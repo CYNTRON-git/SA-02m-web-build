@@ -164,6 +164,8 @@ update-recover-boot|etc/systemd/sa02m-update-verify.service|ExecStart=/usr/local
 update-recover-boot|scripts/update-www-only.sh|sa02m-update-recover.service sa02m-update-verify.service sa02m-factory-reset.service
 update-recover-boot|scripts/pack-offline-update.py|"sa02m-update-verify.service"
 update-recover-boot|etc/sa02m-update-runner.sh|trap '"'"'exit 143'"'"' INT TERM
+no-absolute-api-paths|www/network_config/static/js/devices.js|"api/devices
+flasher-auth-header-strip|etc/nginx/network_config.conf|X-SA02M-Auth  "";
 '
 
 command -v git >/dev/null 2>&1 || { echo "comment-mutation-proof: FAIL — git is required to build the pristine copy"; exit 1; }

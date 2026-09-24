@@ -37,6 +37,25 @@
        a KPI tile clipping its value). GATED at the supported widths, REPORT-only
        at phone-portrait and for boxes that legitimately scroll (`overflow-y:
        auto|scroll` — the user can reach the content).
+     • (h) no INTRA-BOX horizontal clipping: a box whose `overflow-x:hidden|clip`
+       hides content wider than itself (`scrollWidth > clientWidth + HCLIP_EPS`)
+       — the class the (a) overflow test cannot see, because the clipped label
+       sits INSIDE the viewport (right=360 < 393) and only its own card clamps
+       it (1.0.6.53: «USB / microSD», «Перезапустить», «Включить клиент» cut off
+       inside the ≤414px «Управление» tiles). The single-line ellipsis idiom
+       (`text-overflow:ellipsis` + `white-space:nowrap`) is the one sanctioned
+       clip and is skipped. GATED at the supported widths on both surfaces AND
+       at phone-portrait on the management surface (the phone IS that tab's use
+       case — F-B1, 1.0.6.53); REPORT-only at phone-portrait on the dashboard.
+       Non-vacuous: a cell where no `overflow-x:hidden|clip` box is measured
+       at all FAILS (the management card bodies are such boxes by design).
+     • (i) management ONE COLUMN at ≤560px: every visible tile of
+       `.system-manage-grid` spans the grid's full content width (± EPS). The
+       defect: `.system-manage-services-card { grid-column: span 2 }` on a grid
+       whose auto-fill template resolves to ONE track creates an IMPLICIT
+       second column and every auto-placed tile flows into it — two ~60/35 %
+       tiles per row on every phone (1.0.6.53). Non-vacuous floor: ≥ 5 tiles.
+       RED/GREEN record: see the "RED, measured" note beside MANAGE_ONE_COL_MAX_W.
      • every visible interactive control ≥ 44×44 CSS px, or a whitelisted
        deviation with a printed reason (ledger discipline)
      • services-control column alignment (the 1.0.5.19 column grid): manage,
@@ -67,7 +86,8 @@
    NON-VACUOUS. No collection assertion passes on an empty collection: a selector
    that stops matching turns the run RED, not quietly to zero checks (ported from
    the cloud driver's assertNonEmpty rule) — this holds for the GATED checks
-   (overflow, touch, columns, cards, KPI centring, vertical clipping, contrast)
+   (overflow, touch, columns, cards, KPI centring, vertical clipping, intra-box
+   horizontal clipping, management one-column, contrast)
    AND for the report-only font pass (a text selector matching nothing is a real
    regression and FAILS even there). Every gated check names the failing element
    and its
@@ -131,6 +151,26 @@ const CENTRE_EPS = 1.5; // sub-pixel slack for a value-centring claim, CSS px (c
                         // line-height/Range sub-pixel rounding.
 const CLIP_EPS = 1;     // px a box may under-run its own content before it counts (cloud parity)
                         // as clipping (absorbs sub-pixel scrollHeight rounding).
+const HCLIP_EPS = 2;    // px of HORIZONTAL surplus an overflow-x:hidden box may hide before it
+                        // counts as clipping (h): main.css `.system-manage-grid .ctrl-card-main`
+                        // documents a 1–2 px-wide child that its overflow-x:hidden exists to
+                        // swallow (the ::-webkit-scrollbar thumb sliver), so 2 is the floor
+                        // under which the clip is the design, not a defect.
+// The «Управление» grid is ONE column at/below this width (main.css, the ≤560
+// phone-portrait block — F-B2, 1.0.6.53), so the one-column assertion (i) is
+// meaningful only there; above it the auto-fill template packs 2–3 tiles per row.
+// RED, measured 2026-09-23 on the 1.0.6.52 CSS (before the ≤560 rule): 52
+// failures, all four management phone-portrait cells (dark/light ×
+// 1eth/2eth) — (i) 10 of 11 tiles at 230px or 88px in a 332px grid (tracks
+// `230px 88px`; only the `span 2` Службы card filled the row) and (h) three
+// card bodies (`.ctrl-card-main` of Действия / Яндекс Алиса / MPLC-проект,
+// clientWidth 50) hiding 23–48px of their content. Both surfaces were clean
+// under (h) at 800/768/1440; the dashboard at 360 printed one report-only hit
+// (the Температура KPI tile hides 3px, pre-existing, below the floor). GREEN
+// (0 failures) once main.css took `grid-template-columns: minmax(0, 1fr)` +
+// Службы `1 / -1` at ≤560.
+const MANAGE_ONE_COL_MAX_W = 560;
+const MANAGE_TILE_MIN = 5;  // non-vacuity floor for (i): index.html carries 11 tiles in the grid.
 const FONT_MIN = 11;    // HIG minimum readable text size, CSS px. 11 is a FLOOR,
                         // not a target — text AT 11px passes (< FONT_MIN fails).
 const CONTRAST_MIN = 4.5;  // WCAG 2.1 AA for normal-size text.
@@ -360,8 +400,9 @@ function pageSetup(arg) {
 
 // ── In-page measurement (runs in the browser) ───────────────────────────────
 function pageMeasure(arg) {
-  const { surface, TOUCH_MIN, EPS, CLIP_EPS, CENTRE_EPS, FONT_MIN,
-          KPI_CENTRE_MAX_W, KPI_TILE_VAL_SEL, wlSelectors, wlFont } = arg;
+  const { surface, TOUCH_MIN, EPS, CLIP_EPS, HCLIP_EPS, CENTRE_EPS, FONT_MIN,
+          KPI_CENTRE_MAX_W, KPI_TILE_VAL_SEL, MANAGE_ONE_COL_MAX_W,
+          wlSelectors, wlFont } = arg;
   const vw = window.innerWidth;
 
   const describe = (el) => {
@@ -441,6 +482,54 @@ function pageMeasure(arg) {
     else if (oy === 'auto' || oy === 'scroll') vclipScroll.push(rec);
   });
 
+  // (h) intra-box HORIZONTAL clipping — a box whose overflow-x is hidden|clip
+  // and whose content is WIDER than itself (scrollWidth > clientWidth) hides the
+  // surplus INSIDE the viewport. (a) only sees an element hanging past the
+  // viewport edge, so a label clipped by its own card (the ≤414px «Управление»
+  // tiles, 1.0.6.53) was invisible to it; (e) is the vertical twin. The single-
+  // line ellipsis idiom (text-overflow:ellipsis + white-space:nowrap) is the one
+  // sanctioned clip — the text is deliberately truncated — and is skipped.
+  // `hclipBoxCount` is the non-vacuity denominator: zero measured boxes means
+  // the selector rotted or the surface did not render, never a pass.
+  const hclip = [];
+  let hclipBoxCount = 0;
+  document.querySelectorAll('body *').forEach((el) => {
+    const r = el.getBoundingClientRect();
+    if (!visible(el, r)) return;
+    const cs = getComputedStyle(el);
+    const ox = cs.overflowX;
+    if (ox !== 'hidden' && ox !== 'clip') return;
+    hclipBoxCount++;
+    if (el.clientWidth <= 0) return;
+    if (el.scrollWidth <= el.clientWidth + HCLIP_EPS) return;
+    if (cs.textOverflow === 'ellipsis' && cs.whiteSpace === 'nowrap') return;
+    hclip.push({ desc: describe(el), scrollW: el.scrollWidth, clientW: el.clientWidth,
+                 hidden: rnd(el.scrollWidth - el.clientWidth) });
+  });
+
+  // (i) management ONE COLUMN at ≤ MANAGE_ONE_COL_MAX_W — every visible tile of
+  // .system-manage-grid is as wide as the grid's CONTENT box. Measured on the
+  // rendered rect, never on grid-template-columns: the 1.0.6.53 defect was an
+  // IMPLICIT column (a `span 2` item on a one-track auto-fill grid), which no
+  // template string shows. `null` above the width (the check is not in force).
+  let manageTiles = null;
+  if (surface === 'management' && vw <= MANAGE_ONE_COL_MAX_W) {
+    manageTiles = [];
+    const grid = document.querySelector('.system-manage-grid');
+    if (grid) {
+      const gr = grid.getBoundingClientRect();
+      const gcs = getComputedStyle(grid);
+      const contentW = gr.width - parseFloat(gcs.paddingLeft) - parseFloat(gcs.paddingRight)
+                     - parseFloat(gcs.borderLeftWidth) - parseFloat(gcs.borderRightWidth);
+      grid.querySelectorAll(':scope > .system-manage-tile').forEach((t) => {
+        const tr = t.getBoundingClientRect();
+        if (!visible(t, tr)) return;
+        manageTiles.push({ desc: describe(t), w: rnd(tr.width), gridW: rnd(contentW),
+                           off: rnd(tr.width - contentW) });
+      });
+    }
+  }
+
   // (f) mobile KPI value centring — only where the square-tile grid is in force
   // (vw <= KPI_CENTRE_MAX_W). Each direct-child `.widget-val` must sit at the
   // TRUE vertical centre of its tile's CONTENT box. Measured on the TEXT box
@@ -518,7 +607,8 @@ function pageMeasure(arg) {
   }
 
   return { overflow, undersized, controlCount, svcColumns, cards,
-           vclipHidden, vclipScroll, kpiCentres, fontUnder, textRunCount };
+           vclipHidden, vclipScroll, hclip, hclipBoxCount, manageTiles,
+           kpiCentres, fontUnder, textRunCount };
 }
 
 // ── Contrast: in-page text-run probe (runs in the browser) ──────────────────
@@ -701,6 +791,7 @@ async function run() {
   const failures = [];
   const overflowInfo = [];              // report-only overflow (non-gated viewports)
   const vclipReport = new Map();        // key → {kind,desc,hidden,cells} (report-only, deduped)
+  const hclipReport = new Map();        // desc → {hidden,cells} (report-only: dashboard phone-portrait)
   const unlistedUndersized = new Map(); // desc → {w,h,cells:[]}
   const subFont = new Map();            // desc → {fontPx,text,cells:[],known} (report-only)
   const shots = [];
@@ -770,8 +861,8 @@ async function run() {
           shots.push(shotPath);
 
           const m = await page.evaluate(pageMeasure, {
-            surface: surface.id, TOUCH_MIN, EPS, CLIP_EPS, CENTRE_EPS, FONT_MIN,
-            KPI_CENTRE_MAX_W, KPI_TILE_VAL_SEL, wlSelectors, wlFont,
+            surface: surface.id, TOUCH_MIN, EPS, CLIP_EPS, HCLIP_EPS, CENTRE_EPS, FONT_MIN,
+            KPI_CENTRE_MAX_W, KPI_TILE_VAL_SEL, MANAGE_ONE_COL_MAX_W, wlSelectors, wlFont,
           });
 
           // (a) horizontal overflow — scroll (page moves) OR clipped (content
@@ -847,6 +938,41 @@ async function run() {
             const rec = vclipReport.get(key) || { kind: 'scroll', desc: v.desc, hidden: v.hidden, cells: [] };
             if (rec.cells.length < 3) rec.cells.push(cellName);
             vclipReport.set(key, rec);
+          }
+          // (h) intra-box horizontal clipping — gated at the supported widths on
+          // both surfaces AND at phone-portrait on the management surface (F-B1:
+          // the phone is that tab's use case, and its 2-per-row tiles were the
+          // reported defect); the dashboard at phone-portrait stays report-only
+          // like its (a)/(e) siblings. Non-empty guard GATES everywhere: a cell
+          // measuring no overflow-x:hidden|clip box at all is a rotted selector or
+          // an unrendered surface, never a pass.
+          const hclipGate = vp.overflowGate || surface.id === 'management';
+          if (m.hclipBoxCount === 0) {
+            failures.push(`[${cellName}] no overflow-x:hidden|clip boxes measured for the intra-box clipping check — selector rotted or the surface did not render`);
+          }
+          for (const h of m.hclip) {
+            const line = `[${cellName}] horizontal clipping inside a box: ${h.desc} hides ${h.hidden}px of its content (scrollWidth ${h.scrollW} > clientWidth ${h.clientW} + ${HCLIP_EPS}, overflow-x hidden/clip) — unreachable`;
+            if (hclipGate) failures.push(line);
+            else {
+              const rec = hclipReport.get(h.desc) || { hidden: h.hidden, cells: [] };
+              if (rec.cells.length < 3) rec.cells.push(cellName);
+              hclipReport.set(h.desc, rec);
+            }
+          }
+          // (i) management one column at ≤560 — present only where the rule is
+          // in force (phone-portrait on the management surface). Non-empty
+          // guard: fewer than MANAGE_TILE_MIN tiles means the grid or its tile
+          // class rotted, not a one-column layout.
+          if (m.manageTiles) {
+            if (m.manageTiles.length < MANAGE_TILE_MIN) {
+              failures.push(`[${cellName}] management one-column: only ${m.manageTiles.length} .system-manage-grid > .system-manage-tile tiles measured (floor ${MANAGE_TILE_MIN}) — the grid or its tile class rotted`);
+            } else {
+              for (const t of m.manageTiles) {
+                if (Math.abs(t.off) > EPS) {
+                  failures.push(`[${cellName}] management not one column at ≤${MANAGE_ONE_COL_MAX_W}px: ${t.desc} is ${t.w}px wide in a ${t.gridW}px grid (off by ${t.off}px > ${EPS}px)`);
+                }
+              }
+            }
           }
           // (f) mobile KPI value centring — only present where the square-tile
           // grid is in force (vw ≤ 560). Non-empty guard: at a ≤560 dashboard
@@ -998,6 +1124,16 @@ async function run() {
     }
   }
 
+  // ── Report-only intra-box horizontal clipping (dashboard phone-portrait) ──
+  // The management surface and every supported width GATE this class above;
+  // the dashboard at 360px stays a named report like its overflow/vclip siblings.
+  if (hclipReport.size) {
+    console.log('\nintra-box horizontal clipping (report-only — dashboard below the design floor; GATED elsewhere):');
+    for (const [desc, rec] of hclipReport) {
+      console.log(`  · ${desc} — hides ${rec.hidden}px (overflow-x hidden/clip)   e.g. ${rec.cells.join(', ')}`);
+    }
+  }
+
   // ── Touch-target ledger (printed every run) ───────────────────────────────
   console.log('\nTOUCH_WHITELIST ledger (TOUCH_MIN=' + TOUCH_MIN + 'px):');
   TOUCH_WHITELIST.forEach((w, i) => {
@@ -1066,7 +1202,7 @@ async function run() {
   }
   console.log('\nui-layout: PASS — no violations across ' +
     `${SURFACES.length} surfaces × ${VIEWPORTS.length} viewports × ${THEMES.length} themes × ${VARIANTS.length} variants ` +
-    `(geometry + KPI centring + vertical clipping + ${FONT_MIN}px font floor + ${CONTRAST_MIN}:1 contrast in both themes).`);
+    `(geometry + KPI centring + vertical clipping + intra-box horizontal clipping + management one column ≤${MANAGE_ONE_COL_MAX_W}px + ${FONT_MIN}px font floor + ${CONTRAST_MIN}:1 contrast in both themes).`);
   process.exit(0);
 }
 

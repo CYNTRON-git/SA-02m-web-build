@@ -55,7 +55,13 @@ services column alignment · horizontal overflow, BOTH the page scrolling sidewa
 AND an element clipped past the edge while an ancestor clamps scrollWidth · touch
 targets vs a printed deviation ledger · no card overlap · VERTICAL clipping (a box
 whose `overflow-y:hidden` hides content taller than itself — the missed class:
-a mobile drawer/tile swallowing its controls) · mobile KPI value CENTRING (at
+a mobile drawer/tile swallowing its controls) · INTRA-BOX horizontal clipping
+(a box whose `overflow-x:hidden|clip` hides content wider than itself — the
+class the past-the-viewport check cannot see; gated at the supported widths on
+both surfaces AND at phone-portrait on «Управление», report-only at
+phone-portrait on the dashboard) · «Управление» ONE COLUMN at ≤560px (every
+tile spans the grid's content width; the `span 2` Службы card used to mint an
+implicit second column on every phone — 1.0.6.53) · mobile KPI value CENTRING (at
 ≤560px each direct-child `.widget-val` sits at the true vertical centre of its
 tile, measured on the text box) · WCAG AA contrast (≥4.5:1, both themes, backdrop
 SAMPLED from rendered pixels) — GATED since 1.0.5.39: a measured pair below the

@@ -91,7 +91,7 @@ if [ "$METHOD" != "POST" ]; then
 fi
 
 web_factory_csrf_check || {
-  json_out '{"ok":false,"error_code":"E_CSRF","error_message":"CSRF validation failed"}'
+  json_out "{\"ok\":false,\"error_code\":\"E_CSRF\",\"reason\":\"$(web_csrf_fail_reason)\",\"error_message\":\"CSRF validation failed\"}"
   exit 0
 }
 

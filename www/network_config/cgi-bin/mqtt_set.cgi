@@ -29,7 +29,7 @@ fi
 # docs/decisions/selective-csrf-policy.md; contract: mqtt-set-endpoint.md).
 # Headers already emitted above, so validate inline and print the shared shape.
 if ! web_csrf_validate; then
-    echo '{"ok":false,"error":"csrf","error_code":"E_CSRF"}'
+    web_csrf_error_body
     exit 0
 fi
 

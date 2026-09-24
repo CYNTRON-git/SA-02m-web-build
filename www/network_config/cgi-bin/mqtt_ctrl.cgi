@@ -13,7 +13,7 @@ if ! check_auth; then echo '{"ok":false,"error":"unauthorized"}'; exit 0; fi
 if [ "$REQUEST_METHOD" != "POST" ]; then echo '{"ok":false,"error":"method"}'; exit 0; fi
 # CSRF BEFORE any mutation (policy: docs/decisions/selective-csrf-policy.md).
 # Headers already emitted at top, so validate inline.
-if ! web_csrf_validate; then echo '{"ok":false,"error":"csrf","error_code":"E_CSRF"}'; exit 0; fi
+if ! web_csrf_validate; then web_csrf_error_body; exit 0; fi
 
 TMP=$(mktemp /tmp/sa02m-mqctrl.XXXXXX)
 trap "rm -f '$TMP'" EXIT

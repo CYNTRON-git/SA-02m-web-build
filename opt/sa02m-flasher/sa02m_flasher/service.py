@@ -312,6 +312,11 @@ class Handler(BaseHTTPRequestHandler):
     def _check_auth(self) -> bool:
         ctx: ServiceContext = self.server.context  # type: ignore[attr-defined]
         cookie = self.headers.get("Cookie")
+        # X-SA02M-Auth is the edge-side INTERNAL_TOKEN seam, never a client
+        # credential: nginx overwrites a client-supplied value with "" on both
+        # flasher locations (etc/nginx/network_config.conf, gate
+        # flasher-auth-header-strip), so a non-empty value here can only come
+        # from a local caller on the unix socket. Empty INTERNAL_TOKEN = inert.
         token = self.headers.get("X-SA02M-Auth")
         if ctx.cfg.internal_token and check_internal_token(token, ctx.cfg.internal_token):
             return True

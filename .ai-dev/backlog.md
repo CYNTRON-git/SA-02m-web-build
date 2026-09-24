@@ -575,6 +575,51 @@ verified fixed by the whole-backlog triage removed; evidence per entry in that c
   by the CGI), `/etc/sa02m-alice` 0770 group-write, the argument-unrestricted sudoers
   trigger with enable/disable/restart verbs, the CGI nudges — is homed only in review
   stamps that ship-beat deletion removes. Give it a durable home.
+- [OPEN] 2026-09-24 **[MED, Operator decision] The GitHub-OTA runner never deploys the nginx site
+  config.** `etc/sa02m-update-runner.sh` `prepare_github_overlay` → `map_dst` has no branch for
+  `etc/nginx/` (`DST_RE` admits the destination, the filter is map_dst AND DST_RE). The site file
+  reaches a board by every OTHER lane — the one-home list is `docs/deployment.md` «Чего
+  OTA/офлайн-пакет не делает никогда» (full install/refresh via `03-webserver.sh`; www-only from a
+  checkout with `etc/` + `opt/sa02m-devices/` via `update-www-only.sh` → `11-devices.sh`; the offline
+  `.sa02m` package; the golden image) — never GitHub-OTA. Measured 2026-09-24 on 1.135: after the
+  panel OTA 1.0.6.52 → 1.0.6.53 the `X-SA02M-Auth` strip is absent under /etc/nginx while the repo
+  gate is green. Consequence: every nginx-level hardening is invisible to boards updated only through
+  the panel. Fork for the Operator:
+  (a) Расширить `map_dst` раннера веткой для `etc/nginx/network_config.conf` **с шагом рендера**: файл в
+  репо — шаблон с `__PORT__`/`__WEB_ROOT__` (рендерят `scripts/03-webserver.sh` и
+  `scripts/11-devices.sh:94-97` через `sed`), голая ветка положила бы литеральные плейсхолдеры в
+  `/etc/nginx/sites-available/network_config`; `nginx -t` + `reload` раннер уже выполняет в health-gate
+  и rollback, так что добавляется только рендер — и решение Оператора, что GitHub-OTA получает право
+  переписывать конфиг edge (security surface).
+  (b) Оставить как есть и держать одним домом в `docs/deployment.md`: site-файл nginx приезжает полной
+  установкой (`03-webserver.sh`), www-only из чекаута с `etc/` + `opt/sa02m-devices/`
+  (`update-www-only.sh` → `11-devices.sh`), офлайн-пакетом и образом — никогда GitHub-OTA; правка
+  nginx, которая должна дойти до флота, едет одним из этих путей. Until decided, the texts say (b).
+- [OPEN] 2026-09-24 **[LOW] `docs/contracts/cloud-panel-proxy.md` carries a placeholder for the
+  cloud's commit.** The cloud fix (forward the `X-SA02M-` header family) is their PR #120 (cloud
+  0.18.4, branch adc9b2c — a branch hash, they squash). Replace «cloud commit: <to be filled after
+  the cloud merge>» with their `main` commit once they send it; the marker in the file is the only
+  reminder (transient-hygiene does not scan prose).
+- [OPEN] 2026-09-24 **[LOW] Two load-induced harness flakes.** (1) `test-web-update-apply-guard.sh`
+  R1: the live-runner fixture was `sleep 30`; under quality-runner load section R reached it 44–50 s
+  later → false RED. FIXED in 1.0.6.52 (`sleep 900`). (2) `test-web-auth.sh` case 59 «NOT locked
+  after MAXFAIL failures — brute force is unthrottled» FAILED once inside a full `build` beat on
+  2026-09-24 (87/88) and passed on the immediate re-run and every later run — a timing window of
+  the throttle test under load, class (1); not reproduced, not investigated. When it recurs: read the
+  case's time budget against the throttle's window and pin the fixture like R1.
+- [OPEN] 2026-09-23 **[MED] `sa02m-devices-api` listens on `127.0.0.1:8765` with no auth of its
+  own.** `opt/sa02m-devices/sa02m_devices/api.py` reads only Content-Length and relies entirely on
+  nginx's `auth_request` in front of `/api/devices*`; any local process or user on the board can
+  open the loopback port and bypass the panel's session. Found while sweeping the `X-SA02M-Auth`
+  class (1.0.6.53): a different class (unauthenticated loopback TCP), the same shape the Alice config
+  API had before it moved to a root-only unix socket (1.0.6.24, `88032f4`). Fix direction: the same
+  move (AF_UNIX socket, 0660 root:www-data) or a shared local secret set by nginx only. Threat model
+  row to add with the fix.
+- [OPEN] 2026-09-23 **[LOW] XHR upload paths have no CSRF refresh-and-retry of their own.** The
+  panel's two XMLHttpRequest uploads (`status.js` ~:1756 and ~:2318, offline package / MPLC project)
+  read the refreshed token but bypass the fetch wrapper, so an E_CSRF there still ends the upload
+  with a plain error instead of the 1.0.6.53 refresh-once-retry-once path. Route them through the
+  same reaction or document the difference in `docs/contracts/cloud-panel-proxy.md`.
 - [OPEN] 2026-09-23 **[LOW, honesty] `ui-layout` reports PASS when Playwright is absent.** In a
   checkout without `scripts/dev/node_modules` (a fresh git worktree, 2026-09-23) the review beat
   printed `ui-layout: skipped — playwright not installed` followed by `PASS  ui-layout`, while

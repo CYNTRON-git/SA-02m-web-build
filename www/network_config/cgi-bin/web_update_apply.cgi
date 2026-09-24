@@ -25,6 +25,10 @@ CGI_LOCK="$STATEDIR/incoming/.cgi.lock"
 # recover→verify handover at boot and any txn_patch gap shorter than the
 # health gate's settle window (contract: docs/contracts/web-update.md).
 WEB_UPD_STALE_AFTER_S=120
+# The stages during which a transaction is «in progress» — one home for the
+# GET status mapping and the POST launch verdict below (both python snippets
+# receive it as an argument).
+WEB_UPD_RUNNING_STAGES="uploaded validating backing_up applying verifying committing rolling_back confirmed wipe apply verify"
 
 METHOD="${REQUEST_METHOD:-GET}"
 
@@ -46,15 +50,38 @@ _legacy_log_tail() {
   fi
 }
 
+# The launcher (sa02m-web-update-apply) is alive on its own lock pid — judged
+# by /proc/<pid>/cmdline through the liveness home (lib_web_update.sh), never
+# by `kill -0`: this CGI runs as www-data and the launcher as root, so kill(2)
+# with signal 0 answers EPERM for a live root pid and bash reads that as
+# «dead» — the «already running» branch below never fired on a board
+# (1.0.6.53). /proc/<pid>/cmdline is world-readable, and a reused pid whose
+# cmdline is not the launcher no longer blocks a launch.
 _legacy_running() {
-  if [ -f "$LEGACY_LOCKFILE" ]; then
-    local pid
-    pid=$(tr -d ' \r\n' < "$LEGACY_LOCKFILE" 2>/dev/null)
-    if [[ "$pid" =~ ^[0-9]+$ ]] && kill -0 "$pid" 2>/dev/null; then
-      return 0
-    fi
-  fi
-  return 1
+  _web_upd_pid_cmdline_matches "$LEGACY_LOCKFILE" '*sa02m-web-update-apply*'
+}
+
+# rc 0 when transaction.json is at a running stage AND its updated_at is no
+# older than WEB_UPD_STALE_AFTER_S — the trace a launcher that already exec'd
+# the runner leaves behind before the runner takes its own lock.
+_txn_running_fresh() {
+  [ -r "$WEB_UPD_TXN_FILE" ] || return 1
+  command -v python3 >/dev/null 2>&1 || return 1
+  python3 - "$WEB_UPD_TXN_FILE" "$WEB_UPD_STALE_AFTER_S" "$WEB_UPD_RUNNING_STAGES" <<'PY'
+import datetime, json, sys, time
+try:
+    txn = json.load(open(sys.argv[1], encoding="utf-8"))
+except Exception:
+    raise SystemExit(1)
+if not isinstance(txn, dict) or str(txn.get("stage") or "") not in set(sys.argv[3].split()):
+    raise SystemExit(1)
+try:
+    t = datetime.datetime.strptime(str(txn.get("updated_at")), "%Y-%m-%dT%H:%M:%SZ")
+    age = time.time() - t.replace(tzinfo=datetime.timezone.utc).timestamp()
+except Exception:
+    raise SystemExit(1)
+raise SystemExit(0 if age <= int(sys.argv[2]) else 1)
+PY
 }
 
 _emit_status() {
@@ -62,7 +89,7 @@ _emit_status() {
   # and handed to the JSON builder as a flag; python only does the arithmetic.
   local alive=0
   web_upd_runner_alive && alive=1
-  python3 - "$STATEDIR" "$LEGACY_STATEDIR" "$alive" "$WEB_UPD_STALE_AFTER_S" <<'PY'
+  python3 - "$STATEDIR" "$LEGACY_STATEDIR" "$alive" "$WEB_UPD_STALE_AFTER_S" "$WEB_UPD_RUNNING_STAGES" <<'PY'
 import datetime, json, sys, time
 from pathlib import Path
 
@@ -70,6 +97,7 @@ statedir = Path(sys.argv[1])
 legacy_dir = Path(sys.argv[2])
 runner_alive_flag = sys.argv[3] == "1"
 stale_after_s = int(sys.argv[4])
+running_stages = set(sys.argv[5].split())
 sys.path.insert(0, "/opt/sa02m-update")
 
 txn = None
@@ -86,11 +114,6 @@ except Exception:
 
 stage = (txn or {}).get("stage") or "idle"
 result = (txn or {}).get("result") or "pending"
-running_stages = {
-    "uploaded", "validating", "backing_up", "applying",
-    "verifying", "committing", "rolling_back",
-    "confirmed", "wipe", "apply", "verify",
-}
 if stage in running_stages:
     legacy_status = "running"
 elif stage == "done":
@@ -241,7 +264,7 @@ if [ -n "$CONFIRM" ]; then
   # Offline file apply — CSRF required (headers not yet sent).
   if ! web_csrf_validate; then
     _json_headers
-    printf '{"ok":false,"error":"csrf","error_code":"E_CSRF"}\n'
+    web_csrf_error_body
     exit 0
   fi
 
@@ -390,7 +413,7 @@ fi
 # cached bundle without the token gets E_CSRF and the app.js wrapper re-logs in.
 if ! web_csrf_validate; then
   _json_headers
-  printf '{"ok":false,"error":"csrf","error_code":"E_CSRF"}\n'
+  web_csrf_error_body
   exit 0
 fi
 
@@ -475,13 +498,22 @@ if ! command -v sudo >/dev/null 2>&1; then
 fi
 
 nohup sudo -n /usr/local/sbin/sa02m-web-update-apply >/dev/null 2>&1 &
-BGPID=$!
 sleep 1
 
-if [ -f "$LEGACY_LOCKFILE" ] || kill -0 "$BGPID" 2>/dev/null; then
+# The verdict after the launch — contract «POST — ответ после запуска»
+# (docs/contracts/web-update.md): «running» when the launcher is alive (its
+# legacy lock — the clone phase — or its lock pid + cmdline), the runner it
+# exec'd is alive (lib_web_update.sh: runner lock pid + cmdline, units), or the
+# transaction it wrote is at a running stage and fresh. Until 1.0.6.53 this was
+# «legacy lock still present OR kill -0 $!»: a fast clone (a local git server,
+# bench 2026-09-23) let the launcher drop its lock and exec the runner inside
+# the 1 s, and kill -0 on the setuid sudo→root child answers EPERM to www-data,
+# so a good launch was reported as «error» — and written into update_status,
+# a file the LAUNCHER owns (etc/sa02m-web-update-apply.sh), so the next GET
+# replayed the false verdict. The CGI writes no status file any more.
+if [ -f "$LEGACY_LOCKFILE" ] || _legacy_running || web_upd_runner_alive || _txn_running_fresh; then
   printf '{"ok":true,"status":"running","log":"Обновление запущено...","legacy":{"status":"running"}}\n'
 else
-  printf 'error' > "$LEGACY_STATUS_FILE" 2>/dev/null || true
   log_tail=$(_legacy_log_tail)
   log_tail="${log_tail%\\n}"
   printf '{"ok":false,"status":"error","log":"%s","legacy":{"status":"error"}}\n' "$log_tail"

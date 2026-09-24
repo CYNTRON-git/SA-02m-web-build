@@ -1,5 +1,5 @@
 /* Devices tab — live ДТВ / СЭ-02м-3 widgets + MR-02m analog cards + history modal / Excel / events */
-import { aiSensorLabel, aiUnitPrecision } from "./ai-sensors.js?v=1.0.6.52";
+import { aiSensorLabel, aiUnitPrecision } from "./ai-sensors.js?v=1.0.6.53";
 
 (function () {
   "use strict";
@@ -580,7 +580,7 @@ import { aiSensorLabel, aiUnitPrecision } from "./ai-sensors.js?v=1.0.6.52";
     ) {
       return;
     }
-    fetchJson("/api/devices/widgets/remove", {
+    fetchJson("api/devices/widgets/remove", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ id: id }),
@@ -595,7 +595,7 @@ import { aiSensorLabel, aiUnitPrecision } from "./ai-sensors.js?v=1.0.6.52";
   }
 
   function addWidget(id) {
-    return fetchJson("/api/devices/widgets/add", {
+    return fetchJson("api/devices/widgets/add", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ id: id }),
@@ -859,7 +859,7 @@ import { aiSensorLabel, aiUnitPrecision } from "./ai-sensors.js?v=1.0.6.52";
   }
 
   function refreshEvents() {
-    return fetchJson("/api/devices/events?limit=80")
+    return fetchJson("api/devices/events?limit=80")
       .then((data) => {
         if (!data || !data.ok) return;
         renderEvents(data.events || []);
@@ -868,7 +868,7 @@ import { aiSensorLabel, aiUnitPrecision } from "./ai-sensors.js?v=1.0.6.52";
   }
 
   function refreshLive() {
-    return fetchJson("/api/devices")
+    return fetchJson("api/devices")
       .then((data) => {
         if (!data || !data.ok) return;
         availableDevices = Array.isArray(data.available) ? data.available : [];
@@ -1077,7 +1077,7 @@ import { aiSensorLabel, aiUnitPrecision } from "./ai-sensors.js?v=1.0.6.52";
     } else {
       params.metric = activeMetric;
     }
-    const url = "/api/devices/history/export?" + historyQs(params);
+    const url = "api/devices/history/export?" + historyQs(params);
     const status = $("dev-chart-status");
     if (status) status.textContent = "Экспорт Excel";
     const fallback =
@@ -1179,7 +1179,7 @@ import { aiSensorLabel, aiUnitPrecision } from "./ai-sensors.js?v=1.0.6.52";
     }
     summaryAbort = typeof AbortController !== "undefined" ? new AbortController() : null;
     const url =
-      "/api/devices/history/summary?" +
+      "api/devices/history/summary?" +
       historyQs({ ...rangeReqParams(), kwh_rub: String(tariff) });
     return fetchJson(url, summaryAbort ? { signal: summaryAbort.signal } : {})
       .then((data) => {
@@ -2375,7 +2375,7 @@ import { aiSensorLabel, aiUnitPrecision } from "./ai-sensors.js?v=1.0.6.52";
               group: activeDevice === "dtv" ? "climate" : "energy",
               ...rangeReqParams(),
             };
-      const url = "/api/devices/history?" + historyQs(overviewQs);
+      const url = "api/devices/history?" + historyQs(overviewQs);
       fetchJson(url, fetchOpts)
         .then((data) => {
           if (!stillCurrent()) return;
@@ -2438,7 +2438,7 @@ import { aiSensorLabel, aiUnitPrecision } from "./ai-sensors.js?v=1.0.6.52";
         : activeDevice === "carel"
         ? { kind: "carel", metric: activeMetric, ...rangeReqParams() }
         : { metric: activeMetric, ...rangeReqParams() };
-    const url = "/api/devices/history?" + historyQs(metricQs);
+    const url = "api/devices/history?" + historyQs(metricQs);
     fetchJson(url, fetchOpts)
       .then((data) => {
         if (!stillCurrent()) return;

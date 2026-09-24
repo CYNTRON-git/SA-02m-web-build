@@ -44,7 +44,7 @@ METHOD="${REQUEST_METHOD:-GET}"
 # cloud.cgi's CSRF check.
 if [ "$METHOD" = "POST" ] || [ "$METHOD" = "PUT" ] || [ "$METHOD" = "DELETE" ]; then
     if ! web_csrf_validate; then
-        echo '{"ok":false,"error":"csrf","error_code":"E_CSRF"}'
+        web_csrf_error_body
         exit 0
     fi
 fi
