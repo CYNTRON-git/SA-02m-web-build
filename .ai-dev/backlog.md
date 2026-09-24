@@ -575,6 +575,18 @@ verified fixed by the whole-backlog triage removed; evidence per entry in that c
   by the CGI), `/etc/sa02m-alice` 0770 group-write, the argument-unrestricted sudoers
   trigger with enable/disable/restart verbs, the CGI nudges — is homed only in review
   stamps that ship-beat deletion removes. Give it a durable home.
+- [OPEN] 2026-09-24 **[LOW] `docs/contracts/cloud-panel-proxy.md` carries a placeholder for the
+  cloud's commit.** The cloud fix (forward the `X-SA02M-` header family) is their PR #120 (cloud
+  0.18.4, branch adc9b2c — a branch hash, they squash). Replace «cloud commit: <to be filled after
+  the cloud merge>» with their `main` commit once they send it; the marker in the file is the only
+  reminder (transient-hygiene does not scan prose).
+- [OPEN] 2026-09-24 **[LOW] Two load-induced harness flakes.** (1) `test-web-update-apply-guard.sh`
+  R1: the live-runner fixture was `sleep 30`; under quality-runner load section R reached it 44–50 s
+  later → false RED. FIXED in 1.0.6.52 (`sleep 900`). (2) `test-web-auth.sh` case 59 «NOT locked
+  after MAXFAIL failures — brute force is unthrottled» FAILED once inside a full `build` beat on
+  2026-09-24 (87/88) and passed on the immediate re-run and every later run — a timing window of
+  the throttle test under load, class (1); not reproduced, not investigated. When it recurs: read the
+  case's time budget against the throttle's window and pin the fixture like R1.
 - [OPEN] 2026-09-23 **[MED] `sa02m-devices-api` listens on `127.0.0.1:8765` with no auth of its
   own.** `opt/sa02m-devices/sa02m_devices/api.py` reads only Content-Length and relies entirely on
   nginx's `auth_request` in front of `/api/devices*`; any local process or user on the board can
