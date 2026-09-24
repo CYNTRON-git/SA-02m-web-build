@@ -183,40 +183,44 @@ def mk(sid, name, code):
     return cmd({"id": sid, "name": name, "type": "code",
                 "enabled": True, "code": code}).get("ok")
 
-def journal_count():
+# The journal keeps the newest RUNS_MAX records, so on a board that has run
+# scenarios for a while it is FULL and its length never grows — counting
+# entries turned check 7 into a false FAIL (bench 1.135, 2026-09-24). The new
+# record is found by the scenario id and a timestamp at or after run_now.
+def journal_has(sid, t0):
     j = store.journal_path(P)
     if not os.path.exists(j):
-        return 0
+        return False
     try:
-        return len(json.load(open(j)).get("runs") or [])
+        runs = json.load(open(j)).get("runs") or []
     except Exception:
-        return 0
+        return False
+    return any(r.get("id") == sid and float(r.get("ts") or 0) >= t0 - 1 for r in runs)
 
 def run(sid, wait=45):
     mt0 = os.path.getmtime(P)
-    n0 = journal_count()
     before = (row(sid) or {}).get("last_run")
-    cmd({"id": sid, "run_now": True})
     t0 = time.time()
+    cmd({"id": sid, "run_now": True})
     while time.time() - t0 < wait:
         r = row(sid)
         if r and r.get("last_run") and r.get("last_run") != before:
             break
         time.sleep(1)
     time.sleep(7)  # the runs journal flushes on a 5 s cadence
-    return row(sid), os.path.getmtime(P) == mt0, journal_count() - n0
+    return row(sid), os.path.getmtime(P) == mt0, journal_has(sid, t0)
 
 made = []
 try:
     mk("vtmo", "verify timeout", "while True:\n    pass\n")
     made.append("vtmo")
-    r, mt_same, dn = run("vtmo")
+    r, mt_same, found = run("vtmo")
     err = (r or {}).get("last_error", "")
     alive = os.system("systemctl is-active --quiet sa02m-rules") == 0
     print(("PASS" if (err == "timeout" and alive) else "FAIL") +
           " 5 sandbox deadline: last_error=%r daemon_active=%s" % (err, alive))
-    print(("PASS" if (mt_same and dn >= 1) else "FAIL") +
-          " 7 runs journal +%d, scenarios.json mtime unchanged=%s" % (dn, mt_same))
+    print(("PASS" if (mt_same and found) else "FAIL") +
+          " 7 runs journal holds this run (id vtmo, ts >= run_now)=%s, scenarios.json mtime unchanged=%s" % (found, mt_same))
 
     cases = [("http://127.0.0.1:9/x", False, "loopback"),
              ("http://[2002:7f00:1::]:9/x", False, "6to4 wrapping 127.0.0.1"),
@@ -369,18 +373,25 @@ else
     no "12 empty served asset(s): $(printf '%s' "$ZW" | tr '\n' ' ')"
 fi
 
-# 13 the offline-update post-checks of THIS version, when one was run here
-OUTF=/root/offline-$VER.out
+# 13 the offline-update post-checks of THIS version, when one was run here.
+# The wrapper (scripts/offline-full-update.sh) prints its PASS/FAIL table to
+# stdout and, with --log PATH, appends it there; the runbooks run it
+# `--unattended --log /root/install-offline-<ver>.wrapper.log`
+# (docs/deployment.md «Офлайн-вариант»), so that file is the record. The log
+# accumulates across re-runs: the LAST «ИТОГ:» line is the verdict. An
+# interactive run keeps its table on the terminal only — nothing to read.
+# (Until 1.0.6.54 this read /root/offline-<ver>.out, which nothing writes: a
+# check that could only ever SKIP.)
+OUTF=/root/install-offline-$VER.wrapper.log
 if [ ! -f "$OUTF" ]; then
-    skip "13 offline update post-checks: $OUTF absent (no offline update run on this board)"
+    skip "13 offline update post-checks: $OUTF absent (no --log'ged offline update of $VER here; an interactive run keeps its table on the terminal only)"
 else
-    NF=$(grep -c 'FAIL' "$OUTF" 2>/dev/null | head -1)
-    NP=$(grep -c 'PASS' "$OUTF" 2>/dev/null | head -1)
-    if [ "$NF" = "0" ] && [ "$NP" != "0" ]; then
-        ok "13 offline update post-checks: $NP PASS, 0 FAIL"
-    else
-        no "13 offline update post-checks: $NP PASS, $NF FAIL"
-    fi
+    VERDICT=$(grep -E 'ИТОГ: (PASS|FAIL)' "$OUTF" 2>/dev/null | tail -1)
+    case "$VERDICT" in
+        *'ИТОГ: PASS'*) ok "13 offline update post-checks: ${VERDICT#*ИТОГ: }" ;;
+        *'ИТОГ: FAIL'*) no "13 offline update post-checks: ${VERDICT#*ИТОГ: }" ;;
+        *) no "13 offline update post-checks: $OUTF has no «ИТОГ:» line (the wrapper is still running or died before its table)" ;;
+    esac
 fi
 
 # 14 the journal is persistent: the Armbian RAM-log hooks are off (their cron
