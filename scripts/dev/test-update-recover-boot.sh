@@ -83,6 +83,9 @@
 #   Round 6: R10 — a torn last journal line converges in ONE run, through boot
 #   recover (R10a) and runtime reclaim (R10b). RED on fb78136: rc=1, stage
 #   frozen at rolling_back, lock kept, file NEW.
+#   Round 7: R11 — the caller's ERROR line after a rollback names its real
+#   outcome («rollback incomplete» over stage=error, «rolled back» otherwise).
+#   RED on 8e21bee: R11a logged «(rolled back)» over stage=error.
 #
 # Run: bash scripts/dev/test-update-recover-boot.sh   (bash + python3 + coreutils)
 # ═══════════════════════════════════════════════════════════════════════════
@@ -710,6 +713,41 @@ else
     bad "R10b reclaim over a torn journal: rc=$rc stage=$(txn_field stage) f=$(cat "$TW/r10/f.conf") lock=$([ -f "$IMAGING_LOCK" ] && echo kept || echo cleared)"
 fi
 rm -f "$STAGE/journal.jsonl" "$STAGE/backups/r10bak"
+
+# ── R11: the caller's ERROR line tells the truth about the rollback (round 7 —
+# review R4-3). rollback_from_journal returns 0 over a PARTIAL restore
+# (stage=error «rollback incomplete»), and every caller — cmd_apply's five
+# failure branches and cmd_verify — logged «(rolled back)» regardless. Driven
+# through cmd_verify (the one caller extracted here; cmd_apply's branches read
+# the same ROLLBACK_OUTCOME): a failed health gate over a journal whose replace
+# record has lost its backup. R11a: the line says «rollback incomplete», never
+# «rolled back»; R11b (a clean rollback) still says «rolled back».
+echo "── R11: the post-rollback ERROR line matches the transaction ──"
+reset_run; printf '1\n' > "$T/health.rc"
+mkdir -p "$STAGE/backups" "$TW/r11"
+printf 'r11 NEW\n' > "$TW/r11/f.conf"
+printf '{"op": "replace", "dst": "%s/r11/f.conf", "backup": "%s/backups/r11-gone", "mode": "0644", "owner": "root:root"}\n' "$TW" "$STAGE" \
+    > "$STAGE/journal.jsonl"
+write_txn verifying 3 3 boot_verify_pending=true runtime_wdt_prev_usec=15000000
+date -Iseconds > "$IMAGING_LOCK"
+run_verify
+r11_line=$(grep -F 'post-boot health failed' "$LOG" 2>/dev/null) || :
+if [ "$(txn_field stage)" = error ] && [[ "$r11_line" == *"(rollback incomplete)"* ]] && [[ "$r11_line" != *"rolled back"* ]]; then
+    ok "R11a incomplete rollback after verify: stage=error and the ERROR line says «rollback incomplete»"
+else
+    bad "R11a incomplete rollback after verify: stage=$(txn_field stage), ERROR line='$r11_line' — the log claims a rollback the transaction denies"
+fi
+rm -f "$STAGE/journal.jsonl"
+reset_run; printf '1\n' > "$T/health.rc"
+write_txn verifying 3 3 boot_verify_pending=true runtime_wdt_prev_usec=15000000
+date -Iseconds > "$IMAGING_LOCK"
+run_verify
+r11_line=$(grep -F 'post-boot health failed' "$LOG" 2>/dev/null) || :
+if [ "$(txn_field stage)" = rolled_back ] && [[ "$r11_line" == *"(rolled back)"* ]]; then
+    ok "R11b clean rollback after verify: stage=rolled_back and the ERROR line says «rolled back»"
+else
+    bad "R11b clean rollback after verify: stage=$(txn_field stage), ERROR line='$r11_line'"
+fi
 
 echo "-----"
 if [ "$fails" -eq 0 ]; then echo "PASS (all checks)"; exit 0

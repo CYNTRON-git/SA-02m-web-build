@@ -87,6 +87,15 @@
 #   (2026-09-24, WSL): 10 FAIL — 15a/15b rc=1 with every file NEW, 15c
 #   «rolled_back» over a NEW file, 15d rc=1, 15e same inode and owner 0:0,
 #   16a/16b no visudo call, 10c rc=0.
+#   Round 7 (review R4-1): every rollback copy is fdatasync'd before the journal
+#   line that names it — case 6 now pins five consecutive trace lines (sync -d
+#   backup → sync -d journal → sync -d tmp → mv → sync dir); 11g / 11h / 12e
+#   refuse the backup's `sync -d` in the deploy loop / the runner stamp /
+#   apply_deletes → rc=1, nothing renamed or deleted, no journal line. RED on
+#   8e21bee (2026-09-24, WSL): 6 FAIL, the 53 earlier checks still ok — 6 «[]»
+#   before the journal's sync (no backup sync at all), 11g rc=0 with every file
+#   NEW and a journal line for item 2, 11h stamp 9.9.9.9 with its record, 12e
+#   rc=0 with the target DELETED and its record journalled.
 #
 # Drive-to-failure: UPDATE_RUNNER_SRC=<(git show main:etc/sa02m-update-runner.sh) \
 #   bash scripts/dev/test-update-deploy-skip.sh   → the skip assertion goes RED
@@ -443,28 +452,35 @@ else
     bad "rollback left the NEW runner stamp behind (stamp='$(cat "$RUNNER_VERSION_FILE" 2>/dev/null)') — board over-reports a runner it rolled back from"
 fi
 
-# 6. FSYNC ORDER PER CHANGED FILE (1.0.6.54, G3). For item B the trace must read,
-#    on four CONSECUTIVE lines: `sync -d -- <journal>` (the line describing B is
-#    durable first), `sync -d -- <B tmp>`, `mv -f <B tmp> <B>`, `sync -- <live dir>`.
-#    A power cut between any two leaves old-or-new B and a journal that already
-#    names it — never a truncated B, never a NEW B the rollback does not know.
+# 6. FSYNC ORDER PER CHANGED FILE (1.0.6.54, G3/G6). For item B the trace must
+#    read, on five CONSECUTIVE lines: `sync -d -- <B backup>` (the rollback copy
+#    is durable first — round 7, review R4-1), `sync -d -- <journal>` (then the
+#    line naming it), `sync -d -- <B tmp>`, `mv -f <B tmp> <B>`, `sync -- <live
+#    dir>`. A power cut between any two leaves old-or-new B, a journal that
+#    already names it, and a backup whose bytes are on disk — never a truncated
+#    B, never a NEW B the rollback does not know, never a rollback that restores
+#    a 0-byte copy (root fs commit=600 + journal_data_writeback: the journal's
+#    fdatasync commits the copy's inode, not its data).
 #    Capture-then-match (no producer into an early-exit pipe).
 trace_all=$(cat "$TRACE" 2>/dev/null)
 t_tmp=$(grep -n -- "^sync -d -- $LIVE/b.conf.tmp." "$TRACE" 2>/dev/null) || :
 t_tmp=${t_tmp%%$'\n'*}; t_tmp=${t_tmp%%:*}
+b_bak=$(printf '%s' "$LIVE/b.conf" | command sha256sum); b_bak="$STATEDIR/staging/$TXN/backups/${b_bak%% *}"
 if [ -z "$trace_all" ]; then
     bad "no sync/mv calls traced at all — fsync goes through python3 (or nowhere), journal never synced"
 elif [ -z "$t_tmp" ]; then
     bad "no 'sync -d' of B's tmp file in the trace — fdatasync before rename is not through coreutils sync"
 else
+    l_b=""; [ "$t_tmp" -gt 2 ] && l_b=$(sed -n "$((t_tmp - 2))p" "$TRACE")
     l_j=$(sed -n "$((t_tmp - 1))p" "$TRACE"); l_mv=$(sed -n "$((t_tmp + 1))p" "$TRACE"); l_d=$(sed -n "$((t_tmp + 2))p" "$TRACE")
+    case "$l_b" in "sync -d -- $b_bak") b_ok=1 ;; *) b_ok=0 ;; esac
     case "$l_j" in "sync -d -- $JOURNAL") j_ok=1 ;; *) j_ok=0 ;; esac
     case "$l_mv" in "mv -f $LIVE/b.conf.tmp."*" $LIVE/b.conf") mv_ok=1 ;; *) mv_ok=0 ;; esac
     case "$l_d" in "sync -- $LIVE") d_ok=1 ;; *) d_ok=0 ;; esac
-    if [ "$j_ok$mv_ok$d_ok" = "111" ]; then
-        ok "fsync order per changed file: sync -d journal → sync -d tmp → mv → sync dir (trace lines $((t_tmp - 1))-$((t_tmp + 2)))"
+    if [ "$b_ok$j_ok$mv_ok$d_ok" = "1111" ]; then
+        ok "fsync order per changed file: sync -d backup → sync -d journal → sync -d tmp → mv → sync dir (trace lines $((t_tmp - 2))-$((t_tmp + 2)))"
     else
-        bad "fsync order broken around B (journal-before-tmp=$j_ok mv-after-tmp=$mv_ok dir-after-mv=$d_ok): [$l_j] [$l_mv] [$l_d]"
+        bad "fsync order broken around B (backup-before-journal=$b_ok journal-before-tmp=$j_ok mv-after-tmp=$mv_ok dir-after-mv=$d_ok): [$l_b] [$l_j] [$l_mv] [$l_d]"
     fi
 fi
 
@@ -723,6 +739,22 @@ SHA_FAIL=""
 SYNC_FAIL_ON="staging/TXN11C/journal.jsonl"
 run_g6_case TXN11C "$T/live11c" "11c fdatasync of the journal fails (item 1 not renamed)" "ERROR: journal write failed: $T/live11c/g1.conf" "g1 OLD|g2 OLD|g3 OLD"
 SYNC_FAIL_ON=""
+# 11g (round 7 — review R4-1): the fdatasync of item 2's BACKUP fails. The copy
+#     is what the rollback restores; journalled without being durable, a power
+#     cut left the journal naming a 0-byte copy and the rollback installed it.
+#     Expected: rc=1 with the backup error, item 2 NOT renamed, and NO journal
+#     line for item 2 (the sync precedes the line). Until round 7 the copy was
+#     never synced: rc=0, every file NEW.
+g2_bak=$(printf '%s' "$T/live11g/g2.conf" | command sha256sum)
+SYNC_FAIL_ON="staging/TXN11G/backups/${g2_bak%% *}"
+run_g6_case TXN11G "$T/live11g" "11g fdatasync of item 2's backup fails (item 2 not renamed)" "ERROR: backup failed: $T/live11g/g2.conf" "g1 NEW|g2 OLD|g3 OLD"
+SYNC_FAIL_ON=""
+g2_lines=$(grep -cF "\"dst\": \"$T/live11g/g2.conf\"" "$STATEDIR/staging/TXN11G/journal.jsonl" 2>/dev/null) || :
+if [ "${g2_lines:-0}" = "0" ] && grep -qF "\"dst\": \"$T/live11g/g1.conf\"" "$STATEDIR/staging/TXN11G/journal.jsonl" 2>/dev/null; then
+    ok "11g the journal names item 1 and NOT item 2 (the backup's fdatasync precedes its journal line)"
+else
+    bad "11g journal lines for item 2 = ${g2_lines:-?} (want 0, with item 1 journalled) — a line names a backup that was never made durable"
+fi
 
 # 11d. THE RUNNER STAMP CHECKS ITS JOURNAL WRITE TOO. The manifest deploys the
 #      "runner" (RUNNER_BIN_DST); the journal path is a directory, so the
@@ -758,6 +790,23 @@ if [ "$rc11e" -eq 0 ] && [ "$(cat "$RUNNER_VERSION_FILE")" = "1.0.0.1" ] && grep
     ok "11e runner stamp: failed manifest read stays soft (rc=0, stamp untouched) and logs a WARN naming the read"
 else
     bad "11e runner stamp: failed manifest read (rc=$rc11e, stamp='$(cat "$RUNNER_VERSION_FILE")', warn=$(grep -cF 'WARN: runner stamp: manifest read failed' "$LOG")) — silent"
+fi
+# 11h (round 7 — review R4-1). The runner stamp's backup is fdatasync'd before
+#     its journal record too: the sync fails → rc=1, stamp untouched, no record.
+TXN11H="TXN11H"; mkdir -p "$STATEDIR/staging/$TXN11H/meta"
+printf '{"schema_version": 1, "version": "9.9.9.9", "deploy": [{"src": "x", "dst": "%s", "mode": "0755", "owner": ""}]}\n' "$LIVE/c.sh" \
+    > "$STATEDIR/staging/$TXN11H/meta/manifest.json"
+RUNNER_BIN_DST="$LIVE/c.sh"; printf '1.0.0.1\n' > "$RUNNER_VERSION_FILE"; : > "$LOG"
+if [ "$HAS_STAMP" = "1" ]; then
+    ( set -euo pipefail; SYNC_FAIL_ON="staging/$TXN11H/backups/"
+      if ! stamp_runner_version_after_deploy "$TXN11H"; then exit 1; fi ) >/dev/null 2>&1; rc11h=$?
+else rc11h=127; fi
+rec11h=$(grep -cF "\"dst\": \"$RUNNER_VERSION_FILE\"" "$STATEDIR/staging/$TXN11H/journal.jsonl" 2>/dev/null) || :
+if [ "$rc11h" -eq 1 ] && [ "$(cat "$RUNNER_VERSION_FILE")" = "1.0.0.1" ] && [ "${rec11h:-0}" = "0" ] \
+   && grep -qF 'ERROR: runner stamp: backup failed' "$LOG"; then
+    ok "11h runner stamp: failed fdatasync of its backup → rc=1, stamp untouched, no journal record"
+else
+    bad "11h runner stamp: backup fdatasync failure (rc=$rc11h, stamp='$(cat "$RUNNER_VERSION_FILE")', records=${rec11h:-?}) — journalled or installed over a copy that is not durable"
 fi
 
 # 12. apply_deletes CHECKS ITS LIST READ, BACKUP AND JOURNAL (round 4). Called
@@ -795,6 +844,16 @@ if [ "$rc12d" -eq 0 ] && [ ! -e "$tgt12" ] && grep -q '"op": "delete"' "$STATEDI
     ok "12d healthy delete: rc=0, target removed, delete record journalled"
 else
     bad "12d healthy delete broken (rc=$rc12d, target $([ -e "$tgt12" ] && echo present || echo gone))"
+fi
+# 12e (round 7 — review R4-1). The delete's backup is fdatasync'd before its
+#     journal line: the sync fails → rc=1, target kept, no delete record.
+SYNC_FAIL_ON="staging/TXN12E/backups/"
+run_del_case TXN12E "12e delete backup fdatasync fails" "ERROR: backup failed: $T/del-TXN12E.conf"
+SYNC_FAIL_ON=""
+if grep -qF '"op": "delete"' "$STATEDIR/staging/TXN12E/journal.jsonl" 2>/dev/null; then
+    bad "12e a delete record was journalled over a backup whose fdatasync failed"
+else
+    ok "12e no delete record journalled when the backup's fdatasync fails"
 fi
 
 # 13. atomic_install_file's OWN fsyncs are checked (round 5). `sync -d -- <tmp>`

@@ -92,6 +92,10 @@ RUNNER_CONTEXT=""
 # rollback_from_journal used to stamp E_APPLY and no message on EVERY rollback,
 # so the panel could not say why a board rolled back).
 APPLY_FAIL_REASON=""
+# What the last rollback_from_journal recorded — "rolled back" or "rollback
+# incomplete" — for the callers' ERROR line, which used to say «rolled back»
+# over a stage=error «rollback incomplete» transaction (review 1.0.6.54 R4-3).
+ROLLBACK_OUTCOME=""
 
 log() {
     local ts line
@@ -1463,7 +1467,14 @@ PY
                 bak=$(printf '%s' "$dst" | sha256sum) || bak=""
                 bak=${bak%% *}
                 [ "${#bak}" -eq 64 ] && bak="$STATEDIR/staging/$txn/backups/$bak" || bak=""
-                if [ -z "$bak" ] || ! { mkdir -p "$(dirname "$bak")" && cp -a "$dst" "$bak"; }; then
+                # The copy is fdatasync'd BEFORE the journal line that names
+                # it: the root fs is commit=600 + journal_data_writeback, so
+                # the journal's own fdatasync commits the copy's inode but not
+                # its data, and after a power cut the rollback restored a
+                # 0-byte file over the live one (review 1.0.6.54 R4-1; gate:
+                # update-deploy-skip 6, 11g). A copy that is not durable is a
+                # failed backup.
+                if [ -z "$bak" ] || ! { mkdir -p "$(dirname "$bak")" && cp -a "$dst" "$bak" && sync -d -- "$bak"; }; then
                     log "ERROR: backup failed: $dst"
                     APPLY_FAIL_REASON="backup failed: $dst"
                     return 1
@@ -1548,12 +1559,13 @@ print(sum(1 for it in m.get("deploy",[]) if it.get("dst")==sys.argv[2]))' "$mf" 
         log "ERROR: runner stamp: cannot write $src"
         return 1
     fi
-    # Backup and journal record checked before the install (G6; gate: 11d).
+    # Backup (fdatasync'd, as in the deploy loop) and journal record checked
+    # before the install (G6; gates: 11d, 11h).
     if [ -e "$RUNNER_VERSION_FILE" ]; then
         bak=$(printf '%s' "$RUNNER_VERSION_FILE" | sha256sum) || bak=""
         bak=${bak%% *}
         [ "${#bak}" -eq 64 ] && bak="$STATEDIR/staging/$txn/backups/$bak" || bak=""
-        if [ -z "$bak" ] || ! { mkdir -p "$(dirname "$bak")" && cp -a "$RUNNER_VERSION_FILE" "$bak"; }; then
+        if [ -z "$bak" ] || ! { mkdir -p "$(dirname "$bak")" && cp -a "$RUNNER_VERSION_FILE" "$bak" && sync -d -- "$bak"; }; then
             rm -f "$src"
             log "ERROR: runner stamp: backup failed: $RUNNER_VERSION_FILE"
             return 1
@@ -1601,7 +1613,9 @@ for p in json.load(open(sys.argv[1],encoding="utf-8")).get("delete",[]):
             bak=${bak%% *}
             [ "${#bak}" -eq 64 ] && bak="$STATEDIR/staging/$txn/backups/del-$bak" || bak=""
             if [ -f "$dpath" ]; then
-                if [ -z "$bak" ] || ! { mkdir -p "$(dirname "$bak")" && cp -a "$dpath" "$bak"; }; then
+                # fdatasync'd before its journal line, as in the deploy loop
+                # (gate: 12e).
+                if [ -z "$bak" ] || ! { mkdir -p "$(dirname "$bak")" && cp -a "$dpath" "$bak" && sync -d -- "$bak"; }; then
                     log "ERROR: backup failed: $dpath"
                     APPLY_FAIL_REASON="backup failed: $dpath"
                     return 1
@@ -1673,6 +1687,7 @@ rollback_from_journal() {
     local txn=$1 code=${2:-E_APPLY} message=${3:-}
     local j="$STATEDIR/staging/$txn/journal.jsonl"
     local incomplete="" replay_out="" replay_rc=0 line
+    ROLLBACK_OUTCOME=""
     log "rollback from journal txn=$txn (${code}${message:+: $message})"
     txn_patch "stage=rolling_back" "result=pending"
     if [ -f "$j" ]; then
@@ -1792,12 +1807,14 @@ PY
             "error_message=rollback incomplete ($incomplete; see update.log)${message:+ after: $message}" \
             "finished_at=$(utc_now)"
         cleanup_imaging_lock || true
+        ROLLBACK_OUTCOME="rollback incomplete"
         log "ERROR: rollback INCOMPLETE: $incomplete"
         return 0
     fi
     txn_patch "stage=rolled_back" "result=rolled_back" "error_code=$code" \
         "error_message=${message:-null}" "finished_at=$(utc_now)"
     cleanup_imaging_lock || true
+    ROLLBACK_OUTCOME="rolled back"
     log "rollback complete"
 }
 
@@ -2375,30 +2392,30 @@ cmd_apply() {
     # Extract already done before re-exec; deploy now.
     if ! apply_deploy_items "$txn"; then
         rollback_from_journal "$txn" E_APPLY "${APPLY_FAIL_REASON:-deploy failed}"
-        log "ERROR [E_APPLY]: deploy failed (rolled back)"
+        log "ERROR [E_APPLY]: deploy failed (${ROLLBACK_OUTCOME:-rollback attempted})"
         exit 1
     fi
     if ! stamp_runner_version_after_deploy "$txn"; then
         rollback_from_journal "$txn" E_APPLY "runner stamp failed"
-        log "ERROR [E_APPLY]: runner stamp failed (rolled back)"
+        log "ERROR [E_APPLY]: runner stamp failed (${ROLLBACK_OUTCOME:-rollback attempted})"
         exit 1
     fi
     cleanup_b1_deploy_artifacts
     if ! apply_deletes "$txn"; then
         rollback_from_journal "$txn" E_APPLY "${APPLY_FAIL_REASON:-delete failed}"
-        log "ERROR [E_APPLY]: delete failed (rolled back)"
+        log "ERROR [E_APPLY]: delete failed (${ROLLBACK_OUTCOME:-rollback attempted})"
         exit 1
     fi
     if ! run_migrations "$txn"; then
         rollback_from_journal "$txn" E_APPLY "migrations failed"
-        log "ERROR [E_APPLY]: migrations failed (rolled back)"
+        log "ERROR [E_APPLY]: migrations failed (${ROLLBACK_OUTCOME:-rollback attempted})"
         exit 1
     fi
 
     txn_patch "stage=verifying" "progress_pct=85"
     if ! restart_services_and_health "$txn"; then
         rollback_from_journal "$txn" E_HEALTH "${HEALTH_FAIL_REASON:-health gate failed}"
-        log "ERROR [E_HEALTH]: health gate failed (rolled back): ${HEALTH_FAIL_REASON:-}"
+        log "ERROR [E_HEALTH]: health gate failed (${ROLLBACK_OUTCOME:-rollback attempted}): ${HEALTH_FAIL_REASON:-}"
         exit 1
     fi
 
@@ -2622,7 +2639,7 @@ cmd_verify() {
     # verifying) instead of deciding. Either one is a health failure.
     if ! services_enable_and_tmpfiles "$txn" || ! health_check "$txn"; then
         rollback_from_journal "$txn" E_HEALTH "${HEALTH_FAIL_REASON:-health gate failed}"
-        log "ERROR [E_HEALTH]: post-boot health failed (rolled back): ${HEALTH_FAIL_REASON:-}"
+        log "ERROR [E_HEALTH]: post-boot health failed (${ROLLBACK_OUTCOME:-rollback attempted}): ${HEALTH_FAIL_REASON:-}"
         exit 1
     fi
     txn_patch "stage=committing" "progress_pct=95"
