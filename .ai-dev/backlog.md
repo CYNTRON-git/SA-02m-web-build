@@ -3,7 +3,8 @@
 Recorded findings and deferred work (`.ai-dev/procedures/backlog.md` owns the
 format). One status per finding: `- [OPEN|RESOLVED] <date> <item>`. Resolved
 entries are pruned (history lives in git); last prune 2026-09-24 (1.0.6.54 — audit 2026-09-24 M5:
-24 RESOLVED entries and one OPEN entry shipped in 1.0.6.51 removed; list in that commit's body).
+24 RESOLVED entries and one OPEN entry shipped in 1.0.6.51 removed; the removed text is that
+commit's diff of this file).
 
 ## Open
 
@@ -1107,4 +1108,4 @@ entries are pruned (history lives in git); last prune 2026-09-24 (1.0.6.54 — a
   Carel, measured on the bench before and after. Found in the 1.0.6.31 hardware acceptance. Related:
   the COM3 error-rate entry (2026-09-24 data).
 - [OPEN] 2026-09-24 **[MED] OTA never deletes retired files.** The runner path applies `delete: []` on every manifest (`etc/sa02m-update-runner.sh` github manifest builder; `scripts/pack-offline-update.py` likewise), while the legacy rsync path did `--delete`. A file removed from the repo stays on every OTA-updated board forever (stale CGI, stale unit, stale helper twin). Fix shape: the packer / manifest builder computes `delete[]` from the previous release's deploy list (git), the runner already journals and rolls back `delete` records. Found while building 1.0.6.54 (fast OTA, CHANGELOG entry).
-- [OPEN] 2026-09-24 **[LOW] Deploy loop, next rung (a2): one python process for the whole deploy.** 1.0.6.54 (a1) removed the per-item interpreter starts in bash (~2,100 → ~20 per apply); an in-process Python deploy (compare/backup/journal/install, per-file fdatasync kept) would take the 505-item deploy from ≈1.5–2 min to ≈10–20 s. Not taken: it moves the root apply core out of bash and breaks the single-function extraction of three harnesses. Trigger: the bench measurement of a 1.0.6.54 apply (505 items) lands above 3 min. Recorded while building 1.0.6.54 (CHANGELOG entry).
+- [OPEN] 2026-09-24 **[LOW] Deploy loop, next rung (a2): one python process for the whole deploy.** 1.0.6.54 (a1) removed the per-item interpreter starts in bash (~2,100 → ~20 per apply); an in-process Python deploy (compare/backup/journal/install, per-file fdatasync kept) would take the 505-item deploy from ≈1.5–2 min to ≈10–20 s. Not taken: it moves the root apply core out of bash and breaks the single-function extraction of three harnesses. Trigger: the bench measurement of a 1.0.6.54 apply (505 items) lands above 3 min. Recorded while building 1.0.6.54 (CHANGELOG entry). MEASURED 2026-09-24 on 1.135 (514 items, 411 changed, load ~8): deploy 2 min 30 s, «Применить» → done 4 min 15 s (repeat 2:31 / 4:18) — the deploy trigger is not met; the remaining ~1 min 45 s is clone/staging/rollback archive (~30 s) and the health gate's restarts (~70 s).
