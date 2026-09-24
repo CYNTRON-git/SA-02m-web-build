@@ -52,10 +52,19 @@
 #          1.0.6.54 F1): the function's status was that of its last `sync … ||
 #          sync`, always 0, so a disk-full/EACCES install was counted done and the
 #          update committed over a mixed tree;
-#   10     a NUL inside a manifest field is refused by the NUL-list emitter before
-#          any file is touched (rc≠0, nothing deployed, the reason on stderr) —
-#          otherwise the field list shifts and the last item lands with a garbage
-#          dst/mode (review 1.0.6.54 F2).
+#   10     a NUL inside a manifest field makes the NUL-list emitter exit non-zero
+#          and apply_deploy_items RETURN 1 before its first txn_patch (nothing
+#          deployed, no `files_total=` written, `ERROR: deploy list` logged, the
+#          emitter's reason on stderr) — otherwise the field list shifts and the
+#          last item lands with a garbage dst/mode (review 1.0.6.54 F2);
+#   10b    any other emitter failure (here: deploy.items is a directory, so
+#          python raises — the same path as ENOSPC or an unreadable manifest)
+#          fails the apply the same way, never a 0-item "success".
+#   Every apply runs through run_apply (`if ! apply_deploy_items`), cmd_apply's
+#   shape: errexit is suspended there, so only an EXPLICIT status check counts.
+#   RED for 10/10b on 5e24234 (round 2 build, check-less `total=$(…)`), observed
+#   2026-09-24 under WSL: both rc=0 — 10 deployed item 1 and patched
+#   `files_total=` empty; 10b patched `files_total=` empty and `files_done=0`.
 #
 # Drive-to-failure: UPDATE_RUNNER_SRC=<(git show main:etc/sa02m-update-runner.sh) \
 #   bash scripts/dev/test-update-deploy-skip.sh   → the skip assertion goes RED
@@ -202,6 +211,18 @@ export SA02M_UPDATE_PROGRESS_S=0
 # shellcheck disable=SC1090
 . "$T/fn.sh"
 
+# Every apply below goes through the PRODUCTION calling shape. cmd_apply runs
+# `if ! apply_deploy_items "$txn"; then …rollback…`, and bash suspends errexit
+# for the whole body of a function tested by `if !` — so an unchecked failing
+# command inside it does NOT abort, whatever `set -e` says. Calling the function
+# as the last command of a `set -e` subshell (the pre-round-3 shape) is STRICTER
+# than production and let case 10 pass for the wrong reason (review 1.0.6.54
+# round 2, F-A). The harness must never be stricter than the runner it tests.
+run_apply() {
+    if ! apply_deploy_items "$1"; then return 1; fi
+    return 0
+}
+
 # ── Fixture: an overlay (staged new files) + live dst tree + a manifest ─────
 OV="$STATEDIR/staging/$TXN/overlay"
 LIVE="$T/live"
@@ -249,7 +270,7 @@ d_before=$(stat -c '%i %Y' "$LIVE/d.conf")
 sleep 1   # ensure any rewrite would move mtime (1s stat granularity)
 
 # ── Run the shipped deploy loop under production shell options ──────────────
-( set -euo pipefail; apply_deploy_items "$TXN" ) >/dev/null 2>&1
+( set -euo pipefail; run_apply "$TXN" ) >/dev/null 2>&1
 rc=$?
 [ "$rc" -eq 0 ] && ok "apply_deploy_items returned 0" \
                  || bad "apply_deploy_items FAILED (rc=$rc)"
@@ -403,10 +424,12 @@ fi
 # 7. A dst WITH `"` AND `\` (1.0.6.54, R-a2). Own fixture (TXN2): the item is a
 #    replace whose journal line must parse and must roll back. Before 1.0.6.54
 #    journal_append built the line by string interpolation and fed it to
-#    json.loads, which raised on the unescaped quote — journal_append returned 1
-#    and, under set -e, the whole apply failed (E_APPLY rollback) on such a
-#    name. The manifest is written by python (json.dump) so the quoting under
-#    test is the runner's, not this heredoc's.
+#    json.loads, which raised on the unescaped quote and returned 1 — and under
+#    cmd_apply's `if ! apply_deploy_items` (errexit suspended, the shape run_apply
+#    reproduces) that status was ignored: the line went SILENTLY MISSING, the file
+#    was installed anyway, and a rollback left it NEW. The manifest is written by
+#    python (json.dump) so the quoting under test is the runner's, not this
+#    heredoc's.
 TXN2="TXN2"; OV2="$STATEDIR/staging/$TXN2/overlay"; LIVE2="$T/live2"
 mkdir -p "$OV2" "$LIVE2" "$STATEDIR/staging/$TXN2/meta" "$STATEDIR/staging/$TXN2/backups"
 QNAME='q"uo\te.conf'
@@ -419,7 +442,7 @@ m = {"schema_version": 1, "version": "9.9.9.9",
      "deploy": [{"src": "e.conf", "dst": dst, "mode": "0644", "owner": owner}]}
 open(mf, "w", encoding="utf-8").write(json.dumps(m) + "\n")
 PY
-( set -euo pipefail; apply_deploy_items "$TXN2" ) >/dev/null 2>&1
+( set -euo pipefail; run_apply "$TXN2" ) >/dev/null 2>&1
 rc2=$?
 J2="$STATEDIR/staging/$TXN2/journal.jsonl"
 # Parse every journal line; print the op of the record whose dst is the quoted path.
@@ -475,7 +498,7 @@ REAL_PY=$(command -v python3); PYCOUNT="$T/py.count"; : > "$PYCOUNT"
 printf '#!/bin/bash\nprintf . >> "%s"\nexec "%s" "$@"\n' "$PYCOUNT" "$REAL_PY" > "$T/bin/python3"
 chmod 755 "$T/bin/python3"
 t0=$EPOCHREALTIME
-( set -euo pipefail; PATH="$T/bin:$PATH"; apply_deploy_items "$TXN3" ) >/dev/null 2>&1
+( set -euo pipefail; PATH="$T/bin:$PATH"; run_apply "$TXN3" ) >/dev/null 2>&1
 rc3=$?
 t1=$EPOCHREALTIME
 py_n=$(wc -c < "$PYCOUNT" | tr -d ' ')
@@ -514,7 +537,7 @@ deploy = [{"src": "g%d.conf" % i, "dst": "%s/g%d.conf" % (live, i), "mode": "064
 open(mf, "w", encoding="utf-8").write(json.dumps({"schema_version": 1, "version": "9.9.9.9", "deploy": deploy}) + "\n")
 PY
     : > "$TXNVARS_F"; : > "$LOG"
-    ( set -euo pipefail; INSTALL_FAIL_ON=$3; MV_FAIL_ON=$4; apply_deploy_items "$txn" ) >/dev/null 2>&1
+    ( set -euo pipefail; INSTALL_FAIL_ON=$3; MV_FAIL_ON=$4; run_apply "$txn" ) >/dev/null 2>&1
     local rc=$? fd tmps
     fd=$(txn_get files_done)
     tmps=$(find "$live" -name '*.tmp.*' 2>/dev/null | wc -l | tr -d ' ')
@@ -537,9 +560,12 @@ run_fail_case TXN5 "$T/live5" "" "g2.conf" "9b mv fails on item 2"
 
 # 10. NUL INSIDE A MANIFEST FIELD IS REFUSED UP FRONT (review 1.0.6.54 F2). The
 #     emitter writes NUL-separated fields, so a `\u0000` inside the LAST item's dst
-#     would shift the list and land that item with a garbage dst/mode. Expected:
-#     apply rc≠0 before ANY file is touched (item 1 still OLD) and the reason on
-#     stderr. Without the guard: item 1 deployed, then the shifted last item.
+#     would shift the list and land that item with a garbage dst/mode. Expected,
+#     in cmd_apply's calling shape (run_apply): apply rc=1 before ANY file is
+#     touched (item 1 still OLD), no `files_total=` patch, the runner's
+#     `ERROR: deploy list` line, and the emitter's reason on stderr. The emitter
+#     exiting non-zero is not enough on its own: under `if !` an unchecked
+#     `total=$(…)` swallows it (5e24234: rc=0, item 1 deployed, files_total="").
 TXN6="TXN6"; OV6="$STATEDIR/staging/$TXN6/overlay"; LIVE6="$T/live6"
 mkdir -p "$OV6" "$LIVE6" "$STATEDIR/staging/$TXN6/meta" "$STATEDIR/staging/$TXN6/backups"
 printf 'n1 NEW\n' > "$OV6/n1.conf"; printf 'n1 OLD\n' > "$LIVE6/n1.conf"; chmod 644 "$OV6/n1.conf" "$LIVE6/n1.conf"
@@ -551,13 +577,40 @@ deploy = [{"src": "n1.conf", "dst": live + "/n1.conf", "mode": "0644", "owner": 
           {"src": "n2.conf", "dst": live + "/n2\u0000.conf", "mode": "0644", "owner": owner}]
 open(mf, "w", encoding="utf-8").write(json.dumps({"schema_version": 1, "version": "9.9.9.9", "deploy": deploy}) + "\n")
 PY
-: > "$TXNVARS_F"
-( set -euo pipefail; apply_deploy_items "$TXN6" ) >/dev/null 2>"$T/nul.err"
+: > "$TXNVARS_F"; : > "$LOG"
+( set -euo pipefail; run_apply "$TXN6" ) >/dev/null 2>"$T/nul.err"
 rc6=$?
-if [ "$rc6" -ne 0 ] && [ "$(cat "$LIVE6/n1.conf")" = "n1 OLD" ] && grep -qi 'NUL' "$T/nul.err"; then
-    ok "NUL in a manifest field refused before any file is touched (rc=$rc6, reason on stderr)"
+ft6=$(grep -c '^files_total=' "$TXNVARS_F") || :
+if [ "$rc6" -eq 1 ] && [ "$(cat "$LIVE6/n1.conf")" = "n1 OLD" ] && [ "$ft6" = "0" ] \
+   && grep -qF 'ERROR: deploy list' "$LOG" && grep -qi 'NUL' "$T/nul.err"; then
+    ok "10 NUL in a manifest field: apply returns 1 under \`if !\` before any file or txn patch (item 1 OLD, error logged, reason on stderr)"
 else
-    bad "NUL in a manifest field not refused up front (rc=$rc6, n1='$(cat "$LIVE6/n1.conf")', stderr='$(tr -d '\n' < "$T/nul.err" | cut -c1-120)')"
+    bad "10 NUL in a manifest field not refused in cmd_apply's shape (rc=$rc6, n1='$(cat "$LIVE6/n1.conf")', files_total patches=$ft6, txn='$(tr '\n' ' ' < "$TXNVARS_F")', log-line=$(grep -cF 'ERROR: deploy list' "$LOG"))"
+fi
+
+# 10b. ANY EMITTER FAILURE FAILS THE APPLY. deploy.items is pre-created as a
+#     DIRECTORY, so python's open(out, "wb") raises (traceback, exit 1) — the
+#     same unchecked path as ENOSPC while writing the list or an unreadable
+#     manifest. Expected: rc=1, no `files_total=` patch, the live file untouched,
+#     the `ERROR: deploy list` line. 5e24234: `files_total=` (empty), then the
+#     loop read nothing and the function returned 0 — a zero-item "success".
+TXN7="TXN7"; OV7="$STATEDIR/staging/$TXN7/overlay"; LIVE7="$T/live7"
+mkdir -p "$OV7" "$LIVE7" "$STATEDIR/staging/$TXN7/meta" "$STATEDIR/staging/$TXN7/deploy.items"
+printf 'm1 NEW\n' > "$OV7/m1.conf"; printf 'm1 OLD\n' > "$LIVE7/m1.conf"; chmod 644 "$OV7/m1.conf" "$LIVE7/m1.conf"
+python3 - "$LIVE7" "$STATEDIR/staging/$TXN7/meta/manifest.json" "$OWNER" <<'PY'
+import json, sys
+live, mf, owner = sys.argv[1], sys.argv[2], sys.argv[3]
+deploy = [{"src": "m1.conf", "dst": live + "/m1.conf", "mode": "0644", "owner": owner}]
+open(mf, "w", encoding="utf-8").write(json.dumps({"schema_version": 1, "version": "9.9.9.9", "deploy": deploy}) + "\n")
+PY
+: > "$TXNVARS_F"; : > "$LOG"
+( set -euo pipefail; run_apply "$TXN7" ) >/dev/null 2>/dev/null
+rc7=$?
+ft7=$(grep -c '^files_total=' "$TXNVARS_F") || :
+if [ "$rc7" -eq 1 ] && [ "$ft7" = "0" ] && [ "$(cat "$LIVE7/m1.conf")" = "m1 OLD" ] && grep -qF 'ERROR: deploy list' "$LOG"; then
+    ok "10b emitter failure (python traceback writing deploy.items): apply returns 1, no txn patch, file untouched, error logged"
+else
+    bad "10b emitter failure swallowed (rc=$rc7, files_total patches=$ft7, txn='$(tr '\n' ' ' < "$TXNVARS_F")', m1='$(cat "$LIVE7/m1.conf")', log-line=$(grep -cF 'ERROR: deploy list' "$LOG"))"
 fi
 
 echo "-----"

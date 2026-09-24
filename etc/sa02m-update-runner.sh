@@ -1208,16 +1208,19 @@ PY
     log "rollback archive: $archive"
 }
 
-# journal_append TXN KEY=VALUE... — one JSON object per line, keys in argument
-# order, values escaped so that json.loads returns the original string (`\`, `"`,
-# and every [[:cntrl:]] character — the C0 set as json.dumps(ensure_ascii=False)
-# writes it; DEL and, under a UTF-8 locale, the C1 set as `\u00XX`, which python
-# would leave raw: parse-equal, not byte-equal, for those); the readers are
-# rollback_from_journal / _journal_has_dst_prefix (json.loads per line). Built in bash and made durable with fdatasync BEFORE the
-# caller renames the file the line describes (1.0.6.54): the python3 one-liner it
-# replaces cost one interpreter start per changed file, raised on a dst carrying
-# a `"` (the caller interpolated it raw), and never synced the journal — a power
-# cut could lose the last lines and leave those files NEW after a rollback.
+# journal_append TXN KEY=VALUE... — one JSON object per line, keys in
+# argument order, values escaped so that json.loads returns the original
+# string: `\`, `"`, and every [[:cntrl:]] character — the C0 set as
+# json.dumps(ensure_ascii=False) writes it; DEL and, under a UTF-8 locale,
+# the C1 set as `\u00XX`, which python would leave raw (parse-equal, not
+# byte-equal, for those). Readers: rollback_from_journal and
+# _journal_has_dst_prefix (json.loads per line). Built in bash and made
+# durable with fdatasync BEFORE the caller renames the file the line
+# describes (1.0.6.54): the python3 one-liner it replaces cost one
+# interpreter start per changed file, raised on a dst carrying a `"` (the
+# caller interpolated it raw — under cmd_apply's `if !` the line then went
+# silently missing), and never synced the journal — a power cut could lose
+# the last lines and leave those files NEW after a rollback.
 journal_append() {
     local txn=$1
     shift
@@ -1365,14 +1368,29 @@ with open(out, "wb") as f:
             s = str(it.get(k, "0644" if k == "mode" else ""))
             # NUL is the field separator: one inside a value would shift every
             # field after it (the last item landing with a garbage dst/mode).
-            # Unreachable from a real path or a signed manifest — refused anyway,
-            # before any file is touched (review 1.0.6.54 F2; gate: case 10).
+            # Unreachable from a real path or a signed manifest — refused
+            # anyway: the exit fails the capture below (gate: case 10).
             if "\0" in s:
                 sys.exit("deploy.items: NUL inside manifest field %r of item %r" % (k, it.get("dst")))
             f.write(s.encode("utf-8") + b"\0")
 print(len(deploy))
 PY
-)
+) || {
+        # Checked EXPLICITLY: cmd_apply calls this function under `if !`, which
+        # suspends errexit for its whole body, so a failed capture would
+        # otherwise leave total="" and "deploy" a truncated or empty list with
+        # status 0 (review 1.0.6.54 round 2, F-A; gates: cases 10, 10b).
+        log "ERROR: deploy list: manifest emit failed ($mf)"
+        APPLY_FAIL_REASON="deploy list: manifest emit failed"
+        return 1
+    }
+    case "$total" in
+        ''|*[!0-9]*)
+            log "ERROR: deploy list: bad item count '$total'"
+            APPLY_FAIL_REASON="deploy list: bad item count"
+            return 1
+            ;;
+    esac
     txn_patch "files_total=$total" "files_done=0" "progress_pct=0"
     done=0
     # Progress cadence: a txn_patch is a JSON rewrite + two fsyncs + one python3
