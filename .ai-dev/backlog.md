@@ -577,16 +577,24 @@ verified fixed by the whole-backlog triage removed; evidence per entry in that c
   stamps that ship-beat deletion removes. Give it a durable home.
 - [OPEN] 2026-09-24 **[MED, Operator decision] The GitHub-OTA runner never deploys the nginx site
   config.** `etc/sa02m-update-runner.sh` `prepare_github_overlay` → `map_dst` has no branch for
-  `etc/nginx/` (only `DST_RE` names it), so a change to `etc/nginx/network_config.conf` reaches a
-  board only via `install.sh`/03-webserver.sh (full install, refresh, offline full update), the
-  offline `.sa02m` package (`scripts/offline-update-deploy-map.json` maps it to
-  `/etc/nginx/sites-available/network_config`) and the golden image. Measured 2026-09-24 on 1.135:
-  after the panel OTA 1.0.6.52 → 1.0.6.53 the `X-SA02M-Auth` strip is absent under /etc/nginx while
-  the repo gate is green. Consequence: every nginx-level hardening (this strip, auth_request lines,
-  CSP/headers) is OTA-invisible. Fork for the Operator: (a) add `etc/nginx/network_config.conf` to
-  the OTA map with `nginx -t` before reload and a rollback on failure — widens what a root OTA may
-  overwrite (security review: the config carries the auth_request lines); (b) keep nginx install-only
-  and say so in every contract that pins an nginx line. Until decided, the texts say (b).
+  `etc/nginx/` (`DST_RE` admits the destination, the filter is map_dst AND DST_RE). The site file
+  reaches a board by every OTHER lane — the one-home list is `docs/deployment.md` «Чего
+  OTA/офлайн-пакет не делает никогда» (full install/refresh via `03-webserver.sh`; www-only from a
+  checkout with `etc/` + `opt/sa02m-devices/` via `update-www-only.sh` → `11-devices.sh`; the offline
+  `.sa02m` package; the golden image) — never GitHub-OTA. Measured 2026-09-24 on 1.135: after the
+  panel OTA 1.0.6.52 → 1.0.6.53 the `X-SA02M-Auth` strip is absent under /etc/nginx while the repo
+  gate is green. Consequence: every nginx-level hardening is invisible to boards updated only through
+  the panel. Fork for the Operator:
+  (a) Расширить `map_dst` раннера веткой для `etc/nginx/network_config.conf` **с шагом рендера**: файл в
+  репо — шаблон с `__PORT__`/`__WEB_ROOT__` (рендерят `scripts/03-webserver.sh` и
+  `scripts/11-devices.sh:94-97` через `sed`), голая ветка положила бы литеральные плейсхолдеры в
+  `/etc/nginx/sites-available/network_config`; `nginx -t` + `reload` раннер уже выполняет в health-gate
+  и rollback, так что добавляется только рендер — и решение Оператора, что GitHub-OTA получает право
+  переписывать конфиг edge (security surface).
+  (b) Оставить как есть и держать одним домом в `docs/deployment.md`: site-файл nginx приезжает полной
+  установкой (`03-webserver.sh`), www-only из чекаута с `etc/` + `opt/sa02m-devices/`
+  (`update-www-only.sh` → `11-devices.sh`), офлайн-пакетом и образом — никогда GitHub-OTA; правка
+  nginx, которая должна дойти до флота, едет одним из этих путей. Until decided, the texts say (b).
 - [OPEN] 2026-09-24 **[LOW] `docs/contracts/cloud-panel-proxy.md` carries a placeholder for the
   cloud's commit.** The cloud fix (forward the `X-SA02M-` header family) is their PR #120 (cloud
   0.18.4, branch adc9b2c — a branch hash, they squash). Replace «cloud commit: <to be filled after
