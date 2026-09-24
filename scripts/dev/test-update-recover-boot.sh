@@ -79,9 +79,9 @@
 #   set-property …, systemctl start sa02m-flasher».
 #   1.0.6.54 round 4: R4d — a failing services_enable_and_tmpfiles (a dead
 #   manifest read) makes verify roll back with E_HEALTH and its reason. RED on
-#   35f4e8d: rc=1, stage left at verifying (set -e killed verify mid-way).
+#   0f0fc86: rc=1, stage left at verifying (set -e killed verify mid-way).
 #   Round 6: R10 — a torn last journal line converges in ONE run, through boot
-#   recover (R10a) and runtime reclaim (R10b). RED on 20a54fe: rc=1, stage
+#   recover (R10a) and runtime reclaim (R10b). RED on fb78136: rc=1, stage
 #   frozen at rolling_back, lock kept, file NEW.
 #
 # Run: bash scripts/dev/test-update-recover-boot.sh   (bash + python3 + coreutils)

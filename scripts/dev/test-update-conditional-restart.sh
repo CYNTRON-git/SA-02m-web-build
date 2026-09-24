@@ -79,12 +79,12 @@
 # one manifest read whose argv contains PY_FAIL_MATCH; each dead read (health
 # facts, the three restart sets, enable[]) must FAIL its step with a
 # `manifest read failed` reason, a dead daemon_reload read must still reload,
-# and a key absent by design must still skip. RED on 35f4e8d (2026-09-24,
+# and a key absent by design must still skip. RED on 0f0fc86 (2026-09-24,
 # WSL): 12 FAIL — every dead read left an empty list and returned 0.
 # Round 5: run 3b (a present journal whose read dies counts as CHANGED, with
 # a WARN) and run 5c (restart_after_rollback: a dead set read WARNs by name,
 # the rollback stays 0, the other sets still run); the log stub records to
-# $RUNNER_LOG for these. RED on 2b3224c: 3 FAIL.
+# $RUNNER_LOG for these. RED on b277e7e: 3 FAIL.
 #
 # Run: bash scripts/dev/test-update-conditional-restart.sh   (bash + python3 +
 #   coreutils; no systemd — the shims replace it).

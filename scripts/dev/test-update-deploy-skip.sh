@@ -62,7 +62,7 @@
 #          fails the apply the same way, never a 0-item "success".
 #   Every apply runs through run_apply (`if ! apply_deploy_items`), cmd_apply's
 #   shape: errexit is suspended there, so only an EXPLICIT status check counts.
-#   RED for 10/10b on 1b25f06 (round 2 build, check-less `total=$(…)`), observed
+#   RED for 10/10b on 1484330 (round 2 build, check-less `total=$(…)`), observed
 #   2026-09-24 under WSL: both rc=0 — 10 deployed item 1 and patched
 #   `files_total=` empty; 10b patched `files_total=` empty and `files_done=0`.
 #   11a–11e, 12a–12d (round 4, G6): a failed backup / journal write / journal
@@ -70,20 +70,20 @@
 #   apply loop, the runner stamp and apply_deletes (extracted since round 4);
 #   failure injection through `cp` / `sync` forwarders, a journal path made a
 #   directory, and a `pyfail` python3 shim that fails one read by argv match.
-#   RED on 35f4e8d, observed 2026-09-24 under WSL: 10 FAIL — 11a rc=0 and g2
+#   RED on 0f0fc86, observed 2026-09-24 under WSL: 10 FAIL — 11a rc=0 and g2
 #   NEW after rollback, 11b/11c rc=0 with every file renamed, 11d stamp
 #   installed without a record, 11e no WARN, 12a–12c rc=0 (12b/12c deleted).
 #   Round 5: 11f (the backup's sha256 name cannot be computed), 13a/13b
 #   (atomic_install_file's own fdatasync(tmp) / fsync(dir) fail), 14a/14b
 #   (stop_before_apply dies on a dead read before any deploy; extracted with
 #   the shipped die). Every 11/13 case asserts the exact g1|g2|g3 state. RED on
-#   2b3224c (2026-09-24, WSL): 5 FAIL — 11f every file NEW even after rollback,
+#   b277e7e (2026-09-24, WSL): 5 FAIL — 11f every file NEW even after rollback,
 #   13a/13b rc=0 with every file renamed, 14a «deploy PROCEEDED, systemctl
 #   calls=''».
 #   Round 6: 15a–15e (rollback_from_journal over a torn line / a NUL tail / a
 #   missing backup / a raising restore; atomic restore with owner and mode),
 #   16a/16b (sudoers drop-ins validated by `visudo -cf` before the rename),
-#   10c (a deploy list that ends early fails the apply). RED on 20a54fe
+#   10c (a deploy list that ends early fails the apply). RED on fb78136
 #   (2026-09-24, WSL): 10 FAIL — 15a/15b rc=1 with every file NEW, 15c
 #   «rolled_back» over a NEW file, 15d rc=1, 15e same inode and owner 0:0,
 #   16a/16b no visudo call, 10c rc=0.
@@ -612,7 +612,7 @@ run_fail_case TXN5 "$T/live5" "" "g2.conf" "9b mv fails on item 2"
 #     touched (item 1 still OLD), no `files_total=` patch, the runner's
 #     `ERROR: deploy list` line, and the emitter's reason on stderr. The emitter
 #     exiting non-zero is not enough on its own: under `if !` an unchecked
-#     `total=$(…)` swallows it (1b25f06: rc=0, item 1 deployed, files_total="").
+#     `total=$(…)` swallows it (1484330: rc=0, item 1 deployed, files_total="").
 TXN6="TXN6"; OV6="$STATEDIR/staging/$TXN6/overlay"; LIVE6="$T/live6"
 mkdir -p "$OV6" "$LIVE6" "$STATEDIR/staging/$TXN6/meta" "$STATEDIR/staging/$TXN6/backups"
 printf 'n1 NEW\n' > "$OV6/n1.conf"; printf 'n1 OLD\n' > "$LIVE6/n1.conf"; chmod 644 "$OV6/n1.conf" "$LIVE6/n1.conf"
@@ -639,7 +639,7 @@ fi
 #     DIRECTORY, so python's open(out, "wb") raises (traceback, exit 1) — the
 #     same unchecked path as ENOSPC while writing the list or an unreadable
 #     manifest. Expected: rc=1, no `files_total=` patch, the live file untouched,
-#     the `ERROR: deploy list` line. 1b25f06: `files_total=` (empty), then the
+#     the `ERROR: deploy list` line. 1484330: `files_total=` (empty), then the
 #     loop read nothing and the function returned 0 — a zero-item "success".
 TXN7="TXN7"; OV7="$STATEDIR/staging/$TXN7/overlay"; LIVE7="$T/live7"
 mkdir -p "$OV7" "$LIVE7" "$STATEDIR/staging/$TXN7/meta" "$STATEDIR/staging/$TXN7/deploy.items"
