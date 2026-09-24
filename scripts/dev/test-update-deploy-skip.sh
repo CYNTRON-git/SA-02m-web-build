@@ -19,8 +19,8 @@
 # txn/log/manifest helpers, and run a mixed deploy against a sandbox manifest
 # whose owner axis is set to the test user's own id (the harness runs NON-root).
 # Nothing touches the real filesystem, no root, no device. Requires python3 (the
-# runner's own manifest/journal parsing uses it, and so do the extracted
-# journal_append / atomic_install_file). Case 4b/5b (1.0.6.40, item 6) rides
+# runner's manifest emit and journal replay use it; the harness's own JSON
+# checks too). Case 4b/5b (1.0.6.40, item 6) rides
 # the same fixture: the runner stamp is written through the journal when the
 # manifest deploys the runner binary, left alone when it does not, and
 # restored by the rollback — a pre-1.0.6.40 runner (no stamp function) FAILS 4b.
@@ -28,6 +28,23 @@
 # txn_patch/txn_get are FILE-backed here: the deploy loop runs in a `( subshell )`
 # under production shell options, so a shell-variable store would not survive to
 # the files_done/files_total assertion — the file does.
+#
+# 1.0.6.54 (fast OTA, plan fast-ota-research §6 R-a1..R-a4) — the 35-minute
+# deploy was ~2,100 python3 starts, four per manifest item to read four JSON
+# fields plus three per changed file. Cases added on the same extraction:
+#   4c/4d  progress cadence is TIME-based (SA02M_UPDATE_PROGRESS_S, exported 0
+#          here so every item patches) and the final files_done==files_total
+#          patch is issued exactly once, after the loop;
+#   6      fsync ORDER per changed file, from `sync`/`mv` function shims that
+#          trace their argv: sync -d <journal> → sync -d <tmp> → mv → sync <dir>
+#          — the journal line is durable BEFORE the rename it describes;
+#   7      a dst carrying `"` and `\` gets a journal line that PARSES (json.loads)
+#          and rolls back; the pre-1.0.6.54 journal_append fed the raw string to
+#          json.loads and the whole apply failed (E_APPLY) on such a name;
+#   8      a 100-item manifest (90 unchanged, 10 changed) under a counting
+#          python3 PATH shim starts python3 at most twice in apply_deploy_items
+#          (the loop starts none per item) — the info line prints the count and
+#          the wall time on this host for the record.
 #
 # Drive-to-failure: UPDATE_RUNNER_SRC=<(git show main:etc/sa02m-update-runner.sh) \
 #   bash scripts/dev/test-update-deploy-skip.sh   → the skip assertion goes RED
@@ -37,6 +54,14 @@
 #   deploy turns them RED. The pre-fix runner defines no is_unchanged, so this
 #   harness extracts it only when present (see HAS_GUARD) — the drive-to-failure
 #   run must reach and FAIL the assertions, not abort on a missing marker.
+#   RED for the 1.0.6.54 cases: UPDATE_RUNNER_SRC=<(git show 3c98af0:etc/sa02m-update-runner.sh)
+#   (main = 1.0.6.52) — observed 2026-09-24: 6 FAIL — 4c/4d (files_done sequence
+#   `0 4 4`), 6 (no `sync -d` of the tmp file: only mv lines in the trace), 7
+#   (quote-dst apply rc=1, no journal line, rollback unproven), 8 (432 python3
+#   starts for 100 items: 4 per item + 3 per changed + 2 up front); every
+#   original assertion stays GREEN.
+#   This box (Windows git-bash) SKIPs on the mode probe below — the runs were
+#   under WSL Ubuntu-24.04, where mktemp's sandbox is a native ext4.
 #
 # Run: bash scripts/dev/test-update-deploy-skip.sh
 # ═══════════════════════════════════════════════════════════════════════════
@@ -132,6 +157,17 @@ txn_get()   {
     local v; v=$(grep "^$k=" "$TXNVARS_F" 2>/dev/null | tail -n1)
     printf '%s\n' "${v#*=}"
 }
+# Case 6 — fsync-order trace. The shipped code fsyncs through coreutils `sync`
+# (-d FILE = fdatasync, DIR = fsync) and renames with `mv`; both are resolved by
+# name inside the extracted functions, so a same-named shell function sees every
+# call with its argv, records it, and forwards to the real binary. A runner that
+# fsyncs through python3 (pre-1.0.6.54) leaves this trace EMPTY — the RED.
+TRACE="$T/fsync.trace"; : > "$TRACE"
+sync() { printf 'sync %s\n' "$*" >> "$TRACE"; command sync "$@"; }
+mv()   { printf 'mv %s\n' "$*"   >> "$TRACE"; command mv "$@"; }
+# Case 4c/4d — time-based progress cadence: 0 s ⇒ every item patches, so the
+# patch sequence is deterministic here whatever the host's speed.
+export SA02M_UPDATE_PROGRESS_S=0
 
 # shellcheck disable=SC1090
 . "$T/fn.sh"
@@ -241,6 +277,22 @@ if [ -n "$ft" ] && [ "$ft" = "4" ] && [ "$fd" = "$ft" ]; then
 else
     bad "files_done/files_total wrong (done=$fd total=$ft) — skip broke progress accounting"
 fi
+# 4c/4d. PROGRESS CADENCE (1.0.6.54). With SA02M_UPDATE_PROGRESS_S=0 every item
+#     patches, so the recorded files_done sequence is 0 (the opening patch), 1, 2,
+#     3 (in-loop), 4 (the single closing patch). The every-10th-item runner
+#     records `0 4 4`: no intermediate patch, and the final count twice.
+fd_seq=$(grep '^files_done=' "$TXNVARS_F" | cut -d= -f2 | tr '\n' ' ')
+fd_final_n=$(grep -c '^files_done=4$' "$TXNVARS_F") || :
+if [ "$fd_final_n" = "1" ]; then
+    ok "final files_done == files_total patch issued exactly once (sequence: $fd_seq)"
+else
+    bad "final files_done == files_total patch issued $fd_final_n times, want 1 (sequence: $fd_seq)"
+fi
+if [ "$fd_seq" = "0 1 2 3 4 " ]; then
+    ok "time-based progress cadence: at SA02M_UPDATE_PROGRESS_S=0 every item patches (0 1 2 3 4)"
+else
+    bad "progress cadence is not time-based (sequence: ${fd_seq}want: 0 1 2 3 4 ) — the bar freezes ~40 s between moves on a 505-item tree"
+fi
 
 # 4b. RUNNER STAMP RIDES THE JOURNAL (1.0.6.40, item 6). When the manifest
 #     deploys the runner binary, stamp_runner_version_after_deploy writes the
@@ -291,6 +343,123 @@ if [ "$(cat "$RUNNER_VERSION_FILE" 2>/dev/null)" = "1.0.0.1" ]; then
     ok "rollback restores the pre-update runner stamp (4b's journal record)"
 else
     bad "rollback left the NEW runner stamp behind (stamp='$(cat "$RUNNER_VERSION_FILE" 2>/dev/null)') — board over-reports a runner it rolled back from"
+fi
+
+# 6. FSYNC ORDER PER CHANGED FILE (1.0.6.54, G3). For item B the trace must read,
+#    on four CONSECUTIVE lines: `sync -d -- <journal>` (the line describing B is
+#    durable first), `sync -d -- <B tmp>`, `mv -f <B tmp> <B>`, `sync -- <live dir>`.
+#    A power cut between any two leaves old-or-new B and a journal that already
+#    names it — never a truncated B, never a NEW B the rollback does not know.
+#    Capture-then-match (no producer into an early-exit pipe).
+trace_all=$(cat "$TRACE" 2>/dev/null)
+t_tmp=$(grep -n -- "^sync -d -- $LIVE/b.conf.tmp." "$TRACE" 2>/dev/null) || :
+t_tmp=${t_tmp%%$'\n'*}; t_tmp=${t_tmp%%:*}
+if [ -z "$trace_all" ]; then
+    bad "no sync/mv calls traced at all — fsync goes through python3 (or nowhere), journal never synced"
+elif [ -z "$t_tmp" ]; then
+    bad "no 'sync -d' of B's tmp file in the trace — fdatasync before rename is not through coreutils sync"
+else
+    l_j=$(sed -n "$((t_tmp - 1))p" "$TRACE"); l_mv=$(sed -n "$((t_tmp + 1))p" "$TRACE"); l_d=$(sed -n "$((t_tmp + 2))p" "$TRACE")
+    case "$l_j" in "sync -d -- $JOURNAL") j_ok=1 ;; *) j_ok=0 ;; esac
+    case "$l_mv" in "mv -f $LIVE/b.conf.tmp."*" $LIVE/b.conf") mv_ok=1 ;; *) mv_ok=0 ;; esac
+    case "$l_d" in "sync -- $LIVE") d_ok=1 ;; *) d_ok=0 ;; esac
+    if [ "$j_ok$mv_ok$d_ok" = "111" ]; then
+        ok "fsync order per changed file: sync -d journal → sync -d tmp → mv → sync dir (trace lines $((t_tmp - 1))-$((t_tmp + 2)))"
+    else
+        bad "fsync order broken around B (journal-before-tmp=$j_ok mv-after-tmp=$mv_ok dir-after-mv=$d_ok): [$l_j] [$l_mv] [$l_d]"
+    fi
+fi
+
+# 7. A dst WITH `"` AND `\` (1.0.6.54, R-a2). Own fixture (TXN2): the item is a
+#    replace whose journal line must parse and must roll back. Before 1.0.6.54
+#    journal_append built the line by string interpolation and fed it to
+#    json.loads, which raised on the unescaped quote — journal_append returned 1
+#    and, under set -e, the whole apply failed (E_APPLY rollback) on such a
+#    name. The manifest is written by python (json.dump) so the quoting under
+#    test is the runner's, not this heredoc's.
+TXN2="TXN2"; OV2="$STATEDIR/staging/$TXN2/overlay"; LIVE2="$T/live2"
+mkdir -p "$OV2" "$LIVE2" "$STATEDIR/staging/$TXN2/meta" "$STATEDIR/staging/$TXN2/backups"
+QNAME='q"uo\te.conf'
+printf 'quoted NEW\n' > "$OV2/e.conf";        chmod 644 "$OV2/e.conf"
+printf 'quoted OLD\n' > "$LIVE2/$QNAME";      chmod 644 "$LIVE2/$QNAME"
+python3 - "$LIVE2/$QNAME" "$STATEDIR/staging/$TXN2/meta/manifest.json" "$OWNER" <<'PY'
+import json, sys
+dst, mf, owner = sys.argv[1], sys.argv[2], sys.argv[3]
+m = {"schema_version": 1, "version": "9.9.9.9",
+     "deploy": [{"src": "e.conf", "dst": dst, "mode": "0644", "owner": owner}]}
+open(mf, "w", encoding="utf-8").write(json.dumps(m) + "\n")
+PY
+( set -euo pipefail; apply_deploy_items "$TXN2" ) >/dev/null 2>&1
+rc2=$?
+J2="$STATEDIR/staging/$TXN2/journal.jsonl"
+# Parse every journal line; print the op of the record whose dst is the quoted path.
+q_op=$(python3 - "$J2" "$LIVE2/$QNAME" <<'PY' 2>/dev/null
+import json, sys
+path, want = sys.argv[1], sys.argv[2]
+try:
+    lines = [ln for ln in open(path, encoding="utf-8") if ln.strip()]
+except OSError:
+    sys.exit(0)
+for ln in lines:
+    rec = json.loads(ln)          # a line that does not parse is the RED
+    if rec.get("dst") == want:
+        print(rec.get("op", ""), sorted(rec.keys()))
+PY
+) || q_op=""
+if [ "$rc2" -eq 0 ] && [ "$(cat "$LIVE2/$QNAME")" = "quoted NEW" ] && [ "$q_op" = "replace ['backup', 'dst', 'mode', 'op', 'owner']" ]; then
+    ok "dst with \" and \\ deploys and its journal line parses with the record keys (op,dst,backup,mode,owner)"
+else
+    bad "dst with \" and \\: apply rc=$rc2, content='$(cat "$LIVE2/$QNAME" 2>/dev/null)', parsed record='$q_op' — journal line missing/unparseable"
+fi
+( set -euo pipefail; rollback_from_journal "$TXN2" ) >/dev/null 2>&1
+# Guarded by rc2: a failed apply leaves the OLD content untouched, which must not
+# read as "rollback worked" (the assertion would pass for the wrong reason).
+if [ "$rc2" -eq 0 ] && [ "$(cat "$LIVE2/$QNAME" 2>/dev/null)" = "quoted OLD" ]; then
+    ok "rollback restores the quoted-name file from its journal record"
+else
+    bad "rollback of the quoted-name file not proven (apply rc=$rc2, content='$(cat "$LIVE2/$QNAME" 2>/dev/null)')"
+fi
+
+# 8. INTERPRETER STARTS PER ITEM (1.0.6.54, R-a1/G2). 100 items, 90 unchanged
+#    and 10 changed, under a python3 PATH shim that counts its own starts and
+#    execs the real interpreter. The deploy loop must start none per item: the
+#    whole apply_deploy_items is allowed 2 (one manifest emit + slack). The
+#    pre-1.0.6.54 loop starts 4 per item + 3 per changed file (+2 up front) = 442
+#    here, and on the Cortex-A7 that was the 33 minutes. The wall time printed is
+#    this host's, for the record — not the board's.
+TXN3="TXN3"; OV3="$STATEDIR/staging/$TXN3/overlay"; LIVE3="$T/live3"
+mkdir -p "$OV3" "$LIVE3" "$STATEDIR/staging/$TXN3/meta" "$STATEDIR/staging/$TXN3/backups" "$T/bin"
+for i in $(seq 1 100); do
+    printf 'item %s content\n' "$i" > "$OV3/f$i.conf"; chmod 644 "$OV3/f$i.conf"
+    if [ "$i" -le 90 ]; then printf 'item %s content\n' "$i" > "$LIVE3/f$i.conf"
+    else printf 'item %s OLD\n' "$i" > "$LIVE3/f$i.conf"; fi
+    chmod 644 "$LIVE3/f$i.conf"
+done
+python3 - "$LIVE3" "$STATEDIR/staging/$TXN3/meta/manifest.json" "$OWNER" <<'PY'
+import json, sys
+live, mf, owner = sys.argv[1], sys.argv[2], sys.argv[3]
+deploy = [{"src": "f%d.conf" % i, "dst": "%s/f%d.conf" % (live, i), "mode": "0644", "owner": owner} for i in range(1, 101)]
+open(mf, "w", encoding="utf-8").write(json.dumps({"schema_version": 1, "version": "9.9.9.9", "deploy": deploy}) + "\n")
+PY
+REAL_PY=$(command -v python3); PYCOUNT="$T/py.count"; : > "$PYCOUNT"
+printf '#!/bin/bash\nprintf . >> "%s"\nexec "%s" "$@"\n' "$PYCOUNT" "$REAL_PY" > "$T/bin/python3"
+chmod 755 "$T/bin/python3"
+t0=$EPOCHREALTIME
+( set -euo pipefail; PATH="$T/bin:$PATH"; apply_deploy_items "$TXN3" ) >/dev/null 2>&1
+rc3=$?
+t1=$EPOCHREALTIME
+py_n=$(wc -c < "$PYCOUNT" | tr -d ' ')
+wall=$(python3 -c 'import sys; print("%.2f" % (float(sys.argv[2]) - float(sys.argv[1])))' "$t0" "$t1")
+echo "info  apply_deploy_items over 100 items (90 unchanged / 10 changed): python3 starts=$py_n wall=${wall}s (this host, not the board)"
+if [ "$rc3" -eq 0 ] && [ "$(cat "$LIVE3/f100.conf")" = "item 100 content" ] && [ "$(txn_get files_done)" = "100" ]; then
+    ok "100-item mixed deploy applied (rc=0, changed file landed, files_done=100)"
+else
+    bad "100-item mixed deploy broken (rc=$rc3, f100='$(cat "$LIVE3/f100.conf" 2>/dev/null)', files_done=$(txn_get files_done))"
+fi
+if [ "$py_n" -le 2 ]; then
+    ok "deploy loop starts no python3 per item ($py_n start(s) for 100 items, limit 2)"
+else
+    bad "deploy loop starts python3 per item: $py_n starts for 100 items (limit 2) — the 33-minute class"
 fi
 
 echo "-----"

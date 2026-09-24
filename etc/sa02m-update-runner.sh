@@ -1197,11 +1197,45 @@ PY
     log "rollback archive: $archive"
 }
 
+# journal_append TXN KEY=VALUE... — one JSON object per line, keys in argument
+# order, values escaped as json.dumps(ensure_ascii=False) escapes them (`\`, `"`,
+# the C0 controls); the readers are rollback_from_journal / _journal_has_dst_prefix
+# (json.loads per line). Built in bash and made durable with fdatasync BEFORE the
+# caller renames the file the line describes (1.0.6.54): the python3 one-liner it
+# replaces cost one interpreter start per changed file, raised on a dst carrying
+# a `"` (the caller interpolated it raw), and never synced the journal — a power
+# cut could lose the last lines and leave those files NEW after a rollback.
 journal_append() {
     local txn=$1
     shift
     local j="$STATEDIR/staging/$txn/journal.jsonl"
-    python3 -c 'import json,sys; print(json.dumps(json.loads(sys.argv[1]),ensure_ascii=False))' "$1" >>"$j"
+    local kv k v line="" sep="" esc c i
+    for kv in "$@"; do
+        k=${kv%%=*}
+        v=${kv#*=}
+        v=${v//\\/\\\\}
+        v=${v//\"/\\\"}
+        if [[ $v == *[[:cntrl:]]* ]]; then
+            esc=""
+            for ((i = 0; i < ${#v}; i++)); do
+                c=${v:i:1}
+                case $c in
+                    $'\n') c='\n' ;;
+                    $'\r') c='\r' ;;
+                    $'\t') c='\t' ;;
+                    $'\b') c='\b' ;;
+                    $'\f') c='\f' ;;
+                    [[:cntrl:]]) printf -v c '\\u%04x' "'$c" ;;
+                esac
+                esc+=$c
+            done
+            v=$esc
+        fi
+        line+="$sep\"$k\": \"$v\""
+        sep=", "
+    done
+    printf '{%s}\n' "$line" >>"$j"
+    sync -d -- "$j" 2>/dev/null || sync
 }
 
 atomic_install_file() {
@@ -1217,13 +1251,14 @@ atomic_install_file() {
     else
         install -m "$mode" "$src" "$tmp"
     fi
-    if command -v fdatasync >/dev/null 2>&1; then
-        fdatasync "$tmp" 2>/dev/null || true
-    else
-        python3 -c 'import os,sys; fd=os.open(sys.argv[1],os.O_RDONLY); os.fdatasync(fd); os.close(fd)' "$tmp" 2>/dev/null || sync
-    fi
+    # fdatasync(tmp) BEFORE the rename, fsync(dir) after it, through coreutils
+    # `sync -d FILE` / `sync DIR` (>= 8.24; the boards run 9.4) with bare `sync`
+    # where the operand form is refused — the launcher's own idiom. Until
+    # 1.0.6.54 both were python3 one-liners (coreutils ships no `fdatasync`
+    # binary, so that branch never ran): two interpreter starts per changed file.
+    sync -d -- "$tmp" 2>/dev/null || sync
     mv -f "$tmp" "$dst"
-    python3 -c 'import os,sys; d=os.path.dirname(sys.argv[1]) or "."; fd=os.open(d,os.O_RDONLY); os.fsync(fd); os.close(fd)' "$dst" 2>/dev/null || sync
+    sync -- "$dstdir" 2>/dev/null || sync
 }
 
 # Deploy-skip predicate: returns 0 (unchanged) ONLY when $dst already matches the
@@ -1287,22 +1322,44 @@ cleanup_b1_deploy_artifacts() {
     fi
 }
 
+# The deploy loop. One python3 start for the whole manifest: it writes the deploy
+# list as NUL-separated fields (src, dst, mode, owner per item) into staging and
+# prints the count; the loop reads them with `read -d ''`. Until 1.0.6.54 every
+# item paid FOUR interpreter starts to read its four fields (plus three per
+# changed file in journal_append/atomic_install_file) — 2,134 starts for a
+# 505-item tree, 33 minutes on the Cortex-A7 (plan fast-ota-research §1).
+# Gate: update-deploy-skip case 8 (a python3 PATH shim counts the starts).
 apply_deploy_items() {
     local txn=$1
-    local mf overlay total done item_json
+    local mf overlay items total done
     mf=$(manifest_path "$txn")
     overlay="$STATEDIR/staging/$txn/overlay"
-    total=$(python3 -c 'import json,sys; print(len(json.load(open(sys.argv[1],encoding="utf-8")).get("deploy",[])))' "$mf")
+    items="$STATEDIR/staging/$txn/deploy.items"
+    total=$(python3 - "$mf" "$items" <<'PY'
+import json, sys
+mf, out = sys.argv[1], sys.argv[2]
+deploy = json.load(open(mf, encoding="utf-8")).get("deploy", [])
+with open(out, "wb") as f:
+    for it in deploy:
+        for v in (it.get("src", ""), it.get("dst", ""), it.get("mode", "0644"), it.get("owner", "")):
+            f.write(str(v).encode("utf-8") + b"\0")
+print(len(deploy))
+PY
+)
     txn_patch "files_total=$total" "files_done=0" "progress_pct=0"
     done=0
+    # Progress cadence: a txn_patch is a JSON rewrite + two fsyncs + one python3
+    # start, so it runs at most every $every seconds (never per item) — the
+    # every-10-items cadence (1.0.6.8) left the bar frozen ~40 s between moves
+    # on a 505-item tree; time-based, it moves on every panel poll whatever
+    # the item rate. The final files_done == files_total patch is issued ONCE,
+    # after the loop. Harnesses set SA02M_UPDATE_PROGRESS_S=0 to patch per item.
+    local last_patch=$SECONDS every=${SA02M_UPDATE_PROGRESS_S:-3}
+    case "$every" in ''|*[!0-9]*) every=3 ;; esac
 
-    while IFS= read -r item_json; do
-        [ -n "$item_json" ] || continue
-        local src_rel dst mode owner src_abs bak
-        src_rel=$(python3 -c 'import json,sys; print(json.loads(sys.argv[1]).get("src",""))' "$item_json")
-        dst=$(python3 -c 'import json,sys; print(json.loads(sys.argv[1]).get("dst",""))' "$item_json")
-        mode=$(python3 -c 'import json,sys; print(json.loads(sys.argv[1]).get("mode","0644"))' "$item_json")
-        owner=$(python3 -c 'import json,sys; print(json.loads(sys.argv[1]).get("owner",""))' "$item_json")
+    local src_rel dst mode owner src_abs bak pct
+    while IFS= read -r -d '' src_rel && IFS= read -r -d '' dst \
+          && IFS= read -r -d '' mode && IFS= read -r -d '' owner; do
         src_abs="$overlay/$src_rel"
         if [ ! -f "$src_abs" ]; then
             log "ERROR: missing staged src: $src_rel"
@@ -1323,9 +1380,9 @@ apply_deploy_items() {
                 bak="$STATEDIR/staging/$txn/backups/$(printf '%s' "$dst" | sha256sum | awk '{print $1}')"
                 mkdir -p "$(dirname "$bak")"
                 cp -a "$dst" "$bak"
-                journal_append "$txn" "{\"op\":\"replace\",\"dst\":\"$dst\",\"backup\":\"$bak\",\"mode\":\"$mode\",\"owner\":\"$owner\"}"
+                journal_append "$txn" "op=replace" "dst=$dst" "backup=$bak" "mode=$mode" "owner=$owner"
             else
-                journal_append "$txn" "{\"op\":\"create\",\"dst\":\"$dst\",\"mode\":\"$mode\",\"owner\":\"$owner\"}"
+                journal_append "$txn" "op=create" "dst=$dst" "mode=$mode" "owner=$owner"
             fi
             if ! atomic_install_file "$src_abs" "$dst" "$mode" "$owner"; then
                 log "ERROR: atomic install failed: $dst"
@@ -1334,22 +1391,15 @@ apply_deploy_items() {
             fi
         fi
         done=$((done + 1))
-        local pct=0
-        if [ "$total" -gt 0 ]; then
+        if [ "$done" -lt "$total" ] && [ $((SECONDS - last_patch)) -ge "$every" ]; then
             pct=$((done * 100 / total))
-        fi
-        # Patch txn every 10 files (and on the last): per-file JSON rewrite + fsync
-        # made 1.0.6.1→latest apply take ~12 min with no log lines between re-exec
-        # and verifying — UI looked frozen on "updating packages".
-        if [ "$done" -eq "$total" ] || [ $((done % 10)) -eq 0 ]; then
             txn_patch "files_done=$done" "progress_pct=$pct"
             log "apply: files $done/$total (${pct}%)"
+            last_patch=$SECONDS
         fi
-    done < <(python3 -c 'import json,sys
-for it in json.load(open(sys.argv[1],encoding="utf-8")).get("deploy",[]):
-    print(json.dumps(it,ensure_ascii=False))
-' "$mf")
+    done <"$items"
     txn_patch "files_done=$done" "progress_pct=100"
+    log "apply: files $done/$total (100%)"
     return 0
 }
 
@@ -1388,9 +1438,9 @@ print(sum(1 for it in m.get("deploy",[]) if it.get("dst")==sys.argv[2]))' "$mf" 
         bak="$STATEDIR/staging/$txn/backups/$(printf '%s' "$RUNNER_VERSION_FILE" | sha256sum | awk '{print $1}')"
         mkdir -p "$(dirname "$bak")"
         cp -a "$RUNNER_VERSION_FILE" "$bak"
-        journal_append "$txn" "{\"op\":\"replace\",\"dst\":\"$RUNNER_VERSION_FILE\",\"backup\":\"$bak\",\"mode\":\"0644\",\"owner\":\"root:root\"}"
+        journal_append "$txn" "op=replace" "dst=$RUNNER_VERSION_FILE" "backup=$bak" "mode=0644" "owner=root:root"
     else
-        journal_append "$txn" "{\"op\":\"create\",\"dst\":\"$RUNNER_VERSION_FILE\",\"mode\":\"0644\",\"owner\":\"root:root\"}"
+        journal_append "$txn" "op=create" "dst=$RUNNER_VERSION_FILE" "mode=0644" "owner=root:root"
     fi
     if ! atomic_install_file "$src" "$RUNNER_VERSION_FILE" 0644 root:root; then
         rm -f "$src"
@@ -1413,7 +1463,7 @@ apply_deletes() {
             mkdir -p "$(dirname "$bak")"
             if [ -f "$dpath" ]; then
                 cp -a "$dpath" "$bak"
-                journal_append "$txn" "{\"op\":\"delete\",\"dst\":\"$dpath\",\"backup\":\"$bak\"}"
+                journal_append "$txn" "op=delete" "dst=$dpath" "backup=$bak"
                 rm -f "$dpath"
             else
                 log "ERROR: delete target not a regular file: $dpath"
