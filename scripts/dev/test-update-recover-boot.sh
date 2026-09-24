@@ -79,7 +79,10 @@
 #   set-property …, systemctl start sa02m-flasher».
 #   1.0.6.54 round 4: R4d — a failing services_enable_and_tmpfiles (a dead
 #   manifest read) makes verify roll back with E_HEALTH and its reason. RED on
-#   2373792: rc=1, stage left at verifying (set -e killed verify mid-way).
+#   35f4e8d: rc=1, stage left at verifying (set -e killed verify mid-way).
+#   Round 6: R10 — a torn last journal line converges in ONE run, through boot
+#   recover (R10a) and runtime reclaim (R10b). RED on 20a54fe: rc=1, stage
+#   frozen at rolling_back, lock kept, file NEW.
 #
 # Run: bash scripts/dev/test-update-recover-boot.sh   (bash + python3 + coreutils)
 # ═══════════════════════════════════════════════════════════════════════════
@@ -670,6 +673,43 @@ for f in scripts/03-webserver.sh scripts/update-www-only.sh; do
 done
 stripped_has scripts/pack-offline-update.py '"sa02m-update-verify.service"' && ok "U1 pack-offline-update.py packs the verify unit" \
     || bad "U1 scripts/pack-offline-update.py does not pack sa02m-update-verify.service"
+
+# ── R10: a TORN journal converges on ONE boot (round 6 — review R3-1) ────────
+# The residue a power cut mid-apply leaves: stage applying, one file renamed
+# and journalled, a torn last line. Until round 6 the replay died on json.loads
+# of the torn line (it is read first — reverse order): recover exited non-zero
+# at rolling_back with the lock kept, and every later boot repeated it.
+# Expected: recover (boot) and reclaim (runtime) each finish in ONE run —
+# rolled_back, E_POWER, the renamed file OLD again, the lock cleared.
+echo "── R10: torn journal line — recover / reclaim converge in one run ──"
+r10_setup() {
+    mkdir -p "$STAGE/backups" "$TW/r10"
+    printf 'r10 NEW\n' > "$TW/r10/f.conf"
+    printf 'r10 OLD\n' > "$STAGE/backups/r10bak"
+    printf '{"op": "replace", "dst": "%s/r10/f.conf", "backup": "%s/backups/r10bak", "mode": "0644", "owner": "root:root"}\n' "$TW" "$STAGE" \
+        > "$STAGE/journal.jsonl"
+    printf '{"op": "create", "dst": "%s/r10/g.co' "$TW" >> "$STAGE/journal.jsonl"
+}
+reset_run; r10_setup
+write_txn applying 1 3
+date -Iseconds > "$IMAGING_LOCK"
+run_recover
+if [ "$rc" -eq 0 ] && [ "$(txn_field stage)" = rolled_back ] && [ "$(txn_field error_code)" = E_POWER ] \
+   && [ "$(cat "$TW/r10/f.conf")" = "r10 OLD" ] && [ ! -f "$IMAGING_LOCK" ]; then
+    ok "R10a boot recover over a torn journal: rolled_back / E_POWER in one run, file restored, lock cleared"
+else
+    bad "R10a boot recover over a torn journal: rc=$rc stage=$(txn_field stage) code=$(txn_field error_code) f=$(cat "$TW/r10/f.conf") lock=$([ -f "$IMAGING_LOCK" ] && echo kept || echo cleared)"
+fi
+reset_run; r10_setup
+write_txn rolling_back 1 3
+date -Iseconds > "$IMAGING_LOCK"
+run_reclaim
+if [ "$rc" -eq 0 ] && [ "$(txn_field stage)" = rolled_back ] && [ "$(cat "$TW/r10/f.conf")" = "r10 OLD" ] && [ ! -f "$IMAGING_LOCK" ]; then
+    ok "R10b runtime reclaim of a rollback residue with a torn journal: rolled_back in one run, file restored"
+else
+    bad "R10b reclaim over a torn journal: rc=$rc stage=$(txn_field stage) f=$(cat "$TW/r10/f.conf") lock=$([ -f "$IMAGING_LOCK" ] && echo kept || echo cleared)"
+fi
+rm -f "$STAGE/journal.jsonl" "$STAGE/backups/r10bak"
 
 echo "-----"
 if [ "$fails" -eq 0 ]; then echo "PASS (all checks)"; exit 0

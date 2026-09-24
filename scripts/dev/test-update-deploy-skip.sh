@@ -62,7 +62,7 @@
 #          fails the apply the same way, never a 0-item "success".
 #   Every apply runs through run_apply (`if ! apply_deploy_items`), cmd_apply's
 #   shape: errexit is suspended there, so only an EXPLICIT status check counts.
-#   RED for 10/10b on 5e24234 (round 2 build, check-less `total=$(…)`), observed
+#   RED for 10/10b on 1b25f06 (round 2 build, check-less `total=$(…)`), observed
 #   2026-09-24 under WSL: both rc=0 — 10 deployed item 1 and patched
 #   `files_total=` empty; 10b patched `files_total=` empty and `files_done=0`.
 #   11a–11e, 12a–12d (round 4, G6): a failed backup / journal write / journal
@@ -70,16 +70,23 @@
 #   apply loop, the runner stamp and apply_deletes (extracted since round 4);
 #   failure injection through `cp` / `sync` forwarders, a journal path made a
 #   directory, and a `pyfail` python3 shim that fails one read by argv match.
-#   RED on 2373792, observed 2026-09-24 under WSL: 10 FAIL — 11a rc=0 and g2
+#   RED on 35f4e8d, observed 2026-09-24 under WSL: 10 FAIL — 11a rc=0 and g2
 #   NEW after rollback, 11b/11c rc=0 with every file renamed, 11d stamp
 #   installed without a record, 11e no WARN, 12a–12c rc=0 (12b/12c deleted).
 #   Round 5: 11f (the backup's sha256 name cannot be computed), 13a/13b
 #   (atomic_install_file's own fdatasync(tmp) / fsync(dir) fail), 14a/14b
 #   (stop_before_apply dies on a dead read before any deploy; extracted with
 #   the shipped die). Every 11/13 case asserts the exact g1|g2|g3 state. RED on
-#   f7091bf (2026-09-24, WSL): 5 FAIL — 11f every file NEW even after rollback,
+#   2b3224c (2026-09-24, WSL): 5 FAIL — 11f every file NEW even after rollback,
 #   13a/13b rc=0 with every file renamed, 14a «deploy PROCEEDED, systemctl
 #   calls=''».
+#   Round 6: 15a–15e (rollback_from_journal over a torn line / a NUL tail / a
+#   missing backup / a raising restore; atomic restore with owner and mode),
+#   16a/16b (sudoers drop-ins validated by `visudo -cf` before the rename),
+#   10c (a deploy list that ends early fails the apply). RED on 20a54fe
+#   (2026-09-24, WSL): 10 FAIL — 15a/15b rc=1 with every file NEW, 15c
+#   «rolled_back» over a NEW file, 15d rc=1, 15e same inode and owner 0:0,
+#   16a/16b no visudo call, 10c rc=0.
 #
 # Drive-to-failure: UPDATE_RUNNER_SRC=<(git show main:etc/sa02m-update-runner.sh) \
 #   bash scripts/dev/test-update-deploy-skip.sh   → the skip assertion goes RED
@@ -90,9 +97,12 @@
 #   harness extracts it only when present (see HAS_GUARD) — the drive-to-failure
 #   run must reach and FAIL the assertions, not abort on a missing marker.
 #   RED for the 1.0.6.54 cases: UPDATE_RUNNER_SRC=<(git show 3c98af0:etc/sa02m-update-runner.sh)
-#   (main = 1.0.6.52) — observed 2026-09-24: 6 FAIL — 4c/4d (files_done sequence
+#   (1.0.6.52 — the branch base before the rebase onto 1.0.6.53) — observed
+#   2026-09-24: 6 FAIL — 4c/4d (files_done sequence
 #   `0 4 4`), 6 (no `sync -d` of the tmp file: only mv lines in the trace), 7
-#   (quote-dst apply rc=1, no journal line, rollback unproven), 8 (432 python3
+#   (quote-dst: no journal line — rc=1 in the pre-round-3 `set -e` shape; in
+#   cmd_apply's `if !` shape, used since, rc=0 with the file installed and the
+#   rollback leaving it NEW), 8 (432 python3
 #   starts for 100 items: 4 per item + 3 per changed + 2 up front); every
 #   original assertion stays GREEN.
 #   This box (Windows git-bash) SKIPs on the mode probe below — the runs were
@@ -602,7 +612,7 @@ run_fail_case TXN5 "$T/live5" "" "g2.conf" "9b mv fails on item 2"
 #     touched (item 1 still OLD), no `files_total=` patch, the runner's
 #     `ERROR: deploy list` line, and the emitter's reason on stderr. The emitter
 #     exiting non-zero is not enough on its own: under `if !` an unchecked
-#     `total=$(…)` swallows it (5e24234: rc=0, item 1 deployed, files_total="").
+#     `total=$(…)` swallows it (1b25f06: rc=0, item 1 deployed, files_total="").
 TXN6="TXN6"; OV6="$STATEDIR/staging/$TXN6/overlay"; LIVE6="$T/live6"
 mkdir -p "$OV6" "$LIVE6" "$STATEDIR/staging/$TXN6/meta" "$STATEDIR/staging/$TXN6/backups"
 printf 'n1 NEW\n' > "$OV6/n1.conf"; printf 'n1 OLD\n' > "$LIVE6/n1.conf"; chmod 644 "$OV6/n1.conf" "$LIVE6/n1.conf"
@@ -629,7 +639,7 @@ fi
 #     DIRECTORY, so python's open(out, "wb") raises (traceback, exit 1) — the
 #     same unchecked path as ENOSPC while writing the list or an unreadable
 #     manifest. Expected: rc=1, no `files_total=` patch, the live file untouched,
-#     the `ERROR: deploy list` line. 5e24234: `files_total=` (empty), then the
+#     the `ERROR: deploy list` line. 1b25f06: `files_total=` (empty), then the
 #     loop read nothing and the function returned 0 — a zero-item "success".
 TXN7="TXN7"; OV7="$STATEDIR/staging/$TXN7/overlay"; LIVE7="$T/live7"
 mkdir -p "$OV7" "$LIVE7" "$STATEDIR/staging/$TXN7/meta" "$STATEDIR/staging/$TXN7/deploy.items"
@@ -839,6 +849,169 @@ if grep -q '^stop_before_apply() {' "$T/fn.sh"; then
     fi
 else
     bad "14 stop_before_apply not extracted — the marker moved"
+fi
+
+# 15. rollback_from_journal SURVIVES A TORN JOURNAL, RESTORES EVERYTHING IT CAN,
+#     AND RESTORES ATOMICALLY (round 6 — review R3-1 / audit M1). The replay ran
+#     json.loads and shutil.copy2 with no per-record guard, in REVERSE order, so
+#     a torn last line (ENOSPC mid-write, a power cut between the printf and its
+#     sync -d) or a NUL tail killed it before ANY restore — under errexit the
+#     runner died at rolling_back and every recover replayed the same crash. A
+#     file is renamed only after its line was written AND synced, so an
+#     unparseable TRAILING line never describes a renamed file: it is skipped.
+#     One restore that fails must not stop the others, and the stage must then
+#     say so (error + «rollback incomplete»), not rolled_back. The restore goes
+#     tmp → fsync → rename (never truncate-then-fill the live path), keeping the
+#     backup's owner and mode. Driven as cmd_apply drives it: errexit ON.
+rb_setup() {   # <txn> <live> → three changed items deployed and journalled
+    local txn=$1 live=$2 ov="$STATEDIR/staging/$1/overlay" i
+    mkdir -p "$ov" "$live" "$STATEDIR/staging/$txn/meta" "$STATEDIR/staging/$txn/backups"
+    for i in 1 2 3; do
+        printf 'r%s NEW\n' "$i" > "$ov/r$i.conf"; chmod 644 "$ov/r$i.conf"
+        printf 'r%s OLD\n' "$i" > "$live/r$i.conf"; chmod 644 "$live/r$i.conf"
+    done
+    python3 - "$live" "$STATEDIR/staging/$txn/meta/manifest.json" "$OWNER" <<'PYM'
+import json, sys
+live, mf, owner = sys.argv[1], sys.argv[2], sys.argv[3]
+deploy = [{"src": "r%d.conf" % i, "dst": "%s/r%d.conf" % (live, i), "mode": "0644", "owner": owner} for i in (1, 2, 3)]
+open(mf, "w", encoding="utf-8").write(json.dumps({"schema_version": 1, "version": "9.9.9.9", "deploy": deploy}) + "\n")
+PYM
+    : > "$TXNVARS_F"; : > "$LOG"
+    ( set -euo pipefail; run_apply "$txn" ) >/dev/null 2>&1
+}
+rb_bak() { local h; h=$(printf '%s' "$1" | command sha256sum); printf '%s\n' "$STATEDIR/staging/$2/backups/${h%% *}"; }
+rb_run() { : > "$TXNVARS_F"; ( set -euo pipefail; rollback_from_journal "$1" E_APPLY "test" ) >/dev/null 2>&1; rb_rc=$?; }
+rb_states() { printf '%s|%s|%s' "$(cat "$1/r1.conf")" "$(cat "$1/r2.conf")" "$(cat "$1/r3.conf")"; }
+
+# 15a torn last line
+rb_setup TXN15A "$T/live15a"
+printf '{"op": "replace", "dst": "%s/r9.co' "$T/live15a" >> "$STATEDIR/staging/TXN15A/journal.jsonl"
+rb_run TXN15A
+if [ "$rb_rc" -eq 0 ] && [ "$(rb_states "$T/live15a")" = "r1 OLD|r2 OLD|r3 OLD" ] && [ "$(txn_get stage)" = rolled_back ]; then
+    ok "15a torn last journal line: rollback completes, every file OLD, stage rolled_back"
+else
+    bad "15a torn last journal line: rc=$rb_rc states=$(rb_states "$T/live15a") stage=$(txn_get stage) — the replay died on the torn line"
+fi
+grep -qF 'unparseable' "$LOG" && ok "15a the skipped torn line is logged" || bad "15a the torn line was skipped silently (no log line)"
+# 15b NUL-filled tail (a power cut with the block allocated, data not written)
+rb_setup TXN15B "$T/live15b"
+head -c 96 /dev/zero >> "$STATEDIR/staging/TXN15B/journal.jsonl"
+rb_run TXN15B
+if [ "$rb_rc" -eq 0 ] && [ "$(rb_states "$T/live15b")" = "r1 OLD|r2 OLD|r3 OLD" ] && [ "$(txn_get stage)" = rolled_back ]; then
+    ok "15b NUL-filled journal tail: rollback completes, every file OLD"
+else
+    bad "15b NUL-filled journal tail: rc=$rb_rc states=$(rb_states "$T/live15b") stage=$(txn_get stage)"
+fi
+# 15c a replace record whose backup is GONE: the others restore, the stage says so
+rb_setup TXN15C "$T/live15c"
+rm -f "$(rb_bak "$T/live15c/r2.conf" TXN15C)"
+rb_run TXN15C
+if [ "$rb_rc" -eq 0 ] && [ "$(rb_states "$T/live15c")" = "r1 OLD|r2 NEW|r3 OLD" ] \
+   && [ "$(txn_get stage)" = error ] && txn_get error_message | grep -qF 'rollback incomplete' \
+   && grep -qF "$T/live15c/r2.conf" "$LOG"; then
+    ok "15c missing backup for item 2: items 1 and 3 restored, stage=error «rollback incomplete», the file named in the log"
+else
+    bad "15c missing backup: rc=$rb_rc states=$(rb_states "$T/live15c") stage=$(txn_get stage) msg='$(txn_get error_message)' — reported as a clean rollback"
+fi
+# 15d a restore that RAISES (the dst's directory became a regular file) must not
+#     abort the records processed after it (reverse order: item 3 is first)
+rb_setup TXN15D "$T/live15d"
+mkdir -p "$T/live15d-sub"; printf 'x' > "$T/live15d-sub/r3.conf"
+python3 - "$STATEDIR/staging/TXN15D/journal.jsonl" "$T/live15d/r3.conf" "$T/live15d-sub/blocker/r3.conf" <<'PYM'
+import sys
+p, old, new = sys.argv[1:4]
+t = open(p, encoding="utf-8").read().replace(old, new)
+open(p, "w", encoding="utf-8").write(t)
+PYM
+printf 'x' > "$T/live15d-sub/blocker"      # makedirs(dirname(dst)) now raises
+rb_run TXN15D
+if [ "$rb_rc" -eq 0 ] && [ "$(cat "$T/live15d/r1.conf")|$(cat "$T/live15d/r2.conf")" = "r1 OLD|r2 OLD" ] \
+   && [ "$(txn_get stage)" = error ] && grep -qF "live15d-sub/blocker/r3.conf" "$LOG"; then
+    ok "15d a restore that raises on item 3: items 1 and 2 still restored, the failure logged, stage=error"
+else
+    bad "15d a raising restore aborted the rest: rc=$rb_rc r1=$(cat "$T/live15d/r1.conf") r2=$(cat "$T/live15d/r2.conf") stage=$(txn_get stage)"
+fi
+# 15e the restore is a RENAME (new inode), keeping the backup's owner and mode
+rb_setup TXN15E "$T/live15e"
+ino_new=$(stat -c %i "$T/live15e/r1.conf")
+b1=$(rb_bak "$T/live15e/r1.conf" TXN15E); chmod 0600 "$b1"
+rb_owner_ok=skip
+if [ "$(id -u)" = 0 ]; then chown 4321:4322 "$b1"; rb_owner_ok=1; fi
+rb_run TXN15E
+ino_after=$(stat -c %i "$T/live15e/r1.conf")
+if [ "$rb_rc" -eq 0 ] && [ "$(cat "$T/live15e/r1.conf")" = "r1 OLD" ] && [ "$ino_new" != "$ino_after" ] \
+   && [ "$(stat -c %a "$T/live15e/r1.conf")" = 600 ] && ! ls "$T/live15e" | grep -q '\.rb\.'; then
+    ok "15e restore goes tmp → rename (inode $ino_new → $ino_after), backup mode 0600 kept, no tmp left"
+else
+    bad "15e restore wrote the live file in place or lost the mode (inode $ino_new → $ino_after, mode $(stat -c %a "$T/live15e/r1.conf"), rc=$rb_rc)"
+fi
+if [ "$rb_owner_ok" = skip ]; then
+    echo "SKIP  15e owner assertion (not root — the chown to 4321:4322 cannot be staged here)"
+elif [ "$(stat -c '%u:%g' "$T/live15e/r1.conf")" = "4321:4322" ]; then
+    ok "15e the restored file carries the backup's owner (4321:4322)"
+else
+    bad "15e the restored file lost the backup's owner ($(stat -c '%u:%g' "$T/live15e/r1.conf"), want 4321:4322)"
+fi
+
+# 16. SUDOERS DROP-INS ARE VALIDATED BEFORE THE RENAME (round 6 — audit M2).
+#     The runner maps etc/sudoers.d/* onto /etc/sudoers.d/* and used to rename
+#     them live, checking with `visudo -c` only AFTERWARDS (a WARN): one syntax
+#     error breaks sudo globally, and with it the update launcher itself. Now
+#     `visudo -cf` runs on the STAGED file first; a refusal fails the apply
+#     (E_APPLY rollback keeps the old file). The sudoers directory is
+#     SA02M_SUDOERS_DIR here (default /etc/sudoers.d); visudo is a recording
+#     function (exit from $T/visudo.rc).
+run_sudo_case() {   # <txn> <visudo-rc> → rc16, $T/visudo.calls
+    local txn=$1 live="$T/live-$1" ov="$STATEDIR/staging/$1/overlay"
+    mkdir -p "$ov" "$live/sudoers.d" "$STATEDIR/staging/$txn/meta" "$STATEDIR/staging/$txn/backups"
+    printf 'www-data ALL=(root) NOPASSWD: /bin/true\n' > "$ov/sa02m-www"; chmod 644 "$ov/sa02m-www"
+    printf '# OLD grant\n' > "$live/sudoers.d/sa02m-www"; chmod 644 "$live/sudoers.d/sa02m-www"
+    printf 'plain NEW\n' > "$ov/plain.conf"; chmod 644 "$ov/plain.conf"
+    printf 'plain OLD\n' > "$live/plain.conf"; chmod 644 "$live/plain.conf"
+    printf '{"schema_version": 1, "version": "9.9.9.9", "deploy": [{"src": "plain.conf", "dst": "%s/plain.conf", "mode": "0644", "owner": "%s"}, {"src": "sa02m-www", "dst": "%s/sudoers.d/sa02m-www", "mode": "0644", "owner": "%s"}]}\n' \
+        "$live" "$OWNER" "$live" "$OWNER" > "$STATEDIR/staging/$txn/meta/manifest.json"
+    printf '%s\n' "$2" > "$T/visudo.rc"; : > "$T/visudo.calls"; : > "$TXNVARS_F"; : > "$LOG"
+    ( set -euo pipefail; export SA02M_SUDOERS_DIR="$live/sudoers.d"
+      visudo() { printf 'visudo %s\n' "$*" >> "$T/visudo.calls"; return "$(cat "$T/visudo.rc")"; }
+      run_apply "$txn" ) >/dev/null 2>&1
+    rc16=$?
+}
+run_sudo_case TXN16A 1
+if [ "$rc16" -eq 1 ] && [ "$(cat "$T/live-TXN16A/sudoers.d/sa02m-www")" = "# OLD grant" ] \
+   && grep -qF 'ERROR: sudoers validation failed' "$LOG" && grep -q '^visudo -cf ' "$T/visudo.calls"; then
+    ok "16a visudo refuses the staged sudoers drop-in → apply FAILS, the live grant untouched"
+else
+    bad "16a a refused sudoers drop-in was installed live (rc=$rc16, live='$(cat "$T/live-TXN16A/sudoers.d/sa02m-www")', visudo calls='$(tr '\n' ';' < "$T/visudo.calls")')"
+fi
+run_sudo_case TXN16B 0
+if [ "$rc16" -eq 0 ] && [ "$(cat "$T/live-TXN16B/sudoers.d/sa02m-www")" = "www-data ALL=(root) NOPASSWD: /bin/true" ] \
+   && [ "$(grep -c '^visudo -cf ' "$T/visudo.calls")" = 1 ] && grep -qF "overlay/sa02m-www" "$T/visudo.calls"; then
+    ok "16b an accepted drop-in is installed; visudo -cf ran once, on the STAGED file (not on the plain item)"
+else
+    bad "16b accepted drop-in: rc=$rc16 live='$(cat "$T/live-TXN16B/sudoers.d/sa02m-www")' visudo calls='$(tr '\n' ';' < "$T/visudo.calls")'"
+fi
+
+# 10c (round 6 — review R3-2). The deploy loop could not tell a failed read of
+#     deploy.items from the end of the list: the file vanishing between the
+#     emit and the loop (EIO / EMFILE / an early EOF) ended the loop silently
+#     and the function returned 0 with files_done < files_total. The shim runs
+#     the real emitter, then deletes the list it wrote.
+mkdir -p "$T/itemsvanish"
+printf '#!/bin/bash\n"%s" "$@"; rc=$?\nfor a in "$@"; do case "$a" in *deploy.items) rm -f "$a" ;; esac; done\nexit $rc\n' "$(command -v python3)" > "$T/itemsvanish/python3"
+chmod 755 "$T/itemsvanish/python3"
+rb_setup_only() {
+    local txn=$1 live=$2 ov="$STATEDIR/staging/$1/overlay"
+    mkdir -p "$ov" "$live" "$STATEDIR/staging/$txn/meta"
+    printf 'v NEW\n' > "$ov/v.conf"; printf 'v OLD\n' > "$live/v.conf"; chmod 644 "$ov/v.conf" "$live/v.conf"
+    printf '{"schema_version": 1, "version": "9.9.9.9", "deploy": [{"src": "v.conf", "dst": "%s/v.conf", "mode": "0644", "owner": "%s"}]}\n' \
+        "$live" "$OWNER" > "$STATEDIR/staging/$txn/meta/manifest.json"
+}
+rb_setup_only TXN10C "$T/live10c"; : > "$TXNVARS_F"; : > "$LOG"
+( set -euo pipefail; PATH="$T/itemsvanish:$PATH"; run_apply TXN10C ) >/dev/null 2>&1; rc10c=$?
+if [ "$rc10c" -eq 1 ] && grep -qF 'ERROR: deploy list: read 0 of 1' "$LOG"; then
+    ok "10c deploy list unreadable after the emit → apply FAILS (read 0 of 1), never a short success"
+else
+    bad "10c deploy list vanished and the apply returned $rc10c (files_done=$(txn_get files_done) of $(txn_get files_total))"
 fi
 
 echo "-----"

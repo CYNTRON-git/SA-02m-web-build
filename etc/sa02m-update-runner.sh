@@ -1267,11 +1267,11 @@ atomic_install_file() {
     mkdir -p "$dstdir"
     tmp="${dst}.tmp.$$"
     # Every caller runs this under `if ! atomic_install_file …`, which suspends
-    # set -e inside, and the last command below is `sync … || sync` (always 0) —
-    # so a failed install/rename MUST return explicitly or it is counted done:
-    # until 1.0.6.54 a disk-full/EACCES/bad-mode install was swallowed, files_done
-    # reached files_total and the update committed over a mixed tree (review
-    # 1.0.6.54 F1; gate: update-deploy-skip 9a/9b). The caller logs the dst.
+    # set -e for the whole body, so every step below returns explicitly on
+    # failure — otherwise the file is counted done (until 1.0.6.54 a
+    # disk-full/EACCES/bad-mode install was swallowed and the update committed
+    # over a mixed tree; gate: update-deploy-skip 9a/9b, 13a/13b). The caller
+    # logs the dst.
     # install copies mode/owner when possible
     if [ -n "$owner" ]; then
         install -m "$mode" -o "${owner%:*}" -g "${owner#*:}" "$src" "$tmp" 2>/dev/null \
@@ -1407,6 +1407,8 @@ PY
     # on a 505-item tree; time-based, it moves on every panel poll whatever
     # the item rate. The final files_done == files_total patch is issued ONCE,
     # after the loop. Harnesses set SA02M_UPDATE_PROGRESS_S=0 to patch per item.
+    local sudoers_dir=${SA02M_SUDOERS_DIR:-/etc/sudoers.d}
+    sudoers_dir=${sudoers_dir%/}
     local last_patch=$SECONDS every=${SA02M_UPDATE_PROGRESS_S:-3}
     case "$every" in ''|*[!0-9]*) every=3 ;; esac
 
@@ -1429,6 +1431,27 @@ PY
             # verify invariant); the log line keeps an all-skipped run visible.
             log "apply: skip unchanged $dst"
         else
+            # A sudoers drop-in is validated on the STAGED bytes before anything
+            # else: one syntax error there breaks sudo globally — every root CGI
+            # helper and the update launcher itself — and the panel could no
+            # longer update its way out. Refusal = E_APPLY (the rollback keeps
+            # the live grant). No visudo on the board: WARN and proceed, as the
+            # installer and the legacy launcher do (audit 2026-09-24 M2; gate:
+            # update-deploy-skip 16a/16b).
+            case "$dst" in
+                "$sudoers_dir"/*)
+                    if command -v visudo >/dev/null 2>&1; then
+                        local vout
+                        if ! vout=$(visudo -cf "$src_abs" 2>&1); then
+                            log "ERROR: sudoers validation failed: $dst — ${vout//$'\n'/ }"
+                            APPLY_FAIL_REASON="sudoers validation failed: $dst"
+                            return 1
+                        fi
+                    else
+                        log "WARN: visudo not found - $dst installed unvalidated"
+                    fi
+                    ;;
+            esac
             # Backup, then journal line, then rename — each checked, because
             # errexit is off in here (cmd_apply's `if !`): a backup that failed
             # would be journalled as existing (rollback then keeps the NEW
@@ -1469,6 +1492,14 @@ PY
             last_patch=$SECONDS
         fi
     done <"$items"
+    # Every early failure above returns 1, so a short count here can only be a
+    # read of the list that ended early (EIO / EMFILE / the file gone) — the
+    # loop cannot tell that from the end of the list (review R3-2; gate 10c).
+    if [ "$done" -ne "$total" ]; then
+        log "ERROR: deploy list: read $done of $total items"
+        APPLY_FAIL_REASON="deploy list: read $done of $total items"
+        return 1
+    fi
     txn_patch "files_done=$done" "progress_pct=100"
     log "apply: files $done/$total (100%)"
     return 0
@@ -1622,29 +1653,111 @@ run_migrations() {
 # rollback_from_journal TXN [CODE] [MESSAGE] — CODE/MESSAGE land in the
 # transaction (default E_APPLY, the pre-1.0.6.52 blanket); the health gate
 # passes E_HEALTH + its reason, recover passes E_POWER + the stage.
+#
+# The journal replay (round 6 — review R3-1 / audit M1). It used to json.loads
+# and copy2 with no per-record guard, in reverse order: a torn last line (a
+# write cut by ENOSPC or power) or a NUL tail killed it before ANY restore, and
+# under errexit the runner died at rolling_back — every recover replayed the
+# same crash, the board never converged. Now:
+#   - an unparseable LAST line is skipped and logged: a file is renamed only
+#     after its line was written AND synced (journal_append → atomic_install_
+#     file), so a torn trailing line never describes a renamed file; an
+#     unparseable line anywhere else is a failure (it may describe one);
+#   - each record is restored on its own; a failure is logged and the rest go on;
+#   - a restore is tmp in the same dir → owner/mode from the backup → fsync →
+#     rename → dir fsync, never a truncate-then-fill of the live path;
+#   - any failure ends in stage=error «rollback incomplete (…)» with the
+#     caller's code, never rolled_back over a partly restored tree.
+# Gates: update-deploy-skip 15a-15e, update-recover-boot R10.
 rollback_from_journal() {
     local txn=$1 code=${2:-E_APPLY} message=${3:-}
     local j="$STATEDIR/staging/$txn/journal.jsonl"
+    local incomplete="" replay_out="" replay_rc=0 line
     log "rollback from journal txn=$txn (${code}${message:+: $message})"
     txn_patch "stage=rolling_back" "result=pending"
     if [ -f "$j" ]; then
-        python3 - "$j" <<'PY'
+        replay_out=$(python3 - "$j" <<'PY'
 import json, os, shutil, sys
 path = sys.argv[1]
-with open(path, encoding="utf-8") as f:
-    lines = [ln.strip() for ln in f if ln.strip()]
-for line in reversed(lines):
-    rec = json.loads(line)
-    op = rec.get("op")
-    dst = rec.get("dst")
-    bak = rec.get("backup")
-    if op in ("replace", "delete") and bak and os.path.isfile(bak) and dst:
-        os.makedirs(os.path.dirname(dst) or ".", exist_ok=True)
-        shutil.copy2(bak, dst)
-    elif op == "create" and dst and os.path.lexists(dst):
-        if os.path.isfile(dst):
-            os.remove(dst)
+with open(path, "rb") as f:
+    raw = f.read()
+lines = [ln for ln in raw.split(b"\n") if ln.strip(b" \t\r\x00")]
+failed = 0
+last = len(lines) - 1
+for idx in range(last, -1, -1):
+    ln = lines[idx]
+    try:
+        rec = json.loads(ln.decode("utf-8"))
+        if not isinstance(rec, dict):
+            raise ValueError("not an object")
+    except Exception:
+        if idx == last:
+            print("SKIP unparseable last journal line (a torn write; its file was never renamed): %r" % ln[:80])
+        else:
+            failed += 1
+            print("FAIL unparseable journal line %d of %d: %r" % (idx + 1, len(lines), ln[:80]))
+        continue
+    op, dst, bak = rec.get("op"), rec.get("dst"), rec.get("backup")
+    try:
+        if op in ("replace", "delete"):
+            if not dst or not bak:
+                raise ValueError("record without dst/backup")
+            if not os.path.isfile(bak):
+                raise FileNotFoundError("backup missing: %s" % bak)
+            d = os.path.dirname(dst) or "."
+            os.makedirs(d, exist_ok=True)
+            tmp = "%s.rb.%d" % (dst, os.getpid())
+            try:
+                shutil.copy2(bak, tmp)
+                st = os.stat(bak)
+                # The board is Linux and root. The guards below (and the RDWR
+                # open for the fsync) exist for the dev harnesses only: a
+                # non-root sandbox cannot chown, and update-recover-boot also
+                # runs this replay under Windows CPython, which has no os.chown,
+                # cannot open a directory, and refuses fsync on a read-only fd.
+                if hasattr(os, "chown"):
+                    try:
+                        os.chown(tmp, st.st_uid, st.st_gid)
+                    except PermissionError:
+                        pass
+                fd = os.open(tmp, os.O_RDWR)   # RDWR: Windows fsync refuses a read-only fd
+                try:
+                    os.fsync(fd)
+                finally:
+                    os.close(fd)
+                os.replace(tmp, dst)
+            except BaseException:
+                try:
+                    os.remove(tmp)
+                except OSError:
+                    pass
+                raise
+            if os.name != "nt":
+                dfd = os.open(d, os.O_RDONLY)
+                try:
+                    os.fsync(dfd)
+                finally:
+                    os.close(dfd)
+        elif op == "create":
+            if dst and os.path.isfile(dst) and not os.path.islink(dst):
+                os.remove(dst)
+        else:
+            raise ValueError("unknown op %r" % (op,))
+    except Exception as e:
+        failed += 1
+        print("FAIL %s %s: %s" % (op, dst, e))
+print("SUMMARY %d record(s) not restored of %d" % (failed, len(lines)))
+sys.exit(3 if failed else 0)
 PY
+) || replay_rc=$?
+        while IFS= read -r line; do
+            [ -n "$line" ] && log "rollback: $line"
+        done <<< "$replay_out"
+        if [ "$replay_rc" -ne 0 ]; then
+            line=$(printf '%s\n' "$replay_out" | grep '^SUMMARY ' || true)
+            incomplete="${line#SUMMARY }"
+            [ -n "$incomplete" ] || incomplete="journal replay failed (rc=$replay_rc)"
+        fi
     else
         # Fall back to rollback archive members → temp → install (never tar -C /).
         local archive
@@ -1671,6 +1784,17 @@ PY
         fi
     fi
     restart_after_rollback "$txn" || true
+    if [ -n "$incomplete" ]; then
+        # Terminal and honest: not rolled_back over a partly restored tree, and
+        # not a crash either (a crash here would freeze the stage at
+        # rolling_back and every recover would retry the same failure).
+        txn_patch "stage=error" "result=failed" "error_code=$code" \
+            "error_message=rollback incomplete ($incomplete; see update.log)${message:+ after: $message}" \
+            "finished_at=$(utc_now)"
+        cleanup_imaging_lock || true
+        log "ERROR: rollback INCOMPLETE: $incomplete"
+        return 0
+    fi
     txn_patch "stage=rolled_back" "result=rolled_back" "error_code=$code" \
         "error_message=${message:-null}" "finished_at=$(utc_now)"
     cleanup_imaging_lock || true
