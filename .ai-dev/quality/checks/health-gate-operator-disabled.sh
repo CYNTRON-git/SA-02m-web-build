@@ -4,7 +4,10 @@
 # back — the never-widen rule (a shared HardPy stand masks sa02m-devices-api because
 # its own app serves :8765). An ENABLED-but-down unit must still FAIL. Verifies the
 # skip logic is present, correctly gated, and positioned before the fail path in
-# etc/sa02m-update-runner.sh's restart_services_and_health health loop.
+# etc/sa02m-update-runner.sh's health_check units loop (since 1.0.6.52 the health
+# gate is its own function and the per-unit probe is unit_settled — the settle
+# window; before that the loop lived in restart_services_and_health behind one
+# bare `is-active` probe).
 #
 # Every pin below reads the COMMENT-STRIPPED function body: commenting out the
 # `systemctl is-enabled` line left this gate green while `_en_state` went empty
@@ -22,17 +25,17 @@ bad(){ printf '  FAIL  %s\n' "$1"; fails=$((fails+1)); }
 
 [ -r "$RUNNER" ] || { echo "health-gate-operator-disabled: cannot read $RUNNER"; exit 1; }
 
-# The health loop lives inside restart_services_and_health, between the units_active
-# read and the http/version checks. Extract that function body.
-fn="$(sed -n '/^restart_services_and_health() {/,/^}/p' "$RUNNER" | strip_comments)"
+# The health loop lives inside health_check, between the units_active read and
+# the http/version checks. Extract that function body.
+fn="$(sed -n '/^health_check() {/,/^}/p' "$RUNNER" | strip_comments)"
 # Non-vacuity: an empty extraction (function renamed, or its body entirely
 # commented out) FAILS the gate, it never passes silently.
-grep -q '[^[:space:]]' <<<"$fn" || { echo "restart_services_and_health not found (or its body is entirely commented out)"; exit 1; }
+grep -q '[^[:space:]]' <<<"$fn" || { echo "health_check not found (or its body is entirely commented out)"; exit 1; }
 
-# (a) the is-active failure branch still exists (non-vacuous anchor)
-text_matches "$fn" 'if ! systemctl is-active --quiet "\$u"; then' \
-    && ok "(a) health loop still guards each units_active with is-active" \
-    || bad "(a) the is-active failure branch is gone — health loop changed shape"
+# (a) the settled-probe failure branch still exists (non-vacuous anchor)
+text_matches "$fn" 'if ! unit_settled "\$u"; then' \
+    && ok "(a) health loop still guards each units_active with unit_settled" \
+    || bad "(a) the unit_settled failure branch is gone — health loop changed shape"
 
 # (b) an is-enabled read of the same unit inside that branch
 text_matches "$fn" 'systemctl is-enabled "\$u"' \
@@ -45,9 +48,20 @@ text_matches "$fn" 'masked\|masked-runtime\|disabled\)' \
     && ok "(c) masked/masked-runtime/disabled -> continue (skip)" \
     || bad "(c) no masked/disabled skip case with continue"
 
+# (c2) a unit whose own Condition*= kept it off (ConditionResult=no) is skipped too
+text_matches "$fn" 'systemctl show -p ConditionResult --value "\$u"' \
+    && ok "(c2) the branch reads ConditionResult (a Condition-off unit is operator-configured)" \
+    || bad "(c2) no ConditionResult read — a unit kept off by its own Condition rolls the update back"
+
+# (c3) ...and only together with an EVALUATED condition: ConditionResult=no is
+#     also what a never-started unit reports (review 1.0.6.52, finding 2)
+text_matches "$fn" 'systemctl show -p ConditionTimestampMonotonic --value "\$u"' \
+    && ok "(c3) the branch reads ConditionTimestampMonotonic (never-started ≠ Condition-off)" \
+    || bad "(c3) no ConditionTimestampMonotonic read — a never-started enabled unit is waved through as Condition-off"
+
 # (d) the skip 'continue' appears BEFORE the 'unit not active' + return 1 (fail path)
 #     within the branch — an ENABLED-but-down unit must still fail.
-blk="$(printf '%s\n' "$fn" | sed -n '/if ! systemctl is-active --quiet "\$u"; then/,/^        fi$/p')"
+blk="$(printf '%s\n' "$fn" | sed -n '/if ! unit_settled "\$u"; then/,/^        fi$/p')"
 c_line=$(printf '%s\n' "$blk" | grep -nE 'operator-disabled.*|[[:space:]]continue$' | grep -w continue | head -1 | cut -d: -f1)
 f_line=$(printf '%s\n' "$blk" | grep -nE 'log "health: unit not active' | head -1 | cut -d: -f1)
 r_line=$(printf '%s\n' "$blk" | grep -nE '^[[:space:]]*return 1$' | tail -1 | cut -d: -f1)
@@ -58,7 +72,7 @@ else
 fi
 
 # (e) the fail path (return 1 on a genuinely-down enabled unit) still exists
-text_matches "$fn" 'log "health: unit not active: \$u"' \
+text_matches "$fn" 'log "health: unit not active: \$u' \
     && ok "(e) the enabled-but-down FAIL path is preserved (still rolls back a real regression)" \
     || bad "(e) the fail path log is gone — the gate no longer catches a down required unit"
 

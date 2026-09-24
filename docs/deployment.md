@@ -27,11 +27,88 @@
 |---|---|---|
 | **www-only** | изменения только в `www/` (frontend + CGI) | `scripts/update-www-only.sh` |
 | **full install** | новое устройство, или менялись `etc/`/`opt/`/systemd/демон | `install.sh` (на настроенной плате — `install.sh --refresh`, «Режим обновления» ниже) |
-| **web-update (OTA)** | штатное самообновление с интернетом | вкладка «Обновление» → GitHub (`web_update_*.cgi`, semver); apply через shared runner при наличии |
+| **web-update (OTA)** | штатное самообновление с интернетом | вкладка «Обновление» → GitHub (`web_update_*.cgi`, semver); apply через shared runner при наличии. С 1.0.6.52 раннер работает transient-юнитом `sa02m-update-apply-<txn8>` (не в cgroup fcgiwrap), а перезагрузка платы на `verifying` **завершает** обновление (`sa02m-update-verify.service` после nginx), а не откатывает его — гарантии G1–G5 в `docs/contracts/web-update.md` «Жизненный цикл apply»; что из этого действует уже в доставляющем обновлении — таблица ниже |
 | **offline package** | обновление без интернета платы **≥ 1.0.5.60** (runner ≥ 1.0.5.66 — `MIN_VERSION`/`MIN_UPDATER` в `scripts/pack-offline-update.py`) | вкладка «Обновление» → файл `.sa02m`; packer на ПК: `python scripts/pack-offline-update.py` |
 | **offline full update** | плата **< 1.0.5.60** (старый updater, `.sa02m` не примется) или любой разрыв `etc/`/`opt/` с текущим релизом, без интернета | полный архив `origin/main` в `/tmp` платы + `scripts/offline-full-update.sh` — «Офлайн-вариант» в разделе «Полный деплой» (запускает `install.sh --refresh`) |
 | ~~self-upgrade bridge~~ **(ОТМЕНЁН — не использовать)** | плата **< 1.0.5.75** без интернета/по SSH | **вместо моста — «offline full update» выше.** Мост переписывал боевые version-ветки force-push'ем и ОТКЛОНЁН: `docs/decisions/no-force-push-version-branches.md` |
 | **vendor-payload** | доставка/обновление опционального стека (Node-RED) вне релиза веб-интерфейса | процедура «Доставка vendor-payload Node-RED» ниже |
+
+### Что из 1.0.6.52 действует уже в доставляющем OTA (плата на ≤ 1.0.6.51)
+
+**Главное: на плате ≤ 1.0.6.51 первое обновление через GitHub замирает на
+«Проверка сервисов… 85 %»; после перезагрузки проверка завершается сама
+(юнит верификации), и все обновления ПОСЛЕ этого идут целиком.** Причина —
+в старом коде: `self_reexec_before_deploy` копирует УСТАНОВЛЕННЫЙ (старый)
+раннер и `exec`'ит эту копию, т.е. весь доставляющий apply, включая
+health-gate, выполняет старый раннер — он по-прежнему гибнет на
+`restart fcgiwrap`. Рычага в старом коде нет (проверено 2026-09-23: старая
+карта не несёт drop-in для fcgiwrap, `migrations` пусты, `restart[]`
+фиксирован).
+
+| Часть | Действует в доставляющем обновлении? | Почему |
+|---|---|---|
+| Выход из cgroup, окно ожидания health-gate, причина отказа, сохранение сторожа в транзакции | **нет — со следующего обновления** | весь apply идёт под старым раннером |
+| Новый раннер + `sa02m-update-verify.service` на диске | **да, до health-gate** (файлы + `daemon-reload` делает старый код по старой карте `etc/systemd/*sa02m-*`) | старый раннер их задеплоил |
+| `stale` в статусе CGI и человеческая строка в `log` («Обновление прервано на этапе …: перезагрузите плату…») | **да, через 120 с после гибели раннера** — каждый запрос исполняет файл CGI с диска; старый кэшированный бандл показывает `status:"error"` + эту строку в журнале событий, новый — красную строку в карточке | новый CGI |
+| Завершение после перезагрузки (recover → verify → `done`), сторож 15 с по политике, лок снят | **да** — recover запускает уже задеплоенный новый раннер; в транзакции старого кода нет `runtime_wdt_prev_usec`, живой 0 → fallback политики | новый раннер при загрузке |
+| Завершение БЕЗ перезагрузки | **да, вручную:** `scripts/sa02m-update-remedy.sh` → `runner reclaim`: сначала наборы перезапусков, до которых погибший apply не дошёл (fcgiwrap, `nginx -t` + reload, `restart[]`, …), затем целое дерево уходит в `sa02m-update-verify`, который запускается сразу. На плате ещё не выполнялось — проверено только харнессом (`update-recover-boot` R8d) | «Ремонт застрявшего обновления» ниже |
+| Защита хелпера от второго «Применить» | **только со следующего обновления** | первым бежит старый хелпер |
+
+Альтернатива для платы, до которой можно дотянуться руками, без замирания:
+офлайн-полное обновление (`scripts/offline-full-update.sh`) или пакет `.sa02m`
+через `sa02m-update.service` (офлайн-путь, `KillMode=process` — раннер там не
+гибнет).
+
+Остаток старого кода после доставляющего обновления: `stage=verifying`, лок,
+сторож 0, `net-watchdog`/`sa02m-flasher` остановлены (enabled — загрузка их
+поднимет; recover/verify их не останавливают), упавший `sa02m-update-recover`
+прошлой загрузки, легаси-файл `update_status=running` (CGI его не читает при
+наличии транзакции). Всё это сходится за одну загрузку — `update-recover-boot`
+R9.
+
+### Ремонт застрявшего обновления без перезагрузки (`scripts/sa02m-update-remedy.sh`)
+
+**Когда.** Панель показывает «Обновление прервано на этапе …» (или старый
+бандл — «Ошибка обновления»), а на плате: `transaction.json` на
+`rolling_back`/`verifying`/`committing`/`applying`, есть `/run/sa02m-imaging.lock`,
+`busctl get-property … RuntimeWatchdogUSec` = `t 0` (аппаратный сторож ВЫКЛЮЧЕН),
+`net-watchdog`/`sa02m-flasher` неактивны — и ни одного процесса раннера. Так
+выглядит плата, чей recover при загрузке был убит собственным
+`TimeoutStartSec=300` посреди отката (стенд 1.135, 2026-09-23; платы Сколково).
+Перезагрузка тоже лечит (recover ≥ 1.0.6.52 сходится за одну загрузку), но
+сторож до неё выключен — скрипт чинит сразу.
+
+**Как.** `scp scripts/sa02m-update-remedy.sh root@<ip>:/tmp/ && ssh root@<ip>
+'bash /tmp/sa02m-update-remedy.sh'`. Только состояние времени выполнения; файлы
+репозитория не трогает; повторный запуск безвреден; при живом раннере
+отказывает (код 2) и ничего не делает. С раннером ≥ 1.0.6.52 вызывает
+`sa02m-update-runner reclaim` (тот же recover, но во время работы: откат
+дозавершается с перезапусками; целое дерево на `verifying`/`committing` —
+сначала наборы перезапусков, до которых погибший apply не дошёл, затем
+`sa02m-update-verify`, который запускается сразу; если `reclaim` отвечает
+кодом 3 — лок занял живой раннер — скрипт останавливается, ничего больше не
+делая); со старым — `recover` во время работы и явное восстановление сторожа
+по политике `sa02m-watchdog.conf`.
+
+**Ожидаемый вывод.** Проверено на 1.135 (2026-09-23) **только для ветки старого
+раннера** (`old runner: … recover rc=0`): плата после RED-прогона несла
+восстановленный раннер 1.0.6.49. Ветка `reclaim` (раннер ≥ 1.0.6.52) на плате
+ещё не выполнялась — только харнесс (`update-recover-boot` R8, M); её первый
+реальный прогон — W6 через этот скрипт вместо перезагрузки.
+
+```
+before: stage=rolling_back pending lock=yes watchdog=t 0 net-watchdog=inactive VERSION=1.0.6.49
+runner supports reclaim — finishing the abandoned transaction at runtime...   (или: old runner: finishing the rollback…)
+…                                                                             (строки журнала раннера, ~24 с)
+reclaim rc=0                                                                  (или recover rc=0)
+hardware watchdog set to 15000000us (policy /etc/systemd/system.conf.d/sa02m-watchdog.conf)
+after:  stage=rolled_back rolled_back lock=no watchdog=t 15000000 net-watchdog=active flasher=active nginx=active fcgiwrap=active VERSION=1.0.6.49
+```
+
+Пустой хвост (`systemctl --failed`) — норма. Если `after:` всё ещё показывает
+`lock=yes` или `watchdog=t 0` — раннер жив (скрипт сказал бы об этом) или
+`sa02m-watchdog.conf` не читается; тогда `journalctl -u sa02m-update-recover -b`
+и `/var/lib/sa02m-update/update.log`.
 
 ### Чего OTA/офлайн-пакет не делает никогда
 

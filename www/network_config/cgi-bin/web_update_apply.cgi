@@ -1,10 +1,13 @@
 #!/bin/bash
 # Web update apply / status (legacy GitHub OTA + offline file transaction).
-# GET: transaction fields + legacy.status/log for status.js (plan §2.10 / §6.1).
+# GET: transaction fields + legacy.status/log for status.js (plan §2.10 / §6.1),
+#      plus runner_alive / stale (1.0.6.52 — a dead runner is reported, not polled forever).
 # POST without confirm_version: legacy sa02m-web-update-apply (BC for status.js). CSRF required (launches a root GitHub OTA).
 # POST with confirm_version: CSRF + write transaction → systemctl start sa02m-update.service.
 # shellcheck disable=SC1091
 . "$(dirname "$0")/lib_web_auth.sh"
+# shellcheck disable=SC1091
+. "$(dirname "$0")/lib_web_update.sh"
 
 # Env-overridable ONLY for the harness (scripts/dev/test-web-update-apply-guard.sh);
 # the same variable name etc/sa02m-update-runner.sh honours. nginx/fcgiwrap set nothing.
@@ -13,9 +16,15 @@ LEGACY_LOCKFILE="$LEGACY_STATEDIR/update.lock"
 LEGACY_STATUS_FILE="$LEGACY_STATEDIR/update_status"
 LEGACY_LOGFILE="$LEGACY_STATEDIR/update.log"
 
-STATEDIR=/var/lib/sa02m-update
+# Same seam as the runner's STATEDIR (etc/sa02m-update-runner.sh); harness only.
+STATEDIR="$WEB_UPD_STATEDIR"
 PACKAGE="$STATEDIR/incoming/package.sa02m"
 CGI_LOCK="$STATEDIR/incoming/.cgi.lock"
+# A running-stage transaction whose runner is gone for longer than this is
+# reported `stale` (status «error», E_RUNNER_LOST). 120 s covers the
+# recover→verify handover at boot and any txn_patch gap shorter than the
+# health gate's settle window (contract: docs/contracts/web-update.md).
+WEB_UPD_STALE_AFTER_S=120
 
 METHOD="${REQUEST_METHOD:-GET}"
 
@@ -49,12 +58,18 @@ _legacy_running() {
 }
 
 _emit_status() {
-  python3 - "$STATEDIR" "$LEGACY_STATEDIR" <<'PY'
-import json, sys
+  # Liveness is judged in bash (lib_web_update.sh: lock pid + cmdline, units)
+  # and handed to the JSON builder as a flag; python only does the arithmetic.
+  local alive=0
+  web_upd_runner_alive && alive=1
+  python3 - "$STATEDIR" "$LEGACY_STATEDIR" "$alive" "$WEB_UPD_STALE_AFTER_S" <<'PY'
+import datetime, json, sys, time
 from pathlib import Path
 
 statedir = Path(sys.argv[1])
 legacy_dir = Path(sys.argv[2])
+runner_alive_flag = sys.argv[3] == "1"
+stale_after_s = int(sys.argv[4])
 sys.path.insert(0, "/opt/sa02m-update")
 
 txn = None
@@ -106,7 +121,45 @@ elif status_file.is_file() and not txn:
     except Exception:
         pass
 
+# Dead-runner detection (1.0.6.52, contract «GET — состояние»): a running-stage
+# transaction with NO live runner for longer than stale_after_s is `stale` —
+# reported as an error with a next step, never as «running» forever. Three
+# conditions, all required (fail-closed toward «alive»: a false «stale» costs a
+# page reload, a false «alive» costs 120 s). The legacy launcher lock counts as
+# alive: the clone/handoff phase runs before the runner takes its own lock.
+runner_alive = None
+stale = False
+if txn:
+    runner_alive = bool(runner_alive_flag or legacy_running)
+    if stage in running_stages and not runner_alive:
+        try:
+            t = datetime.datetime.strptime(str(txn.get("updated_at")), "%Y-%m-%dT%H:%M:%SZ")
+            age = time.time() - t.replace(tzinfo=datetime.timezone.utc).timestamp()
+        except Exception:
+            age = None  # no usable timestamp and no runner: nothing will ever move it
+        if age is None or age > stale_after_s:
+            stale = True
+            legacy_status = "error"
+            age_txt = "unknown" if age is None else "%d" % int(age)
+
 prefer_new = stage in running_stages or stage in ("done", "error", "rolled_back", "cancelled")
+# The human line for the OLD cached bundle: it never reads `stale`, it routes
+# `log` to the event log and prints the generic «Ошибка обновления» — this is
+# the only channel through which a board on ≤1.0.6.51 (the delivering OTA
+# freezes at 85 % under the old runner) can tell the operator what to do.
+# The labels mirror WEB_UPD_STAGE_UI in static/js/app/status.js (the one home
+# for the panel's stage wording) minus the trailing ellipsis — a second copy by
+# necessity: the CGI cannot read the bundle. Keep in step.
+STAGE_RU = {
+    "uploaded": "Проверка пакета", "validating": "Проверка пакета",
+    "backing_up": "Создание резервной копии", "applying": "Установка",
+    "verifying": "Проверка сервисов", "committing": "Проверка сервисов",
+    "rolling_back": "Откат",
+}
+stale_line = ""
+if stale:
+    stale_line = ("Обновление прервано на этапе «%s»: перезагрузите плату — при загрузке "
+                  "проверка завершится сама." % STAGE_RU.get(stage, stage))
 log_path = (statedir / "update.log") if prefer_new and (statedir / "update.log").is_file() else log_file
 log_tail = ""
 if log_path.is_file():
@@ -118,8 +171,10 @@ if log_path.is_file():
 out = {
     "ok": True,
     "status": legacy_status,
-    "log": log_tail,
+    "log": (stale_line + "\n" + log_tail).strip() if stale_line else log_tail,
     "legacy": {"status": legacy_status},
+    "runner_alive": runner_alive,
+    "stale": stale,
 }
 if txn:
     out["transaction"] = txn
@@ -134,6 +189,14 @@ if txn:
     out["source"] = txn.get("source")
     out["operation"] = txn.get("operation")
     out["result"] = txn.get("result")
+    if stale:
+        # A code the runner already recorded (E_HEALTH on a rollback it never
+        # finished) is kept — it names the real cause; E_RUNNER_LOST is the
+        # code for «nothing recorded, and nobody is running».
+        out["error_code"] = txn.get("error_code") or "E_RUNNER_LOST"
+        out["error_message"] = txn.get("error_message") or (
+            "update runner is not running (stage=%s, last update %ss ago) — "
+            "reboot the board; verification completes at boot" % (stage, age_txt))
 print(json.dumps(out, ensure_ascii=False))
 PY
 }

@@ -575,17 +575,22 @@ verified fixed by the whole-backlog triage removed; evidence per entry in that c
   by the CGI), `/etc/sa02m-alice` 0770 group-write, the argument-unrestricted sudoers
   trigger with enable/disable/restart verbs, the CGI nudges — is homed only in review
   stamps that ship-beat deletion removes. Give it a durable home.
-- [OPEN] 2026-08-20 **[LOW] Functional test for the update-runner health-gate operator-disabled
-  skip (deferred).** The skip logic (masked/masked-runtime/disabled required units are skipped,
-  enabled-but-down still fails — `etc/sa02m-update-runner.sh` restart_services_and_health) is
-  covered only by the STATIC gate `health-gate-operator-disabled` (structure, non-vacuous), below
-  the repo's functional-extraction idiom (service-ctl-policy-write, port-lease). A functional
-  harness extracting `restart_services_and_health` + a systemctl shim was attempted but hit a
-  Git-Bash tmp-file gremlin (the shim's per-unit state files read empty inside the sourced
-  function despite working standalone) and was dropped for the static gate. Follow-up: drive the
-  four is-enabled branches through a stubbed systemctl (masked/disabled → rc0 skip, enabled-down
-  → rc1 fail) — likely needs a Linux/WSL runner, not Git-Bash. Surfaced by the health-gate
-  Reviewer (F1 advisory).
+- [OPEN] 2026-09-23 **[LOW, honesty] `ui-layout` reports PASS when Playwright is absent.** In a
+  checkout without `scripts/dev/node_modules` (a fresh git worktree, 2026-09-23) the review beat
+  printed `ui-layout: skipped — playwright not installed` followed by `PASS  ui-layout`, while
+  `cloud-card-smoke` and `sh-modal-layout-smoke` in the same state correctly FAILED with «chromium/
+  playwright missing». quality-gate-rigor.md: a skipped row is reported as skipped, never as
+  passed. Fix: exit non-zero (or the runner's SKIP status, if it has one) when the driver cannot
+  run; add the case to `run.test.mjs`. Queued for R58 (gates and tools).
+- [OPEN] 2026-09-23 **[LOW] Known limit: the delivering GitHub OTA on a ≤1.0.6.51 board still
+  freezes at 85 %.** `self_reexec_before_deploy` copies the INSTALLED runner and execs the copy,
+  so the whole delivering apply (health gate included) runs under the OLD code and dies at
+  `restart fcgiwrap`; the NEW runner, verify unit and CGI are on disk, so the panel says
+  «Обновление прервано … перезагрузите плату» after 120 s and the next boot (or
+  `scripts/sa02m-update-remedy.sh`) completes it — every update after that runs whole. No
+  lever in the old code (no fcgiwrap drop-in route in the old map, empty migrations, fixed
+  restart[]). Named in `docs/deployment.md` «Пути деплоя»; closes itself once every board
+  runs ≥ 1.0.6.52. Alternative for a visited board: offline full update or a `.sa02m` package.
 - [OPEN] 2026-08-19 **[LOW] `tools/update-bridge/` is deprecated (unused) — remove at
   next cleanup.** The self-upgrade bridge (force-push a launcher onto fielded version
   branches) was REJECTED — see `docs/decisions/no-force-push-version-branches.md`. Old

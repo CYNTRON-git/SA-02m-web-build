@@ -469,7 +469,7 @@ mkdir -p /etc/sa02m-update/trusted-keys
 if [ -d "$SCRIPT_DIR/../etc/sa02m-update/trusted-keys" ]; then
     install -m 644 "$SCRIPT_DIR/../etc/sa02m-update/trusted-keys/"*.pem /etc/sa02m-update/trusted-keys/ 2>/dev/null || true
 fi
-for _upd_unit in sa02m-update.service sa02m-update-recover.service sa02m-factory-reset.service; do
+for _upd_unit in sa02m-update.service sa02m-update-recover.service sa02m-update-verify.service sa02m-factory-reset.service; do
     if [ -f "$SYSTEMD_DIR/$_upd_unit" ]; then
         sa02m_atomic_install -m 644 "$SYSTEMD_DIR/$_upd_unit" "/etc/systemd/system/$_upd_unit"
         sed -i 's/\r$//' "/etc/systemd/system/$_upd_unit"
@@ -583,7 +583,7 @@ if [ -f "$ETC_DIR/tmpfiles.d/sa02m-update.conf" ]; then
     fi
     log OK "tmpfiles sa02m-update.conf"
 fi
-for _upd_unit in sa02m-update.service sa02m-update-recover.service sa02m-factory-reset.service; do
+for _upd_unit in sa02m-update.service sa02m-update-recover.service sa02m-update-verify.service sa02m-factory-reset.service; do
     if [ -f "$SYSTEMD_DIR/$_upd_unit" ]; then
         sa02m_atomic_install -m 644 "$SYSTEMD_DIR/$_upd_unit" "/etc/systemd/system/$_upd_unit"
         sed -i 's/\r$//' "/etc/systemd/system/$_upd_unit"

@@ -11,7 +11,15 @@
    docs/contracts/web-update.md). PROVEN RED on 1f6f1a1: D — POST refused
    while the data said "update available" because the status text read
    «Обновлений нет», and webUpdStatusSaysNone still defined; E — no
-   webUpdApplyRefusal in status.js. */
+   webUpdApplyRefusal in status.js.
+   (F, 1.0.6.52 field incident) the poll loop STOPS on a stale transaction
+   (`stale:true` from the CGI — the runner is gone) and says so with the next
+   step instead of polling «Проверка сервисов…» 85 % forever; a rolled-back
+   transaction shows the runner's reason; _webUpdFinish keeps that specific
+   text instead of clobbering it with the generic «Ошибка обновления. См.
+   Журнал событий.». PROVEN RED on 6ba943d (1.0.6.50): 7 FAIL — stale ignored
+   by _webUpdIsTerminal/_webUpdStageText/_webUpdApplyTxnUI, rolled_back text
+   fixed, _webUpdFinish clobbers. */
 import fs from 'fs';
 import path from 'path';
 import vm from 'vm';
@@ -268,6 +276,114 @@ if (typeof bare.webUpdApplyRefusal !== 'function') {
   eq('a generic error is not a refusal (null → the error path)', bare.webUpdApplyRefusal({ ok: false, status: 'error', log: 'boom' }), null);
   eq('a running answer is not a refusal', bare.webUpdApplyRefusal({ ok: true, status: 'running' }), null);
   eq('a null payload is not a refusal', bare.webUpdApplyRefusal(null), null);
+}
+
+process.stdout.write('F. a stale transaction stops the poll and says so; rollback shows its reason (1.0.6.52)\n');
+
+// `var NAME = { … };` object literal, brace-matched like extractFn.
+function extractVar(name) {
+  const start = src.indexOf('var ' + name + ' = {');
+  if (start < 0) throw new Error('missing var ' + name);
+  let i = src.indexOf('{', start);
+  let depth = 0;
+  for (; i < src.length; i++) {
+    const ch = src[i];
+    if (ch === '{') depth++;
+    else if (ch === '}') {
+      depth--;
+      if (depth === 0) return src.slice(start, i + 1) + ';';
+    }
+  }
+  throw new Error('unclosed var ' + name);
+}
+
+function makeTxnEls() {
+  const els = makeEls();
+  els['web-upd-status'] = { hidden: true, textContent: '', className: '' };
+  els['web-upd-progress'] = { hidden: true };
+  els['web-upd-progress-fill'] = { style: {} };
+  els['web-upd-progress-label'] = { textContent: '' };
+  return els;
+}
+
+function makeTxnCtx(els) {
+  const ctx = {
+    _webUpdTxnActive: true,
+    _webUpdLastCheck: null,
+    _webUpdOnlineCanApply: false,
+    _webUpdPollTimer: null,
+    _webUpdPollInFlight: false,
+    _webUpdInspect: null,
+    _webUpdOfflineReady: false,
+    uiT: (s) => s,
+    toast: () => {},
+    clearTimeout: () => {},
+    setTimeout: () => 1,
+    location: { reload() {} },
+    document: { getElementById: (id) => els[id] || null }
+  };
+  const code = [extractVar('WEB_UPD_STAGE_UI')].concat([
+    '_webUpdSetStatus',
+    '_webUpdSetProgress',
+    '_webUpdLegacyStatus',
+    '_webUpdStageText',
+    '_webUpdShowLog',
+    '_webUpdIsTerminal',
+    '_webUpdIsBusy',
+    'setOfflineUpdateEnabled',
+    'webUpdResolveAvailable',
+    'webUpdOnlineApplyAllowed',
+    'webUpdSetOnlineApplyEnabled',
+    '_webUpdApplyTxnUI',
+    '_webUpdFinish'
+  ].map(extractFn)).join('\n\n');
+  vm.runInNewContext(code, ctx, { filename: 'status.js-txn-extract' });
+  return ctx;
+}
+
+{
+  const txn = makeTxnCtx(makeTxnEls());
+  eq('F1 stale:true is terminal (the poll stops)', txn._webUpdIsTerminal({ stage: 'verifying', stale: true }), true);
+  eq('F1b stale:false at verifying is not terminal', txn._webUpdIsTerminal({ stage: 'verifying', stale: false }), false);
+  const staleText = txn._webUpdStageText({ stage: 'verifying', stale: true });
+  eq('F2 stale text names the interruption', staleText.indexOf('Обновление прервано') === 0, true);
+  eq('F2b stale text names the stage it stopped at', staleText.indexOf('Проверка сервисов…') > 0, true);
+  eq('F2c stale text tells the next step (reboot)', /Перезагрузите плату/.test(staleText), true);
+  eq('F3 rolled_back + error_message shows the reason',
+    txn._webUpdStageText({ stage: 'rolled_back', error_message: 'unit not active: nginx (inactive)' }),
+    'Выполнен откат: unit not active: nginx (inactive)');
+  eq('F3b rolled_back without a reason keeps the plain label',
+    txn._webUpdStageText({ stage: 'rolled_back', error_message: null }), 'Выполнен откат');
+  eq('F4 verifying, not stale → «Проверка сервисов…»',
+    txn._webUpdStageText({ stage: 'verifying', stale: false }), 'Проверка сервисов…');
+}
+
+{
+  // F5 the transaction UI on a stale answer: error tone, progress bar hidden.
+  const els = makeTxnEls();
+  const txn = makeTxnCtx(els);
+  txn._webUpdApplyTxnUI({ stage: 'verifying', stale: true, progress_pct: 85, status: 'error', legacy: { status: 'error' } });
+  eq('F5 stale → status tone is-err', /\bis-err\b/.test(els['web-upd-status'].className), true);
+  eq('F5b stale → progress bar hidden', els['web-upd-progress'].hidden, true);
+  const live = makeTxnEls();
+  const ctxLive = makeTxnCtx(live);
+  ctxLive._webUpdApplyTxnUI({ stage: 'verifying', stale: false, progress_pct: 85, status: 'running', legacy: { status: 'running' } });
+  eq('F5c live verifying → progress bar shown', live['web-upd-progress'].hidden, false);
+}
+
+{
+  // F6 _webUpdFinish keeps a specific terminal text when given one, and still
+  // falls back to the generic line when not.
+  const els = makeTxnEls();
+  const txn = makeTxnCtx(els);
+  txn._webUpdFinish('error', '', 'Обновление прервано на этапе «Проверка сервисов…». Перезагрузите плату — при загрузке проверка завершится сама.');
+  eq('F6 finish(error, …, text) keeps the specific text',
+    els['web-upd-status'].textContent.indexOf('Обновление прервано') === 0, true);
+  eq('F6b finish stops the poll (txn inactive)', txn._webUpdTxnActive, false);
+  const els2 = makeTxnEls();
+  const txn2 = makeTxnCtx(els2);
+  txn2._webUpdFinish('error', '');
+  eq('F7 finish(error) without a text → the generic line', els2['web-upd-status'].textContent, 'Ошибка обновления. См. Журнал событий.');
 }
 
 if (fails) {

@@ -8,7 +8,10 @@ set -uo pipefail
 LIB=/usr/local/lib/sa02m-web-build-lib.sh
 [ -f "$LIB" ] && . "$LIB"
 
-STATEDIR=/var/lib/sa02m-web-build
+# Both state dirs env-overridable ONLY for the harness
+# (scripts/dev/test-web-update-launcher-guard.sh) — the same two names the
+# CGI and the runner honour. sudo's env_reset strips them on the board.
+STATEDIR="${SA02M_WEB_BUILD_STATEDIR:-/var/lib/sa02m-web-build}"
 UPDATE_STATEDIR="${SA02M_UPDATE_STATEDIR:-/var/lib/sa02m-update}"
 LOGFILE="$STATEDIR/update.log"
 LOCKFILE="$STATEDIR/update.lock"
@@ -166,6 +169,56 @@ if ! repo_url_allowed "$REPO_URL"; then
     printf 'error' > "$STATUS_FILE"
     exit 1
 fi
+
+# ── Never clobber a RUNNING transaction (1.0.6.52, F5b) ─────────────────────
+# A second «Применить» while a runner works used to clone again and hand a NEW
+# transaction.json over the live one (handoff_to_shared_runner). Refused here,
+# before the clone, when the transaction is at a busy stage AND its runner is
+# alive; a transaction whose runner is gone is left alone — re-applying is a
+# legitimate recovery, and so is the reboot (recover → verify). Same liveness
+# test as the CGI side (www/network_config/cgi-bin/lib_web_update.sh) — a
+# second copy by necessity: a root helper must not source a www-data-writable
+# file. Keep the two in step. Harness: scripts/dev/test-web-update-launcher-guard.sh.
+update_runner_alive() {
+    local lock="$UPDATE_STATEDIR/update.lock" pid cmd units
+    if [ -r "$lock" ]; then
+        pid=$(tr -d ' \r\n' < "$lock" 2>/dev/null)
+        if [[ "$pid" =~ ^[0-9]+$ ]] && [ -r "/proc/$pid/cmdline" ]; then
+            cmd=$(tr '\0' ' ' < "/proc/$pid/cmdline" 2>/dev/null)
+            case "$cmd" in
+                *sa02m-update-runner*|*/sa02m-update/runner/*) return 0 ;;
+            esac
+        fi
+    fi
+    if command -v systemctl >/dev/null 2>&1; then
+        # Both oneshot: `activating` is their running state (is-active would say rc 3).
+        local u st
+        for u in sa02m-update.service sa02m-update-verify.service; do
+            st=$(timeout 5 systemctl show -p ActiveState --value "$u" 2>/dev/null) || st=""
+            case "${st%%[[:space:]]*}" in active|activating|reloading) return 0 ;; esac
+        done
+        units=$(timeout 5 systemctl list-units --plain --no-legend 'sa02m-update-apply-*.service' 2>/dev/null) || units=""
+        case "$units" in *" running"*) return 0 ;; esac
+    fi
+    return 1
+}
+txn_stage=""; txn_id=""
+if [ -r "$UPDATE_STATEDIR/transaction.json" ]; then
+    read -r txn_stage txn_id < <(python3 -c 'import json,sys
+try:
+    d=json.load(open(sys.argv[1],encoding="utf-8")); print(str(d.get("stage") or "-"), str(d.get("id") or "-"))
+except Exception:
+    pass' "$UPDATE_STATEDIR/transaction.json" 2>/dev/null | tr -d '\r') || true
+fi
+case "$txn_stage" in
+    applying|verifying|committing|rolling_back)
+        if update_runner_alive; then
+            log "ERROR: обновление уже выполняется (txn ${txn_id:-?} stage=$txn_stage) — повторный запуск отклонён"
+            printf 'error' > "$STATUS_FILE"
+            exit 1
+        fi
+        ;;
+esac
 
 # Temporary directory for clone
 TMPDIR=$(mktemp -d /tmp/sa02m-web-update-XXXXXX)

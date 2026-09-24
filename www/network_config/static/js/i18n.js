@@ -667,6 +667,7 @@
     'Проверить': 'Check',
     // web_update_apply.cgi E_CHECK_STALE (docs/contracts/web-update.md).
     'Сведения об обновлении устарели — нажмите «Проверить»': 'Update information is stale — click Check',
+    'Идёт обновление — перезагрузка отложена': 'Update in progress — reboot postponed',
     'Загрузка': 'Loading',
     'Обновить список': 'Refresh List',
     'Командная строка': 'Command Line',
@@ -1646,6 +1647,8 @@
     [/^Обновление отменено$/u, 'Update cancelled'],
     [/^Откат…$/u, 'Rolling back…'],
     [/^Выполнен откат$/u, 'Rolled back'],
+    [/^Выполнен откат: (.+)$/u, 'Rolled back: $1'],
+    [/^Обновление прервано на этапе «(.+)»\. Перезагрузите плату — при загрузке проверка завершится сама\.$/u, 'Update interrupted at stage “$1”. Reboot the board — verification completes at boot.'],
     [/^Пакет загружен$/u, 'Package uploaded'],
     [/^Резервная копия скачана$/u, 'Backup downloaded'],
     [/^Отмена запрошена$/u, 'Cancel requested'],

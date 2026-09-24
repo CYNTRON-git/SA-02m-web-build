@@ -66,6 +66,13 @@
 #     (a C:/ PATH entry is not searched). cygpath exists only on MSYS; on
 #     Linux TW == T and the export is inert.
 #
+# Run 6 (1.0.6.52): the health gate's settle window (two consecutive `active`
+#   samples, `activating` waits), the Condition-off skip and the status
+#   excerpt — the systemctl shim answers `is-active` from a per-unit state
+#   SEQUENCE file and `is-enabled` / `show -p ConditionResult` from per-unit
+#   answer files (see SHIM_STATE). Against a pre-split runner it runs the
+#   monolithic restart_services_and_health and goes RED on 6a/6b/6c/6e/6g.
+#
 # Run: bash scripts/dev/test-update-conditional-restart.sh   (bash + python3 +
 #   coreutils; no systemd — the shims replace it).
 # ═══════════════════════════════════════════════════════════════════════════
@@ -115,6 +122,16 @@ grep -q '^restart_after_rollback() {' "$SRC" && HAS_RB_RESTART=1
 funcs="_systemctl_bounded restart_services_and_health rollback_from_journal"
 [ "$HAS_GATE" = "1" ] && funcs="_systemctl_bounded _journal_has_dst_prefix restart_services_and_health rollback_from_journal"
 [ "$HAS_RB_RESTART" = "1" ] && funcs="$funcs restart_after_rollback"
+# 1.0.6.52: restart_services_and_health is the composition of three named
+# halves (services_enable_and_tmpfiles / services_restart_sets / health_check)
+# plus the per-unit settle probe unit_settled. Extract-if-present, so a
+# pre-split runner still RUNS run 6 against its monolithic function and FAILS
+# the settle / Condition assertions there (RED), instead of aborting here.
+HAS_HEALTH_SPLIT=0
+grep -q '^health_check() {' "$SRC" && HAS_HEALTH_SPLIT=1
+for fn in unit_settled health_check services_enable_and_tmpfiles services_restart_sets; do
+    grep -q "^$fn() {" "$SRC" && funcs="$funcs $fn"
+done
 : > "$T/fn.sh"
 for fn in $funcs; do
     extract "$fn" >> "$T/fn.sh"
@@ -138,7 +155,11 @@ STAGE="$STATEDIR/staging/$TXN"
 mkdir -p "$STAGE/meta"
 CALLS_LOG="$T/calls.log"
 ACTIVE_FILE="$T/active.units"
-export CALLS_LOG ACTIVE_FILE
+# Per-unit shim state (run 6): seq.<unit> = one is-active state per line,
+# consumed per call, last line repeats; enabled.<unit> = the is-enabled answer;
+# cond.<unit> = the ConditionResult answer. Absent ⇒ the run 1–5 defaults.
+SHIM_STATE="$T"
+export CALLS_LOG ACTIVE_FILE SHIM_STATE
 
 log()                  { :; }
 manifest_path()        { printf '%s\n' "$STAGE/meta/manifest.json"; }
@@ -173,11 +194,41 @@ printf 'systemctl %s\n' "$*" >> "$CALLS_LOG"
 cmd=${1:-}; [ $# -gt 0 ] && shift
 case "$cmd" in
     is-active)
-        [ "${1:-}" = "--quiet" ] && shift
-        grep -qxF "${1:-}" "$ACTIVE_FILE" 2>/dev/null
+        quiet=0; [ "${1:-}" = "--quiet" ] && { quiet=1; shift; }
+        u=${1:-}
+        seqf="$SHIM_STATE/seq.$u"
+        if [ -f "$seqf" ]; then
+            # A state SEQUENCE: line n on the n-th call, the last line forever.
+            n=$(cat "$seqf.n" 2>/dev/null || echo 0); n=$((n + 1)); echo "$n" > "$seqf.n"
+            total=$(grep -c . "$seqf"); [ "$n" -gt "$total" ] && n=$total
+            state=$(sed -n "${n}p" "$seqf")
+        elif grep -qxF "$u" "$ACTIVE_FILE" 2>/dev/null; then
+            state=active
+        else
+            state=inactive
+        fi
+        [ "$quiet" = 1 ] || echo "$state"
+        [ "$state" = active ]
         ;;
     is-enabled)
-        echo enabled
+        u=${1:-}
+        if [ -f "$SHIM_STATE/enabled.$u" ]; then cat "$SHIM_STATE/enabled.$u"; else echo enabled; fi
+        ;;
+    show)
+        # systemctl show -p <Property> --value <unit>; answered per property:
+        # ConditionResult from cond.<unit> (default yes), ConditionTimestampMonotonic
+        # from condts.<unit> (default 0 — never evaluated this boot, as systemd
+        # reports for a unit whose start was never attempted).
+        u=""; for a in "$@"; do u=$a; done
+        prop=""; for a in "$@"; do case "$a" in -p) ;; --value) ;; *) [ -z "$prop" ] && prop=$a ;; esac; done
+        case "$prop" in
+            ConditionResult) if [ -f "$SHIM_STATE/cond.$u" ]; then cat "$SHIM_STATE/cond.$u"; else echo yes; fi ;;
+            ConditionTimestampMonotonic) if [ -f "$SHIM_STATE/condts.$u" ]; then cat "$SHIM_STATE/condts.$u"; else echo 0; fi ;;
+            *) echo "" ;;
+        esac
+        ;;
+    status)
+        echo "● ${1:-}: shim status excerpt"
         ;;
     *)
         exit 0
@@ -340,6 +391,113 @@ if [ "$rb_rc" -eq 0 ] && ! grep -q 'restart' "$CALLS_LOG" 2>/dev/null; then
 else
     bad "run5b: rollback without a manifest rc=$rb_rc calls: $(tr '\n' ';' < "$CALLS_LOG")"
 fi
+
+# ── Run 6: the health gate settles, tolerates Condition-off, names the state ─
+# Field incident 2026-09-23 (1.0.6.52, F1): one `is-active` probe immediately
+# after `restart` (Type=simple returns at exec) read a still-`activating`
+# sa02m-devices-api as DOWN and rolled a good update back (1.135 sample
+# 2026-08-20); a unit kept off by its own `Condition*=` (the stand drop-in) was
+# never recognised as operator-configured. The gate must: wait for two
+# consecutive `active` samples within the settle window (a Restart=always crash
+# loop alternates activating↔active and must NOT pass on one sample); skip a
+# masked/disabled unit (the existing skip, functional at last — backlog
+# 2026-08-20) AND a unit whose ConditionResult is `no`; and log the last state
+# plus a `systemctl status` excerpt on a real failure.
+# RED on the pre-split runner (6ba943d), observed 2026-09-23: 7 FAIL — 6a (one
+# probe → rc 1, 1 probe recorded), 6b (no status excerpt), 6c (a single active
+# sample PASSED the crash loop), 6e (no Condition skip, ConditionResult never
+# read), 6g (ConditionTimestampMonotonic never read; its rc 1 holds there by
+# accident — the old gate failed every inactive unit). 6d/6f hold on both
+# trees. 6g against the FIRST fixed tree (ConditionResult alone): «a
+# never-started enabled required unit was waved through as Condition-off
+# (rc=0)» — review 1.0.6.52, finding 2.
+echo "── run 6: health gate settle window / Condition-off skip ──"
+HEALTH_FN=restart_services_and_health
+[ "$HAS_HEALTH_SPLIT" = "1" ] && HEALTH_FN=health_check
+# 6 s window at a 1 s step: 6a needs four samples (~3 s) and must not sit on the
+# deadline — under the quality runner other rows load the box and SECONDS is
+# whole-second granular, so a 3 s window failed 6a there while passing alone.
+export SA02M_UPDATE_HEALTH_SETTLE_SEC=6 SA02M_UPDATE_HEALTH_SETTLE_STEP=1
+write_units_manifest() {  # $1 = unit name for units_active
+    cat > "$STAGE/meta/manifest.json" <<JSON
+{
+  "schema_version": 1,
+  "version": "9.9.9.9",
+  "deploy": [],
+  "services": {
+    "daemon_reload": false,
+    "restart": [],
+    "health": {"http_url": "", "units_active": ["$1"], "version_file": "$TW/VERSION"}
+  }
+}
+JSON
+}
+run_units_health() {  # $1 = unit
+    write_units_manifest "$1"
+    rm -f "$SHIM_STATE"/seq.*.n
+    : > "$CALLS_LOG"
+    ( set -euo pipefail; "$HEALTH_FN" "$TXN" ) >/dev/null 2>&1; run_rc=$?
+}
+n_probes() { grep -c "^systemctl is-active \(--quiet \)\?$1\$" "$CALLS_LOG" 2>/dev/null || true; }
+
+# 6a slow unit: activating, activating, active, active → passes after settling
+printf '%s\n' activating activating active active > "$SHIM_STATE/seq.u-slow"
+run_units_health u-slow
+[ "$run_rc" -eq 0 ] && ok "6a still-activating unit settles to active → health rc 0" \
+                    || bad "6a a unit still activating right after restart FAILED the gate (rc=$run_rc) — the 2026-08-20 rollback class"
+[ "$(n_probes u-slow)" -ge 3 ] && ok "6a the gate re-sampled is-active ($(n_probes u-slow) probes)" \
+                               || bad "6a only $(n_probes u-slow) is-active probe(s) — no settle window"
+# 6b never leaves activating → rc 1 with a status excerpt logged
+printf '%s\n' activating > "$SHIM_STATE/seq.u-slow"
+run_units_health u-slow
+[ "$run_rc" -ne 0 ] && ok "6b a unit stuck in activating still fails the gate (rc=$run_rc)" \
+                    || bad "6b a unit that never becomes active PASSED the gate"
+called "status --no-pager -n 5 u-slow" \
+    && ok "6b the failure logs a systemctl status excerpt of the unit" \
+    || bad "6b no 'systemctl status --no-pager -n 5 u-slow' call — the field log names no cause"
+# 6c a Restart=always crash loop: active/inactive alternating → never two in a row
+printf '%s\n' active inactive active inactive active inactive active inactive > "$SHIM_STATE/seq.u-flap"
+run_units_health u-flap
+[ "$run_rc" -ne 0 ] && ok "6c a flapping unit (active,inactive,…) does not pass on one active sample" \
+                    || bad "6c a crash-looping unit PASSED the gate on a single active sample"
+# 6d operator-disabled: inactive + is-enabled=disabled → skipped, rc 0
+printf '%s\n' inactive > "$SHIM_STATE/seq.u-off"
+printf 'disabled\n' > "$SHIM_STATE/enabled.u-off"
+run_units_health u-off
+[ "$run_rc" -eq 0 ] && ok "6d an operator-disabled (is-enabled=disabled) required unit is skipped, not a failure" \
+                    || bad "6d disabled unit rolled the update back (rc=$run_rc) — never-widen violated"
+# 6e Condition-off: inactive, enabled, ConditionResult=no AND the condition was
+# really evaluated this boot (ConditionTimestampMonotonic != 0) → skipped, rc 0
+printf '%s\n' inactive > "$SHIM_STATE/seq.u-cond"
+printf 'no\n' > "$SHIM_STATE/cond.u-cond"
+printf '4823917\n' > "$SHIM_STATE/condts.u-cond"
+run_units_health u-cond
+[ "$run_rc" -eq 0 ] && ok "6e a unit kept off by its own Condition*= (ConditionResult=no, evaluated) is skipped" \
+                    || bad "6e a Condition-off unit (the 1.135 stand drop-in shape) FAILED the gate (rc=$run_rc)"
+called "show -p ConditionResult --value u-cond" \
+    && ok "6e the gate consulted ConditionResult" \
+    || bad "6e ConditionResult was never read"
+# 6g the over-broad twin (review 1.0.6.52, finding 2): systemd reports
+# ConditionResult=no for a unit whose start was NEVER attempted this boot
+# (condition_result is false until unit_test_condition runs), with
+# ConditionTimestampMonotonic=0. An enabled required unit in that state is a
+# regression (its start job was cancelled/never queued), not an operator
+# choice — it must FAIL the gate.
+printf '%s\n' inactive > "$SHIM_STATE/seq.u-never"
+printf 'no\n' > "$SHIM_STATE/cond.u-never"
+printf '0\n' > "$SHIM_STATE/condts.u-never"
+run_units_health u-never
+[ "$run_rc" -ne 0 ] && ok "6g a never-started enabled unit (ConditionResult=no, ConditionTimestampMonotonic=0) still FAILS the gate" \
+                    || bad "6g a never-started enabled required unit was waved through as Condition-off (rc=$run_rc) — the skip is over-broad"
+called "show -p ConditionTimestampMonotonic --value u-never" \
+    && ok "6g the gate consulted ConditionTimestampMonotonic" \
+    || bad "6g ConditionTimestampMonotonic was never read — evaluated-false and never-evaluated are indistinguishable"
+# 6f enabled, no Condition, inactive → still fails (the fail path is preserved)
+printf '%s\n' inactive > "$SHIM_STATE/seq.u-down"
+run_units_health u-down
+[ "$run_rc" -ne 0 ] && ok "6f an enabled unit that is simply down still fails the gate" \
+                    || bad "6f an enabled-but-down unit PASSED — the gate no longer catches a real regression"
+unset SA02M_UPDATE_HEALTH_SETTLE_SEC SA02M_UPDATE_HEALTH_SETTLE_STEP
 
 echo "-----"
 if [ "$fails" -eq 0 ]; then echo "PASS (all checks)"; exit 0

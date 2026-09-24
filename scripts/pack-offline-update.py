@@ -283,6 +283,7 @@ def overlay_workdir_files(paths: list[str], dest: Path) -> int:
         ROOT / "etc" / "sa02m-factory-reset-runner.sh",
         ROOT / "etc" / "systemd" / "sa02m-update.service",
         ROOT / "etc" / "systemd" / "sa02m-update-recover.service",
+        ROOT / "etc" / "systemd" / "sa02m-update-verify.service",
         ROOT / "etc" / "systemd" / "sa02m-factory-reset.service",
         ROOT / "etc" / "nginx" / "network_config.conf",
     ]:

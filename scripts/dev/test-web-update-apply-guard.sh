@@ -31,6 +31,18 @@
 # probe prints nothing to stdout (exit code only), and every body read below is
 # stripped of \r (.ai-dev/notes/quality-gate-environment.md).
 #
+# Section G (1.0.6.52, field incident: a runner SIGKILLed at the health gate left
+# the panel polling «Проверка сервисов…» 85 % forever): the GET status answer
+# carries `runner_alive` / `stale` and turns a running-stage transaction whose
+# runner is gone into status «error» + E_RUNNER_LOST after WEB_UPD_STALE_AFTER_S
+# (120 s) — contract: docs/contracts/web-update.md «GET — состояние». The state
+# dir is SA02M_UPDATE_STATEDIR (the runner's own seam); liveness is the pid in
+# $STATEDIR/update.lock (alive AND its cmdline names the runner) or an active
+# sa02m-update / sa02m-update-verify / sa02m-update-apply-* unit (systemctl
+# shimmed here: everything inactive). The live-runner fixture is a real process
+# whose argv[0] is `sa02m-update-runner` (exec -a); the dead one is pid 2^22-1,
+# above every pid_max this project meets. RED recorded in the section header.
+#
 # Run: bash scripts/dev/test-web-update-apply-guard.sh
 #      WEB_UPDATE_APPLY_CGI=<path> to drive another copy (the RED run).
 set -uo pipefail
@@ -162,6 +174,175 @@ rm -f "$T/sudo.calls"
 body=$(run_cgi "0000000000000000000000000000000000000000000000000000000000000000" "$CSRF")
 if printf '%s' "$body" | grep -q '"error":"unauthorized"' && ! sudo_called; then ok "11 unknown session → unauthorized, no launch"
 else bad "11 unknown session → body: ${body##*$'\n\n'}, sudo called: $(sudo_called && echo yes || echo no)"; fi
+
+# ═══ G. GET status: a dead runner is reported as stale (1.0.6.52) ═══════════
+# RED, observed 2026-09-23 against the 1.0.6.50 CGI (6ba943d): 10 FAILED (G1–G6 incl. both runner_alive reads and the G1 log line) —
+# the CGI reads a hard-coded /var/lib/sa02m-update (absent on the host), so the
+# sandbox transaction is invisible (status «idle»), and it prints no
+# runner_alive / stale field at all; on the board the same code answered
+# «running» for a transaction whose runner had been SIGKILLed 40 min earlier.
+# G6 was RED on the first fixed lib as well («stale=True … want stale=False»:
+# its `is-active --quiet` clause cannot fire for a oneshot unit — review
+# 1.0.6.52, finding 3).
+echo
+echo "── G. GET status: runner liveness + stale transaction ──"
+UPD="$T/upd"; mkdir -p "$UPD"
+export SA02M_UPDATE_STATEDIR="$UPD"
+# The CGI's python prints Russian text (the stale line for the old bundle):
+# pin UTF-8 on both sides of the pipe — a Windows CPython defaults to cp1251.
+export PYTHONIOENCODING=utf-8
+# systemctl shim: no update unit is active, no transient apply unit is loaded.
+cat > "$BIN/systemctl" <<'SHIM'
+#!/bin/bash
+case "${1:-}" in
+  is-active) exit 3 ;;
+  list-units) exit 0 ;;
+  *) exit 0 ;;
+esac
+SHIM
+chmod +x "$BIN/systemctl"
+# A live runner: a process whose argv[0] names the runner (what the lock pid's
+# /proc/<pid>/cmdline shows on the board). Killed on exit. 900 s, not 30: under
+# quality-runner load section R reached R1 44–50 s after the spawn and the
+# fixture was already gone — a false RED (review round 4, 1.0.6.52).
+bash -c 'exec -a sa02m-update-runner sleep 900' &
+LIVE_PID=$!
+# A live process that is NOT the runner: a reused pid must not read as alive.
+sleep 900 &
+OTHER_PID=$!
+trap 'kill "$LIVE_PID" "$OTHER_PID" 2>/dev/null; rm -rf "$T"' EXIT
+sleep 0.3
+DEAD_PID=4194303   # 2^22-1: above every pid_max this project meets
+
+run_get() {
+  REQUEST_METHOD=GET QUERY_STRING='' HTTP_COOKIE="session_token=$TOK" \
+    bash "$CGI" </dev/null 2>/dev/null | tr -d '\r'
+}
+# json_field BODY KEY → the value as python prints it (True/False/None/str).
+json_field() {
+  printf '%s' "${1##*$'\n\n'}" | python3 -c 'import json,sys
+d=json.load(sys.stdin); v=d.get(sys.argv[1], "<absent>"); print(v)' "$2" 2>/dev/null
+}
+write_txn() {  # $1=stage $2=updated_at
+  printf '{"schema_version":1,"id":"abcdef12-0000-4000-8000-000000000001","operation":"update","source":"github","stage":"%s","progress_pct":85,"files_total":3,"files_done":3,"result":"pending","error_code":null,"error_message":null,"target_version":"9.9.9.9","updated_at":"%s"}\n' "$1" "$2" > "$UPD/transaction.json"
+}
+expect_get() {  # label stale status code
+  local label="$1" want_stale="$2" want_status="$3" want_code="$4" body stale status code
+  body=$(run_get)
+  stale=$(json_field "$body" stale); status=$(json_field "$body" status); code=$(json_field "$body" error_code)
+  if [ "$stale" = "$want_stale" ] && [ "$status" = "$want_status" ] && [ "$code" = "$want_code" ]; then
+    ok "$label → stale=$stale status=$status error_code=$code"
+  else
+    bad "$label → stale=$stale status=$status error_code=$code (want stale=$want_stale status=$want_status code=$want_code) — body: ${body##*$'\n\n'}"
+  fi
+}
+OLD_TS=$(date -u -d '-600 seconds' +%Y-%m-%dT%H:%M:%SZ)
+
+# G1 verifying, last update 600 s ago, lock pid dead → stale, error, E_RUNNER_LOST
+write_txn verifying "$OLD_TS"; printf '%s\n' "$DEAD_PID" > "$UPD/update.lock"
+expect_get "G1 verifying, 600 s old, lock pid dead" True error E_RUNNER_LOST
+body=$(run_get)
+[ "$(json_field "$body" runner_alive)" = "False" ] && ok "G1 runner_alive=false reported" \
+  || bad "G1 runner_alive: $(json_field "$body" runner_alive) (want False)"
+# The OLD cached bundle never reads `stale`; it shows `log` in the event log —
+# the only channel a ≤1.0.6.51 board has for «what now» (round 2, item 4).
+case "$(json_field "$body" log)" in
+  "Обновление прервано на этапе «Проверка сервисов»: перезагрузите плату"*) ok "G1 log carries the human line for the old cached bundle" ;;
+  *) bad "G1 log does not start with the human «Обновление прервано…» line: $(json_field "$body" log | head -1)" ;;
+esac
+# G2 same transaction, lock pid = a live runner → not stale, running
+printf '%s\n' "$LIVE_PID" > "$UPD/update.lock"
+expect_get "G2 verifying, 600 s old, lock pid alive (runner cmdline)" False running None
+body=$(run_get)
+[ "$(json_field "$body" runner_alive)" = "True" ] && ok "G2 runner_alive=true reported" \
+  || bad "G2 runner_alive: $(json_field "$body" runner_alive) (want True)"
+# G2b lock pid alive but its cmdline is not the runner (pid reuse) → stale
+printf '%s\n' "$OTHER_PID" > "$UPD/update.lock"
+expect_get "G2b verifying, lock pid alive but not a runner (pid reuse)" True error E_RUNNER_LOST
+# G3 dead pid but updated_at = now → inside the grace window, not stale
+write_txn verifying "$(now_utc)"; printf '%s\n' "$DEAD_PID" > "$UPD/update.lock"
+expect_get "G3 verifying, updated just now, lock pid dead (grace)" False running None
+# G4 terminal stage → never stale, status done
+write_txn done "$OLD_TS"
+expect_get "G4 stage=done, 600 s old, lock pid dead" False done None
+# G5 a transaction that already carries a code keeps it when it goes stale
+printf '{"schema_version":1,"id":"abcdef12-0000-4000-8000-000000000001","stage":"rolling_back","progress_pct":90,"result":"pending","error_code":"E_HEALTH","error_message":"unit not active: nginx (inactive)","updated_at":"%s"}\n' "$OLD_TS" > "$UPD/transaction.json"
+expect_get "G5 rolling_back, 600 s old, dead pid, own code" True error E_HEALTH
+# G6 the unit half of the liveness test must FIRE for a oneshot unit while its
+# ExecStart runs: systemd reports ActiveState=activating (is-active rc 3) for
+# the whole run of sa02m-update-verify.service, so an `is-active --quiet`
+# clause never returns 0 (review 1.0.6.52, finding 3). Dead lock pid, old
+# updated_at, the verify unit activating → alive, not stale.
+cat > "$BIN/systemctl" <<'SHIM'
+#!/bin/bash
+case "${1:-}" in
+  is-active) exit 3 ;;
+  show)
+    u=""; for a in "$@"; do u=$a; done
+    case "$*" in *ActiveState*) if [ "$u" = sa02m-update-verify.service ]; then echo activating; else echo inactive; fi ;; esac
+    exit 0 ;;
+  *) exit 0 ;;
+esac
+SHIM
+chmod +x "$BIN/systemctl"
+write_txn verifying "$OLD_TS"; printf '%s\n' "$DEAD_PID" > "$UPD/update.lock"
+expect_get "G6 verifying, 600 s old, dead pid, sa02m-update-verify.service activating (oneshot mid-run)" False running None
+# ═══ R. reboot.cgi refuses while a LIVE runner works, reboots a stale one ═══
+# (1.0.6.52, F5a) A hard reset mid-apply was one click away: reboot.cgi ran
+# `reboot -f` with no look at the transaction. Now: applying / verifying /
+# committing / rolling_back AND a live runner → E_UPDATE_RUNNING, no sudo; a
+# STALE transaction (runner gone) stays rebootable — the reboot IS its recovery
+# path (recover → sa02m-update-verify at boot). The sudo chain of reboot.cgi
+# runs inside a nohup'd `sh -c` whose stdout is redirected into
+# /var/log/sa02m_install.log — absent on a dev host, so the shell never starts
+# it there and «sudo called» is observable only as an ABSENCE; the ok:true body
+# is the positive observable for the rebootable cases.
+# RED, observed 2026-09-23 on the 1.0.6.50 reboot.cgi: R1 answers ok:true (it
+# refuses nothing); R2–R4 hold on both trees.
+echo
+echo "── R. reboot.cgi vs a running update ──"
+REBOOT_CGI="$(dirname "$CGI")/reboot.cgi"
+[ -f "$REBOOT_CGI" ] || { bad "R reboot.cgi not found beside the CGI: $REBOOT_CGI"; }
+export SA02M_UPDATE_STATEDIR="$UPD"
+cat > "$BIN/systemctl" <<'SHIM'
+#!/bin/bash
+case "${1:-}" in
+  is-active) exit 3 ;;
+  *) exit 0 ;;
+esac
+SHIM
+chmod +x "$BIN/systemctl"
+run_reboot() {  # [csrf]
+  rm -f "$T/sudo.calls"
+  printf '{}' | REQUEST_METHOD=POST CONTENT_LENGTH=2 QUERY_STRING='' \
+    HTTP_COOKIE="session_token=$TOK" HTTP_X_SA02M_CSRF="${1:-$CSRF}" \
+    bash "$REBOOT_CGI" 2>/dev/null | tr -d '\r'
+}
+# R1 live runner at applying → refused, no sudo
+write_txn applying "$(now_utc)"; printf '%s\n' "$LIVE_PID" > "$UPD/update.lock"
+body=$(run_reboot); sleep 1.5
+if printf '%s' "$body" | grep -q '"error_code":"E_UPDATE_RUNNING"' && printf '%s' "$body" | grep -q '"ok":false' && ! sudo_called; then
+  ok "R1 live runner at applying → E_UPDATE_RUNNING, no reboot"
+else
+  bad "R1 live runner at applying → body: ${body##*$'\n\n'}, sudo called: $(sudo_called && echo yes || echo no) (want E_UPDATE_RUNNING, no sudo)"
+fi
+# R2 stale transaction (runner gone) → rebootable
+write_txn verifying "$OLD_TS"; printf '%s\n' "$DEAD_PID" > "$UPD/update.lock"
+body=$(run_reboot)
+printf '%s' "$body" | grep -q '"ok":true' && ok "R2 stale transaction (dead runner) → reboot allowed (the recovery path)" \
+  || bad "R2 stale transaction → body: ${body##*$'\n\n'} (want ok:true)"
+# R3 terminal stage with a live pid in the lock → rebootable
+write_txn done "$(now_utc)"; printf '%s\n' "$LIVE_PID" > "$UPD/update.lock"
+body=$(run_reboot)
+printf '%s' "$body" | grep -q '"ok":true' && ok "R3 stage=done → reboot allowed" \
+  || bad "R3 stage=done → body: ${body##*$'\n\n'} (want ok:true)"
+# R4 CSRF still first: wrong token → E_CSRF, no sudo, even with a live runner
+write_txn applying "$(now_utc)"
+body=$(run_reboot "wrong-token"); sleep 1.5
+if printf '%s' "$body" | grep -q '"error_code":"E_CSRF"' && ! sudo_called; then ok "R4 wrong CSRF → E_CSRF before the update guard, no reboot"
+else bad "R4 wrong CSRF → body: ${body##*$'\n\n'}, sudo called: $(sudo_called && echo yes || echo no)"; fi
+rm -f "$BIN/systemctl" "$UPD/transaction.json" "$UPD/update.lock"
+unset SA02M_UPDATE_STATEDIR
 
 echo
 if [ "$fails" -eq 0 ]; then

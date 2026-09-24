@@ -8,7 +8,9 @@
 #   - imaging lock + the runtime watchdog held off (read back) for the apply window
 #   - self-copy re-exec into $STATEDIR/runner/<txn>/runner before deploy
 #
-# Commands: apply (default) | recover
+# Commands: apply (default) | recover | verify (post-boot health gate,
+#           sa02m-update-verify.service) | reclaim (recover at runtime for a
+#           transaction whose runner is gone) | version
 # shellcheck shell=bash
 set -euo pipefail
 
@@ -82,6 +84,14 @@ PRESERVE_PATHS=(
 CMD="${1:-apply}"
 IMAGING_HELD=0
 LOCK_HELD=0
+# `boot` while cmd_recover runs: sa02m-update-recover.service is ordered
+# Before=nginx fcgiwrap, so a restart/reload job on either can never complete
+# from inside it — restart_after_rollback skips them in this context.
+RUNNER_CONTEXT=""
+# The last deploy-side failure, for the transaction's error_message (1.0.6.52:
+# rollback_from_journal used to stamp E_APPLY and no message on EVERY rollback,
+# so the panel could not say why a board rolled back).
+APPLY_FAIL_REASON=""
 
 log() {
     local ts
@@ -127,15 +137,33 @@ migrate_legacy_state() {
     chmod 644 "$STATEDIR/state/updater_version" 2>/dev/null || true
 }
 
-acquire_lock() {
+# acquire_lock [WAIT_SECS] — the lock file's content is this process's pid; the
+# status CGI reads it (lib_web_update.sh) to tell a live runner from a dead one.
+# Opened for APPEND so a contender never truncates the holder's pid line; the
+# pid is written only once the lock is ours. A wait is given by the two entry
+# points that follow a handover: the cgroup-escaped runner (the handing-over
+# process closes fd 9 just before systemd-run) and `verify` (recover may still
+# be releasing).
+try_lock() {  # [WAIT_SECS] — rc 1 when another runner holds the lock
+    local wait=${1:-}
     mkdir -p "$STATEDIR"
-    exec 9>"$LOCKFILE"
-    if ! flock -n 9; then
-        log "ERROR [E_LOCK]: another update holds $LOCKFILE"
+    exec 9>>"$LOCKFILE"
+    if [ -n "$wait" ]; then
+        flock -w "$wait" 9 || return 1
+    else
+        flock -n 9 || return 1
+    fi
+    printf '%s\n' "$$" >"$LOCKFILE"
+    LOCK_HELD=1
+    return 0
+}
+
+acquire_lock() {
+    local wait=${1:-}
+    if ! try_lock "$wait"; then
+        log "ERROR [E_LOCK]: another update holds $LOCKFILE${wait:+ (waited ${wait}s)}"
         exit 1
     fi
-    printf '%s\n' "$$" >&9
-    LOCK_HELD=1
 }
 
 # --- transaction.json helpers (temp → fdatasync → rename) --------------------
@@ -159,6 +187,15 @@ elif isinstance(v,(dict,list)):
 else:
   print(v)
 ' "$TXN_FILE" "$key" 2>/dev/null || true
+}
+
+txn_has_key() {  # rc 0 when the transaction carries the key (even null/empty)
+    python3 -c 'import json,sys
+try:
+  d=json.load(open(sys.argv[1],encoding="utf-8"))
+except Exception:
+  sys.exit(1)
+sys.exit(0 if sys.argv[2] in d else 1)' "$TXN_FILE" "$1" 2>/dev/null
 }
 
 txn_patch() {
@@ -280,12 +317,76 @@ sa02m_runtime_watchdog_set() {
 }
 # ── END sa02m-runtime-watchdog ─────────────────────────────────────────────
 
+# The value held off for the apply window lives in THREE processes at least —
+# the launching runner, its self-copy after `exec`, the cgroup-escaped copy —
+# and across a reboot into recover/verify. A shell variable survives none of
+# that: until 1.0.6.52 every runner-path apply left RuntimeWatchdogUSec=0
+# until the next reboot (field incident, H5). So the value is persisted in the
+# transaction (runtime_wdt_prev_usec, empty when nothing was held) and every
+# entry point that inherits an existing imaging lock reloads it here first.
+# The configured policy is the fallback for a transaction an OLDER launcher
+# wrote (no field) while the live value is 0 — the delivering update's shape.
+runtime_wdt_policy_usec() {   # prints the policy RuntimeWatchdogSec in µs; rc=1 when unparseable
+    local f="${SA02M_WATCHDOG_POLICY_FILE:-/etc/systemd/system.conf.d/sa02m-watchdog.conf}" raw num unit
+    [ -r "$f" ] || return 1
+    raw=$(grep -E '^[[:space:]]*RuntimeWatchdogSec=' "$f" | tail -n1) || true
+    raw=${raw#*=}
+    raw=$(printf '%s' "$raw" | tr -d '[:space:]\r')
+    [ -n "$raw" ] || return 1
+    num=${raw%%[!0-9]*}
+    unit=${raw#"$num"}
+    [ -n "$num" ] || return 1
+    case "$unit" in
+        ''|s|sec|seconds) printf '%s\n' $((num * 1000000)) ;;
+        ms|msec)          printf '%s\n' $((num * 1000)) ;;
+        us|usec)          printf '%s\n' "$num" ;;
+        m|min|minutes)    printf '%s\n' $((num * 60000000)) ;;
+        *) return 1 ;;
+    esac
+}
+
+load_runtime_wdt_prev() {
+    local v live policy
+    v=$(txn_get runtime_wdt_prev_usec)
+    case "$v" in ''|*[!0-9]*) v="" ;; esac
+    if [ -n "$v" ]; then
+        RUNTIME_WDT_PREV=$v
+        return 0
+    fi
+    # Field present but empty: the earlier process found nothing to hold off.
+    txn_has_key runtime_wdt_prev_usec && return 0
+    live=$(sa02m_runtime_watchdog_usec 2>/dev/null) || live=""
+    [ "$live" = "0" ] || return 0
+    if policy=$(runtime_wdt_policy_usec); then
+        RUNTIME_WDT_PREV=$policy
+        log "runtime watchdog: previous value unknown (older launcher) — restoring the configured policy ${policy}us"
+    else
+        log "WARN: runtime watchdog: previous value unknown (older launcher) and no parsable policy file — left at 0 until reboot"
+    fi
+    return 0
+}
+
 install_imaging_lock() {
     date -Iseconds >"$IMAGING_LOCK"
     sync
     systemctl stop net-watchdog sa02m-watchdog-feed 2>/dev/null || true
     local now=""
-    RUNTIME_WDT_PREV=$(sa02m_runtime_watchdog_usec 2>/dev/null) || RUNTIME_WDT_PREV=""
+    # A value reloaded from the transaction (load_runtime_wdt_prev) wins: the
+    # manager already reads 0 once a hold is in force, and "held off 0" would
+    # restore 0.
+    if [ -z "$RUNTIME_WDT_PREV" ]; then
+        RUNTIME_WDT_PREV=$(sa02m_runtime_watchdog_usec 2>/dev/null) || RUNTIME_WDT_PREV=""
+    fi
+    # A manager already at 0 under a configured policy is an earlier hold's
+    # residue (a killed recover, bench 1.135 2026-09-23), not a board without a
+    # watchdog: holding off 0 would "restore" 0 at the end. Hold the policy value.
+    if [ "$RUNTIME_WDT_PREV" = 0 ]; then
+        local _policy
+        if _policy=$(runtime_wdt_policy_usec); then
+            log "runtime watchdog already 0 under a configured policy — an earlier hold's residue; ${_policy}us will be restored"
+            RUNTIME_WDT_PREV=$_policy
+        fi
+    fi
     if [ -n "$RUNTIME_WDT_PREV" ] && [ "$RUNTIME_WDT_PREV" != 0 ]; then
         if now=$(sa02m_runtime_watchdog_set 0); then
             log "imaging lock installed ($IMAGING_LOCK); runtime watchdog held off (was ${RUNTIME_WDT_PREV}us, now ${now}us)"
@@ -297,23 +398,41 @@ install_imaging_lock() {
         log "imaging lock installed ($IMAGING_LOCK); runtime watchdog ${RUNTIME_WDT_PREV:-unreadable} — nothing to hold off"
     fi
     IMAGING_HELD=1
-    txn_patch "imaging_lock=true" || true
+    txn_patch "imaging_lock=true" "runtime_wdt_prev_usec=${RUNTIME_WDT_PREV:-}" || true
+}
+
+# Put the held-off value back; the outcome text lands in WDT_RESTORE_MSG (not
+# printed: a `$(…)` caller would run this in a subshell and the clearing of
+# RUNTIME_WDT_PREV would never reach it). Shared by cleanup_imaging_lock and
+# the EXIT trap (which keeps the lock file at a rolling stage but must never
+# leave the hardware watchdog off). Clears RUNTIME_WDT_PREV once restored so a
+# later cleanup on the same process does not restore twice.
+WDT_RESTORE_MSG=""
+restore_runtime_wdt() {
+    local now=""
+    if [ -z "$RUNTIME_WDT_PREV" ]; then
+        WDT_RESTORE_MSG='не менялся'
+        return 0
+    fi
+    if now=$(sa02m_runtime_watchdog_set "$RUNTIME_WDT_PREV"); then
+        WDT_RESTORE_MSG="restored to ${now}us"
+    else
+        WDT_RESTORE_MSG="RESTORE FAILED: wanted ${RUNTIME_WDT_PREV}us, in force ${now:-unknown}us"
+    fi
+    RUNTIME_WDT_PREV=""
+    return 0
 }
 
 cleanup_imaging_lock() {
     if [ "$IMAGING_HELD" != "1" ] && [ ! -f "$IMAGING_LOCK" ]; then
         return 0
     fi
-    local now="" wdt="не менялся"
-    if [ -n "$RUNTIME_WDT_PREV" ]; then
-        if now=$(sa02m_runtime_watchdog_set "$RUNTIME_WDT_PREV"); then
-            wdt="restored to ${now}us"
-        else
-            wdt="RESTORE FAILED: wanted ${RUNTIME_WDT_PREV}us, in force ${now:-unknown}us"
-        fi
-        RUNTIME_WDT_PREV=""
-    fi
-    systemctl start net-watchdog 2>/dev/null || true
+    local wdt
+    restore_runtime_wdt
+    wdt=$WDT_RESTORE_MSG
+    # --no-block: at boot (recover, DefaultDependencies=no) the network is not
+    # up yet and a blocking start would sit inside recover's own timeout.
+    _systemctl_bounded 20 start --no-block net-watchdog || true
     # sa02m-watchdog-feed is optional; leave stopped if it was inactive.
     rm -f "$IMAGING_LOCK"
     IMAGING_HELD=0
@@ -387,6 +506,79 @@ preflight_space() {
     if [ "${free:-0}" -lt "$need" ]; then
         die E_SPACE "free_bytes=$free need=$need"
     fi
+}
+
+# --- leave a foreign cgroup before anything destructive ---------------------
+#
+# Launched from the web panel («Применить» → web_update_apply.cgi →
+# `nohup sudo -n sa02m-web-update-apply &`) this runner lives in
+# 0::/system.slice/fcgiwrap.service: sudo's PAM stack on the board carries no
+# pam_systemd, so nothing moves the process out (measured on bench 1.135,
+# 2026-09-23). The health gate's first step after stage=verifying is
+# `systemctl restart fcgiwrap`, and fcgiwrap.service is KillMode=mixed — once
+# the main process exits every remaining member of the cgroup is SIGKILLed,
+# this runner included: no EXIT trap, transaction.json frozen at verifying/85,
+# imaging lock and watchdog hold left behind, nginx serving the new tree from
+# disk (the Skolkovo incident, six boards). The runner therefore re-launches
+# ITSELF as a transient system unit (systemd-run, KillMode=process) as soon as
+# it starts, hands the lock over and exits 0 — at the very start of cmd_apply,
+# before prepare/backup. HONEST LIMIT: self_reexec_before_deploy copies the
+# INSTALLED runner (`readlink -f "$0"`) and execs the copy, so the update that
+# DELIVERS this code to a ≤1.0.6.51 board runs entirely under the old runner —
+# the escape first bites on the update after it; that first OTA still freezes
+# at «Проверка сервисов 85 %» and completes at the next boot (recover → verify)
+# or via `runner reclaim`. Runner-side rather than launcher-side on purpose: the
+# launcher on the field boards is the OLD one too. The offline path
+# (sa02m-update.service) and an SSH launch (session scope) never match and
+# are only logged. Failure mode is «continue in place» (logged): a board with a
+# broken systemd-run still updates and is now recoverable by recover→verify at
+# boot. Harness: scripts/dev/test-update-cgroup-escape.sh.
+ESCAPED=0
+ESCAPE_UNIT=""
+escape_foreign_cgroup() {
+    local txn=$1 cgfile="${SA02M_UPDATE_CGROUP_FILE:-/proc/self/cgroup}" cg unit rc v self
+    local -a args
+    cg=$(tr '\n' ' ' <"$cgfile" 2>/dev/null) || cg=""
+    cg=${cg% }
+    log "runner cgroup: ${cg:-unreadable}"
+    [ "${SA02M_UPDATE_ESCAPED:-0}" = 1 ] && return 0
+    case "$cg " in
+        */fcgiwrap.service\ *) ;;
+        *) return 0 ;;
+    esac
+    if ! command -v systemd-run >/dev/null 2>&1; then
+        log "WARN: systemd-run missing — continuing inside $cg (a fcgiwrap restart will kill this runner; a reboot then completes the update)"
+        return 0
+    fi
+    unit="sa02m-update-apply-${txn:0:8}"
+    log "re-launching as transient unit $unit: fcgiwrap KillMode=mixed SIGKILLs this cgroup when the health gate restarts fcgiwrap"
+    args=(--unit="$unit" --collect --quiet
+          -p Nice=5 -p IOSchedulingClass=best-effort -p IOSchedulingPriority=6
+          -p KillMode=process -p TimeoutStopSec=30
+          --setenv=SA02M_UPDATE_ESCAPED=1
+          --setenv=SA02M_UPDATE_STATEDIR="$STATEDIR"
+          --setenv=SA02M_UPDATE_REEXEC="${SA02M_UPDATE_REEXEC:-0}")
+    for v in SA02M_IMAGING_LOCK SA02M_UPDATE_VALIDATE_PY SA02M_WEB_VERSION_FILE \
+             SA02M_WEB_BUILD_STATEDIR SA02M_UPDATER_VERSION SA02M_UPDATE_RUNNER_DST; do
+        if [ -n "${!v:-}" ]; then
+            args+=(--setenv="$v=${!v}")
+        fi
+    done
+    self=$(readlink -f "$0" 2>/dev/null || printf '%s' "$0")
+    # Release the lock so the new process can take it (acquire_lock waits 15 s
+    # on the other side); re-take it if the launch fails — nobody else contends.
+    exec 9>&-
+    LOCK_HELD=0
+    if timeout 30 systemd-run "${args[@]}" "$self" apply; then
+        ESCAPED=1
+        ESCAPE_UNIT=$unit
+        return 0
+    else
+        rc=$?
+    fi
+    log "WARN: systemd-run failed (rc=$rc) — continuing in place"
+    acquire_lock
+    return 0
 }
 
 # --- self-copy re-exec before deploy -----------------------------------------
@@ -1114,6 +1306,7 @@ apply_deploy_items() {
         src_abs="$overlay/$src_rel"
         if [ ! -f "$src_abs" ]; then
             log "ERROR: missing staged src: $src_rel"
+            APPLY_FAIL_REASON="missing staged src: $src_rel"
             return 1
         fi
         bak=""
@@ -1136,6 +1329,7 @@ apply_deploy_items() {
             fi
             if ! atomic_install_file "$src_abs" "$dst" "$mode" "$owner"; then
                 log "ERROR: atomic install failed: $dst"
+                APPLY_FAIL_REASON="atomic install failed: $dst"
                 return 1
             fi
         fi
@@ -1223,6 +1417,7 @@ apply_deletes() {
                 rm -f "$dpath"
             else
                 log "ERROR: delete target not a regular file: $dpath"
+                APPLY_FAIL_REASON="delete target not a regular file: $dpath"
                 return 1
             fi
         fi
@@ -1254,10 +1449,13 @@ run_migrations() {
     return 0
 }
 
+# rollback_from_journal TXN [CODE] [MESSAGE] — CODE/MESSAGE land in the
+# transaction (default E_APPLY, the pre-1.0.6.52 blanket); the health gate
+# passes E_HEALTH + its reason, recover passes E_POWER + the stage.
 rollback_from_journal() {
-    local txn=$1
+    local txn=$1 code=${2:-E_APPLY} message=${3:-}
     local j="$STATEDIR/staging/$txn/journal.jsonl"
-    log "rollback from journal txn=$txn"
+    log "rollback from journal txn=$txn (${code}${message:+: $message})"
     txn_patch "stage=rolling_back" "result=pending"
     if [ -f "$j" ]; then
         python3 - "$j" <<'PY'
@@ -1303,8 +1501,8 @@ PY
         fi
     fi
     restart_after_rollback "$txn" || true
-    txn_patch "stage=rolled_back" "result=rolled_back" "error_code=E_APPLY" \
-        "finished_at=$(utc_now)"
+    txn_patch "stage=rolled_back" "result=rolled_back" "error_code=$code" \
+        "error_message=${message:-null}" "finished_at=$(utc_now)"
     cleanup_imaging_lock || true
     log "rollback complete"
 }
@@ -1325,6 +1523,18 @@ restart_after_rollback() {
     mf=$(manifest_path "$txn" 2>/dev/null) || mf=""
     if [ -z "$mf" ] || [ ! -f "$mf" ]; then
         log "rollback: no manifest for txn=$txn — units NOT restarted (reboot to drop in-memory code)"
+        return 0
+    fi
+    if [ "${RUNNER_CONTEXT:-}" = boot ]; then
+        # From sa02m-update-recover.service (Before=nginx fcgiwrap multi-user)
+        # nothing has started yet: a job on nginx/fcgiwrap can only time out,
+        # and every other unit starts from the restored files the moment
+        # recover exits. Bench 1.135, 2026-09-23: the restart set here (60 s
+        # bounds each) ran recover into its own TimeoutStartSec=300 and it was
+        # SIGKILLed mid-rollback — stage rolling_back, imaging lock and a
+        # watchdog held at 0 left behind. Boot context: daemon-reload only.
+        log "rollback: boot context — daemon-reload only; every unit starts from the restored tree when recover exits"
+        _systemctl_bounded 60 daemon-reload || true
         return 0
     fi
     log "rollback: daemon-reload + restart sets on the restored tree..."
@@ -1414,8 +1624,16 @@ sys.exit(0 if found else 1)
 PY
 }
 
-# Returns 0 on success, 1 on failure (does not exit — caller may rollback).
-restart_services_and_health() {
+# --- post-deploy: enable + tmpfiles, restart sets, health gate --------------
+# Three named halves since 1.0.6.52, because the post-boot verification unit
+# (cmd_verify) needs enable+tmpfiles and the health gate WITHOUT the restart
+# sets — at boot every unit already started from the deployed tree, and a
+# restart job on nginx/fcgiwrap from inside a unit ordered BEFORE them can never
+# complete (the field rollback class, cmd_recover). restart_services_and_health
+# stays as the composition the apply path and the harnesses call by name.
+
+# daemon-reload, the named tmpfiles confs, services.enable[]. Idempotent.
+services_enable_and_tmpfiles() {
     local txn=$1
     local mf
     mf=$(manifest_path "$txn")
@@ -1446,9 +1664,21 @@ restart_services_and_health() {
 for u in json.load(open(sys.argv[1],encoding="utf-8")).get("services",{}).get("enable",[]):
     print(u)
 ' "$mf")
+    return 0
+}
+
+# fcgiwrap → nginx -t && reload → restart[] → restart_if_active[] →
+# restart_if_changed{}. Returns 1 only when `nginx -t` rejects the config.
+services_restart_sets() {
+    local txn=$1
+    local mf
+    mf=$(manifest_path "$txn")
     # Ordered: fcgiwrap → nginx -t && reload → other restart[] (e.g. sa02m-flasher).
     # Bound fcgiwrap restart: UI polling keeps CGI children alive and can stall
     # an unbounded systemctl restart for many minutes (looks like "stuck on verifying").
+    # This restart is the one that used to SIGKILL the runner itself: launched
+    # from the web panel it lived in fcgiwrap's cgroup (KillMode=mixed) — since
+    # 1.0.6.52 escape_foreign_cgroup moves it out before the first file is written.
     log "health: restarting fcgiwrap..."
     if ! _systemctl_bounded 45 restart fcgiwrap \
         && ! _systemctl_bounded 45 restart fcgiwrap.service; then
@@ -1461,6 +1691,7 @@ for u in json.load(open(sys.argv[1],encoding="utf-8")).get("services",{}).get("e
         _systemctl_bounded 30 reload nginx || _systemctl_bounded 45 restart nginx || true
     else
         log "health: nginx -t failed"
+        HEALTH_FAIL_REASON="nginx -t failed on the deployed config"
         return 1
     fi
     while IFS= read -r u; do
@@ -1517,7 +1748,50 @@ m=json.load(open(sys.argv[1],encoding="utf-8")).get("services",{}).get("restart_
 for u,p in m.items():
     print(u+"\t"+p)
 ' "$mf")
+    return 0
+}
 
+# Settle probe for one required unit: rc 0 on TWO CONSECUTIVE `active` samples
+# within HEALTH_SETTLE_SEC (every HEALTH_SETTLE_STEP s), rc 1 on timeout with
+# HEALTH_LAST_STATE = the last state seen. One sample is not enough in either
+# direction: `systemctl restart` on a Type=simple unit returns at exec, so the
+# unit is still `activating` when a single probe would read it as DOWN (the
+# 1.135 sample of 2026-08-20 rolled a good update back on sa02m-devices-api that
+# way), and a Restart=always crash loop alternates activating↔active, so a
+# single `active` would wave a dying unit through.
+HEALTH_SETTLE_SEC=""
+HEALTH_LAST_STATE=""
+HEALTH_FAIL_REASON=""
+unit_settled() {
+    local u=$1 state consecutive=0 start step
+    # Resolved here, not at file top: the harnesses extract this function alone.
+    HEALTH_SETTLE_SEC="${SA02M_UPDATE_HEALTH_SETTLE_SEC:-30}"
+    step="${SA02M_UPDATE_HEALTH_SETTLE_STEP:-2}"
+    start=$SECONDS
+    HEALTH_LAST_STATE=""
+    while :; do
+        state=$(systemctl is-active "$u" 2>/dev/null || true)
+        state=${state%%[[:space:]]*}
+        HEALTH_LAST_STATE=${state:-unknown}
+        if [ "$state" = active ]; then
+            consecutive=$((consecutive + 1))
+            [ "$consecutive" -ge 2 ] && return 0
+        else
+            consecutive=0
+        fi
+        [ $((SECONDS - start)) -lt "$HEALTH_SETTLE_SEC" ] || return 1
+        sleep "$step"
+    done
+}
+
+# The health gate proper: units_active (settled), the http probe, the version
+# file. Returns 1 with HEALTH_FAIL_REASON set — the reason lands in
+# transaction.json (rollback_from_journal E_HEALTH) and in the panel.
+health_check() {
+    local txn=$1
+    local mf
+    mf=$(manifest_path "$txn")
+    HEALTH_FAIL_REASON=""
     local http_url version_want version_file
     http_url=$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1],encoding="utf-8")).get("services",{}).get("health",{}).get("http_url",""))' "$mf")
     version_file=$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1],encoding="utf-8")).get("services",{}).get("health",{}).get("version_file","/var/www/network_config/VERSION"))' "$mf")
@@ -1525,22 +1799,49 @@ for u,p in m.items():
 
     while IFS= read -r u; do
         [ -n "$u" ] || continue
-        if ! systemctl is-active --quiet "$u"; then
+        if ! unit_settled "$u"; then
             # An operator-disabled required unit is NOT a health failure: the
             # operator deliberately took it out of service (never-widen). A shared
             # HardPy stand masks sa02m-devices-api because the stand app serves
             # :8765 instead — requiring it active would wrongly roll back every
             # update there. masked / masked-runtime / disabled ⇒ skip; an ENABLED
             # unit that is merely down still fails (a real regression).
-            local _en_state
+            local _en_state _cond
             _en_state=$(systemctl is-enabled "$u" 2>/dev/null || true)
+            _en_state=${_en_state%%[[:space:]]*}
             case "$_en_state" in
                 masked|masked-runtime|disabled)
                     log "health: $u is $_en_state (operator-disabled) — not required active"
                     continue
                     ;;
             esac
-            log "health: unit not active: $u"
+            # A unit whose own Condition*= says no (the 1.135 stand drop-in sets
+            # ConditionPathExists=!…stand_web_api.py) is not started by systemd
+            # on any restart either — the board's declared configuration, not a
+            # regression. Same never-widen skip. ConditionResult alone is not
+            # enough: systemd reports `no` for a unit whose start was never
+            # attempted this boot too (the result is false until a start
+            # evaluates the conditions), and such an enabled required unit IS a
+            # regression — so the skip also requires the condition to have been
+            # evaluated (ConditionTimestampMonotonic != 0).
+            local _cts
+            _cond=$(systemctl show -p ConditionResult --value "$u" 2>/dev/null || true)
+            _cond=${_cond%%[[:space:]]*}
+            _cts=$(systemctl show -p ConditionTimestampMonotonic --value "$u" 2>/dev/null || true)
+            _cts=${_cts%%[[:space:]]*}
+            case "$_cts" in ''|*[!0-9]*) _cts=0 ;; esac
+            if [ "$_cond" = no ] && [ "$_cts" -ne 0 ]; then
+                log "health: $u not started by its own Condition (operator-configured) — not required active"
+                continue
+            fi
+            log "health: unit not active: $u (state=$HEALTH_LAST_STATE after ${HEALTH_SETTLE_SEC}s)"
+            local _excerpt _line
+            _excerpt=$(_systemctl_bounded 15 status --no-pager -n 5 "$u" | head -12 || true)
+            while IFS= read -r _line; do
+                [ -n "$_line" ] || continue
+                log "health:   status | $_line"
+            done <<< "$_excerpt"
+            HEALTH_FAIL_REASON="unit not active: $u ($HEALTH_LAST_STATE)"
             return 1
         fi
     done < <(python3 -c 'import json,sys
@@ -1550,8 +1851,19 @@ for u in json.load(open(sys.argv[1],encoding="utf-8")).get("services",{}).get("h
 
     if [ -n "$http_url" ]; then
         if command -v curl >/dev/null 2>&1; then
-            if ! curl -fsS -o /dev/null --max-time 10 "$http_url"; then
+            # nginx was just reloaded: three attempts 3 s apart before the
+            # probe counts as a failure.
+            local _try _http_ok=0
+            for _try in 1 2 3; do
+                if curl -fsS -o /dev/null --max-time 10 "$http_url"; then
+                    _http_ok=1
+                    break
+                fi
+                [ "$_try" -lt 3 ] && sleep 3
+            done
+            if [ "$_http_ok" != 1 ]; then
                 log "health: http failed: $http_url"
+                HEALTH_FAIL_REASON="http failed: $http_url"
                 return 1
             fi
         fi
@@ -1561,10 +1873,19 @@ for u in json.load(open(sys.argv[1],encoding="utf-8")).get("services",{}).get("h
         got=$(tr -d '\r' <"$version_file" | grep -E '^[0-9]+(\.[0-9]+){1,3}$' | head -1 || true)
         if [ -n "$version_want" ] && [ "$got" != "$version_want" ]; then
             log "health: version_file=$got want=$version_want"
+            HEALTH_FAIL_REASON="version_file=$got want=$version_want"
             return 1
         fi
     fi
     return 0
+}
+
+# Returns 0 on success, 1 on failure (does not exit — caller may rollback).
+restart_services_and_health() {
+    local txn=$1
+    services_enable_and_tmpfiles "$txn"
+    services_restart_sets "$txn" || return 1
+    health_check "$txn"
 }
 
 commit_markers() {
@@ -1602,7 +1923,9 @@ for u in json.load(open(sys.argv[1],encoding="utf-8")).get("services",{}).get("s
 cmd_apply() {
     ensure_dirs
     migrate_legacy_state
-    acquire_lock
+    # After a cgroup handover the previous process has just closed its lock fd:
+    # wait for it instead of failing on the race.
+    acquire_lock "${SA02M_UPDATE_ESCAPED:+15}"
 
     if ! txn_exists; then
         log "apply: no transaction.json — no-op"
@@ -1618,6 +1941,13 @@ cmd_apply() {
             exit 0
             ;;
     esac
+
+    # Before anything destructive: out of fcgiwrap's cgroup (see the function).
+    escape_foreign_cgroup "$(txn_get id)"
+    if [ "$ESCAPED" = 1 ]; then
+        log "handed over to $ESCAPE_UNIT"
+        exit 0
+    fi
 
     honour_cancel_if_early
 
@@ -1669,41 +1999,43 @@ cmd_apply() {
         self_reexec_before_deploy
     fi
 
-    # Post re-exec (or if re-exec was skipped somehow)
+    # Post re-exec (or if re-exec was skipped somehow). An inherited lock means
+    # an earlier process took the watchdog hold — reload its value (F6).
     if [ ! -f "$IMAGING_LOCK" ]; then
         install_imaging_lock
     else
         IMAGING_HELD=1
+        load_runtime_wdt_prev
     fi
 
     txn_patch "stage=applying" "progress_pct=40"
     # Extract already done before re-exec; deploy now.
     if ! apply_deploy_items "$txn"; then
-        rollback_from_journal "$txn"
+        rollback_from_journal "$txn" E_APPLY "${APPLY_FAIL_REASON:-deploy failed}"
         log "ERROR [E_APPLY]: deploy failed (rolled back)"
         exit 1
     fi
     if ! stamp_runner_version_after_deploy "$txn"; then
-        rollback_from_journal "$txn"
+        rollback_from_journal "$txn" E_APPLY "runner stamp failed"
         log "ERROR [E_APPLY]: runner stamp failed (rolled back)"
         exit 1
     fi
     cleanup_b1_deploy_artifacts
     if ! apply_deletes "$txn"; then
-        rollback_from_journal "$txn"
+        rollback_from_journal "$txn" E_APPLY "${APPLY_FAIL_REASON:-delete failed}"
         log "ERROR [E_APPLY]: delete failed (rolled back)"
         exit 1
     fi
     if ! run_migrations "$txn"; then
-        rollback_from_journal "$txn"
+        rollback_from_journal "$txn" E_APPLY "migrations failed"
         log "ERROR [E_APPLY]: migrations failed (rolled back)"
         exit 1
     fi
 
     txn_patch "stage=verifying" "progress_pct=85"
     if ! restart_services_and_health "$txn"; then
-        rollback_from_journal "$txn"
-        log "ERROR [E_HEALTH]: health gate failed (rolled back)"
+        rollback_from_journal "$txn" E_HEALTH "${HEALTH_FAIL_REASON:-health gate failed}"
+        log "ERROR [E_HEALTH]: health gate failed (rolled back): ${HEALTH_FAIL_REASON:-}"
         exit 1
     fi
 
@@ -1726,11 +2058,54 @@ cmd_recover() {
         log "recover: no transaction — no-op"
         exit 0
     fi
+    RUNNER_CONTEXT=boot
+    recover_transaction
+    exit 0
+}
 
+# `runner reclaim` — the same recovery at RUNTIME, for a transaction whose
+# runner is gone while the board never rebooted: a recover killed by its own
+# timeout mid-rollback (bench 1.135, 2026-09-23) leaves stage=rolling_back,
+# the imaging lock and the hardware watchdog at 0 until the next boot. Refuses
+# to touch anything while a runner holds the lock. Outside boot context the
+# rollback restarts its sets as usual (the web stack is up) and a complete
+# verifying/committing tree is handed to sa02m-update-verify.service, which
+# runs at once. Field entry point: scripts/sa02m-update-remedy.sh.
+cmd_reclaim() {
+    ensure_dirs
+    if ! try_lock; then
+        # Distinct exit code: the remedy script must STOP here (it would
+        # otherwise arm the watchdog and start the flasher under a live runner
+        # that took the lock after its own liveness check).
+        log "reclaim: an update runner holds $LOCKFILE — refused (rc 3)"
+        exit 3
+    fi
+    if ! txn_exists; then
+        if [ -f "$IMAGING_LOCK" ]; then
+            log "reclaim: leftover imaging lock with no transaction — clearing"
+            load_runtime_wdt_prev
+            IMAGING_HELD=1
+            cleanup_imaging_lock || true
+        else
+            log "reclaim: nothing to reclaim (no transaction)"
+        fi
+        exit 0
+    fi
+    RUNNER_CONTEXT=runtime
+    recover_transaction
+    exit 0
+}
+
+# Shared by cmd_recover (boot) and cmd_reclaim (runtime); RUNNER_CONTEXT tells
+# restart_after_rollback whether restarts can complete.
+recover_transaction() {
     local stage txn
     stage=$(txn_get stage)
     txn=$(txn_get id)
-    log "recover: stage=$stage txn=$txn"
+    log "recover: stage=$stage txn=$txn context=${RUNNER_CONTEXT:-runtime}"
+    # The hold (if any) was taken before the reboot; reload its value before
+    # install_imaging_lock reads a manager that already says 0 (F6).
+    load_runtime_wdt_prev
 
     case "$stage" in
         uploaded|validating|cancelled)
@@ -1742,7 +2117,7 @@ cmd_recover() {
             local archive
             archive=$(txn_get rollback_archive)
             if [ -n "$archive" ] && [ -f "$archive" ]; then
-                rollback_from_journal "$txn"
+                rollback_from_journal "$txn" E_POWER "power loss during backup"
             else
                 txn_patch "stage=error" "result=failed" "error_code=E_POWER" \
                     "error_message=power loss during backup" "finished_at=$(utc_now)"
@@ -1751,12 +2126,19 @@ cmd_recover() {
             ;;
         applying)
             install_imaging_lock || true
-            rollback_from_journal "$txn"
+            rollback_from_journal "$txn" E_POWER "power loss during apply (deploy incomplete)"
             ;;
-        verifying)
-            # Deploy finished (files on disk) but health/restart aborted — prefer
-            # completing like committing, not rolling back a good tree. Fall back
-            # to rollback only when the health gate still fails.
+        verifying|committing)
+            # Deploy finished (files on disk) but the health gate never
+            # completed — the runner died (SIGKILL, power loss, hard reset).
+            # A COMPLETE tree is never rolled back here: this unit is ordered
+            # Before=nginx fcgiwrap, so every restart/reload job the health
+            # path would queue on them can only time out, `units_active` would
+            # then find nginx down, and a good update would be rolled back
+            # after ≈3–4 min without web (field incident 2026-09-23 — six
+            # Skolkovo boards). The health gate runs instead from
+            # sa02m-update-verify.service, ordered AFTER the web stack
+            # (schedule_boot_verify); only a real failure there rolls back.
             install_imaging_lock || true
             if [ -n "$txn" ] && [ -f "$(manifest_path "$txn")" ]; then
                 local files_done files_total ver_got ver_want
@@ -1767,42 +2149,33 @@ cmd_recover() {
                 if [ -n "$files_total" ] && [ "$files_total" -gt 0 ] 2>/dev/null \
                     && [ "$files_done" = "$files_total" ] \
                     && [ -n "$ver_want" ] && [ "$ver_got" = "$ver_want" ]; then
-                    log "recover: verifying with deploy complete ($files_done/$files_total, VERSION=$ver_got) - finish health"
-                    if restart_services_and_health "$txn"; then
-                        commit_markers "$txn"
-                        txn_patch "stage=done" "result=success" "progress_pct=100" \
-                            "finished_at=$(utc_now)"
-                        cleanup_imaging_lock || true
-                    else
-                        log "recover: health still failing after complete deploy - rollback"
-                        rollback_from_journal "$txn"
+                    log "recover: $stage with deploy complete ($files_done/$files_total, VERSION=$ver_got) - post-boot verification"
+                    if [ "${RUNNER_CONTEXT:-}" != boot ]; then
+                        # At RUNTIME (reclaim) nothing restarted the daemons
+                        # after the deploy — the dead runner never reached
+                        # its restart sets — so old code is still in memory.
+                        # Run the same sets the apply would have (fcgiwrap,
+                        # nginx -t + reload, restart[] …) before the health
+                        # gate; at boot every unit already started from the
+                        # deployed tree and this must stay off (R1/R9).
+                        if ! services_restart_sets "$txn"; then
+                            log "recover: restart sets failed at runtime - rollback"
+                            rollback_from_journal "$txn" E_HEALTH "${HEALTH_FAIL_REASON:-restart sets failed}"
+                            return 0
+                        fi
                     fi
+                    schedule_boot_verify "$txn"
                 else
-                    log "recover: verifying incomplete (done=$files_done total=$files_total ver=$ver_got want=$ver_want) - rollback"
-                    rollback_from_journal "$txn"
+                    log "recover: $stage incomplete (done=$files_done total=$files_total ver=$ver_got want=$ver_want) - rollback"
+                    rollback_from_journal "$txn" E_POWER "power loss during $stage (deploy incomplete: $files_done/$files_total, VERSION=$ver_got)"
                 fi
             else
-                rollback_from_journal "$txn"
-            fi
-            ;;
-        committing)
-            # Health OK → complete markers; else rollback.
-            if [ -n "$txn" ] && [ -f "$(manifest_path "$txn")" ]; then
-                if restart_services_and_health "$txn"; then
-                    commit_markers "$txn"
-                    txn_patch "stage=done" "result=success" "progress_pct=100" \
-                        "finished_at=$(utc_now)"
-                    cleanup_imaging_lock || true
-                else
-                    rollback_from_journal "$txn"
-                fi
-            else
-                rollback_from_journal "$txn"
+                rollback_from_journal "$txn" E_POWER "power loss during $stage (manifest missing)"
             fi
             ;;
         rolling_back)
             install_imaging_lock || true
-            rollback_from_journal "$txn"
+            rollback_from_journal "$txn" E_POWER "power loss during rollback"
             ;;
         done|error|idle|rolled_back)
             log "recover: no-op for stage=$stage"
@@ -1815,6 +2188,85 @@ cmd_recover() {
             cleanup_imaging_lock || true
             ;;
     esac
+    return 0
+}
+
+# Hand a complete-but-unverified tree to sa02m-update-verify.service (static;
+# After=nginx fcgiwrap sa02m-devices-api). Fallback on an older tree without
+# the unit file: a transient unit with the same ordering — enqueued with
+# --no-block, because its start job waits for nginx, whose start job waits for
+# THIS unit (recover is Before=nginx): a blocking systemd-run could only time
+# out here. When neither can be scheduled the transaction is LEFT at verifying
+# — the next boot retries and the panel reports it stale (lib_web_update.sh)
+# — never rolled back.
+schedule_boot_verify() {
+    local txn=$1 unit="sa02m-update-verify-${txn:0:8}"
+    txn_patch "stage=verifying" "progress_pct=85" "boot_verify_pending=true"
+    if _systemctl_bounded 30 start --no-block sa02m-update-verify.service; then
+        log "recover: sa02m-update-verify.service scheduled (runs after nginx/fcgiwrap)"
+        return 0
+    fi
+    log "recover: sa02m-update-verify.service unavailable - trying a transient unit $unit"
+    if command -v systemd-run >/dev/null 2>&1 \
+        && timeout 30 systemd-run --unit="$unit" --collect --quiet --no-block \
+            -p After=nginx.service -p After=fcgiwrap.service -p After=sa02m-devices-api.service \
+            --setenv=SA02M_UPDATE_STATEDIR="$STATEDIR" "$RUNNER_BIN_DST" verify; then
+        log "recover: transient unit $unit scheduled"
+        return 0
+    fi
+    cleanup_imaging_lock || true
+    log "ERROR [E_CMD]: cannot schedule post-boot verification — stage left at verifying (next boot retries; the panel reports the transaction as stale)"
+    return 0
+}
+
+# `runner verify` — the health gate after boot, from sa02m-update-verify.service
+# (After=nginx fcgiwrap). Idempotent: a second run on a terminal stage is a
+# no-op; a power loss mid-verify leaves `verifying` and the next boot repeats
+# recover → verify. No restart sets: every unit already started from the
+# deployed tree; enable[] + tmpfiles are the two things a boot does not do.
+cmd_verify() {
+    ensure_dirs
+    acquire_lock 60
+
+    if ! txn_exists; then
+        log "verify: no transaction — no-op"
+        exit 0
+    fi
+    local stage txn
+    stage=$(txn_get stage)
+    txn=$(txn_get id)
+    case "$stage" in
+        verifying|committing) ;;
+        *)
+            log "verify: stage=$stage — no-op"
+            exit 0
+            ;;
+    esac
+    if [ -z "$txn" ] || [ ! -f "$(manifest_path "$txn")" ]; then
+        log "ERROR [E_INTERNAL]: verify: manifest missing for txn=$txn — stage left at $stage (the panel reports it stale; a reboot retries)"
+        exit 1
+    fi
+    log "verify: post-boot verification txn=$txn stage=$stage"
+    load_runtime_wdt_prev
+    if [ -f "$IMAGING_LOCK" ]; then
+        IMAGING_HELD=1
+    else
+        install_imaging_lock
+    fi
+    txn_patch "stage=verifying" "boot_verify_pending=false"
+    services_enable_and_tmpfiles "$txn"
+    if ! health_check "$txn"; then
+        rollback_from_journal "$txn" E_HEALTH "${HEALTH_FAIL_REASON:-health gate failed}"
+        log "ERROR [E_HEALTH]: post-boot health failed (rolled back): ${HEALTH_FAIL_REASON:-}"
+        exit 1
+    fi
+    txn_patch "stage=committing" "progress_pct=95"
+    commit_markers "$txn"
+    txn_patch "stage=done" "result=success" "progress_pct=100" "error_code=null" \
+        "error_message=null" "finished_at=$(utc_now)"
+    cleanup_imaging_lock
+    sync
+    log "DONE: update verified after boot txn=$txn"
     exit 0
 }
 
@@ -1822,23 +2274,35 @@ cmd_recover() {
 on_exit() {
     local ec=$?
     if [ "$IMAGING_HELD" = "1" ] && [ "$ec" -ne 0 ]; then
-        # Failed mid-apply: keep imaging lock only if still rolling; otherwise clear.
+        # Failed mid-apply: keep the imaging lock only if still rolling (the
+        # next boot / `reclaim` finishes); otherwise clear. Either way the
+        # hardware watchdog goes back: recover's own TimeoutStartSec SIGTERMed a
+        # rollback on bench 1.135 (2026-09-23) and the board then ran with the
+        # watchdog held at 0 until someone noticed.
         local stage
         stage=$(txn_get stage 2>/dev/null || echo error)
         case "$stage" in
-            applying|verifying|rolling_back|committing) ;;
+            applying|verifying|rolling_back|committing)
+                restore_runtime_wdt
+                log "exit $ec at stage=$stage: imaging lock kept for recover/reclaim; runtime watchdog $WDT_RESTORE_MSG"
+                ;;
             *) cleanup_imaging_lock || true ;;
         esac
     fi
 }
 trap on_exit EXIT
+# A SIGTERM (systemd's TimeoutStartSec, a `systemctl stop`) becomes an exit so
+# the EXIT trap above runs; bash would otherwise die without it.
+trap 'exit 143' INT TERM
 
 case "$CMD" in
     apply) cmd_apply ;;
     recover) cmd_recover ;;
+    verify) cmd_verify ;;
+    reclaim) cmd_reclaim ;;
     version) printf '%s\n' "$UPDATER_VERSION" ;;
     *)
-        echo "usage: $0 apply|recover|version" >&2
+        echo "usage: $0 apply|recover|verify|reclaim|version" >&2
         exit 2
         ;;
 esac
