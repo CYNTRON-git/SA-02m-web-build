@@ -575,6 +575,18 @@ verified fixed by the whole-backlog triage removed; evidence per entry in that c
   by the CGI), `/etc/sa02m-alice` 0770 group-write, the argument-unrestricted sudoers
   trigger with enable/disable/restart verbs, the CGI nudges — is homed only in review
   stamps that ship-beat deletion removes. Give it a durable home.
+- [OPEN] 2026-09-24 **[MED, Operator decision] The GitHub-OTA runner never deploys the nginx site
+  config.** `etc/sa02m-update-runner.sh` `prepare_github_overlay` → `map_dst` has no branch for
+  `etc/nginx/` (only `DST_RE` names it), so a change to `etc/nginx/network_config.conf` reaches a
+  board only via `install.sh`/03-webserver.sh (full install, refresh, offline full update), the
+  offline `.sa02m` package (`scripts/offline-update-deploy-map.json` maps it to
+  `/etc/nginx/sites-available/network_config`) and the golden image. Measured 2026-09-24 on 1.135:
+  after the panel OTA 1.0.6.52 → 1.0.6.53 the `X-SA02M-Auth` strip is absent under /etc/nginx while
+  the repo gate is green. Consequence: every nginx-level hardening (this strip, auth_request lines,
+  CSP/headers) is OTA-invisible. Fork for the Operator: (a) add `etc/nginx/network_config.conf` to
+  the OTA map with `nginx -t` before reload and a rollback on failure — widens what a root OTA may
+  overwrite (security review: the config carries the auth_request lines); (b) keep nginx install-only
+  and say so in every contract that pins an nginx line. Until decided, the texts say (b).
 - [OPEN] 2026-09-24 **[LOW] `docs/contracts/cloud-panel-proxy.md` carries a placeholder for the
   cloud's commit.** The cloud fix (forward the `X-SA02M-` header family) is their PR #120 (cloud
   0.18.4, branch adc9b2c — a branch hash, they squash). Replace «cloud commit: <to be filled after
