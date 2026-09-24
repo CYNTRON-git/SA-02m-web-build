@@ -2,8 +2,8 @@
 
 Recorded findings and deferred work (`.ai-dev/procedures/backlog.md` owns the
 format). One status per finding: `- [OPEN|RESOLVED] <date> <item>`. Resolved
-entries are pruned (history lives in git); last prune 2026-09-23 (1.0.6.51 — 34 entries
-verified fixed by the whole-backlog triage removed; evidence per entry in that commit's body).
+entries are pruned (history lives in git); last prune 2026-09-24 (1.0.6.54 — audit 2026-09-24 M5:
+24 RESOLVED entries and one OPEN entry shipped in 1.0.6.51 removed; list in that commit's body).
 
 ## Open
 
@@ -19,19 +19,10 @@ verified fixed by the whole-backlog triage removed; evidence per entry in that c
   `:94-108`. A10: the backlog entry «The GitHub-OTA runner never deploys the nginx site config» mixes
   English and Russian (options (a)/(b)); make it one language (English, machine-facing backlog).
 
-- [OPEN] 2026-09-16 **[HIGH] Audit 2026-09-16 (whole tree at 1.0.6.48) — H1: branch-protection floor half-wired and already bypassed.** Live `gh api …/branches/main/protection`: `quality` is required but `enforce_admins:false`, `strict:false`, no review rule; `1dfa503` (2026-09-10, «1.0.6.46», 13 files incl. `bridge_fmb.py`/`bridge_mr02m.py`) sits on `main` with NO PR (direct push, no review stamp evidence). `.ai-dev/notes/ci-budget.md:32` claims `enforce_admins: true` — false. Fix: set `enforce_admins=true` + `strict=true` on the forge (Operator's word), correct the note, retroactive Reviewer pass over 1.0.6.46's diff.
-- [OPEN] 2026-09-16 **[HIGH] Audit H2: GitHub Actions billing-locked since 1.0.6.24 (2026-08-28 20:47, run 33209713129), not 1.0.6.40.** Last green = 1.0.6.23. 25 releases + 3 side branches merged with the required check never executed; the substitute (local suite) runs on Windows where `shellcheck`, `ui-layout`, two `web-auth-behaviour` asserts and `install-atomic` 8b skip. Not recorded durably until now. Operator action: unlock billing; until then run the substitute under WSL/Linux where possible (node is absent in WSL today).
-- [RESOLVED 2026-09-16, 1.0.6.49 — the workflow installs the harness + chromium; the first real run is the proof (CI billing-locked, H2)] 2026-09-16 **[HIGH] Audit H3: CI cannot go green even after unlock** — `.github/workflows/web-quality.yml` installs no playwright/chromium while review rows `cloud-card-smoke` (`scripts/dev/cloud-card-smoke.mjs:47,143`) and `sh-modal-layout-smoke` (`:33,292`) exit 2 without it. Latent since 1.0.6.28. Fix: `npm run ui-layout:install` (+ chromium deps) in the workflow.
-- [RESOLVED 2026-09-16, 1.0.6.49 — overlay synced, row `firstboot-overlay-parity`] 2026-09-16 **[MED] Audit M1: firstboot-overlay drift** — `tools/imaging/firstboot-overlay/usr/local/sbin/sa02m-eth-coldboot.sh` (76-line diff vs `usr/local/sbin/`: no resolver belt/bootstrap shim) and `…/usr/local/bin/fix-eth.sh` vs `etc/fix-eth.sh` (no `dns_ensure`) are stale; `tools/imaging/autorun.sh:55-60` copies them over a fresh rootfs, so clones flashed via that path lose the `docs/contracts/boot-network-dns.md` guarantee. No registry row covers the overlay copies (the expand script is the only pinned pair). Unchecked twins: `sa02m-failure-monitor`, `sa02m-userspace-watchdog`. Fix: overlay copies byte-identical to their homes + an overlay-parity row.
-- [RESOLVED 2026-09-16, 1.0.6.49 — both CGIs POST-only + token; rows `cgi-csrf-policy` + `cgi-csrf-behaviour`; BUGLOG 2026-09-17] 2026-09-16 **[MED] Audit M2 (security): CSRF gaps** — `www/network_config/cgi-bin/mqtt_scan.cgi:19-30,66` runs `sudo python3 mqtt_bus_scan.py` on POST AND GET with no `web_csrf_*` call (the GET-mutation class `docs/decisions/selective-csrf-policy.md:24` declared closed); `web_update_check.cgi:25` POST→sudo without a token. Only `web-update-csrf-contract` gates one endpoint; `docs/threat-model.md` §4 «держится (1.0.5.72)» over-claims. Fix: set-wide row (every sudo/mutating CGI ⇒ POST-only + `web_csrf_*`, recorded exemptions) + the two endpoints.
-- [RESOLVED 2026-09-16, 1.0.6.49] 2026-09-16 **[MED] Audit M3: threat model stale** — §5 (`docs/threat-model.md:341-345`) says cloud is latent/backend not working, contradicted by §3's 2026-09 entries and the bench; `:391-392` says the cloud deploy is absent from deployment.md while `docs/deployment.md:682-700` has the unbind runbook; `:199` cites a deleted transient; no §4 row for LAN→1883→`/devices/<id>/controls/{do,beeper,alarm_led}/on` (the 1.0.6.42/43 path).
-- [RESOLVED 2026-09-16, 1.0.6.49 — pruned, shipped items closed] 2026-09-16 **[MED] Audit M4: backlog hygiene** — header says resolved entries are pruned, 20 `RESOLVED` remain; OPEN-but-shipped items: headless-smoke (script gone), rs485 consumer row (exists), «docs say 3 rows» (fixed), architecture.md missing (stub exists), bundle list (fixed), i18n/html-id rows (exist). Prune on the next branch.
-- [RESOLVED 2026-09-16, 1.0.6.49 — docs half: the bench facts landed in `docs/deployment.md`; the pointer rewrite is the orchestrator's] 2026-09-16 **[MED] Audit M5: state pointer journals** — DONE blocks and bench runbook facts (stick G:, donor ssh keys, `D:\` paths) belong in `docs/deployment.md`; cadence marker omits the 2026-09-08 line audit (CHANGELOG:357-361). Rewrite the pointer as a pointer.
-- [RESOLVED 2026-09-16, 1.0.6.49 — §0/§3/§6 current; values 5–7 await the Operator's `[?]`] 2026-09-16 **[MED] Audit M6: product brief stale** — `docs/product.md` §0/§3/§6 omit cloud, Alice/«Умный дом», scenarios, «Устройства»; `lite` reviews judge product fit against it.
+- [OPEN] 2026-09-16 **[HIGH] Audit 2026-09-16 (whole tree at 1.0.6.48) — H1: branch-protection floor half-wired and already bypassed.** Live `gh api …/branches/main/protection`: `quality` is required but `enforce_admins:false`, `strict:false`, no review rule; `1dfa503` (2026-09-10, «1.0.6.46», 13 files incl. `bridge_fmb.py`/`bridge_mr02m.py`) sits on `main` with NO PR (direct push, no review stamp evidence). `.ai-dev/notes/ci-budget.md:32` claims `enforce_admins: true` — false. Fix: set `enforce_admins=true` + `strict=true` on the forge (Operator's word), correct the note, retroactive Reviewer pass over 1.0.6.46's diff. Status 2026-09-24 (audit H1): unchanged — `contexts:["quality"]` present, `strict:false`, `enforce_admins:false`, no review rule; the 1.0.6.46 retro-review still owed.
+- [OPEN] 2026-09-16 **[HIGH] Audit H2: GitHub Actions billing-locked since 1.0.6.24 (2026-08-28 20:47, run 33209713129), not 1.0.6.40.** Last green = 1.0.6.23. 25 releases + 3 side branches merged with the required check never executed; the substitute (local suite) runs on Windows where `shellcheck`, `ui-layout`, two `web-auth-behaviour` asserts and `install-atomic` 8b skip. Not recorded durably until now. Operator action: unlock billing; until then run the substitute under WSL/Linux where possible (node is absent in WSL today). Status 2026-09-24 (audit H1): still locked — the five PR runs #182–#186 each failed in 4–10 s and all five releases (1.0.6.49–.53) were admin-merged over the red required check.
 - [OPEN] 2026-09-16 **[MED] Audit M7: verification coverage** — no dependency-CVE row (pip deps installed unpinned `scripts/lib.sh:739-763`; Node-RED payload; frpc) — re-rank the 08-28 LOW item; 16 mutating/root-capable CGIs (cmd_exec, hw_set, kernel_ctrl, reboot, restart, web_creds, web_factory_reset, storage_format_set, mqtt_config, mqtt_ctrl, cpu_profile, gateway_ctrl, web_update_upload/cancel, ssh_debug, web_backup) have zero behavioural test references. **Operator decision owed:** add `pip-audit` / `npm audit --package-lock-only` rows, or record the accepted risk (1.0.6.49 plan: no row until decided). The CGI half now has a shape to reuse — `cgi-csrf-behaviour` covers two of the 16; the rest stay uncovered.
-- [OPEN] 2026-09-16 **[LOW] Audit M8 (advisory): module size** — 47 files > 800 lines (40 on 08-28): main.css 6055, flasher.js 5863, status.js 2584, smarthome.js 1873, config/api.py 1411, engine.py 1117; gate files too (test_binding_reset.py 1735, sh-modal-layout-smoke.mjs 1209, sudoers-pin-contract.sh 1148, ui-layout.mjs 1062). Decompose worklist (`.ai-dev/procedures/decompose.md`), by cohesion.
-- [RESOLVED 2026-09-16, 1.0.6.49 — L1–L5 landed; the workspace dimension is its own OPEN entry below] 2026-09-16 **[LOW] Audit L1–L5** — L1 `docs/SA02M_IMAGING_GUIDE.md:1179` «Этап 1 — MVP (текущий)» stale; L2 `tools/imaging/_run_reset_cloud.py` tracked on a gitignore exception, no backlog line; L3 seven contracts not in their gate's `covers` (a contract edit never re-runs its row under `--touched`); L4 no `transient-hygiene` row (inert now); L5 `.ai-dev/notes/quality-gate-environment.md` lacks the two smoke rows. Orchestrator's own dimension: 9 git worktrees (3 nested under `carel-smart-home-support-3e146c/.ai-dev/worktrees/`, 4 `claude/*` on stale commits), local branches without upstream (`1.0.6.33–36`, `fix/alice-room-membership`), local `main` behind origin — prune once the Operator confirms which sessions are dead.
-- [RESOLVED 2026-09-16, 1.0.6.49 — (1) §12 NOCSUM/ERR, (2) `rm -f "$RESULT.tmp"` at start + harness 6e, (3) CHANGELOG, (4) headers collapsed, (5) two smoke rows in the environment note] 2026-09-16 **[LOW] Reviewer advisories of the 1.0.6.48 review — next fixup.** (1) the verdict file may carry `NOCSUM`/`ERR` besides `OK|BAD` (`etc/sa02m-rootfs-expand.sh` `write_result`, `sb_csum_of_block`), but `docs/deployment.md` §12 / CHANGELOG / BUGLOG describe only `OK | BAD` — one clause in §12. (2) a `.result.tmp` can survive a power cut between the temp write and the rename commit and nothing removes it later — `rm -f "$RESULT.tmp"` at `start`. (3) CHANGELOG/§12 do not say the flash→cut→boot re-run of the verdict file is deferred to the next golden capture. (4) the bench cause is restated in six places pointing to BUGLOG 16:40 — collapse the script/harness headers to one clause + pointer. (5) `.ai-dev/notes/quality-gate-environment.md` lacks rows for `cloud-card-smoke` / `sh-modal-layout-smoke`, which FAIL (not skip) without playwright. Source: `.ai-dev/reviews/1.0.6.48_review.md` (transient).
+- [OPEN] 2026-09-16 **[LOW] Audit M8 (advisory): module size** — 47 files > 800 lines (40 on 08-28): main.css 6055, flasher.js 5863, status.js 2584, smarthome.js 1873, config/api.py 1411, engine.py 1117; gate files too (test_binding_reset.py 1735, sh-modal-layout-smoke.mjs 1209, sudoers-pin-contract.sh 1148, ui-layout.mjs 1062). Decompose worklist (`.ai-dev/procedures/decompose.md`), by cohesion. Re-measured 2026-09-24: 56 files; the order lives in the «Decomposition worklist» entry (its one home).
 - [OPEN] 2026-09-16 **[LOW] `tools/imaging/_run_reset_cloud.py` — keep or retire (Operator).** Tracked via the `.gitignore` exception (`:89-93`) since 1.0.5.64; used only by hand against the bench (audit L2).
 - [OPEN] 2026-09-16 **[LOW] The firstboot overlay carries the DNS-belt callers but not the belt.** `tools/imaging/firstboot-overlay/` has `sa02m-eth-coldboot.sh` and `fix-eth.sh` with `dns_ensure` (synced 1.0.6.49) but no `usr/local/sbin/sa02m-dns-ensure.sh`; `dns_ensure` guards on `-x`, so a clone flashed from a pre-1.0.6.6 image gets the guard, not the belt. Fix: add the helper to the overlay + its PAIRS row in `firstboot-overlay-parity` (audit M1 follow-up).
 - [OPEN] 2026-09-16 **[HIGH] Rebuild the board kernel `6.1.0-rc6` with the upstream ext4 patch
@@ -54,141 +45,6 @@ verified fixed by the whole-backlog triage removed; evidence per entry in that c
   decision: wear vs durability — `commit=5..30` and/or `data=ordered` in the image's fstab /
   `tune2fs -o` defaults, or targeted fsync in every config writer (the
   `sa02m_atomic_install` shape, BUGLOG 2026-09-08). Record: `docs/bugs/BUGLOG.md` 2026-09-16 16:40.
-- [RESOLVED 1.0.6.50] 2026-09-20 **[MED] Every Carel device declares a fan binding its controller cannot have.**
-  `opt/sa02m-alice/sa02m_alice/config/ahu_status.py` `_FLOAT_ROWS` emits BOTH
-  `("fan_speed","fan_supply","unit.percent")` and `("fan_step","fan_step","unit.step")` for every
-  `kind=carel` device, while `docs/contracts/carel-ahu.md` §5 says `fan_supply` exists only on crst
-  (c.pCOmini) and `fan_step` only on uAria. Measured on bench 1.135: COM3-1 (crst) publishes
-  fan_supply 80.0 / no fan_step, COM3-2 (uaria) publishes fan_step 7 / no fan_supply — the DATA is
-  family-correct, only the declaration is not. Inert today (both rows `cloud_only`, the absent one
-  reports `present:false`), and it becomes a live defect when the Alice fan capability ships: a uAria
-  would declare a percent control nothing publishes and `_wb_fan` cannot write (no `HR_FAN_SUPPLY`).
-  FIX: make the two fan rows family-aware — `_OPTIONAL_FLOAT_ROWS` (:62-65) is the existing
-  mechanism — and correct the contract in the same change.
-  **Second finding, same root:** `carel-ahu.md` §7 claims the Devices tab picks the family by the
-  PRESENCE of `fan_step`. It does not: `www/network_config/static/js/devices.js:698` branches on
-  `d.family === "uaria"`, and `bridge_carel.py:69` resolves that field from the YAML entry or the
-  FC17 signature. The tab is correct today; the CONTRACT is wrong and is what sent the cloud session
-  hunting a symptom that does not exist. No `devices.js` change is needed.
-  **Hard constraint from the cloud session — do NOT drop the float rows:** `fan_speed`/`fan_step` are
-  not valid Yandex float instances, so both rows must keep `cloud_only: true`; an out-of-schema
-  Discovery response makes every device on that account vanish from the app.
-  **[SUPERSEDED — see «CLAIM RETRACTED» below: that last clause is not true as written.]**
-  The float-row instruction itself stands; only the stated consequence was withdrawn. Shipment 2 adds ONE
-  `devices.capabilities.mode` (instance `fan_speed`) BESIDE them, percent-backed on c.pCOmini and
-  step-backed on uAria. Open on the cloud side: the value vocabulary (per-family vs shared) — their
-  Operator's product call.
-  Honest note for the CHANGELOG when this ships: the narrowing alone changes nothing a user sees
-  (`present:false` and «absent» render identically); its value is a truthful declaration and a safe
-  shipment 2. Scope of any config write: bench 1.135 ONLY (six Skolkovo boards are on 1.0.6.37 and
-  10 of 13 enrolled devices have been offline since 09-07/08). Deploy order: board → cloud.
-  **UPDATE 2026-09-20 — the cloud Operator merged the two shipments into one and settled the
-  vocabulary.** One release: family-aware float rows AND the Alice capability, verified on the bench
-  in one pass. One shared vocabulary for both families, `devices.capabilities.mode` instance
-  `fan_speed`, five values — quiet/low/medium/high/turbo = 20/40/60/80/100 % on crst and
-  steps 2/4/6/8/10 on uAria. `auto` deliberately absent (no auto register on c.pCOmini).
-  Read-back clamps to NEAREST, ties round up. Constants VERIFIED here, and note the path their brief
-  gives is wrong — they live in `opt/sa02m-carel/sa02m_carel/carel_ahu.py`, not under
-  `opt/sa02m-modbus-mqtt/`: `FAN_PCT_MIN=20.0` (:103), `FAN_PCT_MAX=100.0` (:104),
-  `UARIA_FAN_STEP_MIN=1` (:105), `UARIA_FAN_STEP_MAX=10` (:106), `HR_FAN_SUPPLY=53` (:44),
-  `HR_UARIA_FAN_SP=197` (:69, USINT steps 1..10). Their caveat is correct: step 1 = 10 % is below
-  anything a c.pCOmini accepts, so the unified scale starts at 20 %.
-  **Wart to record in the plan, inherent to 5 names over a continuous range:** read-back and set are
-  asymmetric at off-vocabulary values — a uAria at step 1 reports `quiet`, but tapping `quiet`
-  writes step 2 and MOVES the fan; a c.pCOmini at 73 % reports `high`, tapping `high` writes 80.
-  Acceptable, but it must be stated, not discovered by a customer.
-  Note for the Builder: `.ai-dev/quality/checks/carel-shared-home.sh` gates the one-home rule for the
-  Carel register map — the new mapping module must not open a second home for these constants.
-  **SETTLED 2026-09-20 (cloud Operator).** The read/write asymmetry is ACCEPTED AS DESIGNED —
-  nearest-clamp on read, unconditional write on set — chosen over the per-family `quiet`=step 1
-  alternative because that one fixes a single case and buys back the cross-family divergence the
-  «приведи к единому виду» instruction existed to remove. **Binding: this is contract text, not a
-  code comment** — it goes into `docs/contracts/carel-ahu.md` beside the mapping table, in
-  customer-facing wording («выбор режима, в котором устройство уже показано, всё равно записывает
-  значение этого режима; на промежуточных значениях это сдвинет вентилятор»). Without it the first
-  support ticket becomes an investigation, which is the cost the decision was made to avoid.
-  Final brief: one shipment; one `devices.capabilities.mode`/`fan_speed` BESIDE the float rows
-  (which keep `cloud_only: true`); five values 20/40/60/80/100 % ≡ steps 2/4/6/8/10; no `auto`;
-  constants CONSUMED from `opt/sa02m-carel/sa02m_carel/carel_ahu.py` (a restated 20 or 10 is a second
-  home and turns `carel-shared-home` red); `_FLOAT_ROWS` narrowed per family first; §5/§7 corrections
-  ride along; config write on bench 1.135 only; deploy board → cloud. Joint bench pass agreed:
-  COM3-2 `fan_step` 7→6→7, then COM3-1 `fan_supply` 80→75→80 (both off-vocabulary on purpose —
-  they exercise nearest-clamp while proving the raw value still reaches the cloud intact).
-  **BENCH PASS DONE 2026-09-20 17:48-17:52 (joint, cloud session drove the writes, this session
-  watched the wire).** uAria COM3-2 `fan_step` 7→6→7 and c.pCOmini COM3-1 `fan_supply` 80→75→80,
-  both confirmed by two independent watches; unit stayed running, supply temp unchanged; the
-  off-vocabulary 6 and 75.0 reached the cache EXACT, so nearest-clamp is a presentation rule only —
-  measured, not inferred. Line behaviour: a write costs ~5 extra frame errors per 2-min window and
-  zero offline events on COM3-1; COM3-2's two offline events sat inside its own rate (9 per 80 min).
-  Recorded as «bus disturbance NOT SUPPORTED» rather than «ruled out» — one clean pair of windows is
-  evidence, not proof. NOT exercised today (nothing to exercise yet): the Alice capability, the
-  mapping, a tap from the app.
-  **NEW REQUIREMENT that ships WITH the capability — write-backs are silent in the journal.** Four
-  writes across both families left zero trace: no arriving topic/payload, no resolved register, no
-  clamped value, no retry count, no outcome. `_wb_done`/`_wb_write_retry` in `bridge_carel.py` carry
-  no logging. Tolerable while only a deliberate MQTT publish reaches the path; unacceptable once a
-  customer's app button moves a real fan on a line that loses ~1.5 % of frames — both «it moved and
-  we do not know why» and «it did not move and we do not know why» become unanswerable, and the log
-  is what keeps the ACCEPTED read/write asymmetry cheap to support. Log spec (cloud session's
-  wording, better than ours): arriving topic + payload, resolved register + clamped value, whether
-  the retry wrapper fired and how many attempts, outcome. Write path only — do not add noise to the
-  poll loop, which already logs its own failures.
-  **Deploy risk lowered:** the cloud half is labels-only (`fan_step` gets «Ступень вентилятора» /
-  «Ступ.», `unit.step` keeps its empty suffix) and is independent of ours in BOTH directions, so
-  board → cloud is a preference for coherence, not a dependency — if our release lands first their
-  page simply keeps its current labels. **Offered and ACCEPTED for ship time:** before/after the
-  1.135 config write they re-run their bench chain against our build (board conf → hub catalogue →
-  built function, byte-compared) — the check that catches a mapping module quietly changing what the
-  catalogue publishes.
-  Operator's go given 2026-09-20 (full cycle + bench pass). Branch `1.0.6.50` cut; planning under way.
-  **CLAIM RETRACTED 2026-09-20 (cloud session), superseding the «Hard constraint» paragraph above.**
-  «An out-of-schema Discovery response makes every device on that account vanish from the app» is
-  NOT established: it lived in their repo as two docstrings with no primary source, no recorded
-  observation, and nobody had measured it. **Their research has since CONCLUDED (2026-09-20)**;
-  the conclusion, attributed to them and with its missing citations stated, is recorded once in
-  `docs/contracts/carel-ahu.md` §6. The BEHAVIOUR the retracted claim was used to justify is
-  unchanged — `cloud_only` on both float rows, the mode item validated at write time — and now
-  rests on the cost that conclusion names (one rejected device until the next Discovery), not on
-  the retracted one. The verified fact that should carry the weight instead: Discovery
-  is ON DEMAND, so nothing reaches an app until the user taps «Обновить список устройств» (their
-  `docs/yandex-smart-home-rules.md` §5; our own record of the same behaviour is in
-  `docs/contracts/alice-mqtt-mapping.md`). Every site where THIS repo stated the claim as fact was
-  introduced on branch 1.0.6.50 and is corrected in it (`config/models.py`, `config/ahu_status.py`,
-  `tests/test_models.py`, `docs/contracts/carel-ahu.md`); `git show origin/main` carries none of it.
-  **RESOLVED in 1.0.6.50.** Family-true fan rows + one `devices.capabilities.mode`/`fan_speed`
-  (shared four-name ladder, positions written once, the percent side DERIVED from the map limits,
-  in the new one-home module
-  `opt/sa02m-carel/sa02m_carel/carel_fan.py`), the write-back audit trail across every Carel
-  handler, the mode schema closed in `models.py`, and the contract corrected — §6 (not §5: §5 was
-  already right) plus the §7 layer clarification. Two further findings fixed in the same change,
-  both recorded here because the next sweep would otherwise re-derive them:
-  (1) the brief's claim that «a restated 20 or 10 turns `carel-shared-home` red» was FALSE at HEAD —
-  case 5 swept two coil needles, neither a fan constant; widened, and the registry text corrected in
-  the same change;
-  (2) that same sweep was COMMENT-BLIND — `grep -rlF` counted `#FAN_PCT_MIN = 20.0` as a definition,
-  so its non-vacuity half could not be turned RED by the one mutation it exists to survive, and a
-  commented-out copy elsewhere read as a live second home. Every hit is now confirmed through
-  `lib_check.sh`, and the case is registered in `comment-mutation-proof`.
-  STILL OPEN, carried out of this entry into its own line below: the `comment-mutation-proof`
-  enumeration gap for `04-flasher.sh` (plan F4), and the exact official Yandex value set for
-  `devices.capabilities.mode` instance `fan_speed` (plan F5 — we admit auto/quiet/low/medium/high/
-  turbo and declare only the five; the set was NOT verified against a canonical source).
-- [OPEN] 2026-09-20 **[LOW] `comment-mutation-proof` does not case `carel-shared-home` for
-  `04-flasher.sh`.** Cases exist for `05-mqtt.sh`, `06-alice.sh` and `update-www-only.sh`, though
-  case 1 of the gate pins `04-flasher.sh` identically — so a commented-out installer call there is
-  the one of the four the mutation proof does not measure. Same shape as the widening done in
-  1.0.6.50; deliberately left out of that change, which already carried two structural forks.
-  FIX: one CASES row plus the run that proves it RED. Own branch.
-- [RESOLVED 1.0.6.50] 2026-09-20 **[LOW] The Yandex value set for `devices.capabilities.mode` /
-  `fan_speed` is unverified.** Verified at source during review round 2: `auto` IS in the
-  recommended set, and the per-instance lists are ADVISORY («Допускается использовать любые
-  комбинации режимов работы и функций без ограничений»), so a wider allowlist is not a hole.
-  `models.MODE_INSTANCES` keeps auto/quiet/low/medium/high/turbo and the comment now cites
-  https://yandex.ru/dev/dialogs/smart-home/doc/ru/concepts/mode-instance and .../mode-instance-modes
-  instead of «unverified». Excluding `auto` from what we DECLARE is a product choice (no auto fan
-  register on a c.pCOmini), not a schema limit. Same round: the vocabulary itself became the
-  recommended four (low/medium/high/turbo = 20/40/70/100 % = steps 2/4/7/10); `quiet` was the one
-  value outside the recommended set and was dropped.
 - [OPEN] 2026-09-23 **[LOW] Follow-ups found while shipping 1.0.6.50 (Carel fan) — none is in that
   release, each is its own change.**
   1. **Observability: the Alice client logs no POSITIVE line when it builds a catalogue.** After an
@@ -268,6 +124,13 @@ verified fixed by the whole-backlog triage removed; evidence per entry in that c
   1.0.6.51 (A-1); the bus itself: Operator decision «data first» — B3 diagnostics ship in
   1.0.6.51, the COM3 fix follows in 1.0.6.52 on 1 h of bench data. «22 Sep 18:00» is a retention
   edge, not the onset (cloud session + re-checked here).
+  DATA 2026-09-24 10:54 (B3 capture, bench on 1.0.6.53): UART framing errors 20–51/min on COM3 only
+  (the other four ports ~0); errors per hour by device: mr02m-COM3-10 652, carel-COM3-1 368,
+  carel-COM3-2 336, led-COM3-13 123. Framing errors are a line-level symptom (baud, termination,
+  wiring, a talker off-board), not a software one — no code change is indicated. RE-TARGETED: the next
+  step is a person at the stand — unplug one device at a time and re-sample the framing-error rate;
+  no release carries this until that data exists. The Carel in-reply-pause loss (its own entry) is a
+  separate, software cause.
 - [OPEN] 2026-09-09 **[MED] An Alice «включи» is answered DONE while `sa02m-rules` is down.**
   The registry publishes `/devices/sa02m-rules-<sid>/controls/run/on` and reports success;
   with the engine stopped the publish is simply lost and the user gets «сделано» for a
@@ -441,7 +304,6 @@ verified fixed by the whole-backlog triage removed; evidence per entry in that c
   pre-existing: light `.btn-warn:hover` = 4.44:1 (`#b45309` on `#fff0cc`), just under AA;
   `ui-layout` never measures hover.
 
-
 - [OPEN] 2026-08-27 **[MED] The action path writes the commanded value into our own
   state cache, so a failed command is indistinguishable from a successful one.**
   `device_registry.apply_actions` does `self._mqtt_cache[topic] = payload` as it builds
@@ -502,7 +364,6 @@ verified fixed by the whole-backlog triage removed; evidence per entry in that c
   seam class the 1.0.6.19 gate pins on the helper↔client side, left unpinned on the
   JS↔contract side. Fix direction: a small assertion in the headless driver (the
   linked-state card offers «Отвязать», never «Завершить привязку»).
-
 
 - [OPEN] 2026-08-27 **[MED] Alice client never resubscribes MQTT after a broker
   reconnect.** Subscriptions are taken once, right after `mqtt.connect()`
@@ -642,6 +503,12 @@ verified fixed by the whole-backlog triage removed; evidence per entry in that c
   playwright missing». quality-gate-rigor.md: a skipped row is reported as skipped, never as
   passed. Fix: exit non-zero (or the runner's SKIP status, if it has one) when the driver cannot
   run; add the case to `run.test.mjs`. Queued for R58 (gates and tools).
+  WIDENED by audit 2026-09-24 L1: the runner HAS no skip status, so every whole-row skip exits 0 and
+  prints PASS — `shellcheck.sh:15-17`, `pytest-suite.sh:32-37` (15 rows), `sh-model-schema.sh:52-53`,
+  `ui-layout.mjs:763-765`. Only shellcheck skips on the dev box today (run under WSL: rc 0, full set,
+  so no live defect). `ui-layout.mjs:114` still says «CI has no …» (stale since 1.0.6.49). Fix: a
+  runner SKIP status (exit-code convention, printed as SKIP, counted apart) + a `run.test.mjs` case;
+  1.0.6.54's `sudoers-visudo` row is the newest caller that needs it.
 - [OPEN] 2026-09-23 **[LOW] Known limit: the delivering GitHub OTA on a ≤1.0.6.51 board still
   freezes at 85 %.** `self_reexec_before_deploy` copies the INSTALLED runner and execs the copy,
   so the whole delivering apply (health gate included) runs under the OLD code and dies at
@@ -1016,68 +883,51 @@ verified fixed by the whole-backlog triage removed; evidence per entry in that c
 - [OPEN] 2026-08-24 **[MED] make-image.sh strands the donor after capture.** It strips SSH host keys as its last pre-`dd` step but never reboots the donor in the still-live session, so post-capture the board is unreachable (sshd has no host keys, panel stopped) until a manual power cycle — a problem on a remote bench. One line: schedule a detached reboot at the end of the stream session (rc.local already regenerates keys at boot).
 - [OPEN] 2026-08-27 **[MED] «Время без опроса» accepts a value that silently breaks outputs, with no warning.** MR-02m holding 134 clears ALL of a module's outputs after N seconds without a frame that resets its inactivity counter (five reset sites, only one of them address-matched — the table is in the note named below). The module-config window (`flasher.js`, `saveMrGlobalInactivity` + the per-AO field + the bulk template-apply path at ~4322) offers the raw range 0–255 with no guidance, so a value shorter than one bus sweep — 1 s on a line the bridge polls round-robin — makes every output fall by itself during normal operation. Cost a full firmware-update cycle and hours of bus tracing on bench 1.135 before the register was read (root cause + the A/B/A proof: `.ai-dev/notes/mr02m-inactivity-timeout.md`). Fix candidates: warn (do not block) below a threshold derived from the port's device count and poll period; surface the current value in the module card next to the DO states; make the template-apply path name this field explicitly in its confirmation, since it copies it onto other modules. Fold in round-1 finding 10 while there: neither `docs/agent-rules/web-diagnostic-tools.md` nor `docs/agent-rules/sa02m-domain.md` points at the note, so the symptom->tool dispatch still cannot route "an output falls by itself".
 
+- [OPEN] 2026-09-24 **[MED, Operator decision] The two HTTP daemons are outside the CSRF policy
+  (audit 2026-09-24 M3).** `docs/threat-model.md:291` says `X-SA02M-CSRF` covers «ВСЕХ» session-authed
+  mutating endpoints; the flasher daemon (`service.py:345-365`: `/flash`, `/flash_batch`,
+  `/ports/release|restore`, `/firmware/*`, `/device_config/network`) and devices-api (`api.py:311-323`:
+  `widgets/add|remove`) are session-authed behind `auth_request`, mutating, and carry no token and no
+  recorded exemption; the frontend sends none (`flasher.js`, `flasher/*.js`, `devices.js`).
+  `_read_json_body` parses any Content-Type, so a `text/plain` form POST needs no preflight. What
+  holds: `SameSite=Lax` blocks cross-SITE POSTs; the residue is same-site origins on the board's IP
+  (other ports, e.g. Node-RED `:1880`). `/ports/release` stops field polling; `/flash` is
+  irreversible. Options: (a) extend the token to both daemons (they already read the session file; the
+  `<hash>.csrf` sits next to it), or (b) record the exemption with its reason in
+  `docs/decisions/selective-csrf-policy.md` and correct the threat-model line. Not the devices-api
+  loopback entry (a different class).
+- [OPEN] 2026-09-24 **[LOW] The OTA destination allow-list lives in four places and one has drifted
+  (audit L2).** `etc/sa02m-update-runner.sh` twice (identical blocks), `scripts/pack-offline-update.py`,
+  `opt/sa02m-update/lib/validate_package.py`; the runner admits any `/opt/mplc4/…`, the other two a
+  closed two-name set. No parity row (`mplc-ota-deploy-contract.sh:54` pins one prefix). Fix: runner
+  decomposition seam (a) in the worklist entry (one Python module next to `validate_package.py`).
+- [OPEN] 2026-09-24 **[LOW] The journal-on-disk policy has no repo gate (audit L3).**
+  `etc/systemd/sa02m-journald.conf` `Storage=persistent` and `etc/default/armbian-ramlog`
+  `ENABLED=false` are checked only on a board (`verify-release-on-board.sh`); a comment-out stays green
+  in the repo. Fix: a static pin + a `comment-mutation-proof` case.
+- [OPEN] 2026-09-24 **[LOW] `docs/contracts/sh-model.md` reads as implemented (audit L5).** §0 says
+  the daemon, the UI and Alice «строятся против неё», but no producer or consumer exists in `opt www
+  etc scripts`; the shipped «Умный дом»/Alice build on `alice-mqtt-mapping.md`. Fix: a status line
+  (design contract, not implemented) so a review does not judge shipped code against it.
+- [OPEN] 2026-09-24 **[LOW] `.ai-dev/8d/bench-136-reset.md` parked since 2026-09-09 (audit L6).** Its
+  own header forbids parking; D5 step F and D8 are not done. Graduate it to `docs/bugs/` with its
+  citations re-pointed, or the Operator closes D5-F.
+- [OPEN] 2026-09-24 **[LOW] Contracts missing from their rows' `covers` (audit L7, the 09-16 L3 class
+  recurring).** `docs/contracts/web-update.md` is in none of the 14 runner rows' `covers` (e.g.
+  `update-recover-boot`, which it cites as the G2/G5 gate); `docs/contracts/cloud-panel-proxy.md` is
+  absent from `app-csrf-recovery`, `web-auth-behaviour`, `cgi-csrf-behaviour`. A contract edit then
+  re-runs nothing under `--touched`. Every contract still has ≥1 validating row.
+- [OPEN] 2026-09-24 **[LOW, advisory] CHANGELOG release prose is heavy (audit L8).** 1.0.6.52 is 176
+  lines, .51 115, .53 92; the file is 6,128 lines. A release entry states user impact; the mechanism
+  lives in the contract or the commit.
+- [OPEN] 2026-09-24 **[LOW, latent] The flasher uses `cgi.FieldStorage` (audit L9).**
+  `opt/sa02m-flasher/sa02m_flasher/service.py:191`; the `cgi` module is gone in Python 3.13, so
+  firmware upload breaks on a distro upgrade. Read the board's Python version first.
+
 <!-- Whole-project audit 2026-08-28 at 1.0.6.23 (3 parallel auditors: contracts,
      security, docs). Suite was GREEN (build 47/47, review 6/6) and branch
      protection verified live — every finding below is what green does NOT cover. -->
 
-- [RESOLVED 2026-09-16, `373a2f9` — all six grant homes read] 2026-08-28 **[HIGH] The B1 escalation gate reads 1 of the 6 homes that grant
-  www-data root — hollow ratchet #9, on a security-load-bearing claim.**
-  `.ai-dev/quality/checks/sudoers-pin-contract.sh:29` reads only `etc/sudoers.d/sa02m-www`.
-  The other homes: `etc/sudoers.d/sa02m-cloud`, `etc/sudoers.d/sa02m-mqtt`,
-  `scripts/06-alice.sh:105`, `scripts/06-gateway.sh:47-51`, and a RUNTIME APPEND at
-  `etc/sa02m-web-update-apply.sh:308`. The `sa02m-www` header claims to be "the COMPLETE,
-  single-home" grant list — false. This is why the two BLOCKERs above are green today, and why
-  `docs/threat-model.md` still says the escalation class is closed (B1). Fix: extend the gate to
-  all six homes and prove it RED against the two injections BEFORE fixing them.
-- [RESOLVED 2026-09-16, `4686bf3` + row `comment-mutation-proof`] 2026-08-28 **[HIGH] Five safety gates are defeated by putting a comment mark in front
-  of a line.** Mutation-proven GREEN on comment-out (16 of 22 mutations correctly went RED;
-  these 5 did not): `mplc-ota-deploy-contract.sh:20`, `mplc-project-deploy-contract.sh:36`,
-  `kernel-policy-contract.sh:177`, `health-gate-operator-disabled.sh:28`,
-  `sudoers-pin-contract.sh:76`. All five DO go red on deletion — only the comment form slips.
-  `tools.json:159` and `:303` explicitly promise these cases fail. 8 of 16 check scripts have no
-  comment handling, though `no-retired-session-token.sh` already solved it in-repo.
-  Fix: reuse that pattern across the 8; add a comment-out mutation to each row's own proof.
-- [RESOLVED 2026-09-16, `3b44f24` — row `mqtt-set-contract`] 2026-08-28 **[HIGH] The one endpoint that switches real relay outputs is guarded only
-  by a comment.** No registry row touches `www/network_config/cgi-bin/mqtt_set.cgi` beyond
-  `bash -n`; `docs/contracts/mqtt-set-endpoint.md:74-96` is a MANUAL recipe, and `mqtt_set.cgi:88`
-  claims "Hard floor of this endpoint; asserted by the contract check" — no such check exists.
-  Re-adding the MQTT retain flag would re-fire every output on the next bridge restart with
-  nothing in the pipeline noticing. Fix: a real row + delete the false comment.
-- [RESOLVED 2026-09-16, row `web-auth-behaviour`] 2026-08-28 **[HIGH] The panel's login/CSRF core has zero functional tests.**
-  `www/network_config/cgi-bin/lib_web_auth.sh` — 354 lines, 27 functions (session tokens, CSRF
-  minting/validation, password hashing, credential-file repair), sourced by every mutating
-  endpoint — is reached only by `bash -n` and CI shellcheck. A mistake in the code deciding
-  "is this person logged in" ships green. Harness pattern already in-repo: `test-subnet-validate.sh`.
-- [RESOLVED 2026-09-16, script + baseline gone from the tree; the headless rows are `ui-layout` / `cloud-card-smoke` / `sh-modal-layout-smoke`] 2026-08-28 **[MED-HIGH] `headless-smoke` is a dormant row over a stale baseline.**
-  `headless-smoke.sh:12` skips unless playwright AND `SA02M_WEB_PASS` are present; CI provides
-  neither, so it has no environment where it runs. Its committed baseline
-  `scripts/dev/baseline/manifest.json` was last touched at 1.0.5.81 while the JS is at 1.0.6.23.
-- [RESOLVED 2026-09-16, row `rs485-roster-consumer`] 2026-08-28 **[MED-HIGH] The `rs485-roster` contract is validated producer-side only.**
-  `py-unit-roster` covers `opt/sa02m-rs485-roster/` (`tools.json:127`); the contracted `modules`
-  field is emitted from `status.cgi:1116-1124`, which NO row covers. Edit `status.cgi`, lose the
-  RS-485 module list from the dashboard, every gate stays green — the exact blind spot this audit
-  dimension exists for.
-- [RESOLVED 2026-09-16, the rule docs now point at `tools.json` as the one home] 2026-08-28 **[MED-HIGH] Four always-loaded rule docs say the quality registry has 3
-  rows; it has 53.** `web-code-rigor.md:142`, `web-diagnostic-tools.md:96-97`,
-  `web-workflow.md:78-79`, `sa02m-web-testing/SKILL.md:64-65`. The registry is the one home —
-  the prose should point at it, not enumerate.
-- [RESOLVED 2026-09-16, row `web-update-csrf-contract` (1.0.6.24); set-wide since 1.0.6.49 (`cgi-csrf-policy`)] 2026-08-28 **[MED] CSRF gap on the legacy OTA endpoint contradicts our own canon.**
-  `web_update_apply.cgi:318-330` runs the update helper marked "no CSRF", while
-  `docs/decisions/selective-csrf-policy.md` names only `logout` as an exception and the threat
-  model requires CSRF on ALL mutating endpoints. SameSite=Lax still holds, so this is broken
-  defence-in-depth plus false canon — fix the endpoint or amend the decision, not neither.
-- [RESOLVED 2026-09-16, 1.0.6.49 — audit H3: `web-quality.yml` installs the harness + chromium] 2026-08-28 **[MED] `ui-layout` never runs in CI** — the workflow installs Python deps
-  only, no playwright, so layout / mobile KPI centring / clipping / the WCAG contrast ledger are
-  dev-box-only. Honestly labelled (`tools.json:482`, `.ai-dev/notes/quality-gate-environment.md`),
-  so this is coverage, not dishonesty.
-- [RESOLVED 2026-09-16, the pointer stub exists; filling it is its own OPEN entry] 2026-08-28 **[MED] `docs/architecture.md` does not exist yet is cited 12x in
-  always-loaded files** (`PROTOCOL.md` 6x, `.claude/ai-dev.md` 3x, `.ai-dev/notes/README.md:4,9,20`).
-  Every session is pointed at a missing home.
-- [RESOLVED 2026-09-16, `sa02m-domain.md` now says «do not keep a bundle list here» — `index.html` + `ls` are the inventory] 2026-08-28 **[MED] `sa02m-domain.md:28` named 5 JS bundles while the tree had 8 + the `app/` cluster** and contradicted its own tab table. (Split from the polling-architecture entry above; the SKILL restatement half stays OPEN.)
-- [RESOLVED 2026-09-16, rows `i18n-dict-contract` + `html-id-contract`] 2026-08-28 **[MED-LOW] Two declared reviewer floors have no mechanical row** — i18n
-  completeness and the HTML-id contract are named as floors in `web-code-rigor.md` but nothing
-  implements them. Concrete: a DICT-completeness script (RU strings in markup/JS vs `i18n.js`
-  keys) and an id-contract grep (getElementById against `index.html`).
 - [OPEN] 2026-08-28 **[LOW] Security long tail.** Response-header injection in the devices export
   (`device_history_db.py:1788-1789` raw metric/group into `api.py:59-66`; the ascii filter keeps
   CR/LF, `_q1` strips only edges) — authenticated · no dependency-CVE and no secret-scanner row in
@@ -1106,24 +956,35 @@ verified fixed by the whole-backlog triage removed; evidence per entry in that c
   scanned for secrets (`private/`, `.tmp/` are correctly gitignored).
 - [OPEN] 2026-08-28 **[MED] Decomposition worklist (audit-derived, by cohesion not line count).**
   **THE one home for this worklist** — the 2026-07-17 / 2026-08-06 / 2026-08-18 entries were
-  collapsed into it on 2026-08-28 (their numbers were stale, one on a void rationale). Line
-  counts re-measured in-tree 2026-08-28 on branch 1.0.6.24.
-  1. `flasher.js` 5189 L — ~10 responsibilities in one IIFE; the ES-module blocker is void since
-  2026-08-18 (`docs/decisions/es-modules.md`, whose stated motivation IS this split).
-  2. `app/status.js` 2509 L — the update flow (`:1294-2030`) and MPLC deploy
-  (`:2030-2300`) are not status. 3. `device_history_db.py` 1918 L — ranges/schema/write/query.
-  4. `devices.js` 2406 L — extract the canvas chart engine (`:1068-2008`). 5. `flash_protocol.py`
-  2517 L — split the three flash-sequence drivers. 6. `etc/sa02m-web-service-ctl.sh` 1582 L —
-  Node-RED block (`:955-1491`); it grew 1414 → 1518 → 1582 across three sweeps, so it is a
-  standing item, not this cycle's growth. 7. `mqtt.js` 2721 L — seams already named: device-add
-  modal / per-family builders · the `type:template` picker (`_templateCatalog` /
-  `fillTemplateSelect` / `refreshTemplateCatalog`) · broker+credential settings · config model;
-  already an ES module. 8. `status.cgi` ~2530 L (size relief, not cohesion) ·
-  9. `sa02m-update-runner.sh` 1479 L. Smaller, self-contained and still worth doing:
-  `opt/sa02m-modbus-mqtt/bridge_mqtt.py` (444 L) — extract the `/meta` blob cluster
-  (`_num_or_str`/`_obj_or_str`/`_control_meta_blob`/`_device_meta_blob`/the two
-  `_publish_*_meta_blob`) → `bridge_meta.py`, covered by `test_meta_blob.py`.
-  NOT a finding: `main.css` 5466 L — sectioned, one token root, no-build stack.
+  collapsed into it on 2026-08-28 (their numbers were stale, one on a void rationale); re-measured
+  and re-ordered by audit 2026-09-24 at 1.0.6.53 (56 tracked text files over 800 lines).
+  1. `etc/sa02m-update-runner.sh` 2308 L on main (≈2,660 on 1.0.6.54), 58 functions; largest
+  `run_validate_and_extract` 292 and `prepare_github_overlay` 254 (mostly embedded Python). Seams:
+  (a) the GitHub manifest builder (`map_dst` + `DST_RE`) and the validator's second `DST_RE`/`DEL_RE`/
+  `PRESERVE` → one Python module in `opt/sa02m-update/lib/` next to `validate_package.py` (closes the
+  four-home allow-list entry); (b) deploy/journal/rollback core; (c) services + health gate;
+  (d) recover/reclaim/verify state machine; (e) watchdog/imaging lock. Constraints: the delivering
+  update runs the INSTALLED runner (`self_reexec_before_deploy` copies one file), so a sourced-lib
+  split gives old-runner + new-lib skew — keep the bash single-file, move only Python out; three
+  harnesses extract single functions by awk marker (`test-update-recover-rollback.sh:46`). After
+  1.0.6.54 lands.
+  2. `flasher.js` 5863 L — ~10 responsibilities; `flasher/led.js` (1427) proved the ES-module split.
+  Next: the Carel window, the MR module-config window, scan/flash job UI vs port lease.
+  3. `app/status.js` 2640 L — the web-update UI (panel belt, semver, XHR upload) and MPLC deploy are
+  not status → `app/webupdate.js`, `app/mplcdeploy.js` (the XHR CSRF entry lands there naturally).
+  4. `scripts/lib.sh` 1322 L — sections exist (net/subnet, resolvconf, apt/pip, sudoers, atomic
+  install, the byte-identical watchdog block, service capture/apply) → `lib-net.sh` / `lib-pkg.sh` /
+  `lib-install.sh` / `lib-svc.sh`; mind the 7 rows whose `covers` name `scripts/lib.sh` and the
+  runner twins (`cleanup_b1_deploy_artifacts` vs `sa02m_cleanup_b1_deploy_artifacts`).
+  5. `devices.js` 2618 L — the canvas chart engine. `mqtt.js` 2775 L — seams: device-add modal /
+  per-family builders · the `type:template` picker (`_templateCatalog` / `fillTemplateSelect` /
+  `refreshTemplateCatalog`) · broker+credential settings · config model. `status.cgi` 2538 L (size
+  relief). `flash_protocol.py` 2517 L — the three drivers. `etc/sa02m-web-service-ctl.sh` 1590 L —
+  the Node-RED block. `device_history_db.py` — ranges/schema/write/query. Smaller:
+  `opt/sa02m-modbus-mqtt/bridge_mqtt.py` — the `/meta` blob cluster → `bridge_meta.py`, covered by
+  `test_meta_blob.py`.
+  NOT a split target: `main.css` 6069 L — sectioned, one token root; a split costs link tags plus
+  `?v=`/`&r=` busts per file on a no-build stack. Re-judge at 7k.
   Already done, do not re-raise: `modbus_mqtt_bridge.py` (was 3422 L, now 298 — split into
   `bridge_*.py`) and `app.js` (F10, now a ~389 L core + the `app/` cluster).
 - [OPEN] 2026-08-28 **[MED] Empty `FSTYPE` conflates "blank" with "probe failed", and
@@ -1172,14 +1033,6 @@ verified fixed by the whole-backlog triage removed; evidence per entry in that c
   of 1.0.6.26 deliberately so the `alice-image-identity` gate's mutation set stayed
   untouched; the parity fix is a planned change that extends that mutation set and the
   contract together, not a one-liner.
-- [RESOLVED 2026-09-16, 1.0.6.49 — audit H3] 2026-09-02 **[MED] CI runs the `ui-layout` review gate VACUOUSLY — Playwright is never
-  installed in `.github/workflows/web-quality.yml`, so the row self-skips and reports PASS.**
-  Exactly the class of defect caught locally during the 1.0.6.26 review: the driver "passed"
-  on the developer host until `npm run ui-layout:install` was run, after which it found three
-  real violations (tap target, two contrast pairs) in the new «Умный дом» UI. Until CI runs
-  `npm run ui-layout:install` before the review beat (chromium download + cache step), the
-  remote floor does not cover geometry/contrast at all and the gate is honest only on a
-  prepared workstation. Separate CI change, deliberately outside the 1.0.6.26 PR.
 - [OPEN] 2026-09-02 **[INFO — bench reference, not a defect] Three paths where a cloud tap is
   NOT confirmed by design (1.0.6.26 cloud control).** Recorded so the bench run on 192.168.1.135
   does not book them as regressions: (1) the target already equals the actual state — the cloud
@@ -1231,51 +1084,27 @@ verified fixed by the whole-backlog triage removed; evidence per entry in that c
   if the transport drops on a ~5-17 min cycle, every drop is a window in which a tap is not
   confirmed. Bench 192.168.1.135, 1.0.6.26.
 
-### [LOW] Тексты входов/выходов Carel не переведены на английский
-
-Строки таблиц «Входы/выходы» и расшифровки цифровых состояний живут в
-`opt/sa02m-carel/sa02m_carel/carel_ahu_map.py` только по-русски — у тревог там
-есть `text_en`, у остальных строк нет. В английском интерфейсе окна настройки
-контроллера эти две таблицы остаются русскими. Заметно только при переключении
-языка; чинится добавлением `text_en` в карту (её единственный дом) и
-использованием его в рендерере, как уже сделано для тревог.
-Найдено при сборке окна 1.0.6.31. OPEN.
-
-### [LOW] Граница уставки Carel в документе «Умного дома» одна на оба семейства
-
-`SH_KINDS.setpoint` в `smarthome.js` проставляет `parameters.range` = 0..99
-всем, тогда как потолок uAria — 50 °C (`SETPOINT_RANGE` в
-`opt/sa02m-carel/sa02m_carel/controls.py`). Мост зажимает значение при записи,
-поэтому агрегат в безопасности, но ползунок, построенный по документу,
-предложит недостижимые 50..99 и «отскочит» после первого отчёта.
-
-Причина: окно не знает семейства — топик уставки несёт порт и адрес, а
-инвентарь топиков отдаётся плоским списком строк. Чинится доведением семейства
-до окна: либо мост публикует его метой контрола, либо
-`sa02m_alice_topics.cgi` отдаёт карту «идентификатор устройства → семейство».
-Найдено ревью 1.0.6.31, зафиксировано в `docs/contracts/carel-ahu.md` §6. OPEN.
-
-### [MED] Опрос Carel теряет ~1,5 % кадров на «тихой паузе» внутри ответа
-
-Измерено на стенде 1.135, COM3 19200, оба ПЛК под опросом моста: ~9 записей
-`Short response` в минуту на два устройства (14 за 90 с при двух устройствах на
-линии). Значения при этом верные и свежие, `meta/error` пуст — повтор чтения
-восстанавливает кадр, устройство не уходит в offline. Доля — около 1,5 % от
-~600 чтений в минуту.
-
-Гипотеза «виноват фантом `mr02m-COM3-10`, которого нет на линии» ПРОВЕРЕНА И
-ОТВЕРГНУТА: со снятым фантомом частота на Carel та же (7+7 за 90 с). Причина в
-чтении: `bridge_serial.py` выходит из чтения по первой тихой паузе, не дожидаясь
-полной длины кадра (там же и комментарий про `frame_timeout` wb-mqtt-serial), а
-ПЛК Carel умеют паузу в середине ответа. Обрезаются оба размера: 11/13 байт
-(IR1..4 у c.pCOmini) и 72/77 (IR0..35 у uAria) — длина кадра тут ни при чём,
-таймаут 0,3 с обоим избыточен.
-
-Чинить надо адресно, не глобально: ранний выход по паузе существует ради МР-02м,
-и менять его для всех — это трогать тайминг шины всем поллерам сразу. Нужен
-поcимвольный добор до вычисленной длины кадра для Carel-транзакций (флаг
-транзакции либо свой допуск паузы), с повторным замером на стенде до и после.
-Найдено при приёмке 1.0.6.31 на железе. OPEN.
-
+- [OPEN] 2026-09-03 **[LOW] Carel I/O texts have no English.** The «Входы/выходы» rows and the
+  digital-state captions live in `opt/sa02m-carel/sa02m_carel/carel_ahu_map.py` in Russian only —
+  alarms carry `text_en`, the other rows do not — so the controller window's two tables stay Russian in
+  the English UI. Fix: `text_en` in the map (its one home) and the renderer reads it, as for alarms.
+  Found building the 1.0.6.31 window.
+- [OPEN] 2026-09-03 **[LOW] The «Умный дом» setpoint range is one for both Carel families.**
+  `SH_KINDS.setpoint` in `smarthome.js` sets `parameters.range` 0..99 for every device, while uAria
+  tops out at 50 °C (`SETPOINT_RANGE`, `opt/sa02m-carel/sa02m_carel/controls.py`). The bridge clamps
+  the write, so the unit is safe, but a slider built from the document offers an unreachable 50..99 and
+  snaps back after the first report. Cause: the window does not know the family (the setpoint topic
+  carries port and address; the topic inventory is a flat list). Fix: carry the family to the window —
+  the bridge publishes it as control meta, or `sa02m_alice_topics.cgi` returns a device→family map.
+  Found by the 1.0.6.31 review; recorded in `docs/contracts/carel-ahu.md` §6.
+- [OPEN] 2026-09-03 **[MED] Carel polling loses ~1.5 % of frames on an in-reply pause.** Bench 1.135,
+  COM3 19200, both PLCs polled: ~9 `Short response` per minute for two devices, values still correct
+  and fresh (the retry recovers the frame; no offline). The «phantom `mr02m-COM3-10`» hypothesis was
+  tested and REJECTED (same rate with it removed). Cause: `bridge_serial.py` ends the read at the first
+  silent gap without waiting for the computed frame length, and Carel PLCs pause mid-reply (both
+  11/13- and 72/77-byte frames are cut). Fix locally, not globally — the early exit exists for MR-02m
+  and changing it moves every poller's bus timing: a per-transaction «read to computed length» for
+  Carel, measured on the bench before and after. Found in the 1.0.6.31 hardware acceptance. Related:
+  the COM3 error-rate entry (2026-09-24 data).
 - [OPEN] 2026-09-24 **[MED] OTA never deletes retired files.** The runner path applies `delete: []` on every manifest (`etc/sa02m-update-runner.sh` github manifest builder; `scripts/pack-offline-update.py` likewise), while the legacy rsync path did `--delete`. A file removed from the repo stays on every OTA-updated board forever (stale CGI, stale unit, stale helper twin). Fix shape: the packer / manifest builder computes `delete[]` from the previous release's deploy list (git), the runner already journals and rolls back `delete` records. Found while building 1.0.6.54 (fast OTA, CHANGELOG entry).
 - [OPEN] 2026-09-24 **[LOW] Deploy loop, next rung (a2): one python process for the whole deploy.** 1.0.6.54 (a1) removed the per-item interpreter starts in bash (~2,100 → ~20 per apply); an in-process Python deploy (compare/backup/journal/install, per-file fdatasync kept) would take the 505-item deploy from ≈1.5–2 min to ≈10–20 s. Not taken: it moves the root apply core out of bash and breaks the single-function extraction of three harnesses. Trigger: the bench measurement of a 1.0.6.54 apply (505 items) lands above 3 min. Recorded while building 1.0.6.54 (CHANGELOG entry).
