@@ -65,6 +65,14 @@
 #   RED for 10/10b on 5e24234 (round 2 build, check-less `total=$(…)`), observed
 #   2026-09-24 under WSL: both rc=0 — 10 deployed item 1 and patched
 #   `files_total=` empty; 10b patched `files_total=` empty and `files_done=0`.
+#   11a–11e, 12a–12d (round 4, G6): a failed backup / journal write / journal
+#   fdatasync fails the step BEFORE the rename or delete it describes — in the
+#   apply loop, the runner stamp and apply_deletes (extracted since round 4);
+#   failure injection through `cp` / `sync` forwarders, a journal path made a
+#   directory, and a `pyfail` python3 shim that fails one read by argv match.
+#   RED on 2373792, observed 2026-09-24 under WSL: 10 FAIL — 11a rc=0 and g2
+#   NEW after rollback, 11b/11c rc=0 with every file renamed, 11d stamp
+#   installed without a record, 11e no WARN, 12a–12c rc=0 (12b/12c deleted).
 #
 # Drive-to-failure: UPDATE_RUNNER_SRC=<(git show main:etc/sa02m-update-runner.sh) \
 #   bash scripts/dev/test-update-deploy-skip.sh   → the skip assertion goes RED
@@ -117,7 +125,13 @@ SRC="$T/runner.sh"
 # the first `install` call of this file (the mode probe below), so every later
 # call — the probe included — goes through the forwarder. `mv` also feeds the
 # case-6 trace.
-INSTALL_FAIL_ON=""; MV_FAIL_ON=""
+INSTALL_FAIL_ON=""; MV_FAIL_ON=""; CP_FAIL_ON=""; SYNC_FAIL_ON=""
+# Cases 11/12: `cp` refuses when its SOURCE (second-to-last argument)
+# contains $CP_FAIL_ON; the runner takes a backup with `cp -a <live> <bak>`.
+cp() {
+    if [ -n "$CP_FAIL_ON" ] && [ "$#" -ge 2 ] && [[ "${*: -2:1}" == *"$CP_FAIL_ON"* ]]; then return 1; fi
+    command cp "$@"
+}
 install() {
     if [ -n "$INSTALL_FAIL_ON" ] && [[ "${*: -1}" == *"$INSTALL_FAIL_ON"* ]]; then return 1; fi
     command install "$@"
@@ -166,6 +180,7 @@ grep -q '^stamp_runner_version_after_deploy() {' "$SRC" && HAS_STAMP=1
 funcs="apply_deploy_items journal_append atomic_install_file rollback_from_journal"
 [ "$HAS_GUARD" = "1" ] && funcs="is_unchanged $funcs"
 [ "$HAS_STAMP" = "1" ] && funcs="$funcs stamp_runner_version_after_deploy"
+funcs="$funcs apply_deletes"
 for fn in $funcs; do
     extract "$fn" >> "$T/fn.sh"
     grep -q "^$fn() {" "$T/fn.sh" \
@@ -202,7 +217,13 @@ txn_get()   {
 # call with its argv, records it, and forwards to the real binary. A runner that
 # fsyncs through python3 (pre-1.0.6.54) leaves this trace EMPTY — the RED.
 TRACE="$T/fsync.trace"; : > "$TRACE"
-sync() { printf 'sync %s\n' "$*" >> "$TRACE"; command sync "$@"; }
+# Cases 11c: refuses when its LAST argument contains $SYNC_FAIL_ON (a bare
+# `sync` has none, so the full-sync fallback still goes through).
+sync() {
+    printf 'sync %s\n' "$*" >> "$TRACE"
+    if [ -n "$SYNC_FAIL_ON" ] && [ "$#" -ge 1 ] && [[ "${*: -1}" == *"$SYNC_FAIL_ON"* ]]; then return 1; fi
+    command sync "$@"
+}
 # (`mv` is the forwarder defined above the mode probe; it traces into $TRACE.)
 # Case 4c/4d — time-based progress cadence: 0 s ⇒ every item patches, so the
 # patch sequence is deterministic here whatever the host's speed.
@@ -611,6 +632,130 @@ if [ "$rc7" -eq 1 ] && [ "$ft7" = "0" ] && [ "$(cat "$LIVE7/m1.conf")" = "m1 OLD
     ok "10b emitter failure (python traceback writing deploy.items): apply returns 1, no txn patch, file untouched, error logged"
 else
     bad "10b emitter failure swallowed (rc=$rc7, files_total patches=$ft7, txn='$(tr '\n' ' ' < "$TXNVARS_F")', m1='$(cat "$LIVE7/m1.conf")', log-line=$(grep -cF 'ERROR: deploy list' "$LOG"))"
+fi
+
+# 11. A FAILED BACKUP OR JOURNAL WRITE FAILS THE STEP BEFORE THE RENAME (G6,
+#     round 4). The apply loop runs under cmd_apply's `if !` (errexit
+#     suspended): until round 4 `cp -a <live> <bak>` and journal_append's
+#     `printf >>` / `sync -d` were unchecked, so a disk-full backup left a
+#     journal line naming a backup that does not exist (rollback then keeps the
+#     NEW file), and a failed journal write renamed the file with no record of
+#     it — G6 ("the journal knows every renamed file") was false exactly when
+#     the disk fills. Expected in every case: rc=1, the named ERROR line, the
+#     failing item NOT renamed, no *.tmp.* left, every later item untouched,
+#     and rollback over whatever journal exists leaves every file OLD.
+run_g6_case() {   # <txn> <live> <label> <expected-error-substring> [journal-as-dir]
+    local txn=$1 live=$2 label=$3 want=$4 jdir=${5:-} ov="$STATEDIR/staging/$1/overlay" i
+    mkdir -p "$ov" "$live" "$STATEDIR/staging/$txn/meta" "$STATEDIR/staging/$txn/backups"
+    for i in 1 2 3; do
+        printf 'g%s NEW\n' "$i" > "$ov/g$i.conf"; chmod 644 "$ov/g$i.conf"
+        printf 'g%s OLD\n' "$i" > "$live/g$i.conf"; chmod 644 "$live/g$i.conf"
+    done
+    [ -n "$jdir" ] && mkdir -p "$STATEDIR/staging/$txn/journal.jsonl"
+    python3 - "$live" "$STATEDIR/staging/$txn/meta/manifest.json" "$OWNER" <<'PYM'
+import json, sys
+live, mf, owner = sys.argv[1], sys.argv[2], sys.argv[3]
+deploy = [{"src": "g%d.conf" % i, "dst": "%s/g%d.conf" % (live, i), "mode": "0644", "owner": owner} for i in (1, 2, 3)]
+open(mf, "w", encoding="utf-8").write(json.dumps({"schema_version": 1, "version": "9.9.9.9", "deploy": deploy}) + "\n")
+PYM
+    : > "$TXNVARS_F"; : > "$LOG"
+    ( set -euo pipefail; run_apply "$txn" ) >/dev/null 2>&1
+    local rc=$? tmps states
+    tmps=$(find "$live" -name '*.tmp.*' 2>/dev/null | wc -l | tr -d ' ')
+    states="$(cat "$live/g1.conf")|$(cat "$live/g2.conf")|$(cat "$live/g3.conf")"
+    if [ "$rc" -eq 1 ] && grep -qF "$want" "$LOG" && [ "$tmps" = "0" ] \
+       && [ "${states##*|}" = "g3 OLD" ]; then
+        ok "$label: apply FAILS before the rename (rc=1, error logged, no tmp left, later items untouched; g1|g2|g3=$states)"
+    else
+        bad "$label: failure not caught before the rename (rc=$rc, tmp-left=$tmps, g1|g2|g3=$states, want-line=$(grep -cF "$want" "$LOG"))"
+    fi
+    ( set -euo pipefail; rollback_from_journal "$txn" ) >/dev/null 2>&1
+    states="$(cat "$live/g1.conf")|$(cat "$live/g2.conf")|$(cat "$live/g3.conf")"
+    if [ "$states" = "g1 OLD|g2 OLD|g3 OLD" ]; then
+        ok "$label: rollback over the journal that exists leaves every file OLD"
+    else
+        bad "$label: after rollback g1|g2|g3=$states — a renamed file the journal does not describe"
+    fi
+}
+CP_FAIL_ON="$T/live11a/g2.conf"
+run_g6_case TXN11A "$T/live11a" "11a backup of item 2 fails" "ERROR: backup failed: $T/live11a/g2.conf"
+CP_FAIL_ON=""
+run_g6_case TXN11B "$T/live11b" "11b journal write fails (journal path is a directory)" "ERROR: journal write failed: $T/live11b/g1.conf" jdir
+SYNC_FAIL_ON="staging/TXN11C/journal.jsonl"
+run_g6_case TXN11C "$T/live11c" "11c fdatasync of the journal fails" "ERROR: journal write failed: $T/live11c/g1.conf"
+SYNC_FAIL_ON=""
+
+# 11d. THE RUNNER STAMP CHECKS ITS JOURNAL WRITE TOO. The manifest deploys the
+#      "runner" (RUNNER_BIN_DST); the journal path is a directory, so the
+#      stamp's record cannot be written. Expected (the stamp is called under
+#      cmd_apply's `if !`): rc=1 and the stamp file UNCHANGED. Until round 4 the
+#      failed journal_append was ignored and the stamp installed with no
+#      record — a rollback then left the NEW stamp behind the OLD runner.
+TXN11D="TXN11D"; mkdir -p "$STATEDIR/staging/$TXN11D/meta" "$STATEDIR/staging/$TXN11D/journal.jsonl"
+printf '{"schema_version": 1, "version": "9.9.9.9", "deploy": [{"src": "x", "dst": "%s", "mode": "0755", "owner": ""}]}\n' "$LIVE/c.sh" \
+    > "$STATEDIR/staging/$TXN11D/meta/manifest.json"
+RUNNER_BIN_DST="$LIVE/c.sh"; printf '1.0.0.1\n' > "$RUNNER_VERSION_FILE"; : > "$LOG"
+if [ "$HAS_STAMP" = "1" ]; then
+    ( set -euo pipefail; if ! stamp_runner_version_after_deploy "$TXN11D"; then exit 1; fi ) >/dev/null 2>&1; rc11d=$?
+else rc11d=127; fi
+if [ "$rc11d" -eq 1 ] && [ "$(cat "$RUNNER_VERSION_FILE")" = "1.0.0.1" ] && grep -qF 'ERROR: runner stamp: journal write failed' "$LOG"; then
+    ok "11d runner stamp: failed journal write → rc=1, stamp untouched, error logged"
+else
+    bad "11d runner stamp installed without a journal record (rc=$rc11d, stamp='$(cat "$RUNNER_VERSION_FILE")')"
+fi
+# 11e. ...and a failed manifest READ in the stamp stays soft (documented: the
+#      stamp is at worst one release old) but is no longer silent: rc=0, the
+#      stamp untouched, a WARN naming the failed read. The pyfail shim fails a
+#      python3 call whose argv contains $PY_FAIL_MATCH and forwards the rest.
+mkdir -p "$T/pyfail"
+printf '#!/bin/bash\nfor a in "$@"; do case "$a" in *"$PY_FAIL_MATCH"*) [ -n "$PY_FAIL_MATCH" ] && { echo "pyfail shim: injected failure" >&2; exit 1; } ;; esac; done\nexec "%s" "$@"\n' "$(command -v python3)" > "$T/pyfail/python3"
+chmod 755 "$T/pyfail/python3"
+rm -rf "$STATEDIR/staging/$TXN11D/journal.jsonl"; printf '1.0.0.1\n' > "$RUNNER_VERSION_FILE"; : > "$LOG"
+if [ "$HAS_STAMP" = "1" ]; then
+    ( set -euo pipefail; PATH="$T/pyfail:$PATH"; export PY_FAIL_MATCH='sys.argv[2]'
+      if ! stamp_runner_version_after_deploy "$TXN11D"; then exit 1; fi ) >/dev/null 2>&1; rc11e=$?
+else rc11e=127; fi
+if [ "$rc11e" -eq 0 ] && [ "$(cat "$RUNNER_VERSION_FILE")" = "1.0.0.1" ] && grep -qF 'WARN: runner stamp: manifest read failed' "$LOG"; then
+    ok "11e runner stamp: failed manifest read stays soft (rc=0, stamp untouched) and logs a WARN naming the read"
+else
+    bad "11e runner stamp: failed manifest read (rc=$rc11e, stamp='$(cat "$RUNNER_VERSION_FILE")', warn=$(grep -cF 'WARN: runner stamp: manifest read failed' "$LOG")) — silent"
+fi
+
+# 12. apply_deletes CHECKS ITS LIST READ, BACKUP AND JOURNAL (round 4). Called
+#     under cmd_apply's `if !` like the loop. The list came from
+#     `done < <(python3 …)`, whose status bash never reports: a failed read
+#     deleted nothing and "succeeded". Expected: rc=1, the target still there.
+run_del_case() {   # <txn> <label> <expected-error-substring> [journal-as-dir]
+    local txn=$1 label=$2 want=$3 jdir=${4:-} tgt="$T/del-$1.conf"
+    mkdir -p "$STATEDIR/staging/$txn/meta" "$STATEDIR/staging/$txn/backups"
+    printf 'retired\n' > "$tgt"
+    [ -n "$jdir" ] && mkdir -p "$STATEDIR/staging/$txn/journal.jsonl"
+    printf '{"schema_version": 1, "version": "9.9.9.9", "deploy": [], "delete": ["%s"]}\n' "$tgt" \
+        > "$STATEDIR/staging/$txn/meta/manifest.json"
+    : > "$LOG"
+    ( set -euo pipefail; PATH="$T/pyfail:$PATH"; export PY_FAIL_MATCH
+      if ! apply_deletes "$txn"; then exit 1; fi ) >/dev/null 2>&1
+    local rc=$?
+    if [ "$rc" -eq 1 ] && [ -f "$tgt" ] && grep -qF "$want" "$LOG"; then
+        ok "$label: rc=1, target kept, error logged"
+    else
+        bad "$label: rc=$rc, target $([ -f "$tgt" ] && echo kept || echo DELETED), want-line=$(grep -cF "$want" "$LOG")"
+    fi
+}
+PY_FAIL_MATCH='get("delete"'; run_del_case TXN12A "12a delete-list read fails" "ERROR: delete list: manifest read failed"
+PY_FAIL_MATCH=""
+run_del_case TXN12B "12b delete journal write fails" "ERROR: journal write failed: $T/del-TXN12B.conf" jdir
+CP_FAIL_ON="$T/del-TXN12C.conf"
+run_del_case TXN12C "12c delete backup fails" "ERROR: backup failed: $T/del-TXN12C.conf"
+CP_FAIL_ON=""
+# 12d. Non-regression: a healthy delete still deletes and journals.
+TXN12D="TXN12D"; tgt12="$T/del-TXN12D.conf"; mkdir -p "$STATEDIR/staging/$TXN12D/meta"; printf 'retired\n' > "$tgt12"
+printf '{"schema_version": 1, "version": "9.9.9.9", "deploy": [], "delete": ["%s"]}\n' "$tgt12" > "$STATEDIR/staging/$TXN12D/meta/manifest.json"
+( set -euo pipefail; if ! apply_deletes "$TXN12D"; then exit 1; fi ) >/dev/null 2>&1; rc12d=$?
+if [ "$rc12d" -eq 0 ] && [ ! -e "$tgt12" ] && grep -q '"op": "delete"' "$STATEDIR/staging/$TXN12D/journal.jsonl" 2>/dev/null; then
+    ok "12d healthy delete: rc=0, target removed, delete record journalled"
+else
+    bad "12d healthy delete broken (rc=$rc12d, target $([ -e "$tgt12" ] && echo present || echo gone))"
 fi
 
 echo "-----"

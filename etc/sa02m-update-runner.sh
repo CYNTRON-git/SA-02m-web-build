@@ -1250,8 +1250,14 @@ journal_append() {
         line+="$sep\"$k\": \"$v\""
         sep=", "
     done
-    printf '{%s}\n' "$line" >>"$j"
-    sync -d -- "$j" 2>/dev/null || sync
+    # Returns 1 when the line cannot be written OR made durable; every caller
+    # checks it and fails its step BEFORE the rename/delete the line describes
+    # (G6 — round 4: both were unchecked, so a full disk renamed files the
+    # journal never recorded; gate: update-deploy-skip 11b/11c/11d/12b). No
+    # bare-`sync` fallback here: it cannot report an error, and every board's
+    # coreutils (8.32 / 9.4) has the operand form.
+    printf '{%s}\n' "$line" >>"$j" || return 1
+    sync -d -- "$j" || return 1
 }
 
 atomic_install_file() {
@@ -1421,13 +1427,27 @@ PY
             # verify invariant); the log line keeps an all-skipped run visible.
             log "apply: skip unchanged $dst"
         else
+            # Backup, then journal line, then rename — each checked, because
+            # errexit is off in here (cmd_apply's `if !`): a backup that failed
+            # would be journalled as existing (rollback then keeps the NEW
+            # file), a journal line that failed would leave the file renamed
+            # with no record (G6; gate: update-deploy-skip 11a-11c).
             if [ -e "$dst" ]; then
                 bak="$STATEDIR/staging/$txn/backups/$(printf '%s' "$dst" | sha256sum | awk '{print $1}')"
-                mkdir -p "$(dirname "$bak")"
-                cp -a "$dst" "$bak"
-                journal_append "$txn" "op=replace" "dst=$dst" "backup=$bak" "mode=$mode" "owner=$owner"
-            else
-                journal_append "$txn" "op=create" "dst=$dst" "mode=$mode" "owner=$owner"
+                if ! { mkdir -p "$(dirname "$bak")" && cp -a "$dst" "$bak"; }; then
+                    log "ERROR: backup failed: $dst"
+                    APPLY_FAIL_REASON="backup failed: $dst"
+                    return 1
+                fi
+                if ! journal_append "$txn" "op=replace" "dst=$dst" "backup=$bak" "mode=$mode" "owner=$owner"; then
+                    log "ERROR: journal write failed: $dst"
+                    APPLY_FAIL_REASON="journal write failed: $dst"
+                    return 1
+                fi
+            elif ! journal_append "$txn" "op=create" "dst=$dst" "mode=$mode" "owner=$owner"; then
+                log "ERROR: journal write failed: $dst"
+                APPLY_FAIL_REASON="journal write failed: $dst"
+                return 1
             fi
             if ! atomic_install_file "$src_abs" "$dst" "$mode" "$owner"; then
                 log "ERROR: atomic install failed: $dst"
@@ -1465,27 +1485,49 @@ stamp_runner_version_after_deploy() {
     local txn=$1
     local mf ver n src bak
     mf=$(manifest_path "$txn")
+    # The two reads stay soft (a stale stamp is at worst one release old) but
+    # say so: errexit is off here (cmd_apply's `if !`), so a failed read used
+    # to look exactly like "manifest does not deploy the runner" (gate: 11e).
     n=$(python3 -c 'import json,sys
 m=json.load(open(sys.argv[1],encoding="utf-8"))
-print(sum(1 for it in m.get("deploy",[]) if it.get("dst")==sys.argv[2]))' "$mf" "$RUNNER_BIN_DST")
+print(sum(1 for it in m.get("deploy",[]) if it.get("dst")==sys.argv[2]))' "$mf" "$RUNNER_BIN_DST") || {
+        log "WARN: runner stamp: manifest read failed (deploy list) - stamp unchanged"
+        return 0
+    }
     if [ "${n:-0}" -eq 0 ]; then
         log "runner stamp: manifest does not deploy $RUNNER_BIN_DST - stamp unchanged"
         return 0
     fi
-    ver=$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1],encoding="utf-8")).get("version",""))' "$mf")
+    ver=$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1],encoding="utf-8")).get("version",""))' "$mf") || {
+        log "WARN: runner stamp: manifest read failed (version) - stamp unchanged"
+        return 0
+    }
     if ! [[ "$ver" =~ ^[0-9]+(\.[0-9]+){1,3}$ ]]; then
         log "WARN: runner stamp: manifest version '$ver' unusable - stamp unchanged"
         return 0
     fi
     src="$STATEDIR/staging/$txn/runner.version.new"
-    printf '%s\n' "$ver" >"$src"
+    if ! printf '%s\n' "$ver" >"$src"; then
+        log "ERROR: runner stamp: cannot write $src"
+        return 1
+    fi
+    # Backup and journal record checked before the install (G6; gate: 11d).
     if [ -e "$RUNNER_VERSION_FILE" ]; then
         bak="$STATEDIR/staging/$txn/backups/$(printf '%s' "$RUNNER_VERSION_FILE" | sha256sum | awk '{print $1}')"
-        mkdir -p "$(dirname "$bak")"
-        cp -a "$RUNNER_VERSION_FILE" "$bak"
-        journal_append "$txn" "op=replace" "dst=$RUNNER_VERSION_FILE" "backup=$bak" "mode=0644" "owner=root:root"
-    else
-        journal_append "$txn" "op=create" "dst=$RUNNER_VERSION_FILE" "mode=0644" "owner=root:root"
+        if ! { mkdir -p "$(dirname "$bak")" && cp -a "$RUNNER_VERSION_FILE" "$bak"; }; then
+            rm -f "$src"
+            log "ERROR: runner stamp: backup failed: $RUNNER_VERSION_FILE"
+            return 1
+        fi
+        if ! journal_append "$txn" "op=replace" "dst=$RUNNER_VERSION_FILE" "backup=$bak" "mode=0644" "owner=root:root"; then
+            rm -f "$src"
+            log "ERROR: runner stamp: journal write failed: $RUNNER_VERSION_FILE"
+            return 1
+        fi
+    elif ! journal_append "$txn" "op=create" "dst=$RUNNER_VERSION_FILE" "mode=0644" "owner=root:root"; then
+        rm -f "$src"
+        log "ERROR: runner stamp: journal write failed: $RUNNER_VERSION_FILE"
+        return 1
     fi
     if ! atomic_install_file "$src" "$RUNNER_VERSION_FILE" 0644 root:root; then
         rm -f "$src"
@@ -1497,29 +1539,49 @@ print(sum(1 for it in m.get("deploy",[]) if it.get("dst")==sys.argv[2]))' "$mf" 
     return 0
 }
 
+# Called under cmd_apply's `if !` (errexit off): every step is checked. The
+# list is captured, then iterated — a `done < <(python3 …)` never reports a
+# failed read, so the list was just empty and the step "succeeded" (round 4;
+# gate: update-deploy-skip 12a-12d).
 apply_deletes() {
     local txn=$1
-    local mf dpath bak
+    local mf dpath bak list
     mf=$(manifest_path "$txn")
+    list=$(python3 -c 'import json,sys
+for p in json.load(open(sys.argv[1],encoding="utf-8")).get("delete",[]):
+    print(p)
+' "$mf") || {
+        log "ERROR: delete list: manifest read failed ($mf)"
+        APPLY_FAIL_REASON="delete list: manifest read failed"
+        return 1
+    }
     while IFS= read -r dpath; do
         [ -n "$dpath" ] || continue
         if [ -e "$dpath" ]; then
             bak="$STATEDIR/staging/$txn/backups/del-$(printf '%s' "$dpath" | sha256sum | awk '{print $1}')"
-            mkdir -p "$(dirname "$bak")"
             if [ -f "$dpath" ]; then
-                cp -a "$dpath" "$bak"
-                journal_append "$txn" "op=delete" "dst=$dpath" "backup=$bak"
-                rm -f "$dpath"
+                if ! { mkdir -p "$(dirname "$bak")" && cp -a "$dpath" "$bak"; }; then
+                    log "ERROR: backup failed: $dpath"
+                    APPLY_FAIL_REASON="backup failed: $dpath"
+                    return 1
+                fi
+                if ! journal_append "$txn" "op=delete" "dst=$dpath" "backup=$bak"; then
+                    log "ERROR: journal write failed: $dpath"
+                    APPLY_FAIL_REASON="journal write failed: $dpath"
+                    return 1
+                fi
+                if ! rm -f "$dpath"; then
+                    log "ERROR: delete failed: $dpath"
+                    APPLY_FAIL_REASON="delete failed: $dpath"
+                    return 1
+                fi
             else
                 log "ERROR: delete target not a regular file: $dpath"
                 APPLY_FAIL_REASON="delete target not a regular file: $dpath"
                 return 1
             fi
         fi
-    done < <(python3 -c 'import json,sys
-for p in json.load(open(sys.argv[1],encoding="utf-8")).get("delete",[]):
-    print(p)
-' "$mf")
+    done <<< "$list"
     return 0
 }
 
@@ -1528,7 +1590,10 @@ run_migrations() {
     local mf
     mf=$(manifest_path "$txn")
     local count
-    count=$(python3 -c 'import json,sys; print(len(json.load(open(sys.argv[1],encoding="utf-8")).get("migrations",[])))' "$mf")
+    # A failed read stays soft — count ≠ "0", so the migrate step below runs
+    # and reads the manifest itself — but is logged (round 4).
+    count=$(python3 -c 'import json,sys; print(len(json.load(open(sys.argv[1],encoding="utf-8")).get("migrations",[])))' "$mf") \
+        || log "WARN: migrations: manifest read failed (migrations count) - running the migrate step anyway"
     if [ "$count" = "0" ]; then
         return 0
     fi
@@ -1732,8 +1797,24 @@ services_enable_and_tmpfiles() {
     local txn=$1
     local mf
     mf=$(manifest_path "$txn")
-    local daemon_reload
-    daemon_reload=$(python3 -c 'import json,sys; print("true" if json.load(open(sys.argv[1],encoding="utf-8")).get("services",{}).get("daemon_reload",True) else "false")' "$mf")
+    # Reads first, each status-checked (round 4): callers run this under `if !`
+    # or check its status, so errexit never catches a failed read, and the old
+    # `done < <(python3 …)` could not report one at all — the enable list was
+    # just empty. A dead enable[] read fails the step; a dead daemon_reload
+    # read reloads anyway (fail safe). Gate: update-conditional-restart run 7.
+    local daemon_reload enable_list
+    enable_list=$(python3 -c 'import json,sys
+for u in json.load(open(sys.argv[1],encoding="utf-8")).get("services",{}).get("enable",[]):
+    print(u)
+' "$mf") || {
+        log "ERROR: health: manifest read failed (services.enable) $mf"
+        HEALTH_FAIL_REASON="manifest read failed: services.enable"
+        return 1
+    }
+    daemon_reload=$(python3 -c 'import json,sys; print("true" if json.load(open(sys.argv[1],encoding="utf-8")).get("services",{}).get("daemon_reload",True) else "false")' "$mf") || {
+        log "WARN: health: manifest read failed (services.daemon_reload) - reloading anyway (fail safe)"
+        daemon_reload=true
+    }
     if [ "$daemon_reload" = "true" ]; then
         log "health: daemon-reload..."
         _systemctl_bounded 60 daemon-reload || true
@@ -1755,10 +1836,7 @@ services_enable_and_tmpfiles() {
         [ -n "$u" ] || continue
         _systemctl_bounded 60 enable "$u" || true
         log "enabled after apply: $u"
-    done < <(python3 -c 'import json,sys
-for u in json.load(open(sys.argv[1],encoding="utf-8")).get("services",{}).get("enable",[]):
-    print(u)
-' "$mf")
+    done <<< "$enable_list"
     return 0
 }
 
@@ -1766,8 +1844,28 @@ for u in json.load(open(sys.argv[1],encoding="utf-8")).get("services",{}).get("e
 # restart_if_changed{}. Returns 1 only when `nginx -t` rejects the config.
 services_restart_sets() {
     local txn=$1
-    local mf
+    local mf restart_list if_active_list if_changed_list
     mf=$(manifest_path "$txn")
+    # The three sets are read BEFORE anything is bounced, each status-checked:
+    # the loops used to read them through `done < <(python3 …)`, which never
+    # reports a failure — a dead read restarted nothing and the step returned 0,
+    # leaving stale code in memory behind a green gate (round 4; gate:
+    # update-conditional-restart run 7).
+    restart_list=$(python3 -c 'import json,sys
+for u in json.load(open(sys.argv[1],encoding="utf-8")).get("services",{}).get("restart",[]):
+    print(u)
+' "$mf") && if_active_list=$(python3 -c 'import json,sys
+for u in json.load(open(sys.argv[1],encoding="utf-8")).get("services",{}).get("restart_if_active",[]):
+    print(u)
+' "$mf") && if_changed_list=$(python3 -c 'import json,sys
+m=json.load(open(sys.argv[1],encoding="utf-8")).get("services",{}).get("restart_if_changed",{})
+for u,p in m.items():
+    print(u+"\t"+p)
+' "$mf") || {
+        log "ERROR: health: manifest read failed (services.restart / restart_if_active / restart_if_changed) $mf - nothing restarted"
+        HEALTH_FAIL_REASON="manifest read failed: services.restart sets"
+        return 1
+    }
     # Ordered: fcgiwrap → nginx -t && reload → other restart[] (e.g. sa02m-flasher).
     # Bound fcgiwrap restart: UI polling keeps CGI children alive and can stall
     # an unbounded systemctl restart for many minutes (looks like "stuck on verifying").
@@ -1797,10 +1895,7 @@ services_restart_sets() {
         log "health: restarting $u..."
         _systemctl_bounded 60 restart "$u" || _systemctl_bounded 45 start "$u" || true
         log "restarted after apply: $u"
-    done < <(python3 -c 'import json,sys
-for u in json.load(open(sys.argv[1],encoding="utf-8")).get("services",{}).get("restart",[]):
-    print(u)
-' "$mf")
+    done <<< "$restart_list"
 
     # restart_if_active[] — opt-in units (never-widen): `systemctl restart` on
     # an INACTIVE unit STARTS it, so the plain restart[] loop above would widen
@@ -1815,10 +1910,7 @@ for u in json.load(open(sys.argv[1],encoding="utf-8")).get("services",{}).get("r
         else
             log "health: $u not active — conditional restart skipped"
         fi
-    done < <(python3 -c 'import json,sys
-for u in json.load(open(sys.argv[1],encoding="utf-8")).get("services",{}).get("restart_if_active",[]):
-    print(u)
-' "$mf")
+    done <<< "$if_active_list"
 
     # restart_if_changed{unit: prefix} — the same if-active discipline, plus a
     # change gate on the unit's /opt tree: when every file under the prefix
@@ -1838,11 +1930,7 @@ for u in json.load(open(sys.argv[1],encoding="utf-8")).get("services",{}).get("r
         else
             log "health: $u not active — conditional restart skipped"
         fi
-    done < <(python3 -c 'import json,sys
-m=json.load(open(sys.argv[1],encoding="utf-8")).get("services",{}).get("restart_if_changed",{})
-for u,p in m.items():
-    print(u+"\t"+p)
-' "$mf")
+    done <<< "$if_changed_list"
     return 0
 }
 
@@ -1887,12 +1975,36 @@ health_check() {
     local mf
     mf=$(manifest_path "$txn")
     HEALTH_FAIL_REASON=""
-    local http_url version_want version_file
-    http_url=$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1],encoding="utf-8")).get("services",{}).get("health",{}).get("http_url",""))' "$mf")
-    version_file=$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1],encoding="utf-8")).get("services",{}).get("health",{}).get("version_file","/var/www/network_config/VERSION"))' "$mf")
-    version_want=$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1],encoding="utf-8"))["version"])' "$mf")
+    local http_url version_want version_file facts u
+    # ONE status-checked read of every health fact (round 4). Three unchecked
+    # `$(python3 …)` and a `done < <(python3 …)` used to feed this gate: under
+    # cmd_apply's `if !` a read that died left the value EMPTY, and empty meant
+    # "not configured" — no unit checked, no HTTP probe, no version check, gate
+    # green. Now a dead read FAILS the gate; a key ABSENT by design (http_url
+    # "", no units_active) still skips — .get() defaults, not the exit status,
+    # carry that (gate: update-conditional-restart run 7). Line layout:
+    # http_url, version_file, version, then one required unit per line.
+    facts=$(python3 -c 'import json,sys
+m=json.load(open(sys.argv[1],encoding="utf-8"))
+h=m.get("services",{}).get("health",{})
+vals=[h.get("http_url",""),h.get("version_file","/var/www/network_config/VERSION"),m.get("version","")]
+vals+=list(h.get("units_active",[]))
+for v in vals:
+    v=str(v)
+    if "\n" in v or "\r" in v: sys.exit("health: newline inside a manifest value")
+    print(v)
+' "$mf") || {
+        log "ERROR: health: manifest read failed (services.health / version) $mf"
+        HEALTH_FAIL_REASON="manifest read failed: services.health"
+        return 1
+    }
+    local -a _hf
+    mapfile -t _hf <<< "$facts"
+    http_url=${_hf[0]:-}
+    version_file=${_hf[1]:-}
+    version_want=${_hf[2]:-}
 
-    while IFS= read -r u; do
+    for u in "${_hf[@]:3}"; do
         [ -n "$u" ] || continue
         if ! unit_settled "$u"; then
             # An operator-disabled required unit is NOT a health failure: the
@@ -1939,10 +2051,7 @@ health_check() {
             HEALTH_FAIL_REASON="unit not active: $u ($HEALTH_LAST_STATE)"
             return 1
         fi
-    done < <(python3 -c 'import json,sys
-for u in json.load(open(sys.argv[1],encoding="utf-8")).get("services",{}).get("health",{}).get("units_active",[]):
-    print(u)
-' "$mf")
+    done
 
     if [ -n "$http_url" ]; then
         if command -v curl >/dev/null 2>&1; then
@@ -1978,7 +2087,7 @@ for u in json.load(open(sys.argv[1],encoding="utf-8")).get("services",{}).get("h
 # Returns 0 on success, 1 on failure (does not exit — caller may rollback).
 restart_services_and_health() {
     local txn=$1
-    services_enable_and_tmpfiles "$txn"
+    services_enable_and_tmpfiles "$txn" || return 1
     services_restart_sets "$txn" || return 1
     health_check "$txn"
 }
@@ -2349,8 +2458,10 @@ cmd_verify() {
         install_imaging_lock
     fi
     txn_patch "stage=verifying" "boot_verify_pending=false"
-    services_enable_and_tmpfiles "$txn"
-    if ! health_check "$txn"; then
+    # Both steps can fail (a dead manifest read — round 4); at top level under
+    # set -e an unchecked failure would kill verify mid-way (stage frozen at
+    # verifying) instead of deciding. Either one is a health failure.
+    if ! services_enable_and_tmpfiles "$txn" || ! health_check "$txn"; then
         rollback_from_journal "$txn" E_HEALTH "${HEALTH_FAIL_REASON:-health gate failed}"
         log "ERROR [E_HEALTH]: post-boot health failed (rolled back): ${HEALTH_FAIL_REASON:-}"
         exit 1

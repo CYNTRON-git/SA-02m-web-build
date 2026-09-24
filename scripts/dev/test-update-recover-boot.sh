@@ -77,6 +77,9 @@
 #   complete tree to verify WITHOUT the restart sets», R8e «rc=0 (want 3)», Me
 #   «remedy exited 0» + «went on after a refused reclaim: lock removed, busctl
 #   set-property …, systemctl start sa02m-flasher».
+#   1.0.6.54 round 4: R4d — a failing services_enable_and_tmpfiles (a dead
+#   manifest read) makes verify roll back with E_HEALTH and its reason. RED on
+#   2373792: rc=1, stage left at verifying (set -e killed verify mid-way).
 #
 # Run: bash scripts/dev/test-update-recover-boot.sh   (bash + python3 + coreutils)
 # ═══════════════════════════════════════════════════════════════════════════
@@ -162,7 +165,7 @@ manifest_path()                { printf '%s\n' "$STAGE/meta/manifest.json"; }
 wipe_incoming_staging()        { :; }
 commit_markers()               { : > "$T/commit.marker"; }
 health_check()                 { echo "fn health_check $1" >> "$CALLS"; HEALTH_FAIL_REASON="unit not active: nginx (inactive)"; return "$(cat "$T/health.rc")"; }
-services_enable_and_tmpfiles() { echo "fn services_enable_and_tmpfiles $1" >> "$CALLS"; return 0; }
+services_enable_and_tmpfiles() { echo "fn services_enable_and_tmpfiles $1" >> "$CALLS"; [ -f "$T/enable.rc" ] || return 0; HEALTH_FAIL_REASON="manifest read failed: services.enable"; return "$(cat "$T/enable.rc")"; }
 services_restart_sets()        { echo "fn services_restart_sets $1" >> "$CALLS"; return 0; }
 restart_services_and_health()  { echo "fn restart_services_and_health $1" >> "$CALLS"; HEALTH_FAIL_REASON="unit not active: nginx (inactive)"; return "$(cat "$T/health.rc")"; }
 
@@ -339,6 +342,25 @@ run_verify
     || bad "R4b error_message='$(txn_field error_message)' (want the health reason)"
 called "systemctl restart sa02m-rules" && ok "R4b rollback after verify restarts the sets (web is up now)" \
     || bad "R4b rollback after verify did not restart sa02m-rules"
+
+# R4d (review 1.0.6.54 round 4): services_enable_and_tmpfiles can now FAIL (a
+# manifest read that dies). cmd_verify runs under `set -e` at top level, so an
+# unchecked failing call there would kill verify mid-way — stage frozen at
+# verifying, lock held — instead of deciding. It must be a health failure:
+# rollback with E_HEALTH and the reason, health_check not reached.
+reset_run; printf '0\n' > "$T/health.rc"; printf '1\n' > "$T/enable.rc"
+write_txn verifying 3 3 boot_verify_pending=true runtime_wdt_prev_usec=15000000
+date -Iseconds > "$IMAGING_LOCK"
+run_verify
+rm -f "$T/enable.rc"
+if [ "$rc" -ne 0 ] && [ "$(txn_field stage)" = rolled_back ] && [ "$(txn_field error_code)" = E_HEALTH ] \
+   && [ "$(txn_field error_message)" = "manifest read failed: services.enable" ]; then
+    ok "R4d a failed enable step → verify rolls back with E_HEALTH and the reason (never dies mid-verify)"
+else
+    bad "R4d failed enable step: rc=$rc stage=$(txn_field stage) error_code=$(txn_field error_code) error_message='$(txn_field error_message)'"
+fi
+called_re '^fn health_check ' && bad "R4d health_check still ran after the enable step failed" \
+    || ok "R4d health_check not reached after the enable step failed"
 
 for st in done rolled_back; do
     reset_run; printf '0\n' > "$T/health.rc"
