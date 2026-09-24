@@ -192,11 +192,14 @@ retained MQTT snapshot) is the baseline and never fires — only values arriving
 on the state topics count as observed, never the engine's own writes (a `boot`
 scenario that sets the device before its snapshot arrives does not make that
 snapshot a change); the trigger fires on each later value that differs from the
-previous one. Version-scoped: boards
-below 1.0.6.54 evaluate `changed` as a level that always holds, so every
-engine start (service restart, update, reboot) fires every `changed`
-scenario once. Events `motion_detected` / `motion_cleared` / `opened` /
-`closed`.
+previous one. So the echo of a `boot` write depends on arrival order at start:
+boot write → snapshot → the bridge's echo of the write fires `changed` once
+(snapshot → echo is a real observed change); snapshot → boot write → echo
+fires nothing (the echo equals the engine's mirror and is dropped as a repeat).
+Version-scoped: boards below 1.0.6.54 evaluate `changed` as a level that
+always holds, so every engine start (service restart, update, reboot) fires
+every `changed` scenario once. Events `motion_detected` / `motion_cleared` /
+`opened` / `closed`.
 
 Button gestures: `single` / `long` / `double` from bridge counters
 `di_N_short` / `di_N_long` / `di_N_double` (`docs/MQTT_TOPICS.md`) — a

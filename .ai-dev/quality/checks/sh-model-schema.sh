@@ -1,11 +1,6 @@
 #!/usr/bin/env bash
 # sh-model-schema - the validating check for docs/contracts/sh-model.md (plan D4 / Q4=docs+test).
 #
-# ORCHESTRATOR: install this in the sibling repo SA-02m-web-build as
-#   .ai-dev/quality/checks/sh-model-schema.sh
-# (the sibling convention is checks/<row-id>.sh; the row id is sh-model-schema).
-# The exact tools.json registry row to add is printed at the bottom of this header.
-#
 # WHY THIS EXISTS. docs/contracts/sh-model.schema.json is the executable half of
 # the model contract: it fixes the shape of the SA-02m unified device model
 # (Device -> functions[] -> points[]) that the Phase-B daemon, the Phase-C UI
