@@ -73,6 +73,13 @@
 #   RED on 2373792, observed 2026-09-24 under WSL: 10 FAIL — 11a rc=0 and g2
 #   NEW after rollback, 11b/11c rc=0 with every file renamed, 11d stamp
 #   installed without a record, 11e no WARN, 12a–12c rc=0 (12b/12c deleted).
+#   Round 5: 11f (the backup's sha256 name cannot be computed), 13a/13b
+#   (atomic_install_file's own fdatasync(tmp) / fsync(dir) fail), 14a/14b
+#   (stop_before_apply dies on a dead read before any deploy; extracted with
+#   the shipped die). Every 11/13 case asserts the exact g1|g2|g3 state. RED on
+#   f7091bf (2026-09-24, WSL): 5 FAIL — 11f every file NEW even after rollback,
+#   13a/13b rc=0 with every file renamed, 14a «deploy PROCEEDED, systemctl
+#   calls=''».
 #
 # Drive-to-failure: UPDATE_RUNNER_SRC=<(git show main:etc/sa02m-update-runner.sh) \
 #   bash scripts/dev/test-update-deploy-skip.sh   → the skip assertion goes RED
@@ -125,7 +132,13 @@ SRC="$T/runner.sh"
 # the first `install` call of this file (the mode probe below), so every later
 # call — the probe included — goes through the forwarder. `mv` also feeds the
 # case-6 trace.
-INSTALL_FAIL_ON=""; MV_FAIL_ON=""; CP_FAIL_ON=""; SYNC_FAIL_ON=""
+INSTALL_FAIL_ON=""; MV_FAIL_ON=""; CP_FAIL_ON=""; SYNC_FAIL_ON=""; SYNC_FAIL_EQ=""; SHA_FAIL=""
+# Case 11f: the backup NAME is the sha256 of the dst; a failing sha256sum used
+# to yield the bare backups/ directory as the "backup" (cp -a still succeeds).
+sha256sum() {
+    if [ -n "$SHA_FAIL" ]; then cat >/dev/null; return 1; fi
+    command sha256sum "$@"
+}
 # Cases 11/12: `cp` refuses when its SOURCE (second-to-last argument)
 # contains $CP_FAIL_ON; the runner takes a backup with `cp -a <live> <bak>`.
 cp() {
@@ -180,7 +193,7 @@ grep -q '^stamp_runner_version_after_deploy() {' "$SRC" && HAS_STAMP=1
 funcs="apply_deploy_items journal_append atomic_install_file rollback_from_journal"
 [ "$HAS_GUARD" = "1" ] && funcs="is_unchanged $funcs"
 [ "$HAS_STAMP" = "1" ] && funcs="$funcs stamp_runner_version_after_deploy"
-funcs="$funcs apply_deletes"
+funcs="$funcs apply_deletes stop_before_apply die"
 for fn in $funcs; do
     extract "$fn" >> "$T/fn.sh"
     grep -q "^$fn() {" "$T/fn.sh" \
@@ -222,6 +235,9 @@ TRACE="$T/fsync.trace"; : > "$TRACE"
 sync() {
     printf 'sync %s\n' "$*" >> "$TRACE"
     if [ -n "$SYNC_FAIL_ON" ] && [ "$#" -ge 1 ] && [[ "${*: -1}" == *"$SYNC_FAIL_ON"* ]]; then return 1; fi
+    # Case 13b: refuses only when the last argument IS $SYNC_FAIL_EQ (a
+    # directory fsync — a tmp path under that dir must still go through).
+    if [ -n "$SYNC_FAIL_EQ" ] && [ "$#" -ge 1 ] && [ "${*: -1}" = "$SYNC_FAIL_EQ" ]; then return 1; fi
     command sync "$@"
 }
 # (`mv` is the forwarder defined above the mode probe; it traces into $TRACE.)
@@ -642,10 +658,14 @@ fi
 #     NEW file), and a failed journal write renamed the file with no record of
 #     it — G6 ("the journal knows every renamed file") was false exactly when
 #     the disk fills. Expected in every case: rc=1, the named ERROR line, the
-#     failing item NOT renamed, no *.tmp.* left, every later item untouched,
-#     and rollback over whatever journal exists leaves every file OLD.
-run_g6_case() {   # <txn> <live> <label> <expected-error-substring> [journal-as-dir]
-    local txn=$1 live=$2 label=$3 want=$4 jdir=${5:-} ov="$STATEDIR/staging/$1/overlay" i
+#     failing item NOT renamed (exact g1|g2|g3 state asserted), no *.tmp.*
+#     left, every later item untouched, and rollback over whatever journal
+#     exists leaves every file OLD.
+# <want-states> is the EXACT g1|g2|g3 content right after the failed apply: the
+# failing item still OLD proves it was not renamed; an earlier item may be NEW
+# (its journal line exists — the rollback below must restore it).
+run_g6_case() {   # <txn> <live> <label> <expected-error-substring> <want-states> [journal-as-dir]
+    local txn=$1 live=$2 label=$3 want=$4 want_states=$5 jdir=${6:-} ov="$STATEDIR/staging/$1/overlay" i
     mkdir -p "$ov" "$live" "$STATEDIR/staging/$txn/meta" "$STATEDIR/staging/$txn/backups"
     for i in 1 2 3; do
         printf 'g%s NEW\n' "$i" > "$ov/g$i.conf"; chmod 644 "$ov/g$i.conf"
@@ -664,10 +684,10 @@ PYM
     tmps=$(find "$live" -name '*.tmp.*' 2>/dev/null | wc -l | tr -d ' ')
     states="$(cat "$live/g1.conf")|$(cat "$live/g2.conf")|$(cat "$live/g3.conf")"
     if [ "$rc" -eq 1 ] && grep -qF "$want" "$LOG" && [ "$tmps" = "0" ] \
-       && [ "${states##*|}" = "g3 OLD" ]; then
-        ok "$label: apply FAILS before the rename (rc=1, error logged, no tmp left, later items untouched; g1|g2|g3=$states)"
+       && [ "$states" = "$want_states" ]; then
+        ok "$label: apply FAILS (rc=1, error logged, no tmp left; g1|g2|g3=$states as expected)"
     else
-        bad "$label: failure not caught before the rename (rc=$rc, tmp-left=$tmps, g1|g2|g3=$states, want-line=$(grep -cF "$want" "$LOG"))"
+        bad "$label: failure not caught (rc=$rc, tmp-left=$tmps, g1|g2|g3=$states, want $want_states, want-line=$(grep -cF "$want" "$LOG"))"
     fi
     ( set -euo pipefail; rollback_from_journal "$txn" ) >/dev/null 2>&1
     states="$(cat "$live/g1.conf")|$(cat "$live/g2.conf")|$(cat "$live/g3.conf")"
@@ -678,11 +698,20 @@ PYM
     fi
 }
 CP_FAIL_ON="$T/live11a/g2.conf"
-run_g6_case TXN11A "$T/live11a" "11a backup of item 2 fails" "ERROR: backup failed: $T/live11a/g2.conf"
+run_g6_case TXN11A "$T/live11a" "11a backup of item 2 fails (item 2 not renamed)" "ERROR: backup failed: $T/live11a/g2.conf" "g1 NEW|g2 OLD|g3 OLD"
 CP_FAIL_ON=""
-run_g6_case TXN11B "$T/live11b" "11b journal write fails (journal path is a directory)" "ERROR: journal write failed: $T/live11b/g1.conf" jdir
+run_g6_case TXN11B "$T/live11b" "11b journal write fails (journal path is a directory; item 1 not renamed)" "ERROR: journal write failed: $T/live11b/g1.conf" "g1 OLD|g2 OLD|g3 OLD" jdir
+# 11f (round 5): the backup's NAME cannot be computed (sha256sum fails at
+#     runtime — fork/ENOMEM; the binary itself is a preflight command). The
+#     unchecked `$(… | sha256sum | awk …)` made the backup path the backups/
+#     DIRECTORY: `cp -a` into it succeeded, the journal recorded a directory as
+#     the backup, the file was renamed, and the rollback (isfile(backup) is
+#     false) left it NEW. Expected: rc=1 before the rename, every file OLD.
+SHA_FAIL=1
+run_g6_case TXN11F "$T/live11f" "11f backup name cannot be computed (item 1 not renamed)" "ERROR: backup failed: $T/live11f/g1.conf" "g1 OLD|g2 OLD|g3 OLD"
+SHA_FAIL=""
 SYNC_FAIL_ON="staging/TXN11C/journal.jsonl"
-run_g6_case TXN11C "$T/live11c" "11c fdatasync of the journal fails" "ERROR: journal write failed: $T/live11c/g1.conf"
+run_g6_case TXN11C "$T/live11c" "11c fdatasync of the journal fails (item 1 not renamed)" "ERROR: journal write failed: $T/live11c/g1.conf" "g1 OLD|g2 OLD|g3 OLD"
 SYNC_FAIL_ON=""
 
 # 11d. THE RUNNER STAMP CHECKS ITS JOURNAL WRITE TOO. The manifest deploys the
@@ -756,6 +785,60 @@ if [ "$rc12d" -eq 0 ] && [ ! -e "$tgt12" ] && grep -q '"op": "delete"' "$STATEDI
     ok "12d healthy delete: rc=0, target removed, delete record journalled"
 else
     bad "12d healthy delete broken (rc=$rc12d, target $([ -e "$tgt12" ] && echo present || echo gone))"
+fi
+
+# 13. atomic_install_file's OWN fsyncs are checked (round 5). `sync -d -- <tmp>`
+#     and `sync -- <dir>` used to fall back to a bare `sync`, which cannot
+#     report an error — a failed fdatasync of the new bytes still led to the
+#     rename. 13a: the tmp's fdatasync fails on item 2 → rc=1, item 2 NOT
+#     renamed, no tmp left. 13b: the directory fsync after item 1's rename fails
+#     → rc=1; item 1 IS renamed (the rename happened) but its journal line
+#     exists, so the rollback restores it — every file OLD after rollback.
+SYNC_FAIL_ON="$T/live13a/g2.conf.tmp."
+run_g6_case TXN13A "$T/live13a" "13a fdatasync of item 2's tmp fails (item 2 not renamed)" "ERROR: atomic install failed: $T/live13a/g2.conf" "g1 NEW|g2 OLD|g3 OLD"
+SYNC_FAIL_ON=""
+SYNC_FAIL_EQ="$T/live13b"
+run_g6_case TXN13B "$T/live13b" "13b directory fsync after item 1's rename fails (item 1 renamed, journalled; items 2-3 not reached)" "ERROR: atomic install failed: $T/live13b/g1.conf" "g1 NEW|g2 OLD|g3 OLD"
+SYNC_FAIL_EQ=""
+
+# 14. stop_before_apply DIES ON A FAILED READ, BEFORE ANYTHING IS DEPLOYED
+#     (round 5). cmd_apply calls it plainly (errexit on) and then deploys; its
+#     list came from `done < <(python3 …)`, whose status bash never reports — a
+#     dead read stopped NOTHING (sa02m-flasher kept the RS-485 ports) and the
+#     apply went on. Driven as cmd_apply runs it: a set -e subshell calling it
+#     and then marking "deploy started". The systemctl function records calls.
+#     Expected: exit 1 via die (stage=error, error_code=E_APPLY, the reason
+#     naming the read), no deploy marker, no systemctl call. 14b: a healthy
+#     read stops sa02m-flasher and the apply proceeds.
+run_stop_case() {   # <txn> <pyfail-match> → rc14, $T/sys14.calls, $T/deploy14.marker
+    local txn=$1
+    mkdir -p "$STATEDIR/staging/$txn/meta"
+    printf '{"schema_version": 1, "version": "9.9.9.9", "deploy": [], "services": {"stop_before_apply": ["sa02m-flasher"]}}\n' \
+        > "$STATEDIR/staging/$txn/meta/manifest.json"
+    : > "$TXNVARS_F"; : > "$LOG"; : > "$T/sys14.calls"; rm -f "$T/deploy14.marker"
+    ( set -euo pipefail; PATH="$T/pyfail:$PATH"; export PY_FAIL_MATCH=$2
+      systemctl() { printf 'systemctl %s\n' "$*" >> "$T/sys14.calls"; return 0; }
+      stop_before_apply "$txn"
+      : > "$T/deploy14.marker" ) >/dev/null 2>&1
+    rc14=$?
+}
+if grep -q '^stop_before_apply() {' "$T/fn.sh"; then
+    run_stop_case TXN14A 'stop_before_apply'
+    if [ "$rc14" -eq 1 ] && [ ! -e "$T/deploy14.marker" ] && [ ! -s "$T/sys14.calls" ] \
+       && [ "$(txn_get error_code)" = E_APPLY ] && [ "$(txn_get stage)" = error ] \
+       && grep -qF 'manifest read failed' "$LOG"; then
+        ok "14a stop_before_apply: a dead read DIES before any deploy (E_APPLY, stage=error, flasher untouched)"
+    else
+        bad "14a stop_before_apply: dead read → rc=$rc14, deploy $([ -e "$T/deploy14.marker" ] && echo PROCEEDED || echo stopped), systemctl calls='$(tr '\n' ';' < "$T/sys14.calls")', stage=$(txn_get stage) error_code=$(txn_get error_code)"
+    fi
+    run_stop_case TXN14B ''
+    if [ "$rc14" -eq 0 ] && [ -e "$T/deploy14.marker" ] && grep -qx 'systemctl stop sa02m-flasher' "$T/sys14.calls"; then
+        ok "14b stop_before_apply: a healthy read stops sa02m-flasher and the apply proceeds"
+    else
+        bad "14b stop_before_apply healthy read broken (rc=$rc14, calls='$(tr '\n' ';' < "$T/sys14.calls")')"
+    fi
+else
+    bad "14 stop_before_apply not extracted — the marker moved"
 fi
 
 echo "-----"

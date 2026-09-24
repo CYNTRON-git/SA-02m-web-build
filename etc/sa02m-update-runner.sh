@@ -1280,13 +1280,15 @@ atomic_install_file() {
         install -m "$mode" "$src" "$tmp" || { rm -f "$tmp"; return 1; }
     fi
     # fdatasync(tmp) BEFORE the rename, fsync(dir) after it, through coreutils
-    # `sync -d FILE` / `sync DIR` (>= 8.24; the boards run 9.4) with bare `sync`
-    # where the operand form is refused — the launcher's own idiom. Until
-    # 1.0.6.54 both were python3 one-liners (coreutils ships no `fdatasync`
-    # binary, so that branch never ran): two interpreter starts per changed file.
-    sync -d -- "$tmp" 2>/dev/null || sync
+    # `sync -d FILE` / `sync DIR` (>= 8.24; every board runs 8.32 or 9.4) —
+    # each checked, with no bare-`sync` fallback: sync(2) cannot report an
+    # error, so a failed fdatasync used to lead to the rename anyway (round 5;
+    # gate: update-deploy-skip 13a/13b). A failed dir fsync comes after the
+    # rename: the journal line already names the file, so the E_APPLY
+    # rollback restores it. Until 1.0.6.54 both were python3 one-liners.
+    sync -d -- "$tmp" || { rm -f "$tmp"; return 1; }
     mv -f "$tmp" "$dst" || { rm -f "$tmp"; return 1; }
-    sync -- "$dstdir" 2>/dev/null || sync
+    sync -- "$dstdir" || return 1
 }
 
 # Deploy-skip predicate: returns 0 (unchanged) ONLY when $dst already matches the
@@ -1433,8 +1435,12 @@ PY
             # file), a journal line that failed would leave the file renamed
             # with no record (G6; gate: update-deploy-skip 11a-11c).
             if [ -e "$dst" ]; then
-                bak="$STATEDIR/staging/$txn/backups/$(printf '%s' "$dst" | sha256sum | awk '{print $1}')"
-                if ! { mkdir -p "$(dirname "$bak")" && cp -a "$dst" "$bak"; }; then
+                # The backup is named by the dst's sha256 — checked: an empty
+                # name made the backups/ DIRECTORY the "backup" (gate: 11f).
+                bak=$(printf '%s' "$dst" | sha256sum) || bak=""
+                bak=${bak%% *}
+                [ "${#bak}" -eq 64 ] && bak="$STATEDIR/staging/$txn/backups/$bak" || bak=""
+                if [ -z "$bak" ] || ! { mkdir -p "$(dirname "$bak")" && cp -a "$dst" "$bak"; }; then
                     log "ERROR: backup failed: $dst"
                     APPLY_FAIL_REASON="backup failed: $dst"
                     return 1
@@ -1513,8 +1519,10 @@ print(sum(1 for it in m.get("deploy",[]) if it.get("dst")==sys.argv[2]))' "$mf" 
     fi
     # Backup and journal record checked before the install (G6; gate: 11d).
     if [ -e "$RUNNER_VERSION_FILE" ]; then
-        bak="$STATEDIR/staging/$txn/backups/$(printf '%s' "$RUNNER_VERSION_FILE" | sha256sum | awk '{print $1}')"
-        if ! { mkdir -p "$(dirname "$bak")" && cp -a "$RUNNER_VERSION_FILE" "$bak"; }; then
+        bak=$(printf '%s' "$RUNNER_VERSION_FILE" | sha256sum) || bak=""
+        bak=${bak%% *}
+        [ "${#bak}" -eq 64 ] && bak="$STATEDIR/staging/$txn/backups/$bak" || bak=""
+        if [ -z "$bak" ] || ! { mkdir -p "$(dirname "$bak")" && cp -a "$RUNNER_VERSION_FILE" "$bak"; }; then
             rm -f "$src"
             log "ERROR: runner stamp: backup failed: $RUNNER_VERSION_FILE"
             return 1
@@ -1558,9 +1566,11 @@ for p in json.load(open(sys.argv[1],encoding="utf-8")).get("delete",[]):
     while IFS= read -r dpath; do
         [ -n "$dpath" ] || continue
         if [ -e "$dpath" ]; then
-            bak="$STATEDIR/staging/$txn/backups/del-$(printf '%s' "$dpath" | sha256sum | awk '{print $1}')"
+            bak=$(printf '%s' "$dpath" | sha256sum) || bak=""
+            bak=${bak%% *}
+            [ "${#bak}" -eq 64 ] && bak="$STATEDIR/staging/$txn/backups/del-$bak" || bak=""
             if [ -f "$dpath" ]; then
-                if ! { mkdir -p "$(dirname "$bak")" && cp -a "$dpath" "$bak"; }; then
+                if [ -z "$bak" ] || ! { mkdir -p "$(dirname "$bak")" && cp -a "$dpath" "$bak"; }; then
                     log "ERROR: backup failed: $dpath"
                     APPLY_FAIL_REASON="backup failed: $dpath"
                     return 1
@@ -1698,6 +1708,25 @@ restart_after_rollback() {
         return 0
     fi
     log "rollback: daemon-reload + restart sets on the restored tree..."
+    # Each set captured, then iterated. Soft by design (a rollback that has
+    # restored the files never fails on a restart), but no longer silent: the
+    # old `done < <(python3 … || true)` bounced nothing and logged nothing on a
+    # dead read. A set that cannot be read is WARNed by name and skipped; the
+    # others still run (round 5; gate: update-conditional-restart run 5c).
+    local restart_list if_active_list if_changed_list
+    restart_list=$(python3 -c 'import json,sys
+for u in json.load(open(sys.argv[1],encoding="utf-8")).get("services",{}).get("restart",[]):
+    print(u)
+' "$mf") || { log "WARN: rollback: manifest read failed (restart) - that set is not restarted"; restart_list=""; }
+    if_active_list=$(python3 -c 'import json,sys
+for u in json.load(open(sys.argv[1],encoding="utf-8")).get("services",{}).get("restart_if_active",[]):
+    print(u)
+' "$mf") || { log "WARN: rollback: manifest read failed (restart_if_active) - that set is not restarted"; if_active_list=""; }
+    if_changed_list=$(python3 -c 'import json,sys
+m=json.load(open(sys.argv[1],encoding="utf-8")).get("services",{}).get("restart_if_changed",{})
+for u,p in m.items():
+    print(u+"\t"+p)
+' "$mf") || { log "WARN: rollback: manifest read failed (restart_if_changed) - that set is not restarted"; if_changed_list=""; }
     _systemctl_bounded 60 daemon-reload || true
     while IFS= read -r u; do
         [ -n "$u" ] || continue
@@ -1713,20 +1742,14 @@ restart_after_rollback() {
         esac
         _systemctl_bounded 60 restart "$u" || _systemctl_bounded 45 start "$u" || true
         log "restarted after rollback: $u"
-    done < <(python3 -c 'import json,sys
-for u in json.load(open(sys.argv[1],encoding="utf-8")).get("services",{}).get("restart",[]):
-    print(u)
-' "$mf" 2>/dev/null || true)
+    done <<< "$restart_list"
     while IFS= read -r u; do
         [ -n "$u" ] || continue
         if systemctl is-active --quiet "$u"; then
             _systemctl_bounded 60 restart "$u" || true
             log "restarted after rollback (if-active): $u"
         fi
-    done < <(python3 -c 'import json,sys
-for u in json.load(open(sys.argv[1],encoding="utf-8")).get("services",{}).get("restart_if_active",[]):
-    print(u)
-' "$mf" 2>/dev/null || true)
+    done <<< "$if_active_list"
     while IFS=$'\t' read -r u prefix; do
         [ -n "$u" ] && [ -n "${prefix:-}" ] || continue
         _journal_has_dst_prefix "$txn" "$prefix" || continue
@@ -1734,11 +1757,7 @@ for u in json.load(open(sys.argv[1],encoding="utf-8")).get("services",{}).get("r
             _systemctl_bounded 60 restart "$u" || true
             log "restarted after rollback (changed, if-active): $u"
         fi
-    done < <(python3 -c 'import json,sys
-m=json.load(open(sys.argv[1],encoding="utf-8")).get("services",{}).get("restart_if_changed",{})
-for u,p in m.items():
-    print(u+"\t"+p)
-' "$mf" 2>/dev/null || true)
+    done <<< "$if_changed_list"
     return 0
 }
 
@@ -1758,15 +1777,18 @@ _systemctl_bounded() {
 # $prefix (skipped-unchanged files never reach the journal — apply_deploy_items
 # suppresses the journal line together with the install). Journal absent
 # (power-loss recover with tmpfs staging) => CHANGED: the failure mode this
-# gate exists for is STALE in-memory code, not a spare restart.
+# gate exists for is STALE in-memory code, not a spare restart. The same rule
+# for a read that FAILS (round 5): "not found" is its own exit code (3), so a
+# crashed/killed python (1, 137, 127 …) or an unparseable journal line counts
+# as CHANGED, with a WARN — it used to share exit 1 with "not found" and a dead
+# read kept the bridge on stale code (gate: update-conditional-restart run 3b).
 _journal_has_dst_prefix() {
-    local txn=$1 prefix=$2
+    local txn=$1 prefix=$2 rc=0
     local j="$STATEDIR/staging/$txn/journal.jsonl"
     [ -f "$j" ] || return 0
-    python3 - "$j" "$prefix" <<'PY'
+    python3 - "$j" "$prefix" <<'PY' || rc=$?
 import json, sys
 j, p = sys.argv[1], sys.argv[2]
-found = False
 with open(j, encoding="utf-8") as f:
     for ln in f:
         ln = ln.strip()
@@ -1775,13 +1797,20 @@ with open(j, encoding="utf-8") as f:
         try:
             rec = json.loads(ln)
         except Exception:
-            continue
+            sys.exit(4)   # a line we cannot read may name the prefix
         d = rec.get("dst", "")
         if isinstance(d, str) and d.startswith(p):
-            found = True
-            break
-sys.exit(0 if found else 1)
+            sys.exit(0)
+sys.exit(3)
 PY
+    case "$rc" in
+        0) return 0 ;;
+        3) return 1 ;;
+        *)
+            log "WARN: journal read failed (rc=$rc) for $prefix - treated as changed"
+            return 0
+            ;;
+    esac
 }
 
 # --- post-deploy: enable + tmpfiles, restart sets, health gate --------------
@@ -2108,18 +2137,24 @@ commit_markers() {
     cp -a "$STATEDIR/state/deployed_at" "$LEGACY_STATEDIR/deployed_at" 2>/dev/null || true
 }
 
+# Stops the units the manifest names (sa02m-flasher: it holds the RS-485
+# ports) before anything is deployed. The list is captured and a failed read
+# DIES (E_APPLY, nothing deployed yet — the rollback archive only): the old
+# `done < <(python3 …)` could not report a dead read, so the apply went on with
+# the flasher still running (round 5; gate: update-deploy-skip 14a/14b).
 stop_before_apply() {
     local txn=$1
-    local mf
+    local mf list u
     mf=$(manifest_path "$txn")
+    list=$(python3 -c 'import json,sys
+for u in json.load(open(sys.argv[1],encoding="utf-8")).get("services",{}).get("stop_before_apply",[]):
+    print(u)
+' "$mf") || die E_APPLY "manifest read failed (services.stop_before_apply) - nothing deployed"
     while IFS= read -r u; do
         [ -n "$u" ] || continue
         systemctl stop "$u" 2>/dev/null || true
         log "stopped before apply: $u"
-    done < <(python3 -c 'import json,sys
-for u in json.load(open(sys.argv[1],encoding="utf-8")).get("services",{}).get("stop_before_apply",[]):
-    print(u)
-' "$mf")
+    done <<< "$list"
 }
 
 # --- main apply / recover ----------------------------------------------------

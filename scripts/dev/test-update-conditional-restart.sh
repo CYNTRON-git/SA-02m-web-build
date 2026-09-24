@@ -81,6 +81,10 @@
 # `manifest read failed` reason, a dead daemon_reload read must still reload,
 # and a key absent by design must still skip. RED on 2373792 (2026-09-24,
 # WSL): 12 FAIL — every dead read left an empty list and returned 0.
+# Round 5: run 3b (a present journal whose read dies counts as CHANGED, with
+# a WARN) and run 5c (restart_after_rollback: a dead set read WARNs by name,
+# the rollback stays 0, the other sets still run); the log stub records to
+# $RUNNER_LOG for these. RED on f7091bf: 3 FAIL.
 #
 # Run: bash scripts/dev/test-update-conditional-restart.sh   (bash + python3 +
 #   coreutils; no systemd — the shims replace it).
@@ -170,7 +174,9 @@ ACTIVE_FILE="$T/active.units"
 SHIM_STATE="$T"
 export CALLS_LOG ACTIVE_FILE SHIM_STATE
 
-log()                  { :; }
+# Recorded (round 5): runs 3b / 5c assert the WARN a failed read must leave.
+RUNNER_LOG="$T/runner.log"; : > "$RUNNER_LOG"
+log()                  { printf '%s\n' "$*" >> "$RUNNER_LOG"; }
 manifest_path()        { printf '%s\n' "$STAGE/meta/manifest.json"; }
 # rollback_from_journal's collaborators (run 5): txn state is irrelevant here.
 txn_patch()            { :; }
@@ -359,6 +365,27 @@ called "restart sa02m-modbus-mqtt" \
     && ok "run3: missing journal treated as CHANGED (recover fails toward freshness)" \
     || bad "run3: missing journal treated as unchanged — recover leaves stale code"
 
+# ── Run 3b: journal PRESENT but its read DIES → changed (round 5) ───────────
+# _journal_has_dst_prefix answered "not found" with exit 1 — the same status a
+# crashed python (traceback, OOM-kill handled as 1 by the shim) returns, so a
+# failed journal read read as "bridge unchanged" and a changed bridge kept its
+# stale code. The journal here names only the rules engine; the shim kills the
+# read. Expected: treated as CHANGED (the missing-journal rule of run 3 — fail
+# toward freshness), the bridge restarted, a WARN naming the failed read.
+printf '%s\n' '{"op":"replace","dst":"/opt/sa02m-rules/sa02m_rules/engine.py","backup":"/x","mode":"0644","owner":"root:root"}' \
+    > "$STAGE/journal.jsonl"
+: > "$RUNNER_LOG"
+export PY_FAIL_MATCH=journal.jsonl
+run_health
+unset PY_FAIL_MATCH
+called "restart sa02m-modbus-mqtt" \
+    && ok "run3b: a dead journal read is treated as CHANGED (bridge restarted)" \
+    || bad "run3b: a dead journal read read as 'unchanged' — the changed-bridge gate fails toward stale code"
+grep -qF 'WARN: journal read failed' "$RUNNER_LOG" \
+    && ok "run3b: the failed journal read is logged (WARN)" \
+    || bad "run3b: no WARN for the failed journal read"
+rm -f "$STAGE/journal.jsonl"
+
 # ── Run 4: legacy manifest WITHOUT the conditional keys → clean no-op ───────
 write_manifest without
 run_health
@@ -413,6 +440,27 @@ if [ "$rb_rc" -eq 0 ] && ! grep -q 'restart' "$CALLS_LOG" 2>/dev/null; then
 else
     bad "run5b: rollback without a manifest rc=$rb_rc calls: $(tr '\n' ';' < "$CALLS_LOG")"
 fi
+
+# ── Run 5c: a dead read in the rollback's restart sets → WARN, continue ─────
+# restart_after_rollback fed its three sets from `done < <(python3 … || true)`:
+# a read that died bounced nothing and said nothing. It must stay soft (a
+# rollback that restored the files never fails on a restart) but WARN, naming
+# the set, and still run the sets it could read. The shim kills only the
+# restart_if_active read.
+write_manifest with
+printf '%s\n' '{"op":"replace","dst":"/opt/sa02m-rules/sa02m_rules/engine.py","backup":"/x","mode":"0644","owner":"root:root"}' \
+    > "$STAGE/journal.jsonl"
+: > "$CALLS_LOG"; : > "$RUNNER_LOG"
+( set -euo pipefail; export PY_FAIL_MATCH=restart_if_active; rollback_from_journal "$TXN" ) >/dev/null 2>&1; rb_rc=$?
+[ "$rb_rc" -eq 0 ] && ok "run5c: rollback with a dead restart_if_active read still returns 0" \
+                   || bad "run5c: rollback FAILED on a dead read (rc=$rb_rc) — a rollback must stay soft"
+grep -qF 'WARN: rollback: manifest read failed (restart_if_active)' "$RUNNER_LOG" \
+    && ok "run5c: the dead read is logged, naming the set (restart_if_active)" \
+    || bad "run5c: no WARN naming restart_if_active — the set was silently skipped"
+called "restart sa02m-rules" \
+    && ok "run5c: the sets that COULD be read still ran (sa02m-rules restarted)" \
+    || bad "run5c: restart[] skipped because another set's read died"
+rm -f "$STAGE/journal.jsonl"
 
 # ── Run 6: the health gate settles, tolerates Condition-off, names the state ─
 # Field incident 2026-09-23 (1.0.6.52, F1): one `is-active` probe immediately
