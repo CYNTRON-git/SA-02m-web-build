@@ -146,6 +146,44 @@ class EdgeOperatorTests(unittest.TestCase):
         e.on_state("sensor", "temp", 0)   # unchanged → filtered
         self.assertEqual(len(self.runs(e)), 2)  # one detected + one cleared
 
+    # «changed» (1.0.6.54, bench 1.135 2026-09-24): the first value after the
+    # engine starts is the retained MQTT snapshot, not a change — «Bench lamp
+    # pulse» (trigger: bench-switch-1 DI1 changed) switched the beeper on
+    # 1–2 s after every sa02m-rules start (08:36, 09:18, 11:08). The first
+    # sight is the baseline, exactly as for the edge ops above and the button
+    # counters; only a later, different value fires.
+    def test_changed_first_sight_after_start_is_the_baseline(self):
+        e, _c, td, _ = make_engine(
+            {"scenarios": [self.scenario("changed", None)]}, [])
+        self.addCleanup(td.cleanup)
+        e.on_state("sensor", "temp", 1)   # retained snapshot after start
+        self.assertEqual(len(self.runs(e)), 0,
+                         "the retained value at engine start fired «changed»")
+        e.on_state("sensor", "temp", 0)   # a real change → one run
+        self.assertEqual(len(self.runs(e)), 1)
+        e.on_state("sensor", "temp", 0)   # unchanged → filtered
+        e.on_state("sensor", "temp", 1)   # another change → one more
+        self.assertEqual(len(self.runs(e)), 2)
+
+    def test_changed_restart_rebaselines(self):
+        # A service restart / reboot / update is a fresh engine: the same
+        # retained value arriving again is still not a change.
+        for _ in range(2):
+            e, _c, td, _ = make_engine(
+                {"scenarios": [self.scenario("changed", None)]}, [])
+            self.addCleanup(td.cleanup)
+            e.on_state("sensor", "temp", 1)
+            self.assertEqual(len(self.runs(e)), 0)
+
+    def test_level_ops_still_fire_on_first_sight(self):
+        # Level ops are states, not changes: a lamp already ON at start still
+        # satisfies `== 1` (unchanged behaviour — only «changed» moved).
+        e, _c, td, _ = make_engine(
+            {"scenarios": [self.scenario("==", 1)]}, [])
+        self.addCleanup(td.cleanup)
+        e.on_state("sensor", "temp", 1)
+        self.assertEqual(len(self.runs(e)), 1)
+
 
 class ButtonTests(unittest.TestCase):
     def scenario(self, gesture, input_name=None):

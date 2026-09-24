@@ -37,7 +37,8 @@ BUTTON_COUNTER_HOLD_S = 10.0  # counters seen this recently mute the classifier
 HEAP_MAX = 4096
 SNAPSHOT_MAX = 16
 
-_LEVEL_OPS = ("==", "!=", ">", "<", ">=", "<=", "changed")
+# «changed» is evaluated before these in _triggered (it needs a previous value).
+_LEVEL_OPS = ("==", "!=", ">", "<", ">=", "<=")
 _COUNTER_SUFFIX = {"short": "single", "long": "long", "double": "double"}
 
 
@@ -588,6 +589,19 @@ class Engine:
                 if event.get("device") != tr.get("device") or event.get("cap") != tr.get("cap"):
                     continue
                 op = tr.get("op") or "=="
+                if op == "changed":
+                    # A CHANGE needs a previous value: the first value the
+                    # engine sees after (re)start — the retained MQTT
+                    # snapshot — is the baseline, never a fire (bench 1.135,
+                    # 2026-09-24: a «changed» scenario switched the beeper on
+                    # after every start/update/reboot). on_state already drops
+                    # repeats, so any later event here is a real change. The
+                    # baseline is the engine's own last value, not a
+                    # per-trigger one, so a scenario added by a hot reload
+                    # still fires on the first real change.
+                    if event.get("prev") is not None:
+                        return True
+                    continue
                 if op in _LEVEL_OPS:
                     if cmp_op(event.get("value"), op, tr.get("value")):
                         return True

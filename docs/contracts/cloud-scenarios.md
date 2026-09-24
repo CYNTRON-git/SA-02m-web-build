@@ -184,10 +184,16 @@ Triggers (`kind`): `state`, `time`, `sun`, `boot`, `every` `{minutes}`,
 `button` `{device, input?, gesture}`, `presence` arrive/leave on
 `Vars.home_mode`.
 
-State operators: level `== != > < >= <= changed`; edge
-`rises_above` / `drops_below` / `enters_range` / `leaves_range` (fire
-once per crossing); events `motion_detected` / `motion_cleared` /
-`opened` / `closed`.
+State operators: level `== != > < >= <=` (a level holds on every value,
+including the first one observed after the engine starts); edge `changed` /
+`rises_above` / `drops_below` / `enters_range` / `leaves_range` (fire once
+per crossing). `changed`: the first value observed after an engine start (the
+retained MQTT snapshot) is the baseline and never fires; the trigger fires on
+each later value that differs from the previous one. Version-scoped: boards
+below 1.0.6.54 evaluate `changed` as a level that always holds, so every
+engine start (service restart, update, reboot) fires every `changed`
+scenario once. Events `motion_detected` / `motion_cleared` / `opened` /
+`closed`.
 
 Button gestures: `single` / `long` / `double` from bridge counters
 `di_N_short` / `di_N_long` / `di_N_double` (`docs/MQTT_TOPICS.md`) — a
