@@ -77,6 +77,15 @@
 #   complete tree to verify WITHOUT the restart sets», R8e «rc=0 (want 3)», Me
 #   «remedy exited 0» + «went on after a refused reclaim: lock removed, busctl
 #   set-property …, systemctl start sa02m-flasher».
+#   1.0.6.54 round 4: R4d — a failing services_enable_and_tmpfiles (a dead
+#   manifest read) makes verify roll back with E_HEALTH and its reason. RED on
+#   0f0fc86: rc=1, stage left at verifying (set -e killed verify mid-way).
+#   Round 6: R10 — a torn last journal line converges in ONE run, through boot
+#   recover (R10a) and runtime reclaim (R10b). RED on fb78136: rc=1, stage
+#   frozen at rolling_back, lock kept, file NEW.
+#   Round 7: R11 — the caller's ERROR line after a rollback names its real
+#   outcome («rollback incomplete» over stage=error, «rolled back» otherwise).
+#   RED on 8e21bee: R11a logged «(rolled back)» over stage=error.
 #
 # Run: bash scripts/dev/test-update-recover-boot.sh   (bash + python3 + coreutils)
 # ═══════════════════════════════════════════════════════════════════════════
@@ -162,7 +171,7 @@ manifest_path()                { printf '%s\n' "$STAGE/meta/manifest.json"; }
 wipe_incoming_staging()        { :; }
 commit_markers()               { : > "$T/commit.marker"; }
 health_check()                 { echo "fn health_check $1" >> "$CALLS"; HEALTH_FAIL_REASON="unit not active: nginx (inactive)"; return "$(cat "$T/health.rc")"; }
-services_enable_and_tmpfiles() { echo "fn services_enable_and_tmpfiles $1" >> "$CALLS"; return 0; }
+services_enable_and_tmpfiles() { echo "fn services_enable_and_tmpfiles $1" >> "$CALLS"; [ -f "$T/enable.rc" ] || return 0; HEALTH_FAIL_REASON="manifest read failed: services.enable"; return "$(cat "$T/enable.rc")"; }
 services_restart_sets()        { echo "fn services_restart_sets $1" >> "$CALLS"; return 0; }
 restart_services_and_health()  { echo "fn restart_services_and_health $1" >> "$CALLS"; HEALTH_FAIL_REASON="unit not active: nginx (inactive)"; return "$(cat "$T/health.rc")"; }
 
@@ -339,6 +348,25 @@ run_verify
     || bad "R4b error_message='$(txn_field error_message)' (want the health reason)"
 called "systemctl restart sa02m-rules" && ok "R4b rollback after verify restarts the sets (web is up now)" \
     || bad "R4b rollback after verify did not restart sa02m-rules"
+
+# R4d (review 1.0.6.54 round 4): services_enable_and_tmpfiles can now FAIL (a
+# manifest read that dies). cmd_verify runs under `set -e` at top level, so an
+# unchecked failing call there would kill verify mid-way — stage frozen at
+# verifying, lock held — instead of deciding. It must be a health failure:
+# rollback with E_HEALTH and the reason, health_check not reached.
+reset_run; printf '0\n' > "$T/health.rc"; printf '1\n' > "$T/enable.rc"
+write_txn verifying 3 3 boot_verify_pending=true runtime_wdt_prev_usec=15000000
+date -Iseconds > "$IMAGING_LOCK"
+run_verify
+rm -f "$T/enable.rc"
+if [ "$rc" -ne 0 ] && [ "$(txn_field stage)" = rolled_back ] && [ "$(txn_field error_code)" = E_HEALTH ] \
+   && [ "$(txn_field error_message)" = "manifest read failed: services.enable" ]; then
+    ok "R4d a failed enable step → verify rolls back with E_HEALTH and the reason (never dies mid-verify)"
+else
+    bad "R4d failed enable step: rc=$rc stage=$(txn_field stage) error_code=$(txn_field error_code) error_message='$(txn_field error_message)'"
+fi
+called_re '^fn health_check ' && bad "R4d health_check still ran after the enable step failed" \
+    || ok "R4d health_check not reached after the enable step failed"
 
 for st in done rolled_back; do
     reset_run; printf '0\n' > "$T/health.rc"
@@ -648,6 +676,78 @@ for f in scripts/03-webserver.sh scripts/update-www-only.sh; do
 done
 stripped_has scripts/pack-offline-update.py '"sa02m-update-verify.service"' && ok "U1 pack-offline-update.py packs the verify unit" \
     || bad "U1 scripts/pack-offline-update.py does not pack sa02m-update-verify.service"
+
+# ── R10: a TORN journal converges on ONE boot (round 6 — review R3-1) ────────
+# The residue a power cut mid-apply leaves: stage applying, one file renamed
+# and journalled, a torn last line. Until round 6 the replay died on json.loads
+# of the torn line (it is read first — reverse order): recover exited non-zero
+# at rolling_back with the lock kept, and every later boot repeated it.
+# Expected: recover (boot) and reclaim (runtime) each finish in ONE run —
+# rolled_back, E_POWER, the renamed file OLD again, the lock cleared.
+echo "── R10: torn journal line — recover / reclaim converge in one run ──"
+r10_setup() {
+    mkdir -p "$STAGE/backups" "$TW/r10"
+    printf 'r10 NEW\n' > "$TW/r10/f.conf"
+    printf 'r10 OLD\n' > "$STAGE/backups/r10bak"
+    printf '{"op": "replace", "dst": "%s/r10/f.conf", "backup": "%s/backups/r10bak", "mode": "0644", "owner": "root:root"}\n' "$TW" "$STAGE" \
+        > "$STAGE/journal.jsonl"
+    printf '{"op": "create", "dst": "%s/r10/g.co' "$TW" >> "$STAGE/journal.jsonl"
+}
+reset_run; r10_setup
+write_txn applying 1 3
+date -Iseconds > "$IMAGING_LOCK"
+run_recover
+if [ "$rc" -eq 0 ] && [ "$(txn_field stage)" = rolled_back ] && [ "$(txn_field error_code)" = E_POWER ] \
+   && [ "$(cat "$TW/r10/f.conf")" = "r10 OLD" ] && [ ! -f "$IMAGING_LOCK" ]; then
+    ok "R10a boot recover over a torn journal: rolled_back / E_POWER in one run, file restored, lock cleared"
+else
+    bad "R10a boot recover over a torn journal: rc=$rc stage=$(txn_field stage) code=$(txn_field error_code) f=$(cat "$TW/r10/f.conf") lock=$([ -f "$IMAGING_LOCK" ] && echo kept || echo cleared)"
+fi
+reset_run; r10_setup
+write_txn rolling_back 1 3
+date -Iseconds > "$IMAGING_LOCK"
+run_reclaim
+if [ "$rc" -eq 0 ] && [ "$(txn_field stage)" = rolled_back ] && [ "$(cat "$TW/r10/f.conf")" = "r10 OLD" ] && [ ! -f "$IMAGING_LOCK" ]; then
+    ok "R10b runtime reclaim of a rollback residue with a torn journal: rolled_back in one run, file restored"
+else
+    bad "R10b reclaim over a torn journal: rc=$rc stage=$(txn_field stage) f=$(cat "$TW/r10/f.conf") lock=$([ -f "$IMAGING_LOCK" ] && echo kept || echo cleared)"
+fi
+rm -f "$STAGE/journal.jsonl" "$STAGE/backups/r10bak"
+
+# ── R11: the caller's ERROR line tells the truth about the rollback (round 7 —
+# review R4-3). rollback_from_journal returns 0 over a PARTIAL restore
+# (stage=error «rollback incomplete»), and every caller — cmd_apply's five
+# failure branches and cmd_verify — logged «(rolled back)» regardless. Driven
+# through cmd_verify (the one caller extracted here; cmd_apply's branches read
+# the same ROLLBACK_OUTCOME): a failed health gate over a journal whose replace
+# record has lost its backup. R11a: the line says «rollback incomplete», never
+# «rolled back»; R11b (a clean rollback) still says «rolled back».
+echo "── R11: the post-rollback ERROR line matches the transaction ──"
+reset_run; printf '1\n' > "$T/health.rc"
+mkdir -p "$STAGE/backups" "$TW/r11"
+printf 'r11 NEW\n' > "$TW/r11/f.conf"
+printf '{"op": "replace", "dst": "%s/r11/f.conf", "backup": "%s/backups/r11-gone", "mode": "0644", "owner": "root:root"}\n' "$TW" "$STAGE" \
+    > "$STAGE/journal.jsonl"
+write_txn verifying 3 3 boot_verify_pending=true runtime_wdt_prev_usec=15000000
+date -Iseconds > "$IMAGING_LOCK"
+run_verify
+r11_line=$(grep -F 'post-boot health failed' "$LOG" 2>/dev/null) || :
+if [ "$(txn_field stage)" = error ] && [[ "$r11_line" == *"(rollback incomplete)"* ]] && [[ "$r11_line" != *"rolled back"* ]]; then
+    ok "R11a incomplete rollback after verify: stage=error and the ERROR line says «rollback incomplete»"
+else
+    bad "R11a incomplete rollback after verify: stage=$(txn_field stage), ERROR line='$r11_line' — the log claims a rollback the transaction denies"
+fi
+rm -f "$STAGE/journal.jsonl"
+reset_run; printf '1\n' > "$T/health.rc"
+write_txn verifying 3 3 boot_verify_pending=true runtime_wdt_prev_usec=15000000
+date -Iseconds > "$IMAGING_LOCK"
+run_verify
+r11_line=$(grep -F 'post-boot health failed' "$LOG" 2>/dev/null) || :
+if [ "$(txn_field stage)" = rolled_back ] && [[ "$r11_line" == *"(rolled back)"* ]]; then
+    ok "R11b clean rollback after verify: stage=rolled_back and the ERROR line says «rolled back»"
+else
+    bad "R11b clean rollback after verify: stage=$(txn_field stage), ERROR line='$r11_line'"
+fi
 
 echo "-----"
 if [ "$fails" -eq 0 ]; then echo "PASS (all checks)"; exit 0

@@ -146,6 +146,95 @@ class EdgeOperatorTests(unittest.TestCase):
         e.on_state("sensor", "temp", 0)   # unchanged → filtered
         self.assertEqual(len(self.runs(e)), 2)  # one detected + one cleared
 
+    # «changed» (1.0.6.54, bench 1.135 2026-09-24): the first value after the
+    # engine starts is the retained MQTT snapshot, not a change — «Bench lamp
+    # pulse» (trigger: bench-switch-1 DI1 changed) switched the beeper on
+    # 1–2 s after every sa02m-rules start (08:36, 09:18, 11:08). The first
+    # sight is the baseline, exactly as for the edge ops above and the button
+    # counters; only a later, different value fires.
+    def test_changed_first_sight_after_start_is_the_baseline(self):
+        e, _c, td, _ = make_engine(
+            {"scenarios": [self.scenario("changed", None)]}, [])
+        self.addCleanup(td.cleanup)
+        e.on_state("sensor", "temp", 1)   # retained snapshot after start
+        self.assertEqual(len(self.runs(e)), 0,
+                         "the retained value at engine start fired «changed»")
+        e.on_state("sensor", "temp", 0)   # a real change → one run
+        self.assertEqual(len(self.runs(e)), 1)
+        e.on_state("sensor", "temp", 0)   # unchanged → filtered
+        e.on_state("sensor", "temp", 1)   # another change → one more
+        self.assertEqual(len(self.runs(e)), 2)
+
+    def test_changed_restart_rebaselines(self):
+        # A service restart / reboot / update is a fresh engine: the same
+        # retained value arriving again is still not a change.
+        for _ in range(2):
+            e, _c, td, _ = make_engine(
+                {"scenarios": [self.scenario("changed", None)]}, [])
+            self.addCleanup(td.cleanup)
+            e.on_state("sensor", "temp", 1)
+            self.assertEqual(len(self.runs(e)), 0)
+
+    def test_level_ops_still_fire_on_first_sight(self):
+        # Level ops are states, not changes: a lamp already ON at start still
+        # satisfies `== 1` (unchanged behaviour — only «changed» moved).
+        e, _c, td, _ = make_engine(
+            {"scenarios": [self.scenario("==", 1)]}, [])
+        self.addCleanup(td.cleanup)
+        e.on_state("sensor", "temp", 1)
+        self.assertEqual(len(self.runs(e)), 1)
+
+    # Review 1.0.6.54 R4-2: the «changed» baseline is an OBSERVED value. A boot
+    # scenario that writes the lamp before the retained snapshot arrives used
+    # to seed the engine's mirror, so the retained value then read as a change
+    # from the engine's own write and switched the beeper on at start.
+    def test_changed_engine_write_before_the_snapshot_is_no_baseline(self):
+        pubs = []
+        e, _c, td, _ = make_engine({"scenarios": [
+            block("b", [{"kind": "boot"}],
+                  [{"kind": "set", "device": "lamp", "cap": "on_off", "value": 1}]),
+            block("c", [{"kind": "state", "device": "lamp", "cap": "on_off",
+                         "op": "changed", "value": None}],
+                  [{"kind": "set", "device": "beeper", "cap": "on_off", "value": 1}]),
+        ]}, pubs)
+        self.addCleanup(td.cleanup)
+        e.on_boot()                          # b writes lamp=1 first
+        e.on_state("lamp", "on_off", 0)      # then the retained snapshot
+        self.assertNotIn(("beeper", "on_off", 1), pubs,
+                         "the retained value after an engine write fired «changed»")
+        self.assertEqual([r.get("id") for r in self.runs(e)], ["b"])
+        e.on_state("lamp", "on_off", 1)      # a later OBSERVED change fires
+        self.assertEqual(pubs.count(("beeper", "on_off", 1)), 1)
+
+    def test_changed_snapshot_equal_to_an_engine_write_is_the_baseline(self):
+        # The retained value may EQUAL what the engine already wrote: on_state
+        # drops it as a repeat, yet it is still the first observation — the
+        # next different value is a real change and fires.
+        e, _c, td, _ = make_engine({"scenarios": [
+            block("b", [{"kind": "boot"}],
+                  [{"kind": "set", "device": "sensor", "cap": "temp", "value": 1}]),
+            self.scenario("changed", None),
+        ]}, [])
+        self.addCleanup(td.cleanup)
+        e.on_boot()
+        e.on_state("sensor", "temp", 1)      # retained == the engine's write
+        self.assertEqual([r.get("id") for r in self.runs(e)], ["b"])
+        e.on_state("sensor", "temp", 0)
+        self.assertEqual([r.get("id") for r in self.runs(e)], ["b", "s1"])
+
+    def test_changed_added_by_hot_reload_fires_on_the_first_real_change(self):
+        # The engine's hot-reload claim (its «changed» comment; review R4-4):
+        # the observed baseline belongs to the engine, not to the scenario, so
+        # a «changed» scenario adopted after the snapshot arrived fires on the
+        # next real change.
+        e, _c, td, _ = make_engine({"scenarios": []}, [])
+        self.addCleanup(td.cleanup)
+        e.on_state("sensor", "temp", 1)      # retained snapshot, no scenario yet
+        e.adopt({"scenarios": [self.scenario("changed", None)], "runs": [],
+                 "notify_queue": [], "library": "", "vars": {}})
+        e.on_state("sensor", "temp", 0)
+        self.assertEqual(len(self.runs(e)), 1)
+
 
 class ButtonTests(unittest.TestCase):
     def scenario(self, gesture, input_name=None):

@@ -73,6 +73,19 @@
 #   answer files (see SHIM_STATE). Against a pre-split runner it runs the
 #   monolithic restart_services_and_health and goes RED on 6a/6b/6c/6e/6g.
 #
+# Round 4 (1.0.6.54): every run calls the function under test the way the
+# runner does — `if ! fn` inside a set -e subshell, errexit suspended — so the
+# harness cannot be stricter than production. Run 7: the python3 shim fails the
+# one manifest read whose argv contains PY_FAIL_MATCH; each dead read (health
+# facts, the three restart sets, enable[]) must FAIL its step with a
+# `manifest read failed` reason, a dead daemon_reload read must still reload,
+# and a key absent by design must still skip. RED on 0f0fc86 (2026-09-24,
+# WSL): 12 FAIL — every dead read left an empty list and returned 0.
+# Round 5: run 3b (a present journal whose read dies counts as CHANGED, with
+# a WARN) and run 5c (restart_after_rollback: a dead set read WARNs by name,
+# the rollback stays 0, the other sets still run); the log stub records to
+# $RUNNER_LOG for these. RED on b277e7e: 3 FAIL.
+#
 # Run: bash scripts/dev/test-update-conditional-restart.sh   (bash + python3 +
 #   coreutils; no systemd — the shims replace it).
 # ═══════════════════════════════════════════════════════════════════════════
@@ -161,7 +174,9 @@ ACTIVE_FILE="$T/active.units"
 SHIM_STATE="$T"
 export CALLS_LOG ACTIVE_FILE SHIM_STATE
 
-log()                  { :; }
+# Recorded (round 5): runs 3b / 5c assert the WARN a failed read must leave.
+RUNNER_LOG="$T/runner.log"; : > "$RUNNER_LOG"
+log()                  { printf '%s\n' "$*" >> "$RUNNER_LOG"; }
 manifest_path()        { printf '%s\n' "$STAGE/meta/manifest.json"; }
 # rollback_from_journal's collaborators (run 5): txn state is irrelevant here.
 txn_patch()            { :; }
@@ -180,6 +195,13 @@ cat > "$T/bin/python3" <<SH
 #!/bin/bash
 # Harness shim: strip CR from CPython's text-mode stdout (Windows emits CRLF),
 # keeping python's own exit status — _journal_has_dst_prefix reads it.
+# Run 7: a call whose argv contains \$PY_FAIL_MATCH fails (exit 1) instead —
+# a manifest read that dies (traceback, ENOMEM, unreadable file).
+if [ -n "\${PY_FAIL_MATCH:-}" ]; then
+    for a in "\$@"; do
+        case "\$a" in *"\$PY_FAIL_MATCH"*) echo "shim: injected python failure" >&2; exit 1 ;; esac
+    done
+fi
 "$REAL_PY" "\$@" | tr -d '\r'
 exit "\${PIPESTATUS[0]}"
 SH
@@ -293,7 +315,13 @@ printf '%s\n' sa02m-alice-client sa02m-modbus-mqtt > "$ACTIVE_FILE"
 
 called()   { grep -qxF "systemctl $1" "$CALLS_LOG" 2>/dev/null; }
 run_rc=0
-run_health() { : > "$CALLS_LOG"; ( set -euo pipefail; restart_services_and_health "$TXN" ) >/dev/null 2>&1; run_rc=$?; }
+# cmd_apply calls `if ! restart_services_and_health` and cmd_verify `if !
+# health_check`: bash suspends errexit for the whole body of a function tested
+# that way, so only an EXPLICIT status check fails the gate. Every run goes
+# through that shape (round 4) — the harness must never be stricter than the
+# runner (`set -e` + last command would abort on an unchecked failure that
+# production silently continues past).
+run_health() { : > "$CALLS_LOG"; ( set -euo pipefail; if ! restart_services_and_health "$TXN"; then exit 1; fi ) >/dev/null 2>&1; run_rc=$?; }
 
 # ── Run 1: full manifest, bridge prefix NOT in the apply journal ────────────
 write_manifest with
@@ -336,6 +364,27 @@ run_health
 called "restart sa02m-modbus-mqtt" \
     && ok "run3: missing journal treated as CHANGED (recover fails toward freshness)" \
     || bad "run3: missing journal treated as unchanged — recover leaves stale code"
+
+# ── Run 3b: journal PRESENT but its read DIES → changed (round 5) ───────────
+# _journal_has_dst_prefix answered "not found" with exit 1 — the same status a
+# crashed python (traceback, OOM-kill handled as 1 by the shim) returns, so a
+# failed journal read read as "bridge unchanged" and a changed bridge kept its
+# stale code. The journal here names only the rules engine; the shim kills the
+# read. Expected: treated as CHANGED (the missing-journal rule of run 3 — fail
+# toward freshness), the bridge restarted, a WARN naming the failed read.
+printf '%s\n' '{"op":"replace","dst":"/opt/sa02m-rules/sa02m_rules/engine.py","backup":"/x","mode":"0644","owner":"root:root"}' \
+    > "$STAGE/journal.jsonl"
+: > "$RUNNER_LOG"
+export PY_FAIL_MATCH=journal.jsonl
+run_health
+unset PY_FAIL_MATCH
+called "restart sa02m-modbus-mqtt" \
+    && ok "run3b: a dead journal read is treated as CHANGED (bridge restarted)" \
+    || bad "run3b: a dead journal read read as 'unchanged' — the changed-bridge gate fails toward stale code"
+grep -qF 'WARN: journal read failed' "$RUNNER_LOG" \
+    && ok "run3b: the failed journal read is logged (WARN)" \
+    || bad "run3b: no WARN for the failed journal read"
+rm -f "$STAGE/journal.jsonl"
 
 # ── Run 4: legacy manifest WITHOUT the conditional keys → clean no-op ───────
 write_manifest without
@@ -392,6 +441,27 @@ else
     bad "run5b: rollback without a manifest rc=$rb_rc calls: $(tr '\n' ';' < "$CALLS_LOG")"
 fi
 
+# ── Run 5c: a dead read in the rollback's restart sets → WARN, continue ─────
+# restart_after_rollback fed its three sets from `done < <(python3 … || true)`:
+# a read that died bounced nothing and said nothing. It must stay soft (a
+# rollback that restored the files never fails on a restart) but WARN, naming
+# the set, and still run the sets it could read. The shim kills only the
+# restart_if_active read.
+write_manifest with
+printf '%s\n' '{"op":"replace","dst":"/opt/sa02m-rules/sa02m_rules/engine.py","backup":"/x","mode":"0644","owner":"root:root"}' \
+    > "$STAGE/journal.jsonl"
+: > "$CALLS_LOG"; : > "$RUNNER_LOG"
+( set -euo pipefail; export PY_FAIL_MATCH=restart_if_active; rollback_from_journal "$TXN" ) >/dev/null 2>&1; rb_rc=$?
+[ "$rb_rc" -eq 0 ] && ok "run5c: rollback with a dead restart_if_active read still returns 0" \
+                   || bad "run5c: rollback FAILED on a dead read (rc=$rb_rc) — a rollback must stay soft"
+grep -qF 'WARN: rollback: manifest read failed (restart_if_active)' "$RUNNER_LOG" \
+    && ok "run5c: the dead read is logged, naming the set (restart_if_active)" \
+    || bad "run5c: no WARN naming restart_if_active — the set was silently skipped"
+called "restart sa02m-rules" \
+    && ok "run5c: the sets that COULD be read still ran (sa02m-rules restarted)" \
+    || bad "run5c: restart[] skipped because another set's read died"
+rm -f "$STAGE/journal.jsonl"
+
 # ── Run 6: the health gate settles, tolerates Condition-off, names the state ─
 # Field incident 2026-09-23 (1.0.6.52, F1): one `is-active` probe immediately
 # after `restart` (Type=simple returns at exec) read a still-`activating`
@@ -436,7 +506,7 @@ run_units_health() {  # $1 = unit
     write_units_manifest "$1"
     rm -f "$SHIM_STATE"/seq.*.n
     : > "$CALLS_LOG"
-    ( set -euo pipefail; "$HEALTH_FN" "$TXN" ) >/dev/null 2>&1; run_rc=$?
+    ( set -euo pipefail; if ! "$HEALTH_FN" "$TXN"; then exit 1; fi ) >/dev/null 2>&1; run_rc=$?
 }
 n_probes() { grep -c "^systemctl is-active \(--quiet \)\?$1\$" "$CALLS_LOG" 2>/dev/null || true; }
 
@@ -498,6 +568,77 @@ run_units_health u-down
 [ "$run_rc" -ne 0 ] && ok "6f an enabled unit that is simply down still fails the gate" \
                     || bad "6f an enabled-but-down unit PASSED — the gate no longer catches a real regression"
 unset SA02M_UPDATE_HEALTH_SETTLE_SEC SA02M_UPDATE_HEALTH_SETTLE_STEP
+
+# ── Run 7: a failed manifest READ fails the step; an absent key still skips ──
+# Round 4 of review 1.0.6.54. Every list/value the health path reads from the
+# manifest came from `$(python3 …)` or `done < <(python3 …)`: the first is
+# unchecked under cmd_apply's `if !`, the second is never observable at all, so
+# a read that died left an EMPTY value and the step went on as if the manifest
+# had asked for nothing — no units checked, no HTTP probe, no version check, no
+# restarts, no enables, and the update committed. A failed read must now FAIL
+# the step with HEALTH_FAIL_REASON naming the read; a key ABSENT by design
+# (http_url "", no units_active, the fixtures above) still skips, and a failed
+# `daemon_reload` read does the reload (fail safe) rather than skip it.
+# The python3 shim fails the one call whose argv contains PY_FAIL_MATCH.
+echo "── run 7: failed manifest reads fail the step ──"
+REASON_F="$T/reason"
+run7() {  # <fn> <match> → run_rc, $REASON_F
+    : > "$CALLS_LOG"; : > "$REASON_F"
+    ( set -euo pipefail; export PY_FAIL_MATCH=$2
+      if ! "$1" "$TXN"; then printf '%s' "${HEALTH_FAIL_REASON:-}" > "$REASON_F"; exit 1; fi ) >/dev/null 2>&1
+    run_rc=$?
+}
+reason_has() { grep -qF "$1" "$REASON_F" 2>/dev/null; }
+if [ "$HAS_HEALTH_SPLIT" = "1" ]; then
+    write_units_manifest nginx; printf '%s\n' active > "$SHIM_STATE/seq.nginx"; rm -f "$SHIM_STATE"/seq.*.n
+    for m in units_active http_url version_file; do
+        run7 health_check "$m"
+        if [ "$run_rc" -ne 0 ] && reason_has "manifest read failed"; then
+            ok "7 health_check: the '$m' read dies → gate FAILS (reason: $(cat "$REASON_F"))"
+        else
+            bad "7 health_check: the '$m' read died and the gate returned $run_rc (reason='$(cat "$REASON_F")') — probe silently skipped"
+        fi
+    done
+    write_manifest with; : > "$STAGE/journal.jsonl"
+    for m in '"restart",[]' restart_if_active restart_if_changed; do
+        run7 services_restart_sets "$m"
+        if [ "$run_rc" -ne 0 ] && reason_has "manifest read failed"; then
+            ok "7 services_restart_sets: the $m read dies → step FAILS before any bounce (fcgiwrap restarted: $(called 'restart fcgiwrap' && echo yes || echo no))"
+        else
+            bad "7 services_restart_sets: the $m read died and the step returned $run_rc — its units silently not restarted"
+        fi
+        called 'restart fcgiwrap' && bad "7 services_restart_sets ($m): fcgiwrap bounced before the failed read was noticed" || :
+    done
+    run7 services_enable_and_tmpfiles 'get("enable"'
+    if [ "$run_rc" -ne 0 ] && reason_has "manifest read failed"; then
+        ok "7 services_enable_and_tmpfiles: the enable[] read dies → step FAILS (reason: $(cat "$REASON_F"))"
+    else
+        bad "7 services_enable_and_tmpfiles: the enable[] read died and the step returned $run_rc — new units silently not enabled"
+    fi
+    write_units_manifest nginx   # daemon_reload: false in this fixture
+    run7 services_enable_and_tmpfiles daemon_reload
+    if [ "$run_rc" -eq 0 ] && called daemon-reload; then
+        ok "7 services_enable_and_tmpfiles: the daemon_reload read dies → daemon-reload DONE anyway (fail safe), step continues"
+    else
+        bad "7 services_enable_and_tmpfiles: the daemon_reload read died → rc=$run_rc, daemon-reload $(called daemon-reload && echo done || echo SKIPPED)"
+    fi
+    # Non-regression: a health block with NO http_url / version_file keys and
+    # an empty units_active is "nothing configured" — the gate passes.
+    cat > "$STAGE/meta/manifest.json" <<JSON
+{"schema_version": 1, "version": "9.9.9.9", "deploy": [], "services": {"daemon_reload": false, "restart": [], "health": {"units_active": []}}}
+JSON
+    run7 health_check ""
+    [ "$run_rc" -eq 0 ] && ok "7 keys absent by design (no http_url / version_file, empty units_active) → gate passes, as before" \
+                        || bad "7 a health block with nothing configured FAILED the gate (rc=$run_rc, reason='$(cat "$REASON_F")')"
+    # …and the same through the whole composition, as cmd_apply runs it.
+    write_manifest with; : > "$STAGE/journal.jsonl"
+    run7 restart_services_and_health units_active
+    [ "$run_rc" -ne 0 ] && reason_has "manifest read failed" \
+        && ok "7 restart_services_and_health (cmd_apply's shape): a dead units_active read fails the apply's gate" \
+        || bad "7 restart_services_and_health: a dead units_active read passed the gate (rc=$run_rc)"
+else
+    bad "7 runner has no health_check split — run 7 cannot run"
+fi
 
 echo "-----"
 if [ "$fails" -eq 0 ]; then echo "PASS (all checks)"; exit 0

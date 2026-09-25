@@ -179,6 +179,10 @@ class EngineTests(unittest.TestCase):
         }]}, pubs, now=12 * 3600)
         self.addCleanup(td.cleanup)
         clock[0] = 12 * 3600  # noon — outside the night window
+        # The retained value first: since 1.0.6.54 a «changed» trigger takes
+        # it as its baseline, so without this line the next event would be
+        # blocked by the baseline and the time window would go untested.
+        e.on_state("lamp", "on_off", 1)
         e.on_state("lamp", "on_off", 0)
         self.assertEqual(pubs, [])
         self.assertEqual(e.doc.get("runs"), [])

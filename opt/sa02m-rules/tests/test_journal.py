@@ -43,6 +43,11 @@ def _engine(td, scenarios, now=1000.0, pubs=None):
     clock = [now]
     e = engine.Engine(lambda d, c, v: (pubs if pubs is not None else []).append((d, c, v)),
                       path, now=lambda: clock[0], pub_state=lambda *_a: None)
+    # The retained snapshot a real engine sees at start. Since 1.0.6.54 the
+    # first value is a «changed» trigger's baseline, not a run (bench 1.135);
+    # these tests count runs driven through that trigger, so they start from
+    # the state a running board is in. No run, no write happens here.
+    e.on_state("lamp", "on_off", "retained")
     return e, clock, path
 
 
@@ -149,6 +154,9 @@ class ServiceWatchTests(unittest.TestCase):
         path = os.path.join(td.name, "scenarios.json")
         store.save({"scenarios": [_block()], "library": "", "vars": {}}, path)
         app = rules_service.RulesApp(FakeClient(), path)
+        # The retained snapshot first — the «changed» baseline (see _engine).
+        app._apply_message("/devices/lamp/controls/on_off", "retained")
+        app.tick()
         mtime = os.path.getmtime(path)
         with mock.patch.object(app.engine, "adopt", wraps=app.engine.adopt) as adopt:
             for i in range(5):
@@ -391,6 +399,8 @@ class ShutdownTests(unittest.TestCase):
     def test_stop_flushes_pending(self):
         store.save({"scenarios": [_block()], "library": "", "vars": {}}, self.path)
         app = rules_service.RulesApp(FakeClient(), self.path)
+        # The retained snapshot first — the «changed» baseline (see _engine).
+        app._apply_message("/devices/lamp/controls/on_off", "retained")
         app._apply_message("/devices/lamp/controls/on_off", "1")
         self.assertFalse(os.path.exists(self.journal))
         app.stop()
