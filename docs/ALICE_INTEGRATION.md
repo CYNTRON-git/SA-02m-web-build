@@ -179,7 +179,7 @@ Modbus→MQTT.
 | Операция | Alice (`sa02m-alice-client`) | Cloud control (`sa02m-cloud-control`) |
 |---|---|---|
 | `.sa02m` update | деплой кода; preserve conf + cert | тот же пакет и conf — деплоится вместе; unit из `etc/systemd/system/sa02m-*` |
-| User backup | включить conf + `/var/lib/sa02m-alice/` | ничего своего: идентичность — у агента облака (`/etc/sa02m-cloud/`) |
+| User backup | в архиве `sa02m-alice-client.conf` и `sa02m-alice-devices.conf` (из `/etc/sa02m-alice/` и старые плоские `/etc/sa02m-alice-*.conf`); mTLS cert/key (`/var/lib/sa02m-alice/`) в архив **не** входят — restore их не трогает, на новой плате устройство привязывают заново. Restore перезапускает запущенные unit'ы Алисы, остановленные не стартует | ничего своего: идентичность — у агента облака (`/etc/sa02m-cloud/`) |
 | Factory reset | очистить mappings, `client_enabled=false`, **сохранить** cert | `cloud_control_enabled=false` (тот же `reset_mappings`); `status-cloud.json` — tmpfs, очищается перезагрузкой |
 | Снятие образа (identity reset) | стирает cert/claim/status.json (`docs/contracts/image-identity-reset.md`) | ничего не стирает: облачная идентичность стирается сбросом агента облака, без неё unit уходит в `missing_identity`; `status-cloud.json` живёт в tmpfs |
 

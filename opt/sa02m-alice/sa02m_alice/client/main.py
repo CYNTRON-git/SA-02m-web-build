@@ -114,11 +114,12 @@ def _write_status(state: str, *, profile: str = C.PROFILE_YANDEX, **kw: Any) -> 
     # a `--profile cloud` process.
     if _suppress_status(state, _unlinked.is_set(), _wipe_pending()):
         return
-    # `cert_present` is published on EVERY write: this process (root) is the
-    # only one that can see into the root-only cert dir, so the world-readable
-    # status file is where the web layer (www-data) learns cert presence. The
-    # cloud profile publishes `identity_present` the same way and for the same
-    # reason (the device secret is 0600 root).
+    # `cert_present` is published on EVERY write: the cert dir is 0700 (owner
+    # www-data, the enroll writer), so only this process (root) and www-data can
+    # see into it; the world-readable status file is how any other reader learns
+    # cert presence, and the web layer's first source. The cloud profile
+    # publishes `identity_present` the same way and for the same reason (the
+    # device secret is 0600 root).
     payload = {
         "state": state,
         "ts": int(time.time()),

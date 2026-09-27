@@ -20,7 +20,11 @@ SA-02m MQTT → Home Assistant (внешний хост)
 - Home Assistant ≥ 2025.12
 - HACS + компонент `yandex_smart_home`
 - тип подключения «Облачное (Yaha Cloud)»
-- MQTT-брокер SA-02m доступен с HA (`IP:1883`, см. [MQTT_TOPICS.md](MQTT_TOPICS.md))
+- MQTT-брокер SA-02m доступен с HA по внешнему порту `IP:1884` с логином
+  `mqttuser` и паролем из панели «Подключение MQTT с ПК» (ACL этого пользователя:
+  чтение-запись `/devices/#`, чтение `$SYS/#` — `etc/mosquitto/acl_default.conf`).
+  Порт `1883` слушает только `127.0.0.1` и снаружи недоступен — см.
+  `etc/mosquitto/10listeners.conf` и [MQTT_TOPICS.md](MQTT_TOPICS.md)
 - привязка навыка «Yaha Cloud» в приложении «Дом с Алисой» (не Quasar web)
 
 Источники:

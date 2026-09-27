@@ -136,6 +136,17 @@ watchdog-hold|install.sh|sa02m_restore_runtime_watchdog || true
 watchdog-hold|install.sh|set -C; date -Iseconds > "$SA02M_IMAGING_LOCK"
 watchdog-hold|install.sh|SA02M_OWN_IMAGING_LOCK=1
 watchdog-hold|install.sh|rm -f "$SA02M_IMAGING_LOCK"
+alice-conf-homes|opt/sa02m-update/lib/validate_package.py|"/etc/sa02m-alice/",
+alice-conf-homes|etc/sa02m-update-runner.sh|"/etc/sa02m-alice/",
+alice-conf-homes|etc/sa02m-restore-backup.sh|sa02m-alice/sa02m-alice-(client|devices)
+alice-conf-homes|etc/sa02m-restore-backup.sh|if why is not None: raise RestoreRefused(why)
+alice-conf-homes|etc/sa02m-restore-backup.sh|"/etc/sa02m-alice": (0o770
+alice-conf-homes|etc/sa02m-restore-backup.sh|if not pinned(cur_st, st): raise Unsafe(f"{nxt} is a symlink in
+alice-conf-homes|etc/sa02m-web-backup.sh|if not pinned(cur_st, st): raise Unsafe(f"{nxt} is a symlink in
+alice-conf-homes|etc/sa02m-web-backup.sh|if not pinned(cur_st, st): raise Unsafe(f"{nxt} is a directory in
+alice-conf-homes|etc/sa02m-web-backup.sh|if not stat.S_ISREG(st.st_mode): raise Unsafe(
+alice-conf-homes|etc/sa02m-web-backup.sh|if st.st_nlink > 1 and not dir_root_only: raise Unsafe(
+alice-conf-homes|scripts/06-alice.sh|if not stat.S_ISREG(st.st_mode) or st.st_nlink != 1: raise
 runner-version-stamp|scripts/03-webserver.sh|sa02m_stamp_runner_version "$SCRIPT_DIR/../www/network_config/VERSION"
 runner-version-stamp|scripts/update-www-only.sh|sa02m_stamp_runner_version "$REPO_ROOT/www/network_config/VERSION"
 runner-version-stamp|scripts/lib.sh|install -m 0644 "$statedir/runner.version.tmp" "$statedir/runner.version"

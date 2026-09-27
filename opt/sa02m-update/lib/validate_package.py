@@ -49,6 +49,9 @@ PRESERVE_PATHS: Tuple[str, ...] = (
     "/etc/sa02m-cloud/",
     "/var/lib/sa02m-flasher/",
     "/var/lib/sa02m-update/",
+    # Live Alice conf layout (sa02m_alice common/constants.py); the two flat
+    # names below it are the older layout, kept so an old board stays covered.
+    "/etc/sa02m-alice/",
     "/etc/sa02m-alice-client.conf",
     "/etc/sa02m-alice-devices.conf",
     "/var/lib/sa02m-alice/",

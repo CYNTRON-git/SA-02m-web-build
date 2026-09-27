@@ -682,9 +682,16 @@ re-measured on this branch.
 
 ## Client status file → web API cert / link truth (1.0.5.80)
 
-The cert dir `/var/lib/sa02m-alice` is root-only (key 0600 root) and stays so;
-the web API runs as `www-data` and MUST NOT probe it (an `isfile()` there is
-permission-blind and returns a false "absent").
+The cert dir `/var/lib/sa02m-alice` is `www-data:www-data 0700` (key 0600,
+owner www-data) — the enroll write runs as `www-data` inside
+`sa02m_alice_api.cgi`, and the client that uses the cert runs as root; no other
+user can enter it (home of the mode: `etc/tmpfiles.d/sa02m-alice.conf`,
+re-asserted by `scripts/06-alice.sh`; why: `docs/bugs/BUGLOG.md` 2026-08-26
+13:30, 1.0.6.14). A reader that cannot enter the dir MUST NOT probe it with
+`isfile()` — that is permission-blind and returns a false "absent" — so the
+status file below is the first source of cert truth, and a local check runs
+only where the caller can actually traverse the dir
+(`sa02m_alice/config/api.py::cert_presence`).
 
 - **Status file** `/run/sa02m-alice/status.json` (client, root, mode 0644,
   rewritten on every state change): `{state, ts, version, cert_present:
