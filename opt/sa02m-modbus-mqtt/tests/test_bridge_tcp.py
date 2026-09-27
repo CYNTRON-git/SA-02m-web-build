@@ -356,6 +356,89 @@ class TestConcurrency(unittest.TestCase):
         c.close()
 
 
+class TestSilentUnit(unittest.TestCase):
+    """A peer that accepts the connection but never answers one unit id.
+
+    Review 1.0.6.56 A1: every timeout drops the socket, the reconnect
+    succeeds (so no connect backoff applied), and each reconnect logged INFO
+    «connected» — a 23-channel template pass wrote 23 INFO lines to the
+    persistent journal and cost 23 timeouts. Bounded now: «connected» is
+    INFO only on the first connect or after a connect failure, and a unit
+    that times out MUTE_AFTER_TIMEOUTS times in a row fast-fails inside its
+    own 1-2-4-8-10 s window — its OWN, so other units behind the same
+    gateway keep being polled.
+    """
+
+    PASSES = 3
+    CHANNELS = 23
+
+    def _server(self):
+        srv = FakeMbapServer(Bank(regs={("h", 0): 7}))
+        self.addCleanup(srv.stop)
+        srv.mute_units = {1}
+        return srv
+
+    def _pass(self, c, unit=1):
+        for _ in range(self.CHANNELS):
+            try:
+                c.read_holding_registers(unit, 0, 1)
+            except IOError:
+                pass
+
+    def test_journal_stays_bounded_over_many_passes(self):
+        srv = self._server()
+        c = _client(srv, timeout=0.2)
+        self.addCleanup(c.close)
+        with self.assertLogs(c._log.name, level="DEBUG") as logs:
+            t0 = time.monotonic()
+            for _ in range(self.PASSES):
+                self._pass(c)
+            spent = time.monotonic() - t0
+        info = [ln for ln in logs.output if ln.startswith(("INFO", "WARNING", "ERROR"))]
+        # One «connected», one WARN for the silent unit — not one per channel.
+        self.assertLessEqual(len(info), 2, info)
+        self.assertEqual(len([ln for ln in info if "connected" in ln]), 1, info)
+        # Three timeouts, then the unit's window: far fewer requests (and far
+        # less time) than PASSES x CHANNELS timeouts.
+        self.assertLessEqual(len(srv.requests), 3 + 2, len(srv.requests))
+        self.assertLess(spent, 0.2 * 6 + 1.0)
+
+    def test_another_unit_on_the_same_endpoint_is_not_starved(self):
+        srv = self._server()
+        c = _client(srv, timeout=0.2)
+        self.addCleanup(c.close)
+        self._pass(c, unit=1)                        # unit 1 enters its window
+        self.assertEqual(c.read_holding_registers(2, 0, 1), [7])
+        self.assertEqual(c.backoff_s, 0.0)           # no endpoint-wide window
+
+    def test_the_unit_recovers_after_its_window(self):
+        srv = self._server()
+        c = _client(srv, timeout=0.2)
+        self.addCleanup(c.close)
+        self._pass(c, unit=1)
+        srv.mute_units = set()
+        with self.assertRaisesRegex(IOError, "not answering"):
+            c.read_holding_registers(1, 0, 1)        # inside the window: no I/O
+        left = c._unit_retry_left(1)
+        self.assertGreater(left, 0)
+        self.assertLessEqual(left, bridge_tcp.BACKOFF_STEPS_S[-1])
+        time.sleep(left + 0.05)
+        with self.assertLogs(c._log.name, level="INFO") as logs:
+            self.assertEqual(c.read_holding_registers(1, 0, 1), [7])
+        self.assertTrue(any("unit 1 answering again" in ln for ln in logs.output),
+                        logs.output)
+        self.assertEqual(c._unit_retry_left(1), 0.0)
+
+    def test_a_timeout_is_still_never_resent(self):
+        srv = self._server()
+        c = _client(srv, timeout=0.2)
+        self.addCleanup(c.close)
+        with self.assertRaises(IOError):
+            c.write_register(1, 190, 225)
+        time.sleep(0.3)
+        self.assertEqual(srv.fcs(), [6])
+
+
 class TestPool(unittest.TestCase):
     def test_one_client_per_endpoint(self):
         with mock.patch.dict(bridge_tcp._tcp_pool, clear=True):

@@ -46,6 +46,10 @@ class FakeMbapServer:
         self.reply_delay_s = reply_delay_s
         self.script: list = []          # per-request actions, consumed in order
         self.on_accept = None           # None | "reset"
+        # Unit ids that are never answered (a TCP->RTU gateway whose slave is
+        # dead, or a device that answers another unit id): the connection is
+        # accepted and kept, the request just gets no reply.
+        self.mute_units: set = set()
         self.requests: list = []        # (tid, unit, fc, pdu)
         self.accepts = 0
         self.pipelined = 0              # a request arrived while one was pending
@@ -116,7 +120,10 @@ class FakeMbapServer:
                     self.requests.append((tid, unit, pdu[0], pdu))
                     self._outstanding += 1
                     self.max_outstanding = max(self.max_outstanding, self._outstanding)
-                    action = self.script.pop(0) if self.script else "normal"
+                    if unit in self.mute_units:
+                        action = "silent"
+                    else:
+                        action = self.script.pop(0) if self.script else "normal"
                 try:
                     if self.reply_delay_s:
                         time.sleep(self.reply_delay_s)

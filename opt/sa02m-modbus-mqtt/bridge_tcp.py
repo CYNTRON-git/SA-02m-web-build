@@ -41,6 +41,12 @@ from bridge_serial import (
 # first successful exchange. Wall time, and capped below the device poller's
 # backoff_max_s default (30 s), so it can never starve a retry.
 BACKOFF_STEPS_S = (1.0, 2.0, 4.0, 8.0, 10.0)
+# A peer that accepts but never answers one unit id (a TCP->RTU gateway whose
+# slave is dead, a device that answers another unit id) costs a timeout per
+# request and a reconnect after each. After this many timeouts in a row THAT
+# unit fast-fails inside its own window (the same steps) — its own, so the
+# other units behind the same gateway keep being polled.
+MUTE_AFTER_TIMEOUTS = 3
 # MBAP length field = unit byte + PDU; a PDU is at most 253 bytes.
 _MBAP_LEN_MIN = 2
 _MBAP_LEN_MAX = 254
@@ -118,7 +124,12 @@ class ModbusTcpClient:
         self._retry_at = 0.0
         self.backoff_s = 0.0
         self._connected_once = False
+        # «connected» is INFO once, then again only after a connect failure:
+        # a reconnect after a timeout is routine and goes to DEBUG + stats.
+        self._announced = False
         self._streak_logged = False
+        # unit id -> [timeouts in a row, window steps taken, retry_at, warned]
+        self._units: dict[int, list] = {}
         self._self_logged = False
         self._log = logging.getLogger("tcp.%s-%d" % (host, self._port))
 
@@ -147,6 +158,7 @@ class ModbusTcpClient:
             self._log.debug("%s: %s", self.label, msg)
 
     def _connect_failed(self, msg: str) -> None:
+        self._announced = False
         self.backoff_s = BACKOFF_STEPS_S[min(self._fail_n, len(BACKOFF_STEPS_S) - 1)]
         self._fail_n += 1
         self._retry_at = time.monotonic() + self.backoff_s
@@ -190,7 +202,38 @@ class ModbusTcpClient:
         if self._connected_once:
             self.stats.reconnects += 1
         self._connected_once = True
-        self._log.info("connected %s", self.label)
+        if self._announced:
+            self._log.debug("reconnected %s", self.label)
+        else:
+            self._announced = True
+            self._log.info("connected %s", self.label)
+
+    # --- per-unit silence ------------------------------------------------------
+
+    def _unit_retry_left(self, unit: int) -> float:
+        st = self._units.get(unit)
+        return max(0.0, st[2] - time.monotonic()) if st else 0.0
+
+    def _unit_timed_out(self, unit: int, fc: int, tlim: float) -> None:
+        st = self._units.setdefault(unit, [0, 0, 0.0, False])
+        st[0] += 1
+        msg = "unit %d FC%02X: no response within %.1f s" % (unit, fc, tlim)
+        if st[0] >= MUTE_AFTER_TIMEOUTS:
+            step = BACKOFF_STEPS_S[min(st[1], len(BACKOFF_STEPS_S) - 1)]
+            st[1] += 1
+            st[2] = time.monotonic() + step
+            msg += " (%d in a row; unit retried in %.0f s)" % (st[0], step)
+        if not st[3]:
+            st[3] = True
+            self._log.warning("%s: %s — check the unit id (address) and the "
+                              "device behind this endpoint", self.label, msg)
+        else:
+            self._log.debug("%s: %s", self.label, msg)
+
+    def _unit_answered(self, unit: int) -> None:
+        st = self._units.pop(unit, None)
+        if st and st[3]:
+            self._log.info("%s: unit %d answering again", self.label, unit)
 
     @staticmethod
     def _is_self(s: socket.socket) -> bool:
@@ -213,6 +256,10 @@ class ModbusTcpClient:
         pdu = frame[1:-2]
         fc = pdu[0]
         tlim = self._timeout if timeout is None else float(timeout)
+        left = self._unit_retry_left(unit)
+        if left > 0:
+            raise IOError("%s unit %d: not answering (retry in %.1f s)"
+                          % (self.label, unit, left))
         for attempt in (0, 1):
             reused = self._sock is not None
             if not reused:
@@ -234,8 +281,7 @@ class ModbusTcpClient:
                 # Never resent: the request may have been applied.
                 self._drop()
                 self.stats.timeouts += 1
-                self._fail_log("unit %d FC%02X: no response within %.1f s"
-                               % (unit, fc, tlim))
+                self._unit_timed_out(unit, fc, tlim)
                 raise IOError("%s unit %d: timeout on FC%02X" % (self.label, unit, fc))
             except (_EarlyEof, OSError) as e:
                 # sendall failed or the peer closed before any reply byte.
@@ -263,6 +309,7 @@ class ModbusTcpClient:
                               % (self.label, unit, fc, rtid, tid, runit, length,
                                  (head + body)[:12].hex()))
             self._succeeded()
+            self._unit_answered(unit)
             resp = bytes([unit]) + body
             if body[0] & 0x80:
                 code = body[1] if len(body) > 1 else 0
