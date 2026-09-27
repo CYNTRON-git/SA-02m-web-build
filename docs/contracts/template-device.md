@@ -10,8 +10,9 @@
 **Только механизм (решение Оператора 2026-08-17).** Мост читает любой JSON,
 лежащий в каталоге шаблонов; ни один файл-шаблон Wiren Board в репозиторий НЕ
 вкладывается — их LICENSE ограничивает использование оборудованием Wiren Board,
-а SA-02m — это Allwinner A40i. Шаблоны реальных устройств поставляет интегратор
-(см. `opt/sa02m-modbus-mqtt/templates/README.md`).
+а SA-02m — это Allwinner A40i. В `templates/` лежат и собственные шаблоны
+семейства CYNTRON, и шаблоны, которые кладёт интегратор; перечень поставляемых —
+`opt/sa02m-modbus-mqtt/templates/README.md`.
 
 Реализация: `opt/sa02m-modbus-mqtt/bridge_template.py` (`TemplatePoller`);
 регистрация типа: `POLLER_CLASSES["template"]`
@@ -158,7 +159,8 @@ follow-up (см. бэклог). Не выдавайте 8N2-устройство
   каталога, golden-декод u16/s16/u32/s32/float × word_order, scale/offset,
   громкий пропуск неподдерживаемых полей, guard rail «все пропущены», полный
   проход опроса parse→poll→publish и writeback, отказ записи вне диапазона
-  формата (границы s16/u16).
+  формата (границы s16/u16), поставляемый шаблон `mp02-ahu` через настоящий
+  резолвер.
 - `opt/sa02m-modbus-mqtt/tests/test_entry_surface.py` — `TemplatePoller` и
   модуль `bridge_template` в замороженной поверхности импорта.
 - Веб-эндпойнт каталога: `www/network_config/cgi-bin/mqtt_templates.cgi` (GET,

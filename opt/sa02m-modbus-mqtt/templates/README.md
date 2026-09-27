@@ -11,6 +11,27 @@ family class. Contract + supported schema: `docs/contracts/template-device.md`.
 - `config-example.json` — a **self-authored** fictional demo meter documenting
   the v1 supported schema. Used by the runtime tests and the web add-by-template
   picker. It is not a real device.
+- `config-mp02-ahu.json` (`template: mp02-ahu`) — the CYNTRON **MP-02** PLC
+  running its air-handling-unit (AHU / ПВУ) program, 23 controls. Authored by
+  the MP-02 firmware team from their own register map, not a Wiren Board file
+  (source: MP-02 firmware repo `CYNTRON-git/PLC_STM32F427`,
+  `integrations/sa02m/config-mp02-ahu.json` (their PR #33)); the register
+  map's one home is that repo's `docs/MODBUS_MAP.md` — not restated here.
+  What bites an operator:
+  - Line: RS-485 **19200 8N1, address 1** (MP-02 defaults).
+  - The setpoints `temp_setpoint` / `humidity_setpoint` / `fan_speed_manual`
+    (holding 190…192, int16 = value ×10) and `run` (coil 16) are the MP-02
+    **operator window** — they need MP-02 firmware with the operator window
+    (HR 190…193, coil 16; 2026-09-27) or newer. Out-of-range setpoints are clamped
+    by the PLC; the read-back shows the accepted value.
+  - `run` reads back the **operator start latch**, not the unit's state: a
+    unit started by its schedule reads `run = 0` while running. Use
+    `status_code` / `sequencer_state` for the real state.
+  - Every write lands in MP-02's event log as an operator command. The bridge
+    writes only on an explicit `/on` command (a retained `/on` is not
+    replayed), never on poll.
+  - Holding **129** is MP-02's bootloader entry; the template does not
+    include it — never write it outside a flashing scenario.
 
 ## Where real templates come from — and the license restriction
 
@@ -22,9 +43,10 @@ Allwinner A40i SoM — **not** Wiren Board hardware — so those template files 
 **not vendored into this repo** (Operator decision, 2026-08-17: ship the
 license-independent mechanism only).
 
-The **integrator/operator supplies templates** into this dir at their own legal
-discretion — a written WB permission, a differently-licensed template source, or
-a clean-room template re-derived from a device's public Modbus datasheet.
+For third-party devices the **integrator/operator supplies templates** into
+this dir at their own legal discretion — a written WB permission, a
+differently-licensed template source, or a clean-room template re-derived from
+a device's public Modbus datasheet.
 
 ## File naming
 
