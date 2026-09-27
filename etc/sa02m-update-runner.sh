@@ -83,6 +83,11 @@ PRESERVE_PATHS=(
     /etc/sa02m-alice-client.conf
     /etc/sa02m-alice-devices.conf
     /var/lib/sa02m-alice/
+    # HomeKit bridge (docs/contracts/homekit-bridge.md §13-§14): the conf is the
+    # operator's decision (enabled/interface/port), the state dir holds the
+    # pairing keys — an OTA never overwrites either.
+    /etc/sa02m-homekit/
+    /var/lib/sa02m-homekit/
 )
 
 CMD="${1:-apply}"
@@ -848,6 +853,10 @@ manifest = {
             "sa02m-alice-client",
             "sa02m-alice-config",
             "sa02m-cloud-control",
+            # HomeKit bridge: optional module, installed stopped/disabled
+            # (scripts/06c-homekit.sh `app off`); it holds /opt/sa02m-homekit
+            # and the Alice registry code in memory.
+            "sa02m-homekit",
         ],
         # Change-gated conditional restart: unit -> /opt prefix watched in the
         # apply journal. sa02m-modbus-mqtt owns the RS-485 port lease: restart
@@ -980,6 +989,8 @@ PRESERVE_PREFIXES = (
     "/etc/sa02m-alice-client.conf",
     "/etc/sa02m-alice-devices.conf",
     "/var/lib/sa02m-alice/",
+    "/etc/sa02m-homekit/",
+    "/var/lib/sa02m-homekit/",
 )
 
 def fail(code, msg):
@@ -1363,7 +1374,7 @@ cleanup_b1_deploy_artifacts() {
     done
     # OTA may land sa02m-* sudoers as 0644 (source tree mode); visudo -c then
     # WARN-fails even when syntax is OK. Harden known drop-ins we ship.
-    for _name in sa02m-www sa02m-cloud sa02m-flasher sa02m-mqtt sa02m-gateway sa02m-alice; do
+    for _name in sa02m-www sa02m-cloud sa02m-flasher sa02m-mqtt sa02m-gateway sa02m-alice sa02m-homekit; do
         _path="/etc/sudoers.d/$_name"
         if [ -f "$_path" ]; then
             chmod 0440 "$_path" 2>/dev/null || true

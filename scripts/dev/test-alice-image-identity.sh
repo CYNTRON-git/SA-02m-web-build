@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
-# Gate for the image-identity reset of the Alice controller enrollment (1.0.6.20).
+# Gate for the image-identity reset of the Alice controller enrollment (1.0.6.20)
+# and of the HomeKit bridge identity (Part H, contract §7).
 # comment-mutation-proof-exempt: behavioural harness - every guarantee is asserted by RUNNING the shipped code in a sandbox (files written, shim invocations, exit codes), so a commented-out line changes the measured behaviour instead of hiding behind a needle grep; its source-text greps are extraction/retarget sanity guards on its own scratch copy, which abort the run when the shipped block moves.
 #
 # The defect it pins is a CROSS-TENANT one: the gateway identifies a controller
@@ -47,6 +48,25 @@
 #   drop a *.tmp / .alice-* sidecar row from a clear-list                 ... A2/B
 #   widen a sidecar glob to *.pem* or *                                   ... A3c/B
 # Override any site with <NAME>_SRC=/path to re-run it against another revision.
+#
+# Part H — the HomeKit twin (contract §7, wipe_homekit_identity() at the same
+#   five sites): H0 the gate's on-device set IS the §7 clear-list table (read
+#   from the contract); H1/H1c every file carries AND calls the wipe; H2 per-site
+#   path-set equality (on-device: + /run, offline: + the wants link, - /run);
+#   H3 no recursion, the software never named; H4 the patch site's wipe and its
+#   fatal belt are unconditional and bare; H7 on-device systemctl bounded. HB
+#   runs each shipped wipe on a paired donor (the receivers under bash AND dash):
+#   the state dir left empty but present, the conf read as disabled by the
+#   daemon's OWN parser (sa02m_homekit.config) with interface/port kept, the
+#   stop recorded BEFORE the store is removed, idempotent, a no-module rootfs
+#   untouched, `ENABLED : on` forced off, a symlinked conf dropped without its
+#   target being read or written. HB2 runs the patch site's belt: passes a
+#   wiped image and a no-module image, dies on each dirty dimension alone —
+#   including an ABSOLUTE wants link, which `[ -e ]` alone resolves on the host.
+#   RED observed 2026-09-27 with every site at HEAD 485f385: 29 FAIL, all in H
+#   (A/B/B2 still green). Mutations: each call commented out -> H1c/H4; the
+#   `.hk-*` glob commented out -> H2 + HB; the stop commented out -> H7 + HB
+#   ordering; the belt's `-L` dropped -> HB2 wantslink.
 #
 # No root, no device, no image, no loop mount.
 set -u
@@ -777,6 +797,429 @@ else
             bad "(B2) the assertion missed a dirty '$one' — that dimension is unguarded"
         else
             ok "(B2) the assertion catches a dirty '$one'"
+        fi
+    done
+fi
+
+# ══════════════════════════════════════════════════════════════════════════
+# H — the HomeKit half (contract §7): wipe_homekit_identity() at the same five
+# sites. Same shape as A/B/B2 above, its own clear-list (the pairing store is
+# wiped WHOLE — contents of /var/lib/sa02m-homekit, dot-sidecars included),
+# its own keep-list (the dirs, interface/port, the unit, the software).
+# ══════════════════════════════════════════════════════════════════════════
+echo
+echo "H. HomeKit bridge identity (contract §7)"
+
+HK_SITES="$RESET_SRC $STREAM_SRC $PATCH_SRC $AUTORUN_SRC $AUTORUN_FEL_SRC $SSH_FLASH_SRC"
+
+hk_paths_of() { # <file>
+    extract_fn "$1" wipe_homekit_identity \
+        | sed 's/#.*$//' \
+        | tr -d '"' \
+        | grep -oE '/var/lib/sa02m-homekit/[A-Za-z0-9._*-]+|/run/sa02m-homekit/[A-Za-z0-9._*-]+|/etc/sa02m-homekit/[A-Za-z0-9._*-]+|/etc/systemd/system/multi-user\.target\.wants/sa02m-homekit\.service' \
+        | sort -u
+}
+
+# ── H0 — the harness's sets are the CONTRACT's, not a second copy ─────────
+# The clear-list table of §7 is read from the contract itself: every
+# backticked HomeKit path in the rows between "Clear-list HomeKit" and
+# "Keep-list HomeKit". The unit row names no path (on the board it is a
+# `systemctl disable`, offline the wants link), so it is asserted by name.
+hk_table="$(awk '/^\*\*Clear-list HomeKit/{f=1;next} /^\*\*Keep-list HomeKit/{f=0} f' "$CONTRACT")"
+HK_CONTRACT_SET="$(printf '%s\n' "$hk_table" | grep '^|' \
+    | grep -oE '`/(var/lib|run|etc)/sa02m-homekit/[^`]*`' | tr -d '`' | sort -u)"
+HK_ONDEVICE_SET="$(printf '%s\n' \
+    '/etc/sa02m-homekit/sa02m-homekit.conf' \
+    '/run/sa02m-homekit/*' \
+    '/var/lib/sa02m-homekit/*' \
+    '/var/lib/sa02m-homekit/.hk-*' | sort -u)"
+HK_OFFLINE_SET="$(printf '%s\n' \
+    '/etc/sa02m-homekit/sa02m-homekit.conf' \
+    '/etc/systemd/system/multi-user.target.wants/sa02m-homekit.service' \
+    '/var/lib/sa02m-homekit/*' \
+    '/var/lib/sa02m-homekit/.hk-*' | sort -u)"
+if [ -z "$HK_CONTRACT_SET" ]; then
+    bad "(H0) no HomeKit clear-list table found in $CONTRACT §7 — the sites have no anchor (vacuous)"
+elif [ "$HK_CONTRACT_SET" = "$HK_ONDEVICE_SET" ]; then
+    ok "(H0) the on-device set here IS the contract's §7 clear-list (read from the table)"
+else
+    bad "(H0) the contract's §7 clear-list and this gate's on-device set differ
+--- contract ---
+$HK_CONTRACT_SET
+--- gate ---
+$HK_ONDEVICE_SET"
+fi
+if printf '%s\n' "$hk_table" | grep '^|' | grep -q 'sa02m-homekit\.service' \
+   && printf '%s\n' "$hk_table" | grep '^|' | grep -q 'multi-user.target.wants'; then
+    ok "(H0) the contract's unit row names sa02m-homekit.service and the offline wants link"
+else
+    bad "(H0) the contract's §7 table lost its unit row — the offline wants-link removal has no anchor"
+fi
+
+# ── H1 — every file of the five sites carries the wipe, and CALLS it ──────
+hk_count=0
+for f in $HK_SITES; do
+    if [ -n "$(extract_fn "$f" wipe_homekit_identity)" ]; then
+        hk_count=$((hk_count + 1))
+    else
+        bad "(H1) no wipe_homekit_identity() in ${f#"$HERE"/} — that site ships the donor's HomeKit accessory"
+    fi
+done
+[ "$hk_count" -eq 6 ] && ok "(H1) all six files of the five sites carry wipe_homekit_identity()"
+
+hk_call_pin() { # <label> <file> <enclosing fn|-> <call regex>
+    local lbl=$1 file=$2 fn=$3 re=$4 scope
+    if [ "$fn" = "-" ]; then
+        scope="$(sed 's/#.*$//' "$file")"
+    else
+        scope="$(extract_fn "$file" "$fn" | sed 's/#.*$//')"
+        [ -n "$scope" ] || { bad "(H1c) $lbl: $fn() could not be extracted — vacuous"; return; }
+    fi
+    if printf '%s\n' "$scope" | grep -Eq "$re"; then
+        ok "(H1c) $lbl: the HomeKit wipe is actually CALLED"
+    else
+        bad "(H1c) $lbl: wipe_homekit_identity is DEFINED BUT NEVER CALLED — that site is inert"
+    fi
+}
+hk_call_pin "reset-alice-enrollment.sh" "$RESET_SRC" "-" '^wipe_homekit_identity[[:space:]]*$'
+# Inside prepare_clone_ids, like the Alice wipe: the donor-side wipe follows
+# --no-id-reset (contract §5); the patch site below is the unconditional belt.
+hk_call_pin "stream-after-cleanup.sh (in prepare_clone_ids)" "$STREAM_SRC" "prepare_clone_ids" \
+    '^[[:space:]]*wipe_homekit_identity[[:space:]]*$'
+hk_call_pin "autorun.sh (in apply_firstboot_wiring)" "$AUTORUN_SRC" "apply_firstboot_wiring" \
+    '^[[:space:]]*wipe_homekit_identity[[:space:]]+"\$root"[[:space:]]*$'
+hk_call_pin "autorun-fel.sh (in apply_firstboot_wiring)" "$AUTORUN_FEL_SRC" "apply_firstboot_wiring" \
+    '^[[:space:]]*wipe_homekit_identity[[:space:]]+"\$root"[[:space:]]*$'
+hk_call_pin "ssh-flash-safe.sh (on written rootfs)" "$SSH_FLASH_SRC" "-" \
+    '^[[:space:]]*wipe_homekit_identity[[:space:]]+"\$MNT"[[:space:]]*$'
+
+# ── H2 — per-site path-set EQUALITY with the contract set for its form ────
+hk_check_set() { # <label> <file> <expected>
+    local got
+    got="$(hk_paths_of "$2")"
+    if [ -z "$got" ]; then
+        bad "(H2) $1: no HomeKit path extracted — vacuous"
+    elif [ "$got" = "$3" ]; then
+        ok "(H2) $1: HomeKit path set matches the contract exactly"
+    else
+        bad "(H2) $1: HomeKit path set differs from the contract
+--- got ---
+$got
+--- expected ---
+$3"
+    fi
+}
+hk_check_set "reset-alice-enrollment.sh (on-device)" "$RESET_SRC"       "$HK_ONDEVICE_SET"
+hk_check_set "stream-after-cleanup.sh (on-device)"   "$STREAM_SRC"      "$HK_ONDEVICE_SET"
+hk_check_set "patch-firstboot-image.sh (offline)"    "$PATCH_SRC"       "$HK_OFFLINE_SET"
+hk_check_set "autorun.sh (offline)"                  "$AUTORUN_SRC"     "$HK_OFFLINE_SET"
+hk_check_set "autorun-fel.sh (offline)"              "$AUTORUN_FEL_SRC" "$HK_OFFLINE_SET"
+hk_check_set "ssh-flash-safe.sh (offline)"           "$SSH_FLASH_SRC"   "$HK_OFFLINE_SET"
+
+# ── H3 — keep-list tripwire: no recursive rm, the software is never named ─
+hk_over=0
+for f in $HK_SITES; do
+    body="$(extract_fn "$f" wipe_homekit_identity | sed 's/#.*$//')"
+    [ -n "$body" ] || continue
+    if printf '%s\n' "$body" | grep -Eq 'rm[[:space:]]+-[a-z]*r'; then
+        bad "(H3) ${f#"$HERE"/}: recursive rm inside the HomeKit wipe — the dirs belong to tmpfiles.d"
+        hk_over=1
+    fi
+    if printf '%s\n' "$body" | grep -Eq '/opt/sa02m-homekit|system/sa02m-homekit\.service'; then
+        bad "(H3) ${f#"$HERE"/}: the HomeKit wipe names the installed software (package, venv or unit file) — identity goes, software stays"
+        hk_over=1
+    fi
+done
+[ "$hk_over" -eq 0 ] && ok "(H3) no HomeKit wipe recurses or touches the installed software"
+
+# ── H4 — the patch site: wipe + fatal belt, unconditional and bare ───────
+hk_depths="$(awk '
+  {
+    l=$0; sub(/#.*$/,"",l)
+    iscall = (l ~ /^[[:space:]]*(wipe_homekit_identity|assert_homekit_identity_clean)[[:space:]]+"\$mnt"/)
+    gsub(/"[^"]*"/, "S", l)
+    gsub(/\047[^\047]*\047/, "S", l)
+    o = gsub(/(^|[;&|(=[:space:]])(if|for|while|until|case)[[:space:]]/, "X", l)
+    c = gsub(/(^|[;&|[:space:]])(fi|done|esac)([;&|[:space:]]|$)/, "X", l)
+    if (iscall) print d+0
+    d += o - c
+  }' "$PATCH_SRC")"
+hk_calls="$(printf '%s\n' "$hk_depths" | grep -c '[0-9]' || true)"
+hk_nested="$(printf '%s\n' "$hk_depths" | grep -cv '^0$' || true)"
+if [ "$hk_calls" -ne 2 ]; then
+    bad "(H4) expected exactly 2 top-level HomeKit calls (wipe + assert) in patch-firstboot-image.sh, found $hk_calls"
+elif [ "$hk_nested" -ne 0 ]; then
+    bad "(H4) the patch site's HomeKit wipe/assert sits inside a conditional (depth $hk_depths) — a security clear must not be skippable"
+else
+    ok "(H4) the patch site's HomeKit wipe AND assertion are unconditional (depth 0)"
+fi
+hk_swallowed="$(grep -E '^[[:space:]]*(wipe_homekit_identity|assert_homekit_identity_clean)[[:space:]]+"\$mnt"' "$PATCH_SRC" \
+              | grep -E '\|\||&&|; *(true|:)' || true)"
+[ -z "$hk_swallowed" ] && ok "(H4c) the HomeKit wipe/assert calls are bare" \
+                        || bad "(H4c) the patch site's HomeKit call swallows its own failure: $hk_swallowed"
+
+# ── H7 — every systemctl the on-device HomeKit wipes run is bounded ──────
+for f in "$RESET_SRC" "$STREAM_SRC"; do
+    body="$(extract_fn "$f" wipe_homekit_identity | sed 's/#.*$//')"
+    n="$(printf '%s\n' "$body" | grep -c 'systemctl' || true)"
+    if [ "${n:-0}" -lt 2 ]; then
+        bad "(H7) ${f#"$HERE"/}: only ${n:-0} systemctl call(s) in the HomeKit wipe — the unit is not stopped+disabled, or the extraction is vacuous"
+    else
+        unbounded="$(printf '%s\n' "$body" | grep 'systemctl' | grep -v 'timeout[[:space:]]\+[0-9]\+[[:space:]]\+systemctl' || true)"
+        [ -z "$unbounded" ] && ok "(H7) ${f#"$HERE"/}: all $n HomeKit systemctl calls are timeout-bounded" \
+                            || bad "(H7) ${f#"$HERE"/}: unbounded systemctl in the HomeKit wipe: $unbounded"
+    fi
+done
+
+# ── HB — behavioural: the shipped HomeKit wipes against a paired donor ───
+HK_PKG="$HERE/opt/sa02m-homekit"
+hk_seed() { # <root> <enabled-line>
+    local r=$1 en=${2:-enabled = true}
+    mkdir -p "$r/var/lib/sa02m-homekit" "$r/run/sa02m-homekit" "$r/etc/sa02m-homekit" \
+             "$r/etc/systemd/system/multi-user.target.wants" "$r/opt/sa02m-homekit/sa02m_homekit"
+    printf '{"accessory_ltsk":"DONOR-LTSK","paired_clients":{"iphone":"DONOR"}}\n' > "$r/var/lib/sa02m-homekit/state.json"
+    printf '{"dev-1":2}\n'                    > "$r/var/lib/sa02m-homekit/aids.json"
+    printf '{"machine_id_sha256":"donor"}\n' > "$r/var/lib/sa02m-homekit/identity.json"
+    # A torn atomic write of the pairing store: the same key under a dot-name.
+    printf '{"accessory_ltsk":"DONOR-LTSK"}\n' > "$r/var/lib/sa02m-homekit/.hk-Zq81xk.tmp"
+    printf '{"state":"running"}\n'           > "$r/run/sa02m-homekit/status.json"
+    printf '{"code":"111-22-333"}\n'          > "$r/run/sa02m-homekit/setup.json"
+    printf '{"accessories":[]}\n'             > "$r/run/sa02m-homekit/projection.json"
+    printf '%s\n' '# SA-02m Apple HomeKit bridge' '[bridge]' "$en" 'interface = eth1' 'port = 21070' \
+        > "$r/etc/sa02m-homekit/sa02m-homekit.conf"
+    printf '[Unit]\n' > "$r/etc/systemd/system/sa02m-homekit.service"
+    printf 'code\n'   > "$r/opt/sa02m-homekit/sa02m_homekit/main.py"
+    # Relative, so it resolves inside the sandbox (the absolute form a board
+    # carries is HB2's 'wantslink' case).
+    ln -s ../sa02m-homekit.service \
+        "$r/etc/systemd/system/multi-user.target.wants/sa02m-homekit.service" 2>/dev/null \
+        || printf 'unit-wants-link\n' > "$r/etc/systemd/system/multi-user.target.wants/sa02m-homekit.service"
+}
+
+# The conf as the DAEMON reads it (sa02m_homekit.config.load) — the parser
+# whose verdict decides whether a clone opens a listener. Prints
+# "<enabled> <interface> <port>" or nothing.
+hk_conf_view() { # <conf>
+    [ -n "$PY" ] || return 0
+    PYTHONPATH="$HK_PKG" "$PY" -c 'import sys
+from sa02m_homekit import config
+c = config.load(sys.argv[1])
+print("%s %s %s" % (c.enabled, c.interface, c.port))' "$1" 2>/dev/null
+}
+
+make_hk_ondevice_probe() { # <src> <out>
+    local body
+    body="$(extract_fn "$1" wipe_homekit_identity)"
+    [ -n "$body" ] || return 90
+    body="$(printf '%s\n' "$body" \
+        | sed -e 's#\(^\|[[:space:]"]\)/var/lib/sa02m-homekit#\1"$SBROOT"/var/lib/sa02m-homekit#g' \
+              -e 's#\(^\|[[:space:]"]\)/etc/sa02m-homekit#\1"$SBROOT"/etc/sa02m-homekit#g' \
+              -e 's#\(^\|[[:space:]"]\)/run/sa02m-homekit#\1"$SBROOT"/run/sa02m-homekit#g')"
+    if printf '%s\n' "$body" | sed 's/#.*$//' | sed 's#"\$SBROOT"/#@SB@/#g' \
+         | grep -Eq '(^|[[:space:]"])/(var/lib|etc|run)/sa02m-homekit'; then
+        return 91
+    fi
+    {
+        echo '#!/usr/bin/env bash'
+        echo 'set -euo pipefail'
+        echo 'SBROOT="$1"; REC="$2"'
+        # Records every call, and whether the pairing store was still on disk
+        # when the stop ran: the daemon holds the keys in memory and would
+        # write them back, so the stop must come FIRST.
+        echo 'systemctl(){ printf "%s\n" "systemctl $*" >> "$REC"; if [ "$1" = stop ] && [ -e "$SBROOT/var/lib/sa02m-homekit/state.json" ]; then echo "stop-before-wipe" >> "$REC"; fi; return 0; }'
+        echo 'timeout(){ shift; "$@"; }'
+        echo 'log(){ :; }'
+        printf '%s\n' "$body"
+        echo 'wipe_homekit_identity'
+    } > "$2"
+}
+
+make_hk_offline_probe() { # <src> <out> <shell>
+    local body
+    body="$(extract_fn "$1" wipe_homekit_identity)"
+    [ -n "$body" ] || return 90
+    {
+        echo "#!/usr/bin/env $3"
+        echo 'set -eu'
+        printf '%s\n' "$body"
+        echo 'wipe_homekit_identity "$1"'
+    } > "$2"
+}
+
+hk_run() { # <form> <probe> <root> <rec> <shell>
+    if [ "$1" = ondevice ]; then bash "$2" "$3" "$4"; else "$5" "$2" "$3"; fi
+}
+
+hk_run_site() { # <label> <src> <form> [shell for offline: bash|sh]
+    local lbl=$1 src=$2 form=$3 sh=${4:-bash} root="$SANDBOX/hk-$1" probe="$SANDBOX/hk-$1.probe.sh"
+    local rec="$SANDBOX/hk-$1.systemctl.log" rc=0 view left
+    rm -rf "$root"; mkdir -p "$root"; : > "$rec"
+    hk_seed "$root"
+    if [ "$form" = ondevice ]; then make_hk_ondevice_probe "$src" "$probe" || rc=$?
+    else make_hk_offline_probe "$src" "$probe" "$sh" || rc=$?; fi
+    case "$rc" in
+      90) bad "(HB/$lbl) wipe_homekit_identity() could not be extracted — nothing behavioural was run"; return ;;
+      91) bad "(HB/$lbl) the sandbox retarget failed — refusing to run (it would edit the host's real /etc)"; return ;;
+    esac
+    hk_run "$form" "$probe" "$root" "$rec" "$sh" || { bad "(HB/$lbl) the wipe exited non-zero on a paired donor"; return; }
+    ok "(HB/$lbl) the shipped HomeKit wipe ran clean on a paired donor ($form${4:+, $sh})"
+
+    if [ -d "$root/var/lib/sa02m-homekit" ] && [ -z "$(ls -A "$root/var/lib/sa02m-homekit")" ]; then
+        ok "(HB/$lbl) the pairing store is empty (state, aids, identity and the .hk- sidecar gone); the dir stays"
+    else
+        bad "(HB/$lbl) the state dir is gone or not empty: $(ls -A "$root/var/lib/sa02m-homekit" 2>&1 | tr '\n' ' ')"
+    fi
+    view="$(hk_conf_view "$root/etc/sa02m-homekit/sa02m-homekit.conf")"
+    if [ -z "$PY" ]; then
+        bad "(HB/$lbl) no python — the conf cannot be read through the daemon's own parser"
+    elif [ "$view" = "False eth1 21070" ]; then
+        ok "(HB/$lbl) the daemon's parser reads the conf as disabled; interface/port kept (configuration)"
+    else
+        bad "(HB/$lbl) the daemon's parser reads the wiped conf as '$view' — want 'False eth1 21070'"
+    fi
+    if [ -f "$root/etc/systemd/system/sa02m-homekit.service" ] && [ -f "$root/opt/sa02m-homekit/sa02m_homekit/main.py" ]; then
+        ok "(HB/$lbl) the unit file and the package survive (software, not identity)"
+    else
+        bad "(HB/$lbl) the wipe removed installed software (unit file or package)"
+    fi
+    case "$form" in
+      ondevice)
+        if [ -d "$root/run/sa02m-homekit" ] && [ -z "$(ls -A "$root/run/sa02m-homekit")" ]; then
+            ok "(HB/$lbl) /run/sa02m-homekit emptied (the live setup code and status gone), dir kept"
+        else
+            bad "(HB/$lbl) /run/sa02m-homekit still holds: $(ls -A "$root/run/sa02m-homekit" 2>&1 | tr '\n' ' ')"
+        fi
+        if grep -q 'systemctl stop sa02m-homekit' "$rec" && grep -q 'systemctl disable sa02m-homekit' "$rec"; then
+            ok "(HB/$lbl) the bridge unit was stopped AND disabled (recorded by the shim)"
+        else
+            bad "(HB/$lbl) stop/disable not recorded — the donor's daemon keeps its keys in memory, and a clone boots enabled"
+        fi
+        if grep -qx 'stop-before-wipe' "$rec"; then
+            ok "(HB/$lbl) the daemon was stopped BEFORE its pairing store was removed"
+        else
+            bad "(HB/$lbl) the stop ran after the wipe (or never) — a running daemon writes its in-memory keys back"
+        fi ;;
+      offline)
+        if [ -e "$root/run/sa02m-homekit/status.json" ]; then
+            ok "(HB/$lbl) the offline wipe does not touch /run (never in the image)"
+        else
+            bad "(HB/$lbl) the offline wipe cleared /run — a dead line: tmpfs is not in the image"
+        fi
+        left="$root/etc/systemd/system/multi-user.target.wants/sa02m-homekit.service"
+        if [ -e "$left" ] || [ -L "$left" ]; then
+            bad "(HB/$lbl) the bridge unit is still enabled in the image"
+        else
+            ok "(HB/$lbl) the bridge unit is disabled in the image (wants link removed)"
+        fi ;;
+    esac
+
+    local before after
+    before="$(snapshot "$root")"
+    hk_run "$form" "$probe" "$root" "$rec" "$sh" >/dev/null 2>&1; rc=$?
+    after="$(snapshot "$root")"
+    [ "$rc" -eq 0 ] && [ "$before" = "$after" ] \
+        && ok "(HB/$lbl) idempotent — a second run is a byte-identical no-op, exit 0" \
+        || bad "(HB/$lbl) not idempotent (rc=$rc)"
+
+    # THE common case: the module is optional and not in the factory image.
+    local bare="$SANDBOX/hk-$1.bare" created
+    rm -rf "$bare"; mkdir -p "$bare/etc" "$bare/var/lib"
+    hk_run "$form" "$probe" "$bare" "$rec" "$sh" >/dev/null 2>&1; rc=$?
+    created="$(find "$bare" -name '*homekit*' 2>/dev/null | head -n 5)"
+    [ "$rc" -eq 0 ] && [ -z "$created" ] \
+        && ok "(HB/$lbl) a rootfs without the module: exit 0, creates nothing" \
+        || bad "(HB/$lbl) rootfs without the module: rc=$rc created='$created' — an abort here kills the capture"
+
+    # The key as configparser also accepts it: any case, `:` delimiter.
+    local var="$SANDBOX/hk-$1.var"
+    rm -rf "$var"; mkdir -p "$var"; hk_seed "$var" 'ENABLED : on'
+    hk_run "$form" "$probe" "$var" "$rec" "$sh" >/dev/null 2>&1
+    view="$(hk_conf_view "$var/etc/sa02m-homekit/sa02m-homekit.conf")"
+    [ "$view" = "False eth1 21070" ] \
+        && ok "(HB/$lbl) 'ENABLED : on' (valid for configparser) is forced off too" \
+        || bad "(HB/$lbl) 'ENABLED : on' survived as '$view' — the daemon would still open the listener"
+
+    # A symlink planted at the conf (www-data can, the dir is 0770): never
+    # read or written through — the victim stays byte-identical and no copy
+    # of it appears at the conf name.
+    local lk="$SANDBOX/hk-$1.link" victim="$SANDBOX/hk-$1.victim"
+    rm -rf "$lk"; mkdir -p "$lk"; hk_seed "$lk"
+    printf 'root:$6$hk-planted-victim:19000:0:99999:7:::\nenabled = true\n' > "$victim"
+    rm -f "$lk/etc/sa02m-homekit/sa02m-homekit.conf"
+    ln -s "$victim" "$lk/etc/sa02m-homekit/sa02m-homekit.conf"
+    local vb; vb="$(cksum < "$victim")"
+    hk_run "$form" "$probe" "$lk" "$rec" "$sh" >/dev/null 2>&1; rc=$?
+    if [ "$rc" -eq 0 ] && [ "$(cksum < "$victim")" = "$vb" ] \
+       && [ ! -e "$lk/etc/sa02m-homekit/sa02m-homekit.conf" ] && [ ! -L "$lk/etc/sa02m-homekit/sa02m-homekit.conf" ]; then
+        ok "(HB/$lbl) a symlinked conf is dropped, never followed: victim identical, no copy at the conf name"
+    else
+        bad "(HB/$lbl) symlinked conf: rc=$rc, victim identical=$([ "$(cksum < "$victim")" = "$vb" ] && echo yes || echo NO), conf name now: $(ls -l "$lk/etc/sa02m-homekit/" 2>&1 | tail -n +2 | tr '\n' ' ')"
+    fi
+}
+
+hk_run_site reset      "$RESET_SRC"       ondevice
+hk_run_site stream     "$STREAM_SRC"      ondevice
+hk_run_site patch      "$PATCH_SRC"       offline bash
+hk_run_site autorun    "$AUTORUN_SRC"     offline bash
+hk_run_site autorunfel "$AUTORUN_FEL_SRC" offline bash
+hk_run_site sshflash   "$SSH_FLASH_SRC"   offline bash
+# The receivers run under BusyBox sh on the USB stick, not bash: run them
+# under a POSIX sh too (dash on Linux), where one is present.
+if command -v dash >/dev/null 2>&1; then
+    hk_run_site autorun-sh    "$AUTORUN_SRC"     offline dash
+    hk_run_site autorunfel-sh "$AUTORUN_FEL_SRC" offline dash
+else
+    echo "  SKIP  (HB) no dash on this host — the receivers' HomeKit wipe was run under bash only (a skip is not a pass)"
+fi
+
+# ── HB2 — the shipped HomeKit belt (patch site), run for real ────────────
+hk_abody="$(extract_fn "$PATCH_SRC" assert_homekit_identity_clean)"
+if [ -z "$hk_abody" ]; then
+    bad "(HB2) assert_homekit_identity_clean() could not be extracted — the HomeKit belt has no buckle"
+else
+    hk_aprobe="$SANDBOX/hk-assert.probe.sh"
+    {
+        echo '#!/usr/bin/env bash'
+        echo 'set -euo pipefail'
+        echo 'die(){ echo "FATAL: $*" >&2; exit 1; }'
+        printf '%s\n' "$hk_abody"
+        echo 'assert_homekit_identity_clean "$1"'
+    } > "$hk_aprobe"
+    if printf '%s\n' "$hk_abody" | sed 's/#.*$//' | grep -q '|| true'; then
+        bad "(HB2) the HomeKit belt carries a || true — the fail-open that neutered the boot.scr guard"
+    fi
+    if bash "$hk_aprobe" "$SANDBOX/hk-patch" >/dev/null 2>&1; then
+        ok "(HB2) the HomeKit belt PASSES a correctly wiped image"
+    else
+        bad "(HB2) the HomeKit belt fails a correctly wiped image — it would abort every capture"
+    fi
+    hk_bare="$SANDBOX/hk-bare-image"; rm -rf "$hk_bare"; mkdir -p "$hk_bare/etc"
+    bash "$hk_aprobe" "$hk_bare" >/dev/null 2>&1 \
+        && ok "(HB2) the HomeKit belt PASSES an image without the module (the factory image)" \
+        || bad "(HB2) the HomeKit belt fails an image without the module — every factory capture would abort"
+    for one in state sidecar dotfile enabled wantslink wantsfile conflink; do
+        d="$SANDBOX/hk-dirty-$one"; rm -rf "$d"; mkdir -p "$d"; hk_seed "$d"
+        # clean first, then re-dirty exactly one dimension
+        rm -f "$d/var/lib/sa02m-homekit"/* "$d/var/lib/sa02m-homekit"/.hk-* \
+              "$d/etc/systemd/system/multi-user.target.wants/sa02m-homekit.service"
+        sed -i 's/^enabled = true$/enabled = false/' "$d/etc/sa02m-homekit/sa02m-homekit.conf"
+        case "$one" in
+          state)     printf 'DONOR-LTSK\n' > "$d/var/lib/sa02m-homekit/state.json" ;;
+          sidecar)   printf 'DONOR-LTSK\n' > "$d/var/lib/sa02m-homekit/.hk-Zq81xk.tmp" ;;
+          dotfile)   printf 'x\n' > "$d/var/lib/sa02m-homekit/.unknown-shape" ;;
+          enabled)   sed -i 's/^enabled = false$/Enabled: Yes/' "$d/etc/sa02m-homekit/sa02m-homekit.conf" ;;
+          # The real wants entry is an ABSOLUTE link: `-e` alone resolves it
+          # on the host running the patch and misses it.
+          wantslink) ln -s /nonexistent-on-this-host/sa02m-homekit.service \
+                         "$d/etc/systemd/system/multi-user.target.wants/sa02m-homekit.service" ;;
+          wantsfile) printf 'unit-wants-link\n' > "$d/etc/systemd/system/multi-user.target.wants/sa02m-homekit.service" ;;
+          conflink)  rm -f "$d/etc/sa02m-homekit/sa02m-homekit.conf"
+                     ln -s /nonexistent-on-this-host/conf "$d/etc/sa02m-homekit/sa02m-homekit.conf" ;;
+        esac
+        if bash "$hk_aprobe" "$d" >/dev/null 2>&1; then
+            bad "(HB2) the HomeKit belt missed a dirty '$one' — that dimension is unguarded"
+        else
+            ok "(HB2) the HomeKit belt catches a dirty '$one'"
         fi
     done
 fi

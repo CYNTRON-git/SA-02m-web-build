@@ -75,7 +75,9 @@ for f in sa02m-alice-client.conf sa02m-alice-devices.conf sa02m-alice-server.con
     fi
 done
 # www-data reads AND writes client/devices confs directly (CGI atomic write —
-# hence the 0770 dir above); server.conf stays 0640 root:www-data read-only.
+# hence the 0770 dir above). server.conf is 0640 root:www-data: www-data cannot
+# write the file, but through that 0770 dir it can delete or replace it by
+# name — the mode alone does not make it root-controlled.
 # That same 0770 lets www-data plant any name here, and chmod/chgrp follow a
 # symlink: a planted `sa02m-alice-client.conf -> /etc/sudoers.d/x` would get
 # group www-data + 0660 (root escalation). So root touches only a regular,
@@ -96,13 +98,19 @@ for name in sorted(os.listdir(dfd)):
         fd = os.open(name, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK | os.O_CLOEXEC, dir_fd=dfd)
         st = os.fstat(fd)
         if not stat.S_ISREG(st.st_mode) or st.st_nlink != 1: raise OSError(f"{stat.filemode(st.st_mode)}, {st.st_nlink} link(s)")
-        os.fchown(fd, -1, gid)
-        os.fchmod(fd, 0o660 if name in RW else 0o640)
     except OSError as e:
         print(f"WARN: {conf_dir}/{name}: not a regular singly-linked file ({e}) — mode/group left alone", file=sys.stderr)
-    finally:
         if fd is not None:
             os.close(fd)
+        continue
+    mode = 0o660 if name in RW else 0o640
+    try:
+        os.fchown(fd, -1, gid)
+        os.fchmod(fd, mode)
+    except OSError as e:
+        print(f"WARN: {conf_dir}/{name}: could not set group {group} and mode {mode:o} ({e.strerror}) — check it by hand", file=sys.stderr)
+    finally:
+        os.close(fd)
 PY
 
 # ── systemd ────────────────────────────────────────────────────────────────

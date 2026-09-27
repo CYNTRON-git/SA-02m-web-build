@@ -104,6 +104,33 @@ wipe_alice_enrollment() {
     rm -f "$root/etc/systemd/system/multi-user.target.wants/sa02m-alice-client.service"
 }
 
+# HomeKit bridge identity — offline copy of the clear-list in
+# docs/contracts/image-identity-reset.md §7 (no repo on the media, so the block is duplicated
+# and pinned by the alice-image-identity quality row). The pairing store
+# holds the accessory's long-term key and the paired iPhones: a clone carrying
+# it IS the donor's accessory. Contents go, the dirs stay (tmpfiles.d owns
+# them); interface/port and the installed software stay.
+wipe_homekit_identity() {
+    local root=$1
+    # `.hk-*` is the atomic-write sidecar shape (fsutil.atomic_write): a torn
+    # write of the pairing store is the same key under another name, and `*`
+    # does not expand to dot-files.
+    rm -f "$root/var/lib/sa02m-homekit"/* \
+          "$root/var/lib/sa02m-homekit"/.hk-*
+    # A symlink at the conf is never the installer's (the dir is root:www-data
+    # 0770 on the board), and on a mounted image an absolute link resolves on
+    # the HOST running this script — sed -i would copy a host file into the
+    # image. Drop the link instead: an absent conf reads as disabled.
+    if [ -L "$root/etc/sa02m-homekit/sa02m-homekit.conf" ]; then
+        rm -f "$root/etc/sa02m-homekit/sa02m-homekit.conf"
+    elif [ -f "$root/etc/sa02m-homekit/sa02m-homekit.conf" ]; then
+        # configparser reads the key case-insensitively and accepts `:` too.
+        sed -i 's/^[[:space:]]*[Ee][Nn][Aa][Bb][Ll][Ee][Dd][[:space:]]*[=:].*/enabled = false/' \
+            "$root/etc/sa02m-homekit/sa02m-homekit.conf"
+    fi
+    rm -f "$root/etc/systemd/system/multi-user.target.wants/sa02m-homekit.service"
+}
+
 apply_firstboot_wiring() {
     local root=$1
     mkdir -p "$root/etc/systemd/system" \
@@ -168,6 +195,8 @@ apply_firstboot_wiring() {
 
     wipe_alice_enrollment "$root"
     log "image identity: alice enrollment cleared on new rootfs"
+    wipe_homekit_identity "$root"
+    log "image identity: homekit pairing store cleared on new rootfs"
 }
 
 apply_boot_wiring() {

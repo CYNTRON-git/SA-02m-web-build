@@ -1,5 +1,6 @@
 #!/bin/bash
-# Reset SA-02m Alice controller enrollment to factory (unlinked, no bindings).
+# Reset SA-02m Alice controller enrollment to factory (unlinked, no bindings),
+# and the HomeKit bridge identity (pairing store, bridge off) when installed.
 # Twin of reset-cloud-enrollment.sh — same shape, same seam, read them together.
 #
 # Use it to un-link a donor by hand (docs/deployment.md §2), or to un-clone a
@@ -59,7 +60,36 @@ wipe_alice_enrollment() {
     done
 }
 
+wipe_homekit_identity() {
+    # HomeKit bridge identity (docs/contracts/image-identity-reset.md §7): the
+    # pairing store holds the accessory's long-term key and the paired iPhones,
+    # so a board carrying it IS the donor's accessory to the donor's family.
+    # Stop the daemon FIRST — it holds the keys in memory and persists them
+    # again. The unit, the dirs (tmpfiles.d owns them), interface/port and the
+    # software stay: a clone boots with the bridge off, as on a first install.
+    timeout 10 systemctl stop sa02m-homekit.service 2>/dev/null || true
+    timeout 10 systemctl disable sa02m-homekit.service 2>/dev/null || true
+    # Contents, never the dir. `.hk-*` is the atomic-write sidecar shape
+    # (fsutil.atomic_write) — a torn write of the pairing store is the same key
+    # under another name, and `*` does not expand to dot-files. /run holds the
+    # live setup code (setup.json) and the status.
+    rm -f /var/lib/sa02m-homekit/* \
+          /var/lib/sa02m-homekit/.hk-* \
+          /run/sa02m-homekit/*
+    # /etc/sa02m-homekit is root:www-data 0770: a symlink at the conf is never
+    # the installer's, and sed -i would read through it as root — drop it
+    # instead (an absent conf reads as disabled). Absent file: nothing to do.
+    if [ -L /etc/sa02m-homekit/sa02m-homekit.conf ]; then
+        rm -f /etc/sa02m-homekit/sa02m-homekit.conf
+    elif [ -f /etc/sa02m-homekit/sa02m-homekit.conf ]; then
+        # configparser reads the key case-insensitively and accepts `:` too.
+        sed -i 's/^[[:space:]]*[Ee][Nn][Aa][Bb][Ll][Ee][Dd][[:space:]]*[=:].*/enabled = false/' \
+            /etc/sa02m-homekit/sa02m-homekit.conf
+    fi
+}
+
 wipe_alice_enrollment
+wipe_homekit_identity
 
 echo "=== VERIFY ==="
 ls -la /var/lib/sa02m-alice 2>/dev/null || echo "var dir absent (never linked)"
@@ -89,3 +119,12 @@ for f in /etc/sa02m-alice/sa02m-alice-client.conf /etc/sa02m-alice-client.conf; 
 done
 timeout 10 systemctl is-enabled sa02m-alice-client 2>&1 || true
 timeout 10 systemctl is-active sa02m-alice-client 2>&1 || true
+if [ -d /var/lib/sa02m-homekit ]; then
+    if [ -z "$(ls -A /var/lib/sa02m-homekit 2>/dev/null)" ]; then
+        echo "homekit state=EMPTY_OK"
+    else
+        echo "homekit state=STILL_PRESENT_FAIL"
+    fi
+    grep -E '^[[:space:]]*enabled' /etc/sa02m-homekit/sa02m-homekit.conf 2>/dev/null || true
+    timeout 10 systemctl is-enabled sa02m-homekit 2>&1 || true
+fi

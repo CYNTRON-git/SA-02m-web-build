@@ -1264,11 +1264,38 @@ function shVisibleInAlice(dev) {
   return !dev || dev.alice_visible !== false;
 }
 
+// HomeKit exposure is opt-in: only an explicit `true` exposes (absent ⇒
+// hidden — the opposite default of alice_visible, docs/contracts/
+// homekit-bridge.md), so a writer that drops the key can only hide.
+function shVisibleInHomekit(dev) {
+  return !!dev && dev.homekit_visible === true;
+}
+
+// app/homekit.js publishes whether the module is installed (null until its
+// first answer). The HomeKit controls show only on a positive answer.
+function shHomekitInstalled() {
+  return window.sa02mHomekitInstalled === true;
+}
+
+function shSyncHomekitField() {
+  const on = shHomekitInstalled();
+  const field = $('sh-hk-field');
+  if (field) field.hidden = !on;
+  const all = $('sh-hk-all');
+  if (all) {
+    let pending = 0;
+    Object.keys(shDevCache).forEach(function (id) { if (!shVisibleInHomekit(shDevCache[id])) pending++; });
+    all.hidden = !on || pending === 0;
+    all.disabled = _shHkTicking;
+  }
+}
+
 // ── Render (poll-driven) ────────────────────────────────────────────────────
 // Edit-mode state: id being edited + the last rendered device objects by id
 // (source for prefill and id/room_id/type preservation).
 let shEditId = null;
 let shDevCache = {};
+let _shHkTicking = false;
 let shRoomCache = {};
 let shRoomSig = '';
 
@@ -1361,8 +1388,9 @@ function shRenderDevices(devices, rooms, sceneDevices) {
     const room = shRoomCache[dev.room_id];
     const meta = shDeviceTypeLabel(dev.type) + shReadingCount(dev) +
       (room ? ' · ' + (room.name || room.id) : '');
-    const hidden = shVisibleInAlice(dev) ? '' :
-      ' <span class="badge badge-unk">' + escHtml(uiT('скрыто из Алисы')) + '</span>';
+    const hidden = (shVisibleInAlice(dev) ? '' :
+      ' <span class="badge badge-unk">' + escHtml(uiT('скрыто из Алисы')) + '</span>') +
+      (shHomekitInstalled() && shVisibleInHomekit(dev) ? ' <span class="badge badge-unk">HomeKit</span>' : '');
     return '<div class="sh-dev-row" data-id="' + escAttr(dev.id || '') + '">' +
       '<svg class="sh-icon" aria-hidden="true"><use href="#i-' + escAttr(shDeviceIcon(dev)) + '"></use></svg>' +
       '<span class="mono text-sm">' + escHtml(dev.name || dev.id) + '</span> ' +
@@ -1390,6 +1418,7 @@ function shOnData(d) {
   const sceneDevices = d.scene_devices || [];
   shRenderRooms(rooms);
   shRenderDevices(devices, rooms, sceneDevices);
+  shSyncHomekitField();
   const counts = shCountsText(rooms, devices, sceneDevices);
   const card = $('sh-counts');
   if (card) card.textContent = counts;
@@ -1542,6 +1571,12 @@ async function shAddDevice() {
   device.room_id = (roomSel && roomSel.value) || '';
   const exportEl = $('sh-dev-export');
   device.alice_visible = exportEl ? !!exportEl.checked : true;
+  // The upsert replaces the whole row: while the toggle is shown it is the
+  // truth; while hidden (module not installed / not yet known) an edited
+  // device keeps its stored flag from the deep copy and a new one stays
+  // without the key (hidden).
+  const hkEl = $('sh-dev-homekit');
+  if (hkEl && shHomekitInstalled()) device.homekit_visible = !!hkEl.checked;
   // The icon belongs to on/off tiles only; an empty value drops the key.
   const iconSel = $('sh-dev-icon');
   device.icon = shIsOnOffType(dtype) && iconSel ? iconSel.value : '';
@@ -1678,6 +1713,8 @@ function shBeginEdit(id) {
   if (roomSel) roomSel.value = shRoomCache[dev.room_id] ? dev.room_id : '';
   const exportEl = $('sh-dev-export');
   if (exportEl) exportEl.checked = shVisibleInAlice(dev);
+  const hkEl = $('sh-dev-homekit');
+  if (hkEl) hkEl.checked = shVisibleInHomekit(dev);
   shClearRows();
   const rows = shDetectRows(dev);
   if (!rows.length) shAddRow(SH_DEFAULT_KIND, '', null);
@@ -1701,6 +1738,8 @@ function shCancelEdit() {
   if (roomSel) roomSel.value = '';
   const exportEl = $('sh-dev-export');
   if (exportEl) exportEl.checked = true;
+  const hkEl = $('sh-dev-homekit');
+  if (hkEl) hkEl.checked = false;
   const invEl = $('sh-dev-inverted');
   if (invEl) invEl.checked = false;
   shDtypeTouched = false;
@@ -1732,6 +1771,43 @@ async function shDeleteDevice(id) {
   }
 }
 
+// «Отметить все для HomeKit» (plan Q-D): the device API has no bulk write, so
+// each not-yet-exposed device is re-saved from its stored row with the flag
+// set — one request at a time (each upsert rewrites the device document), the
+// button disabled for the run. A device edited in the form right now is
+// skipped: saving it here would race the operator's unsaved edits.
+async function shHomekitTickAll() {
+  if (_shHkTicking || !shHomekitInstalled()) return;
+  const ids = Object.keys(shDevCache).filter(function (id) {
+    return id !== shEditId && !shVisibleInHomekit(shDevCache[id]);
+  });
+  if (!ids.length) return;
+  if (!window.confirm(uiT('Показать в HomeKit все устройства') + ' (' + ids.length + ')?')) return;
+  _shHkTicking = true;
+  shSyncHomekitField();
+  let done = 0;
+  let failed = 0;
+  for (let i = 0; i < ids.length; i++) {
+    const src = shDevCache[ids[i]];
+    if (!src) continue;
+    const device = JSON.parse(JSON.stringify(src));
+    device.homekit_visible = true;
+    try {
+      const d = await shApi({ action: 'upsert_device', device: device });
+      if (d && d.ok) done++;
+      else failed++;
+    } catch (e) {
+      failed++;
+    }
+    shSetBindMsg(uiT('Отмечено для HomeKit') + ': ' + done + ' / ' + ids.length, failed ? false : true);
+  }
+  _shHkTicking = false;
+  if (failed) shSetBindMsg(uiT('Не удалось отметить') + ': ' + failed + ' / ' + ids.length, false);
+  else shSetBindMsg(uiT('Все устройства отмечены для HomeKit'), true);
+  await shRefresh();
+  shSyncHomekitField();
+}
+
 // ── Modal («Комнаты и устройства») ──────────────────────────────────────────
 // Reuses the shared mqtt-modal markup/behaviour, not a new one.
 function shModalEsc(e) {
@@ -1751,6 +1827,8 @@ async function shOpenModal() {
   m.removeAttribute('hidden');
   document.addEventListener('keydown', shModalEsc);
   shRefresh();
+  shSyncHomekitField();
+  if (typeof window.homekitRefresh === 'function') window.homekitRefresh();
   // Topics FIRST: the seeded row's topic picker would otherwise open empty.
   // The seed is in `finally` so a timed-out or throwing inventory still leaves
   // the operator a row (the picker then offers hand entry — fail-closed).
@@ -1822,6 +1900,12 @@ function shInit() {
   }
   shRefreshI18n();
   if (typeof window.sa02mAliceOnData === 'function') window.sa02mAliceOnData(shOnData);
+  // Installed/not-installed flips (app/homekit.js): the toggle and the row
+  // badges follow at once, not on the next Alice poll.
+  document.addEventListener('sa02m-homekit-status', function () {
+    shSyncHomekitField();
+    if (_shLastData) shOnData(_shLastData);
+  });
 }
 
 // Language switch (called by i18n.js updateControl, and once at init). The
@@ -1863,6 +1947,7 @@ window.shAddRow = shAddRow;
 window.shAddDevice = shAddDevice;
 window.shCancelEdit = shCancelEdit;
 window.shAddRoom = shAddRoom;
+window.shHomekitTickAll = shHomekitTickAll;
 
 if (document.readyState === 'loading') {
   document.addEventListener('DOMContentLoaded', shInit);

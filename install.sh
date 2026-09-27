@@ -13,6 +13,10 @@
 #   (docs/contracts/installer-refresh-policy.md).
 #   --with-optional (или SA02M_WITH_OPTIONAL=1) — явно ставить/обновлять
 #   сторонние стеки, в т.ч. отключённые оператором.
+#   --with-homekit (или SA02M_WITH_HOMEKIT=1) — установить мост Apple HomeKit
+#   (sa02m-homekit; опционально, не входит в заводской образ, служба выключена
+#   до включения на карточке). Уже установленный мост обновляется и без флага;
+#   SA02M_SKIP_HOMEKIT=1 — не трогать его вовсе.
 # ═══════════════════════════════════════════════════════════════════════════
 set -euo pipefail
 
@@ -54,6 +58,7 @@ while [[ $# -gt 0 ]]; do
         --no-gw-repair) SA02M_SKIP_GW_REPAIR="1"; shift ;;
         --refresh) SA02M_INSTALL_MODE="refresh"; shift ;;
         --with-optional) SA02M_WITH_OPTIONAL="1"; shift ;;
+        --with-homekit) SA02M_WITH_HOMEKIT="1"; shift ;;
         *)         shift ;;
     esac
 done
@@ -253,6 +258,20 @@ fi
 if [ "${SA02M_SKIP_RULES:-0}" != "1" ] && [ -f "$SCRIPT_DIR/scripts/06b-rules.sh" ]; then
     log INFO "──── Опциональный стек: сценарии (sa02m-rules) ────"
     sa02m_run_module 06b-rules.sh || log WARN "06b-rules.sh завершился с ошибкой"
+fi
+# Apple HomeKit bridge — OPT-IN (Operator decision Q-A: an optional install,
+# never in the factory image). Runs when asked for, or when the bridge is
+# already installed, so `install.sh --refresh` keeps an installed bridge
+# current instead of leaving an old daemon under a new CGI. "Installed" = the
+# system user 06c-homekit.sh creates — not the unit file, which OTA delivers
+# to every board, and not the venv, which a first run without network may not
+# have built yet.
+# After 06-alice.sh: the bridge imports the Alice package (shared dependency
+# before its consumer).
+if [ "${SA02M_SKIP_HOMEKIT:-0}" != "1" ] && [ -f "$SCRIPT_DIR/scripts/06c-homekit.sh" ] \
+   && { [ "${SA02M_WITH_HOMEKIT:-0}" = "1" ] || id -u sa02m-homekit >/dev/null 2>&1; }; then
+    log INFO "──── Опциональный модуль: Apple HomeKit (sa02m-homekit) ────"
+    sa02m_run_module 06c-homekit.sh || log WARN "06c-homekit.sh завершился с ошибкой"
 fi
 
 if [ "${SA02M_SKIP_NODERED:-0}" != "1" ] && [ -f "$SCRIPT_DIR/scripts/07-nodered.sh" ]; then

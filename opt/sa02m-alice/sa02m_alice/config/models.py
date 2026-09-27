@@ -462,6 +462,14 @@ def validate_device(dev: Dict[str, Any], *, partial: bool = False) -> Tuple[Opti
     if "alice_visible" in out:
         if not isinstance(out["alice_visible"], bool):
             return None, "invalid alice_visible"
+    # `homekit_visible`: absent ⇒ HIDDEN — the opposite default of
+    # `alice_visible`, on purpose (docs/contracts/homekit-bridge.md §Что видно
+    # в HomeKit): a device reaches Apple Home only once ticked, so a stale
+    # writer that replaces the row without this key can only hide a device,
+    # never expose one. Strict bool for the same reason as `alice_visible`.
+    if "homekit_visible" in out:
+        if not isinstance(out["homekit_visible"], bool):
+            return None, "invalid homekit_visible"
     # `icon`: optional tile icon for the cloud control page. Empty/None is
     # "unset" and the key is dropped; anything else must be in the allow-list.
     if "icon" in out:

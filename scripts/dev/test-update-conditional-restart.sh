@@ -85,6 +85,15 @@
 # a WARN) and run 5c (restart_after_rollback: a dead set read WARNs by name,
 # the rollback stays 0, the other sets still run); the log stub records to
 # $RUNNER_LOG for these. RED on b277e7e: 3 FAIL.
+# Run 8 (HomeKit): restart_if_active taken from the two SHIPPED generators —
+#   the runner's github-overlay manifest builder run on an empty overlay, and
+#   pack-offline-update.py build_services_block() on the optional-keys tier —
+#   must be one set, carry sa02m-homekit, keep it out of both restart[], and,
+#   fed to the extracted loop, bounce a running bridge and leave a stopped one.
+#   RED 2026-09-27: both generators at HEAD 485f385 -> 3 FAIL; runner edited
+#   alone -> the parity FAIL; pack edited alone -> 4 FAIL; sa02m-homekit added
+#   to the runner's restart[] -> the never-widen FAIL. PACK_SRC=<file>
+#   overrides the pack like UPDATE_RUNNER_SRC does the runner.
 #
 # Run: bash scripts/dev/test-update-conditional-restart.sh   (bash + python3 +
 #   coreutils; no systemd — the shims replace it).
@@ -638,6 +647,82 @@ JSON
         || bad "7 restart_services_and_health: a dead units_active read passed the gate (rc=$run_rc)"
 else
     bad "7 runner has no health_check split — run 7 cannot run"
+fi
+
+# ── Run 8: the GENERATED restart_if_active, online and offline, in step ─────
+# The fixtures above hand-write restart_if_active; this run takes it from the
+# two SHIPPED generators — the runner's github-overlay manifest builder (its
+# python heredoc, run on an empty overlay) and scripts/pack-offline-update.py
+# build_services_block() on the optional-keys tier — and feeds the online one
+# into the extracted restart_services_and_health. Both must carry the same
+# opt-in set (they are two emitters of one policy: "Must stay in step"), the
+# HomeKit bridge must be in it and in NEITHER restart[] (an inactive bridge is
+# never started — installed `app off`, scripts/06c-homekit.sh), and the loop
+# must bounce a RUNNING bridge and leave a stopped one alone.
+PACK_SRC="${PACK_SRC:-scripts/pack-offline-update.py}"
+gen_py="$T/gen-manifest.py"
+awk '/python3 <<.PY. \|\| die E_COMPAT "github manifest build failed"/{f=1;next} f&&/^PY$/{exit} f' "$SRC" > "$gen_py"
+mkdir -p "$T/gen-overlay" "$T/gen-meta"
+if [ ! -s "$gen_py" ] || ! grep -q 'restart_if_active' "$gen_py"; then
+    bad "run8: could not extract the runner's github-overlay manifest builder (non-vacuity)"
+elif ! OVERLAY="$TW/gen-overlay" META="$TW/gen-meta" TARGET_VER=9.9.9.9 python3 "$gen_py" >/dev/null 2>"$T/gen.err"; then
+    bad "run8: the shipped manifest builder failed on an empty overlay: $(tail -c 300 "$T/gen.err")"
+else
+    sets="$(PACK="$PACK_SRC" MAN="$TW/gen-meta/manifest.json" python3 - <<'PY'
+import importlib.util, json, os
+spec = importlib.util.spec_from_file_location("pack", os.environ["PACK"])
+pack = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(pack)
+off = pack.build_services_block(pack.SERVICES_OPTIONAL_SINCE)
+on = json.load(open(os.environ["MAN"], encoding="utf-8"))["services"]
+print(" ".join(sorted(on.get("restart_if_active", []))))
+print(" ".join(sorted(off.get("restart_if_active", []))))
+print(" ".join(sorted(set(on.get("restart", [])) | set(off.get("restart", [])))))
+PY
+)" || sets=""
+    on_ria=$(printf '%s\n' "$sets" | sed -n 1p)
+    off_ria=$(printf '%s\n' "$sets" | sed -n 2p)
+    both_restart=$(printf '%s\n' "$sets" | sed -n 3p)
+    if [ -z "$on_ria" ] || [ -z "$off_ria" ]; then
+        bad "run8: a generator emitted no restart_if_active (online='$on_ria', offline='$off_ria') — vacuous"
+    elif [ "$on_ria" = "$off_ria" ]; then
+        ok "run8: online and offline restart_if_active are the same set ($on_ria)"
+    else
+        bad "run8: online and offline restart_if_active differ — the two updates disagree about which opt-in units are bounced (online: $on_ria | offline: $off_ria)"
+    fi
+    case " $on_ria " in
+        *" sa02m-homekit "*) ok "run8: sa02m-homekit is in the generated restart_if_active" ;;
+        *) bad "run8: sa02m-homekit is NOT in the generated restart_if_active — an OTA leaves a running bridge on stale code" ;;
+    esac
+    case " $both_restart " in
+        *" sa02m-homekit "*) bad "run8: sa02m-homekit is in a restart[] list — restart STARTS an inactive unit: every OTA would switch the bridge on" ;;
+        *) ok "run8: sa02m-homekit is in neither restart[] (never-widen)" ;;
+    esac
+    # Feed the GENERATED set into the shipped loop.
+    ria_json=$(printf '%s\n' "$on_ria" | python3 -c 'import json,sys; print(json.dumps(sys.stdin.read().split()))')
+    cat > "$STAGE/meta/manifest.json" <<JSON
+{"schema_version": 1, "version": "9.9.9.9", "deploy": [],
+ "services": {"daemon_reload": false, "stop_before_apply": [], "restart": [],
+              "restart_if_active": $ria_json,
+              "health": {"http_url": "", "units_active": [], "version_file": "$TW/VERSION"}}}
+JSON
+    : > "$STAGE/journal.jsonl"
+    printf '%s\n' sa02m-homekit > "$ACTIVE_FILE"
+    run_health
+    if [ "$run_rc" -eq 0 ] && called "restart sa02m-homekit"; then
+        ok "run8: a RUNNING bridge is restarted by the generated set (fresh /opt code after OTA)"
+    else
+        bad "run8: running bridge not restarted (rc=$run_rc) — calls: $(tr '\n' ';' < "$CALLS_LOG")"
+    fi
+    : > "$ACTIVE_FILE"
+    run_health
+    if called "restart sa02m-homekit" || called "start sa02m-homekit"; then
+        bad "run8: a STOPPED bridge was restarted/started by the OTA — the operator's OFF widened"
+    elif called "is-active --quiet sa02m-homekit"; then
+        ok "run8: a stopped bridge is probed and left alone (never-widen)"
+    else
+        bad "run8: the bridge was never probed — the generated set did not reach the loop (vacuous)"
+    fi
 fi
 
 echo "-----"

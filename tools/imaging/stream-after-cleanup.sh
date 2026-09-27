@@ -149,6 +149,35 @@ wipe_alice_enrollment() {
     done
 }
 
+wipe_homekit_identity() {
+    # HomeKit bridge identity (docs/contracts/image-identity-reset.md §7): the
+    # pairing store holds the accessory's long-term key and the paired iPhones,
+    # so a board carrying it IS the donor's accessory to the donor's family.
+    # Stop the daemon FIRST — it holds the keys in memory and persists them
+    # again. The unit, the dirs (tmpfiles.d owns them), interface/port and the
+    # software stay: a clone boots with the bridge off, as on a first install.
+    log "сброс HomeKit identity (хранилище пар, мост выключен)"
+    timeout 10 systemctl stop sa02m-homekit.service 2>/dev/null || true
+    timeout 10 systemctl disable sa02m-homekit.service 2>/dev/null || true
+    # Contents, never the dir. `.hk-*` is the atomic-write sidecar shape
+    # (fsutil.atomic_write) — a torn write of the pairing store is the same key
+    # under another name, and `*` does not expand to dot-files. /run holds the
+    # live setup code (setup.json) and the status.
+    rm -f /var/lib/sa02m-homekit/* \
+          /var/lib/sa02m-homekit/.hk-* \
+          /run/sa02m-homekit/*
+    # /etc/sa02m-homekit is root:www-data 0770: a symlink at the conf is never
+    # the installer's, and sed -i would read through it as root — drop it
+    # instead (an absent conf reads as disabled). Absent file: nothing to do.
+    if [ -L /etc/sa02m-homekit/sa02m-homekit.conf ]; then
+        rm -f /etc/sa02m-homekit/sa02m-homekit.conf
+    elif [ -f /etc/sa02m-homekit/sa02m-homekit.conf ]; then
+        # configparser reads the key case-insensitively and accepts `:` too.
+        sed -i 's/^[[:space:]]*[Ee][Nn][Aa][Bb][Ll][Ee][Dd][[:space:]]*[=:].*/enabled = false/' \
+            /etc/sa02m-homekit/sa02m-homekit.conf
+    fi
+}
+
 prepare_clone_ids() {
     log "сброс machine-id (ssh keys — непосредственно перед dd)"
     truncate -s 0 /etc/machine-id
@@ -157,6 +186,7 @@ prepare_clone_ids() {
     install_regen_ssh_service
     wipe_cloud_enrollment
     wipe_alice_enrollment
+    wipe_homekit_identity
     prepare_firstboot_resize
     touch /root/.not_logged_in_yet
     sync

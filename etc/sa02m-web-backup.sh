@@ -16,6 +16,11 @@ DEVICE_ID_FILE="${SA02M_DEVICE_ID_FILE:-/etc/machine-id}"
 # also pass sa02m-restore-backup.sh's ALLOW list, or a restore of the archive
 # fails as a whole. Alice: /etc/sa02m-alice/ is the live conf layout; the flat
 # /etc/sa02m-alice-*.conf names are the older one (an old board may carry them).
+# HomeKit: the conf (enabled/interface/port) only. /var/lib/sa02m-homekit/ is
+# never archived — it holds the accessory's long-term key and the paired
+# controllers, and an archive goes to the panel (docs/contracts/homekit-bridge.md
+# P4); a restored board pairs anew. This list is the allow-list, so leaving the
+# dir out is the whole guarantee.
 collect_paths() {
   local p
   # Explicit files
@@ -27,7 +32,8 @@ collect_paths() {
     /etc/sa02m-alice/sa02m-alice-client.conf \
     /etc/sa02m-alice/sa02m-alice-devices.conf \
     /etc/sa02m-alice-client.conf \
-    /etc/sa02m-alice-devices.conf
+    /etc/sa02m-alice-devices.conf \
+    /etc/sa02m-homekit/sa02m-homekit.conf
   do
     [ -e "$p" ] && printf '%s\n' "$p"
   done

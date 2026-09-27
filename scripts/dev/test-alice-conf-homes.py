@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """test-alice-conf-homes.py — every preserve / backup / restore list names the
-LIVE Alice conf layout. Quality row `alice-conf-homes`.
+LIVE Alice conf layout, and the HomeKit bridge's conf and pairing store where
+each belongs (section 10). Quality row `alice-conf-homes`.
 
 Why it exists: the Alice confs live in /etc/sa02m-alice/ (code home
 opt/sa02m-alice/sa02m_alice/common/constants.py ETC_DIR, created by
@@ -66,8 +67,20 @@ Method — behavioural where the code can be run, never a grep for a string:
      conf-install loop and the systemd block) runs with the dir retargeted and
      www-data replaced by the invoking group: regular confs get their modes; a
      planted symlink or hard link is reported and its target left unchanged.
+  10. the HomeKit bridge homes (docs/contracts/homekit-bridge.md §13-§14),
+     read from sa02m_homekit.constants and cross-checked against its tmpfiles:
+     the conf and the pairing store (state.json and a `.hk-` sidecar) are
+     preserved by all four OTA guards; the backup archives the conf and NEVER
+     the pairing store (P4 — asserted on the listed paths and on the raw
+     stream of the whole script, whose /var/lib/ is retargeted too), and skips
+     a symlink planted at the conf; the restore admits the conf, refuses the
+     pairing store, creates a missing conf dir with the tmpfiles owner/mode,
+     restores the conf without touching a HomeKit unit (the daemon re-reads it
+     every 2 s) and fails the preflight on a symlinked conf; the runner's 0440
+     re-mode loop names every committed etc/sudoers.d/ drop-in (open world).
 Negative controls: /opt/sa02m-alice/… (the code tree OTA DOES deploy) must not
-be preserved by any guard; /etc/shadow must not pass the restore.
+be preserved by any guard; /etc/shadow must not pass the restore; the HomeKit
+code tree stays deployable.
 
 RED observed 2026-09-27 on 9c4355d (1.0.6.54): 1–6 FAIL for both live confs in
 every home, 7a FAIL (owner 0:0 instead of 1234:4321), 7b FAIL (gid 0 instead of
@@ -84,6 +97,14 @@ restore ALLOW entry (6, 8a/8b), the restore's refusal line (7d/7e/7f), its
 DIR_SPEC entry (7s), the resolver's symlink rule in each twin (5e2/5e5 resp.
 7d/7f/8a, plus 7t), the backup's directory rule (5e5), regular-file rule
 (5e3) and hard-link rule (5e4), and the installer's regular-file rule (9c).
+Section 10, RED observed 2026-09-27 against the branch's own pre-HomeKit lists
+(HEAD 485f385 for the runner, validator, deploy map, pack, backup, restore): 21
+FAIL — every guard in 10.1-10.4 for all three paths, 10.5/10.5e1/10.5e2 (no
+conf in the archive, no WARN), 10.6 (conf refused), 10.7 (no DIR_SPEC), 10.8a/b
+(«path not allowlisted»), 10.9 (sa02m-homekit not re-moded). Its mutation
+cases (validator and runner-bootstrap entries, restore ALLOW entry, DIR_SPEC
+entry) each RED as root and as nobody; adding the pairing store to the backup
+list turns 10.5/10.5e1/10.6 RED.
 The backup list is not cased: its entries sit inside a backslash-continued
 `for p in \\` list, where a `#` breaks the syntax of the whole loop — a RED for
 the wrong reason.
@@ -847,6 +868,224 @@ else:
                 f"reported={'sa02m-alice-devices.conf' in out}")
         (ok if rc == 0 and server_ok else bad)(
             f"9d the installer carries on past the plants (rc={rc}) and still sets the regular server conf 0640 ({server_ok})")
+
+# ── 10. the HomeKit bridge homes (docs/contracts/homekit-bridge.md §13-§14) ─
+# The same lists, the second optional module: the conf is the operator's
+# decision (preserved by OTA, archived by the backup, admitted by the restore),
+# the state dir holds the pairing keys (preserved by OTA, NEVER archived — P4:
+# the archive goes to the panel, and a restore to another board would clone the
+# accessory). Every assertion runs the shipped code the sections above run.
+print("── 10. HomeKit homes (preserve / backup / restore / OTA sudoers mode) ──")
+HK_PKG = ROOT / "opt/sa02m-homekit"
+HK_TMPFILES = ROOT / "etc/tmpfiles.d/sa02m-homekit.conf"
+HK_INSTALLER = ROOT / "scripts/06c-homekit.sh"
+env_hk = {k: v for k, v in os.environ.items() if not k.startswith("SA02M_HOMEKIT_")}
+env_hk["PYTHONPATH"] = str(HK_PKG)
+r = subprocess.run(
+    [sys.executable, "-c",
+     "from sa02m_homekit import constants as C;"
+     "print(C.ETC_DIR); print(C.CONF_FILE); print(C.VAR_DIR); print(C.STATE_FILE); print(C.TMP_PREFIX)"],
+    env=env_hk, capture_output=True, text=True, timeout=30,
+)
+hk = r.stdout.split()
+if r.returncode != 0 or len(hk) != 5:
+    bad(f"10.0 could not read the HomeKit layout from sa02m_homekit.constants (rc={r.returncode}): {r.stderr.strip()[:200]}")
+else:
+    HK_ETC, HK_CONF, HK_VAR, HK_STATE, HK_TMP = hk
+    HK_SIDECAR = f"{HK_VAR}/{HK_TMP}Zq81xk.tmp"
+    HK_CODE = "/opt/sa02m-homekit/sa02m_homekit/main.py"
+    hk_tmp_txt = read(HK_TMPFILES)
+    hk_inst = [l for l in read(HK_INSTALLER).splitlines() if not l.lstrip().startswith("#")]
+    for d in (HK_ETC, HK_VAR):
+        (ok if re.search(r"^d\s+" + re.escape(d) + r"\s", hk_tmp_txt, re.M) else bad)(
+            f"10.0 tmpfiles creates {d} (the layout the lists must name)")
+    HK_KEEP = [HK_CONF, HK_STATE, HK_SIDECAR]
+
+    # 10.1-10.4 — the four OTA never-deploy guards
+    if vp is not None:
+        for p in HK_KEEP:
+            (ok if vp.path_is_preserved(p) else bad)(f"10.1 path_is_preserved({p})")
+        (bad if vp.path_is_preserved(HK_CODE) else ok)("10.1 negative control: the HomeKit code tree stays deployable")
+    if m_tuple and m_pred:
+        for p in HK_KEEP:
+            (ok if hit(p) else bad)(f"10.2 runner bootstrap refuses a deploy onto {p}")
+        (bad if hit(HK_CODE) else ok)("10.2 negative control: the HomeKit code tree stays deployable")
+    else:
+        bad("10.2 runner bootstrap guard not extracted (see 2)")
+    arr_hk = []
+    if m_arr:
+        rb_hk = subprocess.run(["bash", "-c", "set -f\nPRESERVE_PATHS=(\n" + m_arr.group(1) + ")\nprintf '%s\\n' \"${PRESERVE_PATHS[@]}\"\n"],
+                               capture_output=True, text=True, timeout=30)
+        arr_hk = [l for l in rb_hk.stdout.splitlines() if l]
+    if not arr_hk:
+        bad("10.3 runner bash PRESERVE_PATHS not expanded (see 3)")
+    else:
+        for p in HK_KEEP:
+            (ok if any(generic_hit(p, x) for x in arr_hk) else bad)(f"10.3 PRESERVE_PATHS covers {p}")
+        (bad if any(generic_hit(HK_CODE, x) for x in arr_hk) else ok)("10.3 negative control: the HomeKit code tree is not in PRESERVE_PATHS")
+    try:
+        nd_hk = json.loads(read(DEPLOY_MAP) or "{}").get("never_deploy") or []
+    except ValueError:
+        nd_hk = []
+    if len(nd_hk) < 5:
+        bad(f"10.4 never_deploy has {len(nd_hk)} entries — the list was not found (non-vacuity)")
+    else:
+        for p in HK_KEEP:
+            (ok if any(generic_hit(p, x) for x in nd_hk) else bad)(f"10.4 never_deploy covers {p}")
+        (bad if any(generic_hit(HK_CODE, x) for x in nd_hk) else ok)("10.4 negative control: the HomeKit code tree is not in never_deploy")
+
+    # 10.5 — the shipped collect_paths(): the conf yes, the pairing store never
+    hk_emitted: list[str] = []
+    if not m_fn:
+        bad("10.5 collect_paths() not extracted (see 5)")
+    else:
+        fn_hk, _ = re.subn(r"(?<=\s)/etc/", '"$SANDBOX"/etc/', m_fn.group(0))
+        fn_hk = re.sub(r"(?<=\s)/var/lib/", '"$SANDBOX"/var/lib/', fn_hk)
+        with tempfile.TemporaryDirectory() as sb:
+            for p in (HK_CONF, HK_STATE, HK_SIDECAR, f"{HK_VAR}/aids.json", f"{HK_VAR}/identity.json"):
+                f = Path(sb + p)
+                f.parent.mkdir(parents=True, exist_ok=True)
+                f.write_text("x\n", encoding="utf-8")
+            rbk = subprocess.run(["bash", "-c", fn_hk + "\ncollect_paths\n"], capture_output=True, text=True,
+                                 timeout=30, env={**os.environ, "SANDBOX": sb})
+            hk_emitted = [l[len(sb):] for l in rbk.stdout.splitlines() if l.startswith(sb)]
+        (ok if HK_CONF in hk_emitted else bad)(f"10.5 the backup archives {HK_CONF}")
+        leak = [p for p in hk_emitted if p.startswith(HK_VAR.rstrip("/") + "/")]
+        (bad if leak else ok)(f"10.5 the backup never lists the pairing store (P4){': ' + str(leak) if leak else ''}")
+
+    # 10.5e — the WHOLE backup end to end: a paired board's archive carries the
+    # conf bytes and not one byte of the pairing store; a symlink planted at the
+    # conf (its dir is root:www-data 0770 like the Alice one) is skipped.
+    if not (shutil.which("bash") and shutil.which("tar")) or "run_backup" not in globals():
+        skip("10.5e needs bash + tar — not run on this host (a skip is not a pass)")
+    else:
+        HK_KEY = b"hk-donor-long-term-secret-key"
+
+        def hk_backup_case(tag, what, plant, want_conf: bool, warn: bool):
+            with tempfile.TemporaryDirectory() as tsb:
+                sb = Path(tsb)
+                e = seed_backup(sb)
+                hdir = sb / HK_ETC.lstrip("/")
+                hdir.mkdir(parents=True)
+                hdir.chmod(0o770)
+                (sb / HK_CONF.lstrip("/")).write_bytes(b"[bridge]\nenabled = true\n")
+                vdir = sb / HK_VAR.lstrip("/")
+                vdir.mkdir(parents=True)
+                (sb / HK_STATE.lstrip("/")).write_bytes(HK_KEY + b"\n")
+                (sb / HK_SIDECAR.lstrip("/")).write_bytes(HK_KEY + b"\n")
+                plant(sb, e)
+                # Retarget /var/lib/ too, or a HomeKit line naming it would
+                # read the HOST's pairing store instead of the seeded one.
+                global btxt
+                saved = btxt
+                btxt = btxt.replace(" /var/lib/", f" {sb}/var/lib/")
+                try:
+                    rc, err, files, raw, n_sub = run_backup(sb)
+                finally:
+                    btxt = saved
+            problems = []
+            if rc != 0:
+                problems.append(f"rc={rc} ({err.strip()[-200:]!r})")
+            if HK_KEY in raw:
+                problems.append("the pairing store's bytes ARE in the archive")
+            if MARK in raw:
+                problems.append("the planted victim's bytes ARE in the archive")
+            if want_conf and files.get(HK_CONF) != b"[bridge]\nenabled = true\n":
+                problems.append(f"{HK_CONF} missing or wrong bytes ({files.get(HK_CONF)!r})")
+            if not want_conf and HK_CONF in files:
+                problems.append(f"{HK_CONF} archived")
+            if warn and HK_CONF not in err:
+                problems.append(f"no WARN naming {HK_CONF}")
+            (bad if problems else ok)(f"{tag} {what}" + (": " + "; ".join(problems) if problems else ""))
+
+        hk_backup_case("10.5e1", "a paired board's archive carries the HomeKit conf and none of the pairing store",
+                       lambda sb, e: None, True, False)
+
+        def hk_plant_symlink(sb, e):
+            c = sb / HK_CONF.lstrip("/")
+            c.unlink()
+            c.symlink_to(e["victim"])
+        hk_backup_case("10.5e2", "a symlink planted at the HomeKit conf is skipped with a WARN; the victim never reaches the archive",
+                       hk_plant_symlink, False, True)
+
+    # 10.6 — the restore admits the conf, refuses the pairing store, and admits
+    # everything the backup emits for a HomeKit board.
+    if allowed is None:
+        bad("10.6 restore ALLOW not extracted (see 6)")
+    else:
+        (ok if allowed(HK_CONF) else bad)(f"10.6 the restore admits {HK_CONF}")
+        for p in (HK_STATE, HK_SIDECAR):
+            (bad if allowed(p) else ok)(f"10.6 the restore refuses {p} (a backup never carries the pairing store)")
+        refused = [p for p in hk_emitted if not allowed(p)]
+        if hk_emitted and not refused:
+            ok(f"10.6 every path the backup emits on a HomeKit board passes the restore ({len(hk_emitted)} paths)")
+        else:
+            bad(f"10.6 backup/restore disagree on a HomeKit board (emitted={hk_emitted}, refused={refused})")
+
+    # 10.7 — a missing conf dir is created with the tmpfiles owner/mode.
+    hk_spec = None
+    if blocks["DIR_SPEC"]:
+        ns_hk: dict = {}
+        exec(blocks["DIR_SPEC"], ns_hk)  # noqa: S102 - the shipped source under test
+        hk_spec = ns_hk["DIR_SPEC"].get(HK_ETC)
+    m_hk = re.search(r"^d\s+" + re.escape(HK_ETC) + r"\s+(\d+)\s+(\S+)\s+(\S+)", hk_tmp_txt, re.M)
+    hk_want = (int(m_hk.group(1), 8), m_hk.group(2), m_hk.group(3)) if m_hk else None
+    hk_inst_ok = any(f"install -d -m {oct(hk_want[0])[2:].zfill(4)} -o {hk_want[1]} -g {hk_want[2]} {HK_ETC}" in l
+                     for l in hk_inst) if hk_want else False
+    if hk_spec is not None and hk_spec == hk_want and hk_inst_ok:
+        ok(f"10.7 a missing {HK_ETC} is created {oct(hk_spec[0])} {hk_spec[1]}:{hk_spec[2]} — tmpfiles and scripts/06c-homekit.sh agree")
+    else:
+        bad(f"10.7 restore DIR_SPEC[{HK_ETC}]={hk_spec} vs tmpfiles {hk_want} (installer agrees: {hk_inst_ok}) "
+            "— a restore onto a board without the dir creates it unwritable for the CGI")
+
+    # 10.8 — the SHIPPED restore end to end: the conf lands, no HomeKit unit is
+    # touched (the daemon re-reads its conf every 2 s), and a symlink planted
+    # at the conf fails the preflight with nothing written.
+    if not (shutil.which("bash") and shutil.which("tar")) or "run_restore" not in globals():
+        skip("10.8 needs bash + tar — not run on this host (a skip is not a pass)")
+    else:
+        with tempfile.TemporaryDirectory() as tsb:
+            sb = Path(tsb)
+            hdir = sb / HK_ETC.lstrip("/")
+            hdir.mkdir(parents=True)
+            hdir.chmod(0o770)
+            conf = sb / HK_CONF.lstrip("/")
+            conf.write_bytes(b"old\n")
+            rc, out, calls, _ = run_restore(sb, {HK_CONF: b"[bridge]\nenabled = false\n"}, {"sa02m-homekit"})
+            if rc == 0 and conf.read_bytes() == b"[bridge]\nenabled = false\n" and not [c for c in calls if "homekit" in c]:
+                ok("10.8a a clean --apply restores the HomeKit conf and touches no HomeKit unit (the daemon re-reads it)")
+            else:
+                bad(f"10.8a HomeKit conf --apply: rc={rc}, bytes={conf.read_bytes()!r}, homekit calls="
+                    f"{[c for c in calls if 'homekit' in c]}, output: {out.strip()[-300:]!r}")
+            victim = sb / "victim"
+            victim.write_bytes(b"root-secret\n")
+            victim.chmod(0o600)
+            conf.unlink()
+            conf.symlink_to(victim)
+            rc, out, calls, _ = run_restore(sb, {HK_CONF: b"[bridge]\nenabled = true\n"}, set())
+            if rc != 0 and "symlink" in out and conf.is_symlink() and victim.read_bytes() == b"root-secret\n":
+                ok("10.8b a symlink planted at the HomeKit conf fails --apply in the preflight; the victim is untouched")
+            else:
+                bad(f"10.8b planted HomeKit conf symlink: rc={rc}, still a link={conf.is_symlink()}, "
+                    f"victim={victim.read_bytes()!r}, output: {out.strip()[-300:]!r}")
+
+# 10.9 — the OTA lands every committed sudoers drop-in, the github-overlay path
+# at 0644 (the runner's deploy_mode), and its cleanup step re-modes a NAMED list
+# to 0440 (visudo -c flags anything else). Open world: every file under
+# etc/sudoers.d/ must be in that list — a new drop-in (sa02m-homekit) left out
+# ships as a visudo failure on every OTA'd board.
+m_loop = re.search(r"^\s*for _name in ([^;\n]+); do\n\s*_path=\"/etc/sudoers\.d/\$_name\"\n\s*if \[ -f \"\$_path\" \]; then\n\s*chmod 0440",
+                   rtxt, re.M)
+committed = sorted(p.name for p in (ROOT / "etc/sudoers.d").iterdir() if p.is_file()) if (ROOT / "etc/sudoers.d").is_dir() else []
+if not m_loop or not committed:
+    bad(f"10.9 could not extract the runner's 0440 re-mode loop (found={bool(m_loop)}) or list etc/sudoers.d ({len(committed)} files) (non-vacuity)")
+else:
+    named = set(m_loop.group(1).split())
+    missing_mode = [n for n in committed if n not in named]
+    if missing_mode:
+        bad(f"10.9 committed sudoers drop-ins the OTA never re-modes to 0440: {missing_mode}")
+    else:
+        ok(f"10.9 the OTA re-modes all {len(committed)} committed sudoers drop-ins to 0440 (sa02m-homekit included)")
 
 print("")
 if fails:

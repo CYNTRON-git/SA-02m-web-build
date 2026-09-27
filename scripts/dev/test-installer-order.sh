@@ -28,6 +28,10 @@
 # in install.sh with the bare `bash "$SCRIPT_DIR/scripts/01-system.sh"` —
 # case 4 goes RED.
 #
+# Case 5 (HomeKit): swap the 06-alice.sh and 06c-homekit.sh module blocks in
+# install.sh, or run it against an install.sh without the 06c module — 5a
+# goes RED.
+#
 # Run: bash scripts/dev/test-installer-order.sh   (bash + sed + grep)
 # ═══════════════════════════════════════════════════════════════════════════
 set -u
@@ -104,6 +108,14 @@ if [ "$calls" -ge 12 ]; then
 else
     bad "4b non-vacuity: only $calls sa02m_run_module call lines — the module list stopped going through the runner"
 fi
+
+echo "── 5. install.sh: the Alice package lands before the HomeKit bridge that imports it ──"
+# The bridge (opt/sa02m-homekit, scripts/06c-homekit.sh) imports the Alice
+# registry from /opt/sa02m-alice at start (docs/contracts/homekit-bridge.md §1)
+# — the same shared-dependency floor as cases 1-3, one level up: module order
+# in install.sh.
+order_pin install.sh "5a 06-alice.sh → 06c-homekit.sh" \
+    '^[[:space:]]*sa02m_run_module 06-alice\.sh' '^[[:space:]]*sa02m_run_module 06c-homekit\.sh'
 
 echo ""
 if [ "$fails" -eq 0 ]; then

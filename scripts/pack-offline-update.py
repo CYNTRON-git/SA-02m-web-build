@@ -598,6 +598,10 @@ def build_services_block(min_updater: str = MIN_UPDATER) -> dict[str, Any]:
         "sa02m-alice-client",
         "sa02m-alice-config",
         "sa02m-cloud-control",
+        # HomeKit bridge — optional, installed stopped (06c-homekit.sh
+        # `app off`), so only ever restarted when already running. Must
+        # stay in step with etc/sa02m-update-runner.sh.
+        "sa02m-homekit",
     ]
     services["restart_if_changed"] = {
         "sa02m-modbus-mqtt": "/opt/sa02m-modbus-mqtt/",

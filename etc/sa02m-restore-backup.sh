@@ -72,6 +72,8 @@ ALLOW = [
     re.compile(r"^/etc/sa02m-alice/sa02m-alice-(client|devices)\.conf$"),
     re.compile(r"^/etc/sa02m-alice-client\.conf$"),
     re.compile(r"^/etc/sa02m-alice-devices\.conf$"),
+    # HomeKit: the conf only — the pairing store is never in a backup (P4).
+    re.compile(r"^/etc/sa02m-homekit/sa02m-homekit\.conf$"),
     re.compile(r"^/etc/sa02m[^/]*\.conf$"),
     re.compile(r"^/etc/sa02m_[^/]*\.conf$"),
     re.compile(r"^/etc/sa02m-device-templates/"),
@@ -87,6 +89,8 @@ def allowed(p: str) -> bool:
 # boot anyway; created any other way the CGI cannot save the restored confs.
 DIR_SPEC = {
     "/etc/sa02m-alice": (0o770, "root", "www-data"),
+    # etc/tmpfiles.d/sa02m-homekit.conf (and scripts/06c-homekit.sh).
+    "/etc/sa02m-homekit": (0o770, "root", "www-data"),
 }
 
 class RestoreRefused(Exception):
@@ -362,6 +366,8 @@ if any(d.startswith(("/etc/sa02m-alice/", "/etc/sa02m-alice-")) for d in restore
             rc = 1
         else:
             print(f"restarted {unit} (restored Alice conf)")
+# No HomeKit restart: the bridge re-reads its conf every 2 s and applies
+# enabled/interface/port itself (docs/contracts/homekit-bridge.md §14).
 print("health: restore complete (no reboot)")
 sys.exit(rc)
 PY
