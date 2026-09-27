@@ -164,6 +164,10 @@ exposed to Alice.
 
 ## Engine v2
 
+Linked from the cloud's own contract («State operators», cloud commit `5e26fff`,
+cloud #125): renaming this heading or the «State operators» paragraph below
+breaks that link — tell the cloud session first.
+
 Non-blocking scheduler (heap of timers, cancel-by-key generations).
 `RUN_S=30` counts **execution** only — scheduler waits are excluded. For
 `type=code` it is a hard wall-clock deadline on the body itself
