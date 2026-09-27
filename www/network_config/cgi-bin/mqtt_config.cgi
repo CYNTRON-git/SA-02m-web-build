@@ -5,6 +5,11 @@
 # POST → принимает JSON, сохраняет YAML, опционально перезапускает мост
 
 CONFIG_FILE="/etc/sa02m-modbus-mqtt.yaml"
+# The bridge's transport validator (bridge_bus.py, stdlib-only) — the one home
+# of the Modbus TCP entry rules (docs/contracts/bridge-modbus-tcp.md). Server
+# env only: fcgiwrap passes a request nothing but HTTP_* variables. Handed to
+# python as argv, never interpolated into its source.
+BRIDGE_LIB_DIR="${SA02M_BRIDGE_LIB_DIR:-/opt/sa02m-modbus-mqtt}"
 
 echo "Content-type: application/json; charset=UTF-8"
 echo "Cache-Control: no-store"
@@ -20,22 +25,38 @@ if ! check_auth; then echo '{"error":"unauthorized"}'; exit 0; fi
 . "$(dirname "$0")/lib_web_json.sh"
 
 if [ "$REQUEST_METHOD" = "GET" ]; then
-    # Читаем YAML и конвертируем в JSON через Python
-    if [ ! -f "$CONFIG_FILE" ]; then
-        echo '{"devices":[],"mqtt":{"broker":"127.0.0.1","port":1883,"qos":1,"retain":true}}'
-        exit 0
-    fi
-    python3 - <<'PYEOF'
+    # Читаем YAML и конвертируем в JSON через Python. `capabilities` (what the
+    # add-device modal may offer over Modbus TCP) comes from the validator
+    # itself; without it the field is absent and the modal hides Ethernet.
+    python3 - "$BRIDGE_LIB_DIR" <<'PYEOF'
 import sys, json, yaml, pathlib
 cfg_path = pathlib.Path("/etc/sa02m-modbus-mqtt.yaml")
+
+
+def capabilities():
+    try:
+        sys.path.insert(0, sys.argv[1])
+        import bridge_bus
+        return bridge_bus.capabilities()
+    except Exception:
+        return None
+
+
 try:
-    with open(cfg_path) as f:
-        data = yaml.safe_load(f) or {}
-    # Remove comments-only keys, keep structure
-    out = {
-        "mqtt": data.get("mqtt", {}),
-        "devices": data.get("devices", []) or [],
-    }
+    if cfg_path.is_file():
+        with open(cfg_path) as f:
+            data = yaml.safe_load(f) or {}
+        # Remove comments-only keys, keep structure
+        out = {
+            "mqtt": data.get("mqtt", {}),
+            "devices": data.get("devices", []) or [],
+        }
+    else:
+        out = {"devices": [],
+               "mqtt": {"broker": "127.0.0.1", "port": 1883, "qos": 1, "retain": True}}
+    caps = capabilities()
+    if caps is not None:
+        out["capabilities"] = caps
     print(json.dumps(out))
 except Exception as e:
     print(json.dumps({"error": str(e), "devices": [], "mqtt": {}}))
@@ -61,15 +82,40 @@ if [ "$REQUEST_METHOD" = "POST" ]; then
         exit 0
     fi
 
-    RESULT=$(python3 - "$TMP_IN" "$TMP_OUT" <<'PYEOF'
+    RESULT=$(python3 - "$TMP_IN" "$TMP_OUT" "$BRIDGE_LIB_DIR" <<'PYEOF'
 import sys, json, yaml, pathlib
 try:
     with open(sys.argv[1]) as f:
         data = json.load(f)
     data.pop("restart", None)
+    # GET-computed, server-owned: a bundle that echoes its whole config back
+    # (every mqtt.js before 1.0.6.56) must not persist it into the YAML.
+    data.pop("capabilities", None)
     for dev in data.get("devices") or []:
         if isinstance(dev, dict):
             dev.pop("restart", None)
+    # Modbus TCP entries: refuse the WHOLE save on the first invalid one, with
+    # the bridge's own reason code, before anything is written. The bridge
+    # loader re-checks (the YAML is www-data-writable); this is the early,
+    # explainable refusal. RS-485-only bodies are never judged.
+    devices = data.get("devices") or []
+    try:
+        sys.path.insert(0, sys.argv[3])
+        import bridge_bus
+    except Exception:
+        bridge_bus = None
+    if bridge_bus is None:
+        # Fail closed: without the validator a TCP entry cannot be vouched for.
+        if any(isinstance(d, dict) and d.get("transport") not in (None, "rtu")
+               for d in devices):
+            print(json.dumps({"ok": False, "error": "transport_validator_unavailable"}))
+            sys.exit(0)
+    else:
+        refused = bridge_bus.validate_devices(devices)
+        if refused:
+            print(json.dumps({"ok": False, "error": "invalid_device",
+                              "id": refused[0]["id"], "reason": refused[0]["reason"]}))
+            sys.exit(0)
     tmp_path = pathlib.Path(sys.argv[2])
     with open(tmp_path, "w", encoding="utf-8") as f:
         f.write("# SA-02m Modbus\u2192MQTT bridge configuration\n")
