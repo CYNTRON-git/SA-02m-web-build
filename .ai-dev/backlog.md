@@ -472,11 +472,6 @@ commit's diff of this file).
   установкой (`03-webserver.sh`), www-only из чекаута с `etc/` + `opt/sa02m-devices/`
   (`update-www-only.sh` → `11-devices.sh`), офлайн-пакетом и образом — никогда GitHub-OTA; правка
   nginx, которая должна дойти до флота, едет одним из этих путей. Until decided, the texts say (b).
-- [OPEN] 2026-09-24 **[LOW] `docs/contracts/cloud-panel-proxy.md` carries a placeholder for the
-  cloud's commit.** The cloud fix (forward the `X-SA02M-` header family) is their PR #120 (cloud
-  0.18.4, branch adc9b2c — a branch hash, they squash). Replace «cloud commit: <to be filled after
-  the cloud merge>» with their `main` commit once they send it; the marker in the file is the only
-  reminder (transient-hygiene does not scan prose).
 - [OPEN] 2026-09-24 **[LOW] Two load-induced harness flakes.** (1) `test-web-update-apply-guard.sh`
   R1: the live-runner fixture was `sleep 30`; under quality-runner load section R reached it 44–50 s
   later → false RED. FIXED in 1.0.6.52 (`sleep 900`). (2) `test-web-auth.sh` case 59 «NOT locked
