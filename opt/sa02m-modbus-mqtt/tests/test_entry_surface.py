@@ -115,7 +115,7 @@ FROZEN_SURFACE = [
     "CONFIG_PATH", "sd_notify", "POLLER_CLASSES",
     "load_config", "watchdog_thread", "signal_handler",
     "ROSTER_PATH", "write_bridge_roster", "main",
-    "compose_pollers",
+    "compose_pollers", "make_port_scheduler",
 ]
 
 

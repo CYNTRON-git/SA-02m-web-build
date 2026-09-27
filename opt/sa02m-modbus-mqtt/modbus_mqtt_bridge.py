@@ -313,6 +313,23 @@ def compose_pollers(devices_cfg: list, pub: MQTTPublisher):
     return by_port, fmb_ports, refused
 
 
+def make_port_scheduler(port_key: str, pollers: list, fmb_ports: dict):
+    """`(PortCycleScheduler, thread name)` for one bus of compose_pollers().
+
+    RS-485: `port:baud`, the port's FMB manager, UART counters in the stats
+    line. Modbus TCP: one thread per endpoint named by its host:port, no FMB,
+    the client's TcpLineStats as the stats-line source (no /proc/tty line).
+    """
+    bus = pollers[0].bus
+    if bus.transport == bridge_bus.TRANSPORT_TCP:
+        return PortCycleScheduler(
+            bus.label, 0, pollers,
+            line_stats=pollers[0].get_port().stats), bus.label
+    port_path, baud_s = port_key.rsplit(":", 1)
+    return PortCycleScheduler(
+        port_path, int(baud_s), pollers, fmb=fmb_ports.get(port_key)), port_path
+
+
 def main() -> None:
     signal.signal(signal.SIGTERM, signal_handler)
     signal.signal(signal.SIGINT,  signal_handler)
@@ -337,17 +354,7 @@ def main() -> None:
 
     # One thread per port — EVENTS+POLLING interleaved (wb-mqtt-serial).
     for port_key, pollers in by_port.items():
-        bus = pollers[0].bus
-        if bus.transport == bridge_bus.TRANSPORT_TCP:
-            # One thread per endpoint, like a COM port; no FMB, no UART.
-            port_path = bus.label
-            sched = PortCycleScheduler(
-                port_path, 0, pollers,
-                line_stats=pollers[0].get_port().stats)
-        else:
-            port_path, baud_s = port_key.rsplit(":", 1)
-            sched = PortCycleScheduler(
-                port_path, int(baud_s), pollers, fmb=fmb_ports.get(port_key))
+        sched, port_path = make_port_scheduler(port_key, pollers, fmb_ports)
         _port_schedulers.append(sched)
         t = threading.Thread(target=sched.run, name=f"port-{port_path}",
                              daemon=True)

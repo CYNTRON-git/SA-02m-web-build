@@ -50,6 +50,7 @@ except ImportError:
     sys.modules["paho.mqtt.client"] = _paho_client
 
 import modbus_mqtt_bridge as bridge  # noqa: E402
+import bridge_device  # noqa: E402
 import bridge_serial  # noqa: E402
 import bridge_tcp  # noqa: E402
 import bridge_template  # noqa: E402
@@ -179,6 +180,82 @@ class TestCompose(_Isolated):
             client = p.get_port()
         self.assertIsInstance(client, bridge_tcp.ModbusTcpClient)
         self.assertEqual(client.label, "192.0.2.10:502")
+
+
+class TestPortScheduler(_Isolated):
+    """main()'s per-bus scheduler wiring (review 1.0.6.56 A2).
+
+    A TCP bus gets one PortCycleScheduler named by its host:port, no Fast
+    Modbus, and the client's TcpLineStats as the stats-line source — never a
+    UartCounterDelta (a TCP bus has no /proc/tty line). RS-485 is wired as
+    before.
+    """
+
+    def _compose(self, devices):
+        return bridge.compose_pollers(devices, self.pub)
+
+    def test_rtu_bus_is_wired_as_before(self):
+        by_bus, fmb, _r = self._compose([
+            {"id": "mr-COM1-5", "type": "mr02m", "port": "/dev/COM1",
+             "address": 5, "module_type": 1}])
+        key = "/dev/COM1:115200"
+        sched, name = bridge.make_port_scheduler(key, by_bus[key], fmb)
+        self.assertEqual(name, "/dev/COM1")
+        self.assertEqual((sched._port_path, sched._baudrate), ("/dev/COM1", 115200))
+        self.assertIs(sched._fmb, fmb[key])
+        self.assertIsNone(sched._line_stats)
+
+    def test_tcp_bus_gets_its_endpoint_name_no_fmb_and_the_client_stats(self):
+        by_bus, fmb, _r = self._compose([_tcp_template(fast_modbus=True)])
+        key = "tcp:192.0.2.10:502"
+        with mock.patch.object(bridge_serial, "get_port",
+                               side_effect=AssertionError("serial port opened")):
+            sched, name = bridge.make_port_scheduler(key, by_bus[key], fmb)
+        self.assertEqual(name, "192.0.2.10:502")
+        self.assertEqual((sched._port_path, sched._baudrate), ("192.0.2.10:502", 0))
+        self.assertIsNone(sched._fmb)
+        self.assertIs(sched._line_stats,
+                      bridge_tcp.get_tcp_client("192.0.2.10", 502).stats)
+
+    def test_tcp_scheduler_polls_over_the_socket_and_reports_tcp_stats(self):
+        srv = FakeMbapServer(_bank(), reply_delay_s=0.003)
+        self.addCleanup(srv.stop)
+        client = bridge_tcp.ModbusTcpClient("127.0.0.1", srv.port, timeout=0.5,
+                                            refuse_self=False)
+        self.addCleanup(client.close)
+        bridge_tcp._tcp_pool[("192.0.2.10", 502)] = client
+        by_bus, fmb, _r = self._compose([_tcp_template(poll_s=0)])
+        key = "tcp:192.0.2.10:502"
+        sched, name = bridge.make_port_scheduler(key, by_bus[key], fmb)
+
+        # The stats line is due every 60 s: shift the clock the scheduler reads
+        # once polling has started instead of waiting a minute.
+        offset = [0.0]
+        real = time.monotonic
+        clock = types.SimpleNamespace(monotonic=lambda: real() + offset[0],
+                                      sleep=time.sleep)
+        import threading
+        with mock.patch.object(bridge_device, "time", clock),                 mock.patch.object(bridge_serial, "UartCounterDelta",
+                                  side_effect=AssertionError("UART read on TCP")),                 mock.patch.object(bridge_serial, "get_port",
+                                  side_effect=AssertionError("serial port opened")),                 self.assertLogs("port." + name, level="INFO") as logs:
+            t = threading.Thread(target=sched.run, daemon=True)
+            t.start()
+            deadline = real() + 8
+            # Advance a minute at a time until the loop (which starts its own
+            # 60 s window only after setup and warm-up) prints the line.
+            while (not any("poll cycles" in ln for ln in logs.output)
+                   and real() < deadline):
+                time.sleep(0.2)
+                offset[0] += 61.0
+            sched.stop()
+            t.join(3)
+        values = {c.args[1]: c.args[2] for c in self.pub.pub_control.call_args_list}
+        self.assertEqual(values.get("supply_temp"), "-5.5")
+        stats = [ln for ln in logs.output if "poll cycles" in ln]
+        self.assertTrue(stats, logs.output)
+        self.assertRegex(stats[0], r"fmb=off tcp reconnects=\+\d+ timeouts=\+\d+$")
+        self.assertTrue(any("wb-style port cycle on 192.0.2.10:502" in ln
+                            for ln in logs.output), logs.output)
 
 
 class TestRoster(_Isolated):
