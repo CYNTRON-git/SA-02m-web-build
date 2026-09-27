@@ -90,7 +90,10 @@ install -m 0644 -o www-data -g www-data \
 # the MQTT bridge); a stopped gateway is left stopped (never force-started).
 sa02m_svc_capture "$SVC_NAME.service"
 log INFO "Устанавливаю systemd unit $SVC_NAME.service"
-install -m 0644 -o root -g root \
+# Atomic (tmp + fsync + rename-over): a 0-byte fragment is read as masked in
+# /lib/systemd/system too. The /lib location is historical and kept — moving
+# it would strand the old fragment and its enable symlink on upgraded boards.
+sa02m_atomic_install -m 0644 -o root -g root \
     "$ETC_DIR/sa02m-serial-gateway.service" \
     "/lib/systemd/system/$SVC_NAME.service"
 

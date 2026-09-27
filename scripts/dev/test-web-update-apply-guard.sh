@@ -58,8 +58,38 @@ ok()  { printf 'ok    %s\n' "$1"; }
 bad() { printf 'FAIL  %s\n' "$1"; fails=$((fails + 1)); }
 
 T=$(mktemp -d)
-trap 'rm -rf "$T"' EXIT
 BIN="$T/bin"; mkdir -p "$BIN"
+# Cleanup never removes the sudo shim while a detached reboot shell from
+# section R may still resolve `sudo`: reboot.cgi answers, then a nohup'd
+# `sh -c 'sleep 1; sync; sudo -n …reboot -f || …'` looks `sudo` up in PATH
+# seconds later. Deleting $BIN under it made that lookup land on the host's
+# real sudo — on a root / passwordless-sudo host (a dev container, a CI runner)
+# a forced reboot of the machine running the suite. Every spawned shell calls
+# the shim exactly once (it exits 0, so the `||` chain stops); cleanup waits
+# for that count and, if it never arrives, leaves $T in place — a leaked temp
+# dir, never a rebooted host.
+FIXTURE_PIDS=""
+REBOOT_SPAWNED=0
+reboot_count() { if [ -f "$T/reboot.calls" ]; then wc -l < "$T/reboot.calls" | tr -d ' '; else echo 0; fi; }
+# reboot_drained SECONDS → 0 once every spawned reboot shell has called the shim.
+reboot_drained() {
+  local i=0 lim=$(( $1 * 10 ))
+  while [ "$(reboot_count)" -lt "$REBOOT_SPAWNED" ]; do
+    [ "$i" -ge "$lim" ] && return 1
+    sleep 0.1; i=$((i + 1))
+  done
+  return 0
+}
+cleanup() {
+  # shellcheck disable=SC2086  # FIXTURE_PIDS is a word list of pids
+  [ -n "$FIXTURE_PIDS" ] && kill $FIXTURE_PIDS 2>/dev/null
+  if ! reboot_drained 30; then
+    echo "WARN  $((REBOOT_SPAWNED - $(reboot_count))) detached reboot shell(s) never reached the sudo shim — leaving $T in place so they cannot fall through to the host's real sudo" >&2
+    return
+  fi
+  rm -rf "$T"
+}
+trap cleanup EXIT
 STATE="$T/state"; mkdir -p "$STATE"
 export SA02M_WEB_BUILD_STATEDIR="$STATE"
 export SA02M_SESSION_DIR="$T/sessions"
@@ -123,6 +153,12 @@ expect_launch() {
   else
     bad "$label → sudo called: $(sudo_called && echo yes || echo no), code '${code:-none}' (want a launch) — body: ${body##*$'\n\n'}"
   fi
+  # The shim still holds the legacy lock ~0.2 s after the CGI's 1 s verdict; a
+  # next case starting inside that window reads a live launcher and answers
+  # «running» without launching (case 7 after the instant case 6 — an
+  # intermittent false RED). Wait for the lock to go (bounded) before moving on.
+  local i=0
+  while [ -f "$STATE/update.lock" ] && [ "$i" -lt 50 ]; do sleep 0.1; i=$((i + 1)); done
 }
 
 # ═══ 1. no check.json at all ═══════════════════════════════════════════════
@@ -218,7 +254,7 @@ LIVE_PID=$!
 # A live process that is NOT the runner: a reused pid must not read as alive.
 sleep 900 &
 OTHER_PID=$!
-trap 'kill "$LIVE_PID" "$OTHER_PID" 2>/dev/null; rm -rf "$T"' EXIT
+FIXTURE_PIDS="$LIVE_PID $OTHER_PID"
 sleep 0.3
 DEAD_PID=4194303   # 2^22-1: above every pid_max this project meets
 
@@ -300,18 +336,31 @@ expect_get "G6 verifying, 600 s old, dead pid, sa02m-update-verify.service activ
 # `reboot -f` with no look at the transaction. Now: applying / verifying /
 # committing / rolling_back AND a live runner → E_UPDATE_RUNNING, no sudo; a
 # STALE transaction (runner gone) stays rebootable — the reboot IS its recovery
-# path (recover → sa02m-update-verify at boot). The sudo chain of reboot.cgi
-# runs inside a nohup'd `sh -c` whose stdout is redirected into
-# /var/log/sa02m_install.log — absent on a dev host, so the shell never starts
-# it there and «sudo called» is observable only as an ABSENCE; the ok:true body
-# is the positive observable for the rebootable cases.
+# path (recover → sa02m-update-verify at boot).
+# reboot.cgi answers first, then spawns a nohup'd `sh -c 'sleep 1; sync; sudo -n
+# …reboot -f || …'` that outlives the CGI. The harness makes that child
+# deterministic and observable: SA02M_INSTALL_LOG points the CGI's log (the
+# child's stdout) into the sandbox, so the child starts on every host; a `sync`
+# shim returns at once (the real one waits on the host's whole dirty-page
+# flush — seconds under suite load — which is how a child used to fire after
+# the harness had deleted its sudo shim and reach the real sudo: a forced
+# reboot of a root host, observed 2026-09-27 on the dev container); the R sudo
+# shim records into its own ledger and exits 0, so each child calls it exactly
+# once. Rebootable cases then WAIT for that call (positive observable: the
+# reboot chain really ran, and stopped at its first sudo); refused cases assert
+# its absence; section end drains every child before H rewrites the shim.
 # RED, observed 2026-09-23 on the 1.0.6.50 reboot.cgi: R1 answers ok:true (it
-# refuses nothing); R2–R4 hold on both trees.
+# refuses nothing); R2–R4 hold on both trees. RED of the drain, observed
+# 2026-09-27 on the pre-drain harness under disk-write load with a logging
+# canary sudo last in PATH: the canary got 8 calls (-n /usr/sbin/reboot -f …
+# -n /usr/bin/systemctl reboot) — a child's lookup found no shim — and R4 / H1
+# / H2 / case 7 failed intermittently on stray child calls in sudo.calls.
 echo
 echo "── R. reboot.cgi vs a running update ──"
 REBOOT_CGI="$(dirname "$CGI")/reboot.cgi"
 [ -f "$REBOOT_CGI" ] || { bad "R reboot.cgi not found beside the CGI: $REBOOT_CGI"; }
 export SA02M_UPDATE_STATEDIR="$UPD"
+export SA02M_INSTALL_LOG="$T/install.log"
 cat > "$BIN/systemctl" <<'SHIM'
 #!/bin/bash
 case "${1:-}" in
@@ -320,37 +369,62 @@ case "${1:-}" in
 esac
 SHIM
 chmod +x "$BIN/systemctl"
+cat > "$BIN/sudo" <<SHIM
+#!/bin/bash
+printf '%s\n' "\$*" >> "$T/reboot.calls"
+exit 0
+SHIM
+chmod +x "$BIN/sudo"
+printf '#!/bin/sh\nexit 0\n' > "$BIN/sync"; chmod +x "$BIN/sync"
 run_reboot() {  # [csrf]
-  rm -f "$T/sudo.calls"
   printf '{}' | REQUEST_METHOD=POST CONTENT_LENGTH=2 QUERY_STRING='' \
     HTTP_COOKIE="session_token=$TOK" HTTP_X_SA02M_CSRF="${1:-$CSRF}" \
     bash "$REBOOT_CGI" 2>/dev/null | tr -d '\r'
 }
+# The CGI spawns its reboot shell exactly when it answers ok:true — count it
+# (in the main shell: run_reboot runs in a command substitution) so cleanup
+# knows how many shim calls to wait for.
+note_spawn() { case "$1" in *'"ok":true'*) REBOOT_SPAWNED=$((REBOOT_SPAWNED + 1)) ;; esac; }
+# expect_reboot LABEL BODY — ok:true AND, within 15 s, exactly one more shim
+# call naming a reboot path (chain stopped at its first sudo).
+expect_reboot() {
+  local label="$1" body="$2" last
+  # Matched in-shell, not `printf | grep -q` (quality-gate-rigor.md shape f).
+  if [[ "$body" != *'"ok":true'* ]]; then bad "$label → body: ${body##*$'\n\n'} (want ok:true)"; return; fi
+  if ! reboot_drained 15; then bad "$label → ok:true but the reboot shell never called sudo within 15 s (calls $(reboot_count), spawned $REBOOT_SPAWNED)"; return; fi
+  last=$(tail -n 1 "$T/reboot.calls")
+  if [ "$(reboot_count)" = "$REBOOT_SPAWNED" ] && [[ "$last" =~ ^-n\ (/sbin/reboot\ -f|/usr/local/sbin/sa02m-web-reboot\.sh)$ ]]; then
+    ok "$label → ok:true, reboot shell ran: sudo $last"
+  else
+    bad "$label → reboot ledger: $(reboot_count) call(s) for $REBOOT_SPAWNED spawn(s), last '$last' (want one '-n /sbin/reboot -f' or '-n /usr/local/sbin/sa02m-web-reboot.sh' per spawn)"
+  fi
+}
 # R1 live runner at applying → refused, no sudo
 write_txn applying "$(now_utc)"; printf '%s\n' "$LIVE_PID" > "$UPD/update.lock"
-body=$(run_reboot); sleep 1.5
-if printf '%s' "$body" | grep -q '"error_code":"E_UPDATE_RUNNING"' && printf '%s' "$body" | grep -q '"ok":false' && ! sudo_called; then
+before=$(reboot_count); body=$(run_reboot); note_spawn "$body"; sleep 1.5
+if [[ "$body" == *'"error_code":"E_UPDATE_RUNNING"'* && "$body" == *'"ok":false'* ]] && [ "$(reboot_count)" = "$before" ]; then
   ok "R1 live runner at applying → E_UPDATE_RUNNING, no reboot"
 else
-  bad "R1 live runner at applying → body: ${body##*$'\n\n'}, sudo called: $(sudo_called && echo yes || echo no) (want E_UPDATE_RUNNING, no sudo)"
+  bad "R1 live runner at applying → body: ${body##*$'\n\n'}, reboot calls $before → $(reboot_count) (want E_UPDATE_RUNNING, no sudo)"
 fi
 # R2 stale transaction (runner gone) → rebootable
 write_txn verifying "$OLD_TS"; printf '%s\n' "$DEAD_PID" > "$UPD/update.lock"
-body=$(run_reboot)
-printf '%s' "$body" | grep -q '"ok":true' && ok "R2 stale transaction (dead runner) → reboot allowed (the recovery path)" \
-  || bad "R2 stale transaction → body: ${body##*$'\n\n'} (want ok:true)"
+body=$(run_reboot); note_spawn "$body"
+expect_reboot "R2 stale transaction (dead runner) → reboot allowed (the recovery path)" "$body"
 # R3 terminal stage with a live pid in the lock → rebootable
 write_txn done "$(now_utc)"; printf '%s\n' "$LIVE_PID" > "$UPD/update.lock"
-body=$(run_reboot)
-printf '%s' "$body" | grep -q '"ok":true' && ok "R3 stage=done → reboot allowed" \
-  || bad "R3 stage=done → body: ${body##*$'\n\n'} (want ok:true)"
+body=$(run_reboot); note_spawn "$body"
+expect_reboot "R3 stage=done → reboot allowed" "$body"
 # R4 CSRF still first: wrong token → E_CSRF, no sudo, even with a live runner
 write_txn applying "$(now_utc)"
-body=$(run_reboot "wrong-token"); sleep 1.5
-if printf '%s' "$body" | grep -q '"error_code":"E_CSRF"' && ! sudo_called; then ok "R4 wrong CSRF → E_CSRF before the update guard, no reboot"
-else bad "R4 wrong CSRF → body: ${body##*$'\n\n'}, sudo called: $(sudo_called && echo yes || echo no)"; fi
-rm -f "$BIN/systemctl" "$UPD/transaction.json" "$UPD/update.lock"
-unset SA02M_UPDATE_STATEDIR
+before=$(reboot_count); body=$(run_reboot "wrong-token"); note_spawn "$body"; sleep 1.5
+if [[ "$body" == *'"error_code":"E_CSRF"'* ]] && [ "$(reboot_count)" = "$before" ]; then ok "R4 wrong CSRF → E_CSRF before the update guard, no reboot"
+else bad "R4 wrong CSRF → body: ${body##*$'\n\n'}, reboot calls $before → $(reboot_count)"; fi
+# Drain: no reboot shell may outlive R — H rewrites $BIN/sudo in place.
+if reboot_drained 15 && [ "$(reboot_count)" = "$REBOOT_SPAWNED" ]; then ok "R every reboot shell drained ($REBOOT_SPAWNED spawned, $REBOOT_SPAWNED shim calls)"
+else bad "R reboot shells not drained: $REBOOT_SPAWNED spawned, $(reboot_count) shim calls"; fi
+rm -f "$BIN/systemctl" "$BIN/sync" "$UPD/transaction.json" "$UPD/update.lock"
+unset SA02M_UPDATE_STATEDIR SA02M_INSTALL_LOG
 
 # ═══ H. POST verdict after the launch: the handoff race (1.0.6.53) ═══════════
 # Bench 1.135, 2026-09-23 20:30: «Применить» against a LOCAL git server answered
@@ -396,7 +470,7 @@ bash -c 'exec -a sa02m-web-update-apply sleep 60' &
 LAUNCHER_PID=$!
 sleep 60 &
 H_OTHER_PID=$!
-trap 'kill "$LIVE_PID" "$OTHER_PID" "$H_RUNNER_PID" "$LAUNCHER_PID" "$H_OTHER_PID" 2>/dev/null; rm -rf "$T"' EXIT
+FIXTURE_PIDS="$FIXTURE_PIDS $H_RUNNER_PID $LAUNCHER_PID $H_OTHER_PID"
 sleep 0.3
 # shim_handoff MODE — the sudo shim for H: records the call, then behaves like a
 # launcher that already handed off: `txn` leaves a fresh validating transaction

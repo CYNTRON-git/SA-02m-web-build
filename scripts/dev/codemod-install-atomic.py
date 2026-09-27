@@ -15,6 +15,23 @@ helper, which lands the file as tmp + fsync + rename-over (old-or-new, never a
 /opt payloads, variable targets) is left alone: those have their own guards or
 are re-read only at boot.
 
+Since 1.0.6.55 the sweep also sees three shapes it used to be blind to — each
+one shipped a raw unit write with this gate green (quality-gate-rigor.md (b)):
+  * vendor unit dirs /lib/systemd/system/ and /usr/lib/systemd/system/ are
+    live prefixes too — systemd reads a 0-byte fragment there as masked exactly
+    as it does under /etc (scripts/06-gateway.sh installed
+    sa02m-serial-gateway.service there with a raw `install -m`);
+  * a destination that starts with a file-level variable holding a literal
+    absolute path (`SYSTEMD_DIR="/etc/systemd/system"` … `"$SYSTEMD_DIR/"`) is
+    resolved before it is classified. Only a NAME=literal assignment made once
+    (or always to the same value) in the same file resolves; anything computed
+    (`${WEB_ROOT:-…}`, `$(…)`) stays unclassified, i.e. outside the sweep
+    (scripts/05-cloud-agent.sh wrote both cloud units and /usr/local/bin/frpc
+    through such variables);
+  * `cp` into a live path is a raw site too (the two cloud units above were
+    `cp`, not `install -m`). A `cp` site is REPORTED by --list/--check but never
+    rewritten: it carries no mode, so its conversion is a hand decision.
+
 Heredoc writes (`cat > /etc/systemd/system.conf.d/sa02m-timeouts.conf <<…`)
 into the same live prefixes are NOT `install -m` commands, so this sweep does
 not see them: the rule and its gate cover `install -m` sites only, and a
@@ -26,7 +43,7 @@ joined for classification; only the FIRST physical line is rewritten. Options
 already-rewritten line (`sa02m_atomic_install`) never matches again.
 
 Modes:
-  --list    print every in-scope site still on raw `install -m` (no write)
+  --list    print every in-scope site still on raw `install -m` or `cp` (no write)
   --check   exit 1 when any such site remains (the gate form; prints them)
   --all     with --list: also print the already-converted sites (non-vacuity
             evidence for the harness — the sweep sees files)
@@ -126,11 +143,21 @@ LIVE_PREFIXES = (
     "/usr/local/sbin/",
     "/usr/local/lib/",
     "/usr/local/libexec/",
+    "/lib/systemd/system/",
+    "/usr/lib/systemd/system/",
 )
 # `install` as a command word: line start or after a connector; never
 # `/usr/bin/install` nor `sa02m_atomic_install` (the \w and / look-behind).
 RAW_RE = re.compile(r"(?<![\w/.-])install\s+-m\s+")
 CONVERTED_RE = re.compile(r"(?<![\w/.-])sa02m_atomic_install\s+-m\s+")
+# `cp` as a command word, same look-behind (never `scp`, `/bin/cp`, `x_cp`).
+CP_RE = re.compile(r"(?<![\w/.-])cp\s+")
+# NAME="/literal/abs/path" (quotes optional, no expansion inside) — the only
+# assignment shape a destination variable is resolved from.
+ASSIGN_RE = re.compile(
+    r'^\s*(?:readonly\s+|export\s+|local\s+)?([A-Za-z_][A-Za-z0-9_]*)='
+    r'("?)(/[^"$`\s;]*)\2\s*(?:#.*)?$')
+VAR_RE = re.compile(r"^\$(?:\{([A-Za-z_][A-Za-z0-9_]*)\}|([A-Za-z_][A-Za-z0-9_]*))")
 # The command ends at an unquoted control/redirect token.
 END_TOKENS = ("&&", "||", ";", "|", ">", "2>", "<")
 
@@ -159,10 +186,42 @@ def destination(logical_after_install):
     for w in shell_words(logical_after_install):
         if w in END_TOKENS or w.startswith((">", "2>", "<")):
             break
+        # `… "$DST"; }` — a `;` glued to the last word ends the command too
+        # (a one-line function body: scripts/05-cloud-agent.sh _frpc_install_bin).
+        if w.endswith(";"):
+            args.append(w[:-1])
+            break
         args.append(w)
     if len(args) < 2:
         return None
     return args[-1].strip('"')
+
+
+def literal_vars(lines):
+    """{NAME: value} for names assigned a literal absolute path, unambiguously.
+
+    A name assigned two different values anywhere in the file is dropped — the
+    sweep would otherwise classify a destination by a value it may not hold.
+    """
+    seen = {}
+    for raw in lines:
+        if raw.lstrip().startswith("#"):
+            continue
+        m = ASSIGN_RE.match(raw.rstrip("\r\n"))
+        if m:
+            seen.setdefault(m.group(1), set()).add(m.group(3))
+    return {k: next(iter(v)) for k, v in seen.items() if len(v) == 1}
+
+
+def resolve(dst, env):
+    """Substitute a leading $NAME / ${NAME} from env; unchanged otherwise."""
+    m = VAR_RE.match(dst)
+    if not m:
+        return dst
+    name = m.group(1) or m.group(2)
+    if name not in env:
+        return dst
+    return env[name] + dst[m.end():]
 
 
 def logical_line(lines, i):
@@ -179,19 +238,30 @@ def scan(path):
     """Yield (lineno, kind, physical_line) for every in-scope site."""
     with open(path, newline="", encoding="utf-8") as f:
         lines = f.readlines()
+    env = literal_vars(lines)
     for i, raw in enumerate(lines):
         if raw.lstrip().startswith("#"):
             continue
         m_raw = RAW_RE.search(raw)
         m_conv = CONVERTED_RE.search(raw)
-        if not (m_raw or m_conv):
+        m_cp = CP_RE.search(raw)
+        if m_raw:
+            regex, kind = RAW_RE, "raw"
+        elif m_conv:
+            regex, kind = CONVERTED_RE, "converted"
+        elif m_cp:
+            regex, kind = CP_RE, "raw-cp"
+        else:
             continue
         text = logical_line(lines, i)
-        m = (RAW_RE if m_raw else CONVERTED_RE).search(text)
+        m = regex.search(text)
         dst = destination(text[m.end():])
-        if dst is None or not dst.startswith(LIVE_PREFIXES):
+        if dst is None:
             continue
-        yield i + 1, ("raw" if m_raw else "converted"), raw
+        dst = resolve(dst, env)
+        if not dst.startswith(LIVE_PREFIXES):
+            continue
+        yield i + 1, kind, raw
 
 
 def rewrite(path):
@@ -239,16 +309,16 @@ def main(argv):
                 print("%s:%d: rewritten" % (path, lineno))
             continue
         for lineno, kind, raw in scan(path):
-            if kind == "raw":
+            if kind in ("raw", "raw-cp"):
                 remaining += 1
                 print("%s:%d: %s" % (path, lineno, raw.rstrip("\r\n").strip()))
             elif show_all:
                 print("%s:%d: [converted] %s" % (path, lineno, raw.rstrip("\r\n").strip()))
     if mode == "check":
         if remaining:
-            print("codemod-install-atomic: %d live-path install -m site(s) still raw" % remaining)
+            print("codemod-install-atomic: %d live-path install -m / cp site(s) still raw" % remaining)
             return 1
-        print("codemod-install-atomic: ok — no raw live-path install -m site")
+        print("codemod-install-atomic: ok — no raw live-path install -m / cp site")
     return 0
 
 
