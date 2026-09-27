@@ -46,6 +46,11 @@ _WORDS_BY_FORMAT = {
     "u16": 1, "s16": 1,
     "u32": 2, "s32": 2, "float": 2,
 }
+# Raw range a single-register holding write may carry, per format. Writeback is
+# 16-bit only (32-bit writable channels are never subscribed), and a value
+# outside its format is refused, never masked: `& 0xFFFF` alone would turn an
+# s16 40000 into -25536 on the wire.
+_WRITE_RANGE_BY_FORMAT = {"u16": (0, 0xFFFF), "s16": (-0x8000, 0x7FFF)}
 _SUPPORTED_REG_TYPES = ("coil", "discrete", "input", "holding")
 _REGISTER_REG_TYPES = ("input", "holding")   # carry a numeric format
 _BIT_REG_TYPES = ("coil", "discrete")        # 1 bit, format ignored
@@ -415,10 +420,18 @@ class TemplatePoller(DevicePoller):
                 # Holding register: invert scale/offset back to a raw u16 word.
                 value = float(payload)
                 raw = int(round((value - ch.offset) / ch.scale)) if ch.scale else 0
+                lo, hi = _WRITE_RANGE_BY_FORMAT.get(ch.fmt, (1, 0))  # unknown → refuse
+                if not lo <= raw <= hi:
+                    # Same refusal path as a non-numeric payload: no bus
+                    # write, WARN, error "w", no echo.
+                    raise ValueError(
+                        f"value {payload} (raw {raw}) outside {ch.fmt} range "
+                        f"{lo}..{hi} — write refused")
                 raw &= 0xFFFF
                 self._wb_write_retry(
                     lambda: self.write_register(self.address, ch.address, raw))
                 self._wb_done(ch.name, self._format_value(ch, value))
         except Exception as e:
-            self.log.warning("template writeback %s: %s", ch.name, e)
+            self.log.warning("template writeback %s %s: %s",
+                             self.device_id, ch.name, e)
             self.pub.pub_error(self.device_id, ch.name, "w")

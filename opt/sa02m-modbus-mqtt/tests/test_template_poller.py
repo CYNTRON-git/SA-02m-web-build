@@ -378,5 +378,85 @@ class TestWriteback(unittest.TestCase):
             self.assertFalse([w for w in fake.writes if w[0] == "reg" and w[1] == 20])
 
 
+class TestWritebackRange(unittest.TestCase):
+    """A holding write whose raw value does not fit the channel's 16-bit
+    format is REFUSED — never masked into range. `raw & 0xFFFF` used to turn
+    s16 4000.0 x10 = 40000 into -25536 on the wire (the device then clamped to
+    its LOWER bound). Refusal follows the same path as a non-numeric payload:
+    no bus write, a WARN, `/meta/error` = "w", and no echo of the value."""
+
+    DEVICE_ID = "tmpl-COM5-30"
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.dir = Path(self.tmp.name)
+        _write_template(self.dir, "rng", {
+            "name": "rng",
+            "channels": [
+                {"name": "sp", "reg_type": "holding", "address": 190,
+                 "format": "s16", "scale": 0.1, "units": "°C",
+                 "readonly": False},
+                {"name": "cnt", "reg_type": "holding", "address": 100,
+                 "format": "u16", "readonly": False},
+            ],
+        })
+        self.p, self.pub = _poller("rng", self.dir)
+
+    def tearDown(self):
+        self.tmp.cleanup()
+
+    def _write(self, name, payload):
+        ch = next(c for c in self.p._channels if c.name == name)
+        fake = FakeSerial()
+        with mock.patch.object(self.p, "get_port", return_value=fake), \
+                mock.patch.object(bridge.DeviceLiveCache, "flush_file"):
+            self.p._writeback(ch, payload)
+        return fake
+
+    def _assert_refused(self, name, payload, range_text):
+        self.pub.reset_mock()   # an allowed write earlier in the test echoes
+        with self.assertLogs(f"dev.{self.DEVICE_ID}", level="WARNING") as cm:
+            fake = self._write(name, payload)
+        self.assertEqual(fake.writes, [], "refused value reached the bus")
+        echoes = [c for c in self.pub.pub_control.call_args_list
+                  if c.args[1] == name]
+        self.assertEqual(echoes, [], "refused value was echoed to MQTT")
+        self.pub.pub_error.assert_any_call(self.DEVICE_ID, name, "w")
+        warn = "\n".join(cm.output)
+        for token in (self.DEVICE_ID, name, payload, range_text):
+            self.assertIn(token, warn)
+
+    def test_s16_out_of_range_refused(self):
+        self._assert_refused("sp", "4000", "-32768..32767")
+
+    def test_s16_upper_boundary(self):
+        self.assertEqual(self._write("sp", "3276.7").writes,
+                         [("reg", 190, 32767)])
+        self._assert_refused("sp", "3276.8", "-32768..32767")
+
+    def test_s16_lower_boundary(self):
+        self.assertEqual(self._write("sp", "-3276.8").writes,
+                         [("reg", 190, 0x8000)])   # -32768 as a raw word
+        self._assert_refused("sp", "-3276.9", "-32768..32767")
+
+    def test_u16_range(self):
+        self.assertEqual(self._write("cnt", "65535").writes,
+                         [("reg", 100, 65535)])
+        self.assertEqual(self._write("cnt", "0").writes, [("reg", 100, 0)])
+        self._assert_refused("cnt", "-1", "0..65535")
+        self._assert_refused("cnt", "65536", "0..65535")
+
+    def test_non_numeric_payload_same_refusal_path(self):
+        # The idiom the range refusal matches: no write, WARN, error "w",
+        # no echo.
+        with self.assertLogs(f"dev.{self.DEVICE_ID}", level="WARNING") as cm:
+            fake = self._write("sp", "abc")
+        self.assertEqual(fake.writes, [])
+        self.assertFalse([c for c in self.pub.pub_control.call_args_list
+                          if c.args[1] == "sp"])
+        self.pub.pub_error.assert_any_call(self.DEVICE_ID, "sp", "w")
+        self.assertIn("sp", "\n".join(cm.output))
+
+
 if __name__ == "__main__":
     unittest.main()
