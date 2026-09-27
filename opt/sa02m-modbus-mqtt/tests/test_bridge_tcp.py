@@ -429,6 +429,31 @@ class TestSilentUnit(unittest.TestCase):
                         logs.output)
         self.assertEqual(c._unit_retry_left(1), 0.0)
 
+    def test_an_answer_clears_the_units_silence_state(self):
+        """Review round 2, N1: the recovery must FORGET the silent spell.
+
+        Mutation M4 (`self._units.pop(unit, None)` -> `.get(unit)`) survived
+        every case above: the recovery INFO still fired once. What it breaks
+        is the aftermath — a remembered streak re-announces every answer and
+        puts the unit straight back into its window on the next single
+        timeout, as if it had never answered.
+        """
+        srv = self._server()
+        c = _client(srv, timeout=0.2)
+        self.addCleanup(c.close)
+        self._pass(c, unit=1)                        # 3 timeouts -> window
+        srv.mute_units = set()
+        time.sleep(c._unit_retry_left(1) + 0.05)
+        self.assertEqual(c.read_holding_registers(1, 0, 1), [7])   # recovery
+        with self.assertNoLogs(c._log.name, level="INFO"):
+            self.assertEqual(c.read_holding_registers(1, 0, 1), [7])
+        srv.mute_units = {1}
+        with self.assertRaisesRegex(IOError, "timeout"):
+            c.read_holding_registers(1, 0, 1)        # ONE fresh timeout
+        self.assertEqual(c._unit_retry_left(1), 0.0)
+        srv.mute_units = set()
+        self.assertEqual(c.read_holding_registers(1, 0, 1), [7])  # not windowed
+
     def test_a_timeout_is_still_never_resent(self):
         srv = self._server()
         c = _client(srv, timeout=0.2)

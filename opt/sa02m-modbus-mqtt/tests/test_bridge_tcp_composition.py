@@ -14,6 +14,7 @@ from __future__ import annotations
 import json
 import sys
 import tempfile
+import threading
 import time
 import types
 import unittest
@@ -234,10 +235,12 @@ class TestPortScheduler(_Isolated):
         real = time.monotonic
         clock = types.SimpleNamespace(monotonic=lambda: real() + offset[0],
                                       sleep=time.sleep)
-        import threading
-        with mock.patch.object(bridge_device, "time", clock),                 mock.patch.object(bridge_serial, "UartCounterDelta",
-                                  side_effect=AssertionError("UART read on TCP")),                 mock.patch.object(bridge_serial, "get_port",
-                                  side_effect=AssertionError("serial port opened")),                 self.assertLogs("port." + name, level="INFO") as logs:
+        with mock.patch.object(bridge_device, "time", clock), \
+                mock.patch.object(bridge_serial, "UartCounterDelta",
+                                  side_effect=AssertionError("UART read on TCP")), \
+                mock.patch.object(bridge_serial, "get_port",
+                                  side_effect=AssertionError("serial port opened")), \
+                self.assertLogs("port." + name, level="INFO") as logs:
             t = threading.Thread(target=sched.run, daemon=True)
             t.start()
             deadline = real() + 8
