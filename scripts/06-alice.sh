@@ -76,11 +76,34 @@ for f in sa02m-alice-client.conf sa02m-alice-devices.conf sa02m-alice-server.con
 done
 # www-data reads AND writes client/devices confs directly (CGI atomic write —
 # hence the 0770 dir above); server.conf stays 0640 root:www-data read-only.
-chmod 0640 /etc/sa02m-alice/*.conf 2>/dev/null || true
-chgrp www-data /etc/sa02m-alice /etc/sa02m-alice/*.conf 2>/dev/null || true
-# Allow www-data to update devices/client via API running as www-data in CGI
-chmod 0660 /etc/sa02m-alice/sa02m-alice-client.conf \
-           /etc/sa02m-alice/sa02m-alice-devices.conf 2>/dev/null || true
+# That same 0770 lets www-data plant any name here, and chmod/chgrp follow a
+# symlink: a planted `sa02m-alice-client.conf -> /etc/sudoers.d/x` would get
+# group www-data + 0660 (root escalation). So root touches only a regular,
+# singly-linked file, through an O_NOFOLLOW fd; anything else is reported on
+# stderr and left alone. Pinned by the quality row `alice-conf-homes` (case 9).
+chgrp www-data /etc/sa02m-alice 2>/dev/null || true
+python3 - /etc/sa02m-alice www-data <<'PY' || true
+import grp, os, stat, sys
+conf_dir, group = sys.argv[1], sys.argv[2]
+gid = grp.getgrnam(group).gr_gid
+RW = ("sa02m-alice-client.conf", "sa02m-alice-devices.conf")
+dfd = os.open(conf_dir, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
+for name in sorted(os.listdir(dfd)):
+    if not name.endswith(".conf"):
+        continue
+    fd = None
+    try:
+        fd = os.open(name, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK | os.O_CLOEXEC, dir_fd=dfd)
+        st = os.fstat(fd)
+        if not stat.S_ISREG(st.st_mode) or st.st_nlink != 1: raise OSError(f"{stat.filemode(st.st_mode)}, {st.st_nlink} link(s)")
+        os.fchown(fd, -1, gid)
+        os.fchmod(fd, 0o660 if name in RW else 0o640)
+    except OSError as e:
+        print(f"WARN: {conf_dir}/{name}: not a regular singly-linked file ({e}) — mode/group left alone", file=sys.stderr)
+    finally:
+        if fd is not None:
+            os.close(fd)
+PY
 
 # ── systemd ────────────────────────────────────────────────────────────────
 # Capture prior state BEFORE (re)installing the units — the only reliable

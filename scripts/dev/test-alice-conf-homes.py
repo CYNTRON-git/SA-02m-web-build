@@ -1,0 +1,855 @@
+#!/usr/bin/env python3
+"""test-alice-conf-homes.py — every preserve / backup / restore list names the
+LIVE Alice conf layout. Quality row `alice-conf-homes`.
+
+Why it exists: the Alice confs live in /etc/sa02m-alice/ (code home
+opt/sa02m-alice/sa02m_alice/common/constants.py ETC_DIR, created by
+etc/tmpfiles.d/sa02m-alice.conf, filled by scripts/06-alice.sh), but every list
+outside the package still named the older flat layout
+(/etc/sa02m-alice-client.conf, /etc/sa02m-alice-devices.conf):
+
+  * the OTA never-deploy guards — etc/sa02m-update-runner.sh PRESERVE_PATHS
+    (bash, documentation-only: SC2034) and its bootstrap PRESERVE_PREFIXES
+    (enforced), opt/sa02m-update/lib/validate_package.py PRESERVE_PATHS
+    (enforced), scripts/offline-update-deploy-map.json never_deploy — guarded a
+    layout no current board has. Latent: DST_RE does not admit /etc/sa02m-alice/
+    either, so the guard was the second line, not the only one;
+  * the user backup (etc/sa02m-web-backup.sh) silently left the live Alice
+    rooms/devices/client confs out of every downloaded archive — the policy in
+    docs/ALICE_INTEGRATION.md says «включить conf»;
+  * the SSH restore (etc/sa02m-restore-backup.sh) would have rejected a fixed
+    backup AS A WHOLE («path not allowlisted»), and chowned every restored file
+    root:root, which locks the CGI (www-data) out of root:www-data files —
+    /etc/sa02m_web.env today, the Alice confs as soon as they are restored.
+
+The flat names stay in every list (the older layout; factory reset still
+handles both — etc/sa02m-factory-reset-runner.sh), and this row asserts that
+too, so a later cleanup cannot silently drop an old board's coverage.
+
+Method — behavioural where the code can be run, never a grep for a string:
+  0. the live layout is READ from its code home (constants imported in a clean
+     env) and cross-checked against tmpfiles and the installer (non-vacuity);
+  1. validate_package.path_is_preserved() is imported and called;
+  2. the runner's bootstrap tuple AND its shipped predicate line are extracted
+     from the heredoc and evaluated;
+  3. the runner's bash array is expanded by bash itself (set -f);
+  4. the deploy map's never_deploy is loaded as JSON;
+  5. the SHIPPED collect_paths() of the backup is extracted, retargeted at a
+     seeded sandbox root and run; 5e runs the WHOLE backup script the same way
+     (its conf dir 0770 like the board's): the installer's root-made nginx
+     link is archived through to its target, while a symlink, a FIFO or a hard
+     link planted at a live Alice conf, and a symlinked conf directory (or any
+     directory) in a parent others can write, are skipped with a WARN, the
+     backup exits 0, and a planted victim's bytes are nowhere in the stream;
+  6. the restore's ALLOW list + allowed() are extracted and exec'd, and every
+     path the backup of step 5 emits must pass it (backup/restore agreement);
+  7. 7t: the backup and the restore carry one trusted-path resolver (follow a
+     symlink or descend a directory only where nobody but root could have made
+     or replaced it) as byte-identical twins. The restore's atomic_install()
+     and its helpers are extracted and run: an existing file keeps its owner, a
+     new one takes root + its directory's group (7a/7b); a symlink planted at
+     the temp name (the exact `<dest>.tmp.<pid>` the first owner-keeping
+     version used, plus neighbours) is never followed, and a symlinked dest, a
+     non-regular dest and a symlinked parent in a directory others can write
+     are refused, each leaving a victim byte- and mode-identical (7c-7g). A
+     missing conf dir is created with the tmpfiles owner/mode (7h; 7s
+     cross-checks that spec against tmpfiles and the installer). Only 7a/7b/7h
+     observe an owner and need root; a non-root host reports them as SKIP,
+     never a pass, and runs everything else — CI runs this row non-root;
+  8. the WHOLE restore script runs end to end with /etc/ retargeted into a
+     sandbox and systemctl/nginx shimmed: a planted symlinked dest fails
+     --apply in the preflight with nothing written (not even the archive's
+     other files); a clean --apply restarts only the ACTIVE Alice units; a
+     restore without Alice confs touches none; the installer's root-made
+     /etc/nginx/sites-enabled link validates and is written through (8d);
+  9. the installer's conf mode/group block (scripts/06-alice.sh, between the
+     conf-install loop and the systemd block) runs with the dir retargeted and
+     www-data replaced by the invoking group: regular confs get their modes; a
+     planted symlink or hard link is reported and its target left unchanged.
+Negative controls: /opt/sa02m-alice/… (the code tree OTA DOES deploy) must not
+be preserved by any guard; /etc/shadow must not pass the restore.
+
+RED observed 2026-09-27 on 9c4355d (1.0.6.54): 1–6 FAIL for both live confs in
+every home, 7a FAIL (owner 0:0 instead of 1234:4321), 7b FAIL (gid 0 instead of
+4242). The symlink cases RED on the first owner-keeping restore (review B1):
+7c victim 0600 0:0 → 0660 1234:4321 with the archive's bytes, 7d/7e/7f not
+refused (7f wrote through the parent), 7s/7h no directory spec, 8a rc=0 with
+the victim rewritten, 8b no Alice restart — 9 FAIL. Review round 2, on the
+pre-round-2 tree: 5e2/5e4/5e5 streamed the planted victim's bytes in the
+archive, 5e3 dropped the FIFO silently (no WARN), 8d refused the nginx link in
+--dry-run and --apply (every board's own backup unrestorable), 9b/9c chmod'd
+the victim 0600 → 0660. Mutation cases in comment-mutation-proof, each RED in
+a non-root run: the validator entry (1), the runner bootstrap entry (2), the
+restore ALLOW entry (6, 8a/8b), the restore's refusal line (7d/7e/7f), its
+DIR_SPEC entry (7s), the resolver's symlink rule in each twin (5e2/5e5 resp.
+7d/7f/8a, plus 7t), the backup's directory rule (5e5), regular-file rule
+(5e3) and hard-link rule (5e4), and the installer's regular-file rule (9c).
+The backup list is not cased: its entries sit inside a backslash-continued
+`for p in \\` list, where a `#` breaks the syntax of the whole loop — a RED for
+the wrong reason.
+
+Run: python3 scripts/dev/test-alice-conf-homes.py   (python3 + bash)
+"""
+from __future__ import annotations
+
+import ast
+import json
+import os
+import re
+import shutil
+import subprocess
+import sys
+import tempfile
+from pathlib import Path
+
+ROOT = Path(__file__).resolve().parents[2]
+RUNNER = ROOT / "etc/sa02m-update-runner.sh"
+VALIDATOR_DIR = ROOT / "opt/sa02m-update"
+DEPLOY_MAP = ROOT / "scripts/offline-update-deploy-map.json"
+BACKUP = ROOT / "etc/sa02m-web-backup.sh"
+RESTORE = ROOT / "etc/sa02m-restore-backup.sh"
+ALICE_PKG = ROOT / "opt/sa02m-alice"
+TMPFILES = ROOT / "etc/tmpfiles.d/sa02m-alice.conf"
+INSTALLER = ROOT / "scripts/06-alice.sh"
+
+LEGACY = ["/etc/sa02m-alice-client.conf", "/etc/sa02m-alice-devices.conf"]
+CODE_TREE = "/opt/sa02m-alice/sa02m_alice/client/main.py"
+
+fails = 0
+
+
+def ok(msg: str) -> None:
+    print("ok    " + msg)
+
+
+def bad(msg: str) -> None:
+    global fails
+    fails += 1
+    print("FAIL  " + msg)
+
+
+def skip(msg: str) -> None:
+    print("SKIP  " + msg)
+
+
+def read(p: Path) -> str:
+    try:
+        return p.read_text(encoding="utf-8")
+    except OSError as e:
+        bad(f"cannot read {p.relative_to(ROOT)}: {e}")
+        return ""
+
+
+def generic_hit(dst: str, rule: str) -> bool:
+    """The never-deploy rule semantics of validate_package.path_is_preserved:
+    a trailing-slash rule is a directory prefix, one `*` a same-depth glob,
+    anything else an exact path. Used only for the two homes that ship no
+    predicate of their own (the bash array and the JSON map)."""
+    if rule.endswith("/"):
+        return dst == rule.rstrip("/") or dst.startswith(rule)
+    if "*" in rule:
+        pre, _, suf = rule.partition("*")
+        return dst.startswith(pre) and dst.endswith(suf) and dst.count("/") == rule.count("/")
+    return dst == rule
+
+
+# ── 0. the live layout, from its code home ─────────────────────────────────
+print("── 0. live Alice conf layout (sa02m_alice.common.constants) ──")
+env = {k: v for k, v in os.environ.items() if k != "SA02M_ALICE_ETC"}
+env["PYTHONPATH"] = str(ALICE_PKG)
+r = subprocess.run(
+    [sys.executable, "-c",
+     "from sa02m_alice.common import constants as C;"
+     "print(C.ETC_DIR); print(C.CLIENT_CONF); print(C.DEVICES_CONF)"],
+    env=env, capture_output=True, text=True, timeout=30,
+)
+lines = r.stdout.split()
+if r.returncode != 0 or len(lines) != 3:
+    bad(f"0 could not read the live layout from constants (rc={r.returncode}): {r.stderr.strip()[:200]}")
+    print(f"alice-conf-homes: {fails} FAILURE(S)")
+    sys.exit(1)
+ETC_DIR, CLIENT, DEVICES = lines
+LIVE = [CLIENT, DEVICES]
+if ETC_DIR.startswith("/etc/") and all(p.startswith(ETC_DIR.rstrip("/") + "/") for p in LIVE):
+    ok(f"0a live confs {CLIENT}, {DEVICES} (ETC_DIR={ETC_DIR})")
+else:
+    bad(f"0a live layout is not an /etc directory holding both confs: {lines}")
+tmp_txt = read(TMPFILES)
+if re.search(r"^d\s+" + re.escape(ETC_DIR) + r"\s", tmp_txt, re.M):
+    ok(f"0b tmpfiles creates {ETC_DIR}")
+else:
+    bad(f"0b {TMPFILES.relative_to(ROOT)} has no `d {ETC_DIR}` line — the layout the lists must name moved")
+inst = [l for l in read(INSTALLER).splitlines() if not l.lstrip().startswith("#")]
+if any(f'"{ETC_DIR}/$f"' in l and "install -m" in l for l in inst):
+    ok(f"0c scripts/06-alice.sh installs the confs into {ETC_DIR}/")
+else:
+    bad(f"0c scripts/06-alice.sh no longer installs the confs into {ETC_DIR}/ — the layout the lists must name moved")
+
+WANT = LIVE + LEGACY
+
+# ── 1. validate_package.path_is_preserved ─────────────────────────────────
+print("── 1. OTA validator (opt/sa02m-update/lib/validate_package.py) ──")
+sys.path.insert(0, str(VALIDATOR_DIR))
+try:
+    from lib import validate_package as vp  # noqa: E402
+except Exception as e:  # pragma: no cover - reported, not raised
+    bad(f"1 cannot import validate_package: {e}")
+    vp = None
+if vp is not None:
+    for p in WANT:
+        (ok if vp.path_is_preserved(p) else bad)(f"1 path_is_preserved({p})")
+    if vp.path_is_preserved(CODE_TREE):
+        bad(f"1 negative control: the code tree {CODE_TREE} is preserved — OTA could no longer deploy the Alice package")
+    else:
+        ok("1 negative control: the Alice code tree stays deployable")
+
+# ── 2. runner bootstrap PRESERVE_PREFIXES + its shipped predicate ─────────
+print("── 2. runner bootstrap guard (etc/sa02m-update-runner.sh PRESERVE_PREFIXES) ──")
+rtxt = read(RUNNER)
+m_tuple = re.search(r"^PRESERVE_PREFIXES = (\(.*?^\))", rtxt, re.S | re.M)
+m_pred = re.search(r"^    for p in PRESERVE_PREFIXES:\n\s+if (.+):\s*$", rtxt, re.M)
+if not (m_tuple and m_pred):
+    bad("2 could not extract PRESERVE_PREFIXES and its predicate from the runner (non-vacuity)")
+else:
+    prefixes = ast.literal_eval(m_tuple.group(1))
+    pred = compile(m_pred.group(1), "runner-predicate", "eval")
+    hit = lambda dst: any(eval(pred, {}, {"dst": dst, "p": p}) for p in prefixes)  # noqa: E731
+    for p in WANT:
+        (ok if hit(p) else bad)(f"2 runner bootstrap refuses a deploy onto {p}")
+    (bad if hit(CODE_TREE) else ok)("2 negative control: the Alice code tree stays deployable")
+
+# ── 3. runner bash PRESERVE_PATHS (documentation-only array) ──────────────
+print("── 3. runner bash PRESERVE_PATHS ──")
+m_arr = re.search(r"^PRESERVE_PATHS=\(\n(.*?)^\)", rtxt, re.S | re.M)
+if not m_arr:
+    bad("3 could not extract the PRESERVE_PATHS array (non-vacuity)")
+else:
+    script = "set -f\nPRESERVE_PATHS=(\n" + m_arr.group(1) + ")\nprintf '%s\\n' \"${PRESERVE_PATHS[@]}\"\n"
+    rb = subprocess.run(["bash", "-c", script], capture_output=True, text=True, timeout=30)
+    arr = [l for l in rb.stdout.splitlines() if l]
+    if rb.returncode != 0 or len(arr) < 5:
+        bad(f"3 bash could not expand the array (rc={rb.returncode}, {len(arr)} entries)")
+    else:
+        for p in WANT:
+            (ok if any(generic_hit(p, r) for r in arr) else bad)(f"3 PRESERVE_PATHS covers {p}")
+        (bad if any(generic_hit(CODE_TREE, r) for r in arr) else ok)(
+            "3 negative control: the Alice code tree is not in PRESERVE_PATHS")
+
+# ── 4. deploy map never_deploy ────────────────────────────────────────────
+print("── 4. scripts/offline-update-deploy-map.json never_deploy ──")
+try:
+    nd = json.loads(read(DEPLOY_MAP) or "{}").get("never_deploy") or []
+except ValueError as e:
+    nd = []
+    bad(f"4 deploy map is not JSON: {e}")
+if len(nd) < 5:
+    bad(f"4 never_deploy has {len(nd)} entries — the list was not found (non-vacuity)")
+else:
+    for p in WANT:
+        (ok if any(generic_hit(p, r) for r in nd) else bad)(f"4 never_deploy covers {p}")
+    (bad if any(generic_hit(CODE_TREE, r) for r in nd) else ok)(
+        "4 negative control: the Alice code tree is not in never_deploy")
+
+# ── 5. the shipped backup collect_paths(), on a seeded sandbox ────────────
+print("── 5. user backup (etc/sa02m-web-backup.sh collect_paths) ──")
+emitted: list[str] = []
+btxt = read(BACKUP)
+m_fn = re.search(r"^collect_paths\(\) \{\n.*?^\}\n", btxt, re.S | re.M)
+if not m_fn:
+    bad("5 could not extract collect_paths() from the backup script (non-vacuity)")
+else:
+    fn, n_sub = re.subn(r"(?<=\s)/etc/", '"$SANDBOX"/etc/', m_fn.group(0))
+    with tempfile.TemporaryDirectory() as sb:
+        seed = [ETC_DIR + "/sa02m-alice-client.conf", ETC_DIR + "/sa02m-alice-devices.conf",
+                ETC_DIR + "/sa02m-alice-server.conf", *LEGACY, "/etc/sa02m_web.env"]
+        for p in seed:
+            f = Path(sb + p)
+            f.parent.mkdir(parents=True, exist_ok=True)
+            f.write_text("x\n", encoding="utf-8")
+        rb = subprocess.run(["bash", "-c", fn + "\ncollect_paths\n"], capture_output=True, text=True,
+                            timeout=30, env={**os.environ, "SANDBOX": sb})
+        out = [l for l in rb.stdout.splitlines() if l]
+    foreign = [l for l in out if not l.startswith(sb)]
+    if rb.returncode != 0 or n_sub < 5 or not out or foreign:
+        bad(f"5 retargeted collect_paths did not run cleanly (rc={rb.returncode}, {n_sub} paths retargeted, "
+            f"{len(out)} emitted, {len(foreign)} outside the sandbox): {rb.stderr.strip()[:200]}")
+    else:
+        emitted = [l[len(sb):] for l in out]
+        for p in WANT:
+            (ok if p in emitted else bad)(f"5 the backup archives {p}")
+
+# ── 5e. the WHOLE backup script, end to end: what www-data can plant ───────
+# The backup runs as root (sudo from web_backup.cgi) and streams the archive
+# to the panel, and /etc/sa02m-alice is root:www-data 0770 — so www-data (any
+# panel session: cmd_exec.cgi) can put any name where the backup reads. Each
+# case plants what www-data could plant at a www-data-writable source, runs the
+# SHIPPED script with /etc/ retargeted into a sandbox, and asserts the victim's
+# bytes are nowhere in the stream. The sandbox's conf dir is 0770 like the real
+# one: the backup trusts a name only where no one but root (here: the invoking
+# user) can create it, which is what separates a plant from the installer's own
+# /etc/nginx/sites-enabled link (5e1 — that one must still be archived).
+print("── 5e. user backup end to end (sandboxed, planted sources) ──")
+if not (shutil.which("bash") and shutil.which("tar")):
+    skip("5e needs bash + tar — not run on this host (a skip is not a pass)")
+else:
+    import gzip  # noqa: E402
+    import io  # noqa: E402
+    import tarfile  # noqa: E402
+
+    SECRET = b"root:$6$planted-victim-secret:19000:0:99999:7:::\n"
+    MARK = b"planted-victim-secret"
+
+    def seed_backup(sb: Path) -> dict:
+        etc = sb / "etc"
+        (etc / "nginx/sites-available").mkdir(parents=True)
+        (etc / "nginx/sites-enabled").mkdir(parents=True)
+        (etc / "sa02m_web.env").write_bytes(b"env\n")
+        (etc / "nginx/sites-available/network_config").write_bytes(b"server {}\n")
+        (etc / "nginx/sites-enabled/000-sa02m-network_config").symlink_to("../sites-available/network_config")
+        adir = etc / "sa02m-alice"
+        adir.mkdir()
+        adir.chmod(0o770)
+        (adir / "sa02m-alice-client.conf").write_bytes(b"client\n")
+        (adir / "sa02m-alice-devices.conf").write_bytes(b"devices\n")
+        vdir = sb / "secret"
+        vdir.mkdir(mode=0o700)
+        victim = vdir / "shadow"
+        victim.write_bytes(SECRET)
+        victim.chmod(0o600)
+        return {"etc": etc, "adir": adir, "victim": victim, "vdir": vdir}
+
+    def run_backup(sb: Path):
+        """Run the retargeted SHIPPED backup. Returns (rc, stderr, {source path:
+        archived bytes} from the manifest, decompressed stream, #retargets)."""
+        body = btxt.replace("/etc/", f"{sb}/etc/")
+        script = sb / "backup.sh"
+        script.write_text(body, encoding="utf-8")
+        env = {**os.environ, "SA02M_WEB_VERSION_FILE": str(sb / "no-version"),
+               "SA02M_DEVICE_ID_FILE": str(sb / "no-machine-id")}
+        try:
+            r = subprocess.run(["bash", str(script)], capture_output=True, timeout=60, env=env)
+        except subprocess.TimeoutExpired:
+            return 124, "timed out after 60 s (a FIFO opened blocking?)", {}, b"", 0
+        files, raw = {}, b""
+        if r.returncode == 0:
+            raw = gzip.decompress(r.stdout)
+            with tarfile.open(fileobj=io.BytesIO(r.stdout), mode="r:gz") as tf:
+                man = json.loads(tf.extractfile("backup-manifest.json").read())
+                for ent in man.get("paths", []):
+                    files[ent["path"][len(str(sb)):]] = tf.extractfile(ent["archive_path"]).read()
+        return r.returncode, r.stderr.decode("utf-8", "replace"), files, raw, body.count(f"{sb}/etc/")
+
+    A_CLIENT, A_DEVICES = ETC_DIR + "/sa02m-alice-client.conf", ETC_DIR + "/sa02m-alice-devices.conf"
+    NGINX = "/etc/nginx/sites-enabled/000-sa02m-network_config"
+
+    def backup_case(tag: str, what: str, plant, expect_absent: list, expect_kept: dict, warn_for: list):
+        with tempfile.TemporaryDirectory() as tsb:
+            sb = Path(tsb)
+            env_ = seed_backup(sb)
+            plant(env_)
+            rc, err, files, raw, n_sub = run_backup(sb)
+        problems = []
+        if n_sub < 5:
+            problems.append(f"retarget touched only {n_sub} /etc/ paths (non-vacuity)")
+        if rc != 0:
+            problems.append(f"rc={rc} ({err.strip()[-200:]!r}) — a refused optional entry must not abort the backup")
+        if MARK in raw:
+            problems.append("the victim's bytes ARE in the archive")
+        problems += [f"{p} archived" for p in expect_absent if p in files]
+        problems += [f"{p} missing or wrong bytes ({files.get(p)!r})" for p, b in expect_kept.items() if files.get(p) != b]
+        problems += [f"no WARN naming {p}" for p in warn_for if p not in err]
+        (bad if problems else ok)(f"{tag} {what}" + (": " + "; ".join(problems) if problems else ""))
+
+    kept_all = {"/etc/sa02m_web.env": b"env\n", A_CLIENT: b"client\n", A_DEVICES: b"devices\n", NGINX: b"server {}\n"}
+    backup_case("5e1", "clean board: every home archived, the installer's root-made nginx link through to its target",
+                lambda e: None, [], kept_all, [])
+
+    def plant_symlink(e):
+        (e["adir"] / "sa02m-alice-client.conf").unlink()
+        (e["adir"] / "sa02m-alice-client.conf").symlink_to(e["victim"])
+    backup_case("5e2", "a symlink planted at the live client conf is skipped with a WARN; the victim never reaches the archive",
+                plant_symlink, [A_CLIENT], {k: v for k, v in kept_all.items() if k != A_CLIENT}, [A_CLIENT])
+
+    def plant_fifo(e):
+        (e["adir"] / "sa02m-alice-devices.conf").unlink()
+        os.mkfifo(e["adir"] / "sa02m-alice-devices.conf")
+    backup_case("5e3", "a FIFO planted at the live devices conf neither hangs the backup nor is archived; WARN",
+                plant_fifo, [A_DEVICES], {k: v for k, v in kept_all.items() if k != A_DEVICES}, [A_DEVICES])
+
+    def plant_hardlink(e):
+        (e["adir"] / "sa02m-alice-client.conf").unlink()
+        os.link(e["victim"], e["adir"] / "sa02m-alice-client.conf")
+    backup_case("5e4", "a hard link to the victim planted at the live client conf is skipped with a WARN",
+                plant_hardlink, [A_CLIENT], {k: v for k, v in kept_all.items() if k != A_CLIENT}, [A_CLIENT])
+
+    def plant_parent(e):
+        # The conf directory itself replaced by a symlink, in a parent others
+        # can write: on a board /etc is root-only, so this models the class
+        # (a directory on the path that is not root's), not a live exploit.
+        # The nginx directory is then a directory inside that parent too —
+        # refused by the same rule (a swap between check and open).
+        shutil.rmtree(e["adir"])
+        (e["vdir"] / "sa02m-alice-client.conf").write_bytes(SECRET)
+        e["adir"].symlink_to(e["vdir"])
+        e["etc"].chmod(0o770)
+    backup_case("5e5", "a symlinked conf directory (and any directory) in a parent others can write is never descended; "
+                "a plain file there is still archived",
+                plant_parent, [A_CLIENT, A_DEVICES, NGINX], {"/etc/sa02m_web.env": b"env\n"}, [ETC_DIR, "/etc/nginx"])
+
+# ── 6. restore ALLOW list, and backup/restore agreement ───────────────────
+print("── 6. SSH restore allow-list (etc/sa02m-restore-backup.sh ALLOW) ──")
+stxt = read(RESTORE)
+m_allow = re.search(r"^ALLOW = \[\n.*?^\]\n", stxt, re.S | re.M)
+m_def = re.search(r"^def allowed\(.*?\n(?:    .*\n)+", stxt, re.M)
+allowed = None
+if not (m_allow and m_def):
+    bad("6 could not extract ALLOW / allowed() from the restore script (non-vacuity)")
+else:
+    ns: dict = {"re": re}
+    exec(m_allow.group(0) + m_def.group(0), ns)  # noqa: S102 - the shipped source under test
+    allowed = ns["allowed"]
+    for p in WANT:
+        (ok if allowed(p) else bad)(f"6 the restore admits {p}")
+    (bad if allowed("/etc/shadow") else ok)("6 negative control: /etc/shadow is refused")
+    if emitted:
+        refused = [p for p in emitted if not allowed(p)]
+        if refused:
+            bad(f"6 the restore refuses what the backup writes — every such archive fails AS A WHOLE: {refused}")
+        else:
+            ok(f"6 every one of the {len(emitted)} paths the backup emits passes the restore")
+
+# ── 7. restore atomic_install(): ownership + symlink hardening ─────────────
+# The restore runs as root and /etc/sa02m-alice is root:www-data 0770, so a
+# www-data account (any panel session: cmd_exec.cgi) can create names in the
+# directory it writes into. Every case below plants what www-data could plant
+# (in a 0770 directory, as on the board) and asserts a victim file stays byte-,
+# mode- and owner-identical. Only the cases that OBSERVE an owner (7a/7b/7h)
+# need root; 7c-7g run everywhere — CI runs this row as a non-root user, and
+# the comment-mutation proof of the restore's refusal line depends on them.
+print("── 7. restore atomic_install() ownership + symlink hardening ──")
+HELPERS = ("RestoreRefused", "DIR_SPEC", "dest_check", "ensure_parent", "atomic_install")
+IS_ROOT = hasattr(os, "geteuid") and os.geteuid() == 0
+TWIN_RE = re.compile(r"^# >>> trusted-path resolver.*?^# <<< trusted-path resolver\n", re.S | re.M)
+
+
+def extract_block(src: str, name: str) -> str | None:
+    """A top-level def/class body, or a top-level `NAME = {…}` dict literal."""
+    m = re.search(r"^(?:def|class) " + name + r"\b.*?\n(?:(?:    .*)?\n)+", src, re.M)
+    if m:
+        return m.group(0)
+    m = re.search(r"^" + name + r" = \{\n.*?^\}\n", src, re.S | re.M)
+    return m.group(0) if m else None
+
+
+blocks = {n: extract_block(stxt, n) for n in HELPERS}
+missing = [n for n, b in blocks.items() if b is None]
+m_twin_r = TWIN_RE.search(stxt)
+m_twin_b = TWIN_RE.search(btxt)
+# 7t: the trusted-path resolver is one algorithm in two self-contained root
+# scripts (neither can import the other on a board); the twins must not drift.
+if not (m_twin_r and m_twin_b):
+    bad(f"7t trusted-path resolver block missing (restore: {bool(m_twin_r)}, backup: {bool(m_twin_b)}) — "
+        "the symlink rule the backup and the restore share is gone from one of them")
+elif m_twin_r.group(0) != m_twin_b.group(0):
+    bad("7t the trusted-path resolver in etc/sa02m-restore-backup.sh and etc/sa02m-web-backup.sh differ — "
+        "the backup and the restore no longer agree on which names root may follow")
+else:
+    ok("7t the backup and the restore carry the same trusted-path resolver (byte-identical twins)")
+# 7s needs no root: the directory spec the restore creates a missing Alice conf
+# dir with must be the one tmpfiles and the installer give it.
+spec = None
+if blocks["DIR_SPEC"]:
+    ns_spec: dict = {}
+    exec(blocks["DIR_SPEC"], ns_spec)  # noqa: S102 - the shipped source under test
+    spec = ns_spec["DIR_SPEC"].get(ETC_DIR)
+m_tmpf = re.search(r"^d\s+" + re.escape(ETC_DIR) + r"\s+(\d+)\s+(\S+)\s+(\S+)", tmp_txt, re.M)
+want_spec = (int(m_tmpf.group(1), 8), m_tmpf.group(2), m_tmpf.group(3)) if m_tmpf else None
+inst_spec = any(f"install -d -m {oct(want_spec[0])[2:].zfill(4)} -o {want_spec[1]} -g {want_spec[2]} {ETC_DIR}" in l
+                for l in inst) if want_spec else False
+if spec is not None and spec == want_spec and inst_spec:
+    ok(f"7s a missing {ETC_DIR} is created {oct(spec[0])} {spec[1]}:{spec[2]} — the tmpfiles line and the installer agree")
+else:
+    fmt = lambda t: t and (oct(t[0]), *t[1:])  # noqa: E731
+    bad(f"7s restore DIR_SPEC[{ETC_DIR}]={fmt(spec)} vs tmpfiles {fmt(want_spec)} (installer install -d agrees: {inst_spec}) "
+        "— a restore onto a board without the dir creates it unwritable for the CGI")
+
+if blocks["atomic_install"] is None:
+    bad("7 could not extract atomic_install() from the restore script (non-vacuity)")
+else:
+    if missing:
+        bad(f"7 restore hardening helpers absent: {missing} — the cases below run the bare atomic_install()")
+    import grp  # noqa: E402
+    import pwd  # noqa: E402
+    import stat as stat_mod  # noqa: E402
+    ns = {"os": os, "shutil": shutil, "Path": Path, "stat": stat_mod, "tempfile": tempfile,
+          "pwd": pwd, "grp": grp, "sys": sys}
+    if m_twin_r:
+        exec(m_twin_r.group(0), ns)  # noqa: S102 - the shipped source under test
+    for n in HELPERS:
+        if blocks[n]:
+            exec(blocks[n], ns)  # noqa: S102 - the shipped source under test
+    ai = ns["atomic_install"]
+
+    def snap(p: Path) -> tuple:
+        st = os.lstat(p)
+        return (p.read_bytes(), oct(stat_mod.S_IMODE(st.st_mode)), st.st_uid, st.st_gid)
+
+    def make_victim(where: Path, name: str = "shadow") -> Path:
+        """A 0600 file in a 0700 directory: root's where the host allows the
+        chown, else the invoking user's — the byte/mode identity assertions
+        hold either way (7c-7g need no owner change to observe a write)."""
+        where.mkdir(exist_ok=True)
+        if IS_ROOT:
+            os.chown(where, 0, 0)
+        os.chmod(where, 0o700)
+        v = where / name
+        v.write_bytes(b"root-secret\n")
+        if IS_ROOT:
+            os.chown(v, 0, 0)
+        os.chmod(v, 0o600)
+        return v
+
+    def leftovers(d: Path, name: str) -> list:
+        return sorted(p.name for p in d.iterdir() if p.name != name and name in p.name)
+
+    def attempt(src_p: Path, dest: Path, mode: int = 0o660):
+        try:
+            ai(src_p, str(dest), mode)
+        except Exception as e:  # noqa: BLE001 - any refusal counts; the type is not the contract
+            return e
+        return None
+
+    with tempfile.TemporaryDirectory() as sb:
+        src = Path(sb, "src.conf")
+        src.write_text("new\n", encoding="utf-8")
+        d = Path(sb, "sa02m-alice")
+        d.mkdir()
+        if IS_ROOT:
+            os.chown(d, 0, 4242)
+        os.chmod(d, 0o770)
+        live = d / "sa02m-alice-client.conf"
+        live.write_text("old\n", encoding="utf-8")
+        fresh = d / "sa02m-alice-devices.conf"
+        if IS_ROOT:
+            os.chown(live, 1234, 4321)
+            err = attempt(src, live)
+            st = live.stat()
+            body = live.read_text(encoding="utf-8")
+            if err is None and (st.st_uid, st.st_gid) == (1234, 4321) and body == "new\n":
+                ok("7a an existing file keeps its owner (1234:4321) and gets the new bytes")
+            else:
+                bad(f"7a restored file is {st.st_uid}:{st.st_gid} body={body!r} err={err!r} — expected 1234:4321 'new' "
+                    "(root:root locks the CGI out of a root:www-data conf)")
+            err = attempt(src, fresh)
+            st = fresh.stat() if fresh.exists() else None
+            if err is None and st and (st.st_uid, st.st_gid) == (0, 4242):
+                ok("7b a new file is root with its directory's group (0:4242)")
+            else:
+                bad(f"7b new restored file is {st and (st.st_uid, st.st_gid)} err={err!r} — expected 0:4242 (the directory's group)")
+        else:
+            skip("7a/7b owner-keeping cases need root to observe a chown — not run on this host (a skip is not a pass)")
+            fresh.write_text("old\n", encoding="utf-8")
+
+        # 7c: a symlink planted at the temp name. The pre-fix code used the
+        # predictable `<dest>.tmp.<pid>` and followed it with copy2/chmod/chown;
+        # the plant sits at the exact name it would use (this process's pid,
+        # since the function runs in-process) plus its neighbours.
+        victim = make_victim(Path(sb, "victim-c"))
+        before = snap(victim)
+        for pid in range(max(1, os.getpid() - 3), os.getpid() + 4):
+            (d / f"{live.name}.tmp.{pid}").symlink_to(victim)
+        err = attempt(src, live)
+        after = snap(victim)
+        live_ok = not live.is_symlink() and live.is_file() and live.read_bytes() == b"new\n"
+        if after == before and err is None and live_ok:
+            ok("7c a symlink planted at the temp name is never followed: victim identical, live conf restored as a regular file")
+        else:
+            bad(f"7c planted temp-name symlink: victim {before[1:]}→{after[1:]} bytes-changed={after[0] != before[0]}, "
+                f"live regular+new={live_ok}, err={err!r} — root wrote/chmod/chowned through a www-data plant")
+        for p in d.glob(f"{live.name}.tmp.*"):
+            p.unlink()
+
+        # 7d: the dest itself is a symlink → refused, nothing written.
+        victim = make_victim(Path(sb, "victim-d"))
+        before = snap(victim)
+        fresh.unlink(missing_ok=True)
+        fresh.symlink_to(victim)
+        err = attempt(src, fresh)
+        after = snap(victim)
+        still_link = fresh.is_symlink() and os.readlink(fresh) == str(victim)
+        extra = leftovers(d, fresh.name)
+        if err is not None and after == before and still_link and not extra:
+            ok(f"7d a symlinked dest is refused ({err}); victim identical, nothing written")
+        else:
+            bad(f"7d symlinked dest: refused={err is not None}, victim identical={after == before}, "
+                f"dest still the plant={still_link}, leftovers={extra}")
+        fresh.unlink()
+
+        # 7e: the dest is not a regular file (a FIFO) → refused.
+        os.mkfifo(fresh)
+        err = attempt(src, fresh)
+        is_fifo = stat_mod.S_ISFIFO(os.lstat(fresh).st_mode)
+        extra = leftovers(d, fresh.name)
+        if err is not None and is_fifo and not extra:
+            ok(f"7e a non-regular dest (FIFO) is refused ({err}); nothing written")
+        else:
+            bad(f"7e FIFO dest: refused={err is not None}, still a FIFO={is_fifo}, leftovers={extra}")
+        fresh.unlink()
+
+        # 7f: the parent directory is a symlink planted where others can write
+        # (a 0770 directory, like /etc/sa02m-alice) → refused. A link only root
+        # could have made (root-owned, in a directory only root can write) is
+        # the installer's, and is followed — 8d pins that side.
+        vdir = Path(sb, "victim-f")
+        victim = make_victim(vdir, live.name)
+        before = snap(victim)
+        link_dir = d / "alice-link"
+        link_dir.symlink_to(vdir)
+        err = attempt(src, link_dir / live.name)
+        after = snap(victim)
+        extra = leftovers(vdir, live.name)
+        if err is not None and after == before and not extra:
+            ok(f"7f a symlinked parent directory in a directory others can write is refused ({err}); victim identical")
+        else:
+            bad(f"7f symlinked parent: refused={err is not None}, victim identical={after == before}, leftovers={extra}")
+        link_dir.unlink()
+
+        # 7g: a failure after the temp file exists (unreadable source) removes it;
+        # neither that nor 7a-7f leaves a temp file behind.
+        err = attempt(Path(sb, "no-such-src"), live)
+        (ok if err is not None and live.read_bytes() == b"new\n" else bad)(
+            f"7g a failed copy raises ({type(err).__name__}) and leaves the live conf untouched")
+        extra = leftovers(d, "sa02m-alice-")
+        extra = [n for n in extra if n not in (live.name, fresh.name)]
+        (ok if not extra else bad)(f"7g no temp file left in the conf dir (found: {extra})")
+
+        # 7h: a missing Alice conf dir is created with its tmpfiles owner/mode.
+        if spec is None:
+            bad("7h no DIR_SPEC entry for the Alice conf dir — a missing dir is created root:root 0755")
+        elif not IS_ROOT:
+            skip("7h creating the conf dir root:www-data needs root to chown — not run on this host (a skip is not a pass)")
+        else:
+            try:
+                want_gid = grp.getgrnam(spec[2]).gr_gid
+                want_uid = pwd.getpwnam(spec[1]).pw_uid
+            except KeyError:
+                want_gid = None
+            if want_gid is None:
+                skip(f"7h user/group {spec[1]}:{spec[2]} absent on this host — not run (a skip is not a pass)")
+            else:
+                nd = Path(sb, "etc-new", "sa02m-alice")
+                ns["DIR_SPEC"] = {str(nd): spec}
+                err = attempt(src, nd / live.name)
+                if nd.is_dir():
+                    dst = os.lstat(nd)
+                    got = (stat_mod.S_IMODE(dst.st_mode), dst.st_uid, dst.st_gid)
+                    fst = os.lstat(nd / live.name) if (nd / live.name).exists() else None
+                else:
+                    got, fst = None, None
+                if err is None and got == (spec[0], want_uid, want_gid) and fst and fst.st_gid == want_gid:
+                    ok(f"7h a missing conf dir is created {oct(spec[0])} {spec[1]}:{spec[2]}; the conf lands with group {spec[2]}")
+                else:
+                    bad(f"7h missing conf dir created as {got} (want {(spec[0], want_uid, want_gid)}), "
+                        f"conf gid={fst and fst.st_gid}, err={err!r}")
+
+# ── 8. the SHIPPED restore script, end to end in a sandbox ─────────────────
+# Section 7 runs the functions; this runs the whole script (shell wrapper +
+# python body) with every /etc/ path retargeted into a sandbox and shims for
+# systemctl/nginx, so the preflight wiring and the post-restore restarts are
+# observed, not read.
+print("── 8. restore script end to end (sandboxed --apply) ──")
+if not (shutil.which("bash") and shutil.which("tar")):
+    skip("8 needs bash + tar — not run on this host (a skip is not a pass)")
+else:
+    import hashlib  # noqa: E402
+    import io  # noqa: E402
+    import tarfile  # noqa: E402
+
+    def run_restore(sb: Path, files: dict, active: set, mode: str = "--apply"):
+        """Build an archive of `files` (sandbox-relative dest → bytes) and run the
+        retargeted restore on it. Returns (rc, output, systemctl calls)."""
+        body = stxt.replace("/etc/", f"{sb}/etc/")
+        script = sb / "restore.sh"
+        script.write_text(body, encoding="utf-8")
+        shims = sb / "shims"
+        shims.mkdir(exist_ok=True)
+        calls = sb / "systemctl.calls"
+        (shims / "systemctl").write_text(
+            "#!/bin/bash\nprintf '%s\\n' \"$*\" >> " + str(calls) + "\n"
+            "if [ \"$1\" = is-active ]; then\n  case \" " + " ".join(sorted(active)) + " \" in\n"
+            "    *\" ${@: -1} \"*) exit 0 ;;\n  esac\n  exit 3\nfi\nexit 0\n", encoding="utf-8")
+        (shims / "nginx").write_text("#!/bin/bash\nexit 0\n", encoding="utf-8")
+        for f in shims.iterdir():
+            f.chmod(0o755)
+        paths, buf = [], io.BytesIO()
+        with tarfile.open(fileobj=buf, mode="w:gz") as tf:
+            members = {}
+            for i, (dest, data) in enumerate(files.items()):
+                ap = f"files/{i}"
+                members[ap] = data
+                paths.append({"path": f"{sb}{dest}", "archive_path": ap,
+                              "sha256": hashlib.sha256(data).hexdigest(), "mode": "0o660"})
+            members["backup-manifest.json"] = json.dumps({"schema_version": 1, "paths": paths}).encode()
+            for name, data in members.items():
+                ti = tarfile.TarInfo(name)
+                ti.size = len(data)
+                tf.addfile(ti, io.BytesIO(data))
+        arc = sb / "backup.tar.gz"
+        arc.write_bytes(buf.getvalue())
+        if calls.exists():
+            calls.unlink()
+        env = {**os.environ, "PATH": f"{shims}:{os.environ.get('PATH', '')}",
+               "SA02M_WEB_BACKUP": str(sb / "no-backup-bin"), "SA02M_BACKUP_EXPORT": str(sb / "export")}
+        r = subprocess.run(["bash", str(script), mode, str(arc)], capture_output=True, text=True,
+                           timeout=60, env=env)
+        got = calls.read_text().splitlines() if calls.exists() else []
+        return r.returncode, r.stdout + r.stderr, got, body.count(f"{sb}/etc/")
+
+    with tempfile.TemporaryDirectory() as tsb:
+        sb = Path(tsb)
+        adir = sb / "etc/sa02m-alice"
+        adir.mkdir(parents=True)
+        adir.chmod(0o770)  # as on the board (root:www-data 0770): others can plant names here
+        env_f = sb / "etc/sa02m_web.env"
+        env_f.write_bytes(b"old-env\n")
+        conf = adir / "sa02m-alice-client.conf"
+        victim = sb / "victim"
+        victim.write_bytes(b"root-secret\n")
+        victim.chmod(0o600)
+        conf.symlink_to(victim)
+        files = {"/etc/sa02m_web.env": b"new-env\n", "/etc/sa02m-alice/sa02m-alice-client.conf": b"new-conf\n"}
+        rc, out, calls, n_sub = run_restore(sb, files, {"sa02m-alice-client"})
+        untouched = (env_f.read_bytes() == b"old-env\n" and conf.is_symlink()
+                     and victim.read_bytes() == b"root-secret\n" and not (sb / "export").exists())
+        if n_sub < 8:
+            bad(f"8 retarget touched only {n_sub} /etc/ paths in the restore body (non-vacuity)")
+        elif rc != 0 and "symlink" in out and untouched:
+            ok("8a a symlinked dest fails the whole --apply in the preflight: rc!=0, reason printed, nothing written (not even the other file)")
+        else:
+            bad(f"8a symlinked dest under --apply: rc={rc}, untouched={untouched}, output: {out.strip()[-300:]!r}")
+        conf.unlink()
+        conf.write_bytes(b"old-conf\n")
+        rc, out, calls, _ = run_restore(sb, files, {"sa02m-alice-client"})
+        restored = env_f.read_bytes() == b"new-env\n" and conf.read_bytes() == b"new-conf\n"
+        restarts = [c for c in calls if c.startswith("restart ")]
+        probed = sorted(c.split()[-1] for c in calls if c.startswith("is-active"))
+        if (rc == 0 and restored and "restart sa02m-alice-client" in restarts
+                and probed == ["sa02m-alice-client", "sa02m-alice-config", "sa02m-cloud-control"]
+                and not [c for c in restarts if "alice-config" in c or "cloud-control" in c]):
+            ok("8b a clean --apply restores both files and restarts ONLY the active Alice unit (inactive ones are never started)")
+        else:
+            bad(f"8b clean --apply: rc={rc}, restored={restored}, probed={probed}, restarts={restarts}, "
+                f"output: {out.strip()[-300:]!r}")
+        rc, out, calls, _ = run_restore(sb, {"/etc/sa02m_web.env": b"env-only\n"}, {"sa02m-alice-client"})
+        if rc == 0 and not [c for c in calls if "alice" in c or "cloud" in c]:
+            ok("8c a restore without Alice confs touches no Alice unit")
+        else:
+            bad(f"8c env-only --apply: rc={rc}, systemctl calls={calls}")
+
+        # 8d: the installer's own link (scripts/03-webserver.sh: ln -sf
+        # sites-available/network_config sites-enabled/000-sa02m-network_config)
+        # is in every board backup. Only root can make a name in that directory,
+        # so the restore writes THROUGH it, as it always did — refusing it would
+        # fail every restore (even --dry-run) of every board's own backup.
+        avail = sb / "etc/nginx/sites-available/network_config"
+        avail.parent.mkdir(parents=True)
+        avail.write_bytes(b"old-site\n")
+        link = sb / "etc/nginx/sites-enabled/000-sa02m-network_config"
+        link.parent.mkdir(parents=True)
+        link.symlink_to("../sites-available/network_config")
+        nginx_files = {"/etc/sa02m_web.env": b"env-2\n", "/etc/nginx/sites-enabled/000-sa02m-network_config": b"new-site\n"}
+        rc_d, out_d, _, _ = run_restore(sb, nginx_files, set(), mode="--dry-run")
+        rc, out, calls, _ = run_restore(sb, nginx_files, set())
+        through = (link.is_symlink() and os.readlink(link) == "../sites-available/network_config"
+                   and avail.read_bytes() == b"new-site\n" and env_f.read_bytes() == b"env-2\n")
+        if rc_d == 0 and rc == 0 and through:
+            ok("8d the installer's root-made nginx link validates and is written through (link kept, target restored)")
+        else:
+            bad(f"8d root-made nginx link: dry-run rc={rc_d}, apply rc={rc}, link kept + target restored={through}, "
+                f"output: {(out_d + out).strip()[-300:]!r}")
+
+# ── 9. installer conf modes: root never chmod/chgrps through a plant ──────
+# scripts/06-alice.sh (a full install, as root) sets the confs' mode and group
+# right after creating them — in the same root:www-data 0770 directory. chmod
+# and chgrp follow a symlink, so a planted `sa02m-alice-client.conf ->
+# /etc/sudoers.d/x` would hand www-data group-write on the target (root
+# escalation). The SHIPPED lines between the conf-install loop and the systemd
+# block run here with the conf dir retargeted into a sandbox and www-data
+# replaced by the invoking user's group — no root needed.
+print("── 9. installer conf modes (scripts/06-alice.sh) never follow a plant ──")
+itxt = read(INSTALLER)
+m9 = re.search(r"^for f in sa02m-alice-client\.conf [^\n]*\n.*?^done\n(.*?)^# ── systemd", itxt, re.S | re.M)
+if not m9 or ETC_DIR not in m9.group(1):
+    bad(f"9 could not extract the conf mode/group block after the conf-install loop in {INSTALLER.relative_to(ROOT)} (non-vacuity)")
+else:
+    import grp as grp9  # noqa: E402
+    import stat as stat9  # noqa: E402
+    my_group = grp9.getgrgid(os.getegid()).gr_name
+
+    def run_modes(sb: Path):
+        adir = sb / "sa02m-alice"
+        block = m9.group(1).replace(ETC_DIR, str(adir)).replace("www-data", my_group)
+        try:
+            r = subprocess.run(["bash", "-c", "set -euo pipefail\n" + block], capture_output=True, text=True, timeout=60)
+        except subprocess.TimeoutExpired:
+            return 124, "timed out (a FIFO opened blocking?)"
+        return r.returncode, r.stdout + r.stderr
+
+    def seed_modes(sb: Path) -> dict:
+        adir = sb / "sa02m-alice"
+        adir.mkdir()
+        adir.chmod(0o770)
+        for n in ("sa02m-alice-client.conf", "sa02m-alice-devices.conf", "sa02m-alice-server.conf"):
+            (adir / n).write_bytes(b"conf\n")
+            (adir / n).chmod(0o600)
+        vdir = sb / "victim"
+        vdir.mkdir(mode=0o700)
+        v1, v2 = vdir / "sudoers-x", vdir / "shadow"
+        for v in (v1, v2):
+            v.write_bytes(b"root-secret\n")
+            v.chmod(0o600)
+        return {"adir": adir, "v1": v1, "v2": v2}
+
+    def mode_of(p: Path) -> int:
+        return stat9.S_IMODE(os.lstat(p).st_mode)
+
+    with tempfile.TemporaryDirectory() as tsb:
+        sb = Path(tsb)
+        e9 = seed_modes(sb)
+        rc, out = run_modes(sb)
+        got = {n: oct(mode_of(e9["adir"] / n)) for n in ("sa02m-alice-client.conf", "sa02m-alice-devices.conf", "sa02m-alice-server.conf")}
+        want = {"sa02m-alice-client.conf": "0o660", "sa02m-alice-devices.conf": "0o660", "sa02m-alice-server.conf": "0o640"}
+        if rc == 0 and got == want:
+            ok("9a regular confs get their modes (client/devices 0660, server 0640)")
+        else:
+            bad(f"9a conf modes: rc={rc}, got {got}, want {want}: {out.strip()[-200:]!r}")
+
+    with tempfile.TemporaryDirectory() as tsb:
+        sb = Path(tsb)
+        e9 = seed_modes(sb)
+        (e9["adir"] / "sa02m-alice-client.conf").unlink()
+        (e9["adir"] / "sa02m-alice-client.conf").symlink_to(e9["v1"])
+        (e9["adir"] / "sa02m-alice-devices.conf").unlink()
+        os.link(e9["v2"], e9["adir"] / "sa02m-alice-devices.conf")
+        before = [(mode_of(v), os.lstat(v).st_gid) for v in (e9["v1"], e9["v2"])]
+        rc, out = run_modes(sb)
+        after = [(mode_of(v), os.lstat(v).st_gid) for v in (e9["v1"], e9["v2"])]
+        server_ok = oct(mode_of(e9["adir"] / "sa02m-alice-server.conf")) == "0o640"
+        if before[0] == after[0] and "sa02m-alice-client.conf" in out:
+            ok("9b a symlink planted at the client conf is left alone and reported; its target's mode/group unchanged")
+        else:
+            bad(f"9b planted symlink: target mode/gid {oct(before[0][0])}/{before[0][1]} → {oct(after[0][0])}/{after[0][1]}, "
+                f"reported={'sa02m-alice-client.conf' in out} — root chmod/chgrp'd through a www-data plant")
+        if before[1] == after[1] and "sa02m-alice-devices.conf" in out:
+            ok("9c a hard link planted at the devices conf is left alone and reported; the linked file unchanged")
+        else:
+            bad(f"9c planted hard link: file mode/gid {oct(before[1][0])}/{before[1][1]} → {oct(after[1][0])}/{after[1][1]}, "
+                f"reported={'sa02m-alice-devices.conf' in out}")
+        (ok if rc == 0 and server_ok else bad)(
+            f"9d the installer carries on past the plants (rc={rc}) and still sets the regular server conf 0640 ({server_ok})")
+
+print("")
+if fails:
+    print(f"alice-conf-homes: {fails} FAILURE(S)")
+    sys.exit(1)
+print("alice-conf-homes: ALL OK")

@@ -53,9 +53,14 @@ log INFO "Устанавливаю systemd units..."
 # Capture BEFORE the unit files land (first-install signal). An ACTIVE agent is
 # restarted on the fresh code just copied — the stale-code class the MQTT
 # bridge already fixed (1.0.5.73); a stopped/disabled one is preserved.
+# Units land atomically (tmp + fsync + rename-over): a reset mid-`cp` would
+# leave a 0-byte unit, which systemd reads as masked (web-code-rigor.md,
+# installer floors). Re-running rewrites the same bytes — idempotent.
 sa02m_svc_capture sa02m-cloud-agent.service
-cp "$AGENT_SRC/sa02m-cloud-agent.service" "$SYSTEMD_DIR/"
-cp "$AGENT_SRC/sa02m-cloud-frpc.service"  "$SYSTEMD_DIR/"
+sa02m_atomic_install -m 0644 -o root -g root \
+    "$AGENT_SRC/sa02m-cloud-agent.service" "$SYSTEMD_DIR/"
+sa02m_atomic_install -m 0644 -o root -g root \
+    "$AGENT_SRC/sa02m-cloud-frpc.service" "$SYSTEMD_DIR/"
 systemctl daemon-reload
 # Первый раз агент только включаем (enable, без запуска) — до активации он в
 # standby и ждёт код/токен. Туннель включает сам агент после enrollment
@@ -109,8 +114,9 @@ FRPC_DL_TIMEOUT_SEC="${SA02M_APT_TIMEOUT_SEC:-90}"
 # sha256 of a file → stdout (empty on failure).
 _frpc_sha256() { sha256sum "$1" 2>/dev/null | awk '{print $1}'; }
 
-# Install <src> as $FRPC_BIN, 0755 root:root. Returns install's exit code.
-_frpc_install_bin() { install -m 0755 -o root -g root "$1" "$FRPC_BIN"; }
+# Install <src> as $FRPC_BIN, 0755 root:root, atomically (never a torn binary
+# on a reset). Returns 0 only when $FRPC_BIN carries the new bytes.
+_frpc_install_bin() { sa02m_atomic_install -m 0755 -o root -g root "$1" "$FRPC_BIN"; }
 
 # Host is ARMv7/ARMv6/armhf? (never lay down a wrong-arch static binary).
 _frpc_arch_ok() {

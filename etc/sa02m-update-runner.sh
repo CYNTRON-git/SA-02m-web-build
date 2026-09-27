@@ -76,6 +76,10 @@ PRESERVE_PATHS=(
     /etc/sa02m-cloud/
     /var/lib/sa02m-flasher/
     /var/lib/sa02m-update/
+    # Alice confs: the live layout is /etc/sa02m-alice/ (sa02m_alice
+    # common/constants.py, scripts/06-alice.sh); the flat names are the older
+    # layout factory reset still handles — kept so an old board stays covered.
+    /etc/sa02m-alice/
     /etc/sa02m-alice-client.conf
     /etc/sa02m-alice-devices.conf
     /var/lib/sa02m-alice/
@@ -972,6 +976,7 @@ PRESERVE_PREFIXES = (
     "/etc/sa02m-cloud/",
     "/var/lib/sa02m-flasher/",
     "/var/lib/sa02m-update/",
+    "/etc/sa02m-alice/",
     "/etc/sa02m-alice-client.conf",
     "/etc/sa02m-alice-devices.conf",
     "/var/lib/sa02m-alice/",
