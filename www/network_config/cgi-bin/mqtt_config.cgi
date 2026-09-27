@@ -38,7 +38,12 @@ def capabilities():
         sys.path.insert(0, sys.argv[1])
         import bridge_bus
         return bridge_bus.capabilities()
-    except Exception:
+    except Exception as e:
+        # Fail closed (no Ethernet option), but never silently: fcgiwrap
+        # hands stderr to the nginx error log.
+        print("mqtt_config.cgi: Modbus TCP validator unavailable - cannot "
+              "import bridge_bus from %s: %s; the Ethernet option is hidden"
+              % (sys.argv[1], e), file=sys.stderr)
         return None
 
 
@@ -102,7 +107,10 @@ try:
     try:
         sys.path.insert(0, sys.argv[3])
         import bridge_bus
-    except Exception:
+    except Exception as e:
+        print("mqtt_config.cgi: Modbus TCP validator unavailable - cannot "
+              "import bridge_bus from %s: %s; TCP entries are refused"
+              % (sys.argv[3], e), file=sys.stderr)
         bridge_bus = None
     if bridge_bus is None:
         # Fail closed: without the validator a TCP entry cannot be vouched for.

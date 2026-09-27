@@ -83,6 +83,9 @@ YAML_FILE="$TW/sa02m-modbus-mqtt.yaml"
 APPLIED="$TW/applied.yaml"
 SUDOALL="$TW/sudo-all.log"
 : > "$SUDOALL"
+# The endpoint's stderr of the LAST call — what fcgiwrap hands to the nginx
+# error log on the board.
+CGI_ERR="$T/cgi-stderr.log"
 
 # PYTHONUTF8=1 on every endpoint run: Windows python otherwise decodes the
 # UTF-8 body as cp1251 (mojibake in a Cyrillic device name); Linux, the board
@@ -147,7 +150,7 @@ call() {  # <method> <cookie> <csrf> <body> [lib dir]
         SA02M_BRIDGE_LIB_DIR="${5:-$LIBW}" \
         PYTHONUTF8=1 \
         PATH="$PATH" \
-        bash "$CGIDIR/mqtt_config.cgi" 2>/dev/null | sed '1,/^\r\{0,1\}$/d' | tr -d '\r'
+        bash "$CGIDIR/mqtt_config.cgi" 2>"$CGI_ERR" | sed '1,/^\r\{0,1\}$/d' | tr -d '\r'
     return 0
 }
 
@@ -319,6 +322,14 @@ if [ "$(jget "$out" '(j.get("ok"), j.get("error"))')" = "(False, 'transport_vali
 else
     bad "13 lib missing + a TCP entry was not refused fail-closed: $out"
 fi
+# Review 1.0.6.56 A5: the missing validator is never silent — it is named in
+# the log the operator's integrator can read, not only in the refusal code.
+err=$(cat "$CGI_ERR" 2>/dev/null)
+if [[ "$err" == *"validator unavailable"* && "$err" == *bridge_bus* ]]; then
+    ok "13b lib missing on save: the import failure is logged to stderr (nginx error log)"
+else
+    bad "13b lib missing on save left no trace on stderr: '${err}'"
+fi
 out=$(call POST "$GOOD_COOKIE" "$CSRF" "$RTU_BODY" "$TW/nolib")
 if [ "$(jget "$out" 'j.get("ok")')" = True ] && [ -f "$APPLIED" ] && is_golden "$APPLIED"; then
     ok "14 lib missing + RS-485 only: saves exactly as before"
@@ -335,11 +346,22 @@ if [ "$(jget "$out" 'j.get("capabilities")')" = "{'tcp_types': ['template', 'car
 else
     bad "15 GET has no/wrong capabilities: $out"
 fi
+if [[ "$(cat "$CGI_ERR" 2>/dev/null)" != *"validator unavailable"* ]]; then
+    ok "15b lib present: no import-failure line on stderr"
+else
+    bad "15b lib present but the endpoint logged an import failure: $(cat "$CGI_ERR")"
+fi
 out=$(call GET "$GOOD_COOKIE" "" "" "$TW/nolib")
 if [ "$(jget "$out" '"capabilities" in j')" = False ] && [ "$(jget "$out" 'len(j.get("devices") or [])')" = 3 ]; then
     ok "16 lib missing: GET omits capabilities (the UI hides Ethernet) and still serves the config"
 else
     bad "16 lib missing: GET is not fail-closed: $out"
+fi
+err=$(cat "$CGI_ERR" 2>/dev/null)
+if [[ "$err" == *"validator unavailable"* && "$err" == *bridge_bus* ]]; then
+    ok "16b lib missing on GET: the Ethernet option does not vanish silently - the import failure is logged to stderr"
+else
+    bad "16b lib missing on GET left no trace on stderr (the Ethernet option would just vanish): '${err}'"
 fi
 rm -f "$YAML_FILE"
 out=$(call GET "$GOOD_COOKIE" "" "")
@@ -359,7 +381,7 @@ fi
 
 echo
 if [ "$fails" -eq 0 ]; then
-    echo "mqtt-config-transport: ALL OK - 18 case(s) green"
+    echo "mqtt-config-transport: ALL OK - 21 case(s) green"
     exit 0
 fi
 echo "mqtt-config-transport: $fails FAILURE(S)"
