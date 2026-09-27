@@ -816,7 +816,7 @@
     'По сети (Modbus TCP) подключаются только «Шаблон устройства» и Carel': 'Only «Device template» and Carel can be connected over the network (Modbus TCP)',
     'Для Carel по сети укажите семейство: c.pCOmini или uAria': 'For a Carel over the network, set the family: c.pCOmini or uAria',
     'IP-адрес: четыре числа через точку, без ведущих нулей, например 192.168.1.20': 'IP address: four numbers separated by dots, no leading zeros, e.g. 192.168.1.20',
-    'Этот адрес нельзя: укажите IP устройства в сети, не адрес самой платы': 'This address is not allowed: enter the device IP on the network, not the board’s own address',
+    'Адрес не допускается: служебный, групповой или адрес самой платы': 'Address not allowed: a reserved, a multicast or the board’s own address',
     'TCP-порт должен быть от 1 до 65535': 'TCP port must be 1 to 65535',
     'Адрес Modbus по сети должен быть от 1 до 255': 'Modbus address over the network must be 1 to 255',
     'Таймаут Modbus TCP должен быть от 0,2 до 5 с': 'Modbus TCP timeout must be 0.2 to 5 s',

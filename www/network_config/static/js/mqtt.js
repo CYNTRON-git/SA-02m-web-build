@@ -2723,7 +2723,10 @@ const TCP_REFUSAL_TEXT = {
   carel_family_required: () => uiT('Для Carel по сети укажите семейство: c.pCOmini или uAria'),
   host_missing: () => uiT('Укажите IP-адрес устройства'),
   host_not_ipv4_literal: () => uiT('IP-адрес: четыре числа через точку, без ведущих нулей, например 192.168.1.20'),
-  host_forbidden: () => uiT('Этот адрес нельзя: укажите IP устройства в сети, не адрес самой платы'),
+  // One code for loopback, 0.0.0.0, multicast and reserved (incl. 255.255.255.255)
+  // — the server does not say which, so the text names the three classes. The
+  // board's own LAN address is NOT judged here (it is refused at connect time).
+  host_forbidden: () => uiT('Адрес не допускается: служебный, групповой или адрес самой платы'),
   tcp_port_invalid: () => uiT('TCP-порт должен быть от 1 до 65535'),
   unit_invalid: () => uiT('Адрес Modbus по сети должен быть от 1 до 255'),
   timeout_invalid: () => uiT('Таймаут Modbus TCP должен быть от 0,2 до 5 с'),
