@@ -271,8 +271,10 @@ function switchTab(tab) {
     loadKernelControl(false);
     loadVariant();
     if (window.cloudTabInit) window.cloudTabInit();
+    if (window.homekitTabInit) window.homekitTabInit();
   }
   if (tab !== 'system' && window.cloudTabDestroy) window.cloudTabDestroy();
+  if (tab !== 'system' && window.homekitTabDestroy) window.homekitTabDestroy();
   if (tab === 'network') {
     applyVariantVisibility(_boardVariant);
     loadConfig();

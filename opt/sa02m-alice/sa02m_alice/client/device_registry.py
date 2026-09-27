@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import copy
 import logging
 import threading
 import time
@@ -398,6 +399,34 @@ class DeviceRegistry:
                     row["icon"] = str(group["icon"])
                 out.append(row)
             return out
+
+    def catalogue_items(
+        self,
+    ) -> List[Tuple[str, Dict[str, Any], List[Dict[str, Any]], List[Dict[str, Any]]]]:
+        """The catalogue as THIS profile sees it, for a non-Yandex consumer:
+        `[(device_id, device, capability_items, property_items)]` in document
+        order, deep copies.
+
+        Items pass the same `_items` filter every other path reads (so a
+        `cloud_only` item is dropped on any profile but cloud) and the scene
+        rows are whatever `_catalogue_doc` attached for this profile (none
+        outside yandex). Unlike `discovery_devices()` nothing is filtered on
+        `alice_visible` and nothing is stripped — that is Yandex policy. The
+        HomeKit bridge projects this list (docs/contracts/homekit-bridge.md);
+        the copies keep a consumer from mutating the registry's document.
+        """
+        out: List[Tuple[str, Dict[str, Any], List[Dict[str, Any]], List[Dict[str, Any]]]] = []
+        with self._lock:
+            for did, dev in self._devices_by_id.items():
+                out.append(
+                    (
+                        did,
+                        copy.deepcopy(dev),
+                        copy.deepcopy(self._items(dev, "capabilities")),
+                        copy.deepcopy(self._items(dev, "properties")),
+                    )
+                )
+        return out
 
     def discovery_devices(self, profile: str = C.PROFILE_YANDEX) -> List[Dict[str, Any]]:
         """Discovery device list (no live state), shaped per profile.

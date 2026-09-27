@@ -8,7 +8,7 @@
   <meta name="theme-color" content="#161618" id="theme-color-meta">
   <title>СА-02м — Панель управления</title>
   <link rel="icon" type="image/svg+xml" href="static/favicon_cyntron.svg?v=1.0.6.56&r=devhist1">
-  <link rel="stylesheet" href="static/css/main.css?v=1.0.6.56&r=tcp56a">
+  <link rel="stylesheet" href="static/css/main.css?v=1.0.6.56&r=hk57a">
   <script>try{var _lt=localStorage.getItem('sa02m-theme')==='light';if(_lt)document.documentElement.setAttribute('data-theme','light');var _m=document.getElementById('theme-color-meta');if(_m)_m.setAttribute('content',_lt?'#ececf3':'#161618');}catch(e){}</script>
 </head>
 <body>
@@ -592,6 +592,52 @@
               </div>
               <div class="cloud-agent-ctrl system-manage-tile-foot">
                 <button type="button" class="btn btn-sm btn-primary" id="alice-btn-enable" onclick="aliceToggleClient()" disabled>…</button>
+              </div>
+            </div>
+            <!-- Apple HomeKit bridge (app/homekit.js, sa02m_homekit_api.cgi;
+                 docs/contracts/homekit-bridge.md). Every value below is
+                 renderer-owned; the setup code and QR exist in the DOM only
+                 after «Показать код» and only while the bridge is unpaired. -->
+            <div class="ctrl-card system-manage-tile system-manage-alice-card system-manage-homekit-card" id="homekit-card">
+              <div class="ctrl-card-main">
+                <h3 class="system-manage-tile-title">Apple HomeKit</h3>
+                <dl class="cloud-meta web-upd-meta">
+                  <div><dt data-i18n="Мост">Мост</dt><dd id="homekit-state"><span class="badge badge-unk">…</span></dd></div>
+                  <div><dt data-i18n="Сопряжение">Сопряжение</dt><dd id="homekit-paired">—</dd></div>
+                  <div><dt data-i18n="Аксессуаров">Аксессуаров</dt><dd id="homekit-acc">—</dd></div>
+                  <div><dt data-i18n="Интерфейс">Интерфейс</dt><dd id="homekit-iface" class="mono">—</dd></div>
+                  <div><dt data-i18n="Адрес">Адрес</dt><dd id="homekit-addr" class="mono">—</dd></div>
+                </dl>
+                <p class="homekit-skip-line text-sm" id="homekit-skip-line" hidden>
+                  <a href="#" id="homekit-skip-link" onclick="homekitToggleSkipped(); return false;" aria-expanded="false" aria-controls="homekit-skip-list"><span id="homekit-skip-text"></span></a>
+                </p>
+                <ul class="homekit-skip-list" id="homekit-skip-list" hidden></ul>
+                <div class="homekit-setup" id="homekit-setup" hidden>
+                  <button type="button" class="btn btn-sm btn-primary" id="homekit-btn-code" onclick="homekitShowCode()">Показать код</button>
+                  <div class="homekit-code-box" id="homekit-code-box" hidden>
+                    <svg class="homekit-qr" id="homekit-qr" role="img" aria-label="QR-код для приложения «Дом»" xmlns="http://www.w3.org/2000/svg" shape-rendering="crispEdges"></svg>
+                    <div class="homekit-code" id="homekit-code"></div>
+                    <p class="field-hint text-sm homekit-setup-hint" data-i18n="Дом → Добавить аксессуар → отсканируйте код. Мост не сертифицирован Apple — нажмите «Всё равно добавить».">Дом → Добавить аксессуар → отсканируйте код. Мост не сертифицирован Apple — нажмите «Всё равно добавить».</p>
+                  </div>
+                </div>
+                <details class="homekit-net" id="homekit-net" hidden>
+                  <summary data-i18n="Интерфейс и порт">Интерфейс и порт</summary>
+                  <div class="field">
+                    <label for="homekit-iface-sel" data-i18n="Интерфейс">Интерфейс</label>
+                    <select id="homekit-iface-sel"></select>
+                  </div>
+                  <div class="field">
+                    <label for="homekit-port-in" data-i18n="Порт">Порт</label>
+                    <input type="number" id="homekit-port-in" inputmode="numeric" min="1024" max="65535" step="1">
+                  </div>
+                  <button type="button" class="btn btn-sm" id="homekit-btn-net" onclick="homekitApplyNet()" data-i18n="Применить">Применить</button>
+                </details>
+                <div id="homekit-msg" class="cloud-msg" role="status" hidden></div>
+                <p class="field-hint text-sm homekit-note" data-i18n="Не сертифицировано Apple">Не сертифицировано Apple</p>
+              </div>
+              <div class="cloud-agent-ctrl system-manage-tile-foot">
+                <button type="button" class="btn btn-sm btn-danger" id="homekit-btn-reset" onclick="homekitResetPairing()" hidden data-i18n="Сбросить сопряжение">Сбросить сопряжение</button>
+                <button type="button" class="btn btn-sm btn-primary" id="homekit-btn-enable" onclick="homekitToggle()" disabled>…</button>
               </div>
             </div>
             <div class="ctrl-card system-manage-tile system-manage-cloud-card" id="cloud-card">
@@ -1365,6 +1411,7 @@
         <div class="field">
           <label id="sh-device-list-label" data-i18n="Устройства">Устройства</label>
           <div id="sh-device-list" class="sh-device-list" role="group" aria-labelledby="sh-device-list-label"></div>
+          <button type="button" class="btn btn-sm" id="sh-hk-all" onclick="shHomekitTickAll()" hidden data-i18n="Отметить все для HomeKit">Отметить все для HomeKit</button>
         </div>
       </div>
       <div class="sh-col sh-col-actions">
@@ -1409,6 +1456,16 @@
           <label class="sh-export-label" for="sh-dev-export">
             <input type="checkbox" class="toggle" id="sh-dev-export" checked>
             <span data-i18n="Показывать в Алисе">Показывать в Алисе</span>
+          </label>
+        </div>
+        <!-- «Показывать в HomeKit» — opt-in, off by default (a device reaches
+             Apple Home only once ticked; docs/contracts/homekit-bridge.md).
+             Shown only while the HomeKit module is installed; smarthome.js
+             round-trips the stored flag on every save either way. -->
+        <div class="field sh-field-half" id="sh-hk-field" hidden>
+          <label class="sh-export-label" for="sh-dev-homekit">
+            <input type="checkbox" class="toggle" id="sh-dev-homekit">
+            <span data-i18n="Показывать в HomeKit">Показывать в HomeKit</span>
           </label>
         </div>
         <!-- «Инвертировать» — active-low outputs (contract §Inverted). A device
@@ -1484,8 +1541,8 @@
   </div>
 </div>
 
-<script src="static/js/i18n.js?v=1.0.6.56&r=tcp56b"></script>
-<script src="static/js/app.js?v=1.0.6.56&r=cloud53a"></script>
+<script src="static/js/i18n.js?v=1.0.6.56&r=hk57a"></script>
+<script src="static/js/app.js?v=1.0.6.56&r=homekit1"></script>
 <script src="static/js/app/status.js?v=1.0.6.56&r=cloud53a"></script>
 <script src="static/js/app/hw.js?v=1.0.6.56&r=devhist1"></script>
 <script src="static/js/app/rs485.js?v=1.0.6.56&r=audit39a"></script>
@@ -1501,7 +1558,8 @@
 <script type="module" src="static/js/devices.js?v=1.0.6.56&r=cloud53a"></script>
 <script src="static/js/cloud.js?v=1.0.6.56&r=audit39a"></script>
 <script src="static/js/app/alice.js?v=1.0.6.56&r=audit39a"></script>
-<script src="static/js/app/smarthome.js?v=1.0.6.56&r=expose1"></script>
+<script src="static/js/app/smarthome.js?v=1.0.6.56&r=homekit1"></script>
+<script src="static/js/app/homekit.js?v=1.0.6.56&r=homekit1"></script>
 
 <div id="dev-modal" class="dev-modal" hidden>
   <div class="dev-modal-backdrop" id="dev-modal-backdrop"></div>

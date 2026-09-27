@@ -173,6 +173,23 @@ wipe_alice_enrollment() {
     rm -f "$root/etc/systemd/system/multi-user.target.wants/sa02m-alice-client.service"
 }
 
+# HomeKit bridge identity (contract §7): the pairing store is the accessory key
+# and the paired iPhones. Contents go, the dirs stay. A symlinked conf is
+# dropped, never read through (sed -i would copy its target into the image);
+# an absent conf reads as disabled.
+wipe_homekit_identity() {
+    local root=$1
+    rm -f "$root/var/lib/sa02m-homekit"/* \
+          "$root/var/lib/sa02m-homekit"/.hk-*
+    if [ -L "$root/etc/sa02m-homekit/sa02m-homekit.conf" ]; then
+        rm -f "$root/etc/sa02m-homekit/sa02m-homekit.conf"
+    elif [ -f "$root/etc/sa02m-homekit/sa02m-homekit.conf" ]; then
+        sed -i "s/^[[:space:]]*[Ee][Nn][Aa][Bb][Ll][Ee][Dd][[:space:]]*[=:].*/enabled = false/" \
+            "$root/etc/sa02m-homekit/sa02m-homekit.conf"
+    fi
+    rm -f "$root/etc/systemd/system/multi-user.target.wants/sa02m-homekit.service"
+}
+
 # RuntimeWatchdogSec — 15s из эталона etc/systemd/sa02m-watchdog.conf (cap
 # sun4i-wdt = 16s). ВНИМАНИЕ: правим system.conf НАПРЯМУЮ, а не drop-in, — это
 # свежезаписанный dd-образ, каталога system.conf.d в нём может ещё не быть.
@@ -227,6 +244,7 @@ done
 
 wipe_cloud_enrollment "$MNT"
 wipe_alice_enrollment "$MNT"
+wipe_homekit_identity "$MNT"
 
 sync
 umount "$MNT"

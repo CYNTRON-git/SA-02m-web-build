@@ -998,3 +998,63 @@ class TestFanModeReachesEveryConverterCallSite(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class TestCatalogueItems(unittest.TestCase):
+    """`catalogue_items()` (1.0.6.55): the per-profile catalogue for a
+    non-Yandex consumer (the HomeKit bridge) — the `_items` filter, deep
+    copies, no `alice_visible` filtering, no scene rows off the yandex
+    profile."""
+
+    DOC = {
+        "rooms": [],
+        "devices": [
+            {
+                "id": "ahu",
+                "name": "AHU",
+                "type": "devices.types.ventilation",
+                "alice_visible": False,
+                "capabilities": [dict(_ON_OFF, mqtt=MODBUS_DO_TOPIC)],
+                "properties": [
+                    {
+                        "type": "devices.properties.float",
+                        "mqtt": "/devices/dtv-COM2-1/controls/t_return",
+                        "cloud_only": True,
+                        "parameters": {"instance": "temperature",
+                                       "unit": "unit.temperature.celsius"},
+                    },
+                    {
+                        "type": "devices.properties.float",
+                        "mqtt": "/devices/dtv-COM2-1/controls/t_supply",
+                        "parameters": {"instance": "temperature",
+                                       "unit": "unit.temperature.celsius"},
+                    },
+                ],
+            },
+        ],
+    }
+
+    def test_profile_other_than_cloud_drops_cloud_only(self):
+        reg = DeviceRegistry(self.DOC, profile="homekit")
+        items = reg.catalogue_items()
+        self.assertEqual([row[0] for row in items], ["ahu"])
+        _did, dev, caps, props = items[0]
+        self.assertEqual(len(caps), 1)
+        self.assertEqual([p["mqtt"] for p in props],
+                         ["/devices/dtv-COM2-1/controls/t_supply"])
+        # alice_visible is Yandex policy — not filtered here, carried through.
+        self.assertIs(dev["alice_visible"], False)
+
+    def test_cloud_profile_keeps_cloud_only(self):
+        reg = DeviceRegistry(self.DOC, profile=C.PROFILE_CLOUD)
+        props = reg.catalogue_items()[0][3]
+        self.assertEqual(len(props), 2)
+
+    def test_returns_copies(self):
+        reg = DeviceRegistry(self.DOC, profile="homekit")
+        _did, dev, caps, _props = reg.catalogue_items()[0]
+        dev["name"] = "mutated"
+        caps[0]["mqtt"] = "/devices/x/controls/y"
+        again = reg.catalogue_items()[0]
+        self.assertEqual(again[1]["name"], "AHU")
+        self.assertEqual(again[2][0]["mqtt"], MODBUS_DO_TOPIC)

@@ -1,0 +1,32 @@
+# sa02m-homekit venv lock: the COMPLETE closure, hash-pinned, wheels only.
+# Why these versions, the evidence, and the install contract:
+# docs/decisions/homekit-home-connect.md (G1). Install ONLY as
+#   python3 -m venv --system-site-packages /opt/sa02m-homekit-venv
+#   /opt/sa02m-homekit-venv/bin/pip install --no-deps -r requirements.lock
+# --no-deps is required: cryptography declares cffi>=2.0.0, PyPI has no
+# armv7l cffi wheel, and the runtime needs only the C module _cffi_backend
+# from apt python3-cffi-backend. Without --no-deps pip fails closed.
+# Each hash line: manylinux armv7l (the board) and, where the wheel is not
+# pure Python, manylinux x86_64 (CI / dev hosts).
+--require-hashes
+--only-binary=:all:
+
+chacha20poly1305-reuseable==0.13.2 \
+    --hash=sha256:c7dba7c3604a9fa51bcfef9e4bfdaa3bfaadd88b6c5436a27be1c7e9c4081048
+cryptography==50.0.1 \
+    --hash=sha256:359e62deae718bce96170e223fdcb6357e4fbd3bb7a3a75f4430763532560e49 \
+    --hash=sha256:51593d180cf6d179bde5c5d065bed81386b1f381656ae7d042b7ffc87a9895ad
+h11==0.16.0 \
+    --hash=sha256:63cf8bbe7522de3bf65932fda1d9c2772064ffb3dae62d55932da54b31cb6c86
+hap-python==5.0.0 \
+    --hash=sha256:c1ca3abc68adbfb0a4a50be3fff2399ab7ed7ac3d91f66f4e9d9d26037c04ed7
+ifaddr==0.2.0 \
+    --hash=sha256:085e0305cfe6f16ab12d72e2024030f5d52674afad6911bb1eee207177b8a748
+orjson==3.12.0 \
+    --hash=sha256:2d3a9da945a4d96ae758fdaaca56742e6b73b6fd554c5d8876f252a6dad70b83 \
+    --hash=sha256:1192a7021b6d071aaf909864f6e924d6a2675ca360485b972b8401749311750b
+segno==1.6.6 \
+    --hash=sha256:28c7d081ed0cf935e0411293a465efd4d500704072cdb039778a2ab8736190c7
+zeroconf==0.151.3 \
+    --hash=sha256:b76cdefeb7ebe5a3cd8cdd0b1761113d5a64e3031c38c1de873a289ced574eff \
+    --hash=sha256:bbd2b73902a44426080190d653fa35638a93b6c6725c2be76888b4b614bc0b48

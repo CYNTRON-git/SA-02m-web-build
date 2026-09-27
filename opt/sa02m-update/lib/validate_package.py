@@ -55,6 +55,10 @@ PRESERVE_PATHS: Tuple[str, ...] = (
     "/etc/sa02m-alice-client.conf",
     "/etc/sa02m-alice-devices.conf",
     "/var/lib/sa02m-alice/",
+    # HomeKit bridge: the operator's conf and the pairing store
+    # (docs/contracts/homekit-bridge.md §13-§14).
+    "/etc/sa02m-homekit/",
+    "/var/lib/sa02m-homekit/",
 )
 
 _DST_PREFIX_RES = (

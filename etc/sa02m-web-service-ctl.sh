@@ -200,6 +200,14 @@ service_present() {
         mqtt-telemetry)
             [ -x /opt/sa02m-modbus-mqtt/sa02m_telemetry.py ] && return 0
             ;;
+        homekit)
+            # Installed ⇔ the install.sh footprint (scripts/06c-homekit.sh): the
+            # venv interpreter and the system user. OTA delivers the unit file
+            # to every board, and a unit whose User= does not exist can never
+            # start — without this the list would offer a dead «Пуск».
+            [ -x /opt/sa02m-homekit-venv/bin/python ] || return 1
+            id -u sa02m-homekit >/dev/null 2>&1 || return 1
+            ;;
     esac
     _old_ifs=$IFS
     IFS=,
@@ -369,12 +377,28 @@ set_client_enabled($([ "$_val" = true ] && echo True || echo False))
 " >>"$LOG" 2>&1 || echo "$(date '+%Y-%m-%d %H:%M:%S') sa02m-web-service-ctl: alice client_enabled=${_val} write FAILED" >>"$LOG" 2>&1
 }
 
+# homekit: same shape as alice — the daemon exits 0 (standby) while
+# enabled=false in /etc/sa02m-homekit/sa02m-homekit.conf, so Пуск/Стоп sync the
+# flag through its one home (sa02m_homekit.config — the code path the HomeKit
+# card's enable/disable uses). Bounded; a failed write is logged and the start
+# then fails honestly on the runtime-active check.
+homekit_sync_enabled() {
+    _val=$1  # true|false
+    PYTHONPATH=/opt/sa02m-homekit timeout 15 python3 -c "
+from sa02m_homekit import config
+c = config.load()
+c.enabled = $([ "$_val" = true ] && echo True || echo False)
+config.save(c)
+" >>"$LOG" 2>&1 || echo "$(date '+%Y-%m-%d %H:%M:%S') sa02m-web-service-ctl: homekit enabled=${_val} write FAILED" >>"$LOG" 2>&1
+}
+
 # id | UI label | candidate units (first existing wins)
 # alice: plain Type=simple systemd unit (no init.d/SysV shim, no COM lease) —
 # the generic present/resolve/list path handles it; not svc_is_installable, so
 # it shows Пуск/Стоп like mosquitto/mqtt-bridge (install-time-only overlay).
 SERVICE_DEFS=$(cat <<'SVC_DEFS'
 alice|Яндекс Алиса|sa02m-alice-client.service
+homekit|Apple HomeKit|sa02m-homekit.service
 docker|Docker|docker.service
 codesys|CODESYS|codesyscontrol.service,codesys.service,CODESYSControl.service,CODESYSControlRuntime.service
 mplc4|MPLC4|mplc4.service
@@ -707,6 +731,9 @@ cmd_stop() {
     if [ "$_id" = "alice" ]; then
         alice_sync_client_enabled false
     fi
+    if [ "$_id" = "homekit" ]; then
+        homekit_sync_enabled false
+    fi
     if [ -n "$_u" ]; then
         sc_run_slow stop "$_u" >>"$LOG" 2>&1 || true
         sc_run_slow disable "$_u" >>"$LOG" 2>&1 || true
@@ -776,6 +803,9 @@ cmd_start() {
     fi
     if [ "$_id" = "alice" ]; then
         alice_sync_client_enabled true
+    fi
+    if [ "$_id" = "homekit" ]; then
+        homekit_sync_enabled true
     fi
     if [ -n "$_u" ]; then
         sc_run_slow unmask "$_u" >>"$LOG" 2>&1 || true
