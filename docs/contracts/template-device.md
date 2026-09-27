@@ -33,6 +33,10 @@
   # offline_after_fails, backoff_base_s, backoff_max_s
 ```
 
+Устройство-шаблон можно опрашивать и по сети Ethernet (Modbus TCP): вместо
+`port`/`baudrate` запись несёт `transport: tcp`, `host`, `tcp_port` —
+грамматика, коды отказов и пределы в `docs/contracts/bridge-modbus-tcp.md`.
+
 `template` — **bare name**; резолвер ищет `config-<name>.json`, затем
 `<name>.json` в каталоге шаблонов. Каталог: `templates/` рядом с
 `bridge_template.py` (на устройстве `/opt/sa02m-modbus-mqtt/templates/`),
@@ -125,7 +129,8 @@
 Опрос — только классический (v1): `fmb_event_ranges()` наследует `[]`, Fast
 Modbus для шаблонов не арминится. Инвариант аренды порта RS-485 унаследован
 структурно — `TemplatePoller` не открывает порт, а пользуется FC-обёртками
-`DevicePoller` (`sa02m-domain.md ## Subsystems`).
+`DevicePoller` (`sa02m-domain.md ## Subsystems`). Устройство по Modbus TCP
+последовательного порта не касается вовсе (`docs/contracts/bridge-modbus-tcp.md` §1).
 
 ## 6. Ростер RS-485
 
@@ -144,6 +149,8 @@ MQTT против `FakeSerial`), а НЕ соответствие реально
 Оператор не подтвердит показания на реальном устройстве.
 
 ## 8. Ограничение последовательной линии: только 8N1 (v1)
+
+Раздел касается только RS-485; у устройства по Modbus TCP параметров линии нет.
 
 Мост открывает COM-порт **жёстко 8N1** (`bridge_serial.py`: `parity=NONE,
 stopbits=ONE`), поле для parity/stopbits в YAML НЕ поддерживается. Задаётся только

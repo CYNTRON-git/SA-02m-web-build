@@ -79,7 +79,7 @@ background set `storage,time,uptime,network,load,system,services,hardware`
 |---|---|---|---|
 | Сведения (dashboard) | `app/status.js` apply*/render* | `status.cgi` parts | `/proc`, `sa02m-web-service-ctl.sh list` |
 | Сеть / Время | `app/forms.js` (static-IP toggles per iface) | `config.cgi`, `apply.cgi` | ifupdown/netplan per installer |
-| MQTT | `mqtt.js` | `mqtt_*.cgi` | mosquitto (1883 local / 1884 external+auth), `sa02m-modbus-mqtt` bridge |
+| MQTT | `mqtt.js` | `mqtt_*.cgi` | mosquitto (1883 local / 1884 external+auth), `sa02m-modbus-mqtt` bridge (+ Modbus TCP for `template`/`carel`, `docs/contracts/bridge-modbus-tcp.md`) |
 | Устройства (ДТВ / СЭ / MR AI / Carel / LED) | `devices.js` | nginx `/api/devices*` → `sa02m-devices-api` `:8765` (stand 1.135: gunicorn `sa02m-stand-api` owns the port; `11-devices.sh` restarts it when active) | `opt/sa02m-devices` — live from the MQTT cache, SQLite archive (`sa02m-devices-logger`); Carel `kind=carel`, LED type 120. Contracts: `devices-mr-history.md`, `carel-ahu.md`, `led-mb2ws.md`. |
 | Устройства RS-485 (flasher) | `flasher.js` (reconnect state via `sessionStorage`, irreversible-flash guard) | `flasher` daemon HTTP + CGI | `sa02m-flasher.service` (Python), MR-02m/DTV/CE-02m-3/Carel/LED. LED settings window backend exists; the flasher tab UI is not drawn yet. Bus-mode/BACnet ops (register 122 selector, MS/TP verify, in-band recover — 1.0.5.65) run as daemon jobs under the same COM lease; contract `docs/contracts/web-bus-mode-bacnet.md`, firmware seam in the sibling MR-02m/DTV `bus-protocol.md`. |
 | Шлюз RS-485 | `gateway.js` (builds its own DOM; COM1..COM5 sub-nav dots) | `gateway_*.cgi` | `sa02m-gateway.yaml` (Modbus TCP / RTU-over-TCP / transparent) |

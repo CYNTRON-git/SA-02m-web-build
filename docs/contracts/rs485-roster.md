@@ -42,6 +42,9 @@
 - `ours[].online`: `true`/`false` только у живого источника; у `scan` — `null`.
 - `third_party.online`: `null`, когда порт не имеет живого источника (нельзя
   показывать ложный ноль онлайна вместо неизвестности).
+- Устройства моста, опрашиваемые по Modbus TCP (`transport: tcp`), на линии
+  RS-485 не стоят: мост не пишет их в свой `_roster.json`, и в ростер они не
+  попадают (`docs/contracts/bridge-modbus-tcp.md` §1).
 
 ## 2. `status.cgi?part=rs485` — аддитивное поле `modules`
 

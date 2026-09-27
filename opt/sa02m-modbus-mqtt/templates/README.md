@@ -14,11 +14,14 @@ family class. Contract + supported schema: `docs/contracts/template-device.md`.
 - `config-mp02-ahu.json` (`template: mp02-ahu`) — the CYNTRON **MP-02** PLC
   running its air-handling-unit (AHU / ПВУ) program, 23 controls. Authored by
   the MP-02 firmware team from their own register map, not a Wiren Board file
-  (source: MP-02 firmware repo `CYNTRON-git/PLC_STM32F427`,
+  (source: MP-02 firmware repo `CYNTRON-git/PLC_STM32F427` — a **private**
+  repository, readable by CYNTRON staff only —
   `integrations/sa02m/config-mp02-ahu.json` (their PR #33)); the register
   map's one home is that repo's `docs/MODBUS_MAP.md` — not restated here.
   What bites an operator:
-  - Line: RS-485 **19200 8N1, address 1** (MP-02 defaults).
+  - Line: RS-485 **19200 8N1, address 1** (MP-02 defaults), or Ethernet —
+    Modbus TCP, unit 1 (`transport: tcp`; grammar and limits:
+    `docs/contracts/bridge-modbus-tcp.md`).
   - The setpoints `temp_setpoint` / `humidity_setpoint` / `fan_speed_manual`
     (holding 190…192, int16 = value ×10) and `run` (coil 16) are the MP-02
     **operator window** — they need MP-02 firmware with the operator window
@@ -68,6 +71,10 @@ looks for `config-<name>.json` then `<name>.json` in this dir. Example:
 # common 9600 **8N2** factory line is NOT supported in v1 and will not answer
 # (see docs/contracts/template-device.md §8).
 ```
+
+A template device can also be polled over Ethernet (Modbus TCP): the entry
+carries `transport: tcp`, `host`, `tcp_port` instead of `port`/`baudrate` —
+`docs/contracts/bridge-modbus-tcp.md` is the one home of that grammar.
 
 Only a `[A-Za-z0-9._-]+` name is accepted (no path separators, no traversal); a
 name that resolves to no file leaves that one device idle and logs an error —
