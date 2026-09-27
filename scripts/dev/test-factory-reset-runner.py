@@ -36,14 +36,18 @@ temp name swapped between mkstemp and rename).
 
   B1 clean reset: the backup file exists, 0600 in a 0700 dir, is the whole
      restorable archive (manifest first, every entry present); the log holds
-     no gzip bytes and is 0600; transaction.json is 0644 (the CGI reads it)
+     no gzip bytes and is 0600; transaction.json is 0644 (the CGI reads it);
+     the state dir, locked to 0755 for the run, is given its 0775 back
   B2/B3 a failing / garbage-emitting helper aborts the reset (E_BACKUP),
      nothing reset, no partial archive left
-  B4 an old log holding a backup stream is truncated and made 0600
+  B4 an old log holding a backup stream is truncated, made 0600, and the log
+     says so
   S1/S2 a symlinked log / lock: the victim is untouched
   S3 a transaction id with `../` is refused; nothing is created outside
   S4 a symlinked transaction.json: the victim's JSON never lands in the
      transaction the CGI serves
+  S5 a foreign entry in the state dir (a file planted as `rollback`): refused
+     before any work, and the dir's 0775 is given back all the same
   A1 a symlinked Alice conf: the victim is untouched and the reset refuses
      (and rolls back) instead of writing through it
   A2 with no client template, a symlinked client conf is refused, never
@@ -66,6 +70,7 @@ temp name swapped between mkstemp and rename).
   H6 a reset that fails its own verify keeps the pairings (the erase runs
      only after the reversible part verified)
   H7 no trusted package template: `enabled = false` forced, the rest kept
+  H7b the same with the key spelled `Enabled:` (configparser reads it): forced
   T  the runner's trusted-path resolver is byte-identical to the block in
      etc/sa02m-web-backup.sh (a third twin; no root script can import another)
   P  the embedded helper compiles
@@ -299,6 +304,18 @@ def log_is_clean(sbx: Sandbox) -> tuple[bool, str]:
     return not probs, ", ".join(probs) or "clean"
 
 
+def reach_late_steps(sbx: Sandbox) -> None:
+    """Drop the interfaces.d templates (the runner skips a missing template) so
+    a runner still carrying the pre-fix basename-glob bug (G) reaches the Alice
+    step and the end of the run instead of stopping at eth0.conf — without it
+    the A cases would pass on 485f385 for the wrong reason, and H1 would fail
+    there for the wrong one. B2–B4 and H2–H7b use it for the same reason;
+    B1 keeps the templates so one clean run still reinstalls them end to end
+    (on 485f385 B1a/B1c–B1e still fail for their own reasons)."""
+    for n in ("eth0.conf", "eth1.conf"):
+        (sbx.cur / "templates/etc/network/interfaces.d" / n).unlink(missing_ok=True)
+
+
 # ── G. the lists' basename glob (the SHIPPED path_matches_glob, run by bash) ─
 print("── G. wipe/preserve list globs ──")
 mg = re.search(r"^path_matches_glob\(\) \{\n.*?^\}\n", RUNNER_TXT, re.S | re.M)
@@ -357,11 +374,15 @@ check(clean, "B1c the log holds no backup stream and is root-only", f"B1c log: {
 tm = stat.S_IMODE(os.lstat(s.state / "transaction.json").st_mode)
 check(tm == 0o644, "B1d transaction.json is 0644 (the status CGI reads it as www-data)",
       f"B1d transaction.json is {tm:o} — the status CGI (www-data) cannot read the progress")
+sm = stat.S_IMODE(os.lstat(s.state).st_mode)
+check(sm == 0o775, "B1e the state dir is given its 0775 back (the CGI queues the next job there)",
+      f"B1e the state dir is left {sm:o} — the factory CGI cannot write the next transaction until reboot")
 s.cleanup()
 
 for tag, body, what in (("b2", "#!/bin/sh\nprintf '\\037\\213partial'\nexit 1\n", "a failing helper"),
                         ("b3", "#!/bin/sh\necho 'not an archive'\nexit 0\n", "a helper emitting garbage")):
     s = Sandbox(tag)
+    reach_late_steps(s)
     stub = s.sb / "bin-stub.sh"
     stub.write_text(body, encoding="utf-8")
     os.chmod(stub, 0o755)
@@ -375,12 +396,14 @@ for tag, body, what in (("b2", "#!/bin/sh\nprintf '\\037\\213partial'\nexit 1\n"
     s.cleanup()
 
 s = Sandbox("b4")
+reach_late_steps(s)
 s.log.write_bytes(b"2026-01-01 old line\n" + gzip.compress(b"SECRET-HT stream") + b"\n")
 os.chmod(s.log, 0o644)
 rc = s.run()
 clean, why = log_is_clean(s)
-check(clean and rc == 0, "B4 an old log holding a backup stream is truncated and made 0600",
-      f"B4 old contaminated log: {why} (rc={rc})")
+said = s.log.is_file() and b"log truncated by the factory-reset runner" in s.log.read_bytes()
+check(clean and said and rc == 0, "B4 an old log holding a backup stream is truncated, made 0600, and says so",
+      f"B4 old contaminated log: {why}, truncation noted in the log={said} (rc={rc})")
 s.cleanup()
 
 # ── S. names in the state dir ───────────────────────────────────────────────
@@ -423,9 +446,21 @@ check(snap(v) == before and not leaked, "S4 a symlinked transaction: its target 
       f"S4 victim changed={snap(v) != before}, target content copied into transaction.json={leaked}")
 s.cleanup()
 
+s = Sandbox("s5")
+(s.state / "rollback").write_text("planted\n", encoding="utf-8")
+rc = s.run()
+t = s.txn()
+sm = stat.S_IMODE(os.lstat(s.state).st_mode)
+check(rc != 0 and t.get("error_code") == "E_INTERNAL" and not s.htpasswd_reset() and sm == 0o775,
+      "S5 a foreign entry in the state dir: refused before any work, the dir's 0775 given back",
+      f"S5 rc={rc} code={t.get('error_code')} htpasswd_reset={s.htpasswd_reset()} state dir {sm:o} "
+      f"({s.why()})")
+s.cleanup()
+
 # ── A. the www-data-writable Alice conf dir ─────────────────────────────────
 print("── A. /etc/sa02m-alice (root:www-data 0770) ──")
 s = Sandbox("a1")
+reach_late_steps(s)
 v = victim(s.sb)
 before = snap(v)
 dst = s.alice / "sa02m-alice-client.conf"
@@ -440,6 +475,7 @@ check(rc != 0 and t.get("error_code") == "E_APPLY" and not s.htpasswd_reset(),
 s.cleanup()
 
 s = Sandbox("a2")
+reach_late_steps(s)
 (s.cur / "templates/etc/sa02m-alice/sa02m-alice-client.conf").unlink()
 v = victim(s.sb, body=b"client_enabled = true\nVICTIM-SECRET\n")
 before = snap(v)
@@ -453,8 +489,18 @@ check(snap(v) == before and not copied and rc != 0,
       f"A2 rc={rc}, victim changed={snap(v) != before}, victim bytes copied into the 0770 dir as {copied}")
 s.cleanup()
 
-if IS_ROOT:
+def has_group(name: str) -> bool:
+    try:
+        import grp
+        grp.getgrnam(name)
+        return True
+    except KeyError:
+        return False
+
+
+if IS_ROOT and has_group("www-data"):
     s = Sandbox("a3")
+    reach_late_steps(s)
     v = victim(s.sb)
     before = snap(v)
     real_install = shutil.which("install") or "/usr/bin/install"
@@ -462,15 +508,19 @@ if IS_ROOT:
 "{real_install}" "$@" || exit $?
 last="${{@: -1}}"
 case "$last" in
-  {s.alice}/*.tmp.*) rm -f -- "$last"; ln -s "{v}" "$last" ;;
+  {s.alice}/*.tmp.*) rm -f -- "$last"; ln -s "{v}" "$last"; echo swapped >> "{s.sb}/a3-swapped" ;;
 esac
 """)
     s.run()
-    check(snap(v) == before, "A3 temp name swapped for a symlink after staging: the victim's owner/mode stay put",
+    fired = (s.sb / "a3-swapped").exists()
+    check(snap(v) == before,
+          "A3 temp name swapped for a symlink after staging: the victim's owner/mode stay put"
+          + ("" if fired else " (the runner stages no name-addressed temp at all; the window is U1's)"),
           f"A3 the runner chowned through the swapped temp name: victim {before[1:]} -> {snap(v)[1:]}")
     s.cleanup()
 else:
-    skip("A3 temp-name swap race: an owner change is only observable as root (non-root host)")
+    skip("A3 temp-name swap race: an owner change is only observable as root with a www-data group"
+         f" (this run: {'root' if IS_ROOT else 'not root'}, www-data group {'present' if has_group('www-data') else 'absent'})")
 
 # ── U1 the swap window inside fr_safe ───────────────────────────────────────
 m = re.search(r"^IFS= read -r -d '' FR_SAFE_PY <<'PY' \|\| true\n(.*?)^PY$", RUNNER_TXT, re.S | re.M)
@@ -524,6 +574,7 @@ else:
 # ── H. HomeKit (Q-F: factory reset ERASES the pairings) ─────────────────────
 print("── H. HomeKit bridge clear-list ──")
 s = Sandbox("h1")
+reach_late_steps(s)
 rc = s.run()
 store_left = sorted(p.name for p in s.hk_var.iterdir()) if s.hk_var.is_dir() else ["<dir gone>"]
 check(rc == 0 and s.hk_var.is_dir() and not s.hk_var.is_symlink() and not store_left,
@@ -542,6 +593,7 @@ check(not (s.hk_run / "setup.json").exists(), "H1d the stale setup code is remov
 s.cleanup()
 
 s = Sandbox("h2")
+reach_late_steps(s)
 (s.sb / "hk-stuck").write_text("1", encoding="utf-8")
 rc = s.run()
 conf_back = s.hk_conf.is_file() and b"enabled = true" in s.hk_conf.read_bytes()
@@ -553,6 +605,7 @@ check(rc != 0 and s.txn().get("error_code") == "E_APPLY" and (s.hk_var / "state.
 s.cleanup()
 
 s = Sandbox("h3")
+reach_late_steps(s)
 v = victim(s.sb)
 vdir = s.sb / "outside/vdir"
 vdir.mkdir()
@@ -570,6 +623,7 @@ check(rc == 0 and not left and snap(v) == before and snap(vdir / "keep") == befo
 s.cleanup()
 
 s = Sandbox("h4")
+reach_late_steps(s)
 v = victim(s.sb)
 before = snap(v)
 s.hk_conf.unlink()
@@ -581,6 +635,7 @@ check(rc != 0 and snap(v) == before and (s.hk_var / "state.json").exists(),
 s.cleanup()
 
 s = Sandbox("h5")
+reach_late_steps(s)
 shutil.rmtree(s.hk_var)
 shutil.rmtree(s.etc / "sa02m-homekit")
 rc = s.run()
@@ -590,6 +645,7 @@ check(rc == 0 and s.done() and "sa02m-homekit" not in s.systemctl_log(),
 s.cleanup()
 
 s = Sandbox("h6")
+reach_late_steps(s)
 (s.cur / "templates/etc/nginx/.htpasswd").write_text("nobody:x\n", encoding="utf-8")
 rc = s.run()
 check(rc != 0 and s.txn().get("error_code") == "E_HEALTH" and (s.hk_var / "state.json").exists(),
@@ -598,12 +654,26 @@ check(rc != 0 and s.txn().get("error_code") == "E_HEALTH" and (s.hk_var / "state
 s.cleanup()
 
 s = Sandbox("h7")
+reach_late_steps(s)
 shutil.rmtree(s.sb / "opt/sa02m-homekit")
 rc = s.run()
 body = s.hk_conf.read_bytes() if s.hk_conf.is_file() else b""
 check(rc == 0 and b"enabled = false" in body and b"interface = eth1" in body and not any(s.hk_var.iterdir()),
       "H7 no package template: enabled = false forced, the rest kept, the store still erased",
       f"H7 rc={rc} conf={body!r} ({s.why()})")
+s.cleanup()
+
+s = Sandbox("h7b")
+reach_late_steps(s)
+shutil.rmtree(s.sb / "opt/sa02m-homekit")
+# configparser (the daemon's reader) takes the key in any case and `:` as well
+# as `=`: the forced value must reach every spelling the daemon would honour.
+s.hk_conf.write_text("[bridge]\nEnabled: true\ninterface = eth1\n", encoding="utf-8")
+rc = s.run()
+body = s.hk_conf.read_bytes() if s.hk_conf.is_file() else b""
+check(rc == 0 and b"true" not in body and b"enabled = false" in body.lower() and b"interface = eth1" in body,
+      "H7b no package template, `Enabled: true` spelling: forced to false too",
+      f"H7b rc={rc} conf={body!r} ({s.why()})")
 s.cleanup()
 
 # ── T. the resolver twin ────────────────────────────────────────────────────

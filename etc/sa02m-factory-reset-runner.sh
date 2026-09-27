@@ -290,8 +290,10 @@ def cmd_restore(src, dest):
 
 
 def cmd_force_key(dest, key, value):
-    """`key = value` on every `key =` line of an INI conf, rewritten through a
-    new file (never sed -i: that reads through a planted symlink)."""
+    """`key = value` on every line that sets `key` in an INI conf, rewritten
+    through a new file (never sed -i: that reads through a planted symlink).
+    Both readers are configparser, which takes the key in any case and `:` as
+    well as `=` — every spelling they honour is forced."""
     target, st = target_of(dest)
     if st is None:
         return
@@ -306,7 +308,7 @@ def cmd_force_key(dest, key, value):
     finally:
         os.close(fd)
     text = data.decode("utf-8", "surrogateescape")
-    pat = re.compile(r"^[ \t\r\f\v]*" + re.escape(key) + r"[ \t\r\f\v]*=.*$", re.M)
+    pat = re.compile(r"^[ \t\r\f\v]*" + re.escape(key) + r"[ \t\r\f\v]*[=:].*$", re.M | re.I)
     new = pat.sub(f"{key} = {value}", text)
     if new == text:
         return
@@ -610,6 +612,20 @@ sys.exit(main(sys.argv[1:]))
 PY
 fr_safe() { python3 -I -B -c "$FR_SAFE_PY" "$@"; }
 
+# prepare-statedir takes group write off $STATEDIR for the run, so nothing can
+# be planted in it while root works there; the CGI needs it back afterwards to
+# queue the next job (etc/tmpfiles.d/sa02m-update.conf: 0775 root:www-data, the
+# factory CGI mkstemps transaction.json there). release_statedir gives the mode
+# back on exit. It is read before the lock and carried across the self-copy
+# re-exec, which would otherwise read the already-locked 0755 and keep it.
+if [ "${SA02M_FACTORY_REEXEC:-}" = 1 ]; then
+  STATEDIR_MODE=${SA02M_FACTORY_STATEDIR_MODE:-}
+else
+  STATEDIR_MODE=$(stat -Lc '%a' "$STATEDIR" 2>/dev/null || true)
+fi
+case "$STATEDIR_MODE" in 755|775) ;; *) STATEDIR_MODE="" ;; esac
+export SA02M_FACTORY_STATEDIR_MODE="$STATEDIR_MODE"
+
 # Before anything is logged: the log, the lock and the transaction are names in
 # $STATEDIR. rc 3 = the dir itself unusable (nothing can be recorded there);
 # rc 4 = an entry in it is not the runner's own (recorded in the transaction).
@@ -639,6 +655,11 @@ with os.fdopen(fd, "w", encoding="utf-8") as f:
     os.fchmod(f.fileno(), 0o644)
 os.replace(tmp, path)
 PY
+    # rc 4 comes after the fchmod 0755 on a path resolved as trusted: give the
+    # mode back by name once the error is recorded, as release_statedir does on
+    # a normal exit, or the panel cannot queue a job until reboot (rc 3 never:
+    # that path is not trusted).
+    [ -z "$STATEDIR_MODE" ] || chmod "$STATEDIR_MODE" "$STATEDIR" 2>/dev/null || true
   fi
   exit 1
 fi
@@ -1125,7 +1146,7 @@ wipe_homekit_pairings() {
   # disable, usr/local/sbin/sa02m-homekit-web-trigger.sh).
   out=$(fr_safe remove-name "$HK_RUN_DIR" setup.json 2>&1) || log "WARN homekit: $out"
   [ -z "$out" ] || log "homekit: $out"
-  log "homekit: pairings erased, conf at the template (docs/contracts/homekit-bridge.md §14)"
+  log "homekit: pairings erased, bridge off (docs/contracts/homekit-bridge.md §14)"
 }
 
 verify_reset() {
@@ -1152,7 +1173,7 @@ verify_reset() {
 # the log. No fallback: an archive the restore cannot read, or an empty one, is
 # not the backup the reset promises — the reset stops instead.
 do_backup() {
-  local out=$1 msg
+  local out=$1 msg=""
   [ -x "$BACKUP_BIN" ] || fail E_BACKUP "backup helper $BACKUP_BIN missing — the mandatory backup cannot be taken"
   if ! timeout 300 "$BACKUP_BIN" 2>>"$LOGFILE" | fr_safe write-new "$out" 2>>"$LOGFILE"; then
     fr_safe discard "$out" >/dev/null 2>&1 || true
@@ -1297,6 +1318,19 @@ on_exit() {
     log "exiting with the imaging lock still held — releasing it"
     cleanup_imaging_lock || true
   fi
+  release_statedir
+}
+
+# Last act of the run: nothing is opened by name in $STATEDIR after this (the
+# next run's prepare-statedir re-checks whatever the CGI leaves there). The
+# path was resolved as trusted (root-only parent) before the run, so chmod by
+# name cannot be redirected.
+release_statedir() {
+  [ -n "$STATEDIR_MODE" ] || return 0
+  if ! chmod "$STATEDIR_MODE" "$STATEDIR" 2>/dev/null; then
+    log "WARN could not give $STATEDIR its mode $STATEDIR_MODE back — the panel cannot queue a job until reboot (tmpfiles)"
+  fi
+  STATEDIR_MODE=""
 }
 trap on_exit EXIT
 trap 'exit 143' INT TERM

@@ -77,7 +77,8 @@ done
 # www-data reads AND writes client/devices confs directly (CGI atomic write —
 # hence the 0770 dir above). server.conf is 0640 root:www-data: www-data cannot
 # write the file, but through that 0770 dir it can delete or replace it by
-# name — the mode alone does not make it root-controlled.
+# name, and the Alice units read it as root — the mode alone does not make it
+# root-controlled.
 # That same 0770 lets www-data plant any name here, and chmod/chgrp follow a
 # symlink: a planted `sa02m-alice-client.conf -> /etc/sudoers.d/x` would get
 # group www-data + 0660 (root escalation). So root touches only a regular,
