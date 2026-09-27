@@ -6,7 +6,8 @@ interleaved EVENTS + POLLING). Split out of modbus_mqtt_bridge.py by the
 bridge decompose (backlog "Decompose worklist" — the entry was the
 fastest-growing module across three audits).
 
-NOT quite verbatim, and this is the whole of the difference: DevicePoller's
+At the split it was NOT quite verbatim, and this was the whole of the
+difference: DevicePoller's
 two references to the monolith's module globals are now qualified —
 get_port(...) reads bridge_serial.get_port(...) and WritebackWorker reads
 bridge_serial.WritebackWorker. Name resolution only — no logic change, and
@@ -14,6 +15,12 @@ every class body is otherwise byte-identical to the monolith. Note the
 asymmetry with bridge_fmb.py, which routes get_port through a shim on the
 entry module instead: patching modbus_mqtt_bridge.get_port reaches the FMB
 call sites but NOT these two. Nothing in production patches that name.
+
+Transport (1.0.6.56): a device's bus comes from bridge_bus.device_bus — the
+serial path exactly as before when the entry has no `transport`, or a Modbus
+TCP client (bridge_tcp) for `transport: tcp`. A TCP poller has
+port_path=None and never reaches bridge_serial.get_port, so it can never open,
+lease or report a COM port (docs/contracts/bridge-modbus-tcp.md).
 """
 
 from __future__ import annotations
@@ -22,7 +29,9 @@ import time
 import threading
 import logging
 
+import bridge_bus
 import bridge_serial
+import bridge_tcp
 from bridge_serial import ModbusSerial, WRITEBACK_POLL_GRACE_S
 from bridge_fmb import (
     FastModbusEventPortManager, FMB_INSURANCE_POLL_S,
@@ -37,8 +46,11 @@ class DevicePoller:
         self.cfg       = cfg
         self.pub       = pub
         self.device_id = cfg["id"]
-        self.port_path = cfg.get("port", "/dev/COM1")
-        self.baudrate  = int(cfg.get("baudrate", 115200))
+        self.bus       = bridge_bus.device_bus(cfg)
+        # RTU only; a TCP poller that ever fell back to a port path would
+        # open a COM line, so there is none to fall back to.
+        self.port_path = self.bus.port
+        self.baudrate  = self.bus.baudrate
         self.address   = int(cfg.get("address", 1))
         self._stop     = threading.Event()
         self._meta_ok  = False
@@ -88,13 +100,16 @@ class DevicePoller:
         return self._fmb_io_covered
 
     def get_port(self) -> ModbusSerial:
+        if self.bus.transport == bridge_bus.TRANSPORT_TCP:
+            return bridge_tcp.get_tcp_client(
+                self.bus.host, self.bus.tcp_port, self.bus.timeout_s)
         return bridge_serial.get_port(self.port_path, self.baudrate)
 
     # --- Writeback (очередь + worker, вне MQTT callback) ----------------------
 
     def _wb_submit(self, name: str, job) -> None:
-        key = f"{self.port_path}:{self.baudrate}"
-        bridge_serial.WritebackWorker.for_port(key).submit((self.device_id, name), job)
+        bridge_serial.WritebackWorker.for_port(self.bus.key).submit(
+            (self.device_id, name), job)
 
     def _wb_offline_skip(self, name: str) -> bool:
         """A3: устройство offline (meta/error=r) — не долбить шину записями."""
@@ -185,8 +200,17 @@ class DevicePoller:
             if self._online:
                 self._online = False
                 self.log.warning("device offline after %d failed reads — "
-                                  "backing off polling", self._fail_count)
+                                  "backing off polling%s", self._fail_count,
+                                  self._offline_where())
                 self.pub.device_online(self.device_id, False)
+
+    def _offline_where(self) -> str:
+        """TCP only: name the endpoint and unit id — a device that answers
+        another unit id (a Carel on 255) is otherwise offline with no clue.
+        Empty on RS-485, so the serial journal line is unchanged."""
+        if self.bus.transport != bridge_bus.TRANSPORT_TCP:
+            return ""
+        return " (%s unit %d)" % (self.bus.label, self.address)
 
     def classic_ready_for_fmb(self, min_ok: int = 2) -> bool:
         """True after a few successful classic reads (safe to send 0x18)."""
@@ -262,11 +286,16 @@ class PortCycleScheduler:
 
     def __init__(self, port_path: str, baudrate: int,
                  pollers: list[DevicePoller],
-                 fmb: FastModbusEventPortManager | None = None):
+                 fmb: FastModbusEventPortManager | None = None,
+                 line_stats=None):
+        """line_stats: the 60 s stats-line suffix source — None = the UART
+        counters of `port_path` (RS-485); a TCP bus passes its client's
+        TcpLineStats and `port_path` is then the host:port label."""
         self._port_path = port_path
         self._baudrate = baudrate
         self._pollers = pollers
         self._fmb = fmb
+        self._line_stats = line_stats
         self._stop = threading.Event()
         self._poll_idx = 0
         tag = port_path.replace("/dev/", "")
@@ -358,7 +387,8 @@ class PortCycleScheduler:
         stats_t = now
         # UART fe/brk/oe deltas per stats line — line-level evidence next to
         # the transaction errors (one /proc read per port per 60 s).
-        uart = bridge_serial.UartCounterDelta(self._port_path, logger=self._log)
+        uart = self._line_stats if self._line_stats is not None else \
+            bridge_serial.UartCounterDelta(self._port_path, logger=self._log)
 
         while not self._stop.is_set():
             now = time.monotonic()
