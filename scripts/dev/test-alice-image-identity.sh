@@ -54,19 +54,31 @@
 #   from the contract); H1/H1c every file carries AND calls the wipe; H2 per-site
 #   path-set equality (on-device: + /run, offline: + the wants link, - /run);
 #   H3 no recursion, the software never named; H4 the patch site's wipe and its
-#   fatal belt are unconditional and bare; H7 on-device systemctl bounded. HB
+#   fatal belt are unconditional and bare; H5 the `.hk-*` rows are the
+#   daemon's own TMP_PREFIX (read from its constants, and used to seed HB's
+#   sidecar); H7 on-device systemctl bounded. HB
 #   runs each shipped wipe on a paired donor (the receivers under bash AND dash):
 #   the state dir left empty but present, the conf read as disabled by the
 #   daemon's OWN parser (sa02m_homekit.config) with interface/port kept, the
 #   stop recorded BEFORE the store is removed, idempotent, a no-module rootfs
 #   untouched, `ENABLED : on` forced off, a symlinked conf dropped without its
-#   target being read or written. HB2 runs the patch site's belt: passes a
-#   wiped image and a no-module image, dies on each dirty dimension alone —
-#   including an ABSOLUTE wants link, which `[ -e ]` alone resolves on the host.
+#   target being read or written, a symlinked state dir dropped without being
+#   descended. HB2 runs the patch site's belt: passes a wiped image and a
+#   no-module image, dies on each dirty dimension alone — including an
+#   ABSOLUTE wants link, which `[ -e ]` alone resolves on the host, and a
+#   dangling link at the store, whose entry globs expand to nothing.
 #   RED observed 2026-09-27 with every site at HEAD 485f385: 29 FAIL, all in H
 #   (A/B/B2 still green). Mutations: each call commented out -> H1c/H4; the
 #   `.hk-*` glob commented out -> H2 + HB; the stop commented out -> H7 + HB
 #   ordering; the belt's `-L` dropped -> HB2 wantslink.
+#   A symlink AT the state dir (HB 'symlinked state dir', HB2 'dirlink'): the
+#   contents glob followed it and emptied the victim dir, dot-files included —
+#   on a mounted image an absolute link resolves on the imaging HOST. RED
+#   observed 2026-09-27 on the six copies at 2e806a3: 9 FAIL (8 HB runs, each
+#   victim dir emptied; HB2 passed a dangling link); GREEN with the `-L` guard.
+#   H5 reads the sidecar prefix from sa02m_homekit.constants.TMP_PREFIX: set
+#   to ".homekit-" on a scratch copy -> 10 FAIL (H5 + the sidecar surviving
+#   all 8 HB runs + HB2's clean image), with the sites unchanged.
 #
 # No root, no device, no image, no loop mount.
 set -u
@@ -973,6 +985,29 @@ done
 
 # ── HB — behavioural: the shipped HomeKit wipes against a paired donor ───
 HK_PKG="$HERE/opt/sa02m-homekit"
+
+# ── H5 — the sidecar glob is anchored at the daemon's OWN tmp prefix ─────
+# Every atomic write of the package names its temp file with
+# sa02m_homekit.constants.TMP_PREFIX (fsutil.atomic_write). The prefix is read
+# from that code home, never assumed: the gate's `.hk-*` rows (and so the
+# contract's and every site's, by H0/H2) must be exactly that prefix + `*`, and
+# HB seeds its torn-write sidecar under the READ prefix — so a renamed prefix
+# leaves a sidecar the shipped globs no longer reach and HB goes RED.
+HK_TMP_PREFIX=""
+if [ -n "$PY" ]; then
+    HK_TMP_PREFIX="$(PYTHONPATH="$HK_PKG" "$PY" -c 'from sa02m_homekit import constants as C; print(C.TMP_PREFIX)' 2>/dev/null)"
+fi
+case "$HK_TMP_PREFIX" in
+  ""|*[!A-Za-z0-9._-]*)
+    bad "(H5) TMP_PREFIX could not be read from sa02m_homekit.constants ('$HK_TMP_PREFIX') — the sidecar rows have no anchor"
+    HK_TMP_PREFIX=".hk-" ;;
+  *)
+    if printf '%s\n' "$HK_ONDEVICE_SET" | grep -qxF "/var/lib/sa02m-homekit/${HK_TMP_PREFIX}*"; then
+        ok "(H5) the sidecar glob is the daemon's own atomic-write prefix (${HK_TMP_PREFIX}*, sa02m_homekit.constants.TMP_PREFIX)"
+    else
+        bad "(H5) sa02m_homekit.constants.TMP_PREFIX is '$HK_TMP_PREFIX' but the clear-list glob is not '${HK_TMP_PREFIX}*' — a torn write of the pairing store survives every site"
+    fi ;;
+esac
 hk_seed() { # <root> <enabled-line>
     local r=$1 en=${2:-enabled = true}
     mkdir -p "$r/var/lib/sa02m-homekit" "$r/run/sa02m-homekit" "$r/etc/sa02m-homekit" \
@@ -981,7 +1016,7 @@ hk_seed() { # <root> <enabled-line>
     printf '{"dev-1":2}\n'                    > "$r/var/lib/sa02m-homekit/aids.json"
     printf '{"machine_id_sha256":"donor"}\n' > "$r/var/lib/sa02m-homekit/identity.json"
     # A torn atomic write of the pairing store: the same key under a dot-name.
-    printf '{"accessory_ltsk":"DONOR-LTSK"}\n' > "$r/var/lib/sa02m-homekit/.hk-Zq81xk.tmp"
+    printf '{"accessory_ltsk":"DONOR-LTSK"}\n' > "$r/var/lib/sa02m-homekit/${HK_TMP_PREFIX}Zq81xk.tmp"
     printf '{"state":"running"}\n'           > "$r/run/sa02m-homekit/status.json"
     printf '{"code":"111-22-333"}\n'          > "$r/run/sa02m-homekit/setup.json"
     printf '{"accessories":[]}\n'             > "$r/run/sa02m-homekit/projection.json"
@@ -1155,6 +1190,25 @@ hk_run_site() { # <label> <src> <form> [shell for offline: bash|sh]
     else
         bad "(HB/$lbl) symlinked conf: rc=$rc, victim identical=$([ "$(cksum < "$victim")" = "$vb" ] && echo yes || echo NO), conf name now: $(ls -l "$lk/etc/sa02m-homekit/" 2>&1 | tail -n +2 | tr '\n' ' ')"
     fi
+
+    # A symlink AT the state dir: the contents glob would descend it, and on a
+    # mounted image an absolute link resolves on the HOST running the capture
+    # (`rm -f <link>/*` empties a host directory). Dropped, never descended —
+    # the victim dir keeps every file, dot-files included; tmpfiles.d
+    # re-creates the real dir at boot, so the wipe creates nothing there.
+    local dl="$SANDBOX/hk-$1.dirlink" vdir="$SANDBOX/hk-$1.victimdir"
+    rm -rf "$dl" "$vdir"; mkdir -p "$dl" "$vdir"; hk_seed "$dl"
+    printf 'host-file\n' > "$vdir/precious"
+    printf 'host-dot\n'  > "$vdir/.hk-host.tmp"
+    rm -rf "$dl/var/lib/sa02m-homekit"
+    ln -s "$vdir" "$dl/var/lib/sa02m-homekit"
+    hk_run "$form" "$probe" "$dl" "$rec" "$sh" >/dev/null 2>&1; rc=$?
+    if [ "$rc" -eq 0 ] && [ -f "$vdir/precious" ] && [ -f "$vdir/.hk-host.tmp" ] \
+       && [ ! -e "$dl/var/lib/sa02m-homekit" ] && [ ! -L "$dl/var/lib/sa02m-homekit" ]; then
+        ok "(HB/$lbl) a symlinked state dir is dropped, never descended: the victim dir keeps its files"
+    else
+        bad "(HB/$lbl) symlinked state dir: rc=$rc, victim now: $(ls -A "$vdir" 2>&1 | tr '\n' ' '), link still there: $([ -L "$dl/var/lib/sa02m-homekit" ] && echo yes || echo no)"
+    fi
 }
 
 hk_run_site reset      "$RESET_SRC"       ondevice
@@ -1197,7 +1251,7 @@ else
     bash "$hk_aprobe" "$hk_bare" >/dev/null 2>&1 \
         && ok "(HB2) the HomeKit belt PASSES an image without the module (the factory image)" \
         || bad "(HB2) the HomeKit belt fails an image without the module — every factory capture would abort"
-    for one in state sidecar dotfile enabled wantslink wantsfile conflink; do
+    for one in state sidecar dotfile enabled wantslink wantsfile conflink dirlink; do
         d="$SANDBOX/hk-dirty-$one"; rm -rf "$d"; mkdir -p "$d"; hk_seed "$d"
         # clean first, then re-dirty exactly one dimension
         rm -f "$d/var/lib/sa02m-homekit"/* "$d/var/lib/sa02m-homekit"/.hk-* \
@@ -1205,7 +1259,7 @@ else
         sed -i 's/^enabled = true$/enabled = false/' "$d/etc/sa02m-homekit/sa02m-homekit.conf"
         case "$one" in
           state)     printf 'DONOR-LTSK\n' > "$d/var/lib/sa02m-homekit/state.json" ;;
-          sidecar)   printf 'DONOR-LTSK\n' > "$d/var/lib/sa02m-homekit/.hk-Zq81xk.tmp" ;;
+          sidecar)   printf 'DONOR-LTSK\n' > "$d/var/lib/sa02m-homekit/${HK_TMP_PREFIX}Zq81xk.tmp" ;;
           dotfile)   printf 'x\n' > "$d/var/lib/sa02m-homekit/.unknown-shape" ;;
           enabled)   sed -i 's/^enabled = false$/Enabled: Yes/' "$d/etc/sa02m-homekit/sa02m-homekit.conf" ;;
           # The real wants entry is an ABSOLUTE link: `-e` alone resolves it
@@ -1215,6 +1269,10 @@ else
           wantsfile) printf 'unit-wants-link\n' > "$d/etc/systemd/system/multi-user.target.wants/sa02m-homekit.service" ;;
           conflink)  rm -f "$d/etc/sa02m-homekit/sa02m-homekit.conf"
                      ln -s /nonexistent-on-this-host/conf "$d/etc/sa02m-homekit/sa02m-homekit.conf" ;;
+          # A dangling ABSOLUTE link at the store: its globs expand to
+          # nothing, so an entry loop alone passes it.
+          dirlink)   rmdir "$d/var/lib/sa02m-homekit"
+                     ln -s /nonexistent-on-this-host/hk "$d/var/lib/sa02m-homekit" ;;
         esac
         if bash "$hk_aprobe" "$d" >/dev/null 2>&1; then
             bad "(HB2) the HomeKit belt missed a dirty '$one' — that dimension is unguarded"

@@ -179,8 +179,15 @@ wipe_alice_enrollment() {
 # an absent conf reads as disabled.
 wipe_homekit_identity() {
     local root=$1
-    rm -f "$root/var/lib/sa02m-homekit"/* \
-          "$root/var/lib/sa02m-homekit"/.hk-*
+    # A symlink AT the store is dropped, never descended: on a mounted image an
+    # absolute link resolves on the HOST, and the glob would empty a host dir.
+    # tmpfiles.d re-creates the real dir at boot.
+    if [ -L "$root/var/lib/sa02m-homekit" ]; then
+        rm -f "$root/var/lib/sa02m-homekit"
+    else
+        rm -f "$root/var/lib/sa02m-homekit"/* \
+              "$root/var/lib/sa02m-homekit"/.hk-*
+    fi
     if [ -L "$root/etc/sa02m-homekit/sa02m-homekit.conf" ]; then
         rm -f "$root/etc/sa02m-homekit/sa02m-homekit.conf"
     elif [ -f "$root/etc/sa02m-homekit/sa02m-homekit.conf" ]; then

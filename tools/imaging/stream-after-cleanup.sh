@@ -163,9 +163,15 @@ wipe_homekit_identity() {
     # (fsutil.atomic_write) — a torn write of the pairing store is the same key
     # under another name, and `*` does not expand to dot-files. /run holds the
     # live setup code (setup.json) and the status.
-    rm -f /var/lib/sa02m-homekit/* \
-          /var/lib/sa02m-homekit/.hk-* \
-          /run/sa02m-homekit/*
+    # A symlink AT the store is dropped, never descended (the glob would empty
+    # whatever it points at); tmpfiles.d re-creates the real dir at boot.
+    if [ -L /var/lib/sa02m-homekit ]; then
+        rm -f /var/lib/sa02m-homekit
+    else
+        rm -f /var/lib/sa02m-homekit/* \
+              /var/lib/sa02m-homekit/.hk-*
+    fi
+    rm -f /run/sa02m-homekit/*
     # /etc/sa02m-homekit is root:www-data 0770: a symlink at the conf is never
     # the installer's, and sed -i would read through it as root — drop it
     # instead (an absent conf reads as disabled). Absent file: nothing to do.

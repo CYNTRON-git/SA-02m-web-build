@@ -115,8 +115,15 @@ wipe_homekit_identity() {
     # `.hk-*` is the atomic-write sidecar shape (fsutil.atomic_write): a torn
     # write of the pairing store is the same key under another name, and `*`
     # does not expand to dot-files.
-    rm -f "$root/var/lib/sa02m-homekit"/* \
-          "$root/var/lib/sa02m-homekit"/.hk-*
+    # A symlink AT the store is dropped, never descended: on a mounted image an
+    # absolute link resolves on the HOST, and the glob would empty a host dir.
+    # tmpfiles.d re-creates the real dir at boot.
+    if [ -L "$root/var/lib/sa02m-homekit" ]; then
+        rm -f "$root/var/lib/sa02m-homekit"
+    else
+        rm -f "$root/var/lib/sa02m-homekit"/* \
+              "$root/var/lib/sa02m-homekit"/.hk-*
+    fi
     # A symlink at the conf is never the installer's (the dir is root:www-data
     # 0770 on the board), and on a mounted image an absolute link resolves on
     # the HOST running this script — sed -i would copy a host file into the

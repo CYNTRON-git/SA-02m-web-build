@@ -196,8 +196,15 @@ wipe_homekit_identity() {
     # `.hk-*` is the atomic-write sidecar shape (fsutil.atomic_write): a torn
     # write of the pairing store is the same key under another name, and `*`
     # does not expand to dot-files.
-    rm -f "$root/var/lib/sa02m-homekit"/* \
-          "$root/var/lib/sa02m-homekit"/.hk-*
+    # A symlink AT the store is dropped, never descended: on a mounted image an
+    # absolute link resolves on the HOST, and the glob would empty a host dir.
+    # tmpfiles.d re-creates the real dir at boot.
+    if [ -L "$root/var/lib/sa02m-homekit" ]; then
+        rm -f "$root/var/lib/sa02m-homekit"
+    else
+        rm -f "$root/var/lib/sa02m-homekit"/* \
+              "$root/var/lib/sa02m-homekit"/.hk-*
+    fi
     # A symlink at the conf is never the installer's (the dir is root:www-data
     # 0770 on the board), and on a mounted image an absolute link resolves on
     # the HOST running this script — sed -i would copy a host file into the
@@ -218,6 +225,11 @@ wipe_homekit_identity() {
 # own machine-id binding would not regenerate the keys on the clone).
 assert_homekit_identity_clean() {
     local root=$1 f
+    # A link at the store itself: a dangling absolute one expands the entry
+    # globs below to nothing, so it is checked by name first.
+    if [ -L "$root/var/lib/sa02m-homekit" ]; then
+        die "image identity: /var/lib/sa02m-homekit is a symlink — the HomeKit pairing store must be a plain dir or absent"
+    fi
     # Nothing may remain in the state dir — not a whitelist of known names but
     # an empty one, so a sidecar shape nobody has invented yet also stops the
     # build. `-L` too: a dangling link is still an entry.
