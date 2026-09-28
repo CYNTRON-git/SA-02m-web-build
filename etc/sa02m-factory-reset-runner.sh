@@ -50,9 +50,9 @@ CMD="${1:-run}"
 
 # --- root file operations (fr_safe) ------------------------------------------
 # This runner is root and writes into directories others can write:
-# /etc/sa02m-alice, /etc/sa02m-homekit and /etc/sa02m-homeconnect are
-# root:www-data 0770 (any panel session plants any name there through
-# cmd_exec.cgi), /var/lib/sa02m-homekit and /var/lib/sa02m-homeconnect belong to
+# /etc/sa02m-alice is root:www-data 0771 and /etc/sa02m-homekit and
+# /etc/sa02m-homeconnect are www-data's own (any panel session plants any name
+# there through cmd_exec.cgi), /var/lib/sa02m-homekit and /var/lib/sa02m-homeconnect belong to
 # their daemons, and $STATEDIR is 0775 root:www-data (tmpfiles)
 # until prepare-statedir takes it. So nothing here chowns, chmods, seds or
 # copies BY NAME into those directories: every such write goes through fr_safe
@@ -70,7 +70,7 @@ import grp, gzip, json, os, pwd, re, stat, sys, tarfile, tempfile
 # >>> trusted-path resolver — twin: etc/sa02m-web-backup.sh and
 # etc/sa02m-restore-backup.sh carry this block byte-identical (row
 # alice-conf-homes, case 7t); neither root script can import the other.
-# Why: both run as root, and /etc/sa02m-alice is root:www-data 0770, so www-data
+# Why: both run as root, and /etc/sa02m-alice is root:www-data 0771, so www-data
 # (any panel session: cmd_exec.cgi) can create any name there. A name is
 # trusted only where nobody but root could have made it.
 class Unsafe(Exception):
@@ -141,9 +141,9 @@ class Refused(Exception):
 # sa02m-homeconnect.conf), never root:root 0755 — the CGI could not save its
 # conf into that.
 DIR_SPEC = {
-    "/etc/sa02m-alice": (0o770, "root", "www-data"),
-    "/etc/sa02m-homekit": (0o770, "root", "www-data"),
-    "/etc/sa02m-homeconnect": (0o770, "root", "www-data"),
+    "/etc/sa02m-alice": (0o771, "root", "www-data"),
+    "/etc/sa02m-homekit": (0o2750, "www-data", "sa02m-homekit"),
+    "/etc/sa02m-homeconnect": (0o2750, "www-data", "sa02m-homeconnect"),
 }
 NOFOLLOW_RD = os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK | os.O_CLOEXEC
 DIR_RD = os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW | os.O_CLOEXEC
@@ -494,7 +494,9 @@ def reset_conf(conf, pkg_dir, owner, kind):
         warn(f"{target}: no template — forcing enabled = false only")
         cmd_force_key(conf, "enabled", "false")
         return
-    replace_with(target, lambda out: out.write(body), 0o660, owner_ids(owner) or (st.st_uid, st.st_gid))
+    # 0640 www-data:<daemon>: the CGI owns it, the daemon reads it through its
+    # group (homekit-bridge.md §13, home-connect.md §11).
+    replace_with(target, lambda out: out.write(body), 0o640, owner_ids(owner) or (st.st_uid, st.st_gid))
     print(f"reset {target} to the package template (enabled = false)")
 
 
@@ -1208,7 +1210,7 @@ quiesce_homekit() {
   remember_if_active "$HK_UNIT"
   if [ -e "$HK_CONF" ] || [ -L "$HK_CONF" ]; then
     journal_prior "$HK_CONF"
-    out=$(fr_safe hk-reset-conf "$HK_CONF" "$HK_PKG_DIR" root:www-data 2>&1) || fail E_APPLY "HomeKit conf not reset: $out"
+    out=$(fr_safe hk-reset-conf "$HK_CONF" "$HK_PKG_DIR" www-data:sa02m-homekit 2>&1) || fail E_APPLY "HomeKit conf not reset: $out"
     [ -z "$out" ] || log "homekit: $out"
   fi
   timeout 20 systemctl stop "$HK_UNIT" >/dev/null 2>&1 || true
@@ -1222,7 +1224,7 @@ quiesce_homeconnect() {
   remember_if_active "$HC_UNIT"
   if [ -e "$HC_CONF" ] || [ -L "$HC_CONF" ]; then
     journal_prior "$HC_CONF"
-    out=$(fr_safe hc-reset-conf "$HC_CONF" "$HC_PKG_DIR" root:www-data 2>&1) || fail E_APPLY "Home Connect conf not reset: $out"
+    out=$(fr_safe hc-reset-conf "$HC_CONF" "$HC_PKG_DIR" www-data:sa02m-homeconnect 2>&1) || fail E_APPLY "Home Connect conf not reset: $out"
     [ -z "$out" ] || log "homeconnect: $out"
   fi
   timeout 20 systemctl stop "$HC_UNIT" >/dev/null 2>&1 || true

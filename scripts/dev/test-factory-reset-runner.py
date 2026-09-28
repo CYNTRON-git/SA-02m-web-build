@@ -6,7 +6,7 @@ the HomeKit bridge's pairings and the Home Connect sign-in (Operator decision
 Q-F). Quality row `factory-reset-runner`.
 
 Why it exists — the runner is root and works in directories others can write:
-  * /etc/sa02m-alice is root:www-data 0770 (any panel session plants any name
+  * /etc/sa02m-alice is root:www-data 0771 (any panel session plants any name
     there through cmd_exec.cgi). The runner staged its templates at the
     predictable `<dest>.tmp.$$`, then `chown`-ed that NAME (chown follows a
     symlink: swap the temp for a link to /etc/shadow and it became
@@ -51,13 +51,13 @@ temp name swapped between mkstemp and rename).
   A1 a symlinked Alice conf: the victim is untouched and the reset refuses
      (and rolls back) instead of writing through it
   A2 with no client template, a symlinked client conf is refused, never
-     read through (the old `sed -i` copied the victim into the 0770 dir)
+     read through (the old `sed -i` copied the victim into the group-writable dir)
   A3 the temp name swapped for a symlink right after it is staged (an
      `install` shim that wins the race every time): the victim's owner stays
      put. Observing an owner change needs root — non-root: SKIP, not a pass
   U1 fr_safe replace_with with the temp swapped after mkstemp: refused, the
      victim untouched, the planted link not left at the destination
-  H1 HomeKit: conf → the installer's seed bytes 0660 FIRST, the unit stopped
+  H1 HomeKit: conf → the installer's seed bytes 0640 FIRST, the unit stopped
      while the store still existed, then the store's every entry erased
      (dir kept), setup.json removed
   H2 a unit that will not stop: E_APPLY, the store intact, configs and the
@@ -71,7 +71,7 @@ temp name swapped between mkstemp and rename).
      only after the reversible part verified)
   H7 no trusted package template: `enabled = false` forced, the rest kept
   H7b the same with the key spelled `Enabled:` (configparser reads it): forced
-  C1 Home Connect: conf → the package's render() of the defaults 0660 FIRST
+  C1 Home Connect: conf → the package's render() of the defaults 0640 FIRST
      (the unit was stopped with the conf already disabled, so the daemon
      removes its retained topics), stopped while the tokens still existed,
      then the state dir's every entry erased (dir kept), link.json removed
@@ -540,7 +540,7 @@ check(rc != 0 and t.get("error_code") == "E_INTERNAL" and not s.htpasswd_reset()
 s.cleanup()
 
 # ── A. the www-data-writable Alice conf dir ─────────────────────────────────
-print("── A. /etc/sa02m-alice (root:www-data 0770) ──")
+print("── A. /etc/sa02m-alice (root:www-data 0771) ──")
 s = Sandbox("a1")
 reach_late_steps(s)
 v = victim(s.sb)
@@ -568,7 +568,7 @@ rc = s.run()
 copied = [p.name for p in s.alice.iterdir() if p.is_file() and not p.is_symlink() and b"VICTIM-SECRET" in p.read_bytes()]
 check(snap(v) == before and not copied and rc != 0,
       "A2 no client template: the symlinked client conf is refused, never read through",
-      f"A2 rc={rc}, victim changed={snap(v) != before}, victim bytes copied into the 0770 dir as {copied}")
+      f"A2 rc={rc}, victim changed={snap(v) != before}, victim bytes copied into the group-writable dir as {copied}")
 s.cleanup()
 
 def has_group(name: str) -> bool:
@@ -667,9 +667,15 @@ check("stop sa02m-homekit.service" in sl and "stop:store-present" in sl,
       "H1b the unit was stopped while the store still existed (stop before erase)",
       f"H1b systemctl calls: {sl.splitlines()}")
 conf_ok = s.hk_conf.is_file() and s.hk_conf.read_bytes() == HK_SEED.read_bytes() \
-    and stat.S_IMODE(os.lstat(s.hk_conf).st_mode) == 0o660
-check(conf_ok, "H1c the conf is the installer's seed bytes (enabled = false), 0660",
+    and stat.S_IMODE(os.lstat(s.hk_conf).st_mode) == 0o640
+check(conf_ok, "H1c the conf is the installer's seed bytes (enabled = false), 0640 (homekit-bridge.md §13)",
       f"H1c conf: {s.hk_conf.read_bytes()[:120]!r}")
+# The owner is asked for by name; the sandbox host has no sa02m-homekit group,
+# so owner_ids() keeps the old owner here — the call's argument is what the
+# board resolves (www-data owns the conf, the bridge reads it through its group).
+check('fr_safe hk-reset-conf "$HK_CONF" "$HK_PKG_DIR" www-data:sa02m-homekit' in FACTORY.read_text(encoding="utf-8"),
+      "H1c2 the reset asks for owner www-data:sa02m-homekit (the CGI owns, the bridge reads by group)",
+      "H1c2 the HomeKit conf reset does not name owner www-data:sa02m-homekit")
 check(not (s.hk_run / "setup.json").exists(), "H1d the stale setup code is removed",
       "H1d /run/sa02m-homekit/setup.json survived the reset")
 s.cleanup()
@@ -780,9 +786,12 @@ check("stop sa02m-homeconnect.service" in sl and "hc-stop:tokens-present" in sl 
       "C1b the client was stopped with the conf already disabled and while the tokens still existed (conf → stop → erase)",
       f"C1b systemctl calls: {sl.splitlines()}")
 hc_ok = s.hc_conf.is_file() and s.hc_conf.read_bytes() == HC_TEMPLATE \
-    and stat.S_IMODE(os.lstat(s.hc_conf).st_mode) == 0o660
-check(hc_ok, "C1c the conf is the package's own render() of the defaults (enabled = false, no Client ID), 0660",
+    and stat.S_IMODE(os.lstat(s.hc_conf).st_mode) == 0o640
+check(hc_ok, "C1c the conf is the package's own render() of the defaults (enabled = false, no Client ID), 0640",
       f"C1c conf: {s.hc_conf.read_bytes()[:160]!r}")
+check('fr_safe hc-reset-conf "$HC_CONF" "$HC_PKG_DIR" www-data:sa02m-homeconnect' in FACTORY.read_text(encoding="utf-8"),
+      "C1c2 the reset asks for owner www-data:sa02m-homeconnect (the CGI owns, the client reads by group)",
+      "C1c2 the Home Connect conf reset does not name owner www-data:sa02m-homeconnect")
 check(not (s.hc_run / "link.json").exists(), "C1d the pending sign-in code (link.json) is removed",
       "C1d /run/sa02m-homeconnect/link.json survived the reset")
 log_txt = s.log.read_text(encoding="utf-8", errors="replace") if s.log.is_file() else ""

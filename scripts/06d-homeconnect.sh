@@ -8,8 +8,9 @@
 #
 # Order is a floor, each step BEFORE the one that consumes it:
 #   apt paho (05-mqtt.sh normally has it) → system user → package tree
-#   → dirs (tmpfiles) → conf seed (rendered BY the installed package)
-#   → capture → unit → apply (app off) → trigger + sudoers → CGI → JS.
+#   → dirs (tmpfiles) → access helper → conf seed (rendered BY the installed
+#   package) → capture → unit → apply (app off) → trigger + sudoers → CGI → JS
+#   → access check (LAST: the grant is tried as the daemon, fatal).
 # No pip, no venv: the daemon is stdlib + apt python3-paho-mqtt, so OTA alone
 # can carry every later code update; only the user, the dirs and the conf seed
 # need this installer (a board updated by OTA alone shows `not_installed`).
@@ -51,9 +52,9 @@ python3 -c "import paho.mqtt" 2>/dev/null || sa02m_pkg_install_tier optional pyt
 # ── Unprivileged system user (plan D11) ────────────────────────────────────
 # No shell, no home, and in NO other group: www-data would let the client read
 # the panel credentials and every web conf (audit 2026-09-28). What it needs
-# instead lands with the tmpfiles conf below (setgid /run dir, a read ACL on
-# its conf); gate `daemon-least-privilege`. www-data is NOT in the daemon's
-# group either, so it never reads the tokens (promise P4).
+# instead is a mode, not a membership (setgid /run and conf dirs,
+# docs/contracts/home-connect.md §11); gate `daemon-least-privilege`. www-data
+# is NOT in the daemon's group either, so it never reads the tokens (P4).
 if ! id -u "$HC_USER" >/dev/null 2>&1; then
     if useradd --system --user-group --no-create-home --home-dir /nonexistent \
             --shell /usr/sbin/nologin --comment "SA-02m Home Connect client" "$HC_USER" >>"$LOG_FILE" 2>&1; then
@@ -92,39 +93,43 @@ chmod -R u=rwX,go=rX "$INSTALL_DIR"
 install -m 0644 -o root -g root \
     "$OPT_SRC/tmpfiles.d/sa02m-homeconnect.conf" /etc/tmpfiles.d/sa02m-homeconnect.conf
 sed -i 's/\r$//' /etc/tmpfiles.d/sa02m-homeconnect.conf
-# It also carries the daemon's read ACL on its conf: only systemd-tmpfiles
-# applies it — the unit re-applies it before every start too (ExecStartPre).
 if command -v systemd-tmpfiles >/dev/null 2>&1; then
     systemd-tmpfiles --create /etc/tmpfiles.d/sa02m-homeconnect.conf >>"$LOG_FILE" 2>&1 \
-        || log WARN "[06d-homeconnect] systemd-tmpfiles --create вернул ошибку — каталоги создаю напрямую, право чтения конфига (ACL) проверьте: getfacl /etc/sa02m-homeconnect"
-else
-    log WARN "[06d-homeconnect] нет systemd-tmpfiles — право чтения конфига (ACL) не выдано, клиент не прочитает свой конфиг"
+        || log WARN "[06d-homeconnect] systemd-tmpfiles --create вернул ошибку — каталоги создаю напрямую"
 fi
 # Same modes as the tmpfiles entries (idempotent re-assert; tmpfiles may be
-# absent in a stripped rootfs). chmod keeps the ACL entries (it sets the mask).
+# absent in a stripped rootfs). The conf dir: www-data writes it (atomic save),
+# setgid sa02m-homeconnect makes the conf saved there the client's group.
 install -d -m 0700 -o "$HC_USER" -g "$HC_USER" /var/lib/sa02m-homeconnect
 install -d -m 2750 -o "$HC_USER" -g www-data /run/sa02m-homeconnect
-install -d -m 0770 -o root -g www-data /etc/sa02m-homeconnect
+install -d -m 2750 -o www-data -g sa02m-homeconnect /etc/sa02m-homeconnect
+
+# ── Access helper (BEFORE the unit: its ExecStartPre runs it) ──────────────
+sa02m_atomic_install -m 0755 -o root -g root \
+    "$BASE_DIR/usr/local/sbin/sa02m-daemon-access.sh" /usr/local/sbin/sa02m-daemon-access.sh
 
 # ── Conf seed — only if absent (the card owns it afterwards) ───────────────
 # The seed is the package's OWN render of the defaults (config.render(
 # ClientConfig()): enabled = false, no Client ID, host api) — one home, no
-# template file to drift from the parser. /etc/sa02m-homeconnect is
-# root:www-data 0770, so www-data can plant any name here, and chmod/chgrp
-# follow a symlink: a planted `sa02m-homeconnect.conf -> /etc/sudoers.d/x`
-# would get group www-data + 0660 (root escalation). Root therefore creates the
-# seed with O_CREAT|O_EXCL|O_NOFOLLOW (a planted name makes the create fail,
-# never followed) and re-asserts group/mode only on a regular, singly-linked
-# file through an O_NOFOLLOW fd; anything else is reported on stderr and left
-# alone — the scripts/06c-homekit.sh pattern. `-I`: root runs this from the
+# template file to drift from the parser. The conf is
+# www-data:sa02m-homeconnect 0640 (§11): the CGI owns and rewrites it, the
+# client reads it through its group. /etc/sa02m-homeconnect is www-data's, so
+# www-data can plant any name here, and chown/chmod follow a symlink: a planted
+# `sa02m-homeconnect.conf -> /etc/sudoers.d/x` would be handed to www-data
+# (root escalation). Root therefore creates the seed with O_CREAT|O_EXCL|
+# O_NOFOLLOW (a planted name makes the create fail, never followed) and
+# re-asserts owner/group/mode only on a regular, singly-linked file through an
+# O_NOFOLLOW fd; anything else is reported on stderr and left alone — the
+# scripts/06c-homekit.sh pattern. `-I`: root runs this from the
 # operator's shell, so neither its cwd nor an inherited PYTHONPATH may inject a
 # module; the package root is inserted explicitly (root-owned, just installed).
 # `-B`: no __pycache__ written into /opt as root. Pinned by the quality row
 # `alice-conf-homes` (section 14).
-python3 -I -B - "$INSTALL_DIR" /etc/sa02m-homeconnect sa02m-homeconnect.conf www-data <<'PY' \
+python3 -I -B - "$INSTALL_DIR" /etc/sa02m-homeconnect sa02m-homeconnect.conf www-data "$HC_USER" <<'PY' \
     || log WARN "[06d-homeconnect] конфиг /etc/sa02m-homeconnect/sa02m-homeconnect.conf не проверен (python3)"
-import grp, os, stat, sys
-pkg, conf_dir, name, group = sys.argv[1:5]
+import grp, os, pwd, stat, sys
+pkg, conf_dir, name, owner, group = sys.argv[1:6]
+uid = pwd.getpwnam(owner).pw_uid
 gid = grp.getgrnam(group).gr_gid
 path = f"{conf_dir}/{name}"
 dfd = os.open(conf_dir, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
@@ -144,8 +149,8 @@ if fd is not None:
     view = memoryview(body)
     while view:
         view = view[os.write(fd, view):]
-    os.fchown(fd, -1, gid)
-    os.fchmod(fd, 0o660)
+    os.fchown(fd, uid, gid)
+    os.fchmod(fd, 0o640)
     os.fsync(fd)
     os.close(fd)
     print(f"OK: created {path} (enabled = false)")
@@ -159,10 +164,10 @@ try:
 except OSError as e:
     print(f"WARN: {path}: not a regular singly-linked file ({e}) — left alone", file=sys.stderr)
     sys.exit(0)
-os.fchown(fd, -1, gid)
-os.fchmod(fd, 0o660)
+os.fchown(fd, uid, gid)
+os.fchmod(fd, 0o640)
 os.close(fd)
-print(f"INFO: {path} already exists — kept, group/mode re-asserted")
+print(f"INFO: {path} already exists — kept, owner/group/mode re-asserted")
 PY
 
 # ── systemd ────────────────────────────────────────────────────────────────
@@ -196,6 +201,24 @@ if [ -f "$BASE_DIR/www/network_config/static/js/app/homeconnect.js" ]; then
         "$BASE_DIR/www/network_config/static/js/app/homeconnect.js" \
         "$WEB_ROOT_DIR/static/js/app/homeconnect.js"
 fi
+
+# ── Access check — LAST: the grant is TRIED as the client, never assumed ────
+# Owner/group/mode re-asserted on its conf, then the read (and the writes of
+# its own dirs, the CGI's save) attempted as that account; so are reads it must
+# NOT have. The ACL grant this replaces passed every line check and read
+# nothing on the product kernel (bench 1.135, 2026-09-28).
+hc_access_rc=0
+HC_ACCESS_OUT=$(timeout 120 /usr/local/sbin/sa02m-daemon-access.sh apply homeconnect 2>&1) || hc_access_rc=$?
+if [ "$hc_access_rc" != 0 ]; then
+    while IFS= read -r _line; do
+        [ -n "$_line" ] && log ERR "[06d-homeconnect]   $_line"
+    done <<<"$HC_ACCESS_OUT"
+    log ERR "[06d-homeconnect] клиент Home Connect не получил доступ к своему конфигу (код $hc_access_rc) — установка не завершена; проверка: docs/deployment.md «Проверка на стенде»"
+    exit 1
+fi
+while IFS= read -r _line; do
+    [ -n "$_line" ] && log INFO "[06d-homeconnect]   $_line"
+done <<<"$HC_ACCESS_OUT"
 
 if python3 -c "import paho.mqtt.client" 2>/dev/null; then
     log OK "=== [06d-homeconnect] sa02m-homeconnect установлен (служба выключена по умолчанию) ==="

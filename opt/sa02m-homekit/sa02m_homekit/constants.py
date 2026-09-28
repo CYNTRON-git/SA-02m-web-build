@@ -36,6 +36,10 @@ VENV_PYTHON = "/opt/sa02m-homekit-venv/bin/python"
 PACKAGE_DIR = "/opt/sa02m-homekit/sa02m_homekit"
 # Group that may read setup.json / projection.json (the CGI runs as it).
 WEB_GROUP = "www-data"
+# The conf's owner and group (§13): the CGI account owns and rewrites it, the
+# bridge reads it through its own group — no ACL.
+WEB_USER = "www-data"
+DAEMON_GROUP = "sa02m-homekit"
 
 # ── Bridge states written to status.json ───────────────────────────────────
 # `not_installed` is never written by the daemon: the CGI answers it when the
@@ -68,8 +72,8 @@ REASON_STATUS_STALE = "status_stale"
 # With `missing_deps`: a sibling package (sa02m_alice) is older than this
 # bridge — a symbol from peers.REQUIRED_PEER_SYMBOLS is absent.
 REASON_PEER_OUTDATED = "peer_package_outdated"
-# With `missing_deps`: the conf exists but the daemon cannot read it (its read
-# ACL is gone, docs/contracts/homekit-bridge.md §13) — not «disabled».
+# With `missing_deps`: the conf exists but the daemon cannot read it (its
+# group grant was broken, docs/contracts/homekit-bridge.md §13) — not «disabled».
 REASON_CONF_UNREADABLE = "conf_unreadable"
 REASONS = (
     REASON_IDENTITY_REGENERATED,

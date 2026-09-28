@@ -10,9 +10,10 @@
 #   Alice package present (the bridge imports sa02m_alice.DeviceRegistry)
 #   → peer packages carry every symbol this bridge imports (refreshed from
 #     this tree through their own modules, else STOP before touching anything)
-#   → apt python3-venv/paho → system user → venv from the hash-pinned lock
-#   → package tree → dirs (tmpfiles) → conf seed → capture → unit → apply
-#   (app off) → status fallback → trigger + sudoers → CGI → JS.
+#   → apt python3-venv/paho → system user + groups → venv from the hash-pinned
+#   lock → package tree → dirs (tmpfiles) → access helper → conf seed →
+#   capture → unit → apply (app off) → status fallback → trigger + sudoers →
+#   CGI → JS → access check (LAST: the grant is tried as the daemon, fatal).
 # Idempotent: a re-run on a configured board refreshes code only — the conf,
 # the pairing store and the operator's enable/run state are never touched; a
 # venv already matching the lock is left alone.
@@ -145,11 +146,13 @@ python3 -c "import ensurepip, venv" 2>/dev/null || sa02m_pkg_install_tier option
 python3 -c "import _cffi_backend" 2>/dev/null || sa02m_pkg_install_tier optional python3-cffi-backend
 
 # ── Unprivileged system user (D11) ─────────────────────────────────────────
-# No shell, no home, and in NO other group: www-data would let this LAN
+# No shell, no home, and never in www-data: that group would let this LAN
 # listener read the panel credentials, the gateway YAML and every Alice conf
-# (audit 2026-09-28). What it needs instead lands with the tmpfiles conf below
-# (setgid /run dir, read ACLs); gate `daemon-least-privilege`. www-data is NOT
-# in the daemon's group either, so it never reads the pairing store (P4).
+# (audit 2026-09-28). Its only other group is sa02m-alice-devices (below), which
+# reads exactly one file. Everything else it needs is a mode, not a membership
+# (setgid /run and conf dirs, docs/contracts/homekit-bridge.md §13); gate
+# `daemon-least-privilege`. www-data is NOT in the daemon's group either, so it
+# never reads the pairing store (P4).
 if ! id -u "$HK_USER" >/dev/null 2>&1; then
     if useradd --system --user-group --no-create-home --home-dir /nonexistent \
             --shell /usr/sbin/nologin --comment "SA-02m HomeKit bridge" "$HK_USER" >>"$LOG_FILE" 2>&1; then
@@ -169,6 +172,41 @@ case " $_hk_groups " in
             log OK "$HK_USER исключён из группы www-data"
         else
             log WARN "[06c-homekit] не удалось исключить $HK_USER из группы www-data — мост читает лишнее (gpasswd -d $HK_USER www-data)"
+        fi ;;
+esac
+# Read on the Alice device document — and on nothing else in /etc/sa02m-alice —
+# through a group of exactly two members: the bridge and www-data. www-data
+# must be a member because the Alice CGI replaces the document by rename, and a
+# non-root writer can give its new file only a group it belongs to (the Alice
+# writer keeps the old file's group). No POSIX ACL: the product RT kernel has
+# none (bench 1.135, 2026-09-28). The document's owner/group/mode are set by
+# usr/local/sbin/sa02m-daemon-access.sh at the end of this module.
+HK_DEVDOC_GROUP=sa02m-alice-devices
+if ! getent group "$HK_DEVDOC_GROUP" >/dev/null 2>&1; then
+    if groupadd --system "$HK_DEVDOC_GROUP" >>"$LOG_FILE" 2>&1; then
+        log OK "создана группа $HK_DEVDOC_GROUP (чтение документа устройств Алисы мостом HomeKit)"
+    else
+        log WARN "[06c-homekit] не удалось создать группу $HK_DEVDOC_GROUP — мост не прочитает документ устройств"
+    fi
+fi
+_hk_groups=$(id -nG "$HK_USER" 2>/dev/null) || _hk_groups=""
+case " $_hk_groups " in
+    *" $HK_DEVDOC_GROUP "*) ;;
+    *)
+        gpasswd -a "$HK_USER" "$HK_DEVDOC_GROUP" >>"$LOG_FILE" 2>&1 \
+            || log WARN "[06c-homekit] не удалось добавить $HK_USER в $HK_DEVDOC_GROUP" ;;
+esac
+_hk_web_groups=$(id -nG www-data 2>/dev/null) || _hk_web_groups=""
+case " $_hk_web_groups " in
+    *" $HK_DEVDOC_GROUP "*) ;;
+    *)
+        if gpasswd -a www-data "$HK_DEVDOC_GROUP" >>"$LOG_FILE" 2>&1; then
+            # The CGI inherits fcgiwrap's groups, fixed when fcgiwrap started:
+            # until it restarts, a card save would hand the document back to
+            # group www-data and cut the bridge off again.
+            sa02m_svc_restart_if_active fcgiwrap.service
+        else
+            log WARN "[06c-homekit] не удалось добавить www-data в $HK_DEVDOC_GROUP — сохранение с карточки Алисы отнимет у моста документ устройств"
         fi ;;
 esac
 
@@ -196,42 +234,44 @@ chmod -R u=rwX,go=rX "$INSTALL_DIR"
 # ── Runtime dirs (boot-persistent home: the package's tmpfiles.d copy) ─────
 # The conf lives in the package, not under etc/tmpfiles.d/: everything there is
 # OTA'd to EVERY board, and its lines name the sa02m-homekit account that only
-# this module creates (journal noise + an empty 0770 /etc/sa02m-homekit on every
+# this module creates (journal noise + an empty /etc/sa02m-homekit on every
 # other board). This installer is its only writer into /etc/tmpfiles.d/
 # (pinned by `alice-conf-homes` section 12).
 install -m 0644 -o root -g root \
     "$OPT_SRC/tmpfiles.d/sa02m-homekit.conf" /etc/tmpfiles.d/sa02m-homekit.conf
 sed -i 's/\r$//' /etc/tmpfiles.d/sa02m-homekit.conf
-# It also carries the daemon's read ACLs (its conf, the Alice device document):
-# only systemd-tmpfiles applies them — the unit re-applies them before every
-# start too (ExecStartPre), so a restore that recreates a file heals itself.
 if command -v systemd-tmpfiles >/dev/null 2>&1; then
     systemd-tmpfiles --create /etc/tmpfiles.d/sa02m-homekit.conf >>"$LOG_FILE" 2>&1 \
-        || log WARN "[06c-homekit] systemd-tmpfiles --create вернул ошибку — каталоги создаю напрямую, права чтения (ACL) проверьте: getfacl /etc/sa02m-alice"
-else
-    log WARN "[06c-homekit] нет systemd-tmpfiles — права чтения моста (ACL) не выданы, мост не прочитает свой конфиг и документ устройств"
+        || log WARN "[06c-homekit] systemd-tmpfiles --create вернул ошибку — каталоги создаю напрямую"
 fi
 # Same modes as the tmpfiles entries (idempotent re-assert; tmpfiles may be
-# absent in a stripped rootfs). chmod keeps the ACL entries (it sets the mask).
+# absent in a stripped rootfs). The conf dir: www-data writes it (atomic save),
+# setgid sa02m-homekit makes every file saved there the bridge's group.
 install -d -m 0700 -o "$HK_USER" -g "$HK_USER" /var/lib/sa02m-homekit
 install -d -m 2750 -o "$HK_USER" -g www-data /run/sa02m-homekit
-install -d -m 0770 -o root -g www-data /etc/sa02m-homekit
+install -d -m 2750 -o www-data -g sa02m-homekit /etc/sa02m-homekit
+
+# ── Access helper (BEFORE the unit: its ExecStartPre runs it) ──────────────
+sa02m_atomic_install -m 0755 -o root -g root \
+    "$BASE_DIR/usr/local/sbin/sa02m-daemon-access.sh" /usr/local/sbin/sa02m-daemon-access.sh
 
 # ── Conf seed — only if absent (the card owns it afterwards) ───────────────
-# /etc/sa02m-homekit is root:www-data 0770, so www-data can plant any name
-# here, and chmod/chgrp/sed -i follow (or read through) a symlink: a planted
-# `sa02m-homekit.conf -> /etc/sudoers.d/x` would get group www-data + 0660
-# (root escalation). Root therefore creates the seed with O_CREAT|O_EXCL|
-# O_NOFOLLOW (a planted name makes the create fail, never followed) and
-# re-asserts group/mode only on a regular, singly-linked file through an
-# O_NOFOLLOW fd; anything else is reported on stderr and left alone — the
-# scripts/06-alice.sh pattern. `-I`: root runs this from the operator's shell,
-# so neither its cwd nor an inherited PYTHONPATH may inject a module. Pinned by
-# the quality row `alice-conf-homes` (section 11).
-python3 -I - "$BASE_DIR/etc/sa02m-homekit/sa02m-homekit.conf" /etc/sa02m-homekit sa02m-homekit.conf www-data <<'PY' \
+# The conf is www-data:sa02m-homekit 0640 (§13): the CGI owns and rewrites it,
+# the bridge reads it through its group. /etc/sa02m-homekit is www-data's, so
+# www-data can plant any name here, and chown/chmod/sed -i follow (or read
+# through) a symlink: a planted `sa02m-homekit.conf -> /etc/sudoers.d/x` would
+# be handed to www-data (root escalation). Root therefore creates the seed with
+# O_CREAT|O_EXCL|O_NOFOLLOW (a planted name makes the create fail, never
+# followed) and re-asserts owner/group/mode only on a regular, singly-linked
+# file through an O_NOFOLLOW fd; anything else is reported on stderr and left
+# alone — the scripts/06-alice.sh pattern. `-I`: root runs this from the
+# operator's shell, so neither its cwd nor an inherited PYTHONPATH may inject a
+# module. Pinned by the quality row `alice-conf-homes` (section 11).
+python3 -I - "$BASE_DIR/etc/sa02m-homekit/sa02m-homekit.conf" /etc/sa02m-homekit sa02m-homekit.conf www-data "$HK_USER" <<'PY' \
     || log WARN "[06c-homekit] конфиг /etc/sa02m-homekit/sa02m-homekit.conf не проверен (python3)"
-import grp, os, stat, sys
-src, conf_dir, name, group = sys.argv[1:5]
+import grp, os, pwd, stat, sys
+src, conf_dir, name, owner, group = sys.argv[1:6]
+uid = pwd.getpwnam(owner).pw_uid
 gid = grp.getgrnam(group).gr_gid
 path = f"{conf_dir}/{name}"
 dfd = os.open(conf_dir, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
@@ -245,8 +285,8 @@ if fd is not None:
     view = memoryview(body)
     while view:
         view = view[os.write(fd, view):]
-    os.fchown(fd, -1, gid)
-    os.fchmod(fd, 0o660)
+    os.fchown(fd, uid, gid)
+    os.fchmod(fd, 0o640)
     os.fsync(fd)
     os.close(fd)
     print(f"OK: created {path} (enabled = false)")
@@ -260,10 +300,10 @@ try:
 except OSError as e:
     print(f"WARN: {path}: not a regular singly-linked file ({e}) — left alone", file=sys.stderr)
     sys.exit(0)
-os.fchown(fd, -1, gid)
-os.fchmod(fd, 0o660)
+os.fchown(fd, uid, gid)
+os.fchmod(fd, 0o640)
 os.close(fd)
-print(f"INFO: {path} already exists — kept, group/mode re-asserted")
+print(f"INFO: {path} already exists — kept, owner/group/mode re-asserted")
 PY
 
 # ── systemd ────────────────────────────────────────────────────────────────
@@ -297,6 +337,25 @@ if [ -f "$BASE_DIR/www/network_config/static/js/app/homekit.js" ]; then
         "$BASE_DIR/www/network_config/static/js/app/homekit.js" \
         "$WEB_ROOT_DIR/static/js/app/homekit.js"
 fi
+
+# ── Access check — LAST: the grant is TRIED as the bridge, never assumed ────
+# Owner/group/mode re-asserted on its conf and the Alice device document, then
+# every read the bridge needs (and the writes of its own dirs, the CGI's save)
+# attempted as that account; so are reads it must NOT have (panel credentials,
+# the other Alice confs). The ACL grant this replaces passed every line check
+# and read nothing on the product kernel (bench 1.135, 2026-09-28).
+hk_access_rc=0
+HK_ACCESS_OUT=$(timeout 120 /usr/local/sbin/sa02m-daemon-access.sh apply homekit 2>&1) || hk_access_rc=$?
+if [ "$hk_access_rc" != 0 ]; then
+    while IFS= read -r _line; do
+        [ -n "$_line" ] && log ERR "[06c-homekit]   $_line"
+    done <<<"$HK_ACCESS_OUT"
+    log ERR "[06c-homekit] мост HomeKit не получил доступ к своим файлам (код $hk_access_rc) — установка не завершена; проверка: docs/deployment.md «Проверка на стенде»"
+    exit 1
+fi
+while IFS= read -r _line; do
+    [ -n "$_line" ] && log INFO "[06c-homekit]   $_line"
+done <<<"$HK_ACCESS_OUT"
 
 if [ "$HK_DEPS" = ok ]; then
     log OK "=== [06c-homekit] sa02m-homekit установлен (служба выключена по умолчанию) ==="

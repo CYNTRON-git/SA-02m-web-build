@@ -32,19 +32,22 @@ Nice=10
 # Unprivileged (D11): nothing in the bridge needs root — and NOT group
 # www-data: this listener is on the LAN before pairing, and www-data reads the
 # panel credentials, the gateway YAML and every Alice conf. What it needs
-# instead (docs/contracts/homekit-bridge.md §13): /run/sa02m-homekit is setgid
-# www-data (the files the card reads inherit the group), and ACLs grant read
-# on its conf and the Alice device document — a DEFAULT ACL on each directory,
-# so an atomic rename keeps the grant. Gate: `daemon-least-privilege`.
+# instead (docs/contracts/homekit-bridge.md §13), plain Unix groups, no ACL:
+# /run/sa02m-homekit is setgid www-data (the files the card reads inherit the
+# group); its conf dir is www-data:sa02m-homekit 2750 (setgid: every file saved
+# there is the bridge's group, read-only for it); the Alice device document is
+# group sa02m-alice-devices, which the account joins in /etc/group (systemd
+# applies those groups at start). Gate: `daemon-least-privilege`.
 User=sa02m-homekit
 Group=sa02m-homekit
-# `+`: as root, before the sandbox; `-`: a missing conf (an OTA-only board,
-# where this unit cannot start anyway) is not a start failure. Re-applies the
-# modes and ACLs a restore or a hand edit may have dropped.
-ExecStartPre=-+/usr/bin/systemd-tmpfiles --create /etc/tmpfiles.d/sa02m-homekit.conf
+# `+`: as root, before the sandbox; `-`: never a start failure — a failed probe
+# is in this unit's journal and the daemon then reports `conf_unreadable` on
+# the card. Re-asserts the modes a restore or a hand edit may have dropped and
+# proves the read AS the daemon (the installer's last step runs the same).
+ExecStartPre=-+/usr/local/sbin/sa02m-daemon-access.sh apply homekit
 UMask=0077
 NoNewPrivileges=true
-# strict: /etc (including the group-writable device document and the conf) is
+# strict: /etc (including the conf and the device document) is
 # read-only for this unit; the writable tree is exactly its own two dirs.
 ProtectSystem=strict
 ReadWritePaths=/var/lib/sa02m-homekit /run/sa02m-homekit

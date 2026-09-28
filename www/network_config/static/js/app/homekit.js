@@ -343,7 +343,8 @@ function hkStateLine(d) {
   if (st === 'not_installed') return [uiT('Нужна полная установка (install.sh)'), null];
   // A sibling package older than the bridge (contract §10): the precise fix, one line.
   if (st === 'missing_deps' && reason === 'peer_package_outdated') return [uiT('Обновите пакет Алисы'), false];
-  // The conf exists but the daemon cannot read it (its read ACL is gone).
+  // The conf exists but the daemon cannot read it (its owner/group/mode were
+  // broken; the unit's ExecStartPre `sa02m-daemon-access.sh apply` restores them).
   if (st === 'missing_deps' && reason === 'conf_unreadable') return [uiT('Нет доступа к настройкам'), false];
   if (st === 'missing_deps') return [uiT('Нужна полная установка (install.sh)'), false];
   if (st === 'error' && reason === 'status_stale') return [uiT('Статус устарел'), false];

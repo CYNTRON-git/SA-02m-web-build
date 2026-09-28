@@ -20,7 +20,7 @@ from dataclasses import dataclass, field
 from typing import List, Optional
 
 from . import constants as C
-from .fsutil import atomic_write, group_gid
+from .fsutil import atomic_write, group_gid, user_uid
 
 _CLIENT_ID_RE = re.compile(C.CLIENT_ID_RE)
 ACCOUNT = "account"
@@ -53,8 +53,9 @@ class ClientConfig:
     control_mode: str = "off"
     # Values in the file that were refused and replaced by the default.
     warnings: List[str] = field(default_factory=list)
-    # The file EXISTS but could not be read (EACCES: the daemon's read ACL is
-    # gone) — never the same as disabled (main.py: `conf_unreadable`).
+    # The file EXISTS but could not be read (EACCES: its
+    # www-data:sa02m-homeconnect 0640 grant was broken, §11) — never the same
+    # as disabled (main.py: `conf_unreadable`).
     unreadable: bool = False
 
     @property
@@ -149,8 +150,9 @@ def render(conf: ClientConfig) -> str:
 def save(conf: ClientConfig, path: Optional[str] = None) -> None:
     """Validate, then replace the conf atomically.
 
-    An existing regular conf keeps its mode/owner; otherwise root:www-data
-    0660 (the group from group_gid()) applies.
+    An existing regular conf keeps its mode/owner; otherwise the §11 default
+    www-data:sa02m-homeconnect 0640 applies — the CGI owns it, the client reads
+    it through its group (a non-root writer gets the group from the setgid dir).
     """
     for key in ("client_id", "vendor_client_id"):
         value = getattr(conf, key)
@@ -161,5 +163,5 @@ def save(conf: ClientConfig, path: Optional[str] = None) -> None:
     if isinstance(conf.link_requested_at, bool) or not isinstance(conf.link_requested_at, int) \
             or conf.link_requested_at < 0:
         raise ValueError("invalid link_requested_at")
-    atomic_write(path or C.CONF_FILE, render(conf), mode=0o660, gid=group_gid(),
-                 preserve=True)
+    atomic_write(path or C.CONF_FILE, render(conf), mode=0o640,
+                 uid=user_uid(C.WEB_USER), gid=group_gid(C.DAEMON_GROUP), preserve=True)

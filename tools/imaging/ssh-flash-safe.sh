@@ -215,8 +215,8 @@ wipe_homeconnect_identity() {
         rm -f "$root/var/lib/sa02m-homeconnect"/* \
               "$root/var/lib/sa02m-homeconnect"/.hc-*
     fi
-    # A symlink at the conf is never made by the installer (the dir is root:www-data
-    # 0770 on the board), and on a mounted image an absolute link resolves on
+    # A symlink at the conf is never made by the installer (the dir is
+    # www-data-writable on the board), and on a mounted image an absolute link resolves on
     # the HOST running this script — sed -i would copy a host file into the
     # image. Drop the link instead: an absent conf reads as disabled.
     if [ -L "$root/etc/sa02m-homeconnect/sa02m-homeconnect.conf" ]; then

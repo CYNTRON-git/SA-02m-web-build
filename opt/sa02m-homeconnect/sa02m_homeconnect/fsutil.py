@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import grp
 import os
+import pwd
 import secrets
 import stat as stat_module
 from typing import Optional, Tuple, Union
@@ -38,6 +39,31 @@ def group_gid(name: str = C.WEB_GROUP) -> Optional[int]:
         return None
 
 
+def user_uid(name: str = C.WEB_USER) -> Optional[int]:
+    """uid of `name`, or None when the account does not exist (a dev host)."""
+    try:
+        return pwd.getpwnam(name).pw_uid
+    except KeyError:
+        return None
+
+
+def _own_new(fd: int, uid: Optional[int], gid: Optional[int]) -> None:
+    """Give a NEW file `uid`/`gid`, best effort. Root gets both. A non-root
+    writer (the CGI) is refused a foreign owner and a group it is not in; the
+    file then keeps what the directory gave it — in the setgid conf dir that IS
+    the client's group (contract §11), so the grant survives either way."""
+    try:
+        os.fchown(fd, -1 if uid is None else uid, -1 if gid is None else gid)
+        return
+    except OSError:
+        pass
+    if uid is not None and gid is not None:
+        try:
+            os.fchown(fd, -1, gid)
+        except OSError:
+            pass
+
+
 def open_dir(directory: str) -> int:
     """A descriptor of `directory` itself — never of a symlink's target."""
     return os.open(directory or ".", os.O_RDONLY | _O_DIRECTORY | _O_NOFOLLOW | _O_CLOEXEC)
@@ -52,6 +78,7 @@ def atomic_write(
     data: Union[str, bytes],
     *,
     mode: int = 0o600,
+    uid: Optional[int] = None,
     gid: Optional[int] = None,
     preserve: bool = False,
     durable: bool = True,
@@ -62,7 +89,8 @@ def atomic_write(
     written by root AND by the www-data CGI). Only a regular, single-link file
     at the NAME is a source (lstat through the directory descriptor), and
     setuid/setgid/sticky are never carried over; anything else falls back to
-    `mode`/`gid` as for a new file. `gid` sets the group of a NEW file.
+    `mode`/`uid`/`gid` as for a new file. `uid`/`gid` set the owner/group of
+    a NEW file, best effort (`_own_new`).
     `durable` fsyncs the file and the directory; /run files may skip it.
     """
     directory = os.path.dirname(path) or "."
@@ -91,11 +119,8 @@ def atomic_write(
                         pass  # a non-root writer keeps its own uid; the group suffices
                 else:
                     os.fchmod(fd, mode)
-                    if gid is not None:
-                        try:
-                            os.fchown(fd, -1, gid)
-                        except OSError:
-                            pass  # not a member of the group: mode still applies
+                    if uid is not None or gid is not None:
+                        _own_new(fd, uid, gid)
                 view = memoryview(payload)
                 while view:
                     written = os.write(fd, view)

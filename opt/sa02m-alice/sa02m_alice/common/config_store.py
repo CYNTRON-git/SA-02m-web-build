@@ -204,7 +204,7 @@ def devices_lock(path: Optional[str] = None) -> Iterator[None]:
     edit silently. Every writer wraps its critical section in this.
 
     The lock is `flock(LOCK_EX)` on the document's DIRECTORY fd, opened
-    read-only: `/etc/sa02m-alice` is 0770 root:www-data (scripts/06-alice.sh),
+    read-only: `/etc/sa02m-alice` is 0771 root:www-data (scripts/06-alice.sh),
     so root and www-data can both open it and no lock file has to be created
     with permissions that suit both. flock on a directory is ordinary Linux
     behaviour. Same-thread nesting is a no-op (see `_LOCK_DEPTH`); a missing

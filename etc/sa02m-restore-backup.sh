@@ -89,12 +89,15 @@ def allowed(p: str) -> bool:
 # root:root 0755. /etc/sa02m-alice: the line in etc/tmpfiles.d/sa02m-alice.conf
 # (and scripts/06-alice.sh `install -d`), which systemd-tmpfiles re-asserts every
 # boot anyway; created any other way the CGI cannot save the restored confs.
+# The HomeKit / Home Connect conf dirs are the CGI's own, setgid to the daemon's
+# group (contracts homekit-bridge.md §13, home-connect.md §11): a file restored
+# NEW into one takes the dir's owner (atomic_install), so the CGI can read it.
 DIR_SPEC = {
-    "/etc/sa02m-alice": (0o770, "root", "www-data"),
+    "/etc/sa02m-alice": (0o771, "root", "www-data"),
     # opt/sa02m-homekit/tmpfiles.d/sa02m-homekit.conf (and scripts/06c-homekit.sh).
-    "/etc/sa02m-homekit": (0o770, "root", "www-data"),
+    "/etc/sa02m-homekit": (0o2750, "www-data", "sa02m-homekit"),
     # opt/sa02m-homeconnect/tmpfiles.d/sa02m-homeconnect.conf (and scripts/06d-homeconnect.sh).
-    "/etc/sa02m-homeconnect": (0o770, "root", "www-data"),
+    "/etc/sa02m-homeconnect": (0o2750, "www-data", "sa02m-homeconnect"),
 }
 
 class RestoreRefused(Exception):
@@ -103,7 +106,7 @@ class RestoreRefused(Exception):
 # >>> trusted-path resolver — twin: etc/sa02m-web-backup.sh and
 # etc/sa02m-restore-backup.sh carry this block byte-identical (row
 # alice-conf-homes, case 7t); neither root script can import the other.
-# Why: both run as root, and /etc/sa02m-alice is root:www-data 0770, so www-data
+# Why: both run as root, and /etc/sa02m-alice is root:www-data 0771, so www-data
 # (any panel session: cmd_exec.cgi) can create any name there. A name is
 # trusted only where nobody but root could have made it.
 class Unsafe(Exception):
@@ -169,7 +172,7 @@ def resolve_trusted(path):
 def dest_check(dest: str):
     """(why `dest` must not be written as root, or None; the path to write).
     Some ALLOW homes sit in a www-data-writable directory (/etc/sa02m-alice is
-    root:www-data 0770), so a name there may be a symlink www-data planted:
+    root:www-data 0771), so a name there may be a symlink www-data planted:
     never write, chmod or chown through one. A link only root could have made
     (the installer's /etc/nginx/sites-enabled/000-sa02m-network_config) is
     written through to its target, as the restore always did."""
@@ -292,12 +295,17 @@ def atomic_install(src: Path, dest: str, fmode: int) -> None:
     # The archive records mode, not owner. Keep the owner the board already
     # gives this path (/etc/sa02m_web.env and the Alice confs are root:www-data:
     # root:root there locks the CGI out); a new file is root with its
-    # directory's group (/etc/sa02m-alice is root:www-data 0770).
+    # directory's group (/etc/sa02m-alice is root:www-data 0771) — in a conf dir
+    # DIR_SPEC gives a non-root owner (the CGI's HomeKit / Home Connect dirs),
+    # that owner, or the CGI could not read the restored conf.
     try:
         st = os.lstat(dest_p)
         uid, gid = st.st_uid, st.st_gid
     except FileNotFoundError:
-        uid, gid = 0, os.lstat(dest_p.parent).st_gid
+        pst = os.lstat(dest_p.parent)
+        spec = DIR_SPEC.get(str(dest_p.parent))
+        uid = pst.st_uid if spec is not None and spec[1] != "root" else 0
+        gid = pst.st_gid
     fd, tmp = tempfile.mkstemp(dir=str(dest_p.parent), prefix=f".{dest_p.name}.", suffix=".restore")
     try:
         with os.fdopen(fd, "wb") as out:

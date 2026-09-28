@@ -14,7 +14,7 @@ from dataclasses import dataclass, field
 from typing import List, Optional
 
 from . import constants as C
-from .fsutil import atomic_write, group_gid
+from .fsutil import atomic_write, group_gid, user_uid
 
 _INTERFACE_RE = re.compile(C.INTERFACE_RE)
 SECTION = "bridge"
@@ -50,8 +50,9 @@ class BridgeConfig:
     port: int = C.DEFAULT_PORT
     # Values in the file that were refused and replaced by the default.
     warnings: List[str] = field(default_factory=list)
-    # The file EXISTS but could not be read (EACCES: the daemon's read ACL is
-    # gone) — never the same as disabled (main.py: `conf_unreadable`).
+    # The file EXISTS but could not be read (EACCES: its www-data:sa02m-homekit
+    # 0640 grant was broken, §13) — never the same as disabled (main.py:
+    # `conf_unreadable`).
     unreadable: bool = False
 
 
@@ -109,11 +110,12 @@ def save(conf: BridgeConfig, path: Optional[str] = None) -> None:
     """Validate, then replace the conf atomically.
 
     An existing regular conf keeps its mode/owner; otherwise the §13 default
-    (root:www-data 0660 — the group from group_gid()) applies.
+    www-data:sa02m-homekit 0640 applies — the CGI owns it, the bridge reads it
+    through its group (a non-root writer gets the group from the setgid dir).
     """
     if not valid_interface(conf.interface):
         raise ValueError("invalid interface")
     if not valid_port(conf.port):
         raise ValueError("invalid port")
-    atomic_write(path or C.CONF_FILE, render(conf), mode=0o660, gid=group_gid(),
-                 preserve=True)
+    atomic_write(path or C.CONF_FILE, render(conf), mode=0o640,
+                 uid=user_uid(C.WEB_USER), gid=group_gid(C.DAEMON_GROUP), preserve=True)

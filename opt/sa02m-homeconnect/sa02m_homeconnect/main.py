@@ -773,7 +773,8 @@ class Daemon:
         self.conf = conf_mod.load(self.conf_path)
         if self.conf.unreadable:
             # Exit 0: Restart=on-failure leaves it alone; the next start
-            # (ExecStartPre re-applies the ACL) or 06d brings it back. The
+            # (ExecStartPre `sa02m-daemon-access.sh apply homeconnect`
+            # re-asserts the group grant and proves it) or 06d brings it back. The
             # retained appliance topics stay: this is not «disabled».
             self._write_conf_unreadable(self.conf.host)
             log.error("conf %s exists but is not readable (%s) — a full install or "

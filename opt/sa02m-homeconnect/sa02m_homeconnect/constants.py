@@ -37,6 +37,10 @@ PACKAGE_DIR = "/opt/sa02m-homeconnect/sa02m_homeconnect"
 DAEMON_USER = "sa02m-homeconnect"
 # Group that may read link.json / inventory.json (the CGI runs as it).
 WEB_GROUP = "www-data"
+# The conf's owner and group (§11): the CGI account owns and rewrites it, the
+# client reads it through its own group — no ACL.
+WEB_USER = "www-data"
+DAEMON_GROUP = "sa02m-homeconnect"
 
 # ── BSH cloud (docs/decisions/homekit-home-connect.md G6/G7) ───────────────
 # The conf names a host KEY; the URL comes only from this table, so a
@@ -168,8 +172,8 @@ REASON_RETRY_AFTER = "retry_after"
 REASON_DAILY_LIMIT = "daily_limit"
 REASON_STREAM_DOWN = "stream_down"
 REASON_STATUS_STALE = "status_stale"
-# With `missing_deps`: the conf exists but the daemon cannot read it (its read
-# ACL is gone, docs/contracts/home-connect.md §11) — not «disabled».
+# With `missing_deps`: the conf exists but the daemon cannot read it (its
+# group grant was broken, docs/contracts/home-connect.md §11) — not «disabled».
 REASON_CONF_UNREADABLE = "conf_unreadable"
 REASONS = (
     REASON_ACCESS_DENIED,

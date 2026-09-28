@@ -38,7 +38,7 @@ Method — behavioural where the code can be run, never a grep for a string:
   4. the deploy map's never_deploy is loaded as JSON;
   5. the SHIPPED collect_paths() of the backup is extracted, retargeted at a
      seeded sandbox root and run; 5e runs the WHOLE backup script the same way
-     (its conf dir 0770 like the board's): the installer's root-made nginx
+     (its conf dir group-writable like the board's): the installer's root-made nginx
      link is archived through to its target, while a symlink, a FIFO or a hard
      link planted at a live Alice conf, and a symlinked conf directory (or any
      directory) in a parent others can write, are skipped with a WARN, the
@@ -325,12 +325,12 @@ else:
 
 # ── 5e. the WHOLE backup script, end to end: what www-data can plant ───────
 # The backup runs as root (sudo from web_backup.cgi) and streams the archive
-# to the panel, and /etc/sa02m-alice is root:www-data 0770 — so www-data (any
+# to the panel, and /etc/sa02m-alice is root:www-data 0771 — so www-data (any
 # panel session: cmd_exec.cgi) can put any name where the backup reads. Each
 # case plants what www-data could plant at a www-data-writable source, runs the
 # SHIPPED script with /etc/ retargeted into a sandbox, and asserts the victim's
-# bytes are nowhere in the stream. The sandbox's conf dir is 0770 like the real
-# one: the backup trusts a name only where no one but root (here: the invoking
+# bytes are nowhere in the stream. The sandbox's conf dir is group-writable like
+# the real one: the backup trusts a name only where no one but root (here: the invoking
 # user) can create it, which is what separates a plant from the installer's own
 # /etc/nginx/sites-enabled link (5e1 — that one must still be archived).
 print("── 5e. user backup end to end (sandboxed, planted sources) ──")
@@ -464,10 +464,10 @@ else:
             ok(f"6 every one of the {len(emitted)} paths the backup emits passes the restore")
 
 # ── 7. restore atomic_install(): ownership + symlink hardening ─────────────
-# The restore runs as root and /etc/sa02m-alice is root:www-data 0770, so a
+# The restore runs as root and /etc/sa02m-alice is root:www-data 0771, so a
 # www-data account (any panel session: cmd_exec.cgi) can create names in the
 # directory it writes into. Every case below plants what www-data could plant
-# (in a 0770 directory, as on the board) and asserts a victim file stays byte-,
+# (in a www-data-writable directory, as on the board) and asserts a victim file stays byte-,
 # mode- and owner-identical. Only the cases that OBSERVE an owner (7a/7b/7h)
 # need root; 7c-7g run everywhere — CI runs this row as a non-root user, and
 # the comment-mutation proof of the restore's refusal line depends on them.
@@ -591,6 +591,27 @@ else:
                 ok("7b a new file is root with its directory's group (0:4242)")
             else:
                 bad(f"7b new restored file is {st and (st.st_uid, st.st_gid)} err={err!r} — expected 0:4242 (the directory's group)")
+            # 7b2: a conf dir DIR_SPEC gives a non-root owner (the HomeKit / Home
+            # Connect dirs are www-data's, setgid to the daemon's group — contract
+            # homekit-bridge.md §13): a NEW file takes the dir's owner and group,
+            # or the CGI could not read the restored conf. The spec is keyed by
+            # the board path; the sandbox dir is registered under the same shape.
+            dh = Path(sb, "sa02m-homekit")
+            dh.mkdir()
+            os.chown(dh, 61033, 61001)
+            os.chmod(dh, 0o2750)
+            ns["DIR_SPEC"][str(dh)] = (0o2750, "www-data", "sa02m-homekit")
+            try:
+                err = attempt(src, dh / "sa02m-homekit.conf", 0o640)
+            finally:
+                del ns["DIR_SPEC"][str(dh)]
+            new_hk = dh / "sa02m-homekit.conf"
+            st = new_hk.stat() if new_hk.exists() else None
+            if err is None and st and (st.st_uid, st.st_gid, stat_mod.S_IMODE(st.st_mode)) == (61033, 61001, 0o640):
+                ok("7b2 a new file in a conf dir DIR_SPEC gives to www-data takes the dir's owner and group (61033:61001 0640)")
+            else:
+                bad(f"7b2 new restored HomeKit conf is {st and (st.st_uid, st.st_gid, oct(stat_mod.S_IMODE(st.st_mode)))} "
+                    f"err={err!r} — expected 61033:61001 0640 (the CGI must be able to read it)")
         else:
             skip("7a/7b owner-keeping cases need root to observe a chown — not run on this host (a skip is not a pass)")
             fresh.write_text("old\n", encoding="utf-8")
@@ -642,7 +663,7 @@ else:
         fresh.unlink()
 
         # 7f: the parent directory is a symlink planted where others can write
-        # (a 0770 directory, like /etc/sa02m-alice) → refused. A link only root
+        # (a group-writable directory, like /etc/sa02m-alice) → refused. A link only root
         # could have made (root-owned, in a directory only root can write) is
         # the installer's, and is followed — 8d pins that side.
         vdir = Path(sb, "victim-f")
@@ -754,7 +775,7 @@ else:
         sb = Path(tsb)
         adir = sb / "etc/sa02m-alice"
         adir.mkdir(parents=True)
-        adir.chmod(0o770)  # as on the board (root:www-data 0770): others can plant names here
+        adir.chmod(0o770)  # group-writable as on the board (root:www-data 0771): others can plant names here
         env_f = sb / "etc/sa02m_web.env"
         env_f.write_bytes(b"old-env\n")
         conf = adir / "sa02m-alice-client.conf"
@@ -815,7 +836,7 @@ else:
 
 # ── 9. installer conf modes: root never chmod/chgrps through a plant ──────
 # scripts/06-alice.sh (a full install, as root) sets the confs' mode and group
-# right after creating them — in the same root:www-data 0770 directory. chmod
+# right after creating them — in the same root:www-data 0771 directory. chmod
 # and chgrp follow a symlink, so a planted `sa02m-alice-client.conf ->
 # /etc/sudoers.d/x` would hand www-data group-write on the target (root
 # escalation). The SHIPPED lines between the conf-install loop and the systemd
@@ -892,6 +913,31 @@ else:
                 f"reported={'sa02m-alice-devices.conf' in out}")
         (ok if rc == 0 and server_ok else bad)(
             f"9d the installer carries on past the plants (rc={rc}) and still sets the regular server conf 0640 ({server_ok})")
+
+    # 9e: where the HomeKit bridge is installed (group sa02m-alice-devices
+    # exists) the device document is the bridge's read grant
+    # (www-data:sa02m-alice-devices 0640, usr/local/sbin/sa02m-daemon-access.sh)
+    # — 06-alice must leave it alone instead of handing it back to www-data,
+    # which cut the bridge off. The group is made to exist by naming the
+    # invoking user's own group in its place.
+    hk_arg = " sa02m-alice-devices <<'PY'"
+    with tempfile.TemporaryDirectory() as tsb:
+        sb = Path(tsb)
+        e9 = seed_modes(sb)
+        adir = sb / "sa02m-alice"
+        block = m9.group(1).replace(ETC_DIR, str(adir)).replace("www-data", my_group)
+        if hk_arg not in block:
+            bad("9e the 06-alice mode block names no sa02m-alice-devices group — nothing tells it the device "
+                "document is the HomeKit bridge's grant")
+        else:
+            block = block.replace(hk_arg, f" {my_group} <<'PY'")
+            r9e = subprocess.run(["bash", "-c", "set -euo pipefail\n" + block], capture_output=True, text=True, timeout=60)
+            got = {n: oct(mode_of(adir / n)) for n in ("sa02m-alice-client.conf", "sa02m-alice-devices.conf", "sa02m-alice-server.conf")}
+            want = {"sa02m-alice-client.conf": "0o660", "sa02m-alice-devices.conf": "0o600", "sa02m-alice-server.conf": "0o640"}
+            if r9e.returncode == 0 and got == want:
+                ok("9e with sa02m-alice-devices present the device document is left alone (still 0600), the others get their modes")
+            else:
+                bad(f"9e HomeKit-owned device document: rc={r9e.returncode}, got {got}, want {want}")
 
 # ── 10. the HomeKit bridge homes (docs/contracts/homekit-bridge.md §13-§14) ─
 # The same lists, the second optional module: the conf is the operator's
@@ -979,7 +1025,7 @@ else:
 
     # 10.5e — the WHOLE backup end to end: a paired board's archive carries the
     # conf bytes and not one byte of the pairing store; a symlink planted at the
-    # conf (its dir is root:www-data 0770 like the Alice one) is skipped.
+    # conf (its dir is www-data-writable like the Alice one) is skipped.
     if not (shutil.which("bash") and shutil.which("tar")) or "run_backup" not in globals():
         skip("10.5e needs bash + tar — not run on this host (a skip is not a pass)")
     else:
@@ -1114,10 +1160,12 @@ else:
 # ── 11. HomeKit installer conf seed: root never writes/chmods through a plant ─
 # scripts/06c-homekit.sh (root, on every install.sh refresh once the bridge is
 # installed) seeds /etc/sa02m-homekit/sa02m-homekit.conf and re-asserts its
-# group/mode — in a root:www-data 0770 directory, the same door as section 9.
-# The SHIPPED block between «Conf seed» and «systemd» runs with the conf dir
-# retargeted into a sandbox, $BASE_DIR at a sandbox seed (written with CRLF, so
-# the CR strip is measured too) and www-data replaced by the invoking group.
+# owner/group/mode (www-data:sa02m-homekit 0640, contract §13) — in a directory
+# www-data owns, the same door as section 9. The SHIPPED block between «Conf
+# seed» and «systemd» runs with the conf dir retargeted into a sandbox,
+# $BASE_DIR at a sandbox seed (written with CRLF, so the CR strip is measured
+# too), the owner www-data replaced by the invoking user and $HK_USER (the
+# group) by the invoking group.
 print("── 11. HomeKit installer conf seed/modes (scripts/06c-homekit.sh) never follow a plant ──")
 HK11_DIR = "/etc/sa02m-homekit"
 HK11_NAME = "sa02m-homekit.conf"
@@ -1129,7 +1177,9 @@ if not m11 or HK11_DIR not in m11.group(1) or not HK11_SEED.is_file():
 else:
     import grp as grp11  # noqa: E402
     import stat as stat11  # noqa: E402
+    import pwd as pwd11  # noqa: E402
     group11 = grp11.getgrgid(os.getegid()).gr_name
+    user11 = pwd11.getpwuid(os.geteuid()).pw_name
     seed11 = HK11_SEED.read_bytes()
 
     def run_seed(sb: Path, cwd=None, env=None):
@@ -1138,8 +1188,9 @@ else:
         (base / "etc/sa02m-homekit" / HK11_NAME).write_bytes(seed11.replace(b"\n", b"\r\n"))
         # Only the LIVE path is retargeted — not the seed source under $BASE_DIR/etc/.
         block = re.sub(r"(?<![\w}])" + re.escape(HK11_DIR), str(sb / "sa02m-homekit"), m11.group(1))
-        block = block.replace("www-data", group11)
-        script = "set -euo pipefail\nlog() { printf '%s\\n' \"$*\"; }\nBASE_DIR=" + str(base) + "\n" + block
+        block = block.replace("www-data", user11)
+        script = ("set -euo pipefail\nlog() { printf '%s\\n' \"$*\"; }\nBASE_DIR=" + str(base)
+                  + "\nHK_USER=" + group11 + "\n" + block)
         try:
             r = subprocess.run(["bash", "-c", script], capture_output=True, text=True, timeout=60, cwd=cwd,
                                env=env)
@@ -1163,19 +1214,20 @@ else:
 
     def state11(p: Path):
         st = os.lstat(p)
-        return (stat11.S_IMODE(st.st_mode), st.st_gid, p.read_bytes())
+        return (stat11.S_IMODE(st.st_mode), st.st_gid, p.read_bytes(), st.st_uid)
 
     my_gid = os.getegid()
+    my_uid = os.geteuid()
     with tempfile.TemporaryDirectory() as tsb:
         sb = Path(tsb)
         e = seed_dir(sb)
         rc, out = run_seed(sb)
         c = e["conf"]
-        if rc == 0 and c.is_file() and not c.is_symlink() and state11(c) == (0o660, my_gid, seed11):
-            ok("11a an absent conf is seeded: the seed bytes (CR stripped), 0660, group www-data")
+        if rc == 0 and c.is_file() and not c.is_symlink() and state11(c) == (0o640, my_gid, seed11, my_uid):
+            ok("11a an absent conf is seeded: the seed bytes (CR stripped), 0640, owner www-data, group sa02m-homekit")
         else:
             got = state11(c) if c.exists() else None
-            bad(f"11a seed: rc={rc}, conf={got!r}, want (0o660, {my_gid}, seed bytes): {out.strip()[-200:]!r}")
+            bad(f"11a seed: rc={rc}, conf={got!r}, want (0o640, {my_gid}, seed bytes, {my_uid}): {out.strip()[-200:]!r}")
 
     with tempfile.TemporaryDirectory() as tsb:
         sb = Path(tsb)
@@ -1183,8 +1235,8 @@ else:
         e["conf"].write_bytes(b"[bridge]\nenabled = true\n")
         e["conf"].chmod(0o600)
         rc, out = run_seed(sb)
-        (ok if rc == 0 and state11(e["conf"]) == (0o660, my_gid, b"[bridge]\nenabled = true\n") else bad)(
-            f"11b an existing regular conf keeps its bytes and gets 0660 + group www-data back (rc={rc})")
+        (ok if rc == 0 and state11(e["conf"]) == (0o640, my_gid, b"[bridge]\nenabled = true\n", my_uid) else bad)(
+            f"11b an existing regular conf keeps its bytes and gets 0640 + www-data:sa02m-homekit back (rc={rc})")
 
     with tempfile.TemporaryDirectory() as tsb:
         sb = Path(tsb)
@@ -1238,7 +1290,7 @@ else:
         env11 = dict(os.environ, PYTHONPATH=str(cwd11))
         rc, out = run_seed(sb, cwd=cwd11, env=env11)
         c = e["conf"]
-        seeded = c.is_file() and not c.is_symlink() and state11(c) == (0o660, my_gid, seed11)
+        seeded = c.is_file() and not c.is_symlink() and state11(c) == (0o640, my_gid, seed11, my_uid)
         (ok if rc == 0 and not marker11.exists() and seeded else bad)(
             f"11f the seed block runs isolated (python3 -I): a planted sitecustomize/grp on the cwd or PYTHONPATH "
             f"never runs and the seed still lands (rc={rc}, planted module ran={marker11.exists()}, seeded={seeded})")
@@ -1248,7 +1300,7 @@ else:
 # map_dst, the offline deploy map) to EVERY board, and systemd-tmpfiles applies
 # it at every boot. The HomeKit conf names the `sa02m-homekit` account, which
 # exists only where scripts/06c-homekit.sh ran: on any other board its lines
-# fail to resolve at every boot and it creates an empty 0770 /etc/sa02m-homekit.
+# fail to resolve at every boot and it creates an empty /etc/sa02m-homekit.
 # So the conf lives in the package (inert under /opt) and only the installer
 # copies it into /etc/tmpfiles.d/ (review advisory A1, 1.0.6.57).
 print("── 12. the HomeKit tmpfiles conf is installer-owned, never OTA'd into /etc/tmpfiles.d ──")
@@ -1373,7 +1425,7 @@ else:
 
     # 13.5e — the WHOLE backup end to end: a signed-in board's archive carries
     # the conf bytes and not one byte of the tokens; a symlink planted at the
-    # conf (its dir is root:www-data 0770) is skipped with a WARN.
+    # conf (its dir is www-data-writable) is skipped with a WARN.
     if not (shutil.which("bash") and shutil.which("tar")) or "run_backup" not in globals():
         skip("13.5e needs bash + tar — not run on this host (a skip is not a pass)")
     else:
@@ -1491,10 +1543,11 @@ else:
 # scripts/06d-homeconnect.sh (root, on every install.sh refresh once the client
 # is installed) seeds /etc/sa02m-homeconnect/sa02m-homeconnect.conf from the
 # INSTALLED package's own render() of the defaults and re-asserts its
-# group/mode — in a root:www-data 0770 directory, the section-9/11 door. The
-# SHIPPED block between «Conf seed» and «systemd» runs with the conf dir
-# retargeted into a sandbox, $INSTALL_DIR at this checkout's package and
-# www-data replaced by the invoking group.
+# owner/group/mode (www-data:sa02m-homeconnect 0640, contract §11) — in a
+# directory www-data owns, the section-9/11 door. The SHIPPED block between
+# «Conf seed» and «systemd» runs with the conf dir retargeted into a sandbox,
+# $INSTALL_DIR at this checkout's package, the owner www-data replaced by the
+# invoking user and $HC_USER (the group) by the invoking group.
 print("── 14. Home Connect installer conf seed/modes (scripts/06d-homeconnect.sh) never follow a plant ──")
 HC14_DIR = "/etc/sa02m-homeconnect"
 HC14_NAME = "sa02m-homeconnect.conf"
@@ -1512,13 +1565,16 @@ if not m14 or HC14_DIR not in m14.group(1) or r14.returncode != 0 or "enabled = 
 else:
     import grp as grp14  # noqa: E402
     import stat as stat14  # noqa: E402
+    import pwd as pwd14  # noqa: E402
     group14 = grp14.getgrgid(os.getegid()).gr_name
+    user14 = pwd14.getpwuid(os.geteuid()).pw_name
     seed14 = r14.stdout.encode("utf-8")
 
     def run_seed14(sb: Path, cwd=None, env=None, pkg: Path = HC14_PKG):
         block = re.sub(r"(?<![\w}])" + re.escape(HC14_DIR), str(sb / "sa02m-homeconnect"), m14.group(1))
-        block = block.replace("www-data", group14)
-        script = ("set -euo pipefail\nlog() { printf '%s\\n' \"$*\"; }\nINSTALL_DIR=" + str(pkg) + "\n" + block)
+        block = block.replace("www-data", user14)
+        script = ("set -euo pipefail\nlog() { printf '%s\\n' \"$*\"; }\nINSTALL_DIR=" + str(pkg)
+                  + "\nHC_USER=" + group14 + "\n" + block)
         try:
             r = subprocess.run(["bash", "-c", script], capture_output=True, text=True, timeout=60, cwd=cwd, env=env)
         except subprocess.TimeoutExpired:
@@ -1541,19 +1597,21 @@ else:
 
     def state14(p: Path):
         st = os.lstat(p)
-        return (stat14.S_IMODE(st.st_mode), st.st_gid, p.read_bytes())
+        return (stat14.S_IMODE(st.st_mode), st.st_gid, p.read_bytes(), st.st_uid)
 
     gid14 = os.getegid()
+    uid14 = os.geteuid()
     with tempfile.TemporaryDirectory() as tsb:
         sb = Path(tsb)
         e = seed_dir14(sb)
         rc, out = run_seed14(sb)
         c = e["conf"]
-        if rc == 0 and c.is_file() and not c.is_symlink() and state14(c) == (0o660, gid14, seed14):
-            ok("14a an absent conf is seeded: the package's own render() of the defaults (enabled = false), 0660, group www-data")
+        if rc == 0 and c.is_file() and not c.is_symlink() and state14(c) == (0o640, gid14, seed14, uid14):
+            ok("14a an absent conf is seeded: the package's own render() of the defaults (enabled = false), 0640, "
+               "owner www-data, group sa02m-homeconnect")
         else:
             got = state14(c) if c.exists() else None
-            bad(f"14a seed: rc={rc}, conf={got!r}, want (0o660, {gid14}, render bytes): {out.strip()[-200:]!r}")
+            bad(f"14a seed: rc={rc}, conf={got!r}, want (0o640, {gid14}, render bytes, {uid14}): {out.strip()[-200:]!r}")
 
     with tempfile.TemporaryDirectory() as tsb:
         sb = Path(tsb)
@@ -1562,8 +1620,8 @@ else:
         e["conf"].write_bytes(mine)
         e["conf"].chmod(0o600)
         rc, out = run_seed14(sb)
-        (ok if rc == 0 and state14(e["conf"]) == (0o660, gid14, mine) else bad)(
-            f"14b an existing regular conf keeps its bytes (the Client ID) and gets 0660 + group www-data back (rc={rc})")
+        (ok if rc == 0 and state14(e["conf"]) == (0o640, gid14, mine, uid14) else bad)(
+            f"14b an existing regular conf keeps its bytes (the Client ID) and gets 0640 + www-data:sa02m-homeconnect back (rc={rc})")
 
     with tempfile.TemporaryDirectory() as tsb:
         sb = Path(tsb)
@@ -1612,7 +1670,7 @@ else:
         env14 = dict(os.environ, PYTHONPATH=str(cwd14))
         rc, out = run_seed14(sb, cwd=cwd14, env=env14)
         c = e["conf"]
-        seeded = c.is_file() and not c.is_symlink() and state14(c) == (0o660, gid14, seed14)
+        seeded = c.is_file() and not c.is_symlink() and state14(c) == (0o640, gid14, seed14, uid14)
         (ok if rc == 0 and not marker14.exists() and seeded else bad)(
             f"14f the seed block runs isolated (python3 -I): a planted sitecustomize/grp on the cwd or PYTHONPATH "
             f"never runs and the seed still lands (rc={rc}, planted module ran={marker14.exists()}, seeded={seeded})")

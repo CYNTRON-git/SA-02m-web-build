@@ -1,5 +1,5 @@
-"""A conf that EXISTS but cannot be read (EACCES — e.g. the daemon's read ACL
-was lost; docs/contracts/homekit-bridge.md §13) is not «disabled».
+"""A conf that EXISTS but cannot be read (EACCES — e.g. its group grant was
+broken by a restore; docs/contracts/homekit-bridge.md §13) is not «disabled».
 configparser.read() skips a file it cannot open without a word, so the bridge
 used to read defaults (enabled = false) and stop as if the operator had
 switched it off. Now: `missing_deps` + reason `conf_unreadable`, exit 0 (no
