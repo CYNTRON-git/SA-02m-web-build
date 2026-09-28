@@ -272,6 +272,15 @@
       "init": "bash + grep + python3"
     },
     {
+      "id": "ota-dst-allowlist-parity",
+      "checks": "The OTA destination allow-list (which live paths an update may write, as root) has four homes - etc/sa02m-update-runner.sh twice (DST_RE in the GitHub manifest builder and in the offline-package extract), scripts/pack-offline-update.py (DST_PREFIX_RE) and opt/sa02m-update/lib/validate_package.py (_DST_PREFIX_RES) - and they must admit the SAME set. Each home is parsed as Python with `ast` (a commented-out alternative vanishes exactly as at run time), the alternations are split at their top-level `|` and the four alternative sets must be identical; then every home's COMPILED predicate is driven over a probe table - 14 allowed destinations accepted, 12 near misses refused (another /opt/mplc4 file, a plugin with a suffix or a sub-path, /etc/default/grub, /usr/local/bin, the dhcp hook with a suffix, a non-sa02m unit) - so four homes drifting wide together still FAIL. Also FAILS if scripts/offline-update-deploy-map.json grows a `dst_prefix_allowlist` again (an unread fifth copy that had drifted; removed in 1.0.6.58). Non-vacuous: exactly two runner blocks, >=10 alternatives per home, every home answering every probe. RED observed 2026-09-28 on the 1.0.6.56 tree: 16 failures - both runner blocks admitting any /opt/mplc4/ path (start_mplc4.sh, other_plugin.so, mplc_cyntron.so.bak, sub/mplc_cyntron.so), the packer's plugin alternative without its `$` admitting mplc_cyntron.so.bak, and the deploy-map copy present (audit 2026-09-24 L2); GREEN after narrowing both runner blocks to the closed plugin set, anchoring the packer's, and deleting the deploy-map copy. Comment-out mutation cased in comment-mutation-proof for the validator, the packer and the runner.",
+      "config": null,
+      "run": "bash .ai-dev/quality/checks/ota-dst-allowlist-parity.sh",
+      "beat": "build",
+      "covers": ["etc/sa02m-update-runner.sh", "scripts/pack-offline-update.py", "opt/sa02m-update/lib/validate_package.py", "scripts/offline-update-deploy-map.json", ".ai-dev/quality/checks/ota-dst-allowlist-parity.sh"],
+      "init": "bash + python3 (stdlib ast/re)"
+    },
+    {
       "id": "ota-deploy-mode-contract",
       "checks": "OTA manifest deploy mode follows DESTINATION role, not source extension. Pins private/BUG-ota-mode-0644.md: extension-less helpers (sa02m-set-storage-auto-format, sa02m-set-cpu-profile) in /usr/local/sbin were deployed 0644 on every web update — exFAT autoformat button greyed out, CPU profile switch failed silently. Asserts deploy_mode(rel,dst) exists, manifest builder uses it, sbin/libexec/bin/dhclient-hooks → 0755 while nginx/sudoers stay 0644, and offline map still marks the two helpers 0755. COMMENT-SAFE (1.0.6.24): every needle is matched against comment-stripped text (.ai-dev/quality/checks/lib_check.sh), so commenting a pinned line out FAILS the gate instead of satisfying it; proven per gate by the comment-mutation-proof row.",
       "config": null,

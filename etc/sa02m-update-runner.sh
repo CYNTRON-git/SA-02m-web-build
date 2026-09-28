@@ -644,9 +644,11 @@ overlay = Path(os.environ["OVERLAY"])
 meta = Path(os.environ["META"])
 meta.mkdir(parents=True, exist_ok=True)
 
+# One of four copies of the destination allow-list (runner x2, packer, validator);
+# the ota-dst-allowlist-parity row keeps them equal - change all four together.
 DST_RE = re.compile(
     r"^/(var/www/network_config/|usr/local/(sbin|lib|libexec)/|"
-    r"opt/sa02m-[a-z0-9-]+/|opt/mplc4/|"
+    r"opt/sa02m-[a-z0-9-]+/|opt/mplc4/(mplc_cyntron|mplc_protocol_fast_modbus)\.so$|"
     r"etc/systemd/system/sa02m-|"
     r"etc/nginx/|etc/tmpfiles\.d/|etc/sudoers\.d/|"
     r"etc/default/sa02m-|"
@@ -947,9 +949,11 @@ meta = os.path.join(staging, "meta")
 os.makedirs(overlay, exist_ok=True)
 os.makedirs(meta, exist_ok=True)
 
+# One of four copies of the destination allow-list (runner x2, packer, validator);
+# the ota-dst-allowlist-parity row keeps them equal - change all four together.
 DST_RE = re.compile(
     r"^/(var/www/network_config/|usr/local/(sbin|lib|libexec)/|"
-    r"opt/sa02m-[a-z0-9-]+/|opt/mplc4/|"
+    r"opt/sa02m-[a-z0-9-]+/|opt/mplc4/(mplc_cyntron|mplc_protocol_fast_modbus)\.so$|"
     r"etc/systemd/system/sa02m-|"
     r"etc/nginx/|etc/tmpfiles\.d/|etc/sudoers\.d/|"
     r"etc/default/sa02m-|"

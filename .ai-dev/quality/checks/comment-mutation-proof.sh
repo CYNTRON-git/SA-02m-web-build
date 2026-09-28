@@ -168,6 +168,14 @@ update-recover-boot|scripts/pack-offline-update.py|"sa02m-update-verify.service"
 update-recover-boot|etc/sa02m-update-runner.sh|trap '"'"'exit 143'"'"' INT TERM
 no-absolute-api-paths|www/network_config/static/js/devices.js|"api/devices
 flasher-auth-header-strip|etc/nginx/network_config.conf|X-SA02M-Auth  "";
+ota-dst-allowlist-parity|opt/sa02m-update/lib/validate_package.py|re.compile(r"^/etc/nginx/"),
+ota-dst-allowlist-parity|scripts/pack-offline-update.py|r"etc/systemd/system/sa02m-|"
+ota-dst-allowlist-parity|etc/sa02m-update-runner.sh|r"etc/systemd/system/sa02m-|"
+journal-on-disk-policy|etc/systemd/sa02m-journald.conf|Storage=persistent
+journal-on-disk-policy|etc/systemd/sa02m-journald.conf|SyncIntervalSec=1m
+journal-on-disk-policy|etc/default/armbian-ramlog|ENABLED=false
+journal-on-disk-policy|scripts/01-system.sh|sa02m_atomic_install -m 644 "$ETC_REPO/default/armbian-ramlog"
+journal-on-disk-policy|scripts/01-system.sh|sa02m_atomic_install -m 644 "$ETC_REPO/systemd/sa02m-journald.conf"
 '
 
 command -v git >/dev/null 2>&1 || { echo "comment-mutation-proof: FAIL — git is required to build the pristine copy"; exit 1; }

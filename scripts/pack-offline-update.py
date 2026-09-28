@@ -68,9 +68,11 @@ FOOTER = FOOTER_MAGIC + b"\0\0"
 assert len(FOOTER) == 21
 SIG_DOMAIN = b"SA02M-MANIFEST-V1\0"
 VERSION_RE = re.compile(r"^\d+(\.\d+){2,3}$")
+# One of four copies of the destination allow-list (runner x2, packer, validator);
+# the ota-dst-allowlist-parity row keeps them equal - change all four together.
 DST_PREFIX_RE = re.compile(
     r"^/(var/www/network_config/|usr/local/(sbin|lib|libexec)/|"
-    r"opt/sa02m-[a-z0-9-]+/|opt/mplc4/(mplc_cyntron|mplc_protocol_fast_modbus)\.so|"
+    r"opt/sa02m-[a-z0-9-]+/|opt/mplc4/(mplc_cyntron|mplc_protocol_fast_modbus)\.so$|"
     r"etc/systemd/system/sa02m-|"
     r"etc/nginx/|etc/tmpfiles\.d/|etc/sudoers\.d/|"
     r"etc/default/sa02m-|"
