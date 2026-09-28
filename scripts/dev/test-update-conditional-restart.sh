@@ -94,7 +94,7 @@
 #   alone -> the parity FAIL; pack edited alone -> 4 FAIL; sa02m-homekit added
 #   to the runner's restart[] -> the never-widen FAIL. PACK_SRC=<file>
 #   overrides the pack like UPDATE_RUNNER_SRC does the runner.
-#   Since the Home Connect client (1.0.6.58 branch) the same four checks run
+#   Since the Home Connect client (1.0.6.57 branch) the same four checks run
 #   for sa02m-homeconnect too (installed `app off` by 06d-homeconnect.sh).
 #   RED 2026-09-28: both generators at HEAD d7d9c4a -> 3 FAIL (not in the set,
 #   running client not restarted, never probed — the homekit half green); the
