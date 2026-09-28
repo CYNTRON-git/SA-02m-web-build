@@ -920,6 +920,15 @@ commit's diff of this file).
   `opt/sa02m-flasher/sa02m_flasher/service.py:191`; the `cgi` module is gone in Python 3.13, so
   firmware upload breaks on a distro upgrade. Read the board's Python version first.
 
+- [OPEN] 2026-09-27 **[LOW] Modbus TCP follow-ups from the 1.0.6.56 review.** A3: the add-dialog TCP
+  logic (`mqtt.js` connection selector, narrowing, ids, refusal toast) has no JS unit test — only headless
+  runs. A4: no «проверить связь» action — a wrong IP shows only after «Сохранить и применить». A7: devices
+  sharing one `host:tcp_port` use the first entry's `tcp_timeout_s` (documented in
+  `docs/contracts/bridge-modbus-tcp.md`) but nothing warns when entries disagree. A8: `mqtt.js` 2937 lines,
+  `stand_devices.py` 750, `bridge_serial.py` 699 — decompose worklist.
+- [OPEN] 2026-09-27 **[LOW] No direct unit test of `ModbusSerial` bit parsing** (FC01/FC02 are covered only
+  through the shared helper by the TCP round-trips since 1.0.6.56).
+
 <!-- Whole-project audit 2026-08-28 at 1.0.6.23 (3 parallel auditors: contracts,
      security, docs). Suite was GREEN (build 47/47, review 6/6) and branch
      protection verified live — every finding below is what green does NOT cover. -->

@@ -4791,6 +4791,11 @@ html[data-theme="light"] .mqtt-ch-live-ok { color: var(--cyan-hover); }
   min-height: 0;
   overscroll-behavior: contain;
 }
+/* .form-row sets display:flex, which outranks the UA [hidden] rule: the add
+   dialog's «Шаблон» row stayed on screen for every device type, and the
+   Modbus TCP rows (transport / IP / TCP port / Carel family) are toggled the
+   same way. */
+#mqtt-add-modal .form-row[hidden] { display: none !important; }
 .mqtt-modal-foot {
   display: flex;
   gap: 8px;

@@ -83,8 +83,12 @@ _DTV_EXT_BREAK_EPS = 0.5   # published temp is quantized to 0.1 °C; clamp is ex
 _DTV_EXT_MIN_C = -60.0     # sane external floor (below any table UNDER sentinel)
 _DTV_EXT_MAX_C = 130.0     # sane external ceil (above any table OVER sentinel)
 
+# RS-485: `<family>-COM<n>-<addr>`. Modbus TCP (1.0.6.56, Carel only):
+# `carel-tcp-<a_b_c_d>-<addr>` — the host with dots as underscores, no COM port
+# (docs/contracts/bridge-modbus-tcp.md).
 _ID_RE = re.compile(
-    r"^(?P<prefix>dtv|ce02m3|mr02m|carel)-COM(?P<port>\d+)-(?P<addr>\d+)$",
+    r"^(?:(?P<prefix>dtv|ce02m3|mr02m|carel)-COM(?P<port>\d+)-(?P<addr>\d+)"
+    r"|carel-tcp-(?P<host>[0-9]{1,3}(?:_[0-9]{1,3}){3})-(?P<tcp_addr>[0-9]+))$",
     re.IGNORECASE,
 )
 
@@ -243,7 +247,11 @@ def _age_s(ts: Any, mtime: float | None = None) -> float | None:
 
 
 def parse_device_id(device_id: str) -> dict[str, Any]:
-    """Разобрать ``dtv-COM4-3`` / ``ce02m3-COM2-14`` → port_num, addr, kind."""
+    """Разобрать ``dtv-COM4-3`` / ``ce02m3-COM2-14`` → port_num, addr, kind.
+
+    ``carel-tcp-192_168_1_50-1`` → kind carel, addr, host «192.168.1.50»,
+    port_num None (a Modbus TCP device has no COM port).
+    """
     m = _ID_RE.match(str(device_id or "").strip())
     if not m:
         return {
@@ -251,6 +259,14 @@ def parse_device_id(device_id: str) -> dict[str, Any]:
             "port_num": None,
             "addr": None,
             "com": "",
+        }
+    if m.group("host"):
+        return {
+            "kind": "carel",
+            "port_num": None,
+            "addr": int(m.group("tcp_addr")),
+            "com": "",
+            "host": m.group("host").replace("_", "."),
         }
     prefix = m.group("prefix").lower()
     port_num = int(m.group("port"))
@@ -626,7 +642,11 @@ def _build_carel(
     sku = "Carel uAria" if family == "uaria" else "Carel c.pCOmini"
     a = meta.get("addr")
     p = meta.get("port_num")
-    label = f"{sku} № {'—' if a is None else a} порт {'—' if p is None else p}"
+    host = meta.get("host")
+    if host:
+        label = f"{sku} № {'—' if a is None else a} · {host}"
+    else:
+        label = f"{sku} № {'—' if a is None else a} порт {'—' if p is None else p}"
     plant = str(controls.get("plant_state") or "").strip().lower()
     return {
         "id": device_id,

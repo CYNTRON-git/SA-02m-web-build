@@ -27,6 +27,7 @@ import os
 import sys
 import time
 
+import bridge_bus
 from bridge_device import DevicePoller
 from bridge_mqtt import DeviceLiveCache, MQTTPublisher
 
@@ -116,9 +117,11 @@ class CarelPoller(DevicePoller):
 
     def setup(self) -> None:
         self._identify()
+        self._warn_unknown_version()
         model = "uAria" if self.family == cc.FAMILY_UARIA else "c.pCOmini"
+        # bus.label: "COM3" on RS-485 (as before), "192.168.1.50:502" on TCP.
         name = self.cfg.get("name") or "Carel %s (%s addr=%d)" % (
-            model, self.port_path.replace("/dev/", ""), self.address)
+            model, self.bus.label, self.address)
         self.publish_device_meta(name, driver="carel")
         for cname, wb_type, units, readonly, _fams in cc.controls_for(self.family):
             self.pub.pub_control_meta(self.device_id, cname, "type", wb_type)
@@ -131,6 +134,20 @@ class CarelPoller(DevicePoller):
             self.pub.pub_control_meta(self.device_id, cname, "min", str(lo))
             self.pub.pub_control_meta(self.device_id, cname, "max", str(hi))
         self._setup_writeback()
+
+    def _warn_unknown_version(self) -> None:
+        """TCP c.pCOmini with no firmware version: say which table is assumed.
+
+        FC17 over Carel Ethernet is unverified, and without a version the
+        UnitStatus table falls back to v2 — wrong status text and plant state
+        for firmware older than 2.02.xx.52. The uAria has one table, so only
+        the c.pCOmini is concerned; RS-485 is unchanged.
+        """
+        if (self.bus.transport == bridge_bus.TRANSPORT_TCP
+                and self.family == cc.FAMILY_CRST and self._version is None):
+            self.log.warning("carel over TCP: no firmware version (no FC17 "
+                             "answer, no app_version) — status table assumed "
+                             "v2; set app_version in the device entry")
 
     def _setup_writeback(self) -> None:
         for cname in cc.writable_names(self.family):

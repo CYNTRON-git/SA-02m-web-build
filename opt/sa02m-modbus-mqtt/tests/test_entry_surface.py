@@ -12,6 +12,7 @@ tree (they run and the module set must match EXPECTED_MODULES exactly).
 from __future__ import annotations
 
 import importlib
+import re
 import sys
 import time as _time
 import types
@@ -52,6 +53,7 @@ import modbus_mqtt_bridge as bridge  # noqa: E402
 # it exactly: a module added later must be declared here AND in both deploy
 # scripts (scripts/05-mqtt.sh, scripts/update-www-only.sh).
 EXPECTED_MODULES = [
+    "bridge_bus",
     "bridge_carel",
     "bridge_device",
     "bridge_dtv_ce",
@@ -62,6 +64,7 @@ EXPECTED_MODULES = [
     "bridge_mr02m",
     "bridge_mr02m_map",
     "bridge_serial",
+    "bridge_tcp",
     "bridge_template",
 ]
 
@@ -112,6 +115,7 @@ FROZEN_SURFACE = [
     "CONFIG_PATH", "sd_notify", "POLLER_CLASSES",
     "load_config", "watchdog_thread", "signal_handler",
     "ROSTER_PATH", "write_bridge_roster", "main",
+    "compose_pollers", "make_port_scheduler",
 ]
 
 
@@ -124,6 +128,26 @@ class TestFrozenSurface(unittest.TestCase):
     def test_entry_keeps_time_module(self):
         # Tests patch bridge.time.monotonic — the entry must keep `import time`.
         self.assertIs(bridge.time, _time)
+
+
+def copy_loop_modules(text: str) -> list[str]:
+    """Module names in a deploy script's bridge copy loop (`for f in … ; do`).
+
+    Parsed, not substring-searched: until 1.0.6.56 this suite checked
+    `"bridge_x.py" in text`, so a module named only in a COMMENT passed while
+    the loop never copied it (shape (a), docs/agent-rules/quality-gate-rigor.md).
+    Comments are stripped first, continuation lines joined, and only the loop
+    whose every token is a bridge_*.py file counts. Returns [] when there is
+    no such loop — the caller fails on that (non-vacuous).
+    """
+    lines = [re.sub(r"(^|\s)#.*$", "", ln) for ln in text.splitlines()]
+    joined = re.sub(r"\\" + "\n", " ", "\n".join(lines))
+    found = []
+    for m in re.finditer(r"^\s*for\s+f\s+in\s+([^;\n]*);\s*do\b", joined, re.M):
+        tokens = m.group(1).split()
+        if tokens and all(re.fullmatch(r"bridge_\w+\.py", t) for t in tokens):
+            found.append([t[:-3] for t in tokens])
+    return found[0] if len(found) == 1 else []
 
 
 class TestSubmoduleImportSmoke(unittest.TestCase):
@@ -144,10 +168,27 @@ class TestSubmoduleImportSmoke(unittest.TestCase):
         for script in ("scripts/05-mqtt.sh", "scripts/update-www-only.sh"):
             text = (repo / script).read_text(encoding="utf-8", errors="replace")
             self.assertTrue(text.strip(), "%s is empty or unreadable" % script)
-            missing = [n for n in EXPECTED_MODULES if "%s.py" % n not in text]
+            copied = copy_loop_modules(text)
+            self.assertTrue(copied, "%s: no single bridge_*.py copy loop "
+                            "(`for f in bridge_… ; do`) found" % script)
+            missing = [n for n in EXPECTED_MODULES if n not in copied]
+            extra = [n for n in copied if n not in EXPECTED_MODULES]
             # assertIn would dump the whole script into the failure message.
             self.assertEqual([], missing,
                              "%s never copies: %s" % (script, ", ".join(missing)))
+            self.assertEqual([], extra,
+                             "%s copies undeclared: %s" % (script, ", ".join(extra)))
+
+    def test_copy_loop_parser_is_not_comment_blind(self):
+        loop = ("for f in bridge_serial.py \\\n"
+                "         bridge_device.py; do\n  install x\ndone\n")
+        self.assertEqual(copy_loop_modules(loop), ["bridge_serial", "bridge_device"])
+        # Named only in a comment: not copied.
+        self.assertNotIn("bridge_tcp",
+                         copy_loop_modules("# bridge_tcp.py\n" + loop))
+        # A commented-out loop is no loop (non-vacuous: the caller FAILS).
+        self.assertEqual(copy_loop_modules("# " + loop.replace("\n", "\n# ")), [])
+        self.assertEqual(copy_loop_modules(""), [])
 
     def test_split_modules_import_cleanly(self):
         found = self._found_modules()

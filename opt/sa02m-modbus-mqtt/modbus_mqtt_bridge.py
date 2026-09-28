@@ -1,9 +1,10 @@
 #!/usr/bin/env python3
 """SA-02m Modbus→MQTT bridge v2.
 
-Devices:  mr02m (all 13 types), dtv (RTU-Sensor), ce02m3
+Devices:  mr02m (all 13 types), dtv (RTU-Sensor), ce02m3, led, template, carel
 Protocol: standard Modbus RTU (FC01-06) + Wiren Board Fast Modbus
-          (FC 0x46: scanner + event polling).
+          (FC 0x46: scanner + event polling); Modbus TCP for template/carel
+          (`transport: tcp`, docs/contracts/bridge-modbus-tcp.md).
 Topics:   Wiren Board MQTT convention (/devices/…/controls/…)
 Config:   /etc/sa02m-modbus-mqtt.yaml  (env SA02M_MQTT_CONFIG to override)
 Systemd:  sd_notify READY=1 / WATCHDOG=1
@@ -95,6 +96,7 @@ from bridge_dtv_ce import DTVPoller, CE02M3Poller  # noqa: F401
 from bridge_carel import CarelPoller
 from bridge_led import LedPoller
 from bridge_template import TemplatePoller  # noqa: F401
+import bridge_bus
 
 
 # ── Systemd watchdog ───────────────────────────────────────────────────────────
@@ -216,6 +218,10 @@ def write_bridge_roster(devices_cfg: list, pub: MQTTPublisher,
     online = pub.device_online_snapshot()
     rows = []
     for dev_cfg in devices_cfg or []:
+        if dev_cfg.get("transport") not in (None, bridge_bus.TRANSPORT_RTU):
+            # A Modbus TCP device is not on an RS-485 line: no roster row
+            # (docs/contracts/rs485-roster.md), and never a "" ghost port.
+            continue
         dev_type = str(dev_cfg.get("type", "")).lower()
         module_type = int(dev_cfg.get("module_type", 0) or 0)
         rows.append({
@@ -235,6 +241,93 @@ def write_bridge_roster(devices_cfg: list, pub: MQTTPublisher,
         tmp.replace(path)
     except OSError as e:
         log.debug("bridge roster write: %s", e)
+
+
+def compose_pollers(devices_cfg: list, pub: MQTTPublisher):
+    """Build the pollers and group them by bus: `(by_bus, fmb_ports, refused)`.
+
+    by_bus: {bus key: [poller, …]} in config order — `port:baud` for RS-485
+    (unchanged), `tcp:host:port` for Modbus TCP. fmb_ports: {rtu key: FMB
+    manager}. refused: bridge_bus.validate_devices() rows for the entries
+    skipped with one ERROR each — the rest of the fleet still registers
+    (the template precedent, docs/contracts/template-device.md §2).
+
+    The bridge loader is where an invalid TCP entry is refused: the YAML is
+    www-data-writable, so the CGI's save-time check is not the authority.
+    """
+    refused = bridge_bus.validate_devices(devices_cfg)
+    refused_idx = {r["index"] for r in refused}
+    for r in refused:
+        log.error("device %s refused: %s", r["id"], r["reason"])
+
+    # Per-port FMB helpers (no own thread) + pollers grouped by port:baud.
+    fmb_ports: dict[str, FastModbusEventPortManager] = {}
+    by_port: dict[str, list[DevicePoller]] = {}
+    for index, dev_cfg in enumerate(devices_cfg):
+        if index in refused_idx:
+            continue
+        dev_type = dev_cfg.get("type", "").lower()
+        cls = POLLER_CLASSES.get(dev_type)
+        if cls is None:
+            log.error("Unknown device type '%s' id=%s — skipping",
+                      dev_type, dev_cfg.get("id", "?"))
+            continue
+        poller = cls(dev_cfg, pub)
+        _pollers.append(poller)
+        pub.register_device(dev_cfg["id"])
+        port_key = poller.bus.key
+        by_port.setdefault(port_key, []).append(poller)
+        log.info("Registered %s poller %s on %s", dev_type, dev_cfg["id"], port_key)
+
+        if poller.bus.transport == bridge_bus.TRANSPORT_TCP:
+            # Fast Modbus is an RS-485 broadcast protocol: never armed on a
+            # TCP bus, whatever `fast_modbus` says.
+            continue
+        # Default ON for MR/DTV. CE: explicit fast_modbus:true only — early
+        # configure_events while silent wedged CE on COM2 (RX frozen).
+        want_fmb = bool(dev_cfg["fast_modbus"]) if "fast_modbus" in dev_cfg \
+            else dev_type in ("mr02m", "dtv")
+        if want_fmb:
+            ranges = poller.fmb_event_ranges()
+            if ranges:
+                mgr = fmb_ports.get(port_key)
+                if mgr is None:
+                    mgr = FastModbusEventPortManager(
+                        poller.port_path, poller.baudrate)
+                    fmb_ports[port_key] = mgr
+                mgr.register_device(
+                    poller.address, poller.device_id, ranges,
+                    poller.fmb_dispatch, poller=poller, dev_type=dev_type,
+                    wire_mode=str(dev_cfg.get("fmb_event_wire", "auto")))
+
+    # Physical lines only: `tcp:H:502` + `tcp:H:503` are two endpoints, not
+    # one port at two bauds.
+    rtu_keys = [k for k, ps in by_port.items()
+                if ps[0].bus.transport == bridge_bus.TRANSPORT_RTU]
+    for path, bauds in mixed_baud_port_conflicts(rtu_keys).items():
+        log.error("%s is configured at several baud rates (%s) — one physical "
+                  "line cannot serve them: the handles are exclusive per "
+                  "port:baud and all but one will fail to open. Put the odd "
+                  "device on its own COM port or change its baud.",
+                  path, ", ".join(str(b) for b in bauds))
+    return by_port, fmb_ports, refused
+
+
+def make_port_scheduler(port_key: str, pollers: list, fmb_ports: dict):
+    """`(PortCycleScheduler, thread name)` for one bus of compose_pollers().
+
+    RS-485: `port:baud`, the port's FMB manager, UART counters in the stats
+    line. Modbus TCP: one thread per endpoint named by its host:port, no FMB,
+    the client's TcpLineStats as the stats-line source (no /proc/tty line).
+    """
+    bus = pollers[0].bus
+    if bus.transport == bridge_bus.TRANSPORT_TCP:
+        return PortCycleScheduler(
+            bus.label, 0, pollers,
+            line_stats=pollers[0].get_port().stats), bus.label
+    port_path, baud_s = port_key.rsplit(":", 1)
+    return PortCycleScheduler(
+        port_path, int(baud_s), pollers, fmb=fmb_ports.get(port_key)), port_path
 
 
 def main() -> None:
@@ -257,52 +350,11 @@ def main() -> None:
                              args=((wdg_usec / 1_000_000) / 2,), daemon=True)
         t.start()
 
-    # Per-port FMB helpers (no own thread) + pollers grouped by port:baud.
-    fmb_ports: dict[str, FastModbusEventPortManager] = {}
-    by_port: dict[str, list[DevicePoller]] = {}
-    for dev_cfg in devices_cfg:
-        dev_type = dev_cfg.get("type", "").lower()
-        cls = POLLER_CLASSES.get(dev_type)
-        if cls is None:
-            log.error("Unknown device type '%s' id=%s — skipping",
-                      dev_type, dev_cfg.get("id", "?"))
-            continue
-        poller = cls(dev_cfg, pub)
-        _pollers.append(poller)
-        pub.register_device(dev_cfg["id"])
-        port_key = f"{dev_cfg.get('port', '/dev/COM1')}:{int(dev_cfg.get('baudrate', 115200))}"
-        by_port.setdefault(port_key, []).append(poller)
-        log.info("Registered %s poller %s on %s", dev_type, dev_cfg["id"], port_key)
-
-        # Default ON for MR/DTV. CE: explicit fast_modbus:true only — early
-        # configure_events while silent wedged CE on COM2 (RX frozen).
-        want_fmb = bool(dev_cfg["fast_modbus"]) if "fast_modbus" in dev_cfg \
-            else dev_type in ("mr02m", "dtv")
-        if want_fmb:
-            ranges = poller.fmb_event_ranges()
-            if ranges:
-                mgr = fmb_ports.get(port_key)
-                if mgr is None:
-                    mgr = FastModbusEventPortManager(
-                        poller.port_path, poller.baudrate)
-                    fmb_ports[port_key] = mgr
-                mgr.register_device(
-                    poller.address, poller.device_id, ranges,
-                    poller.fmb_dispatch, poller=poller, dev_type=dev_type,
-                    wire_mode=str(dev_cfg.get("fmb_event_wire", "auto")))
-
-    for path, bauds in mixed_baud_port_conflicts(by_port).items():
-        log.error("%s is configured at several baud rates (%s) — one physical "
-                  "line cannot serve them: the handles are exclusive per "
-                  "port:baud and all but one will fail to open. Put the odd "
-                  "device on its own COM port or change its baud.",
-                  path, ", ".join(str(b) for b in bauds))
+    by_port, fmb_ports, _refused = compose_pollers(devices_cfg, pub)
 
     # One thread per port — EVENTS+POLLING interleaved (wb-mqtt-serial).
     for port_key, pollers in by_port.items():
-        port_path, baud_s = port_key.rsplit(":", 1)
-        sched = PortCycleScheduler(
-            port_path, int(baud_s), pollers, fmb=fmb_ports.get(port_key))
+        sched, port_path = make_port_scheduler(port_key, pollers, fmb_ports)
         _port_schedulers.append(sched)
         t = threading.Thread(target=sched.run, name=f"port-{port_path}",
                              daemon=True)

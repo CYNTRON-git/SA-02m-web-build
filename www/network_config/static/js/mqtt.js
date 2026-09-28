@@ -1,6 +1,6 @@
 /* SA-02m MQTT tab — v1.0 */
 
-import { AI_SENSOR_LABELS } from './ai-sensors.js?v=1.0.6.55';
+import { AI_SENSOR_LABELS } from './ai-sensors.js?v=1.0.6.56';
 
 
 function uiT(s) {
@@ -49,10 +49,19 @@ function mr02mTypeLabelRu(mtCode) {
   return mt ? mt.name : String(mtCode);
 }
 
+/** `host:tcp_port` of a Modbus TCP device (docs/contracts/bridge-modbus-tcp.md). */
+function deviceEndpointLabel(dev) {
+  return `${dev.host || '—'}:${dev.tcp_port || 502}`;
+}
+
 function formatDeviceDisplayName(dev) {
   const comName = (dev.port || '').replace('/dev/', '');
   const addr = dev.address != null ? dev.address : (dev.addr != null ? dev.addr : '—');
   const stored = (dev.name && String(dev.name).trim()) ? String(dev.name).trim() : '';
+  if (dev.transport === 'tcp') {
+    if (stored && /\([^)]*addr=\d+/i.test(stored)) return stored;
+    return `${stored || dev.id} (${deviceEndpointLabel(dev)} addr=${addr})`;
+  }
   if (dev.type === 'mr02m') {
     // Count-first product names (6AI6AO / 4DO6DI), matching MR-02m main.h /
     // MR02M_TYPE_NAMES. Rewrite legacy letter-first YAML (AO6AI6, DO4DI6, …).
@@ -287,6 +296,9 @@ const CE02M3_CHANNELS = [
 
 // ── State ─────────────────────────────────────────────────────────────────────
 let _config = {mqtt:{broker:'127.0.0.1',port:1883,qos:1,retain:true}, devices:[]};
+// mqtt_config.cgi GET `capabilities` (Modbus TCP types, Carel families, default
+// port) — null until loaded, or when the board cannot validate TCP entries.
+let _tcpCaps = null;
 let _monitorPollTimer = null;
 let _monitorPaused = false;
 let _monitorLastVal = Object.create(null);
@@ -345,19 +357,30 @@ function showToast(msg, type = 'ok') {
   t._timeout = setTimeout(() => t.classList.remove('mqtt-toast-show'), 3500);
 }
 
+/** Id prefix of a template device: the picked template's name (reads like the family). */
+function templateIdPrefix() {
+  const tEl = document.getElementById('mqtt-add-template');
+  const tName = (tEl && tEl.value) ? String(tEl.value) : '';
+  return tName.replace(/[^A-Za-z0-9._-]/g, '') || 'tmpl';
+}
+
 function makeDeviceId(type, port, addr) {
   const comName = port.replace('/dev/', '');
   let prefix;
   if (type === 'dtv') prefix = 'dtv';
   else if (type === 'ce02m3') prefix = 'ce02m3';
   else if (type === 'led') prefix = 'led';
-  else if (type === 'template') {
-    // Prefix by the picked template name so the id reads like the device family.
-    const tEl = document.getElementById('mqtt-add-template');
-    const tName = (tEl && tEl.value) ? String(tEl.value) : '';
-    prefix = tName.replace(/[^A-Za-z0-9._-]/g, '') || 'tmpl';
-  } else prefix = 'mr02m';
+  else if (type === 'template') prefix = templateIdPrefix();
+  else prefix = 'mr02m';
   return `${prefix}-${comName}-${addr}`;
+}
+
+/** Modbus TCP id: `<template>-tcp-<a_b_c_d>-<addr>` / `carel-tcp-<a_b_c_d>-<addr>`.
+ *  A Carel id MUST start with `carel-` (the «Устройства» glob, the Alice prefix). */
+function makeTcpDeviceId(type, host, addr) {
+  const host_ = String(host || '').trim().replace(/\./g, '_');
+  const prefix = type === 'carel' ? 'carel' : templateIdPrefix();
+  return `${prefix}-tcp-${host_}-${addr}`;
 }
 
 /** Уже в конфиге на этом COM и Modbus-адресе. */
@@ -1631,6 +1654,12 @@ window.mqttRefreshI18n = function () {
 async function loadConfig() {
   const data = await apiGet('cgi-bin/mqtt_config.cgi').catch(() => null);
   if (data && !data.error) {
+    // What the add-device modal may offer over Modbus TCP — server-owned, never
+    // saved back. Absent (an older CGI, or the validator missing on the board)
+    // = the modal stays RS-485 only.
+    const caps = data.capabilities;
+    _tcpCaps = (caps && Array.isArray(caps.tcp_types) && caps.tcp_types.length) ? caps : null;
+    delete data.capabilities;
     _config = data;
     for (const dev of _config.devices || []) {
       migrateDeviceLegacyAiSensorTypes(dev);
@@ -1667,7 +1696,9 @@ function renderDeviceList() {
     const ioEnabled = countChannelsEnabled(dev);
     const ioTotal = countChannelsTotal(dev);
     const pollCount = countPollEnabled(dev);
-    const comName = (dev.port || '').replace('/dev/', '');
+    const comName = dev.transport === 'tcp'
+      ? deviceEndpointLabel(dev)
+      : (dev.port || '').replace('/dev/', '');
     const topic = deviceTopicFilter(dev.id);
     const rowClass = 'is-selectable' + (_selectedDeviceIds.has(dev.id) ? ' is-selected' : '');
     const tr = h('tr', {'data-device-id': dev.id, 'class': rowClass},
@@ -1715,7 +1746,7 @@ function onPollConfigChanged(devId) {
 }
 
 function deviceTypeBadge(type) {
-  const labels = {mr02m:'МР-02м', dtv:'ДТВ-RS-485', ce02m3:'СЭ-02м-3', led:'LED', template:'Шаблон'};
+  const labels = {mr02m:'МР-02м', dtv:'ДТВ-RS-485', ce02m3:'СЭ-02м-3', led:'LED', template:'Шаблон', carel:'Carel'};
   return h('span', {'class':'badge badge-info'}, labels[type] || type);
 }
 
@@ -2424,18 +2455,62 @@ async function loadTemplateCatalog(force) {
   updateAddModalId();
 }
 
+function setRowShown(id, shown) {
+  const row = document.getElementById(id);
+  if (!row) return;
+  if (shown) row.removeAttribute('hidden'); else row.setAttribute('hidden', '');
+}
+
+/** Ethernet picked in the modal — only possible once the CGI advertised TCP. */
+function addTransportIsTcp() {
+  const el = document.getElementById('mqtt-add-transport');
+  return !!_tcpCaps && !!el && el.value === 'tcp';
+}
+
 function onAddTypeChange() {
   const typeEl = document.getElementById('mqtt-add-type');
-  const row = document.getElementById('mqtt-add-template-row');
   const isTemplate = !!typeEl && typeEl.value === 'template';
-  if (row) { if (isTemplate) row.removeAttribute('hidden'); else row.setAttribute('hidden', ''); }
+  setRowShown('mqtt-add-template-row', isTemplate);
+  setRowShown('mqtt-add-carel-family-row',
+    addTransportIsTcp() && !!typeEl && typeEl.value === 'carel');
   if (isTemplate) void loadTemplateCatalog(false);
   updateAddModalId();
+}
+
+/** RS-485 ⇄ Ethernet: the type list narrows to what the bridge takes over TCP
+ *  (server's `capabilities.tcp_types`); the COM row gives way to IP + TCP port.
+ *  The rules for the address itself are the server's — none are copied here. */
+function onAddTransportChange() {
+  const tcp = addTransportIsTcp();
+  const typeEl = document.getElementById('mqtt-add-type');
+  if (typeEl) {
+    const allowed = tcp ? _tcpCaps.tcp_types : null;
+    for (const opt of typeEl.options) {
+      const on = tcp ? allowed.includes(opt.value) : opt.value !== 'carel';
+      opt.hidden = !on;
+      opt.disabled = !on;
+    }
+    const cur = typeEl.options[typeEl.selectedIndex];
+    if (!cur || cur.disabled) {
+      const first = [...typeEl.options].find(o => !o.disabled);
+      if (first) typeEl.value = first.value;
+    }
+  }
+  setRowShown('mqtt-add-port-row', !tcp);
+  setRowShown('mqtt-add-host-row', tcp);
+  setRowShown('mqtt-add-tcp-port-row', tcp);
+  const addrEl = document.getElementById('mqtt-add-addr');
+  // Unit 0 is the Modbus broadcast id; over TCP 1..255, on RS-485 1..247.
+  if (addrEl) addrEl.max = tcp ? '255' : '247';
+  onAddTypeChange();
 }
 
 function showAddModal() {
   const modal = document.getElementById('mqtt-add-modal');
   if (modal) modal.removeAttribute('hidden');
+  const trEl = document.getElementById('mqtt-add-transport');
+  if (trEl) trEl.value = 'rtu';
+  setRowShown('mqtt-add-transport-row', !!_tcpCaps);
   const typeEl = document.getElementById('mqtt-add-type');
   if (typeEl) typeEl.value = 'mr02m';
   const tRow = document.getElementById('mqtt-add-template-row');
@@ -2446,7 +2521,13 @@ function showAddModal() {
   if (addrEl) addrEl.value = '1';
   const nameEl = document.getElementById('mqtt-add-name');
   if (nameEl) nameEl.value = '';
-  updateAddModalId();
+  const hostEl = document.getElementById('mqtt-add-host');
+  if (hostEl) hostEl.value = '';
+  const tcpPortEl = document.getElementById('mqtt-add-tcp-port');
+  if (tcpPortEl) tcpPortEl.value = String((_tcpCaps && _tcpCaps.tcp_default_port) || 502);
+  const famEl = document.getElementById('mqtt-add-carel-family');
+  if (famEl) famEl.value = 'crst';
+  onAddTransportChange();
 }
 
 function hideAddModal() {
@@ -2460,7 +2541,54 @@ function updateAddModalId() {
   const addrEl = document.getElementById('mqtt-add-addr');
   const idEl = document.getElementById('mqtt-add-id');
   if (!typeEl || !portEl || !addrEl || !idEl) return;
+  if (addTransportIsTcp()) {
+    const hostEl = document.getElementById('mqtt-add-host');
+    idEl.value = makeTcpDeviceId(typeEl.value, hostEl ? hostEl.value : '', addrEl.value);
+    return;
+  }
   idEl.value = makeDeviceId(typeEl.value, portEl.value, addrEl.value);
+}
+
+/** Add a Modbus TCP device (YAML grammar: docs/contracts/bridge-modbus-tcp.md).
+ *  Presence checks only — whether the address is allowed is decided by the
+ *  server on save (the bridge's own validator), not re-implemented here. */
+function confirmAddTcpDevice(type, addr, name, idEl, templateName) {
+  const hostEl = document.getElementById('mqtt-add-host');
+  const tcpPortEl = document.getElementById('mqtt-add-tcp-port');
+  const famEl = document.getElementById('mqtt-add-carel-family');
+  const host = hostEl ? String(hostEl.value || '').trim() : '';
+  if (!host) {
+    showToast('Укажите IP-адрес устройства', 'warn');
+    return;
+  }
+  const tcpPort = parseInt(tcpPortEl ? tcpPortEl.value : '', 10) || 502;
+  let family = '';
+  if (type === 'carel') {
+    family = famEl ? String(famEl.value || '') : '';
+    if (!family) {
+      showToast('Выберите семейство Carel', 'warn');
+      return;
+    }
+  }
+  const id = idEl.value.trim() || makeTcpDeviceId(type, host, addr);
+  if (_config.devices.find(d => d.id === id)) {
+    showToast(`Устройство ${id} уже добавлено`, 'warn');
+    return;
+  }
+  const dev = {id, type};
+  if (type === 'template') dev.template = templateName;
+  if (type === 'carel') dev.family = family;
+  Object.assign(dev, {transport: 'tcp', host, tcp_port: tcpPort, address: addr});
+  dev.name = name || (type === 'carel'
+    ? `Carel ${family === 'uaria' ? 'uAria' : 'c.pCOmini'} (${host}:${tcpPort} addr=${addr})`
+    : id);
+  dev.poll_s = 2;
+
+  _config.devices.push(dev);
+  markUnsaved();
+  hideAddModal();
+  renderDeviceList();
+  renderAccordion();
 }
 
 function confirmAddDevice() {
@@ -2486,6 +2614,10 @@ function confirmAddDevice() {
       showToast('Выберите шаблон устройства', 'warn');
       return;
     }
+  }
+  if (addTransportIsTcp()) {
+    confirmAddTcpDevice(type, addr, name, idEl, templateName);
+    return;
   }
 
   const id = idEl.value.trim() || makeDeviceId(type, port, addr);
@@ -2577,8 +2709,40 @@ async function saveAndApply() {
       }
     }, 4000);
   } else {
-    showToast('Ошибка сохранения: ' + (res?.error || 'неизвестная'), 'err');
+    const why = saveRefusalText(res);
+    showToast(why || ('Ошибка сохранения: ' + (res?.error || 'неизвестная')), 'err');
   }
+}
+
+// mqtt_config.cgi refusal of a Modbus TCP entry → the operator's words. The
+// codes are the bridge's (bridge_bus.REASONS, docs/contracts/bridge-modbus-tcp.md);
+// an unknown code falls back to the generic save error.
+const TCP_REFUSAL_TEXT = {
+  transport_unknown: () => uiT('Неизвестный способ подключения устройства'),
+  type_not_tcp_capable: () => uiT('По сети (Modbus TCP) подключаются только «Шаблон устройства» и Carel'),
+  carel_family_required: () => uiT('Для Carel по сети укажите семейство: c.pCOmini или uAria'),
+  host_missing: () => uiT('Укажите IP-адрес устройства'),
+  host_not_ipv4_literal: () => uiT('IP-адрес: четыре числа через точку, без ведущих нулей, например 192.168.1.20'),
+  // One code for loopback, 0.0.0.0, multicast and reserved (incl. 255.255.255.255)
+  // — the server does not say which, so the text names the three classes. The
+  // board's own LAN address is NOT judged here (it is refused at connect time).
+  host_forbidden: () => uiT('Адрес не допускается: служебный, групповой или адрес самой платы'),
+  tcp_port_invalid: () => uiT('TCP-порт должен быть от 1 до 65535'),
+  unit_invalid: () => uiT('Адрес Modbus по сети должен быть от 1 до 255'),
+  timeout_invalid: () => uiT('Таймаут Modbus TCP должен быть от 0,2 до 5 с'),
+  serial_keys_on_tcp: () => uiT('У сетевого устройства не указывают COM-порт и скорость'),
+  tcp_endpoint_limit: () => uiT('Слишком много сетевых устройств: не больше 16 разных адресов'),
+};
+
+function saveRefusalText(res) {
+  if (!res) return '';
+  if (res.error === 'transport_validator_unavailable') {
+    return uiT('Проверка сетевых устройств недоступна: обновите мост MQTT на плате');
+  }
+  if (res.error !== 'invalid_device') return '';
+  const text = TCP_REFUSAL_TEXT[res.reason];
+  if (!text) return '';
+  return res.id ? `${text()} (${res.id})` : text();
 }
 
 function markUnsaved() {
@@ -2715,6 +2879,7 @@ window.mqttHideAddModal  = hideAddModal;
 window.mqttConfirmAdd    = confirmAddDevice;
 window.mqttUpdateId      = updateAddModalId;
 window.mqttOnAddTypeChange = onAddTypeChange;
+window.mqttOnAddTransportChange = onAddTransportChange;
 window.mqttShowScanModal = showScanModal;
 window.mqttHideScanModal = hideScanModal;
 window.mqttRunScan       = runScan;

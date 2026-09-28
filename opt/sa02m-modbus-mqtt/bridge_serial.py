@@ -10,6 +10,7 @@ across three audits); the entry module re-exports every public name.
 
 from __future__ import annotations
 
+import contextlib
 import os
 import re
 import struct
@@ -241,6 +242,55 @@ def build_fmb_configure_events_wb(addr: int, evt_type: int,
     return _append_crc(data)
 
 
+# ── Shared by every transport (ModbusSerial here, bridge_tcp.ModbusTcpClient) ──
+# A response frame is `[slave][fc][byte count][payload…]` on both transports
+# (the TCP client re-shapes its PDU to that layout), so one parser serves both.
+def bits_from_response(resp: bytes, count: int) -> list[int]:
+    """FC01/FC02 payload → `count` bits, LSB of the first data byte first."""
+    return [(resp[3 + i // 8] >> (i % 8)) & 1 for i in range(count)]
+
+
+def words_from_response(resp: bytes, count: int) -> list[int]:
+    """FC03/FC04 payload → `count` big-endian 16-bit words."""
+    return [(resp[3 + i * 2] << 8) | resp[4 + i * 2] for i in range(count)]
+
+
+def slave_id_payload(resp: bytes) -> bytes:
+    """FC17 identity blob, or b\"\" when the reply is not an FC17 answer."""
+    if len(resp) < 5 or resp[1] != 0x11:
+        return b""
+    return bytes(resp[3 : 3 + resp[2]])
+
+
+class _WriterPriority:
+    """Writes preempt the poll on one shared line.
+
+    threading.Lock is not fair: the continuously polling thread re-takes the
+    transport lock before a waiting writeback worker (+2-3 transactions ≈
+    +0.3-0.5 s on a DO echo). A write registers itself here while it waits;
+    a poll read yields first while any write is waiting.
+    """
+
+    def __init__(self):
+        self.waiting = 0
+        self.lock = threading.Lock()
+
+    def yield_to_writer(self, max_wait_s: float = 0.5) -> None:
+        deadline = time.monotonic() + max_wait_s
+        while self.waiting > 0 and time.monotonic() < deadline:
+            time.sleep(0.005)
+
+    @contextlib.contextmanager
+    def writing(self):
+        with self.lock:
+            self.waiting += 1
+        try:
+            yield
+        finally:
+            with self.lock:
+                self.waiting -= 1
+
+
 # ── ModbusSerial ───────────────────────────────────────────────────────────────
 class ModbusSerial:
     """Thread-safe Modbus RTU over serial, with Fast Modbus support."""
@@ -263,18 +313,21 @@ class ModbusSerial:
         # byte, the largest gap between two arrivals, and the raw byte count.
         # Read by _transact to explain a failed transaction.
         self._last_rx: dict | None = None
-        # Приоритет записей над поллом: threading.Lock не fair, и поток
-        # непрерывного полла перехватывает лок обратно раньше ожидающего
-        # writeback-worker'а (+2-3 транзакции ≈ +0.3-0.5 с к echo DO).
-        # Полл перед чтением уступает, пока есть ожидающие записи.
-        self._write_waiting = 0
-        self._prio_lock = threading.Lock()
+        # Приоритет записей над поллом (_WriterPriority): полл перед чтением
+        # уступает, пока есть ожидающие записи.
+        self._prio = _WriterPriority()
+
+    @property
+    def _write_waiting(self) -> int:
+        return self._prio.waiting
+
+    @property
+    def _prio_lock(self) -> threading.Lock:
+        return self._prio.lock
 
     def _yield_to_writer(self, max_wait_s: float = 0.5) -> None:
         """Пропустить ожидающую запись вперёд текущего цикла полла."""
-        deadline = time.monotonic() + max_wait_s
-        while self._write_waiting > 0 and time.monotonic() < deadline:
-            time.sleep(0.005)
+        self._prio.yield_to_writer(max_wait_s)
 
     def _bus_gap(self) -> None:
         if self._inter_frame_delay_s > 0:
@@ -415,33 +468,31 @@ class ModbusSerial:
         with self._lock:
             resp = self._transact(build_request(addr, 0x01, start, count),
                                   5 + (count + 7) // 8)
-            return [(resp[3 + i // 8] >> (i % 8)) & 1 for i in range(count)]
+            return bits_from_response(resp, count)
 
     def read_discrete_inputs(self, addr: int, start: int, count: int) -> list[int]:
         self._yield_to_writer()
         with self._lock:
             resp = self._transact(build_request(addr, 0x02, start, count),
                                   5 + (count + 7) // 8)
-            return [(resp[3 + i // 8] >> (i % 8)) & 1 for i in range(count)]
+            return bits_from_response(resp, count)
 
     def read_holding_registers(self, addr: int, start: int, count: int) -> list[int]:
         self._yield_to_writer()
         with self._lock:
             resp = self._transact(build_request(addr, 0x03, start, count),
                                   5 + count * 2)
-            return [(resp[3 + i * 2] << 8) | resp[4 + i * 2] for i in range(count)]
+            return words_from_response(resp, count)
 
     def read_input_registers(self, addr: int, start: int, count: int) -> list[int]:
         self._yield_to_writer()
         with self._lock:
             resp = self._transact(build_request(addr, 0x04, start, count),
                                   5 + count * 2)
-            return [(resp[3 + i * 2] << 8) | resp[4 + i * 2] for i in range(count)]
+            return words_from_response(resp, count)
 
     def write_coil(self, addr: int, coil: int, value: bool) -> None:
-        with self._prio_lock:
-            self._write_waiting += 1
-        try:
+        with self._prio.writing():
             t0 = time.monotonic()
             with self._lock:
                 t1 = time.monotonic()
@@ -449,30 +500,17 @@ class ModbusSerial:
                 t2 = time.monotonic()
             log.debug("write_coil a%d c%d: lock %.0f ms, io %.0f ms",
                       addr, coil, (t1 - t0) * 1000, (t2 - t1) * 1000)
-        finally:
-            with self._prio_lock:
-                self._write_waiting -= 1
 
     def write_register(self, addr: int, reg: int, value: int) -> None:
-        with self._prio_lock:
-            self._write_waiting += 1
-        try:
+        with self._prio.writing():
             with self._lock:
                 self._transact(build_write_register(addr, reg, value), 8)
-        finally:
-            with self._prio_lock:
-                self._write_waiting -= 1
 
     def write_registers(self, addr: int, start: int, values) -> None:
         """FC16 — one transaction for a multi-word value (uAria float32)."""
-        with self._prio_lock:
-            self._write_waiting += 1
-        try:
+        with self._prio.writing():
             with self._lock:
                 self._transact(build_write_registers(addr, start, values), 8)
-        finally:
-            with self._prio_lock:
-                self._write_waiting -= 1
 
     def report_slave_id(self, addr: int, timeout: float = 0.7) -> bytes:
         """FC17 payload (identity blob), or b"" when the device does not answer.
@@ -490,9 +528,7 @@ class ModbusSerial:
                                       timeout=max(self._timeout, float(timeout)))
             except Exception:
                 return b""
-        if len(resp) < 5 or resp[1] != 0x11:
-            return b""
-        return bytes(resp[3 : 3 + resp[2]])
+        return slave_id_payload(resp)
 
     # --- Fast Modbus ----------------------------------------------------------
 
