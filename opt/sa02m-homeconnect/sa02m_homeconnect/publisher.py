@@ -13,7 +13,10 @@ Topics, all retained, QoS 1 (docs/contracts/home-connect.md §3):
 READ-ONLY: nothing is subscribed, no `/on` topic exists. Controls come only
 from mapping.MAPPING. The publisher keeps the retained state it owns in a
 cache and republishes all of it on every broker (re)connect, so a broker that
-restarted without persistence gets the state back.
+restarted without persistence gets the state back; while the event stream is
+alive the daemon also re-sends the live appliances' control values on a
+heartbeat (`republish_values`, main.VALUE_HEARTBEAT_S) so consumers that age
+values do not call a quiet appliance stale.
 """
 
 from __future__ import annotations
@@ -136,6 +139,27 @@ class Publisher:
     def republish_all(self) -> int:
         with self._lock:
             items = sorted(self._retained.items())
+        for topic, payload in items:
+            self._publish(topic, payload, True)
+        return len(items)
+
+    def republish_values(self) -> int:
+        """Re-send the cached control VALUES of every appliance whose
+        `meta/error` is `""` — the value heartbeat (main.VALUE_HEARTBEAT_S).
+        An appliance flagged `"r"`, or not flagged yet, is skipped: its values
+        are not known to be current, and a re-send would make them look fresh.
+        Meta topics are never re-sent (nobody ages them)."""
+        with self._lock:
+            items = []
+            for topic, payload in sorted(self._retained.items()):
+                if not topic.startswith("/devices/"):
+                    continue
+                dev_id, sep, rest = topic[len("/devices/"):].partition("/controls/")
+                if not sep or "/" in rest or "/" in dev_id:
+                    continue
+                if self._retained.get(device_topic(dev_id) + "/meta/error") != "":
+                    continue
+                items.append((topic, payload))
         for topic, payload in items:
             self._publish(topic, payload, True)
         return len(items)

@@ -2,8 +2,8 @@
 """test-factory-reset-runner.py — the config-only factory reset
 (etc/sa02m-factory-reset-runner.sh) takes the backup it promises, keeps
 secrets out of its log, never follows a name somebody else planted, and erases
-the HomeKit bridge's pairings (Operator decision Q-F). Proposed quality row
-`factory-reset-runner`.
+the HomeKit bridge's pairings and the Home Connect sign-in (Operator decision
+Q-F). Quality row `factory-reset-runner`.
 
 Why it exists — the runner is root and works in directories others can write:
   * /etc/sa02m-alice is root:www-data 0770 (any panel session plants any name
@@ -71,12 +71,25 @@ temp name swapped between mkstemp and rename).
      only after the reversible part verified)
   H7 no trusted package template: `enabled = false` forced, the rest kept
   H7b the same with the key spelled `Enabled:` (configparser reads it): forced
+  C1 Home Connect: conf → the package's render() of the defaults 0660 FIRST
+     (the unit was stopped with the conf already disabled, so the daemon
+     removes its retained topics), stopped while the tokens still existed,
+     then the state dir's every entry erased (dir kept), link.json removed
+  C2 a client that will not stop: E_APPLY, the tokens intact, the Home
+     Connect conf rolled back
+  C3 a symlink inside the state dir: removed, its target untouched
+  C4 a symlinked Home Connect conf: refused, the victim and the tokens intact
+  C5 client not installed: the reset succeeds and never touches its unit
+  C6 a reset failing its own verify keeps the sign-in (checked in H6's run)
+  C7 no trusted package template: `enabled = false` forced, the Client ID
+     kept, the state dir still erased
   T  the runner's trusted-path resolver is byte-identical to the block in
      etc/sa02m-web-backup.sh (a third twin; no root script can import another)
   P  the embedded helper compiles
 
 RED observed 2026-09-27 on the runner at HEAD 485f385 (FACTORY_SRC=<copy>):
-recorded in the commit that adds this harness.
+recorded in the commit that adds this harness. C1-C7 RED observed 2026-09-28
+on the runner at HEAD d7d9c4a (no Home Connect step): see the commit body.
 
 Run: python3 scripts/dev/test-factory-reset-runner.py   (python3 + bash;
 root or not — CI runs non-root; FACTORY_SRC=<file> runs another runner copy)
@@ -102,6 +115,7 @@ BACKUP = ROOT / "etc/sa02m-web-backup.sh"
 DEFAULTS = ROOT / "etc/sa02m-factory-defaults"
 HK_PKG = ROOT / "opt/sa02m-homekit/sa02m_homekit"
 HK_SEED = ROOT / "etc/sa02m-homekit/sa02m-homekit.conf"
+HC_PKG = ROOT / "opt/sa02m-homeconnect/sa02m_homeconnect"
 IS_ROOT = os.geteuid() == 0
 
 fails = 0
@@ -125,10 +139,22 @@ def check(cond: bool, good: str, fail: str) -> None:
     (ok if cond else bad)(good if cond else fail)
 
 
-for p in (FACTORY, BACKUP, DEFAULTS, HK_PKG, HK_SEED):
+for p in (FACTORY, BACKUP, DEFAULTS, HK_PKG, HK_SEED, HC_PKG):
     if not p.exists():
         bad(f"missing input {p} (non-vacuity)")
 if fails:
+    sys.exit(1)
+
+# The Home Connect template: the package's own render() of the defaults (the
+# 06d seed and the factory reset both come from this one home).
+_r_hc = subprocess.run([sys.executable, "-c",
+                        "import sys; from sa02m_homeconnect import config;"
+                        "sys.stdout.write(config.render(config.ClientConfig()))"],
+                       env={**{k: v for k, v in os.environ.items() if not k.startswith("SA02M_HOMECONNECT_")},
+                            "PYTHONPATH": str(HC_PKG.parent)}, capture_output=True, text=True, timeout=30)
+HC_TEMPLATE = _r_hc.stdout.encode("utf-8")
+if _r_hc.returncode != 0 or b"enabled = false" not in HC_TEMPLATE:
+    bad(f"the Home Connect package cannot render its template (rc={_r_hc.returncode}): {_r_hc.stderr[-200:]!r}")
     sys.exit(1)
 
 RUNNER_TXT = FACTORY.read_text(encoding="utf-8")
@@ -139,6 +165,7 @@ def retarget(text: str, sb: Path) -> str:
     for a in ("/etc/", "/var/lib/", "/var/www/", "/run/"):
         text = text.replace(a, f"{sb}{a}")
     text = text.replace("/opt/sa02m-homekit", f"{sb}/opt/sa02m-homekit")
+    text = text.replace("/opt/sa02m-homeconnect", f"{sb}/opt/sa02m-homeconnect")
     text = text.replace("/usr/share/sa02m-factory-defaults", f"{sb}/usr/share/sa02m-factory-defaults")
     return text
 
@@ -166,12 +193,16 @@ class Sandbox:
         self.hk_var = sb / "var/lib/sa02m-homekit"
         self.hk_run = sb / "run/sa02m-homekit"
         self.hk_conf = self.etc / "sa02m-homekit/sa02m-homekit.conf"
+        self.hc_var = sb / "var/lib/sa02m-homeconnect"
+        self.hc_run = sb / "run/sa02m-homeconnect"
+        self.hc_conf = self.etc / "sa02m-homeconnect/sa02m-homeconnect.conf"
         for d in ("etc/nginx", "etc/network/interfaces.d", "etc/sa02m-cloud", "var/lib/sa02m-alice",
-                  "var/www/network_config", "run/sa02m-homekit", "bin", "outside"):
+                  "var/www/network_config", "run/sa02m-homekit", "run/sa02m-homeconnect", "bin", "outside"):
             (sb / d).mkdir(parents=True, exist_ok=True)
         self.state.mkdir(parents=True)
         os.chmod(self.state, 0o775)  # etc/tmpfiles.d/sa02m-update.conf
-        for d, m in ((self.alice, 0o770), (self.etc / "sa02m-homekit", 0o770), (self.hk_var, 0o700)):
+        for d, m in ((self.alice, 0o770), (self.etc / "sa02m-homekit", 0o770), (self.hk_var, 0o700),
+                     (self.etc / "sa02m-homeconnect", 0o770), (self.hc_var, 0o700)):
             d.mkdir(parents=True)
             os.chmod(d, m)
         w = self.write
@@ -186,6 +217,12 @@ class Sandbox:
             w(f"var/lib/sa02m-homekit/{n}", '{"k": "HK-SECRET"}\n', 0o600)
         w("etc/sa02m-homekit/sa02m-homekit.conf", "[bridge]\nenabled = true\ninterface = eth1\nport = 21065\n", 0o660)
         w("run/sa02m-homekit/setup.json", '{"code": "111-22-333"}\n', 0o640)
+        for n in ("tokens.json", "budget.json", "appliances.json", ".hc-abc.tmp"):
+            w(f"var/lib/sa02m-homeconnect/{n}", '{"refresh_token": "HC-SECRET"}\n', 0o600)
+        w("etc/sa02m-homeconnect/sa02m-homeconnect.conf",
+          "[account]\nenabled = true\nclient_id = INTEGRATOR_APP_1\nvendor_client_id = \nhost = simulator\n"
+          "link_requested_at = 0\n\n[control]\nmode = off\n", 0o660)
+        w("run/sa02m-homeconnect/link.json", '{"user_code": "DONR-1234"}\n', 0o640)
         # Factory defaults bundle, lists retargeted like the runner.
         cur = sb / "usr/share/sa02m-factory-defaults/current"
         shutil.copytree(DEFAULTS / "templates", cur / "templates")
@@ -203,6 +240,10 @@ class Sandbox:
         # installed modes are set here, not inherited.
         for dirpath, _dirs, _files in os.walk(sb / "opt/sa02m-homekit"):
             os.chmod(dirpath, 0o755)
+        shutil.copytree(HC_PKG, sb / "opt/sa02m-homeconnect/sa02m_homeconnect",
+                        ignore=shutil.ignore_patterns("__pycache__", "tests"))
+        for dirpath, _dirs, _files in os.walk(sb / "opt/sa02m-homeconnect"):
+            os.chmod(dirpath, 0o755)
         # Backup helper: the SHIPPED script, retargeted.
         self.backup = sb / "bin-backup.sh"
         self.backup.write_text(retarget(BACKUP_TXT, sb), encoding="utf-8")
@@ -217,9 +258,19 @@ case "$1" in
       [ -e "{self.hk_var}/state.json" ] && echo "stop:store-present" >> "{sb}/systemctl.log"
       [ -e "{sb}/hk-stuck" ] || echo inactive > "{sb}/hk-state"
     fi
+    if [ "${{2:-}}" = sa02m-homeconnect.service ]; then
+      [ -e "{self.hc_var}/tokens.json" ] && echo "hc-stop:tokens-present" >> "{sb}/systemctl.log"
+      grep -Eiq '^[[:space:]]*enabled[[:space:]]*[=:][[:space:]]*(1|true|yes|on)[[:space:]]*$' \
+          "{self.hc_conf}" 2>/dev/null && echo "hc-stop:conf-enabled" >> "{sb}/systemctl.log"
+      [ -e "{sb}/hc-stuck" ] || echo inactive > "{sb}/hc-state"
+    fi
     exit 0 ;;
   is-active)
-    st=$(cat "{sb}/hk-state" 2>/dev/null || echo active); echo "$st"
+    case "${{2:-}}" in
+      sa02m-homeconnect.service) st=$(cat "{sb}/hc-state" 2>/dev/null || echo active) ;;
+      *) st=$(cat "{sb}/hk-state" 2>/dev/null || echo active) ;;
+    esac
+    echo "$st"
     [ "$st" = active ] && exit 0 || exit 3 ;;
   *) exit 0 ;;
 esac
@@ -657,6 +708,9 @@ rc = s.run()
 check(rc != 0 and s.txn().get("error_code") == "E_HEALTH" and (s.hk_var / "state.json").exists(),
       "H6 a reset failing its own verify keeps the pairings (erase runs only after verify)",
       f"H6 rc={rc} store={(s.hk_var / 'state.json').exists()} ({s.why()})")
+check(rc != 0 and (s.hc_var / "tokens.json").exists() and "sa02m-homeconnect" not in s.systemctl_log(),
+      "C6 the same failed verify keeps the Home Connect sign-in and never touches its unit",
+      f"C6 rc={rc} tokens={(s.hc_var / 'tokens.json').exists()} systemctl={s.systemctl_log().splitlines()}")
 s.cleanup()
 
 s = Sandbox("h7")
@@ -680,6 +734,86 @@ body = s.hk_conf.read_bytes() if s.hk_conf.is_file() else b""
 check(rc == 0 and b"true" not in body and b"enabled = false" in body.lower() and b"interface = eth1" in body,
       "H7b no package template, `Enabled: true` spelling: forced to false too",
       f"H7b rc={rc} conf={body!r} ({s.why()})")
+s.cleanup()
+
+# ── C. Home Connect (Q-F: factory reset ERASES the sign-in) ─────────────────
+print("── C. Home Connect sign-in clear-list ──")
+s = Sandbox("c1")
+reach_late_steps(s)
+rc = s.run()
+left = sorted(p.name for p in s.hc_var.iterdir()) if s.hc_var.is_dir() else ["<dir gone>"]
+check(rc == 0 and s.done() and s.hc_var.is_dir() and not s.hc_var.is_symlink() and not left,
+      "C1a every entry of the Home Connect state dir erased (tokens, budget, appliances, .hc-*), the dir kept",
+      f"C1a state dir after reset: {left} (rc={rc}; {s.why()})")
+sl = s.systemctl_log()
+check("stop sa02m-homeconnect.service" in sl and "hc-stop:tokens-present" in sl and "hc-stop:conf-enabled" not in sl,
+      "C1b the client was stopped with the conf already disabled and while the tokens still existed (conf → stop → erase)",
+      f"C1b systemctl calls: {sl.splitlines()}")
+hc_ok = s.hc_conf.is_file() and s.hc_conf.read_bytes() == HC_TEMPLATE \
+    and stat.S_IMODE(os.lstat(s.hc_conf).st_mode) == 0o660
+check(hc_ok, "C1c the conf is the package's own render() of the defaults (enabled = false, no Client ID), 0660",
+      f"C1c conf: {s.hc_conf.read_bytes()[:160]!r}")
+check(not (s.hc_run / "link.json").exists(), "C1d the pending sign-in code (link.json) is removed",
+      "C1d /run/sa02m-homeconnect/link.json survived the reset")
+log_txt = s.log.read_text(encoding="utf-8", errors="replace") if s.log.is_file() else ""
+check("HC-SECRET" not in log_txt, "C1e no token byte reached the factory-reset log",
+      "C1e the token file's content is in the factory-reset log")
+s.cleanup()
+
+s = Sandbox("c2")
+reach_late_steps(s)
+(s.sb / "hc-stuck").write_text("1", encoding="utf-8")
+rc = s.run()
+hc_back = s.hc_conf.is_file() and b"enabled = true" in s.hc_conf.read_bytes() and b"INTEGRATOR_APP_1" in s.hc_conf.read_bytes()
+check(rc != 0 and s.txn().get("error_code") == "E_APPLY" and (s.hc_var / "tokens.json").exists() and hc_back,
+      "C2 a client that will not stop: E_APPLY, the tokens intact, the Home Connect conf rolled back",
+      f"C2 rc={rc} tokens={(s.hc_var / 'tokens.json').exists()} conf_back={hc_back} ({s.why()})")
+s.cleanup()
+
+s = Sandbox("c3")
+reach_late_steps(s)
+v = victim(s.sb)
+before = snap(v)
+(s.hc_var / "tokens.json").unlink()
+os.symlink(v, s.hc_var / "tokens.json")
+rc = s.run()
+left = sorted(p.name for p in s.hc_var.iterdir()) if s.hc_var.is_dir() else ["<dir gone>"]
+check(rc == 0 and not left and snap(v) == before,
+      "C3 a symlink inside the state dir: removed, its target untouched",
+      f"C3 rc={rc} left={left} victim={snap(v) == before} ({s.why()})")
+s.cleanup()
+
+s = Sandbox("c4")
+reach_late_steps(s)
+v = victim(s.sb)
+before = snap(v)
+s.hc_conf.unlink()
+os.symlink(v, s.hc_conf)
+rc = s.run()
+check(rc != 0 and snap(v) == before and (s.hc_var / "tokens.json").exists(),
+      "C4 a symlinked Home Connect conf: refused, the victim and the tokens untouched",
+      f"C4 rc={rc} victim changed={snap(v) != before} tokens={(s.hc_var / 'tokens.json').exists()}")
+s.cleanup()
+
+s = Sandbox("c5")
+reach_late_steps(s)
+shutil.rmtree(s.hc_var)
+shutil.rmtree(s.etc / "sa02m-homeconnect")
+rc = s.run()
+check(rc == 0 and s.done() and "sa02m-homeconnect" not in s.systemctl_log(),
+      "C5 client not installed: the reset succeeds and leaves the Home Connect unit alone",
+      f"C5 rc={rc} systemctl={s.systemctl_log().splitlines()} ({s.why()})")
+s.cleanup()
+
+s = Sandbox("c7")
+reach_late_steps(s)
+shutil.rmtree(s.sb / "opt/sa02m-homeconnect")
+rc = s.run()
+body = s.hc_conf.read_bytes() if s.hc_conf.is_file() else b""
+check(rc == 0 and b"enabled = false" in body and b"client_id = INTEGRATOR_APP_1" in body
+      and not any(s.hc_var.iterdir()),
+      "C7 no package template: enabled = false forced, the Client ID kept, the state dir still erased",
+      f"C7 rc={rc} conf={body!r} ({s.why()})")
 s.cleanup()
 
 # ── T. the resolver twin ────────────────────────────────────────────────────

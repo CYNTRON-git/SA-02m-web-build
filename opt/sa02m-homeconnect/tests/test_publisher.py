@@ -79,6 +79,30 @@ class PublisherTest(unittest.TestCase):
         self.assertEqual(self.pub.published_controls("hc-x"), [])
         self.assertEqual(self.pub.republish_all(), 0)
 
+    def test_republish_values_sends_only_live_control_values(self) -> None:
+        # The value heartbeat: control VALUES of live appliances only — never a
+        # meta topic, never an appliance flagged "r" (or not yet flagged at all).
+        self.pub.announce("hc-live", "A", "Dishwasher")
+        self.pub.set_control("hc-live", "running", "1")
+        self.pub.set_control("hc-live", "remaining_s", "120")
+        self.pub.set_error("hc-live", False)
+        self.pub.announce("hc-down", "B", "Washer")
+        self.pub.set_control("hc-down", "running", "0")
+        self.pub.set_error("hc-down", True)
+        self.pub.set_control("hc-new", "connected", "1")  # no meta/error yet ⇒ unknown
+        n = len(self.rec.sent)
+        count = self.pub.republish_values()
+        resent = self.rec.sent[n:]
+        self.assertEqual(count, len(resent))
+        self.assertEqual(sorted(resent), [
+            ("/devices/hc-live/controls/remaining_s", "120", True),
+            ("/devices/hc-live/controls/running", "1", True),
+        ])
+        # Nothing changed in the cache: a second beat re-sends the same set.
+        self.assertEqual(self.pub.republish_values(), 2)
+        self.pub.clear_device("hc-live")
+        self.assertEqual(self.pub.republish_values(), 0)
+
 
 class FakePaho:
     def __init__(self) -> None:

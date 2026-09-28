@@ -7,10 +7,13 @@ name: web-quality
 # ubuntu-latest already provides bash + python3; Node, the Python test deps and
 # — since 1.0.6.49 — the scripts/dev Playwright harness + chromium are set up
 # here, so the headless review rows (ui-layout, cloud-card-smoke,
-# sh-modal-layout-smoke, homekit-card-smoke) run for real instead of skipping or
+# sh-modal-layout-smoke, homekit-card-smoke, homeconnect-card-smoke) run for real
+# instead of skipping or
 # exiting 2 (audit 2026-09-16, H3). Since 1.0.6.57 a venv built from
 # opt/sa02m-homekit/requirements.lock makes py-unit-homekit's HAP-python/segno
-# tests run instead of skipping.
+# tests run instead of skipping. The Home Connect client needs nothing extra:
+# py-unit-homeconnect is stdlib-only (paho is faked), and its card smoke uses
+# the same harness + chromium as the other headless rows.
 
 # push->main deliberately absent: each shipped feature otherwise costs two
 # identical runs (PR + post-squash re-validation of the same tree) against a
@@ -54,7 +57,7 @@ jobs:
       # `npm ci` (lockfile-exact) instead of the root `ui-layout:install` script's
       # `npm install`: CI must run the pinned harness, the dev box may float.
       # `--with-deps` adds the Ubuntu shared libs chromium needs (runner sudo).
-      - name: Install the dev harness + chromium (the headless rows — ui-layout, cloud-card-smoke, sh-modal-layout-smoke, homekit-card-smoke)
+      - name: Install the dev harness + chromium (the headless rows — ui-layout, cloud-card-smoke, sh-modal-layout-smoke, homekit-card-smoke, homeconnect-card-smoke)
         run: |
           npm --prefix scripts/dev ci
           node scripts/dev/node_modules/playwright/cli.js install --with-deps chromium

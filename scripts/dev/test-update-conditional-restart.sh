@@ -94,6 +94,11 @@
 #   alone -> the parity FAIL; pack edited alone -> 4 FAIL; sa02m-homekit added
 #   to the runner's restart[] -> the never-widen FAIL. PACK_SRC=<file>
 #   overrides the pack like UPDATE_RUNNER_SRC does the runner.
+#   Since the Home Connect client (1.0.6.58 branch) the same four checks run
+#   for sa02m-homeconnect too (installed `app off` by 06d-homeconnect.sh).
+#   RED 2026-09-28: both generators at HEAD d7d9c4a -> 3 FAIL (not in the set,
+#   running client not restarted, never probed — the homekit half green); the
+#   runner at d7d9c4a alone -> 4 FAIL (the parity check too).
 #
 # Run: bash scripts/dev/test-update-conditional-restart.sh   (bash + python3 +
 #   coreutils; no systemd — the shims replace it).
@@ -690,14 +695,16 @@ PY
     else
         bad "run8: online and offline restart_if_active differ — the two updates disagree about which opt-in units are bounced (online: $on_ria | offline: $off_ria)"
     fi
-    case " $on_ria " in
-        *" sa02m-homekit "*) ok "run8: sa02m-homekit is in the generated restart_if_active" ;;
-        *) bad "run8: sa02m-homekit is NOT in the generated restart_if_active — an OTA leaves a running bridge on stale code" ;;
-    esac
-    case " $both_restart " in
-        *" sa02m-homekit "*) bad "run8: sa02m-homekit is in a restart[] list — restart STARTS an inactive unit: every OTA would switch the bridge on" ;;
-        *) ok "run8: sa02m-homekit is in neither restart[] (never-widen)" ;;
-    esac
+    for u8 in sa02m-homekit sa02m-homeconnect; do
+        case " $on_ria " in
+            *" $u8 "*) ok "run8: $u8 is in the generated restart_if_active" ;;
+            *) bad "run8: $u8 is NOT in the generated restart_if_active — an OTA leaves the running daemon on stale code" ;;
+        esac
+        case " $both_restart " in
+            *" $u8 "*) bad "run8: $u8 is in a restart[] list — restart STARTS an inactive unit: every OTA would switch the opt-in module on" ;;
+            *) ok "run8: $u8 is in neither restart[] (never-widen)" ;;
+        esac
+    done
     # Feed the GENERATED set into the shipped loop.
     ria_json=$(printf '%s\n' "$on_ria" | python3 -c 'import json,sys; print(json.dumps(sys.stdin.read().split()))')
     cat > "$STAGE/meta/manifest.json" <<JSON
@@ -707,22 +714,24 @@ PY
               "health": {"http_url": "", "units_active": [], "version_file": "$TW/VERSION"}}}
 JSON
     : > "$STAGE/journal.jsonl"
-    printf '%s\n' sa02m-homekit > "$ACTIVE_FILE"
-    run_health
-    if [ "$run_rc" -eq 0 ] && called "restart sa02m-homekit"; then
-        ok "run8: a RUNNING bridge is restarted by the generated set (fresh /opt code after OTA)"
-    else
-        bad "run8: running bridge not restarted (rc=$run_rc) — calls: $(tr '\n' ';' < "$CALLS_LOG")"
-    fi
-    : > "$ACTIVE_FILE"
-    run_health
-    if called "restart sa02m-homekit" || called "start sa02m-homekit"; then
-        bad "run8: a STOPPED bridge was restarted/started by the OTA — the operator's OFF widened"
-    elif called "is-active --quiet sa02m-homekit"; then
-        ok "run8: a stopped bridge is probed and left alone (never-widen)"
-    else
-        bad "run8: the bridge was never probed — the generated set did not reach the loop (vacuous)"
-    fi
+    for u8 in sa02m-homekit sa02m-homeconnect; do
+        printf '%s\n' "$u8" > "$ACTIVE_FILE"
+        run_health
+        if [ "$run_rc" -eq 0 ] && called "restart $u8"; then
+            ok "run8: a RUNNING $u8 is restarted by the generated set (fresh /opt code after OTA)"
+        else
+            bad "run8: running $u8 not restarted (rc=$run_rc) — calls: $(tr '\n' ';' < "$CALLS_LOG")"
+        fi
+        : > "$ACTIVE_FILE"
+        run_health
+        if called "restart $u8" || called "start $u8"; then
+            bad "run8: a STOPPED $u8 was restarted/started by the OTA — the operator's OFF widened"
+        elif called "is-active --quiet $u8"; then
+            ok "run8: a stopped $u8 is probed and left alone (never-widen)"
+        else
+            bad "run8: $u8 was never probed — the generated set did not reach the loop (vacuous)"
+        fi
+    done
 fi
 
 echo "-----"

@@ -56,6 +56,17 @@ RETRY_MAX_S = 1800.0
 # An event for an appliance we do not know re-reads the list at most this often.
 UNKNOWN_LIST_REREAD_S = 600.0
 INVENTORY_WRITE_S = 5.0
+# Value heartbeat: consumers that age non-Modbus values (sa02m-alice treats a
+# value older than 90 s as stale) would call a quiet but healthy appliance
+# stale, since the cloud only sends changes. While the event stream is alive
+# the cached values are known-current (a change would have arrived), so they
+# are re-sent on this cadence; stream down or silent ⇒ no re-send ⇒ they age
+# out honestly. No cloud call is made for it (the budget is untouched).
+VALUE_HEARTBEAT_S = 60.0
+# "Alive" = up AND carried something (a keep-alive comes about every 55 s)
+# within this long; a stalled socket stops the heartbeat before the reader's
+# own 120 s deadline notices.
+STREAM_QUIET_MAX_S = 70.0
 
 
 def missing_dependencies(modules: Tuple[str, ...] = REQUIRED_MODULES) -> List[str]:
@@ -169,6 +180,8 @@ class Daemon:
         self.next_stream_start = 0.0
         self._last_status: Dict[str, Any] = {}
         self._next_heartbeat = 0.0
+        self.stream_activity: Optional[float] = None
+        self._next_value_heartbeat = 0.0
 
     # ── appliances.json (device ids this client published) ────────────────
     def _load_known(self) -> None:
@@ -274,6 +287,8 @@ class Daemon:
                 kind, payload = self.events.get_nowait()
             except queue.Empty:
                 return
+            if kind in (STREAM_EVENT, STREAM_UP):
+                self.stream_activity = self.mono()  # keep-alives count: the socket is alive
             try:
                 if kind == STREAM_EVENT:
                     self._on_event(payload)
@@ -531,6 +546,22 @@ class Daemon:
             for app in self.apps.values():
                 self._refresh_error(app)
 
+    def _value_heartbeat(self) -> None:
+        """Re-send the cached values of live appliances every VALUE_HEARTBEAT_S,
+        only while the stream is up, not stale, and not silent past
+        STREAM_QUIET_MAX_S. Otherwise the beat is re-armed a full period out,
+        so a recovered stream beats only after a period of being alive."""
+        now = self.mono()
+        alive = (self.stream_up and not self.stream_stale and self.stream_activity is not None
+                 and now - self.stream_activity <= STREAM_QUIET_MAX_S)
+        if not alive:
+            self._next_value_heartbeat = now + VALUE_HEARTBEAT_S
+            return
+        if now < self._next_value_heartbeat:
+            return
+        self._next_value_heartbeat = now + VALUE_HEARTBEAT_S
+        self.publisher.republish_values()
+
     # ── the link flow ─────────────────────────────────────────────────────
     def _link_step(self, session: Session) -> None:
         now_wall = self.clock()
@@ -628,6 +659,7 @@ class Daemon:
                 self._drop_all_appliances()
                 self.cleared_unlinked = True
             self._link_step(session)
+        self._value_heartbeat()
         self._write_inventory()
         snap = self.budget.snapshot()
         blocked = snap["blocked_until"] if snap["blocked_until"] > self.clock() else 0

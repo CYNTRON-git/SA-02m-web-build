@@ -600,6 +600,10 @@ def build_services_block(min_updater: str = MIN_UPDATER) -> dict[str, Any]:
         # `app off`), so only ever restarted when already running. Must
         # stay in step with etc/sa02m-update-runner.sh.
         "sa02m-homekit",
+        # Home Connect client — optional, installed stopped
+        # (06d-homeconnect.sh `app off`), same rule. Must stay in step with
+        # etc/sa02m-update-runner.sh.
+        "sa02m-homeconnect",
     ]
     services["restart_if_changed"] = {
         "sa02m-modbus-mqtt": "/opt/sa02m-modbus-mqtt/",

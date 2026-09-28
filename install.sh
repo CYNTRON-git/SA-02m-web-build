@@ -17,6 +17,11 @@
 #   (sa02m-homekit; опционально, не входит в заводской образ, служба выключена
 #   до включения на карточке). Уже установленный мост обновляется и без флага;
 #   SA02M_SKIP_HOMEKIT=1 — не трогать его вовсе.
+#   --with-homeconnect (или SA02M_WITH_HOMECONNECT=1) — установить клиент
+#   BSH Home Connect (sa02m-homeconnect; только чтение, опционально, не входит
+#   в заводской образ, служба выключена до включения на карточке). Уже
+#   установленный клиент обновляется и без флага; SA02M_SKIP_HOMECONNECT=1 —
+#   не трогать его вовсе.
 # ═══════════════════════════════════════════════════════════════════════════
 set -euo pipefail
 
@@ -59,6 +64,7 @@ while [[ $# -gt 0 ]]; do
         --refresh) SA02M_INSTALL_MODE="refresh"; shift ;;
         --with-optional) SA02M_WITH_OPTIONAL="1"; shift ;;
         --with-homekit) SA02M_WITH_HOMEKIT="1"; shift ;;
+        --with-homeconnect) SA02M_WITH_HOMECONNECT="1"; shift ;;
         *)         shift ;;
     esac
 done
@@ -272,6 +278,17 @@ if [ "${SA02M_SKIP_HOMEKIT:-0}" != "1" ] && [ -f "$SCRIPT_DIR/scripts/06c-homeki
    && { [ "${SA02M_WITH_HOMEKIT:-0}" = "1" ] || id -u sa02m-homekit >/dev/null 2>&1; }; then
     log INFO "──── Опциональный модуль: Apple HomeKit (sa02m-homekit) ────"
     sa02m_run_module 06c-homekit.sh || log WARN "06c-homekit.sh завершился с ошибкой"
+fi
+# BSH Home Connect client — OPT-IN, read-only (Operator decisions Q-E/Q-G;
+# docs/contracts/home-connect.md), never in the factory image. Same gate shape
+# as HomeKit: runs when asked for, or when the client is already installed
+# ("installed" = the system user 06d-homeconnect.sh creates — not the unit
+# file, which OTA delivers to every board). After 05-mqtt.sh: the daemon's
+# only non-stdlib import (paho) and its broker come from there.
+if [ "${SA02M_SKIP_HOMECONNECT:-0}" != "1" ] && [ -f "$SCRIPT_DIR/scripts/06d-homeconnect.sh" ] \
+   && { [ "${SA02M_WITH_HOMECONNECT:-0}" = "1" ] || id -u sa02m-homeconnect >/dev/null 2>&1; }; then
+    log INFO "──── Опциональный модуль: BSH Home Connect (sa02m-homeconnect) ────"
+    sa02m_run_module 06d-homeconnect.sh || log WARN "06d-homeconnect.sh завершился с ошибкой"
 fi
 
 if [ "${SA02M_SKIP_NODERED:-0}" != "1" ] && [ -f "$SCRIPT_DIR/scripts/07-nodered.sh" ]; then

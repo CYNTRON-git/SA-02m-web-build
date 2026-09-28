@@ -32,15 +32,25 @@ HK_VAR_DIR=/var/lib/sa02m-homekit
 HK_RUN_DIR=/run/sa02m-homekit
 HK_CONF=/etc/sa02m-homekit/sa02m-homekit.conf
 HK_PKG_DIR=/opt/sa02m-homekit
+# Home Connect client clear-list (Q-F: ERASE the sign-in). Home of the list:
+# docs/contracts/home-connect.md §12 + image-identity-reset.md §8 — the state
+# dir's contents (tokens, call budget, published appliances) go, the dirs, the
+# package and the unit stay.
+HC_UNIT=sa02m-homeconnect.service
+HC_VAR_DIR=/var/lib/sa02m-homeconnect
+HC_RUN_DIR=/run/sa02m-homeconnect
+HC_CONF=/etc/sa02m-homeconnect/sa02m-homeconnect.conf
+HC_PKG_DIR=/opt/sa02m-homeconnect
 
 SELF="${BASH_SOURCE[0]:-$0}"
 CMD="${1:-run}"
 
 # --- root file operations (fr_safe) ------------------------------------------
 # This runner is root and writes into directories others can write:
-# /etc/sa02m-alice and /etc/sa02m-homekit are root:www-data 0770 (any panel
-# session plants any name there through cmd_exec.cgi), /var/lib/sa02m-homekit
-# belongs to the bridge daemon, and $STATEDIR is 0775 root:www-data (tmpfiles)
+# /etc/sa02m-alice, /etc/sa02m-homekit and /etc/sa02m-homeconnect are
+# root:www-data 0770 (any panel session plants any name there through
+# cmd_exec.cgi), /var/lib/sa02m-homekit and /var/lib/sa02m-homeconnect belong to
+# their daemons, and $STATEDIR is 0775 root:www-data (tmpfiles)
 # until prepare-statedir takes it. So nothing here chowns, chmods, seds or
 # copies BY NAME into those directories: every such write goes through fr_safe
 # — mkstemp (O_EXCL|O_NOFOLLOW) in the directory, owner/mode on the fd, fsync,
@@ -124,11 +134,13 @@ class Refused(Exception):
     pass
 
 # A missing conf directory is created with the owner/mode its tmpfiles line
-# gives it (etc/tmpfiles.d/sa02m-alice.conf, sa02m-homekit.conf), never
-# root:root 0755 — the CGI could not save its conf into that.
+# gives it (etc/tmpfiles.d/sa02m-alice.conf, sa02m-homekit.conf,
+# sa02m-homeconnect.conf), never root:root 0755 — the CGI could not save its
+# conf into that.
 DIR_SPEC = {
     "/etc/sa02m-alice": (0o770, "root", "www-data"),
     "/etc/sa02m-homekit": (0o770, "root", "www-data"),
+    "/etc/sa02m-homeconnect": (0o770, "root", "www-data"),
 }
 NOFOLLOW_RD = os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK | os.O_CLOEXEC
 DIR_RD = os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW | os.O_CLOEXEC
@@ -435,12 +447,22 @@ def cmd_remove_name(dirpath, name):
         os.close(dfd)
 
 
-def package_template(pkg_dir):
-    """The bridge conf template, from its one home: the installed package's
-    own render() of the defaults (== etc/sa02m-homekit/sa02m-homekit.conf, the
-    installer's seed). Imported as root only from directories only root can
-    write; None when the package is absent or not trusted."""
-    for d in (pkg_dir, os.path.join(pkg_dir, "sa02m_homekit"), os.path.join(pkg_dir, "sa02m_homekit", "__pycache__")):
+# The optional modules whose conf a factory reset returns to its template:
+# package name, the conf dataclass whose defaults render() writes, a label.
+TEMPLATES = {
+    "hk": ("sa02m_homekit", "BridgeConfig", "HomeKit"),
+    "hc": ("sa02m_homeconnect", "ClientConfig", "Home Connect"),
+}
+
+
+def package_template(pkg_dir, kind):
+    """A module's conf template, from its one home: the installed package's
+    own render() of the defaults (== the installer's seed — the HomeKit
+    etc/sa02m-homekit/sa02m-homekit.conf, the Home Connect 06d render).
+    Imported as root only from directories only root can write; None when the
+    package is absent or not trusted."""
+    pkg, cls, label = TEMPLATES[kind]
+    for d in (pkg_dir, os.path.join(pkg_dir, pkg), os.path.join(pkg_dir, pkg, "__pycache__")):
         try:
             st = os.lstat(d)
         except FileNotFoundError:
@@ -448,29 +470,37 @@ def package_template(pkg_dir):
                 continue
             return None
         if not root_only(st):
-            warn(f"{d} is not root-only — not importing the HomeKit package as root")
+            warn(f"{d} is not root-only — not importing the {label} package as root")
             return None
     sys.dont_write_bytecode = True
     sys.path.insert(0, pkg_dir)
     try:
-        from sa02m_homekit import config
-        return config.render(config.BridgeConfig()).encode("utf-8")
+        config = __import__(pkg + ".config", fromlist=["config"])
+        return config.render(getattr(config, cls)()).encode("utf-8")
     except Exception as e:  # noqa: BLE001 — any import failure means "no template"
-        warn(f"HomeKit package template unavailable ({e})")
+        warn(f"{label} package template unavailable ({e})")
         return None
 
 
-def cmd_hk_reset_conf(conf, pkg_dir, owner):
+def reset_conf(conf, pkg_dir, owner, kind):
     target, st = target_of(conf)
     if st is None:
         return
-    body = package_template(pkg_dir)
+    body = package_template(pkg_dir, kind)
     if body is None:
         warn(f"{target}: no template — forcing enabled = false only")
         cmd_force_key(conf, "enabled", "false")
         return
     replace_with(target, lambda out: out.write(body), 0o660, owner_ids(owner) or (st.st_uid, st.st_gid))
     print(f"reset {target} to the package template (enabled = false)")
+
+
+def cmd_hk_reset_conf(conf, pkg_dir, owner):
+    reset_conf(conf, pkg_dir, owner, "hk")
+
+
+def cmd_hc_reset_conf(conf, pkg_dir, owner):
+    reset_conf(conf, pkg_dir, owner, "hc")
 
 
 def drop_foreign(pfd, dreal, name, lst, kind):
@@ -596,6 +626,7 @@ def main(argv):
         "wipe-dir": (cmd_wipe_dir, 1),
         "remove-name": (cmd_remove_name, 2),
         "hk-reset-conf": (cmd_hk_reset_conf, 3),
+        "hc-reset-conf": (cmd_hc_reset_conf, 3),
     }
     if not argv or argv[0] not in cmds or len(argv) - 1 != cmds[argv[0]][1]:
         print(f"usage: fr_safe {'|'.join(cmds)} ARGS", file=sys.stderr)
@@ -1116,9 +1147,9 @@ MAP
 # Order: conf to the template first (enabled = false — a daemon restarted
 # behind our back exits instead of re-persisting keys), then stop, then erase
 # only once systemd reports the unit fully down.
-hk_unit_stopped() {
+unit_stopped() {
   local st
-  st=$(timeout 10 systemctl is-active "$HK_UNIT" 2>/dev/null) || true
+  st=$(timeout 10 systemctl is-active "$1" 2>/dev/null) || true
   case "$st" in
     inactive|failed) return 0 ;;
     *) return 1 ;;
@@ -1137,7 +1168,7 @@ wipe_homekit_pairings() {
     [ -z "$out" ] || log "homekit: $out"
   fi
   timeout 20 systemctl stop "$HK_UNIT" >/dev/null 2>&1 || true
-  hk_unit_stopped || fail E_APPLY "HomeKit bridge did not stop — its pairings were NOT erased"
+  unit_stopped "$HK_UNIT" || fail E_APPLY "HomeKit bridge did not stop — its pairings were NOT erased"
   if [ -e "$HK_VAR_DIR" ] || [ -L "$HK_VAR_DIR" ]; then
     out=$(fr_safe wipe-dir "$HK_VAR_DIR" 2>&1) || fail E_APPLY "HomeKit pairing store not erased: $out"
     log "homekit: $out"
@@ -1147,6 +1178,38 @@ wipe_homekit_pairings() {
   out=$(fr_safe remove-name "$HK_RUN_DIR" setup.json 2>&1) || log "WARN homekit: $out"
   [ -z "$out" ] || log "homekit: $out"
   log "homekit: pairings erased, bridge off (docs/contracts/homekit-bridge.md §14)"
+}
+
+# Home Connect (Q-F: factory reset ERASES the sign-in — resale must not leave
+# the previous owner's BSH account readable from this board). Runs right after
+# the HomeKit erase, for the same reasons and in the same order: conf to the
+# template first (enabled = false — the daemon, stopping with the conf
+# disabled, removes its retained appliance topics instead of marking them
+# stale, and a daemon restarted behind our back exits instead of refreshing a
+# token), then stop, then erase the state dir only once systemd reports the
+# unit fully down.
+wipe_homeconnect_signin() {
+  local out
+  if [ ! -e "$HC_VAR_DIR" ] && [ ! -L "$HC_VAR_DIR" ] && [ ! -e "$HC_CONF" ] && [ ! -L "$HC_CONF" ]; then
+    log "homeconnect: client not installed — nothing to erase"
+    return 0
+  fi
+  if [ -e "$HC_CONF" ] || [ -L "$HC_CONF" ]; then
+    journal_prior "$HC_CONF"
+    out=$(fr_safe hc-reset-conf "$HC_CONF" "$HC_PKG_DIR" root:www-data 2>&1) || fail E_APPLY "Home Connect conf not reset: $out"
+    [ -z "$out" ] || log "homeconnect: $out"
+  fi
+  timeout 20 systemctl stop "$HC_UNIT" >/dev/null 2>&1 || true
+  unit_stopped "$HC_UNIT" || fail E_APPLY "Home Connect client did not stop — its sign-in was NOT erased"
+  if [ -e "$HC_VAR_DIR" ] || [ -L "$HC_VAR_DIR" ]; then
+    out=$(fr_safe wipe-dir "$HC_VAR_DIR" 2>&1) || fail E_APPLY "Home Connect sign-in not erased: $out"
+    log "homeconnect: $out"
+  fi
+  # A killed daemon cannot withdraw a pending sign-in code (the card's
+  # disable/unlink do the same, usr/local/sbin/sa02m-homeconnect-web-trigger.sh).
+  out=$(fr_safe remove-name "$HC_RUN_DIR" link.json 2>&1) || log "WARN homeconnect: $out"
+  [ -z "$out" ] || log "homeconnect: $out"
+  log "homeconnect: sign-in erased, client off (docs/contracts/home-connect.md §12)"
 }
 
 verify_reset() {
@@ -1289,6 +1352,7 @@ PY
   txn_write "stage=verify" "progress_pct=85"
   verify_reset
   wipe_homekit_pairings
+  wipe_homeconnect_signin
 
   trap - ERR
 

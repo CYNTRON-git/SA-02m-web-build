@@ -74,6 +74,8 @@ ALLOW = [
     re.compile(r"^/etc/sa02m-alice-devices\.conf$"),
     # HomeKit: the conf only — the pairing store is never in a backup (P4).
     re.compile(r"^/etc/sa02m-homekit/sa02m-homekit\.conf$"),
+    # Home Connect: the conf only — the OAuth tokens are never in a backup (P4).
+    re.compile(r"^/etc/sa02m-homeconnect/sa02m-homeconnect\.conf$"),
     re.compile(r"^/etc/sa02m[^/]*\.conf$"),
     re.compile(r"^/etc/sa02m_[^/]*\.conf$"),
     re.compile(r"^/etc/sa02m-device-templates/"),
@@ -91,6 +93,8 @@ DIR_SPEC = {
     "/etc/sa02m-alice": (0o770, "root", "www-data"),
     # opt/sa02m-homekit/tmpfiles.d/sa02m-homekit.conf (and scripts/06c-homekit.sh).
     "/etc/sa02m-homekit": (0o770, "root", "www-data"),
+    # opt/sa02m-homeconnect/tmpfiles.d/sa02m-homeconnect.conf (and scripts/06d-homeconnect.sh).
+    "/etc/sa02m-homeconnect": (0o770, "root", "www-data"),
 }
 
 class RestoreRefused(Exception):
@@ -368,6 +372,8 @@ if any(d.startswith(("/etc/sa02m-alice/", "/etc/sa02m-alice-")) for d in restore
             print(f"restarted {unit} (restored Alice conf)")
 # No HomeKit restart: the bridge re-reads its conf every 2 s and applies
 # enabled/interface/port itself (docs/contracts/homekit-bridge.md §14).
+# No Home Connect restart either: the client re-reads its conf every 2 s
+# (docs/contracts/home-connect.md §12).
 print("health: restore complete (no reboot)")
 sys.exit(rc)
 PY
