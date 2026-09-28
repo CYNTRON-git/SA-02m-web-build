@@ -158,6 +158,193 @@ run_launcher
 cloned && ok "L7 rolling_back with a dead runner (the bench residue) → «Применить» proceeds (clone attempted)" \
   || bad "L7 rolling_back + dead runner → clone NOT attempted (rc=$rc) — a stuck board could never re-apply"
 
+# ── L8–L11: the clobber PAST the pre-clone guard (1.0.6.62, audit 2026-09-28 M1) ─
+# Until 1.0.6.62 the guard above pinned FOUR stages and ran only BEFORE the
+# clone, while the write that clobbers (handoff_to_shared_runner: tmp.replace
+# over transaction.json) ran unconditionally 30–60 s later — a runner at
+# validating / backing_up (10–30 s on the A7) was not protected at all, and one
+# that became alive DURING the clone was protected by nothing; runner 2 then
+# died on E_LOCK with runner 1's transaction already replaced, and a power cut
+# in that window rolled nothing back (recover reads the new `validating`, wipes
+# staging, E_POWER — the half-deployed tree stays). Now: every non-terminal
+# stage is guarded before the clone (L8); the launcher takes the runner's OWN
+# flock on $SA02M_UPDATE_STATEDIR/update.lock (fd 9, opened for append — the
+# runner's try_lock idiom) before it writes transaction.json, refuses when it is
+# held (L9), re-checks liveness under it (L10 — the cgroup handover releases the
+# lock for a moment while the runner is alive), and holds it through `exec` so
+# the runner inherits it and re-takes it on the same descriptor without a
+# deadlock (L11 — also the non-vacuity anchor: the clone + handoff really run).
+# Method: a git shim that lets the clone SUCCEED (a repo skeleton with a
+# VERSION, the allowlisted remote, a pinned HEAD) and an optional on-clone hook
+# that plants the racing runner «while the clone runs»; a fake runner at
+# SA02M_UPDATE_RUNNER that records what it inherited (fd 9's target, whether
+# the lock was held at exec, whether the runner's own re-take succeeds) and
+# removes the clone it was handed. A lock HOLDER is a real process holding
+# flock(2) on the sandbox lock with argv[0] = sa02m-update-runner.
+# flock(1) is util-linux — absent on git-bash, so the section is SKIPPED there
+# (printed as a skip, never counted as a pass); run it under WSL/Linux.
+# Drive-to-failure: WEB_UPDATE_LAUNCHER=<(git show d66d7b6:etc/sa02m-web-update-apply.sh)
+#   bash scripts/dev/test-web-update-launcher-guard.sh   (under WSL/Linux; on a
+#   Windows worktree WSL cannot resolve the worktree's git dir — `git show` the
+#   file to disk from the Windows side and point WEB_UPDATE_LAUNCHER at it).
+# RED observed 2026-09-28 on that pre-fix launcher (WSL): 6 FAIL — L8 ×3
+# «clone attempted (rc=0, txn id now <new uuid>, was …0001, runner exec'd:
+# yes)» (uploaded / validating / backing_up: the clone ran, the handoff
+# replaced the live transaction, the fake runner was exec'd on top of the
+# holder); L9 and L10 the same id change (rc=0, status=running, runner
+# exec'd); L11 «fd9=none held_at_exec=no» (nothing inherited — a contender's
+# flock -n succeeded against the just-exec'd runner). L11's handoff line and
+# its re-take line hold on both trees.
+echo
+echo "── L8–L11: clobber past the pre-clone guard (runner lock inheritance) ──"
+skipped=""
+if ! command -v flock >/dev/null 2>&1; then
+  echo "SKIP  L8–L11 need flock(1) (util-linux) — the launcher's lock idiom; absent here, run this harness under WSL/Linux"
+  skipped="L8–L11 (no flock)"
+else
+  SHA=0123456789abcdef0123456789abcdef01234567
+  REPO=https://github.com/CYNTRON-git/SA-02m-web-build.git
+  export SA02M_WEB_BUILD_REPO_URL="$REPO" SA02M_WEB_BUILD_REPO_ALLOWLIST="$REPO" SA02M_WEB_BUILD_COMMIT_PIN="$SHA"
+  # git shim: the clone SUCCEEDS and materialises a repo skeleton; the optional
+  # on-clone hook runs while «the clone is in progress» (its children must not
+  # keep the launcher's `tee` pipe open — every fixture below detaches stdio).
+  cat > "$BIN/git" <<SHIM
+#!/bin/bash
+printf 'git %s\n' "\$*" >> "$T/git.calls"
+sub=""; for a in "\$@"; do case "\$a" in clone|remote|rev-parse|ls-remote) [ -n "\$sub" ] || sub=\$a ;; esac; done
+case "\$sub" in
+  clone) dest=""; for a in "\$@"; do dest=\$a; done
+         mkdir -p "\$dest/www/network_config" && printf '9.9.9.9\n' > "\$dest/www/network_config/VERSION" || exit 1
+         [ -x "$T/on-clone" ] && "$T/on-clone"
+         exit 0 ;;
+  remote) printf '%s\n' "$REPO" ;;
+  rev-parse) printf '%s\n' "$SHA" ;;
+  ls-remote) printf '%s\trefs/heads/main\n' "$SHA" ;;
+esac
+exit 0
+SHIM
+  chmod +x "$BIN/git"
+  # The fake runner: carries the launcher's handoff-capability tokens in its
+  # header (the launcher greps for them), records what it inherited, and owns
+  # the clone it was handed (the real runner cleans the overlay up too).
+  FAKE_RUNNER="$T/fake-runner"
+  cat > "$FAKE_RUNNER" <<SHIM
+#!/bin/bash
+# fake sa02m-update-runner — capability tokens for the launcher's grep: overlay_path SA02M_UPDATE_GITHUB
+lock="\${SA02M_UPDATE_STATEDIR:?}/update.lock"
+{
+  printf 'args=%s\n' "\$*"
+  printf 'overlay=%s\n' "\${SA02M_UPDATE_GITHUB_OVERLAY:-}"
+  printf 'fd9=%s\n' "\$([ -e /proc/self/fd/9 ] && readlink -f /proc/self/fd/9 || echo none)"
+  if flock -n "\$lock" true 2>/dev/null; then printf 'held_at_exec=no\n'; else printf 'held_at_exec=yes\n'; fi
+  # the runner's own try_lock over the inherited descriptor: must not deadlock
+  if exec 9>>"\$lock" && flock -n 9; then printf 'reacquire=ok\n'; else printf 'reacquire=FAIL\n'; fi
+} >> "$T/runner.calls"
+case "\${SA02M_UPDATE_GITHUB_OVERLAY:-}" in /tmp/sa02m-web-update-*/repo) rm -rf "\$(dirname "\$SA02M_UPDATE_GITHUB_OVERLAY")" ;; esac
+exit 0
+SHIM
+  chmod +x "$FAKE_RUNNER"
+  export SA02M_UPDATE_RUNNER="$FAKE_RUNNER"
+  # Fixtures: a runner that is alive but holds NO lock (the cgroup-handover
+  # moment), and — per case — a HOLDER that keeps flock(2) on the sandbox lock.
+  bash -c 'exec -a sa02m-update-runner sleep 900' </dev/null >/dev/null 2>&1 &
+  LIVE2_PID=$!
+  HOLD_PIDS=""
+  trap 'kill "$LIVE_PID" "$LIVE2_PID" $HOLD_PIDS 2>/dev/null; rm -rf "$T"' EXIT
+  sleep 0.3
+  spawn_holder() {  # → HOLD_PID; the lock file names it
+    bash -c 'exec 9>>"$0" && flock -n 9 || exit 99; exec -a sa02m-update-runner sleep 900' "$UPD/update.lock" </dev/null >/dev/null 2>&1 &
+    HOLD_PID=$!; HOLD_PIDS="$HOLD_PIDS $HOLD_PID"
+    local i=0
+    while flock -n "$UPD/update.lock" true 2>/dev/null; do i=$((i + 1)); [ "$i" -ge 40 ] && break; sleep 0.1; done
+    printf '%s\n' "$HOLD_PID" > "$UPD/update.lock"
+  }
+  txn_id() { python3 -c 'import json,sys; print(json.load(open(sys.argv[1],encoding="utf-8")).get("id",""))' "$UPD/transaction.json" 2>/dev/null | tr -d '\r'; }
+  txn_same() { cmp -s "$UPD/transaction.json" "$T/txn.before"; }
+  runner_execd() { [ -f "$T/runner.calls" ]; }
+  snapshot_txn() { cp "$UPD/transaction.json" "$T/txn.before"; BEFORE_ID=$(txn_id); }
+  run_launcher_ho() { rm -f "$T/runner.calls"; run_launcher; }
+  refused_intact() {  # $1=label — the shared shape of a refusal that left the live transaction alone
+    if [ "$rc" -ne 0 ] && txn_same && ! runner_execd && status_is error && grep -q 'уже выполняется' "$LEGACY/update.log" 2>/dev/null; then
+      ok "$1 → exit $rc, transaction.json byte-identical, runner NOT exec'd, update_status=error, refusal logged"
+    else
+      bad "$1 → rc=$rc, cloned: $(cloned && echo yes || echo no), txn id now '$(txn_id)' (was '$BEFORE_ID'), runner exec'd: $(runner_execd && echo yes || echo no), status='$(cat "$LEGACY/update_status" 2>/dev/null)' — the clobber class"
+    fi
+  }
+
+  # ── L8: a live runner (holding the lock) at uploaded / validating / backing_up → refused BEFORE the clone ─
+  spawn_holder
+  flock -n "$UPD/update.lock" true 2>/dev/null && bad "L8 fixture: the holder does not hold flock(2) on the sandbox lock"
+  rm -f "$T/on-clone"
+  for st in uploaded validating backing_up; do
+    write_txn "$st"; printf '%s\n' "$HOLD_PID" > "$UPD/update.lock"; snapshot_txn
+    run_launcher_ho
+    if ! cloned; then refused_intact "L8 live runner at $st"
+    else bad "L8 live runner at $st → clone attempted (rc=$rc, txn id now '$(txn_id)', was '$BEFORE_ID', runner exec'd: $(runner_execd && echo yes || echo no)) — the stage is not guarded before the clone"; fi
+  done
+  kill "$HOLD_PID" 2>/dev/null
+
+  # ── L9: the race — nothing running at the guard, a runner takes the lock DURING the clone → refused at the lock ─
+  rm -f "$UPD/transaction.json" "$UPD/update.lock" "$T/hold9.pid" "$T/txn.before"
+  cat > "$T/on-clone" <<HOOK
+#!/bin/bash
+printf '{"schema_version":1,"id":"abcdef12-0000-4000-8000-000000000009","operation":"update","source":"file","stage":"validating","progress_pct":5,"result":"pending","error_code":null,"error_message":null,"updated_at":"%s"}\n' "\$(date -u +%Y-%m-%dT%H:%M:%SZ)" > "$UPD/transaction.json"
+bash -c 'exec 9>>"\$0" && flock -n 9 || exit 99; exec -a sa02m-update-runner sleep 900' "$UPD/update.lock" </dev/null >/dev/null 2>&1 &
+echo \$! > "$T/hold9.pid"
+i=0; while flock -n "$UPD/update.lock" true 2>/dev/null; do i=\$((i + 1)); [ "\$i" -ge 40 ] && exit 1; sleep 0.1; done
+printf '%s\n' "\$(cat "$T/hold9.pid")" > "$UPD/update.lock"
+cp "$UPD/transaction.json" "$T/txn.before"
+exit 0
+HOOK
+  chmod +x "$T/on-clone"
+  run_launcher_ho
+  [ -s "$T/hold9.pid" ] && HOLD_PIDS="$HOLD_PIDS $(cat "$T/hold9.pid")"
+  if ! cloned || [ ! -s "$T/txn.before" ]; then
+    bad "L9 fixture: the clone/hook did not run (cloned: $(cloned && echo yes || echo no), rc=$rc) — nothing was raced"
+  else
+    BEFORE_ID=abcdef12-0000-4000-8000-000000000009
+    refused_intact "L9 a runner took the lock during the clone (validating)"
+  fi
+  [ -s "$T/hold9.pid" ] && kill "$(cat "$T/hold9.pid")" 2>/dev/null
+
+  # ── L10: under the lock — the lock is FREE but a runner is alive at validating (cgroup handover) → refused before the write ─
+  rm -f "$UPD/transaction.json" "$UPD/update.lock" "$T/txn.before"
+  cat > "$T/on-clone" <<HOOK
+#!/bin/bash
+printf '{"schema_version":1,"id":"abcdef12-0000-4000-8000-000000000010","operation":"update","source":"github","stage":"validating","progress_pct":5,"result":"pending","error_code":null,"error_message":null,"updated_at":"%s"}\n' "\$(date -u +%Y-%m-%dT%H:%M:%SZ)" > "$UPD/transaction.json"
+printf '%s\n' "$LIVE2_PID" > "$UPD/update.lock"
+cp "$UPD/transaction.json" "$T/txn.before"
+exit 0
+HOOK
+  chmod +x "$T/on-clone"
+  run_launcher_ho
+  if ! cloned || [ ! -s "$T/txn.before" ]; then
+    bad "L10 fixture: the clone/hook did not run (cloned: $(cloned && echo yes || echo no), rc=$rc)"
+  else
+    BEFORE_ID=abcdef12-0000-4000-8000-000000000010
+    refused_intact "L10 lock free, runner alive at validating (planted during the clone)"
+  fi
+
+  # ── L11: the positive handoff — idle, no runner: transaction written, runner exec'd WITH the lock held ─
+  rm -f "$UPD/transaction.json" "$UPD/update.lock" "$T/on-clone"
+  run_launcher_ho
+  txn_shape_ok() { python3 -c 'import json,sys
+d=json.load(open(sys.argv[1],encoding="utf-8")); raise SystemExit(0 if d.get("stage")=="validating" and d.get("source")=="github" and d.get("id") else 1)' "$UPD/transaction.json" 2>/dev/null; }
+  if [ "$rc" -eq 0 ] && runner_execd && grep -qx 'args=apply' "$T/runner.calls" && txn_shape_ok && status_is running; then
+    ok "L11 idle → clone, transaction.json written (stage=validating, source=github), runner exec'd with 'apply', update_status=running"
+  else
+    bad "L11 idle → rc=$rc, cloned: $(cloned && echo yes || echo no), runner exec'd: $(runner_execd && echo yes || echo no), txn id '$(txn_id)', status='$(cat "$LEGACY/update_status" 2>/dev/null)' — the handoff itself broke (the L8–L10 refusals would be vacuous)"
+  fi
+  lockpath=$(readlink -f "$UPD/update.lock")
+  if grep -qxF "fd9=$lockpath" "$T/runner.calls" 2>/dev/null && grep -qx 'held_at_exec=yes' "$T/runner.calls" 2>/dev/null; then
+    ok "L11 the runner inherited fd 9 → update.lock with flock(2) HELD at exec (a contender's flock -n fails)"
+  else
+    bad "L11 lock not inherited: $(grep -E '^(fd9|held_at_exec)=' "$T/runner.calls" 2>/dev/null | tr '\n' ' ')(want fd9=$lockpath held_at_exec=yes) — between the write and the runner's own lock a second launcher can still clobber"
+  fi
+  grep -qx 'reacquire=ok' "$T/runner.calls" 2>/dev/null && ok "L11 the runner's own try_lock idiom (exec 9>>lock; flock -n 9) re-takes the inherited lock — no deadlock" \
+    || bad "L11 re-take over the inherited descriptor FAILED ($(grep '^reacquire=' "$T/runner.calls" 2>/dev/null)) — the real runner would die on E_LOCK against its own launcher"
+fi
+
 echo "-----"
-if [ "$fails" -eq 0 ]; then echo "PASS (all checks)"; exit 0
-else echo "FAIL ($fails check(s))"; exit 1; fi
+if [ "$fails" -eq 0 ]; then echo "PASS (all checks${skipped:+; SKIPPED here: $skipped})"; exit 0
+else echo "FAIL ($fails check(s)${skipped:+; SKIPPED here: $skipped})"; exit 1; fi
