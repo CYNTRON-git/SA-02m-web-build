@@ -173,7 +173,9 @@ const P = {
   connecting: st({ state: 'connecting', ...LINKED, stream: 'down' }),
   connected: st({ state: 'connected', ...LINKED, stream: 'up' }),
   rate_limited: st({ state: 'rate_limited', reason: 'daily_limit', ...LINKED, stream: 'up', rate_limited_until: UNTIL }),
-  offline: st({ state: 'offline', ...LINKED, stream: 'down' }),
+  offline: st({ state: 'offline', ...LINKED, stream: 'down', message: 'cloud unreachable: timed out' }),
+  // Sign-in against a cloud that never answers (bench G6, RU IP): not linked.
+  offline_unlinked: st({ state: 'offline', message: 'sign-in could not start: timed out' }),
   token_revoked: st({ state: 'token_revoked' }),
   error: st({ state: 'error' }),
 };
@@ -186,32 +188,34 @@ const P = {
 const CASES = [
   { name: 'not_installed', p: P.not_installed, badge: 'не установлен', line: 'Нужна полная установка (install.sh)', btn: null, link: false, unlink: false, cidHidden: true },
   { name: 'disabled', p: P.disabled, badge: 'выключен', line: null, btn: 'Включить', link: false, unlink: false },
-  { name: 'missing_deps', p: P.missing_deps, badge: 'нет компонентов', line: 'Не установлены компоненты Home Connect — нужна полная установка (install.sh)', btn: 'Выключить', link: false, unlink: false },
-  { name: 'missing_client_id', p: P.missing_client_id, badge: 'нет Client ID', line: 'Введите Client ID своего приложения Home Connect', btn: 'Выключить', link: true, linkDisabled: true, unlink: false },
-  { name: 'unlinked', p: P.unlinked, badge: 'не подключён', line: 'Аккаунт не подключён — нажмите «Подключить»', btn: 'Выключить', link: true, unlink: false },
+  { name: 'missing_deps', p: P.missing_deps, badge: 'нет компонентов', line: 'Нужна полная установка (install.sh)', btn: 'Выключить', link: false, unlink: false },
+  { name: 'missing_client_id', p: P.missing_client_id, badge: 'нет Client ID', line: 'Введите Client ID', btn: 'Выключить', link: true, linkDisabled: true, unlink: false },
+  { name: 'unlinked', p: P.unlinked, badge: 'не подключён', line: 'Нажмите «Подключить»', btn: 'Выключить', link: true, unlink: false },
   { name: 'awaiting_user', p: P.awaiting_user, badge: 'ждёт входа', line: null, btn: 'Выключить', link: false, unlink: true, code: true },
-  { name: 'link_expired', p: P.link_expired, badge: 'код истёк', line: 'Код входа истёк — нажмите «Подключить» ещё раз', btn: 'Выключить', link: true, unlink: false },
+  { name: 'link_expired', p: P.link_expired, badge: 'код истёк', line: 'Нажмите «Подключить» ещё раз', btn: 'Выключить', link: true, unlink: false },
   { name: 'connecting', p: P.connecting, badge: 'подключение…', line: null, btn: 'Выключить', link: false, unlink: true },
   { name: 'connected', p: P.connected, badge: 'подключён', line: null, btn: 'Выключить', link: false, unlink: true, apps: true },
   { name: 'rate_limited', p: P.rate_limited, badge: '@RATE@', line: '@RATELINE@', btn: 'Выключить', link: false, unlink: true },
-  { name: 'offline', p: P.offline, badge: 'нет связи с облаком', line: 'Нет связи с облаком Home Connect', btn: 'Выключить', link: false, unlink: true },
-  { name: 'token_revoked', p: P.token_revoked, badge: 'доступ отозван', line: 'Доступ отозван — подключите аккаунт заново', btn: 'Выключить', link: true, unlink: true },
-  { name: 'error', p: P.error, badge: 'ошибка', line: 'Ошибка клиента — подробности в журнале sa02m-homeconnect', btn: 'Выключить', link: false, unlink: false },
+  { name: 'offline', p: P.offline, badge: 'нет связи с облаком', line: 'BSH недоступно из этой сети', oneLine: true, btn: 'Выключить', link: false, unlink: true },
+  { name: 'offline-unlinked', p: P.offline_unlinked, badge: 'нет связи с облаком', line: 'BSH недоступно из этой сети', oneLine: true, btn: 'Выключить', link: true, unlink: false },
+  { name: 'token_revoked', p: P.token_revoked, badge: 'доступ отозван', line: 'Подключите аккаунт заново', btn: 'Выключить', link: true, unlink: true },
+  { name: 'error', p: P.error, badge: 'ошибка', line: 'Журнал: sa02m-homeconnect', btn: 'Выключить', link: false, unlink: false },
   { name: 'no-answer', p: null, noanswer: true, badge: 'н/д', line: 'Нет ответа от платы', btn: null, link: false, allDisabled: true },
 ];
 
 /* Every contract reason, in a state that carries it, with its expected line
    (the card's Russian, never the raw code). */
 const REASON_CASES = {
-  access_denied: { p: st({ state: 'unlinked', reason: 'access_denied' }), badge: 'не подключён', line: 'Вход отклонён на странице Home Connect' },
-  client_id_rejected: { p: st({ state: 'unlinked', reason: 'client_id_rejected' }), badge: 'не подключён', line: 'Home Connect не принял Client ID — проверьте его' },
-  token_store_insecure: { p: st({ state: 'error', reason: 'token_store_insecure' }), badge: 'ошибка', line: 'Небезопасный файл входа — подробности в журнале sa02m-homeconnect' },
-  token_store_corrupt: { p: st({ state: 'unlinked', reason: 'token_store_corrupt' }), badge: 'не подключён', line: 'Данные входа повреждены — подключите аккаунт заново' },
-  budget_local_reached: { p: st({ state: 'connected', reason: 'budget_local_reached', ...LINKED, stream: 'up', budget: { ...BUDGET, used: 812, remaining: 188 } }), badge: 'подключён', line: 'Израсходовано 800 запросов из 1000 — опрос приостановлен до конца суток (UTC), события приходят', budget: '812 из 1000' },
+  access_denied: { p: st({ state: 'unlinked', reason: 'access_denied' }), badge: 'не подключён', line: 'Вход отклонён' },
+  client_id_rejected: { p: st({ state: 'unlinked', reason: 'client_id_rejected' }), badge: 'не подключён', line: 'Client ID не принят' },
+  token_store_insecure: { p: st({ state: 'error', reason: 'token_store_insecure' }), badge: 'ошибка', line: 'Небезопасный файл входа — журнал sa02m-homeconnect' },
+  token_store_corrupt: { p: st({ state: 'unlinked', reason: 'token_store_corrupt' }), badge: 'не подключён', line: 'Данные входа повреждены — подключите заново' },
+  budget_local_reached: { p: st({ state: 'connected', reason: 'budget_local_reached', ...LINKED, stream: 'up', budget: { ...BUDGET, used: 812, remaining: 188 } }), badge: 'подключён', line: 'Опрос на паузе до конца суток (UTC)', budget: '812 из 1000' },
   retry_after: { p: st({ state: 'rate_limited', reason: 'retry_after', ...LINKED, stream: 'down', rate_limited_until: UNTIL }), badge: '@RATE@', line: '@RETRYLINE@' },
   daily_limit: { p: P.rate_limited, badge: '@RATE@', line: '@RATELINE@' },
-  stream_down: { p: st({ state: 'connecting', reason: 'stream_down', ...LINKED, stream: 'down' }), badge: 'подключение…', line: 'Нет потока событий — данные приборов могут быть устаревшими' },
-  status_stale: { p: st({ state: 'error', reason: 'status_stale' }), badge: 'не отвечает', line: 'Клиент не отвечает — статус устарел' },
+  conf_unreadable: { p: st({ state: 'missing_deps', reason: 'conf_unreadable', message: 'conf unreadable' }), badge: 'нет компонентов', line: 'Нет доступа к настройкам' },
+  stream_down: { p: st({ state: 'connecting', reason: 'stream_down', ...LINKED, stream: 'down' }), badge: 'подключение…', line: 'Нет потока событий — данные могут устареть' },
+  status_stale: { p: st({ state: 'error', reason: 'status_stale' }), badge: 'не отвечает', line: 'Статус устарел' },
 };
 
 // Non-vacuous both ways: contract states/reasons and the fixtures are one set.
@@ -317,7 +321,7 @@ async function expandDynamic(page, text) {
   const hhmm = await page.evaluate((u) => { const d = new Date(u * 1000); const p = (n) => (n < 10 ? '0' : '') + n; return p(d.getHours()) + ':' + p(d.getMinutes()); }, UNTIL);
   return {
     '@RATE@': `лимит API до ${hhmm}`,
-    '@RATELINE@': `Суточный лимит запросов исчерпан — до ${hhmm}`,
+    '@RATELINE@': `Суточный лимит исчерпан — до ${hhmm}`,
     '@RETRYLINE@': `Облако попросило подождать — до ${hhmm}`,
   }[text];
 }
@@ -364,6 +368,14 @@ async function readCard(page) {
       stream: txt('homeconnect-stream'),
       msgVisible: vis('homeconnect-msg'),
       msg: txt('homeconnect-msg'),
+      // Rendered text lines of the card line (distinct line boxes of its text).
+      msgLines: (() => {
+        const el = $('homeconnect-msg');
+        if (!el || !el.firstChild) return 0;
+        const r = document.createRange();
+        r.selectNodeContents(el);
+        return new Set([...r.getClientRects()].filter((b) => b.width > 0).map((b) => Math.round(b.top))).size;
+      })(),
       linkVisible: vis('homeconnect-btn-link'),
       codeBoxVisible: vis('homeconnect-code-box'),
       codeInDom: document.documentElement.outerHTML.includes(code),
@@ -423,6 +435,8 @@ async function runStateMatrix(browser, base, theme) {
     const line = await expandDynamic(page, c.line);
     if (line) check(s.msgVisible && s.msg === line, `${tag}: card line "${s.msg}" (visible=${s.msgVisible})`);
     else check(!s.msgVisible, `${tag}: no card line (got "${s.msg}")`);
+    if (c.oneLine) check(s.msgLines === 1, `${tag}: the card line fits one line (${s.msgLines} lines)`);
+    if (c.p && c.p.message) check(!String(s.msg || '').includes(c.p.message), `${tag}: the raw status message is not shown`);
     if (c.btn) check(s.enVisible && s.enText === c.btn && s.disabled.enable === false, `${tag}: footer «${s.enText}» usable (disabled=${s.disabled.enable})`);
     if (c.name === 'not_installed') check(s.disabled.enable === true, `${tag}: «Включить» locked (disabled=${s.disabled.enable})`);
     if (!c.noanswer) {
@@ -600,7 +614,7 @@ async function runInteractions(browser, base) {
   // Unlink confirm.
   if (await reach(page, S, connected, 'unlink')) {
     renders++;
-    const TEXT = 'Плата отключится от аккаунта Home Connect, приборы пропадут из MQTT. Чтобы вернуть их, понадобится войти заново.';
+    const TEXT = 'Отключить аккаунт? Приборы пропадут из MQTT до нового входа.';
     S.dialogs.length = 0;
     S.dialogAccept = false;
     const count = () => S.posts.filter((b) => b.action === 'unlink').length;
@@ -626,7 +640,7 @@ async function runInteractions(browser, base) {
     await page.waitForTimeout(250);
     const t = await toasts(page);
     check(S.posts.length === n0, `client-id: a malformed id sends nothing (POSTs ${S.posts.length - n0})`);
-    check(t.includes('Недопустимый Client ID: 8–128 символов (латиница, цифры, _ и -)'), `client-id: the refusal is explained (${JSON.stringify(t.slice(-1))})`);
+    check(t.includes('Недопустимый Client ID'), `client-id: the refusal is explained (${JSON.stringify(t.slice(-1))})`);
     await page.fill('#homeconnect-client-in', 'MyHcClientId_0002');
     await page.click('#homeconnect-btn-client');
     await page.waitForFunction((n) => !document.getElementById('homeconnect-btn-enable').disabled, n0, { timeout: REACH_MS }).catch(() => {});

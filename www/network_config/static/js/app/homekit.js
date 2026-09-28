@@ -6,7 +6,11 @@
    on an explicit «Показать код» and live in the DOM only while the bridge is
    running and unpaired. The «Умный дом» modal (app/smarthome.js) reads whether
    the module is installed through window.sa02mHomekitInstalled and the
-   `sa02m-homekit-status` document event. */
+   `sa02m-homekit-status` document event. The «Устройства для HomeKit» list
+   rides the Alice card's poll (window.sa02mAliceOnData — no poll of its own)
+   and saves through window.sa02mAliceApi in ONE `set_homekit_visible` request
+   (never one upsert per device: that timed out behind nginx on a loaded
+   board, bench 1.135). */
 
 (function () {
 'use strict';
@@ -44,12 +48,13 @@ const HOMEKIT_STATE_MAP = {
 const HOMEKIT_SKIP_MAP = {
   range_unsupported: 'диапазон не поддерживается',
   capability_unsupported: 'умение не поддерживается',
-  needs_threshold: 'нужен порог срабатывания',
   no_homekit_type: 'нет типа в HomeKit',
   unit_unsupported: 'единица не поддерживается',
   nothing_mappable: 'нечего передать',
   hidden: 'не отмечено для HomeKit',
   bridge_full: 'мост заполнен (149)',
+  button_source_unsupported: 'нет счётчиков нажатий',
+  scene_disabled: 'сцена выключена',
 };
 
 // `{"ok":false,"error":…}` codes of the dispatch/CGI → RU (never the raw code
@@ -57,9 +62,9 @@ const HOMEKIT_SKIP_MAP = {
 const HOMEKIT_ERROR_MAP = {
   invalid_interface: 'Недопустимый интерфейс',
   invalid_port: 'Недопустимый порт',
-  not_installed: 'HomeKit не установлен — нужна полная установка (install.sh)',
+  not_installed: 'Нужна полная установка (install.sh)',
   conf_write_failed: 'Не удалось сохранить настройки',
-  not_available: 'Код недоступен — мост сопряжён или не запущен',
+  not_available: 'Код недоступен',
   homekit_api_failed: 'Нет ответа от платы',
   payload_too_large: 'Ошибка запроса API HomeKit',
   invalid_json: 'Ошибка запроса API HomeKit',
@@ -144,6 +149,14 @@ let _hkTabActive = false;
 let _hkPoll = null;
 let _hkFastPoll = null;
 let _hkFastPollGen = 0;
+// «Устройства для HomeKit»: the last Alice config (device document), the
+// operator's unsaved ticks (id → bool; survive every re-render), whether the
+// operator opened/closed the block himself, and the last rendered signature
+// (an unchanged list is not rebuilt — focus and scroll stay put).
+let _hkAlice = null;
+let _hkDevEdits = {};
+let _hkDevsTouched = false;
+let _hkDevsSig = '';
 
 // null until the first answer; then true unless the board says not_installed.
 window.sa02mHomekitInstalled = null;
@@ -228,6 +241,10 @@ function hkSetButtonsDisabled() {
     const el = $(id);
     if (el) el.disabled = blocked || !installed;
   });
+  const save = $('homekit-btn-devs');
+  if (save) save.disabled = _hkBusy || !installed || !Object.keys(_hkDevEdits).length;
+  const list = $('homekit-dev-list');
+  if (list) list.querySelectorAll('input[type="checkbox"]').forEach(function (cb) { cb.disabled = _hkBusy; });
 }
 
 function hkSetBusy(on) {
@@ -287,8 +304,9 @@ function hkRenderSkipped(d) {
   const rows = d && Array.isArray(d.skipped) ? d.skipped : [];
   if (line) line.hidden = total <= 0;
   // One text run: the link is inline-flex, so separate spans would lose the
-  // spaces between them.
-  hkSetText('homekit-skip-text', uiT('не передаётся') + ': ' + total + ' ›');
+  // spaces between them. No «›»: the link colour is the affordance (Operator,
+  // 2026-09-28); aria-expanded carries the open state.
+  hkSetText('homekit-skip-text', uiT('не передаётся') + ': ' + total);
   if (total <= 0) _hkSkipOpen = false;
   if (link) link.setAttribute('aria-expanded', _hkSkipOpen ? 'true' : 'false');
   if (!list) return;
@@ -323,16 +341,20 @@ function hkStateLine(d) {
   const st = d.state;
   const reason = d.reason || '';
   if (st === 'not_installed') return [uiT('Нужна полная установка (install.sh)'), null];
-  if (st === 'missing_deps') return [uiT('Не установлены компоненты HomeKit — нужна полная установка (install.sh)'), false];
-  if (st === 'error' && reason === 'status_stale') return [uiT('Мост не отвечает — статус устарел'), false];
-  if (st === 'error') return [uiT('Ошибка моста — подробности в журнале sa02m-homekit'), false];
-  if (st === 'no_interface') return [uiT('На выбранном интерфейсе нет адреса'), false];
-  if (st === 'port_in_use') return [uiT('Порт занят другой программой — выберите другой'), false];
+  // A sibling package older than the bridge (contract §10): the precise fix, one line.
+  if (st === 'missing_deps' && reason === 'peer_package_outdated') return [uiT('Обновите пакет Алисы'), false];
+  // The conf exists but the daemon cannot read it (its read ACL is gone).
+  if (st === 'missing_deps' && reason === 'conf_unreadable') return [uiT('Нет доступа к настройкам'), false];
+  if (st === 'missing_deps') return [uiT('Нужна полная установка (install.sh)'), false];
+  if (st === 'error' && reason === 'status_stale') return [uiT('Статус устарел'), false];
+  if (st === 'error') return [uiT('Журнал: sa02m-homekit'), false];
+  if (st === 'no_interface') return [uiT('Нет адреса на интерфейсе'), false];
+  if (st === 'port_in_use') return [uiT('Выберите другой порт'), false];
   if (st === 'running' && (d.pair_setup_locked || reason === 'pair_setup_locked') && d.paired === false) {
-    return [uiT('Сопряжение заблокировано после 100 неудачных попыток — перезапустите мост'), false];
+    return [uiT('Сопряжение заблокировано — перезапустите мост'), false];
   }
   if (reason === 'identity_regenerated' || reason === 'state_corrupt_regenerated') {
-    return [uiT('Мост создан заново — добавьте его в «Дом» повторно'), null];
+    return [uiT('Мост создан заново — добавьте в «Дом» снова'), null];
   }
   return null;
 }
@@ -388,6 +410,7 @@ function hkRender(d) {
   hkSetText('homekit-addr', running && d.address ? String(d.address) + ':' + d.port : '—');
 
   hkRenderSkipped(d);
+  hkRenderDevices();
 
   // Setup block: only while running ∧ unpaired. Leaving that state removes
   // the code from the DOM at once (a pairing just completed, a stop, a reset).
@@ -414,6 +437,134 @@ function hkRender(d) {
   if (line) hkSetCardMsg(line[0], line[1]);
   else hkSetCardMsg('', true);
   hkSetButtonsDisabled();
+}
+
+// ── «Устройства для HomeKit» ─────────────────────────────────────────────────
+function hkDevices() {
+  const doc = _hkAlice && _hkAlice.devices && typeof _hkAlice.devices === 'object' ? _hkAlice.devices : null;
+  const rows = doc && Array.isArray(doc.devices) ? doc.devices : [];
+  return rows.filter(function (dev) { return dev && typeof dev === 'object' && typeof dev.id === 'string' && dev.id; });
+}
+
+// Why a TICKED device still does not reach «Дом»: its device-level skip row
+// (item null) from the bridge's projection, never `hidden` (the box says it).
+function hkDeviceReasons(d) {
+  const out = {};
+  (d && Array.isArray(d.skipped) ? d.skipped : []).forEach(function (s) {
+    if (!s || typeof s !== 'object' || s.item || typeof s.device_id !== 'string') return;
+    const reason = String(s.reason || '');
+    if (reason && reason !== 'hidden' && HOMEKIT_SKIP_MAP[reason]) out[s.device_id] = HOMEKIT_SKIP_MAP[reason];
+  });
+  return out;
+}
+
+function hkRenderDevices() {
+  const det = $('homekit-devs');
+  const list = $('homekit-dev-list');
+  const hint = $('homekit-devs-hint');
+  if (!det || !list) return;
+  const d = _hkLast;
+  const installed = !!(d && d.state !== 'not_installed' && !_hkLastFailed);
+  const devs = hkDevices();
+  const show = installed && devs.length > 0;
+  det.hidden = !show;
+  const ids = {};
+  devs.forEach(function (dev) { ids[dev.id] = true; });
+  Object.keys(_hkDevEdits).forEach(function (id) { if (!ids[id]) delete _hkDevEdits[id]; });
+  const ticked = devs.filter(function (dev) { return dev.homekit_visible === true; }).length;
+  // Only when nothing is ticked: ticked-but-all-skipped rows already carry
+  // their own skip reason, and «отметьте» would ask for what is done.
+  const none = show && ticked === 0;
+  if (hint) hint.hidden = !none;
+  if (show && ticked === 0 && !_hkDevsTouched) det.open = true;
+  if (!show) { hkSetButtonsDisabled(); return; }
+  const reasons = hkDeviceReasons(d);
+  const sig = JSON.stringify(devs.map(function (dev) {
+    return [dev.id, dev.name, dev.homekit_visible === true, reasons[dev.id] || ''];
+  })) + JSON.stringify(_hkDevEdits) + (window.sa02mI18n && window.sa02mI18n.lang ? window.sa02mI18n.lang : '');
+  if (sig !== _hkDevsSig) {
+    _hkDevsSig = sig;
+    while (list.firstChild) list.removeChild(list.firstChild);
+    devs.forEach(function (dev) {
+      const li = document.createElement('li');
+      const label = document.createElement('label');
+      label.className = 'homekit-dev-row';
+      const cb = document.createElement('input');
+      cb.type = 'checkbox';
+      cb.dataset.id = dev.id;
+      cb.checked = Object.prototype.hasOwnProperty.call(_hkDevEdits, dev.id)
+        ? _hkDevEdits[dev.id] : dev.homekit_visible === true;
+      const name = document.createElement('span');
+      name.className = 'homekit-dev-name';
+      name.textContent = String(dev.name || dev.id);
+      name.title = name.textContent;
+      label.appendChild(cb);
+      label.appendChild(name);
+      if (reasons[dev.id]) {
+        const why = document.createElement('span');
+        why.className = 'homekit-dev-why';
+        why.textContent = uiT(reasons[dev.id]);
+        label.appendChild(why);
+      }
+      li.appendChild(label);
+      list.appendChild(li);
+    });
+  }
+  hkSetButtonsDisabled();
+}
+
+function hkDevListChange(e) {
+  const cb = e && e.target;
+  if (!cb || cb.type !== 'checkbox' || !cb.dataset.id) return;
+  const dev = hkDevices().find(function (x) { return x.id === cb.dataset.id; });
+  if (!dev) return;
+  if (cb.checked === (dev.homekit_visible === true)) delete _hkDevEdits[dev.id];
+  else _hkDevEdits[dev.id] = cb.checked;
+  _hkDevsSig = '';
+  hkRenderDevices();
+}
+
+function hkOnAliceData(data) {
+  if (!data || typeof data !== 'object' || data.ok === false) return;
+  _hkAlice = data;
+  hkRenderDevices();
+}
+
+// `set_homekit_visible` refusals (config/api.py) → RU; anything else is the
+// generic save failure (never the raw code).
+const HK_DEVS_ERROR_MAP = {
+  not_found: 'Список устарел — обновите страницу',
+  too_many: 'Слишком много устройств',
+};
+
+async function homekitSaveDevices() {
+  const edits = Object.assign({}, _hkDevEdits);
+  const before = _hkLast ? _hkLast.accessories : null;
+  if (_hkBusy || !Object.keys(edits).length || typeof window.sa02mAliceApi !== 'function') return;
+  hkSetBusy(true);
+  let d = null;
+  try {
+    d = await window.sa02mAliceApi({ action: 'set_homekit_visible', visible: edits });
+  } catch (e) {
+    d = null;
+  }
+  hkSetBusy(false);
+  if (!d) { hkNotice(uiT('Нет ответа от платы'), false); return; }
+  if (d.error === 'unauthorized' || d.error_code === 'E_CSRF') return;
+  if (d.ok !== true) {
+    hkNotice(uiT(HK_DEVS_ERROR_MAP[d.error] || 'Не удалось сохранить'), false);
+    return;
+  }
+  // Only the ticks that were sent: one made during the request stays pending.
+  Object.keys(edits).forEach(function (id) {
+    if (_hkDevEdits[id] === edits[id]) delete _hkDevEdits[id];
+  });
+  hkNotice(uiT('Сохранено'), true);
+  if (typeof window.sa02mAliceRefresh === 'function') {
+    try { await window.sa02mAliceRefresh(); } catch (e) { /* the next Alice poll catches up */ }
+  }
+  // The bridge rebuilds its accessories after REBUILD_DEBOUNCE_S (3 s).
+  hkFastPoll(function (s) { return s.state !== 'running' || s.accessories !== before; });
 }
 
 // ── Poll ───────────────────────────────────────────────────────────────────
@@ -509,7 +660,7 @@ async function hkMutate(body, okText) {
     return d;
   }
   if (d.trigger === 'failed' || d.trigger === 'timeout') {
-    hkNotice(uiT('Настройки сохранены, но служба не ответила'), false);
+    hkNotice(uiT('Сохранено, служба не ответила'), false);
   } else if (okText) {
     hkNotice(okText, true);
   }
@@ -526,7 +677,7 @@ async function homekitToggle() {
 }
 
 async function homekitResetPairing() {
-  if (!window.confirm(uiT('Все iPhone и iPad потеряют доступ к мосту. Их придётся добавить заново.'))) return;
+  if (!window.confirm(uiT('Сбросить? iPhone и iPad придётся добавить заново.'))) return;
   hkClearCode();
   const d = await hkMutate({ action: 'reset_pairing' }, uiT('Сопряжение сброшено'));
   if (d && d.ok) hkFastPoll(function (s) { return hkSettledState(s) && s.paired !== true; });
@@ -583,7 +734,7 @@ async function homekitApplyNet() {
   const forbidden = Array.isArray(d0.forbidden_ports) ? d0.forbidden_ports : [];
   if (iface && !HK_IFACE_RE.test(iface)) { hkNotice(uiT('Недопустимый интерфейс'), false); return; }
   if (!(port >= pmin && port <= pmax)) { hkNotice(uiT('Недопустимый порт'), false); return; }
-  if (forbidden.indexOf(port) !== -1) { hkNotice(uiT('Порт занят службой платы — выберите другой'), false); return; }
+  if (forbidden.indexOf(port) !== -1) { hkNotice(uiT('Порт занят службой платы'), false); return; }
   let changed = false;
   let failed = false;
   if (iface && iface !== d0.interface) {
@@ -649,6 +800,13 @@ function refreshHomekitI18n() {
 function hkInit() {
   if (!$('homekit-card')) return;
   document.addEventListener('visibilitychange', hkVisibilityChanged);
+  const list = $('homekit-dev-list');
+  if (list) list.addEventListener('change', hkDevListChange);
+  const det = $('homekit-devs');
+  // A summary click is the operator's own choice; the auto-open below is not.
+  const sum = det ? det.querySelector('summary') : null;
+  if (sum) sum.addEventListener('click', function () { _hkDevsTouched = true; });
+  if (typeof window.sa02mAliceOnData === 'function') window.sa02mAliceOnData(hkOnAliceData);
   // A deep link straight to #system switched tabs before this file's init ran.
   const pane = $('tab-system');
   if (pane && pane.classList.contains('active')) homekitTabInit();
@@ -663,6 +821,7 @@ window.homekitResetPairing = homekitResetPairing;
 window.homekitShowCode = homekitShowCode;
 window.homekitApplyNet = homekitApplyNet;
 window.homekitToggleSkipped = homekitToggleSkipped;
+window.homekitSaveDevices = homekitSaveDevices;
 window.homekitRefresh = hkRefresh;
 window.refreshHomekitI18n = refreshHomekitI18n;
 

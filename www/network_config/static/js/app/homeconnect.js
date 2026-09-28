@@ -54,10 +54,10 @@ const HOMECONNECT_STATE_MAP = {
 
 // `{"ok":false,"error":…}` codes (dispatch §9 + the CGI) → RU.
 const HOMECONNECT_ERROR_MAP = {
-  invalid_client_id: 'Недопустимый Client ID: 8–128 символов (латиница, цифры, _ и -)',
+  invalid_client_id: 'Недопустимый Client ID',
   not_enabled: 'Сначала включите Home Connect',
   missing_client_id: 'Сначала сохраните Client ID',
-  already_linked: 'Аккаунт уже подключён — сначала отключите его',
+  already_linked: 'Аккаунт уже подключён',
   not_installed: 'Home Connect не установлен — нужна полная установка (install.sh)',
   conf_write_failed: 'Не удалось сохранить настройки',
   homeconnect_api_failed: 'Нет ответа от платы',
@@ -596,27 +596,31 @@ function hcStateLine(d) {
   const until = hcClock(d.rate_limited_until);
   switch (st) {
     case 'not_installed': return [uiT('Нужна полная установка (install.sh)'), null];
-    case 'missing_deps': return [uiT('Не установлены компоненты Home Connect — нужна полная установка (install.sh)'), false];
-    case 'missing_client_id': return [uiT('Введите Client ID своего приложения Home Connect'), null];
+    case 'missing_deps':
+      // The conf exists but the daemon cannot read it (its read ACL is gone).
+      if (r === 'conf_unreadable') return [uiT('Нет доступа к настройкам'), false];
+      return [uiT('Нужна полная установка (install.sh)'), false];
+    case 'missing_client_id': return [uiT('Введите Client ID'), null];
     case 'unlinked':
-      if (r === 'access_denied') return [uiT('Вход отклонён на странице Home Connect'), false];
-      if (r === 'client_id_rejected') return [uiT('Home Connect не принял Client ID — проверьте его'), false];
-      if (r === 'token_store_corrupt') return [uiT('Данные входа повреждены — подключите аккаунт заново'), false];
-      return [uiT('Аккаунт не подключён — нажмите «Подключить»'), null];
-    case 'link_expired': return [uiT('Код входа истёк — нажмите «Подключить» ещё раз'), false];
+      if (r === 'access_denied') return [uiT('Вход отклонён'), false];
+      if (r === 'client_id_rejected') return [uiT('Client ID не принят'), false];
+      if (r === 'token_store_corrupt') return [uiT('Данные входа повреждены — подключите заново'), false];
+      return [uiT('Нажмите «Подключить»'), null];
+    case 'link_expired': return [uiT('Нажмите «Подключить» ещё раз'), false];
     case 'rate_limited':
-      if (r === 'daily_limit') return [uiT('Суточный лимит запросов исчерпан') + (until ? ' — ' + uiT('до') + ' ' + until : ''), false];
+      if (r === 'daily_limit') return [uiT('Суточный лимит исчерпан') + (until ? ' — ' + uiT('до') + ' ' + until : ''), false];
       return [uiT('Облако попросило подождать') + (until ? ' — ' + uiT('до') + ' ' + until : ''), false];
-    case 'offline': return [uiT('Нет связи с облаком Home Connect'), false];
-    case 'token_revoked': return [uiT('Доступ отозван — подключите аккаунт заново'), false];
+    // Also the bench case (G6): TLS completes from an RU IP, then BSH never answers.
+    case 'offline': return [uiT('BSH недоступно из этой сети'), false];
+    case 'token_revoked': return [uiT('Подключите аккаунт заново'), false];
     case 'error':
-      if (r === 'status_stale') return [uiT('Клиент не отвечает — статус устарел'), false];
-      if (r === 'token_store_insecure') return [uiT('Небезопасный файл входа — подробности в журнале sa02m-homeconnect'), false];
-      return [uiT('Ошибка клиента — подробности в журнале sa02m-homeconnect'), false];
+      if (r === 'status_stale') return [uiT('Статус устарел'), false];
+      if (r === 'token_store_insecure') return [uiT('Небезопасный файл входа — журнал sa02m-homeconnect'), false];
+      return [uiT('Журнал: sa02m-homeconnect'), false];
     default: break;
   }
-  if (r === 'stream_down') return [uiT('Нет потока событий — данные приборов могут быть устаревшими'), false];
-  if (r === 'budget_local_reached') return [uiT('Израсходовано 800 запросов из 1000 — опрос приостановлен до конца суток (UTC), события приходят'), null];
+  if (r === 'stream_down') return [uiT('Нет потока событий — данные могут устареть'), false];
+  if (r === 'budget_local_reached') return [uiT('Опрос на паузе до конца суток (UTC)'), null];
   return null;
 }
 
@@ -786,7 +790,7 @@ async function hcMutate(body, okText) {
     return d;
   }
   if (d.trigger === 'failed' || d.trigger === 'timeout') {
-    hcNotice(uiT('Настройки сохранены, но служба не ответила'), false);
+    hcNotice(uiT('Сохранено, служба не ответила'), false);
   } else if (okText) {
     hcNotice(okText, true);
   }
@@ -825,7 +829,7 @@ async function homeconnectLink() {
 }
 
 async function homeconnectUnlink() {
-  if (!window.confirm(uiT('Плата отключится от аккаунта Home Connect, приборы пропадут из MQTT. Чтобы вернуть их, понадобится войти заново.'))) return;
+  if (!window.confirm(uiT('Отключить аккаунт? Приборы пропадут из MQTT до нового входа.'))) return;
   hcClearCode();
   const d = await hcMutate({ action: 'unlink' }, uiT('Аккаунт отключён'));
   if (d && d.ok) hcFastPoll(function (s) { return s.linked !== true; });

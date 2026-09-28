@@ -1061,6 +1061,182 @@ async function runInventoryHang(browser, base) {
   return 1;
 }
 
+/* ── Phase 3 editor additions (1.0.6.57) ────────────────────────────────────
+   Home Connect appliances in the picker and the kinds that bind them with the
+   right semantics, the «Кнопка» kind with its press-counter hint and the O5
+   Alice default, the thermostat setpoint kind — asserted from the real
+   `upsert_device` POST (the wire), in both themes, at a wide viewport and at
+   500 px. Served from its own inventory so the passes above keep theirs.
+     * the HC card: the appliance name, «Home Connect · <brand>», read-only
+       channels («чтение»), text controls never offered;
+     * a «Переключатель» row picked onto an HC switch control becomes
+       «Состояние (только чтение)» and saves `writable: false`; `door_open`
+       becomes «Открытие» (event open, opened/closed);
+     * a NEW device led by «Кнопка» starts hidden from Alice with the one-line
+       hint; the hint below the rows shows for a DI without press counters and
+       hides for one that has them;
+     * «Уставка термостата» saves a 5–35 °C celsius range. */
+const HC_ID = 'hc-bosch-sms6zci49e-68a40e000001';
+const HC_CH = (tag, title, group) => ({ tag, topic: '/devices/' + HC_ID + '/controls/' + tag, title, rw: 'r', enabled: true, sub: [] });
+const P3_MOD = 'mr02m-COM2-5';
+const P3_DI = (n, counters) => ({
+  tag: 'di_' + n, topic: '/devices/' + P3_MOD + '/controls/di_' + n, title: 'DI' + n, rw: 'r', enabled: true,
+  sub: [{ tag: 'di_' + n + '_count', topic: '/devices/' + P3_MOD + '/controls/di_' + n + '_count', title: 'DI' + n + ': счётчик импульсов', rw: 'r', enabled: true, sub: [] }]
+    .concat(counters ? [{ tag: 'di_' + n + '_short', topic: '/devices/' + P3_MOD + '/controls/di_' + n + '_short', title: 'DI' + n + ': короткие нажатия', rw: 'r', enabled: true, sub: [] }] : []),
+});
+const P3_INVENTORY = {
+  ok: true, source: '/etc/sa02m-modbus-mqtt.yaml', count: 2,
+  devices: [
+    { id: P3_MOD, name: '', type: 'mr02m', model: '14DI', model_ru: '14ДИ', model_source: '', yaml_model: '',
+      port: 'COM2', address: 5,
+      channels: { di: [P3_DI(1, true), P3_DI(2, false)], do: [], ai: [], ao: [], other: [], diag: [] } },
+    { id: HC_ID, name: 'Посудомойка', type: 'homeconnect', model: 'Home Connect', model_ru: '', model_source: '',
+      yaml_model: '', brand: 'Bosch', appliance_type: 'Dishwasher', port: '', address: null,
+      channels: { di: [], do: [], ai: [], ao: [],
+        other: [HC_CH('door_open', 'Дверь открыта'), HC_CH('running', 'Работает'), HC_CH('finished', 'Программа завершена')],
+        diag: [HC_CH('connected', 'На связи')] } },
+  ],
+};
+
+async function runPhase3Editor(browser, base, theme, vp) {
+  const tag = `${theme} ${vp.width}px`;
+  const ctx = await browser.newContext({ viewport: { width: vp.width, height: vp.height } });
+  await ctx.addCookies([{ name: 'session_token', value: 'test', domain: '127.0.0.1', path: '/' }]);
+  const page = await ctx.newPage();
+  const errors = [];
+  page.on('pageerror', (e) => errors.push(String(e)));
+  const saved = [];
+  await page.route('**/cgi-bin/**', (r) => {
+    const req = r.request();
+    const url = req.url();
+    if (/sa02m_alice_api\.cgi/.test(url) && req.method() === 'POST') {
+      let sent = null;
+      try { sent = JSON.parse(req.postData() || 'null'); } catch { sent = null; }
+      if (sent && sent.action === 'upsert_device') {
+        saved.push(sent.device);
+        return r.fulfill({ status: 200, contentType: 'application/json', body: '{"ok":true}' });
+      }
+    }
+    if (/format=inventory/.test(url)) {
+      return r.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify(P3_INVENTORY) });
+    }
+    return r.fulfill({ status: 200, contentType: 'application/json', body: stubBody(url) });
+  });
+  await page.goto(`${base}/index.html`, { waitUntil: 'load' });
+  if (theme === 'light') await page.evaluate(() => document.documentElement.setAttribute('data-theme', 'light'));
+  await page.evaluate(() => window.shOpenModal());
+  await page.waitForFunction(() => document.querySelectorAll('#sh-rows .sh-bind-row').length >= 1, null, { timeout: 8000 });
+  await page.waitForTimeout(200);
+  console.log(`\n[${tag}] Phase 3 editor — Home Connect, «Кнопка», thermostat`);
+
+  const setKind = (i, kind) => page.evaluate(([idx, k]) => {
+    const sel = document.querySelectorAll('#sh-rows .sh-bind-row .sh-row-kind')[idx];
+    sel.value = k;
+    sel.dispatchEvent(new Event('change', { bubbles: true }));
+  }, [i, kind]);
+  const kindOf = (i) => page.evaluate((idx) => document.querySelectorAll('#sh-rows .sh-bind-row .sh-row-kind')[idx].value, i);
+  const waitSave = async (n) => {
+    for (let k = 0; k < 80 && saved.length < n; k++) await page.waitForTimeout(50);
+    return saved.length >= n;
+  };
+
+  const opts = await page.evaluate(() => [...document.querySelectorAll('#sh-rows .sh-bind-row .sh-row-kind option')]
+    .map((o) => [o.value, o.textContent.trim()]));
+  const has = (v, t) => opts.some((o) => o[0] === v && o[1] === t);
+  check(has('open', 'Открытие') && has('state_ro', 'Состояние (только чтение)') && has('button', 'Кнопка')
+    && has('thermostat_setpoint', 'Уставка термостата'),
+    `${tag}: the four new kinds are offered (${opts.map((o) => o[0]).join(',')})`);
+
+  // Home Connect: the card, then two picks that retype the row.
+  await setKind(0, 'switch');
+  await openPicker(page, 0);
+  const card = await page.evaluate((id) => {
+    const head = document.querySelector('.sh-pick-dev[data-id="' + id + '"] button[data-act="dev"]');
+    if (!head) return null;
+    head.click();
+    const dev = document.querySelector('.sh-pick-dev[data-id="' + id + '"]');
+    return {
+      title: (dev.querySelector('.sh-pick-dev-title') || {}).textContent || '',
+      sub: (dev.querySelector('.sh-pick-dev-sub') || {}).textContent || '',
+      rw: [...dev.querySelectorAll('.sh-pick-ch-rw')].map((x) => x.textContent.trim()),
+      topics: [...dev.querySelectorAll('button[data-act="ch"]')].map((b) => b.getAttribute('data-topic').split('/').pop()),
+    };
+  }, HC_ID);
+  check(!!card && card.title === 'Посудомойка' && /Home Connect · Bosch/.test(card.sub),
+    `${tag}: the appliance card names it and its brand (${card && card.title} | ${card && card.sub})`);
+  check(!!card && card.rw.length >= 3 && card.rw.every((x) => x === 'чтение'),
+    `${tag}: every appliance channel is read-only (${card && card.rw.join(',')})`);
+  await page.locator('#sh-pick-modal .mqtt-modal-dialog').screenshot({ path: join(SHOTS, `sh-pick-hc-${theme}-${vp.width}.png`) }).catch(() => {});
+  await page.evaluate(() => window.shPickClose());
+  await pickTopic(page, '/devices/' + HC_ID + '/controls/running', 0);
+  check(await kindOf(0) === 'state_ro', `${tag}: «Переключатель» picked onto an appliance switch becomes read-only (${await kindOf(0)})`);
+  await page.evaluate(() => window.shAddRow());
+  await setKind(1, 'switch');
+  await pickTopic(page, '/devices/' + HC_ID + '/controls/door_open', 1);
+  check(await kindOf(1) === 'open', `${tag}: door_open becomes «Открытие» (${await kindOf(1)})`);
+  await page.fill('#sh-dev-name', 'Посудомойка');
+  await page.click('#sh-dev-save');
+  const got1 = await waitSave(1);
+  const dev1 = got1 ? saved[0] : null;
+  const cap = dev1 && (dev1.capabilities || [])[0];
+  const prop = dev1 && (dev1.properties || [])[0];
+  check(!!cap && cap.type === 'devices.capabilities.on_off' && cap.writable === false && /controls\/running$/.test(cap.mqtt),
+    `${tag}: the read-only state saves writable:false (${JSON.stringify(cap)})`);
+  check(!!prop && prop.type === 'devices.properties.event' && prop.parameters.instance === 'open'
+    && JSON.stringify(prop.parameters.events) === JSON.stringify([{ value: 'opened' }, { value: 'closed' }]),
+    `${tag}: the door saves an open event (${JSON.stringify(prop)})`);
+
+  // «Кнопка»: the O5 default and the counter hint.
+  await page.waitForTimeout(250);
+  await page.evaluate(() => window.shCancelEdit());
+  await setKind(0, 'button');
+  const o5 = await page.evaluate(() => ({
+    exported: document.getElementById('sh-dev-export').checked,
+    hint: !document.getElementById('sh-export-hint').hidden,
+  }));
+  check(!o5.exported && o5.hint, `${tag}: a new «Кнопка» device starts hidden from Alice with the hint (checked=${o5.exported}, hint=${o5.hint})`);
+  await pickTopic(page, '/devices/' + P3_MOD + '/controls/di_2', 0);
+  const noCounters = await page.evaluate(() => { const h = document.getElementById('sh-btn-hint'); return !!h && !h.hidden && h.getClientRects().length > 0; });
+  check(noCounters, `${tag}: a DI without press counters shows «Вход не в режиме «Кнопка»»`);
+  await pickTopic(page, '/devices/' + P3_MOD + '/controls/di_1', 0);
+  const withCounters = await page.evaluate(() => document.getElementById('sh-btn-hint').hidden);
+  check(withCounters, `${tag}: a DI with press counters hides the hint`);
+  const fit = await page.evaluate(() => ({ sw: document.documentElement.scrollWidth, vw: window.innerWidth }));
+  check(fit.sw <= fit.vw + 1, `${tag}: no horizontal overflow (scrollWidth ${fit.sw} vs ${fit.vw})`);
+  await page.locator('#sh-modal .mqtt-modal-dialog').screenshot({ path: join(SHOTS, `sh-modal-p3-${theme}-${vp.width}.png`) }).catch(() => {});
+  await page.fill('#sh-dev-name', 'Кнопка у двери');
+  await page.click('#sh-dev-save');
+  const got2 = await waitSave(2);
+  const dev2 = got2 ? saved[1] : null;
+  const btn = dev2 && (dev2.properties || [])[0];
+  check(!!dev2 && dev2.alice_visible === false && !!btn && btn.parameters.instance === 'button'
+    && btn.parameters.events.length === 3 && /controls\/di_1$/.test(btn.mqtt),
+    `${tag}: the button device saves hidden from Alice with a button event on di_1 (${JSON.stringify(dev2)})`);
+
+  // «Уставка термостата».
+  await page.waitForTimeout(250);
+  await page.evaluate(() => window.shCancelEdit());
+  await setKind(0, 'thermostat_setpoint');
+  const dtype = await page.evaluate(() => document.getElementById('sh-dev-type').value);
+  check(dtype === 'devices.types.thermostat', `${tag}: the thermostat kind suggests the thermostat type (${dtype})`);
+  await page.evaluate(() => {
+    const inp = document.querySelector('#sh-rows .sh-bind-row .sh-row-topic');
+    inp.value = '/devices/SA-02m/controls/AO1';
+  });
+  await page.fill('#sh-dev-name', 'Термостат');
+  await page.click('#sh-dev-save');
+  const got3 = await waitSave(3);
+  const rng = got3 ? (saved[2].capabilities || [])[0] : null;
+  check(!!rng && rng.type === 'devices.capabilities.range' && rng.parameters.instance === 'temperature'
+    && rng.parameters.unit === 'unit.temperature.celsius'
+    && JSON.stringify(rng.parameters.range) === JSON.stringify({ min: 5, max: 35, precision: 0.5 }),
+    `${tag}: the thermostat setpoint saves a 5–35 °C range (${JSON.stringify(rng)})`);
+
+  check(errors.length === 0, `${tag}: no page errors (${errors.join(' | ')})`);
+  await ctx.close();
+  return 1;
+}
+
 async function run() {
   const srv = await listen();
   const base = `http://127.0.0.1:${srv.address().port}`;
@@ -1191,6 +1367,10 @@ async function run() {
     rendered += await runInvertSave(browser, base);
     rendered += await runMqttAnchoring(browser, base);
     rendered += await runInventoryHang(browser, base);
+    for (const theme of THEMES) {
+      rendered += await runPhase3Editor(browser, base, theme, VIEWPORTS.find((v) => v.wide));
+      rendered += await runPhase3Editor(browser, base, theme, { name: 'p3-narrow', width: 500, height: 900, wide: false });
+    }
   } finally {
     await browser.close();
     srv.close();
@@ -1199,7 +1379,7 @@ async function run() {
   for (const m of matrix) console.log(`  ${m.label.padEnd(28)} ${m.cols.padEnd(14)} ${m.scrolled}`);
   if (rendered === 0) die(1, `${TAG}: ERROR — nothing was rendered; a pass without a render is not a pass`);
   if (failures) die(1, `\n${TAG}: ${failures} FAILURE(S) across ${VIEWPORTS.length} viewports × ${THEMES.length} themes`);
-  console.log(`\n${TAG}: PASS — ${assertions} assertions: the «Комнаты и устройства» panes across ${VIEWPORTS.length} viewports × ${THEMES.length} themes plus the channel picker (with a «"»-bearing topic), the invert flag's save side, the MQTT-dialog viewport anchoring and the inventory hang (${rendered} renders, ${DEVICE_COUNT} devices / ${ROOM_COUNT} rooms)`);
+  console.log(`\n${TAG}: PASS — ${assertions} assertions: the «Комнаты и устройства» panes across ${VIEWPORTS.length} viewports × ${THEMES.length} themes plus the channel picker (with a «"»-bearing topic), the invert flag's save side, the MQTT-dialog viewport anchoring, the inventory hang and the Phase 3 editor additions (× 2 themes × 2 widths) (${rendered} renders, ${DEVICE_COUNT} devices / ${ROOM_COUNT} rooms)`);
   process.exit(0);
 }
 
