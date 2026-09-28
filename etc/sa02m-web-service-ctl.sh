@@ -58,6 +58,32 @@ emit_result() {
     fi
 }
 
+# atomic_install_unit SRC DST [MODE=0644] — land a file on a LIVE path as
+# tmp beside the target → fdatasync → rename-over → dir fsync, so any instant
+# of a hard reset leaves DST OLD or NEW, never 0 bytes. A bare `install -m`
+# truncates the live path first and fills it later, and systemd reads an empty
+# unit as MASKED (bench 1.136 booted with the flasher unit masked that way,
+# 2026-09-08 — web-code-rigor.md ## System scripts). This script runs
+# standalone on the board as /bin/sh and cannot source scripts/lib.sh, so it
+# carries the update runner's atomic_install_file() shape as its own copy; the
+# list of etc/ scripts that carry one, and why each does, has one home:
+# scripts/dev/codemod-install-atomic.py. `sync -d FILE` / `sync DIR` need
+# coreutils >= 8.24 (every board runs 8.32 or 9.4). Every step is checked and
+# a failed step removes the tmp: a refused fdatasync must stop the rename (the
+# tmp may not be on disk). Gate: scripts/dev/test-nodered-ctl.sh.
+atomic_install_unit() {
+    _ai_src=$1
+    _ai_dst=$2
+    _ai_mode=${3:-0644}
+    _ai_dir=$(dirname "$_ai_dst")
+    _ai_tmp="$_ai_dst.tmp.$$"
+    mkdir -p "$_ai_dir" || return 1
+    install -m "$_ai_mode" "$_ai_src" "$_ai_tmp" || { rm -f "$_ai_tmp"; return 1; }
+    sync -d -- "$_ai_tmp" || { rm -f "$_ai_tmp"; return 1; }
+    mv -f "$_ai_tmp" "$_ai_dst" || { rm -f "$_ai_tmp"; return 1; }
+    sync -- "$_ai_dir" || return 1
+}
+
 # ── RS-485 port-lease probe (флашер держит линию?) ─────────────────────────
 # Читает poll_locked с НЕавторизованного GET /health демона sa02m-flasher —
 # союз «flock на диске ∪ активные задачи», который демон и так вычисляет.
@@ -1355,8 +1381,9 @@ nodered_install_offline() {
     nodered_fix_settings "$_nr_home"
     chown -R nodered:nodered "$_nr_home" 2>/dev/null || true
     # The unit is mandatory (nodered_payload_resolve already proved it exists),
-    # so a failed copy is a failed install, not something to swallow.
-    if ! install -m 0644 "$_nr_unit" /etc/systemd/system/nodered.service >>"$LOG" 2>&1; then
+    # so a failed copy is a failed install, not something to swallow. Landed
+    # atomically: a reset mid-copy must never leave a 0-byte (= masked) unit.
+    if ! atomic_install_unit "$_nr_unit" /etc/systemd/system/nodered.service 0644 >>"$LOG" 2>&1; then
         emit_result '{"ok":false,"error":"install_failed","id":"node-red"}'
         return 1
     fi
