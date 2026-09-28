@@ -1,6 +1,7 @@
 """The Alice DeviceRegistry under profile "homekit" — the seam HomeKit relies on
-(plan §5.2): cloud-only items dropped, no scene rows, `catalogue_items()` agrees
-with the registry's own `_items` filter. An Alice change that breaks any of it
+(plan §5.2): cloud-only items dropped, no Alice-exposed scene rows but the
+`homekit_scenes`-ticked ones attached (`HomekitSceneProfileTests`),
+`catalogue_items()` agrees with the registry's own `_items` filter. An Alice change that breaks any of it
 goes RED here (py-unit-homekit `covers` names device_registry.py)."""
 
 from __future__ import annotations
@@ -112,6 +113,44 @@ class RegistryProfileTests(unittest.TestCase):
         reg.note_mqtt("/devices/mr02m-COM3-10/meta/error", "r", retained=True)
         entry = reg.query_devices(["lamp"])[0]
         self.assertEqual(entry.get("error_code"), AC.ERR_DEVICE_UNREACHABLE)
+
+
+class HomekitSceneProfileTests(unittest.TestCase):
+    """Phase 3 C: the `homekit` profile attaches the scenes TICKED in the
+    device document (`homekit_scenes`) as `scene-hk-<sid>` — never the ones
+    marked «в Алису» (the fixture's SCENE is Alice-exposed only)."""
+
+    HK_SCENE = {"id": "s2", "name": "Ночь", "type": "scene", "enabled": True,
+                "action": [{"kind": "set", "device": "lamp", "cap": "on_off", "value": 0}]}
+
+    def _registry(self, ticked):
+        rules = copy.deepcopy(RULES)
+        rules["scenarios"].append(copy.deepcopy(self.HK_SCENE))
+        doc = copy.deepcopy(DOC)
+        doc["homekit_scenes"] = ticked
+        with mock.patch.object(scene_devices, "load_rules_doc", return_value=rules), \
+                mock.patch.object(scene_devices, "board_key", return_value="BOARD1"):
+            return DeviceRegistry(doc, profile=C.CATALOGUE_PROFILE)
+
+    def test_a_ticked_scene_is_attached_as_a_momentary_switch(self):
+        catalogue = self._registry(["s2"]).catalogue_items()
+        self.assertEqual([row[0] for row in catalogue], ["ahu", "lamp", "scene-hk-s2"])
+        proj = P.project(catalogue, {})
+        scene = [a for a in proj.accessories if a.device_id == "scene-hk-s2"][0]
+        self.assertEqual([(s.row_ids, s.service) for s in scene.services], [(("M18",), "Switch")])
+        self.assertEqual(scene.services[0].bindings[0].rule, P.RULE_MOMENTARY)
+
+    def test_an_alice_exposed_scene_is_never_attached(self):
+        ids = [row[0] for row in self._registry(["s2"]).catalogue_items()]
+        self.assertFalse(any(i.startswith(scene_devices.SCENE_ID_PREFIX + "BOARD1") for i in ids))
+        self.assertNotIn("scene-hk-s1", ids)
+        # ... and ticking the Alice-exposed one attaches it on its OWN tick only.
+        ids = [row[0] for row in self._registry(["s1"]).catalogue_items()]
+        self.assertIn("scene-hk-s1", ids)
+
+    def test_the_catalogue_profile_and_prefix_are_pinned_to_the_alice_homes(self):
+        self.assertEqual(C.CATALOGUE_PROFILE, AC.PROFILE_HOMEKIT)
+        self.assertEqual(C.SCENE_ID_PREFIX, scene_devices.HOMEKIT_SCENE_ID_PREFIX)
 
 
 if __name__ == "__main__":

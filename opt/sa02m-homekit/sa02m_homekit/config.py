@@ -50,14 +50,30 @@ class BridgeConfig:
     port: int = C.DEFAULT_PORT
     # Values in the file that were refused and replaced by the default.
     warnings: List[str] = field(default_factory=list)
+    # The file EXISTS but could not be read (EACCES: the daemon's read ACL is
+    # gone) — never the same as disabled (main.py: `conf_unreadable`).
+    unreadable: bool = False
 
 
 def load(path: Optional[str] = None) -> BridgeConfig:
-    """Read the conf. Absent file / section ⇒ defaults (disabled)."""
+    """Read the conf. Absent file / section ⇒ defaults (disabled); a file
+    that exists but cannot be opened or read ⇒ `unreadable` (configparser's
+    own read() would skip it silently and report «disabled»)."""
+    target = path or C.CONF_FILE
+    try:
+        with open(target, encoding="utf-8") as fh:
+            text = fh.read()
+    except FileNotFoundError:
+        return BridgeConfig()
+    except UnicodeDecodeError as exc:
+        return BridgeConfig(warnings=["unreadable conf: %s" % exc])
+    except OSError as exc:
+        return BridgeConfig(unreadable=True,
+                            warnings=["unreadable conf: %s" % (exc.strerror or exc)])
     cfg = configparser.ConfigParser()
     try:
-        cfg.read(path or C.CONF_FILE, encoding="utf-8")
-    except (OSError, configparser.Error) as exc:
+        cfg.read_string(text, source=target)
+    except configparser.Error as exc:
         return BridgeConfig(warnings=["unreadable conf: %s" % exc])
     out = BridgeConfig()
     if not cfg.has_section(SECTION):

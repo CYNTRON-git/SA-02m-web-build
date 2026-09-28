@@ -65,11 +65,19 @@ REASON_IDENTITY_REGENERATED = "identity_regenerated"
 REASON_STATE_CORRUPT = "state_corrupt_regenerated"
 REASON_PAIR_SETUP_LOCKED = "pair_setup_locked"
 REASON_STATUS_STALE = "status_stale"
+# With `missing_deps`: a sibling package (sa02m_alice) is older than this
+# bridge — a symbol from peers.REQUIRED_PEER_SYMBOLS is absent.
+REASON_PEER_OUTDATED = "peer_package_outdated"
+# With `missing_deps`: the conf exists but the daemon cannot read it (its read
+# ACL is gone, docs/contracts/homekit-bridge.md §13) — not «disabled».
+REASON_CONF_UNREADABLE = "conf_unreadable"
 REASONS = (
     REASON_IDENTITY_REGENERATED,
     REASON_STATE_CORRUPT,
     REASON_PAIR_SETUP_LOCKED,
     REASON_STATUS_STALE,
+    REASON_PEER_OUTDATED,
+    REASON_CONF_UNREADABLE,
 )
 # States a LIVE process re-writes every STATUS_HEARTBEAT_S. The others are
 # written once by a process that then exits (or by the trigger), so their age
@@ -104,6 +112,37 @@ AID_FIRST = 2
 NAME_MAX = 64
 SKIPPED_CAP = 200
 MANUFACTURER = "CYNTRON"
+
+# CO₂ (row M15): CarbonDioxideDetected rises at the threshold and falls only
+# below threshold − hysteresis — iOS notifies on every rise, so sensor noise
+# around the threshold must not flap. The document may override the threshold
+# per item (`co2_alarm_ppm`, 400–5000, sa02m_alice config/models.py); this is
+# the one home of the default (docs/contracts/homekit-bridge.md §3).
+CO2_ALARM_DEFAULT_PPM = 1000
+# Copy of the validator's bounds (config/models.py CO2_ALARM_MIN/MAX_PPM),
+# pinned equal by tests/test_projection.py: a value outside falls back here.
+CO2_ALARM_MIN_PPM = 400
+CO2_ALARM_MAX_PPM = 5000
+CO2_HYSTERESIS_PPM = 100
+CO2_LEVEL_MAX = 100000.0
+
+# Buttons (row M16): MR-02m «Кнопка»-mode press counters (uint16 input
+# registers). The guards are the rules engine's (sa02m_rules/engine.py
+# BUTTON_COUNTER_MAX / BUTTON_COUNTER_WRAP_SLACK — duplicated on purpose, the
+# bridge must not depend on the rules runtime; pinned equal by tests).
+BUTTON_COUNTER_MAX = 65535
+BUTTON_COUNTER_WRAP_SLACK = 8
+# Press events waiting for the next flush onto the HAP loop; past this the
+# oldest are dropped (logged) — a stalled loop must not grow memory.
+EVENT_QUEUE_MAX = 64
+
+# Scenes (row M18): a momentary switch — after a run the bridge sets On back to
+# false itself, this long after the successful write (on the HAP loop).
+SCENE_RESET_S = 1.0
+# Every scene device id starts so (sa02m_alice config/scene_devices.py
+# HOMEKIT_SCENE_ID_PREFIX, pinned equal by tests): an unreadable store retires
+# none of them.
+SCENE_ID_PREFIX = "scene-hk-"
 
 # ── Timing ─────────────────────────────────────────────────────────────────
 FLUSH_S = 0.5

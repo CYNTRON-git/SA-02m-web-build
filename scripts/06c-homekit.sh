@@ -8,6 +8,8 @@
 #
 # Order is a floor, each step BEFORE the one that consumes it:
 #   Alice package present (the bridge imports sa02m_alice.DeviceRegistry)
+#   → peer packages carry every symbol this bridge imports (refreshed from
+#     this tree through their own modules, else STOP before touching anything)
 #   → apt python3-venv/paho → system user → venv from the hash-pinned lock
 #   → package tree → dirs (tmpfiles) → conf seed → capture → unit → apply
 #   (app off) → status fallback → trigger + sudoers → CGI → JS.
@@ -34,6 +36,10 @@ VENV_DIR=/opt/sa02m-homekit-venv
 WHEELHOUSE=/opt/vendor-installers/homekit
 HK_USER=sa02m-homekit
 UNIT=sa02m-homekit.service
+# The unit's import roots for the sibling packages (PYTHONPATH in the unit;
+# the rules root is scene_devices.RULES_DIR's default).
+HK_ALICE_DIR=/opt/sa02m-alice
+HK_RULES_DIR=/opt/sa02m-rules
 
 if [ -n "${SA02M_ROOTFS_BUILD:-}" ]; then
     log WARN "[06c-homekit] сборка образа: HomeKit не входит в заводской образ (устанавливается интегратором) — пропуск"
@@ -43,7 +49,7 @@ fi
 # ── Shared dependency first: the Alice package ─────────────────────────────
 # The bridge builds its accessories from sa02m_alice's DeviceRegistry over the
 # one device document; without the package the daemon cannot import at all.
-if [ ! -d /opt/sa02m-alice/sa02m_alice ]; then
+if [ ! -d "$HK_ALICE_DIR/sa02m_alice" ]; then
     log WARN "[06c-homekit] HomeKit needs Alice package: /opt/sa02m-alice отсутствует (06-alice.sh не выполнен) — HomeKit не установлен"
     exit 0
 fi
@@ -51,6 +57,85 @@ if [ ! -d "$OPT_SRC/sa02m_homekit" ]; then
     log WARN "[06c-homekit] исходники $OPT_SRC/sa02m_homekit не найдены — пропуск"
     exit 0
 fi
+
+# >>> peer-probe  (extracted and run by opt/sa02m-homekit/tests/test_peers.py)
+# ── Peer packages: every symbol this bridge imports ────────────────────────
+# A www-only update (scripts/update-www-only.sh) or an older full install can
+# leave /opt/sa02m-alice (or /opt/sa02m-rules) a release behind this bridge:
+# the daemon then died on an absent method (bench 1.135, 2026-09-28). The list
+# has ONE home — sa02m_homekit.peers.REQUIRED_PEER_SYMBOLS — probed with the
+# unit's interpreter (the venv once it exists, else the python3 it is built
+# from) and the unit's import roots; `-I` so neither the operator's cwd nor an
+# inherited PYTHONPATH can answer for the installed packages. Outdated ⇒ the
+# peer is refreshed from THIS tree through its own module (idempotent; it
+# restarts only its active units, docs/contracts/installer-refresh-policy.md),
+# unless the operator skipped that module; still outdated ⇒ stop here, before
+# the new bridge lands next to the old package. Rules are optional (§1 of the
+# contract: no rules stack = no scenes), so an old rules package only warns.
+HK_PEER_OUT=""
+hk_peer_probe() {
+    local py=python3 rc=0
+    [ -x "$VENV_DIR/bin/python" ] && py="$VENV_DIR/bin/python"
+    HK_PEER_OUT=$(timeout 60 "$py" -I - "$OPT_SRC" "$HK_ALICE_DIR" "$HK_RULES_DIR" 2>&1 <<'PY'
+import sys
+sys.path[:0] = [sys.argv[1], sys.argv[2]]
+from sa02m_homekit import peers
+sys.exit(peers.cli(["--rules-dir", sys.argv[3]]))
+PY
+) || rc=$?
+    return "$rc"
+}
+hk_peer_log() {
+    local line
+    while IFS= read -r line; do
+        [ -n "$line" ] && log "$1" "[06c-homekit]   $line"
+    done <<<"$HK_PEER_OUT"
+}
+hk_peer_rc=0
+hk_peer_probe || hk_peer_rc=$?
+if [ "$hk_peer_rc" = 10 ] || [ "$hk_peer_rc" = 11 ]; then
+    log WARN "[06c-homekit] установленные пакеты старше моста HomeKit:"
+    hk_peer_log WARN
+    case "$HK_PEER_OUT" in
+        *"outdated sa02m_alice"*)
+            if [ "${SA02M_SKIP_ALICE:-0}" != 1 ] && [ -f "$SCRIPT_DIR/06-alice.sh" ] \
+               && [ -d "$BASE_DIR/opt/sa02m-alice/sa02m_alice" ]; then
+                log INFO "[06c-homekit] обновляю пакет Алисы из этого дерева (06-alice.sh)"
+                bash "$SCRIPT_DIR/06-alice.sh" || log WARN "[06c-homekit] 06-alice.sh завершился с ошибкой"
+            fi ;;
+    esac
+    case "$HK_PEER_OUT" in
+        *"outdated-optional sa02m_rules"*)
+            if [ "${SA02M_SKIP_RULES:-0}" != 1 ] && [ -f "$SCRIPT_DIR/06b-rules.sh" ] \
+               && [ -d "$BASE_DIR/opt/sa02m-rules/sa02m_rules" ]; then
+                log INFO "[06c-homekit] обновляю пакет сценариев из этого дерева (06b-rules.sh)"
+                bash "$SCRIPT_DIR/06b-rules.sh" || log WARN "[06c-homekit] 06b-rules.sh завершился с ошибкой"
+            fi ;;
+    esac
+    hk_peer_rc=0
+    hk_peer_probe || hk_peer_rc=$?
+fi
+case "$hk_peer_rc" in
+    0) log OK "[06c-homekit] пакеты Алисы и сценариев совместимы с мостом" ;;
+    10)
+        hk_peer_log ERR
+        log ERR "[06c-homekit] пакет Алисы старше моста HomeKit — обновите пакет Алисы: запустите 06-alice.sh или полную установку (install.sh --refresh). HomeKit не изменён"
+        exit 1 ;;
+    11)
+        hk_peer_log WARN
+        log WARN "[06c-homekit] пакет сценариев старше моста — сцены в HomeKit недоступны; обновите: 06b-rules.sh или полная установка" ;;
+    12)
+        hk_peer_log WARN
+        log WARN "[06c-homekit] пакет Алисы не импортируется — мост покажет «нет компонентов»; нужна полная установка (install.sh)" ;;
+    2)
+        hk_peer_log ERR
+        log ERR "[06c-homekit] список символов моста пуст или испорчен (sa02m_homekit/peers.py) — проверка ничего не доказывает, установка остановлена"
+        exit 1 ;;
+    *)
+        hk_peer_log WARN
+        log WARN "[06c-homekit] проверка пакетов не выполнена (код $hk_peer_rc) — мост проверит их сам при запуске" ;;
+esac
+# <<< peer-probe
 
 # ── System packages ────────────────────────────────────────────────────────
 python3 -c "import paho.mqtt" 2>/dev/null || sa02m_pkg_install_tier optional python3-paho-mqtt
@@ -60,10 +145,11 @@ python3 -c "import ensurepip, venv" 2>/dev/null || sa02m_pkg_install_tier option
 python3 -c "import _cffi_backend" 2>/dev/null || sa02m_pkg_install_tier optional python3-cffi-backend
 
 # ── Unprivileged system user (D11) ─────────────────────────────────────────
-# No shell, no home. www-data as a supplementary group lets the daemon read the
-# device document (0660 root:www-data) and hand the web card its 0640 /run
-# files; www-data is NOT in the daemon's group, so it never reads the pairing
-# store (promise P4).
+# No shell, no home, and in NO other group: www-data would let this LAN
+# listener read the panel credentials, the gateway YAML and every Alice conf
+# (audit 2026-09-28). What it needs instead lands with the tmpfiles conf below
+# (setgid /run dir, read ACLs); gate `daemon-least-privilege`. www-data is NOT
+# in the daemon's group either, so it never reads the pairing store (P4).
 if ! id -u "$HK_USER" >/dev/null 2>&1; then
     if useradd --system --user-group --no-create-home --home-dir /nonexistent \
             --shell /usr/sbin/nologin --comment "SA-02m HomeKit bridge" "$HK_USER" >>"$LOG_FILE" 2>&1; then
@@ -73,11 +159,17 @@ if ! id -u "$HK_USER" >/dev/null 2>&1; then
         exit 0
     fi
 fi
+# Upgrade: a board installed before 1.0.6.57's least-privilege change has the
+# account in www-data — take it out (the running bridge picks the new groups up
+# at the restart `sa02m_svc_apply` does below).
 _hk_groups=$(id -nG "$HK_USER" 2>/dev/null) || _hk_groups=""
 case " $_hk_groups " in
-    *" www-data "*) : ;;
-    *) usermod -a -G www-data "$HK_USER" >>"$LOG_FILE" 2>&1 \
-           || log WARN "[06c-homekit] не удалось добавить $HK_USER в группу www-data — мост не прочитает документ устройств" ;;
+    *" www-data "*)
+        if gpasswd -d "$HK_USER" www-data >>"$LOG_FILE" 2>&1; then
+            log OK "$HK_USER исключён из группы www-data"
+        else
+            log WARN "[06c-homekit] не удалось исключить $HK_USER из группы www-data — мост читает лишнее (gpasswd -d $HK_USER www-data)"
+        fi ;;
 esac
 
 # ── Venv from the hash-pinned lock (D1) — BEFORE the code that imports it ───
@@ -110,14 +202,19 @@ chmod -R u=rwX,go=rX "$INSTALL_DIR"
 install -m 0644 -o root -g root \
     "$OPT_SRC/tmpfiles.d/sa02m-homekit.conf" /etc/tmpfiles.d/sa02m-homekit.conf
 sed -i 's/\r$//' /etc/tmpfiles.d/sa02m-homekit.conf
+# It also carries the daemon's read ACLs (its conf, the Alice device document):
+# only systemd-tmpfiles applies them — the unit re-applies them before every
+# start too (ExecStartPre), so a restore that recreates a file heals itself.
 if command -v systemd-tmpfiles >/dev/null 2>&1; then
     systemd-tmpfiles --create /etc/tmpfiles.d/sa02m-homekit.conf >>"$LOG_FILE" 2>&1 \
-        || log WARN "[06c-homekit] systemd-tmpfiles --create вернул ошибку — каталоги создаю напрямую"
+        || log WARN "[06c-homekit] systemd-tmpfiles --create вернул ошибку — каталоги создаю напрямую, права чтения (ACL) проверьте: getfacl /etc/sa02m-alice"
+else
+    log WARN "[06c-homekit] нет systemd-tmpfiles — права чтения моста (ACL) не выданы, мост не прочитает свой конфиг и документ устройств"
 fi
 # Same modes as the tmpfiles entries (idempotent re-assert; tmpfiles may be
-# absent in a stripped rootfs).
+# absent in a stripped rootfs). chmod keeps the ACL entries (it sets the mask).
 install -d -m 0700 -o "$HK_USER" -g "$HK_USER" /var/lib/sa02m-homekit
-install -d -m 0750 -o "$HK_USER" -g www-data /run/sa02m-homekit
+install -d -m 2750 -o "$HK_USER" -g www-data /run/sa02m-homekit
 install -d -m 0770 -o root -g www-data /etc/sa02m-homekit
 
 # ── Conf seed — only if absent (the card owns it afterwards) ───────────────
