@@ -149,7 +149,7 @@ OTA и офлайн-пакет **копируют файлы по карте н�
 `etc/tmpfiles.d/sa02m-alice.conf`, грант `etc/sudoers.d/sa02m-alice`, CGI и
 `static/js/app/alice.js`) по карте
 проходит, поэтому OTA **обновляет уже установленную** Алису. Но **установить**
-её OTA не может: python-socketio, каталоги `/etc/sa02m-alice` (0770 root:www-data),
+её OTA не может: python-socketio, каталоги `/etc/sa02m-alice` (0771 root:www-data),
 `/var/lib/sa02m-alice` (0700 www-data), `/run/sa02m-alice` и засевка
 `/etc/sa02m-alice/*.conf` живут только в `scripts/06-alice.sh`.
 
@@ -817,20 +817,32 @@ ls /run/sa02m-homekit/                       # пусто: мост не зап�
 curl -s -b "session_token=<токен>" http://127.0.0.1/cgi-bin/sa02m_homekit_api.cgi   # "state":"disabled" (из конфига)
 /opt/sa02m-homekit-venv/bin/python -c 'import pyhap.accessory_driver, segno; print("ok")'
 stat -c '%a %U:%G %n' /var/lib/sa02m-homekit /run/sa02m-homekit \
-      /etc/sa02m-homekit /etc/sa02m-homekit/sa02m-homekit.conf
+      /etc/sa02m-homekit /etc/sa02m-homekit/sa02m-homekit.conf \
+      /etc/sa02m-alice /etc/sa02m-alice/sa02m-alice-devices.conf
 # 700 sa02m-homekit:sa02m-homekit · 2750 sa02m-homekit:www-data ·
-# 770 root:www-data · 660 root:www-data
-id -nG sa02m-homekit                         # sa02m-homekit — без www-data
-getfacl -cp /etc/sa02m-homekit /etc/sa02m-alice/sa02m-alice-devices.conf | grep sa02m-homekit
-# user:sa02m-homekit:--x · default:user:sa02m-homekit:r-- · user:sa02m-homekit:r--
-sudo -u sa02m-homekit cat /etc/sa02m_web.env  # Permission denied
+# 2750 www-data:sa02m-homekit · 640 www-data:sa02m-homekit ·
+# 771 root:www-data · 640 www-data:sa02m-alice-devices
+id -nG sa02m-homekit                         # sa02m-homekit sa02m-alice-devices — без www-data
+getent group sa02m-alice-devices             # …:sa02m-homekit,www-data — ровно два члена
+runuser -u sa02m-homekit -- test -r /etc/sa02m-homekit/sa02m-homekit.conf && echo ok
+runuser -u sa02m-homekit -- test -r /etc/sa02m-alice/sa02m-alice-devices.conf && echo ok
+runuser -u sa02m-homekit -- test -r /etc/sa02m_web.env || echo "нет доступа — так и должно быть"
+/usr/local/sbin/sa02m-daemon-access.sh check homekit   # «доступ sa02m-homekit подтверждён: …», код 0
 ```
 
-Мост не входит в группу `www-data` (она читает пароль панели): файлы для
-карточки получают группу от setgid-каталога `/run/sa02m-homekit`, свой конфиг и
-документ устройств мост читает по ACL из `/etc/tmpfiles.d/sa02m-homekit.conf`
-(юнит переприменяет его перед каждым стартом). Нет вывода `getfacl` — нет пакета
-`acl`, проверка тогда — `sudo -u sa02m-homekit cat` этих двух файлов.
+Мост не входит в группу `www-data` (она читает пароль панели). Чтение выдано
+группами, без ACL: каталог конфига — `www-data` с setgid-группой моста,
+документ устройств — через группу `sa02m-alice-devices`; права и доступ
+установщик проверяет последним шагом (`sa02m-daemon-access.sh apply homekit`,
+провал — строка «ОШИБКА: … не может читать <файл>» и выход 1), юнит — перед
+каждым стартом (провал — в `journalctl -u sa02m-homekit`, на карточке «Нет
+доступа к настройкам»). Лечение: повторить `scripts/06c-homekit.sh` или
+`install.sh --refresh` — оба идемпотентно чинят и плату со старой ACL-выдачей
+(9cf41b5), и плату, где мост ещё в `www-data`. Режимы файлов чинит и простой
+перезапуск моста (или `sudo /usr/local/sbin/sa02m-daemon-access.sh apply
+homekit`), но группу `sa02m-alice-devices` и членство в ней создаёт только
+`06c` — OTA их не несёт. Одна проверка на всё — `check` выше (от имени моста
+и `www-data`, с `timeout`).
 
 После «Включить» на карточке «Управление → Apple HomeKit»:
 
@@ -894,11 +906,16 @@ curl -s -b "session_token=<токен>" http://127.0.0.1/cgi-bin/sa02m_homeconne
 stat -c '%a %U:%G %n' /var/lib/sa02m-homeconnect /run/sa02m-homeconnect \
       /etc/sa02m-homeconnect /etc/sa02m-homeconnect/sa02m-homeconnect.conf
 # 700 sa02m-homeconnect:sa02m-homeconnect · 2750 sa02m-homeconnect:www-data ·
-# 770 root:www-data · 660 root:www-data
+# 2750 www-data:sa02m-homeconnect · 640 www-data:sa02m-homeconnect
 id -nG sa02m-homeconnect                     # sa02m-homeconnect — без www-data
-sudo -u sa02m-homeconnect cat /etc/sa02m-homeconnect/sa02m-homeconnect.conf >/dev/null && echo "конфиг читается"
-sudo -u sa02m-homeconnect cat /etc/sa02m_web.env   # Permission denied
+runuser -u sa02m-homeconnect -- test -r /etc/sa02m-homeconnect/sa02m-homeconnect.conf && echo "конфиг читается"
+runuser -u sa02m-homeconnect -- test -r /etc/sa02m_web.env || echo "нет доступа — так и должно быть"
+/usr/local/sbin/sa02m-daemon-access.sh check homeconnect   # «доступ sa02m-homeconnect подтверждён: …», код 0
 ```
+
+Провал проверки при установке останавливает `06d-homeconnect.sh` строкой
+«ОШИБКА: … не может читать <файл>»; лечение и смысл те же, что у моста
+HomeKit выше.
 
 После «Client ID → Включить → Подключить» и входа на странице BSH:
 
