@@ -459,7 +459,12 @@ sa02m_homeconnect`, `Environment=PYTHONPATH=/opt/sa02m-homeconnect`. `www-data`
   не должен видеть плату, а плата — его приборы): конфиг к шаблону
   (`enabled = false`) первым, затем остановка юнита — демон при остановке с
   выключенным конфигом удаляет retained-топики приборов, — затем очистка
-  содержимого `/var/lib/sa02m-homeconnect/` (включая `.hc-*`).
+  содержимого `/var/lib/sa02m-homeconnect/` (включая `.hc-*`). Очистка —
+  и входа, и пар моста HomeKit (`homekit-bridge.md` §14) — идёт только после
+  того, как остановлены **оба** юнита; отказ остановки любого — `E_APPLY`,
+  конфиги откатываются, не стёрто ничего, а юниты, работавшие до сброса,
+  после восстановления конфигов запускаются снова (по мере сил; не работавший
+  до сброса остаётся остановленным).
 - **Снятие образа — СТЕРЕТЬ**: содержимое `/var/lib/sa02m-homeconnect/`
   (включая `.hc-*`), `enabled = false` в конфиге, юнит выключен — на всех пяти
   площадках `image-identity-reset.md` §4.
@@ -476,7 +481,7 @@ sa02m_homeconnect`, `Environment=PYTHONPATH=/opt/sa02m-homeconnect`. `www-data`
 `restart_if_active` раннера и `scripts/pack-offline-update.py`; веб-бэкап —
 `etc/sa02m-web-backup.sh` (только конфиг) и `etc/sa02m-restore-backup.sh`
 (конфиг, без перезапуска юнита); factory reset —
-`wipe_homeconnect_signin()` в `etc/sa02m-factory-reset-runner.sh`; снятие образа
+`erase_owner_state()` в `etc/sa02m-factory-reset-runner.sh`; снятие образа
 — `wipe_homeconnect_identity()` на пяти площадках
 (`image-identity-reset.md` §8); «Пуск»/«Стоп» каталога служб —
 `homeconnect_sync_enabled` в `etc/sa02m-web-service-ctl.sh` (строка
@@ -536,7 +541,7 @@ sa02m_homeconnect`, `Environment=PYTHONPATH=/opt/sa02m-homeconnect`. `www-data`
 | `update-conditional-restart` (прогон 8) | `sa02m-homeconnect` в `restart_if_active` онлайн и офлайн, ни в одном `restart[]`; работающий перезапускается, остановленный только опрашивается | действует |
 | `alice-conf-homes` (разделы 13–15) | конфиг и хранилище токенов во всех четырёх списках «не разворачивать»; бэкап несёт конфиг и ни байта токенов; восстановление принимает конфиг, отвергает токены, юнит не трогает; засевка `06d` не идёт по подложенной ссылке и изолирована (`python3 -I`); tmpfiles попадает в `/etc/tmpfiles.d/` только через `06d` | действует |
 | `alice-image-identity` (часть C) | пять площадок снятия образа, `image-identity-reset.md` §8 | действует |
-| `factory-reset-runner` (C1–C7) | factory reset §12: конфиг к шаблону → остановка → очистка, отказ при неостановленном юните и подложенном конфиге, без пакета — `enabled = false` с сохранённым Client ID | действует |
+| `factory-reset-runner` (C1–C7, O1–O4) | factory reset §12: конфиг к шаблону → остановка → очистка, отказ при неостановленном юните и подложенном конфиге, без пакета — `enabled = false` с сохранённым Client ID; неостановленный клиент не стоит пар HomeKit (O1), неостановленный мост не трогает клиента (O2); откат запускает снова только работавшие до сброса юниты (O3–O4) | действует |
 | `service-ctl-policy-write` (раздел 3) | «Пуск»/«Стоп» синхронизирует `enabled` через `python3 -I`: пакет, подложенный в cwd, не импортируется от root | действует |
 
 Не проверено здесь (стенд): §14 целиком; настоящий `systemd`/`sudo`/`visudo`

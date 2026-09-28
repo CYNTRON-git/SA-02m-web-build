@@ -81,9 +81,10 @@
 # not only where the check lives (docs/agent-rules/quality-gate-rigor.md (c)).
 # The cost is that a `--touched` review run almost always includes this row —
 # minutes, not seconds: every case re-runs its WHOLE gate, so the behavioural
-# harnesses dominate (the factory-reset-runner cases alone are 10 mutations +
-# a baseline at ~27 s each, measured 2026-09-27). That is the fail-safe
-# direction, and CI runs the full set regardless.
+# harnesses dominate (each factory-reset-runner case, and its baseline, is a
+# full harness run at ~27 s, measured 2026-09-27; count them in CASES below —
+# a number written here goes stale). That is the fail-safe direction, and CI
+# runs the full set regardless.
 #
 # NOT COVERED, and why: a gate whose pins are all fail-IF-PRESENT sweeps
 # (no-retired-session-token, the negative halves of installer-svc-policy-gate)
@@ -227,6 +228,10 @@ installer-svc-policy-gate|scripts/06d-homeconnect.sh|sa02m_svc_capture "$UNIT"
 factory-reset-runner|etc/sa02m-factory-reset-runner.sh|  wipe_homeconnect_signin
 factory-reset-runner|etc/sa02m-factory-reset-runner.sh|systemctl stop "$HC_UNIT"
 factory-reset-runner|etc/sa02m-factory-reset-runner.sh|fr_safe remove-name "$HC_RUN_DIR" link.json
+factory-reset-runner|etc/sa02m-factory-reset-runner.sh|unit_stopped "$HK_UNIT" || fail E_APPLY
+factory-reset-runner|etc/sa02m-factory-reset-runner.sh|unit_stopped "$HC_UNIT" || fail E_APPLY
+factory-reset-runner|etc/sa02m-factory-reset-runner.sh|  restart_stopped_units
+factory-reset-runner|etc/sa02m-factory-reset-runner.sh|remember_if_active "$HK_UNIT"
 '
 
 command -v git >/dev/null 2>&1 || { echo "comment-mutation-proof: FAIL — git is required to build the pristine copy"; exit 1; }
