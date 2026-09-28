@@ -86,7 +86,13 @@ Validating tests: `opt/sa02m-alice/tests/test_auto_provision.py`.
 - `ce02m3-` → three `devices.types.smart_meter.electricity` (фаза A/B/C):
   voltage, amperage, power; `electricity_meter` from
   `energy_active_import_a|b|c` (`scale` 0.001 Wh→kWh) when those topics
-  exist, else total `energy_active_import` on phase C only.
+  exist, else total `energy_active_import` on phase C only. A phase device
+  MAY additionally carry `frequency` (`unit.hertz`) as a **`cloud_only`
+  float** — Yandex has no Hz instance, so it never reaches Yandex and is
+  shown on the cloud control page only; the validator admits it solely with
+  `cloud_only: true` (`CLOUD_ONLY_FLOAT_INSTANCES`; the boards' documents
+  carry it from the 1.0.6.36 auto-provision, 1.0.6.58). Validating:
+  `tests/test_cloud_only_items.py TestCePhaseFrequency`.
 - A second pass is a no-op. Lights, Carel, sirens and other bindings stay.
 - After persist the in-process registry reloads (same `apply_reload` path
   as a CGI edit). The hub catalog is the next `alice_devices_list`.

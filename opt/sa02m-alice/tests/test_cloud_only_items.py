@@ -228,3 +228,70 @@ class TestSetpointWrite(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+# ── CE-02m-3 phase devices carrying a cloud-only `frequency` (1.0.6.58) ──────
+# Bench 1.135's three «Фаза А/В/С» devices each carry a float property
+# `frequency` / `unit.hertz` with `cloud_only: true` — written by an unshipped
+# auto-provision (the 1.0.6.36 WIP tree, commit 6bc1160), whose validator also
+# admitted the instance. HEAD's validator did not, so the document could not
+# be re-saved: `upsert_device` answered `invalid_device` («invalid float
+# property instance») for a device the operator had not changed. Yandex has no
+# Hz instance, so the reading stays cloud-only; the fix admits it exactly there
+# (docs/contracts/alice-mqtt-mapping.md §Auto-provision).
+CE_TOPIC = "/devices/ce02m3-COM2-10/controls"
+
+
+def _ce_phase_device(*, frequency_cloud_only: bool = True) -> dict:
+    """«Фаза А» as the 1.136/1.135 documents carry it."""
+    freq = {"type": "devices.properties.float", "mqtt": CE_TOPIC + "/frequency",
+            "retrievable": True, "reportable": True,
+            "parameters": {"instance": "frequency", "unit": "unit.hertz"}}
+    if frequency_cloud_only:
+        freq["cloud_only"] = True
+    return {
+        "id": "ce-a",
+        "name": "Анализатор фаза А",
+        "type": "devices.types.smart_meter.electricity",
+        "room_id": None,
+        "capabilities": [],
+        "properties": [
+            {"type": "devices.properties.float", "mqtt": CE_TOPIC + "/voltage_a",
+             "retrievable": True, "reportable": True,
+             "parameters": {"instance": "voltage", "unit": "unit.volt"}},
+            {"type": "devices.properties.float", "mqtt": CE_TOPIC + "/current_a",
+             "retrievable": True, "reportable": True,
+             "parameters": {"instance": "amperage", "unit": "unit.ampere"}},
+            freq,
+        ],
+    }
+
+
+class TestCePhaseFrequency(unittest.TestCase):
+    def test_the_bench_phase_document_re_saves(self):
+        out, err = models.validate_device(_ce_phase_device())
+        self.assertIsNone(err, "a stored «Фаза А» with cloud-only frequency must validate again")
+        self.assertIsNotNone(out)
+        freq = [p for p in out["properties"] if p["parameters"]["instance"] == "frequency"]
+        self.assertEqual(len(freq), 1)
+        self.assertIs(freq[0].get("cloud_only"), True, "the flag must survive the round trip")
+
+    def test_frequency_without_the_flag_stays_refused(self):
+        # Yandex has no Hz instance: an unflagged item would reach discovery.
+        _out, err = models.validate_device(_ce_phase_device(frequency_cloud_only=False))
+        self.assertEqual(err, "invalid float property instance")
+
+    def test_frequency_never_reaches_yandex(self):
+        reg = DeviceRegistry({"rooms": [], "devices": [_ce_phase_device()]},
+                             profile=C.PROFILE_YANDEX)
+        dev = reg.discovery_devices(C.PROFILE_YANDEX)[0]
+        instances = [p["parameters"]["instance"] for p in dev["properties"]]
+        self.assertEqual(instances, ["voltage", "amperage"])
+        self.assertNotIn(CE_TOPIC + "/frequency", reg.mqtt_topics())
+
+    def test_frequency_reaches_the_cloud_profile(self):
+        reg = DeviceRegistry({"rooms": [], "devices": [_ce_phase_device()]},
+                             profile=C.PROFILE_CLOUD)
+        dev = reg.discovery_devices(C.PROFILE_CLOUD)[0]
+        instances = [p["parameters"]["instance"] for p in dev["properties"]]
+        self.assertIn("frequency", instances)
