@@ -102,6 +102,19 @@ GATEWAY_UNLINK_PATH = "/controller/unlink"
 # Socket.IO wait_timeout — a live hub's websocket+namespace handshake from
 # the ARM board is slower than a HEAD ping.
 GATEWAY_PROBE_TIMEOUT_S = 5.0
+# Status-poll reachability (docs/contracts/alice-mqtt-mapping.md §Gateway
+# reachability): a live client session answers without a probe; otherwise a
+# probe cache in VAR_DIR answers, refreshed at most once per TTL (sooner after a
+# failure, so the confirming second probe comes quickly), and a cache nobody
+# refreshed past MAX_AGE is no evidence at all. FAIL_THRESHOLD consecutive
+# failures after a success flip the answer — one slow ping never does.
+GATEWAY_PROBE_TTL_S = 60.0
+GATEWAY_PROBE_RETRY_S = 15.0
+GATEWAY_PROBE_MAX_AGE_S = 180.0
+GATEWAY_PROBE_FAIL_THRESHOLD = 2
+# A refresh lock older than this is a refresher that was killed mid-probe
+# (the probe's worst case is a HEAD + a GET retry, 2 x GATEWAY_PROBE_TIMEOUT_S).
+GATEWAY_PROBE_LOCK_STALE_S = 30.0
 # CGI `timeout` around python dispatch (sa02m_alice_api.cgi). Slowest honest
 # path is unlink / enroll: probe + gateway POST, each GATEWAY_PROBE_TIMEOUT_S;
 # a HEAD 405 retry on probe adds a third urllib wait. Import + JSON of ~15

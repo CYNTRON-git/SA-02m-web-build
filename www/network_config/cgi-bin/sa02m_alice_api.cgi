@@ -34,6 +34,10 @@ fi
 
 export PYTHONPATH="$ALICE_ROOT${PYTHONPATH:+:$PYTHONPATH}"
 export SA02M_ALICE_ETC="${SA02M_ALICE_ETC:-/etc/sa02m-alice}"
+# This CGI serves the card's 5 s status poll: a due gateway-probe refresh runs
+# detached, never inside the request (docs/contracts/alice-mqtt-mapping.md
+# §Gateway reachability; web-code-rigor: no network work on a polled endpoint).
+export SA02M_ALICE_PROBE_REFRESH=spawn
 
 METHOD="${REQUEST_METHOD:-GET}"
 

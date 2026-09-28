@@ -205,6 +205,8 @@
     'Проверить снова': 'Check again',
     'Проверка соединения': 'Checking connection',
     'Шлюз недоступен': 'Gateway unavailable',
+    'Проверка шлюза…': 'Checking gateway…',
+    'Проверяется': 'Checking',
     'Отключено': 'Disabled',
     'сертификат шлюза не доверенный': 'gateway certificate not trusted',
     'Управление привязками': 'Manage bindings',

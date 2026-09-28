@@ -764,6 +764,15 @@
       "init": "Python 3.10+ as python3, python, or py (stdlib only, no deps) — same interpreter picker as version-consistency; run on demand: python3 scripts/dev/test_sync_app_version.py"
     },
     {
+      "id": "js-unit-alice-gateway",
+      "checks": "The «Яндекс Алиса» card's gateway pill and «Шлюз» badge against the §Gateway reachability contract (docs/contracts/alice-mqtt-mapping.md): `gateway.state = checking` (no evidence yet) renders the neutral «Проверка шлюза…» / «Проверяется», never «Шлюз недоступен»; a connected client reads «Подключено»; `unreachable` and an older backend's bare `available:false` still read «Шлюз недоступен» / «Недоступен»; a TLS-trust failure keeps «сертификат шлюза не доверенный»; a disabled client reads «Отключено». aliceFriendlyStatus / aliceGatewayBadge / ALICE_STATE_MAP are cut out of the SHIPPED app/alice.js by brace matching and evaluated in a sandbox. RED observed 2026-09-28 on the pre-fix alice.js: aliceGatewayBadge absent (extraction FAIL), and aliceFriendlyStatus rendered `checking` as {text:'Шлюз недоступен', kind:'err'}.",
+      "config": null,
+      "run": "node scripts/dev/test-alice-gateway-status.mjs",
+      "beat": "build",
+      "covers": ["www/network_config/static/js/app/alice.js", "scripts/dev/test-alice-gateway-status.mjs", "docs/contracts/alice-mqtt-mapping.md"],
+      "init": "Node 18+ (stdlib only)"
+    },
+    {
       "id": "js-unit-flasher-signatures",
       "checks": "flasher.js module-signature recognition/caps/route functions (isMpModuleSignatureForFirmwareHint, capsFromSignature, resolveDeviceFlashRoute) against every recognized MR-02m spelling incl. count-first 6AI6AO/AO6AI6 — a regression here silently misroutes bootloader-mode flashing or the RS-485 line profile with no server-side signal.",
       "config": null,
