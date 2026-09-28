@@ -1208,6 +1208,15 @@ PY
         tar -czf "$archive" --verbatim-files-from -T "$list" || die E_APPLY "rollback archive failed"
     fi
     chmod 0600 "$archive"
+    # Durable BEFORE the caller records stage=applying: on the board's ext4
+    # (commit=600 + journal_data_writeback) an archive never fdatasync'ed can
+    # be empty or partial after the very power loss the archive fallback
+    # exists for — the R4-1 reasoning G6 applies to the journal's backups.
+    # Checked, no bare-`sync` fallback (it cannot report an error); a failure
+    # stops the update here, before any file is touched. Gate:
+    # update-recover-rollback (j).
+    sync -d -- "$archive" || die E_APPLY "rollback archive not durable (fdatasync failed)"
+    sync -- "$STATEDIR/rollback" || die E_APPLY "rollback archive not durable (directory fsync failed)"
     # FIFO retention: keep max 2
     ls -1t "$STATEDIR/rollback"/pre-update-*.tar.gz 2>/dev/null | tail -n +3 | while read -r old; do
         rm -f "$old"
@@ -1688,10 +1697,11 @@ run_migrations() {
 #     caller's code, never rolled_back over a partly restored tree.
 # With no journal (staging lost), the ARCHIVE FALLBACK restores the
 # pre-update archive under the same rules: each member atomically through
-# atomic_install_file, a failed member / an unreadable archive / no archive at
-# all each end in «rollback incomplete (…)».
+# atomic_install_file, and only from an archive tar read to the end (an
+# unreadable archive restores nothing); a failed member / an unreadable
+# archive / no archive at all each end in «rollback incomplete (…)».
 # Gates: update-deploy-skip 15a-15e, update-recover-boot R10,
-# update-recover-rollback (c)-(i).
+# update-recover-rollback (c)-(j).
 rollback_from_journal() {
     local txn=$1 code=${2:-E_APPLY} message=${3:-}
     local j="$STATEDIR/staging/$txn/journal.jsonl"
@@ -1794,10 +1804,16 @@ PY
             tmp=$(mktemp -d "$STATEDIR/staging/rollback-extract.XXXXXX")
             # -p preserves each member's mode/owner so the restore keeps exec bits
             # (else systemd 203/EXEC on the restored scripts) and restrictive perms.
-            # A corrupt or truncated archive is NOT a clean rollback: whatever
-            # tar did extract is still restored below, but the outcome is
-            # «rollback incomplete» (until 1.0.6.60 `|| true` let it end
-            # rolled_back). Gate: update-recover-rollback (h).
+            # A tar failure restores NOTHING (fail-closed) and ends «rollback
+            # incomplete». The only integrity check over the payload is the
+            # gzip CRC, verified once at the END of the stream, so when tar
+            # fails no extracted byte is proven: GNU tar leaves the member it
+            # was writing truncated (and without its -p mode), and a corrupt —
+            # not truncated — stream can yield a same-size member with wrong
+            # bytes, which no per-member size check would catch. Restoring
+            # the extracted tree would atomically put a torn file over a valid
+            # live one (1.0.6.60 review B6). tar rc 0 is the one point where
+            # every member is CRC-proven. Gate: update-recover-rollback (h), (h2).
             local tar_rc=0
             tar -xpzf "$archive" -C "$tmp" || tar_rc=$?
             # Archive stored absolute paths; walk and restore each with its real
@@ -1813,21 +1829,22 @@ PY
             # to kill the runner at rolling_back. Gate: update-recover-rollback
             # (c)-(g).
             local n_failed=0 n_total=0 f rel
-            while IFS= read -r f; do
-                rel="${f#"$tmp"}"
-                [ -n "$rel" ] || continue
-                n_total=$((n_total + 1))
-                if ! atomic_install_file "$f" "$rel" "$(stat -c '%a' "$f")" "$(stat -c '%u:%g' "$f")"; then
-                    n_failed=$((n_failed + 1))
-                    log "rollback: FAIL restore $rel from archive"
-                fi
-            done < <(find "$tmp" -type f)
             if [ "$tar_rc" -ne 0 ]; then
-                log "rollback: archive $archive unreadable (tar rc=$tar_rc) - $((n_total - n_failed)) extracted member(s) restored"
-                incomplete="rollback archive unreadable (tar rc=$tar_rc)"
-                [ "$n_failed" -eq 0 ] || incomplete="$incomplete; $n_failed of $n_total archive member(s) not restored"
-            elif [ "$n_failed" -gt 0 ]; then
-                incomplete="$n_failed of $n_total archive member(s) not restored"
+                log "rollback: archive $archive unreadable (tar rc=$tar_rc) - nothing restored from it (no member is CRC-proven)"
+                incomplete="rollback archive unreadable (tar rc=$tar_rc); nothing restored from it"
+            else
+                while IFS= read -r f; do
+                    rel="${f#"$tmp"}"
+                    [ -n "$rel" ] || continue
+                    n_total=$((n_total + 1))
+                    if ! atomic_install_file "$f" "$rel" "$(stat -c '%a' "$f")" "$(stat -c '%u:%g' "$f")"; then
+                        n_failed=$((n_failed + 1))
+                        log "rollback: FAIL restore $rel from archive"
+                    fi
+                done < <(find "$tmp" -type f)
+                if [ "$n_failed" -gt 0 ]; then
+                    incomplete="$n_failed of $n_total archive member(s) not restored"
+                fi
             fi
             rm -rf "$tmp"
         else
