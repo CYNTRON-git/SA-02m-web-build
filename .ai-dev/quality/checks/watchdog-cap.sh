@@ -364,4 +364,4 @@ else
 fi
 
 [ "$fails" = 0 ] || printf 'watchdog-cap: %s check(s) failed — policy home: %s\n' "$fails" "$POLICY_HOME"
-exit "$fails"
+exit $(( fails > 0 ))  # never the count: 77 reads SKIP, 256 reads PASS (run.mjs SKIP_EXIT)

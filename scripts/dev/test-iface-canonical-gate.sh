@@ -147,4 +147,4 @@ grep -q "link set dev end0 down" "$T/ip-calls.log" && grep -q "link set dev end0
 
 echo "---"
 if [ "$fails" = 0 ]; then echo "iface-canonical-gate: all checks passed"; else echo "iface-canonical-gate: $fails check(s) FAILED"; fi
-exit "$fails"
+exit $(( fails > 0 ))  # never the count: 77 reads SKIP, 256 reads PASS (run.mjs SKIP_EXIT)

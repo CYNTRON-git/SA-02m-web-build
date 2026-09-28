@@ -15,6 +15,8 @@
         verdict existed; audit 2026-09-24 L1) — now exit 77 = SKIP.
      E. the whole-row skippers returning 0 instead of 77 when their tool is
         forced absent.
+     F. a registry-run script exiting with a failure COUNT (77 failures read
+        as SKIP, 256 as PASS — review F1, 1.0.6.58).
    ───────────────────────────────────────────────────────────────────────────
    Regression A: the fallback used to `.trim()` the WHOLE multi-line
    `git status --short` output before splitting into lines. Trimming the
@@ -58,7 +60,7 @@
    unstaged modification) rather than a copy of the parsing logic.
    ═══════════════════════════════════════════════════════════════════════════ */
 import { execSync, spawnSync } from 'node:child_process';
-import { copyFileSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { copyFileSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -367,6 +369,122 @@ for (const [script, line] of [
   } finally {
     rmSync(d, { recursive: true, force: true });
   }
+}
+
+// ── F. no registry-run script exits with a COUNT ───────────────────────────
+// SKIP_EXIT (77) is only honest if no gate can reach 77 by accident. A gate
+// ending in `exit "$fails"` reports 77 failures as an environment SKIP (beat
+// green) and 256 failures as exit 0 (PASS) — review F1, 1.0.6.58: fifteen such
+// sites in fourteen scripts. The rule: a registry-run script's OWN exit status
+// is a literal, a boolean `$(( … > 0 ))`, or carries an `exit-status:` marker
+// naming why a variable is safe. Every row is enumerated (the same
+// check-script resolution comment-mutation-proof uses), not a list of names.
+// Scope, stated: heredoc bodies are skipped — they are shims standing in for
+// external tools (a fake `mkfs.exfat` exiting "${SHIM_MKFS_RC}") or embedded
+// python whose status the bash around it reads — and only the script the row
+// names is read, not what it sources.
+const EXIT_MARK = /exit-status:\s*\S/;
+// Shell lexer, just enough for this rule: yields each line's UNQUOTED code
+// (quoted strings — awk programs, messages, printf'd shims — collapse to `Q`,
+// comments drop, heredoc bodies are skipped), so an `exit` inside a string or
+// an awk program is never mistaken for the script's own.
+function shCodeLines(text) {
+  const lines = text.split(/\r?\n/);
+  const out = [];
+  let q = null;        // null | "'" | '"' — quote state carried across lines
+  let heredocs = [];   // pending heredoc terminators opened on this line
+  let inHeredoc = null;
+  for (let i = 0; i < lines.length; i++) {
+    const ln = lines[i];
+    if (inHeredoc) {
+      if ((inHeredoc.dash ? ln.replace(/^\t+/, '') : ln) === inHeredoc.tag) {
+        inHeredoc = heredocs.shift() || null;
+      }
+      out.push('');
+      continue;
+    }
+    let code = '';
+    for (let j = 0; j < ln.length; j++) {
+      const c = ln[j];
+      if (q === "'") { if (c === "'") q = null; continue; }
+      if (q === '"') {
+        if (c === '\\') { j++; continue; }
+        if (c === '"') q = null;
+        continue;
+      }
+      if (c === '\\') { j++; continue; }
+      if (c === "'" || c === '"') { q = c; code += 'Q'; continue; }
+      if (c === '#' && (j === 0 || /\s/.test(ln[j - 1]))) break;
+      if (c === '<' && ln[j + 1] === '<' && ln[j + 2] !== '<') {
+        const m = ln.slice(j).match(/^<<(-?)\s*(['"]?)([A-Za-z_][A-Za-z0-9_]*)\2/);
+        if (m) { heredocs.push({ tag: m[3], dash: m[1] === '-' }); j += m[0].length - 1; code += '<<H'; continue; }
+      }
+      code += c;
+    }
+    out.push(code);
+    if (!q && heredocs.length) inHeredoc = heredocs.shift();
+  }
+  return out;
+}
+
+function exitViolations(text, lang) {
+  const out = [];
+  const lines = text.split(/\r?\n/);
+  if (lang === 'sh') {
+    shCodeLines(text).forEach((code, i) => {
+      const re = /(?:^|[;{]|&&|\|\||\bthen|\belse|\bdo)\s*exit\s+(\$\(\([^)]*\)\)|[^\s;&|)}]+)/g;
+      let m;
+      while ((m = re.exec(code))) {
+        const op = m[1];
+        const ok = /^\d+$/.test(op) || /^\$\(\(.*(>|!=|==|<).*\)\)$/.test(op) || EXIT_MARK.test(lines[i]);
+        if (!ok) out.push((i + 1) + ': ' + lines[i].trim());
+      }
+    });
+  } else {
+    lines.forEach((ln, i) => {
+      if (/^\s*(#|\/\/)/.test(ln)) return;
+      const re = lang === 'py' ? /(?:sys\.exit|SystemExit)\(([^)]*)\)/g : /process\.exit\(([^)]*)\)/g;
+      let m;
+      while ((m = re.exec(ln))) {
+        const op = m[1].trim();
+        const ok = op === '' || /^\d+$/.test(op) || /\?\s*\d+\s*:\s*\d+$/.test(op) ||
+          /^f?['"]/.test(op) || EXIT_MARK.test(ln);
+        if (!ok) out.push((i + 1) + ': ' + ln.trim());
+      }
+    });
+  }
+  return out;
+}
+
+{
+  // Non-vacuity of the scanner itself: each shape it must see, and must not.
+  check(exitViolations('fails=3\nexit "$fails"\n', 'sh').length === 1, 'exit-scan: `exit "$fails"` is flagged');
+  check(exitViolations('[ "$f" = 0 ] || { echo x; exit "$f"; }\n', 'sh').length === 1, 'exit-scan: an exit inside `{ …; }` is flagged');
+  check(exitViolations('exit $rc\n', 'sh').length === 1, 'exit-scan: an unquoted `exit $rc` is flagged');
+  check(exitViolations('exit 1\nexit 77  # SKIP\n[ x ] || exit 1\n', 'sh').length === 0, 'exit-scan: literal exits pass');
+  check(exitViolations('exit $(( fails > 0 ))\n', 'sh').length === 0, 'exit-scan: a boolean `$(( … > 0 ))` passes');
+  check(exitViolations('cat > f <<\'SHIM\'\nexit "${X:-0}"\nSHIM\nexit 0\n', 'sh').length === 0, 'exit-scan: a heredoc shim body is not the script\'s own exit');
+  check(exitViolations('cat > f <<\'SHIM\'\nexit 0\nSHIM\nexit "$fails"\n', 'sh').length === 1, 'exit-scan: the scan resumes after the heredoc terminator');
+  check(exitViolations('bad "exit $RC, expected 0"\n', 'sh').length === 0, 'exit-scan: "exit $RC" inside a message string is not an exit');
+  // Spliced so this file's own scan does not read the fixture as an exit.
+  check(exitViolations('process.' + 'exit(failures);\n', 'mjs').length === 1, 'exit-scan: a count handed to process.exit is flagged');
+  check(exitViolations('process.exit(failures ? 1 : 0);\nprocess.exit(77);\n', 'mjs').length === 0, 'exit-scan: literal and boolean-ternary exits pass');
+  check(exitViolations('sys.exit(fails)\n', 'py').length === 1, 'exit-scan: sys.exit(<count>) is flagged');
+}
+{
+  const reg = JSON.parse(readFileSync(join(REPO, '.ai-dev', 'quality', 'tools.json'), 'utf8'));
+  const scriptRe = /(?:\.ai-dev\/quality\/|scripts\/dev\/)[A-Za-z0-9_.\/-]+\.(?:sh|mjs|py)/g;
+  const scripts = new Set();
+  for (const t of reg.tools || []) for (const m of String(t.run || '').matchAll(scriptRe)) scripts.add(m[0]);
+  check(scripts.size >= 60, 'exit-scan: the registry resolves >=60 check scripts (got ' + scripts.size + ') — a broken enumeration FAILS, it does not pass empty');
+  const bad = [];
+  for (const s of [...scripts].sort()) {
+    let text;
+    try { text = readFileSync(join(REPO, s), 'utf8'); } catch { bad.push(s + ': unreadable'); continue; }
+    for (const v of exitViolations(text, s.split('.').pop())) bad.push(s + ':' + v);
+  }
+  check(bad.length === 0, 'exit-scan: no registry-run script exits with a count (77 would read SKIP, 256 would read PASS)' +
+    (bad.length ? ' — ' + bad.length + ' site(s):\n      ' + bad.join('\n      ') : ''));
 }
 
 if (failures) {

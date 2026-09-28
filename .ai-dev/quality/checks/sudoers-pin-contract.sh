@@ -1145,4 +1145,4 @@ else
 fi
 
 [ "$fails" = 0 ] || printf 'sudoers-pin-contract: %s check(s) failed — audit B1 escalation not fully closed\n' "$fails"
-exit "$fails"
+exit $(( fails > 0 ))  # never the count: 77 reads SKIP, 256 reads PASS (run.mjs SKIP_EXIT)

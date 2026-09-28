@@ -282,4 +282,4 @@ else
 fi
 
 [ "$fails" = 0 ] || printf 'iface-naming-contract: %s check(s) failed — see docs/contracts/ethernet-iface-naming.md\n' "$fails"
-exit "$fails"
+exit $(( fails > 0 ))  # never the count: 77 reads SKIP, 256 reads PASS (run.mjs SKIP_EXIT)
