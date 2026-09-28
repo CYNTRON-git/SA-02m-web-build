@@ -116,7 +116,7 @@ def write_pending(cls: str, reason: str) -> None:
     a process that answers and exits. Its in-memory pending record dies with it,
     and `/run/sa02m-alice` is `0755 root root` (etc/tmpfiles.d/sa02m-alice.conf)
     so that process cannot even write the status file. `/etc/sa02m-alice` is
-    `0770 root:www-data` — this INI is the ONE channel it has to the running
+    `0771 root:www-data` — this INI is the ONE channel it has to the running
     client, which is the process that can actually retry.
     """
     set_unlink_marker("", cls, reason)

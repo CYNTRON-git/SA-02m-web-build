@@ -69,7 +69,7 @@ class ConfTests(unittest.TestCase):
 
     def test_save_through_a_planted_symlink_copies_nothing_from_its_target(self):
         # Review A2: root reaches save() via homekit_sync_enabled, and www-data
-        # can plant `sa02m-homekit.conf -> <any file>` in the 0770 conf dir.
+        # can plant `sa02m-homekit.conf -> <any file>` in the conf dir it owns.
         # preserve must read the NAME (lstat), never the symlink's target.
         victim = os.path.join(self.dir, "victim")
         with open(victim, "w", encoding="utf-8") as fh:
@@ -82,7 +82,7 @@ class ConfTests(unittest.TestCase):
         config.save(config.BridgeConfig(enabled=True), self.path)
         st = os.lstat(self.path)
         self.assertTrue(stat.S_ISREG(st.st_mode))
-        self.assertEqual(stat.S_IMODE(st.st_mode), 0o660)  # the contract default, not 04755
+        self.assertEqual(stat.S_IMODE(st.st_mode), 0o640)  # the contract default, not 04755
         if foreign:
             self.assertNotEqual((st.st_uid, st.st_gid), (12345, 12345))
         with open(victim, encoding="utf-8") as fh:
@@ -100,23 +100,53 @@ class ConfTests(unittest.TestCase):
         os.chmod(self.path, 0o640)
         os.link(self.path, os.path.join(self.dir, "other-name"))
         config.save(config.BridgeConfig(enabled=True), self.path)
-        self.assertEqual(stat.S_IMODE(os.stat(self.path).st_mode), 0o660)
+        self.assertEqual(stat.S_IMODE(os.stat(self.path).st_mode), 0o640)
 
-    def test_save_fallback_asks_for_the_web_group(self):
-        # A conf with nothing safe to preserve falls back to root:www-data 0660
-        # (contract §13 table); the group comes from group_gid().
-        seen = []
+    def test_save_fallback_is_web_owner_daemon_group_0640(self):
+        # A conf with nothing safe to preserve falls back to
+        # www-data:sa02m-homekit 0640 (contract §13): the CGI owns it, the
+        # bridge READS it through its group — no ACL (bench 1.135: the product
+        # RT kernel has none). Owner and group are asked for by name.
+        seen, asked = [], []
         real_fchown = os.fchown
 
         def spy(fd, uid, gid):
             seen.append((uid, gid))
             return real_fchown(fd, uid, gid)
 
-        with mock.patch.object(config, "group_gid", return_value=os.getegid()), \
+        def uid_of(name):
+            asked.append(("user", name))
+            return os.geteuid()
+
+        def gid_of(name):
+            asked.append(("group", name))
+            return os.getegid()
+
+        with mock.patch.object(config, "user_uid", side_effect=uid_of), \
+                mock.patch.object(config, "group_gid", side_effect=gid_of), \
                 mock.patch.object(fsutil.os, "fchown", side_effect=spy):
             config.save(config.BridgeConfig(enabled=True), self.path)
-        self.assertEqual(seen, [(-1, os.getegid())])
-        self.assertEqual(stat.S_IMODE(os.stat(self.path).st_mode), 0o660)
+        self.assertEqual(sorted(asked), [("group", "sa02m-homekit"), ("user", "www-data")])
+        self.assertEqual(seen[0], (os.geteuid(), os.getegid()))
+        self.assertEqual(stat.S_IMODE(os.stat(self.path).st_mode), 0o640)
+
+    def test_non_root_writer_keeps_the_group_of_its_setgid_dir(self):
+        # The CGI (www-data) is NOT in sa02m-homekit: its fchown to that group
+        # fails, and the file keeps the group the setgid conf dir gave it —
+        # the write must still succeed with mode 0640.
+        calls = []
+
+        def refuse(fd, uid, gid):
+            calls.append((uid, gid))
+            raise PermissionError(1, "Operation not permitted")
+
+        with mock.patch.object(config, "user_uid", return_value=33), \
+                mock.patch.object(config, "group_gid", return_value=4242), \
+                mock.patch.object(fsutil.os, "fchown", side_effect=refuse):
+            config.save(config.BridgeConfig(enabled=True), self.path)
+        self.assertEqual(calls, [(33, 4242), (-1, 4242)])
+        self.assertEqual(stat.S_IMODE(os.stat(self.path).st_mode), 0o640)
+        self.assertTrue(config.load(self.path).enabled)
 
     def test_enabled_spellings(self):
         for raw, want in (("true", True), ("1", True), ("yes", True), ("on", True),

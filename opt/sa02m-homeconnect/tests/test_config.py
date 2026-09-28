@@ -6,9 +6,11 @@ import os
 import stat
 import tempfile
 import unittest
+from unittest import mock
 
 from sa02m_homeconnect import config
 from sa02m_homeconnect import constants as C
+from sa02m_homeconnect import fsutil
 
 GOOD_ID = "A1B2C3D4E5F6A7B8C9D0E1F2A3B4C5D6E7F8A9B0C1D2E3F4A5B6C7D8E9F0A1B2"
 
@@ -77,9 +79,35 @@ class ConfigTest(unittest.TestCase):
         self.assertEqual(conf.control_mode, "off")
         self.assertTrue(any("read-only" in w for w in conf.warnings))
 
-    def test_new_conf_mode_0660(self) -> None:
+    def test_new_conf_mode_0640(self) -> None:
+        # Contract §11: www-data:sa02m-homeconnect 0640 — the client READS its
+        # conf through its group (no ACL: the product RT kernel has none).
         config.save(config.ClientConfig(), self.path)
-        self.assertEqual(stat.S_IMODE(os.stat(self.path).st_mode), 0o660)
+        self.assertEqual(stat.S_IMODE(os.stat(self.path).st_mode), 0o640)
+
+    def test_new_conf_asks_for_web_owner_and_daemon_group(self) -> None:
+        asked, seen = [], []
+
+        def uid_of(name):
+            asked.append(("user", name))
+            return 33
+
+        def gid_of(name):
+            asked.append(("group", name))
+            return 4242
+
+        def refuse(fd, uid, gid):
+            seen.append((uid, gid))
+            raise PermissionError(1, "Operation not permitted")
+
+        with mock.patch.object(config, "user_uid", side_effect=uid_of), \
+                mock.patch.object(config, "group_gid", side_effect=gid_of), \
+                mock.patch.object(fsutil.os, "fchown", side_effect=refuse):
+            config.save(config.ClientConfig(), self.path)
+        self.assertEqual(sorted(asked), [("group", "sa02m-homeconnect"), ("user", "www-data")])
+        # A non-root writer (the CGI) is refused both; the setgid dir's group stays.
+        self.assertEqual(seen, [(33, 4242), (-1, 4242)])
+        self.assertEqual(stat.S_IMODE(os.stat(self.path).st_mode), 0o640)
 
     def test_existing_mode_preserved_but_not_via_symlink(self) -> None:
         config.save(config.ClientConfig(), self.path)
@@ -94,7 +122,7 @@ class ConfigTest(unittest.TestCase):
         os.symlink(victim, self.path)
         config.save(config.ClientConfig(), self.path)
         self.assertFalse(os.path.islink(self.path))
-        self.assertEqual(stat.S_IMODE(os.stat(self.path).st_mode), 0o660)
+        self.assertEqual(stat.S_IMODE(os.stat(self.path).st_mode), 0o640)
         with open(victim) as fh:
             self.assertEqual(fh.read(), "keep")
 

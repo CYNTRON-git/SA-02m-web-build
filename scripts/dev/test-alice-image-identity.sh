@@ -1195,7 +1195,7 @@ hk_run_site() { # <label> <src> <form> [shell for offline: bash|sh]
         && ok "(HB/$lbl) 'ENABLED : on' (valid for configparser) is forced off too" \
         || bad "(HB/$lbl) 'ENABLED : on' survived as '$view' — the daemon would still open the listener"
 
-    # A symlink planted at the conf (www-data can, the dir is 0770): never
+    # A symlink planted at the conf (www-data can, the dir is www-data's): never
     # read or written through — the victim stays byte-identical and no copy
     # of it appears at the conf name.
     local lk="$SANDBOX/hk-$1.link" victim="$SANDBOX/hk-$1.victim"

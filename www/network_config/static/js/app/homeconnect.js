@@ -597,7 +597,8 @@ function hcStateLine(d) {
   switch (st) {
     case 'not_installed': return [uiT('Нужна полная установка (install.sh)'), null];
     case 'missing_deps':
-      // The conf exists but the daemon cannot read it (its read ACL is gone).
+      // The conf exists but the daemon cannot read it (its owner/group/mode were
+      // broken; the unit's ExecStartPre `sa02m-daemon-access.sh apply` restores them).
       if (r === 'conf_unreadable') return [uiT('Нет доступа к настройкам'), false];
       return [uiT('Нужна полная установка (install.sh)'), false];
     case 'missing_client_id': return [uiT('Введите Client ID'), null];

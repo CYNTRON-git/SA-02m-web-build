@@ -388,7 +388,8 @@ class Daemon:
         self.conf = conf_mod.load(self.conf_path)
         if self.conf.unreadable:
             # Exit 0: Restart=on-failure leaves it alone; the next start
-            # (ExecStartPre re-applies the ACLs) or 06c brings it back.
+            # (ExecStartPre `sa02m-daemon-access.sh apply homekit` re-asserts
+            # the group grant and proves it) or 06c brings it back.
             self._write_conf_unreadable()
             log.error("conf %s exists but is not readable (%s) — a full install or "
                       "06c-homekit.sh restores the daemon's read access",

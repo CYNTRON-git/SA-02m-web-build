@@ -1,5 +1,5 @@
-"""A conf that EXISTS but cannot be read (EACCES — the daemon's read ACL was
-lost; docs/contracts/home-connect.md §11) is not «disabled». configparser's
+"""A conf that EXISTS but cannot be read (EACCES — its group grant was
+broken; docs/contracts/home-connect.md §11) is not «disabled». configparser's
 read() skips such a file silently, so the client used to read defaults and
 stop as if switched off — and, worse, drop every appliance's retained topics.
 Now: `missing_deps` + reason `conf_unreadable`, exit 0, at start and while

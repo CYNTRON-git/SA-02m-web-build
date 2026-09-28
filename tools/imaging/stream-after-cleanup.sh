@@ -172,7 +172,7 @@ wipe_homekit_identity() {
               /var/lib/sa02m-homekit/.hk-*
     fi
     rm -f /run/sa02m-homekit/*
-    # /etc/sa02m-homekit is root:www-data 0770: a symlink at the conf is never
+    # /etc/sa02m-homekit is www-data-writable: a symlink at the conf is never
     # the installer's, and sed -i would read through it as root — drop it
     # instead (an absent conf reads as disabled). Absent file: nothing to do.
     if [ -L /etc/sa02m-homekit/sa02m-homekit.conf ]; then
@@ -195,7 +195,7 @@ wipe_homeconnect_identity() {
     # token in memory and a refresh would write it back), then the contents.
     # The unit, the dirs (tmpfiles.d owns them), the Client ID and the software
     # stay: a clone boots with the client off, as on a first install.
-    # /etc/sa02m-homeconnect is root:www-data 0770: a symlink at the conf is
+    # /etc/sa02m-homeconnect is www-data-writable: a symlink at the conf is
     # never the installer's, and sed -i would read through it as root — drop it
     # instead (an absent conf reads as disabled). Absent file: nothing to do.
     if [ -L /etc/sa02m-homeconnect/sa02m-homeconnect.conf ]; then

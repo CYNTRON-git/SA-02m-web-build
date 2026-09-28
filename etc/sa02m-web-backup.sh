@@ -92,7 +92,7 @@ paths_meta = []
 # >>> trusted-path resolver — twin: etc/sa02m-web-backup.sh and
 # etc/sa02m-restore-backup.sh carry this block byte-identical (row
 # alice-conf-homes, case 7t); neither root script can import the other.
-# Why: both run as root, and /etc/sa02m-alice is root:www-data 0770, so www-data
+# Why: both run as root, and /etc/sa02m-alice is root:www-data 0771, so www-data
 # (any panel session: cmd_exec.cgi) can create any name there. A name is
 # trusted only where nobody but root could have made it.
 class Unsafe(Exception):

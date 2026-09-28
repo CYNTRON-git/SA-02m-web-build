@@ -30,17 +30,20 @@ Nice=10
 # Unprivileged (plan D11): nothing in the client needs root — and NOT group
 # www-data (that group reads the panel credentials and every web conf).
 # /run/sa02m-homeconnect is setgid www-data, so the 0640 files the card reads
-# inherit the group; an ACL grants read on the conf — a DEFAULT ACL on its
-# directory, so an atomic rename keeps it (docs/contracts/home-connect.md §11).
-# www-data is NOT in this unit's group, so it never reads the tokens.
-# Gate: `daemon-least-privilege`.
+# inherit the group; its conf dir is www-data:sa02m-homeconnect 2750 (setgid:
+# the conf saved there is the client's group, read-only for it) — plain Unix
+# groups, no ACL (docs/contracts/home-connect.md §11). www-data is NOT in this
+# unit's group, so it never reads the tokens. Gate: `daemon-least-privilege`.
 User=sa02m-homeconnect
 Group=sa02m-homeconnect
-# `+`: as root, before the sandbox; `-`: a missing conf is not a start failure.
-ExecStartPre=-+/usr/bin/systemd-tmpfiles --create /etc/tmpfiles.d/sa02m-homeconnect.conf
+# `+`: as root, before the sandbox; `-`: never a start failure — a failed probe
+# is in this unit's journal and the daemon then reports `conf_unreadable`.
+# Re-asserts the modes a restore may have dropped and proves the read AS the
+# daemon (the installer's last step runs the same).
+ExecStartPre=-+/usr/local/sbin/sa02m-daemon-access.sh apply homeconnect
 UMask=0077
 NoNewPrivileges=true
-# strict: /etc (including the group-writable conf) is read-only for this unit;
+# strict: /etc (including the conf) is read-only for this unit;
 # the writable tree is exactly its own two dirs.
 ProtectSystem=strict
 ReadWritePaths=/var/lib/sa02m-homeconnect /run/sa02m-homeconnect
