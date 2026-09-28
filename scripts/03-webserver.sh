@@ -140,6 +140,12 @@ esac
 
 log INFO "Деплой файлов в $WEB_ROOT"
 mkdir -p "$WEB_ROOT"
+# Root-owned BEFORE the wipe and the copy: a board installed before 1.0.6.55
+# has a www-data-owned tree, and a link www-data plants between the wipe and
+# the copy would turn `cp`/`chmod` into a root write of its target. After this
+# no non-root can add an entry anywhere under WEB_ROOT (scripts/lib.sh
+# sa02m-web-root-own block — the one home). Refusal = the install stops here.
+sa02m_web_root_secure "$WEB_ROOT" || exit 1
 
 # Полная очистка каталога веб-приложения (остатки старого проекта / чужие cgi, html, static)
 if [ -d "$WEB_ROOT" ]; then
@@ -182,7 +188,8 @@ fi
 find "$WEB_ROOT/cgi-bin" -name "*.cgi" -exec chmod 755 {} \;
 find "$WEB_ROOT/static"  \( -name "*.css" -o -name "*.js" -o -name "*.svg" \) -exec chmod 644 {} \;
 chmod 644 "$WEB_ROOT/index.html" "$WEB_ROOT/login.html"
-chown -R www-data:www-data "$WEB_ROOT"
+# root:root, read-only to www-data — nothing the web does at runtime writes here.
+sa02m_web_root_secure "$WEB_ROOT" || exit 1
 
 if [ -f "$SCRIPT_DIR/../etc/sa02m-web-root-cmd.sh" ]; then
     sa02m_atomic_install -m 755 "$SCRIPT_DIR/../etc/sa02m-web-root-cmd.sh" /usr/local/sbin/sa02m-web-root-cmd.sh
@@ -361,6 +368,13 @@ if [ -f "$ETC_DIR/tmpfiles.d/sa02m-web-login.conf" ]; then
         systemd-tmpfiles --create /etc/tmpfiles.d/sa02m-web-login.conf >>"$LOG_FILE" 2>&1 || true
     fi
     log OK "tmpfiles sa02m-web-login.conf (/run/sa02m-web-login)"
+fi
+# Boot-time belt for the root-owned web tree (the conf's own header says why);
+# the tree itself was migrated above by sa02m_web_root_secure.
+if [ -f "$ETC_DIR/tmpfiles.d/sa02m-web-root.conf" ]; then
+    install -m 644 "$ETC_DIR/tmpfiles.d/sa02m-web-root.conf" /etc/tmpfiles.d/sa02m-web-root.conf
+    sed -i 's/\r$//' /etc/tmpfiles.d/sa02m-web-root.conf
+    log OK "tmpfiles sa02m-web-root.conf (веб-корень root:root при загрузке)"
 fi
 
 if [ -f "$ETC_DIR/sa02m-beeper-override.sh" ]; then

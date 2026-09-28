@@ -59,7 +59,7 @@ sed -i 's/\r$//' /usr/local/sbin/sa02m-gateway-config-apply.sh
 # ── CGI скрипты ──────────────────────────────────────────────────────────
 log INFO "Устанавливаю CGI: gateway_config.cgi, gateway_status.cgi, gateway_ctrl.cgi"
 for cgi in gateway_config.cgi gateway_status.cgi gateway_ctrl.cgi; do
-    install -m 0755 -o www-data -g www-data \
+    install -m 0755 -o root -g root \
         "$BASE_DIR/www/network_config/cgi-bin/$cgi" \
         "$WEB_CGI/$cgi"
 done
@@ -67,20 +67,20 @@ done
 # ── Web assets ────────────────────────────────────────────────────────────
 WEB_JS="${WEB_ROOT:-/var/www/network_config}/static/js"
 log INFO "Устанавливаю gateway.js"
-install -m 0644 -o www-data -g www-data \
+install -m 0644 -o root -g root \
     "$BASE_DIR/www/network_config/static/js/gateway.js" \
     "$WEB_JS/gateway.js"
 
 # ── index.html и app.js ────────────────────────────────────────────────────
 log INFO "Обновляю index.html, app.js, main.css"
 WEB_STATIC="${WEB_ROOT:-/var/www/network_config}/static"
-install -m 0644 -o www-data -g www-data \
+install -m 0644 -o root -g root \
     "$BASE_DIR/www/network_config/index.html" \
     "${WEB_ROOT:-/var/www/network_config}/index.html"
-install -m 0644 -o www-data -g www-data \
+install -m 0644 -o root -g root \
     "$BASE_DIR/www/network_config/static/js/app.js" \
     "$WEB_JS/app.js"
-install -m 0644 -o www-data -g www-data \
+install -m 0644 -o root -g root \
     "$BASE_DIR/www/network_config/static/css/main.css" \
     "$WEB_STATIC/css/main.css"
 

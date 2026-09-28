@@ -578,6 +578,160 @@ sa02m_atomic_install() {
     return 0
 }
 
+# ── BEGIN sa02m-web-root-own (shared block — keep BYTE-IDENTICAL) ──────────
+# One home for "the served web tree is root-owned and read-only to www-data"
+# (Operator decision 2026-09-28; the threat and its closure: docs/threat-model.md,
+# the root-writer row). Nothing the web does at runtime writes under the web
+# root — every CGI keeps its state in /run, /tmp or /var/lib — so the list of
+# www-data-writable subpaths is EMPTY. Three callers cannot share a file:
+# scripts/lib.sh is sourced by the installer and update-www-only.sh out of an
+# extracted tree, while etc/sa02m-web-update-apply.sh and
+# etc/sa02m-update-runner.sh run standalone on the board, where scripts/ is not
+# deployed. So the block is duplicated by construction and pinned byte-for-byte
+# by scripts/dev/test-web-root-own.sh. Nothing here logs: the three callers have
+# different log() signatures — each logs the lines it gets back.
+#
+# sa02m_web_root_own ROOT [UID GID] — re-own ROOT and everything under it to
+# UID:GID (default 0:0, the only value a device caller passes; the arguments
+# exist so the harness can run without root): directories 0755, files 0755
+# when any execute bit was set, else 0644. Nothing is followed. ROOT is opened
+# O_NOFOLLOW (a symlinked ROOT is a refusal); every entry is lstat'ed through
+# its directory's fd and opened O_NOFOLLOW; a directory is locked (fchown +
+# fchmod) BEFORE it is listed, so from then on no non-root can add, rename or
+# swap an entry in it. What a served tree never holds is REMOVED, never
+# re-owned: a symlink (the next by-name root write would land on its target),
+# a fifo/socket/device, and a regular file with more than one link (a hard
+# link to a root file — re-owning it re-owns the victim; fs.protected_hardlinks
+# is not relied on). ROOT's parent loses group/other write and a non-root
+# owner; a sticky parent is a shared directory and is refused, never re-moded.
+# Absent ROOT: nothing to do, rc 0. rc 1 on a refusal or any failed entry. One
+# summary line on stdout, one line per removal or failure on stderr. Idempotent.
+sa02m_web_root_own() {
+    python3 - "$@" <<'SA02M_WEB_ROOT_OWN_PY'
+import os, stat, sys
+
+args = sys.argv[1:]
+if len(args) not in (1, 3) or not args[0].startswith("/") or not args[0].strip("/"):
+    sys.exit("web-root-own: usage: ROOT [UID GID] (absolute ROOT, never /)")
+root = args[0].rstrip("/")
+uid, gid = (int(args[1]), int(args[2])) if len(args) == 3 else (0, 0)
+counts = {"settled": 0, "removed": 0, "failed": 0}
+
+
+def note(msg):
+    print("web-root-own: " + msg, file=sys.stderr)
+
+
+def settle(fd, mode):
+    st = os.fstat(fd)
+    touched = False
+    if st.st_uid != uid or st.st_gid != gid:
+        os.fchown(fd, uid, gid)
+        touched = True
+        st = os.fstat(fd)  # a chown clears setuid/setgid — read the mode again
+    if stat.S_IMODE(st.st_mode) != mode:
+        os.fchmod(fd, mode)
+        touched = True
+    if touched:
+        counts["settled"] += 1
+
+
+def walk(dfd, path):
+    settle(dfd, 0o755)  # lock the directory before reading its entries
+    for name in sorted(os.listdir(dfd)):
+        full = path + "/" + name
+        try:
+            st = os.stat(name, dir_fd=dfd, follow_symlinks=False)
+            if stat.S_ISDIR(st.st_mode):
+                cfd = os.open(name, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW, dir_fd=dfd)
+                try:
+                    cst = os.fstat(cfd)
+                    if (cst.st_dev, cst.st_ino) != (st.st_dev, st.st_ino):
+                        raise OSError("replaced while being opened")
+                    walk(cfd, full)
+                finally:
+                    os.close(cfd)
+                continue
+            if stat.S_ISREG(st.st_mode) and st.st_nlink == 1:
+                fd = os.open(name, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK, dir_fd=dfd)
+                try:
+                    fst = os.fstat(fd)
+                    if (fst.st_dev, fst.st_ino) != (st.st_dev, st.st_ino) or fst.st_nlink != 1:
+                        raise OSError("replaced while being opened")
+                    settle(fd, 0o755 if fst.st_mode & 0o111 else 0o644)
+                finally:
+                    os.close(fd)
+                continue
+            if stat.S_ISLNK(st.st_mode):
+                kind = "symlink"
+            elif stat.S_ISREG(st.st_mode):
+                kind = "hard-linked file (%d links)" % st.st_nlink
+            else:
+                kind = "special file"
+            os.unlink(name, dir_fd=dfd)
+            counts["removed"] += 1
+            note("removed %s %s" % (kind, full))
+        except OSError as e:
+            counts["failed"] += 1
+            note("FAILED %s: %s" % (full, e))
+
+
+parent = os.path.dirname(root) or "/"
+try:
+    pfd = os.open(parent, os.O_RDONLY | os.O_DIRECTORY)
+except FileNotFoundError:
+    print("web-root-own: %s absent - nothing to do" % root)
+    sys.exit(0)
+try:
+    pst = os.fstat(pfd)
+    if pst.st_mode & stat.S_ISVTX:
+        note("REFUSED: parent %s is a sticky shared directory" % parent)
+        sys.exit(1)
+    if pst.st_uid not in (0, uid):
+        os.fchown(pfd, uid, gid)
+        note("parent %s re-owned (was uid %d)" % (parent, pst.st_uid))
+    if pst.st_mode & 0o022:
+        os.fchmod(pfd, stat.S_IMODE(pst.st_mode) & ~0o022)
+        note("parent %s lost group/other write (was %o)" % (parent, stat.S_IMODE(pst.st_mode)))
+    try:
+        rfd = os.open(os.path.basename(root), os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW, dir_fd=pfd)
+    except FileNotFoundError:
+        print("web-root-own: %s absent - nothing to do" % root)
+        sys.exit(0)
+    except OSError as e:
+        note("REFUSED: %s is not a real directory (%s)" % (root, e))
+        sys.exit(1)
+    try:
+        walk(rfd, root)
+    finally:
+        os.close(rfd)
+except OSError as e:
+    note("FAILED %s: %s" % (root, e))
+    sys.exit(1)
+finally:
+    os.close(pfd)
+print("web-root-own: %s owned %d:%d - %d entr%s settled, %d removed, %d failed"
+      % (root, uid, gid, counts["settled"], "y" if counts["settled"] == 1 else "ies",
+         counts["removed"], counts["failed"]))
+sys.exit(1 if counts["failed"] else 0)
+SA02M_WEB_ROOT_OWN_PY
+}
+# ── END sa02m-web-root-own ─────────────────────────────────────────────────
+
+# sa02m_web_root_secure ROOT — the installer-side caller of the block above:
+# every line it prints goes to the install log, the status passes through.
+# Callers run it BEFORE they write into ROOT (so no non-root can plant a link
+# in the window) and again after (the copy's own entries).
+sa02m_web_root_secure() {
+    local out rc=0 line
+    out=$(sa02m_web_root_own "$1" 2>&1) || rc=$?
+    while IFS= read -r line; do
+        [ -n "$line" ] && log INFO "$line"
+    done <<< "$out"
+    [ "$rc" -eq 0 ] || log ERR "веб-корень $1 не удалось перевести на root (rc=$rc)"
+    return "$rc"
+}
+
 # ── BEGIN sa02m-runtime-watchdog (shared block — keep BYTE-IDENTICAL) ──────
 # One home for "hold the systemd manager's hardware watchdog off while the
 # live filesystem is being rewritten". Three callers cannot share a file:

@@ -177,6 +177,9 @@ update-recover-boot|scripts/pack-offline-update.py|"sa02m-update-verify.service"
 update-recover-boot|etc/sa02m-update-runner.sh|trap '"'"'exit 143'"'"' INT TERM
 no-absolute-api-paths|www/network_config/static/js/devices.js|"api/devices
 flasher-auth-header-strip|etc/nginx/network_config.conf|X-SA02M-Auth  "";
+web-root-own|etc/tmpfiles.d/sa02m-web-root.conf|Z /var/www/network_config - root root -
+web-root-own|etc/sa02m-update-runner.sh|        web_root_prepare
+web-root-own|scripts/lib.sh|os.unlink(name, dir_fd=dfd)
 '
 
 command -v git >/dev/null 2>&1 || { echo "comment-mutation-proof: FAIL — git is required to build the pristine copy"; exit 1; }

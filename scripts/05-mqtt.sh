@@ -239,7 +239,7 @@ CGI_DST="$WEB_ROOT/cgi-bin"
 if [ -d "$CGI_DST" ]; then
     for cgi in mqtt_config.cgi mqtt_status.cgi mqtt_monitor.cgi mqtt_ctrl.cgi mqtt_scan.cgi mqtt_live.cgi; do
         if [ -f "$CGI_SRC/$cgi" ]; then
-            install -m 0755 -o root -g www-data "$CGI_SRC/$cgi" "$CGI_DST/$cgi"
+            install -m 0755 -o root -g root "$CGI_SRC/$cgi" "$CGI_DST/$cgi"
             sed -i 's/\r$//' "$CGI_DST/$cgi"
             log OK "Установлен $cgi"
         else

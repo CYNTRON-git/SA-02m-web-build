@@ -19,6 +19,14 @@ if [ ! -d "$WWW_DIR" ]; then
 fi
 
 log INFO "Копирование $WWW_DIR → $WEB_ROOT"
+mkdir -p "$WEB_ROOT"
+# Root-owned BEFORE the copy. `cp -a` writes THROUGH an existing destination
+# symlink (and copies the source mode onto its target), so on a board with the
+# old www-data-owned tree a link www-data planted at a shipped name
+# (static/js/app.js -> /etc/shadow) made this copy a root write + chmod of the
+# target. The block removes every link / special / multi-link entry and locks
+# the tree before anything is copied (scripts/lib.sh sa02m-web-root-own).
+sa02m_web_root_secure "$WEB_ROOT" || exit 1
 mkdir -p "$WEB_ROOT/cgi-bin" "$WEB_ROOT/static/css" "$WEB_ROOT/static/js"
 cp -a "$WWW_DIR/." "$WEB_ROOT/"
 
@@ -59,7 +67,8 @@ fi
 find "$WEB_ROOT/cgi-bin" -name '*.cgi' -exec chmod 755 {} \;
 find "$WEB_ROOT/static" \( -name '*.css' -o -name '*.js' -o -name '*.svg' \) -exec chmod 644 {} \;
 chmod 644 "$WEB_ROOT/index.html" "$WEB_ROOT/login.html" 2>/dev/null || true
-chown -R www-data:www-data "$WEB_ROOT"
+# root:root, read-only to www-data (`cp -a` kept the source tree's owner).
+sa02m_web_root_secure "$WEB_ROOT" || exit 1
 
 # Раздел "Дискретный выход, USB-питание и индикация": hw_set.cgi должен ходить
 # в /dev/i2c-* (PCA9536). Без членства www-data в группе i2c CGI уходит на
@@ -117,6 +126,13 @@ if [ -f "$SCRIPT_DIR/../etc/tmpfiles.d/sa02m-web-login.conf" ]; then
         systemd-tmpfiles --create /etc/tmpfiles.d/sa02m-web-login.conf 2>/dev/null || true
     fi
     log OK "tmpfiles sa02m-web-login.conf (/run/sa02m-web-login)"
+fi
+# Boot-time belt for the root-owned web tree (the conf's own header says why);
+# the tree itself was migrated above by sa02m_web_root_secure.
+if [ -f "$SCRIPT_DIR/../etc/tmpfiles.d/sa02m-web-root.conf" ]; then
+    install -m 644 "$SCRIPT_DIR/../etc/tmpfiles.d/sa02m-web-root.conf" /etc/tmpfiles.d/sa02m-web-root.conf
+    sed -i 's/\r$//' /etc/tmpfiles.d/sa02m-web-root.conf
+    log OK "tmpfiles sa02m-web-root.conf (веб-корень root:root при загрузке)"
 fi
 
 if systemctl is-active --quiet fcgiwrap 2>/dev/null; then

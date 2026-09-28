@@ -20,7 +20,7 @@
       "src_prefix": "www/network_config/",
       "dst_prefix": "/var/www/network_config/",
       "mode": "0644",
-      "owner": "www-data:www-data",
+      "owner": "root:root",
       "exec_globs": ["cgi-bin/**", "**/*.cgi", "**/*.sh"]
     },
     {

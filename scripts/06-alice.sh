@@ -155,7 +155,7 @@ sa02m_install_sudoers "$BASE_DIR/etc/sudoers.d/sa02m-alice" /etc/sudoers.d/sa02m
 
 # ── CGI ────────────────────────────────────────────────────────────────────
 for cgi in sa02m_alice_api.cgi sa02m_alice_topics.cgi; do
-    install -m 0755 -o www-data -g www-data \
+    install -m 0755 -o root -g root \
         "$BASE_DIR/www/network_config/cgi-bin/$cgi" \
         "$WEB_CGI/$cgi"
     sed -i 's/\r$//' "$WEB_CGI/$cgi"
@@ -166,7 +166,7 @@ WEB_ROOT_DIR="${WEB_ROOT:-/var/www/network_config}"
 for js in alice.js smarthome.js; do
     if [ -f "$BASE_DIR/www/network_config/static/js/app/$js" ]; then
         install -d -m 0755 "$WEB_ROOT_DIR/static/js/app"
-        install -m 0644 -o www-data -g www-data \
+        install -m 0644 -o root -g root \
             "$BASE_DIR/www/network_config/static/js/app/$js" \
             "$WEB_ROOT_DIR/static/js/app/$js"
     fi

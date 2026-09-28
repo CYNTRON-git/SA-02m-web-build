@@ -45,7 +45,8 @@
 #          python3 PATH shim starts python3 at most twice in apply_deploy_items
 #          (the loop starts none per item) — the info line prints the count and
 #          the wall time on this host for the record;
-#   9a/9b  a failed `install` / `mv -f` inside atomic_install_file FAILS the apply
+#   9a/9b  a failed tmp write (`cat` into the fd since 1.0.6.55, `install` before)
+#          / `mv -f` inside atomic_install_file FAILS the apply
 #          (rc=1, `ERROR: atomic install failed: <dst>` logged, files_done stays
 #          below files_total, no tmp left behind) and the journal written before
 #          the failure rolls the earlier items back. Pre-existing on main (review
@@ -151,7 +152,7 @@ SRC="$T/runner.sh"
 # the first `install` call of this file (the mode probe below), so every later
 # call — the probe included — goes through the forwarder. `mv` also feeds the
 # case-6 trace.
-INSTALL_FAIL_ON=""; MV_FAIL_ON=""; CP_FAIL_ON=""; SYNC_FAIL_ON=""; SYNC_FAIL_EQ=""; SHA_FAIL=""
+INSTALL_FAIL_ON=""; WRITE_FAIL_ON=""; MV_FAIL_ON=""; CP_FAIL_ON=""; SYNC_FAIL_ON=""; SYNC_FAIL_EQ=""; SHA_FAIL=""
 # Case 11f: the backup NAME is the sha256 of the dst; a failing sha256sum used
 # to yield the bare backups/ directory as the "backup" (cp -a still succeeds).
 sha256sum() {
@@ -167,6 +168,18 @@ cp() {
 install() {
     if [ -n "$INSTALL_FAIL_ON" ] && [[ "${*: -1}" == *"$INSTALL_FAIL_ON"* ]]; then return 1; fi
     command install "$@"
+}
+# Case 9a since 1.0.6.55: atomic_install_file no longer writes its tmp with GNU
+# `install` (which chmods/chowns the tmp BY NAME — test-web-root-own.sh F4) but
+# with `cat SRC >&FD` into a mktemp tmp it opened once. The refused step moved
+# with it — the tmp write, gated on the SOURCE (cat's last argument; its stdout
+# is the tmp's fd) — and the assertions did not move: rc=1, the error line,
+# files_done < files_total, no *.tmp.* left, the rollback. On a pre-1.0.6.55
+# runner (no cat in the writer) 9a goes RED as «failure swallowed»: the seam
+# is where the write happens, not where it used to happen.
+cat() {
+    if [ -n "$WRITE_FAIL_ON" ] && [ "$#" -ge 1 ] && [[ "${*: -1}" == *"$WRITE_FAIL_ON"* ]]; then return 1; fi
+    command cat "$@"
 }
 mv() {
     printf 'mv %s\n' "$*" >> "${TRACE:-/dev/null}"
@@ -578,15 +591,16 @@ else
     bad "deploy loop starts python3 per item: $py_n starts for 100 items (limit 2) — the 33-minute class"
 fi
 
-# 9. A FAILED install / mv FAILS THE APPLY (review 1.0.6.54 F1). Three changed
-#    items; the forwarder refuses the SECOND one's destination. Expected: rc=1,
+# 9. A FAILED tmp write / mv FAILS THE APPLY (review 1.0.6.54 F1). Three changed
+#    items; the forwarder refuses the SECOND one (9a: its tmp write, by source;
+#    9b: its rename, by destination). Expected: rc=1,
 #    the `ERROR: atomic install failed: <dst>` line, files_done < files_total (the
 #    first item's patch only, at SA02M_UPDATE_PROGRESS_S=0), no `*.tmp.*` left in
 #    the live dir, and rollback_from_journal restoring item 1 (its journal line
 #    was written before the failure) while items 2 and 3 are still OLD.
 #    On main / the first 1.0.6.54 build the function's last command was
 #    `sync … || sync` (always 0) — the failure was swallowed: rc=0, files_done=3.
-run_fail_case() {   # <txn> <live dir> <install-gate> <mv-gate> <label>
+run_fail_case() {   # <txn> <live dir> <write-gate (src)> <mv-gate> <label>
     local txn=$1 live=$2 label=$5 ov="$STATEDIR/staging/$1/overlay" i
     mkdir -p "$ov" "$live" "$STATEDIR/staging/$txn/meta" "$STATEDIR/staging/$txn/backups"
     for i in 1 2 3; do
@@ -600,7 +614,7 @@ deploy = [{"src": "g%d.conf" % i, "dst": "%s/g%d.conf" % (live, i), "mode": "064
 open(mf, "w", encoding="utf-8").write(json.dumps({"schema_version": 1, "version": "9.9.9.9", "deploy": deploy}) + "\n")
 PY
     : > "$TXNVARS_F"; : > "$LOG"
-    ( set -euo pipefail; INSTALL_FAIL_ON=$3; MV_FAIL_ON=$4; run_apply "$txn" ) >/dev/null 2>&1
+    ( set -euo pipefail; WRITE_FAIL_ON=$3; MV_FAIL_ON=$4; run_apply "$txn" ) >/dev/null 2>&1
     local rc=$? fd tmps
     fd=$(txn_get files_done)
     tmps=$(find "$live" -name '*.tmp.*' 2>/dev/null | wc -l | tr -d ' ')
@@ -618,7 +632,7 @@ PY
         bad "$label: rollback after the failed item left g1='$(cat "$live/g1.conf")' g2='$(cat "$live/g2.conf")' g3='$(cat "$live/g3.conf")'"
     fi
 }
-run_fail_case TXN4 "$T/live4" "g2.conf.tmp." "" "9a install fails on item 2"
+run_fail_case TXN4 "$T/live4" "/overlay/g2.conf" "" "9a the tmp write fails on item 2"
 run_fail_case TXN5 "$T/live5" "" "g2.conf" "9b mv fails on item 2"
 
 # 10. NUL INSIDE A MANIFEST FIELD IS REFUSED UP FRONT (review 1.0.6.54 F2). The

@@ -184,11 +184,32 @@ ensure_file_mode /etc/codesyscontrol/CODESYSControl_User.cfg 644 root root
 check_service_user_write /var/opt/codesys/PlcLogic root codesys
 check_service_user_write /etc/codesyscontrol root codesys
 
-echo "--- Web UI ($WEB_ROOT, user www-data) ---"
-check_service_user_write "$WEB_ROOT" www-data nginx/fcgiwrap
-for sub in cgi-bin static; do
-    [ -d "$WEB_ROOT/$sub" ] && check_service_user_write "$WEB_ROOT/$sub" www-data nginx/fcgiwrap
+echo "--- Web UI ($WEB_ROOT, served read-only to www-data) ---"
+# Inverse of every other section: the served tree must NOT be writable by the
+# web user (root:root since 1.0.6.55; nothing the web does at runtime writes
+# there — the sa02m-web-root-own block in scripts/lib.sh is the one home). No
+# auto-fix here: the installer / an update re-owns the tree without following
+# links, which a chmod/chown from this script would not guarantee.
+check_service_user_nowrite() {
+    local path="$1" user="$2" svc="$3"
+    [ ! -e "$path" ] && return
+    if write_test "$path" "$user"; then
+        log_issue "$path" "WRITABLE" "$svc as $user can write the served tree (re-run the installer or an update)"
+    else
+        log_ok "$path" "read-only" "$svc as $user"
+    fi
+}
+check_service_user_nowrite "$WEB_ROOT" www-data nginx/fcgiwrap
+for sub in cgi-bin static static/js static/css; do
+    [ -d "$WEB_ROOT/$sub" ] && check_service_user_nowrite "$WEB_ROOT/$sub" www-data nginx/fcgiwrap
 done
+# Captured whole, then trimmed in-shell: `find | head` under pipefail turns a
+# SIGPIPE'd find into a failed assignment and set -e ends the audit.
+_ww=$(find "$WEB_ROOT" \( ! -user root -o -perm /022 -o -type l \) -printf '%p\n' 2>/dev/null) || true
+if [ -n "$_ww" ]; then
+    mapfile -t _wwl <<< "$_ww"
+    log_issue "$WEB_ROOT" "NOT_ROOT_OWNED" "${#_wwl[@]} entries not root-owned / group-other-writable / symlinks, e.g. ${_wwl[*]:0:5}"
+fi
 ensure_file_mode /etc/sa02m-modbus-mqtt.yaml 660 root www-data
 ensure_file_mode /etc/sa02m-gateway.yaml 660 root www-data
 ensure_file_mode /etc/sa02m_web.env 640 root www-data

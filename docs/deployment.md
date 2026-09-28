@@ -110,6 +110,44 @@ after:  stage=rolled_back rolled_back lock=no watchdog=t 15000000 net-watchdog=a
 `sa02m-watchdog.conf` не читается; тогда `journalctl -u sa02m-update-recover -b`
 и `/var/lib/sa02m-update/update.log`.
 
+### Владелец веб-корня: root (с 1.0.6.55)
+
+**`/var/www/network_config` целиком — `root:root`, каталоги 0755, файлы 0644,
+`*.cgi` — 0755; `www-data` его только читает.** (Подключаемые `cgi-bin/lib_*.sh`
+после установщика и www-only остаются 0644 — они `source`-ятся, не
+исполняются; OTA/`.sa02m` ставит им 0755 по `exec_globs` карты — обе формы
+рабочие. Правило перевода: файл с любым битом исполнения — 0755, иначе 0644.) Ни один подпуть не
+оставлен ему на запись: веб во время работы туда ничего не пишет (сессии,
+кэши, загрузки, транзакции обновления — в `/run`, `/tmp`, `/var/lib`).
+Раньше дерево было `chown -R www-data`, и любой root-писатель в нём
+(`cp`, `chmod`, `install`, откат раннера) мог по подложенной ссылке
+записать или сменить режим произвольного файла — модель угроз, строка
+«Root-скрипт в каталоге, куда пишет `www-data`».
+
+Перевод на root делает каждый путь деплоя сам, **до** первой записи в
+дерево, и повторно после неё; идемпотентен, ссылок не проходит,
+подложенные symlink / fifo / файлы с несколькими ссылками удаляет (в
+раздаваемом дереве их не бывает):
+
+| Путь | Когда дерево становится root |
+|---|---|
+| full install / `--refresh`, offline full update | сразу (`scripts/03-webserver.sh`) |
+| www-only | сразу (`scripts/update-www-only.sh`) |
+| легаси-OTA (rsync-путь хелпера) | сразу (`sa02m-web-update-apply.sh`) |
+| web-update (OTA) и `.sa02m` | **со следующей загрузки после доставляющего обновления** — его выполняет прежний раннер платы (копия УСТАНОВЛЕННОГО раннера, как в таблице выше), который дерево не перевладевает; тем же обновлением приезжает `etc/tmpfiles.d/sa02m-web-root.conf`, и `systemd-tmpfiles` при загрузке переводит дерево на root (только владельца). Каждое следующее обновление новым раннером переводит дерево до резервной копии и остановки служб, а файлы под веб-корнем ставит `root:root`, что бы ни было в манифесте (старые подписанные `.sa02m` несут `www-data`) |
+
+Проверка на плате (пусто = норма):
+
+```
+find /var/www/network_config \( ! -user root -o -perm /022 -o -type l \) -print
+```
+
+Никогда не возвращайте дереву владельца `www-data` (`chown -R www-data` в
+старых инструкциях и скриптах — снято): CGI это не нужно, а раннер при
+следующем обновлении всё равно переведёт дерево обратно. Аудит
+`etc/sa02m-check-service-perms.sh` сообщает `WRITABLE` / `NOT_ROOT_OWNED`,
+если `www-data` может писать в дерево.
+
 ### Чего OTA/офлайн-пакет не делает никогда
 
 OTA и офлайн-пакет **копируют файлы по карте назначений** и после этого делают
@@ -174,7 +212,8 @@ OTA обновляет код, установку делает установщ�
 `.sa02m` — с N+1. Подробности формата: `docs/OFFLINE_UPDATE_PACKAGE_V1.md`.
 
 `update-www-only.sh` синхронизирует `www/` → `/var/www/network_config`, чинит
-права (CGI 755, static 644, owner `www-data`), пишет маркер коммита,
+права (CGI 755, static 644, владелец `root:root` — «Владелец веб-корня» выше),
+пишет маркер коммита,
 перезапускает fcgiwrap. nginx перезапуска не требует. Идемпотентен.
 
 **Важно:** `update-www-only.sh` разворачивает `www/` и — если `etc/` есть в
@@ -262,7 +301,8 @@ scripts/lib.sh: line <N>: .../scripts/../etc/sa02m-stacks-policy.sh: No such fil
    ssh root@<dev> 'bash /root/sa02m-deploy-<ver>/scripts/update-www-only.sh'
    ```
 5. **Проверка деплоя:** `VERSION`, `APP_VERSION` в `app.js`, `?v=` в
-   `index.html` — все равны новой версии; owner `www-data:www-data`.
+   `index.html` — все равны новой версии; владелец `root:root`, проверка из
+   «Владелец веб-корня» пуста.
 6. **Функциональная проверка (обязательна):**
    - Страница грузится: `curl -o /dev/null -w '%{http_code}' http://<dev>:9999/`
      (ожидается 200), `/login.html` 200, `/static/js/app.js` содержит новый
@@ -273,7 +313,8 @@ scripts/lib.sh: line <N>: .../scripts/../etc/sa02m-stacks-policy.sh: No such fil
      sa02m-modbus-mqtt`), `POST /api/flasher/scan` по нужному COM, дождаться
      `state:"done"`, вернуть MQTT (`systemctl start sa02m-modbus-mqtt`).
 7. **Откат** при проблеме: распаковать бэкап из шага 1 обратно в `/var/www`,
-   `chown -R www-data:www-data /var/www/network_config`, `systemctl restart
+   `chown -hR root:root /var/www/network_config` (бэкап платы до 1.0.6.55
+   несёт владельца `www-data`; `-h` — не проходить ссылки), `systemctl restart
    fcgiwrap`.
 
 ### Замечания по устройству-стенду 192.168.1.136

@@ -22,6 +22,11 @@ PACKAGE_DEFAULT="$STATEDIR/incoming/package.sa02m"
 IMAGING_LOCK="${SA02M_IMAGING_LOCK:-/run/sa02m-imaging.lock}"
 VALIDATE_PY="${SA02M_UPDATE_VALIDATE_PY:-/opt/sa02m-update/lib/validate_package.py}"
 VERSION_FILE="${SA02M_WEB_VERSION_FILE:-/var/www/network_config/VERSION}"
+# The served web tree: root-owned before anything is deployed into it
+# (web_root_prepare) and every file deployed under it lands root:root whatever
+# the manifest says (apply_deploy_items). Env override for harnesses only —
+# sudo's env_reset and the systemd-run escape (it forwards a named list) drop it.
+WEB_ROOT="${SA02M_WEB_ROOT:-/var/www/network_config}"
 LEGACY_STATEDIR="${SA02M_WEB_BUILD_STATEDIR:-/var/lib/sa02m-web-build}"
 # RuntimeWatchdogUSec (µs) READ BACK from the manager before the apply window
 # held it off; empty = nothing was held, so nothing is restored. The old
@@ -216,12 +221,27 @@ sys.exit(0 if sys.argv[2] in d else 1)' "$TXN_FILE" "$1" 2>/dev/null
 txn_patch() {
     # args: key=value ...
     TXN_FILE="$TXN_FILE" python3 - "$@" <<'PY'
-import json, os, sys, time
+import json, os, stat, sys, tempfile, time
 
+# The state dir is 0775 root:www-data (the CGI writes transaction.json there),
+# so nothing in it is opened by a predictable name or through a link
+# (1.0.6.55): the read is O_NOFOLLOW and regular-files-only — a planted link is
+# a failure, never a silent reset to {} — and the write goes to a mkstemp tmp
+# (O_EXCL, unpredictable), mode set on its fd, renamed over. The old
+# `transaction.json.tmp.<pid>` was opened for writing BY NAME: a link planted
+# at the next pid made every txn_patch a root truncate+write of its target.
 path = os.environ["TXN_FILE"]
 data = {}
-if os.path.exists(path):
-    with open(path, encoding="utf-8") as f:
+try:
+    rfd = os.open(path, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
+except FileNotFoundError:
+    rfd = -1
+except OSError as e:
+    sys.exit("txn_patch: %s refused (%s)" % (path, e))
+if rfd >= 0:
+    with os.fdopen(rfd, encoding="utf-8") as f:
+        if not stat.S_ISREG(os.fstat(f.fileno()).st_mode):
+            sys.exit("txn_patch: %s is not a regular file" % path)
         data = json.load(f)
 
 def coerce(v):
@@ -248,13 +268,22 @@ now = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
 data.setdefault("schema_version", 1)
 data["updated_at"] = now
 
-tmp = path + ".tmp.%d" % os.getpid()
-with open(tmp, "w", encoding="utf-8") as f:
-    json.dump(data, f, indent=2, sort_keys=True, ensure_ascii=False)
-    f.write("\n")
-    f.flush()
-    os.fdatasync(f.fileno())
-os.replace(tmp, path)
+fd, tmp = tempfile.mkstemp(prefix=os.path.basename(path) + ".tmp.", dir=os.path.dirname(path) or ".")
+try:
+    with os.fdopen(fd, "w", encoding="utf-8") as f:
+        # 0644: the status CGIs (www-data) read the transaction back.
+        os.fchmod(f.fileno(), 0o644)
+        json.dump(data, f, indent=2, sort_keys=True, ensure_ascii=False)
+        f.write("\n")
+        f.flush()
+        os.fdatasync(f.fileno())
+    os.replace(tmp, path)
+except BaseException:
+    try:
+        os.remove(tmp)
+    except OSError:
+        pass
+    raise
 dirfd = os.open(os.path.dirname(path) or ".", os.O_RDONLY)
 try:
     os.fsync(dirfd)
@@ -596,6 +625,162 @@ escape_foreign_cgroup() {
     return 0
 }
 
+# ── BEGIN sa02m-web-root-own (shared block — keep BYTE-IDENTICAL) ──────────
+# One home for "the served web tree is root-owned and read-only to www-data"
+# (Operator decision 2026-09-28; the threat and its closure: docs/threat-model.md,
+# the root-writer row). Nothing the web does at runtime writes under the web
+# root — every CGI keeps its state in /run, /tmp or /var/lib — so the list of
+# www-data-writable subpaths is EMPTY. Three callers cannot share a file:
+# scripts/lib.sh is sourced by the installer and update-www-only.sh out of an
+# extracted tree, while etc/sa02m-web-update-apply.sh and
+# etc/sa02m-update-runner.sh run standalone on the board, where scripts/ is not
+# deployed. So the block is duplicated by construction and pinned byte-for-byte
+# by scripts/dev/test-web-root-own.sh. Nothing here logs: the three callers have
+# different log() signatures — each logs the lines it gets back.
+#
+# sa02m_web_root_own ROOT [UID GID] — re-own ROOT and everything under it to
+# UID:GID (default 0:0, the only value a device caller passes; the arguments
+# exist so the harness can run without root): directories 0755, files 0755
+# when any execute bit was set, else 0644. Nothing is followed. ROOT is opened
+# O_NOFOLLOW (a symlinked ROOT is a refusal); every entry is lstat'ed through
+# its directory's fd and opened O_NOFOLLOW; a directory is locked (fchown +
+# fchmod) BEFORE it is listed, so from then on no non-root can add, rename or
+# swap an entry in it. What a served tree never holds is REMOVED, never
+# re-owned: a symlink (the next by-name root write would land on its target),
+# a fifo/socket/device, and a regular file with more than one link (a hard
+# link to a root file — re-owning it re-owns the victim; fs.protected_hardlinks
+# is not relied on). ROOT's parent loses group/other write and a non-root
+# owner; a sticky parent is a shared directory and is refused, never re-moded.
+# Absent ROOT: nothing to do, rc 0. rc 1 on a refusal or any failed entry. One
+# summary line on stdout, one line per removal or failure on stderr. Idempotent.
+sa02m_web_root_own() {
+    python3 - "$@" <<'SA02M_WEB_ROOT_OWN_PY'
+import os, stat, sys
+
+args = sys.argv[1:]
+if len(args) not in (1, 3) or not args[0].startswith("/") or not args[0].strip("/"):
+    sys.exit("web-root-own: usage: ROOT [UID GID] (absolute ROOT, never /)")
+root = args[0].rstrip("/")
+uid, gid = (int(args[1]), int(args[2])) if len(args) == 3 else (0, 0)
+counts = {"settled": 0, "removed": 0, "failed": 0}
+
+
+def note(msg):
+    print("web-root-own: " + msg, file=sys.stderr)
+
+
+def settle(fd, mode):
+    st = os.fstat(fd)
+    touched = False
+    if st.st_uid != uid or st.st_gid != gid:
+        os.fchown(fd, uid, gid)
+        touched = True
+        st = os.fstat(fd)  # a chown clears setuid/setgid — read the mode again
+    if stat.S_IMODE(st.st_mode) != mode:
+        os.fchmod(fd, mode)
+        touched = True
+    if touched:
+        counts["settled"] += 1
+
+
+def walk(dfd, path):
+    settle(dfd, 0o755)  # lock the directory before reading its entries
+    for name in sorted(os.listdir(dfd)):
+        full = path + "/" + name
+        try:
+            st = os.stat(name, dir_fd=dfd, follow_symlinks=False)
+            if stat.S_ISDIR(st.st_mode):
+                cfd = os.open(name, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW, dir_fd=dfd)
+                try:
+                    cst = os.fstat(cfd)
+                    if (cst.st_dev, cst.st_ino) != (st.st_dev, st.st_ino):
+                        raise OSError("replaced while being opened")
+                    walk(cfd, full)
+                finally:
+                    os.close(cfd)
+                continue
+            if stat.S_ISREG(st.st_mode) and st.st_nlink == 1:
+                fd = os.open(name, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK, dir_fd=dfd)
+                try:
+                    fst = os.fstat(fd)
+                    if (fst.st_dev, fst.st_ino) != (st.st_dev, st.st_ino) or fst.st_nlink != 1:
+                        raise OSError("replaced while being opened")
+                    settle(fd, 0o755 if fst.st_mode & 0o111 else 0o644)
+                finally:
+                    os.close(fd)
+                continue
+            if stat.S_ISLNK(st.st_mode):
+                kind = "symlink"
+            elif stat.S_ISREG(st.st_mode):
+                kind = "hard-linked file (%d links)" % st.st_nlink
+            else:
+                kind = "special file"
+            os.unlink(name, dir_fd=dfd)
+            counts["removed"] += 1
+            note("removed %s %s" % (kind, full))
+        except OSError as e:
+            counts["failed"] += 1
+            note("FAILED %s: %s" % (full, e))
+
+
+parent = os.path.dirname(root) or "/"
+try:
+    pfd = os.open(parent, os.O_RDONLY | os.O_DIRECTORY)
+except FileNotFoundError:
+    print("web-root-own: %s absent - nothing to do" % root)
+    sys.exit(0)
+try:
+    pst = os.fstat(pfd)
+    if pst.st_mode & stat.S_ISVTX:
+        note("REFUSED: parent %s is a sticky shared directory" % parent)
+        sys.exit(1)
+    if pst.st_uid not in (0, uid):
+        os.fchown(pfd, uid, gid)
+        note("parent %s re-owned (was uid %d)" % (parent, pst.st_uid))
+    if pst.st_mode & 0o022:
+        os.fchmod(pfd, stat.S_IMODE(pst.st_mode) & ~0o022)
+        note("parent %s lost group/other write (was %o)" % (parent, stat.S_IMODE(pst.st_mode)))
+    try:
+        rfd = os.open(os.path.basename(root), os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW, dir_fd=pfd)
+    except FileNotFoundError:
+        print("web-root-own: %s absent - nothing to do" % root)
+        sys.exit(0)
+    except OSError as e:
+        note("REFUSED: %s is not a real directory (%s)" % (root, e))
+        sys.exit(1)
+    try:
+        walk(rfd, root)
+    finally:
+        os.close(rfd)
+except OSError as e:
+    note("FAILED %s: %s" % (root, e))
+    sys.exit(1)
+finally:
+    os.close(pfd)
+print("web-root-own: %s owned %d:%d - %d entr%s settled, %d removed, %d failed"
+      % (root, uid, gid, counts["settled"], "y" if counts["settled"] == 1 else "ies",
+         counts["removed"], counts["failed"]))
+sys.exit(1 if counts["failed"] else 0)
+SA02M_WEB_ROOT_OWN_PY
+}
+# ── END sa02m-web-root-own ─────────────────────────────────────────────────
+
+# web_root_prepare — the runner's caller of the block above, run in cmd_apply
+# before anything is backed up, stopped or deployed: from here no non-root can
+# add, swap or re-point an entry under $WEB_ROOT, and every link planted there
+# earlier is gone before a root write could land on its target. A refusal dies
+# E_APPLY with nothing stopped and nothing deployed. Not effective in the update
+# that DELIVERS it (that one is applied by the board's previous runner — the
+# boot-time etc/tmpfiles.d/sa02m-web-root.conf covers that hop).
+web_root_prepare() {
+    local out rc=0 line
+    out=$(sa02m_web_root_own "$WEB_ROOT" 2>&1) || rc=$?
+    while IFS= read -r line; do
+        [ -n "$line" ] && log "$line"
+    done <<< "$out"
+    [ "$rc" -eq 0 ] || die E_APPLY "web root $WEB_ROOT could not be made root-owned (rc=$rc) - nothing deployed"
+}
+
 # --- self-copy re-exec before deploy -----------------------------------------
 
 self_reexec_before_deploy() {
@@ -756,7 +941,10 @@ for p in overlay.rglob("*"):
     if not dst or not DST_RE.match(dst):
         continue
     mode = deploy_mode(rel, dst)
-    owner = "www-data:www-data" if dst.startswith("/var/www/") else "root:root"
+    # The served tree is root:root too (read-only to www-data — the
+    # sa02m-web-root-own block's header says why); apply_deploy_items forces it
+    # again for a manifest that still says otherwise.
+    owner = "root:root"
     deploy.append({"src": rel, "dst": dst, "mode": mode, "owner": owner})
 
 ver = os.environ.get("TARGET_VER") or ""
@@ -1271,22 +1459,55 @@ journal_append() {
 
 atomic_install_file() {
     local src=$1 dst=$2 mode=$3 owner=$4
-    local dstdir tmp
+    local dstdir tmp fd="" fdp id_fd id_name ok=0
     dstdir=$(dirname "$dst")
-    mkdir -p "$dstdir"
-    tmp="${dst}.tmp.$$"
+    mkdir -p "$dstdir" || return 1
     # Every caller runs this under `if ! atomic_install_file …`, which suspends
     # set -e for the whole body, so every step below returns explicitly on
     # failure — otherwise the file is counted done (until 1.0.6.54 a
     # disk-full/EACCES/bad-mode install was swallowed and the update committed
     # over a mixed tree; gate: update-deploy-skip 9a/9b, 13a/13b). The caller
     # logs the dst.
-    # install copies mode/owner when possible
-    if [ -n "$owner" ]; then
-        install -m "$mode" -o "${owner%:*}" -g "${owner#*:}" "$src" "$tmp" 2>/dev/null \
-            || install -m "$mode" "$src" "$tmp" || { rm -f "$tmp"; return 1; }
-    else
-        install -m "$mode" "$src" "$tmp" || { rm -f "$tmp"; return 1; }
+    #
+    # No by-name metadata op on the tmp (1.0.6.55). GNU `install` chmods and
+    # chowns its target BY NAME (fchmodat without AT_SYMLINK_NOFOLLOW, strace on
+    # coreutils 9.4), and the old tmp name `<dst>.tmp.$$` was predictable, so
+    # anyone able to write the dst's directory could swap the tmp for a link
+    # between install's create and its chmod — a root chmod/chown of any file.
+    # The web root was such a directory until 1.0.6.55. Now: an unpredictable
+    # tmp made O_EXCL by mktemp, opened once, proven to be that file (fd and
+    # name the same dev:ino, ours, one link, empty regular), written through
+    # the fd, re-owned and re-moded through /proc/self/fd (the fchown/fchmod
+    # of that inode, whatever the name points at by then); the only by-name
+    # steps left are the fdatasync (a read-only open — cannot write anything)
+    # and the rename, which never follows a link. Bash and coreutils only —
+    # no interpreter start per file (update-deploy-skip 8).
+    # A dst directory that is a symlink made by anyone but root is refused: the
+    # rename would land the file wherever that link points (a root-made link is
+    # followed, as before — only root could have made or re-pointed it).
+    if [ -L "$dstdir" ] && [ "$(stat -c '%u' -- "$dstdir" 2>/dev/null)" != 0 ]; then
+        log "ERROR: atomic install: $dstdir is a symlink not made by root — refused"
+        return 1
+    fi
+    tmp=$(mktemp "${dst}.tmp.XXXXXX") || return 1
+    if { exec {fd}<>"$tmp"; } 2>/dev/null; then
+        fdp=/proc/self/fd/$fd
+        id_fd=$(stat -L -c '%d:%i %u %h %s %F' -- "$fdp" 2>/dev/null) || id_fd=""
+        id_name=$(stat -c '%d:%i %u %h %s %F' -- "$tmp" 2>/dev/null) || id_name=""
+        if [ -n "$id_fd" ] && [ "$id_fd" = "$id_name" ] \
+           && [ "${id_fd#* }" = "$EUID 1 0 regular empty file" ]; then
+            # Owner is best-effort, as the old `install -o … || install` was: a
+            # non-root sandbox cannot chown (the board is root and always can).
+            if cat -- "$src" >&"$fd" \
+               && { [ -z "$owner" ] || chown -- "$owner" "$fdp" 2>/dev/null || :; } \
+               && chmod -- "$mode" "$fdp" \
+               && sync -d -- "$tmp"; then
+                ok=1
+            fi
+        else
+            log "ERROR: atomic install: $tmp was replaced before it was written — refused"
+        fi
+        exec {fd}>&-
     fi
     # fdatasync(tmp) BEFORE the rename, fsync(dir) after it, through coreutils
     # `sync -d FILE` / `sync DIR` (>= 8.24; every board runs 8.32 or 9.4) —
@@ -1295,8 +1516,8 @@ atomic_install_file() {
     # gate: update-deploy-skip 13a/13b). A failed dir fsync comes after the
     # rename: the journal line already names the file, so the E_APPLY
     # rollback restores it. Until 1.0.6.54 both were python3 one-liners.
-    sync -d -- "$tmp" || { rm -f "$tmp"; return 1; }
-    mv -f "$tmp" "$dst" || { rm -f "$tmp"; return 1; }
+    [ "$ok" = 1 ] || { rm -f -- "$tmp"; return 1; }
+    mv -f "$tmp" "$dst" || { rm -f -- "$tmp"; return 1; }
     sync -- "$dstdir" || return 1
 }
 
@@ -1375,12 +1596,19 @@ apply_deploy_items() {
     mf=$(manifest_path "$txn")
     overlay="$STATEDIR/staging/$txn/overlay"
     items="$STATEDIR/staging/$txn/deploy.items"
-    total=$(python3 - "$mf" "$items" <<'PY'
+    total=$(python3 - "$mf" "$items" "${WEB_ROOT:-}" <<'PY'
 import json, sys
-mf, out = sys.argv[1], sys.argv[2]
+mf, out, web_root = sys.argv[1], sys.argv[2], sys.argv[3].rstrip("/")
 deploy = json.load(open(mf, encoding="utf-8")).get("deploy", [])
 with open(out, "wb") as f:
     for it in deploy:
+        # A file under the served web tree is root:root whatever the manifest
+        # says: every signed offline package built before 1.0.6.55 names the
+        # web user as the owner there, and one of those must not hand a served
+        # file back to www-data (sa02m-web-root-own block header).
+        dst = str(it.get("dst", ""))
+        if web_root and (dst == web_root or dst.startswith(web_root + "/")):
+            it = dict(it, owner="root:root")
         for k in ("src", "dst", "mode", "owner"):
             s = str(it.get(k, "0644" if k == "mode" else ""))
             # NUL is the field separator: one inside a value would shift every
@@ -1697,8 +1925,89 @@ rollback_from_journal() {
     txn_patch "stage=rolling_back" "result=pending"
     if [ -f "$j" ]; then
         replay_out=$(python3 - "$j" <<'PY'
-import json, os, shutil, sys
+import json, os, stat, sys, tempfile
 path = sys.argv[1]
+NOFOLLOW = getattr(os, "O_NOFOLLOW", 0)   # absent on Windows (harness only)
+
+
+def restore(bak, dst):
+    # No by-name op follows a link (1.0.6.55). The backup is lstat'ed and
+    # opened O_NOFOLLOW: a backup that is a symlink (cp -a copies a planted
+    # dst link as a link) used to be FOLLOWED by copy2, restoring the link
+    # target's bytes — any root-readable file — into the served tree. A link
+    # is restored as the same link, never read through; anything else that is
+    # not a regular file is refused. The tmp is mkstemp's (O_EXCL, not the old
+    # predictable <dst>.rb.<pid>, which copy2 opened and os.chown re-owned BY
+    # NAME), and owner/mode/times go through its fd. Same order as before:
+    # tmp in the dst's directory -> owner/mode -> fsync -> rename -> dir fsync.
+    d = os.path.dirname(dst) or "."
+    os.makedirs(d, exist_ok=True)
+    if os.path.islink(d) and os.lstat(d).st_uid != 0:
+        raise OSError("dst directory %s is a symlink not made by root - refused" % d)
+    st = os.lstat(bak)
+    base = os.path.basename(dst) + ".rb."
+    if stat.S_ISLNK(st.st_mode):
+        target = os.readlink(bak)
+        for _ in range(100):
+            tmp = os.path.join(d, base + os.urandom(6).hex())
+            try:
+                os.symlink(target, tmp)
+                break
+            except FileExistsError:
+                continue
+        else:
+            raise OSError("no free tmp name for the restored link")
+        try:
+            os.replace(tmp, dst)
+        except BaseException:
+            try:
+                os.remove(tmp)
+            except OSError:
+                pass
+            raise
+        return
+    if not stat.S_ISREG(st.st_mode):
+        raise OSError("backup is not a regular file or a link: %s" % bak)
+    src = os.open(bak, os.O_RDONLY | NOFOLLOW | getattr(os, "O_BINARY", 0))
+    fd, tmp = tempfile.mkstemp(prefix=base, dir=d)
+    try:
+        try:
+            while True:
+                chunk = os.read(src, 1 << 20)
+                if not chunk:
+                    break
+                os.write(fd, chunk)
+        finally:
+            os.close(src)
+        # The board is Linux and root. The guards below exist for the dev
+        # harnesses only: a non-root sandbox cannot chown, and
+        # update-recover-boot also runs this replay under Windows CPython,
+        # which has no fchown/fchmod-on-fd and cannot open a directory.
+        if hasattr(os, "fchown"):
+            try:
+                os.fchown(fd, st.st_uid, st.st_gid)
+            except PermissionError:
+                pass
+        if hasattr(os, "fchmod"):
+            os.fchmod(fd, stat.S_IMODE(st.st_mode))
+        else:
+            os.chmod(tmp, stat.S_IMODE(st.st_mode))   # Windows harness only
+        if os.utime in os.supports_fd:
+            os.utime(fd, ns=(st.st_atime_ns, st.st_mtime_ns))
+        os.fsync(fd)   # mkstemp's fd is RDWR, which Windows fsync needs
+        os.close(fd)
+        fd = -1
+        os.replace(tmp, dst)
+    except BaseException:
+        if fd >= 0:
+            os.close(fd)
+        try:
+            os.remove(tmp)
+        except OSError:
+            pass
+        raise
+
+
 with open(path, "rb") as f:
     raw = f.read()
 lines = [ln for ln in raw.split(b"\n") if ln.strip(b" \t\r\x00")]
@@ -1722,36 +2031,10 @@ for idx in range(last, -1, -1):
         if op in ("replace", "delete"):
             if not dst or not bak:
                 raise ValueError("record without dst/backup")
-            if not os.path.isfile(bak):
+            if not os.path.lexists(bak):
                 raise FileNotFoundError("backup missing: %s" % bak)
+            restore(bak, dst)
             d = os.path.dirname(dst) or "."
-            os.makedirs(d, exist_ok=True)
-            tmp = "%s.rb.%d" % (dst, os.getpid())
-            try:
-                shutil.copy2(bak, tmp)
-                st = os.stat(bak)
-                # The board is Linux and root. The guards below (and the RDWR
-                # open for the fsync) exist for the dev harnesses only: a
-                # non-root sandbox cannot chown, and update-recover-boot also
-                # runs this replay under Windows CPython, which has no os.chown,
-                # cannot open a directory, and refuses fsync on a read-only fd.
-                if hasattr(os, "chown"):
-                    try:
-                        os.chown(tmp, st.st_uid, st.st_gid)
-                    except PermissionError:
-                        pass
-                fd = os.open(tmp, os.O_RDWR)   # RDWR: Windows fsync refuses a read-only fd
-                try:
-                    os.fsync(fd)
-                finally:
-                    os.close(fd)
-                os.replace(tmp, dst)
-            except BaseException:
-                try:
-                    os.remove(tmp)
-                except OSError:
-                    pass
-                raise
             if os.name != "nt":
                 dfd = os.open(d, os.O_RDONLY)
                 try:
@@ -2374,6 +2657,7 @@ cmd_apply() {
         fi
 
         honour_cancel_if_early
+        web_root_prepare
         txn_patch "stage=backing_up" "progress_pct=25"
         honour_cancel_if_early
         build_rollback_archive "$txn"
