@@ -94,6 +94,7 @@ set -uo pipefail
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../../.." && pwd)"
 
 fails=0
+skips=0
 ok()  { printf 'comment-mutation-proof: ok    %s\n' "$*"; }
 bad() { printf 'comment-mutation-proof: FAIL  %s\n' "$*"; fails=$((fails + 1)); }
 
@@ -273,13 +274,20 @@ comment_token() {  # $1 = path ; prints `#`, `//`, or `html`
 }
 
 # One green baseline per gate, cached: a gate that is already RED would make
-# every mutation below look successful.
+# every mutation below look successful. A gate that SKIPS here (exit 77, run.mjs
+# SKIP_EXIT — its tool is not installed) cannot be measured on this host: its
+# cases are reported SKIP and counted, never ok and never FAIL, because a
+# mutation under a skipping gate would "stay green" for a reason that has
+# nothing to do with the pin. Returns 0 = green, 1 = red, 2 = skipped.
 declare -A baseline_done=()
 green_baseline() {  # $1 = gate id
-    local g="$1"
+    local g="$1" rc
     [ -n "${baseline_done[$g]:-}" ] && return "${baseline_done[$g]}"
-    if run_gate "$g"; then
+    run_gate "$g"; rc=$?
+    if [ "$rc" -eq 0 ]; then
         baseline_done[$g]=0
+    elif [ "$rc" -eq 77 ]; then
+        baseline_done[$g]=2
     else
         baseline_done[$g]=1
         bad "$g is not green on an unmutated tree — its mutation results below prove nothing"
@@ -297,7 +305,13 @@ while IFS='|' read -r gate file needle; do
         bad "$gate: target file $file is absent from HEAD — the pin moved; re-point this case"
         continue
     fi
-    green_baseline "$gate" || continue
+    green_baseline "$gate"; brc=$?
+    if [ "$brc" -eq 2 ]; then
+        printf "comment-mutation-proof: SKIP  %s skips in this environment (exit 77) — its case on '%s' in %s is NOT measured here\n" "$gate" "$needle" "$file"
+        skips=$((skips + 1))
+        continue
+    fi
+    [ "$brc" -eq 0 ] || continue
 
     cp "$TREE/$file" "$PRISTINE/current"
     # Comment out every non-comment line carrying the pinned text. index() is a
@@ -337,8 +351,11 @@ while IFS='|' read -r gate file needle; do
     fi
     cp "$TMP/mutated" "$TREE/$file"
 
-    if run_gate "$gate"; then
+    run_gate "$gate"; mrc=$?
+    if [ "$mrc" -eq 0 ]; then
         bad "$gate stays GREEN with '$needle' commented out in $file — the gate is hollow"
+    elif [ "$mrc" -eq 77 ]; then
+        bad "$gate turns into a SKIP (exit 77) with '$needle' commented out in $file — a skip is not RED, the gate is hollow"
     else
         ok "$gate goes RED when '$needle' is commented out in $file"
     fi
@@ -456,7 +473,11 @@ coverage_check
 
 echo
 if [ "$fails" -eq 0 ]; then
-    echo "comment-mutation-proof: ALL OK — $n_cases comment-out mutation(s) each turned their gate RED"
+    if [ "$skips" -gt 0 ]; then
+        echo "comment-mutation-proof: ALL OK — $((n_cases - skips)) of $n_cases comment-out mutation(s) each turned their gate RED; $skips SKIPPED (the gate skips in this environment — not measured here, CI is the authority)"
+    else
+        echo "comment-mutation-proof: ALL OK — $n_cases comment-out mutation(s) each turned their gate RED"
+    fi
     exit 0
 fi
 echo "comment-mutation-proof: $fails FAILURE(S)"

@@ -20,7 +20,8 @@
 #   3. origin/main
 # A remote-tracking ref is used as-is; where one is absent (CI's depth-1
 # checkout) a bounded `git fetch --depth=1` is tried unless
-# CACHE_BUST_R_NO_FETCH is set. No candidate ⇒ printed as a SKIP, exit 0.
+# CACHE_BUST_R_NO_FETCH is set. No candidate ⇒ printed as a SKIP, exit 77
+# (run.mjs SKIP_EXIT — the runner prints SKIP, never PASS).
 # The WORKING TREE is what is compared, never HEAD — the build beat runs on the
 # Builder's uncommitted edits. HONESTY: in CI the checked-out tree is clean and
 # equals the pushed origin/<VERSION>, so CI reports "0 with changed bytes" —
@@ -86,7 +87,7 @@ for cand in "$VERSION" "$PREV" main; do
 done
 if [ -z "$REF" ]; then
     skip "no reference state reachable (origin/$VERSION, origin/$PREV, origin/main) — &r= discipline NOT verified"
-    exit 0
+    exit 77
 fi
 if [ "$REF" = "$HEAD_SHA" ]; then
     printf 'cache-bust-r: note  %s is HEAD itself — only uncommitted edits can differ from it\n' "$REF_NAME"

@@ -19,8 +19,18 @@
 // untracked) — see computeTouchedFiles(); a Builder's uncommitted handback is
 // exactly what the pre-handback invocation has to look at.
 //
-// Exit codes: 0 = every matched row passed (or no rows matched, or no registry);
+// Exit codes: 0 = every matched row passed or SKIPPED (or no rows matched, or no
+//                 registry);
 //             non-zero = a row failed, a bad beat arg, or a malformed registry.
+//
+// Row verdicts: a row's exit 0 is PASS; exit SKIP_EXIT (77, the automake
+// convention) is SKIP — the row could not run in this environment (its tool is
+// not installed) and says so on its own output line; any other status is FAIL.
+// A skip is printed `SKIP`, counted apart from the passes and named in the
+// summary, and does not turn the beat red — but it is never reported as a pass
+// (docs/agent-rules/quality-gate-rigor.md: "a skip is reported as a skip").
+// Before this, a row's only way to skip was exit 0, which printed PASS (audit
+// 2026-09-24 L1). Which rows skip where: .ai-dev/notes/quality-gate-environment.md.
 //
 // Security: the executed commands come ONLY from the tracked, reviewed
 // tools.json (first-party, changes through git). The <beat> arg is used SOLELY
@@ -33,6 +43,9 @@ import { fileURLToPath } from "node:url";
 import { execSync } from "node:child_process";
 
 const BEATS = ["build", "review", "ship"];
+
+// The exit status a row returns for a documented environment skip (above).
+export const SKIP_EXIT = 77;
 
 // Resolve the tools.json path: prefer `<root>/src/quality/tools.json` (the
 // project's real tools), fall back to the co-located file beside this runner
@@ -254,8 +267,9 @@ export function filterByScope(rows, touchedFiles) {
 }
 
 // Run every tools.json row whose beat === `beat`, from `root` (the cwd the
-// commands execute in). Returns an exit code (0 = all matched rows passed /
-// none matched / no registry; non-zero = failure or malformed registry).
+// commands execute in). Returns an exit code (0 = all matched rows passed or
+// skipped / none matched / no registry; non-zero = failure or malformed
+// registry).
 // `registryPath` overrides the default resolution (see resolveRegistry).
 // `touchedFiles` (optional array of project-root-relative paths) enables
 // scope mode — rows with a `covers` field run only if a touched file matches
@@ -297,11 +311,12 @@ export function run(beat, root, registryPath, touchedFiles) {
   const totalBefore = rows.length;
   rows = filterByScope(rows, touchedFiles);
   if (touchedFiles && touchedFiles.length > 0) {
-    const skipped = totalBefore - rows.length;
-    if (skipped > 0) console.log(`run.mjs: ${skipped} tool(s) skipped (scope — not touched)`);
+    const notSelected = totalBefore - rows.length;
+    if (notSelected > 0) console.log(`run.mjs: ${notSelected} tool(s) not selected (scope — not touched; not an environment SKIP)`);
   }
 
   let failed = 0;
+  const skipped = [];
   for (const row of rows) {
     if (typeof row.run !== "string" || !row.run) {
       console.error(`FAIL  ${row.id ?? "<no id>"} — row has no runnable "run" command`);
@@ -311,13 +326,22 @@ export function run(beat, root, registryPath, touchedFiles) {
     try {
       execSync(row.run, { cwd: root, stdio: "inherit" });
       console.log(`PASS  ${row.id}`);
-    } catch {
-      console.log(`FAIL  ${row.id}`);
-      failed++;
+    } catch (e) {
+      if (e && e.status === SKIP_EXIT) {
+        console.log(`SKIP  ${row.id}`);
+        skipped.push(row.id);
+      } else {
+        console.log(`FAIL  ${row.id}`);
+        failed++;
+      }
     }
   }
 
-  console.log(`\n${beat}: ${rows.length - failed}/${rows.length} passed${failed ? ` — ${failed} FAILED` : ""}`);
+  const passed = rows.length - failed - skipped.length;
+  const skipNote = skipped.length
+    ? ` — ${skipped.length} SKIPPED, not verified here (${skipped.join(", ")})`
+    : "";
+  console.log(`\n${beat}: ${passed}/${rows.length} passed${skipNote}${failed ? ` — ${failed} FAILED` : ""}`);
   return failed ? 1 : 0;
 }
 

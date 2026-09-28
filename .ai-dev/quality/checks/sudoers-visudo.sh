@@ -9,8 +9,8 @@
 # (audit 2026-09-24, M2; sudoers-pin-contract.sh pins grants, not syntax).
 #
 # Where visudo is absent (Windows git-bash) this prints a loud SKIP line and
-# exits 0 — run.mjs has no skip status and reports the row as PASS; the skip is
-# recorded in .ai-dev/notes/quality-gate-environment.md and WSL/Linux CI is the
+# exits 77 (run.mjs SKIP_EXIT) — the runner reports the row as SKIP, never PASS;
+# recorded in .ai-dev/notes/quality-gate-environment.md, WSL/Linux CI is the
 # authority. Non-vacuous: no drop-in found FAILS.
 # RED proof: SUDOERS_VISUDO_DIR=<dir holding a broken copy> bash this-script
 # → FAIL naming the file (recorded in the registry row).
@@ -23,7 +23,7 @@ n=0
 
 if ! command -v visudo >/dev/null 2>&1; then
     echo "sudoers-visudo: SKIP  visudo not on PATH here — the $dir drop-ins are NOT validated on this host (WSL/Linux CI is the authority)"
-    exit 0
+    exit 77
 fi
 
 tmp=$(mktemp) || { echo "sudoers-visudo: FAIL  mktemp"; exit 1; }

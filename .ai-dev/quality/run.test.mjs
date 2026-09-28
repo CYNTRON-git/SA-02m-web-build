@@ -11,6 +11,10 @@
      B. coversToRegex()'s handling of a bare path PREFIX.
      C. computeTouchedFiles() ignoring the working tree once the branch has a
         commit — the Builder's own handback invisible to `--touched`.
+     D. run() printing PASS for a row that could not run here (no skip
+        verdict existed; audit 2026-09-24 L1) — now exit 77 = SKIP.
+     E. the whole-row skippers returning 0 instead of 77 when their tool is
+        forced absent.
    ───────────────────────────────────────────────────────────────────────────
    Regression A: the fallback used to `.trim()` the WHOLE multi-line
    `git status --short` output before splitting into lines. Trimming the
@@ -53,11 +57,16 @@
    the actual fallback path (no origin remote, branch even with main, one
    unstaged modification) rather than a copy of the parsing logic.
    ═══════════════════════════════════════════════════════════════════════════ */
-import { execSync } from 'node:child_process';
-import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { execSync, spawnSync } from 'node:child_process';
+import { copyFileSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
-import { join } from 'node:path';
-import { computeTouchedFiles, coversToRegex, fileMatchesCovers, workingTreeFiles } from './run.mjs';
+import { dirname, join } from 'node:path';
+import { fileURLToPath } from 'node:url';
+import * as runner from './run.mjs';
+import { computeTouchedFiles, coversToRegex, fileMatchesCovers, run, workingTreeFiles } from './run.mjs';
+// Read off the namespace so the pre-fix runner (no such export) yields
+// undefined and section D goes RED on assertions instead of a link error.
+const SKIP_EXIT = runner.SKIP_EXIT;
 
 let failures = 0;
 function check(cond, msg) {
@@ -209,9 +218,160 @@ check(coversToRegex('etc/') instanceof RegExp, 'coversToRegex() returns a RegExp
 check(fileMatchesCovers(['etc/x'], ['nope/', 'etc/']) === true,
   'fileMatchesCovers() ORs across patterns — a later pattern still matches');
 
+// ── D. a documented environment skip is reported as SKIP, never as PASS ───
+// A row that cannot run here (its tool is not installed) used to exit 0, and
+// the runner printed `PASS` for it — five rows did exactly that on a box
+// without their tool (audit 2026-09-24 L1). The runner now reads SKIP_EXIT
+// (77) as a skip: printed SKIP, counted apart from the passes, named in the
+// summary, and NOT a red beat. Every other non-zero code stays a FAIL.
+function runCaptured(rows, beat = 'build') {
+  const d = mkdtempSync(join(tmpdir(), 'sa02m-run-mjs-test-skip-'));
+  const reg = join(d, 'tools.json');
+  writeFileSync(reg, JSON.stringify({ tools: rows }));
+  const lines = [];
+  const origLog = console.log;
+  const origErr = console.error;
+  console.log = (...a) => { lines.push(a.join(' ')); };
+  console.error = (...a) => { lines.push(a.join(' ')); };
+  let rc;
+  try {
+    rc = run(beat, d, reg, null);
+  } finally {
+    console.log = origLog;
+    console.error = origErr;
+    rmSync(d, { recursive: true, force: true });
+  }
+  return { rc, out: lines.join('\n') };
+}
+const exitRow = (id, code) => ({ id, beat: 'build', run: 'node -e "process.exit(' + code + ')"' });
+
+check(SKIP_EXIT === 77, 'skip: SKIP_EXIT is 77 (the automake convention every converted row returns)');
+{
+  const { rc, out } = runCaptured([exitRow('d-pass', 0), exitRow('d-skip', SKIP_EXIT)]);
+  check(rc === 0, 'skip: a pass + a documented skip is a GREEN beat (rc 0) — got ' + rc);
+  check(/^SKIP  d-skip$/m.test(out), 'skip: the skipped row prints `SKIP  d-skip`');
+  check(!/^PASS  d-skip$/m.test(out), 'skip: the skipped row does NOT print `PASS  d-skip` — the L1 defect');
+  check(/^PASS  d-pass$/m.test(out), 'skip: the passing row still prints PASS');
+  check(/build: 1\/2 passed/.test(out) && !/2\/2 passed/.test(out),
+    'skip: the summary counts the skip apart from the passes (1/2 passed, never 2/2) — got ' + JSON.stringify(out.split('\n').pop()));
+  check(/1 SKIPPED/.test(out) && /d-skip/.test(out.split('\n').pop()),
+    'skip: the summary names the skip count and the skipped row id');
+}
+{
+  const { rc, out } = runCaptured([exitRow('d-pass', 0), exitRow('d-skip', SKIP_EXIT), exitRow('d-fail', 1)]);
+  check(rc === 1, 'skip: a skip does not mask a real failure (rc 1) — got ' + rc);
+  check(/^FAIL  d-fail$/m.test(out) && /1 FAILED/.test(out), 'skip: the failing row prints FAIL and is counted');
+}
+{
+  // Non-vacuity of the mapping: only 77 is a skip. The neighbouring codes a
+  // row really uses (1 = check failed, 2 = usage/infra, 3 = ui-layout INFRA
+  // ERROR) must stay FAILs, or "skip" would swallow real breakage.
+  for (const code of [1, 2, 3, 76, 78]) {
+    const { rc, out } = runCaptured([exitRow('d-code' + code, code)]);
+    check(rc === 1 && /^FAIL  d-code/m.test(out) && !/SKIP/.test(out),
+      'skip: exit ' + code + ' is a FAIL, not a SKIP');
+  }
+}
+{
+  const { rc, out } = runCaptured([exitRow('d-only-skip', SKIP_EXIT)]);
+  check(rc === 0 && /build: 0\/1 passed/.test(out),
+    'skip: a beat whose only row skipped reads 0/1 passed, green but not "passed" — got ' + JSON.stringify(out));
+}
+
+// ── E. the whole-row skippers return SKIP_EXIT, not 0 ─────────────────────
+// Each row below skips its whole run when its tool is absent. Forced absence:
+// an empty PATH for a binary probe (the scripts use only builtins before the
+// probe), a PYTHONPATH shadow module that refuses to import for a python dep,
+// and a copy of the driver outside the repo (no scripts/dev/node_modules) for
+// playwright. Each must exit 77 AND print its skip line — the line alone was
+// already there when the row read PASS.
+const REPO = join(dirname(fileURLToPath(import.meta.url)), '..', '..');
+function sh(cmd, env) {
+  const r = spawnSync('bash', ['-c', cmd], { cwd: REPO, env: { ...process.env, ...env }, encoding: 'utf8' });
+  return { rc: r.status, out: (r.stdout || '') + (r.stderr || '') };
+}
+{
+  const r = sh('PATH=/nonexistent-sa02m-skip-probe; exec "$BASH" .ai-dev/quality/checks/shellcheck.sh');
+  check(r.rc === SKIP_EXIT && /shellcheck: skipped/.test(r.out),
+    'skipper: shellcheck.sh without shellcheck exits 77 with its skip line — got rc ' + r.rc + ' ' + JSON.stringify(r.out.trim()));
+}
+{
+  const r = sh('PATH=/nonexistent-sa02m-skip-probe; exec "$BASH" .ai-dev/quality/checks/sudoers-visudo.sh');
+  check(r.rc === SKIP_EXIT && /sudoers-visudo: SKIP/.test(r.out),
+    'skipper: sudoers-visudo.sh without visudo exits 77 with its skip line — got rc ' + r.rc + ' ' + JSON.stringify(r.out.trim()));
+}
+{
+  const shadow = mkdtempSync(join(tmpdir(), 'sa02m-run-mjs-test-pyshadow-'));
+  try {
+    for (const m of ['pytest', 'jsonschema', 'cryptography']) {
+      writeFileSync(join(shadow, m + '.py'), 'raise ImportError("shadowed by run.test.mjs section E")\n');
+    }
+    const env = { PYTHONPATH: shadow };
+    let r = sh('bash .ai-dev/quality/checks/pytest-suite.sh e-row opt/sa02m-update', env);
+    check(r.rc === SKIP_EXIT && /e-row: pytest not installed/.test(r.out),
+      'skipper: pytest-suite.sh without pytest exits 77 — got rc ' + r.rc + ' ' + JSON.stringify(r.out.trim()));
+    // The per-dep branch: pytest importable, a listed runtime dep not.
+    writeFileSync(join(shadow, 'pytest.py'), '# importable stand-in\n');
+    r = sh('bash .ai-dev/quality/checks/pytest-suite.sh e-row opt/sa02m-update cryptography', env);
+    check(r.rc === SKIP_EXIT && /e-row: runtime dep 'cryptography' missing/.test(r.out),
+      'skipper: pytest-suite.sh without a listed dep exits 77 — got rc ' + r.rc + ' ' + JSON.stringify(r.out.trim()));
+    r = sh('bash .ai-dev/quality/checks/sh-model-schema.sh', env);
+    check(r.rc === SKIP_EXIT && /jsonschema' not installed - skipped/.test(r.out),
+      'skipper: sh-model-schema.sh without jsonschema exits 77 — got rc ' + r.rc + ' ' + JSON.stringify(r.out.trim()));
+  } finally {
+    rmSync(shadow, { recursive: true, force: true });
+  }
+}
+// The runner harnesses under scripts/dev/ that guard on python3 skip the whole
+// row without it (found by the L1 sweep beyond the entry's list).
+for (const [script, line] of [
+  ['scripts/dev/test-update-conditional-restart.sh', 'SKIP  python3 unavailable'],
+  ['scripts/dev/test-update-deploy-skip.sh', 'SKIP  python3 unavailable'],
+  ['scripts/dev/test-update-recover-boot.sh', 'SKIP  python3 unavailable'],
+  ['scripts/dev/test-web-update-launcher-guard.sh', 'SKIP  python3 unavailable'],
+]) {
+  const r = sh('PATH=/nonexistent-sa02m-skip-probe; exec "$BASH" ' + script);
+  check(r.rc === SKIP_EXIT && r.out.includes(line),
+    'skipper: ' + script + ' without python3 exits 77 — got rc ' + r.rc + ' ' + JSON.stringify(r.out.trim().slice(-160)));
+}
+{
+  // cache-bust-r with no reference state reachable: a throwaway repo carrying
+  // only the check and a VERSION, no origin refs, fetching disabled.
+  const d = mkdtempSync(join(tmpdir(), 'sa02m-run-mjs-test-cachebust-'));
+  try {
+    mkdirSync(join(d, '.ai-dev', 'quality', 'checks'), { recursive: true });
+    mkdirSync(join(d, 'www', 'network_config'), { recursive: true });
+    copyFileSync(join(REPO, '.ai-dev', 'quality', 'checks', 'cache-bust-r.sh'), join(d, '.ai-dev', 'quality', 'checks', 'cache-bust-r.sh'));
+    writeFileSync(join(d, 'www', 'network_config', 'VERSION'), '1.0.6.57\n');
+    const g = (c) => execSync('git ' + c, { cwd: d, stdio: 'pipe', env });
+    g('init -q -b main'); g('add -A'); g('commit -q -m base');
+    const r = spawnSync('bash', ['.ai-dev/quality/checks/cache-bust-r.sh'],
+      { cwd: d, env: { ...process.env, CACHE_BUST_R_NO_FETCH: '1' }, encoding: 'utf8' });
+    const out = (r.stdout || '') + (r.stderr || '');
+    check(r.status === SKIP_EXIT && /cache-bust-r: skip  no reference state reachable/.test(out),
+      'skipper: cache-bust-r.sh with no reference state exits 77 — got rc ' + r.status + ' ' + JSON.stringify(out.trim()));
+  } finally {
+    rmSync(d, { recursive: true, force: true });
+  }
+}
+{
+  const d = mkdtempSync(join(tmpdir(), 'sa02m-run-mjs-test-uilayout-'));
+  try {
+    const checksDir = join(d, '.ai-dev', 'quality', 'checks');
+    mkdirSync(checksDir, { recursive: true });
+    copyFileSync(join(REPO, '.ai-dev', 'quality', 'checks', 'ui-layout.mjs'), join(checksDir, 'ui-layout.mjs'));
+    const r = spawnSync(process.execPath, [join(checksDir, 'ui-layout.mjs')], { cwd: d, encoding: 'utf8' });
+    const out = (r.stdout || '') + (r.stderr || '');
+    check(r.status === SKIP_EXIT && /ui-layout: skipped — playwright not installed/.test(out),
+      'skipper: ui-layout.mjs without playwright exits 77 — got rc ' + r.status + ' ' + JSON.stringify(out.trim().slice(0, 200)));
+  } finally {
+    rmSync(d, { recursive: true, force: true });
+  }
+}
+
 if (failures) {
   console.error('quality-runner-self-test: ' + failures + ' assertion(s) failed');
   process.exit(1);
 }
-console.log('quality-runner-self-test: computeTouchedFiles() fallback + covers prefix/glob matching ok');
+console.log('quality-runner-self-test: computeTouchedFiles() fallback + covers prefix/glob matching + SKIP status ok');
 process.exit(0);

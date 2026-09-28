@@ -123,7 +123,7 @@ set -u
 cd "$(dirname "${BASH_SOURCE[0]}")/../.." || exit 1
 
 SRC="${UPDATE_RUNNER_SRC:-etc/sa02m-update-runner.sh}"
-command -v python3 >/dev/null 2>&1 || { echo "SKIP  python3 unavailable (runner requires it)"; exit 0; }
+command -v python3 >/dev/null 2>&1 || { echo "SKIP  python3 unavailable (runner requires it)"; exit 77; }  # run.mjs SKIP_EXIT
 T=$(mktemp -d) || exit 1
 trap 'rm -rf "$T"' EXIT
 
@@ -140,7 +140,8 @@ SRC="$T/runner.sh"
 # sandboxes cannot represent them — Git Bash on Windows collapses the mode model
 # (`install -m 0755` yields 644, a .sh chmod 644 reports 755), so the mode axis
 # (assertion 3) and the journal-restore rollback (assertion 5) cannot be exercised
-# faithfully. On such a host the test SKIPs (exit 0) rather than emit false
+# faithfully. On such a host the test SKIPs (exit 77, run.mjs SKIP_EXIT — the
+# runner prints SKIP, never PASS) rather than emit false
 # failures — the same posture as the python3 guard above. Run it under WSL/Linux
 # (or in CI on the device toolchain) for the full RED->GREEN coverage. The probe is
 # `install -m 0755` -> mode 755, the exact operation assertion 3 verifies.
@@ -178,7 +179,7 @@ _probe="$T/.mode-probe"; printf 'x' > "$_probe.src"
 install -m 0755 "$_probe.src" "$_probe.dst" 2>/dev/null
 if [ "$(stat -c '%a' "$_probe.dst" 2>/dev/null)" != "755" ]; then
     echo "SKIP  sandbox filesystem cannot represent POSIX modes (install -m 0755 != 755, e.g. Git Bash on Windows) — run under WSL/Linux for full coverage"
-    exit 0
+    exit 77
 fi
 
 fails=0
