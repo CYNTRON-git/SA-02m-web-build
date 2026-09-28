@@ -226,9 +226,6 @@ class TestSetpointWrite(unittest.TestCase):
         self.assertEqual(publishes, [(TOPIC + "/unit_on/on", "1")])
 
 
-if __name__ == "__main__":
-    unittest.main()
-
 
 # ── CE-02m-3 phase devices carrying a cloud-only `frequency` (1.0.6.58) ──────
 # Bench 1.135's three «Фаза А/В/С» devices each carry a float property
@@ -295,3 +292,7 @@ class TestCePhaseFrequency(unittest.TestCase):
         dev = reg.discovery_devices(C.PROFILE_CLOUD)[0]
         instances = [p["parameters"]["instance"] for p in dev["properties"]]
         self.assertIn("frequency", instances)
+
+
+if __name__ == "__main__":
+    unittest.main()
