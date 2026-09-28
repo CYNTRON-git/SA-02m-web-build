@@ -374,8 +374,8 @@ for (const [script, line] of [
 // ── F. no registry-run script exits with a COUNT ───────────────────────────
 // SKIP_EXIT (77) is only honest if no gate can reach 77 by accident. A gate
 // ending in `exit "$fails"` reports 77 failures as an environment SKIP (beat
-// green) and 256 failures as exit 0 (PASS) — review F1, 1.0.6.58: fifteen such
-// sites in fourteen scripts. The rule: a registry-run script's OWN exit status
+// green) and 256 failures as exit 0 (PASS) — review F1, 1.0.6.58 (the measured
+// RED lives in the quality-runner-self-test row). The rule: a registry-run script's OWN exit status
 // is a literal, a boolean `$(( … > 0 ))`, or carries an `exit-status:` marker
 // naming why a variable is safe. Every row is enumerated (the same
 // check-script resolution comment-mutation-proof uses), not a list of names.
