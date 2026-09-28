@@ -21,7 +21,6 @@ HTTP-сервис демона (stdlib http.server поверх unix-socket).
 from __future__ import annotations
 
 import argparse
-import cgi
 import grp
 import io
 import json
@@ -48,6 +47,7 @@ from .config import FlasherConfig, load_config
 from .firmware_repo import FirmwareRepo
 from .jobs import Job, JobKind, JobManager, JobState, format_sse
 from .mplc_lease import port_lease, port_occupants, port_poll_service_labels
+from .multipart_upload import read_file_field
 from . import device_config, runner
 
 
@@ -183,25 +183,9 @@ def _read_json_body(handler: BaseHTTPRequestHandler) -> Dict[str, Any]:
 
 def _extract_multipart(handler: BaseHTTPRequestHandler) -> Tuple[str, bytes]:
     """Вернуть (filename, raw_bytes) из multipart/form-data с полем 'file'."""
-    ctype = handler.headers.get("Content-Type") or ""
-    if not ctype.startswith("multipart/"):
-        raise ValueError("Ожидается multipart/form-data")
-    length = int(handler.headers.get("Content-Length") or 0)
-    if length <= 0:
-        raise ValueError("Пустое тело запроса")
-    fs = cgi.FieldStorage(
-        fp=handler.rfile,
-        headers=handler.headers,
-        environ={"REQUEST_METHOD": "POST", "CONTENT_TYPE": ctype, "CONTENT_LENGTH": str(length)},
-        keep_blank_values=True,
-    )
-    if "file" not in fs:
-        raise ValueError("Поле 'file' не найдено")
-    item = fs["file"]
-    if not item.filename:
-        raise ValueError("Отсутствует имя файла")
-    data = item.file.read() if hasattr(item, "file") else item.value
-    return item.filename, (data if isinstance(data, (bytes, bytearray)) else bytes(data or b""))
+    # No `cgi` (removed in Python 3.13): the parser and its semantics live in
+    # multipart_upload.py.
+    return read_file_field(handler.headers, handler.rfile)
 
 
 # ─── Handler ─────────────────────────────────────────────────────────────────

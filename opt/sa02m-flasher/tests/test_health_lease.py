@@ -8,9 +8,8 @@ That probe was dead from 2026-07-12 to 2026-08-06 because nothing asserted the
 daemon side of the handshake. These are the assertions that were missing.
 
 WHY IT EXECUTES EXTRACTED SOURCE INSTEAD OF IMPORTING service.py
-`sa02m_flasher.service` cannot be imported off-Linux at all (`import grp`), and
-`import cgi` additionally breaks it on Python >= 3.13 — so no test in this
-directory imports it, which is exactly why the py-unit-flasher row is green
+`sa02m_flasher.service` cannot be imported off-Linux at all (`import grp`) — so
+no test in this directory imports it, which is exactly why the py-unit-flasher row is green
 today. Importing it here would turn that row red on every dev box. Instead we
 extract the SHIPPED function bodies with `ast` and exec them against stubs —
 the same "run the shipped code against a sandbox" idiom the bash harnesses in
