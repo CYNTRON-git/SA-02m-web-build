@@ -247,6 +247,43 @@ else
     bad "(g) refused fdatasync: rc=$rc live='$(live_plain)' dir='$(ls "$RESTORE" | tr '\n' ' ')' patched='$(tr '\n' ';' < "$TXNPATCH")'"
 fi
 
+# ── (h)/(i): an archive that cannot be read, or is not there, is not a rollback ──
+# (h) a truncated archive (a corrupt or half-written tar.gz): tar fails.
+# (i) the transaction names an archive that does not exist, and there is no
+#     journal: nothing can be restored at all.
+# Either way the outcome must be stage=error «rollback incomplete (…)» naming
+# the cause, never rolled_back.
+# RED on the 1.0.6.60 review tree (b39d731), observed 2026-09-28 (git-bash and
+# WSL): (h) and (i) both ended stage=rolled_back — `tar … || true` swallowed
+# the truncated archive, and a missing archive skipped the restore silently.
+GOOD_ARCHIVE=$ARCHIVE
+TRUNC="$STATEDIR/rollback/pre-update-TRUNC.tar.gz"
+head -c "$(( $(wc -c < "$GOOD_ARCHIVE") / 2 ))" "$GOOD_ARCHIVE" > "$TRUNC"
+if tar -tzf "$TRUNC" >/dev/null 2>&1; then
+    bad "(h) precondition: the half-length archive still reads cleanly — the case would test nothing"
+else
+    seed_live; ARCHIVE="$TRUNC"
+    run_fallback; rc=$?
+    if [ "$rc" -eq 0 ] && stage_is error && ! stage_is rolled_back \
+        && grep -q '^error_message=rollback incomplete (rollback archive unreadable (tar rc=' "$TXNPATCH" \
+        && ! tmp_left && ! find "$STATEDIR/staging" -maxdepth 1 -name 'rollback-extract.*' 2>/dev/null | grep -q .; then
+        ok "(h) truncated archive: stage=error «rollback incomplete (rollback archive unreadable …)», not rolled_back, no tmp / extract dir left"
+    else
+        bad "(h) truncated archive: rc=$rc patched='$(tr '\n' ';' < "$TXNPATCH")'"
+    fi
+fi
+
+seed_live; ARCHIVE="$STATEDIR/rollback/pre-update-GONE.tar.gz"
+run_fallback; rc=$?
+if [ "$rc" -eq 0 ] && stage_is error && ! stage_is rolled_back \
+    && grep -q '^error_message=rollback incomplete (no journal and no rollback archive' "$TXNPATCH" \
+    && [ "$(live_plain)" = "LIVE post-update payload" ]; then
+    ok "(i) no journal and no archive: stage=error «rollback incomplete (no journal and no rollback archive …)», live files untouched"
+else
+    bad "(i) no journal and no archive: rc=$rc patched='$(tr '\n' ';' < "$TXNPATCH")'"
+fi
+ARCHIVE=$GOOD_ARCHIVE
+
 echo "-----"
 if [ "$fails" -eq 0 ]; then echo "PASS (all checks)"; exit 0
 else echo "FAIL ($fails check(s))"; exit 1; fi

@@ -1686,7 +1686,12 @@ run_migrations() {
 #     rename → dir fsync, never a truncate-then-fill of the live path;
 #   - any failure ends in stage=error «rollback incomplete (…)» with the
 #     caller's code, never rolled_back over a partly restored tree.
-# Gates: update-deploy-skip 15a-15e, update-recover-boot R10.
+# With no journal (staging lost), the ARCHIVE FALLBACK restores the
+# pre-update archive under the same rules: each member atomically through
+# atomic_install_file, a failed member / an unreadable archive / no archive at
+# all each end in «rollback incomplete (…)».
+# Gates: update-deploy-skip 15a-15e, update-recover-boot R10,
+# update-recover-rollback (c)-(i).
 rollback_from_journal() {
     local txn=$1 code=${2:-E_APPLY} message=${3:-}
     local j="$STATEDIR/staging/$txn/journal.jsonl"
@@ -1789,7 +1794,12 @@ PY
             tmp=$(mktemp -d "$STATEDIR/staging/rollback-extract.XXXXXX")
             # -p preserves each member's mode/owner so the restore keeps exec bits
             # (else systemd 203/EXEC on the restored scripts) and restrictive perms.
-            tar -xpzf "$archive" -C "$tmp" || true
+            # A corrupt or truncated archive is NOT a clean rollback: whatever
+            # tar did extract is still restored below, but the outcome is
+            # «rollback incomplete» (until 1.0.6.60 `|| true` let it end
+            # rolled_back). Gate: update-recover-rollback (h).
+            local tar_rc=0
+            tar -xpzf "$archive" -C "$tmp" || tar_rc=$?
             # Archive stored absolute paths; walk and restore each with its real
             # mode/owner through atomic_install_file (tmp beside the target →
             # fdatasync → rename-over → dir fsync) — the same old-or-new
@@ -1812,10 +1822,22 @@ PY
                     log "rollback: FAIL restore $rel from archive"
                 fi
             done < <(find "$tmp" -type f)
-            if [ "$n_failed" -gt 0 ]; then
+            if [ "$tar_rc" -ne 0 ]; then
+                log "rollback: archive $archive unreadable (tar rc=$tar_rc) - $((n_total - n_failed)) extracted member(s) restored"
+                incomplete="rollback archive unreadable (tar rc=$tar_rc)"
+                [ "$n_failed" -eq 0 ] || incomplete="$incomplete; $n_failed of $n_total archive member(s) not restored"
+            elif [ "$n_failed" -gt 0 ]; then
                 incomplete="$n_failed of $n_total archive member(s) not restored"
             fi
             rm -rf "$tmp"
+        else
+            # No journal AND no archive: nothing can be restored, so this is
+            # not a rollback. The archive is built at stage=backing_up before
+            # any file is deployed, and recover's backing_up branch never gets
+            # here without one — reaching this means the archive was lost.
+            # Until 1.0.6.60 it ended rolled_back. Gate: update-recover-rollback (i).
+            log "rollback: no journal and no rollback archive (${archive:-unset}) - nothing restored"
+            incomplete="no journal and no rollback archive; nothing restored"
         fi
     fi
     restart_after_rollback "$txn" || true

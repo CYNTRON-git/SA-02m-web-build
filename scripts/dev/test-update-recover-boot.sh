@@ -148,6 +148,20 @@ CALLS="$T/calls.log"
 LOG="$T/log"
 export CALLS SA02M_WATCHDOG_POLICY_FILE
 mkdir -p "$STAGE/meta" "$STATEDIR/rollback" "$STATEDIR/staging"
+# Every transaction past stage=backing_up names its pre-update archive:
+# build_rollback_archive writes it (an EMPTY tar.gz when no deployed file existed
+# before the update) and patches `rollback_archive` BEFORE stage=applying, and
+# recover's backing_up branch never rolls back without one. write_txn therefore
+# carries that empty archive. Since 1.0.6.60 a rollback with no journal AND no
+# archive is «rollback incomplete» (stage=error), not rolled_back
+# (update-recover-rollback (i)) — a fixture without the archive would model a
+# state production cannot reach and assert a rollback that restored nothing.
+# POSIX form of the same file ($T, not $TW): GNU tar reads the `C:/…` form
+# cygpath -m gives $TW as `host:path` and refuses it, and the runner's own
+# `tar -xpzf` reads this path back from the transaction.
+ROLLBACK_ARCHIVE="$T/state/rollback/pre-update-$TXN.tar.gz"
+tar -czf "$ROLLBACK_ARCHIVE" -T /dev/null 2>/dev/null \
+    || { echo "FAIL  could not build the empty rollback archive fixture"; exit 1; }
 printf '9.9.9.9\n' > "$VERSION_FILE"
 printf '#!/bin/bash\nexit 0\n' > "$RUNNER_BIN_DST"
 
@@ -234,7 +248,7 @@ JSON
 write_txn() {  # $1=stage $2=files_done $3=files_total [$4... extra key=value]
     printf '%s\n' "id=$TXN" "operation=update" "source=github" "stage=$1" "progress_pct=85" \
         "files_total=$3" "files_done=$2" "result=pending" "error_code=" "error_message=" \
-        "target_version=9.9.9.9" "imaging_lock=true" > "$TXNVARS"
+        "target_version=9.9.9.9" "imaging_lock=true" "rollback_archive=$ROLLBACK_ARCHIVE" > "$TXNVARS"
     shift 3
     [ $# -gt 0 ] && printf '%s\n' "$@" >> "$TXNVARS"
     return 0
