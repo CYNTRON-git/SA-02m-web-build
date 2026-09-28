@@ -34,8 +34,8 @@ Modes:
 
 Scope: scripts/*.sh + install.sh - every shell file that can reach
 sa02m_atomic_install, which lives in scripts/lib.sh and is sourced out of the
-EXTRACTED install tree (install.sh:77). scripts/ is never deployed to the
-device, so a script under etc/ - which runs standalone on the board, sourcing
+EXTRACTED install tree (install.sh `source "$SCRIPT_DIR/scripts/lib.sh"`).
+scripts/ is never deployed to the device, so a script under etc/ - which runs standalone on the board, sourcing
 only its own /usr/local/lib/sa02m-web-*-lib.sh - cannot call THIS helper. That
 is the only thing "out of scope" means here: a device-side script writes live
 paths atomically by carrying its OWN copy of the shape, and four do
@@ -44,9 +44,12 @@ dir fsync; etc/sa02m-factory-reset-runner.sh `atomic_install_file()`, the same
 shape plus the wipe allow-list and rollback journal that file owns;
 etc/sa02m-web-update-apply.sh `atomic_install_script()`, the same shape with the
 CRLF normalisation folded into the staged copy; etc/sa02m-web-service-ctl.sh
-`atomic_install_unit()`, the same shape in /bin/sh for the Node-RED unit — the
-1.0.6.60 plan named a local function as the only option there, the file being
-unable to source any lib that carries one). They are NOT byte-identical and
+`atomic_install_unit()`, the same shape in POSIX sh for the Node-RED unit - a
+local copy because the only lib that script sources,
+/usr/local/lib/sa02m-stacks-policy.sh, is SOFT (sourced only when present, so an
+older board runs without it) and cannot host a mandatory helper, and the
+runner that carries the shape is an executable, not a sourceable lib). They are
+NOT byte-identical and
 there is no cmp pin between them - each is scoped to its own caller's duties,
 which is why a further copy is a decision, not a formality.
 
@@ -71,30 +74,34 @@ and how each closed — cite the symbol, never a line number:
         scripts/dev/test-update-recover-rollback.sh cases (c)-(g).
 
 Everything else under etc/ that matches `install -m` writes a destination that
-is not a live path, so it is outside the rule rather than an exception to it:
+is not a live path, so it is outside the rule rather than an exception to it
+(each named by its function, or by its destination for a top-level site - a
+line number goes stale on the next edit above it):
 
-    etc/sa02m-web-update-apply.sh:396   -> /etc/tmpfiles.d/*        (read by
-        systemd-tmpfiles on demand, never mid-flight)
-    etc/sa02m-web-update-apply.sh:432   -> /etc/sudoers.d/sa02m-www (staged and
-        visudo -c-validated first; re-read per sudo invocation)
-    etc/sa02m-web-service-ctl.sh:895,898 -> /opt/mplc4/*.so         (re-read on
-        MPLC4 restart, and the pack is stopped around the write)
-    etc/sa02m-commit-web-env.sh:14      -> /etc/sa02m_web.env
-    etc/sa02m-web-auth-lib.sh:113       -> "$f" = /etc/sa02m_web.env
-    etc/sa02m-hw-backend-guard.sh:62    -> /etc/sa02m_hw.conf
-    etc/sa02m-status-blocks-guard.sh:112,180 -> /etc/sa02m_status_blocks.conf
-    etc/sa02m-prepare-working-board.sh:58 -> "$file" = /etc/sa02m_{hw,status_blocks,storage}.conf
-    etc/sa02m-armbian-branding.sh:40,71 -> /etc/armbian{,-image}-release,
-        /etc/update-motd.d/10-armbian-header
-    etc/sa02m-update-runner.sh:122      -> "$STATEDIR/state/*"      (own state)
-    etc/sa02m-update-runner.sh `self_reexec_before_deploy()`      -> "$STATEDIR/runner/$txn/runner", a
+    etc/sa02m-web-update-apply.sh, the tmpfiles.d copy loop -> /etc/tmpfiles.d/*
+        (read by systemd-tmpfiles on demand, never mid-flight)
+    etc/sa02m-web-update-apply.sh, the sudoers install -> /etc/sudoers.d/sa02m-www
+        (staged and visudo -c-validated first; re-read per sudo invocation)
+    etc/sa02m-web-service-ctl.sh mplc4_install() (both plugin copies) ->
+        /opt/mplc4/*.so (re-read on MPLC4 restart, and the pack is stopped
+        around the write)
+    etc/sa02m-commit-web-env.sh (its one top-level install) -> /etc/sa02m_web.env
+    etc/sa02m-web-auth-lib.sh web_auth_repair_file() -> "$f" = /etc/sa02m_web.env
+    etc/sa02m-hw-backend-guard.sh write_backend() -> /etc/sa02m_hw.conf
+    etc/sa02m-status-blocks-guard.sh set_key_value(), restore_backup() ->
+        /etc/sa02m_status_blocks.conf
+    etc/sa02m-prepare-working-board.sh set_key_value() -> "$file" =
+        /etc/sa02m_{hw,status_blocks,storage}.conf
+    etc/sa02m-armbian-branding.sh set_kv(), patch_motd_support_line() ->
+        /etc/armbian{,-image}-release, /etc/update-motd.d/10-armbian-header
+    etc/sa02m-update-runner.sh migrate_legacy_state() -> "$STATEDIR/state/*" (own state)
+    etc/sa02m-update-runner.sh self_reexec_before_deploy() -> "$STATEDIR/runner/$txn/runner", a
         per-transaction scratch self-copy that is exec'd immediately - not a
-        live path (this entry used to be recorded as ":394" and as live; both
-        were wrong)
+        live path
     etc/sa02m-update-runner.sh `atomic_install_file()` and
     etc/sa02m-factory-reset-runner.sh `atomic_install_file()` -> "$tmp", the staging file INSIDE
         atomic_install_file - these are the atomic shape, not violations of it
-    etc/sa02m-check-service-perms.sh:63 -> `install -d`: a directory, not a
+    etc/sa02m-check-service-perms.sh ensure_dir() -> `install -d`: a directory, not a
         file write (the helper refuses -d for the same reason)
 
 FILES is deliberately NOT widened to etc/. Two independent reasons, either one
@@ -105,7 +112,6 @@ destination() cannot classify - sweeping that file here would be a check that
 passes because it tested nothing. Those sites are pinned behaviourally instead,
 by scripts/dev/test-install-atomic.sh sections 8-9 (an allow-list of the two
 sanctioned raw destinations + a converted-call floor + a drive-to-failure).
-The two survivors above are tracked in .ai-dev/backlog.md.
 
 Line endings are preserved byte-for-byte (the tree is LF; a CRLF checkout
 stays CRLF). Run from the repo root: python3 scripts/dev/codemod-install-atomic.py
