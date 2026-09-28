@@ -382,57 +382,99 @@ for (const [script, line] of [
 // Scope, stated: heredoc bodies are skipped — they are shims standing in for
 // external tools (a fake `mkfs.exfat` exiting "${SHIM_MKFS_RC}") or embedded
 // python whose status the bash around it reads — and only the script the row
-// names is read, not what it sources.
+// names is read, not what it sources. Also NOT scanned: a script whose final
+// command is a function ending `return "$var"`. `process.exitCode = …` in a
+// node row IS scanned, like `process.exit(…)`.
 const EXIT_MARK = /exit-status:\s*\S/;
-// Shell lexer, just enough for this rule: yields each line's UNQUOTED code
-// (quoted strings — awk programs, messages, printf'd shims — collapse to `Q`,
-// comments drop, heredoc bodies are skipped), so an `exit` inside a string or
-// an awk program is never mistaken for the script's own.
-function shCodeLines(text) {
+// Shell lexer, just enough for this rule: yields each line's TOP-LEVEL code
+// (quoted strings, `$(…)` / backtick substitutions — awk programs, messages,
+// printf'd shims, a subshell's own exit — collapse to `Q`, comments drop,
+// heredoc bodies are skipped), so an `exit` inside a string, an awk program or
+// a command substitution is never mistaken for the script's own. Quoting is a
+// STACK, not a flag: `"$(sed 's/"x"/y/')"` nests a single- and a double-quoted
+// string inside a substitution inside a double-quoted string (review F5 — a
+// flag lost sync there and hid ~100 lines of test-alice-reload-handshake.sh).
+// Returns { lines, open }: `open` is the state left at EOF — anything but
+// empty means the lexer lost sync, and the caller FAILS rather than trusting a
+// scan that may have skipped code.
+function shLex(text) {
   const lines = text.split(/\r?\n/);
   const out = [];
-  let q = null;        // null | "'" | '"' — quote state carried across lines
-  let heredocs = [];   // pending heredoc terminators opened on this line
+  const stack = [];      // frames: { k: "'" | '"' | '$' (ANSI-C) | '(' (subst, depth) | '`' }
+  const pending = [];    // heredoc terminators opened on the current line
   let inHeredoc = null;
   for (let i = 0; i < lines.length; i++) {
     const ln = lines[i];
     if (inHeredoc) {
-      if ((inHeredoc.dash ? ln.replace(/^\t+/, '') : ln) === inHeredoc.tag) {
-        inHeredoc = heredocs.shift() || null;
-      }
+      if ((inHeredoc.dash ? ln.replace(/^\t+/, '') : ln) === inHeredoc.tag) inHeredoc = pending.shift() || null;
       out.push('');
       continue;
     }
     let code = '';
     for (let j = 0; j < ln.length; j++) {
       const c = ln[j];
-      if (q === "'") { if (c === "'") q = null; continue; }
-      if (q === '"') {
+      const top = stack[stack.length - 1];
+      if (top && top.k === "'") { if (c === "'") stack.pop(); continue; }
+      if (top && top.k === '$') {
         if (c === '\\') { j++; continue; }
-        if (c === '"') q = null;
+        if (c === "'") stack.pop();
         continue;
       }
+      if (top && top.k === '`') {
+        if (c === '\\') { j++; continue; }
+        if (c === '`') stack.pop();
+        continue;
+      }
+      if (top && top.k === '"') {
+        if (c === '\\') { j++; continue; }
+        if (c === '"') { stack.pop(); continue; }
+        if (c === '$' && ln[j + 1] === '(') { stack.push({ k: '(', d: 1 }); j++; continue; }
+        if (c === '`') { stack.push({ k: '`' }); continue; }
+        continue;
+      }
+      // Top level, or inside a command substitution: both are shell code.
+      const inSub = top && top.k === '(';
       if (c === '\\') { j++; continue; }
-      if (c === "'" || c === '"') { q = c; code += 'Q'; continue; }
-      if (c === '#' && (j === 0 || /\s/.test(ln[j - 1]))) break;
+      if (c === "'") { stack.push({ k: "'" }); if (!inSub) code += 'Q'; continue; }
+      if (c === '"') { stack.push({ k: '"' }); if (!inSub) code += 'Q'; continue; }
+      if (c === '$' && ln[j + 1] === "'") { stack.push({ k: '$' }); j++; if (!inSub) code += 'Q'; continue; }
+      if (c === '`') { stack.push({ k: '`' }); if (!inSub) code += 'Q'; continue; }
+      // Arithmetic `$(( … ))` at top level stays verbatim: it is an exit
+      // operand the rule reads (`exit $(( fails > 0 ))`), not a subshell.
+      if (!inSub && ln.startsWith('$((', j)) {
+        const end = ln.indexOf('))', j + 3);
+        if (end > 0) { code += ln.slice(j, end + 2); j = end + 1; continue; }
+      }
+      if (c === '$' && ln[j + 1] === '(') { stack.push({ k: '(', d: 1 }); j++; if (!inSub) code += 'Q'; continue; }
+      if (c === '#' && (j === 0 || /[\s;&|(]/.test(ln[j - 1]))) break;
+      if (inSub) {
+        if (c === '(') top.d++;
+        else if (c === ')' && --top.d === 0) stack.pop();
+        continue;
+      }
       if (c === '<' && ln[j + 1] === '<' && ln[j + 2] !== '<') {
         const m = ln.slice(j).match(/^<<(-?)\s*(['"]?)([A-Za-z_][A-Za-z0-9_]*)\2/);
-        if (m) { heredocs.push({ tag: m[3], dash: m[1] === '-' }); j += m[0].length - 1; code += '<<H'; continue; }
+        if (m) { pending.push({ tag: m[3], dash: m[1] === '-' }); j += m[0].length - 1; code += '<<H'; continue; }
       }
       code += c;
     }
     out.push(code);
-    if (!q && heredocs.length) inHeredoc = heredocs.shift();
+    if (!stack.length && pending.length) inHeredoc = pending.shift();
   }
-  return out;
+  const open = stack.map((f) => f.k).join('') + (inHeredoc ? '<<' + inHeredoc.tag : '') +
+    pending.map((p) => '<<' + p.tag).join('');
+  return { lines: out, open };
 }
 
 function exitViolations(text, lang) {
   const out = [];
   const lines = text.split(/\r?\n/);
   if (lang === 'sh') {
-    shCodeLines(text).forEach((code, i) => {
-      const re = /(?:^|[;{]|&&|\|\||\bthen|\belse|\bdo)\s*exit\s+(\$\(\([^)]*\)\)|[^\s;&|)}]+)/g;
+    const lex = shLex(text);
+    if (lex.open) out.push('EOF: the lexer ends inside `' + lex.open + '` — it lost sync, so the scan of this file cannot be trusted');
+    lex.lines.forEach((code, i) => {
+      // `)` is a case arm: `bad) exit "$fails" ;;` is the script's own exit.
+      const re = /(?:^|[;{)]|&&|\|\||\bthen|\belse|\bdo)\s*exit\s+(\$\(\([^)]*\)\)|[^\s;&|)}]+)/g;
       let m;
       while ((m = re.exec(code))) {
         const op = m[1];
@@ -450,6 +492,14 @@ function exitViolations(text, lang) {
         const ok = op === '' || /^\d+$/.test(op) || /\?\s*\d+\s*:\s*\d+$/.test(op) ||
           /^f?['"]/.test(op) || EXIT_MARK.test(ln);
         if (!ok) out.push((i + 1) + ': ' + ln.trim());
+      }
+      // The other way node sets its status (review F5): the same rule.
+      if (lang === 'mjs') {
+        const ec = ln.match(/process\.exitCode\s*=\s*([^;]+)/);
+        if (ec) {
+          const op = ec[1].trim();
+          if (!(/^\d+$/.test(op) || /\?\s*\d+\s*:\s*\d+$/.test(op) || EXIT_MARK.test(ln))) out.push((i + 1) + ': ' + ln.trim());
+        }
       }
     });
   }
@@ -470,6 +520,22 @@ function exitViolations(text, lang) {
   check(exitViolations('process.' + 'exit(failures);\n', 'mjs').length === 1, 'exit-scan: a count handed to process.exit is flagged');
   check(exitViolations('process.exit(failures ? 1 : 0);\nprocess.exit(77);\n', 'mjs').length === 0, 'exit-scan: literal and boolean-ternary exits pass');
   check(exitViolations('sys.exit(fails)\n', 'py').length === 1, 'exit-scan: sys.exit(<count>) is flagged');
+  // Review F5 shapes. The nested-quote line is test-alice-reload-handshake.sh:95
+  // verbatim; with a quote FLAG it swallowed the rest of that file.
+  check(exitViolations('x="$(grep -E \'^A=\' f | sed -E \'s/.*"([^"]+)".*/\\1/\')"\nexit "$fails"\n', 'sh').length === 1,
+    'exit-scan: `"$(… \'…"…"…\' …)"` nesting does not hide the lines after it');
+  check(exitViolations('case "$r" in\n  ok) exit 0 ;;\n  bad) exit "$fails" ;;\nesac\n', 'sh').length === 1,
+    'exit-scan: an exit in a case arm is flagged');
+  check(exitViolations('n=$(printf \'%s\' "$x"; exit 3)\nexit 0\n', 'sh').length === 0,
+    'exit-scan: an exit inside `$(…)` is the subshell\'s, not the script\'s');
+  check(exitViolations('echo "unterminated\nexit 0\n', 'sh').some((v) => v.startsWith('EOF:')),
+    'exit-scan: a file that ends inside an open quote FAILS (lexer desync is not a clean scan)');
+  check(exitViolations('cat <<EOF\nno terminator\n', 'sh').some((v) => v.startsWith('EOF:')),
+    'exit-scan: a file that ends inside an open heredoc FAILS');
+  check(exitViolations('process.' + 'exitCode = failures;\n', 'mjs').length === 1,
+    'exit-scan: a count handed to the node exit-code property is flagged');
+  check(exitViolations('process.' + 'exitCode = failures ? 1 : 0;\n', 'mjs').length === 0,
+    'exit-scan: a boolean node exit-code passes');
 }
 {
   const reg = JSON.parse(readFileSync(join(REPO, '.ai-dev', 'quality', 'tools.json'), 'utf8'));

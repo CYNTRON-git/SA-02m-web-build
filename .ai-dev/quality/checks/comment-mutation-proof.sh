@@ -287,9 +287,10 @@ comment_token() {  # $1 = path ; prints `#`, `//`, or `html`
 # cases are reported SKIP and counted, never ok and never FAIL, because a
 # mutation under a skipping gate would "stay green" for a reason that has
 # nothing to do with the pin. Returns 0 = green, 1 = red, 2 = skipped.
-# Reading 77 as "skip" is only sound because no gate can exit 77 by counting
-# failures — run.test.mjs section F pins every registry-run script to a
-# literal / boolean exit (review F1, 1.0.6.58).
+# Reading 77 as "skip" relies on no gate exiting 77 by counting failures:
+# run.test.mjs section F scans every registry-run script's own exit shapes
+# (literal / boolean / marked) — within the scope it states, not sourced
+# files or a trailing `return "$var"` (review F1/F5, 1.0.6.58).
 declare -A baseline_done=()
 green_baseline() {  # $1 = gate id
     local g="$1" rc
