@@ -232,6 +232,9 @@ factory-reset-runner|etc/sa02m-factory-reset-runner.sh|unit_stopped "$HK_UNIT" |
 factory-reset-runner|etc/sa02m-factory-reset-runner.sh|unit_stopped "$HC_UNIT" || fail E_APPLY
 factory-reset-runner|etc/sa02m-factory-reset-runner.sh|  restart_stopped_units
 factory-reset-runner|etc/sa02m-factory-reset-runner.sh|remember_if_active "$HK_UNIT"
+daemon-least-privilege|scripts/06c-homekit.sh|if gpasswd -d "$HK_USER" www-data >>"$LOG_FILE" 2>&1; then
+daemon-least-privilege|opt/sa02m-homekit/tmpfiles.d/sa02m-homekit.conf|a+ /etc/sa02m-alice - - - - user:sa02m-homekit:--x,default:user:sa02m-homekit:r--,default:mask::rwx
+daemon-least-privilege|etc/systemd/system/sa02m-homeconnect.service|ExecStartPre=-+/usr/bin/systemd-tmpfiles --create /etc/tmpfiles.d/sa02m-homeconnect.conf
 '
 
 command -v git >/dev/null 2>&1 || { echo "comment-mutation-proof: FAIL — git is required to build the pristine copy"; exit 1; }

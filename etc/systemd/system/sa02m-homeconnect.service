@@ -27,12 +27,17 @@ MemoryMax=32M
 CPUQuota=20%
 TasksMax=16
 Nice=10
-# Unprivileged (plan D11): nothing in the client needs root. www-data as a
-# supplementary group lets the web card read the 0640 /run files the daemon
-# creates; www-data is NOT in this unit's group, so it never reads the tokens.
+# Unprivileged (plan D11): nothing in the client needs root — and NOT group
+# www-data (that group reads the panel credentials and every web conf).
+# /run/sa02m-homeconnect is setgid www-data, so the 0640 files the card reads
+# inherit the group; an ACL grants read on the conf — a DEFAULT ACL on its
+# directory, so an atomic rename keeps it (docs/contracts/home-connect.md §11).
+# www-data is NOT in this unit's group, so it never reads the tokens.
+# Gate: `daemon-least-privilege`.
 User=sa02m-homeconnect
 Group=sa02m-homeconnect
-SupplementaryGroups=www-data
+# `+`: as root, before the sandbox; `-`: a missing conf is not a start failure.
+ExecStartPre=-+/usr/bin/systemd-tmpfiles --create /etc/tmpfiles.d/sa02m-homeconnect.conf
 UMask=0077
 NoNewPrivileges=true
 # strict: /etc (including the group-writable conf) is read-only for this unit;
