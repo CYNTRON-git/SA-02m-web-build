@@ -38,32 +38,37 @@ EXTRACTED install tree (install.sh:77). scripts/ is never deployed to the
 device, so a script under etc/ - which runs standalone on the board, sourcing
 only its own /usr/local/lib/sa02m-web-*-lib.sh - cannot call THIS helper. That
 is the only thing "out of scope" means here: a device-side script writes live
-paths atomically by carrying its OWN copy of the shape, and three already do
-(etc/sa02m-update-runner.sh `atomic_install_file()` atomic_install_file, tmp + fdatasync + mv +
-dir fsync; etc/sa02m-factory-reset-runner.sh `atomic_install_file()` atomic_install_file, the same
+paths atomically by carrying its OWN copy of the shape, and four do
+(etc/sa02m-update-runner.sh `atomic_install_file()`, tmp + fdatasync + mv +
+dir fsync; etc/sa02m-factory-reset-runner.sh `atomic_install_file()`, the same
 shape plus the wipe allow-list and rollback journal that file owns;
-etc/sa02m-web-update-apply.sh:59 atomic_install_script, the same shape with the
-CRLF normalisation folded into the staged copy). They are NOT byte-identical
-and there is no cmp pin between them - each is scoped to its own caller's
-duties, which is why a fourth copy is a decision, not a formality.
+etc/sa02m-web-update-apply.sh `atomic_install_script()`, the same shape with the
+CRLF normalisation folded into the staged copy; etc/sa02m-web-service-ctl.sh
+`atomic_install_unit()`, the same shape in /bin/sh for the Node-RED unit — the
+1.0.6.60 plan named a local function as the only option there, the file being
+unable to source any lib that carries one). They are NOT byte-identical and
+there is no cmp pin between them - each is scoped to its own caller's duties,
+which is why a further copy is a decision, not a formality.
 
-Live-path `install -m` sites still under etc/, complete as of 1.0.6.41 (found
-by `grep -rn 'install -m' etc/` and resolving every destination, including the
-variable ones, to what it holds at run time):
+Live-path `install -m` sites under etc/: NONE since 1.0.6.60 (found by
+`grep -rn 'install -m' etc/` and resolving every destination, including the
+variable ones, to what it holds at run time). The two that survived 1.0.6.41,
+and how each closed — cite the symbol, never a line number:
 
-    etc/sa02m-web-service-ctl.sh:1359 -> /etc/systemd/system/nodered.service
-        A unit write - the incident's own shape. Survives because this file
-        carries no atomic helper yet; converting it means a fourth copy of the
-        shape (or a device-side lib the file already sources) plus its own
-        drive-to-failure. NOT closed, and not blocked by anything but the work.
+    etc/sa02m-web-service-ctl.sh nodered_install_offline() -> /etc/systemd/system/nodered.service
+        A unit write - the incident's own shape. Closed by that script's own
+        atomic_install_unit(); gate scripts/dev/test-nodered-ctl.sh runs the
+        helper under failure shims, pins the call site, and FAILS on any raw
+        `install -m` in that file whose destination is a live prefix.
 
-    etc/sa02m-update-runner.sh `rollback_from_journal()` -> "$rel", an absolute path replayed from
+    etc/sa02m-update-runner.sh rollback_from_journal() -> "$rel", an absolute path replayed from
         the pre-update rollback archive; its members are the manifest's
-        deploy[].dst entries (build_rollback_archive, :968-985), so /usr/local/**
-        and /etc/systemd/system/** are exactly what it restores. Survives only
-        because nobody looked: this file DEFINES atomic_install_file 283 lines
-        above, so the conversion needs no new helper - and this is the site that
-        runs when the board is already mid-failure.
+        deploy[].dst entries (build_rollback_archive), so /usr/local/** and
+        /etc/systemd/system/** are exactly what it restores — the site that
+        runs when the board is already mid-failure. Closed through the
+        atomic_install_file() the same file defines (a failed member now ends
+        in «rollback incomplete», never rolled_back over a partial tree); gate
+        scripts/dev/test-update-recover-rollback.sh cases (c)-(g).
 
 Everything else under etc/ that matches `install -m` writes a destination that
 is not a live path, so it is outside the rule rather than an exception to it:
