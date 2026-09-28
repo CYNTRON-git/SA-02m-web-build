@@ -919,6 +919,20 @@ commit's diff of this file).
   `.ai-dev/quality/run.mjs`; an upgrade that overwrites it would drop this project's runner fixes (the
   SKIP verdict, the `--touched` union) — check `.ai-dev/procedures/upgrade.md` handling before the next
   tooling bump.
+- [OPEN] 2026-09-28 **[LOW] Review advisories left open at the 1.0.6.58 ship (four review rounds).**
+  Alice gateway probe (`opt/sa02m-alice/sa02m_alice/config/api.py`, `_read_probe_cache` and the detached
+  refresher): (A1) the refresher has no hard runtime bound — `setsid` takes it out from under the CGI's
+  timeout and urllib's timeout does not cover DNS; past the 30 s stale-lock window a second refresher
+  breaks the lock and the first one's final unlink-by-path may delete the new holder's lock; (A2) the
+  stale-lock break is check-then-act (worst case: one duplicate probe); (A7) the «Проверка шлюза…» string
+  and its DICT entry are never rendered (only `kind:'err'` text shows) — drop or render it. (A4) `api.py`
+  is 1,621 lines — a `decompose` candidate (worklist entry). Quality runner: (A8) section E empties PATH, so
+  the skipper harnesses `cd /` before reaching their skip line — the skip is reached by accident, not by
+  design; (A12) the section F scanner reads a heredoc inside `$(…)` as code (no live script affected);
+  (A13) contrived exit shapes neither scanned nor named in the scope sentence (`(exit "$fails")`,
+  `trap 'exit "$fails"'`, `exit $(( f>0 ? f : 0 ))`, `process.exitCode +=`). Flasher: (A9) the multipart
+  parser holds the whole upload in RAM (nginx caps it at 8 MB). Queued behind the 1.0.6.60–.68 train
+  (2-agent cap, Operator 2026-09-28); verdict text: the 1.0.6.58 PR's review stamp history.
 
 <!-- Whole-project audit 2026-08-28 at 1.0.6.23 (3 parallel auditors: contracts,
      security, docs). Suite was GREEN (build 47/47, review 6/6) and branch
