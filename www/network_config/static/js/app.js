@@ -192,20 +192,74 @@ function sa02mHandleCsrfRejection(res, body, args, ctx) {
   });
 }
 
+/* The one logout for a dead session — the fetch guard's and the XHR helper's.
+   Latched: whoever comes second mid-redirect does nothing. */
+let _sa02mRedirecting = false;
+function sa02mCsrfLogout() {
+  if (_sa02mRedirecting) return;
+  _sa02mRedirecting = true;
+  // Cookie can linger (10-day Max-Age) after the server session dies;
+  // clear it so login.html doesn't bounce us back to the dashboard.
+  // Clear at every path prefix — the cloud scopes it to /devcfg/<id>.
+  clearSessionCookie();
+  window.location.replace('login.html');
+}
+
+/* A loaded XMLHttpRequest's E_CSRF body, or null — the XHR twin of the
+   wrapper's clone().json() peek (HTTP 200 + error_code, never a status). */
+function sa02mXhrCsrfRefusal(xhr) {
+  if (!xhr || xhr.status < 200 || xhr.status >= 300) return null;
+  try {
+    const j = JSON.parse(xhr.responseText || '');
+    return j && j.error_code === 'E_CSRF' ? j : null;
+  } catch (e) { return null; }
+}
+
+/* The same E_CSRF reaction for an XMLHttpRequest upload (1.0.6.63). The two
+   file uploads in app/status.js — offline package, MPLC project — need
+   upload.onprogress, so they bypass fetch and the guard above never sees
+   their refusal; until 1.0.6.63 an E_CSRF there was a bare error line with no
+   refresh and no re-send. `send(token, onAnswer)` is the caller's factory:
+   it opens a NEW request, sets X-SA02M-CSRF when `token` is non-empty, wires
+   its own progress/error/timeout handlers, and calls onAnswer(xhr) from
+   onload. `done(xhr)` receives the FINAL answer — the first when it is not an
+   E_CSRF refusal, the retry's otherwise. Same table as
+   sa02mHandleCsrfRejection: no_header with a token sent → transit note, no
+   retry; any other reason → refresh once, re-send once with the token read
+   from the same home (getSa02mCsrfToken → window.SA02M_CSRF); a failed
+   refresh → logout; the retry's own E_CSRF → transit note or logout — never
+   a third attempt. Re-sending is safe for the same reason as the fetch path
+   (the refused CGI never ran) and cheap: the factory re-sends its own
+   FormData over a stable File handle. */
+function sa02mXhrWithCsrfRetry(send, done) {
+  const sent = getSa02mCsrfToken();
+  send(sent, function (xhr) {
+    const j = sa02mXhrCsrfRefusal(xhr);
+    if (!j) { done(xhr); return; }
+    if (j.reason === 'no_header' && sent) {              // the proxy stripped it: transit, not session
+      sa02mNoteCsrfTransitStrip();
+      done(xhr);
+      return;
+    }
+    sa02mRefreshCsrfToken().then(function (tok) {
+      if (!tok) { sa02mCsrfLogout(); done(xhr); return; }  // the session is really gone
+      send(getSa02mCsrfToken(), function (xhr2) {
+        const j2 = sa02mXhrCsrfRefusal(xhr2);
+        if (j2) {
+          if (j2.reason === 'no_header') sa02mNoteCsrfTransitStrip();   // token in hand, still stripped
+          else sa02mCsrfLogout();
+        }
+        done(xhr2);
+      });
+    });
+  });
+}
+
 function sa02mInstallFetchGuard() {
   const _fetch = window.fetch;
-  let redirecting = false;
   const ctx = {
     fetch: function () { return _fetch.apply(window, arguments); },
-    logout: function () {
-      if (redirecting) return;
-      redirecting = true;
-      // Cookie can linger (10-day Max-Age) after the server session dies;
-      // clear it so login.html doesn't bounce us back to the dashboard.
-      // Clear at every path prefix — the cloud scopes it to /devcfg/<id>.
-      clearSessionCookie();
-      window.location.replace('login.html');
-    }
+    logout: sa02mCsrfLogout
   };
   window.fetch = function () {
     const self = this, args = arguments;
@@ -224,15 +278,15 @@ function sa02mInstallFetchGuard() {
       // body stays readable; only mutating methods can get E_CSRF, so GET/HEAD
       // polling skips the extra parse. The wrapper resolves to the FINAL
       // response — the retry's, when sa02mHandleCsrfRejection ran one.
-      if (res && res.ok && !redirecting && method !== 'GET' && method !== 'HEAD') {
+      if (res && res.ok && !_sa02mRedirecting && method !== 'GET' && method !== 'HEAD') {
         return res.clone().json().then(function (j) {
-          if (j && j.error_code === 'E_CSRF' && !redirecting) {
+          if (j && j.error_code === 'E_CSRF' && !_sa02mRedirecting) {
             return sa02mHandleCsrfRejection(res, j, args, ctx);
           }
           return res;
         }, function () { return res; });   // non-JSON body (e.g. 504 HTML) — as is
       }
-      if (!res || res.status !== 401 || redirecting) return res;
+      if (!res || res.status !== 401 || _sa02mRedirecting) return res;
       // Re-check via the canonical auth endpoint — NOT status.cgi (it serves a
       // cached 200 that outlives the session) — and never from cache.
       return _fetch('cgi-bin/auth_check.cgi', { credentials: 'same-origin', cache: 'no-store' })
