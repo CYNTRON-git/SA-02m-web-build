@@ -8,13 +8,33 @@ commit's diff of this file).
 
 ## Open
 
+- [OPEN] 2026-09-28 **[LOW] Hardware watchdog held off from boot recover until verify completes
+  (audit 2026-09-28 L5).** `recover_transaction` `verifying|committing` → `install_imaging_lock`
+  (`etc/sa02m-update-runner.sh:2522`), then `schedule_boot_verify` returns with the lock kept
+  (`:2582-2600`): the manager watchdog stays at 0 from early boot until `sa02m-update-verify` finishes
+  (1–3 min on every recovered boot) — and open-ended if the verify unit is accepted (`--no-block`) but its
+  ExecStart fails, since `cleanup_imaging_lock` runs only on the «cannot schedule» path (`:2597`). Fix
+  direction: take the lock inside `cmd_verify` only (it already handles an absent lock, `:2631-2635`), or a
+  bounded fallback; harness case in `test-update-recover-boot.sh`. Queued behind the 1.0.6.60–.68 train
+  (2-agent cap, Operator 2026-09-28).
+- [OPEN] 2026-09-28 **[LOW] Two layout nits seen in the 1.0.6.63 headless shots (pre-existing, not that
+  change's).** (1) The E_CSRF widget line «Ошибка защиты сессии — повторите действие» wraps to two lines
+  in the narrow «Обновление веб» card (the same string 1.0.6.53 G8 already ships there) — against the
+  one-line-label rule (`web-code-rigor.md ## CSS / UI floors`). (2) Light theme at 1280 px: the «Создать
+  резервную копию и установить» button text is clipped in the three-column layout. Evidence: session
+  shots `A-proxy-toast-*.png`; `ui-layout` did not flag (2) — check why its intra-box clipping pass misses
+  a button label before fixing. Queued behind the 1.0.6.60–.68 train.
+
 - [OPEN] 2026-09-24 **[MED] `install.sh --port N` is not persisted — the next re-render resets nginx to
   9999.** `scripts/03-webserver.sh:12` and `scripts/11-devices.sh:18` default `PORT` to 9999 and render
   `etc/nginx/network_config.conf` with it; `scripts/update-www-only.sh` never sets it, and nothing saves
   the port chosen at install time. A board installed with `--port N` is switched back to 9999 by the
   next www-only deploy (or refresh without `--port`). Found by the 1.0.6.53 fixup review (round 5),
   verified by grep. Fix direction: persist the port (e.g. `/etc/sa02m_web.env` `SA02M_WEB_PORT`) at
-  install and read it in both renderers; harness case.
+  install and read it in both renderers; harness case. OTA consequence (audit 2026-09-28 L4): the
+  runner's health gate hard-codes `http://127.0.0.1:9999/login.html` (`etc/sa02m-update-runner.sh:857`),
+  so a board installed with `--port N` fails the gate and rolls back EVERY OTA — the persisted port must
+  feed the health probe too.
 - [OPEN] 2026-09-24 **[LOW] 1.0.6.53 review advisories left open.** A8: `docs/deployment.md` (nginx
   lanes bullet) cites `11-devices.sh:94-101` for the `nginx -t` + reload, which sit at `:102-108` — cite
   `:94-108`. A10: the backlog entry «The GitHub-OTA runner never deploys the nginx site config» mixes
@@ -938,7 +958,9 @@ commit's diff of this file).
   `run_validate_and_extract` 292 and `prepare_github_overlay` 254 (mostly embedded Python). Seams:
   (a) the GitHub manifest builder (`map_dst` + `DST_RE`) and the validator's second `DST_RE`/`DEL_RE`/
   `PRESERVE` → one Python module in `opt/sa02m-update/lib/` next to `validate_package.py` (closes the
-  four-home allow-list entry); (b) deploy/journal/rollback core; (c) services + health gate;
+  four-home allow-list entry; also fix there audit 2026-09-28 L3 — `map_dst` sends the non-unit drop-ins
+  `etc/systemd/sa02m-journald.conf` / `sa02m-watchdog.conf` to `/etc/systemd/system/` on every OTA,
+  harmless to systemd but a misleading stray file on the board); (b) deploy/journal/rollback core; (c) services + health gate;
   (d) recover/reclaim/verify state machine; (e) watchdog/imaging lock. Constraints: the delivering
   update runs the INSTALLED runner (`self_reexec_before_deploy` copies one file), so a sourced-lib
   split gives old-runner + new-lib skew — keep the bash single-file, move only Python out; three
