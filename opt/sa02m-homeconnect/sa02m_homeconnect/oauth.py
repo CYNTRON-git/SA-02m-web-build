@@ -128,6 +128,14 @@ class OAuthClient:
         self._host = host
         self._clock = clock
         self._lock = threading.RLock()
+        # Held across a whole refresh, the token request included: the main
+        # loop and the SSE reader both refresh, and a second post of the same
+        # refresh token is invalid_grant on a rotating server — our own race
+        # would revoke the sign-in. Also guards the ensure_fresh backoff and
+        # the token swaps of load() and poll() (never the poll's request).
+        # Reentrant (ensure_fresh holds it around refresh()); always taken
+        # before _lock, never while holding it.
+        self._refresh_lock = threading.RLock()
         self._tokens: Optional[TokenSet] = None
         self._refreshes: Deque[float] = collections.deque()
         self._refresh_failures = 0
@@ -139,18 +147,21 @@ class OAuthClient:
     def load(self) -> LoadResult:
         """Read the store. Tokens issued for another client id or host are
         unusable: they are removed (the integrator changed the application)."""
-        result = self._store.load()
-        with self._lock:
-            self._tokens = None
-            self.revoked_at = result.revoked_at
-            self.problem = result.problem
-            tokens = result.tokens
-            if tokens is not None and (tokens.client_id != self._client_id or tokens.host != self._host):
-                log.warning("stored Home Connect sign-in belongs to another client id or host — "
-                            "removed, link again")
-                self._store.clear()
-                tokens = None
-            self._tokens = tokens
+        # Read and swap under the refresh lock: a read taken while a refresh
+        # is in flight would put back the refresh token that refresh spends.
+        with self._refresh_lock:
+            result = self._store.load()
+            with self._lock:
+                self._tokens = None
+                self.revoked_at = result.revoked_at
+                self.problem = result.problem
+                tokens = result.tokens
+                if tokens is not None and (tokens.client_id != self._client_id or tokens.host != self._host):
+                    log.warning("stored Home Connect sign-in belongs to another client id or host — "
+                                "removed, link again")
+                    self._store.clear()
+                    tokens = None
+                self._tokens = tokens
         return result
 
     @property
@@ -260,11 +271,15 @@ class OAuthClient:
                 return POLL_REJECTED
             raise
         tokens = self._tokens_from(data, None)
-        self._store.save(tokens)
-        with self._lock:
-            self._tokens = tokens
-            self.revoked_at = 0
-            self.problem = ""
+        # Only the save and swap take the refresh lock, never the poll above:
+        # an in-flight refresh finishes first, so the new link is not
+        # overwritten by the account it replaces.
+        with self._refresh_lock:
+            self._store.save(tokens)
+            with self._lock:
+                self._tokens = tokens
+                self.revoked_at = 0
+                self.problem = ""
         log.info("Home Connect account linked")
         return POLL_LINKED
 
@@ -277,31 +292,41 @@ class OAuthClient:
         """Refresh the access token now. Raises TokenRevoked, RefreshThrottled,
         BudgetExceeded, NetworkError, HttpError."""
         with self._lock:
-            if self._tokens is None:
-                raise NotLinked()
-            now = self._clock()
-            while self._refreshes and now - self._refreshes[0] >= 60:
-                self._refreshes.popleft()
-            if len(self._refreshes) >= C.TOKEN_REFRESH_PER_MIN:
-                raise RefreshThrottled(60 - (now - self._refreshes[0]))
-            self._refreshes.append(now)
-            previous = self._tokens
-            form = {
-                "grant_type": "refresh_token",
-                "refresh_token": previous.refresh_token,
-                "client_id": self._client_id,
-            }
-        try:
-            data = self._token_request(C.TOKEN_PATH, form)
-        except HttpError as exc:
-            if exc.error_key == "invalid_grant":
-                self._revoke()
-                raise TokenRevoked() from None
-            raise
-        tokens = self._tokens_from(data, previous)
-        self._store.save(tokens)
-        with self._lock:
-            self._tokens = tokens
+            seen = self._tokens
+        if seen is None:
+            raise NotLinked()
+        with self._refresh_lock:
+            with self._lock:
+                if self._tokens is not seen:
+                    # Replaced while this caller waited for the lock (a
+                    # concurrent refresh): the refresh token it saw may be
+                    # spent already, so it is not posted again.
+                    if self._tokens is None:
+                        raise NotLinked()
+                    return
+                now = self._clock()
+                while self._refreshes and now - self._refreshes[0] >= 60:
+                    self._refreshes.popleft()
+                if len(self._refreshes) >= C.TOKEN_REFRESH_PER_MIN:
+                    raise RefreshThrottled(60 - (now - self._refreshes[0]))
+                self._refreshes.append(now)
+                previous = self._tokens
+                form = {
+                    "grant_type": "refresh_token",
+                    "refresh_token": previous.refresh_token,
+                    "client_id": self._client_id,
+                }
+            try:
+                data = self._token_request(C.TOKEN_PATH, form)
+            except HttpError as exc:
+                if exc.error_key == "invalid_grant":
+                    self._revoke()
+                    raise TokenRevoked() from None
+                raise
+            tokens = self._tokens_from(data, previous)
+            self._store.save(tokens)
+            with self._lock:
+                self._tokens = tokens
         log.info("Home Connect access token refreshed (valid %d s)", tokens.expires_at - int(self._clock()))
 
     def ensure_fresh(self) -> None:
@@ -311,29 +336,34 @@ class OAuthClient:
         has expired the failure is raised. TokenRevoked always raises."""
         if not self.needs_refresh():
             return
-        now = self._clock()
-        still_valid = now < self.expires_at
-        if now < self._next_refresh_try:
-            if still_valid:
+        with self._refresh_lock:
+            # Re-read under the lock: a caller that waited out a concurrent
+            # refresh finds it done, or finds the pause its failure set.
+            if not self.needs_refresh():
                 return
-            raise RefreshThrottled(self._next_refresh_try - now)
-        try:
-            self.refresh()
-        except RefreshThrottled:
-            if still_valid:
-                return
-            raise
-        except (NetworkError, HttpError, BudgetExceeded, InvalidResponse) as exc:
-            delay = min(C.REFRESH_RETRY_MAX_S, C.REFRESH_RETRY_MIN_S * (2 ** self._refresh_failures))
-            self._refresh_failures += 1
-            self._next_refresh_try = now + delay
-            if not still_valid:
+            now = self._clock()
+            still_valid = now < self.expires_at
+            if now < self._next_refresh_try:
+                if still_valid:
+                    return
+                raise RefreshThrottled(self._next_refresh_try - now)
+            try:
+                self.refresh()
+            except RefreshThrottled:
+                if still_valid:
+                    return
                 raise
-            log.warning("token refresh failed (%s) — current token still valid, retry in %.0f s",
-                        exc, delay)
-            return
-        self._refresh_failures = 0
-        self._next_refresh_try = 0.0
+            except (NetworkError, HttpError, BudgetExceeded, InvalidResponse) as exc:
+                delay = min(C.REFRESH_RETRY_MAX_S, C.REFRESH_RETRY_MIN_S * (2 ** self._refresh_failures))
+                self._refresh_failures += 1
+                self._next_refresh_try = now + delay
+                if not still_valid:
+                    raise
+                log.warning("token refresh failed (%s) — current token still valid, retry in %.0f s",
+                            exc, delay)
+                return
+            self._refresh_failures = 0
+            self._next_refresh_try = 0.0
 
     def _revoke(self) -> None:
         now = int(self._clock())
