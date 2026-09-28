@@ -25,47 +25,176 @@ except ImportError:  # Windows dev host — the daemon and the CGI run on Linux
 _LOCK_DEPTH = threading.local()
 
 
-def _atomic_write(path: str, data: str, mode: int = 0o640) -> None:
+# Never carried over from an existing conf (see _atomic_write).
+_SPECIAL_BITS = stat_module.S_ISUID | stat_module.S_ISGID | stat_module.S_ISVTX
+# The installer's provisioned modes (scripts/06-alice.sh): the two confs the
+# www-data CGI writes are 0660, every other conf 0640, all group www-data.
+_WEB_GROUP = "www-data"
+_RW_CONF_NAMES = ("sa02m-alice-client.conf", "sa02m-alice-devices.conf")
+
+
+class UnsafeConfPath(OSError):
+    """A conf name root must not read or write through (planted link, FIFO…).
+
+    The message names the path and the reason only — never the content, which
+    for a planted link is some other file's (the install log is panel-readable).
+    """
+
+
+def _web_gid() -> Optional[int]:
+    try:
+        import grp
+        return grp.getgrnam(_WEB_GROUP).gr_gid
+    except (ImportError, KeyError):
+        return None  # Windows dev host / no www-data group
+
+
+def _set_mode(fd: int, tmp: str, mode: int) -> None:
+    if hasattr(os, "fchmod"):
+        os.fchmod(fd, mode)
+    else:  # Windows dev host before Python 3.13: no fchmod, and no www-data to race
+        os.chmod(tmp, mode)
+
+
+def _check_parent(directory: str) -> bool:
+    """False when `directory` is absent; UnsafeConfPath when it is a link."""
+    try:
+        pst = os.lstat(directory)
+    except FileNotFoundError:
+        return False
+    if stat_module.S_ISLNK(pst.st_mode) or not stat_module.S_ISDIR(pst.st_mode):
+        raise UnsafeConfPath("refusing %s: the directory is a symlink or not a directory" % directory)
+    return True
+
+
+def _open_conf_for_read(path: str) -> Optional[int]:
+    """fd of `path` for reading, None when it is absent, else UnsafeConfPath.
+
+    Root reads these confs from a www-data-writable directory: a planted
+    symlink or hard link would hand root another file's bytes, and a parse
+    error quoting them lands in the panel-readable install log (web-service-ctl
+    appends the writer's stderr there). O_NOFOLLOW + fstat decide on the very
+    inode that is read; O_NONBLOCK keeps a planted FIFO from hanging the open.
+    """
+    if not _check_parent(os.path.dirname(path) or "."):
+        return None
+    flags = os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0) | getattr(os, "O_NONBLOCK", 0) \
+        | getattr(os, "O_CLOEXEC", 0)
+    try:
+        fd = os.open(path, flags)
+    except FileNotFoundError:
+        return None
+    except OSError:
+        if os.path.islink(path):  # O_NOFOLLOW answered ELOOP
+            raise UnsafeConfPath("refusing to read %s: it is a symlink" % path) from None
+        raise
+    st = os.fstat(fd)
+    if not stat_module.S_ISREG(st.st_mode) or st.st_nlink != 1:
+        os.close(fd)
+        raise UnsafeConfPath("refusing to read %s: not a regular singly-linked file" % path)
+    return fd
+
+
+def _read_text(path: str) -> Optional[str]:
+    fd = _open_conf_for_read(path)
+    if fd is None:
+        return None
+    with os.fdopen(fd, "r", encoding="utf-8") as fh:
+        return fh.read()
+
+
+def _atomic_write(path: str, data: str, mode: Optional[int] = None) -> None:
+    """Replace `path` with `data` atomically, touching only our own temp's fd.
+
+    Writers run as BOTH root (client/config services, web-service-ctl) and
+    www-data (the CGI) in /etc/sa02m-alice — root:www-data 0770, no sticky
+    bit — so www-data can plant any name there, and chmod/chown BY NAME on the
+    temp let a rename+symlink swap make root re-own an arbitrary file. Hence:
+    the temp is created O_EXCL|O_NOFOLLOW (mkstemp), its mode and owner are set
+    through the fd (fchmod/fchown), and the only by-name act is the rename,
+    which never follows a link. A symlinked or non-regular destination, or a
+    symlinked parent, is refused before anything is created.
+
+    Owner and mode are kept from an existing regular, singly-linked conf (a
+    root write must not lock the www-data web layer out), never its
+    setuid/setgid/sticky bits; anything else — a new conf, a hard link to a
+    foreign file — gets `mode` (default: the installer's mode for this conf
+    name) and group www-data. Same shape as atomic_install in
+    etc/sa02m-restore-backup.sh. Pinned by tests/test_config_store_race.py.
+    """
     directory = os.path.dirname(path) or "."
     os.makedirs(directory, exist_ok=True)
-    # Preserve the existing file's mode/owner across the replace: writers run
-    # as BOTH root (client/config services, web-service-ctl) and www-data (the
-    # CGI) — without this a root write leaves the conf root:root 0640 and the
-    # www-data web layer can no longer read or write it.
+    if not _check_parent(directory):
+        raise FileNotFoundError(2, "conf directory vanished", directory)
     st = None
     try:
-        st = os.stat(path)
-    except OSError:
+        st = os.lstat(path)
+    except FileNotFoundError:
         pass
+    if st is not None:
+        if stat_module.S_ISLNK(st.st_mode):
+            raise UnsafeConfPath("refusing to write %s: it is a symlink (remove it and retry)" % path)
+        if not stat_module.S_ISREG(st.st_mode):
+            raise UnsafeConfPath("refusing to write %s: it exists and is not a regular file" % path)
+        if st.st_nlink != 1:
+            st = None  # a hard link lends nothing; the replace breaks it
+    if mode is None:
+        mode = 0o660 if os.path.basename(path) in _RW_CONF_NAMES else 0o640
+    payload = data if data.endswith("\n") else data + "\n"
     fd, tmp = tempfile.mkstemp(prefix=".alice-", dir=directory)
     try:
-        with os.fdopen(fd, "w", encoding="utf-8") as fh:
-            fh.write(data)
-            if not data.endswith("\n"):
-                fh.write("\n")
-        if st is not None:
-            os.chmod(tmp, stat_module.S_IMODE(st.st_mode))
-            if hasattr(os, "chown"):  # absent on Windows dev hosts
-                try:
-                    os.chown(tmp, st.st_uid, st.st_gid)
-                except OSError:
-                    pass  # non-root writer keeps its own uid; group suffices
-        else:
-            os.chmod(tmp, mode)
+        try:
+            if st is not None:
+                _set_mode(fd, tmp, stat_module.S_IMODE(st.st_mode) & ~_SPECIAL_BITS)
+                if hasattr(os, "fchown"):  # absent on Windows dev hosts
+                    try:
+                        os.fchown(fd, st.st_uid, st.st_gid)
+                    except OSError:
+                        pass  # non-root writer keeps its own uid; group suffices
+            else:
+                _set_mode(fd, tmp, mode)
+                gid = _web_gid()
+                if gid is not None and hasattr(os, "fchown"):
+                    try:
+                        os.fchown(fd, -1, gid)
+                    except OSError:
+                        pass  # not a member: the mode still applies
+            view = memoryview(payload.encode("utf-8"))
+            while view:
+                view = view[os.write(fd, view):]
+            os.fsync(fd)
+        finally:
+            os.close(fd)
         os.replace(tmp, path)
-    except Exception:
+    except BaseException:
         try:
             os.unlink(tmp)
         except OSError:
             pass
         raise
+    try:
+        dfd = os.open(directory, os.O_RDONLY)
+    except OSError:
+        return
+    try:
+        os.fsync(dfd)
+    except OSError:
+        pass
+    finally:
+        os.close(dfd)
 
 
 def load_ini(path: str, defaults: Dict[str, Dict[str, str]]) -> configparser.ConfigParser:
     cfg = configparser.ConfigParser()
     cfg.read_dict(defaults)
-    if os.path.exists(path):
-        cfg.read(path, encoding="utf-8")
+    try:
+        text = _read_text(path)
+    except UnsafeConfPath:
+        raise
+    except OSError:
+        text = None  # configparser.read() skipped an unreadable file the same way
+    if text is not None:
+        cfg.read_string(text, source=path)
     return cfg
 
 
@@ -244,10 +373,10 @@ def empty_devices() -> Dict[str, Any]:
 
 def load_devices(path: str | None = None) -> Dict[str, Any]:
     p = path or C.DEVICES_CONF
-    if not os.path.exists(p):
+    text = _read_text(p)
+    if text is None:
         return empty_devices()
-    with open(p, encoding="utf-8") as fh:
-        data = json.load(fh)
+    data = json.loads(text)
     if not isinstance(data, dict):
         return empty_devices()
     data.setdefault("rooms", [])

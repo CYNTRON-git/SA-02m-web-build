@@ -29,6 +29,7 @@ import socket
 import logging
 import ipaddress
 import subprocess
+import tempfile
 import threading
 from pathlib import Path
 
@@ -503,25 +504,33 @@ def _beeper_override_write(profile: "HwProfile", on: bool) -> tuple[bool, str]:
     except OSError:
         pass
     expires_at = int(time.time()) + profile.beeper_override_sec
-    # The CGI's temp name is `${file}.$$` — unique because every request is its
-    # own process. In one long-lived daemon the pid is shared, so the thread id
-    # joins it: two commands staging the same name would have one of them
-    # renaming a file the other had already moved away.
-    tmp = f"{path}.{os.getpid()}.{threading.get_ident()}"
+    # This daemon is root and the directory is www-data's own 0775, so www-data
+    # can plant any name in it. The temp is therefore mkstemp's (random name,
+    # O_EXCL|O_NOFOLLOW) and touched only through its fd; the rename is the one
+    # by-name act, and it never follows a link. A predictable
+    # `<file>.<pid>.<tid>` opened by name let a planted symlink turn this write
+    # into a root truncate of any file, and chmod BY NAME let a rename+symlink
+    # swap re-mode one (tests/test_telemetry_override_write.py). The CGI's
+    # `${file}.$$` runs as www-data, which gains nothing that way.
     try:
-        with open(tmp, "w", encoding="utf-8", newline="\n") as fh:
-            fh.write("value=%d\n" % (1 if on else 0))
-            fh.write("expires_at=%d\n" % expires_at)
-        # Before the rename, not after: os.replace carries the temp file's mode
-        # onto the live path, so in this order the file is never VISIBLE with
-        # root's umask-narrowed 0644. The reason is the reader, not the other
-        # writer: www-data replaces this file by rename (which needs the
-        # DIRECTORY, and that is 0775 www-data), so it is never blocked by the
-        # file's own mode — but anything that only READS the override, now or
-        # later, would be, and a 0644 window is exactly the kind of transient
-        # nobody reproduces. The CGI chmods after its `mv` and leaves that
-        # window open; this is deliberately narrower.
-        os.chmod(tmp, 0o664)
+        fd, tmp = tempfile.mkstemp(prefix=os.path.basename(path) + ".", dir=directory)
+    except OSError as exc:
+        return False, f"{path}: {exc}"
+    try:
+        try:
+            # Before the rename, not after: os.replace carries the temp file's
+            # mode onto the live path, so in this order the file is never
+            # VISIBLE with mkstemp's 0600. The reason is the reader, not the
+            # other writer: www-data replaces this file by rename (which needs
+            # the DIRECTORY, 0775 www-data), so it is never blocked by the
+            # file's own mode — but anything that only READS the override
+            # would be. The CGI chmods after its `mv` and leaves that window
+            # open; this is deliberately narrower.
+            os.fchmod(fd, 0o664)
+            os.write(fd, ("value=%d\nexpires_at=%d\n"
+                          % (1 if on else 0, expires_at)).encode("ascii"))
+        finally:
+            os.close(fd)
         os.replace(tmp, path)
     except OSError as exc:
         try:

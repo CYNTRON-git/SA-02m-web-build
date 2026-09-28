@@ -59,13 +59,45 @@ def _controller_sn() -> str:
     return controller_sn()
 
 
+def _replace_via_tmp(path: str, text: str, mode: Optional[int] = None) -> None:
+    """Write `<path>.tmp`, then rename it over `path` — never through a planted name.
+
+    VAR_DIR is www-data's own 0700 dir and root reaches these writers too (the
+    config service's socket), so a symlink www-data leaves at the `.tmp` name
+    must be removed, not opened: the name is unlinked, re-created
+    O_EXCL|O_NOFOLLOW (a re-plant in between fails the open instead), and the
+    mode is set through the fd. `.tmp` stays the sidecar name — the binding
+    wipe and the imaging clear-lists match it (binding_sources._sidecars).
+    `mode` None keeps the umask-derived mode open(…, "w") always gave.
+    """
+    tmp = path + ".tmp"
+    try:
+        os.unlink(tmp)
+    except FileNotFoundError:
+        pass
+    flags = os.O_WRONLY | os.O_CREAT | os.O_EXCL | getattr(os, "O_NOFOLLOW", 0) \
+        | getattr(os, "O_CLOEXEC", 0)
+    fd = os.open(tmp, flags, 0o600 if mode is not None else 0o666)
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as fh:
+            if mode is not None:
+                if hasattr(os, "fchmod"):
+                    os.fchmod(fh.fileno(), mode)
+                else:  # Windows dev host before Python 3.13
+                    os.chmod(tmp, mode)
+            fh.write(text)
+        os.replace(tmp, path)
+    except BaseException:
+        try:
+            os.unlink(tmp)
+        except OSError:
+            pass
+        raise
+
+
 def _save_pending_claim(data: Dict[str, Any]) -> None:
     os.makedirs(C.VAR_DIR, exist_ok=True)
-    path = C.PENDING_CLAIM_FILE
-    tmp = path + ".tmp"
-    with open(tmp, "w", encoding="utf-8") as fh:
-        json.dump(data, fh, ensure_ascii=False)
-    os.replace(tmp, path)
+    _replace_via_tmp(C.PENDING_CLAIM_FILE, json.dumps(data, ensure_ascii=False))
 
 
 def _load_pending_claim() -> Dict[str, Any]:
@@ -79,11 +111,7 @@ def _load_pending_claim() -> Dict[str, Any]:
 
 def _write_pem(path: str, pem: str, mode: int = 0o600) -> None:
     os.makedirs(os.path.dirname(path) or ".", exist_ok=True)
-    tmp = path + ".tmp"
-    with open(tmp, "w", encoding="utf-8") as fh:
-        fh.write(pem if pem.endswith("\n") else pem + "\n")
-    os.chmod(tmp, mode)
-    os.replace(tmp, path)
+    _replace_via_tmp(path, pem if pem.endswith("\n") else pem + "\n", mode)
 
 
 def read_status_file() -> Dict[str, Any]:
