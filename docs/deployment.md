@@ -775,6 +775,17 @@ Q-A: некоммерческое использование, в заводск�
 - Установлен пакет Алисы: `/opt/sa02m-alice/sa02m_alice` (`scripts/06-alice.sh`,
   входит в обычный `install.sh`). Без него `06c-homekit.sh` пишет
   `HomeKit needs Alice package` и выходит, ничего не поставив.
+- Пакет Алисы (и пакет сценариев) **не старше моста**. `update-www-only.sh`
+  их не везёт, поэтому после него плата может нести новый мост при старой Алисе
+  (стенд 1.135: мост падал по кругу). `06c-homekit.sh` первым делом проверяет
+  установленные пакеты на все символы, которые берёт мост (список —
+  `opt/sa02m-homekit/sa02m_homekit/peers.py`). Устаревший пакет он обновляет
+  из того же дерева модулем этого пакета (`06-alice.sh`, `06b-rules.sh`; они
+  перезапускают только работающие службы), если модуль не пропущен
+  `SA02M_SKIP_ALICE=1` / `SA02M_SKIP_RULES=1`. Если пакет Алисы остался старым,
+  06c пишет «обновите пакет Алисы: запустите 06-alice.sh или полную установку»
+  и выходит с кодом 1, ничего не поставив. Старый пакет сценариев — только
+  предупреждение: в HomeKit не будет сцен.
 - Зависимости venv — из PyPI (нужен интернет на плате) **или** из wheelhouse
   `/opt/vendor-installers/homekit/` (офлайн). Колёса для платы (armv7l,
   CPython 3.12, с проверкой хэшей lock-файла) скачиваются на ПК командой
@@ -799,7 +810,11 @@ sudo bash scripts/06c-homekit.sh
 lock, не пересобирается. Порядок шагов и почему он такой — шапка
 `scripts/06c-homekit.sh`. Если venv не собрался (нет сети и нет wheelhouse),
 пакет, юнит и карточка всё равно ставятся, а карточка показывает «нет
-компонентов» — повторить установку при сети или с wheelhouse.
+компонентов» — повторить установку при сети или с wheelhouse. Если на
+карточке «Обновите пакет Алисы», мост нашёл старый пакет Алисы при запуске:
+`sudo bash scripts/06-alice.sh` (или полная установка) из того же дерева,
+затем «Выключить» и «Включить» на карточке: остановившийся мост сам не
+перезапускается (как и после «нет компонентов»).
 
 ### Проверка на стенде
 
@@ -813,9 +828,19 @@ curl -s -b "session_token=<токен>" http://127.0.0.1/cgi-bin/sa02m_homekit_a
 /opt/sa02m-homekit-venv/bin/python -c 'import pyhap.accessory_driver, segno; print("ok")'
 stat -c '%a %U:%G %n' /var/lib/sa02m-homekit /run/sa02m-homekit \
       /etc/sa02m-homekit /etc/sa02m-homekit/sa02m-homekit.conf
-# 700 sa02m-homekit:sa02m-homekit · 750 sa02m-homekit:www-data ·
+# 700 sa02m-homekit:sa02m-homekit · 2750 sa02m-homekit:www-data ·
 # 770 root:www-data · 660 root:www-data
+id -nG sa02m-homekit                         # sa02m-homekit — без www-data
+getfacl -cp /etc/sa02m-homekit /etc/sa02m-alice/sa02m-alice-devices.conf | grep sa02m-homekit
+# user:sa02m-homekit:--x · default:user:sa02m-homekit:r-- · user:sa02m-homekit:r--
+sudo -u sa02m-homekit cat /etc/sa02m_web.env  # Permission denied
 ```
+
+Мост не входит в группу `www-data` (она читает пароль панели): файлы для
+карточки получают группу от setgid-каталога `/run/sa02m-homekit`, свой конфиг и
+документ устройств мост читает по ACL из `/etc/tmpfiles.d/sa02m-homekit.conf`
+(юнит переприменяет его перед каждым стартом). Нет вывода `getfacl` — нет пакета
+`acl`, проверка тогда — `sudo -u sa02m-homekit cat` этих двух файлов.
 
 После «Включить» на карточке «Управление → Apple HomeKit»:
 
@@ -878,8 +903,11 @@ systemctl is-active sa02m-homeconnect            # inactive
 curl -s -b "session_token=<токен>" http://127.0.0.1/cgi-bin/sa02m_homeconnect_api.cgi   # "state":"disabled", "read_only":true
 stat -c '%a %U:%G %n' /var/lib/sa02m-homeconnect /run/sa02m-homeconnect \
       /etc/sa02m-homeconnect /etc/sa02m-homeconnect/sa02m-homeconnect.conf
-# 700 sa02m-homeconnect:sa02m-homeconnect · 750 sa02m-homeconnect:www-data ·
+# 700 sa02m-homeconnect:sa02m-homeconnect · 2750 sa02m-homeconnect:www-data ·
 # 770 root:www-data · 660 root:www-data
+id -nG sa02m-homeconnect                     # sa02m-homeconnect — без www-data
+sudo -u sa02m-homeconnect cat /etc/sa02m-homeconnect/sa02m-homeconnect.conf >/dev/null && echo "конфиг читается"
+sudo -u sa02m-homeconnect cat /etc/sa02m_web.env   # Permission denied
 ```
 
 После «Client ID → Включить → Подключить» и входа на странице BSH:

@@ -158,7 +158,10 @@ contract's (`alice-mqtt-mapping.md` §Scene devices) — one home; the store's
 job is unchanged (validate, persist, one writer). `captured_from.group_id`
 is still **stored and not read on the board**: it is cloud-side provenance of
 a group capture. The hub **may** present a scene marked `alice_expose` as
-exposed to Alice.
+exposed to Alice. HomeKit exposure is **not** a store field: its home is the
+Alice device document's `homekit_scenes` list (`alice-mqtt-mapping.md`
+§Device document id namespace, `homekit-bridge.md` §2), so a cloud `replace`
+can never drop a board-written tick.
 
 ---
 
@@ -322,6 +325,9 @@ scene switch commands through (`alice-mqtt-mapping.md` §Scene devices):
 |---|---|
 | `1` / `on` / `true` | run the scene — `run_now`, `source="external"` |
 | anything else | switch off every `on_off` output the scene's definition sets to a truthy value, and cancel a pending `end` (`end_after_s` → 0) |
+
+The HomeKit bridge sends only `1` (a momentary switch, `homekit-bridge.md`
+§7); the off verb is never sent from HomeKit.
 
 Both verbs answer **only for a row that exists, is `scene`-typed and
 enabled** — a `block`/`logic`/`code` id, an unknown id or a disabled scene is
