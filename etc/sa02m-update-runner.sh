@@ -1790,15 +1790,31 @@ PY
             # -p preserves each member's mode/owner so the restore keeps exec bits
             # (else systemd 203/EXEC on the restored scripts) and restrictive perms.
             tar -xpzf "$archive" -C "$tmp" || true
-            # Archive stored absolute paths; walk and restore each with its real mode.
-            find "$tmp" -type f | while IFS= read -r f; do
-                local rel="${f#"$tmp"}"
-                if [ -n "$rel" ]; then
-                    mkdir -p "$(dirname "$rel")"
-                    install -m "$(stat -c '%a' "$f")" -o "$(stat -c '%u' "$f")" \
-                        -g "$(stat -c '%g' "$f")" "$f" "$rel"
+            # Archive stored absolute paths; walk and restore each with its real
+            # mode/owner through atomic_install_file (tmp beside the target →
+            # fdatasync → rename-over → dir fsync) — the same old-or-new
+            # guarantee the journal replay above gives. Until 1.0.6.60 this was
+            # a bare `install -m … "$f" "$rel"`: truncate-then-fill of a LIVE
+            # path (/usr/local/**, /etc/systemd/system/** are what the archive
+            # holds) on the one path that runs when the board is already
+            # mid-failure. The loop runs in THIS shell (process substitution,
+            # not `find | while`) so a failed member reaches $incomplete — a
+            # subshell's count would be lost, and under errexit its death used
+            # to kill the runner at rolling_back. Gate: update-recover-rollback
+            # (c)-(g).
+            local n_failed=0 n_total=0 f rel
+            while IFS= read -r f; do
+                rel="${f#"$tmp"}"
+                [ -n "$rel" ] || continue
+                n_total=$((n_total + 1))
+                if ! atomic_install_file "$f" "$rel" "$(stat -c '%a' "$f")" "$(stat -c '%u:%g' "$f")"; then
+                    n_failed=$((n_failed + 1))
+                    log "rollback: FAIL restore $rel from archive"
                 fi
-            done
+            done < <(find "$tmp" -type f)
+            if [ "$n_failed" -gt 0 ]; then
+                incomplete="$n_failed of $n_total archive member(s) not restored"
+            fi
             rm -rf "$tmp"
         fi
     fi

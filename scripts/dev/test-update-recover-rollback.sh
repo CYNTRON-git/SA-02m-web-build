@@ -27,6 +27,29 @@
 #   bash scripts/dev/test-update-recover-rollback.sh   → both cases go RED
 #   (pre-fix mktemp aborts under set -e; pre-fix install -m 644 drops +x).
 #
+# Cases (c)-(g), 1.0.6.60: the archive restore is ATOMIC. Until then the
+# fallback wrote each member with a bare `install -m … "$f" "$rel"` — a
+# truncate-then-fill of a LIVE path (/usr/local/**, /etc/systemd/system/** are
+# exactly what the archive holds) on the one path that runs when the board is
+# already mid-failure — while the journal replay above it had been atomic since
+# 1.0.6.54, and while the very same file defines atomic_install_file(). Now each
+# member goes through that helper (tmp beside the target → fdatasync →
+# rename-over → dir fsync), a failed member is counted and the outcome is
+# «rollback incomplete» (stage=error), never rolled_back over a partly restored
+# tree — the contract the function's own header states. Failure injection and
+# the fsync-order trace use test-update-deploy-skip.sh's idiom (same-named
+# shell functions over `install` / `mv` / `sync`); `install` is TORN (8 bytes of
+# the source land in the target, then it dies — a copy killed mid-body, the
+# incident's own shape), `mv` refuses, `sync -d` refuses.
+# RED on the pre-1.0.6.60 runner, observed 2026-09-28 (Windows git-bash), 5
+# FAILURES: (c) torn copy — rc=1 (the errexit death in the `find | while`
+# subshell), the live plain.conf left as the 8-byte prefix "plain pa" (BROKEN),
+# and no stage recorded at all (stage=rolling_back;result=pending was the last
+# patch); (d) refused rename and (g) refused fdatasync — a bare `install` has
+# no mv and no sync -d, so neither injection fired: rc=0, the member restored
+# by truncate-then-fill, stage=rolled_back; (f) order — an EMPTY trace. (e)
+# passed on both. GREEN after the conversion, same host.
+#
 # Run: bash scripts/dev/test-update-recover-rollback.sh   (bash + tar + stat +
 #   install + find; no flock/systemctl/python — the runner's lock/systemd path
 #   is not exercised by this function).
@@ -50,16 +73,54 @@ grep -q 'rollback-extract' "$T/fn.sh" \
     || { echo "FAIL  extracted body has no archive-fallback (rollback-extract) — extraction range broke"; exit 1; }
 [ "$(tail -n1 "$T/fn.sh")" = "}" ] \
     || { echo "FAIL  extraction did not stop at the function's closing brace"; exit 1; }
+# The archive fallback restores through atomic_install_file() (cases (c)-(g)),
+# defined elsewhere in the same file: extract it too. Its absence is a FAIL,
+# not a skip — the fallback would then call an undefined helper on the board.
+awk '/^atomic_install_file\(\) \{/{f=1} f{print} f&&/^\}/{exit}' "$SRC" > "$T/aif.sh"
+grep -q '^atomic_install_file() {' "$T/aif.sh" \
+    || bad "$SRC defines no atomic_install_file() — the archive fallback has no atomic helper to restore through"
 
 # ── Stubs for the helpers rollback_from_journal calls ──────────────────────
 STATEDIR="$T/state"
 ARCHIVE="$STATEDIR/rollback/pre-update-TXN.tar.gz"
+TXNPATCH="$T/txnpatch"; : > "$TXNPATCH"
 log()                  { :; }
 utc_now()              { echo 1970-01-01T00:00:00Z; }
-txn_patch()            { :; }
+txn_patch()            { printf '%s\n' "$@" >> "$TXNPATCH"; }
 cleanup_imaging_lock() { :; }
 txn_get()              { case "${1:-}" in rollback_archive) printf '%s\n' "$ARCHIVE" ;; *) : ;; esac; }
 
+# ── Failure injection + fsync-order trace (test-update-deploy-skip.sh idiom) ─
+# `install`, `mv` and `sync` are resolved by name inside the extracted
+# functions, so a same-named shell function sees every call with its argv.
+# `install` TEARS one destination (8 bytes of the source, then rc=1); `mv`
+# refuses one destination; `sync` records argv plus the first bytes the probed
+# live file holds at call time (the ORDER proof) and may refuse a `-d` on one
+# path. The real `sync` is forwarded but its status is not read: on Cygwin/MSYS
+# fdatasync fails with EACCES on the read-only fd coreutils opens, which would
+# turn every case RED on a Windows dev box for a host reason; durability is not
+# observable from a harness anyway — the order and the refusal path are.
+INSTALL_TORN_ON=""; MV_FAIL_ON=""; SYNC_FAIL_D_ON=""; LIVE_PROBE=""
+TRACE="$T/fsync.trace"; : > "$TRACE"
+install() {
+    if [ -n "$INSTALL_TORN_ON" ] && [ "$#" -ge 2 ] && [[ "${*: -1}" == *"$INSTALL_TORN_ON"* ]]; then
+        head -c 8 "${*: -2:1}" > "${*: -1}" 2>/dev/null; return 1
+    fi
+    command install "$@"
+}
+mv() {
+    printf 'mv %s\n' "$*" >> "$TRACE"
+    if [ -n "$MV_FAIL_ON" ] && [ "$#" -ge 1 ] && [[ "${*: -1}" == *"$MV_FAIL_ON"* ]]; then return 1; fi
+    command mv "$@"
+}
+sync() {
+    printf 'sync %s | live=%s\n' "$*" "$(head -c 3 "$LIVE_PROBE" 2>/dev/null)" >> "$TRACE"
+    if [ -n "$SYNC_FAIL_D_ON" ] && [ "${1:-}" = -d ] && [[ "${*: -1}" == *"$SYNC_FAIL_D_ON"* ]]; then return 1; fi
+    command sync "$@" >/dev/null 2>&1 || :
+}
+
+# shellcheck disable=SC1090
+. "$T/aif.sh"
 # shellcheck disable=SC1090
 . "$T/fn.sh"
 
@@ -106,6 +167,84 @@ if find "$STATEDIR/staging" -maxdepth 1 -name 'rollback-extract.*' 2>/dev/null |
     bad "rollback-extract temp dir left behind under staging/"
 else
     ok "rollback-extract temp dir cleaned up"
+fi
+
+# ── (c)-(g): the archive restore is atomic — old-or-new, never a torn live file ──
+# The update REPLACED the live files (post-update bytes on disk); recover must
+# bring the archived pre-update bytes back. A torn or refused restore of ONE
+# member leaves that member's live bytes exactly as they were, still restores
+# the other, leaves no tmp behind, and ends in «rollback incomplete»
+# (stage=error) — never rolled_back over a partly restored tree.
+ARCHIVED_PLAIN='plain payload'
+seed_live() {
+    printf 'LIVE post-update exec\n'    > "$RESTORE/exec.sh"
+    printf 'LIVE post-update payload\n' > "$RESTORE/plain.conf"
+    : > "$TRACE"; : > "$TXNPATCH"
+}
+live_plain()   { cat "$RESTORE/plain.conf" 2>/dev/null; }
+tmp_left()     { ls "$RESTORE"/*.tmp.* >/dev/null 2>&1; }
+stage_is()     { grep -qx "stage=$1" "$TXNPATCH" 2>/dev/null; }
+incomplete_recorded() { grep -q '^error_message=rollback incomplete (' "$TXNPATCH" 2>/dev/null; }
+run_fallback() { ( set -euo pipefail; rollback_from_journal "TXN" ) 2>/dev/null; }
+LIVE_PROBE="$RESTORE/plain.conf"
+
+# (c) torn copy of plain.conf
+seed_live; INSTALL_TORN_ON="plain.conf"
+run_fallback; rc=$?
+INSTALL_TORN_ON=""
+if [ "$rc" -eq 0 ] && [ "$(live_plain)" = "LIVE post-update payload" ] && ! tmp_left; then
+    ok "(c) torn copy: the live plain.conf is untouched (never the 8-byte prefix), rc=$rc, no tmp left"
+else
+    bad "(c) torn copy: rc=$rc live='$(live_plain)' dir='$(ls "$RESTORE" | tr '\n' ' ')'"
+fi
+[ "$(cat "$RESTORE/exec.sh" 2>/dev/null)" = "$(printf '#!/bin/sh\nexit 0')" ] \
+    && ok "(c) …and the other member (exec.sh) was still restored" \
+    || bad "(c) the other member was not restored — one failed member aborted the whole restore"
+if stage_is error && incomplete_recorded && ! stage_is rolled_back; then
+    ok "(c) …and the outcome is stage=error «rollback incomplete», not rolled_back"
+else
+    bad "(c) outcome recorded: $(tr '\n' ';' < "$TXNPATCH") — expected stage=error + 'rollback incomplete (…)'"
+fi
+
+# (d) refused rename of plain.conf
+seed_live; MV_FAIL_ON="plain.conf"
+run_fallback; rc=$?
+MV_FAIL_ON=""
+if [ "$rc" -eq 0 ] && [ "$(live_plain)" = "LIVE post-update payload" ] && ! tmp_left && stage_is error && incomplete_recorded; then
+    ok "(d) refused rename: live plain.conf untouched, rc=$rc, no tmp, stage=error «rollback incomplete»"
+else
+    bad "(d) refused rename: rc=$rc live='$(live_plain)' dir='$(ls "$RESTORE" | tr '\n' ' ')' patched='$(tr '\n' ';' < "$TXNPATCH")'"
+fi
+
+# (e)/(f) success: both members restored, rolled_back, and the ORDER from the
+# trace — fdatasync of the tmp while the live file still reads the post-update
+# bytes ("LIV"), the rename, then the directory fsync once it reads the archived
+# bytes ("pla").
+seed_live
+run_fallback; rc=$?
+if [ "$rc" -eq 0 ] && [ "$(live_plain)" = "$ARCHIVED_PLAIN" ] && [ -x "$RESTORE/exec.sh" ] && ! tmp_left && stage_is rolled_back; then
+    ok "(e) success: both members restored from the archive, rc=0, no tmp, stage=rolled_back"
+else
+    bad "(e) success: rc=$rc live='$(live_plain)' exec-x=$([ -x "$RESTORE/exec.sh" ] && echo yes || echo no) dir='$(ls "$RESTORE" | tr '\n' ' ')' patched='$(tr '\n' ';' < "$TXNPATCH")'"
+fi
+l_tmp=$(grep -n -E "^sync -d -- $RESTORE/plain\.conf\.tmp\.[0-9]+ \| live=LIV\$" "$TRACE" 2>/dev/null | head -1 | cut -d: -f1)
+l_mv=$(grep -n -E "^mv -f $RESTORE/plain\.conf\.tmp\.[0-9]+ $RESTORE/plain\.conf\$" "$TRACE" 2>/dev/null | head -1 | cut -d: -f1)
+l_dir=$(grep -n -E "^sync -- $RESTORE \| live=pla\$" "$TRACE" 2>/dev/null | head -1 | cut -d: -f1)
+if [ -n "$l_tmp" ] && [ -n "$l_mv" ] && [ -n "$l_dir" ] && [ "$l_tmp" -lt "$l_mv" ] && [ "$l_mv" -lt "$l_dir" ]; then
+    ok "(f) order: 'sync -d -- <tmp>' with the live file still post-update (line $l_tmp) → 'mv -f <tmp> <live>' ($l_mv) → 'sync -- <dir>' with it archived ($l_dir)"
+else
+    bad "(f) order: expected sync -d <tmp> (live=LIV) → mv -f → sync <dir> (live=pla); trace: $(tr '\n' ';' < "$TRACE")"
+fi
+
+# (g) refused fdatasync of plain.conf's tmp — no rename over a tmp that may not
+# be on disk.
+seed_live; SYNC_FAIL_D_ON="plain.conf.tmp."
+run_fallback; rc=$?
+SYNC_FAIL_D_ON=""
+if [ "$rc" -eq 0 ] && [ "$(live_plain)" = "LIVE post-update payload" ] && ! tmp_left && stage_is error && incomplete_recorded; then
+    ok "(g) refused fdatasync: live plain.conf untouched, rc=$rc, no tmp, stage=error «rollback incomplete»"
+else
+    bad "(g) refused fdatasync: rc=$rc live='$(live_plain)' dir='$(ls "$RESTORE" | tr '\n' ' ')' patched='$(tr '\n' ';' < "$TXNPATCH")'"
 fi
 
 echo "-----"
