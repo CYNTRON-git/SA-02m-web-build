@@ -2244,6 +2244,31 @@ html[data-theme="light"] .alice-reg-link { color: var(--cyan-hover); }
 .homekit-net .field { margin: 6px 0 8px; }
 .homekit-net .btn { width: 100%; justify-content: center; }
 .homekit-note { margin: 0 !important; font-size: .78rem !important; }
+/* «Устройства для HomeKit»: one line per device — box, name (ellipsis), a
+   muted skip reason. Existing tokens only: --text on the card (the
+   .homekit-skip-name pair), --text-sec for the reason (the list's own pair). */
+.homekit-devs-hint { margin: 6px 0 0 !important; }
+.homekit-devs-hint[hidden] { display: none !important; }
+.homekit-dev-list { max-height: 240px; margin-top: 4px; }
+.homekit-dev-list li { padding: 0; }
+.homekit-dev-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-height: var(--tap);
+  cursor: pointer;
+}
+.homekit-dev-row input { flex: 0 0 auto; margin: 0; }
+.homekit-dev-name {
+  flex: 1 1 auto;
+  min-width: 0;
+  color: var(--text);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.homekit-dev-why { flex: 0 1 auto; min-width: 0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.homekit-devs .btn { margin-top: 6px; }
 
 /* ── BSH Home Connect card (#homeconnect-card, app/homeconnect.js) ──────────
    Reuses the HomeKit card's list / code box / QR / details / note classes
@@ -2456,7 +2481,19 @@ html[data-theme="light"] .homeconnect-verify-link { color: var(--cyan-hover); }
 /* Same guards for the HomeKit toggle field and the «Отметить все» button
    (.btn is inline-flex). */
 #sh-hk-field[hidden],
-#sh-hk-all[hidden] { display: none !important; }
+#sh-hk-all[hidden],
+#sh-co2-field[hidden],
+#sh-hk-scenes[hidden],
+#sh-btn-hint[hidden],
+#sh-export-hint[hidden] { display: none !important; }
+/* «Сцены в HomeKit»: one clickable row per scene (toggle + name). A label
+   inside .field is display:block, small and secondary (`.field label`), so
+   the row restores the device-row look with a matching-specificity rule. */
+.field label.sh-hk-scene-row {
+  display: flex; align-items: center; gap: 12px; margin-bottom: 0;
+  font-size: inherit; font-weight: 400; color: var(--text);
+  min-height: var(--tap); cursor: pointer;
+}
 #sh-hk-all { margin-bottom: 8px; }
 
 /* Stacked: the kind keeps the delete button on its own line (an orphaned ✕
