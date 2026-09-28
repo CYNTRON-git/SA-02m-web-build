@@ -1,8 +1,9 @@
 """sa02m-homeconnect daemon: `python3 -m sa02m_homeconnect` (docs/contracts/home-connect.md).
 
 Standby exits are exit 0 so `Restart=on-failure` leaves them alone: the conf
-says disabled (status `disabled`), paho is not importable (`missing_deps`),
-or SIGTERM. Anything unexpected is status `error` + exit 1 (systemd retries).
+says disabled (status `disabled`), the conf exists but cannot be read
+(`missing_deps` + reason `conf_unreadable`, at start or while running), paho
+is not importable (`missing_deps`), or SIGTERM. Anything unexpected is status `error` + exit 1 (systemd retries).
 Every other condition — no client id, not linked, waiting for the user,
 offline, rate-limited, token revoked — keeps the process running and says so
 in status.json (heartbeat every STATUS_HEARTBEAT_S).
@@ -108,7 +109,7 @@ class Session:
         self.transport = daemon.transport_factory(base)
         self.oauth = OAuthClient(self.transport, daemon.budget, TokenStore(daemon.tokens_path),
                                  client_id=self.client_id, host=self.host, clock=daemon.clock)
-        self.api = ApiClient(self.transport, daemon.budget, self.oauth, wait=daemon.stop.wait,
+        self.api = ApiClient(self.transport, daemon.budget, self.oauth, wait=daemon.wait_alive,
                              clock=daemon.clock, rng=daemon.rng)
         self.stream: Optional[EventStream] = None
         self.next_load = 0.0
@@ -259,6 +260,10 @@ class Daemon:
 
     def _check_conf(self) -> bool:
         new = conf_mod.load(self.conf_path)
+        if new.unreadable:
+            log.error("conf %s is no longer readable (%s) — stopping; run 06d-homeconnect.sh",
+                      self.conf_path or C.CONF_FILE, "; ".join(new.warnings))
+            return False
         if not new.enabled:
             log.info("Home Connect disabled in the conf — stopping")
             return False
@@ -717,6 +722,20 @@ class Daemon:
         self._next_heartbeat = now + C.STATUS_HEARTBEAT_S
         self.status.write_status(state, **fields)
 
+    def wait_alive(self, seconds: float) -> bool:
+        """The REST client's pause between retries (api_client.get). A failing
+        sequence holds the main thread for up to 3 × HTTP_TIMEOUT_S plus its
+        pauses, and a token refresh before it adds one more timeout — close to
+        STATUS_STALE_S (bench G6: every BSH request hung). The last status is
+        re-stamped here, so a daemon waiting on a silent cloud does not read as
+        a dead one («не отвечает») instead of `offline`."""
+        if self._last_status:
+            fields = dict(self._last_status)
+            state = fields.pop("state")
+            self._next_heartbeat = self.mono() + C.STATUS_HEARTBEAT_S
+            self.status.write_status(state, **fields)
+        return self.stop.wait(seconds)
+
     # ── lifecycle ─────────────────────────────────────────────────────────
     def _make_mqtt(self) -> Any:
         if self._mqtt_factory is None:
@@ -746,8 +765,21 @@ class Daemon:
             log.warning("broker not reachable — retained Home Connect topics left in place")
         self.mqtt.stop()
 
+    def _write_conf_unreadable(self, host: str) -> None:
+        self.status.write_status(C.STATE_MISSING_DEPS, reason=C.REASON_CONF_UNREADABLE,
+                                 enabled=True, host=host, message="conf unreadable")
+
     def run(self) -> int:
         self.conf = conf_mod.load(self.conf_path)
+        if self.conf.unreadable:
+            # Exit 0: Restart=on-failure leaves it alone; the next start
+            # (ExecStartPre re-applies the ACL) or 06d brings it back. The
+            # retained appliance topics stay: this is not «disabled».
+            self._write_conf_unreadable(self.conf.host)
+            log.error("conf %s exists but is not readable (%s) — a full install or "
+                      "06d-homeconnect.sh restores the daemon's read access",
+                      self.conf_path or C.CONF_FILE, "; ".join(self.conf.warnings))
+            return EXIT_OK
         for warning in self.conf.warnings:
             log.warning("conf: %s", warning)
         if not self.conf.enabled:
@@ -791,7 +823,7 @@ class Daemon:
             self.session.stream.stop()
         final = conf_mod.load(self.conf_path)
         if self.publisher is not None:
-            if final.enabled:
+            if final.enabled or final.unreadable:
                 # Nobody watches the cloud while we are down.
                 self._mark_all_failing()
             else:
@@ -803,7 +835,9 @@ class Daemon:
             except Exception:
                 log.exception("MQTT stop failed")
         self.status.clear_link()
-        if final.enabled:
+        if final.unreadable:
+            self._write_conf_unreadable(self.conf.host)
+        elif final.enabled:
             self.status.write_status(C.STATE_CONNECTING, enabled=True, host=final.host,
                                      message="stopped")
         else:

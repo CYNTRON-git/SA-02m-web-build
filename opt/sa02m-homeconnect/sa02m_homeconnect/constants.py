@@ -168,6 +168,9 @@ REASON_RETRY_AFTER = "retry_after"
 REASON_DAILY_LIMIT = "daily_limit"
 REASON_STREAM_DOWN = "stream_down"
 REASON_STATUS_STALE = "status_stale"
+# With `missing_deps`: the conf exists but the daemon cannot read it (its read
+# ACL is gone, docs/contracts/home-connect.md §11) — not «disabled».
+REASON_CONF_UNREADABLE = "conf_unreadable"
 REASONS = (
     REASON_ACCESS_DENIED,
     REASON_CLIENT_ID_REJECTED,
@@ -178,6 +181,7 @@ REASONS = (
     REASON_DAILY_LIMIT,
     REASON_STREAM_DOWN,
     REASON_STATUS_STALE,
+    REASON_CONF_UNREADABLE,
 )
 
 # ── MQTT (docs/MQTT_TOPICS.md convention) ──────────────────────────────────
