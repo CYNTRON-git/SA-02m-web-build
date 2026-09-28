@@ -41,6 +41,9 @@ HC_VAR_DIR=/var/lib/sa02m-homeconnect
 HC_RUN_DIR=/run/sa02m-homeconnect
 HC_CONF=/etc/sa02m-homeconnect/sa02m-homeconnect.conf
 HC_PKG_DIR=/opt/sa02m-homeconnect
+# Units phase 1 of erase_owner_state found ACTIVE before it stopped them — the
+# ones a rollback starts again (restart_stopped_units).
+RESTART_UNITS=()
 
 SELF="${BASH_SOURCE[0]:-$0}"
 CMD="${1:-run}"
@@ -1059,7 +1062,24 @@ rollback_from_journal() {
       out=$(fr_safe restore "$f" "$rel" 2>&1) || log "WARN rollback could not restore $rel: $out"
     done < <(find "$JOURNAL_DIR/files" -type f -print0 2>/dev/null || true)
   fi
+  # After the confs are back, so a restarted daemon reads its own, not the template.
+  restart_stopped_units
   txn_write "stage=rolled_back" "result=rolled_back" || true
+}
+
+# Best effort by design: a unit that will not start is logged, never a reason
+# to abandon the rest of the rollback. Units that were not active before the
+# reset are not in the list and stay as they were.
+restart_stopped_units() {
+  local u
+  for u in "${RESTART_UNITS[@]}"; do
+    if timeout 20 systemctl start "$u" >/dev/null 2>&1; then
+      log "rollback: started $u again (it was active before the reset)"
+    else
+      log "WARN rollback: $u was active before the reset and did not start again — start it by hand"
+    fi
+  done
+  RESTART_UNITS=()
 }
 
 # --- apply templates ---------------------------------------------------------
@@ -1140,13 +1160,24 @@ MAP
   done
 }
 
-# HomeKit (Q-F: factory reset ERASES the bridge's pairings — resale must not
-# leave the previous owner's iPhones in control of the relays). Runs LAST, after
-# the reversible config part has verified, so a failed reset never costs the
-# pairings for nothing; a failure here still rolls the configs back.
-# Order: conf to the template first (enabled = false — a daemon restarted
-# behind our back exits instead of re-persisting keys), then stop, then erase
-# only once systemd reports the unit fully down.
+# HomeKit + Home Connect (Q-F: factory reset ERASES the bridge's pairings and
+# the Home Connect sign-in — resale must not leave the previous owner's iPhones
+# in control of the relays, nor his BSH account readable from this board). Runs
+# LAST, after the reversible config part has verified, so a failed reset never
+# costs the pairings or the sign-in for nothing.
+# Two phases, because the erases cannot be rolled back and a refusal must leave
+# the board as it was:
+#   1. quiesce, per installed unit whose state is erased: its conf to the
+#      template (enabled = false — a daemon restarted behind our back exits
+#      instead of re-persisting keys or refreshing a token), then stop, then
+#      require systemd to report the unit fully down. A unit that will not stop
+#      -> E_APPLY: the configs (these confs included) roll back and NOTHING has
+#      been erased yet — a Home Connect refusal no longer costs the HomeKit
+#      pairings erased a step earlier;
+#   2. only once EVERY such unit is verified down: the irreversible erases.
+# A rollback (fail / the ERR trap) starts again every unit phase 1 found active
+# (restart_stopped_units) — its state was read before the conf reset, because a
+# daemon polling its conf would exit on the template before we looked.
 unit_stopped() {
   local st
   st=$(timeout 10 systemctl is-active "$1" 2>/dev/null) || true
@@ -1156,19 +1187,51 @@ unit_stopped() {
   esac
 }
 
-wipe_homekit_pairings() {
+remember_if_active() {
+  local st
+  st=$(timeout 10 systemctl is-active "$1" 2>/dev/null) || true
+  case "$st" in
+    active|activating|reloading) RESTART_UNITS+=("$1") ;;
+  esac
+}
+
+homekit_installed() {
+  [ -e "$HK_VAR_DIR" ] || [ -L "$HK_VAR_DIR" ] || [ -e "$HK_CONF" ] || [ -L "$HK_CONF" ]
+}
+
+homeconnect_installed() {
+  [ -e "$HC_VAR_DIR" ] || [ -L "$HC_VAR_DIR" ] || [ -e "$HC_CONF" ] || [ -L "$HC_CONF" ]
+}
+
+quiesce_homekit() {
   local out
-  if [ ! -e "$HK_VAR_DIR" ] && [ ! -L "$HK_VAR_DIR" ] && [ ! -e "$HK_CONF" ] && [ ! -L "$HK_CONF" ]; then
-    log "homekit: bridge not installed — nothing to erase"
-    return 0
-  fi
+  remember_if_active "$HK_UNIT"
   if [ -e "$HK_CONF" ] || [ -L "$HK_CONF" ]; then
     journal_prior "$HK_CONF"
     out=$(fr_safe hk-reset-conf "$HK_CONF" "$HK_PKG_DIR" root:www-data 2>&1) || fail E_APPLY "HomeKit conf not reset: $out"
     [ -z "$out" ] || log "homekit: $out"
   fi
   timeout 20 systemctl stop "$HK_UNIT" >/dev/null 2>&1 || true
-  unit_stopped "$HK_UNIT" || fail E_APPLY "HomeKit bridge did not stop — its pairings were NOT erased"
+  unit_stopped "$HK_UNIT" || fail E_APPLY "HomeKit bridge did not stop — nothing was erased"
+}
+
+# The daemon, stopping with the conf already disabled, removes its retained
+# appliance topics instead of marking them stale.
+quiesce_homeconnect() {
+  local out
+  remember_if_active "$HC_UNIT"
+  if [ -e "$HC_CONF" ] || [ -L "$HC_CONF" ]; then
+    journal_prior "$HC_CONF"
+    out=$(fr_safe hc-reset-conf "$HC_CONF" "$HC_PKG_DIR" root:www-data 2>&1) || fail E_APPLY "Home Connect conf not reset: $out"
+    [ -z "$out" ] || log "homeconnect: $out"
+  fi
+  timeout 20 systemctl stop "$HC_UNIT" >/dev/null 2>&1 || true
+  unit_stopped "$HC_UNIT" || fail E_APPLY "Home Connect client did not stop — nothing was erased"
+}
+
+# Phase 2 only — callers guarantee the unit is verified down.
+wipe_homekit_pairings() {
+  local out
   if [ -e "$HK_VAR_DIR" ] || [ -L "$HK_VAR_DIR" ]; then
     out=$(fr_safe wipe-dir "$HK_VAR_DIR" 2>&1) || fail E_APPLY "HomeKit pairing store not erased: $out"
     log "homekit: $out"
@@ -1180,27 +1243,8 @@ wipe_homekit_pairings() {
   log "homekit: pairings erased, bridge off (docs/contracts/homekit-bridge.md §14)"
 }
 
-# Home Connect (Q-F: factory reset ERASES the sign-in — resale must not leave
-# the previous owner's BSH account readable from this board). Runs right after
-# the HomeKit erase, for the same reasons and in the same order: conf to the
-# template first (enabled = false — the daemon, stopping with the conf
-# disabled, removes its retained appliance topics instead of marking them
-# stale, and a daemon restarted behind our back exits instead of refreshing a
-# token), then stop, then erase the state dir only once systemd reports the
-# unit fully down.
 wipe_homeconnect_signin() {
   local out
-  if [ ! -e "$HC_VAR_DIR" ] && [ ! -L "$HC_VAR_DIR" ] && [ ! -e "$HC_CONF" ] && [ ! -L "$HC_CONF" ]; then
-    log "homeconnect: client not installed — nothing to erase"
-    return 0
-  fi
-  if [ -e "$HC_CONF" ] || [ -L "$HC_CONF" ]; then
-    journal_prior "$HC_CONF"
-    out=$(fr_safe hc-reset-conf "$HC_CONF" "$HC_PKG_DIR" root:www-data 2>&1) || fail E_APPLY "Home Connect conf not reset: $out"
-    [ -z "$out" ] || log "homeconnect: $out"
-  fi
-  timeout 20 systemctl stop "$HC_UNIT" >/dev/null 2>&1 || true
-  unit_stopped "$HC_UNIT" || fail E_APPLY "Home Connect client did not stop — its sign-in was NOT erased"
   if [ -e "$HC_VAR_DIR" ] || [ -L "$HC_VAR_DIR" ]; then
     out=$(fr_safe wipe-dir "$HC_VAR_DIR" 2>&1) || fail E_APPLY "Home Connect sign-in not erased: $out"
     log "homeconnect: $out"
@@ -1210,6 +1254,23 @@ wipe_homeconnect_signin() {
   out=$(fr_safe remove-name "$HC_RUN_DIR" link.json 2>&1) || log "WARN homeconnect: $out"
   [ -z "$out" ] || log "homeconnect: $out"
   log "homeconnect: sign-in erased, client off (docs/contracts/home-connect.md §12)"
+}
+
+# Every stop is verified inside its quiesce_* (fail exits), so reaching the
+# erase calls means every installed unit whose state goes is down. HomeKit is
+# quiesced first so a bridge that will not stop leaves Home Connect running.
+erase_owner_state() {
+  local hk=0 hc=0
+  if homekit_installed; then hk=1; else log "homekit: bridge not installed — nothing to erase"; fi
+  if homeconnect_installed; then hc=1; else log "homeconnect: client not installed — nothing to erase"; fi
+  if [ "$hk" = 1 ]; then quiesce_homekit; fi
+  if [ "$hc" = 1 ]; then quiesce_homeconnect; fi
+  if [ "$hk" = 1 ]; then
+    wipe_homekit_pairings
+  fi
+  if [ "$hc" = 1 ]; then
+    wipe_homeconnect_signin
+  fi
 }
 
 verify_reset() {
@@ -1351,8 +1412,7 @@ PY
 
   txn_write "stage=verify" "progress_pct=85"
   verify_reset
-  wipe_homekit_pairings
-  wipe_homeconnect_signin
+  erase_owner_state
 
   trap - ERR
 

@@ -251,10 +251,13 @@ firstrun этой конкретной платы. Очистка Алисы н�
 слой 2 — пять площадок, шесть файлов); проверка — часть H строки `alice-image-identity`.
 
 Политика factory reset для HomeKit (§1, «СТЕРЕТЬ») **исполняется**:
-`wipe_homekit_pairings()` в `etc/sa02m-factory-reset-runner.sh` стирает
-содержимое `/var/lib/sa02m-homekit/` и возвращает конфиг к шаблону
-(`homekit-bridge.md` §14); проверяет `scripts/dev/test-factory-reset-runner.py`
-(H1–H7b), строка реестра `factory-reset-runner`.
+`erase_owner_state()` в `etc/sa02m-factory-reset-runner.sh` возвращает конфиг
+к шаблону и стирает содержимое `/var/lib/sa02m-homekit/` — стирание только
+после того, как остановлены все юниты, чьё состояние сброс стирает (мост и
+клиент Home Connect, §8); отказ остановки любого не стирает ничего, а откат
+снова запускает юниты, работавшие до сброса (`homekit-bridge.md` §14);
+проверяет `scripts/dev/test-factory-reset-runner.py` (H1–H7b, O1–O4), строка
+реестра `factory-reset-runner`.
 
 ## 8. Клиент Home Connect (`sa02m-homeconnect`)
 
@@ -295,9 +298,11 @@ retained-топики приборов с брокера, а не оставля
 обновление токена в полёте записало бы его обратно.
 
 Политика factory reset (§1, «СТЕРЕТЬ») **исполняется**:
-`wipe_homeconnect_signin()` в `etc/sa02m-factory-reset-runner.sh` — сразу после
-`wipe_homekit_pairings()` и в том же порядке (конфиг к шаблону пакета, затем
-остановка, затем очистка содержимого `/var/lib/sa02m-homeconnect/` только после
-полной остановки юнита, затем `link.json`); проверяет
-`scripts/dev/test-factory-reset-runner.py` (C1–C7), строка реестра
-`factory-reset-runner`. Площадки — часть C строки `alice-image-identity`.
+`erase_owner_state()` в `etc/sa02m-factory-reset-runner.sh` — в той же
+транзакции, что и мост HomeKit (§7): сначала оба юнита (мост, затем клиент)
+приводятся к шаблону конфига и останавливаются с проверкой полной остановки,
+и только когда остановлены оба — необратимое: пары моста, затем содержимое
+`/var/lib/sa02m-homeconnect/` и `link.json`. Отказ остановки любого — `E_APPLY`,
+конфиги откатываются, не стёрто ничего, работавшие до сброса юниты
+запускаются снова; проверяет `scripts/dev/test-factory-reset-runner.py`
+(C1–C7, O1–O4), строка реестра `factory-reset-runner`. Площадки — часть C строки `alice-image-identity`.

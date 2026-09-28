@@ -83,6 +83,17 @@ temp name swapped between mkstemp and rename).
   C6 a reset failing its own verify keeps the sign-in (checked in H6's run)
   C7 no trusted package template: `enabled = false` forced, the Client ID
      kept, the state dir still erased
+  O1 a Home Connect client that will not stop: E_APPLY and NOTHING erased —
+     the HomeKit pairing store and setup code intact, both confs rolled back
+     (every unit whose state goes is verified down before any erase; the
+     runner used to erase the pairings first and only then find the client
+     still running)
+  O2 a HomeKit bridge that will not stop never stops the Home Connect client
+     and keeps its sign-in (HomeKit is quiesced first)
+  O3 the rollback of O1 starts the HomeKit bridge again — it was active
+     before the reset — and only after its conf is back
+  O4 the same rollback with the bridge INACTIVE before the reset leaves it
+     stopped (only units the reset found active are started again)
   T  the runner's trusted-path resolver is byte-identical to the block in
      etc/sa02m-web-backup.sh (a third twin; no root script can import another)
   P  the embedded helper compiles
@@ -90,6 +101,9 @@ temp name swapped between mkstemp and rename).
 RED observed 2026-09-27 on the runner at HEAD 485f385 (FACTORY_SRC=<copy>):
 recorded in the commit that adds this harness. C1-C7 RED observed 2026-09-28
 on the runner at HEAD d7d9c4a (no Home Connect step): see the commit body.
+O1 RED observed 2026-09-28 on the runner at HEAD f81855e (pairings erased
+before the Home Connect stop was verified); O3 RED 2026-09-28 on the two-phase
+runner without the rollback restart: see the commit body.
 
 Run: python3 scripts/dev/test-factory-reset-runner.py   (python3 + bash;
 root or not — CI runs non-root; FACTORY_SRC=<file> runs another runner copy)
@@ -263,6 +277,17 @@ case "$1" in
       grep -Eiq '^[[:space:]]*enabled[[:space:]]*[=:][[:space:]]*(1|true|yes|on)[[:space:]]*$' \
           "{self.hc_conf}" 2>/dev/null && echo "hc-stop:conf-enabled" >> "{sb}/systemctl.log"
       [ -e "{sb}/hc-stuck" ] || echo inactive > "{sb}/hc-state"
+    fi
+    exit 0 ;;
+  start)
+    # Records whether the unit's own conf (enabled = true, the sandbox seed) is
+    # back at start time — a rollback must restore configs BEFORE it restarts.
+    if [ "${{2:-}}" = sa02m-homekit.service ]; then
+      grep -q '^enabled = true$' "{self.hk_conf}" 2>/dev/null && echo "start:hk-conf-restored" >> "{sb}/systemctl.log"
+      echo active > "{sb}/hk-state"
+    fi
+    if [ "${{2:-}}" = sa02m-homeconnect.service ]; then
+      echo active > "{sb}/hc-state"
     fi
     exit 0 ;;
   is-active)
@@ -659,6 +684,11 @@ check(rc != 0 and s.txn().get("error_code") == "E_APPLY" and (s.hk_var / "state.
       "H2 a unit that will not stop: E_APPLY, the store intact, configs and the HomeKit conf rolled back",
       f"H2 rc={rc} store={(s.hk_var / 'state.json').exists()} htpasswd_reset={s.htpasswd_reset()} "
       f"conf_back={conf_back} ({s.why()})")
+hc_intact = (s.hc_var / "tokens.json").exists() and (s.hc_run / "link.json").exists() \
+    and s.hc_conf.is_file() and b"enabled = true" in s.hc_conf.read_bytes()
+check(rc != 0 and hc_intact and "sa02m-homeconnect" not in s.systemctl_log(),
+      "O2 a HomeKit bridge that will not stop never stops the Home Connect client and keeps its sign-in",
+      f"O2 rc={rc} hc_intact={hc_intact} systemctl={s.systemctl_log().splitlines()} ({s.why()})")
 s.cleanup()
 
 s = Sandbox("h3")
@@ -768,6 +798,45 @@ hc_back = s.hc_conf.is_file() and b"enabled = true" in s.hc_conf.read_bytes() an
 check(rc != 0 and s.txn().get("error_code") == "E_APPLY" and (s.hc_var / "tokens.json").exists() and hc_back,
       "C2 a client that will not stop: E_APPLY, the tokens intact, the Home Connect conf rolled back",
       f"C2 rc={rc} tokens={(s.hc_var / 'tokens.json').exists()} conf_back={hc_back} ({s.why()})")
+s.cleanup()
+
+# O1 — the two erase steps are one transaction: a Home Connect client that
+# refuses to stop must not cost the HomeKit pairings (the old order erased the
+# store, THEN stopped Home Connect, and the E_APPLY rollback cannot bring keys
+# back).
+s = Sandbox("o1")
+reach_late_steps(s)
+(s.sb / "hc-stuck").write_text("1", encoding="utf-8")
+rc = s.run()
+hk_left = sorted(p.name for p in s.hk_var.iterdir()) if s.hk_var.is_dir() else []
+hk_back = s.hk_conf.is_file() and b"enabled = true" in s.hk_conf.read_bytes()
+hc_back = s.hc_conf.is_file() and b"enabled = true" in s.hc_conf.read_bytes()
+check(rc != 0 and s.txn().get("error_code") == "E_APPLY"
+      and hk_left == [".hk-abc.tmp", "aids.json", "identity.json", "state.json"]
+      and (s.hk_run / "setup.json").exists() and hk_back
+      and (s.hc_var / "tokens.json").exists() and (s.hc_run / "link.json").exists() and hc_back
+      and not s.htpasswd_reset(),
+      "O1 Home Connect will not stop: E_APPLY, nothing erased — HomeKit pairings + setup code kept, both confs rolled back",
+      f"O1 rc={rc} hk_store={hk_left} setup={(s.hk_run / 'setup.json').exists()} hk_conf_back={hk_back} "
+      f"tokens={(s.hc_var / 'tokens.json').exists()} hc_conf_back={hc_back} ({s.why()})")
+sl = s.systemctl_log()
+hk_state = (s.sb / "hk-state").read_text(encoding="utf-8").strip() if (s.sb / "hk-state").exists() else "?"
+check(rc != 0 and "start sa02m-homekit.service" in sl and "start:hk-conf-restored" in sl and hk_state == "active",
+      "O3 the rollback starts the HomeKit bridge again (active before the reset), after its conf is back",
+      f"O3 rc={rc} hk_state={hk_state} systemctl={sl.splitlines()} ({s.why()})")
+s.cleanup()
+
+# O4 — only a unit the reset found ACTIVE is started again.
+s = Sandbox("o4")
+reach_late_steps(s)
+(s.sb / "hc-stuck").write_text("1", encoding="utf-8")
+(s.sb / "hk-state").write_text("inactive\n", encoding="utf-8")
+rc = s.run()
+sl = s.systemctl_log()
+check(rc != 0 and s.txn().get("error_code") == "E_APPLY" and "stop sa02m-homekit.service" in sl
+      and "start sa02m-homekit.service" not in sl and (s.hk_var / "state.json").exists(),
+      "O4 a bridge inactive before the reset stays stopped after the rollback (pairings kept)",
+      f"O4 rc={rc} systemctl={sl.splitlines()} ({s.why()})")
 s.cleanup()
 
 s = Sandbox("c3")
