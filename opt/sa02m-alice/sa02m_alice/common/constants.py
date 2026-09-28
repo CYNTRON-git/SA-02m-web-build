@@ -115,6 +115,10 @@ GATEWAY_PROBE_FAIL_THRESHOLD = 2
 # A refresh lock older than this is a refresher that was killed mid-probe
 # (the probe's worst case is a HEAD + a GET retry, 2 x GATEWAY_PROBE_TIMEOUT_S).
 GATEWAY_PROBE_LOCK_STALE_S = 30.0
+# How far in the future a cache timestamp may sit and still count as evidence:
+# the refresher and the poll read the clock a moment apart. Beyond it the cache
+# was written before a backward clock step (or is corrupt) and is refreshed.
+GATEWAY_PROBE_CLOCK_SKEW_S = 5.0
 # CGI `timeout` around python dispatch (sa02m_alice_api.cgi). Slowest honest
 # path is unlink / enroll: probe + gateway POST, each GATEWAY_PROBE_TIMEOUT_S;
 # a HEAD 405 retry on probe adds a third urllib wait. Import + JSON of ~15

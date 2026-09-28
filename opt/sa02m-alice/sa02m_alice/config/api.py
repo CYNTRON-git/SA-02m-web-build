@@ -8,6 +8,7 @@ from __future__ import annotations
 import configparser
 import json
 import logging
+import math
 import os
 import socketserver
 import stat
@@ -296,17 +297,26 @@ def _read_probe_cache() -> Optional[Dict[str, Any]]:
         return None
     if not isinstance(data, dict) or not isinstance(data.get("probe"), dict):
         return None
-    if not isinstance(data.get("ts"), (int, float)):
+    # Every field the poll computes with is checked here, once: a malformed one
+    # makes the whole cache "no evidence" (refreshed and overwritten) instead of
+    # an exception out of full_config() or a bogus success on record. bool is an
+    # int subclass in Python and is refused explicitly. json.load accepts NaN and
+    # Infinity, so a timestamp must also be finite, and not in the future beyond
+    # the clock skew — a cache written before a backward clock step would
+    # otherwise freeze its verdict until the clock caught up (review A10).
+    horizon = time.time() + C.GATEWAY_PROBE_CLOCK_SKEW_S
+
+    def _stamp_ok(v: Any) -> bool:
+        return (not isinstance(v, bool) and isinstance(v, (int, float))
+                and math.isfinite(v) and v <= horizon)
+
+    if not _stamp_ok(data.get("ts")):
         return None
-    # Every field the poll computes with is type-checked here, once: a malformed
-    # one makes the whole cache "no evidence" (refreshed and overwritten) instead
-    # of a ValueError out of full_config() or a bogus success on record. bool is
-    # an int subclass in Python and is refused explicitly.
     fail_count = data.get("fail_count", 0)
     if isinstance(fail_count, bool) or not isinstance(fail_count, int) or fail_count < 0:
         return None
     ok_ts = data.get("ok_ts")
-    if ok_ts is not None and (isinstance(ok_ts, bool) or not isinstance(ok_ts, (int, float))):
+    if ok_ts is not None and not _stamp_ok(ok_ts):
         return None
     return data
 

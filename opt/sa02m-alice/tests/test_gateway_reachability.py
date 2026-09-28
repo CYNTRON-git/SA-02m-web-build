@@ -201,6 +201,44 @@ class TestCorruptCache(_Base):
         self.assertEqual(calls, 1)
         self.assertFalse(gw["available"], "a malformed ok_ts must not stand in for a success")
 
+    # Review A10 (1.0.6.58 round 2): json.load parses NaN / Infinity, both are
+    # floats, and int(cache["ts"]) then raised out of gateway_reachability —
+    # with `due` False the cache was never refreshed, so the card stayed broken.
+    # A ts in the future (a backward clock step) froze the last verdict.
+    def test_non_finite_ts_does_not_break_the_poll(self):
+        self.write_status(state="offline", ts=int(time.time()), client_enabled=True)
+        for bad in (float("nan"), float("inf"), float("-inf")):
+            with self.subTest(ts=bad):
+                self.write_cache(ts=bad, fail_count=5, ok_ts=None)
+                gw, _, calls = self.gateway(PROBE_UP)
+                self.assertEqual(calls, 1, "a non-finite ts is no evidence: refresh")
+                self.assertTrue(gw["available"])
+
+    def test_future_ts_does_not_freeze_the_verdict(self):
+        self.write_status(state="offline", ts=int(time.time()), client_enabled=True)
+        self.write_cache(ts=time.time() + 3600, fail_count=5, ok_ts=None)
+        gw, _, calls = self.gateway(PROBE_UP)
+        self.assertEqual(calls, 1, "a cache stamped in the future is no evidence: refresh")
+        self.assertTrue(gw["available"], "a stale «unreachable» must not survive a backward clock step")
+
+    def test_small_clock_skew_is_tolerated(self):
+        # Not every future ts is corrupt: the refresher and the poll read the
+        # clock a moment apart. Within the skew the cache is still evidence.
+        self.write_status(state="offline", ts=int(time.time()), client_enabled=True)
+        self.write_cache(ts=time.time() + C.GATEWAY_PROBE_CLOCK_SKEW_S / 2, probe=dict(PROBE_UP), fail_count=0)
+        gw, _, calls = self.gateway(PROBE_TIMEOUT)
+        self.assertEqual(calls, 0)
+        self.assertTrue(gw["available"])
+
+    def test_non_finite_or_future_ok_ts_is_not_a_success_on_record(self):
+        self.write_status(state="offline", ts=int(time.time()), client_enabled=True)
+        for bad in (float("nan"), float("inf"), time.time() + 3600):
+            with self.subTest(ok_ts=bad):
+                self.write_cache(ok_ts=bad, fail_count=0)
+                gw, _, calls = self.gateway(PROBE_TIMEOUT)
+                self.assertEqual(calls, 1)
+                self.assertFalse(gw["available"])
+
 
 class TestCgiNeverProbesInline(_Base):
     def setUp(self):
