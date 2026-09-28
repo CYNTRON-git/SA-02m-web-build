@@ -35,10 +35,11 @@ Modes:
 Scope: scripts/*.sh + install.sh - every shell file that can reach
 sa02m_atomic_install, which lives in scripts/lib.sh and is sourced out of the
 EXTRACTED install tree (install.sh `source "$SCRIPT_DIR/scripts/lib.sh"`).
-scripts/ is never deployed to the device, so a script under etc/ - which runs standalone on the board, sourcing
-only its own /usr/local/lib/sa02m-web-*-lib.sh - cannot call THIS helper. That
-is the only thing "out of scope" means here: a device-side script writes live
-paths atomically by carrying its OWN copy of the shape, and four do
+scripts/ is never deployed to the device, so a script under etc/ - which runs
+standalone on the board, sourcing only its own /usr/local/lib/sa02m-web-*-lib.sh
+- cannot call THIS helper. That is the only thing "out of scope" means here: a
+device-side script writes live paths atomically by carrying its OWN copy of
+the shape, and four do
 (etc/sa02m-update-runner.sh `atomic_install_file()`, tmp + fdatasync + mv +
 dir fsync; etc/sa02m-factory-reset-runner.sh `atomic_install_file()`, the same
 shape plus the wipe allow-list and rollback journal that file owns;
@@ -48,10 +49,10 @@ CRLF normalisation folded into the staged copy; etc/sa02m-web-service-ctl.sh
 local copy because the only lib that script sources,
 /usr/local/lib/sa02m-stacks-policy.sh, is SOFT (sourced only when present, so an
 older board runs without it) and cannot host a mandatory helper, and the
-runner that carries the shape is an executable, not a sourceable lib). They are
-NOT byte-identical and
-there is no cmp pin between them - each is scoped to its own caller's duties,
-which is why a further copy is a decision, not a formality.
+runner that carries the shape is an executable, not a sourceable lib). They
+are NOT byte-identical and there is no cmp pin between them - each is scoped
+to its own caller's duties, which is why a further copy is a decision, not a
+formality.
 
 Live-path `install -m` sites under etc/: NONE since 1.0.6.60 (found by
 `grep -rn 'install -m' etc/` and resolving every destination, including the
