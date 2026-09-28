@@ -23,10 +23,11 @@ locally" defect that no other gate can see. This pins:
   - main(['--check']) returns 1 with a stale module under JS_DIR and 0 once
     it is patched (the end-to-end path the quality row runs).
 
-And the line-ending half (LineEndingTests, 1.0.6.60): the syncer changes only
-the version substrings, never a file's line endings — LF stays LF on EVERY
-host. Python's text-mode default (newline=None) writes os.linesep, so a sync
-run from a Windows checkout left VERSION, index.html, login.html and the
+And the line-ending half (LineEndingTests, 1.0.6.60): LF stays LF on EVERY
+host; the regex-patched homes (app.js, index.html, login.html, modules,
+README.md) keep whatever line endings they had, CRLF included, while VERSION
+is rebuilt line by line and always comes back LF (write_version_file()).
+Python's text-mode default (newline=None) writes os.linesep, so a sync run from a Windows checkout left VERSION, index.html, login.html and the
 bundles CRLF in the working tree (backlog 2026-09-23; 1.0.6.51 converted them
 back by hand) while .gitattributes `eol=lf` promises LF on disk for the device
 overlay, and a local gate or a pscp-style delivery reads the working tree, not
@@ -43,7 +44,6 @@ from __future__ import annotations
 
 import importlib.util
 import io
-import os
 import shutil
 import sys
 import tempfile
@@ -302,13 +302,14 @@ class LineEndingTests(unittest.TestCase):
         LF) — the emulated case above is the host-independent proof."""
         self._sync_all()
         self._assert_lf_and_patched()
-        self.assertIn(os.linesep, ("\n", "\r\n"))   # documents which host class ran
 
     def test_crlf_input_stays_crlf(self) -> None:
-        """A CRLF file is patched byte-faithfully — the syncer is a version
-        patcher, not a normaliser (line endings are .gitattributes' job); reading
-        with newline='' and writing with newline='\\n' means neither direction
-        translates, so a file keeps whatever it had."""
+        """A CRLF regex-patched home (app.js, index.html) is patched
+        byte-faithfully: reading with newline='' and writing with newline='\\n'
+        means neither direction translates, so it keeps its CRLF. VERSION is the
+        one exception, by design: write_version_file() rebuilds it from
+        splitlines() and joins with '\\n', so a CRLF VERSION comes back LF —
+        pinned below so the scoped claim is measured, not asserted."""
         crlf_js = self.tmp / "app.js"
         crlf_js.write_bytes(f"const APP_VERSION = '{OLD}';\r\nvar u = 1;\r\n".encode())
         crlf_html = self.tmp / "index.html"
@@ -317,6 +318,10 @@ class LineEndingTests(unittest.TestCase):
         self.assertTrue(sync.patch_html_cache_bust(crlf_html, NEW))
         self.assertEqual(crlf_js.read_bytes(), f"const APP_VERSION = '{NEW}';\r\nvar u = 1;\r\n".encode())
         self.assertEqual(crlf_html.read_bytes(), f'<script src="a.js?v={NEW}"></script>\r\n'.encode())
+        crlf_version = self.tmp / "VERSION"
+        crlf_version.write_bytes(f"# comment\r\n{OLD}\r\n".encode())
+        sync.write_version_file(NEW)
+        self.assertEqual(crlf_version.read_bytes(), f"# comment\n{NEW}\n".encode())
 
 
 if __name__ == "__main__":

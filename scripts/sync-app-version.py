@@ -61,10 +61,14 @@ def _write_text(path: Path, text: str) -> None:
     turns every '\\n' into os.linesep, which left the version homes CRLF after
     a sync run from a Windows checkout (backlog 2026-09-23; .gitattributes
     promises LF on disk for the device overlay). With newline='\\n' nothing is
-    translated in either direction, so a file keeps the line endings it had —
-    LF stays LF on every host. Every read/write of a version home goes through
-    these two helpers. Gate: scripts/dev/test_sync_app_version.py
-    LineEndingTests."""
+    translated on write, so what the caller hands in is what lands: LF stays
+    LF on every host. The regex-patched homes (app.js, index.html, login.html,
+    the served JS modules, README.md) are re-written from the raw text
+    _read_text returned, so they keep whatever line endings they had, CRLF
+    included. VERSION is the exception by design: write_version_file()
+    rebuilds it from splitlines() and joins with '\\n', so it always comes back
+    LF. Every read/write of a version home goes through these two helpers.
+    Gate: scripts/dev/test_sync_app_version.py LineEndingTests."""
     with path.open("w", encoding="utf-8", newline="\n") as fh:
         fh.write(text)
 
