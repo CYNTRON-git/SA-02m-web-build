@@ -84,14 +84,16 @@ class AidStore:
         self.next_aid = aid + 1
         return aid
 
-    def retire_absent(self, present_ids: Iterable[str]) -> int:
+    def retire_absent(self, present_ids: Iterable[str], keep: Iterable[str] = ()) -> int:
         """Drop devices no longer in the document; their aids are never
         reissued (`next` does not move back). Returns how many retired.
 
         Only a device ABSENT from the document is retired — a device merely
         hidden from HomeKit keeps its aid so re-ticking it restores the same
-        accessory in the Home app."""
-        present = set(present_ids)
+        accessory in the Home app. `keep` names ids that are not catalogue
+        rows yet still exist (an unticked or disabled scene, a scene the store
+        could not be read for) — they are not retired either."""
+        present = set(present_ids) | set(keep)
         gone = [did for did in self.aids if did not in present]
         for did in gone:
             del self.aids[did]

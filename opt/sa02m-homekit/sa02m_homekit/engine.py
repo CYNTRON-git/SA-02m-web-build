@@ -15,20 +15,29 @@ have their own lock (plan §Race / re-entry).
 from __future__ import annotations
 
 import logging
+import math
 import threading
-from typing import Any, Callable, Dict, List, Mapping, Optional, Set, Tuple
+from collections import deque
+from typing import Any, Callable, Deque, Dict, List, Mapping, Optional, Set, Tuple
 
 from sa02m_alice.common import constants as AC
 
+from . import constants as C
 from . import projection as P
 from .aid_store import AidStore
 
 log = logging.getLogger("sa02m_homekit.engine")
 
 Publish = Callable[[str, str], bool]
+# () → (skipped rows, known scene device ids, store readable) — the part of the
+# scene projection that is not a catalogue row (config/scene_devices.py
+# homekit_scene_state). None = no scenes at all.
+SceneState = Callable[[], Tuple[List[Dict[str, Any]], List[str], bool]]
 # (service index, characteristic name, HAP value)
 Value = Tuple[int, str, Any]
 Update = Tuple[str, List[Value], bool]
+# (device id, service index, characteristic name, HAP value) — a press event.
+Event = Tuple[str, int, str, Any]
 
 _DEVICES_PREFIX = "/devices/"
 _META_ERROR = "/meta/error"
@@ -49,10 +58,12 @@ def mqtt_device_of(topic: str) -> Optional[str]:
 
 
 class Engine:
-    def __init__(self, registry: Any, aid_store: AidStore, publish: Publish) -> None:
+    def __init__(self, registry: Any, aid_store: AidStore, publish: Publish,
+                 scene_state: Optional[SceneState] = None) -> None:
         self.registry = registry
         self.aids = aid_store
         self._publish = publish
+        self._scene_state = scene_state
         self._lock = threading.Lock()
         self._dirty: Set[str] = set()
         # Last (values, available) handed to the bridge per device: an
@@ -64,6 +75,17 @@ class Engine:
         # availability topics: device `/meta/error`, `controls/uptime_s`).
         self._by_topic: Dict[str, Set[str]] = {}
         self._by_mid: Dict[str, Set[str]] = {}
+        # CarbonDioxideDetected memory per (device, service index): the
+        # hysteresis needs the previous state. Per process — the first reading
+        # after a start is decided on the level alone (homekit-bridge.md §3).
+        self._co2: Dict[Tuple[str, int], int] = {}
+        # Button press counters (M16): counter topic → (device, service index,
+        # characteristic, HAP value), the last counter seen per topic, and the
+        # bounded queue of events waiting for the next flush.
+        self._counters: Dict[str, Tuple[str, int, str, Any]] = {}
+        self._counter_last: Dict[str, float] = {}
+        self._events: Deque[Event] = deque()
+        self._events_dropped = 0
 
     # ── accessory set ────────────────────────────────────────────────────
     def rebuild(self, *, document_loaded: bool = True) -> bool:
@@ -75,10 +97,13 @@ class Engine:
         an aid: a broken read must not look like "every device deleted".
         """
         catalogue = self.registry.catalogue_items()
+        scene_skipped, keep = self._scenes()
         aids_changed = False
         if document_loaded:
-            aids_changed = self.aids.retire_absent(did for did, _d, _c, _p in catalogue) > 0
+            aids_changed = self.aids.retire_absent(
+                (did for did, _d, _c, _p in catalogue), keep=keep) > 0
         proj = P.project(catalogue, self.aids.aids)
+        proj.skipped.extend(scene_skipped)
         for spec in proj.accessories:
             if spec.aid is None:
                 spec.aid = self.aids.allocate(spec.device_id)
@@ -104,6 +129,12 @@ class Engine:
                 mid = mqtt_device_of(topic)
                 if mid:
                     by_mid.setdefault(mid, set()).add(did)
+        counters: Dict[str, Tuple[str, int, str, Any]] = {}
+        for spec in proj.accessories:
+            for index, svc in enumerate(spec.services):
+                for binding in svc.bindings:
+                    for topic, value in P.button_counters(binding):
+                        counters[topic] = (spec.device_id, index, binding.char, value)
         changed = proj.signature() != self.projection.signature()
         with self._lock:
             self.projection = proj
@@ -112,7 +143,28 @@ class Engine:
             self._by_mid = by_mid
             self._last.clear()
             self._dirty = set(self._specs)
+            self._co2 = {k: v for k, v in self._co2.items() if k[0] in self._specs}
+            self._counters = counters
+            # A counter still bound keeps its baseline across a rebuild;
+            # an unbound one is forgotten (re-baselined if bound again).
+            self._counter_last = {t: v for t, v in self._counter_last.items() if t in counters}
         return changed
+
+    def _scenes(self) -> Tuple[List[Dict[str, Any]], Set[str]]:
+        """(scene skip rows, aid ids to keep). An unticked or disabled scene
+        keeps its aid like a hidden device; a store that could not be read
+        retires no scene aid at all («не прочитал» ≠ «удалено»)."""
+        if self._scene_state is None:
+            return [], set()
+        try:
+            skipped, known, readable = self._scene_state()
+        except Exception as exc:
+            log.error("scene state unreadable: %s — no scene aid retired", exc)
+            skipped, known, readable = [], [], False
+        keep = set(known)
+        if not readable:
+            keep |= {did for did in self.aids.aids if did.startswith(C.SCENE_ID_PREFIX)}
+        return list(skipped), keep
 
     @property
     def specs(self) -> List[P.AccessorySpec]:
@@ -134,7 +186,23 @@ class Engine:
                 hit = self._by_mid.get(mid, set()) if mid else set()
             return set(hit)
 
+    def extra_topics(self) -> List[str]:
+        """Topics the bridge needs beyond the registry's: the press counters
+        of every admitted button (docs/contracts/homekit-bridge.md §6)."""
+        with self._lock:
+            return sorted(self._counters)
+
     def note_mqtt(self, topic: str, payload: str, retained: bool) -> None:
+        with self._lock:
+            counter = self._counters.get(topic)
+            also_item = topic in self._by_topic
+        if counter is not None:
+            # An event source, not a value: never through the dirty/_last
+            # dedupe (two single presses are two events). A counter another
+            # accessory binds as an ordinary item still feeds that item below.
+            self._note_counter(topic, counter, payload, retained)
+            if not also_item:
+                return
         self.registry.note_mqtt(topic, payload, retained=retained)
         touched = self.devices_for(topic)
         if touched:
@@ -162,17 +230,74 @@ class Engine:
             if device_id in self._specs:
                 self._dirty.add(device_id)
 
+    def _note_counter(self, topic: str, counter: Tuple[str, int, str, Any],
+                      payload: str, retained: bool) -> None:
+        """The rules engine's counter guards (sa02m_rules engine
+        `_button_state`), plus one stricter: a RETAINED message only
+        re-baselines — a broker reconnect replays the latest counter, and a
+        press made during the outage must not fire late."""
+        try:
+            value = float(str(payload).strip())
+        except (TypeError, ValueError):
+            return  # non-numeric payload: ignored, baseline kept
+        if not math.isfinite(value):
+            return
+        with self._lock:
+            prev = self._counter_last.get(topic)
+            self._counter_last[topic] = value
+            if prev is None or retained:
+                return  # first sight / replay = baseline, never a press
+            wrapped = (prev >= C.BUTTON_COUNTER_MAX - C.BUTTON_COUNTER_WRAP_SLACK
+                       and value <= C.BUTTON_COUNTER_WRAP_SLACK)
+            if not (value > prev or wrapped):
+                return  # unchanged, or a decrease = counter reset: re-baselined
+            # One event per observed increment, whatever the delta: a +3 jump
+            # between two bridge polls is ONE event (lossy, stated in §6).
+            if len(self._events) >= C.EVENT_QUEUE_MAX:
+                self._events.popleft()
+                self._events_dropped += 1
+                dropped = self._events_dropped
+            else:
+                dropped = 0
+            self._events.append(counter)
+        if dropped:
+            log.warning("press event queue full (%d) — oldest dropped (%d so far)",
+                        C.EVENT_QUEUE_MAX, dropped)
+
+    def take_events(self) -> List[Event]:
+        """Press events since the last call (flush thread)."""
+        with self._lock:
+            out = list(self._events)
+            self._events.clear()
+        return out
+
     # ── outbound values ──────────────────────────────────────────────────
     def values_for(self, spec: P.AccessorySpec, entry: Mapping[str, Any]) -> Tuple[List[Value], bool]:
+        """Caller holds `self._lock` (the CO₂ memory is engine state)."""
         available = not entry.get("error_code")
         index = P.state_index(entry)
         values: List[Value] = []
         for i, svc in enumerate(spec.services):
             for binding in svc.bindings:
-                value = P.hap_value(binding, index.get((binding.source_type, binding.instance)))
+                raw = index.get((binding.source_type, binding.instance))
+                if binding.rule == P.RULE_CO2_DETECTED:
+                    value = self._co2_value(spec.device_id, i, binding, raw)
+                else:
+                    value = P.hap_value(binding, raw)
                 if value is not None:
                     values.append((i, binding.char, value))
         return values, available
+
+    def _co2_value(self, device_id: str, index: int, binding: P.CharBinding,
+                   level: Any) -> Optional[int]:
+        if isinstance(level, bool) or not isinstance(level, (int, float)) \
+                or not math.isfinite(level) or len(binding.threshold) < 2:
+            return None
+        key = (device_id, index)
+        detected = P.co2_detected(float(level), binding.threshold[0], binding.threshold[1],
+                                  self._co2.get(key))
+        self._co2[key] = detected
+        return detected
 
     def take_updates(self) -> List[Update]:
         """The dirty accessories whose (values, available) changed."""
@@ -200,6 +325,10 @@ class Engine:
         """Apply one HAP write through the registry's guards and publish the
         resulting `/on` commands. Raises WriteRefused on any refusal so the
         controller sees a failure, never a fake success."""
+        if binding.rule == P.RULE_MOMENTARY and value is not True and value != 1:
+            # The bridge's own reset (or a user tapping a lit tile): never the
+            # engine's off verb — that switches off every output the scene set.
+            return
         try:
             cap = P.yandex_capability(binding, value)
             if cap is None:

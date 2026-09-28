@@ -37,8 +37,10 @@ from pyhap.const import (
     CATEGORY_FAUCET,
     CATEGORY_LIGHTBULB,
     CATEGORY_OUTLET,
+    CATEGORY_PROGRAMMABLE_SWITCH,
     CATEGORY_SENSOR,
     CATEGORY_SWITCH,
+    CATEGORY_THERMOSTAT,
 )
 from pyhap.encoder import AccessoryEncoder
 from pyhap.hap_handler import HAP_TLV_STATES, HAP_TLV_TAGS, HAPServerHandler
@@ -48,7 +50,7 @@ from pyhap.hap_server import HAPServer
 from . import constants as C
 from .fsutil import atomic_write
 from .netif import PortInUse
-from .projection import AccessorySpec, CharBinding
+from .projection import RULE_MOMENTARY, AccessorySpec, CharBinding
 
 log = logging.getLogger("sa02m_homekit.bridge")
 
@@ -61,11 +63,22 @@ _CATEGORY_BY_SERVICE = {
     "Switch": CATEGORY_SWITCH,
     "Fanv2": CATEGORY_FAN,
     "Valve": CATEGORY_FAUCET,
+    "StatelessProgrammableSwitch": CATEGORY_PROGRAMMABLE_SWITCH,
+    "Thermostat": CATEGORY_THERMOSTAT,
 }
 
 # Characteristic property overrides (docs/contracts/homekit-bridge.md §Таблица).
 _CHAR_PROPERTIES = {
     "CurrentTemperature": {"minValue": -100, "maxValue": 200, "minStep": 0.1},
+}
+# Characteristics a service does not carry by default (pyhap services.json
+# "OptionalCharacteristics") that a mapping row binds: preloaded explicitly.
+_OPTIONAL_CHARS = frozenset(("Brightness", "CarbonDioxideLevel"))
+# HAP value → ValidValues name, for the enum characteristics a row restricts
+# (`CharBinding.valid`): pyhap takes the restriction as {name: value}.
+_VALID_NAMES = {
+    "ProgrammableSwitchEvent": {0: "SinglePress", 1: "DoublePress", 2: "LongPress"},
+    "TargetHeatingCoolingState": {0: "Off", 1: "Heat", 2: "Cool", 3: "Auto"},
 }
 
 WriteCallback = Callable[[str, CharBinding, Any], None]
@@ -249,24 +262,55 @@ class HomeKitAccessory(Accessory):
         # (service index, characteristic name) → (Characteristic, binding)
         self.chars: Dict[Tuple[int, str], Tuple[Any, CharBinding]] = {}
         for index, svc in enumerate(spec.services):
-            optional = [b.char for b in svc.bindings if b.char == "Brightness"]
+            optional = [b.char for b in svc.bindings if b.char in _OPTIONAL_CHARS]
             service = self.add_preload_service(svc.service, chars=optional or None)
             for binding in svc.bindings:
                 kwargs: Dict[str, Any] = {}
-                props = _CHAR_PROPERTIES.get(binding.char)
+                props = dict(_CHAR_PROPERTIES.get(binding.char) or {})
+                if binding.char == "TargetTemperature" and len(binding.bounds) >= 3:
+                    # The dial spans the setpoint item's own range and step
+                    # (HAP's default 10–38 °C would refuse a 5 °C setpoint).
+                    props.update({"minValue": binding.bounds[0], "maxValue": binding.bounds[1],
+                                  "minStep": binding.bounds[2]})
                 if props:
-                    kwargs["properties"] = dict(props)
+                    kwargs["properties"] = props
+                names = _VALID_NAMES.get(binding.char)
+                if binding.valid and names:
+                    kwargs["valid_values"] = {names[v]: v for v in binding.valid if v in names}
+                    current = service.get_characteristic(binding.char)
+                    if current.value is not None and current.value not in binding.valid:
+                        # Move the default into the restricted set first:
+                        # pyhap logs an error for a value the new ValidValues
+                        # exclude (TargetHeatingCoolingState 0 → {Heat: 1}).
+                        current.set_value(binding.valid[0], should_notify=False)
                 if binding.writable:
-                    kwargs["setter_callback"] = self._setter(binding, write_cb)
+                    kwargs["setter_callback"] = self._setter(index, binding, write_cb)
                 char = service.configure_char(binding.char, **kwargs)
                 self.chars[(index, binding.char)] = (char, binding)
 
-    def _setter(self, binding: CharBinding, write_cb: WriteCallback) -> Callable[[Any], None]:
+    def _setter(self, index: int, binding: CharBinding,
+                write_cb: WriteCallback) -> Callable[[Any], None]:
         def setter(value: Any) -> None:
             # Raising here makes HAP-python answer -70402
             # SERVICE_COMMUNICATION_FAILURE — never a fake success.
-            write_cb(self.device_id, binding, value)
+            try:
+                write_cb(self.device_id, binding, value)
+            finally:
+                if binding.rule == RULE_MOMENTARY and value:
+                    # A scene switch is a pulse: back to off after the run
+                    # (or after a refused one), never left claiming a state.
+                    self._schedule_reset(index, binding.char)
         return setter
+
+    def _schedule_reset(self, index: int, name: str) -> None:
+        loop = self.driver.loop
+        # Thread-safe whichever thread HAP-python ran the setter on.
+        loop.call_soon_threadsafe(loop.call_later, C.SCENE_RESET_S, self._reset, index, name)
+
+    def _reset(self, index: int, name: str) -> None:
+        entry = self.chars.get((index, name))
+        if entry is not None:
+            entry[0].set_value(False)
 
     @property
     def available(self) -> bool:
@@ -284,6 +328,19 @@ class HomeKitAccessory(Accessory):
                 char.set_value(value)
             except ValueError as exc:
                 log.warning("%s: value %r refused for %s (%s)", self.device_id, value, name, exc)
+
+    def fire(self, index: int, name: str, value: Any) -> None:
+        """One press event (event loop thread only). ProgrammableSwitchEvent
+        is always-null in HAP-python, so every set notifies — two single
+        presses in a row are two events."""
+        entry = self.chars.get((index, name))
+        if entry is None:
+            return
+        char, _binding = entry
+        try:
+            char.set_value(value)
+        except ValueError as exc:
+            log.warning("%s: event %r refused for %s (%s)", self.device_id, value, name, exc)
 
 
 # ── Runner: one driver on its own event-loop thread ───────────────────────
@@ -451,3 +508,10 @@ class BridgeRunner:
         if acc is None or self.driver is None or not self._running:
             return
         self.driver.loop.call_soon_threadsafe(acc.apply, values, available)
+
+    def push_event(self, device_id: str, index: int, char: str, value: Any) -> None:
+        """Queue one press event onto the HAP loop (any thread)."""
+        acc = self.accessories.get(device_id)
+        if acc is None or self.driver is None or not self._running:
+            return
+        self.driver.loop.call_soon_threadsafe(acc.fire, index, char, value)

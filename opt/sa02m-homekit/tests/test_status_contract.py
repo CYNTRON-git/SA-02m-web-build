@@ -87,7 +87,8 @@ class StatusWriterTests(unittest.TestCase):
             "not_installed", "disabled", "starting", "running", "missing_deps",
             "no_interface", "port_in_use", "error"})
         self.assertEqual(set(C.REASONS), {
-            "identity_regenerated", "state_corrupt_regenerated", "pair_setup_locked", "status_stale"})
+            "identity_regenerated", "state_corrupt_regenerated", "pair_setup_locked", "status_stale",
+            "peer_package_outdated", "conf_unreadable"})
         self.assertTrue(C.HEARTBEAT_STATES <= set(C.STATES))
 
 

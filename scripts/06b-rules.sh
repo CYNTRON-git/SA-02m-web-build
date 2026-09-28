@@ -48,4 +48,7 @@ sa02m_svc_apply sa02m-rules.service app on
 # acceptance: trigger/end were silently stripped). The unit is opt-in —
 # restart only an active one, never start a stopped one.
 sa02m_svc_restart_if_active sa02m-cloud-control.service
+# sa02m-homekit imports sa02m_rules.store too (scene rows, homekit-bridge.md):
+# same stale-code rule, same opt-in unit — restart only an active one.
+sa02m_svc_restart_if_active sa02m-homekit.service
 log INFO "=== [06b-rules] готово ==="

@@ -214,6 +214,111 @@ class ReadWriteTests(GlueCase):
         self.assertEqual(self.status.SERVICE_COMMUNICATION_FAILURE, -70402)
 
 
+PHASE3_DEVICES = (
+    ({"id": "air", "name": "Воздух", "type": "devices.types.sensor.climate"},
+     [], [{"type": P.PROP_FLOAT, "mqtt": "/devices/d/controls/co2",
+           "parameters": {"instance": "co2_level", "unit": "unit.ppm"}}]),
+    ({"id": "wall", "name": "Кнопка", "type": "devices.types.sensor.button"},
+     [], [{"type": P.PROP_EVENT, "mqtt": "/devices/mr02m-COM3-10/controls/di_3",
+           "parameters": {"instance": "button",
+                          "events": [{"value": "click"}, {"value": "long_press"}]}}]),
+    ({"id": "th", "name": "Термостат", "type": "devices.types.thermostat"},
+     [{"type": P.CAP_RANGE, "mqtt": "/devices/m/controls/ao_1",
+       "parameters": {"instance": "temperature", "unit": P.UNIT_CELSIUS,
+                      "range": {"min": 5, "max": 35, "precision": 0.5}}}],
+     [{"type": P.PROP_FLOAT, "mqtt": "/devices/d/controls/t",
+       "parameters": {"instance": "temperature", "unit": P.UNIT_CELSIUS}}]),
+    ({"id": "scene-hk-s1", "name": "Вечер", "type": "devices.types.switch", "scene_id": "s1"},
+     [{"type": P.CAP_ON_OFF, "mqtt": "/devices/sa02m-rules-s1/controls/run",
+       "parameters": {"split": True}}], []),
+)
+
+
+def make_phase3_specs():
+    specs = []
+    for aid, (device, caps, props) in enumerate(PHASE3_DEVICES, start=10):
+        services, skipped = P.device_services(device, caps, props)
+        assert services and not skipped, (device["id"], skipped)
+        specs.append(P.AccessorySpec(device_id=device["id"], name=device["name"],
+                                     model=device["type"], services=services, aid=aid))
+    return specs
+
+
+class Phase3GlueTests(GlueCase):
+    """Rows M15–M18 rendered into real pyhap objects."""
+
+    def test_co2_sensor_carries_the_optional_level(self):
+        acc = self.build(specs=make_phase3_specs()).accessories["air"]
+        svc = acc.get_service("CarbonDioxideSensor")
+        names = {c.display_name for c in svc.characteristics}
+        self.assertTrue({"CarbonDioxideDetected", "CarbonDioxideLevel"} <= names, names)
+        acc.apply([(0, "CarbonDioxideDetected", 1), (0, "CarbonDioxideLevel", 1234.0)], True)
+        self.assertEqual(acc.chars[(0, "CarbonDioxideLevel")][0].get_value(), 1234.0)
+
+    def test_button_valid_values_and_every_press_notifies(self):
+        from pyhap.const import CATEGORY_PROGRAMMABLE_SWITCH
+
+        runner = self.build(specs=make_phase3_specs())
+        acc = runner.accessories["wall"]
+        self.assertEqual(acc.category, CATEGORY_PROGRAMMABLE_SWITCH)
+        char = acc.chars[(0, "ProgrammableSwitchEvent")][0]
+        self.assertEqual(char.properties["ValidValues"], {"SinglePress": 0, "LongPress": 2})
+        with mock.patch.object(runner.driver, "publish") as publish:
+            acc.fire(0, "ProgrammableSwitchEvent", 0)
+            acc.fire(0, "ProgrammableSwitchEvent", 0)     # the same press twice
+            acc.fire(0, "ProgrammableSwitchEvent", 2)
+        values = [c.args[0]["value"] for c in publish.call_args_list]
+        self.assertEqual(values, [0, 0, 2])
+        self.assertIsNone(char.get_value())                # always-null between events
+
+    def test_thermostat_props_and_valid_values_reach_pyhap(self):
+        from pyhap.const import CATEGORY_THERMOSTAT
+
+        runner = self.build(specs=make_phase3_specs())
+        acc = runner.accessories["th"]
+        self.assertEqual(acc.category, CATEGORY_THERMOSTAT)
+        target = acc.chars[(0, "TargetTemperature")][0]
+        self.assertEqual((target.properties["minValue"], target.properties["maxValue"],
+                          target.properties["minStep"]), (5, 35, 0.5))
+        mode = acc.chars[(0, "TargetHeatingCoolingState")][0]
+        self.assertEqual(mode.properties["ValidValues"], {"Heat": 1})
+        self.assertIsNotNone(target.setter_callback)
+        self.assertIsNone(mode.setter_callback)
+        # A 5 °C setpoint is inside the dial (HAP's default floor is 10 °C).
+        query = {"characteristics": [{"aid": acc.aid, "iid": self.iid(acc, 0, "TargetTemperature"),
+                                      "value": 5}]}
+        self.assertIsNone(runner.driver.set_characteristics(query, CLIENT))
+        self.assertEqual(self.writes, [("th", "TargetTemperature", 5)])
+
+    def test_scene_switch_resets_to_off_after_the_timer(self):
+        import asyncio
+
+        runner = self.build(specs=make_phase3_specs())
+        acc = runner.accessories["scene-hk-s1"]
+        char = acc.chars[(0, "On")][0]
+        query = {"characteristics": [{"aid": acc.aid, "iid": self.iid(acc, 0, "On"), "value": True}]}
+        with mock.patch.object(C, "SCENE_RESET_S", 0.05):
+            self.assertIsNone(runner.driver.set_characteristics(query, CLIENT))
+            self.assertEqual(self.writes, [("scene-hk-s1", "On", True)])
+            self.assertIs(char.get_value(), True)
+            runner.driver.loop.run_until_complete(asyncio.sleep(0.3))
+        self.assertIs(char.get_value(), False)
+
+    def test_a_refused_scene_run_is_reset_too(self):
+        import asyncio
+
+        runner = self.build(specs=make_phase3_specs())
+        acc = runner.accessories["scene-hk-s1"]
+        self.refuse = True
+        query = {"characteristics": [{"aid": acc.aid, "iid": self.iid(acc, 0, "On"), "value": True}]}
+        with mock.patch.object(C, "SCENE_RESET_S", 0.05), \
+                self.assertLogs("pyhap.accessory_driver", "ERROR"):
+            resp = runner.driver.set_characteristics(query, CLIENT)
+            runner.driver.loop.run_until_complete(asyncio.sleep(0.3))
+        self.assertEqual(resp["characteristics"][0]["status"], self.status.SERVICE_COMMUNICATION_FAILURE)
+        self.assertIs(acc.chars[(0, "On")][0].get_value(), False)
+
+
 class PersistTests(GlueCase):
     def test_persist_is_fsynced_0600_via_hk_tmp_and_passes_our_store_check(self):
         real_fsync, real_mkstemp = os.fsync, fsutil.tempfile.mkstemp

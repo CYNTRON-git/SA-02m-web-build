@@ -15,6 +15,7 @@ a range ↔ 0..100) and back.
 
 from __future__ import annotations
 
+import math
 import re
 import unicodedata
 from dataclasses import dataclass, field
@@ -61,34 +62,61 @@ MAPPING: Tuple[MappingRow, ...] = (
     MappingRow("M12", "properties.event:open", "-", "ContactSensor", ("ContactSensorState",)),
     MappingRow("M13", "properties.event:water_leak", "-", "LeakSensor", ("LeakDetected",)),
     MappingRow("M14", "properties.event:smoke", "-", "SmokeSensor", ("SmokeDetected",)),
+    MappingRow("M15", "properties.float:co2_level", "unit=unit.ppm", "CarbonDioxideSensor",
+               ("CarbonDioxideDetected", "CarbonDioxideLevel")),
+    MappingRow("M16", "properties.event:button", "mqtt=/devices/<mid>/controls/di_N",
+               "StatelessProgrammableSwitch", ("ProgrammableSwitchEvent",)),
+    MappingRow("M17", "capabilities.range:temperature", "type=devices.types.thermostat",
+               "Thermostat", ("CurrentTemperature", "TargetTemperature",
+                              "TargetHeatingCoolingState", "CurrentHeatingCoolingState",
+                              "TemperatureDisplayUnits")),
+    MappingRow("M18", "capabilities.on_off", "scene_id", "Switch", ("On",)),
 )
+# Rows added after v1: their services are APPENDED after every M01–M14 service
+# of an accessory, so a newly mapped item never shifts the characteristic IIDs
+# of an already-paired accessory (docs/contracts/homekit-bridge.md §3, §5).
+LATE_ROWS = frozenset(("M15", "M16", "M17", "M18"))
 ROWS: Dict[str, MappingRow] = {row.row_id: row for row in MAPPING}
 
 # Skip reasons (docs/contracts/homekit-bridge.md §Причины пропуска).
 SKIP_RANGE_UNSUPPORTED = "range_unsupported"
 SKIP_CAPABILITY_UNSUPPORTED = "capability_unsupported"
-SKIP_NEEDS_THRESHOLD = "needs_threshold"
 SKIP_NO_HOMEKIT_TYPE = "no_homekit_type"
 SKIP_UNIT_UNSUPPORTED = "unit_unsupported"
 SKIP_NOTHING_MAPPABLE = "nothing_mappable"
 SKIP_HIDDEN = "hidden"
 SKIP_BRIDGE_FULL = "bridge_full"
+SKIP_BUTTON_SOURCE_UNSUPPORTED = "button_source_unsupported"
+# Emitted by the scene reader (sa02m_alice config/scene_devices.py
+# HOMEKIT_SKIP_SCENE_DISABLED, pinned equal): a ticked scene the store disabled.
+SKIP_SCENE_DISABLED = "scene_disabled"
 SKIP_REASONS = (
     SKIP_RANGE_UNSUPPORTED,
     SKIP_CAPABILITY_UNSUPPORTED,
-    SKIP_NEEDS_THRESHOLD,
     SKIP_NO_HOMEKIT_TYPE,
     SKIP_UNIT_UNSUPPORTED,
     SKIP_NOTHING_MAPPABLE,
     SKIP_HIDDEN,
     SKIP_BRIDGE_FULL,
+    SKIP_BUTTON_SOURCE_UNSUPPORTED,
+    SKIP_SCENE_DISABLED,
 )
 
-# Float instances HomeKit has a sensor for, and the one that would need an
-# invented threshold (CarbonDioxideSensor's mandatory "detected" flag).
-_FLOAT_ROWS = {"temperature": "M08", "humidity": "M09", "illumination": "M10"}
-_FLOAT_NEEDS_THRESHOLD = frozenset(("co2_level",))
+# Float instances HomeKit has a sensor for.
+_FLOAT_ROWS = {"temperature": "M08", "humidity": "M09", "illumination": "M10",
+               "co2_level": "M15"}
+UNIT_PPM = "unit.ppm"
 _EVENT_ROWS = {"motion": "M11", "open": "M12", "water_leak": "M13", "smoke": "M14"}
+# M16: only an MR-02m DI in «Кнопка» mode produces press events — the bridge
+# publishes `<di_N>_short|_double|_long` counters beside the `di_N` topic
+# (docs/MQTT_TOPICS.md). `N` is the rules engine's BUTTON_INPUT_RE (1–2 digits).
+BUTTON_TOPIC_RE = re.compile(r"^/devices/[^/]+/controls/di_\d{1,2}$")
+# (document event word, HAP ProgrammableSwitchEvent value, counter suffix)
+BUTTON_EVENTS: Tuple[Tuple[str, int, str], ...] = (
+    ("click", 0, "short"),
+    ("double_click", 1, "double"),
+    ("long_press", 2, "long"),
+)
 
 # HAP value rules per characteristic binding (docs/contracts §Правило значения).
 RULE_BOOL = "bool"
@@ -103,6 +131,29 @@ RULE_HUMIDITY = "humidity"
 RULE_ILLUMINATION = "illumination"
 RULE_EVENT_BOOL = "event_bool"
 RULE_EVENT_INT = "event_int"
+RULE_CO2_LEVEL = "co2_level"
+# Needs the previous state (hysteresis): computed by the engine, never here.
+RULE_CO2_DETECTED = "co2_detected"
+# Events, not values: pushed by the engine's counter tracker, never by a poll.
+RULE_BUTTON = "button"
+# Scene (M18): a momentary run switch. It never claims a state (no value is
+# ever read for it); `On = true` runs the scene, `On = false` publishes nothing
+# and the bridge resets the switch itself (docs/contracts/homekit-bridge.md §7).
+RULE_MOMENTARY = "momentary"
+# Thermostat (M17). The device has no mode point: the target mode is the
+# constant HEAT and the current one is derived from a read-only heating output
+# (on → HEAT, off → OFF), or the constant OFF when there is none.
+RULE_TARGET_TEMPERATURE = "target_temperature"
+RULE_CONST_HEAT = "const_heat"
+RULE_HEATING_FROM_ON_OFF = "heating_from_on_off"
+HAP_HEAT = 1
+THERMOSTAT_TYPE = "devices.types.thermostat"
+# Setpoint bounds a Thermostat may carry (°C, step): outside, the device keeps
+# today's rows (range → range_unsupported, temperature → M08).
+THERMOSTAT_MIN_C = 0.0
+THERMOSTAT_MAX_C = 50.0
+THERMOSTAT_STEP_MIN = 0.1
+THERMOSTAT_STEP_MAX = 5.0
 
 # HAP minimum for CurrentAmbientLightLevel — 0 lux is not a legal value.
 LUX_MIN = 0.0001
@@ -123,6 +174,12 @@ class CharBinding:
     bounds: Tuple[float, ...] = ()
     # Document unit for RULE_TEMPERATURE (celsius or kelvin); else "".
     unit: str = ""
+    # RULE_CO2_DETECTED: (threshold ppm, hysteresis ppm); else ().
+    threshold: Tuple[float, ...] = ()
+    # Restricted ValidValues of an enum characteristic (ascending); else ().
+    valid: Tuple[int, ...] = ()
+    # RULE_BUTTON: the `di_N` topic its press counters sit beside; else "".
+    source_topic: str = ""
 
 
 @dataclass(frozen=True)
@@ -254,13 +311,39 @@ def _on_off_service(device_type: str, item: Mapping[str, Any]) -> ServiceSpec:
         CharBinding("On", RULE_BOOL, CAP_ON_OFF, inst, writable=True),))
 
 
+def co2_threshold(item: Mapping[str, Any]) -> int:
+    """The item's `co2_alarm_ppm` when it is a valid int, else the default.
+    The validator (config/models.py) already bounds it; a hand-edited
+    document that slipped past falls back rather than alarming at nonsense."""
+    value = item.get("co2_alarm_ppm")
+    if isinstance(value, int) and not isinstance(value, bool) \
+            and C.CO2_ALARM_MIN_PPM <= value <= C.CO2_ALARM_MAX_PPM:
+        return value
+    return C.CO2_ALARM_DEFAULT_PPM
+
+
+def co2_detected(level: float, threshold: float, hysteresis: float,
+                 prev: Optional[int]) -> int:
+    """CarbonDioxideDetected with hysteresis. `prev` None = no memory (the
+    first reading after a daemon start): decided on the level alone."""
+    if prev == 1:
+        return 0 if level < threshold - hysteresis else 1
+    return 1 if level >= threshold else 0
+
+
 def _float_service(item: Mapping[str, Any]) -> Tuple[Optional[ServiceSpec], Optional[str]]:
     inst = _instance(item)
     row = _FLOAT_ROWS.get(inst)
     if row is None:
-        if inst in _FLOAT_NEEDS_THRESHOLD:
-            return None, SKIP_NEEDS_THRESHOLD
         return None, SKIP_NO_HOMEKIT_TYPE
+    if row == "M15":
+        if str(_params(item).get("unit") or "") != UNIT_PPM:
+            return None, SKIP_UNIT_UNSUPPORTED
+        return ServiceSpec((row,), "CarbonDioxideSensor", (
+            CharBinding("CarbonDioxideDetected", RULE_CO2_DETECTED, PROP_FLOAT, inst,
+                        threshold=(float(co2_threshold(item)), float(C.CO2_HYSTERESIS_PPM))),
+            CharBinding("CarbonDioxideLevel", RULE_CO2_LEVEL, PROP_FLOAT, inst),
+        )), None
     if row == "M08":
         unit = str(_params(item).get("unit") or "")
         if unit not in (UNIT_CELSIUS, UNIT_KELVIN):
@@ -274,8 +357,35 @@ def _float_service(item: Mapping[str, Any]) -> Tuple[Optional[ServiceSpec], Opti
         CharBinding("CurrentAmbientLightLevel", RULE_ILLUMINATION, PROP_FLOAT, inst),)), None
 
 
+def _button_service(item: Mapping[str, Any]) -> Tuple[Optional[ServiceSpec], Optional[str]]:
+    topic = str(item.get("mqtt") or "").strip()
+    if not BUTTON_TOPIC_RE.match(topic):
+        return None, SKIP_BUTTON_SOURCE_UNSUPPORTED
+    declared = set()
+    for ev in _params(item).get("events") or []:
+        if isinstance(ev, dict) and isinstance(ev.get("value"), str):
+            declared.add(ev["value"])
+    valid = tuple(value for word, value, _s in BUTTON_EVENTS if word in declared)
+    if not valid:
+        return None, SKIP_BUTTON_SOURCE_UNSUPPORTED
+    return ServiceSpec(("M16",), "StatelessProgrammableSwitch", (
+        CharBinding("ProgrammableSwitchEvent", RULE_BUTTON, PROP_EVENT, "button",
+                    valid=valid, source_topic=topic),)), None
+
+
+def button_counters(binding: CharBinding) -> List[Tuple[str, int]]:
+    """[(counter topic, ProgrammableSwitchEvent value)] of one button binding —
+    only the gestures the document declared."""
+    if binding.rule != RULE_BUTTON or not binding.source_topic:
+        return []
+    return [("%s_%s" % (binding.source_topic, suffix), value)
+            for _w, value, suffix in BUTTON_EVENTS if value in binding.valid]
+
+
 def _event_service(item: Mapping[str, Any]) -> Tuple[Optional[ServiceSpec], Optional[str]]:
     inst = _instance(item)
+    if inst == "button":
+        return _button_service(item)
     row = _EVENT_ROWS.get(inst)
     if row is None:
         return None, SKIP_NO_HOMEKIT_TYPE
@@ -283,6 +393,66 @@ def _event_service(item: Mapping[str, Any]) -> Tuple[Optional[ServiceSpec], Opti
     rule = RULE_EVENT_BOOL if spec.service == "MotionSensor" else RULE_EVENT_INT
     return ServiceSpec((row,), spec.service, (
         CharBinding(spec.characteristics[0], rule, PROP_EVENT, inst),)), None
+
+
+def _thermostat_parts(
+    device_type: str,
+    caps: Sequence[Mapping[str, Any]],
+    props: Sequence[Mapping[str, Any]],
+) -> Optional[Tuple[Mapping[str, Any], Mapping[str, Any], Optional[Mapping[str, Any]]]]:
+    """(setpoint range item, measured temperature item, read-only heating
+    on_off or None) when the device is the M17 composition (sh-model.md §4.2
+    `Thermostat`), else None."""
+    if device_type != THERMOSTAT_TYPE:
+        return None
+    setpoint = None
+    for item in caps:
+        if str(item.get("type") or "") != CAP_RANGE or _instance(item) != "temperature":
+            continue
+        if str(_params(item).get("unit") or "") != UNIT_CELSIUS:
+            continue
+        bounds = _range_bounds(item)
+        if bounds is None:
+            continue
+        lo, hi, precision = bounds
+        if THERMOSTAT_MIN_C <= lo < hi <= THERMOSTAT_MAX_C \
+                and THERMOSTAT_STEP_MIN <= precision <= THERMOSTAT_STEP_MAX:
+            setpoint = item
+            break
+    measured = None
+    for item in props:
+        if str(item.get("type") or "") == PROP_FLOAT and _instance(item) == "temperature" \
+                and str(_params(item).get("unit") or "") in (UNIT_CELSIUS, UNIT_KELVIN):
+            measured = item
+            break
+    if setpoint is None or measured is None:
+        return None
+    heating = None
+    for item in caps:
+        if str(item.get("type") or "") == CAP_ON_OFF and item.get("writable") is False:
+            heating = item
+            break
+    return setpoint, measured, heating
+
+
+def _thermostat_service(setpoint: Mapping[str, Any], measured: Mapping[str, Any],
+                        heating: Optional[Mapping[str, Any]]) -> ServiceSpec:
+    bounds = _range_bounds(setpoint) or ()
+    unit = str(_params(measured).get("unit") or "")
+    if heating is not None:
+        current_mode = CharBinding("CurrentHeatingCoolingState", RULE_HEATING_FROM_ON_OFF,
+                                   CAP_ON_OFF, _instance(heating, "on") or "on")
+    else:
+        current_mode = CharBinding("CurrentHeatingCoolingState", RULE_CONST_ZERO, CAP_ON_OFF, "")
+    return ServiceSpec(("M17",), "Thermostat", (
+        CharBinding("CurrentTemperature", RULE_TEMPERATURE, PROP_FLOAT, "temperature", unit=unit),
+        CharBinding("TargetTemperature", RULE_TARGET_TEMPERATURE, CAP_RANGE, "temperature",
+                    writable=True, bounds=bounds),
+        CharBinding("TargetHeatingCoolingState", RULE_CONST_HEAT, CAP_RANGE, "",
+                    valid=(HAP_HEAT,)),
+        current_mode,
+        CharBinding("TemperatureDisplayUnits", RULE_CONST_ZERO, CAP_RANGE, ""),
+    ))
 
 
 def device_services(
@@ -296,7 +466,24 @@ def device_services(
     skipped: List[Tuple[str, str]] = []
     bulb_index: Optional[int] = None
     brightness: List[Mapping[str, Any]] = []
+    if isinstance(device.get("scene_id"), str) and device.get("scene_id"):
+        # A scene row (config/scene_devices.py homekit_scene_projection): one
+        # on_off on the engine's run topic → M18, nothing else is read.
+        for item in caps:
+            if str(item.get("type") or "") == CAP_ON_OFF:
+                return [ServiceSpec(("M18",), "Switch", (
+                    CharBinding("On", RULE_MOMENTARY, CAP_ON_OFF, _instance(item, "on") or "on",
+                                writable=True),))], []
+        return [], []
+    thermostat = _thermostat_parts(device_type, caps, props)
+    # The items the Thermostat service consumes produce no row of their own
+    # (no separate TemperatureSensor, no ContactSensor for the heating output).
+    consumed = [id(x) for x in thermostat if x is not None] if thermostat else []
+    if thermostat:
+        services.append(_thermostat_service(*thermostat))
     for item in caps:
+        if id(item) in consumed:
+            continue
         ctype = str(item.get("type") or "")
         if ctype == CAP_ON_OFF:
             spec = _on_off_service(device_type, item)
@@ -323,6 +510,8 @@ def device_services(
                                          writable=True, bounds=bounds),),
         )
     for item in props:
+        if id(item) in consumed:
+            continue
         ptype = str(item.get("type") or "")
         if ptype == PROP_FLOAT:
             spec, reason = _float_service(item)
@@ -334,6 +523,9 @@ def device_services(
             skipped.append((_item_label(item), reason or SKIP_NO_HOMEKIT_TYPE))
         else:
             services.append(spec)
+    # The service-order rule: M15–M18 after every v1 service, each group in
+    # document order (a stable sort keeps the relative order).
+    services.sort(key=lambda svc: 1 if LATE_ROWS.intersection(svc.row_ids) else 0)
     return services, skipped
 
 
@@ -413,6 +605,8 @@ def hap_value(binding: CharBinding, value: Any) -> Any:
     rule = binding.rule
     if rule == RULE_CONST_ZERO:
         return 0
+    if rule == RULE_CONST_HEAT:
+        return HAP_HEAT
     if value is None:
         return None
     if rule in (RULE_BOOL, RULE_BOOL_DERIVED):
@@ -422,6 +616,8 @@ def hap_value(binding: CharBinding, value: Any) -> Any:
     if rule == RULE_CONTACT_FROM_ON_OFF:
         # on (contact closed / input active) → CONTACT_DETECTED (0)
         return (0 if value else 1) if isinstance(value, bool) else None
+    if rule == RULE_HEATING_FROM_ON_OFF:
+        return (HAP_HEAT if value else 0) if isinstance(value, bool) else None
     if isinstance(value, bool):
         return None
     if rule == RULE_BRIGHTNESS:
@@ -430,6 +626,15 @@ def hap_value(binding: CharBinding, value: Any) -> Any:
         lo, hi = binding.bounds[0], binding.bounds[1]
         pct = (float(value) - lo) * 100.0 / (hi - lo)
         return int(round(min(100.0, max(0.0, pct))))
+    if rule == RULE_TARGET_TEMPERATURE:
+        # A setpoint outside the item's range is not shown — never clamped
+        # into a reading the device does not hold.
+        if not isinstance(value, (int, float)) or not math.isfinite(value) \
+                or len(binding.bounds) < 2:
+            return None
+        if not binding.bounds[0] <= float(value) <= binding.bounds[1]:
+            return None
+        return round(float(value), 2)
     if rule == RULE_TEMPERATURE:
         if not isinstance(value, (int, float)):
             return None
@@ -441,6 +646,10 @@ def hap_value(binding: CharBinding, value: Any) -> Any:
         if not isinstance(value, (int, float)):
             return None
         return max(LUX_MIN, float(value))
+    if rule == RULE_CO2_LEVEL:
+        if not isinstance(value, (int, float)) or not math.isfinite(value):
+            return None
+        return min(C.CO2_LEVEL_MAX, max(0.0, float(value)))
     if rule in (RULE_EVENT_BOOL, RULE_EVENT_INT):
         active = _event_active(binding.instance, value)
         if active is None:
@@ -460,10 +669,24 @@ def yandex_capability(binding: CharBinding, value: Any) -> Optional[Dict[str, An
         if not isinstance(value, (bool, int)):
             return None
         return {"type": CAP_ON_OFF, "state": {"instance": binding.instance, "value": bool(value)}}
+    if binding.rule == RULE_MOMENTARY:
+        # Only a run is ever sent: the engine drops `On = false` before this
+        # (the off verb would switch off every output the scene set).
+        if value is not True and value != 1:
+            return None
+        return {"type": CAP_ON_OFF, "state": {"instance": binding.instance, "value": True}}
     if binding.rule == RULE_ACTIVE:
         if not isinstance(value, (bool, int)):
             return None
         return {"type": CAP_ON_OFF, "state": {"instance": binding.instance, "value": bool(value)}}
+    if binding.rule == RULE_TARGET_TEMPERATURE:
+        # Absolute, in °C: apply_actions clamps it to the item's range
+        # (converters.yandex_to_range) before the `/on` publish.
+        if isinstance(value, bool) or not isinstance(value, (int, float)) \
+                or not math.isfinite(value):
+            return None
+        return {"type": CAP_RANGE, "state": {"instance": binding.instance,
+                                             "value": round(float(value), 2)}}
     if binding.rule == RULE_BRIGHTNESS:
         if isinstance(value, bool) or not isinstance(value, (int, float)) or len(binding.bounds) < 3:
             return None

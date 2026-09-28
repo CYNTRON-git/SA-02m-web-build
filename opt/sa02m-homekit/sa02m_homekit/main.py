@@ -1,8 +1,10 @@
 """sa02m-homekit daemon: `python -m sa02m_homekit.main` (docs/contracts/homekit-bridge.md).
 
 Standby exits are exit 0 so `Restart=on-failure` leaves them alone: the conf
-says disabled (status `disabled`), a dependency is not importable (status
-`missing_deps`), or SIGTERM. Anything unexpected is status `error` + exit 1
+says disabled (status `disabled`), the conf exists but cannot be read (status
+`missing_deps` + reason `conf_unreadable` — at start or while running), a sibling package is older than this bridge
+(status `missing_deps` + reason `peer_package_outdated`, peers.py), a
+dependency is not importable (status `missing_deps`), or SIGTERM. Anything unexpected is status `error` + exit 1
 (systemd retries). `no_interface` / `port_in_use` keep the process running
 with nothing listening and are retried every ADDR_POLL_S.
 
@@ -29,7 +31,7 @@ from typing import Any, Callable, Dict, List, Optional, Tuple
 
 from . import config as conf_mod
 from . import constants as C
-from . import identity, netif, setup_payload
+from . import identity, netif, peers, setup_payload
 from .status import StatusWriter
 
 log = logging.getLogger("sa02m_homekit")
@@ -102,10 +104,13 @@ class Daemon:
         registry_factory: Optional[Callable[..., Any]] = None,
         load_document: Optional[Callable[[str], Dict[str, Any]]] = None,
         watcher_factory: Optional[Callable[[str], Any]] = None,
+        rules_watcher_factory: Optional[Callable[[], Any]] = None,
+        scene_state: Optional[Callable[[Dict[str, Any]], Any]] = None,
         address_of: Callable[[str], Optional[str]] = netif.ipv4_address,
         mac_of: Callable[[str], Optional[str]] = netif.mac_address,
         clock: Callable[[], float] = time.monotonic,
         check_dependencies: Callable[[], List[str]] = missing_dependencies,
+        check_peers: Callable[[], List[str]] = peers.missing_required,
     ) -> None:
         self.stop = stop or threading.Event()
         self.status = status or StatusWriter()
@@ -116,16 +121,23 @@ class Daemon:
         self._registry_factory = registry_factory
         self._load_document = load_document
         self._watcher_factory = watcher_factory
+        self._rules_watcher_factory = rules_watcher_factory
+        self._scene_state = scene_state
         self._address_of = address_of
         self._mac_of = mac_of
         self._clock = clock
         self._check_dependencies = check_dependencies
+        self._check_peers = check_peers
 
         self.conf = conf_mod.BridgeConfig()
         self.engine: Any = None
         self.mqtt: Any = None
         self.runner: Any = None
         self._watcher: Any = None
+        self._rules_watcher: Any = None
+        # The last device document that loaded — scene ticks live in it, and a
+        # scenario-store change re-attaches scenes from it.
+        self._doc: Dict[str, Any] = {"rooms": [], "groups": [], "devices": []}
         self._firmware = "1.0.0"
         self._state = C.STATE_STARTING
         self._message = ""
@@ -139,8 +151,9 @@ class Daemon:
         self._pairing_event = threading.Event()
 
     # ── status ───────────────────────────────────────────────────────────
-    def _write_standby(self, state: str, message: str = "", enabled: bool = False) -> None:
-        self.status.write_status(state, message=message, enabled=enabled,
+    def _write_standby(self, state: str, message: str = "", enabled: bool = False,
+                       reason: str = "") -> None:
+        self.status.write_status(state, reason=reason, message=message, enabled=enabled,
                                  interface=self.conf.interface, port=self.conf.port)
 
     def refresh_status(self) -> None:
@@ -195,15 +208,24 @@ class Daemon:
         return doc, True
 
     def _check_document(self) -> None:
-        if self._watcher is None or not self._watcher.changed():
+        doc_changed = self._watcher is not None and self._watcher.changed()
+        # The scenario store (scene names, enabled, rooms — row M18): a change
+        # there re-attaches the ticked scenes from the current document.
+        rules_changed = self._rules_watcher is not None and self._rules_watcher.changed()
+        if not doc_changed and not rules_changed:
             return
-        doc, ok = self._load_doc()
-        if not ok:
-            return
-        self.engine.registry.reload(doc)
-        if self.mqtt is not None:
-            self.mqtt.set_topics(self.engine.registry.subscribe_topics())
+        if doc_changed:
+            doc, ok = self._load_doc()
+            if ok:
+                self._doc = doc
+            elif not rules_changed:
+                return
+        self.engine.registry.reload(self._doc)
         changed = self.engine.rebuild(document_loaded=True)
+        if self.mqtt is not None:
+            # After the rebuild: the button counter topics come from the
+            # admitted projection, not from the document alone.
+            self.mqtt.set_topics(self._topics())
         self._write_projection()
         if changed:
             log.info("HomeKit projection changed — driver rebuild in %.0f s", C.REBUILD_DEBOUNCE_S)
@@ -213,8 +235,13 @@ class Daemon:
 
     # ── conf ─────────────────────────────────────────────────────────────
     def _check_conf(self) -> bool:
-        """False when the conf now says disabled (the loop then exits 0)."""
+        """False when the conf now says disabled or became unreadable (the
+        loop then exits 0; _shutdown writes which)."""
         new = conf_mod.load(self.conf_path)
+        if new.unreadable:
+            log.error("conf %s is no longer readable (%s) — stopping; run 06c-homekit.sh",
+                      self.conf_path or C.CONF_FILE, "; ".join(new.warnings))
+            return False
         if not new.enabled:
             log.info("HomeKit bridge disabled in the conf — stopping")
             return False
@@ -296,13 +323,23 @@ class Daemon:
                      self._address, address)
         self._start_listener(address)
 
+    def _topics(self) -> List[str]:
+        """The MQTT subscribe set: the registry's item/availability topics
+        plus the engine's press-counter topics (row M16)."""
+        return sorted(set(self.engine.registry.subscribe_topics()) | set(self.engine.extra_topics()))
+
     def _flush(self) -> None:
         updates = self.engine.take_updates()
+        # Drained even with no listener: a press nobody could see is not
+        # replayed minutes later when the driver comes back.
+        events = self.engine.take_events()
         runner = self.runner
         if runner is None or not runner.running:
             return
         for device_id, values, available in updates:
             runner.push(device_id, values, available)
+        for device_id, index, char, value in events:
+            runner.push_event(device_id, index, char, value)
 
     # ── lifecycle ────────────────────────────────────────────────────────
     def _resolve_defaults(self) -> None:
@@ -327,18 +364,51 @@ class Daemon:
             self._load_document = config_store.load_devices
         if self._watcher_factory is None:
             self._watcher_factory = DevicesWatcher
+        if self._rules_watcher_factory is None or self._scene_state is None:
+            # The rules stack is imported lazily inside scene_devices: its
+            # absence (or a sandbox that cannot import it) is «no scenes»,
+            # never missing_deps.
+            from sa02m_alice.client.reload_watch import RulesExposureWatcher
+            from sa02m_alice.config import scene_devices
+
+            if self._rules_watcher_factory is None:
+                self._rules_watcher_factory = lambda: RulesExposureWatcher(
+                    fingerprint=scene_devices.homekit_exposure_fingerprint)
+            if self._scene_state is None:
+                self._scene_state = scene_devices.homekit_scene_state
         if self.devices_path is None:
             self.devices_path = AC.DEVICES_CONF
         self._firmware = firmware_revision(read_web_version())
 
+    def _write_conf_unreadable(self) -> None:
+        self._write_standby(C.STATE_MISSING_DEPS, "conf unreadable", enabled=True,
+                            reason=C.REASON_CONF_UNREADABLE)
+
     def run(self) -> int:
         self.conf = conf_mod.load(self.conf_path)
+        if self.conf.unreadable:
+            # Exit 0: Restart=on-failure leaves it alone; the next start
+            # (ExecStartPre re-applies the ACLs) or 06c brings it back.
+            self._write_conf_unreadable()
+            log.error("conf %s exists but is not readable (%s) — a full install or "
+                      "06c-homekit.sh restores the daemon's read access",
+                      self.conf_path or C.CONF_FILE, "; ".join(self.conf.warnings))
+            return EXIT_OK
         for warning in self.conf.warnings:
             log.warning("conf: %s", warning)
         if not self.conf.enabled:
             self.status.clear_projection()
             self._write_standby(C.STATE_DISABLED)
             log.info("HomeKit bridge disabled — standby exit")
+            return EXIT_OK
+        # Before the dependency probe: an older Alice package can also fail an
+        # import there, and «update the Alice package» is the precise fix.
+        outdated = self._check_peers()
+        if outdated:
+            self._write_standby(C.STATE_MISSING_DEPS, ("outdated: %s" % ", ".join(outdated))[:200],
+                                enabled=True, reason=C.REASON_PEER_OUTDATED)
+            log.error("sibling package older than this bridge, absent: %s — update the Alice "
+                      "package (scripts/06-alice.sh or a full install)", ", ".join(outdated))
             return EXIT_OK
         missing = self._check_dependencies()
         if missing:
@@ -361,13 +431,19 @@ class Daemon:
         # write landing during the load is seen on the next tick.
         assert self._watcher_factory is not None
         self._watcher = self._watcher_factory(self.devices_path or "")
+        assert self._rules_watcher_factory is not None and self._scene_state is not None
+        self._rules_watcher = self._rules_watcher_factory()
         doc, ok = self._load_doc()
+        if ok:
+            self._doc = doc
         assert self._registry_factory is not None and self._mqtt_factory is not None
         registry = self._registry_factory(doc, profile=C.CATALOGUE_PROFILE)
-        self.engine = Engine(registry, AidStore(), self._publish)
+        scene_state = self._scene_state
+        self.engine = Engine(registry, AidStore(), self._publish,
+                             scene_state=lambda: scene_state(self._doc))
         self.engine.rebuild(document_loaded=ok)
         self._write_projection()
-        self.mqtt = self._mqtt_factory(self.engine.note_mqtt, registry.subscribe_topics())
+        self.mqtt = self._mqtt_factory(self.engine.note_mqtt, self._topics())
         self.mqtt.start()
         try:
             self._loop()
@@ -421,7 +497,9 @@ class Daemon:
             except Exception:
                 log.exception("MQTT stop failed")
         final = conf_mod.load(self.conf_path)
-        if final.enabled:
+        if final.unreadable:
+            self._write_conf_unreadable()
+        elif final.enabled:
             # A restart is expected (trigger `restart`, a rebuild by systemd).
             self._write_standby(C.STATE_STARTING, "stopped", enabled=True)
         else:

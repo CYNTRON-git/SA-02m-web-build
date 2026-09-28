@@ -287,6 +287,69 @@ class RebuildTests(DaemonCase):
                                         in self.h.runners[0].pushed))
 
 
+class ButtonEventTests(DaemonCase):
+    """Row M16 end to end through the daemon: the counters join the MQTT
+    subscribe set and a press reaches the runner as an event."""
+
+    BTN = "/devices/mr02m-COM3-10/controls/di_2"
+
+    def setUp(self):
+        super().setUp()
+        self.h.doc["devices"].append({
+            "id": "wall", "name": "Кнопка", "type": "devices.types.sensor.button",
+            "homekit_visible": True, "capabilities": [],
+            "properties": [{"type": "devices.properties.event", "mqtt": self.BTN,
+                            "parameters": {"instance": "button",
+                                           "events": [{"value": "click"}]}}]})
+
+    def test_counters_are_subscribed_and_presses_reach_the_runner(self):
+        self.h.conf(enabled=True)
+        self.h.start()
+        self.assertTrue(self.h.wait_for(lambda: self.h.state() == C.STATE_RUNNING))
+        self.assertIn(self.BTN + "_short", self.h.mqtt.topics)
+        self.assertIn(self.BTN, self.h.mqtt.topics)            # the registry's own item
+        self.h.mqtt.on_message(self.BTN + "_short", "5", True)   # retained: baseline
+        self.h.mqtt.on_message(self.BTN + "_short", "6", False)
+        self.h.mqtt.on_message(self.BTN + "_short", "7", False)
+        self.assertTrue(self.h.wait_for(lambda: len(self.h.runners[0].events) == 2))
+        self.assertEqual(self.h.runners[0].events,
+                         [("wall", 0, "ProgrammableSwitchEvent", 0)] * 2)
+
+
+class SceneDaemonTests(DaemonCase):
+    """Row M18 through the daemon: a ticked scene is an accessory; a change in
+    the scenario STORE (the second watcher) re-projects without any document
+    edit; ticking is a document change like any other."""
+
+    def setUp(self):
+        super().setUp()
+        self.h.rules = {"scenarios": [{"id": "s1", "name": "Вечер", "type": "scene",
+                                       "enabled": True, "action": []}]}
+        self.h.doc["homekit_scenes"] = ["s1"]
+
+    def _names(self, runner):
+        return sorted(s.name for s in runner.kw["specs"])
+
+    def test_a_store_rename_rebuilds_without_a_document_edit(self):
+        self.h.conf(enabled=True)
+        self.h.start()
+        self.assertTrue(self.h.wait_for(lambda: self.h.state() == C.STATE_RUNNING))
+        self.assertEqual(self._names(self.h.runners[0]), ["Вечер", "Реле"])
+        self.h.rules["scenarios"][0]["name"] = "Вечер дома"
+        self.h.rules_changed = True
+        self.assertTrue(self.h.wait_for(lambda: len(self.h.runners) == 2 and self.h.runners[1].running))
+        self.assertEqual(self._names(self.h.runners[1]), ["Вечер дома", "Реле"])
+
+    def test_unticking_removes_the_accessory(self):
+        self.h.conf(enabled=True)
+        self.h.start()
+        self.assertTrue(self.h.wait_for(lambda: self.h.state() == C.STATE_RUNNING))
+        self.h.doc["homekit_scenes"] = []
+        self.h.doc_changed = True
+        self.assertTrue(self.h.wait_for(lambda: len(self.h.runners) == 2 and self.h.runners[1].running))
+        self.assertEqual(self._names(self.h.runners[1]), ["Реле"])
+
+
 class IdentityReasonTests(DaemonCase):
     def test_regenerated_identity_reason(self):
         with open(C.STATE_FILE, "w") as fh:

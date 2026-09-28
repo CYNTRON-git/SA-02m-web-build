@@ -13,6 +13,8 @@ import time
 from typing import Any, Callable, Dict, List, Optional
 from unittest import mock
 
+from sa02m_alice.config import scene_devices
+
 from sa02m_homekit import config
 from sa02m_homekit import constants as C
 from sa02m_homekit import netif
@@ -50,6 +52,7 @@ class FakeRunner:
         self.pair_setup_locked = False
         self.pair_setup_failures = kw["pair_setup_failures"]
         self.pushed: List[Any] = []
+        self.events: List[Any] = []
         self.stopped = False
 
     def start(self) -> None:
@@ -63,6 +66,9 @@ class FakeRunner:
 
     def push(self, device_id: str, values: Any, available: bool) -> None:
         self.pushed.append((device_id, values, available))
+
+    def push_event(self, device_id: str, index: int, char: str, value: Any) -> None:
+        self.events.append((device_id, index, char, value))
 
     def pair(self) -> None:
         self.paired = True
@@ -100,6 +106,15 @@ class FakeWatcher:
         return flag
 
 
+class FakeRulesWatcher:
+    def __init__(self, harness: "Harness") -> None:
+        self.h = harness
+
+    def changed(self) -> bool:
+        flag, self.h.rules_changed = self.h.rules_changed, False
+        return flag
+
+
 class Harness:
     def __init__(self) -> None:
         self.dir = tempfile.mkdtemp()
@@ -114,6 +129,13 @@ class Harness:
             fh.write("0123456789abcdef\n")
         self.doc = copy.deepcopy(DOC)
         self.doc_changed = False
+        # The scenario store as the scene reader sees it (never the host's
+        # /etc/sa02m-rules): `rules_readable = False` is what `read_rules_doc`
+        # answers for a torn store — proven on the real store by
+        # test_engine.SceneRealStoreTests.
+        self.rules: Dict[str, Any] = {"scenarios": []}
+        self.rules_readable = True
+        self.rules_changed = False
         self.address: Optional[str] = "192.168.1.136"
         self.start_error: Optional[BaseException] = None
         self.missing: List[str] = []
@@ -132,6 +154,13 @@ class Harness:
             "VERSION_FILE": os.path.join(d, "VERSION"),
         })
         self._patches = [mock.patch.object(C, k, v) for k, v in patches.items()]
+        self._patches += [
+            mock.patch.object(scene_devices, "load_rules_doc",
+                              lambda *_a, **_k: copy.deepcopy(self.rules) if self.rules_readable else {}),
+            mock.patch.object(scene_devices, "read_rules_doc",
+                              lambda *_a, **_k: ((copy.deepcopy(self.rules), True)
+                                                 if self.rules_readable else ({}, False))),
+        ]
         for p in self._patches:
             p.start()
         self.status = StatusWriter(self.run_dir)
@@ -144,6 +173,7 @@ class Harness:
             mqtt_factory=self._mqtt,
             load_document=lambda _p: copy.deepcopy(self.doc),
             watcher_factory=lambda _p: FakeWatcher(self),
+            rules_watcher_factory=lambda: FakeRulesWatcher(self),
             address_of=lambda _n: self.address,
             mac_of=lambda _n: "02:42:ac:11:00:02",
             check_dependencies=lambda: list(self.missing),
