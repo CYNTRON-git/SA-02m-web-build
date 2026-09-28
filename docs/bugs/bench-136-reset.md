@@ -1,465 +1,500 @@
-# 8D — bench 1.136 hard reset mid `install.sh --refresh` (2026-09-08)
+# 8D — аппаратный сброс стенда 1.136 посреди `install.sh --refresh` (2026-09-08)
 
-**Graduated 2026-09-28 (1.0.6.58, audit 2026-09-24 L6)** from the run-note
-`.ai-dev/8d/bench-136-reset.md` (`.ai-dev/procedures/8d.md` §Run-note: a note that
-tracked files cite graduates here at D8 instead of being deleted). Twelve tracked files cite
-this path from code comments and gate headers — the evidence they point at is below, kept
-as it was written; sections from «D5» on are the 1.0.6.41 work record, not current
-instructions.
+**Перенесён сюда 2026-09-28 (1.0.6.58, аудит 2026-09-24 L6)** из рабочей записи (run-note)
+`.ai-dev/8d/bench-136-reset.md` (`.ai-dev/procedures/8d.md` §Run-note: запись, на которую
+ссылаются отслеживаемые файлы, на шаге D8 переносится сюда, а не удаляется). Двенадцать
+отслеживаемых файлов ссылаются на этот путь из комментариев в коде и заголовков гейтов —
+улики, на которые они указывают, приведены ниже в том виде, в каком были записаны; разделы
+начиная с «D5» — рабочая запись 1.0.6.41, а не действующие инструкции.
 
-**Status at graduation — what is closed, what is still open:**
-- **D5 A–E + G** — built in 1.0.6.41 (evidence: «D6 progress» below).
-- **D5 F (install lock)** — built in **1.0.6.51**: `install.sh` holds
-  `/run/sa02m-imaging.lock` for its run and releases it only if it took it; pinned by
-  `scripts/dev/test-watchdog-hold.sh` case 12 (row `watchdog-hold`) and three
-  `comment-mutation-proof` cases. The «not built» lines below (D6 progress, Handoff,
-  Progress note) predate that release.
-- **Read 6** (does the Manager `RuntimeWatchdogSec` write take on 1.136?) — answered on the
-  board 2026-09-09: yes on systemd 255.4 (row `watchdog-hold`'s record).
-- **OPEN — the cause of the resets.** After the D4 addendum only power delivery / an
-  external reset remains; no software path is left. A further full install on 1.136 is not
-  to be started until a serial console is attached (D4 addendum, «Attempt ceiling») — the
-  journal-on-disk policy of 1.0.6.51 (`etc/systemd/sa02m-journald.conf`, 1-min sync) has
-  since narrowed the always-lost logging window. Closing this is the Operator's call; it is
-  tracked in `.ai-dev/backlog.md`, not here.
+**Состояние на момент переноса — что закрыто, что ещё открыто:**
+- **D5 A–E + G** — сделаны в 1.0.6.41 (улики: «D6 progress» ниже).
+- **D5 F (блокировка установки, install lock)** — сделан в **1.0.6.51**: `install.sh` держит
+  `/run/sa02m-imaging.lock` на время прогона и снимает его, только если сам его взял;
+  закреплено `scripts/dev/test-watchdog-hold.sh`, случай 12 (строка `watchdog-hold`), и
+  тремя случаями `comment-mutation-proof`. Строки «не сделан» ниже (D6 progress, Handoff,
+  Progress note) написаны до этого релиза.
+- **Чтение 6 (read 6)** (срабатывает ли на 1.136 запись Manager `RuntimeWatchdogSec`?) —
+  ответ получен на плате 2026-09-09: да, на systemd 255.4 (запись строки `watchdog-hold`).
+- **ОТКРЫТО — причина сбросов.** После дополнения к D4 (D4 addendum) остаются только питание
+  или внешний сброс; программного пути не осталось. Следующую полную установку на 1.136 не
+  начинать, пока не подключена последовательная консоль (D4 addendum, «Attempt ceiling» —
+  «Предел попыток»); с тех пор политика журнала на диске из 1.0.6.51
+  (`etc/systemd/sa02m-journald.conf`, синхронизация раз в минуту) сузила окно журнала, которое
+  всегда теряется. Закрыть это — решение Оператора; пункт ведётся в `.ai-dev/backlog.md`, а
+  не здесь.
 
-Facts below are the Orchestrator's SSH evidence; code facts are `file:line` at HEAD
-(1.0.6.40 content).
+Факты ниже — SSH-улики Оркестратора; факты о коде даны как `file:line` на HEAD
+(содержимое 1.0.6.40).
 
-## D1 — Team
+## D1 — Команда (Team)
 
-The loop's roles: Orchestrator (evidence, board reads, git), Researcher-Planner (this
-note), Builder (D5 steps), fresh Reviewer (D6). No new seat.
+Роли цикла: Оркестратор (улики, чтения с платы, git), Researcher-Planner (эта запись),
+Builder (шаги D5), свежий Reviewer (D6). Нового места не заводится.
 
-## D2 — Define
+## D2 — Определение (Define)
 
-Offline full update 1.0.6.37 → 1.0.6.40 on 192.168.1.136 (`sa02m-1eth`, mplc4 on, tree
-extracted under `/tmp` = tmpfs = RAM), launched 22:07:08 via paramiko `exec_command`
-`nohup … --unattended &`; the relay session closed right after.
+Офлайн-полное обновление 1.0.6.37 → 1.0.6.40 на 192.168.1.136 (`sa02m-1eth`, mplc4 включён,
+дерево распаковано в `/tmp` = tmpfs = ОЗУ), запущено в 22:07:08 через paramiko `exec_command`
+`nohup … --unattended &`; сессия-ретранслятор закрылась сразу после этого.
 
-| Time | Fact |
+| Время | Факт |
 |---|---|
-| 22:07–22:14:43 | `install.sh` log complete through `[OK] /opt/sa02m-mplc установлен` (`scripts/03-webserver.sh:633`); the next durable line is a torn `[2026-` — a `lib.sh:19` log line whose tail never reached disk |
-| 22:15:08 | wrapper heartbeat «install.sh работает (8 мин)» (`offline-full-update.sh:186`) — the wrapper survived the session close; nothing later from it is on disk |
-| 22:15 | `/etc/systemd/system/sa02m-flasher.service` mtime — 0-byte regular file (systemd reads an empty unit as **masked**, systemd.unit(5)); written by `04-flasher.sh:90` `install -m 0644` |
-| ≈22:20:05 | boot (watchdog heartbeat «uptime=25s» at 22:20:30); `who -b` = 1970 (RTC) — the wall-clock at boot came from fake-hwclock/chrony |
-| after | `/opt/sa02m-modbus-mqtt/bridge_led.py` = 1.0.6.40; `/opt/sa02m-led/sa02m_led/led_mb2ws.py` lacks `MB2WS_TEXT_BASE` ⇒ bridge crash-loop (119 restarts); `VERSION` + runner stamp already 1.0.6.40 |
-| logs | userspace-watchdog: no FORCED REBOOT; failure-monitor: **no lines 22:05→22:20:30** (its 300 s heartbeats at ~22:10/22:15 are missing too); journal lists one boot; wtmp has no shutdown record |
-| control | 1.135 (same HW class) ran the identical update twice, 13/13 PASS, ≈11 min; the 1.136 re-run at 22:48 (`setsid nohup … </dev/null &`, tree under `/root`, `--force --no-backup`) PASSED 13/13 in 10 min, no reset |
+| 22:07–22:14:43 | журнал `install.sh` полон до строки `[OK] /opt/sa02m-mplc установлен` (`scripts/03-webserver.sh:633`); следующая сохранившаяся строка — оборванная `[2026-` — строка журнала из `lib.sh:19`, хвост которой так и не попал на диск |
+| 22:15:08 | heartbeat обёртки «install.sh работает (8 мин)» (`offline-full-update.sh:186`) — обёртка пережила закрытие сессии; ничего более позднего от неё на диске нет |
+| 22:15 | mtime `/etc/systemd/system/sa02m-flasher.service` — обычный файл размером 0 байт (systemd читает пустой юнит как **masked**, systemd.unit(5)); записан `04-flasher.sh:90` `install -m 0644` |
+| ≈22:20:05 | загрузка (heartbeat watchdog «uptime=25s» в 22:20:30); `who -b` = 1970 (RTC) — время при загрузке пришло из fake-hwclock/chrony |
+| после | `/opt/sa02m-modbus-mqtt/bridge_led.py` = 1.0.6.40; в `/opt/sa02m-led/sa02m_led/led_mb2ws.py` нет `MB2WS_TEXT_BASE` ⇒ мост в crash-loop (119 перезапусков); `VERSION` + штамп раннера уже 1.0.6.40 |
+| журналы | userspace-watchdog: нет FORCED REBOOT; failure-monitor: **нет строк 22:05→22:20:30** (его 300-секундных heartbeat около 22:10/22:15 тоже нет); журнал показывает одну загрузку; в wtmp нет записи о выключении |
+| контроль | 1.135 (тот же класс железа) прошёл то же обновление дважды, 13/13 PASS, ≈11 мин; повторный прогон на 1.136 в 22:48 (`setsid nohup … </dev/null &`, дерево в `/root`, `--force --no-backup`) ПРОШЁЛ 13/13 за 10 мин, без сброса |
 
-## D3 — Contain (done)
+## D3 — Сдерживание (Contain, сделано)
 
-Re-run to completion (installer is idempotent); `sa02m-flasher` unit restored and started by
-hand (the re-run captured the 0-byte unit as `masked` and preserved it — `lib.sh:993-1003`,
-the "never-widen" branch). No further containment needed; the bench is at 1.0.6.40.
+Повторный прогон до конца (установщик идемпотентен); юнит `sa02m-flasher` восстановлен и
+запущен вручную (повторный прогон прочитал 0-байтовый юнит как `masked` и сохранил его —
+`lib.sh:993-1003`, ветка «never-widen»). Дальнейшее сдерживание не нужно; стенд на 1.0.6.40.
 
-## D4 — Root cause
+## D4 — Первопричина (Root cause)
 
-**What the on-disk state proves.** Every clean-reboot path on the board syncs before
-rebooting (`etc/sa02m-userspace-watchdog.sh:212-218` `sync` then `systemctl reboot --force`;
-`systemctl reboot`; `sa02m-web-reboot.sh`). A synced tree cannot show a torn log line, a
-created-but-empty unit, and a shared-package file missing a constant. The tree is a **torn
-page cache — an unclean (hard) reset**, and the writeback lag was minutes, not seconds:
-the last durable installer line is 22:14:43, the wrapper's 22:16–22:20 heartbeats and the
-failure-monitor's 22:10/22:15 heartbeats never landed. Sharper: 1.0.6.37's `bridge_led.py`
-reads `lm.MB2WS_TEXT_BASE` at **module level** (`_LEGAL_BLOCK_WRITES`, origin/1.0.6.37 l.88),
-so if the bridge was active before 22:07 (the `svc-before` row says — Orchestrator: read it),
-the pre-update `led_mb2ws.py` HAD the constant, and the post-reset file is not "the old one"
-but a **torn 1.0.6.40 copy** (`04-flasher.sh:52` / `05-mqtt.sh:166` `install` + `sed -i`).
+**Что доказывает состояние на диске.** Каждый путь чистой перезагрузки на плате делает sync
+перед перезагрузкой (`etc/sa02m-userspace-watchdog.sh:212-218` `sync`, затем
+`systemctl reboot --force`; `systemctl reboot`; `sa02m-web-reboot.sh`). Синхронизированное
+дерево не может показать оборванную строку журнала, созданный, но пустой юнит и файл общего
+пакета без константы. Дерево — это **оборванный page cache, то есть нечистый (аппаратный)
+сброс**, а отставание записи на диск составляло минуты, а не секунды: последняя
+сохранившаяся строка установщика — 22:14:43, heartbeat обёртки 22:16–22:20 и heartbeat
+failure-monitor 22:10/22:15 на диск так и не попали. Точнее: `bridge_led.py` версии
+1.0.6.37 читает `lm.MB2WS_TEXT_BASE` **на уровне модуля** (`_LEGAL_BLOCK_WRITES`,
+origin/1.0.6.37 l.88), поэтому если мост был активен до 22:07 (так говорит строка
+`svc-before` — Оркестратор: прочитать её), то `led_mb2ws.py` до обновления константу ИМЕЛ, и
+файл после сброса — не «старый», а **оборванная копия 1.0.6.40** (`04-flasher.sh:52` /
+`05-mqtt.sh:166` `install` + `sed -i`).
 
-| Candidate | Evidence | Verdict |
+| Кандидат | Улики | Вердикт |
 |---|---|---|
-| `sa02m-userspace-watchdog` reboot | threshold 60×10 s; it logs + `sync`s before acting (`:203-218`); log has nothing; grace/threshold not reachable in the window | **excluded** |
-| `sa02m-failure-monitor` reboot | has **no reboot path at all** — it only logs/snapshots (`etc/sa02m-failure-monitor.sh`, whole file) | **excluded** |
-| `net-watchdog` | loop = `fix-eth.sh` (ifdown/ifup only, `:361-364`) + `inet-failover.sh`; no reboot | **excluded** |
-| a module issuing `reboot` | `grep reboot install.sh scripts/*.sh` → only comments and the install of `sa02m-web-reboot.sh` | **excluded** |
-| SSH teardown killed the process group, later independent reboot | wrapper wrote heartbeats 8 min after the session closed; no independent reboot mechanism exists (rows above) | **excluded** |
-| `daemon-reexec` (`01-system.sh:762`) stalling PID 1 | runs at the END of module 01 (≈22:08); reset ≈22:20 | excluded by timing |
-| **HW watchdog (`sunxi-wdt`, 15 s, PID-1 fed)** after a PID-1 stall | fits a hard reset + minutes of writeback lag (I/O starvation: `rsync`/`install` bursts on eMMC, the tree in tmpfs eating RAM on a 1 GB board running mplc4 — 1.135 has a different memory profile; `daemon-reload` at `04-flasher.sh:91` and `sa02m_systemctl daemon-reload` in 05 make PID 1 read unit files from disk); nothing on record contradicts it | **leading** |
-| external power/reset | indistinguishable from the row above by the filesystem alone; bench 1.136 is shared (`docs/bench-board-target-state.md`) | **open** |
+| перезагрузка `sa02m-userspace-watchdog` | порог 60×10 s; перед действием пишет в журнал и делает `sync` (`:203-218`); в журнале ничего; grace/порог в этом окне недостижимы | **исключён** |
+| перезагрузка `sa02m-failure-monitor` | **вообще не имеет пути перезагрузки** — только пишет журнал/снимки (`etc/sa02m-failure-monitor.sh`, весь файл) | **исключён** |
+| `net-watchdog` | цикл = `fix-eth.sh` (только ifdown/ifup, `:361-364`) + `inet-failover.sh`; перезагрузки нет | **исключён** |
+| модуль, вызывающий `reboot` | `grep reboot install.sh scripts/*.sh` → только комментарии и установка `sa02m-web-reboot.sh` | **исключён** |
+| закрытие SSH убило группу процессов, позже — независимая перезагрузка | обёртка писала heartbeat ещё 8 мин после закрытия сессии; независимого механизма перезагрузки нет (строки выше) | **исключён** |
+| `daemon-reexec` (`01-system.sh:762`), подвесивший PID 1 | выполняется в КОНЦЕ модуля 01 (≈22:08); сброс ≈22:20 | исключён по времени |
+| **HW watchdog (`sunxi-wdt`, 15 s, кормит PID 1)** после подвисания PID 1 | согласуется с аппаратным сбросом + минутами отставания записи (голодание ввода-вывода: всплески `rsync`/`install` на eMMC, дерево в tmpfs съедает ОЗУ на плате с 1 ГБ, где работает mplc4 — у 1.135 другой профиль памяти; `daemon-reload` в `04-flasher.sh:91` и `sa02m_systemctl daemon-reload` в 05 заставляют PID 1 читать файлы юнитов с диска); ничто в записях этому не противоречит | **ведущий** |
+| внешнее питание/сброс | по одной файловой системе неотличим от строки выше; стенд 1.136 общий (`docs/bench-board-target-state.md`) | **открыт** |
 
-### D4 addendum — two more freezes on 2026-09-09, and what measurement excluded
+### D4 addendum — дополнение к D4: ещё два зависания 2026-09-09 и что исключено измерениями
 
-Verifying 1.0.6.41 reran the installer on 1.136 twice. **Both runs ended the same way:**
-every module completed, `=== [12] Docker: модуль завершён ===` was the last install-log
-line, and the board came back on a fresh boot minutes later. Run 1: last log 10:22:28,
-boot ~10:26. Run 2: last log 13:02:37, boot 13:04:36 (`uptime -s`).
+При проверке 1.0.6.41 установщик на 1.136 прогнали дважды. **Оба прогона закончились
+одинаково:** все модули завершились, последней строкой журнала установки была
+`=== [12] Docker: модуль завершён ===`, а через несколько минут плата поднялась с новой
+загрузкой. Прогон 1: последняя запись 10:22:28, загрузка ~10:26. Прогон 2: последняя запись
+13:02:37, загрузка 13:04:36 (`uptime -s`).
 
-**The reset was HARD, and every reset of this board has been.**
-`sa02m-shutdown-marker.service` is enabled and active and writes
-`/var/lib/sa02m-clean-shutdown` on any clean stop. That file **does not exist at all**, so
-no shutdown of this board has ever run its stop job.
+**Сброс был АППАРАТНЫМ, и таким был каждый сброс этой платы.**
+`sa02m-shutdown-marker.service` включён и активен и при любой чистой остановке пишет
+`/var/lib/sa02m-clean-shutdown`. Этого файла **нет вообще**, значит ни одно выключение этой
+платы ни разу не выполнило его stop-задачу.
 
-#### Excluded by measurement on the board (2026-09-09 evening)
+#### Исключено измерениями на плате (2026-09-09, вечер)
 
-| Candidate | How it was excluded |
+| Кандидат | Как исключён |
 |---|---|
-| **HW watchdog (`sunxi-wdt`, PID-1 fed)** — D4's former **leading** row | `/proc/1/fd` shows PID 1 holding `/dev/watchdog0` in normal operation; after `sa02m_runtime_watchdog_set 0` it holds **no** watchdog fd — systemd magic-closes the device, so the timer is DISARMED, not merely unfed. The board then survived **40 s**, well past its 16 s hardware timeout. Repeated across a `systemctl daemon-reexec`: property still 0, still no fd, still alive. The hold was taken at 12:53:15 and install.sh never reached its EXIT trap, so the watchdog was disarmed for the entire run. **This row is now excluded, not leading.** |
-| `daemon-reexec` (`01-system.sh:762`) stalling PID 1 | Already "excluded by timing"; now excluded a second way — the runtime override survives the re-exec (measured above), so the re-exec changes nothing about the watchdog. |
-| Kernel panic → reboot | `kernel.panic=0` and `panic_on_oom=0`: a panic on this board HANGS, it cannot reboot. |
-| Thermal critical trip | `cpu0-thermal` critical = 115 °C, GPU = 125 °C; idle 62 °C and 61–64 °C under a sustained write load. Zero thermal events in the journal. |
-| A long post-module `sync` stalling the board | Measured: a 120 MB burst leaves ~28 MB dirty and `sync` clears it in **2.06 s** (idle sync: 0.02 s). `vm.dirty_expire_centisecs=3000` bounds writeback to ~30 s — `commit=600` is the ext4 *journal* interval, not the page-writeback window. A post-module sync costs seconds, not minutes. |
+| **HW watchdog (`sunxi-wdt`, кормит PID 1)** — бывшая **ведущая** строка D4 | `/proc/1/fd` показывает, что в обычной работе PID 1 держит `/dev/watchdog0`; после `sa02m_runtime_watchdog_set 0` он **не** держит fd watchdog — systemd закрывает устройство с magic close, поэтому таймер ВЫКЛЮЧЕН, а не просто не кормится. После этого плата прожила **40 s** — далеко за своим аппаратным тайм-аутом 16 s. Повторено через `systemctl daemon-reexec`: свойство по-прежнему 0, fd по-прежнему нет, плата жива. Удержание взято в 12:53:15, и install.sh так и не дошёл до своего EXIT trap, так что watchdog был выключен на весь прогон. **Эта строка теперь исключена, а не ведущая.** |
+| `daemon-reexec` (`01-system.sh:762`), подвесивший PID 1 | Уже был «исключён по времени»; теперь исключён вторым способом — runtime-переопределение переживает re-exec (измерено выше), так что re-exec ничего не меняет для watchdog. |
+| Kernel panic → перезагрузка | `kernel.panic=0` и `panic_on_oom=0`: паника на этой плате ПОДВЕШИВАЕТ её, перезагрузить она не может. |
+| Критический тепловой порог | критический порог `cpu0-thermal` = 115 °C, GPU = 125 °C; в простое 62 °C и 61–64 °C под длительной нагрузкой записью. Ноль тепловых событий в журнале. |
+| Долгий `sync` после модуля, подвешивающий плату | Измерено: всплеск 120 MB оставляет ~28 MB грязных страниц, и `sync` сбрасывает их за **2.06 s** (sync в простое: 0.02 s). `vm.dirty_expire_centisecs=3000` ограничивает запись на диск ~30 s — `commit=600` это интервал *журнала* ext4, а не окно записи страниц. `sync` после модуля стоит секунды, а не минуты. |
 
-#### The correction that matters most — a claim in the first draft of this addendum was WRONG
+#### Главная поправка — утверждение в первой редакции этого дополнения было НЕВЕРНЫМ
 
-The first draft said: «journald has NO entries between 13:01:46 and the boot — the system
-was WEDGED, not busy». **That does not follow, and it is withdrawn.** Measured cause of the
-gap:
+Первая редакция гласила: «в journald НЕТ записей между 13:01:46 и загрузкой — система
+ЗАВИСЛА, а не была занята». **Это не следует из фактов, и утверждение снимается.** Измеренная
+причина пробела:
 
-- journald's `SyncIntervalSec` is the compiled default **5 minutes**; nothing in
-  `/etc/systemd/journald.conf*` overrides it.
-- `/` is mounted `commit=600`, and the journal files' mtimes are **13:01:37 / 13:01:39** —
-  exactly where the readable entries stop.
-- The install log is a plain `>>` append, so **its tail lives in the page cache too**. Its
-  last visible line at 13:02:37 is therefore a lower bound on how far the run got, not the
-  moment it stopped.
+- `SyncIntervalSec` в journald — встроенное значение по умолчанию, **5 минут**; ничто в
+  `/etc/systemd/journald.conf*` его не переопределяет.
+- `/` смонтирован с `commit=600`, а mtime файлов журнала — **13:01:37 / 13:01:39** — ровно
+  там, где заканчиваются читаемые записи.
+- Журнал установки — простое дописывание `>>`, поэтому **его хвост тоже живёт в page cache**.
+  Его последняя видимая строка в 13:02:37 — поэтому нижняя граница того, докуда дошёл прогон,
+  а не момент его остановки.
 
-So the entries after ~13:01:37 were written into the page cache and died with the reset.
-**There is no evidence of a wedge.** The system was probably running normally until the
-instant of the reset, and the run may well have progressed past 13:02:37 invisibly.
+Итак, записи после ~13:01:37 были записаны в page cache и погибли вместе со сбросом.
+**Свидетельств зависания нет.** Система, вероятно, работала нормально до самого момента
+сброса, и прогон вполне мог незаметно уйти дальше 13:02:37.
 
-#### D4 CLOSED — the Operator supplied the fact that was missing
+#### D4 ЗАКРЫТ — Оператор сообщил недостающий факт
 
-2026-09-09 ~19:50, from the Operator: **bench 1.136's power is fed from a discrete output of
-bench 1.135.** That is why every software reset path on 1.136 was excluded one after another —
-the cause was never on 1.136.
+2026-09-09 ~19:50, от Оператора: **питание стенда 1.136 подаётся с дискретного выхода стенда
+1.135.** Вот почему каждый программный путь сброса на 1.136 исключался один за другим —
+причина никогда не была на 1.136.
 
-Both losses land inside 1.135 restarting its Modbus/telemetry stack, the only software there
-that touches the PCA9536 outputs. Run 1: 1.135 «Деплой Modbus→MQTT моста» 10:24:57 → 1.136 boots
-~10:26:18. Run 2: 1.135 restarts `sa02m-modbus-mqtt` and `sa02m-telemetry` 13:03:44–13:03:47,
-then `sa02m-alice-client` and `sa02m-cloud-control` through 13:04:22 → 1.136 boots 13:04:36.
-**Independently corroborated** by the peer session «lighting-module-diagnostics», working 1.135
-read-only, which logged systemd killing `sa02m-cloud-control` on its stop timeout at 13:04:47.
+Обе потери приходятся на перезапуск стека Modbus/телеметрии на 1.135 — единственного ПО там,
+которое трогает выходы PCA9536. Прогон 1: 1.135 «Деплой Modbus→MQTT моста» 10:24:57 → 1.136
+загружается ~10:26:18. Прогон 2: 1.135 перезапускает `sa02m-modbus-mqtt` и `sa02m-telemetry`
+13:03:44–13:03:47, затем `sa02m-alice-client` и `sa02m-cloud-control` до 13:04:22 → 1.136
+загружается 13:04:36. **Независимо подтверждено** соседней сессией
+«lighting-module-diagnostics», работавшей с 1.135 только на чтение: она зафиксировала, как
+systemd убил `sa02m-cloud-control` по тайм-ауту остановки в 13:04:47.
 
-**The defect that makes this easy to trigger** — `opt/sa02m-modbus-mqtt/sa02m_telemetry.py`
-`_make_hw_cb` hard-codes `bit_map = {"do": 0, "beeper": 1, "alarm_led": 2}` and never reads
-`/etc/sa02m_hw.conf`, where the board (and `lib_hw.sh`, which does read it) says bit0 = alarm
-LED, **bit1 = DO**, bit2 = buzzer. So an MQTT `beeper` command switches the discrete output.
-Confirmed on the live board: register 0x01 reads `0x05` while the daemon publishes `do=1` — that
-bit is the LED. This is the D5 fix, on branch `1.0.6.42`; on an installation that output commutes
-real equipment, so it is not a bench curiosity.
+**Дефект, из-за которого это легко вызвать** — `opt/sa02m-modbus-mqtt/sa02m_telemetry.py`
+`_make_hw_cb` жёстко задаёт `bit_map = {"do": 0, "beeper": 1, "alarm_led": 2}` и никогда не
+читает `/etc/sa02m_hw.conf`, где плата (и `lib_hw.sh`, который его читает) говорит: bit0 =
+аварийный светодиод, **bit1 = DO**, bit2 = зуммер. Поэтому MQTT-команда `beeper` переключает
+дискретный выход. Подтверждено на живой плате: регистр 0x01 читается как `0x05`, тогда как
+демон публикует `do=1` — этот бит — светодиод. Это исправление D5, ветка `1.0.6.42`; на
+объекте этот выход коммутирует реальное оборудование, так что это не стендовый курьёз.
 
-#### A second correction to my own reasoning — the size of the logging loss
+#### Вторая поправка к моим же рассуждениям — объём потери журнала
 
-The addendum above says the last one to three minutes before a hard reset are unrecoverable, and
-proposes forcing a journal sync at the installer's module boundaries. **The loss is real but far
-smaller than that, and the reason I gave was wrong.** Measured on 1.136:
+Дополнение выше говорит, что последние одна–три минуты перед аппаратным сбросом
+невосстановимы, и предлагает принудительно синхронизировать журнал на границах модулей
+установщика. **Потеря реальна, но намного меньше, а причина, которую я назвал, была
+неверной.** Измерено на 1.136:
 
-- `vm.dirty_expire_centisecs = 3000` with `dirty_writeback_centisecs = 500`: the kernel writes a
-  dirty page back about 30 s after it is dirtied, whatever journald's own `SyncIntervalSec` says.
-  So the exposure is ~30 s of entries, not the 5 minutes that interval suggests.
-- The incident data agrees: the last surviving entry is 13:01:46.21 and the board booted at
-  13:04:36. The rest of that gap is not lost data — the board was simply OFF.
-- `journalctl --sync` costs **43-54 ms** on this board, even right after a 300-line burst — not
-  the ~2 s I extrapolated from a filesystem-wide `sync`.
+- `vm.dirty_expire_centisecs = 3000` при `dirty_writeback_centisecs = 500`: ядро записывает
+  грязную страницу на диск примерно через 30 s после её изменения, что бы ни говорил
+  собственный `SyncIntervalSec` journald. Так что под угрозой ~30 s записей, а не 5 минут,
+  на которые намекает этот интервал.
+- Данные инцидента согласуются: последняя сохранившаяся запись — 13:01:46.21, а плата
+  загрузилась в 13:04:36. Остаток этого пробела — не потерянные данные: плата просто была
+  ВЫКЛЮЧЕНА.
+- `journalctl --sync` стоит на этой плате **43-54 ms**, даже сразу после всплеска в 300 строк —
+  а не ~2 s, которые я экстраполировал с `sync` всей файловой системы.
 
-So the fix is still worth making and is nearly free, but its honest claim is «shrinks a ~30 s
-blind spot to ~0», not «recovers minutes». Thirty seconds is exactly the window that would show
-a power cut arriving, which is why it still matters here.
+Так что исправление по-прежнему стоит сделать, и оно почти бесплатно, но его честное
+обещание — «сужает слепое пятно ~30 s до ~0», а не «возвращает минуты». Тридцать секунд —
+ровно то окно, в котором было бы видно приход обрыва питания, поэтому здесь это всё ещё
+важно.
 
-#### What this leaves, and the honest verdict
+#### Что остаётся, и честный вердикт
 
-Every software reset path is now excluded by measurement. What remains is **power delivery
-or an external reset** on this shared bench board — physical, and outside what the software
-can settle. 1.135 runs the identical archive and has never done this; 1.136 additionally
-carries Docker and MPLC4 on **491 MB with no swap and no zram**, and the PMIC gives no
-usable rail telemetry (`in_voltage0_raw` is pegged at full scale 4095, `in_current*_raw`
-reads 0), so a voltage sampler built in software would report a constant and prove nothing.
-Settling it needs a meter on the rail or a serial console.
+Каждый программный путь сброса теперь исключён измерениями. Остаётся **питание или внешний
+сброс** на этой общей стендовой плате — физика, вне того, что может решить ПО. 1.135
+работает на том же архиве и такого никогда не делал; 1.136 дополнительно несёт Docker и
+MPLC4 на **491 MB без swap и без zram**, а PMIC не даёт пригодной телеметрии шин
+(`in_voltage0_raw` упирается в полную шкалу 4095, `in_current*_raw` читается как 0), так что
+программный сэмплер напряжения показал бы константу и ничего бы не доказал. Для решения нужен
+измерительный прибор на шине питания или последовательная консоль.
 
-#### The finding that actually unblocks the next investigation
+#### Находка, которая действительно разблокирует следующее расследование
 
-**Three incidents have produced no root cause for the same reason each time: the last one to
-three minutes before a hard reset are not recoverable on this board.** The journal is
-fsynced every 5 minutes and the installer's own log is buffered, so the window that matters
-is exactly the window that is always lost. Until that changes, a fourth reset will teach us
-no more than the first three.
+**Три инцидента не дали первопричины по одной и той же причине: последние одна–три минуты
+перед аппаратным сбросом на этой плате невосстановимы.** Журнал синхронизируется на диск раз
+в 5 минут, а собственный журнал установщика буферизован, поэтому окно, которое важно, —
+ровно то окно, которое всегда теряется. Пока это не изменится, четвёртый сброс научит нас не
+большему, чем первые три.
 
-That is cheap to fix — `sync` costs ~2 s after a 120 MB burst, and the installer already
-calls it at every module boundary. Forcing a **journal** sync there too (and fsyncing the
-install log) would cost roughly 25 s across a 13-minute install and would make the next
-post-mortem possible. Tracked as a fix, not a note.
+Это дёшево исправить — `sync` стоит ~2 s после всплеска 120 MB, а установщик уже вызывает
+его на каждой границе модуля. Принудительная синхронизация там же и **журнала** (и fsync
+журнала установки) стоила бы примерно 25 s на 13-минутную установку и сделала бы возможным
+следующий разбор. Ведётся как исправление, а не как заметка.
 
-**Reproducibility is the other new fact.** Three resets, all on 1.136, all in the same
-install phase, none on 1.135 running the identical archive. Whatever it is, it is a property
-of THIS board plus a full install, not of a particular release: run 2 carried the 1.0.6.41
-fences and they held — no 0-byte unit fragment, no failed unit, the board came back on
-1.0.6.41 and passed 12 of 13 direct probes, the one FAIL being the installer report that was
-never written.
+**Воспроизводимость — второй новый факт.** Три сброса, все на 1.136, все в одной и той же
+фазе установки, ни одного на 1.135 с тем же архивом. Что бы это ни было, это свойство ЭТОЙ
+платы плюс полной установки, а не конкретного релиза: прогон 2 нёс ограждения 1.0.6.41, и
+они выдержали — ни 0-байтового фрагмента юнита, ни упавшего юнита; плата поднялась на
+1.0.6.41 и прошла 12 из 13 прямых проверок, единственный FAIL — отчёт установщика, который
+так и не был записан.
 
-**Attempt ceiling.** Two runs, same symptom; a third install was NOT started, and must not be
-until the logging window is closed and a serial console is attached — otherwise it produces
-the same absence of evidence.
+**Attempt ceiling — предел попыток.** Два прогона, один и тот же симптом; третья установка
+НЕ начиналась и не должна начинаться, пока окно журнала не закрыто и не подключена
+последовательная консоль — иначе она даст то же отсутствие улик.
 
-**Verdict.** The reset was a hard reset. **Superseded 2026-09-09 by the addendum above:**
-the two remaining causes were «HW watchdog vs. power»; the HW watchdog is now excluded on
-the board by measurement, so power delivery / external reset is what is left, and no
-software path remains. The
-installer's own defects made the reset an OUTAGE: non-atomic live-path writes (0-byte unit
-⇒ flasher masked), dependency written after its consumer (`05-mqtt.sh:160` `bridge_led.py`
-before `:166` LED pkg), no `sync` at module boundaries (a 5-minute tear), and a capture
-that reads a corrupt unit as an operator decision (`lib.sh:993`). Those are fixable
-regardless of which hard-reset cause wins; D5 fixes them all.
+**Вердикт.** Сброс был аппаратным. **Заменено 2026-09-09 дополнением выше:** двумя
+оставшимися причинами были «HW watchdog против питания»; HW watchdog теперь исключён на плате
+измерениями, так что остаются питание / внешний сброс, и программного пути не остаётся.
+Собственные дефекты установщика превратили сброс в ПРОСТОЙ: неатомарная запись файлов на
+живых путях (0-байтовый юнит ⇒ прошивальщик замаскирован), зависимость записывается после
+своего потребителя (`05-mqtt.sh:160` `bridge_led.py` перед `:166` LED-пакетом), нет `sync` на
+границах модулей (обрыв в 5 минут) и захват состояния, который читает повреждённый юнит как
+решение оператора (`lib.sh:993`). Они исправимы независимо от того, какая причина
+аппаратного сброса окажется верной; D5 исправляет их все.
 
-**Cheapest discriminating reads on 1.136 (non-destructive, Orchestrator):**
+**Самые дешёвые различающие чтения на 1.136 (неразрушающие, Оркестратор):**
 
-1. `journalctl -b 0 -k | grep -iE 'EXT4-fs.*(recover|orphan)|mmc[0-9].*(error|timeout)|sunxi-wdt'` — unclean-shutdown proof + eMMC error traces; `journalctl -b -1 -k | tail -50` if a previous boot exists.
-2. `cat /sys/class/watchdog/watchdog0/bootstatus` — 32 (WDIOF_CARDRESET) = watchdog reset proven; 0 is inconclusive (the driver may not report it).
-3. `findmnt -no OPTIONS /; sysctl vm.dirty_expire_centisecs vm.dirty_ratio` — the commit/writeback windows (Armbian often ships `commit=600`) that decide how wide a tear a reset leaves.
-4. `journalctl -b 0 | grep -iE 'chrony.*(wrong|step)|fake-hwclock|time has been changed'` — the true boot time (the 22:20 figure rests on the post-boot clock).
-5. `free -m; df -h /tmp; du -sh /tmp/sa02m-upd 2>/dev/null` — memory-pressure hypothesis (tree in tmpfs).
-6. `systemctl set-property --runtime Manager RuntimeWatchdogSec=0; echo rc=$?; busctl get-property org.freedesktop.systemd1 /org/freedesktop/systemd1 org.freedesktop.systemd1.Manager RuntimeWatchdogUSec; systemctl set-property --runtime Manager RuntimeWatchdogSec=15s` — whether the runner's precedent guard (`etc/sa02m-update-runner.sh:216`, `|| true`) is real on this systemd (bullseye = v247; writable Manager watchdog properties arrived in v250 — I expect a silent no-op, i.e. a hollow guard, `quality-gate-rigor.md` shape).
-7. `ls -la /var/log/journal/; journalctl --list-boots` — why only one boot is listed.
+1. `journalctl -b 0 -k | grep -iE 'EXT4-fs.*(recover|orphan)|mmc[0-9].*(error|timeout)|sunxi-wdt'` — доказательство нечистого выключения + следы ошибок eMMC; `journalctl -b -1 -k | tail -50`, если есть предыдущая загрузка.
+2. `cat /sys/class/watchdog/watchdog0/bootstatus` — 32 (WDIOF_CARDRESET) = сброс от watchdog доказан; 0 ничего не доказывает (драйвер может этого не сообщать).
+3. `findmnt -no OPTIONS /; sysctl vm.dirty_expire_centisecs vm.dirty_ratio` — окна commit/записи на диск (Armbian часто поставляет `commit=600`), которые определяют, насколько широкий обрыв оставляет сброс.
+4. `journalctl -b 0 | grep -iE 'chrony.*(wrong|step)|fake-hwclock|time has been changed'` — истинное время загрузки (цифра 22:20 опирается на часы после загрузки).
+5. `free -m; df -h /tmp; du -sh /tmp/sa02m-upd 2>/dev/null` — гипотеза давления на память (дерево в tmpfs).
+6. `systemctl set-property --runtime Manager RuntimeWatchdogSec=0; echo rc=$?; busctl get-property org.freedesktop.systemd1 /org/freedesktop/systemd1 org.freedesktop.systemd1.Manager RuntimeWatchdogUSec; systemctl set-property --runtime Manager RuntimeWatchdogSec=15s` — настоящая ли на этом systemd защита-прецедент раннера (`etc/sa02m-update-runner.sh:216`, `|| true`) (bullseye = v247; записываемые свойства watchdog у Manager появились в v250 — ожидаю молчаливый no-op, то есть холостую защиту, форма из `quality-gate-rigor.md`).
+7. `ls -la /var/log/journal/; journalctl --list-boots` — почему показана только одна загрузка.
 
-## D5 — Fix (atomic build steps; each RED on today's tree first)
+## D5 — Исправление (Fix; атомарные шаги сборки, каждый сначала RED на сегодняшнем дереве)
 
-Surface scope: **installer + device scripts** (`install.sh`, `scripts/lib.sh`, `scripts/0*.sh`,
-`scripts/offline-full-update.sh`, `scripts/dev/*`, `.ai-dev/quality/tools.json`); frontend and
-CGI untouched. Guarantee first: **a hard reset at any instant of an installer run leaves every
-live-path file either old or new (never empty), every consumer never newer than its dependency,
-and a re-run repairs — never preserves — a corrupt unit.**
+Охват поверхности: **установщик + скрипты устройства** (`install.sh`, `scripts/lib.sh`,
+`scripts/0*.sh`, `scripts/offline-full-update.sh`, `scripts/dev/*`,
+`.ai-dev/quality/tools.json`); фронтенд и CGI не трогаются. Сначала гарантия: **аппаратный
+сброс в любой момент прогона установщика оставляет каждый файл на живом пути либо старым,
+либо новым (никогда не пустым), каждый потребитель никогда не новее своей зависимости, а
+повторный прогон чинит — а не сохраняет — повреждённый юнит.**
 
-**A. Atomic live-path writes** — `lib.sh` `sa02m_install_atomic [-m MODE] [-o U] [-g G] SRC DST`:
-`install` to `DST.sa02m-tmp.$$` in the same directory, `sync -f`/`fsync` where available,
-`mv -f` over DST (rename-over ⇒ ext4 `auto_da_alloc` forces data allocation; old-or-new, never
-empty). Codemod (`scripts/dev/codemod-install-atomic.py`, re-runnable — Rule of 500) rewrites
-every `install -m … /etc/systemd/system/…` (25 sites) and the `/usr/local/{sbin,lib,libexec}/…`
-helpers to the helper; `sed -i 's/\r$//'` after-passes stay (they are rename-over already).
-RED test: `scripts/dev/test-install-atomic.sh` — (1) helper: DST exists with old content, SRC
-is a FIFO whose writer stops mid-body → DST still old, no `.sa02m-tmp` left after the trap;
-(2) static pin via `lib_check.sh`: no comment-stripped `install -m` line in `scripts/*.sh`
-targets `/etc/systemd/system/` — RED today (25 hits). Registry row `install-atomic`
-(build, `covers: scripts/**/*.sh, install.sh`), case in `comment-mutation-proof`.
-Commit: `fix(1.0.6.41): unit files land atomically, never as an empty file`.
+**A. Атомарная запись на живых путях (Atomic live-path writes)** — `lib.sh`
+`sa02m_install_atomic [-m MODE] [-o U] [-g G] SRC DST`: `install` в `DST.sa02m-tmp.$$` в том
+же каталоге, `sync -f`/`fsync`, где доступно, `mv -f` поверх DST (rename-over ⇒ ext4
+`auto_da_alloc` принудительно выделяет данные; старый-или-новый, никогда не пустой). Codemod
+(`scripts/dev/codemod-install-atomic.py`, перезапускаемый — Rule of 500) переписывает каждый
+`install -m … /etc/systemd/system/…` (25 мест) и хелперы `/usr/local/{sbin,lib,libexec}/…`
+на этот хелпер; последующие проходы `sed -i 's/\r$//'` остаются (они уже rename-over).
+RED-тест: `scripts/dev/test-install-atomic.sh` — (1) хелпер: DST существует со старым
+содержимым, SRC — FIFO, чей писатель останавливается посреди тела → DST всё ещё старый,
+после trap не осталось `.sa02m-tmp`; (2) статический пин через `lib_check.sh`: ни одна
+строка `install -m` в `scripts/*.sh` после удаления комментариев не целится в
+`/etc/systemd/system/` — сегодня RED (25 попаданий). Строка реестра `install-atomic`
+(build, `covers: scripts/**/*.sh, install.sh`), случай в `comment-mutation-proof`.
+Коммит: `fix(1.0.6.41): unit files land atomically, never as an empty file`.
 
-**B. Dependency before consumer + module-boundary sync.** `05-mqtt.sh`: move
-`sa02m_install_carel_pkg`/`sa02m_install_led_pkg` ABOVE the bridge-module loop (`:158`), so a
-tear leaves {new pkg, old bridge} (additive pkg — old bridge still imports). Correct the
-`:152-156` comment (the entry is NOT self-contained since 1.0.6.33 — it imports `bridge_led`).
-`install.sh`: `sync` after each module call (bounds a tear to one module; <1 s on eMMC).
-RED test: `scripts/dev/test-installer-order.sh` — comment-stripped line order in `05-mqtt.sh`
-and `04-flasher.sh`: first `sa02m_install_*_pkg` < first `install … bridge_*.py` /
-`rsync … $INSTALL_DIR` — RED today for 05 (166 > 160); plus `install.sh` carries a `sync`
-after every `bash "$SCRIPT_DIR/scripts/…"` line. Registry row `installer-order`; exempt
-marker per `quality-gate-rigor.md` (an order has no comment-out form) or a case on the `sync`.
-Commit: `fix(1.0.6.41): shared LED/Carel pkg lands before the bridge that imports it`.
+**B. Зависимость перед потребителем + sync на границе модуля (Dependency before consumer +
+module-boundary sync).** `05-mqtt.sh`: перенести `sa02m_install_carel_pkg`/
+`sa02m_install_led_pkg` ВЫШЕ цикла модулей моста (`:158`), чтобы обрыв оставлял {новый
+пакет, старый мост} (пакет аддитивный — старый мост по-прежнему импортируется). Исправить
+комментарий `:152-156` (запись НЕ самодостаточна начиная с 1.0.6.33 — она импортирует
+`bridge_led`). `install.sh`: `sync` после каждого вызова модуля (ограничивает обрыв одним
+модулем; <1 s на eMMC). RED-тест: `scripts/dev/test-installer-order.sh` — порядок строк
+после удаления комментариев в `05-mqtt.sh` и `04-flasher.sh`: первый
+`sa02m_install_*_pkg` < первого `install … bridge_*.py` / `rsync … $INSTALL_DIR` — сегодня
+RED для 05 (166 > 160); плюс `install.sh` несёт `sync` после каждой строки
+`bash "$SCRIPT_DIR/scripts/…"`. Строка реестра `installer-order`; маркер исключения по
+`quality-gate-rigor.md` (у порядка нет формы comment-out) или случай на `sync`.
+Коммит: `fix(1.0.6.41): shared LED/Carel pkg lands before the bridge that imports it`.
 
-**C. Corrupt unit ≠ operator decision (capture blind spot).** `lib.sh sa02m_svc_capture`: when
-`is-enabled` says `masked` but the fragment in an `/etc` unit dir is a **regular file of size
-0** (not a symlink) ⇒ state `broken` (systemd never masks a unit whose fragment lives in
-`/etc` — the comment at `:993-995` already relies on that). `_sa02m_svc_apply_app`: `broken` ⇒
-`log WARN "$u: файл юнита пуст (обрыв прошлой установки) — переустановлен"` and the
-first-install branch (`first` default). `_sa02m_svc_apply_infra`: same detection ⇒ unmask
-path. Test seam: `SA02M_UNIT_FILE_DIRS` (word-split, mirrors `SA02M_SYSV_RC_DIRS` `:680`).
-RED test: new cases in `scripts/dev/test-installer-svc-helpers.sh` — seed `masked inactive` +
-0-byte regular file in the seam dir → expect `en=broken`, apply `app on` ⇒ verbs
-`enable start`, `LAST_RESULT=started`; a /dev/null symlink still ⇒ `left-masked` (1d stays).
-Contract: `docs/contracts/installer-refresh-policy.md` state list (+`broken`).
-Commit: `fix(1.0.6.41): a 0-byte unit is broken, not operator-masked`.
+**C. Повреждённый юнит ≠ решение оператора (слепое пятно захвата состояния; Corrupt unit ≠
+operator decision).** `lib.sh sa02m_svc_capture`: когда `is-enabled` говорит `masked`, но
+фрагмент в каталоге юнитов `/etc` — **обычный файл размером 0** (не symlink) ⇒ состояние
+`broken` (systemd никогда не маскирует юнит, чей фрагмент лежит в `/etc` — комментарий в
+`:993-995` уже на это опирается). `_sa02m_svc_apply_app`: `broken` ⇒
+`log WARN "$u: файл юнита пуст (обрыв прошлой установки) — переустановлен"` и ветка первой
+установки (умолчание `first`). `_sa02m_svc_apply_infra`: то же обнаружение ⇒ путь unmask.
+Тестовый шов: `SA02M_UNIT_FILE_DIRS` (разбивается на слова, по образцу
+`SA02M_SYSV_RC_DIRS` `:680`). RED-тест: новые случаи в
+`scripts/dev/test-installer-svc-helpers.sh` — засеять `masked inactive` + обычный 0-байтовый
+файл в каталог шва → ожидается `en=broken`, применение `app on` ⇒ глаголы `enable start`,
+`LAST_RESULT=started`; symlink на /dev/null по-прежнему ⇒ `left-masked` (1d остаётся).
+Контракт: список состояний `docs/contracts/installer-refresh-policy.md` (+`broken`).
+Коммит: `fix(1.0.6.41): a 0-byte unit is broken, not operator-masked`.
 
-**D. Post-check honesty** — `offline-full-update.sh post_checks`: a core service whose
-`is-enabled` is `masked` (or whose `/etc` fragment is empty) is a FAIL row «юнит повреждён»
-even when `svc-before` says inactive (the re-run's PASS «состояние сохранено» hid the flasher
-outage). RED test: `scripts/dev/test-offline-update-postcheck.sh` with a `systemctl` shim
-(harness idiom of `test-installer-svc-helpers.sh`; `post_checks` extracted by sourcing with
-`MODE_STATUS` stubbed or via a `SA02M_OFU_SOURCE_ONLY=1` seam).
-Commit: `fix(1.0.6.41): offline post-check fails on a masked core unit`.
+**D. Честность пост-проверки (Post-check honesty)** — `offline-full-update.sh post_checks`:
+core-служба, чей `is-enabled` равен `masked` (или чей фрагмент в `/etc` пуст), — строка FAIL
+«юнит повреждён», даже когда `svc-before` говорит inactive (PASS повторного прогона
+«состояние сохранено» скрыл простой прошивальщика). RED-тест:
+`scripts/dev/test-offline-update-postcheck.sh` с шимом `systemctl` (идиома харнесса
+`test-installer-svc-helpers.sh`; `post_checks` извлекается через source с заглушкой
+`MODE_STATUS` или через шов `SA02M_OFU_SOURCE_ONLY=1`).
+Коммит: `fix(1.0.6.41): offline post-check fails on a masked core unit`.
 
-**E. Detached launch + non-tty runbook.** `offline-full-update.sh:371`:
-`nohup setsid env "${LAUNCH_ENV[@]}" bash install.sh </dev/null >"$LOG" 2>&1 &` (own session;
-stdin never a dead channel); dry-run line `:361` mirrors it. `docs/deployment.md` «Офлайн-
-вариант»: a paragraph for a non-tty transport (`sa02m_remote.py exec`, paramiko): launch the
-WRAPPER as `setsid nohup bash … --unattended --log /root/install-offline-<ver>.wrapper.log
-</dev/null >/dev/null 2>&1 &`, then `--status` — the form that worked at 22:48. RED test:
-static pin (comment-stripped) that the live launch line carries `setsid` and `</dev/null`;
-`--dry-run` output asserted equal to the pin (existing dry-run path, no root needed for the
-string check — the EUID guard is bypassed by running the parse under `EUID` shim or by pinning
-the source). Commit: `fix(1.0.6.41): offline update launches install.sh in its own session`.
+**E. Отсоединённый запуск + ранбук для не-tty (Detached launch + non-tty runbook).**
+`offline-full-update.sh:371`:
+`nohup setsid env "${LAUNCH_ENV[@]}" bash install.sh </dev/null >"$LOG" 2>&1 &` (своя сессия;
+stdin никогда не мёртвый канал); строка dry-run `:361` повторяет её. `docs/deployment.md`
+«Офлайн-вариант»: абзац для не-tty транспорта (`sa02m_remote.py exec`, paramiko): запускать
+ОБЁРТКУ как `setsid nohup bash … --unattended --log /root/install-offline-<ver>.wrapper.log
+</dev/null >/dev/null 2>&1 &`, затем `--status` — форма, которая сработала в 22:48.
+RED-тест: статический пин (после удаления комментариев), что живая строка запуска несёт
+`setsid` и `</dev/null`; вывод `--dry-run` сверяется с пином (существующий путь dry-run, для
+проверки строки root не нужен — проверка EUID обходится разбором под шимом `EUID` или
+пиннингом исходника). Коммит: `fix(1.0.6.41): offline update launches install.sh in its own session`.
 
-**F. Install lock (class-level; not this incident's trigger).** `install.sh`: after `lib.sh`,
-`sa02m_install_lock_hold` writes `/run/sa02m-imaging.lock` (the lock the userspace watchdog
-already honours, `etc/sa02m-userspace-watchdog.sh:32,92`; one home shared with
-`sa02m-update-runner.sh:212`) and an `EXIT` trap releases it; `01-system.sh` re-asserts nothing
-(the lock is a file — `daemon-reexec` does not clear it). The HW watchdog is the fork below.
-RED test: `scripts/dev/test-install-lock.sh` — run `install.sh` with `SA02M_ROOTFS_BUILD=1`
-against a scratch `IMAGING_LOCK` path (seam `SA02M_IMAGING_LOCK`) and a stub module that
-records whether the lock existed while it ran and after exit (RED: no lock today).
-Commit: `feat(1.0.6.41): installer holds the imaging lock for its run`.
+**F. Блокировка установки (Install lock; уровень класса, не триггер этого инцидента).**
+`install.sh`: после `lib.sh` `sa02m_install_lock_hold` пишет `/run/sa02m-imaging.lock`
+(блокировку, которую userspace watchdog уже уважает, `etc/sa02m-userspace-watchdog.sh:32,92`;
+один дом, общий с `sa02m-update-runner.sh:212`), и `EXIT` trap её снимает; `01-system.sh`
+ничего не утверждает повторно (блокировка — это файл, `daemon-reexec` её не сбрасывает). HW
+watchdog — развилка ниже. RED-тест: `scripts/dev/test-install-lock.sh` — запустить
+`install.sh` с `SA02M_ROOTFS_BUILD=1` против временного пути `IMAGING_LOCK` (шов
+`SA02M_IMAGING_LOCK`) и модуля-заглушки, который записывает, существовала ли блокировка во
+время его работы и после выхода (RED: сегодня блокировки нет).
+Коммит: `feat(1.0.6.41): installer holds the imaging lock for its run`.
 
-Out of scope (explicit): the HW-watchdog hold (fork), `update-www-only.sh`'s 38 `install -m`
-sites beyond units/helpers (follow-up backlog line), `net-watchdog` behaviour, and any change
-to the runner's own lock code (its hollow-guard question goes to the backlog if read 6 confirms).
+Вне охвата (явно): удержание HW watchdog (развилка), 38 мест `install -m` в
+`update-www-only.sh` помимо юнитов/хелперов (строка бэклога на потом), поведение
+`net-watchdog` и любое изменение собственного кода блокировки раннера (его вопрос о холостой
+защите уходит в бэклог, если чтение 6 это подтвердит).
 
-## D6 — Validate
+## D6 — Проверка (Validate)
 
-- Each step: RED observed on the pristine tree → GREEN after; the mutation recorded in the
-  commit body (`git-commits.md` Verification method). `node .ai-dev/quality/run.mjs build
-  --touched` green per commit; full suite + `review` at ship.
-- Real-layer verification scenario (primary integration layer: **bash over SSH on the board**):
-  on a bench board, `scripts/offline-full-update.sh --dry-run` prints the detached launch line;
-  then a full run on 1.135 (13/13 PASS, flasher active, bridge imports) — offered, not
-  automatic. A hard-reset drill (power-cut mid-run) is destructive and stays **descoped** —
-  the tear-shape guarantee is validated by the unit tests (A: FIFO writer, B: order pins).
-- Regression net: `installer-svc-helpers` (all existing cases stay green — 1d `masked` via
-  symlink unchanged), `installer-svc-policy-gate`, `comment-mutation-proof` coverage.
+- Каждый шаг: RED наблюдается на нетронутом дереве → GREEN после; мутация записывается в
+  тело коммита (`git-commits.md` Verification method). `node .ai-dev/quality/run.mjs build
+  --touched` зелёный на каждый коммит; полный набор + `review` при отгрузке.
+- Сценарий проверки на реальном слое (основной интеграционный слой: **bash по SSH на
+  плате**): на стендовой плате `scripts/offline-full-update.sh --dry-run` печатает строку
+  отсоединённого запуска; затем полный прогон на 1.135 (13/13 PASS, прошивальщик активен,
+  мост импортируется) — предлагается, не автоматически. Учения с аппаратным сбросом (обрыв
+  питания посреди прогона) разрушительны и остаются **вне охвата** — гарантия формы обрыва
+  проверяется модульными тестами (A: писатель FIFO, B: пины порядка).
+- Сеть регрессии: `installer-svc-helpers` (все существующие случаи остаются зелёными — 1d
+  `masked` через symlink не меняется), `installer-svc-policy-gate`, покрытие
+  `comment-mutation-proof`.
 
-## D7 — Prevent (durable homes)
+## D7 — Предотвращение (Prevent; долговременные дома)
 
-- `docs/agent-rules/web-code-rigor.md` §System scripts / installer floors — three lines: live-path
-  files are written via `sa02m_install_atomic` (old-or-new, never empty); a shared package
-  lands before its first consumer file; the installer holds the imaging lock for its run.
-- `docs/deployment.md` «Офлайн-вариант» — the non-tty launch paragraph (E).
-- `docs/contracts/installer-refresh-policy.md` — the `broken` capture state (C).
-- `docs/bugs/BUGLOG.md` — one entry in the file's format (date, branch, files, type, cause, fix).
-- `.ai-dev/backlog.md` — the HIGH entry → RESOLVED (1.0.6.41, steps A–F); two new lines:
-  (1) [MED] runner `RuntimeWatchdogSec=0` guard possibly hollow on bullseye (pending read 6);
-  (2) [LOW] `update-www-only.sh` non-unit `install -m` sites → atomic helper.
-- `CHANGELOG.md` 1.0.6.41 section (Russian, «Установщик»).
+- `docs/agent-rules/web-code-rigor.md` §System scripts / installer floors — три строки: файлы
+  на живых путях пишутся через `sa02m_install_atomic` (старый-или-новый, никогда не пустой);
+  общий пакет ставится раньше первого файла-потребителя; установщик держит блокировку
+  imaging на время прогона.
+- `docs/deployment.md` «Офлайн-вариант» — абзац о не-tty запуске (E).
+- `docs/contracts/installer-refresh-policy.md` — состояние захвата `broken` (C).
+- `docs/bugs/BUGLOG.md` — одна запись в формате файла (дата, ветка, файлы, тип, причина,
+  исправление).
+- `.ai-dev/backlog.md` — запись HIGH → RESOLVED (1.0.6.41, шаги A–F); две новые строки:
+  (1) [MED] защита раннера `RuntimeWatchdogSec=0`, возможно, холостая на bullseye (ждёт
+  чтения 6); (2) [LOW] места `install -m` в `update-www-only.sh`, не относящиеся к юнитам →
+  атомарный хелпер.
+- `CHANGELOG.md`, раздел 1.0.6.41 (по-русски, «Установщик»).
 
-## D8 — Close
+## D8 — Закрытие (Close)
 
-Land A–F + D7 on `1.0.6.41`. Do NOT delete this note when the PR opens: the 8D is still
-open (D4 re-judged, D5–D8 outstanding) and twelve tracked files cite it. It graduates to
-`docs/bugs/` at D8.
+Выложить A–F + D7 в `1.0.6.41`. НЕ удалять эту запись при открытии PR: 8D всё ещё открыт (D4
+пересмотрен, D5–D8 не завершены), и на неё ссылаются двенадцать отслеживаемых файлов. На
+шаге D8 она переносится в `docs/bugs/`.
 
-## Structural forks for the Operator (Orchestrator relays)
+## Структурные развилки для Оператора (Structural forks; передаёт Оркестратор)
 
-1. **HW watchdog during install** — Option 1: also hold `RuntimeWatchdogSec=0` for the run
-   (needs a mechanism that WORKS: read 6; fallback = runtime drop-in
-   `/run/systemd/system.conf.d/` + `daemon-reexec`, itself a PID-1 event); Option 2: leave it
-   armed, ship A–F (the tree survives a reset), decide after reads 1–7. **Recommend 2 now**;
-   revisit only if read 2 proves a watchdog reset or read 6 proves a real handle.
-2. **Codemod breadth (A)** — units + `/usr/local/*` helpers (recommended) vs. units only.
+1. **HW watchdog во время установки** — Вариант 1: на время прогона также держать
+   `RuntimeWatchdogSec=0` (нужен механизм, который РАБОТАЕТ: чтение 6; запасной путь —
+   runtime drop-in `/run/systemd/system.conf.d/` + `daemon-reexec`, что само по себе событие
+   PID 1); Вариант 2: оставить его взведённым, отгрузить A–F (дерево переживает сброс),
+   решать после чтений 1–7. **Рекомендую 2 сейчас**; пересматривать, только если чтение 2
+   докажет сброс от watchdog или чтение 6 докажет реальный рычаг.
+2. **Ширина codemod (A)** — юниты + хелперы `/usr/local/*` (рекомендуется) против только
+   юнитов.
 
-## Plan checklist (floor items not covered above)
+## Чек-лист плана (Plan checklist; пункты минимума, не покрытые выше)
 
-- Contracts touched: `installer-refresh-policy.md` (modified: `broken`), `led-mb2ws.md`,
-  `carel-ahu.md` (honoured: install order), `web-update.md` (read; runner untouched).
-- Behaviour: no web-user-visible change; device: flasher survives a torn run; bridge cannot
-  import ahead of its package; offline post-check no longer green over a masked core unit.
-- Security surface: none new (root-only installer; the lock file lives in `/run`, root-owned;
-  no untrusted input). Threat-model actor untouched.
-- Concurrency: the lock is a file; two concurrent installs are already refused by the wrapper
-  PID file (`:308`); the EXIT trap removes the lock only if this run created it.
-- Estimate: non-trivial logic (A, C), tests that can break (svc-helpers, mutation-proof
-  registration), one open design fork (HW watchdog) — **medium**: ~6 atomic commits, one
-  Builder day; codemod reviewable as a script.
-- Elicitation (pre-mortem): "shipped, 1.136 reset again next month — what still broke?" →
-  the tree survives (A/B), the flasher is repaired by the re-run (C/D); what would NOT: the
-  reset itself — hence reads 1–7 and fork 1 stay open rather than closed by prose.
-- Adversary probe: (i) `mv -f` over a unit while systemd holds it — safe (systemd re-reads at
-  `daemon-reload`); (ii) `sync` per module on a wedged eMMC blocks the installer — acceptable,
-  a hung install is visible; (iii) `broken` misfires on a legitimately empty drop-in — only
-  full fragments in `/etc/systemd/system/<unit>` are judged, never `.d/` drop-ins; (iv) reads
-  1–7 may all come back inconclusive — then the note records "hard reset, cause unresolved",
-  and A–F still stand on their own guarantee.
+- Затронутые контракты: `installer-refresh-policy.md` (изменён: `broken`), `led-mb2ws.md`,
+  `carel-ahu.md` (соблюдены: порядок установки), `web-update.md` (прочитан; раннер не
+  тронут).
+- Поведение: для веб-пользователя видимых изменений нет; устройство: прошивальщик переживает
+  оборванный прогон; мост не может импортироваться раньше своего пакета; офлайн
+  пост-проверка больше не зелёная поверх замаскированной core-службы.
+- Поверхность безопасности: новой нет (установщик только от root; файл блокировки живёт в
+  `/run`, принадлежит root; недоверенного ввода нет). Актор модели угроз не затронут.
+- Параллельность: блокировка — файл; два одновременных запуска установки уже отклоняются
+  PID-файлом обёртки (`:308`); EXIT trap снимает блокировку, только если её создал этот
+  прогон.
+- Оценка: нетривиальная логика (A, C), тесты, которые могут сломаться (svc-helpers,
+  регистрация в mutation-proof), одна открытая проектная развилка (HW watchdog) —
+  **средняя**: ~6 атомарных коммитов, один день Builder'а; codemod проверяется как скрипт.
+- Elicitation (pre-mortem): «отгрузили, через месяц 1.136 снова сбросился — что всё ещё
+  сломалось?» → дерево выживает (A/B), прошивальщик чинится повторным прогоном (C/D); что НЕ
+  выживет: сам сброс — поэтому чтения 1–7 и развилка 1 остаются открытыми, а не закрыты
+  словами.
+- Проверка «противником» (adversary probe): (i) `mv -f` поверх юнита, пока systemd его
+  держит, — безопасно (systemd перечитывает при `daemon-reload`); (ii) `sync` на каждый
+  модуль на зависшей eMMC блокирует установщик — приемлемо, зависшая установка видна;
+  (iii) `broken` ложно срабатывает на законно пустом drop-in — оцениваются только полные
+  фрагменты в `/etc/systemd/system/<unit>`, никогда `.d/` drop-in'ы; (iv) чтения 1–7 могут
+  все оказаться неубедительными — тогда запись фиксирует «hard reset, cause unresolved», а
+  A–F всё равно держатся на собственной гарантии.
 
-## D6 progress — evidence per step (Builder, 2026-09-09)
+## D6 progress — ход D6: улики по шагам (Builder, 2026-09-09)
 
-Host: Windows git-bash (the two environment normalisations of
-`.ai-dev/notes/quality-gate-environment.md` apply). `shellcheck` is **not
-installed here — skipped**, not passed; `bash -n` run on every touched script.
+Хост: Windows git-bash (действуют две нормализации окружения из
+`.ai-dev/notes/quality-gate-environment.md`). `shellcheck` **здесь не установлен — пропущен**,
+а не пройден; `bash -n` выполнен на каждом затронутом скрипте.
 
-**A — atomic live-path writes** (`scripts/lib.sh sa02m_atomic_install`, codemod, 131 sites).
-GREEN: `bash scripts/dev/test-install-atomic.sh` → `install-atomic: ALL OK`, incl.
+**A — атомарная запись на живых путях** (`scripts/lib.sh sa02m_atomic_install`, codemod,
+131 место).
+GREEN: `bash scripts/dev/test-install-atomic.sh` → `install-atomic: ALL OK`, включая
 `7b non-vacuity: the sweep sees 131 converted sites across 13 files (floor 100 / 10)`.
-RED by mutation (scratch copy of the tree, at the real 1.136 site): reverting
-`scripts/04-flasher.sh:87` to `install -m 0644 … /etc/systemd/system/sa02m-flasher.service` →
-`FAIL 7a codemod --check rc=1: scripts\04-flasher.sh:87: install -m 0644 …` plus
+RED мутацией (временная копия дерева, в реальном месте инцидента 1.136): откат
+`scripts/04-flasher.sh:87` к `install -m 0644 … /etc/systemd/system/sa02m-flasher.service` →
+`FAIL 7a codemod --check rc=1: scripts\04-flasher.sh:87: install -m 0644 …` плюс
 `codemod-install-atomic: 1 live-path install -m site(s) still raw`.
-RED on the helper itself: `SVC_HELPERS_LIB=<HEAD lib.sh>` →
+RED на самом хелпере: `SVC_HELPERS_LIB=<HEAD lib.sh>` →
 `FAIL … does not define sa02m_atomic_install() — the atomic helper is missing`.
-**Defect found and fixed while re-deriving this evidence:** case 7a read `rc=$?`
-off a `python3 … | tr` PIPELINE, so it took `tr`'s status and could NEVER go RED —
-the mutation above stayed GREEN until the harness was fixed to capture-then-transform
-(`quality-gate-rigor.md` shape (f)).
+**Дефект, найденный и исправленный при повторном выводе этих улик:** случай 7a читал
+`rc=$?` из КОНВЕЙЕРА `python3 … | tr`, поэтому брал статус `tr` и НИКОГДА не мог стать RED —
+мутация выше оставалась GREEN, пока харнесс не исправили на «сначала захватить, потом
+преобразовать» (форма (f) из `quality-gate-rigor.md`).
 
-**B — dependency before consumer + module-boundary `sync`.**
+**B — зависимость перед потребителем + `sync` на границе модуля.**
 GREEN: `bash scripts/dev/test-installer-order.sh` → `installer-order: ALL OK`
 (`1a LED pkg → bridge copy: dependency at line 161 precedes consumer at line 172`;
 `2a/2b 04-flasher pkg at 46/48 before rsync at 52`;
 `3a one bash line (l.146) inside sa02m_run_module (l.144), sync at l.147`;
 `3b 15 sa02m_run_module call lines (floor 12)`).
-RED by mutation on a scratch copy: putting the two `sa02m_install_*_pkg` calls back
-below the bridge loop (the 1.0.6.40 order) →
-`FAIL 1a … dependency at line 174 comes AFTER consumer at line 170` (and 1b).
-Replacing one `sa02m_run_module 04-flasher.sh` with the bare `bash "$SCRIPT_DIR/…"` →
+RED мутацией на временной копии: вернуть два вызова `sa02m_install_*_pkg` ниже цикла моста
+(порядок 1.0.6.40) →
+`FAIL 1a … dependency at line 174 comes AFTER consumer at line 170` (и 1b).
+Замена одного `sa02m_run_module 04-flasher.sh` голым `bash "$SCRIPT_DIR/…"` →
 `FAIL 3a install.sh runs a module outside sa02m_run_module (2 raw bash lines…)`.
 
-**C — a 0-byte fragment is `broken`, not operator-masked.**
+**C — 0-байтовый фрагмент — это `broken`, а не маска оператора.**
 GREEN: `bash scripts/dev/test-installer-svc-helpers.sh` → `installer-svc-helpers: ALL OK`,
-including the four new cases (`14a` capture + apply verbs `enable start`, `14b` a
-/dev/null symlink still `left-masked`, `14c` a non-empty masked unit stays masked,
-`14d` infra enable without unmask) with every pre-existing case unchanged.
+включая четыре новых случая (`14a` захват + глаголы применения `enable start`, `14b`
+symlink на /dev/null по-прежнему `left-masked`, `14c` непустой замаскированный юнит остаётся
+замаскированным, `14d` включение infra без unmask), при том что каждый ранее существовавший
+случай не изменился.
 `bash .ai-dev/quality/checks/installer-svc-policy-gate.sh` → `all checks passed`
-(incl. `(f) >=25 sa02m_svc_apply sites (41)`).
-RED by mutation on a scratch tree, both branches separately: removing the capture
-branch → `FAIL 14a capture: en='masked' (expected broken)` and
-`FAIL 14a broken app unit: verbs='' LAST_RESULT=left-masked`; reverting
-`_sa02m_svc_apply_infra` to the plain `unmask` →
+(включая `(f) >=25 sa02m_svc_apply sites (41)`).
+RED мутацией на временном дереве, обе ветви по отдельности: удаление ветви захвата →
+`FAIL 14a capture: en='masked' (expected broken)` и
+`FAIL 14a broken app unit: verbs='' LAST_RESULT=left-masked`; откат
+`_sa02m_svc_apply_infra` к простому `unmask` →
 `FAIL 14d infra broken fragment: verbs='unmask enable'`.
 
-**D — post-check honesty** (`scripts/offline-full-update.sh`; the harness is renamed
-to `scripts/dev/test-offline-update-wrapper.sh` because it now covers D and E).
-RED FIRST on the shipped wrapper, reproducing the 1.136 lie verbatim:
+**D — честность пост-проверки** (`scripts/offline-full-update.sh`; харнесс переименован в
+`scripts/dev/test-offline-update-wrapper.sh`, потому что теперь покрывает D и E).
+СНАЧАЛА RED на отгруженной обёртке, дословно воспроизводящий ложь 1.136:
 `FAIL 1 svc-masked expected a FAIL row naming the mask, got: PASS служба svc-masked … состояние сохранено`,
-same for the 0-byte fragment. GREEN after:
-`FAIL служба svc-masked  юнит замаскирован (inactive) — сам не поднимется` and
+то же для 0-байтового фрагмента. GREEN после:
+`FAIL служба svc-masked  юнит замаскирован (inactive) — сам не поднимется` и
 `FAIL служба svc-empty  файл юнита пуст (обрыв установки) — переустановите модулем`,
-while `3 svc-stopped: PASS «состояние сохранено»` (the refresh guarantee) and
-`4 svc-alive: PASS active` stay green.
+тогда как `3 svc-stopped: PASS «состояние сохранено»` (гарантия refresh) и
+`4 svc-alive: PASS active` остаются зелёными.
 
-**E — detached launch + runbook.**
+**E — отсоединённый запуск + ранбук.**
 GREEN: `6a live launch (l.411) … nohup setsid env "${LAUNCH_ENV[@]}" bash install.sh </dev/null > "$LOG" 2>&1 &`
-and `6b DRY-RUN line (l.401) mirrors the live launch`.
-RED on a scratch copy reverted to the 1.0.6.40 form: `FAIL 6a live launch lacks
-setsid and/or </dev/null` plus `FAIL 6b … advertises a form that is not run`.
-Comment-out mutation of the launch line → `FAIL 6a launch line: expected exactly one
+и `6b DRY-RUN line (l.401) mirrors the live launch`.
+RED на временной копии, откаченной к форме 1.0.6.40: `FAIL 6a live launch lacks
+setsid and/or </dev/null` плюс `FAIL 6b … advertises a form that is not run`.
+Мутация comment-out строки запуска → `FAIL 6a launch line: expected exactly one
 live … found 0`.
 
-**G — runtime-watchdog hold. The mechanism, verified as far as this host allows.**
-The real home of the value is **`etc/systemd/sa02m-watchdog.conf:48`**
-(`[Manager] RuntimeWatchdogSec=15s`, installed by `scripts/01-system.sh:564` into
-`/etc/systemd/system.conf.d/sa02m-watchdog.conf`) — the `:11` occurrence is that same
-file's header prose, so the value was never "only a comment".
-Mechanism: **`busctl set-property … org.freedesktop.systemd1.Manager
-RuntimeWatchdogUSec t <µs>`**, with `systemctl set-property --runtime Manager
-RuntimeWatchdogSec=<µs>us` as a second attempt, and **the property read back after
-every write** (`busctl get-property … RuntimeWatchdogUSec`), so the caller is told
-the value ACTUALLY in force. The bus write is an override and survives the modules'
-`daemon-reload`; `daemon-reexec` is deliberately NOT used (D4 names re-execing PID 1
-as a stall candidate).
-Honesty: **not executed on the board by this Builder** — no device access from here.
-What IS proven here is that a manager which accepts the write and changes nothing is
-REPORTED, never believed; the Orchestrator's read 6 on 1.136 remains the confirmation
-that the first ladder step really works there, and is the only open item of G.
+**G — удержание runtime watchdog. Механизм, проверенный настолько, насколько позволяет этот
+хост.**
+Настоящий дом значения — **`etc/systemd/sa02m-watchdog.conf:48`**
+(`[Manager] RuntimeWatchdogSec=15s`, ставится `scripts/01-system.sh:564` в
+`/etc/systemd/system.conf.d/sa02m-watchdog.conf`) — вхождение в `:11` — это прозаический
+заголовок того же файла, так что значение никогда не было «только комментарием».
+Механизм: **`busctl set-property … org.freedesktop.systemd1.Manager
+RuntimeWatchdogUSec t <µs>`**, с `systemctl set-property --runtime Manager
+RuntimeWatchdogSec=<µs>us` как второй попыткой, и **свойство читается обратно после каждой
+записи** (`busctl get-property … RuntimeWatchdogUSec`), так что вызывающему сообщается
+значение, ДЕЙСТВИТЕЛЬНО действующее. Запись по шине — это переопределение, и оно переживает
+`daemon-reload` модулей; `daemon-reexec` намеренно НЕ используется (D4 называет re-exec PID 1
+кандидатом на подвисание).
+Честность: **на плате этим Builder'ом не выполнялось** — доступа к устройству отсюда нет.
+Здесь ДОКАЗАНО, что менеджер, который принимает запись и ничего не меняет, СООБЩАЕТСЯ, а не
+принимается на веру; чтение 6 Оркестратора на 1.136 остаётся подтверждением того, что первая
+ступень лестницы действительно там работает, и это единственный открытый пункт G.
 GREEN: `bash scripts/dev/test-watchdog-hold.sh` → `watchdog-hold: ALL OK`
 (`4a rc=1 and the value ACTUALLY in force (15000000 µs) is what the caller is told`,
 `4b the systemctl fallback was tried before giving up`,
 `7a identical block in both homes (56 lines)`, `9a`/`9b` runner wiring).
-RED by mutation: dropping the two read-backs from `sa02m_runtime_watchdog_set` (the
-1.0.6.40 shape) → `FAIL 4a hollow manager: rc=0 printed='0' — a no-op write was
-reported as success`; commenting out the install.sh EXIT trap → `FAIL 8b`;
-re-introducing a hollow `set-property … RuntimeWatchdogSec=15s` in the runner →
-`FAIL 9a` (and `9b restore=0`); one byte of drift between the two copies of the
-shared block → `FAIL 7a` with the diff printed.
-**Second defect found by mutation:** the first cut of pin 9a banned only `=0` and
-`=${UPPER}`, so a re-introduced hardcoded `=15s` slipped through; the pin now allows
-exactly ONE live `set-property --runtime Manager` line in the runner — the helper's
-own read-back-checked one.
+RED мутацией: убрать два обратных чтения из `sa02m_runtime_watchdog_set` (форма 1.0.6.40) →
+`FAIL 4a hollow manager: rc=0 printed='0' — a no-op write was
+reported as success`; закомментировать EXIT trap в install.sh → `FAIL 8b`;
+вернуть холостой `set-property … RuntimeWatchdogSec=15s` в раннер →
+`FAIL 9a` (и `9b restore=0`); один байт расхождения между двумя копиями общего блока →
+`FAIL 7a` с напечатанным diff.
+**Второй дефект, найденный мутацией:** первая версия пина 9a запрещала только `=0` и
+`=${UPPER}`, так что вновь внесённый захардкоженный `=15s` проскакивал; теперь пин допускает
+ровно ОДНУ живую строку `set-property --runtime Manager` в раннере — собственную строку
+хелпера с проверкой обратным чтением.
 
-**Regression net after all of it:** `installer-svc-helpers` ALL OK ·
+**Сеть регрессии после всего этого:** `installer-svc-helpers` ALL OK ·
 `installer-svc-policy-gate` all checks passed · `update-conditional-restart` PASS ·
-`iface-dns-ensure` PASS · `update-deploy-skip` **SKIP**, reported as a skip (its own
-message: «sandbox filesystem cannot represent POSIX modes … run under WSL/Linux») —
-CI is authoritative for that row.
+`iface-dns-ensure` PASS · `update-deploy-skip` **SKIP**, сообщён как пропуск (его
+собственное сообщение: «sandbox filesystem cannot represent POSIX modes … run under
+WSL/Linux») — для этой строки авторитетен CI.
 
-**Not built (outside this Builder's task):** step **F** (install lock). Nothing in
-A–E/G depends on it; it stays open in D5.
+**Не сделано (вне задачи этого Builder'а):** шаг **F** (блокировка установки). Ничто в
+A–E/G от него не зависит; в D5 он остаётся открытым.
 
-## Handoff — the files this Builder must not touch (Orchestrator's to land)
+## Handoff — передача: файлы, которые этот Builder не должен трогать (их выкладывает Оркестратор)
 
-**1. `.ai-dev/quality/tools.json` — four new rows**, beat `build`:
+**1. `.ai-dev/quality/tools.json` — четыре новые строки**, beat `build`:
 
 | id | run | covers |
 |---|---|---|
@@ -468,24 +503,24 @@ A–E/G depends on it; it stays open in D5.
 | `offline-update-wrapper` | `bash scripts/dev/test-offline-update-wrapper.sh` | `scripts/offline-full-update.sh`, `scripts/dev/test-offline-update-wrapper.sh` |
 | `watchdog-hold` | `bash scripts/dev/test-watchdog-hold.sh` | `scripts/lib.sh`, `install.sh`, `etc/sa02m-update-runner.sh`, `etc/systemd/sa02m-watchdog.conf`, `scripts/dev/test-watchdog-hold.sh` |
 
-Each `checks` text must state what the harness really verifies (its header is the
-source): sandbox behaviour for `install-atomic`, `offline-update-wrapper` §1–5 and
-`watchdog-hold` §1–6; comment-stripped line pins for `installer-order`,
-`offline-update-wrapper` §6 and `watchdog-hold` §7–9. `installer-svc-helpers`'
-`covers` already includes `scripts/lib.sh`; only its `checks` text needs the new
-`broken` state named.
+Текст `checks` каждой строки должен говорить, что харнесс действительно проверяет (источник —
+его заголовок): поведение в песочнице для `install-atomic`, `offline-update-wrapper` §1–5 и
+`watchdog-hold` §1–6; пины строк после удаления комментариев для `installer-order`,
+`offline-update-wrapper` §6 и `watchdog-hold` §7–9. `covers` у `installer-svc-helpers` уже
+включает `scripts/lib.sh`; только в его тексте `checks` нужно назвать новое состояние
+`broken`.
 
-**2. `comment-mutation-proof` `CASES` — three rows carry pins and need a case:**
-- `installer-order`: comment out `sa02m_install_led_pkg "$BASE_DIR"` in
-  `scripts/05-mqtt.sh` → RED (`1a` dependency line not found).
-- `offline-update-wrapper`: comment out the `nohup setsid env …` launch line in
-  `scripts/offline-full-update.sh` → RED (`6a … found 0`) — **measured**.
-- `watchdog-hold`: comment out `trap sa02m_restore_runtime_watchdog EXIT` in
-  `install.sh` → RED (`8b`) — **measured**.
-`install-atomic` keeps the `comment-mutation-proof-exempt:` marker already in its
-header (its site rule is the codemod sweep plus a drive-to-failure, not a needle).
+**2. `CASES` в `comment-mutation-proof` — три строки несут пины и требуют случая:**
+- `installer-order`: закомментировать `sa02m_install_led_pkg "$BASE_DIR"` в
+  `scripts/05-mqtt.sh` → RED (`1a` строка зависимости не найдена).
+- `offline-update-wrapper`: закомментировать строку запуска `nohup setsid env …` в
+  `scripts/offline-full-update.sh` → RED (`6a … found 0`) — **измерено**.
+- `watchdog-hold`: закомментировать `trap sa02m_restore_runtime_watchdog EXIT` в
+  `install.sh` → RED (`8b`) — **измерено**.
+`install-atomic` сохраняет маркер `comment-mutation-proof-exempt:`, уже стоящий в его
+заголовке (его правило мест — проход codemod плюс доведение до отказа, а не needle).
 
-**3. `CHANGELOG.md`, section 1.0.6.41 «Установщик» (Russian):**
+**3. `CHANGELOG.md`, раздел 1.0.6.41 «Установщик» (по-русски):**
 - Файлы юнитов и helper-скриптов ставятся атомарно: аппаратный сброс посреди
   установки больше не оставляет пустой файл (systemd читал такой юнит как
   «замаскирован» — на стенде 1.136 так пропал прошивальщик).
@@ -504,12 +539,12 @@ header (its site rule is the codemod sweep plus a drive-to-failure, not a needle
 
 **4. `.ai-dev/backlog.md`:**
 - 2026-09-08 [HIGH] «Bench 1.136 reset in the middle of `install.sh --refresh`» →
-  **RESOLVED** (1.0.6.41, steps A–E + G; step F still open).
+  **RESOLVED** (1.0.6.41, шаги A–E + G; шаг F всё ещё открыт).
 - NEW [MED] «`etc/sa02m-factory-reset-runner.sh:41,45` still carries the hollow
   `systemctl set-property --runtime Manager RuntimeWatchdogSec=0/15s || true` guard
   the update runner just lost — port it to the shared block; `test-watchdog-hold.sh`
-  case 9 is the pattern.» *(found while building G; that file is outside the D5/D7
-  named set, so it was deliberately not edited here.)*
+  case 9 is the pattern.» *(найдено при сборке G; этот файл вне набора, названного в
+  D5/D7, поэтому здесь его намеренно не правили.)*
 - NEW [LOW] «`scripts/update-www-only.sh`: the non-unit, non-`/usr/local` `install -m`
   sites are still non-atomic — widen the codemod's `LIVE_PREFIXES` or record why not.»
 - NEW [LOW] «D5 step F (install lock) not built in this branch.»
@@ -517,18 +552,19 @@ header (its site rule is the codemod sweep plus a drive-to-failure, not a needle
   value is read back from the manager instead) — confirm no deployment recipe sets it;
   an in-tree grep found no other user.»
 
-## Progress note
+## Progress note — заметка о ходе работы
 
-- Goal: 8D for the 1.136 mid-install reset; A–E + G built on `fix/8d-installer`, D7 landed.
-- Done: D1–D4; D5 steps **A, B, C, D, E, G** built and each proven RED-by-mutation /
-  GREEN (evidence per step: «D6 progress» above); D7 homes written
+- Цель: 8D для сброса 1.136 посреди установки; A–E + G сделаны в `fix/8d-installer`, D7
+  выложен.
+- Сделано: D1–D4; шаги D5 **A, B, C, D, E, G** сделаны, и каждый доказан
+  RED-мутацией / GREEN (улики по шагам: «D6 progress» выше); дома D7 написаны
   (`web-code-rigor.md` §System scripts / installer floors, `docs/deployment.md`
   «Офлайн-вариант», `docs/contracts/installer-refresh-policy.md`, `docs/bugs/BUGLOG.md`).
-  Registry rows, mutation cases, CHANGELOG and backlog lines are in «Handoff» —
-  the Builder does not own those files.
-- Next: Orchestrator commits by the boundaries the Builder named, lands the Handoff
-  items, then a fresh Reviewer over the cumulative diff.
-- Open: (1) read 6 on 1.136 — does the `busctl` write really take on that manager
-  (G is safe either way: it reports what is in force, it does not assume);
-  (2) D5 step **F** (install lock) not built; (3) `svc-before` row for
-  `sa02m-modbus-mqtt` still sharpens the D4 "torn 1.0.6.40 copy" reading.
+  Строки реестра, случаи мутаций, строки CHANGELOG и бэклога — в «Handoff»; эти файлы
+  Builder'у не принадлежат.
+- Далее: Оркестратор коммитит по границам, которые назвал Builder, выкладывает пункты
+  Handoff, затем свежий Reviewer по суммарному diff.
+- Открыто: (1) чтение 6 на 1.136 — действительно ли запись через `busctl` срабатывает на том
+  менеджере (G безопасен в любом случае: он сообщает то, что действует, а не предполагает);
+  (2) шаг D5 **F** (блокировка установки) не сделан; (3) строка `svc-before` для
+  `sa02m-modbus-mqtt` всё ещё уточняет прочтение D4 «оборванная копия 1.0.6.40».

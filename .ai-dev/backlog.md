@@ -255,10 +255,6 @@ commit's diff of this file).
   corrected it. Full enumeration, including the sites that ARE the atomic staging
   write: the docstring of `scripts/dev/codemod-install-atomic.py`, the one home of «which
   install sites are live-path».
-- [OPEN] 2026-09-09 **[LOW] 8D step F (install lock) not built.** The installer does not
-  hold `/run/sa02m-imaging.lock` for its run, so the userspace watchdog is not told to
-  stand down. Class-level measure, not this incident's trigger (nothing in A–E/G
-  depends on it).
 - [OPEN] 2026-09-09 **[LOW] `scripts/update-www-only.sh`: the non-unit, non-`/usr/local`
   `install -m` sites are still non-atomic** — widen the codemod's `LIVE_PREFIXES` or
   record why those paths are not live-path.
@@ -492,19 +488,6 @@ commit's diff of this file).
   read the refreshed token but bypass the fetch wrapper, so an E_CSRF there still ends the upload
   with a plain error instead of the 1.0.6.53 refresh-once-retry-once path. Route them through the
   same reaction or document the difference in `docs/contracts/cloud-panel-proxy.md`.
-- [OPEN] 2026-09-23 **[LOW, honesty] `ui-layout` reports PASS when Playwright is absent.** In a
-  checkout without `scripts/dev/node_modules` (a fresh git worktree, 2026-09-23) the review beat
-  printed `ui-layout: skipped — playwright not installed` followed by `PASS  ui-layout`, while
-  `cloud-card-smoke` and `sh-modal-layout-smoke` in the same state correctly FAILED with «chromium/
-  playwright missing». quality-gate-rigor.md: a skipped row is reported as skipped, never as
-  passed. Fix: exit non-zero (or the runner's SKIP status, if it has one) when the driver cannot
-  run; add the case to `run.test.mjs`. Queued for R58 (gates and tools).
-  WIDENED by audit 2026-09-24 L1: the runner HAS no skip status, so every whole-row skip exits 0 and
-  prints PASS — `shellcheck.sh:15-17`, `pytest-suite.sh:32-37` (15 rows), `sh-model-schema.sh:52-53`,
-  `ui-layout.mjs:763-765`. Only shellcheck skips on the dev box today (run under WSL: rc 0, full set,
-  so no live defect). `ui-layout.mjs:114` still says «CI has no …» (stale since 1.0.6.49). Fix: a
-  runner SKIP status (exit-code convention, printed as SKIP, counted apart) + a `run.test.mjs` case;
-  1.0.6.54's `sudoers-visudo` row is the newest caller that needs it.
 - [OPEN] 2026-09-23 **[LOW] Known limit: the delivering GitHub OTA on a ≤1.0.6.51 board still
   freezes at 85 %.** `self_reexec_before_deploy` copies the INSTALLED runner and execs the copy,
   so the whole delivering apply (health gate included) runs under the OLD code and dies at
@@ -892,33 +875,9 @@ commit's diff of this file).
   `<hash>.csrf` sits next to it), or (b) record the exemption with its reason in
   `docs/decisions/selective-csrf-policy.md` and correct the threat-model line. Not the devices-api
   loopback entry (a different class).
-- [OPEN] 2026-09-24 **[LOW] The OTA destination allow-list lives in four places and one has drifted
-  (audit L2).** `etc/sa02m-update-runner.sh` twice (identical blocks), `scripts/pack-offline-update.py`,
-  `opt/sa02m-update/lib/validate_package.py`; the runner admits any `/opt/mplc4/…`, the other two a
-  closed two-name set. No parity row (`mplc-ota-deploy-contract.sh:54` pins one prefix). Fix: runner
-  decomposition seam (a) in the worklist entry (one Python module next to `validate_package.py`).
-- [OPEN] 2026-09-24 **[LOW] The journal-on-disk policy has no repo gate (audit L3).**
-  `etc/systemd/sa02m-journald.conf` `Storage=persistent` and `etc/default/armbian-ramlog`
-  `ENABLED=false` are checked only on a board (`verify-release-on-board.sh`); a comment-out stays green
-  in the repo. Fix: a static pin + a `comment-mutation-proof` case.
-- [OPEN] 2026-09-24 **[LOW] `docs/contracts/sh-model.md` reads as implemented (audit L5).** §0 says
-  the daemon, the UI and Alice «строятся против неё», but no producer or consumer exists in `opt www
-  etc scripts`; the shipped «Умный дом»/Alice build on `alice-mqtt-mapping.md`. Fix: a status line
-  (design contract, not implemented) so a review does not judge shipped code against it.
-- [OPEN] 2026-09-24 **[LOW] `.ai-dev/8d/bench-136-reset.md` parked since 2026-09-09 (audit L6).** Its
-  own header forbids parking; D5 step F and D8 are not done. Graduate it to `docs/bugs/` with its
-  citations re-pointed, or the Operator closes D5-F.
-- [OPEN] 2026-09-24 **[LOW] Contracts missing from their rows' `covers` (audit L7, the 09-16 L3 class
-  recurring).** `docs/contracts/web-update.md` is in none of the 14 runner rows' `covers` (e.g.
-  `update-recover-boot`, which it cites as the G2/G5 gate); `docs/contracts/cloud-panel-proxy.md` is
-  absent from `app-csrf-recovery`, `web-auth-behaviour`, `cgi-csrf-behaviour`. A contract edit then
-  re-runs nothing under `--touched`. Every contract still has ≥1 validating row.
 - [OPEN] 2026-09-24 **[LOW, advisory] CHANGELOG release prose is heavy (audit L8).** 1.0.6.52 is 176
   lines, .51 115, .53 92; the file is 6,128 lines. A release entry states user impact; the mechanism
   lives in the contract or the commit.
-- [OPEN] 2026-09-24 **[LOW, latent] The flasher uses `cgi.FieldStorage` (audit L9).**
-  `opt/sa02m-flasher/sa02m_flasher/service.py:191`; the `cgi` module is gone in Python 3.13, so
-  firmware upload breaks on a distro upgrade. Read the board's Python version first.
 
 - [OPEN] 2026-09-27 **[LOW] Modbus TCP follow-ups from the 1.0.6.56 review.** A3: the add-dialog TCP
   logic (`mqtt.js` connection selector, narrowing, ids, refusal toast) has no JS unit test — only headless
@@ -928,6 +887,18 @@ commit's diff of this file).
   `stand_devices.py` 750, `bridge_serial.py` 699 — decompose worklist.
 - [OPEN] 2026-09-27 **[LOW] No direct unit test of `ModbusSerial` bit parsing** (FC01/FC02 are covered only
   through the shared helper by the TCP round-trips since 1.0.6.56).
+
+- [OPEN] 2026-09-28 **[MED] Cause of the bench 1.136 resets is still unknown (power or an external
+  reset).** Closed parts of the 2026-09-09 8D are recorded in `docs/bugs/bench-136-reset.md` (D5 step F —
+  the install lock — shipped in 1.0.6.51). Standing rule: no further install on 1.136 without a serial
+  console attached; the next step is a console capture across one reset.
+- [OPEN] 2026-09-28 **[LOW] Quality follow-ups from 1.0.6.58.** (1) A CI strict mode: a SKIP should be a
+  FAIL where the environment is supposed to have the tool (e.g. an env var set in `web-quality.yml`).
+  (2) A gate requiring every row a contract cites to carry that contract in its `covers` — stops the audit
+  L7 class recurring. (3) Upgrade risk: the ai-dev installer ships its own template of
+  `.ai-dev/quality/run.mjs`; an upgrade that overwrites it would drop this project's runner fixes (the
+  SKIP verdict, the `--touched` union) — check `.ai-dev/procedures/upgrade.md` handling before the next
+  tooling bump.
 
 <!-- Whole-project audit 2026-08-28 at 1.0.6.23 (3 parallel auditors: contracts,
      security, docs). Suite was GREEN (build 47/47, review 6/6) and branch
