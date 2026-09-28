@@ -14,7 +14,7 @@ from dataclasses import dataclass, field
 from typing import List, Optional
 
 from . import constants as C
-from .fsutil import atomic_write
+from .fsutil import atomic_write, group_gid
 
 _INTERFACE_RE = re.compile(C.INTERFACE_RE)
 SECTION = "bridge"
@@ -90,9 +90,14 @@ def render(conf: BridgeConfig) -> str:
 
 
 def save(conf: BridgeConfig, path: Optional[str] = None) -> None:
-    """Validate, then replace the conf atomically (mode/owner preserved)."""
+    """Validate, then replace the conf atomically.
+
+    An existing regular conf keeps its mode/owner; otherwise the §13 default
+    (root:www-data 0660 — the group from group_gid()) applies.
+    """
     if not valid_interface(conf.interface):
         raise ValueError("invalid interface")
     if not valid_port(conf.port):
         raise ValueError("invalid port")
-    atomic_write(path or C.CONF_FILE, render(conf), mode=0o660, preserve=True)
+    atomic_write(path or C.CONF_FILE, render(conf), mode=0o660, gid=group_gid(),
+                 preserve=True)

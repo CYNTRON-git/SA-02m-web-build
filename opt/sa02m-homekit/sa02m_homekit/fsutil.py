@@ -17,6 +17,9 @@ from typing import Optional, Union
 
 from . import constants as C
 
+# Never carried over by `preserve` (see atomic_write).
+_SPECIAL_BITS = stat_module.S_ISUID | stat_module.S_ISGID | stat_module.S_ISVTX
+
 
 def group_gid(name: str = C.WEB_GROUP) -> Optional[int]:
     """gid of `name`, or None when the group does not exist (a dev host)."""
@@ -54,6 +57,11 @@ def atomic_write(
     `preserve=True` keeps an existing file's mode and owner (the conf is
     written by root AND by the www-data CGI — without this a root write would
     lock the web layer out, the reason Alice's `_atomic_write` does the same).
+    Only a regular, single-link file at the NAME is a source (lstat): the conf
+    dir is www-data-writable and root writes here, so a planted symlink or a
+    hard link to a foreign file must not lend its owner/mode to the new file;
+    setuid/setgid/sticky are never carried over. Anything else falls back to
+    `mode`/`gid`, as for a new file.
     `gid` sets the group of a NEW file (setup.json → www-data). `durable`
     fsyncs the file and the directory; /run files may skip it (tmpfs).
     """
@@ -62,14 +70,16 @@ def atomic_write(
     st = None
     if preserve:
         try:
-            st = os.stat(path)
+            st = os.lstat(path)
         except OSError:
+            st = None
+        if st is not None and not (stat_module.S_ISREG(st.st_mode) and st.st_nlink == 1):
             st = None
     fd, tmp = tempfile.mkstemp(prefix=C.TMP_PREFIX, suffix=".tmp", dir=directory)
     try:
         try:
             if st is not None:
-                os.fchmod(fd, stat_module.S_IMODE(st.st_mode))
+                os.fchmod(fd, stat_module.S_IMODE(st.st_mode) & ~_SPECIAL_BITS)
                 try:
                     os.fchown(fd, st.st_uid, st.st_gid)
                 except OSError:

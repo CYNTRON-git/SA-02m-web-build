@@ -182,6 +182,7 @@ no-absolute-api-paths|www/network_config/static/js/devices.js|"api/devices
 flasher-auth-header-strip|etc/nginx/network_config.conf|X-SA02M-Auth  "";
 homekit-trigger|usr/local/sbin/sa02m-homekit-web-trigger.sh|hk_write_disabled_status "$since"
 homekit-trigger|usr/local/sbin/sa02m-homekit-web-trigger.sh|rm -f -- "$VAR_DIR/state.json" 2>/dev/null || true
+homekit-wheelhouse|scripts/dev/build-homekit-wheelhouse.sh|is not an armv7l or pure-Python wheel
 homekit-cgi|www/network_config/cgi-bin/sa02m_homekit_api.cgi|TRIG_OUT=$(timeout 11 sudo -n /usr/local/sbin/sa02m-homekit-web-trigger.sh "$VERB" 2>/dev/null) || TRIG_RC=$?
 cgi-csrf-policy|www/network_config/cgi-bin/sa02m_homekit_api.cgi|web_csrf_validate
 alice-conf-homes|opt/sa02m-update/lib/validate_package.py|"/etc/sa02m-homekit/",

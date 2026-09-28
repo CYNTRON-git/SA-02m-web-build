@@ -128,9 +128,10 @@ install -d -m 0770 -o root -g www-data /etc/sa02m-homekit
 # O_NOFOLLOW (a planted name makes the create fail, never followed) and
 # re-asserts group/mode only on a regular, singly-linked file through an
 # O_NOFOLLOW fd; anything else is reported on stderr and left alone — the
-# scripts/06-alice.sh pattern. Pinned by the quality row `alice-conf-homes`
-# (section 11).
-python3 - "$BASE_DIR/etc/sa02m-homekit/sa02m-homekit.conf" /etc/sa02m-homekit sa02m-homekit.conf www-data <<'PY' \
+# scripts/06-alice.sh pattern. `-I`: root runs this from the operator's shell,
+# so neither its cwd nor an inherited PYTHONPATH may inject a module. Pinned by
+# the quality row `alice-conf-homes` (section 11).
+python3 -I - "$BASE_DIR/etc/sa02m-homekit/sa02m-homekit.conf" /etc/sa02m-homekit sa02m-homekit.conf www-data <<'PY' \
     || log WARN "[06c-homekit] конфиг /etc/sa02m-homekit/sa02m-homekit.conf не проверен (python3)"
 import grp, os, stat, sys
 src, conf_dir, name, group = sys.argv[1:5]
