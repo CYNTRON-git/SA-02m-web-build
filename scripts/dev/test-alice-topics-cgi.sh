@@ -19,6 +19,9 @@
 #   5. python hangs, SA02M_ALICE_TOPICS_TIMEOUT=1 -> fallback within the budget
 #   6. session check fails                     -> unauthorized, python NEVER runs
 #   7. the REAL interpreter + the real package (an empty live cache) -> one doc
+#   8. the same, with SA02M_HOMECONNECT_INVENTORY at a fixture -> one doc that
+#      carries the Home Connect appliance and its read-only controls, in the
+#      inventory AND the flat list (Phase 3 item A)
 # Non-vacuous: a missing CGI or interpreter, a stub that was never invoked, or a
 # body that is not exactly one JSON object FAILS. No root, no device, no nginx.
 #
@@ -147,9 +150,33 @@ body="$(
     cd "$BOX/cgi-bin" || exit 1
     env QUERY_STRING="format=inventory" SA02M_ALICE_ROOT="$HERE/opt/sa02m-alice" \
         SA02M_MQTT_LIVE_CACHE="$BOX/empty-cache" STUB_AUTH_RC=0 PYTHONIOENCODING=utf-8 \
+        SA02M_HOMECONNECT_INVENTORY="$BOX/no-such-inventory.json" \
         bash ./sa02m_alice_topics.cgi 2>/dev/null | tr -d '\r' | awk 'body{print; next} /^$/{body=1}'
 )"
 one_doc "(7) the real interpreter + package answer one object" "$body" '"ok" in d'
+
+# (8) a Home Connect inventory fixture: the appliance reaches the picker with
+# only its bindable, read-only controls, and the flat list carries the topic.
+cat > "$BOX/hc-inventory.json" <<'JSON'
+{"ts": 1, "appliances": [{"device_id": "hc-dishwasher-1", "name": "Посудомойка",
+  "type": "Dishwasher", "brand": "Bosch", "connected": true,
+  "controls": ["connected", "door_open", "operation_state", "running"]}]}
+JSON
+real_cgi() {
+    (
+        cd "$BOX/cgi-bin" || exit 1
+        env QUERY_STRING="$1" SA02M_ALICE_ROOT="$HERE/opt/sa02m-alice" \
+            SA02M_MQTT_LIVE_CACHE="$BOX/empty-cache" STUB_AUTH_RC=0 PYTHONIOENCODING=utf-8 \
+            SA02M_HOMECONNECT_INVENTORY="$BOX/hc-inventory.json" \
+            bash ./sa02m_alice_topics.cgi 2>/dev/null | tr -d '\r' | awk 'body{print; next} /^$/{body=1}'
+    )
+}
+body="$(real_cgi 'format=inventory')"
+one_doc "(8) Home Connect fixture -> the appliance with read-only bindable controls" "$body" \
+    '[ (c["tag"], c["rw"]) for dv in d["devices"] if dv["id"] == "hc-dishwasher-1" for g in ("other", "diag") for c in dv["channels"][g] ] == [("door_open", "r"), ("running", "r"), ("connected", "r")]'
+body="$(real_cgi '')"
+one_doc "(8) Home Connect fixture -> the flat list carries its topic, not the text control" "$body" \
+    '"/devices/hc-dishwasher-1/controls/door_open" in d["topics"] and "/devices/hc-dishwasher-1/controls/operation_state" not in d["topics"]'
 
 echo
 [ "$fails" -eq 0 ] && { echo "alice-topics-cgi: ALL OK"; exit 0; }

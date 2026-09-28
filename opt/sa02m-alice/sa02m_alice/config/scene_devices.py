@@ -25,11 +25,19 @@ Fail closed everywhere: a row whose id cannot carry a valid Alice id is NOT
 exposed rather than truncated (a truncated id could collide with another
 scene's), a missing/unreadable rules stack projects nothing, and the flag is
 read as `is True` so a hand-edited `"true"` string never exposes a scene.
+
+HomeKit (1.0.6.57, Phase 3 C) is the second reader, with its OWN flag home:
+the device document's top-level `homekit_scenes` list, never `alice_expose`
+(docs/contracts/homekit-bridge.md §2 isolation string). Its ids are
+`scene-hk-<sid>` — board-independent on purpose: the controller serial may be
+unreadable to the bridge's user and appears only after enrolment, and a
+board-keyed id changing under the bridge would retire the aid.
 """
 
 from __future__ import annotations
 
 import copy
+import json
 import logging
 import os
 import re
@@ -57,6 +65,10 @@ RULES_DEVICE_PREFIX = "sa02m-rules-"
 VIRTUAL_TOPIC_PREFIX = "/devices/" + RULES_DEVICE_PREFIX
 RUN_CONTROL = "run"
 SCENE_ID_PREFIX = "scene-"
+HOMEKIT_SCENE_ID_PREFIX = "scene-hk-"
+#: Skip reason for a ticked scene the store has disabled
+#: (docs/contracts/homekit-bridge.md §4 — the string is the contract's).
+HOMEKIT_SKIP_SCENE_DISABLED = "scene_disabled"
 BOARD_KEY_MAX = 24
 BOARD_KEY_FALLBACK = "sa02m"
 
@@ -114,6 +126,51 @@ def load_rules_doc(path: Optional[str] = None) -> Dict[str, Any]:
     except Exception as exc:  # a corrupt store must not take the catalogue down
         log.error("scenario store unreadable, no scenes exposed: %s", exc)
         return {}
+
+
+def _store_file_readable(target: str) -> bool:
+    """True when the store file is absent (a fresh or factory-reset board has
+    no scenes — the truth) or holds a JSON object; False when it exists but
+    cannot be opened, decoded or parsed, or its top level is not an object.
+
+    `sa02m_rules.store.load` cannot answer this: it maps every such file to
+    `empty_doc()` so the ENGINE keeps running (its contract, left alone). The
+    store writes by atomic rename, so this read and `load`'s see whole files."""
+    try:
+        with open(target, encoding="utf-8") as fh:
+            data = json.load(fh)
+    except FileNotFoundError:
+        return True
+    except (OSError, ValueError) as exc:  # EACCES, EISDIR, bad UTF-8, bad JSON
+        log.error("scenario store unreadable: %s", exc)
+        return False
+    if not isinstance(data, dict):
+        log.error("scenario store unreadable: top level is %s, not an object",
+                  type(data).__name__)
+        return False
+    return True
+
+
+def read_rules_doc(path: Optional[str] = None) -> Tuple[Dict[str, Any], bool]:
+    """(merged scenario view, readable) — the ONE place that decides whether
+    the scenario store was read. `readable` is False when there is no rules
+    stack, the file exists but is not a readable JSON object, or the store
+    raised — «не прочитал» must never look like «сцен нет» to a caller that
+    retires ids or prunes a list on it. An absent file reads as no scenes."""
+    store = rules_store()
+    if store is None:
+        return {}, False
+    target = path or rules_store_path()
+    if not target:
+        return {}, False
+    if not _store_file_readable(target):
+        return {}, False
+    try:
+        doc = store.load(target)
+    except Exception as exc:
+        log.error("scenario store unreadable: %s", exc)
+        return {}, False
+    return (doc if isinstance(doc, dict) else {}), isinstance(doc, dict)
 
 
 def sanitise_board_key(raw: Any) -> str:
@@ -238,12 +295,22 @@ def attach_exposed_scenes(doc: Dict[str, Any], profile: str) -> Dict[str, Any]:
     the caller's document (a test fixture, or what `load_devices` just
     returned) is never mutated and `save_devices` is never called.
 
-    Yandex profile only (F4): the cloud page already has scenarios
-    first-class, so a second tile there would duplicate its own list.
+    Yandex profile: the scenes marked «в Алису» (the cloud page already has
+    scenarios first-class, F4). HomeKit profile: the scenes ticked in the
+    document's `homekit_scenes` — never the Alice-exposed ones. Any other
+    profile: nothing.
     """
-    if not isinstance(doc, dict) or profile != C.PROFILE_YANDEX:
+    if not isinstance(doc, dict):
         return doc
-    rows = exposed_scene_devices(load_rules_doc(), doc.get("rooms"), board_key())
+    if profile == C.PROFILE_YANDEX:
+        rows = exposed_scene_devices(load_rules_doc(), doc.get("rooms"), board_key())
+    elif profile == C.PROFILE_HOMEKIT:
+        ticked = homekit_ticked(doc)
+        if not ticked:
+            return doc
+        rows, _skipped, _known = homekit_scene_projection(load_rules_doc(), doc.get("rooms"), ticked)
+    else:
+        return doc
     if not rows:
         return doc
     out = copy.deepcopy(doc)
@@ -259,7 +326,128 @@ def attach_exposed_scenes(doc: Dict[str, Any], profile: str) -> Dict[str, Any]:
     return out
 
 
-def web_scene_rows(devices_doc: Dict[str, Any]) -> List[Dict[str, Any]]:
+def homekit_scene_device_id(sid: Any) -> Optional[str]:
+    """`scene-hk-<sid>`, or None when it would not be a valid device id."""
+    if not isinstance(sid, str) or not models.id_ok(sid):
+        return None
+    did = HOMEKIT_SCENE_ID_PREFIX + sid
+    return did if models.id_ok(did) else None
+
+
+def homekit_ticked(devices_doc: Any) -> List[str]:
+    """The validated view of the document's `homekit_scenes`: valid ids only,
+    de-duplicated, capped — garbage is ignored, never an error (the writer,
+    `config/api.py`, validates strictly; this is the reader)."""
+    raw = devices_doc.get("homekit_scenes") if isinstance(devices_doc, dict) else None
+    if not isinstance(raw, list):
+        return []
+    out: List[str] = []
+    for sid in raw:
+        if isinstance(sid, str) and models.id_ok(sid) and sid not in out:
+            out.append(sid)
+        if len(out) >= models.HOMEKIT_SCENES_MAX:
+            break
+    return out
+
+
+def homekit_scene_projection(
+    rules_doc: Any, rooms: Optional[Iterable[Any]], ticked: Iterable[str]
+) -> Tuple[List[Dict[str, Any]], List[Dict[str, Any]], List[str]]:
+    """(catalogue rows, skipped, known ids) for the HomeKit profile.
+
+    Rows: ticked ∧ `type: scene` ∧ enabled — the Alice scene row's shape plus
+    `homekit_visible: true`. `alice_expose` is NOT read (isolation).
+    Skipped: ticked ∧ scene ∧ disabled → `scene_disabled`. Known ids: the
+    device id of EVERY scene row, ticked or not, enabled or not — the aid
+    store keeps those (an unticked or disabled scene is hidden, not deleted).
+    """
+    known_rooms = {
+        r["id"] for r in (rooms or [])
+        if isinstance(r, dict) and isinstance(r.get("id"), str)
+    }
+    want = set(ticked)
+    rows: List[Dict[str, Any]] = []
+    skipped: List[Dict[str, Any]] = []
+    known: List[str] = []
+    for row in _scenario_rows(rules_doc):
+        if not isinstance(row, dict) or row.get("type") != "scene":
+            continue
+        sid = row.get("id")
+        did = homekit_scene_device_id(sid)
+        if did is None:
+            if sid in want:
+                log.warning("scenario %r cannot carry a HomeKit device id — not exposed", sid)
+            continue
+        known.append(did)
+        if sid not in want:
+            continue
+        name = str(row.get("name") or sid)
+        if row.get("enabled") is False:
+            skipped.append({"device_id": did, "name": name, "item": None,
+                            "reason": HOMEKIT_SKIP_SCENE_DISABLED})
+            continue
+        dev: Dict[str, Any] = {
+            "id": did,
+            "scene_id": sid,
+            "name": name,
+            "type": SCENE_DEVICE_TYPE,
+            "homekit_visible": True,
+            "capabilities": [{
+                "type": "devices.capabilities.on_off",
+                "mqtt": scene_run_topic(sid),
+                "retrievable": False,
+                "reportable": False,
+                "parameters": {"split": True},
+            }],
+            "properties": [],
+        }
+        rid = _captured_room(row)
+        if rid in known_rooms:
+            dev["room_id"] = rid
+        rows.append(dev)
+    return rows, skipped, known
+
+
+def homekit_scene_state(devices_doc: Any) -> Tuple[List[Dict[str, Any]], List[str], bool]:
+    """(skipped, known ids, store readable) — what the bridge's aid retention
+    and skip list need beyond the attached rows (one store read)."""
+    rules_doc, ok = read_rules_doc()
+    rooms = devices_doc.get("rooms") if isinstance(devices_doc, dict) else None
+    _rows, skipped, known = homekit_scene_projection(rules_doc, rooms, homekit_ticked(devices_doc))
+    return skipped, known, ok
+
+
+def homekit_exposure_fingerprint(rules_doc: Any) -> Tuple[Tuple[Any, ...], ...]:
+    """What the HomeKit projection depends on in the STORE: every scene row's
+    (id, name, enabled, captured room) — ticking lives in the device document,
+    which the bridge's document watcher covers."""
+    return tuple(
+        (row.get("id"), row.get("name"), row.get("enabled") is not False,
+         _captured_room(row))
+        for row in _scenario_rows(rules_doc)
+        if isinstance(row, dict) and row.get("type") == "scene"
+    )
+
+
+def scene_catalog(rules_doc: Any) -> List[Dict[str, Any]]:
+    """Every `type: scene` row for the «Умный дом» card's «Сцены в HomeKit»
+    block: `[{scene_id, name, enabled}]`, capped at the store's own maximum."""
+    out: List[Dict[str, Any]] = []
+    for row in _scenario_rows(rules_doc):
+        if not isinstance(row, dict) or row.get("type") != "scene":
+            continue
+        sid = row.get("id")
+        if not isinstance(sid, str) or not models.id_ok(sid):
+            continue
+        out.append({"scene_id": sid, "name": str(row.get("name") or sid),
+                    "enabled": row.get("enabled") is not False})
+        if len(out) >= models.HOMEKIT_SCENES_MAX:
+            break
+    return out
+
+
+def web_scene_rows(devices_doc: Dict[str, Any],
+                   rules_doc: Optional[Dict[str, Any]] = None) -> List[Dict[str, Any]]:
     """The «Умный дом» card's read-only rows — the SAME projection the Alice
     catalogue is built from, so the page and the account cannot disagree.
 
@@ -271,7 +459,8 @@ def web_scene_rows(devices_doc: Dict[str, Any]) -> List[Dict[str, Any]]:
     return [
         {"id": row["id"], "scene_id": row["scene_id"], "name": row["name"],
          "room_id": row.get("room_id", ""), "enabled": True}
-        for row in exposed_scene_devices(load_rules_doc(), rooms, board_key())
+        for row in exposed_scene_devices(
+            load_rules_doc() if rules_doc is None else rules_doc, rooms, board_key())
     ]
 
 
