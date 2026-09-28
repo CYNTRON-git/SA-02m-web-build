@@ -158,6 +158,30 @@ ssh root@192.168.1.136 '
 останавливается; мост в этом случае ждёт с причиной `peer_package_outdated`
 (`docs/contracts/homekit-bridge.md` §1, §10).
 
+Перепроверка (2026-09-28, 1.135, сборка 9cf41b5d — пункт 1 передачи на
+стенд): PASS. Старый пакет Алисы, штатный путь `update-www-only.sh` +
+`06c-homekit.sh`: 06c нашёл 4 устаревших символа, обновил пакет через
+`06-alice.sh` и записал «пакеты Алисы и сценариев совместимы с мостом»; по
+кругу мост не падает.
+
+**Находка стенда: в продуктовом RT-ядре нет POSIX ACL (блокер).** Та же
+перепроверка: ядро `6.1.0-rc6-rt4` отвечает `[Errno 95] Operation not
+supported` на `os.getxattr(p, "system.posix_acl_access")` для
+`/etc/sa02m-homekit`, его конфига и `/etc/sa02m-alice/sa02m-alice-devices.conf`;
+в суперблоке по умолчанию `user_xattr acl`, значит, выключен
+`CONFIG_EXT4_FS_POSIX_ACL`, а не опция монтирования; пакета `acl` нет.
+`systemd-tmpfiles --create` со строками `a+` выходит с 0 молча, ни 06c, ни
+`ExecStartPre` этого не заметили, 06c записал «исключён из группы www-data» и
+OK. Итог: мост, выведенный из `www-data`, не читает ни свой конфиг, ни
+документ устройств (оба 660 `root:www-data`): «conf … exists but is not
+readable (Permission denied)», HomeKit после установки мёртв; клиент Home
+Connect так же не читает свой конфиг. Гейт `daemon-least-privilege` проверял
+строки ACL, а не их действие. Решение Оператора (2026-09-28): оставить демоны
+вне `www-data`, выдать чтение обычными группами и setgid-каталогами без ACL и
+закончить установку проверкой действия, которая падает громко. Как сделано —
+`docs/contracts/homekit-bridge.md` §13 и `docs/contracts/home-connect.md` §11;
+перепроверка на стенде — в `.ai-dev/notes/bench-handoff-homekit-homeconnect.md`.
+
 ## G2 — нагрузка 50 / 149 аксессуаров на плате
 
 **Статус: PASS по RSS, CPU и диску; pair-setup НЕ ИЗМЕРЕН** (iPhone — только

@@ -26,19 +26,21 @@ Hardware gates — procedures and the result table live in
 
 Done on 1.135 (2026-09-28, recorded there): G1, G2 (RSS/CPU), G3 on 1eth,
 G4 pairing + control on the same Wi-Fi; G6 criterion 1 = BSH cloud silent from
-an RU IP. Still owed:
+an RU IP; plain `06c-homekit.sh` on a board with an older Alice package
+refreshed it through `06-alice.sh`, no crash-loop (9cf41b5d). Still owed:
 
-- Re-deploy this branch with plain `06c-homekit.sh` on a board with an older
-  Alice package: expect the peer refresh or the one-line «Обновите пакет
-  Алисы» state, never a crash-loop.
 - Bulk «Показывать в HomeKit» on the card: tick, save, devices appear in Home.
-- Least privilege (never run on a board yet): after 06c/06d, neither
-  daemon is in www-data (`id -nG`), the ACLs and setgid `/run` are in place
-  (`getfacl`, recipe in `docs/deployment.md`), the HomeKit bridge still reads
-  its conf and the Alice device document, the Home Connect client reads its
-  conf only (a «Permission denied» on the Alice document for
-  `sa02m-homeconnect` is correct), and the cards show state (not «Нет
-  доступа к настройкам»).
+- Least privilege (the ACL grant failed on 1.135 — the RT kernel has no ext4
+  ACL; re-verify the group grant): `install.sh --refresh` on the board, then
+  06c/06d end with «доступ … подтверждён» and exit 0; neither daemon is in
+  www-data (`id -nG`: `sa02m-homekit sa02m-alice-devices`,
+  `sa02m-homeconnect`); `ls -l`/`stat` show conf dirs 2750
+  `www-data:<daemon>`, confs 640 `www-data:<daemon>`, the Alice device
+  document 640 `www-data:sa02m-alice-devices`, `/etc/sa02m-alice` 771;
+  `runuser -u sa02m-homekit -- test -r` its conf and the device document
+  succeeds, `/etc/sa02m_web.env` fails; `sa02m-daemon-access.sh check
+  homekit|homeconnect` exit 0 (recipe in `docs/deployment.md`); the cards
+  show state (not «Нет доступа к настройкам»), also after a card save.
 - G2 pair-setup time at 149 accessories; G3 on SA-02m-2 (eth1); G4 via a home
   hub and item 8 (reset); G6 criterion 2 (SingleKey ID from RU — Operator).
 

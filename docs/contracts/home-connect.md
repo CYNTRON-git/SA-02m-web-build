@@ -198,7 +198,7 @@ payload в каждый топик закрытого набора этого у
 | `daily_limit` | израсходованы все 1000 вызовов суток |
 | `stream_down` | поток событий лежит дольше 120 с; все приборы `"r"` |
 | `status_stale` | живое состояние старше 90 с (выводит диспетчер) |
-| `conf_unreadable` | при `missing_deps`: конфиг есть, но демон не может его прочитать (пропал ACL чтения, §11) — не «выключен»: выход 0, при старте или на ходу, retained-топики приборов не удаляются (приборы `"r"`); отсутствующий конфиг по-прежнему значит «выключен»; карточка: «Нет доступа к настройкам» |
+| `conf_unreadable` | при `missing_deps`: конфиг есть, но демон не может его прочитать (сломаны владелец, группа или режим, §11) — не «выключен»: выход 0, при старте или на ходу, retained-топики приборов не удаляются (приборы `"r"`); отсутствующий конфиг по-прежнему значит «выключен»; карточка: «Нет доступа к настройкам» |
 
 **`status.json`** (0644; никогда токен, никогда коды входа, никогда имена
 приборов — только счётчики). Ключи (`status.STATUS_KEYS`):
@@ -427,8 +427,8 @@ vendor_preset` (bool), `appliances, appliances_connected, appliance_list`
 | `…/status.json` | 0644 | CGI | демон |
 | `…/link.json` | 0640, группа `www-data` | CGI | демон |
 | `…/inventory.json` | 0640, группа `www-data` | CGI | демон |
-| `/etc/sa02m-homeconnect/` | `root:www-data` 0770; ACL `user:sa02m-homeconnect:--x`, `default:user:sa02m-homeconnect:r--` | — | CGI (атомарная запись требует права на каталог) |
-| `…/sa02m-homeconnect.conf` — `[account] enabled, client_id, vendor_client_id, host, link_requested_at` + `[control] mode = off`; не секрет | `root:www-data` 0660; ACL `user:sa02m-homeconnect:r--` (у каждого нового файла — из умолчания каталога) | демон (ACL), CGI, хелпер | CGI, root |
+| `/etc/sa02m-homeconnect/` | `www-data:sa02m-homeconnect` 2750 (setgid: файл, созданный здесь, получает группу клиента) | демон (вход, список) | CGI (владелец; атомарная запись требует права на каталог) |
+| `…/sa02m-homeconnect.conf` — `[account] enabled, client_id, vendor_client_id, host, link_requested_at` + `[control] mode = off`; не секрет | `www-data:sa02m-homeconnect` 0640 | демон (группа, только чтение), CGI, хелпер | CGI (атомарно), root (сохраняя владельца) |
 | `/opt/sa02m-homeconnect/` | `root:root`, `go=rX` | демон, CGI | установщик, OTA |
 
 Каждая запись пакета (`fsutil.atomic_write`) идёт относительно дескриптора
@@ -443,13 +443,19 @@ vendor_preset` (bool), `appliances, appliances_connected, appliance_list`
 Юнит (`etc/systemd/system/sa02m-homeconnect.service`): `User=sa02m-homeconnect` (системный, без оболочки и дома),
 **без группы `www-data`** (ни в юните, ни в `/etc/group`: она читает пароль
 панели и все веб-конфиги) — файлы 0640 для CGI получают группу от setgid-каталога
-`/run/sa02m-homeconnect`, конфиг читается по ACL; у каталога это ACL по
-умолчанию, так что атомарная запись конфига его не теряет; юнит переприменяет
-tmpfiles-конф перед каждым стартом (`ExecStartPre=-+/usr/bin/systemd-tmpfiles
---create …`), установщик исключает из `www-data` учётную запись, созданную
-раньше; гейт `daemon-least-privilege` (проверяет строки, а не их действие:
-файл, созданный 0600 без последующего `chmod`, получает `mask::---`, и ACL на
-чтение у него не действует — стендовый пункт, `docs/deployment.md`).
+`/run/sa02m-homeconnect`; конфиг клиент читает через свою группу, **без ACL**
+(в продуктовом RT-ядре POSIX ACL нет, стенд 1.135, 2026-09-28): каталог
+конфига принадлежит `www-data` с setgid-группой клиента, так что конфиг,
+сохранённый CGI атомарно, всегда получает группу клиента, а клиент его только
+читает. Проверка — действием: `usr/local/sbin/sa02m-daemon-access.sh apply
+homeconnect` восстанавливает владельца, группу и режим и пробует чтение от
+имени клиента (`setpriv`), а заодно — что пароль панели и документ устройств
+Алисы ему не читаются; это последний шаг `scripts/06d-homeconnect.sh`
+(провал — русская строка, выход 1) и `ExecStartPre=-+` юнита перед каждым
+стартом (провал — в журнале, демон показывает `conf_unreadable`); установщик
+исключает из `www-data` учётную запись, созданную раньше; гейты
+`daemon-least-privilege` (строки) и `daemon-access-effect` (действие) — один
+дом правила — `docs/contracts/homekit-bridge.md` §13.
 `ProtectSystem=strict`,
 `ReadWritePaths=/var/lib/sa02m-homeconnect /run/sa02m-homeconnect`,
 `NoNewPrivileges`, `RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX`,
@@ -558,7 +564,8 @@ sa02m_homeconnect`, `Environment=PYTHONPATH=/opt/sa02m-homeconnect`. `www-data`
 | `test_token_sinks.py` (в составе `py-unit-homeconnect`) | идентификаторы `access_token`/`refresh_token` есть только в `oauth.py` и `token_store.py`, `device_code` — только в `oauth.py` (allow-list, не список запрещённых мест); обход не пуст, обе «законные» точки реально содержат идентификаторы | действует (отдельной статической строки `homeconnect-token-sinks` нет: allow-list держит этот тест) |
 | `test_contract_tables.py` (в составе `py-unit-homeconnect`) | таблица §4, состояния, причины и ключи `status.json` §6, действия и коды ошибок диспетчера §9, глаголы §10 совпадают с кодом как множества; пустая или пропавшая таблица — провал | действует |
 | `homeconnect-trigger` (`scripts/dev/test-homeconnect-trigger.sh`) | хелпер §10: четыре глагола и ничего больше, каждый `systemctl` под `timeout` (измерено шимом), `unlink` удаляет ровно `tokens.json` + `.hc-*.tmp` + `link.json` и только после полной остановки (`active`/`deactivating` — отказ), `budget.json`/`appliances.json` остаются, симлинк каталога — отказ, `restart` читает `enabled` только в `[account]`, блокировка `busy`, истинность `enabled` совпадает с `config.load()` | действует |
-| `daemon-least-privilege` (`.ai-dev/quality/checks/daemon-least-privilege.sh`) | §11: в юните нет `SupplementaryGroups=` и `www-data`, `scripts/06d-homeconnect.sh` не добавляет учётную запись ни в одну группу и исключает её из `www-data` при обновлении, `/run/sa02m-homeconnect` — 2750 `:www-data`, ACL конфига в tmpfiles-конфе, юнит переприменяет его перед стартом. RED на дереве до исправления (2026-09-28) | действует (сборка) |
+| `daemon-least-privilege` (`.ai-dev/quality/checks/daemon-least-privilege.sh`) | §11, строки: в юните нет `SupplementaryGroups=` и `www-data`, `scripts/06d-homeconnect.sh` не добавляет учётные записи в группы и исключает клиента из `www-data` при обновлении, `/run/sa02m-homeconnect` — 2750 `:www-data`, каталог конфига — 2750 `www-data:sa02m-homeconnect`, ни одной строки ACL, установщик заканчивается проверкой действия, юнит запускает её перед стартом. RED 2026-09-28 на дереве с `www-data` и на ACL-дереве 9cf41b5 | действует (сборка) |
+| `daemon-access-effect` (`scripts/dev/test-daemon-access.sh`) | §11, действие на настоящих файлах от не-root uid: новая раскладка проходит, 660 `root:www-data` — провал с именем конфига, `apply` лечит, сохранение CGI от `www-data` оставляет конфиг читаемым клиенту; чужой файл под именем конфига не передаётся `www-data` (I), жёсткая ссылка и FIFO — отказ (J), чтение клиентом документа устройств Алисы — провал (K), новый конфиг от `www-data` получает группу клиента и 0640 (L) | действует (сборка) |
 | `homeconnect-cgi` (`scripts/dev/test-homeconnect-cgi.sh`) | CGI §9: сессия до всего, CSRF на каждом POST, тело ≤ 16 КиБ, `GET` ничего не толкает, `sudo` получает ровно четыре закреплённых глагола, отказ/зависание хелпера — фиксированный enum, сбой диспетчера — `homeconnect_api_failed`, коды CGI = таблица «Код CGI», настоящий диспетчер не отдаёт ни токена, ни `device_code` | действует |
 | `homeconnect-card-smoke` (`scripts/dev/homeconnect-card-smoke.mjs`, review, Chromium) | карточка: каждое состояние §6 и причина — по-русски, код входа и QR только в `awaiting_user` (QR сверяется с эталонной матрицей), ссылка только https на доменах BSH, имена приборов как текст, кнопки заблокированы во время действия, подтверждение отвязки, ≤ 560 px | действует |
 | `py-unit-alice` (`test_inventory_homeconnect.py`, `test_models.py`), `alice-topics-cgi` (случай 8) | потребитель §6: пикер читает `inventory.json` ограниченно и с проверкой (размер, число приборов, грамматика id, закрытый список контролов), привязка `on_off` к `hc-` — только чтение, прочие умения отвергаются; копии `MAX_APPLIANCES`, имён `MAPPING` и `VALUE_HEARTBEAT_S` < `STATUS_STALE_S` сверены с пакетом текстом | действует (сборка) |
