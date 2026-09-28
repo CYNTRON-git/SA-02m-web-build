@@ -156,8 +156,13 @@ done
 chmod +x "$BIN"/*
 PATH="$BIN:$PATH"
 
-ntfs3g_present() { printf '#!/bin/bash\nexit 0\n' > "$BIN/mount.ntfs-3g"; chmod +x "$BIN/mount.ntfs-3g"; }
-ntfs3g_absent()  { rm -f "$BIN/mount.ntfs-3g"; }
+# «mount.ntfs-3g absent» removes the shim AND hides the name from `command -v`
+# inside the run (run_mount): removing the shim alone let the lookup fall through
+# to the host's PATH, so on a host with ntfs-3g installed case 8 saw the binary
+# and went RED on correct code. The shim removal stays so a copy that dropped the
+# guard still lands its `mount -t ntfs-3g` on the recording mount shim.
+ntfs3g_present() { printf '#!/bin/bash\nexit 0\n' > "$BIN/mount.ntfs-3g"; chmod +x "$BIN/mount.ntfs-3g"; NTFS3G_HIDDEN=0; }
+ntfs3g_absent()  { rm -f "$BIN/mount.ntfs-3g"; NTFS3G_HIDDEN=1; }
 
 # ── harness helpers ────────────────────────────────────────────────────────
 load_src() {   # $1 = conf body ("" = no conf file at all)
@@ -180,7 +185,14 @@ reset_case() { # $1 = device basename, $2 = TYPE (usb|sdcard)
     ntfs3g_present
 }
 
-run_mount() { OUT=$(do_mount 2>&1); RC=$?; }
+run_mount() {
+    OUT=$(
+        if [ "${NTFS3G_HIDDEN:-0}" = 1 ]; then
+            command() { if [ "${1:-}" = -v ] && [ "${2:-}" = mount.ntfs-3g ]; then return 1; fi; builtin command "$@"; }
+        fi
+        do_mount 2>&1
+    ); RC=$?
+}
 mkfs_ran()  { [ -s "$T/mkfs.log" ]; }
 mounted_as() { grep -q -- "-t $1 " "$T/mount.log" 2>/dev/null; }
 

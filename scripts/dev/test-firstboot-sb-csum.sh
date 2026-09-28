@@ -38,8 +38,9 @@
 #      timeout / sync / blockdev / parted / resize2fs: freeze-verify-OK; the
 #      one retry (BAD then OK); BAD twice -> ERROR + marker + rc 1 while DONE
 #      is STILL set (the boot must not be delayed again); a missing fsfreeze
-#      still verifies; a failed `-f` still issues `-u`; nothing writes the log
-#      between -f and -u (a tee onto a frozen root would hang the boot); the
+#      still verifies and attempts no freeze; a failed `-f` still issues
+#      `-u`; nothing writes the log between -f and -u (a tee onto a frozen
+#      root would hang the boot); the
 #      resize path freezes AFTER resize2fs and BEFORE DONE; and (1.0.6.48)
 #      the durable verdict: after OK / BAD twice / BAD-then-OK the result file
 #      holds exactly ONE line `<ISO time> <OK|BAD> stored=… computed=…
@@ -53,14 +54,75 @@
 #      re-run path clears it too (6e — the only path where nothing else
 #      would consume it; 6f shows the live paths overwrite it anyway).
 #
+# Host-safety (2026-09-27 .. 2026-09-28): layers 3-6 EXECUTE the copy as whoever
+# runs the suite — root on a dev container or a CI runner — and the command under
+# test is `fsfreeze -f /`. Case 5e once played «fsfreeze missing» by moving the
+# shim away: the lookup fell through to the host's /usr/sbin/fsfreeze, the
+# timeout shim exec'd it by name, the host root froze, and the next write to $T
+# hung in D state — the harness hung its own container. Two layers now stand
+# between the copy and a host binary. NEITHER is a complete boundary; read what
+# each does and, just as important, what it does NOT reach:
+#
+#  1. A pre-execution TRIPWIRE, not a proof. BEFORE anything runs, the retargeted
+#     copy is comment-stripped (WHOLE-LINE only, so a path hidden after an
+#     in-string ` #` stays visible) and refused if it contains:
+#       - an absolute-path token outside the sandbox and the allowed contexts —
+#         the lexical scan (see the scan block), now with `:`/`-`/`=`/`+`/`?`/`\`
+#         and `,` as word boundaries so `PATH=$PATH:/x`, `${V:-/x}`, `\/x` are
+#         seen; OR
+#       - a `..` component (walks out of even a sandbox-looking prefix), a
+#         relative `../` path, a `~`/`~user` expansion (HOME is inherited); OR
+#       - a form that reaches a host binary WITHOUT naming a path — `command -p`
+#         (default PATH, not the sandbox), `env -i`/`env VAR=`/`exec -c`, awk
+#         `system(` and python `os.system`/`subprocess`/`popen`, or disabling the
+#         not-found recorder (`unset BASH_ENV` / touching command_not_found_handle).
+#     Any hit ⇒ NOTHING is executed, layers 3-6 skipped, the run FAILS. The scan
+#     has a non-vacuity floor (line count + a 9-class probe + the abs known-bad
+#     probe). It is LEXICAL: a path or a program ASSEMBLED at run time (string
+#     pieces, printf, $VAR) is invisible to it — that residual is layer 2's job.
+#
+#  2. A runtime SANDBOX. Layers 3-6 (and the extraction floor) run with
+#     PATH = $T/bin ONLY — the shims plus wrappers for 15 allow-listed benign
+#     tools read off the shipped script — cwd $T/run, BASH_ENV = $T/cnf.sh. So:
+#       - any other bare name (systemctl, reboot, …) is command-not-found,
+#         recorded by command_not_found_handle and FAILS;
+#       - `command -p` is overridden in cnf.sh to refuse the `-p` flag;
+#       - the awk wrapper refuses a program TEXT calling system() and the python3
+#         wrapper refuses a program that shells out (mawk has no --sandbox, so
+#         this arg scan is the interception); both record to exec-guard.seen ⇒ FAIL;
+#       - each shimmed name must resolve to its shim before every run (else
+#         refused + FAIL, shims_intact); the timeout shim execs only a $T/bin
+#         target (else exit 125 + FAIL); 5e hides fsfreeze from `command -v`
+#         inside the sourced copy and keeps the shim in place.
+#     RESIDUAL layer 2 cannot fully close, stated so the next sweep does not
+#     re-derive it: `command -p` reaching a getconf-reconstructed default PATH,
+#     and python `os.system`/`subprocess` invoking `/bin/sh` by its absolute
+#     path, are not preventable by PATH alone — the arg-scan wrappers and the
+#     static refusal above are the only nets, and a program assembled at run time
+#     escapes both. The real host-independent floor (dropping to an unprivileged
+#     uid) was the reviewer's alternative; the Operator chose to harden the
+#     scanner instead (2026-09-28), so these residuals are accepted, not closed.
+# Measured 2026-09-28, logging canary first in the caller's PATH, as root AND as
+# uid 65534 (setpriv, on a world-readable copy): clean copy ALL OK 41, canary
+# empty (both uids). All eight measured bypasses — `PATH=$PATH:/canary`,
+# `${V:-/canary/reboot}`, `: "x #y"; /canary/reboot`, `\/canary/reboot`,
+# `/etc/systemd/../../..canary/reboot`, `../..canary/reboot`, `~/../..canary/reboot`,
+# `command -p hostname` — plus the three previously confined-but-unrecorded ones
+# (awk `system("reboot")`, python `os.system("reboot")`, `unset BASH_ENV;
+# command_not_found_handle(){…}; reboot`) ⇒ FAIL before execution, canary empty,
+# both uids. comment-mutation cases 167/168/173 still RED (2a+floor / 2j… / 6e),
+# canary empty, both uids.
+#
 # Why the durable layer exists: nothing not fsync'd survives a cut on this
 # root (commit=600 + journal_data_writeback) — bench evidence and the operator
 # reading: docs/bugs/BUGLOG.md 2026-09-16 (12:40, 16:40), docs/deployment.md §12.
 #
 # Non-vacuous: a missing/empty script copy, a fixture that is not exactly
 # 4096 bytes, an extraction that lost a function, a retargeted copy that still
-# names a real /etc /var /lib /dev /usr path (fail-closed: it is never run),
-# or a pin matching no live line FAILS.
+# names any absolute path outside the allowed contexts (fail-closed: nothing is
+# run), an absolute-path scan that sees fewer lines than the copy or stops
+# reporting its known-bad probe, an allow-listed tool missing on the host, or a
+# pin matching no live line FAILS.
 #
 # Drive-to-failure (recipe): ROOTFS_EXPAND_SRC=<copy> runs layers 2-4 against
 # any copy of the script (layer 1 always compares the two SHIPPED copies, so a
@@ -195,18 +257,149 @@ else
     bad "2k the failed-unfreeze branch must be an 'echo … >&2' and not a log() call — a tee onto a possibly frozen root blocks the boot"
 fi
 
-# ── Extraction: the shipped functions without the dispatcher ────────────────
-sed '/^case "\${1:-start}" in/,$d' "$SRC" > "$T/lib.sh"
-for fn in sb_csum_of_block primary_sb_checksum force_primary_sb_rewrite ensure_primary_sb_checksum log sync_files write_result; do
-    bash -c "source '$T/lib.sh'; declare -F $fn >/dev/null" 2>/dev/null \
-        || { echo "FAIL  extraction lost ${fn}() — the sourced copy defines nothing to test (non-vacuity)"; exit 1; }
-done
+# ── Retarget into the sandbox, then refuse ANY absolute path (fail-closed) ──
+# Layers 3-6 EXECUTE this copy, as whoever runs the suite (root on a dev
+# container or CI runner). Every state path is sed-retargeted into $T; the
+# retargeted copy is then comment-stripped (WHOLE-LINE only) and, together with
+# the construct refusals just above (`..`/`~`/`command -p`/env/exec/awk system()/
+# python shell-out/BASH_ENV), scanned for EVERY absolute-path token — a `/` that
+# starts a word at a boundary, command position or not, quoted or not
+# (abs-path-tokens.awk below). The boundary set includes `:`/`-`/`=`/`+`/`?`/`\`
+# and `,` so `PATH=$PATH:/x`, `${V:-/x}` and `\/x` are seen. The only tokens
+# allowed through are, by exact context: the sandbox ($T), `/dev/null` as a
+# redirect target or as the mask link `ln -sfn /dev/null …` / its `= "/dev/null"`
+# readlink compare, the bare `/` of `fsfreeze -f|-u /` (both land on the fsfreeze
+# shim) and of `df -h /`, and the two regex tokens of the parted-output awk
+# program (`/^\/dev\//`, `/s$/`). Anything else — `/opt/x`, `/usr/local/sbin/x`,
+# a bare `rm -rf /` — and NOTHING is executed. Arithmetic `$((…))` is blanked
+# first (its `/` is a division). Not seen by this LEXICAL scan: a path ASSEMBLED
+# at run time (pieces, printf escapes) — bare names are the sandbox PATH's job,
+# an assembled shell-out is the awk/python wrappers' best-effort job (both below).
+DONE_F="$T/var/lib/sa02m-rootfs-expand.done"
+SLOG="$T/var/log/sa02m-rootfs-expand.log"
+sed -e "s#/var/log/sa02m-rootfs-expand.log#$SLOG#" \
+    -e "s#/var/lib/sa02m-rootfs-expand#$T/var/lib/sa02m-rootfs-expand#g" \
+    -e "s#/etc/systemd#$T/etc/systemd#g" \
+    -e "s#/lib/systemd#$T/lib/systemd#g" \
+    -e "s#:-/dev/mmcblk2p2}#:-$T/dev/p2}#" \
+    -e "s#:-/dev/mmcblk2}#:-$T/dev/disk}#" \
+    -e 's#\[ -b "\$ROOT_PART" \] && \[ -b "\$ROOT_DISK" \]#[ -e "$ROOT_PART" ] \&\& [ -e "$ROOT_DISK" ]#' \
+    "$SRC" > "$T/start.sh"
+cat > "$T/abs-path-tokens.awk" <<'AWK'
+# "LINE: TOKEN" for every absolute-path token not allowed by context: a `/`
+# that starts a word (line start, blank, shell metacharacter or quote before it).
+{
+    s = $0
+    while (match(s, /(^|[ \t;|&<>(){}=`"'!:+?,\\-])\/[^ \t;|&<>(){}`"',:]*/)) {
+        t = substr(s, RSTART, RLENGTH); b = ""
+        if (substr(t, 1, 1) != "/") { b = substr(t, 1, 1); t = substr(t, 2) }
+        s = substr(s, RSTART + RLENGTH)
+        if (t == "/dev/null" && b == ">") continue
+        if (t == "/^\\/dev\\//" && b == "\047") continue
+        if (t == "/s$/" && b == "(") continue
+        print NR ": " t
+    }
+}
+AWK
+# WHOLE-LINE comment stripping only (not the ` #`-trailing form): a path written
+# after an in-string ` #` — `: "a #b"; /x` — must stay visible to the scan. The
+# inline form is fail-CLOSED for a presence pin but fail-OPEN for this absence
+# scan (review round 4, B1 mutant 3). The shipped script's only `..`/`~` sit in
+# whole-line comments, so blanking those is safe.
+scan_text=$(stripped_text "$T/start.sh")
+# Non-vacuous: comments are blanked, not deleted, so the scanned text keeps
+# every line of the copy; an empty or short capture scans nothing — FAIL.
+[ -n "$scan_text" ] && [ "$(printf '%s\n' "$scan_text" | wc -l)" -eq "$(wc -l < "$T/start.sh")" ] \
+    || { echo "FAIL  host-safety: the comment-stripped copy is empty or lost lines — the absolute-path scan would see nothing; nothing executed"; exit 1; }
+
+# ── Extra host-safety refusals the lexical token scan alone cannot make ──────
+# The abs-path token scan below is a lexical tripwire for a literal absolute
+# path at a word boundary. bash can reach a host binary in ways that scan does
+# not see, each MEASURED to hit a logging canary on the round-3 harness (review
+# round 4, .ai-dev/reviews/side-findings-fixes-4llog3_review.md): a `..` walk
+# out of the sandbox prefix or a relative `../` path; a `~`/`~user` expansion
+# (HOME is inherited); and forms that reach a host binary WITHOUT naming a path
+# — `command -p` (default PATH, not the sandbox), `env -i`/`env VAR=`/`exec -c`,
+# awk `system()` and python `os.system`/`subprocess`/`popen` (a confined child
+# that shells out to /bin/sh directly), and disabling the not-found recorder
+# (`unset BASH_ENV` / touching `command_not_found_handle`). Refuse them here, on
+# the comment-stripped copy, BEFORE anything runs. None is a false positive on
+# the shipped script (it uses `command -v`, never `-p`, and has no `..`/`~`/env/
+# exec/system outside whole-line comments). RESIDUAL, stated plainly: a path or
+# a program ASSEMBLED at run time (string pieces, printf, $VAR) is invisible to
+# ANY static scan — the sandbox PATH + the awk/python wrappers below are its
+# only, best-effort, net; `command -p` reaching a getconf-reconstructed PATH or
+# a direct `/bin/sh` is not something bash can fully prevent.
+host_safety_refusals() {  # stdin=text; one reason line per detected class
+    local txt; txt=$(cat)
+    printf '%s\n' "$txt" | grep -qE '/\.\.|\.\./'                                                 && echo ".. path traversal (walks out of any prefix, incl. the sandbox)"
+    printf '%s\n' "$txt" | grep -qE '(^|[[:space:]=;|&(])~'                                        && echo "~ / ~user expansion (HOME is inherited)"
+    printf '%s\n' "$txt" | grep -qE '(^|[^[:alnum:]_])command[[:space:]]+-[A-Za-z]*p'              && echo "command -p (searches the default PATH, not the sandbox)"
+    printf '%s\n' "$txt" | grep -qE '(^|[^[:alnum:]_])env[[:space:]]+(-|[A-Za-z_][A-Za-z0-9_]*=)'  && echo "env -flag/VAR= (resets PATH or execs a name)"
+    printf '%s\n' "$txt" | grep -qE '(^|[^[:alnum:]_])exec[[:space:]]+-'                           && echo "exec -flag (-c clears env; -a/-l pick a name)"
+    printf '%s\n' "$txt" | grep -qE '(^|[^[:alnum:]_])unset[[:space:]]+([A-Za-z_]+[[:space:]]+)*BASH_ENV' && echo "unset BASH_ENV (would drop the not-found recorder)"
+    printf '%s\n' "$txt" | grep -qF 'command_not_found_handle'                                     && echo "command_not_found_handle referenced (would blind the recorder)"
+    printf '%s\n' "$txt" | grep -qE 'system[[:space:]]*\('                                         && echo "awk system() (a confined child that shells out)"
+    printf '%s\n' "$txt" | grep -qE 'os\.system|subprocess|os\.popen|(^|[^A-Za-z])popen[[:space:]]*\(' && echo "python os.system/subprocess/popen (reaches /bin/sh directly)"
+}
+# Non-vacuity of the construct scan itself: a probe carrying one of each class
+# must trip every arm; if a check stops matching (a dialect change, a typo) the
+# count drops and we FAIL rather than run a copy the scan silently ignored.
+probe_txt='  /a/../b
+  ~/x
+  command -p hostname
+  env -i sh
+  exec -c sh
+  unset BASH_ENV
+  command_not_found_handle() { :; }
+  awk "BEGIN{system(\"x\")}"
+  python3 -c "import os; os.system(1)"'
+n_probe=$(printf '%s\n' "$probe_txt" | host_safety_refusals | wc -l)
+[ "$n_probe" -ge 9 ] || { echo "FAIL  host-safety: the construct scan tripped only $n_probe/9 probe classes — an arm stopped matching; nothing executed"; exit 1; }
+refusals=$(printf '%s\n' "$scan_text" | host_safety_refusals)
+if [ -n "$refusals" ]; then
+    echo "FAIL  host-safety: the retargeted copy of $SRC uses a host-reaching construct the sandbox cannot bound — NOTHING executed (layers 3-6 skipped): $(printf '%s' "$refusals" | tr '\n' ';')"
+    exit 1
+fi
+
+abs_tokens=$(printf '%s\n' "$scan_text" | sed -E \
+        -e "s#$T#@T@#g" \
+        -e 's#\$\(\([^()]*\)\)#@ARITH@#g' \
+        -e 's#fsfreeze -([fu]) /([[:space:];"]|$)#fsfreeze -\1 @ROOT@\2#g' \
+        -e 's#df -h /([[:space:]|]|$)#df -h @ROOT@\1#g' \
+        -e 's#ln -sfn /dev/null #ln -sfn @DEVNULL@ #g' \
+        -e 's#= "/dev/null"#= "@DEVNULL@"#g' \
+    | awk -f "$T/abs-path-tokens.awk")
+if [ -n "$abs_tokens" ]; then
+    echo "FAIL  host-safety: the retargeted copy of $SRC names absolute path(s) outside the sandbox and the allowed contexts — NOTHING executed (layers 3-6 skipped): $(printf '%s' "$abs_tokens" | tr '\n' ';')"
+    exit 1
+fi
+# Non-vacuity of the scan itself: a known-bad line must be reported.
+printf 'x() {\n    /opt/x/bin/y -f /\n    rm -rf /\n}\n' > "$T/scan-probe.sh"
+probe=$(awk -f "$T/abs-path-tokens.awk" "$T/scan-probe.sh" | tr '\n' ';')
+[ "$probe" = "2: /opt/x/bin/y;2: /;3: /;" ] \
+    || { echo "FAIL  host-safety: the absolute-path scan no longer reports a known-bad probe (got '$probe') — nothing executed"; exit 1; }
+sed '/^case "\${1:-start}" in/,$d' "$T/start.sh" > "$T/lib.sh"
 
 # ── Shims ───────────────────────────────────────────────────────────────────
 mkdir -p "$T/bin" "$T/dev" "$T/var/log" "$T/var/lib" "$T/etc/systemd/system/multi-user.target.wants" "$T/lib/systemd/system"
 CALLS="$T/calls"
 : > "$CALLS"
-printf '#!/bin/bash\nexec "%s" "$@"\n' "$PY" > "$T/bin/python3"
+# python3 wrapper: refuse a -c program (or any arg) that shells out. A run-time
+# ASSEMBLED string is not seen (residual); os.system/subprocess reach /bin/sh
+# by an absolute path, so PATH alone cannot stop them — this arg scan is the net.
+cat > "$T/bin/python3" <<SHIM
+#!/bin/bash
+T="$T"; PY="$PY"
+SHIM
+cat >> "$T/bin/python3" <<'SHIM'
+for a in "$@"; do case "$a" in
+    *os.system*|*subprocess*|*os.popen*|*"popen("*)
+        printf 'python3 %s\n' "$*" >> "$T/exec-guard.seen"
+        echo "py-guard: os.system/subprocess/popen refused" >&2; exit 99 ;;
+esac; done
+exec "$PY" "$@"
+SHIM
 # dd: ignores its arguments (records them), emits the fixture named by the
 # N-th line of $T/dd.seq for the N-th call (last line repeats).
 cat > "$T/bin/dd" <<SHIM
@@ -241,14 +434,27 @@ esac
 exit 0
 SHIM
 # timeout: records the bound and runs the command (the real one would too;
-# the shim proves the bound is passed, not that the shim can kill).
+# the shim proves the bound is passed, not that the shim can kill). It runs
+# ONLY a target that resolves inside $T/bin — defence in depth under the
+# sandbox PATH: the command under it is `fsfreeze -f /`, and a lookup that
+# reached the host's util-linux binary would freeze the root of the machine
+# running the suite (as root). A refused target is exit 125 + stderr + FAIL.
 cat > "$T/bin/timeout" <<SHIM
 #!/bin/bash
 T="$T"
 SHIM
 cat >> "$T/bin/timeout" <<'SHIM'
-printf 'timeout %s\n' "$*" >> "$T/calls"
-shift; exec "$@"
+argv="$*"; shift
+tgt=$(command -v -- "${1:-}" 2>/dev/null)
+case "$tgt" in
+    "$T/bin/"*) ;;
+    *) printf 'timeout-shim: REFUSED %s -> %s (not a shim in %s/bin; would run a host binary)\n' "${1:-}" "${tgt:-<not found>}" "$T" >&2
+       printf 'timeout-refused %s\n' "$argv" >> "$T/calls"
+       printf '%s\n' "$argv" >> "$T/timeout-refused.seen"   # survives reset_shims
+       exit 125 ;;
+esac
+printf 'timeout %s\n' "$argv" >> "$T/calls"
+shift; exec "$tgt" "$@"
 SHIM
 for s in partprobe udevadm resize2fs; do
     printf '#!/bin/bash\nprintf "%s %%s\\n" "$*" >> "%s"\nexit 0\n' "$s" "$CALLS" > "$T/bin/$s"
@@ -284,8 +490,59 @@ printf 'parted %s\n' "$*" >> "$T/calls"
 case "$*" in *print*) printf 'BYT;\n/dev/mmcblk2:15269888s:sd/mmc:512:512:msdos::;\n' ;; esac
 exit 0
 SHIM
+# Allow-listed host tools: the ONLY other names on the sandbox PATH. Derived
+# by reading the shipped script (date tee mv readlink rm mkdir ln awk touch
+# dirname df tail) plus what the shims above use (cat sed wc). Each is a wrapper
+# exec'ing the host tool by its resolved absolute path.
+ALLOW_TOOLS="awk cat date df dirname ln mkdir mv readlink rm sed tail tee touch wc"
+for tool in $ALLOW_TOOLS; do
+    tp=$(command -v "$tool" 2>/dev/null)
+    case "$tp" in /*|[A-Za-z]:/*) ;; *) echo "FAIL  allow-listed tool '$tool' not found on the host PATH ('$tp') — nothing executed"; exit 1 ;; esac
+    printf '#!/bin/bash\nexec %q "$@"\n' "$tp" > "$T/bin/$tool"
+done
+# awk wrapper: mawk (this host) has no `--sandbox`, so intercept the one builtin
+# that shells out — a program TEXT calling system() is refused and recorded. A
+# program ASSEMBLED at run time inside awk is not seen (residual, same class as
+# the static miss the construct scan lists).
+AWK_BIN=$(command -v awk)
+cat > "$T/bin/awk" <<SHIM
+#!/bin/bash
+T="$T"
+SHIM
+cat >> "$T/bin/awk" <<'SHIM'
+for a in "$@"; do case "$a" in
+    *"system("*|*"system ("*)
+        printf 'awk %s\n' "$*" >> "$T/exec-guard.seen"
+        echo "awk-guard: system() refused" >&2; exit 99 ;;
+esac; done
+SHIM
+printf 'exec %q "$@"\n' "$AWK_BIN" >> "$T/bin/awk"
 chmod +x "$T/bin"/*
-export PATH="$T/bin:$PATH"
+# Any other bare name the copy (or a shim) runs is "command not found" on the
+# sandbox PATH; BASH_ENV installs a handler in every bash started there that
+# RECORDS the name — the summary FAILS on it, even when the run's own output
+# was discarded.
+cat > "$T/cnf.sh" <<SHIM
+T="$T"
+SHIM
+cat >> "$T/cnf.sh" <<'SHIM'
+command_not_found_handle() { printf "%s\n" "$*" >> "$T/cnf.log"; echo "host-safety: $1: not on the sandbox PATH" >&2; return 127; }
+# Neutralise `command -p` at run time: it would search the default PATH
+# (/bin:/usr/bin), not the sandbox. Best-effort — bash cannot stop a
+# getconf-reconstructed PATH or a direct /bin/sh; those are the stated residual.
+command() {
+    local a
+    for a in "$@"; do case "$a" in --) break ;; -*p*) echo "host-safety: command -p refused" >&2; return 127 ;; esac; done
+    builtin command "$@"
+}
+SHIM
+mkdir -p "$T/run"
+# Every execution of shipped code: PATH = $T/bin ONLY, cwd = $T/run.
+run_sandboxed() { ( cd "$T/run" && PATH="$T/bin" BASH_ENV="$T/cnf.sh" "$BASH" "$@" ); }
+for fn in sb_csum_of_block primary_sb_checksum force_primary_sb_rewrite ensure_primary_sb_checksum log sync_files write_result; do
+    run_sandboxed -c "source '$T/lib.sh'; declare -F $fn >/dev/null" 2>/dev/null \
+        || { echo "FAIL  extraction lost ${fn}() — the sourced copy defines nothing to test (non-vacuity)"; exit 1; }
+done
 
 reset_shims() {  # $@ = dd sequence (fixture paths)
     : > "$CALLS"; rm -f "$T/dd.n" "$T/frozen-logsize" "$T/done-before-freeze" "$T/wrote-while-frozen" "$T/log" \
@@ -305,8 +562,30 @@ has_file() { if [ -e "$1" ]; then echo yes; else echo no; fi; }
 log_flat() { tr '\n' '|' < "$1" 2>/dev/null; }
 # Run a snippet inside the sourced copy with the state paths pointed at the
 # sandbox; stdin passes through.
+# Precondition, checked before EVERY run of shipped code: each shimmed name
+# (fsfreeze -f /, parted resizepart, resize2fs, dd, …) must resolve to its shim
+# on the sandbox PATH. With PATH = $T/bin alone a missing shim can no longer
+# reach the host (it is command-not-found), but the case would test nothing —
+# so the run is REFUSED and FAILS instead. The refusal is recorded in a file,
+# not printed: run_fn is often called inside $(…) or with output discarded, where
+# a message or a `fails` increment would be lost; the summary below counts it.
+SHIM_NAMES="fsfreeze timeout dd sync blockdev parted resize2fs partprobe udevadm python3"
+HOST_SAFETY="$T/host-safety.log"
+shims_intact() {
+    local s p
+    for s in $SHIM_NAMES; do
+        p=$(PATH="$T/bin" command -v -- "$s" 2>/dev/null)
+        if [ "$p" != "$T/bin/$s" ] || [ ! -x "$p" ]; then
+            printf "host-safety: '%s' resolves to '%s', not %s — run REFUSED (the case would test nothing)\n" \
+                "$s" "${p:-<not found>}" "$T/bin/$s" >> "$HOST_SAFETY"
+            return 1
+        fi
+    done
+}
+shims_intact || { echo "FAIL  $(cat "$HOST_SAFETY") — nothing run"; exit 1; }
 run_fn() {  # $1 = shell snippet
-    bash -c "source '$T/lib.sh'; LOG='$T/log'; DONE='$T/var/lib/sa02m-rootfs-expand.done'; CSUM_BAD='$T/var/lib/sa02m-rootfs-expand.csum-bad'; RESULT='$T/var/lib/sa02m-rootfs-expand.result'; ROOT_PART=/dev/sa02m-fake-p2; $1"
+    shims_intact || return 97
+    run_sandboxed -c "source '$T/lib.sh'; LOG='$T/log'; DONE='$T/var/lib/sa02m-rootfs-expand.done'; CSUM_BAD='$T/var/lib/sa02m-rootfs-expand.csum-bad'; RESULT='$T/var/lib/sa02m-rootfs-expand.result'; ROOT_PART=/dev/sa02m-fake-p2; $1"
 }
 RES="$T/var/lib/sa02m-rootfs-expand.result"
 # The verdict line: ISO time with offset, the verifier's own word and sums, the attempt count.
@@ -421,15 +700,20 @@ run_fn ensure_primary_sb_checksum >/dev/null 2>&1; rc=$?
     && ok "5d a stale marker is cleared on OK (re-run is idempotent)" \
     || bad "5d rc=$rc marker still present=$(has_file "$MARK")"
 
+# «fsfreeze not found» is played by hiding the name from `command -v` INSIDE the
+# sourced copy (the test-update-cgroup-escape E7 pattern) — never by removing
+# the shim: before the sandbox PATH, with $T/bin/fsfreeze gone the lookup fell
+# through to the host's /usr/sbin/fsfreeze and, as root, froze the root
+# filesystem of the machine running the suite (the harness hung its own
+# container that way, 2026-09-27). The shim stays in place, so a copy that
+# ignored the missing binary and froze anyway lands on it — counted below.
 reset_shims "$GOOD_FX"
-mv "$T/bin/fsfreeze" "$T/fsfreeze.away"
-run_fn ensure_primary_sb_checksum >/dev/null 2>&1; rc=$?
-mv "$T/fsfreeze.away" "$T/bin/fsfreeze"
+run_fn 'command() { if [ "${1:-}" = -v ] && [ "${2:-}" = fsfreeze ]; then return 1; fi; builtin command "$@"; }; ensure_primary_sb_checksum' >/dev/null 2>&1; rc=$?
 if [ "$rc" = 0 ] && grep -q 'ERROR: fsfreeze not found' "$T/log" && [ "$(count_calls '^dd ')" = 1 ] \
-   && grep -q 'checksum OK' "$T/log"; then
-    ok "5e fsfreeze missing: ERROR logged, verification still runs (rc follows the on-disk state)"
+   && [ "$(count_calls 'fsfreeze')" = 0 ] && grep -q 'checksum OK' "$T/log"; then
+    ok "5e fsfreeze missing: ERROR logged, no freeze attempted, verification still runs (rc follows the on-disk state)"
 else
-    bad "5e rc=$rc reads=$(count_calls '^dd ') log='$(log_flat "$T/log")'"
+    bad "5e rc=$rc reads=$(count_calls '^dd ') freeze-calls=$(count_calls 'fsfreeze') log='$(log_flat "$T/log")'"
 fi
 
 reset_shims "$GOOD_FX"
@@ -493,23 +777,10 @@ fi
 
 # ── 6. the `start` dispatcher on a sandbox-retargeted copy ──────────────────
 echo "── 6. start paths (retargeted copy, fail-closed) ──"
-DONE_F="$T/var/lib/sa02m-rootfs-expand.done"
-SLOG="$T/var/log/sa02m-rootfs-expand.log"
-sed -e "s#/var/log/sa02m-rootfs-expand.log#$SLOG#" \
-    -e "s#/var/lib/sa02m-rootfs-expand#$T/var/lib/sa02m-rootfs-expand#g" \
-    -e "s#/etc/systemd#$T/etc/systemd#g" \
-    -e "s#/lib/systemd#$T/lib/systemd#g" \
-    -e "s#:-/dev/mmcblk2p2}#:-$T/dev/p2}#" \
-    -e "s#:-/dev/mmcblk2}#:-$T/dev/disk}#" \
-    -e 's#\[ -b "\$ROOT_PART" \] && \[ -b "\$ROOT_DISK" \]#[ -e "$ROOT_PART" ] \&\& [ -e "$ROOT_DISK" ]#' \
-    "$SRC" > "$T/start.sh"
-# Fail-closed: a real absolute path left in the copy means it is never run.
-leftover=$(stripped_text_inline "$T/start.sh" | sed -e "s#$T#@T@#g" -e 's#/dev/null##g' | grep -nE '(^|[^A-Za-z0-9_@])/(etc|var|lib|dev|usr)/')
-if [ -n "$leftover" ]; then
-    bad "6 retargeting incomplete — NOT running the copy: $leftover"
-else
+# $T/start.sh was retargeted and scanned before layer 3 (fail-closed).
+{
     : > "$T/dev/p2"; : > "$T/dev/disk"
-    run_start() { bash "$T/start.sh" start >"$T/start.out" 2>&1; }
+    run_start() { shims_intact || return 97; run_sandboxed "$T/start.sh" start >"$T/start.out" 2>&1; }
     FINAL_SYNC="sync $RES $DONE_F $SLOG $T/var/lib"
     last_call() { tail -n 1 "$CALLS"; }
 
@@ -571,6 +842,23 @@ else
     [ "$rc" = 0 ] && [ ! -e "$RES.tmp" ] && result_matches 'OK stored=0xf8449046 computed=0xf8449046 attempts=1' \
         && ok "6f stale .result.tmp on the no-resize path: gone, verdict OK on one line, rc=0" \
         || bad "6f rc=$rc tmp-left=$(has_file "$RES.tmp") result='$(result_flat)'"
+}
+
+if [ -s "$HOST_SAFETY" ]; then
+    while IFS= read -r line; do bad "$line"; done < "$HOST_SAFETY"
+fi
+# A bare name outside the sandbox PATH (not a shim, not an allow-listed tool).
+if [ -s "$T/cnf.log" ]; then
+    bad "host-safety: shipped code ran name(s) not on the sandbox PATH (command not found, never reached the host): $(sort -u "$T/cnf.log" | tr '\n' ';')"
+fi
+# Any timeout-shim refusal means shipped code reached for a non-shim target.
+if [ -s "$T/timeout-refused.seen" ]; then
+    bad "host-safety: the timeout shim refused a target outside $T/bin: $(tr '\n' ';' < "$T/timeout-refused.seen")"
+fi
+# A run-time-assembled awk system() / python os.system that the static scan
+# could not see, caught by the wrappers in $T/bin at execution.
+if [ -s "$T/exec-guard.seen" ]; then
+    bad "host-safety: a sandbox wrapper refused a shell-out (awk system() / python os.system/subprocess): $(tr '\n' ';' < "$T/exec-guard.seen")"
 fi
 
 echo
