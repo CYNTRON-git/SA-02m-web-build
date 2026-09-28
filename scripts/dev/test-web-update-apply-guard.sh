@@ -67,7 +67,13 @@ BIN="$T/bin"; mkdir -p "$BIN"
 # a forced reboot of the machine running the suite. Every spawned shell calls
 # the shim exactly once (it exits 0, so the `||` chain stops); cleanup waits
 # for that count and, if it never arrives, leaves $T in place — a leaked temp
-# dir, never a rebooted host.
+# dir, never a rebooted host. The count is taken BEFORE each reboot.cgi run and
+# given back only when the body proves no spawn (pre_spawn / note_spawn below):
+# counted after the body, a SIGTERM between the spawn and the assignment left
+# the count one short and cleanup deleted the shim under a live shell (measured
+# 2026-09-27: a SIGTERM injected after the 2nd reboot.cgi answer put
+# `sudo -n /sbin/reboot -f` on a canary sudo; with the pessimistic count cleanup
+# waited for the shim call and the canary stayed empty).
 FIXTURE_PIDS=""
 REBOOT_SPAWNED=0
 reboot_count() { if [ -f "$T/reboot.calls" ]; then wc -l < "$T/reboot.calls" | tr -d ' '; else echo 0; fi; }
@@ -381,10 +387,16 @@ run_reboot() {  # [csrf]
     HTTP_COOKIE="session_token=$TOK" HTTP_X_SA02M_CSRF="${1:-$CSRF}" \
     bash "$REBOOT_CGI" 2>/dev/null | tr -d '\r'
 }
-# The CGI spawns its reboot shell exactly when it answers ok:true — count it
-# (in the main shell: run_reboot runs in a command substitution) so cleanup
-# knows how many shim calls to wait for.
-note_spawn() { case "$1" in *'"ok":true'*) REBOOT_SPAWNED=$((REBOOT_SPAWNED + 1)) ;; esac; }
+# The CGI spawns its reboot shell exactly when it answers ok:true. The count
+# is PESSIMISTIC, and kept in the main shell (run_reboot runs in a command
+# substitution): pre_spawn counts the shell BEFORE the CGI runs and note_spawn
+# takes it back only once the body proves no spawn (no ok:true). A signal that
+# lands between the spawn and the body returning (SIGTERM from a runner timeout,
+# ^C) therefore leaves cleanup waiting for — and, if it never comes, keeping —
+# the shim; counting only after the body returned let cleanup delete $BIN one
+# shell early, and that shell's delayed `sudo -n …reboot -f` reached the host.
+pre_spawn() { REBOOT_SPAWNED=$((REBOOT_SPAWNED + 1)); }
+note_spawn() { case "$1" in *'"ok":true'*) ;; *) REBOOT_SPAWNED=$((REBOOT_SPAWNED - 1)) ;; esac; }
 # expect_reboot LABEL BODY — ok:true AND, within 15 s, exactly one more shim
 # call naming a reboot path (chain stopped at its first sudo).
 expect_reboot() {
@@ -401,7 +413,7 @@ expect_reboot() {
 }
 # R1 live runner at applying → refused, no sudo
 write_txn applying "$(now_utc)"; printf '%s\n' "$LIVE_PID" > "$UPD/update.lock"
-before=$(reboot_count); body=$(run_reboot); note_spawn "$body"; sleep 1.5
+before=$(reboot_count); pre_spawn; body=$(run_reboot); note_spawn "$body"; sleep 1.5
 if [[ "$body" == *'"error_code":"E_UPDATE_RUNNING"'* && "$body" == *'"ok":false'* ]] && [ "$(reboot_count)" = "$before" ]; then
   ok "R1 live runner at applying → E_UPDATE_RUNNING, no reboot"
 else
@@ -409,15 +421,15 @@ else
 fi
 # R2 stale transaction (runner gone) → rebootable
 write_txn verifying "$OLD_TS"; printf '%s\n' "$DEAD_PID" > "$UPD/update.lock"
-body=$(run_reboot); note_spawn "$body"
+pre_spawn; body=$(run_reboot); note_spawn "$body"
 expect_reboot "R2 stale transaction (dead runner) → reboot allowed (the recovery path)" "$body"
 # R3 terminal stage with a live pid in the lock → rebootable
 write_txn done "$(now_utc)"; printf '%s\n' "$LIVE_PID" > "$UPD/update.lock"
-body=$(run_reboot); note_spawn "$body"
+pre_spawn; body=$(run_reboot); note_spawn "$body"
 expect_reboot "R3 stage=done → reboot allowed" "$body"
 # R4 CSRF still first: wrong token → E_CSRF, no sudo, even with a live runner
 write_txn applying "$(now_utc)"
-before=$(reboot_count); body=$(run_reboot "wrong-token"); note_spawn "$body"; sleep 1.5
+before=$(reboot_count); pre_spawn; body=$(run_reboot "wrong-token"); note_spawn "$body"; sleep 1.5
 if [[ "$body" == *'"error_code":"E_CSRF"'* ]] && [ "$(reboot_count)" = "$before" ]; then ok "R4 wrong CSRF → E_CSRF before the update guard, no reboot"
 else bad "R4 wrong CSRF → body: ${body##*$'\n\n'}, reboot calls $before → $(reboot_count)"; fi
 # Drain: no reboot shell may outlive R — H rewrites $BIN/sudo in place.
