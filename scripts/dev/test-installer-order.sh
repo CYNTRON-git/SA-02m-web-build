@@ -32,6 +32,11 @@
 # install.sh, or run it against an install.sh without the 06c module — 5a
 # goes RED.
 #
+# Case 6 (Home Connect): comment out `sa02m_run_module 06d-homeconnect.sh` in
+# install.sh (registered in comment-mutation-proof) or move the 06d block above
+# 05-mqtt.sh — 6a goes RED; move the package rsync in scripts/06d-homeconnect.sh
+# below the conf seed — 6b goes RED; install the CGI before the trigger — 6c.
+#
 # Run: bash scripts/dev/test-installer-order.sh   (bash + sed + grep)
 # ═══════════════════════════════════════════════════════════════════════════
 set -u
@@ -43,7 +48,7 @@ declare -F stripped_first_line >/dev/null || { echo "FAIL  lib_check.sh lacks st
 fails=0
 ok()  { printf 'ok    %s\n' "$1"; }
 bad() { printf 'FAIL  %s\n' "$1"; fails=$((fails + 1)); }
-for f in scripts/05-mqtt.sh scripts/04-flasher.sh scripts/06-alice.sh install.sh; do
+for f in scripts/05-mqtt.sh scripts/04-flasher.sh scripts/06-alice.sh scripts/06d-homeconnect.sh install.sh; do
     [ -f "$f" ] || { echo "FAIL  missing $f"; exit 1; }
 done
 
@@ -116,6 +121,20 @@ echo "── 5. install.sh: the Alice package lands before the HomeKit bridge th
 # in install.sh.
 order_pin install.sh "5a 06-alice.sh → 06c-homekit.sh" \
     '^[[:space:]]*sa02m_run_module 06-alice\.sh' '^[[:space:]]*sa02m_run_module 06c-homekit\.sh'
+
+echo "── 6. Home Connect: dependencies land before their consumers ──"
+# The client (opt/sa02m-homeconnect, scripts/06d-homeconnect.sh) imports apt
+# paho and publishes to mosquitto — both from 05-mqtt.sh (6a, module order).
+# Inside 06d the conf seed is rendered BY the installed package
+# (config.render(ClientConfig())), so the package tree lands first (6b); and
+# the privileged helper + its sudoers land before the CGI that calls them (6c)
+# — a tear never leaves a CGI nudging a helper that is not there yet.
+order_pin install.sh "6a 05-mqtt.sh → 06d-homeconnect.sh" \
+    '^[[:space:]]*sa02m_run_module 05-mqtt\.sh' '^[[:space:]]*sa02m_run_module 06d-homeconnect\.sh'
+order_pin scripts/06d-homeconnect.sh "6b package rsync → conf seed" \
+    '^[[:space:]]*rsync ' '^python3 -I -B - "\$INSTALL_DIR"'
+order_pin scripts/06d-homeconnect.sh "6c trigger + sudoers → CGI" \
+    '^[[:space:]]*sa02m_install_sudoers ' '"\$WEB_CGI/sa02m_homeconnect_api\.cgi"'
 
 echo ""
 if [ "$fails" -eq 0 ]; then

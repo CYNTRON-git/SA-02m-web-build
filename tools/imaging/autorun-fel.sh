@@ -138,6 +138,40 @@ wipe_homekit_identity() {
     rm -f "$root/etc/systemd/system/multi-user.target.wants/sa02m-homekit.service"
 }
 
+# Home Connect sign-in — offline copy of the clear-list in
+# docs/contracts/image-identity-reset.md §8 (no repo on the media, so the block is
+# duplicated and pinned by the alice-image-identity quality row, part C). The
+# state dir holds the OAuth refresh token of the donor's BSH account: a clone
+# carrying it reads the donor household's appliances. Contents go, the dirs
+# stay (tmpfiles.d owns them); the Client ID and the installed software stay.
+wipe_homeconnect_identity() {
+    local root=$1
+    # `.hc-*` is the atomic-write sidecar shape (fsutil.atomic_write): a torn
+    # write of the token file is the same secret under another name, and `*`
+    # does not expand to dot-files.
+    # A symlink AT the state dir is dropped, never descended: on a mounted image
+    # an absolute link resolves on the HOST, and the glob would empty a host dir.
+    # tmpfiles.d re-creates the real dir at boot.
+    if [ -L "$root/var/lib/sa02m-homeconnect" ]; then
+        rm -f "$root/var/lib/sa02m-homeconnect"
+    else
+        rm -f "$root/var/lib/sa02m-homeconnect"/* \
+              "$root/var/lib/sa02m-homeconnect"/.hc-*
+    fi
+    # A symlink at the conf is never the installer's (the dir is root:www-data
+    # 0770 on the board), and on a mounted image an absolute link resolves on
+    # the HOST running this script — sed -i would copy a host file into the
+    # image. Drop the link instead: an absent conf reads as disabled.
+    if [ -L "$root/etc/sa02m-homeconnect/sa02m-homeconnect.conf" ]; then
+        rm -f "$root/etc/sa02m-homeconnect/sa02m-homeconnect.conf"
+    elif [ -f "$root/etc/sa02m-homeconnect/sa02m-homeconnect.conf" ]; then
+        # configparser reads the key case-insensitively and accepts `:` too.
+        sed -i 's/^[[:space:]]*[Ee][Nn][Aa][Bb][Ll][Ee][Dd][[:space:]]*[=:].*/enabled = false/' \
+            "$root/etc/sa02m-homeconnect/sa02m-homeconnect.conf"
+    fi
+    rm -f "$root/etc/systemd/system/multi-user.target.wants/sa02m-homeconnect.service"
+}
+
 apply_firstboot_wiring() {
     local root=$1
     mkdir -p "$root/etc/systemd/system" \
@@ -204,6 +238,8 @@ apply_firstboot_wiring() {
     log "image identity: alice enrollment cleared on new rootfs"
     wipe_homekit_identity "$root"
     log "image identity: homekit pairing store cleared on new rootfs"
+    wipe_homeconnect_identity "$root"
+    log "image identity: home connect sign-in cleared on new rootfs"
 }
 
 apply_boot_wiring() {

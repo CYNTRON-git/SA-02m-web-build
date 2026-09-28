@@ -21,6 +21,10 @@ DEVICE_ID_FILE="${SA02M_DEVICE_ID_FILE:-/etc/machine-id}"
 # controllers, and an archive goes to the panel (docs/contracts/homekit-bridge.md
 # P4); a restored board pairs anew. This list is the allow-list, so leaving the
 # dir out is the whole guarantee.
+# Home Connect: the conf (enabled, the integrator's Client ID — not a secret)
+# only. /var/lib/sa02m-homeconnect/ is never archived — it holds the OAuth
+# refresh token of the owner's BSH account (docs/contracts/home-connect.md P4,
+# §12); a restored board signs in anew.
 collect_paths() {
   local p
   # Explicit files
@@ -33,6 +37,7 @@ collect_paths() {
     /etc/sa02m-alice/sa02m-alice-devices.conf \
     /etc/sa02m-alice-client.conf \
     /etc/sa02m-alice-devices.conf \
+    /etc/sa02m-homeconnect/sa02m-homeconnect.conf \
     /etc/sa02m-homekit/sa02m-homekit.conf
   do
     [ -e "$p" ] && printf '%s\n' "$p"

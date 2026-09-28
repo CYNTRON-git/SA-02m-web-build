@@ -212,6 +212,21 @@ factory-reset-runner|etc/sa02m-factory-reset-runner.sh||| chmod "$STATEDIR_MODE"
 factory-reset-runner|etc/sa02m-factory-reset-runner.sh|systemctl stop "$HK_UNIT"
 factory-reset-runner|etc/sa02m-factory-reset-runner.sh|fr_safe remove-name "$HK_RUN_DIR" setup.json
 factory-reset-runner|etc/sa02m-factory-reset-runner.sh||| fail E_INTERNAL "transaction id is not a plain token"
+homeconnect-trigger|usr/local/sbin/sa02m-homeconnect-web-trigger.sh|rm -f -- "$VAR_DIR/tokens.json" 2>/dev/null || true
+homeconnect-trigger|usr/local/sbin/sa02m-homeconnect-web-trigger.sh|rm -f -- "$LINK_FILE" 2>/dev/null || true
+homeconnect-cgi|www/network_config/cgi-bin/sa02m_homeconnect_api.cgi|TRIG_OUT=$(timeout 11 sudo -n /usr/local/sbin/sa02m-homeconnect-web-trigger.sh "$VERB" 2>/dev/null) || TRIG_RC=$?
+cgi-csrf-policy|www/network_config/cgi-bin/sa02m_homeconnect_api.cgi|web_csrf_validate
+sudoers-pin-contract|etc/sudoers.d/sa02m-homeconnect|/usr/local/sbin/sa02m-homeconnect-web-trigger.sh unlink
+alice-conf-homes|opt/sa02m-update/lib/validate_package.py|"/etc/sa02m-homeconnect/",
+alice-conf-homes|etc/sa02m-update-runner.sh|"/var/lib/sa02m-homeconnect/",
+alice-conf-homes|etc/sa02m-restore-backup.sh|re.compile(r"^/etc/sa02m-homeconnect/sa02m-homeconnect
+alice-conf-homes|etc/sa02m-restore-backup.sh|"/etc/sa02m-homeconnect": (0o770
+alice-conf-homes|scripts/06d-homeconnect.sh|os.fchmod(fd, 0o660)
+installer-order|install.sh|sa02m_run_module 06d-homeconnect.sh
+installer-svc-policy-gate|scripts/06d-homeconnect.sh|sa02m_svc_capture "$UNIT"
+factory-reset-runner|etc/sa02m-factory-reset-runner.sh|  wipe_homeconnect_signin
+factory-reset-runner|etc/sa02m-factory-reset-runner.sh|systemctl stop "$HC_UNIT"
+factory-reset-runner|etc/sa02m-factory-reset-runner.sh|fr_safe remove-name "$HC_RUN_DIR" link.json
 '
 
 command -v git >/dev/null 2>&1 || { echo "comment-mutation-proof: FAIL — git is required to build the pristine copy"; exit 1; }

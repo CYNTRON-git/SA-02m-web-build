@@ -536,6 +536,14 @@ LEDGER = {
         "/usr/local/sbin/sa02m-homekit-web-trigger.sh restart",
         "/usr/local/sbin/sa02m-homekit-web-trigger.sh reset-pairing",
     ],
+    # BSH Home Connect client (docs/contracts/home-connect.md §10): the four
+    # verbs sa02m_homeconnect_api.cgi nudges; the helper re-validates argv.
+    "etc/sudoers.d/sa02m-homeconnect": [
+        "/usr/local/sbin/sa02m-homeconnect-web-trigger.sh enable",
+        "/usr/local/sbin/sa02m-homeconnect-web-trigger.sh disable",
+        "/usr/local/sbin/sa02m-homeconnect-web-trigger.sh restart",
+        "/usr/local/sbin/sa02m-homeconnect-web-trigger.sh unlink",
+    ],
 }
 
 # Open world: every committed drop-in that grants www-data anything is a
@@ -693,6 +701,7 @@ PIN_REQUIRED = [
     "/usr/local/sbin/sa02m-cloud-web-trigger.sh",
     "/usr/local/sbin/sa02m-alice-web-trigger.sh",
     "/usr/local/sbin/sa02m-homekit-web-trigger.sh",
+    "/usr/local/sbin/sa02m-homeconnect-web-trigger.sh",
     "/usr/local/sbin/sa02m-gateway-config-apply.sh",
 ]
 for helper in PIN_REQUIRED:

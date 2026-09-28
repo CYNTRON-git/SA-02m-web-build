@@ -197,6 +197,38 @@ wipe_homekit_identity() {
     rm -f "$root/etc/systemd/system/multi-user.target.wants/sa02m-homekit.service"
 }
 
+# Home Connect sign-in (contract §8): the state dir holds the donor BSH
+# refresh token. Contents go, the dirs stay. A symlinked conf is dropped, never
+# read through (sed -i would copy its target into the image); an absent conf
+# reads as disabled.
+wipe_homeconnect_identity() {
+    local root=$1
+    # `.hc-*` is the atomic-write sidecar shape (fsutil.atomic_write): a torn
+    # write of the token file is the same secret under another name, and `*`
+    # does not expand to dot-files.
+    # A symlink AT the state dir is dropped, never descended: on a mounted image
+    # an absolute link resolves on the HOST, and the glob would empty a host dir.
+    # tmpfiles.d re-creates the real dir at boot.
+    if [ -L "$root/var/lib/sa02m-homeconnect" ]; then
+        rm -f "$root/var/lib/sa02m-homeconnect"
+    else
+        rm -f "$root/var/lib/sa02m-homeconnect"/* \
+              "$root/var/lib/sa02m-homeconnect"/.hc-*
+    fi
+    # A symlink at the conf is never made by the installer (the dir is root:www-data
+    # 0770 on the board), and on a mounted image an absolute link resolves on
+    # the HOST running this script — sed -i would copy a host file into the
+    # image. Drop the link instead: an absent conf reads as disabled.
+    if [ -L "$root/etc/sa02m-homeconnect/sa02m-homeconnect.conf" ]; then
+        rm -f "$root/etc/sa02m-homeconnect/sa02m-homeconnect.conf"
+    elif [ -f "$root/etc/sa02m-homeconnect/sa02m-homeconnect.conf" ]; then
+        # configparser reads the key case-insensitively and accepts `:` too.
+        sed -i "s/^[[:space:]]*[Ee][Nn][Aa][Bb][Ll][Ee][Dd][[:space:]]*[=:].*/enabled = false/" \
+            "$root/etc/sa02m-homeconnect/sa02m-homeconnect.conf"
+    fi
+    rm -f "$root/etc/systemd/system/multi-user.target.wants/sa02m-homeconnect.service"
+}
+
 # RuntimeWatchdogSec — 15s из эталона etc/systemd/sa02m-watchdog.conf (cap
 # sun4i-wdt = 16s). ВНИМАНИЕ: правим system.conf НАПРЯМУЮ, а не drop-in, — это
 # свежезаписанный dd-образ, каталога system.conf.d в нём может ещё не быть.
@@ -252,6 +284,7 @@ done
 wipe_cloud_enrollment "$MNT"
 wipe_alice_enrollment "$MNT"
 wipe_homekit_identity "$MNT"
+wipe_homeconnect_identity "$MNT"
 
 sync
 umount "$MNT"

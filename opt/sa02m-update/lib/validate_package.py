@@ -59,6 +59,10 @@ PRESERVE_PATHS: Tuple[str, ...] = (
     # (docs/contracts/homekit-bridge.md §13-§14).
     "/etc/sa02m-homekit/",
     "/var/lib/sa02m-homekit/",
+    # Home Connect client: the operator's conf and the OAuth tokens + call
+    # budget (docs/contracts/home-connect.md §12).
+    "/etc/sa02m-homeconnect/",
+    "/var/lib/sa02m-homeconnect/",
 )
 
 # One of four copies of the destination allow-list (runner x2, packer, validator);

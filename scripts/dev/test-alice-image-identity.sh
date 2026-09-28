@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
-# Gate for the image-identity reset of the Alice controller enrollment (1.0.6.20)
-# and of the HomeKit bridge identity (Part H, contract §7).
+# Gate for the image-identity reset of the Alice controller enrollment (1.0.6.20),
+# of the HomeKit bridge identity (Part H, contract §7) and of the Home Connect
+# sign-in (Part C, contract §8).
 # comment-mutation-proof-exempt: behavioural harness - every guarantee is asserted by RUNNING the shipped code in a sandbox (files written, shim invocations, exit codes), so a commented-out line changes the measured behaviour instead of hiding behind a needle grep; its source-text greps are extraction/retarget sanity guards on its own scratch copy, which abort the run when the shipped block moves.
 #
 # The defect it pins is a CROSS-TENANT one: the gateway identifies a controller
@@ -79,6 +80,26 @@
 #   H5 reads the sidecar prefix from sa02m_homekit.constants.TMP_PREFIX: set
 #   to ".homekit-" on a scratch copy -> 10 FAIL (H5 + the sidecar surviving
 #   all 8 HB runs + HB2's clean image), with the sites unchanged.
+#
+# Part C — the Home Connect twin (contract §8, wipe_homeconnect_identity() at
+#   the same five sites, right after the HomeKit call): C0 the on-device set IS
+#   the §8 table; C1/C1c every file carries AND calls it; C2 per-site path-set
+#   equality; C3 no recursion, no software named; C4 the patch site's wipe and
+#   its fatal belt assert_homeconnect_identity_clean() unconditional and bare;
+#   C5 the `.hc-*` rows are sa02m_homeconnect.constants.TMP_PREFIX; C7
+#   on-device systemctl bounded. CB runs each shipped wipe on a signed-in donor
+#   (receivers under bash AND dash): state dir empty but present, the conf read
+#   by the daemon's OWN parser as disabled with the Client ID and host kept,
+#   on-device the conf disabled BEFORE the stop (the daemon then removes its
+#   retained appliance topics) and the stop BEFORE the tokens go, idempotent,
+#   a no-module rootfs untouched, `ENABLED : on` forced off, a symlinked conf
+#   and a symlinked state dir dropped, never followed. CB2 runs the belt on a
+#   clean image, a no-module image and each dirty dimension alone.
+#   RED observed 2026-09-28 with the six files at HEAD d7d9c4a: 29 FAIL, all in
+#   C (A/B/H green). Mutations (proof awk, scratch copies): the patch-site call
+#   commented -> C4; the autorun `.hc-*` glob line commented -> C2 + CB (both
+#   shells); the reset stop commented -> C7 + CB; the stream conf edit moved
+#   after the stop -> CB order; the belt's wants `-L` dropped -> CB2 wantslink.
 #
 # No root, no device, no image, no loop mount.
 set -u
@@ -1278,6 +1299,443 @@ else
             bad "(HB2) the HomeKit belt missed a dirty '$one' — that dimension is unguarded"
         else
             ok "(HB2) the HomeKit belt catches a dirty '$one'"
+        fi
+    done
+fi
+
+# ══════════════════════════════════════════════════════════════════════════
+# Part C — the Home Connect twin (contract §8): wipe_homeconnect_identity() at
+# the same five sites, with its own clear-list and keep-list (the dirs, the
+# Client ID, the unit, the software). No machine-id self-heal exists for a
+# BSH token, so these sites are the only layer.
+# ══════════════════════════════════════════════════════════════════════════
+echo
+echo "C. Home Connect sign-in (contract §8)"
+
+hc_paths_of() { # <file>
+    extract_fn "$1" wipe_homeconnect_identity \
+        | sed 's/#.*$//' \
+        | tr -d '"' \
+        | grep -oE '/var/lib/sa02m-homeconnect/[A-Za-z0-9._*-]+|/run/sa02m-homeconnect/[A-Za-z0-9._*-]+|/etc/sa02m-homeconnect/[A-Za-z0-9._*-]+|/etc/systemd/system/multi-user\.target\.wants/sa02m-homeconnect\.service' \
+        | sort -u
+}
+
+# ── C0 — the harness's sets are the CONTRACT's §8 table ───────────────────
+hc_table="$(awk '/^\*\*Clear-list Home Connect/{f=1;next} /^\*\*Keep-list Home Connect/{f=0} f' "$CONTRACT")"
+HC_CONTRACT_SET="$(printf '%s\n' "$hc_table" | grep '^|' \
+    | grep -oE '`/(var/lib|run|etc)/sa02m-homeconnect/[^`]*`' | tr -d '`' | sort -u)"
+HC_ONDEVICE_SET="$(printf '%s\n' \
+    '/etc/sa02m-homeconnect/sa02m-homeconnect.conf' \
+    '/run/sa02m-homeconnect/*' \
+    '/var/lib/sa02m-homeconnect/*' \
+    '/var/lib/sa02m-homeconnect/.hc-*' | sort -u)"
+HC_OFFLINE_SET="$(printf '%s\n' \
+    '/etc/sa02m-homeconnect/sa02m-homeconnect.conf' \
+    '/etc/systemd/system/multi-user.target.wants/sa02m-homeconnect.service' \
+    '/var/lib/sa02m-homeconnect/*' \
+    '/var/lib/sa02m-homeconnect/.hc-*' | sort -u)"
+if [ -z "$HC_CONTRACT_SET" ]; then
+    bad "(C0) no Home Connect clear-list table found in $CONTRACT §8 — the sites have no anchor (vacuous)"
+elif [ "$HC_CONTRACT_SET" = "$HC_ONDEVICE_SET" ]; then
+    ok "(C0) the on-device set here IS the contract's §8 clear-list (read from the table)"
+else
+    bad "(C0) the contract's §8 clear-list and this gate's on-device set differ
+--- contract ---
+$HC_CONTRACT_SET
+--- gate ---
+$HC_ONDEVICE_SET"
+fi
+if printf '%s\n' "$hc_table" | grep '^|' | grep -q 'sa02m-homeconnect\.service' \
+   && printf '%s\n' "$hc_table" | grep '^|' | grep -q 'multi-user.target.wants'; then
+    ok "(C0) the contract's unit row names sa02m-homeconnect.service and the offline wants link"
+else
+    bad "(C0) the contract's §8 table lost its unit row — the offline wants-link removal has no anchor"
+fi
+
+# ── C1 — every file of the five sites carries the wipe, and CALLS it ──────
+hc_count=0
+for f in $HK_SITES; do
+    if [ -n "$(extract_fn "$f" wipe_homeconnect_identity)" ]; then
+        hc_count=$((hc_count + 1))
+    else
+        bad "(C1) no wipe_homeconnect_identity() in ${f#"$HERE"/} — that site ships the donor's BSH sign-in"
+    fi
+done
+[ "$hc_count" -eq 6 ] && ok "(C1) all six files of the five sites carry wipe_homeconnect_identity()"
+
+hc_call_pin() { # <label> <file> <enclosing fn|-> <call regex>
+    local lbl=$1 file=$2 fn=$3 re=$4 scope
+    if [ "$fn" = "-" ]; then
+        scope="$(sed 's/#.*$//' "$file")"
+    else
+        scope="$(extract_fn "$file" "$fn" | sed 's/#.*$//')"
+        [ -n "$scope" ] || { bad "(C1c) $lbl: $fn() could not be extracted — vacuous"; return; }
+    fi
+    if printf '%s\n' "$scope" | grep -Eq "$re"; then
+        ok "(C1c) $lbl: the Home Connect wipe is actually CALLED"
+    else
+        bad "(C1c) $lbl: wipe_homeconnect_identity is DEFINED BUT NEVER CALLED — that site is inert"
+    fi
+}
+hc_call_pin "reset-alice-enrollment.sh" "$RESET_SRC" "-" '^wipe_homeconnect_identity[[:space:]]*$'
+hc_call_pin "stream-after-cleanup.sh (in prepare_clone_ids)" "$STREAM_SRC" "prepare_clone_ids" \
+    '^[[:space:]]*wipe_homeconnect_identity[[:space:]]*$'
+hc_call_pin "autorun.sh (in apply_firstboot_wiring)" "$AUTORUN_SRC" "apply_firstboot_wiring" \
+    '^[[:space:]]*wipe_homeconnect_identity[[:space:]]+"\$root"[[:space:]]*$'
+hc_call_pin "autorun-fel.sh (in apply_firstboot_wiring)" "$AUTORUN_FEL_SRC" "apply_firstboot_wiring" \
+    '^[[:space:]]*wipe_homeconnect_identity[[:space:]]+"\$root"[[:space:]]*$'
+hc_call_pin "ssh-flash-safe.sh (on written rootfs)" "$SSH_FLASH_SRC" "-" \
+    '^[[:space:]]*wipe_homeconnect_identity[[:space:]]+"\$MNT"[[:space:]]*$'
+
+# ── C2 — per-site path-set EQUALITY with the contract set for its form ────
+hc_check_set() { # <label> <file> <expected>
+    local got
+    got="$(hc_paths_of "$2")"
+    if [ -z "$got" ]; then
+        bad "(C2) $1: no Home Connect path extracted — vacuous"
+    elif [ "$got" = "$3" ]; then
+        ok "(C2) $1: Home Connect path set matches the contract exactly"
+    else
+        bad "(C2) $1: Home Connect path set differs from the contract
+--- got ---
+$got
+--- expected ---
+$3"
+    fi
+}
+hc_check_set "reset-alice-enrollment.sh (on-device)" "$RESET_SRC"       "$HC_ONDEVICE_SET"
+hc_check_set "stream-after-cleanup.sh (on-device)"   "$STREAM_SRC"      "$HC_ONDEVICE_SET"
+hc_check_set "patch-firstboot-image.sh (offline)"    "$PATCH_SRC"       "$HC_OFFLINE_SET"
+hc_check_set "autorun.sh (offline)"                  "$AUTORUN_SRC"     "$HC_OFFLINE_SET"
+hc_check_set "autorun-fel.sh (offline)"              "$AUTORUN_FEL_SRC" "$HC_OFFLINE_SET"
+hc_check_set "ssh-flash-safe.sh (offline)"           "$SSH_FLASH_SRC"   "$HC_OFFLINE_SET"
+
+# ── C3 — keep-list tripwire: no recursive rm, the software is never named ─
+hc_over=0
+for f in $HK_SITES; do
+    body="$(extract_fn "$f" wipe_homeconnect_identity | sed 's/#.*$//')"
+    [ -n "$body" ] || continue
+    if printf '%s\n' "$body" | grep -Eq 'rm[[:space:]]+-[a-z]*r'; then
+        bad "(C3) ${f#"$HERE"/}: recursive rm inside the Home Connect wipe — the dirs belong to tmpfiles.d"
+        hc_over=1
+    fi
+    if printf '%s\n' "$body" | grep -Eq '/opt/sa02m-homeconnect|system/sa02m-homeconnect\.service'; then
+        bad "(C3) ${f#"$HERE"/}: the Home Connect wipe names the installed software (package or unit file) — the sign-in goes, software stays"
+        hc_over=1
+    fi
+done
+[ "$hc_over" -eq 0 ] && ok "(C3) no Home Connect wipe recurses or touches the installed software"
+
+# ── C4 — the patch site: wipe + fatal belt, unconditional and bare ───────
+hc_depths="$(awk '
+  {
+    l=$0; sub(/#.*$/,"",l)
+    iscall = (l ~ /^[[:space:]]*(wipe_homeconnect_identity|assert_homeconnect_identity_clean)[[:space:]]+"\$mnt"/)
+    gsub(/"[^"]*"/, "S", l)
+    gsub(/\047[^\047]*\047/, "S", l)
+    o = gsub(/(^|[;&|(=[:space:]])(if|for|while|until|case)[[:space:]]/, "X", l)
+    c = gsub(/(^|[;&|[:space:]])(fi|done|esac)([;&|[:space:]]|$)/, "X", l)
+    if (iscall) print d+0
+    d += o - c
+  }' "$PATCH_SRC")"
+hc_calls="$(printf '%s\n' "$hc_depths" | grep -c '[0-9]' || true)"
+hc_nested="$(printf '%s\n' "$hc_depths" | grep -cv '^0$' || true)"
+if [ "$hc_calls" -ne 2 ]; then
+    bad "(C4) expected exactly 2 top-level Home Connect calls (wipe + assert) in patch-firstboot-image.sh, found $hc_calls"
+elif [ "$hc_nested" -ne 0 ]; then
+    bad "(C4) the patch site's Home Connect wipe/assert sits inside a conditional (depth $hc_depths) — a security clear must not be skippable"
+else
+    ok "(C4) the patch site's Home Connect wipe AND assertion are unconditional (depth 0)"
+fi
+hc_swallowed="$(grep -E '^[[:space:]]*(wipe_homeconnect_identity|assert_homeconnect_identity_clean)[[:space:]]+"\$mnt"' "$PATCH_SRC" \
+              | grep -E '\|\||&&|; *(true|:)' || true)"
+[ -z "$hc_swallowed" ] && ok "(C4c) the Home Connect wipe/assert calls are bare" \
+                        || bad "(C4c) the patch site's Home Connect call swallows its own failure: $hc_swallowed"
+
+# ── C7 — every systemctl the on-device Home Connect wipes run is bounded ─
+for f in "$RESET_SRC" "$STREAM_SRC"; do
+    body="$(extract_fn "$f" wipe_homeconnect_identity | sed 's/#.*$//')"
+    n="$(printf '%s\n' "$body" | grep -c 'systemctl' || true)"
+    if [ "${n:-0}" -lt 2 ]; then
+        bad "(C7) ${f#"$HERE"/}: only ${n:-0} systemctl call(s) in the Home Connect wipe — the unit is not stopped+disabled, or the extraction is vacuous"
+    else
+        unbounded="$(printf '%s\n' "$body" | grep 'systemctl' | grep -v 'timeout[[:space:]]\+[0-9]\+[[:space:]]\+systemctl' || true)"
+        [ -z "$unbounded" ] && ok "(C7) ${f#"$HERE"/}: all $n Home Connect systemctl calls are timeout-bounded" \
+                            || bad "(C7) ${f#"$HERE"/}: unbounded systemctl in the Home Connect wipe: $unbounded"
+    fi
+done
+
+# ── C5 — the sidecar glob is anchored at the daemon's OWN tmp prefix ─────
+HC_PKG="$HERE/opt/sa02m-homeconnect"
+HC_TMP_PREFIX=""
+if [ -n "$PY" ]; then
+    HC_TMP_PREFIX="$(PYTHONPATH="$HC_PKG" "$PY" -c 'from sa02m_homeconnect import constants as C; print(C.TMP_PREFIX)' 2>/dev/null)"
+fi
+case "$HC_TMP_PREFIX" in
+  ""|*[!A-Za-z0-9._-]*)
+    bad "(C5) TMP_PREFIX could not be read from sa02m_homeconnect.constants ('$HC_TMP_PREFIX') — the sidecar rows have no anchor"
+    HC_TMP_PREFIX=".hc-" ;;
+  *)
+    if printf '%s\n' "$HC_ONDEVICE_SET" | grep -qxF "/var/lib/sa02m-homeconnect/${HC_TMP_PREFIX}*"; then
+        ok "(C5) the sidecar glob is the daemon's own atomic-write prefix (${HC_TMP_PREFIX}*, sa02m_homeconnect.constants.TMP_PREFIX)"
+    else
+        bad "(C5) sa02m_homeconnect.constants.TMP_PREFIX is '$HC_TMP_PREFIX' but the clear-list glob is not '${HC_TMP_PREFIX}*' — a torn token write survives every site"
+    fi ;;
+esac
+
+# ── CB — behavioural: the shipped wipes against a signed-in donor ────────
+hc_seed() { # <root> <enabled-line>
+    local r=$1 en=${2:-enabled = true}
+    mkdir -p "$r/var/lib/sa02m-homeconnect" "$r/run/sa02m-homeconnect" "$r/etc/sa02m-homeconnect" \
+             "$r/etc/systemd/system/multi-user.target.wants" "$r/opt/sa02m-homeconnect/sa02m_homeconnect"
+    printf '{"access_token":"DONOR-AT","refresh_token":"DONOR-RT"}\n' > "$r/var/lib/sa02m-homeconnect/tokens.json"
+    printf '{"day":"2026-09-28","used":42}\n'   > "$r/var/lib/sa02m-homeconnect/budget.json"
+    printf '[{"ha_id":"DONOR-HA","device_id":"hc-x"}]\n' > "$r/var/lib/sa02m-homeconnect/appliances.json"
+    printf '{"refresh_token":"DONOR-RT"}\n'       > "$r/var/lib/sa02m-homeconnect/${HC_TMP_PREFIX}Zq81xk.tmp"
+    printf '{"state":"connected"}\n'             > "$r/run/sa02m-homeconnect/status.json"
+    printf '{"user_code":"DONR-1234"}\n'          > "$r/run/sa02m-homeconnect/link.json"
+    printf '{"appliances":[]}\n'                  > "$r/run/sa02m-homeconnect/inventory.json"
+    printf '%s\n' '# SA-02m Home Connect' '[account]' "$en" 'client_id = INTEGRATOR_APP_1' 'vendor_client_id = ' 'host = simulator' 'link_requested_at = 0' '' '[control]' 'mode = off' \
+        > "$r/etc/sa02m-homeconnect/sa02m-homeconnect.conf"
+    printf '[Unit]\n' > "$r/etc/systemd/system/sa02m-homeconnect.service"
+    printf 'code\n'   > "$r/opt/sa02m-homeconnect/sa02m_homeconnect/main.py"
+    ln -s ../sa02m-homeconnect.service \
+        "$r/etc/systemd/system/multi-user.target.wants/sa02m-homeconnect.service" 2>/dev/null \
+        || printf 'unit-wants-link\n' > "$r/etc/systemd/system/multi-user.target.wants/sa02m-homeconnect.service"
+}
+
+# The conf as the DAEMON reads it: "<enabled> <client_id> <host>" or nothing.
+hc_conf_view() { # <conf>
+    [ -n "$PY" ] || return 0
+    PYTHONPATH="$HC_PKG" "$PY" -c 'import sys
+from sa02m_homeconnect import config
+c = config.load(sys.argv[1])
+print("%s %s %s" % (c.enabled, c.client_id, c.host))' "$1" 2>/dev/null
+}
+
+make_hc_ondevice_probe() { # <src> <out>
+    local body
+    body="$(extract_fn "$1" wipe_homeconnect_identity)"
+    [ -n "$body" ] || return 90
+    body="$(printf '%s\n' "$body" \
+        | sed -e 's#\(^\|[[:space:]"]\)/var/lib/sa02m-homeconnect#\1"$SBROOT"/var/lib/sa02m-homeconnect#g' \
+              -e 's#\(^\|[[:space:]"]\)/etc/sa02m-homeconnect#\1"$SBROOT"/etc/sa02m-homeconnect#g' \
+              -e 's#\(^\|[[:space:]"]\)/run/sa02m-homeconnect#\1"$SBROOT"/run/sa02m-homeconnect#g')"
+    if printf '%s\n' "$body" | sed 's/#.*$//' | sed 's#"\$SBROOT"/#@SB@/#g' \
+         | grep -Eq '(^|[[:space:]"])/(var/lib|etc|run)/sa02m-homeconnect'; then
+        return 91
+    fi
+    {
+        echo '#!/usr/bin/env bash'
+        echo 'set -euo pipefail'
+        echo 'SBROOT="$1"; REC="$2"'
+        # At the stop: were the tokens still there (the stop must come first),
+        # and was the conf already disabled (so the daemon drops its topics)?
+        echo 'systemctl(){ printf "%s\n" "systemctl $*" >> "$REC"; if [ "$1" = stop ]; then [ -e "$SBROOT/var/lib/sa02m-homeconnect/tokens.json" ] && echo "stop-before-wipe" >> "$REC"; grep -Eiq "^[[:space:]]*enabled[[:space:]]*[=:][[:space:]]*(1|true|yes|on)[[:space:]]*$" "$SBROOT/etc/sa02m-homeconnect/sa02m-homeconnect.conf" 2>/dev/null && echo "stop-with-conf-enabled" >> "$REC"; fi; return 0; }'
+        echo 'timeout(){ shift; "$@"; }'
+        echo 'log(){ :; }'
+        printf '%s\n' "$body"
+        echo 'wipe_homeconnect_identity'
+    } > "$2"
+}
+
+make_hc_offline_probe() { # <src> <out> <shell>
+    local body
+    body="$(extract_fn "$1" wipe_homeconnect_identity)"
+    [ -n "$body" ] || return 90
+    {
+        echo "#!/usr/bin/env $3"
+        echo 'set -eu'
+        printf '%s\n' "$body"
+        echo 'wipe_homeconnect_identity "$1"'
+    } > "$2"
+}
+
+hc_run() { # <form> <probe> <root> <rec> <shell>
+    if [ "$1" = ondevice ]; then bash "$2" "$3" "$4"; else "$5" "$2" "$3"; fi
+}
+
+hc_run_site() { # <label> <src> <form> [shell for offline: bash|dash]
+    local lbl=$1 src=$2 form=$3 sh=${4:-bash} root="$SANDBOX/hc-$1" probe="$SANDBOX/hc-$1.probe.sh"
+    local rec="$SANDBOX/hc-$1.systemctl.log" rc=0 view
+    rm -rf "$root"; mkdir -p "$root"; : > "$rec"
+    hc_seed "$root"
+    if [ "$form" = ondevice ]; then make_hc_ondevice_probe "$src" "$probe" || rc=$?
+    else make_hc_offline_probe "$src" "$probe" "$sh" || rc=$?; fi
+    case "$rc" in
+      90) bad "(CB/$lbl) wipe_homeconnect_identity() could not be extracted — nothing behavioural was run"; return ;;
+      91) bad "(CB/$lbl) the sandbox retarget failed — refusing to run (it would edit the host's real /etc)"; return ;;
+    esac
+    hc_run "$form" "$probe" "$root" "$rec" "$sh" || { bad "(CB/$lbl) the wipe exited non-zero on a signed-in donor"; return; }
+    ok "(CB/$lbl) the shipped Home Connect wipe ran clean on a signed-in donor ($form${4:+, $sh})"
+
+    if [ -d "$root/var/lib/sa02m-homeconnect" ] && [ -z "$(ls -A "$root/var/lib/sa02m-homeconnect")" ]; then
+        ok "(CB/$lbl) the state dir is empty (tokens, budget, appliances and the .hc- sidecar gone); the dir stays"
+    else
+        bad "(CB/$lbl) the state dir is gone or not empty: $(ls -A "$root/var/lib/sa02m-homeconnect" 2>&1 | tr '\n' ' ')"
+    fi
+    view="$(hc_conf_view "$root/etc/sa02m-homeconnect/sa02m-homeconnect.conf")"
+    if [ -z "$PY" ]; then
+        bad "(CB/$lbl) no python — the conf cannot be read through the daemon's own parser"
+    elif [ "$view" = "False INTEGRATOR_APP_1 simulator" ]; then
+        ok "(CB/$lbl) the daemon's parser reads the conf as disabled; Client ID and host kept (configuration)"
+    else
+        bad "(CB/$lbl) the daemon's parser reads the wiped conf as '$view' — want 'False INTEGRATOR_APP_1 simulator'"
+    fi
+    if [ -f "$root/etc/systemd/system/sa02m-homeconnect.service" ] && [ -f "$root/opt/sa02m-homeconnect/sa02m_homeconnect/main.py" ]; then
+        ok "(CB/$lbl) the unit file and the package survive (software, not the sign-in)"
+    else
+        bad "(CB/$lbl) the wipe removed installed software (unit file or package)"
+    fi
+    case "$form" in
+      ondevice)
+        if [ -d "$root/run/sa02m-homeconnect" ] && [ -z "$(ls -A "$root/run/sa02m-homeconnect")" ]; then
+            ok "(CB/$lbl) /run/sa02m-homeconnect emptied (the live sign-in code, status and inventory gone), dir kept"
+        else
+            bad "(CB/$lbl) /run/sa02m-homeconnect still holds: $(ls -A "$root/run/sa02m-homeconnect" 2>&1 | tr '\n' ' ')"
+        fi
+        if grep -q 'systemctl stop sa02m-homeconnect' "$rec" && grep -q 'systemctl disable sa02m-homeconnect' "$rec"; then
+            ok "(CB/$lbl) the client unit was stopped AND disabled (recorded by the shim)"
+        else
+            bad "(CB/$lbl) stop/disable not recorded — the donor's daemon keeps its token in memory, and a clone boots enabled"
+        fi
+        if grep -qx 'stop-before-wipe' "$rec"; then
+            ok "(CB/$lbl) the daemon was stopped BEFORE its tokens were removed"
+        else
+            bad "(CB/$lbl) the stop ran after the wipe (or never) — a refresh in flight writes the token back"
+        fi
+        if grep -qx 'stop-with-conf-enabled' "$rec"; then
+            bad "(CB/$lbl) the daemon was stopped with its conf still enabled — it marks its retained topics instead of removing them"
+        else
+            ok "(CB/$lbl) the conf was disabled BEFORE the stop (the daemon removes its retained appliance topics)"
+        fi ;;
+      offline)
+        if [ -e "$root/run/sa02m-homeconnect/status.json" ]; then
+            ok "(CB/$lbl) the offline wipe does not touch /run (never in the image)"
+        else
+            bad "(CB/$lbl) the offline wipe cleared /run — a dead line: tmpfs is not in the image"
+        fi
+        if [ -e "$root/etc/systemd/system/multi-user.target.wants/sa02m-homeconnect.service" ] \
+           || [ -L "$root/etc/systemd/system/multi-user.target.wants/sa02m-homeconnect.service" ]; then
+            bad "(CB/$lbl) the client unit is still enabled in the image"
+        else
+            ok "(CB/$lbl) the client unit is disabled in the image (wants link removed)"
+        fi ;;
+    esac
+
+    local before after
+    before="$(snapshot "$root")"
+    hc_run "$form" "$probe" "$root" "$rec" "$sh" >/dev/null 2>&1; rc=$?
+    after="$(snapshot "$root")"
+    [ "$rc" -eq 0 ] && [ "$before" = "$after" ] \
+        && ok "(CB/$lbl) idempotent — a second run is a byte-identical no-op, exit 0" \
+        || bad "(CB/$lbl) not idempotent (rc=$rc)"
+
+    local bare="$SANDBOX/hc-$1.bare" created
+    rm -rf "$bare"; mkdir -p "$bare/etc" "$bare/var/lib"
+    hc_run "$form" "$probe" "$bare" "$rec" "$sh" >/dev/null 2>&1; rc=$?
+    created="$(find "$bare" -name '*homeconnect*' 2>/dev/null | head -n 5)"
+    [ "$rc" -eq 0 ] && [ -z "$created" ] \
+        && ok "(CB/$lbl) a rootfs without the module: exit 0, creates nothing" \
+        || bad "(CB/$lbl) rootfs without the module: rc=$rc created='$created' — an abort here kills the capture"
+
+    local var="$SANDBOX/hc-$1.var"
+    rm -rf "$var"; mkdir -p "$var"; hc_seed "$var" 'ENABLED : on'
+    hc_run "$form" "$probe" "$var" "$rec" "$sh" >/dev/null 2>&1
+    view="$(hc_conf_view "$var/etc/sa02m-homeconnect/sa02m-homeconnect.conf")"
+    [ "$view" = "False INTEGRATOR_APP_1 simulator" ] \
+        && ok "(CB/$lbl) 'ENABLED : on' (valid for configparser) is forced off too" \
+        || bad "(CB/$lbl) 'ENABLED : on' survived as '$view' — the clone would call the donor's cloud account"
+
+    local lk="$SANDBOX/hc-$1.link" victim="$SANDBOX/hc-$1.victim"
+    rm -rf "$lk"; mkdir -p "$lk"; hc_seed "$lk"
+    printf 'root:$6$hc-planted-victim:19000:0:99999:7:::\nenabled = true\n' > "$victim"
+    rm -f "$lk/etc/sa02m-homeconnect/sa02m-homeconnect.conf"
+    ln -s "$victim" "$lk/etc/sa02m-homeconnect/sa02m-homeconnect.conf"
+    local vb; vb="$(cksum < "$victim")"
+    hc_run "$form" "$probe" "$lk" "$rec" "$sh" >/dev/null 2>&1; rc=$?
+    if [ "$rc" -eq 0 ] && [ "$(cksum < "$victim")" = "$vb" ] \
+       && [ ! -e "$lk/etc/sa02m-homeconnect/sa02m-homeconnect.conf" ] && [ ! -L "$lk/etc/sa02m-homeconnect/sa02m-homeconnect.conf" ]; then
+        ok "(CB/$lbl) a symlinked conf is dropped, never followed: victim identical, no copy at the conf name"
+    else
+        bad "(CB/$lbl) symlinked conf: rc=$rc, victim identical=$([ "$(cksum < "$victim")" = "$vb" ] && echo yes || echo NO)"
+    fi
+
+    local dl="$SANDBOX/hc-$1.dirlink" vdir="$SANDBOX/hc-$1.victimdir"
+    rm -rf "$dl" "$vdir"; mkdir -p "$dl" "$vdir"; hc_seed "$dl"
+    printf 'host-file\n' > "$vdir/precious"
+    printf 'host-dot\n'  > "$vdir/.hc-host.tmp"
+    rm -rf "$dl/var/lib/sa02m-homeconnect"
+    ln -s "$vdir" "$dl/var/lib/sa02m-homeconnect"
+    hc_run "$form" "$probe" "$dl" "$rec" "$sh" >/dev/null 2>&1; rc=$?
+    if [ "$rc" -eq 0 ] && [ -f "$vdir/precious" ] && [ -f "$vdir/.hc-host.tmp" ] \
+       && [ ! -e "$dl/var/lib/sa02m-homeconnect" ] && [ ! -L "$dl/var/lib/sa02m-homeconnect" ]; then
+        ok "(CB/$lbl) a symlinked state dir is dropped, never descended: the victim dir keeps its files"
+    else
+        bad "(CB/$lbl) symlinked state dir: rc=$rc, victim now: $(ls -A "$vdir" 2>&1 | tr '\n' ' '), link still there: $([ -L "$dl/var/lib/sa02m-homeconnect" ] && echo yes || echo no)"
+    fi
+}
+
+hc_run_site reset      "$RESET_SRC"       ondevice
+hc_run_site stream     "$STREAM_SRC"      ondevice
+hc_run_site patch      "$PATCH_SRC"       offline bash
+hc_run_site autorun    "$AUTORUN_SRC"     offline bash
+hc_run_site autorunfel "$AUTORUN_FEL_SRC" offline bash
+hc_run_site sshflash   "$SSH_FLASH_SRC"   offline bash
+if command -v dash >/dev/null 2>&1; then
+    hc_run_site autorun-sh    "$AUTORUN_SRC"     offline dash
+    hc_run_site autorunfel-sh "$AUTORUN_FEL_SRC" offline dash
+else
+    echo "  SKIP  (CB) no dash on this host — the receivers' Home Connect wipe was run under bash only (a skip is not a pass)"
+fi
+
+# ── CB2 — the shipped Home Connect belt (patch site), run for real ───────
+hc_abody="$(extract_fn "$PATCH_SRC" assert_homeconnect_identity_clean)"
+if [ -z "$hc_abody" ]; then
+    bad "(CB2) assert_homeconnect_identity_clean() could not be extracted — the Home Connect belt has no buckle"
+else
+    hc_aprobe="$SANDBOX/hc-assert.probe.sh"
+    {
+        echo '#!/usr/bin/env bash'
+        echo 'set -euo pipefail'
+        echo 'die(){ echo "FATAL: $*" >&2; exit 1; }'
+        printf '%s\n' "$hc_abody"
+        echo 'assert_homeconnect_identity_clean "$1"'
+    } > "$hc_aprobe"
+    if printf '%s\n' "$hc_abody" | sed 's/#.*$//' | grep -q '|| true'; then
+        bad "(CB2) the Home Connect belt carries a || true — the fail-open that neutered the boot.scr guard"
+    fi
+    if bash "$hc_aprobe" "$SANDBOX/hc-patch" >/dev/null 2>&1; then
+        ok "(CB2) the Home Connect belt PASSES a correctly wiped image"
+    else
+        bad "(CB2) the Home Connect belt fails a correctly wiped image — it would abort every capture"
+    fi
+    hc_bare="$SANDBOX/hc-bare-image"; rm -rf "$hc_bare"; mkdir -p "$hc_bare/etc"
+    bash "$hc_aprobe" "$hc_bare" >/dev/null 2>&1 \
+        && ok "(CB2) the Home Connect belt PASSES an image without the module (the factory image)" \
+        || bad "(CB2) the Home Connect belt fails an image without the module — every factory capture would abort"
+    for one in tokens sidecar dotfile enabled wantslink wantsfile conflink dirlink; do
+        d="$SANDBOX/hc-dirty-$one"; rm -rf "$d"; mkdir -p "$d"; hc_seed "$d"
+        rm -f "$d/var/lib/sa02m-homeconnect"/* "$d/var/lib/sa02m-homeconnect"/.hc-* \
+              "$d/etc/systemd/system/multi-user.target.wants/sa02m-homeconnect.service"
+        sed -i 's/^enabled = true$/enabled = false/' "$d/etc/sa02m-homeconnect/sa02m-homeconnect.conf"
+        case "$one" in
+          tokens)    printf 'DONOR-RT\n' > "$d/var/lib/sa02m-homeconnect/tokens.json" ;;
+          sidecar)   printf 'DONOR-RT\n' > "$d/var/lib/sa02m-homeconnect/${HC_TMP_PREFIX}Zq81xk.tmp" ;;
+          dotfile)   printf 'x\n' > "$d/var/lib/sa02m-homeconnect/.unknown-shape" ;;
+          enabled)   sed -i 's/^enabled = false$/Enabled: Yes/' "$d/etc/sa02m-homeconnect/sa02m-homeconnect.conf" ;;
+          wantslink) ln -s /nonexistent-on-this-host/sa02m-homeconnect.service \
+                         "$d/etc/systemd/system/multi-user.target.wants/sa02m-homeconnect.service" ;;
+          wantsfile) printf 'unit-wants-link\n' > "$d/etc/systemd/system/multi-user.target.wants/sa02m-homeconnect.service" ;;
+          conflink)  rm -f "$d/etc/sa02m-homeconnect/sa02m-homeconnect.conf"
+                     ln -s /nonexistent-on-this-host/conf "$d/etc/sa02m-homeconnect/sa02m-homeconnect.conf" ;;
+          dirlink)   rmdir "$d/var/lib/sa02m-homeconnect"
+                     ln -s /nonexistent-on-this-host/hc "$d/var/lib/sa02m-homeconnect" ;;
+        esac
+        if bash "$hc_aprobe" "$d" >/dev/null 2>&1; then
+            bad "(CB2) the Home Connect belt missed a dirty '$one' — that dimension is unguarded"
+        else
+            ok "(CB2) the Home Connect belt catches a dirty '$one'"
         fi
     done
 fi

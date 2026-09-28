@@ -98,6 +98,7 @@ HA-автодискавери через WB). Это **аддитивно**: в�
 | Carel AHU | `carel-{port}-{addr}` | `carel-COM3-1` |
 | LED type 120 | `led-{port}-{addr}` | `led-COM3-13` |
 | Сценарий (виртуальный) | `sa02m-rules-{id}` | `sa02m-rules-s1` |
+| Прибор Home Connect (облако BSH) | `hc-{haId}` | `hc-siemens-sn53es02ce-68a40e2c5a2e` |
 
 Карты Carel / LED — `docs/contracts/carel-ahu.md`, `docs/contracts/led-mb2ws.md`.
 
@@ -618,6 +619,28 @@ insurance-опрос.
   Меньшее значение лечит обрыв длинного ответа на загруженной линии ценой
   лишних транзакций; глобально — переменная окружения
   `SA02M_MR02M_AI_CHUNK_REGS`.
+
+---
+
+## Home Connect — бытовые приборы BSH (`hc-*`)
+
+Приборы Bosch/Siemens/Neff/Gaggenau из аккаунта Home Connect интегратора
+публикует клиент `sa02m-homeconnect` (необязательный модуль, `install.sh
+--with-homeconnect`). **Только чтение**: топиков `/on` нет, клиент ни на что не
+подписан. Всё retained, QoS 1, `meta.driver = "sa02m-homeconnect"`.
+
+Единственный дом всего остального — `docs/contracts/home-connect.md`: как
+строится `hc-{haId}` (§3: нижний регистр, всё вне `[a-z0-9-]` → `-`, ≤ 64),
+таблица контролов и правила значений (§4 — `connected`, `power_on`,
+`door_open`, `running`, `finished`, `operation_state`, `active_program`,
+`remaining_s`, `progress_pct`, `last_event`, …), когда ставится
+`meta/error = "r"` и когда топики удаляются (§5). Здесь они не повторяются.
+
+```bash
+# все приборы Home Connect и их доступность
+mosquitto_sub -h 127.0.0.1 -v -t '/devices/+/meta/error' | grep '/hc-'
+mosquitto_sub -h 127.0.0.1 -v -t '/devices/hc-+/controls/#'
+```
 
 ---
 

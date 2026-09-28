@@ -184,6 +184,44 @@ wipe_homekit_identity() {
     fi
 }
 
+wipe_homeconnect_identity() {
+    log "сброс Home Connect (вход в аккаунт BSH, клиент выключен)"
+    # Home Connect sign-in (docs/contracts/image-identity-reset.md §8): the
+    # state dir holds the OAuth refresh token of the owner's BSH account, so a
+    # board carrying it reads the donor household's appliances. Order: the conf
+    # to `enabled = false` FIRST — the daemon, stopping with its conf disabled
+    # (or seeing it within 2 s), removes its retained appliance topics instead
+    # of leaving them on the broker — then stop + disable (the daemon holds the
+    # token in memory and a refresh would write it back), then the contents.
+    # The unit, the dirs (tmpfiles.d owns them), the Client ID and the software
+    # stay: a clone boots with the client off, as on a first install.
+    # /etc/sa02m-homeconnect is root:www-data 0770: a symlink at the conf is
+    # never the installer's, and sed -i would read through it as root — drop it
+    # instead (an absent conf reads as disabled). Absent file: nothing to do.
+    if [ -L /etc/sa02m-homeconnect/sa02m-homeconnect.conf ]; then
+        rm -f /etc/sa02m-homeconnect/sa02m-homeconnect.conf
+    elif [ -f /etc/sa02m-homeconnect/sa02m-homeconnect.conf ]; then
+        # configparser reads the key case-insensitively and accepts `:` too.
+        sed -i 's/^[[:space:]]*[Ee][Nn][Aa][Bb][Ll][Ee][Dd][[:space:]]*[=:].*/enabled = false/' \
+            /etc/sa02m-homeconnect/sa02m-homeconnect.conf
+    fi
+    timeout 10 systemctl stop sa02m-homeconnect.service 2>/dev/null || true
+    timeout 10 systemctl disable sa02m-homeconnect.service 2>/dev/null || true
+    # Contents, never the dir. `.hc-*` is the atomic-write sidecar shape
+    # (fsutil.atomic_write) — a torn write of the token file is the same secret
+    # under another name, and `*` does not expand to dot-files. /run holds the
+    # live sign-in code (link.json), the status and the appliance inventory.
+    # A symlink AT the state dir is dropped, never descended (the glob would
+    # empty whatever it points at); tmpfiles.d re-creates the real dir at boot.
+    if [ -L /var/lib/sa02m-homeconnect ]; then
+        rm -f /var/lib/sa02m-homeconnect
+    else
+        rm -f /var/lib/sa02m-homeconnect/* \
+              /var/lib/sa02m-homeconnect/.hc-*
+    fi
+    rm -f /run/sa02m-homeconnect/*
+}
+
 prepare_clone_ids() {
     log "сброс machine-id (ssh keys — непосредственно перед dd)"
     truncate -s 0 /etc/machine-id
@@ -193,6 +231,7 @@ prepare_clone_ids() {
     wipe_cloud_enrollment
     wipe_alice_enrollment
     wipe_homekit_identity
+    wipe_homeconnect_identity
     prepare_firstboot_resize
     touch /root/.not_logged_in_yet
     sync

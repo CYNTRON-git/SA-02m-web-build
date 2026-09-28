@@ -428,6 +428,81 @@ class DaemonTest(unittest.TestCase):
         self.wait(lambda: self.status().get("appliances") == 1, "count 1")
         self.stop(d)
 
+    # ── value heartbeat (Phase-3 staleness: consumers age values after 90 s) ─
+    def value_resends(self, since: int, dev: str) -> List[Any]:
+        """Control-VALUE publishes for `dev` after log index `since`."""
+        prefix = "/devices/%s/controls/" % dev
+        return [(t, p) for t, p in self.link.log[since:]
+                if t.startswith(prefix) and "/" not in t[len(prefix):]]
+
+    def test_value_heartbeat_only_while_stream_alive(self) -> None:
+        self.write_conf()
+        self.prelink()
+        self.fake.sse_scripts = [[sse_event("KEEP-ALIVE"), "WAIT:drop"]]
+        with mock.patch.object(M, "VALUE_HEARTBEAT_S", 0.15), \
+                mock.patch.object(M, "STREAM_QUIET_MAX_S", 30.0):
+            d = self.start(self.daemon())
+            self.wait(lambda: self.status().get("state") == C.STATE_CONNECTED, "connected")
+            self.wait(lambda: self.topic(DEV_A, "controls/remaining_s") == "1800", "detail read")
+            self.wait(lambda: self.topic(DEV_A, "meta/error") == "", "A live")
+            mark = len(self.link.log)
+            calls_before = len(self.fake.calls())
+            self.wait(lambda: len([1 for t, _ in self.value_resends(mark, DEV_A)
+                                   if t.endswith("/controls/running")]) >= 2,
+                      "running re-sent twice by the heartbeat (value unchanged)")
+            resent = self.value_resends(mark, DEV_A)
+            self.assertIn(("/devices/%s/controls/running" % DEV_A, "1"), resent)
+            self.assertIn(("/devices/%s/controls/remaining_s" % DEV_A, "1800"), resent)
+            # Disconnected appliance ("r"): its values are not known-current.
+            self.assertEqual(self.value_resends(mark, DEV_B), [])
+            # Values only: no meta topic rides the heartbeat.
+            self.assertFalse(any("/meta" in t for t, _ in self.link.log[mark:]
+                                 if not t.endswith("/meta/error")))
+            # No cloud call for it: the fake saw nothing new, the budget agrees.
+            self.assertEqual(len(self.fake.calls()), calls_before)
+            self.assert_every_request_charged()
+
+            # Stream down ⇒ the re-sends stop (consumers then age the values).
+            self.fake.overrides[C.EVENTS_PATH] = [(503, {}, {})] * 400
+            self.fake.gate("drop").set()
+            self.wait(lambda: self.status().get("stream") == "down", "stream down")
+            mark = len(self.link.log)
+            time.sleep(1.2)  # 8 heartbeat periods
+            self.assertEqual(self.status().get("stream"), "down")  # still down: window valid
+            self.assertEqual(self.value_resends(mark, DEV_A), [])
+            self.stop(d)
+
+    def test_value_heartbeat_stops_on_a_silent_stream(self) -> None:
+        self.write_conf()
+        self.prelink()
+        # Up, one keep-alive on the test's signal, then silence (the reader's
+        # own deadline — 15 s here — would still call the stream up).
+        self.fake.sse_scripts = [["WAIT:ka", sse_event("KEEP-ALIVE"), "HANG"]]
+        with mock.patch.object(M, "VALUE_HEARTBEAT_S", 0.1), \
+                mock.patch.object(M, "STREAM_QUIET_MAX_S", 0.6):
+            d = self.start(self.daemon())
+            self.wait(lambda: self.status().get("state") == C.STATE_CONNECTED, "connected")
+            self.wait(lambda: self.topic(DEV_A, "meta/error") == "", "A live")
+            self.wait(lambda: self.topic(DEV_A, "controls/remaining_s") == "1800", "detail read")
+            # Silent since the stream opened: once STREAM_QUIET_MAX_S has passed,
+            # nothing is re-sent even though the stream is up.
+            time.sleep(0.8)
+            mark = len(self.link.log)
+            time.sleep(0.4)
+            self.assertTrue(d.stream_up)
+            self.assertEqual(self.value_resends(mark, DEV_A), [])
+            # The keep-alive alone proves the socket alive again: the beat resumes.
+            mark = len(self.link.log)
+            self.fake.gate("ka").set()
+            self.wait(lambda: self.value_resends(mark, DEV_A) != [],
+                      "heartbeat resumed by the keep-alive")
+            time.sleep(0.8)  # past STREAM_QUIET_MAX_S since the keep-alive
+            mark = len(self.link.log)
+            time.sleep(0.6)  # 6 heartbeat periods of silence
+            self.assertTrue(d.stream_up)  # the reader still calls it up: the window is valid
+            self.assertEqual(self.value_resends(mark, DEV_A), [])
+            self.stop(d)
+
 
 if __name__ == "__main__":
     unittest.main()

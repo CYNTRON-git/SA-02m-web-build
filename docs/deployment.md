@@ -192,6 +192,18 @@ OTA обновляет код, установку делает установщ�
 пользователя стартовать не может). Установка — раздел «Необязательный модуль
 Apple HomeKit» ниже.
 
+**Практическое правило для Home Connect.** То же, что у HomeKit, без venv:
+клиент — стандартная библиотека Python плюс apt `python3-paho-mqtt`, поэтому
+весь его код (`opt/sa02m-homeconnect/**`, юнит `sa02m-homeconnect.service`,
+`usr/local/sbin/sa02m-homeconnect-web-trigger.sh`, грант
+`etc/sudoers.d/sa02m-homeconnect`, CGI `sa02m_homeconnect_api.cgi`,
+`static/js/app/homeconnect.js`) приезжает по OTA на каждую плату, а
+**установка** — системный пользователь `sa02m-homeconnect`, каталоги и засевка
+`/etc/sa02m-homeconnect/sa02m-homeconnect.conf` — только в
+`scripts/06d-homeconnect.sh`. Без этого прогона карточка показывает «не
+установлен», строки «Home Connect» в каталоге служб нет. Установка — раздел
+«Необязательный модуль Home Connect» ниже.
+
 Состояние updater: `/var/lib/sa02m-update` (runner `/usr/local/libexec/sa02m-update-runner`,
 ключи `/etc/sa02m-update/trusted-keys/`). Bootstrap релиза N ставит runner/keys/units
 через `scripts/03-webserver.sh` / `update-www-only.sh` (`[ -f ]`-гарды); применение
@@ -821,6 +833,70 @@ journalctl -u sa02m-homekit -b --no-pager | grep -E '[0-9]{3}-[0-9]{2}-[0-9]{3}|
 процедура G4 в `docs/decisions/homekit-home-connect.md` (там же записываются
 результаты). Удаление модуля не автоматизировано.
 
+## Необязательный модуль Home Connect (`06d-homeconnect.sh`)
+
+Клиент BSH Home Connect (приборы Bosch/Siemens/Neff/Gaggenau как устройства
+MQTT, **только чтение** — решение Оператора Q-E) ставится **только по явному
+запросу**, в заводской образ не входит. Контракт —
+`docs/contracts/home-connect.md`; руководство для наладчика —
+`docs/HOME_CONNECT_INTEGRATION.md`.
+
+### Предусловия
+
+- `scripts/05-mqtt.sh` отработал (mosquitto и `python3-paho-mqtt` — клиент
+  публикует на `127.0.0.1:1883`); если paho нет, `06d` ставит его сам
+  (`sa02m_pkg_install_tier optional`), без него клиент честно показывает «нет
+  компонентов».
+- Никакого pip и никакого wheelhouse: модуль ставится и без интернета на плате
+  (интернет нужен позже — самому клиенту, для облака BSH).
+
+### Шаги
+
+```
+# вариант 1: вместе с полной установкой / обновлением
+sudo ./install.sh --refresh --with-homeconnect    # или SA02M_WITH_HOMECONNECT=1
+# вариант 2: только модуль, на плате, где install.sh уже отработал
+sudo bash scripts/06d-homeconnect.sh
+```
+
+Уже установленный клиент `install.sh` обновляет и без флага (признак — есть
+пользователь `sa02m-homeconnect`); `SA02M_SKIP_HOMECONNECT=1` — не трогать
+модуль вовсе. Повторный запуск идемпотентен: обновляет код, не трогает конфиг
+(Client ID), токены, счёт вызовов и решение оператора «включён/выключен».
+Конфиг засевается собственной функцией пакета (`config.render` значений по
+умолчанию: `enabled = false`, без Client ID, хост `api`) — отдельного файла-
+шаблона нет. Порядок шагов и почему он такой — шапка
+`scripts/06d-homeconnect.sh`.
+
+### Проверка на стенде
+
+После установки (клиент ещё выключен):
+
+```
+systemctl is-enabled sa02m-homeconnect           # disabled
+systemctl is-active sa02m-homeconnect            # inactive
+curl -s -b "session_token=<токен>" http://127.0.0.1/cgi-bin/sa02m_homeconnect_api.cgi   # "state":"disabled", "read_only":true
+stat -c '%a %U:%G %n' /var/lib/sa02m-homeconnect /run/sa02m-homeconnect \
+      /etc/sa02m-homeconnect /etc/sa02m-homeconnect/sa02m-homeconnect.conf
+# 700 sa02m-homeconnect:sa02m-homeconnect · 750 sa02m-homeconnect:www-data ·
+# 770 root:www-data · 660 root:www-data
+```
+
+После «Client ID → Включить → Подключить» и входа на странице BSH:
+
+```
+cat /run/sa02m-homeconnect/status.json            # "state":"connected", "stream":"up"
+stat -c '%a %n' /var/lib/sa02m-homeconnect/tokens.json   # 600
+sudo -u www-data cat /var/lib/sa02m-homeconnect/tokens.json   # Permission denied
+journalctl -u sa02m-homeconnect -b --no-pager | grep -iE 'access_token|refresh_token|device_code' \
+      || echo "токенов в журнале нет"
+mosquitto_sub -h 127.0.0.1 -v -t '/devices/hc-+/controls/#' -C 20
+```
+
+Доступность облака BSH из России и настоящий вход SingleKey ID — процедуры
+G6/G7 в `docs/decisions/homekit-home-connect.md` (там же записываются
+результаты). Удаление модуля не автоматизировано.
+
 ## Подготовка золотого образа (мастер для клонирования)
 
 Единственный дом процедуры санитизации платы-мастера перед снятием образа eMMC
@@ -932,6 +1008,29 @@ sed -i 's/^[[:space:]]*enabled[[:space:]]*=.*/enabled = false/' \
 `ls -A /var/lib/sa02m-homekit` пусто; `systemctl is-enabled sa02m-homekit` =
 `disabled`; в конфиге `enabled = false`. Что делает с этим пайплайн снятия
 образа и что пока нет — `docs/contracts/image-identity-reset.md` §7.
+
+### 2b. Home Connect — отвязать (если модуль установлен)
+
+Мастер нести вход в аккаунт BSH не должен: токен — вход **владельца**, и каждый
+клон читал бы его приборы. Проверка: `id -u sa02m-homeconnect` → «no such
+user». Если модуль установлен — сначала `enabled = false` (остановленный с
+выключенным конфигом клиент сам удаляет свои retained-топики `hc-*` с брокера),
+затем остановка, затем содержимое каталогов:
+
+```
+sed -i 's/^[[:space:]]*enabled[[:space:]]*=.*/enabled = false/' \
+      /etc/sa02m-homeconnect/sa02m-homeconnect.conf
+systemctl stop sa02m-homeconnect
+systemctl disable sa02m-homeconnect
+rm -f /var/lib/sa02m-homeconnect/* /var/lib/sa02m-homeconnect/.hc-*
+rm -f /run/sa02m-homeconnect/*
+```
+
+Client ID интегратора в конфиге остаётся (не секрет). Проверка:
+`ls -A /var/lib/sa02m-homeconnect` пусто; `systemctl is-enabled
+sa02m-homeconnect` = `disabled`; в конфиге `enabled = false`. Пайплайн снятия
+образа делает то же на пяти площадках — `docs/contracts/image-identity-reset.md`
+§8.
 
 ### 3. Облако — отвязать
 
@@ -1093,6 +1192,8 @@ enabled-служба `regen-ssh-host-keys` на первом старте кло
       `sa02m-alice-client` = `disabled`.
 - [ ] HomeKit: пользователя `sa02m-homekit` нет, либо (шаг 2a)
       `/var/lib/sa02m-homekit` пуст, `enabled = false`, служба `disabled`.
+- [ ] Home Connect: пользователя `sa02m-homeconnect` нет, либо (шаг 2b)
+      `/var/lib/sa02m-homeconnect` пуст, `enabled = false`, служба `disabled`.
 - [ ] `enrolled = false` и пустой `device_id` в `agent.conf`.
 - [ ] в `sa02m-modbus-mqtt.yaml` — `devices: []` (0 устройств).
 - [ ] `stat -c %s /etc/machine-id` = `0`.

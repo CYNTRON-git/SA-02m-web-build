@@ -298,6 +298,8 @@
     "/etc/sa02m-alice-devices.conf",
     "/var/lib/sa02m-alice/",
     "/etc/sa02m-homekit/",
-    "/var/lib/sa02m-homekit/"
+    "/var/lib/sa02m-homekit/",
+    "/etc/sa02m-homeconnect/",
+    "/var/lib/sa02m-homeconnect/"
   ]
 }

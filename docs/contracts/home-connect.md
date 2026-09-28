@@ -149,6 +149,13 @@ payload в каждый топик закрытого набора этого у
 - `CONNECTED` прибора → `connected = 1` и перечитывание этого прибора;
   `DISCONNECTED` → `connected = 0`, `"r"`; `PAIRED` → перечитать список;
   `DEPAIRED` → топики прибора удаляются.
+- **Повтор значений, пока поток жив.** Пока поток событий жив (открыт, не
+  устарел и за последние `main.STREAM_QUIET_MAX_S` = 70 с пришло хоть что-то,
+  включая keep-alive), клиент раз в `main.VALUE_HEARTBEAT_S` = 60 с заново
+  публикует кешированные значения контролов приборов с `meta/error = ""` (без
+  меты, без вызовов облака — бюджет не тратится). Поток лёг или молчит —
+  повторов нет, и потребители, считающие значение устаревшим через 90 с
+  (Алиса), честно помечают его устаревшим.
 - **Остаточный риск, названный:** при аварийном падении процесса, которое
   systemd не перезапустит, retained-значения остаются без `"r"` — MQTT даёт
   один will на соединение, а приборов много. Перезапуск (`Restart=on-failure`)
@@ -350,9 +357,25 @@ vendor_preset` (bool), `appliances, appliances_connected, appliance_list`
 | `already_linked` | `link` при действующем входе (сначала `unlink`) |
 | `conf_write_failed` | запись конфига не удалась (+ `message`) |
 
-Коды самого CGI (`unauthorized`, `csrf`, CGI-вариант `not_installed` для
-`GET`, отказ/зависание диспетчера) определяет CGI этапа HC2 по образцу
-`homekit-bridge.md` §11.
+Транспорт — всегда HTTP 200 (идиом проекта), `Cache-Control: no-store`,
+`X-Content-Type-Options: nosniff`. Толчок хелпера — `timeout 11 sudo -n
+/usr/local/sbin/sa02m-homeconnect-web-trigger.sh <глагол>`; бюджет 8 с + 11 с <
+20 с `fastcgi_read_timeout` nginx. Если толчок случился, к ответу добавляется
+`"trigger":"ok"|"failed"|"timeout"` и, если хелпер назвал код ошибки из
+`[a-z_]`, `"trigger_error":"<код>"` (текст хелпера не эхом).
+
+**Коды самого CGI** (до диспетчера или вместо него; сверяются с литералами
+`www/network_config/cgi-bin/sa02m_homeconnect_api.cgi` строкой
+`homeconnect-cgi`, случай K):
+
+| Код CGI | Когда |
+|---|---|
+| `unauthorized` | нет живой сессии — ответ до любой работы, до чтения CSRF |
+| `csrf` (+ `error_code: "E_CSRF"`, `reason`) | POST без верного `X-SA02M-CSRF` (`docs/decisions/selective-csrf-policy.md`) |
+| `method_not_allowed` | метод не `GET`/`POST` |
+| `payload_too_large` | `CONTENT_LENGTH` > 16 КиБ или длиннее 6 цифр |
+| `not_installed` | пакета нет на плате (веб пришёл без модуля): `GET` → `{"ok":true,"state":"not_installed","linked":false,"read_only":true,…}`, `POST` → ошибка |
+| `homeconnect_api_failed` | диспетчер упал, завис (`timeout 8`) или вывел не JSON |
 
 ## 10. Привилегированный хелпер
 
@@ -367,8 +390,16 @@ vendor_preset` (bool), `appliances, appliances_connected, appliance_list`
 | `unlink` | `stop` → удалить `tokens.json` и хвосты `.hc-*.tmp` → `start`, если включён. **`budget.json` и `appliances.json` остаются**: первый — §7, второй нужен перезапущенному демону, чтобы удалить retained-топики приборов отвязанного аккаунта |
 
 Каждый `systemctl` — под `timeout`, удаление — только после полной остановки
-юнита, симлинк каталога состояния — отказ. Реализация и её гейт —
-этап HC2.
+юнита (`is-active` = `inactive`/`failed`; `deactivating` — отказ
+`still_running`), симлинк каталога состояния — отказ `state_dir_invalid`; в
+каталогах демона root только удаляет имена (`rm -f` удаляет ссылку, не её
+цель), `disable` и `unlink` удаляют и `link.json` (убитый демон сам его не
+уберёт). Глаголы идут по одному (`flock` на собственном файле хелпера;
+занято — `busy`). Статус при `disable` root не пишет: диспетчер выводит
+`disabled` из конфига (§6). Реализация —
+`usr/local/sbin/sa02m-homeconnect-web-trigger.sh`, грант —
+`etc/sudoers.d/sa02m-homeconnect` (четыре глагола), гейт — строка
+`homeconnect-trigger`.
 
 ## 11. Файлы и права
 
@@ -396,14 +427,18 @@ vendor_preset` (bool), `appliances, appliances_connected, appliance_list`
 не обычный файл, несколько жёстких ссылок, чужой владелец или биты группы/
 других — отказ без чтения.
 
-Юнит (этап HC2): `User=sa02m-homeconnect` (системный, без оболочки и дома),
+Юнит (`etc/systemd/system/sa02m-homeconnect.service`): `User=sa02m-homeconnect` (системный, без оболочки и дома),
 `SupplementaryGroups=www-data` (файлы 0640 для CGI), `ProtectSystem=strict`,
 `ReadWritePaths=/var/lib/sa02m-homeconnect /run/sa02m-homeconnect`,
 `NoNewPrivileges`, `RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX`,
 `MemoryMax=32M`, `CPUQuota=20%`, `TasksMax=16`, `Nice=10`,
-`Restart=on-failure`; `ExecStart=/usr/bin/python3 -m sa02m_homeconnect`,
-`Environment=PYTHONPATH=/opt/sa02m-homeconnect`. `www-data` в группу
-`sa02m-homeconnect` не входит — токенов не читает (P4).
+`Restart=on-failure`, `TimeoutStopSec=8s` (остановка укладывается в 10 с
+`timeout systemctl stop` хелпера); `ExecStart=/usr/bin/python3 -m
+sa02m_homeconnect`, `Environment=PYTHONPATH=/opt/sa02m-homeconnect`. `www-data`
+в группу `sa02m-homeconnect` не входит — токенов не читает (P4). Каталоги
+создаёт `opt/sa02m-homeconnect/tmpfiles.d/sa02m-homeconnect.conf`, который в
+`/etc/tmpfiles.d/` кладёт только установщик `06d` (OTA приносит его в `/opt`
+инертным: строки называют пользователя, которого на плате без модуля нет).
 
 ## 12. Жизненный цикл
 
@@ -431,11 +466,22 @@ vendor_preset` (bool), `appliances, appliances_connected, appliance_list`
 - **Веб-бэкап** — `/var/lib/sa02m-homeconnect/` не включается никогда;
   конфиг включается (Client ID не секрет).
 
-**Статус исполнения.** Этот контракт и пакет (`opt/sa02m-homeconnect/`,
-тесты) — этап HC1. Юнит, tmpfiles, хелпер, sudoers, CGI, карточка, установщик
-`06d`, списки OTA, factory reset, бэкап и пять площадок снятия образа —
-этап HC2; до его приземления пункты §10–§12 о них — требование, а не
-действующая защита.
+**Где это исполняется.** Установщик — `scripts/06d-homeconnect.sh`
+(`install.sh --with-homeconnect` или `SA02M_WITH_HOMECONNECT=1`; уже
+установленный клиент обновляется `install.sh` и без флага; в заводской образ не
+входит), юнит и tmpfiles — §11, хелпер и грант — §10, CGI — §9; списки «не
+разворачивать» OTA — `etc/sa02m-update-runner.sh` (`PRESERVE_PATHS`, загрузочный
+`PRESERVE_PREFIXES`), `opt/sa02m-update/lib/validate_package.py`,
+`scripts/offline-update-deploy-map.json`; перезапуск только активного —
+`restart_if_active` раннера и `scripts/pack-offline-update.py`; веб-бэкап —
+`etc/sa02m-web-backup.sh` (только конфиг) и `etc/sa02m-restore-backup.sh`
+(конфиг, без перезапуска юнита); factory reset —
+`wipe_homeconnect_signin()` в `etc/sa02m-factory-reset-runner.sh`; снятие образа
+— `wipe_homeconnect_identity()` на пяти площадках
+(`image-identity-reset.md` §8); «Пуск»/«Стоп» каталога служб —
+`homeconnect_sync_enabled` в `etc/sa02m-web-service-ctl.sh` (строка
+`homeconnect|Home Connect|sa02m-homeconnect.service`, «установлен» = пакет и
+системный пользователь). Проверки — §15.
 
 ## 13. Только чтение и вне объёма v1
 
@@ -478,7 +524,20 @@ vendor_preset` (bool), `appliances, appliances_connected, appliance_list`
 
 | Строка реестра / тест | Что доказывает | Состояние |
 |---|---|---|
-| `py-unit-homeconnect` (`opt/sa02m-homeconnect/tests/`, stdlib `unittest`, локальный фейк облака на `http.server`) | Device Flow (успех, `slow_down` +5 с, истечение серверное и локальное без вызова, отказ, неизвестный ID, чужой домен `verification_uri`), обновление (за 1 ч, сохранение старого refresh-токена, `invalid_grant` → маркер без секрета, ≤ 10/мин); бюджет (учёт до отправки, неудачные вызовы, переживает перезапуск, 800/1000, 429 блокирует всё, смена суток, недоверенный файл = 800); REST (только `GET`, ни один 4xx не повторяется, 5xx с паузой, 401 → одно обновление, перенаправление — ошибка, https-only); SSE (поля, многострочные данные, `id` из `haId`, пределы строки/события, переподключение после EOF и молчания дольше дедлайна, рост паузы, остановка прерывает чтение); таблица §4 и очистка id/имён; топики §3, `meta/error`, удаление; статус и права файлов §6/§11; диспетчер §9; демон целиком (вход → `connected` → события → топики, `DISCONNECTED` → `"r"` без переподключения, обрыв потока → `"r"` всем и восстановление с перечитыванием, отвязка и выключение чистят топики, отзыв переживает перезапуск, 429, небезопасный файл токенов не используется; ни токен, ни `device_code` не попадают в журнал, `/run` и MQTT; каждый запрос к фейку учтён в бюджете) | тесты действуют; строка реестра — ожидает регистрации (HC2/Оркестратор) |
-| `test_token_sinks.py` (в составе `py-unit-homeconnect`) | идентификаторы `access_token`/`refresh_token` есть только в `oauth.py` и `token_store.py`, `device_code` — только в `oauth.py` (allow-list, не список запрещённых мест); обход не пуст, обе «законные» точки реально содержат идентификаторы | действует (отдельная статическая строка `homeconnect-token-sinks` из плана — на усмотрение HC2) |
+| `py-unit-homeconnect` (`opt/sa02m-homeconnect/tests/`, stdlib `unittest`, локальный фейк облака на `http.server`) | Device Flow (успех, `slow_down` +5 с, истечение серверное и локальное без вызова, отказ, неизвестный ID, чужой домен `verification_uri`), обновление (за 1 ч, сохранение старого refresh-токена, `invalid_grant` → маркер без секрета, ≤ 10/мин); бюджет (учёт до отправки, неудачные вызовы, переживает перезапуск, 800/1000, 429 блокирует всё, смена суток, недоверенный файл = 800); REST (только `GET`, ни один 4xx не повторяется, 5xx с паузой, 401 → одно обновление, перенаправление — ошибка, https-only); SSE (поля, многострочные данные, `id` из `haId`, пределы строки/события, переподключение после EOF и молчания дольше дедлайна, рост паузы, остановка прерывает чтение); таблица §4 и очистка id/имён; топики §3, `meta/error`, удаление; повтор значений §5, пока поток жив, и его отсутствие при лёгшем или молчащем потоке; статус и права файлов §6/§11; диспетчер §9; демон целиком (вход → `connected` → события → топики, `DISCONNECTED` → `"r"` без переподключения, обрыв потока → `"r"` всем и восстановление с перечитыванием, отвязка и выключение чистят топики, отзыв переживает перезапуск, 429, небезопасный файл токенов не используется; ни токен, ни `device_code` не попадают в журнал, `/run` и MQTT; каждый запрос к фейку учтён в бюджете) | действует |
+| `test_token_sinks.py` (в составе `py-unit-homeconnect`) | идентификаторы `access_token`/`refresh_token` есть только в `oauth.py` и `token_store.py`, `device_code` — только в `oauth.py` (allow-list, не список запрещённых мест); обход не пуст, обе «законные» точки реально содержат идентификаторы | действует (отдельной статической строки `homeconnect-token-sinks` нет: allow-list держит этот тест) |
 | `test_contract_tables.py` (в составе `py-unit-homeconnect`) | таблица §4, состояния, причины и ключи `status.json` §6, действия и коды ошибок диспетчера §9, глаголы §10 совпадают с кодом как множества; пустая или пропавшая таблица — провал | действует |
-| `homeconnect-trigger`, `homeconnect-card-smoke`, `sudoers-pin-contract`, CSRF-строки, строки установщика, `update-conditional-restart`, `alice-image-identity`/`alice-conf-homes` | хелпер, карточка, гранты, CSRF, установщик, OTA, бэкап, снятие образа — §10–§12 | ожидает HC2 |
+| `homeconnect-trigger` (`scripts/dev/test-homeconnect-trigger.sh`) | хелпер §10: четыре глагола и ничего больше, каждый `systemctl` под `timeout` (измерено шимом), `unlink` удаляет ровно `tokens.json` + `.hc-*.tmp` + `link.json` и только после полной остановки (`active`/`deactivating` — отказ), `budget.json`/`appliances.json` остаются, симлинк каталога — отказ, `restart` читает `enabled` только в `[account]`, блокировка `busy`, истинность `enabled` совпадает с `config.load()` | действует |
+| `homeconnect-cgi` (`scripts/dev/test-homeconnect-cgi.sh`) | CGI §9: сессия до всего, CSRF на каждом POST, тело ≤ 16 КиБ, `GET` ничего не толкает, `sudo` получает ровно четыре закреплённых глагола, отказ/зависание хелпера — фиксированный enum, сбой диспетчера — `homeconnect_api_failed`, коды CGI = таблица «Код CGI», настоящий диспетчер не отдаёт ни токена, ни `device_code` | действует |
+| `homeconnect-card-smoke` (`scripts/dev/homeconnect-card-smoke.mjs`, review, Chromium) | карточка: каждое состояние §6 и причина — по-русски, код входа и QR только в `awaiting_user` (QR сверяется с эталонной матрицей), ссылка только https на доменах BSH, имена приборов как текст, кнопки заблокированы во время действия, подтверждение отвязки, ≤ 560 px | действует |
+| `sudoers-pin-contract` | грант `etc/sudoers.d/sa02m-homeconnect` — полный реестр (четыре глагола), закрепление аргументов, путь гранта = путь установки на всех трёх путях доставки | действует |
+| `cgi-csrf-policy` | строка `sa02m_homeconnect_api.cgi` в реестре CSRF: токен до мутации | действует |
+| `installer-svc-policy-gate`, `installer-order` (случай 6), `install-atomic` | `06d`: захват до `app off`, юнит и хелпер через `sa02m_atomic_install`; `05-mqtt.sh` до `06d`; пакет до засевки конфига, хелпер и sudoers до CGI | действует |
+| `update-conditional-restart` (прогон 8) | `sa02m-homeconnect` в `restart_if_active` онлайн и офлайн, ни в одном `restart[]`; работающий перезапускается, остановленный только опрашивается | действует |
+| `alice-conf-homes` (разделы 13–15) | конфиг и хранилище токенов во всех четырёх списках «не разворачивать»; бэкап несёт конфиг и ни байта токенов; восстановление принимает конфиг, отвергает токены, юнит не трогает; засевка `06d` не идёт по подложенной ссылке и изолирована (`python3 -I`); tmpfiles попадает в `/etc/tmpfiles.d/` только через `06d` | действует |
+| `alice-image-identity` (часть C) | пять площадок снятия образа, `image-identity-reset.md` §8 | действует |
+| `factory-reset-runner` (C1–C7) | factory reset §12: конфиг к шаблону → остановка → очистка, отказ при неостановленном юните и подложенном конфиге, без пакета — `enabled = false` с сохранённым Client ID | действует |
+| `service-ctl-policy-write` (раздел 3) | «Пуск»/«Стоп» синхронизирует `enabled` через `python3 -I`: пакет, подложенный в cwd, не импортируется от root | действует |
+
+Не проверено здесь (стенд): §14 целиком; настоящий `systemd`/`sudo`/`visudo`
+на плате (моделируются шимами и реестром грантов).

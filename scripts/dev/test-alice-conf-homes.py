@@ -1,7 +1,8 @@
 #!/usr/bin/env python3
 """test-alice-conf-homes.py — every preserve / backup / restore list names the
-LIVE Alice conf layout, and the HomeKit bridge's conf and pairing store where
-each belongs (section 10). Quality row `alice-conf-homes`.
+LIVE Alice conf layout, the HomeKit bridge's conf and pairing store (section
+10) and the Home Connect client's conf and token store (section 13) where each
+belongs. Quality row `alice-conf-homes`.
 
 Why it exists: the Alice confs live in /etc/sa02m-alice/ (code home
 opt/sa02m-alice/sa02m_alice/common/constants.py ETC_DIR, created by
@@ -78,6 +79,20 @@ Method — behavioural where the code can be run, never a grep for a string:
      restores the conf without touching a HomeKit unit (the daemon re-reads it
      every 2 s) and fails the preflight on a symlinked conf; the runner's 0440
      re-mode loop names every committed etc/sudoers.d/ drop-in (open world).
+  11/12. the HomeKit installer's conf seed and its tmpfiles conf (see those
+     sections).
+  13. the Home Connect client homes (docs/contracts/home-connect.md §11-§12),
+     read from sa02m_homeconnect.constants and cross-checked against its
+     tmpfiles: the conf, tokens.json, budget.json and a `.hc-` sidecar are
+     preserved by all four OTA guards; the backup archives the conf and NEVER
+     the token store (P4 — listed paths and the raw stream of the whole
+     script); the restore admits the conf, refuses the token store, creates a
+     missing conf dir with the tmpfiles owner/mode, touches no Home Connect
+     unit (the client re-reads its conf every 2 s) and fails the preflight on
+     a symlinked conf. 14: the 06d conf seed — rendered by the installed
+     package itself — never follows a plant and runs isolated (`python3 -I`);
+     an unrenderable package leaves no empty conf. 15: the Home Connect
+     tmpfiles conf reaches /etc/tmpfiles.d/ only through 06d.
 Negative controls: /opt/sa02m-alice/… (the code tree OTA DOES deploy) must not
 be preserved by any guard; /etc/shadow must not pass the restore; the HomeKit
 code tree stays deployable.
@@ -105,6 +120,15 @@ conf in the archive, no WARN), 10.6 (conf refused), 10.7 (no DIR_SPEC), 10.8a/b
 cases (validator and runner-bootstrap entries, restore ALLOW entry, DIR_SPEC
 entry) each RED as root and as nobody; adding the pairing store to the backup
 list turns 10.5/10.5e1/10.6 RED.
+Sections 13-15, RED observed 2026-09-28 with the runner, validator, deploy
+map, backup and restore at HEAD d7d9c4a: 25 FAIL (every 13.1-13.8 guard, plus
+10.9's open-world sweep naming the un-re-moded sa02m-homeconnect drop-in).
+14f RED on a bare `python3 -B -` seed (the planted sitecustomize ran); 14c/14d
+RED on a seed opening the conf without O_NOFOLLOW / the nlink check. Mutation
+cases (each RED, one at a time, with the proof's own awk): the validator entry
+(13.1), the runner-bootstrap entry (13.2), the restore ALLOW entry
+(13.6/13.8a/b), the restore DIR_SPEC entry (13.7), and the 06d seed's
+`os.fchmod(fd, 0o660)` (14a/14b/14f).
 The backup list is not cased: its entries sit inside a backslash-continued
 `for p in \\` list, where a `#` breaks the syntax of the whole loop — a RED for
 the wrong reason.
@@ -1261,6 +1285,374 @@ else:
         (ok if re.search(r"tmpfiles\.d/sa02m-homekit\.conf\"?\s+/etc/tmpfiles\.d/sa02m-homekit\.conf", inst12)
             and "$OPT_SRC/tmpfiles.d/sa02m-homekit.conf" in inst12 else bad)(
             "12c scripts/06c-homekit.sh installs the package copy into /etc/tmpfiles.d/ (the only writer)")
+
+# ── 13. the Home Connect client homes (docs/contracts/home-connect.md §11-§12) ─
+# The third optional module, the same lists: the conf is the operator's
+# decision (enabled + the integrator's Client ID — not a secret: preserved by
+# OTA, archived by the backup, admitted by the restore); the state dir holds
+# the OAuth tokens of the owner's BSH account and the call budget (preserved by
+# OTA, NEVER archived — P4: the archive goes to the panel, and a restore onto
+# another board would read the donor household's appliances).
+print("── 13. Home Connect homes (preserve / backup / restore) ──")
+HC_PKG = ROOT / "opt/sa02m-homeconnect"
+HC_TMPFILES = ROOT / "opt/sa02m-homeconnect/tmpfiles.d/sa02m-homeconnect.conf"
+HC_INSTALLER = ROOT / "scripts/06d-homeconnect.sh"
+env_hc = {k: v for k, v in os.environ.items() if not k.startswith("SA02M_HOMECONNECT_")}
+env_hc["PYTHONPATH"] = str(HC_PKG)
+r = subprocess.run(
+    [sys.executable, "-c",
+     "from sa02m_homeconnect import constants as C;"
+     "print(C.ETC_DIR); print(C.CONF_FILE); print(C.VAR_DIR); print(C.TOKENS_FILE); print(C.BUDGET_FILE); print(C.TMP_PREFIX)"],
+    env=env_hc, capture_output=True, text=True, timeout=30,
+)
+hcv = r.stdout.split()
+if r.returncode != 0 or len(hcv) != 6:
+    bad(f"13.0 could not read the Home Connect layout from sa02m_homeconnect.constants (rc={r.returncode}): {r.stderr.strip()[:200]}")
+else:
+    HC_ETC, HC_CONF, HC_VAR, HC_TOKENS, HC_BUDGET, HC_TMP = hcv
+    HC_SIDECAR = f"{HC_VAR}/{HC_TMP}Zq81xk.tmp"
+    HC_CODE = "/opt/sa02m-homeconnect/sa02m_homeconnect/main.py"
+    hc_tmp_txt = read(HC_TMPFILES)
+    hc_inst = [l for l in read(HC_INSTALLER).splitlines() if not l.lstrip().startswith("#")]
+    for d in (HC_ETC, HC_VAR):
+        (ok if re.search(r"^d\s+" + re.escape(d) + r"\s", hc_tmp_txt, re.M) else bad)(
+            f"13.0 tmpfiles creates {d} (the layout the lists must name)")
+    HC_KEEP = [HC_CONF, HC_TOKENS, HC_BUDGET, HC_SIDECAR]
+
+    # 13.1-13.4 — the four OTA never-deploy guards
+    if vp is not None:
+        for p in HC_KEEP:
+            (ok if vp.path_is_preserved(p) else bad)(f"13.1 path_is_preserved({p})")
+        (bad if vp.path_is_preserved(HC_CODE) else ok)("13.1 negative control: the Home Connect code tree stays deployable")
+    if m_tuple and m_pred:
+        for p in HC_KEEP:
+            (ok if hit(p) else bad)(f"13.2 runner bootstrap refuses a deploy onto {p}")
+        (bad if hit(HC_CODE) else ok)("13.2 negative control: the Home Connect code tree stays deployable")
+    else:
+        bad("13.2 runner bootstrap guard not extracted (see 2)")
+    arr_hc = []
+    if m_arr:
+        rb_hc = subprocess.run(["bash", "-c", "set -f\nPRESERVE_PATHS=(\n" + m_arr.group(1) + ")\nprintf '%s\\n' \"${PRESERVE_PATHS[@]}\"\n"],
+                               capture_output=True, text=True, timeout=30)
+        arr_hc = [l for l in rb_hc.stdout.splitlines() if l]
+    if not arr_hc:
+        bad("13.3 runner bash PRESERVE_PATHS not expanded (see 3)")
+    else:
+        for p in HC_KEEP:
+            (ok if any(generic_hit(p, x) for x in arr_hc) else bad)(f"13.3 PRESERVE_PATHS covers {p}")
+        (bad if any(generic_hit(HC_CODE, x) for x in arr_hc) else ok)("13.3 negative control: the Home Connect code tree is not in PRESERVE_PATHS")
+    try:
+        nd_hc = json.loads(read(DEPLOY_MAP) or "{}").get("never_deploy") or []
+    except ValueError:
+        nd_hc = []
+    if len(nd_hc) < 5:
+        bad(f"13.4 never_deploy has {len(nd_hc)} entries — the list was not found (non-vacuity)")
+    else:
+        for p in HC_KEEP:
+            (ok if any(generic_hit(p, x) for x in nd_hc) else bad)(f"13.4 never_deploy covers {p}")
+        (bad if any(generic_hit(HC_CODE, x) for x in nd_hc) else ok)("13.4 negative control: the Home Connect code tree is not in never_deploy")
+
+    # 13.5 — the shipped collect_paths(): the conf yes, the state dir never
+    hc_emitted: list[str] = []
+    if not m_fn:
+        bad("13.5 collect_paths() not extracted (see 5)")
+    else:
+        fn_hc, _ = re.subn(r"(?<=\s)/etc/", '"$SANDBOX"/etc/', m_fn.group(0))
+        fn_hc = re.sub(r"(?<=\s)/var/lib/", '"$SANDBOX"/var/lib/', fn_hc)
+        with tempfile.TemporaryDirectory() as sb:
+            for p in (HC_CONF, HC_TOKENS, HC_BUDGET, HC_SIDECAR, f"{HC_VAR}/appliances.json"):
+                f = Path(sb + p)
+                f.parent.mkdir(parents=True, exist_ok=True)
+                f.write_text("x\n", encoding="utf-8")
+            rbk = subprocess.run(["bash", "-c", fn_hc + "\ncollect_paths\n"], capture_output=True, text=True,
+                                 timeout=30, env={**os.environ, "SANDBOX": sb})
+            hc_emitted = [l[len(sb):] for l in rbk.stdout.splitlines() if l.startswith(sb)]
+        (ok if HC_CONF in hc_emitted else bad)(f"13.5 the backup archives {HC_CONF}")
+        leak = [p for p in hc_emitted if p.startswith(HC_VAR.rstrip("/") + "/")]
+        (bad if leak else ok)(f"13.5 the backup never lists the token store (P4){': ' + str(leak) if leak else ''}")
+
+    # 13.5e — the WHOLE backup end to end: a signed-in board's archive carries
+    # the conf bytes and not one byte of the tokens; a symlink planted at the
+    # conf (its dir is root:www-data 0770) is skipped with a WARN.
+    if not (shutil.which("bash") and shutil.which("tar")) or "run_backup" not in globals():
+        skip("13.5e needs bash + tar — not run on this host (a skip is not a pass)")
+    else:
+        HC_SECRET = b"hc-donor-refresh-token-secret"
+        HC_CONF_BYTES = b"[account]\nenabled = true\nclient_id = ABCDEFGH12345678\n"
+
+        def hc_backup_case(tag, what, plant, want_conf: bool, warn: bool):
+            with tempfile.TemporaryDirectory() as tsb:
+                sb = Path(tsb)
+                e = seed_backup(sb)
+                hdir = sb / HC_ETC.lstrip("/")
+                hdir.mkdir(parents=True)
+                hdir.chmod(0o770)
+                (sb / HC_CONF.lstrip("/")).write_bytes(HC_CONF_BYTES)
+                vdir = sb / HC_VAR.lstrip("/")
+                vdir.mkdir(parents=True)
+                for p in (HC_TOKENS, HC_SIDECAR):
+                    (sb / p.lstrip("/")).write_bytes(HC_SECRET + b"\n")
+                plant(sb, e)
+                global btxt
+                saved = btxt
+                btxt = btxt.replace(" /var/lib/", f" {sb}/var/lib/")
+                try:
+                    rc, err, files, raw, n_sub = run_backup(sb)
+                finally:
+                    btxt = saved
+            problems = []
+            if rc != 0:
+                problems.append(f"rc={rc} ({err.strip()[-200:]!r})")
+            if HC_SECRET in raw:
+                problems.append("the token store's bytes ARE in the archive")
+            if MARK in raw:
+                problems.append("the planted victim's bytes ARE in the archive")
+            if want_conf and files.get(HC_CONF) != HC_CONF_BYTES:
+                problems.append(f"{HC_CONF} missing or wrong bytes ({files.get(HC_CONF)!r})")
+            if not want_conf and HC_CONF in files:
+                problems.append(f"{HC_CONF} archived")
+            if warn and HC_CONF not in err:
+                problems.append(f"no WARN naming {HC_CONF}")
+            (bad if problems else ok)(f"{tag} {what}" + (": " + "; ".join(problems) if problems else ""))
+
+        hc_backup_case("13.5e1", "a signed-in board's archive carries the Home Connect conf and none of the tokens",
+                       lambda sb, e: None, True, False)
+
+        def hc_plant_symlink(sb, e):
+            c = sb / HC_CONF.lstrip("/")
+            c.unlink()
+            c.symlink_to(e["victim"])
+        hc_backup_case("13.5e2", "a symlink planted at the Home Connect conf is skipped with a WARN; the victim never reaches the archive",
+                       hc_plant_symlink, False, True)
+
+    # 13.6 — the restore admits the conf, refuses the state dir, and admits
+    # everything the backup emits for a Home Connect board.
+    if allowed is None:
+        bad("13.6 restore ALLOW not extracted (see 6)")
+    else:
+        (ok if allowed(HC_CONF) else bad)(f"13.6 the restore admits {HC_CONF}")
+        for p in (HC_TOKENS, HC_BUDGET, HC_SIDECAR):
+            (bad if allowed(p) else ok)(f"13.6 the restore refuses {p} (a backup never carries the token store)")
+        refused = [p for p in hc_emitted if not allowed(p)]
+        if hc_emitted and not refused:
+            ok(f"13.6 every path the backup emits on a Home Connect board passes the restore ({len(hc_emitted)} paths)")
+        else:
+            bad(f"13.6 backup/restore disagree on a Home Connect board (emitted={hc_emitted}, refused={refused})")
+
+    # 13.7 — a missing conf dir is created with the tmpfiles owner/mode.
+    hc_spec = None
+    if blocks["DIR_SPEC"]:
+        ns_hc: dict = {}
+        exec(blocks["DIR_SPEC"], ns_hc)  # noqa: S102 - the shipped source under test
+        hc_spec = ns_hc["DIR_SPEC"].get(HC_ETC)
+    m_hc = re.search(r"^d\s+" + re.escape(HC_ETC) + r"\s+(\d+)\s+(\S+)\s+(\S+)", hc_tmp_txt, re.M)
+    hc_want = (int(m_hc.group(1), 8), m_hc.group(2), m_hc.group(3)) if m_hc else None
+    hc_inst_ok = any(f"install -d -m {oct(hc_want[0])[2:].zfill(4)} -o {hc_want[1]} -g {hc_want[2]} {HC_ETC}" in l
+                     for l in hc_inst) if hc_want else False
+    if hc_spec is not None and hc_spec == hc_want and hc_inst_ok:
+        ok(f"13.7 a missing {HC_ETC} is created {oct(hc_spec[0])} {hc_spec[1]}:{hc_spec[2]} — tmpfiles and scripts/06d-homeconnect.sh agree")
+    else:
+        bad(f"13.7 restore DIR_SPEC[{HC_ETC}]={hc_spec} vs tmpfiles {hc_want} (installer agrees: {hc_inst_ok}) "
+            "— a restore onto a board without the dir creates it unwritable for the CGI")
+
+    # 13.8 — the SHIPPED restore end to end: the conf lands, no Home Connect
+    # unit is touched (the client re-reads its conf every 2 s), and a symlink
+    # planted at the conf fails the preflight with nothing written.
+    if not (shutil.which("bash") and shutil.which("tar")) or "run_restore" not in globals():
+        skip("13.8 needs bash + tar — not run on this host (a skip is not a pass)")
+    else:
+        with tempfile.TemporaryDirectory() as tsb:
+            sb = Path(tsb)
+            hdir = sb / HC_ETC.lstrip("/")
+            hdir.mkdir(parents=True)
+            hdir.chmod(0o770)
+            conf = sb / HC_CONF.lstrip("/")
+            conf.write_bytes(b"old\n")
+            new = b"[account]\nenabled = false\nclient_id = ABCDEFGH12345678\n"
+            rc, out, calls, _ = run_restore(sb, {HC_CONF: new}, {"sa02m-homeconnect"})
+            if rc == 0 and conf.read_bytes() == new and not [c for c in calls if "homeconnect" in c]:
+                ok("13.8a a clean --apply restores the Home Connect conf and touches no Home Connect unit (the client re-reads it)")
+            else:
+                bad(f"13.8a Home Connect conf --apply: rc={rc}, bytes={conf.read_bytes()!r}, homeconnect calls="
+                    f"{[c for c in calls if 'homeconnect' in c]}, output: {out.strip()[-300:]!r}")
+            victim = sb / "victim"
+            victim.write_bytes(b"root-secret\n")
+            victim.chmod(0o600)
+            conf.unlink()
+            conf.symlink_to(victim)
+            rc, out, calls, _ = run_restore(sb, {HC_CONF: b"[account]\nenabled = true\n"}, set())
+            if rc != 0 and "symlink" in out and conf.is_symlink() and victim.read_bytes() == b"root-secret\n":
+                ok("13.8b a symlink planted at the Home Connect conf fails --apply in the preflight; the victim is untouched")
+            else:
+                bad(f"13.8b planted Home Connect conf symlink: rc={rc}, still a link={conf.is_symlink()}, "
+                    f"victim={victim.read_bytes()!r}, output: {out.strip()[-300:]!r}")
+
+# ── 14. Home Connect installer conf seed: root never writes/chmods through a plant ─
+# scripts/06d-homeconnect.sh (root, on every install.sh refresh once the client
+# is installed) seeds /etc/sa02m-homeconnect/sa02m-homeconnect.conf from the
+# INSTALLED package's own render() of the defaults and re-asserts its
+# group/mode — in a root:www-data 0770 directory, the section-9/11 door. The
+# SHIPPED block between «Conf seed» and «systemd» runs with the conf dir
+# retargeted into a sandbox, $INSTALL_DIR at this checkout's package and
+# www-data replaced by the invoking group.
+print("── 14. Home Connect installer conf seed/modes (scripts/06d-homeconnect.sh) never follow a plant ──")
+HC14_DIR = "/etc/sa02m-homeconnect"
+HC14_NAME = "sa02m-homeconnect.conf"
+HC14_PKG = ROOT / "opt/sa02m-homeconnect"
+m14 = re.search(r"^# ── Conf seed[^\n]*\n(.*?)^# ── systemd", read(HC14_INSTALLER := ROOT / "scripts/06d-homeconnect.sh"), re.S | re.M)
+r14 = subprocess.run([sys.executable, "-c",
+                      "import sys; from sa02m_homeconnect import config;"
+                      "sys.stdout.write(config.render(config.ClientConfig()))"],
+                     env={**{k: v for k, v in os.environ.items() if not k.startswith("SA02M_HOMECONNECT_")},
+                          "PYTHONPATH": str(HC14_PKG)}, capture_output=True, text=True, timeout=30)
+if not m14 or HC14_DIR not in m14.group(1) or r14.returncode != 0 or "enabled = false" not in r14.stdout:
+    bad(f"14 could not extract the conf seed block (between «Conf seed» and «systemd») from "
+        f"{HC14_INSTALLER.relative_to(ROOT)}, or the package cannot render its defaults "
+        f"(rc={r14.returncode}: {r14.stderr.strip()[-160:]!r}) (non-vacuity)")
+else:
+    import grp as grp14  # noqa: E402
+    import stat as stat14  # noqa: E402
+    group14 = grp14.getgrgid(os.getegid()).gr_name
+    seed14 = r14.stdout.encode("utf-8")
+
+    def run_seed14(sb: Path, cwd=None, env=None, pkg: Path = HC14_PKG):
+        block = re.sub(r"(?<![\w}])" + re.escape(HC14_DIR), str(sb / "sa02m-homeconnect"), m14.group(1))
+        block = block.replace("www-data", group14)
+        script = ("set -euo pipefail\nlog() { printf '%s\\n' \"$*\"; }\nINSTALL_DIR=" + str(pkg) + "\n" + block)
+        try:
+            r = subprocess.run(["bash", "-c", script], capture_output=True, text=True, timeout=60, cwd=cwd, env=env)
+        except subprocess.TimeoutExpired:
+            return 124, "timed out (a FIFO opened blocking?)"
+        return r.returncode, r.stdout + r.stderr
+
+    def seed_dir14(sb: Path) -> dict:
+        hdir = sb / "sa02m-homeconnect"
+        hdir.mkdir()
+        hdir.chmod(0o770)
+        vdir = sb / "victim"
+        vdir.mkdir(mode=0o700)
+        victim = vdir / "shadow"
+        victim.write_bytes(b"root-secret\n")
+        victim.chmod(0o600)
+        return {"conf": hdir / HC14_NAME, "victim": victim, "vdir": vdir}
+
+    def warned14(out: str) -> bool:
+        return any("WARN" in ln and HC14_NAME in ln for ln in out.splitlines())
+
+    def state14(p: Path):
+        st = os.lstat(p)
+        return (stat14.S_IMODE(st.st_mode), st.st_gid, p.read_bytes())
+
+    gid14 = os.getegid()
+    with tempfile.TemporaryDirectory() as tsb:
+        sb = Path(tsb)
+        e = seed_dir14(sb)
+        rc, out = run_seed14(sb)
+        c = e["conf"]
+        if rc == 0 and c.is_file() and not c.is_symlink() and state14(c) == (0o660, gid14, seed14):
+            ok("14a an absent conf is seeded: the package's own render() of the defaults (enabled = false), 0660, group www-data")
+        else:
+            got = state14(c) if c.exists() else None
+            bad(f"14a seed: rc={rc}, conf={got!r}, want (0o660, {gid14}, render bytes): {out.strip()[-200:]!r}")
+
+    with tempfile.TemporaryDirectory() as tsb:
+        sb = Path(tsb)
+        e = seed_dir14(sb)
+        mine = b"[account]\nenabled = true\nclient_id = ABCDEFGH12345678\n"
+        e["conf"].write_bytes(mine)
+        e["conf"].chmod(0o600)
+        rc, out = run_seed14(sb)
+        (ok if rc == 0 and state14(e["conf"]) == (0o660, gid14, mine) else bad)(
+            f"14b an existing regular conf keeps its bytes (the Client ID) and gets 0660 + group www-data back (rc={rc})")
+
+    with tempfile.TemporaryDirectory() as tsb:
+        sb = Path(tsb)
+        e = seed_dir14(sb)
+        e["conf"].symlink_to(e["victim"])
+        before = state14(e["victim"])
+        rc, out = run_seed14(sb)
+        after = state14(e["victim"])
+        if rc == 0 and before == after and e["conf"].is_symlink() and warned14(out):
+            ok("14c a symlink planted at the conf is reported and left alone; its target's bytes/mode/group unchanged")
+        else:
+            bad(f"14c planted symlink: rc={rc}, target {oct(before[0])}/{before[1]} → {oct(after[0])}/{after[1]}, "
+                f"bytes changed={before[2] != after[2]}, reported={warned14(out)} — root followed a www-data plant")
+
+    with tempfile.TemporaryDirectory() as tsb:
+        sb = Path(tsb)
+        e = seed_dir14(sb)
+        os.link(e["victim"], e["conf"])
+        before = state14(e["victim"])
+        rc, out = run_seed14(sb)
+        after = state14(e["victim"])
+        (ok if rc == 0 and before == after and warned14(out) else bad)(
+            f"14d a hard link planted at the conf is reported and left alone (rc={rc}, "
+            f"mode {oct(before[0])} → {oct(after[0])}, reported={warned14(out)})")
+
+    with tempfile.TemporaryDirectory() as tsb:
+        sb = Path(tsb)
+        e = seed_dir14(sb)
+        target = e["vdir"] / "sudoers-x"
+        e["conf"].symlink_to(target)
+        rc, out = run_seed14(sb)
+        (ok if rc == 0 and not target.exists() else bad)(
+            f"14e a dangling symlink planted at the conf is not written through (rc={rc}, target created={target.exists()})")
+
+    # Isolation (`python3 -I`), measured like 11f: a `sitecustomize.py` on an
+    # inherited PYTHONPATH runs under a bare `python3 -` and turns this RED.
+    with tempfile.TemporaryDirectory() as tsb:
+        sb = Path(tsb)
+        e = seed_dir14(sb)
+        cwd14 = sb / "cwd"
+        cwd14.mkdir()
+        marker14 = sb / "planted-module-ran"
+        plant14 = f"open({str(marker14)!r}, 'w').close()\n"
+        (cwd14 / "sitecustomize.py").write_text(plant14)
+        (cwd14 / "grp.py").write_text(plant14 + "raise ImportError('planted grp.py')\n")
+        env14 = dict(os.environ, PYTHONPATH=str(cwd14))
+        rc, out = run_seed14(sb, cwd=cwd14, env=env14)
+        c = e["conf"]
+        seeded = c.is_file() and not c.is_symlink() and state14(c) == (0o660, gid14, seed14)
+        (ok if rc == 0 and not marker14.exists() and seeded else bad)(
+            f"14f the seed block runs isolated (python3 -I): a planted sitecustomize/grp on the cwd or PYTHONPATH "
+            f"never runs and the seed still lands (rc={rc}, planted module ran={marker14.exists()}, seeded={seeded})")
+
+    # A package that cannot render (absent/broken install): no half-made conf
+    # is left behind — the O_EXCL file is removed again, the installer WARNs
+    # and goes on (the next run seeds it).
+    with tempfile.TemporaryDirectory() as tsb:
+        sb = Path(tsb)
+        e = seed_dir14(sb)
+        empty = sb / "no-package"
+        empty.mkdir()
+        rc, out = run_seed14(sb, pkg=empty)
+        (ok if rc == 0 and not e["conf"].exists() and "WARN" in out else bad)(
+            f"14g an unrenderable package leaves no empty conf behind and WARNs (rc={rc}, "
+            f"conf left={e['conf'].exists()}, warned={'WARN' in out})")
+
+# ── 15. the Home Connect tmpfiles conf reaches /etc/tmpfiles.d/ only via 06d ─
+# The section-12 reason, the second module: its lines name the
+# `sa02m-homeconnect` account, which exists only where 06d ran.
+print("── 15. the Home Connect tmpfiles conf is installer-owned, never OTA'd into /etc/tmpfiles.d ──")
+HC15_SRC = "opt/sa02m-homeconnect/tmpfiles.d/sa02m-homeconnect.conf"
+if map12 is None or not shipped:
+    bad(f"15 non-vacuity: map_dst extracted={map12 is not None}, etc/tmpfiles.d files={len(shipped)}")
+else:
+    naming15 = [p.name for p in shipped if (map12(f"etc/tmpfiles.d/{p.name}") or "").startswith("/etc/tmpfiles.d/")
+                and re.search(r"(?m)^[^#\n]*\ssa02m-homeconnect(\s|$)", read(p))]
+    (bad if naming15 else ok)(
+        f"15a no OTA-shipped tmpfiles conf names the sa02m-homeconnect account{': ' + str(naming15) if naming15 else ''}")
+    if not (ROOT / HC15_SRC).is_file():
+        bad(f"15b the package home {HC15_SRC} is missing — the installer has nothing to copy")
+    else:
+        dst15 = map12(HC15_SRC) or ""
+        (ok if dst15.startswith("/opt/sa02m-homeconnect/") else bad)(
+            f"15b the OTA lands the package copy inert under /opt/sa02m-homeconnect/ (map_dst → {dst15!r})")
+        inst15 = "\n".join(l for l in read(ROOT / "scripts/06d-homeconnect.sh").splitlines() if not l.lstrip().startswith("#"))
+        (ok if re.search(r"tmpfiles\.d/sa02m-homeconnect\.conf\"?\s+/etc/tmpfiles\.d/sa02m-homeconnect\.conf", inst15)
+            and "$OPT_SRC/tmpfiles.d/sa02m-homeconnect.conf" in inst15 else bad)(
+            "15c scripts/06d-homeconnect.sh installs the package copy into /etc/tmpfiles.d/ (the only writer)")
+
 
 print("")
 if fails:

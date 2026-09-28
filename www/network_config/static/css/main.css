@@ -2180,7 +2180,8 @@ html[data-theme="light"] .alice-reg-link { color: var(--cyan-hover); }
 
 /* ── Apple HomeKit card (#homekit-card, app/homekit.js) ─────────────────────
    Alice-card skeleton; no new colour pairs except the QR plate (--qr-*). */
-.system-manage-homekit-card .cloud-meta .badge {
+.system-manage-homekit-card .cloud-meta .badge,
+.system-manage-homeconnect-card .cloud-meta .badge {
   display: inline-block;
   font-size: 11px;
   font-weight: 600;
@@ -2243,6 +2244,45 @@ html[data-theme="light"] .alice-reg-link { color: var(--cyan-hover); }
 .homekit-net .field { margin: 6px 0 8px; }
 .homekit-net .btn { width: 100%; justify-content: center; }
 .homekit-note { margin: 0 !important; font-size: .78rem !important; }
+
+/* ── BSH Home Connect card (#homeconnect-card, app/homeconnect.js) ──────────
+   Reuses the HomeKit card's list / code box / QR / details / note classes
+   (one home for those rules); no new colour pairs — link = the cyan pair of
+   .homekit-skip-line a, badges and text = existing tokens. */
+#homeconnect-btn-unlink[hidden] { display: none !important; }
+/* .homekit-qr sets display:block, outranking the UA [hidden] rule. */
+#homeconnect-qr[hidden] { display: none !important; }
+.homeconnect-link-row { margin-top: 8px; }
+.homeconnect-link-row[hidden] { display: none !important; }
+.homeconnect-link-row .btn { width: 100%; justify-content: center; }
+.homeconnect-apps-list li {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 2px 6px;
+}
+.homeconnect-apps-list .homeconnect-app-name { color: var(--text); flex: 1 1 auto; min-width: 0; overflow-wrap: anywhere; }
+.homeconnect-apps-list .homeconnect-app-meta { color: var(--text-sec); overflow-wrap: anywhere; }
+.homeconnect-apps-list .badge {
+  font-size: 11px;
+  font-weight: 600;
+  line-height: 1.15;
+  padding: 1px 7px;
+  box-shadow: none;
+}
+/* Dark: --cyan #22d3ee on --bg-card #242426 = 8.57:1; light: --cyan-hover
+   #0e7490 on #ffffff = 5.36:1 (the .homekit-skip-line a pair). */
+.homeconnect-verify-link {
+  display: inline-flex;
+  align-items: center;
+  min-height: var(--tap);
+  color: var(--cyan);
+  font-size: .85rem;
+  text-decoration: underline;
+  white-space: nowrap;
+}
+html[data-theme="light"] .homeconnect-verify-link { color: var(--cyan-hover); }
+.homeconnect-cid input { width: 100%; font-family: var(--font-mono); }
 
 /* In-card ephemeral banners moved to .toast-area (1.0.6.37). Keep the
    slots in the DOM for older scripts, but they must never grow .ctrl-card. */
@@ -2567,7 +2607,8 @@ html[data-theme="light"] .alice-reg-link { color: var(--cyan-hover); }
 #alice-msg.cloud-msg,
 #cloud-ctrl-msg.cloud-msg,
 #sh-bind-msg.cloud-msg,
-#homekit-msg.cloud-msg {
+#homekit-msg.cloud-msg,
+#homeconnect-msg.cloud-msg {
   margin-top: 4px;
   padding: 8px 12px;
   border-radius: var(--radius-sm);
@@ -2577,7 +2618,8 @@ html[data-theme="light"] .alice-reg-link { color: var(--cyan-hover); }
 #alice-msg.cloud-msg.is-ok,
 #cloud-ctrl-msg.cloud-msg.is-ok,
 #sh-bind-msg.cloud-msg.is-ok,
-#homekit-msg.cloud-msg.is-ok {
+#homekit-msg.cloud-msg.is-ok,
+#homeconnect-msg.cloud-msg.is-ok {
   background: var(--badge-ok-bg);
   color: var(--green);
   border: 1px solid var(--badge-ok-border);
@@ -2585,7 +2627,8 @@ html[data-theme="light"] .alice-reg-link { color: var(--cyan-hover); }
 #alice-msg.cloud-msg.is-err,
 #cloud-ctrl-msg.cloud-msg.is-err,
 #sh-bind-msg.cloud-msg.is-err,
-#homekit-msg.cloud-msg.is-err {
+#homekit-msg.cloud-msg.is-err,
+#homeconnect-msg.cloud-msg.is-err {
   background: var(--badge-err-bg);
   color: var(--red);
   border: 1px solid var(--badge-err-border);
