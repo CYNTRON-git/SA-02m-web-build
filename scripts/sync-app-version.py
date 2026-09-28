@@ -48,10 +48,31 @@ IMPORT_SPEC_RE = re.compile(
 )
 
 
+def _read_text(path: Path) -> str:
+    """Read with NO newline translation (newline=""): a CRLF file yields
+    '\\r\\n', so the patchers' `new == text` comparison and _write_text below
+    see the bytes that are really on disk."""
+    with path.open(encoding="utf-8", newline="") as fh:
+        return fh.read()
+
+
+def _write_text(path: Path, text: str) -> None:
+    """Write with NO newline translation. The stdlib default (newline=None)
+    turns every '\\n' into os.linesep, which left the version homes CRLF after
+    a sync run from a Windows checkout (backlog 2026-09-23; .gitattributes
+    promises LF on disk for the device overlay). With newline='\\n' nothing is
+    translated in either direction, so a file keeps the line endings it had —
+    LF stays LF on every host. Every read/write of a version home goes through
+    these two helpers. Gate: scripts/dev/test_sync_app_version.py
+    LineEndingTests."""
+    with path.open("w", encoding="utf-8", newline="\n") as fh:
+        fh.write(text)
+
+
 def read_version_file() -> str | None:
     if not VERSION_FILE.is_file():
         return None
-    for line in VERSION_FILE.read_text(encoding="utf-8").splitlines():
+    for line in _read_text(VERSION_FILE).splitlines():
         line = line.strip()
         if not line or line.startswith("#"):
             continue
@@ -85,7 +106,7 @@ def resolve_version() -> str:
 
 
 def write_version_file(version: str) -> None:
-    text = VERSION_FILE.read_text(encoding="utf-8") if VERSION_FILE.is_file() else ""
+    text = _read_text(VERSION_FILE) if VERSION_FILE.is_file() else ""
     lines = text.splitlines()
     out: list[str] = []
     replaced = False
@@ -99,11 +120,11 @@ def write_version_file(version: str) -> None:
         if out and out[-1].strip():
             out.append("")
         out.append(version)
-    VERSION_FILE.write_text("\n".join(out).rstrip() + "\n", encoding="utf-8")
+    _write_text(VERSION_FILE, "\n".join(out).rstrip() + "\n")
 
 
 def patch_app_js(version: str) -> bool:
-    text = APP_JS.read_text(encoding="utf-8")
+    text = _read_text(APP_JS)
     new, n = re.subn(
         r"(?m)^const APP_VERSION = '[^']*';",
         f"const APP_VERSION = '{version}';",
@@ -114,25 +135,25 @@ def patch_app_js(version: str) -> bool:
         raise SystemExit(f"APP_VERSION не найден в {APP_JS}")
     if new == text:
         return False
-    APP_JS.write_text(new, encoding="utf-8")
+    _write_text(APP_JS, new)
     return True
 
 
 def patch_html_cache_bust(path: Path, version: str) -> bool:
     if not path.is_file():
         return False
-    text = path.read_text(encoding="utf-8")
+    text = _read_text(path)
     new = CACHE_BUST_RE.sub(rf"\g<1>{version}", text)
     if new == text:
         return False
-    path.write_text(new, encoding="utf-8")
+    _write_text(path, new)
     return True
 
 
 def html_cache_bust_mismatches(path: Path, version: str) -> list[str]:
     if not path.is_file():
         return []
-    text = path.read_text(encoding="utf-8")
+    text = _read_text(path)
     bad: list[str] = []
     for m in CACHE_BUST_RE.finditer(text):
         if m.group(2) != version:
@@ -155,10 +176,10 @@ def patch_js_import_specs(version: str, js_dir: Path | None = None) -> bool:
     versioned specifier is never rewritten (byte-identical)."""
     changed = False
     for path in js_module_files(js_dir):
-        text = path.read_text(encoding="utf-8")
+        text = _read_text(path)
         new = IMPORT_SPEC_RE.sub(rf"\g<lead>\g<q>\g<pre>{version}\g<post>\g<q>", text)
         if new != text:
-            path.write_text(new, encoding="utf-8")
+            _write_text(path, new)
             changed = True
     return changed
 
@@ -167,7 +188,7 @@ def js_import_spec_mismatches(version: str, js_dir: Path | None = None) -> list[
     root = JS_DIR if js_dir is None else js_dir
     bad: list[str] = []
     for path in js_module_files(js_dir):
-        text = path.read_text(encoding="utf-8")
+        text = _read_text(path)
         for m in IMPORT_SPEC_RE.finditer(text):
             if m.group("ver") != version:
                 rel = path.relative_to(root).as_posix()
@@ -178,18 +199,18 @@ def js_import_spec_mismatches(version: str, js_dir: Path | None = None) -> list[
 def patch_readme_badge(version: str) -> bool:
     if not README_MD.is_file():
         return False
-    text = README_MD.read_text(encoding="utf-8")
+    text = _read_text(README_MD)
     new = README_BADGE_RE.sub(rf"\g<1>{version}\g<3>", text)
     if new == text:
         return False
-    README_MD.write_text(new, encoding="utf-8")
+    _write_text(README_MD, new)
     return True
 
 
 def readme_badge_mismatches(version: str) -> list[str]:
     if not README_MD.is_file():
         return []
-    text = README_MD.read_text(encoding="utf-8")
+    text = _read_text(README_MD)
     bad: list[str] = []
     for m in README_BADGE_RE.finditer(text):
         if m.group(2) != version:
@@ -200,7 +221,7 @@ def readme_badge_mismatches(version: str) -> list[str]:
 def current_app_version() -> str | None:
     if not APP_JS.is_file():
         return None
-    m = re.search(r"^const APP_VERSION = '([^']*)';", APP_JS.read_text(encoding="utf-8"), re.M)
+    m = re.search(r"^const APP_VERSION = '([^']*)';", _read_text(APP_JS), re.M)
     return m.group(1) if m else None
 
 
