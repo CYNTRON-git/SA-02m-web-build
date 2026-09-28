@@ -5,10 +5,9 @@
 `cloud.cyntron.ru`: браузер → `https://cloud.cyntron.ru/devcfg/<id>/…` →
 `device_proxy` (`backend/server.py` в репозитории `CYNTRON-git/cloud`) →
 туннель frpc → nginx платы. Дом шва **со стороны устройства**; облачная
-сторона — их `device_proxy` и их проверка (cloud commit: `<to be filled after
-the cloud merge>` — **TODO (backlog, 2026-09-23, round 2):** заменить на
-squash-коммит их `main`, как только облачный PR влит; до этого каждый факт
-«relayed» ниже подтверждён только словами облачной команды). Sibling для API
+сторона — их `device_proxy` и их проверка (cloud commit: `main` `7bb4625`,
+облако 0.18.4 — к нему относятся факты, помеченные ниже «relayed»; из этого
+репозитория они не проверяемы). Sibling для API
 устройства — `cloud-enrollment.md`.
 Машинная грамматика (заголовки, пути, коды) — латиницей (`PROTOCOL.md`
 invariant 5); пояснения — по `docLanguage: ru`.

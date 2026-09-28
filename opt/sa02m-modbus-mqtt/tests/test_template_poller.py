@@ -378,5 +378,284 @@ class TestWriteback(unittest.TestCase):
             self.assertFalse([w for w in fake.writes if w[0] == "reg" and w[1] == 20])
 
 
+class TestWritebackRange(unittest.TestCase):
+    """A holding write whose raw value does not fit the channel's 16-bit
+    format is REFUSED — never masked into range. `raw & 0xFFFF` used to turn
+    s16 4000.0 x10 = 40000 into -25536 on the wire (the device then clamped to
+    its LOWER bound). Refusal follows the same path as a non-numeric payload:
+    no bus write, a WARN, `/meta/error` = "w", and no echo of the value."""
+
+    DEVICE_ID = "tmpl-COM5-30"
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.dir = Path(self.tmp.name)
+        _write_template(self.dir, "rng", {
+            "name": "rng",
+            "channels": [
+                {"name": "sp", "reg_type": "holding", "address": 190,
+                 "format": "s16", "scale": 0.1, "units": "°C",
+                 "readonly": False},
+                {"name": "cnt", "reg_type": "holding", "address": 100,
+                 "format": "u16", "readonly": False},
+            ],
+        })
+        self.p, self.pub = _poller("rng", self.dir)
+
+    def tearDown(self):
+        self.tmp.cleanup()
+
+    def _write(self, name, payload):
+        ch = next(c for c in self.p._channels if c.name == name)
+        fake = FakeSerial()
+        with mock.patch.object(self.p, "get_port", return_value=fake), \
+                mock.patch.object(bridge.DeviceLiveCache, "flush_file"):
+            self.p._writeback(ch, payload)
+        return fake
+
+    def _assert_refused(self, name, payload, range_text):
+        self.pub.reset_mock()   # an allowed write earlier in the test echoes
+        with self.assertLogs(f"dev.{self.DEVICE_ID}", level="WARNING") as cm:
+            fake = self._write(name, payload)
+        self.assertEqual(fake.writes, [], "refused value reached the bus")
+        echoes = [c for c in self.pub.pub_control.call_args_list
+                  if c.args[1] == name]
+        self.assertEqual(echoes, [], "refused value was echoed to MQTT")
+        self.pub.pub_error.assert_any_call(self.DEVICE_ID, name, "w")
+        warn = "\n".join(cm.output)
+        for token in (self.DEVICE_ID, name, payload, range_text):
+            self.assertIn(token, warn)
+
+    def test_s16_out_of_range_refused(self):
+        self._assert_refused("sp", "4000", "-32768..32767")
+
+    def test_s16_upper_boundary(self):
+        self.assertEqual(self._write("sp", "3276.7").writes,
+                         [("reg", 190, 32767)])
+        self._assert_refused("sp", "3276.8", "-32768..32767")
+
+    def test_s16_lower_boundary(self):
+        self.assertEqual(self._write("sp", "-3276.8").writes,
+                         [("reg", 190, 0x8000)])   # -32768 as a raw word
+        self._assert_refused("sp", "-3276.9", "-32768..32767")
+
+    def test_u16_range(self):
+        self.assertEqual(self._write("cnt", "65535").writes,
+                         [("reg", 100, 65535)])
+        self.assertEqual(self._write("cnt", "0").writes, [("reg", 100, 0)])
+        self._assert_refused("cnt", "-1", "0..65535")
+        self._assert_refused("cnt", "65536", "0..65535")
+
+    def test_non_numeric_payload_same_refusal_path(self):
+        # The idiom the range refusal matches: no write, WARN, error "w",
+        # no echo.
+        with self.assertLogs(f"dev.{self.DEVICE_ID}", level="WARNING") as cm:
+            fake = self._write("sp", "abc")
+        self.assertEqual(fake.writes, [])
+        self.assertFalse([c for c in self.pub.pub_control.call_args_list
+                          if c.args[1] == "sp"])
+        self.pub.pub_error.assert_any_call(self.DEVICE_ID, "sp", "w")
+        self.assertIn("sp", "\n".join(cm.output))
+
+
+class RecordingSerial(FakeSerial):
+    """FakeSerial that also records every read as (fc, start, count)."""
+
+    def __init__(self, **kw):
+        super().__init__(**kw)
+        self.reads = []
+
+    def read_input_registers(self, addr, start, count):
+        self.reads.append((4, start, count))
+        return super().read_input_registers(addr, start, count)
+
+    def read_holding_registers(self, addr, start, count):
+        self.reads.append((3, start, count))
+        return super().read_holding_registers(addr, start, count)
+
+    def read_coils(self, addr, start, count):
+        self.reads.append((1, start, count))
+        return super().read_coils(addr, start, count)
+
+    def read_discrete_inputs(self, addr, start, count):
+        self.reads.append((2, start, count))
+        return super().read_discrete_inputs(addr, start, count)
+
+
+class TestShippedMp02Ahu(unittest.TestCase):
+    """The shipped MP-02 AHU template (templates/config-mp02-ahu.json).
+
+    Pins what the bridge makes of the file, not the MP-02 register map itself
+    (its one home is the MP-02 firmware repo): every channel parses with no
+    skip, reads land on the expected FC/address/width, the 190..192 operator
+    window encodes value x10 as int16, and nothing is ever written except on
+    an explicit /on command — MP-02 logs every write as an operator event, and
+    HR 129 (bootloader entry) is never addressed.
+    """
+
+    DEVICE_ID = "mp02-ahu-COM3-1"
+
+    # (name, FC, address, register count) in template order.
+    EXPECTED_READS = [
+        ("outdoor_temp", 4, 4000, 2),
+        ("supply_temp", 4, 4002, 2),
+        ("return_temp", 4, 4004, 2),
+        ("room_temp", 4, 4006, 2),
+        ("water_return_temp", 4, 4008, 2),
+        ("room_humidity", 4, 4014, 2),
+        ("effective_setpoint", 4, 4028, 2),
+        ("heater_valve", 4, 4046, 2),
+        ("supply_fan_speed", 4, 4058, 2),
+        ("exhaust_fan_speed", 4, 4062, 2),
+        ("sequencer_state", 4, 4157, 1),
+        ("winter_mode", 4, 4159, 1),
+        ("status_code", 4, 4200, 1),
+        ("alarm_count", 4, 4207, 1),
+        ("alarm_worst_class", 4, 4208, 1),
+        ("alarm_code", 4, 4210, 1),
+        ("run", 1, 16, 1),
+        ("mode", 3, 100, 1),
+        ("temp_setpoint", 3, 190, 1),
+        ("humidity_setpoint", 3, 191, 1),
+        ("fan_speed_manual", 3, 192, 1),
+        ("alarm_ack", 1, 2, 1),
+        ("alarm_reset", 1, 3, 1),
+    ]
+    WRITABLE = {"run", "mode", "temp_setpoint", "humidity_setpoint",
+                "fan_speed_manual", "alarm_ack", "alarm_reset"}
+
+    def _load(self, pub=None):
+        # Capture WARNING+ on the device logger; the sentinel keeps assertLogs
+        # satisfied so a clean load is observable as "sentinel only".
+        logger_name = f"dev.{self.DEVICE_ID}"
+        with self.assertLogs(logger_name, level="WARNING") as cm:
+            import logging
+            logging.getLogger(logger_name).warning("sentinel")
+            p, pub = _poller("mp02-ahu", TEMPLATES_DIR, pub=pub,
+                             id=self.DEVICE_ID, port="/dev/COM3",
+                             baudrate=19200, address=1)
+        self.assertEqual(cm.output, [f"WARNING:{logger_name}:sentinel"],
+                         "mp02-ahu load emitted a skip WARN or an ERROR")
+        return p, pub
+
+    def _ch(self, p, name):
+        return next(c for c in p._channels if c.name == name)
+
+    def test_parses_all_23_channels_without_skip(self):
+        p, _pub = self._load()
+        self.assertFalse(p._load_error)
+        self.assertEqual([c.name for c in p._channels],
+                         [r[0] for r in self.EXPECTED_READS])
+        self.assertEqual(len(p._channels), 23)
+        self.assertEqual(p._setup_writes, [])   # no device.setup writes
+
+    def test_bootloader_register_129_not_addressed(self):
+        p, _pub = self._load()
+        self.assertFalse([c for c in p._channels
+                          if c.reg_type == "holding" and c.address == 129])
+
+    def test_reads_map_to_expected_fc_and_addresses(self):
+        p, _pub = self._load()
+        fake = RecordingSerial()
+        with mock.patch.object(p, "get_port", return_value=fake), \
+                mock.patch.object(bridge.DeviceLiveCache, "flush_file"):
+            p.poll_io()
+        self.assertEqual(fake.reads, [r[1:] for r in self.EXPECTED_READS])
+
+    def test_decode_float_high_word_first_and_setpoint_x10(self):
+        p, pub = self._load()
+        # 21.5 f32 = 0x41AC0000, high word at the lower address (big_endian).
+        fake = RecordingSerial(regs={4002: 0x41AC, 4003: 0x0000,
+                                     190: 225, 4157: 3},
+                               coils={16: 1})
+        with mock.patch.object(p, "get_port", return_value=fake), \
+                mock.patch.object(bridge.DeviceLiveCache, "flush_file"):
+            p.poll_io()
+        did = p.device_id
+        pub.pub_control.assert_any_call(did, "supply_temp", "21.5")
+        pub.pub_control.assert_any_call(did, "temp_setpoint", "22.5")
+        pub.pub_control.assert_any_call(did, "sequencer_state", "3")
+        pub.pub_control.assert_any_call(did, "run", "1")
+        published = {c.args[1] for c in pub.pub_control.call_args_list}
+        self.assertEqual(published, {r[0] for r in self.EXPECTED_READS})
+
+    def test_writable_set_and_setup_writes_nothing(self):
+        p, pub = self._load()
+        fake = RecordingSerial()
+        with mock.patch.object(p, "get_port", return_value=fake), \
+                mock.patch.object(bridge.DeviceLiveCache, "flush_file"):
+            p.setup()
+        subs = {c.args[1] for c in pub.subscribe_writeback.call_args_list}
+        self.assertEqual(subs, self.WRITABLE)
+        self.assertEqual(fake.writes, [])
+
+    def test_poll_never_writes(self):
+        # Writes happen only on an /on command; repeated polls re-assert
+        # nothing, whatever the device reports.
+        p, _pub = self._load()
+        fake = RecordingSerial(regs={190: 225}, coils={16: 1})
+        clock = {"t": 100.0}
+        with mock.patch.object(p, "get_port", return_value=fake), \
+                mock.patch.object(bridge.DeviceLiveCache, "flush_file"), \
+                mock.patch.object(bridge_template.TemplatePoller, "_monotonic",
+                                  side_effect=lambda: clock["t"]):
+            p.setup()
+            for _ in range(3):
+                p.poll_io()
+                clock["t"] += 10.0
+        self.assertGreater(len(fake.reads), 0)
+        self.assertEqual(fake.writes, [])
+
+    def test_retained_command_not_replayed(self):
+        p, _pub = self._load()
+        cb = p._make_writeback_cb(self._ch(p, "temp_setpoint"))
+        with mock.patch.object(p, "_wb_submit") as submit:
+            cb(None, None, types.SimpleNamespace(retain=True, payload=b"22.5"))
+            submit.assert_not_called()
+            cb(None, None, types.SimpleNamespace(retain=False, payload=b"22.5"))
+            submit.assert_called_once()
+
+    def test_setpoint_writes_encode_x10_int16(self):
+        p, _pub = self._load()
+        cases = [("temp_setpoint", "22.5", 190, 225),
+                 ("temp_setpoint", "5", 190, 50),
+                 ("humidity_setpoint", "45.5", 191, 455),
+                 ("fan_speed_manual", "100", 192, 1000),
+                 ("mode", "2", 100, 2)]
+        for name, payload, reg, raw in cases:
+            with self.subTest(name=name, payload=payload):
+                fake = FakeSerial()
+                with mock.patch.object(p, "get_port", return_value=fake), \
+                        mock.patch.object(bridge.DeviceLiveCache, "flush_file"):
+                    p._writeback(self._ch(p, name), payload)
+                self.assertEqual(fake.writes, [("reg", reg, raw)])
+
+    def test_setpoint_beyond_int16_refused(self):
+        # 4000 x10 = 40000 does not fit int16: refused, not wrapped to a
+        # negative setpoint the PLC would clamp to its lower bound.
+        p, pub = self._load()
+        fake = FakeSerial()
+        with self.assertLogs(f"dev.{self.DEVICE_ID}", level="WARNING"), \
+                mock.patch.object(p, "get_port", return_value=fake), \
+                mock.patch.object(bridge.DeviceLiveCache, "flush_file"):
+            p._writeback(self._ch(p, "temp_setpoint"), "4000")
+        self.assertEqual(fake.writes, [])
+        self.assertFalse([c for c in pub.pub_control.call_args_list
+                          if c.args[1] == "temp_setpoint"])
+        pub.pub_error.assert_any_call(p.device_id, "temp_setpoint", "w")
+
+    def test_coil_writes(self):
+        p, _pub = self._load()
+        cases = [("run", "1", 16, True), ("run", "0", 16, False),
+                 ("alarm_ack", "1", 2, True), ("alarm_reset", "1", 3, True)]
+        for name, payload, coil, on in cases:
+            with self.subTest(name=name, payload=payload):
+                fake = FakeSerial()
+                with mock.patch.object(p, "get_port", return_value=fake), \
+                        mock.patch.object(bridge.DeviceLiveCache, "flush_file"):
+                    p._writeback(self._ch(p, name), payload)
+                self.assertEqual(fake.writes, [("coil", coil, on)])
+
+
 if __name__ == "__main__":
     unittest.main()
