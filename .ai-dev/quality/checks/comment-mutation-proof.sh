@@ -143,7 +143,7 @@ alice-conf-homes|opt/sa02m-update/lib/validate_package.py|"/etc/sa02m-alice/",
 alice-conf-homes|etc/sa02m-update-runner.sh|"/etc/sa02m-alice/",
 alice-conf-homes|etc/sa02m-restore-backup.sh|sa02m-alice/sa02m-alice-(client|devices)
 alice-conf-homes|etc/sa02m-restore-backup.sh|if why is not None: raise RestoreRefused(why)
-alice-conf-homes|etc/sa02m-restore-backup.sh|"/etc/sa02m-alice": (0o770
+alice-conf-homes|etc/sa02m-restore-backup.sh|"/etc/sa02m-alice": (0o771
 alice-conf-homes|etc/sa02m-restore-backup.sh|if not pinned(cur_st, st): raise Unsafe(f"{nxt} is a symlink in
 alice-conf-homes|etc/sa02m-web-backup.sh|if not pinned(cur_st, st): raise Unsafe(f"{nxt} is a symlink in
 alice-conf-homes|etc/sa02m-web-backup.sh|if not pinned(cur_st, st): raise Unsafe(f"{nxt} is a directory in
@@ -190,7 +190,7 @@ alice-conf-homes|opt/sa02m-update/lib/validate_package.py|"/etc/sa02m-homekit/",
 alice-conf-homes|etc/sa02m-update-runner.sh|"/var/lib/sa02m-homekit/",
 alice-conf-homes|etc/sa02m-web-backup.sh|/etc/sa02m-homekit/sa02m-homekit.conf
 alice-conf-homes|etc/sa02m-restore-backup.sh|re.compile(r"^/etc/sa02m-homekit/sa02m-homekit
-alice-conf-homes|etc/sa02m-restore-backup.sh|"/etc/sa02m-homekit": (0o770
+alice-conf-homes|etc/sa02m-restore-backup.sh|"/etc/sa02m-homekit": (0o2750
 installer-order|install.sh|sa02m_run_module 06c-homekit.sh
 installer-svc-policy-gate|scripts/06c-homekit.sh|sa02m_svc_capture "$UNIT"
 factory-reset-runner|etc/sa02m-factory-reset-runner.sh|  wipe_homekit_pairings
@@ -211,8 +211,8 @@ sudoers-pin-contract|etc/sudoers.d/sa02m-homeconnect|/usr/local/sbin/sa02m-homec
 alice-conf-homes|opt/sa02m-update/lib/validate_package.py|"/etc/sa02m-homeconnect/",
 alice-conf-homes|etc/sa02m-update-runner.sh|"/var/lib/sa02m-homeconnect/",
 alice-conf-homes|etc/sa02m-restore-backup.sh|re.compile(r"^/etc/sa02m-homeconnect/sa02m-homeconnect
-alice-conf-homes|etc/sa02m-restore-backup.sh|"/etc/sa02m-homeconnect": (0o770
-alice-conf-homes|scripts/06d-homeconnect.sh|os.fchmod(fd, 0o660)
+alice-conf-homes|etc/sa02m-restore-backup.sh|"/etc/sa02m-homeconnect": (0o2750
+alice-conf-homes|scripts/06d-homeconnect.sh|os.fchmod(fd, 0o640)
 installer-order|install.sh|sa02m_run_module 06d-homeconnect.sh
 installer-svc-policy-gate|scripts/06d-homeconnect.sh|sa02m_svc_capture "$UNIT"
 factory-reset-runner|etc/sa02m-factory-reset-runner.sh|  wipe_homeconnect_signin
@@ -223,8 +223,15 @@ factory-reset-runner|etc/sa02m-factory-reset-runner.sh|unit_stopped "$HC_UNIT" |
 factory-reset-runner|etc/sa02m-factory-reset-runner.sh|  restart_stopped_units
 factory-reset-runner|etc/sa02m-factory-reset-runner.sh|remember_if_active "$HK_UNIT"
 daemon-least-privilege|scripts/06c-homekit.sh|if gpasswd -d "$HK_USER" www-data >>"$LOG_FILE" 2>&1; then
-daemon-least-privilege|opt/sa02m-homekit/tmpfiles.d/sa02m-homekit.conf|a+ /etc/sa02m-alice - - - - user:sa02m-homekit:--x,default:user:sa02m-homekit:r--,default:mask::rwx
-daemon-least-privilege|etc/systemd/system/sa02m-homeconnect.service|ExecStartPre=-+/usr/bin/systemd-tmpfiles --create /etc/tmpfiles.d/sa02m-homeconnect.conf
+daemon-least-privilege|etc/systemd/system/sa02m-homeconnect.service|ExecStartPre=-+/usr/local/sbin/sa02m-daemon-access.sh apply homeconnect
+daemon-least-privilege|scripts/06c-homekit.sh|HK_ACCESS_OUT=$(timeout 120 /usr/local/sbin/sa02m-daemon-access.sh apply homekit 2>&1) || hk_access_rc=$?
+daemon-least-privilege|scripts/06c-homekit.sh|HK_DEVDOC_GROUP=sa02m-alice-devices
+daemon-least-privilege|opt/sa02m-homekit/tmpfiles.d/sa02m-homekit.conf|d /etc/sa02m-homekit 2750 www-data sa02m-homekit -
+daemon-least-privilege|usr/local/sbin/sa02m-daemon-access.sh|ops+=("f:$DEVDOC:0640:$WEB_UID:$DEVDOC_GID:${WEB_GID:-x},$DEVDOC_GID")
+daemon-least-privilege|usr/local/sbin/sa02m-daemon-access.sh|DENY_READ="/etc/sa02m_web.env /etc/sa02m-alice/sa02m-alice-devices.conf"
+daemon-access-effect|usr/local/sbin/sa02m-daemon-access.sh|probe yes "$DAEMON" r "$CONF"
+daemon-access-effect|usr/local/sbin/sa02m-daemon-access.sh|ops+=("f:$CONF:0640:$WEB_UID:$DAEMON_GID:${WEB_GID:-x},$DAEMON_GID")
+daemon-access-effect|usr/local/sbin/sa02m-daemon-access.sh|os.fchown(fd, uid, gid)
 '
 
 command -v git >/dev/null 2>&1 || { echo "comment-mutation-proof: FAIL — git is required to build the pristine copy"; exit 1; }
