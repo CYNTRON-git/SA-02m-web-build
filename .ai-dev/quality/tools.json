@@ -142,7 +142,7 @@
       "config": null,
       "run": "bash scripts/dev/test-alice-reload-handshake.sh",
       "beat": "build",
-      "covers": ["opt/sa02m-alice/", "usr/local/sbin/sa02m-alice-web-trigger.sh", "scripts/dev/test-alice-reload-handshake.sh"],
+      "covers": ["opt/sa02m-alice/", "usr/local/sbin/sa02m-alice-web-trigger.sh", "scripts/dev/test-alice-reload-handshake.sh", "docs/contracts/alice-mqtt-mapping.md"],
       "init": "bash + grep + sed + mktemp (present everywhere the project builds) — run on demand: bash scripts/dev/test-alice-reload-handshake.sh"
     },
     {
@@ -151,7 +151,7 @@
       "config": null,
       "run": "bash scripts/dev/test-alice-topics-cgi.sh",
       "beat": "build",
-      "covers": ["www/network_config/cgi-bin/sa02m_alice_topics.cgi", "www/network_config/cgi-bin/lib_web_auth.sh", "opt/sa02m-alice/sa02m_alice/config/topics.py", "opt/sa02m-alice/sa02m_alice/config/inventory.py", "scripts/dev/test-alice-topics-cgi.sh"],
+      "covers": ["www/network_config/cgi-bin/sa02m_alice_topics.cgi", "www/network_config/cgi-bin/lib_web_auth.sh", "opt/sa02m-alice/sa02m_alice/config/topics.py", "opt/sa02m-alice/sa02m_alice/config/inventory.py", "scripts/dev/test-alice-topics-cgi.sh", "docs/contracts/alice-mqtt-mapping.md"],
       "init": "bash + python3 + coreutils timeout (present everywhere the project builds) — run on demand: bash scripts/dev/test-alice-topics-cgi.sh"
     },
     {
@@ -496,7 +496,8 @@
       "covers": [
         "opt/sa02m-cloud-agent/binding_core.py",
         "opt/sa02m-alice/sa02m_alice/common/binding_core.py",
-        ".ai-dev/quality/checks/binding-reset-parity.sh"
+        ".ai-dev/quality/checks/binding-reset-parity.sh",
+        "docs/contracts/alice-mqtt-mapping.md"
       ],
       "init": "bash + cmp + grep (present everywhere the project builds) — run on demand: bash .ai-dev/quality/checks/binding-reset-parity.sh"
     },
@@ -765,7 +766,7 @@
     },
     {
       "id": "js-unit-alice-gateway",
-      "checks": "The «Яндекс Алиса» card's gateway pill and «Шлюз» badge against the §Gateway reachability contract (docs/contracts/alice-mqtt-mapping.md): `gateway.state = checking` (no evidence yet) renders the neutral «Проверка шлюза…» / «Проверяется», never «Шлюз недоступен»; a connected client reads «Подключено»; `unreachable` and an older backend's bare `available:false` still read «Шлюз недоступен» / «Недоступен»; a TLS-trust failure keeps «сертификат шлюза не доверенный»; a disabled client reads «Отключено». aliceFriendlyStatus / aliceGatewayBadge / ALICE_STATE_MAP are cut out of the SHIPPED app/alice.js by brace matching and evaluated in a sandbox. RED observed 2026-09-28 on the pre-fix alice.js: aliceGatewayBadge absent (extraction FAIL), and aliceFriendlyStatus rendered `checking` as {text:'Шлюз недоступен', kind:'err'}.",
+      "checks": "The «Яндекс Алиса» card's gateway pill and «Шлюз» badge against the §Gateway reachability contract (docs/contracts/alice-mqtt-mapping.md): `gateway.state = checking` (no evidence yet) makes the «Шлюз» badge read the neutral «Проверяется» (kind unk), never «Недоступен», and aliceFriendlyStatus return {«Проверка шлюза…», unk} instead of {«Шлюз недоступен», err} — the card renders that status text only for kind err, so what the operator SEES while checking is the badge, and the absence of the «Шлюз недоступен» card line; the test asserts the helpers' return values, not the rendered DOM; a connected client reads «Подключено»; `unreachable` and an older backend's bare `available:false` still read «Шлюз недоступен» / «Недоступен»; a TLS-trust failure keeps «сертификат шлюза не доверенный»; a disabled client reads «Отключено». aliceFriendlyStatus / aliceGatewayBadge / ALICE_STATE_MAP are cut out of the SHIPPED app/alice.js by brace matching and evaluated in a sandbox. RED observed 2026-09-28 on the pre-fix alice.js: aliceGatewayBadge absent (extraction FAIL), and aliceFriendlyStatus rendered `checking` as {text:'Шлюз недоступен', kind:'err'}.",
       "config": null,
       "run": "node scripts/dev/test-alice-gateway-status.mjs",
       "beat": "build",
