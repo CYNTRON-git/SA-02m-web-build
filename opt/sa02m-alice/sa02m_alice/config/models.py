@@ -126,9 +126,61 @@ CLOUD_ONLY_EVENT_INSTANCES = {
 # PM densities) was rejected.
 _UNIT_RE = re.compile(r"^unit\.[a-z0-9_.]{1,32}$")
 
+# `co2_alarm_ppm` — the HomeKit CarbonDioxideDetected threshold, an item-level
+# field beside `mqtt` (never inside `parameters`, which discovery copies to
+# Yandex verbatim — the `scale` rule). Bounds are the integrator's sane range;
+# the default when absent lives in sa02m_homekit.constants.CO2_ALARM_DEFAULT_PPM
+# (docs/contracts/homekit-bridge.md §3, M15).
+CO2_ALARM_MIN_PPM = 400
+CO2_ALARM_MAX_PPM = 5000
+
 # A scale outside this range is a typo, not a unit conversion (the real ones
 # in use are 1000 mg→µg and 7.50062 kPa→mmHg). Zero would erase the reading.
 _SCALE_MAX = 1e6
+
+
+# `homekit_scenes` — the device document's list of scenario ids shown in Apple
+# Home (docs/contracts/homekit-bridge.md §2). Capped at the scenario store's
+# own maximum (sa02m_rules.store.SCENARIOS_MAX, pinned by tests): there cannot
+# be more scenes to tick than scenarios.
+HOMEKIT_SCENES_MAX = 64
+
+
+def validate_homekit_scenes(value: Any) -> Tuple[Optional[List[str]], Optional[str]]:
+    """Strict: a list of scenario ids (`_ID_RE`), de-duplicated in order,
+    at most HOMEKIT_SCENES_MAX. Anything else is refused, never coerced."""
+    if not isinstance(value, list):
+        return None, "invalid homekit_scenes"
+    out: List[str] = []
+    for sid in value:
+        if not isinstance(sid, str) or not _ID_RE.match(sid):
+            return None, "invalid homekit_scenes"
+        if sid not in out:
+            out.append(sid)
+    if len(out) > HOMEKIT_SCENES_MAX:
+        return None, "too_many"
+    return out, None
+
+
+# One `set_homekit_visible` request (config/api.py): at most this many devices.
+# Above the bridge's 149-accessory cap on purpose — unticking counts too.
+HOMEKIT_VISIBLE_MAX = 256
+
+
+def validate_homekit_visible(value: Any) -> Tuple[Optional[Dict[str, bool]], Optional[str]]:
+    """Strict: a non-empty map of device id (`_ID_RE`) → bool, at most
+    HOMEKIT_VISIBLE_MAX entries. Anything else is refused, never coerced
+    (`1`, `"true"` and `null` are not bools)."""
+    if not isinstance(value, dict) or not value:
+        return None, "invalid_homekit_visible"
+    if len(value) > HOMEKIT_VISIBLE_MAX:
+        return None, "too_many"
+    out: Dict[str, bool] = {}
+    for did, flag in value.items():
+        if not isinstance(did, str) or not _ID_RE.match(did) or not isinstance(flag, bool):
+            return None, "invalid_homekit_visible"
+        out[did] = flag
+    return out, None
 
 
 def new_id() -> str:
@@ -282,6 +334,21 @@ def _validate_inverted(item: Dict[str, Any], kind: str) -> Optional[str]:
     return None
 
 
+def _validate_co2_alarm(item: Dict[str, Any]) -> Optional[str]:
+    """Optional HomeKit CO₂ threshold. Absent stays absent (default applies)."""
+    if "co2_alarm_ppm" not in item:
+        return None
+    value = item.get("co2_alarm_ppm")
+    if str(item.get("type") or "") != "devices.properties.float" \
+            or _item_instance(item) != "co2_level":
+        return "co2_alarm_ppm is only valid on a co2_level property"
+    if isinstance(value, bool) or not isinstance(value, int):
+        return "invalid co2_alarm_ppm"
+    if not CO2_ALARM_MIN_PPM <= value <= CO2_ALARM_MAX_PPM:
+        return "invalid co2_alarm_ppm"
+    return None
+
+
 def _item_instance(item: Dict[str, Any]) -> str:
     params = item.get("parameters")
     if not isinstance(params, dict):
@@ -369,6 +436,9 @@ def _validate_mqtt_item(item: Dict[str, Any], kind: str) -> Tuple[Optional[Dict[
     err = _validate_inverted(item, kind)
     if err:
         return None, err
+    err = _validate_co2_alarm(item)
+    if err:
+        return None, err
     scale, err = _validate_scale(item)
     if err:
         return None, err
@@ -383,6 +453,28 @@ def _validate_mqtt_item(item: Dict[str, Any], kind: str) -> Tuple[Optional[Dict[
         out["scale"] = scale
     if drop_inverted:
         del out["inverted"]
+    return out, None
+
+
+# Topics published by the read-only Home Connect client (docs/contracts/
+# home-connect.md «RO»): it subscribes to nothing, so a `/on` publish reaches
+# no one. An `on_off` bound here is stamped `writable: false` (Alice answers
+# INVALID_ACTION, HomeKit renders a sensor, the rules service skips it) and any
+# other capability type is refused — otherwise a consumer would report a
+# command to an appliance as DONE.
+HOMECONNECT_TOPIC_PREFIX = "/devices/hc-"
+
+
+def _readonly_source_item(item: Dict[str, Any]) -> Tuple[Optional[Dict[str, Any]], Optional[str]]:
+    """Capability bound to a read-only source: stamp or refuse. Copies."""
+    if not str(item.get("mqtt") or "").strip().startswith(HOMECONNECT_TOPIC_PREFIX):
+        return item, None
+    if str(item.get("type") or "") != "devices.capabilities.on_off":
+        return None, "read-only source"
+    if item.get("writable") is False:
+        return item, None
+    out = dict(item)
+    out["writable"] = False
     return out, None
 
 
@@ -493,6 +585,10 @@ def validate_device(dev: Dict[str, Any], *, partial: bool = False) -> Tuple[Opti
                 normalised, err = _validate_mqtt_item(item, kind)
                 if err:
                     return None, err
+                if kind == "capability":
+                    normalised, err = _readonly_source_item(normalised)
+                    if err:
+                        return None, err
                 pair = (str(normalised.get("type") or ""), _item_instance(normalised))
                 if pair in seen:
                     return None, "duplicate %s instance: %s" % (kind, pair[1])

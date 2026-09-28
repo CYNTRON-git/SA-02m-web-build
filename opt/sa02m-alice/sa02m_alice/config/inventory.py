@@ -133,6 +133,39 @@ LED_WRITABLE = frozenset({
     "white", "text",
 })
 
+# Home Connect appliances (docs/contracts/home-connect.md §6, inventory.json):
+# the file is written by another uid (`sa02m-homeconnect`), so it is read
+# bounded and validated at this boundary — topic strings are built only from a
+# validated `hc-` id and a name from the table below, never from other file
+# strings. Absent/unreadable/oversize ⇒ no HC entries, never an error.
+HC_INVENTORY_ENV = "SA02M_HOMECONNECT_INVENTORY"
+HC_INVENTORY_DEFAULT = "/run/sa02m-homeconnect/inventory.json"
+HC_INVENTORY_MAX_BYTES = 65536
+# Conscious copy of sa02m_homeconnect.constants.MAX_APPLIANCES (the alice tree
+# cannot import that package); pinned equal by tests/test_inventory_homeconnect.py.
+HC_MAX_APPLIANCES = 32
+HC_DEVICE_ID_RE = re.compile(r"^hc-[a-z0-9-]{1,61}$")
+HC_NAME_MAX = 64
+HC_LABEL_RE = re.compile(r"^[A-Za-z0-9 ]{1,32}$")
+# The controls a consumer can carry honestly: yes/no values only. Text and
+# epoch controls (`operation_state`, `active_program`, `last_event`,
+# `last_event_ts`) have no Yandex or HAP type; the numeric `remaining_s` /
+# `progress_pct` have no numeric binding kind in the picker yet — none of them
+# is offered. Every name is
+# pinned ⊆ sa02m_homeconnect.mapping.MAPPING by the test above. All read-only
+# (the Home Connect client publishes no `/on`, home-connect.md «RO»).
+HC_BINDABLE_CONTROLS: Tuple[Tuple[str, str, str], ...] = (
+    ("door_open", "Дверь открыта", "other"),
+    ("running", "Работает", "other"),
+    ("finished", "Программа завершена", "other"),
+    ("power_on", "Включён", "other"),
+    ("remote_start_allowed", "Разрешён удалённый старт", "other"),
+    ("remote_control_active", "Удалённое управление", "other"),
+    ("local_control_active", "Местное управление", "other"),
+    ("connected", "На связи", "diag"),
+)
+HC_CONTROL_TITLES: Dict[str, str] = {name: title for name, title, _g in HC_BINDABLE_CONTROLS}
+
 LIVE_CACHE_DIR_ENV = "SA02M_MQTT_LIVE_CACHE"
 LIVE_CACHE_DIR_DEFAULT = "/run/sa02m-modbus-mqtt"
 ROSTER_BASENAME = "_roster.json"
@@ -469,9 +502,92 @@ def _controller_entry() -> Dict[str, Any]:
     }
 
 
+def _hc_inventory_path() -> str:
+    return os.environ.get(HC_INVENTORY_ENV) or HC_INVENTORY_DEFAULT
+
+
+def _read_hc_inventory() -> Any:
+    """The parsed Home Connect inventory, or None (absent, too big, not JSON)."""
+    path = _hc_inventory_path()
+    try:
+        if os.stat(path).st_size > HC_INVENTORY_MAX_BYTES:
+            return None
+        with open(path, "rb") as fh:
+            # cap+1: a file growing between stat and read is still bounded.
+            raw = fh.read(HC_INVENTORY_MAX_BYTES + 1)
+    except OSError:
+        return None
+    if len(raw) > HC_INVENTORY_MAX_BYTES:
+        return None
+    try:
+        return json.loads(raw.decode("utf-8"))
+    except (UnicodeDecodeError, ValueError):
+        return None
+
+
+def _hc_label(value: Any) -> str:
+    return value if isinstance(value, str) and HC_LABEL_RE.match(value) else ""
+
+
+def _homeconnect_entries() -> List[Dict[str, Any]]:
+    """Picker entries for the Home Connect appliances (read-only controls).
+
+    An appliance that is not connected is still offered: bindability is not
+    liveness — the device registry shows it unreachable.
+    """
+    data = _read_hc_inventory()
+    if not isinstance(data, dict):
+        return []
+    appliances = data.get("appliances")
+    if not isinstance(appliances, list):
+        return []
+    out: List[Dict[str, Any]] = []
+    seen = set()
+    for app in appliances[:HC_MAX_APPLIANCES]:
+        if not isinstance(app, dict):
+            continue
+        device_id = app.get("device_id")
+        if not isinstance(device_id, str) or not HC_DEVICE_ID_RE.match(device_id) \
+                or device_id in seen:
+            continue
+        seen.add(device_id)
+        name = app.get("name")
+        name = " ".join(name.split())[:HC_NAME_MAX] if isinstance(name, str) else ""
+        published = app.get("controls")
+        published = set(c for c in published if isinstance(c, str)) \
+            if isinstance(published, list) else set()
+        groups = _empty_groups()
+        for control, title, group in HC_BINDABLE_CONTROLS:
+            if control in published:
+                groups[group].append(_channel(control, device_id, title, "r"))
+        if not any(groups.values()):
+            # Nothing bindable published yet (a text-only appliance, or one
+            # still loading): an empty group in the picker is noise.
+            continue
+        brand = _hc_label(app.get("brand"))
+        out.append({
+            "id": device_id,
+            "name": name or device_id,
+            "type": "homeconnect",
+            "model": "Home Connect",
+            "model_ru": "",
+            "model_source": "",
+            "yaml_model": "",
+            "brand": brand,
+            "appliance_type": _hc_label(app.get("type")),
+            "port": "",
+            "address": None,
+            "channels": groups,
+        })
+    return out
+
+
 def _device_sort_key(entry: Dict[str, Any]) -> Tuple[int, str, int, str]:
-    """Controller last; the rest by COM port then address, as on the MQTT tab."""
+    """Controller last, Home Connect appliances just before it; the rest by COM
+    port then address, as on the MQTT tab."""
     if entry.get("type") == "controller":
+        return (2, "", 0, entry.get("id") or "")
+    if entry.get("type") == "homeconnect":
         return (1, "", 0, entry.get("id") or "")
     try:
         address = int(entry.get("address"))
@@ -502,6 +618,7 @@ def build_mqtt_inventory() -> Dict[str, Any]:
     # The board's own controls are always offered, so the picker is never empty
     # on a fresh board (the guarantee list_mqtt_topics has carried since
     # 1.0.6.22 — the topics are DERIVED from the live device id).
+    devices.extend(_homeconnect_entries())
     devices.append(_controller_entry())
     devices.sort(key=_device_sort_key)
     return {

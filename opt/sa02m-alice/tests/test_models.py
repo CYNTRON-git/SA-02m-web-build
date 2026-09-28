@@ -528,5 +528,130 @@ class TestModeCapabilityValidation(unittest.TestCase):
         self.assertIsNotNone(err)
 
 
+class TestHomeConnectReadOnly(unittest.TestCase):
+    """HC is read-only in every consumer (docs/contracts/home-connect.md «RO»):
+    an on_off bound to `/devices/hc-…` is stored `writable: false`; any other
+    capability bound there is refused."""
+
+    def _hc_switch(self, **extra):
+        dev = _switch_device()
+        dev["capabilities"][0]["mqtt"] = "/devices/hc-dishwasher-1/controls/running"
+        dev["capabilities"][0].update(extra)
+        return dev
+
+    def test_hc_on_off_is_stamped_read_only(self):
+        dev = self._hc_switch()
+        out, err = models.validate_device(dev)
+        self.assertIsNone(err)
+        self.assertIs(out["capabilities"][0]["writable"], False)
+        # The input is copied, never mutated.
+        self.assertNotIn("writable", dev["capabilities"][0])
+
+    def test_hc_on_off_marked_writable_is_still_stamped(self):
+        out, err = models.validate_device(self._hc_switch(writable=True))
+        self.assertIsNone(err)
+        self.assertIs(out["capabilities"][0]["writable"], False)
+
+    def test_hc_range_is_refused(self):
+        dev = _switch_device()
+        dev["capabilities"] = [{
+            "type": "devices.capabilities.range",
+            "mqtt": "/devices/hc-oven-1/controls/progress_pct",
+            "parameters": {"instance": "brightness", "unit": "unit.percent",
+                           "range": {"min": 0, "max": 100, "precision": 1}},
+        }]
+        _out, err = models.validate_device(dev)
+        self.assertEqual(err, "read-only source")
+
+    def test_hc_properties_are_accepted_unchanged(self):
+        dev = _sensor_device()
+        dev["properties"][0] = _float_prop("temperature", "unit.temperature.celsius",
+                                           topic="/devices/hc-oven-1/controls/remaining_s")
+        out, err = models.validate_device(dev)
+        self.assertIsNone(err)
+        self.assertNotIn("writable", out["properties"][0])
+
+    def test_non_hc_on_off_is_byte_identical(self):
+        dev = _switch_device()
+        out, err = models.validate_device(dev)
+        self.assertIsNone(err)
+        self.assertEqual(out, dev)
+        self.assertNotIn("writable", out["capabilities"][0])
+
+
+class TestCo2AlarmThreshold(unittest.TestCase):
+    """`co2_alarm_ppm` — HomeKit's CarbonDioxideDetected threshold (M15)."""
+
+    def _co2(self, **extra):
+        dev = _sensor_device()
+        item = _float_prop("co2_level", "unit.ppm", topic="/devices/dtv-COM3-1/controls/co2")
+        item.update(extra)
+        dev["properties"] = [item]
+        return dev
+
+    def test_absent_is_kept_absent(self):
+        out, err = models.validate_device(self._co2())
+        self.assertIsNone(err)
+        self.assertNotIn("co2_alarm_ppm", out["properties"][0])
+
+    def test_bounds_are_inclusive(self):
+        for value in (400, 1000, 5000):
+            out, err = models.validate_device(self._co2(co2_alarm_ppm=value))
+            self.assertIsNone(err, value)
+            self.assertEqual(out["properties"][0]["co2_alarm_ppm"], value)
+
+    def test_out_of_range_refused(self):
+        for value in (399, 5001, 0, -1):
+            _out, err = models.validate_device(self._co2(co2_alarm_ppm=value))
+            self.assertEqual(err, "invalid co2_alarm_ppm", value)
+
+    def test_bool_float_and_string_refused(self):
+        for value in (True, False, 1000.0, "1000", None):
+            _out, err = models.validate_device(self._co2(co2_alarm_ppm=value))
+            self.assertEqual(err, "invalid co2_alarm_ppm", repr(value))
+
+    def test_wrong_item_refused(self):
+        dev = _sensor_device()
+        dev["properties"][0]["co2_alarm_ppm"] = 1000
+        _out, err = models.validate_device(dev)
+        self.assertEqual(err, "co2_alarm_ppm is only valid on a co2_level property")
+        dev = _switch_device()
+        dev["capabilities"][0]["co2_alarm_ppm"] = 1000
+        _out, err = models.validate_device(dev)
+        self.assertEqual(err, "co2_alarm_ppm is only valid on a co2_level property")
+
+    def test_never_inside_parameters(self):
+        # The field lives beside `mqtt`; a stray copy inside parameters is not
+        # the field (and discovery would forward it) — the validator leaves
+        # parameters alone, the projection reads only the item-level key.
+        dev = self._co2(co2_alarm_ppm=800)
+        out, _err = models.validate_device(dev)
+        self.assertNotIn("co2_alarm_ppm", out["properties"][0]["parameters"])
+
+
+class TestHomekitScenes(unittest.TestCase):
+    def test_strict_list_of_ids_deduplicated_in_order(self):
+        self.assertEqual(models.validate_homekit_scenes(["s2", "s1", "s2"]), (["s2", "s1"], None))
+        self.assertEqual(models.validate_homekit_scenes([]), ([], None))
+
+    def test_anything_else_is_refused(self):
+        for bad in ("s1", None, {"s1": True}, ["ok", 5], ["bad id"], ["x" * 65]):
+            self.assertEqual(models.validate_homekit_scenes(bad), (None, "invalid homekit_scenes"),
+                             repr(bad))
+
+    def test_capped_at_the_store_maximum(self):
+        ids = ["s%d" % i for i in range(models.HOMEKIT_SCENES_MAX)]
+        self.assertEqual(models.validate_homekit_scenes(ids)[1], None)
+        self.assertEqual(models.validate_homekit_scenes(ids + ["one-more"])[1], "too_many")
+
+    def test_cap_equals_the_rules_store_maximum(self):
+        path = os.path.join(ROOT, "..", "sa02m-rules", "sa02m_rules", "store.py")
+        with open(path, encoding="utf-8") as fh:
+            text = fh.read()
+        import re
+        self.assertEqual(int(re.search(r"^SCENARIOS_MAX = (\d+)", text, re.M).group(1)),
+                         models.HOMEKIT_SCENES_MAX)
+
+
 if __name__ == "__main__":
     unittest.main()

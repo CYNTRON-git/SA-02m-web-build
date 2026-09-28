@@ -489,5 +489,33 @@ class TestRulesExposureWatcher(unittest.TestCase):
         self.assertTrue(w.changed())
 
 
+class TestHomekitFingerprintWatcher(TestRulesExposureWatcher):
+    """The HomeKit bridge's second watcher: the same two-stage watch with
+    `homekit_exposure_fingerprint` — every scene row matters (ticking lives in
+    the device document), the Alice default stays exactly as above."""
+
+    def hk_watcher(self):
+        from sa02m_alice.client.reload_watch import RulesExposureWatcher
+        from sa02m_alice.config import scene_devices
+        return RulesExposureWatcher(self.path,
+                                    fingerprint=scene_devices.homekit_exposure_fingerprint)
+
+    def test_renaming_a_scene_not_exposed_to_alice_moves_only_the_homekit_watch(self):
+        row = self._scene()
+        row.pop("alice_expose")
+        self.write(row)
+        alice, hk = self.watcher(), self.hk_watcher()
+        renamed = dict(row, name="Ночь")
+        self.write(renamed)
+        self.assertFalse(alice.changed())
+        self.assertTrue(hk.changed())
+        self.assertFalse(hk.changed())
+
+    def test_a_non_scene_row_never_moves_the_homekit_watch(self):
+        hk = self.hk_watcher()
+        self.write(self._scene(), {"id": "b1", "type": "block", "name": "Блок"})
+        self.assertFalse(hk.changed())
+
+
 if __name__ == "__main__":
     unittest.main()

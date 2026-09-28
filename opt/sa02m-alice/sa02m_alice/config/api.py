@@ -481,6 +481,8 @@ def full_config() -> Dict[str, Any]:
     cfg = default_client_cfg()
     _wss, http, _path = gateway_urls()
     devices = load_devices()
+    # ONE scenario-store read feeds both scene blocks of the card.
+    rules_doc, rules_ok = scene_devices.read_rules_doc()
     status = read_status_file()
     reach = gateway_reachability(status)
     enabled = client_enabled(cfg)
@@ -504,7 +506,7 @@ def full_config() -> Dict[str, Any]:
         if _claim.get("claim_token") and not _claim.get("issued") and _claim_fresh
         else None
     )
-    return {
+    out = {
         "ok": True,
         "version": __version__,
         "client_enabled": enabled,
@@ -534,7 +536,7 @@ def full_config() -> Dict[str, Any]:
         # read per Alice poll, beside the status-file read already here. An
         # older cached bundle simply ignores the key; a newer bundle against
         # an older CGI renders no rows (`(d.scene_devices || [])`).
-        "scene_devices": scene_devices.web_scene_rows(devices),
+        "scene_devices": scene_devices.web_scene_rows(devices, rules_doc),
         # Second unit (sa02m-cloud-control, `--profile cloud`): enable flag,
         # its own status file, tri-state enrollment like mtls.cert_present.
         "cloud_control": cloud_control_block(cfg),
@@ -558,6 +560,12 @@ def full_config() -> Dict[str, Any]:
             "pending": pending_reg_url is not None,
         },
     }
+    # «Сцены в HomeKit»: every scene row, only when the store was read — no
+    # rules stack (or an unreadable store) ⇒ no key ⇒ the card hides the block.
+    # An older cached bundle ignores the key.
+    if rules_ok:
+        out["scene_catalog"] = scene_devices.scene_catalog(rules_doc)
+    return out
 
 
 def set_enable(enabled: bool) -> Dict[str, Any]:
@@ -1340,6 +1348,78 @@ def rename_device(device_id: str, name: Any) -> Dict[str, Any]:
     return {"ok": False, "error": "not_found", "message": "device not found"}
 
 
+def set_scene_homekit(scene_id: Any, visible: Any) -> Dict[str, Any]:
+    """Tick / untick one scene for Apple Home (`homekit_scenes`, the device
+    document — docs/contracts/homekit-bridge.md §2). Not a binding mutation:
+    the CGI's restart list does not name it, so no Alice unit restarts, and
+    the Alice catalogue never reads the list.
+
+    Ids that are no longer `type: scene` rows are pruned ONLY when the store
+    was read (`scene_devices.read_rules_doc` decides): a corrupt or unopenable
+    store or a missing rules stack prunes nothing (and a tick then answers
+    not_found — nothing can be verified to tick).
+    """
+    if not models.id_ok(scene_id):
+        return {"ok": False, "error": "invalid_id", "message": "invalid scene_id"}
+    if not isinstance(visible, bool):
+        return {"ok": False, "error": "invalid_visible", "message": "visible must be a bool"}
+    rules_doc, readable = scene_devices.read_rules_doc()
+    if not readable:
+        log.error("scenario store not read, homekit_scenes not pruned")
+    scene_ids = [row["scene_id"] for row in scene_devices.scene_catalog(rules_doc)] if readable else []
+    with devices_lock():
+        doc = load_devices()
+        current = scene_devices.homekit_ticked(doc)
+        if readable:
+            current = [sid for sid in current if sid in scene_ids]
+        if visible:
+            if not readable or scene_id not in scene_ids:
+                return {"ok": False, "error": "not_found", "message": "scene not found"}
+            if scene_id not in current:
+                current.append(scene_id)
+        else:
+            current = [sid for sid in current if sid != scene_id]
+        cleaned, err = models.validate_homekit_scenes(current)
+        if err:
+            return {"ok": False, "error": err, "message": "invalid homekit_scenes"}
+        doc["homekit_scenes"] = cleaned
+        save_devices(doc)
+    return {"ok": True, "homekit_scenes": cleaned}
+
+
+def set_homekit_visible(visible: Any) -> Dict[str, Any]:
+    """Tick / untick many devices for Apple Home in ONE write (`homekit_visible`
+    — docs/contracts/homekit-bridge.md §2), for the «Apple HomeKit» card's
+    device list: one request instead of one `upsert_device` per device, which
+    timed out behind nginx on a loaded board (bench 1.135).
+
+    `visible` maps existing device ids to a strict bool. All-or-nothing: an
+    unknown id refuses the whole request. Only the named rows change, and only
+    that key — no other row is re-validated, so a stored row the current
+    validator would refuse does not block its neighbours. Not a binding
+    mutation: the CGI's restart list does not name it (the Alice catalogue
+    never reads `homekit_visible`; the bridge rebuilds on the document change).
+    """
+    cleaned, err = models.validate_homekit_visible(visible)
+    if err:
+        return {"ok": False, "error": err, "message": "invalid homekit_visible"}
+    with devices_lock():
+        doc = load_devices()
+        rows = {d.get("id"): d for d in doc.get("devices") or [] if isinstance(d, dict)}
+        if any(did not in rows for did in cleaned):
+            return {"ok": False, "error": "not_found", "message": "device not found"}
+        changed = 0
+        for did, flag in cleaned.items():
+            if rows[did].get("homekit_visible") is not flag:
+                rows[did]["homekit_visible"] = flag
+                changed += 1
+        if changed:
+            save_devices(doc)
+        shown = sorted(did for did, d in rows.items()
+                       if isinstance(did, str) and d.get("homekit_visible") is True)
+    return {"ok": True, "changed": changed, "visible": shown}
+
+
 def delete_device(device_id: str) -> Dict[str, Any]:
     with devices_lock():
         doc = load_devices()
@@ -1504,6 +1584,10 @@ def dispatch(method: str, path: str, body: Optional[Dict[str, Any]] = None) -> T
         return 200, delete_device(str(body.get("id") or ""))
     if action == "rename_device":
         return 200, rename_device(str(body.get("id") or body.get("device") or ""), body.get("name"))
+    if action == "set_scene_homekit":
+        return 200, set_scene_homekit(body.get("scene_id"), body.get("visible"))
+    if action == "set_homekit_visible":
+        return 200, set_homekit_visible(body.get("visible"))
 
     return 404, {"ok": False, "error": "not_found", "message": "unknown path %s" % path}
 
