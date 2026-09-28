@@ -2356,9 +2356,12 @@ function deployMplcProject() {
     var j = null;
     try { j = JSON.parse(xhr.responseText || '{}'); } catch (e) { j = null; }
     if (!j || xhr.status < 200 || xhr.status >= 300 || j.ok === false) {
-      // An E_CSRF here is the refusal app.js already reacted to; MPLC_PROJ_ERR_UI
-      // gives it the widget's own words.
-      _mplcProjFinish('error', j || { error_message: 'HTTP ' + xhr.status });
+      // An E_CSRF here is the refusal app.js already reacted to (proxy toast, or
+      // logout): the status line keeps MPLC_PROJ_ERR_UI's words, but no second,
+      // generic toast — Operator 2026-09-28, the offline upload / online Apply
+      // precedent. Every other error keeps its toast.
+      var csrfRefused = !!(j && j.error_code === 'E_CSRF');
+      _mplcProjFinish('error', j || { error_message: 'HTTP ' + xhr.status }, { toast: !csrfRefused });
       return;
     }
     // Accepted — the deploy runs in the background; poll for its stages.
@@ -2417,7 +2420,9 @@ function _mplcProjStartPolling() {
   _mplcProjPollOnce();
 }
 
-function _mplcProjFinish(result, j) {
+// opts.toast === false: the error line only, no «Ошибка развёртывания проекта»
+// toast (a caller that already told the user — the E_CSRF upload refusal).
+function _mplcProjFinish(result, j, opts) {
   _mplcProjActive = false;
   if (_mplcProjPollTimer) { clearTimeout(_mplcProjPollTimer); _mplcProjPollTimer = null; }
   _mplcProjPollInFlight = false;
@@ -2433,7 +2438,7 @@ function _mplcProjFinish(result, j) {
   } else {
     _mplcProjSetStatus(uiT('Ошибка') + ': ' + uiT(_mplcProjErrText(j || {})), 'is-err');
     _mplcProjSetProgress(null, '');
-    toast('Ошибка развёртывания проекта', 'error');
+    if (!opts || opts.toast !== false) toast('Ошибка развёртывания проекта', 'error');
     onMplcProjectConfirmToggle();
   }
 }

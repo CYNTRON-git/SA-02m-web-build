@@ -53,6 +53,16 @@
    refusal), 10b/10g no transit toast / no SA02M_CSRF_BLOCKED, 10b widget line
    «Ошибка: csrf»; 10.0 and 10h hold on both trees (a plain answer and a
    network error were never the problem), as do 0–9.
+   10b «the transit toast is the only toast» (review 1.0.6.63 B1): RED on
+   0c5ba82 with toast('Ошибка: csrf','error') added to the offline upload's
+   E_CSRF branch — 1 FAIL, where the earlier «widget line not toasted» check
+   stayed green. 10g runs the REAL _mplcProjFinish (+ _mplcProjErrText,
+   MPLC_PROJ_ERR_UI; wrapped only to record the call): on E_CSRF the error
+   line stays and the generic «Ошибка развёртывания проекта» toast is skipped
+   (Operator 2026-09-28) — RED on 0c5ba82's status.js, 1 FAIL; 10i (control)
+   keeps that toast for any other refusal — RED with the suppression widened
+   to every error, 1 FAIL. 10z (A2): an XHR send with no scripted answer in
+   any section-10 world FAILS (10 worlds counted).
 
    Run: node scripts/dev/test-app-csrf-recovery.mjs
         (APP_JS=<path> / STATUS_JS=<path> for other copies — the RED recipe) */
@@ -85,8 +95,23 @@ function extractFnFrom(source, name) {
   throw new Error('unclosed function ' + name);
 }
 function extractFn(name) { return extractFnFrom(src, name); }
-// The two XHR upload sites, from the shipped status.js (section 10).
-const UPLOADS = ['uploadOfflineUpdateFile', 'deployMplcProject'].map((n) => extractFnFrom(statusSrc, n)).join('\n\n');
+// `var NAME = { … };` — a top-level object literal, brace-matched.
+function extractVarObjFrom(source, name) {
+  const start = source.indexOf('var ' + name + ' = {');
+  if (start < 0) throw new Error('missing var ' + name + ' in ' + STATUS_SRC);
+  let i = source.indexOf('{', start), depth = 0;
+  for (; i < source.length; i++) {
+    if (source[i] === '{') depth++;
+    else if (source[i] === '}') { depth--; if (depth === 0) return source.slice(start, i + 1) + ';'; }
+  }
+  throw new Error('unclosed var ' + name);
+}
+// The two XHR upload sites, from the shipped status.js (section 10) — plus the
+// MPLC widget's REAL finish path (its toast is part of what 10g/10i measure).
+const UPLOADS = [
+  extractVarObjFrom(statusSrc, 'MPLC_PROJ_ERR_UI'),
+  ...['uploadOfflineUpdateFile', 'deployMplcProject', '_mplcProjFinish', '_mplcProjErrText'].map((n) => extractFnFrom(statusSrc, n))
+].join('\n\n');
 // The guard region: from the `401 → login` banner to the Navigation banner.
 // Both trees carry the banners; the region holds the old IIFE or the new
 // installer + helpers, so the same cases run against either.
@@ -168,7 +193,9 @@ function makeWorld(script, opts) {
    per send(), delivered from a timer like a real load event), a fake FormData,
    an always-present DOM, recording stubs for the status.js widget helpers the
    two upload functions call — then the shipped upload functions themselves. */
+const XHR_WORLDS = [];   // every section-10 world, for the end-of-section unscripted-send check
 function installUploadWorld(world, xhrScript) {
+  XHR_WORLDS.push(world);
   const ctx = world.ctx;
   const xhrs = world.xhrs = [];
   world.unscripted = 0;
@@ -214,12 +241,18 @@ function installUploadWorld(world, xhrScript) {
     _mplcProjSetProgress: (p, l) => world.mplc.progress.push({ p, l }),
     _mplcProjStagePct: () => 0,
     _mplcProjStartPolling: () => { world.mplc.polling += 1; },
-    _mplcProjFinish: (r, j) => world.mplc.finish.push({ r, j })
+    // what the REAL _mplcProjFinish touches besides the recorded status/progress
+    _mplcProjPollTimer: null, _mplcProjPollInFlight: false,
+    onMplcProjectConfirmToggle: () => {}, cancelMplcProjectPick: () => {}, loadMplcProjectMeta: () => {}
   });
   vm.runInContext(UPLOADS, ctx, { filename: 'status.js-uploads-extract' });
-  if (typeof ctx.uploadOfflineUpdateFile !== 'function' || typeof ctx.deployMplcProject !== 'function') {
+  if (typeof ctx.uploadOfflineUpdateFile !== 'function' || typeof ctx.deployMplcProject !== 'function' ||
+      typeof ctx._mplcProjFinish !== 'function' || typeof ctx.MPLC_PROJ_ERR_UI !== 'object') {
     throw new Error('the status.js upload functions did not evaluate');
   }
+  // Record every finish call, then run the shipped body (its toast and status line).
+  const realFinish = ctx._mplcProjFinish;
+  ctx._mplcProjFinish = function (r, j) { world.mplc.finish.push({ r, j }); return realFinish.apply(this, arguments); };
 }
 
 const settle = () => new Promise((r) => setTimeout(r, 40));
@@ -388,6 +421,9 @@ const lastStatus = (arr) => (arr.length ? arr[arr.length - 1].t : null);
   eq('10b no logout, the session cookie survives', w.replaced.length === 0 && w.jar.has('session_token'), true);
   eq('10b the widget shows its own E_CSRF line, not the raw code', lastStatus(w.upd.status), E_CSRF_WIDGET_LINE);
   eq('10b the widget line is not toasted a second time', w.toasts.indexOf(E_CSRF_WIDGET_LINE), -1);
+  // The transit toast is the ONLY toast: any second one (the widget line, a raw
+  // «Ошибка: csrf», a generic upload error) is the double message 10b forbids.
+  eq('10b the transit toast is the only toast', w.toasts.length === 1 && w.toasts[0].indexOf('X-SA02M-CSRF') >= 0, true);
   eq('10b nothing was applied', w.upd.inspect.length, 0);
 }
 {
@@ -434,6 +470,19 @@ const lastStatus = (arr) => (arr.length ? arr[arr.length - 1].t : null);
   eq('10g the toast names the stripped header, no logout', w.replaced.length === 0 && w.toasts.some((t) => t.indexOf('X-SA02M-CSRF') >= 0), true);
   eq('10g the widget finishes with the E_CSRF body (its own error line)', w.mplc.finish.length === 1 && w.mplc.finish[0].r === 'error' && w.mplc.finish[0].j && w.mplc.finish[0].j.error_code, 'E_CSRF');
   eq('10g the poll never starts', w.mplc.polling, 0);
+  // The REAL _mplcProjFinish ran: its error line stays, its generic toast does not
+  // (Operator 2026-09-28 — one toast, the proxy one).
+  eq('10g the MPLC status line shows the E_CSRF error words', lastStatus(w.mplc.status), 'Ошибка: ошибка защиты сессии');
+  eq('10g the transit toast is the only toast (no «Ошибка развёртывания проекта»)', w.toasts.length === 1 && w.toasts[0].indexOf('X-SA02M-CSRF') >= 0, true);
+}
+{
+  // Control: any other MPLC refusal keeps the generic toast — the suppression is E_CSRF-only.
+  const w = makeWorld([], { cookie: COOKIES, xhr: [{ status: 200, body: { ok: false, error_code: 'E_ZIP' } }] });
+  w.ctx.deployMplcProject();
+  await settleXhr();
+  eq('10i MPLC E_ZIP: one XHR, no refresh, no transit note', w.xhrs.length + ',' + w.calls.length + ',' + (w.window.SA02M_CSRF_BLOCKED || ''), '1,0,');
+  eq('10i the status line shows the E_ZIP words', lastStatus(w.mplc.status), 'Ошибка: это не архив ZIP');
+  eq('10i the generic toast is kept', w.toasts.join('|'), 'Ошибка развёртывания проекта');
 }
 {
   const w = makeWorld([], { cookie: COOKIES, xhr: ['reject'] });
@@ -442,6 +491,9 @@ const lastStatus = (arr) => (arr.length ? arr[arr.length - 1].t : null);
   eq('10h a network error is the caller\'s own path: «Ошибка загрузки файла», no refresh', lastStatus(w.upd.status) + ' ' + w.calls.length, 'Ошибка загрузки файла 0');
   eq('10h one XHR, no logout', w.xhrs.length + ',' + w.replaced.length, '1,0');
 }
+// No case sent an XHR its script did not answer (an extra send would otherwise
+// surface only as a silent onerror); non-vacuous — all ten worlds are counted.
+eq('10z no unscripted XHR send in any section-10 case (10 worlds)', XHR_WORLDS.length + ':' + XHR_WORLDS.reduce((n, w) => n + w.unscripted, 0), '10:0');
 
 if (fails) {
   process.stdout.write('test-app-csrf-recovery: ' + fails + ' FAIL\n');
