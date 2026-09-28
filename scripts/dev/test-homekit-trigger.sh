@@ -24,6 +24,9 @@
 #      winning the race, modelled by a losing `mktemp` shim) redirects nothing
 #      — root never re-opens a name in the daemon's dir (RED on the pre-fix
 #      mktemp + `printf > "$tmp"` + `chmod "$tmp"`: victim overwritten, 0644)
+#      D9 a fallback that fails (a directory at status.json → EISDIR) logs
+#      the exception text via logger, stdout stays the JSON answer, no temp
+#      left (RED on the pre-fix `2>/dev/null`: the cause was dropped)
 #   E  enable: unmask + enable + restart, all bounded
 #   F  restart: conf enabled ⇒ restart; conf disabled ⇒ `skipped`, no restart
 #   G  reset-pairing: removes EXACTLY state.json + .hk-*.tmp; aids.json,
@@ -240,6 +243,27 @@ if [ "$(cat "$SB/victim")" = precious ] && [ "$(stat -c %a "$SB/victim")" = 600 
     ok "D8 a temp name swapped for a symlink never redirects the write: victim bytes/mode untouched, status.json a regular file"
 else
     bad "D8 the fallback wrote through a swapped temp name (victim now: $(head -c 60 "$SB/victim"), mode $(stat -c %a "$SB/victim"); status.json regular=$([ -f "$st" ] && [ ! -L "$st" ] && echo yes || echo no))"
+fi
+
+# a failing fallback names its cause in the log, never on stdout (the CGI
+# parses stdout as JSON): a DIRECTORY at status.json makes the rename fail
+# with EISDIR, as root or not. Before the fix the python's stderr went to
+# /dev/null and the log line named the dir but not why.
+reset_tree false
+mkdir "$st"
+run_trigger disable
+logged=$(grep -F 'cannot write the fallback status' "$SB/logger.log" 2>/dev/null)
+out9=$(tr -d '\n' < "$SB/out")
+leftover=$(find "$SB/root/run/sa02m-homekit" -name '.status.*' | grep -c .)
+case "$logged" in
+    *'Is a directory'*) cause9=yes ;;
+    *) cause9=no ;;
+esac
+if [ "$RC" -eq 0 ] && [ "$out9" = '{"ok":true,"action":"disable"}' ] && [ "$cause9" = yes ] \
+   && [ "$leftover" -eq 0 ] && [ -d "$st" ]; then
+    ok "D9 a failed fallback logs its exception text (EISDIR), stdout stays the JSON answer, no temp left"
+else
+    bad "D9 failed fallback: rc=$RC out=$out9 cause-logged=$cause9 leftover=$leftover log=$(tr '\n' ' ' < "$SB/logger.log" 2>/dev/null | head -c 300)"
 fi
 
 echo "E. enable"

@@ -16,11 +16,13 @@
 #
 # Usage: bash scripts/dev/build-homekit-wheelhouse.sh <out_dir>
 # Needs: python3 with pip, and PyPI (or a configured pip index) reachable.
-# Dev-only; never shipped to the device.
+# Dev-only; never shipped to the device. Harness (offline, pip shimmed):
+# scripts/dev/test-build-homekit-wheelhouse.sh — it points HK_WHEELHOUSE_LOCK
+# at a fixture lock; leave it unset for a real build.
 set -euo pipefail
 cd "$(dirname "${BASH_SOURCE[0]}")/../.."
 
-LOCK=opt/sa02m-homekit/requirements.lock
+LOCK=${HK_WHEELHOUSE_LOCK:-opt/sa02m-homekit/requirements.lock}
 OUT=${1:-}
 [ -n "$OUT" ] || { echo "usage: bash scripts/dev/build-homekit-wheelhouse.sh <out_dir>" >&2; exit 2; }
 [ -r "$LOCK" ] || { echo "build-homekit-wheelhouse: $LOCK not readable" >&2; exit 1; }
@@ -34,7 +36,9 @@ timeout 900 python3 -m pip download --no-deps --only-binary=:all: --require-hash
 
 # Package names the lock pins (PEP 503-normalised: lower case, [-_.] -> _).
 want=$(sed -nE 's/^([A-Za-z0-9_.-]+)==.*/\1/p' "$LOCK" | tr 'A-Z' 'a-z' | tr -- '-.' '__' | sort -u)
-n_want=$(printf '%s\n' "$want" | grep -c .)
+# `|| true`: grep -c exits 1 on a zero count, which set -e/pipefail would turn
+# into a silent abort before the vacuous message below.
+n_want=$(printf '%s\n' "$want" | grep -c . || true)
 [ "$n_want" -ge 1 ] || { echo "build-homekit-wheelhouse: no pinned package parsed from $LOCK (vacuous)" >&2; exit 1; }
 
 fails=0

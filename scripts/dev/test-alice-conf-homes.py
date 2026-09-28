@@ -1108,7 +1108,7 @@ else:
     group11 = grp11.getgrgid(os.getegid()).gr_name
     seed11 = HK11_SEED.read_bytes()
 
-    def run_seed(sb: Path):
+    def run_seed(sb: Path, cwd=None, env=None):
         base = sb / "base"
         (base / "etc/sa02m-homekit").mkdir(parents=True)
         (base / "etc/sa02m-homekit" / HK11_NAME).write_bytes(seed11.replace(b"\n", b"\r\n"))
@@ -1117,7 +1117,8 @@ else:
         block = block.replace("www-data", group11)
         script = "set -euo pipefail\nlog() { printf '%s\\n' \"$*\"; }\nBASE_DIR=" + str(base) + "\n" + block
         try:
-            r = subprocess.run(["bash", "-c", script], capture_output=True, text=True, timeout=60)
+            r = subprocess.run(["bash", "-c", script], capture_output=True, text=True, timeout=60, cwd=cwd,
+                               env=env)
         except subprocess.TimeoutExpired:
             return 124, "timed out (a FIFO opened blocking?)"
         return r.returncode, r.stdout + r.stderr
@@ -1193,6 +1194,30 @@ else:
         rc, out = run_seed(sb)
         (ok if rc == 0 and not target.exists() else bad)(
             f"11e a dangling symlink planted at the conf is not written through (rc={rc}, target created={target.exists()})")
+
+    # The block must run isolated (`python3 -I -`): root runs it from the
+    # operator's shell, whose cwd and environment are not ours. Plants on both
+    # paths: a `sitecustomize.py` + `grp.py` in the cwd, and the same dir on an
+    # inherited PYTHONPATH. Measured on CPython 3.11: the cwd half alone is inert
+    # for THIS block (`grp` is built in, `os`/`stat` are preloaded, `site` runs
+    # before sys.path[0] exists) — the PYTHONPATH `sitecustomize` is what runs
+    # under a bare `python3 -` and turns this case RED; `-I` ignores both.
+    with tempfile.TemporaryDirectory() as tsb:
+        sb = Path(tsb)
+        e = seed_dir(sb)
+        cwd11 = sb / "cwd"
+        cwd11.mkdir()
+        marker11 = sb / "planted-module-ran"
+        plant11 = f"open({str(marker11)!r}, 'w').close()\n"
+        (cwd11 / "sitecustomize.py").write_text(plant11)
+        (cwd11 / "grp.py").write_text(plant11 + "raise ImportError('planted grp.py')\n")
+        env11 = dict(os.environ, PYTHONPATH=str(cwd11))
+        rc, out = run_seed(sb, cwd=cwd11, env=env11)
+        c = e["conf"]
+        seeded = c.is_file() and not c.is_symlink() and state11(c) == (0o660, my_gid, seed11)
+        (ok if rc == 0 and not marker11.exists() and seeded else bad)(
+            f"11f the seed block runs isolated (python3 -I): a planted sitecustomize/grp on the cwd or PYTHONPATH "
+            f"never runs and the seed still lands (rc={rc}, planted module ran={marker11.exists()}, seeded={seeded})")
 
 # ── 12. the HomeKit tmpfiles conf reaches /etc/tmpfiles.d/ only via 06c ─────
 # Everything under etc/tmpfiles.d/ in this tree is shipped by the OTA (runner

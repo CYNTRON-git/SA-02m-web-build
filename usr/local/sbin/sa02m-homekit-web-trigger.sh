@@ -78,7 +78,7 @@ hk_unit_stopped() {
 # than the call ($1 = the call's start epoch) — a fresher file is the
 # daemon's own, richer payload and is never clobbered.
 hk_write_disabled_status() {
-    local since="${1:-0}" mtime now
+    local since="${1:-0}" mtime now err
     # A symlink is never the daemon's status (it writes regular files by
     # rename): replace it, whatever its age.
     if [ -f "$STATUS_FILE" ] && [ ! -L "$STATUS_FILE" ]; then
@@ -95,8 +95,10 @@ hk_write_disabled_status() {
     # fd-only: the temp is created O_EXCL|O_NOFOLLOW relative to a dir fd and
     # written + chmod'ed through ITS fd, then renamed within the dir — a name
     # the daemon swaps is never opened by root (a swapped-in symlink is moved,
-    # not followed). -I: root never imports from the caller's cwd.
-    if ! python3 -I - "$RUN_DIR" "$now" 2>/dev/null <<'PY'
+    # not followed). -I: root never imports from the caller's cwd. stderr is
+    # captured (stdout is the CGI's JSON answer) so a failure logs its cause;
+    # the block handles no secret — a path, an epoch, a fixed body.
+    if ! err=$(python3 -I - "$RUN_DIR" "$now" 2>&1 >/dev/null <<'PY'
 import os, sys
 run_dir, now = sys.argv[1], int(sys.argv[2])
 body = ('{"state":"disabled","ts":%d,"reason":"","message":"HomeKit bridge disabled","enabled":false}\n' % now).encode()
@@ -117,8 +119,12 @@ except OSError:
         pass
     raise
 PY
-    then
-        hk_log "write_disabled_status: cannot write the fallback status in $RUN_DIR — the card keeps its previous state"
+    ); then
+        # The traceback's last line ("<Error>: <text>"), one printable line.
+        err=${err%$'\n'}
+        err=${err##*$'\n'}
+        err=${err//[![:print:]]/}
+        hk_log "write_disabled_status: cannot write the fallback status in $RUN_DIR (${err:0:200}) — the card keeps its previous state"
     fi
     return 0
 }

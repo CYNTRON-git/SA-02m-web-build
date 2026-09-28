@@ -67,6 +67,57 @@ class ConfTests(unittest.TestCase):
         config.save(config.BridgeConfig(enabled=True), self.path)
         self.assertEqual(stat.S_IMODE(os.stat(self.path).st_mode), 0o660)
 
+    def test_save_through_a_planted_symlink_copies_nothing_from_its_target(self):
+        # Review A2: root reaches save() via homekit_sync_enabled, and www-data
+        # can plant `sa02m-homekit.conf -> <any file>` in the 0770 conf dir.
+        # preserve must read the NAME (lstat), never the symlink's target.
+        victim = os.path.join(self.dir, "victim")
+        with open(victim, "w", encoding="utf-8") as fh:
+            fh.write("victim\n")
+        foreign = os.geteuid() == 0
+        if foreign:
+            os.chown(victim, 12345, 12345)  # before chmod: chown clears setuid
+        os.chmod(victim, 0o4755)
+        os.symlink(victim, self.path)
+        config.save(config.BridgeConfig(enabled=True), self.path)
+        st = os.lstat(self.path)
+        self.assertTrue(stat.S_ISREG(st.st_mode))
+        self.assertEqual(stat.S_IMODE(st.st_mode), 0o660)  # the contract default, not 04755
+        if foreign:
+            self.assertNotEqual((st.st_uid, st.st_gid), (12345, 12345))
+        with open(victim, encoding="utf-8") as fh:
+            self.assertEqual(fh.read(), "victim\n")
+        self.assertEqual(stat.S_IMODE(os.stat(victim).st_mode), 0o4755)
+
+    def test_save_never_preserves_setuid_setgid_or_sticky(self):
+        self._write("[bridge]\nenabled = false\n")
+        os.chmod(self.path, 0o7660)
+        config.save(config.BridgeConfig(enabled=True), self.path)
+        self.assertEqual(stat.S_IMODE(os.stat(self.path).st_mode), 0o660)
+
+    def test_save_does_not_preserve_from_a_hard_linked_file(self):
+        self._write("[bridge]\nenabled = false\n")
+        os.chmod(self.path, 0o640)
+        os.link(self.path, os.path.join(self.dir, "other-name"))
+        config.save(config.BridgeConfig(enabled=True), self.path)
+        self.assertEqual(stat.S_IMODE(os.stat(self.path).st_mode), 0o660)
+
+    def test_save_fallback_asks_for_the_web_group(self):
+        # A conf with nothing safe to preserve falls back to root:www-data 0660
+        # (contract §13 table); the group comes from group_gid().
+        seen = []
+        real_fchown = os.fchown
+
+        def spy(fd, uid, gid):
+            seen.append((uid, gid))
+            return real_fchown(fd, uid, gid)
+
+        with mock.patch.object(config, "group_gid", return_value=os.getegid()), \
+                mock.patch.object(fsutil.os, "fchown", side_effect=spy):
+            config.save(config.BridgeConfig(enabled=True), self.path)
+        self.assertEqual(seen, [(-1, os.getegid())])
+        self.assertEqual(stat.S_IMODE(os.stat(self.path).st_mode), 0o660)
+
     def test_enabled_spellings(self):
         for raw, want in (("true", True), ("1", True), ("yes", True), ("on", True),
                           ("false", False), ("0", False), ("maybe", False)):
