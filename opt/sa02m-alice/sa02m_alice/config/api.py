@@ -298,6 +298,16 @@ def _read_probe_cache() -> Optional[Dict[str, Any]]:
         return None
     if not isinstance(data.get("ts"), (int, float)):
         return None
+    # Every field the poll computes with is type-checked here, once: a malformed
+    # one makes the whole cache "no evidence" (refreshed and overwritten) instead
+    # of a ValueError out of full_config() or a bogus success on record. bool is
+    # an int subclass in Python and is refused explicitly.
+    fail_count = data.get("fail_count", 0)
+    if isinstance(fail_count, bool) or not isinstance(fail_count, int) or fail_count < 0:
+        return None
+    ok_ts = data.get("ok_ts")
+    if ok_ts is not None and (isinstance(ok_ts, bool) or not isinstance(ok_ts, (int, float))):
+        return None
     return data
 
 

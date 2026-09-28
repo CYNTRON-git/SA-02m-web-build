@@ -171,6 +171,37 @@ class TestProbeCache(_Base):
         self.assertFalse(os.path.exists(self.var), "the web layer must not create the state dir")
 
 
+class TestCorruptCache(_Base):
+    """A cache file with a malformed field must not take the status poll down
+    (review A5, 1.0.6.58): `int(cache["fail_count"])` raised on a non-numeric
+    value, and the ValueError escaped full_config() — the card lost its whole
+    answer, not just the gateway pill. A corrupt cache is no evidence: it is
+    treated as absent, refreshed, and overwritten."""
+
+    def write_cache(self, **fields):
+        cache = {"ts": time.time(), "probe": dict(PROBE_TIMEOUT), "ok_ts": time.time()}
+        cache.update(fields)
+        with open(api._probe_cache_path(), "w", encoding="utf-8") as fh:
+            json.dump(cache, fh)
+
+    def test_non_numeric_fail_count_does_not_crash_the_poll(self):
+        self.write_status(state="offline", ts=int(time.time()), client_enabled=True)
+        for bad in ("x", [1], {"n": 1}, True):
+            with self.subTest(fail_count=bad):
+                self.write_cache(fail_count=bad)
+                gw, _, calls = self.gateway(PROBE_UP)
+                self.assertEqual(calls, 1, "a corrupt cache is refreshed, not trusted")
+                self.assertTrue(gw["available"])
+                self.assertEqual(api._read_probe_cache()["fail_count"], 0, "the refresh overwrites the bad field")
+
+    def test_non_numeric_ok_ts_is_not_a_success_on_record(self):
+        self.write_status(state="offline", ts=int(time.time()), client_enabled=True)
+        self.write_cache(ok_ts="yesterday", fail_count=0)
+        gw, _, calls = self.gateway(PROBE_TIMEOUT)
+        self.assertEqual(calls, 1)
+        self.assertFalse(gw["available"], "a malformed ok_ts must not stand in for a success")
+
+
 class TestCgiNeverProbesInline(_Base):
     def setUp(self):
         super().setUp()
