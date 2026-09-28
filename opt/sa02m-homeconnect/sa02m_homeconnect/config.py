@@ -53,6 +53,9 @@ class ClientConfig:
     control_mode: str = "off"
     # Values in the file that were refused and replaced by the default.
     warnings: List[str] = field(default_factory=list)
+    # The file EXISTS but could not be read (EACCES: the daemon's read ACL is
+    # gone) — never the same as disabled (main.py: `conf_unreadable`).
+    unreadable: bool = False
 
     @property
     def effective_client_id(self) -> str:
@@ -74,11 +77,24 @@ class ClientConfig:
 
 
 def load(path: Optional[str] = None) -> ClientConfig:
-    """Read the conf. Absent file / section ⇒ defaults (disabled)."""
+    """Read the conf. Absent file / section ⇒ defaults (disabled); a file
+    that exists but cannot be opened or read ⇒ `unreadable` (configparser's
+    own read() would skip it silently and report «disabled»)."""
+    target = path or C.CONF_FILE
+    try:
+        with open(target, encoding="utf-8") as fh:
+            text = fh.read()
+    except FileNotFoundError:
+        return ClientConfig()
+    except UnicodeDecodeError as exc:
+        return ClientConfig(warnings=["unreadable conf: %s" % exc])
+    except OSError as exc:
+        return ClientConfig(unreadable=True,
+                            warnings=["unreadable conf: %s" % (exc.strerror or exc)])
     cfg = configparser.ConfigParser(interpolation=None)
     try:
-        cfg.read(path or C.CONF_FILE, encoding="utf-8")
-    except (OSError, configparser.Error, UnicodeDecodeError) as exc:
+        cfg.read_string(text, source=target)
+    except configparser.Error as exc:
         return ClientConfig(warnings=["unreadable conf: %s" % exc])
     out = ClientConfig()
     if cfg.has_section(ACCOUNT):
