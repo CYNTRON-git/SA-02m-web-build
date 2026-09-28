@@ -83,6 +83,7 @@ mqtt_set.cgi|timeout 5 mosquitto_pub
 reboot.cgi|sudo -n /usr/local/sbin/sa02m-web-reboot.sh
 restart.cgi|sudo -n /usr/local/sbin/sa02m-web-restart-services.sh
 sa02m_alice_api.cgi|sudo -n /usr/local/sbin/sa02m-alice-web-trigger.sh "$ACTION"
+sa02m_homekit_api.cgi|TRIG_OUT=$(timeout 11 sudo -n /usr/local/sbin/sa02m-homekit-web-trigger.sh "$VERB" 2>/dev/null) || TRIG_RC=$?
 services_ctrl.cgi|nohup sudo -n "$CTL" "$ACTION" "$SID"
 storage_format_set.cgi|sudo -n /usr/local/sbin/sa02m-set-storage-auto-format "$VAL"
 variant.cgi|sudo /usr/local/sbin/sa02m-apply-variant.sh "$VARIANT"

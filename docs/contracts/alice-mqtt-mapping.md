@@ -137,6 +137,9 @@ prefixes are named here:
 | `scene-<board>-<sid>` | scene devices (below) | never — in memory per build |
 | everything else | the operator / auto-provision | yes |
 
+The HomeKit bridge (`sa02m-homekit`, `docs/contracts/homekit-bridge.md`) reads
+the same document through `DeviceRegistry` and never writes it.
+
 A saved device that already owns a generated id **wins**: the stored
 document is the operator's and an in-memory row never replaces it.
 
@@ -238,7 +241,7 @@ not conjure one.
 Validating: `tests/test_cloud_control_api.py::TestUpsertDeviceRooms`,
 `::TestUpsertRoomMembership`, `tests/test_models.py::TestRoomId`.
 
-### Tile fields (`alice_visible`, `icon`) — 1.0.6.26
+### Tile fields (`alice_visible`, `icon`, `homekit_visible`) — 1.0.6.26 / 1.0.6.57
 
 Two optional device-level keys beside `room_id`, validated by
 `config/models.py::validate_device`:
@@ -254,6 +257,18 @@ Two optional device-level keys beside `room_id`, validated by
   siren | generic`; `""`/`null` drops the key). A tile icon for the cloud
   control page; the ids match that page's sprite and the board's own
   `#sh-icons`. Never forwarded to Yandex.
+- `homekit_visible` (bool; **absent ⇒ hidden** — the opposite default of
+  `alice_visible`, on purpose; 1.0.6.57). Read only by the HomeKit bridge:
+  a device reaches Apple Home only while this is `true`
+  (`docs/contracts/homekit-bridge.md` §2 — the exposure rule, its skip reason
+  `hidden`, and what the bridge does with it live there). A non-bool value is
+  rejected (`invalid homekit_visible`); an absent key stays absent (never
+  written back as `false`). The config API's upsert replaces the whole device
+  row, so a stale writer that saves a device without the key — an old cached
+  «Умный дом» tab — can only HIDE it, never expose it; the current form
+  round-trips the stored value on every save, also while the module is not
+  installed. Neither discovery profile forwards it (Yandex, cloud page).
+  Validating: `tests/test_tile_fields.py` (`TestHomekitVisible`).
 
 Discovery per profile (`device_registry.discovery_devices(profile)`): the
 Yandex profile carries only the Yandex fields; the **cloud profile lists every
@@ -800,6 +815,18 @@ Validating tests: `opt/sa02m-alice/tests/test_cloud_profile.py`,
 `test_state_origin.py`, `test_tile_fields.py`, `test_cloud_control_api.py`;
 the trigger verbs by `scripts/dev/test-alice-reload-handshake.sh` and the
 sudoers pin by `.ai-dev/quality/checks/sudoers-pin-contract.sh`.
+
+### Catalogue profiles other than `yandex` / `cloud` (1.0.6.57)
+
+A `DeviceRegistry` built with any other profile — today only `homekit`, the
+HomeKit bridge's (`docs/contracts/homekit-bridge.md` §1) — reads the catalogue
+through the same `_items` filter as every other path: `cloud_only` items are
+dropped (as on `yandex`), and no scene rows are attached (scenes join the
+catalogue on `yandex` only). `catalogue_items()` returns that view — deep
+copies in document order, with no `alice_visible` filtering and nothing
+stripped (that is Yandex policy). Validating:
+`opt/sa02m-homekit/tests/test_registry_profile.py`,
+`opt/sa02m-alice/tests/test_device_registry.py` (`TestCatalogueItems`).
 
 ## Non-goals
 

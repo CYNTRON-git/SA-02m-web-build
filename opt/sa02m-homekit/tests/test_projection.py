@@ -361,7 +361,7 @@ class SignatureTests(unittest.TestCase):
         self.assertEqual(body["skipped_total"], 250)
 
     def test_firmware_revision(self):
-        self.assertEqual(P.firmware_revision("1.0.6.55"), "1.0.6")
+        self.assertEqual(P.firmware_revision("1.0.6.57"), "1.0.6")
         self.assertEqual(P.firmware_revision(""), "1.0.0")
 
 

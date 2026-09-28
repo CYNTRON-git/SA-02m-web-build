@@ -877,7 +877,7 @@ else:
 # accessory). Every assertion runs the shipped code the sections above run.
 print("── 10. HomeKit homes (preserve / backup / restore / OTA sudoers mode) ──")
 HK_PKG = ROOT / "opt/sa02m-homekit"
-HK_TMPFILES = ROOT / "etc/tmpfiles.d/sa02m-homekit.conf"
+HK_TMPFILES = ROOT / "opt/sa02m-homekit/tmpfiles.d/sa02m-homekit.conf"
 HK_INSTALLER = ROOT / "scripts/06c-homekit.sh"
 env_hk = {k: v for k, v in os.environ.items() if not k.startswith("SA02M_HOMEKIT_")}
 env_hk["PYTHONPATH"] = str(HK_PKG)
@@ -1086,6 +1086,156 @@ else:
         bad(f"10.9 committed sudoers drop-ins the OTA never re-modes to 0440: {missing_mode}")
     else:
         ok(f"10.9 the OTA re-modes all {len(committed)} committed sudoers drop-ins to 0440 (sa02m-homekit included)")
+
+# ── 11. HomeKit installer conf seed: root never writes/chmods through a plant ─
+# scripts/06c-homekit.sh (root, on every install.sh refresh once the bridge is
+# installed) seeds /etc/sa02m-homekit/sa02m-homekit.conf and re-asserts its
+# group/mode — in a root:www-data 0770 directory, the same door as section 9.
+# The SHIPPED block between «Conf seed» and «systemd» runs with the conf dir
+# retargeted into a sandbox, $BASE_DIR at a sandbox seed (written with CRLF, so
+# the CR strip is measured too) and www-data replaced by the invoking group.
+print("── 11. HomeKit installer conf seed/modes (scripts/06c-homekit.sh) never follow a plant ──")
+HK11_DIR = "/etc/sa02m-homekit"
+HK11_NAME = "sa02m-homekit.conf"
+HK11_SEED = ROOT / "etc/sa02m-homekit/sa02m-homekit.conf"
+m11 = re.search(r"^# ── Conf seed[^\n]*\n(.*?)^# ── systemd", read(HK_INSTALLER), re.S | re.M)
+if not m11 or HK11_DIR not in m11.group(1) or not HK11_SEED.is_file():
+    bad(f"11 could not extract the conf seed block (between «Conf seed» and «systemd») from "
+        f"{HK_INSTALLER.relative_to(ROOT)}, or the seed is missing (non-vacuity)")
+else:
+    import grp as grp11  # noqa: E402
+    import stat as stat11  # noqa: E402
+    group11 = grp11.getgrgid(os.getegid()).gr_name
+    seed11 = HK11_SEED.read_bytes()
+
+    def run_seed(sb: Path):
+        base = sb / "base"
+        (base / "etc/sa02m-homekit").mkdir(parents=True)
+        (base / "etc/sa02m-homekit" / HK11_NAME).write_bytes(seed11.replace(b"\n", b"\r\n"))
+        # Only the LIVE path is retargeted — not the seed source under $BASE_DIR/etc/.
+        block = re.sub(r"(?<![\w}])" + re.escape(HK11_DIR), str(sb / "sa02m-homekit"), m11.group(1))
+        block = block.replace("www-data", group11)
+        script = "set -euo pipefail\nlog() { printf '%s\\n' \"$*\"; }\nBASE_DIR=" + str(base) + "\n" + block
+        try:
+            r = subprocess.run(["bash", "-c", script], capture_output=True, text=True, timeout=60)
+        except subprocess.TimeoutExpired:
+            return 124, "timed out (a FIFO opened blocking?)"
+        return r.returncode, r.stdout + r.stderr
+
+    def seed_dir(sb: Path) -> dict:
+        hdir = sb / "sa02m-homekit"
+        hdir.mkdir()
+        hdir.chmod(0o770)
+        vdir = sb / "victim"
+        vdir.mkdir(mode=0o700)
+        victim = vdir / "shadow"
+        victim.write_bytes(b"root-secret\n")
+        victim.chmod(0o600)
+        return {"conf": hdir / HK11_NAME, "victim": victim, "vdir": vdir}
+
+    def warned11(out: str) -> bool:
+        return any("WARN" in ln and HK11_NAME in ln for ln in out.splitlines())
+
+    def state11(p: Path):
+        st = os.lstat(p)
+        return (stat11.S_IMODE(st.st_mode), st.st_gid, p.read_bytes())
+
+    my_gid = os.getegid()
+    with tempfile.TemporaryDirectory() as tsb:
+        sb = Path(tsb)
+        e = seed_dir(sb)
+        rc, out = run_seed(sb)
+        c = e["conf"]
+        if rc == 0 and c.is_file() and not c.is_symlink() and state11(c) == (0o660, my_gid, seed11):
+            ok("11a an absent conf is seeded: the seed bytes (CR stripped), 0660, group www-data")
+        else:
+            got = state11(c) if c.exists() else None
+            bad(f"11a seed: rc={rc}, conf={got!r}, want (0o660, {my_gid}, seed bytes): {out.strip()[-200:]!r}")
+
+    with tempfile.TemporaryDirectory() as tsb:
+        sb = Path(tsb)
+        e = seed_dir(sb)
+        e["conf"].write_bytes(b"[bridge]\nenabled = true\n")
+        e["conf"].chmod(0o600)
+        rc, out = run_seed(sb)
+        (ok if rc == 0 and state11(e["conf"]) == (0o660, my_gid, b"[bridge]\nenabled = true\n") else bad)(
+            f"11b an existing regular conf keeps its bytes and gets 0660 + group www-data back (rc={rc})")
+
+    with tempfile.TemporaryDirectory() as tsb:
+        sb = Path(tsb)
+        e = seed_dir(sb)
+        e["conf"].symlink_to(e["victim"])
+        before = state11(e["victim"])
+        rc, out = run_seed(sb)
+        after = state11(e["victim"])
+        if rc == 0 and before == after and e["conf"].is_symlink() and warned11(out):
+            ok("11c a symlink planted at the conf is reported and left alone; its target's bytes/mode/group unchanged")
+        else:
+            bad(f"11c planted symlink: rc={rc}, target {oct(before[0])}/{before[1]} → {oct(after[0])}/{after[1]}, "
+                f"bytes changed={before[2] != after[2]}, reported={warned11(out)} — root followed a www-data plant")
+
+    with tempfile.TemporaryDirectory() as tsb:
+        sb = Path(tsb)
+        e = seed_dir(sb)
+        os.link(e["victim"], e["conf"])
+        before = state11(e["victim"])
+        rc, out = run_seed(sb)
+        after = state11(e["victim"])
+        (ok if rc == 0 and before == after and warned11(out) else bad)(
+            f"11d a hard link planted at the conf is reported and left alone (rc={rc}, "
+            f"mode {oct(before[0])} → {oct(after[0])}, reported={warned11(out)})")
+
+    with tempfile.TemporaryDirectory() as tsb:
+        sb = Path(tsb)
+        e = seed_dir(sb)
+        target = e["vdir"] / "sudoers-x"
+        e["conf"].symlink_to(target)
+        rc, out = run_seed(sb)
+        (ok if rc == 0 and not target.exists() else bad)(
+            f"11e a dangling symlink planted at the conf is not written through (rc={rc}, target created={target.exists()})")
+
+# ── 12. the HomeKit tmpfiles conf reaches /etc/tmpfiles.d/ only via 06c ─────
+# Everything under etc/tmpfiles.d/ in this tree is shipped by the OTA (runner
+# map_dst, the offline deploy map) to EVERY board, and systemd-tmpfiles applies
+# it at every boot. The HomeKit conf names the `sa02m-homekit` account, which
+# exists only where scripts/06c-homekit.sh ran: on any other board its lines
+# fail to resolve at every boot and it creates an empty 0770 /etc/sa02m-homekit.
+# So the conf lives in the package (inert under /opt) and only the installer
+# copies it into /etc/tmpfiles.d/ (review advisory A1, 1.0.6.57).
+print("── 12. the HomeKit tmpfiles conf is installer-owned, never OTA'd into /etc/tmpfiles.d ──")
+HK12_SRC = "opt/sa02m-homekit/tmpfiles.d/sa02m-homekit.conf"
+runner12 = read(RUNNER)
+map12 = None
+m12 = re.search(r"^MPLC_OTA_PLUGINS = .*?(?=^def deploy_mode)", runner12, re.M | re.S)
+if m12:
+    ns12 = {"Path": Path}
+    try:
+        exec(m12.group(0), ns12)  # noqa: S102 — the runner's own source is the contract
+        map12 = ns12.get("map_dst")
+    except Exception as e12:  # noqa: BLE001
+        bad(f"12 could not evaluate map_dst() out of the runner: {e12}")
+tmpfiles_dir = ROOT / "etc/tmpfiles.d"
+shipped = sorted(p for p in tmpfiles_dir.iterdir() if p.is_file()) if tmpfiles_dir.is_dir() else []
+if map12 is None or not shipped:
+    bad(f"12 non-vacuity: map_dst extracted={map12 is not None}, etc/tmpfiles.d files={len(shipped)}")
+else:
+    ota_tmpfiles = [p for p in shipped if (map12(f"etc/tmpfiles.d/{p.name}") or "").startswith("/etc/tmpfiles.d/")]
+    (ok if ota_tmpfiles else bad)(
+        f"12 control: the OTA maps etc/tmpfiles.d/* onto /etc/tmpfiles.d/ ({len(ota_tmpfiles)} of {len(shipped)} files) — the premise holds")
+    naming = [p.name for p in ota_tmpfiles
+              if re.search(r"(?m)^[^#\n]*\ssa02m-homekit(\s|$)", read(p))]
+    (bad if naming else ok)(
+        f"12a no OTA-shipped tmpfiles conf names the sa02m-homekit account{': ' + str(naming) if naming else ''}")
+    if not (ROOT / HK12_SRC).is_file():
+        bad(f"12b the package home {HK12_SRC} is missing — the installer has nothing to copy")
+    else:
+        dst12 = map12(HK12_SRC) or ""
+        (ok if dst12.startswith("/opt/sa02m-homekit/") else bad)(
+            f"12b the OTA lands the package copy inert under /opt/sa02m-homekit/ (map_dst → {dst12!r})")
+        inst12 = "\n".join(l for l in read(HK_INSTALLER).splitlines() if not l.lstrip().startswith("#"))
+        (ok if re.search(r"tmpfiles\.d/sa02m-homekit\.conf\"?\s+/etc/tmpfiles\.d/sa02m-homekit\.conf", inst12)
+            and "$OPT_SRC/tmpfiles.d/sa02m-homekit.conf" in inst12 else bad)(
+            "12c scripts/06c-homekit.sh installs the package copy into /etc/tmpfiles.d/ (the only writer)")
 
 print("")
 if fails:

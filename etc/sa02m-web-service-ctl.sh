@@ -369,9 +369,15 @@ unit_admin_enabled() {
 # flag through its one home (sa02m_alice config_store — same code path as the
 # Alice card's enable/disable). Bounded; a failed write is logged and start
 # proceeds (it will then fail honestly on the runtime-active check).
+# Both syncs run as root (sudo from services_ctrl.cgi keeps the CGI's cwd,
+# which www-data owns): `python3 -I` never puts the cwd, PYTHONPATH or the user
+# site on sys.path, and the package root is inserted explicitly — a module
+# planted in the cwd under the imported name is never run as root. Pinned by
+# scripts/dev/test-service-ctl-policy.sh section 3.
 alice_sync_client_enabled() {
     _val=$1  # true|false
-    PYTHONPATH=/opt/sa02m-alice timeout 15 python3 -c "
+    timeout 15 python3 -I -c "
+import sys; sys.path.insert(0, '/opt/sa02m-alice')
 from sa02m_alice.common.config_store import set_client_enabled
 set_client_enabled($([ "$_val" = true ] && echo True || echo False))
 " >>"$LOG" 2>&1 || echo "$(date '+%Y-%m-%d %H:%M:%S') sa02m-web-service-ctl: alice client_enabled=${_val} write FAILED" >>"$LOG" 2>&1
@@ -384,7 +390,8 @@ set_client_enabled($([ "$_val" = true ] && echo True || echo False))
 # then fails honestly on the runtime-active check.
 homekit_sync_enabled() {
     _val=$1  # true|false
-    PYTHONPATH=/opt/sa02m-homekit timeout 15 python3 -c "
+    timeout 15 python3 -I -c "
+import sys; sys.path.insert(0, '/opt/sa02m-homekit')
 from sa02m_homekit import config
 c = config.load()
 c.enabled = $([ "$_val" = true ] && echo True || echo False)

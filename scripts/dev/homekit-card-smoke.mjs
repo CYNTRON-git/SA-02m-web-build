@@ -163,7 +163,7 @@ const COMMON = {
   paired: null, pairings: 0, accessories: 0, skipped_total: 0, skipped: [], accessory_list: [],
   pair_setup_locked: false, setup_available: false, interfaces: WIRED_1ETH,
   port_default: 21064, port_min: 1024, port_max: 65535, forbidden_ports: [502, 1880, 1883, 1884, 4840, 8765, 9999],
-  version: '1.0.6.55', ts: 0,
+  version: '1.0.6.57', ts: 0,
 };
 const st = (o) => ({ ...COMMON, ...o });
 const P = {

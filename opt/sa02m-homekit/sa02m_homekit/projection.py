@@ -481,7 +481,7 @@ def yandex_capability(binding: CharBinding, value: Any) -> Optional[Dict[str, An
 
 def firmware_revision(version: str) -> str:
     """HAP FirmwareRevision is `x[.y[.z]]`: the first three numeric parts of
-    the web version (1.0.6.55 → 1.0.6); anything unusable → 1.0.0."""
+    the web version (1.0.6.57 → 1.0.6); anything unusable → 1.0.0."""
     parts = re.findall(r"\d+", version or "")[:3]
     return ".".join(parts) if parts else "1.0.0"
 

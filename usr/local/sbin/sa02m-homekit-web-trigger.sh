@@ -16,12 +16,13 @@
 #
 # Root writes into daemon-owned directories: /run/sa02m-homekit and
 # /var/lib/sa02m-homekit belong to the unprivileged sa02m-homekit user, so a
-# compromised daemon can plant a symlink under any name there. Hence: the
-# status fallback is written through mktemp (O_EXCL, never follows) and
-# renamed over (rename replaces a symlink, never its target); files are only
-# ever unlinked (rm -f removes the link itself), never opened for writing by
-# name; and the trigger lock is the helper's own root-owned file, never a
-# lock file in the daemon's directory.
+# compromised daemon can plant a symlink under any name there, and swap a
+# name between two root steps. Hence: the status fallback is created
+# O_EXCL|O_NOFOLLOW relative to a directory fd, written and chmod'ed through
+# its own fd, and renamed over (rename replaces a symlink, never its target) —
+# root never re-opens a name there; other files are only ever unlinked (rm -f
+# removes the link itself); and the trigger lock is the helper's own
+# root-owned file, never a lock file in the daemon's directory.
 #
 # Harness: scripts/dev/test-homekit-trigger.sh extracts the block between the
 # two FUNCTIONS markers below and runs it against a sandbox — keep every piece
@@ -77,7 +78,7 @@ hk_unit_stopped() {
 # than the call ($1 = the call's start epoch) — a fresher file is the
 # daemon's own, richer payload and is never clobbered.
 hk_write_disabled_status() {
-    local since="${1:-0}" mtime now tmp
+    local since="${1:-0}" mtime now
     # A symlink is never the daemon's status (it writes regular files by
     # rename): replace it, whatever its age.
     if [ -f "$STATUS_FILE" ] && [ ! -L "$STATUS_FILE" ]; then
@@ -90,20 +91,34 @@ hk_write_disabled_status() {
         return 0
     }
     now=$(date +%s 2>/dev/null) || now=0
-    if ! tmp=$(mktemp "$RUN_DIR/.status.XXXXXX" 2>/dev/null); then
-        hk_log "write_disabled_status: cannot create a temp file in $RUN_DIR — the card keeps its previous state"
-        return 0
-    fi
-    if ! printf '{"state":"disabled","ts":%s,"reason":"","message":"HomeKit bridge disabled","enabled":false}\n' \
-        "$now" > "$tmp" 2>/dev/null; then
-        rm -f -- "$tmp" 2>/dev/null || true
-        hk_log "write_disabled_status: cannot write $tmp — the card keeps its previous state"
-        return 0
-    fi
-    chmod 0644 -- "$tmp" 2>/dev/null || true
-    if ! mv -f -- "$tmp" "$STATUS_FILE" 2>/dev/null; then
-        rm -f -- "$tmp" 2>/dev/null || true
-        hk_log "write_disabled_status: cannot rename $tmp to $STATUS_FILE — the card keeps its previous state"
+    case "$now" in ''|*[!0-9]*) now=0 ;; esac
+    # fd-only: the temp is created O_EXCL|O_NOFOLLOW relative to a dir fd and
+    # written + chmod'ed through ITS fd, then renamed within the dir — a name
+    # the daemon swaps is never opened by root (a swapped-in symlink is moved,
+    # not followed). -I: root never imports from the caller's cwd.
+    if ! python3 -I - "$RUN_DIR" "$now" 2>/dev/null <<'PY'
+import os, sys
+run_dir, now = sys.argv[1], int(sys.argv[2])
+body = ('{"state":"disabled","ts":%d,"reason":"","message":"HomeKit bridge disabled","enabled":false}\n' % now).encode()
+dfd = os.open(run_dir, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
+tmp = ".status.%d.%s" % (os.getpid(), os.urandom(6).hex())
+fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW | os.O_CLOEXEC, 0o600, dir_fd=dfd)
+try:
+    try:
+        os.write(fd, body)
+        os.fchmod(fd, 0o644)
+    finally:
+        os.close(fd)
+    os.rename(tmp, "status.json", src_dir_fd=dfd, dst_dir_fd=dfd)
+except OSError:
+    try:
+        os.unlink(tmp, dir_fd=dfd)
+    except OSError:
+        pass
+    raise
+PY
+    then
+        hk_log "write_disabled_status: cannot write the fallback status in $RUN_DIR — the card keeps its previous state"
     fi
     return 0
 }

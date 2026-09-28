@@ -19,7 +19,11 @@
 #   C  not installed (no unit file) — non-zero, no systemctl
 #   D  disable: stop + disable, all bounded; writes `disabled` when the status
 #      is absent/older; NEVER clobbers a fresher file; replaces a planted
-#      status.json symlink and leaves its target untouched; removes setup.json
+#      status.json symlink and leaves its target untouched; removes setup.json;
+#      D8 a temp NAME swapped for a symlink after its creation (the daemon
+#      winning the race, modelled by a losing `mktemp` shim) redirects nothing
+#      — root never re-opens a name in the daemon's dir (RED on the pre-fix
+#      mktemp + `printf > "$tmp"` + `chmod "$tmp"`: victim overwritten, 0644)
 #   E  enable: unmask + enable + restart, all bounded
 #   F  restart: conf enabled ⇒ restart; conf disabled ⇒ `skipped`, no restart
 #   G  reset-pairing: removes EXACTLY state.json + .hk-*.tmp; aids.json,
@@ -210,6 +214,32 @@ if [ "$(cat "$SB/target")" = precious ] && [ -f "$st" ] && [ ! -L "$st" ]; then
     ok "D7 planted status.json / status.json.tmp symlinks: target untouched, status.json replaced by a regular file"
 else
     bad "D7 a planted symlink redirected the root write (target now: $(head -c 60 "$SB/target"))"
+fi
+
+# the daemon user owns the run dir, so it can swap a temp NAME for a symlink
+# between its creation and root's write; modelled by a `mktemp` that always
+# loses that race. Root must never re-open a temp by name (the pre-fix
+# `mktemp` + `printf > "$tmp"` + `chmod "$tmp"` wrote and chmod'ed the victim).
+reset_tree false
+printf 'precious\n' > "$SB/victim"
+chmod 0600 "$SB/victim"
+HK_REAL_MKTEMP=$(PATH=${PATH#"$SHIM:"} command -v mktemp)
+export HK_REAL_MKTEMP
+cat > "$SHIM/mktemp" <<'EOF'
+#!/usr/bin/env bash
+t=$("$HK_REAL_MKTEMP" "$@") || exit 1
+rm -f -- "$t"
+ln -s "$HK_SB/victim" "$t"
+printf '%s\n' "$t"
+EOF
+chmod +x "$SHIM/mktemp"
+run_trigger disable
+rm -f -- "$SHIM/mktemp"
+if [ "$(cat "$SB/victim")" = precious ] && [ "$(stat -c %a "$SB/victim")" = 600 ] \
+   && [ -f "$st" ] && [ ! -L "$st" ] && grep -q '"state":"disabled"' "$st"; then
+    ok "D8 a temp name swapped for a symlink never redirects the write: victim bytes/mode untouched, status.json a regular file"
+else
+    bad "D8 the fallback wrote through a swapped temp name (victim now: $(head -c 60 "$SB/victim"), mode $(stat -c %a "$SB/victim"); status.json regular=$([ -f "$st" ] && [ ! -L "$st" ] && echo yes || echo no))"
 fi
 
 echo "E. enable"

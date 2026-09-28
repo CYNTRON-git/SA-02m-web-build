@@ -79,9 +79,11 @@
 # scripts/, tools/imaging/ and install.sh, so an edit to any of those can move a
 # pin and make a case vacuous — and `covers` must name what can BREAK the check,
 # not only where the check lives (docs/agent-rules/quality-gate-rigor.md (c)).
-# The cost is that a `--touched` review run almost always includes this row's
-# ~3.5 min (29 mutations plus one green baseline per gate; it was ~60 s at 20
-# cases). That is the fail-safe direction, and CI runs the full set regardless.
+# The cost is that a `--touched` review run almost always includes this row —
+# minutes, not seconds: every case re-runs its WHOLE gate, so the behavioural
+# harnesses dominate (the factory-reset-runner cases alone are 10 mutations +
+# a baseline at ~27 s each, measured 2026-09-27). That is the fail-safe
+# direction, and CI runs the full set regardless.
 #
 # NOT COVERED, and why: a gate whose pins are all fail-IF-PRESENT sweeps
 # (no-retired-session-token, the negative halves of installer-svc-policy-gate)
@@ -178,6 +180,27 @@ update-recover-boot|scripts/pack-offline-update.py|"sa02m-update-verify.service"
 update-recover-boot|etc/sa02m-update-runner.sh|trap '"'"'exit 143'"'"' INT TERM
 no-absolute-api-paths|www/network_config/static/js/devices.js|"api/devices
 flasher-auth-header-strip|etc/nginx/network_config.conf|X-SA02M-Auth  "";
+homekit-trigger|usr/local/sbin/sa02m-homekit-web-trigger.sh|hk_write_disabled_status "$since"
+homekit-trigger|usr/local/sbin/sa02m-homekit-web-trigger.sh|rm -f -- "$VAR_DIR/state.json" 2>/dev/null || true
+homekit-cgi|www/network_config/cgi-bin/sa02m_homekit_api.cgi|TRIG_OUT=$(timeout 11 sudo -n /usr/local/sbin/sa02m-homekit-web-trigger.sh "$VERB" 2>/dev/null) || TRIG_RC=$?
+cgi-csrf-policy|www/network_config/cgi-bin/sa02m_homekit_api.cgi|web_csrf_validate
+alice-conf-homes|opt/sa02m-update/lib/validate_package.py|"/etc/sa02m-homekit/",
+alice-conf-homes|etc/sa02m-update-runner.sh|"/var/lib/sa02m-homekit/",
+alice-conf-homes|etc/sa02m-web-backup.sh|/etc/sa02m-homekit/sa02m-homekit.conf
+alice-conf-homes|etc/sa02m-restore-backup.sh|re.compile(r"^/etc/sa02m-homekit/sa02m-homekit
+alice-conf-homes|etc/sa02m-restore-backup.sh|"/etc/sa02m-homekit": (0o770
+installer-order|install.sh|sa02m_run_module 06c-homekit.sh
+installer-svc-policy-gate|scripts/06c-homekit.sh|sa02m_svc_capture "$UNIT"
+factory-reset-runner|etc/sa02m-factory-reset-runner.sh|  wipe_homekit_pairings
+factory-reset-runner|etc/sa02m-factory-reset-runner.sh|fr_safe verify-backup "$out"
+factory-reset-runner|etc/sa02m-factory-reset-runner.sh|!= (ours.st_dev, ours.st_ino): drop_swapped(target)
+factory-reset-runner|etc/sa02m-factory-reset-runner.sh|if foreign: drop_foreign(pfd, dreal, name, lst, kind)
+factory-reset-runner|etc/sa02m-factory-reset-runner.sh|if dirty: scrub_log(fd, f"{dreal}/{name}")
+factory-reset-runner|etc/sa02m-factory-reset-runner.sh|  release_statedir
+factory-reset-runner|etc/sa02m-factory-reset-runner.sh||| chmod "$STATEDIR_MODE" "$STATEDIR"
+factory-reset-runner|etc/sa02m-factory-reset-runner.sh|systemctl stop "$HK_UNIT"
+factory-reset-runner|etc/sa02m-factory-reset-runner.sh|fr_safe remove-name "$HK_RUN_DIR" setup.json
+factory-reset-runner|etc/sa02m-factory-reset-runner.sh||| fail E_INTERNAL "transaction id is not a plain token"
 '
 
 command -v git >/dev/null 2>&1 || { echo "comment-mutation-proof: FAIL — git is required to build the pristine copy"; exit 1; }
