@@ -27,9 +27,10 @@ And the line-ending half (LineEndingTests, 1.0.6.60): LF stays LF on EVERY
 host; the regex-patched homes (app.js, index.html, login.html, modules,
 README.md) keep whatever line endings they had, CRLF included, while VERSION
 is rebuilt line by line and always comes back LF (write_version_file()).
-Python's text-mode default (newline=None) writes os.linesep, so a sync run from a Windows checkout left VERSION, index.html, login.html and the
-bundles CRLF in the working tree (backlog 2026-09-23; 1.0.6.51 converted them
-back by hand) while .gitattributes `eol=lf` promises LF on disk for the device
+Python's text-mode default (newline=None) writes os.linesep, so a sync run
+from a Windows checkout left VERSION, index.html, login.html and the bundles
+CRLF in the working tree (backlog 2026-09-23; 1.0.6.51 converted them back by
+hand) while .gitattributes `eol=lf` promises LF on disk for the device
 overlay, and a local gate or a pscp-style delivery reads the working tree, not
 the index. The Windows default is EMULATED (io.open wrapped so a text-mode
 write with newline=None gets '\\r\\n' — what CPython's TextIOWrapper does on
@@ -238,8 +239,9 @@ def _crlf_default_open(file, mode="r", buffering=-1, encoding=None, errors=None,
 
 
 class LineEndingTests(unittest.TestCase):
-    """The syncer never changes a file's line endings — only the version
-    substrings (module docstring, the line-ending half)."""
+    """LF stays LF on every host; the regex-patched homes keep their line
+    endings (CRLF included), and VERSION is rebuilt LF by design (module
+    docstring, the line-ending half)."""
 
     # every home the syncer writes, LF, all at OLD
     FIXTURE = {
