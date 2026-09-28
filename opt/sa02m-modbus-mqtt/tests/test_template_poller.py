@@ -341,6 +341,59 @@ class TestFullPollAndSetup(unittest.TestCase):
             self.assertGreater(pub.pub_control.call_count, first)
 
 
+class FailingSerial(FakeSerial):
+    """FakeSerial whose holding-register reads at chosen addresses raise."""
+
+    def __init__(self, fail_addrs=(), **kw):
+        super().__init__(**kw)
+        self.fail_addrs = set(fail_addrs)
+
+    def read_holding_registers(self, addr, start, count):
+        if start in self.fail_addrs:
+            raise IOError(f"timeout reg={start}")
+        return super().read_holding_registers(addr, start, count)
+
+
+class TestReadErrorFlag(unittest.TestCase):
+    """A channel whose read fails raises /meta/error=r and clears it on recovery."""
+
+    def _poller(self, tmp: Path):
+        _write_template(tmp, "err", {
+            "name": "err", "channels": [
+                {"name": "a", "reg_type": "holding", "address": 1, "format": "u16"},
+                {"name": "b", "reg_type": "holding", "address": 2, "format": "u16"},
+            ]})
+        return _poller("err", tmp)
+
+    def _poll(self, p, fake):
+        p._t_poll = -1e9
+        with mock.patch.object(p, "get_port", return_value=fake), \
+                mock.patch.object(bridge.DeviceLiveCache, "flush_file"):
+            p.poll_io()
+
+    def test_failed_read_flags_r_and_publishes_no_value(self):
+        with tempfile.TemporaryDirectory() as d:
+            p, pub = self._poller(Path(d))
+            self._poll(p, FailingSerial(fail_addrs={1}, regs={2: 7}))
+            pub.pub_error.assert_any_call(p.device_id, "a", "r")
+            self.assertFalse([c for c in pub.pub_control.call_args_list
+                              if c.args[1] == "a"])
+            # the healthy channel is unaffected: value published, error cleared
+            pub.pub_control.assert_any_call(p.device_id, "b", "7")
+            pub.pub_error.assert_any_call(p.device_id, "b", "")
+            self.assertNotIn(mock.call(p.device_id, "b", "r"),
+                             pub.pub_error.call_args_list)
+
+    def test_recovered_read_clears_flag(self):
+        with tempfile.TemporaryDirectory() as d:
+            p, pub = self._poller(Path(d))
+            self._poll(p, FailingSerial(fail_addrs={1}))
+            pub.pub_error.reset_mock()
+            self._poll(p, FailingSerial(regs={1: 5}))
+            pub.pub_control.assert_any_call(p.device_id, "a", "5")
+            pub.pub_error.assert_any_call(p.device_id, "a", "")
+
+
 class TestWriteback(unittest.TestCase):
     def _shipped_poller(self):
         return _poller("example", TEMPLATES_DIR)

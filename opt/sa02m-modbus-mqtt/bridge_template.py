@@ -353,12 +353,17 @@ class TemplatePoller(DevicePoller):
                 words = self._read_channel(ch)
             except Exception as e:
                 self.log.debug("template read %s: %s", ch.name, e)
+                # Read-error convention (docs/MQTT_TOPICS.md): the channel keeps
+                # its last good value but says it is stale — never a silent freeze.
+                self.pub.pub_error(self.device_id, ch.name, "r")
                 continue
             if ch.reg_type in _BIT_REG_TYPES:
                 self._wb_publish_poll(ch.name, str(words[0] & 1), t_read)
-                continue
-            value = self._decode(ch, words)
-            self._wb_publish_poll(ch.name, self._format_value(ch, value), t_read)
+            else:
+                value = self._decode(ch, words)
+                self._wb_publish_poll(
+                    ch.name, self._format_value(ch, value), t_read)
+            self.pub.pub_error(self.device_id, ch.name, "")
         DeviceLiveCache.flush_file(self.device_id)
 
     def _read_channel(self, ch: TemplateChannel) -> list:

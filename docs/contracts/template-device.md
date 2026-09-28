@@ -124,7 +124,13 @@
 /devices/<id>/controls/<name>/meta/type           = WB control type
 /devices/<id>/controls/<name>/meta/readonly       = "1" | "0"
 /devices/<id>/controls/<name>/meta/units          = units (+ авто precision)
+/devices/<id>/controls/<name>/meta/error          = "r" | "w" | ""
 ```
+
+Ошибка чтения канала (таймаут, исключение Modbus) ставит его `/meta/error` =
+`r`; значение не публикуется, в MQTT остаётся последнее прочитанное. Первое
+успешное чтение снимает флаг (`""`) — конвенция `docs/MQTT_TOPICS.md`, как у
+Carel и ДТВ. Гейт — `test_template_poller::TestReadErrorFlag`.
 
 Опрос — только классический (v1): `fmb_event_ranges()` наследует `[]`, Fast
 Modbus для шаблонов не арминится. Инвариант аренды порта RS-485 унаследован
