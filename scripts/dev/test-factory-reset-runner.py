@@ -181,7 +181,7 @@ class Sandbox:
         w("etc/sa02m-cloud/agent.conf", "token=SECRET-CLOUD\n", 0o600)
         w("etc/sa02m-alice/sa02m-alice-client.conf", "[client]\nclient_enabled = true\n", 0o660)
         w("etc/sa02m-alice/sa02m-alice-devices.conf", '{"rooms": [], "devices": [1]}\n', 0o660)
-        w("var/www/network_config/VERSION", "1.0.6.55\n", 0o644)
+        w("var/www/network_config/VERSION", "1.0.6.57\n", 0o644)
         for n in ("state.json", "aids.json", "identity.json", ".hk-abc.tmp"):
             w(f"var/lib/sa02m-homekit/{n}", '{"k": "HK-SECRET"}\n', 0o600)
         w("etc/sa02m-homekit/sa02m-homekit.conf", "[bridge]\nenabled = true\ninterface = eth1\nport = 21065\n", 0o660)
@@ -197,6 +197,12 @@ class Sandbox:
         # The HomeKit package, as installed (root-only dirs in the sandbox).
         shutil.copytree(HK_PKG, sb / "opt/sa02m-homekit/sa02m_homekit",
                         ignore=shutil.ignore_patterns("__pycache__", "tests"))
+        # copytree keeps the SOURCE modes: a checkout extracted as root with a
+        # group-writable umask (comment-mutation-proof's `git archive | tar -x`)
+        # would hand the runner a package it rightly refuses to import, so the
+        # installed modes are set here, not inherited.
+        for dirpath, _dirs, _files in os.walk(sb / "opt/sa02m-homekit"):
+            os.chmod(dirpath, 0o755)
         # Backup helper: the SHIPPED script, retargeted.
         self.backup = sb / "bin-backup.sh"
         self.backup.write_text(retarget(BACKUP_TXT, sb), encoding="utf-8")

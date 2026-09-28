@@ -15,7 +15,7 @@ helper, which lands the file as tmp + fsync + rename-over (old-or-new, never a
 /opt payloads, variable targets) is left alone: those have their own guards or
 are re-read only at boot.
 
-Since 1.0.6.55 the sweep also sees three shapes it used to be blind to — each
+Since 1.0.6.57 the sweep also sees three shapes it used to be blind to — each
 one shipped a raw unit write with this gate green (quality-gate-rigor.md (b)):
   * vendor unit dirs /lib/systemd/system/ and /usr/lib/systemd/system/ are
     live prefixes too — systemd reads a 0-byte fragment there as masked exactly

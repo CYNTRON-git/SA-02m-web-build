@@ -216,7 +216,7 @@
     'Управление из облака': 'Cloud control',
     'Показывать в Алисе': 'Show in Alice',
     'скрыто из Алисы': 'hidden from Alice',
-    // Apple HomeKit card + «Показывать в HomeKit» (1.0.6.55, app/homekit.js)
+    // Apple HomeKit card + «Показывать в HomeKit» (1.0.6.57, app/homekit.js)
     'Мост': 'Bridge',
     'Сопряжение': 'Pairing',
     'Аксессуаров': 'Accessories',

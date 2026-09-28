@@ -1001,7 +1001,7 @@ if __name__ == "__main__":
 
 
 class TestCatalogueItems(unittest.TestCase):
-    """`catalogue_items()` (1.0.6.55): the per-profile catalogue for a
+    """`catalogue_items()` (1.0.6.57): the per-profile catalogue for a
     non-Yandex consumer (the HomeKit bridge) — the `_items` filter, deep
     copies, no `alice_visible` filtering, no scene rows off the yandex
     profile."""

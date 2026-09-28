@@ -101,9 +101,14 @@ rsync -a --delete --exclude '__pycache__' --exclude '*.pyc' --exclude 'tests' \
 chown -R root:root "$INSTALL_DIR"
 chmod -R u=rwX,go=rX "$INSTALL_DIR"
 
-# ── Runtime dirs (boot-persistent home: etc/tmpfiles.d/sa02m-homekit.conf) ──
+# ── Runtime dirs (boot-persistent home: the package's tmpfiles.d copy) ─────
+# The conf lives in the package, not under etc/tmpfiles.d/: everything there is
+# OTA'd to EVERY board, and its lines name the sa02m-homekit account that only
+# this module creates (journal noise + an empty 0770 /etc/sa02m-homekit on every
+# other board). This installer is its only writer into /etc/tmpfiles.d/
+# (pinned by `alice-conf-homes` section 12).
 install -m 0644 -o root -g root \
-    "$BASE_DIR/etc/tmpfiles.d/sa02m-homekit.conf" /etc/tmpfiles.d/sa02m-homekit.conf
+    "$OPT_SRC/tmpfiles.d/sa02m-homekit.conf" /etc/tmpfiles.d/sa02m-homekit.conf
 sed -i 's/\r$//' /etc/tmpfiles.d/sa02m-homekit.conf
 if command -v systemd-tmpfiles >/dev/null 2>&1; then
     systemd-tmpfiles --create /etc/tmpfiles.d/sa02m-homekit.conf >>"$LOG_FILE" 2>&1 \
@@ -116,16 +121,52 @@ install -d -m 0750 -o "$HK_USER" -g www-data /run/sa02m-homekit
 install -d -m 0770 -o root -g www-data /etc/sa02m-homekit
 
 # ── Conf seed — only if absent (the card owns it afterwards) ───────────────
-if [ ! -f /etc/sa02m-homekit/sa02m-homekit.conf ]; then
-    install -m 0660 -o root -g www-data \
-        "$BASE_DIR/etc/sa02m-homekit/sa02m-homekit.conf" /etc/sa02m-homekit/sa02m-homekit.conf
-    sed -i 's/\r$//' /etc/sa02m-homekit/sa02m-homekit.conf
-    log OK "создан /etc/sa02m-homekit/sa02m-homekit.conf (enabled = false)"
-else
-    log INFO "/etc/sa02m-homekit/sa02m-homekit.conf уже есть — не перезаписываю"
-    chgrp www-data /etc/sa02m-homekit/sa02m-homekit.conf 2>/dev/null || true
-    chmod 0660 /etc/sa02m-homekit/sa02m-homekit.conf 2>/dev/null || true
-fi
+# /etc/sa02m-homekit is root:www-data 0770, so www-data can plant any name
+# here, and chmod/chgrp/sed -i follow (or read through) a symlink: a planted
+# `sa02m-homekit.conf -> /etc/sudoers.d/x` would get group www-data + 0660
+# (root escalation). Root therefore creates the seed with O_CREAT|O_EXCL|
+# O_NOFOLLOW (a planted name makes the create fail, never followed) and
+# re-asserts group/mode only on a regular, singly-linked file through an
+# O_NOFOLLOW fd; anything else is reported on stderr and left alone — the
+# scripts/06-alice.sh pattern. Pinned by the quality row `alice-conf-homes`
+# (section 11).
+python3 - "$BASE_DIR/etc/sa02m-homekit/sa02m-homekit.conf" /etc/sa02m-homekit sa02m-homekit.conf www-data <<'PY' \
+    || log WARN "[06c-homekit] конфиг /etc/sa02m-homekit/sa02m-homekit.conf не проверен (python3)"
+import grp, os, stat, sys
+src, conf_dir, name, group = sys.argv[1:5]
+gid = grp.getgrnam(group).gr_gid
+path = f"{conf_dir}/{name}"
+dfd = os.open(conf_dir, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
+try:
+    fd = os.open(name, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW | os.O_CLOEXEC, 0o600, dir_fd=dfd)
+except FileExistsError:
+    fd = None
+if fd is not None:
+    with open(src, "rb") as fh:
+        body = fh.read().replace(b"\r\n", b"\n")
+    view = memoryview(body)
+    while view:
+        view = view[os.write(fd, view):]
+    os.fchown(fd, -1, gid)
+    os.fchmod(fd, 0o660)
+    os.fsync(fd)
+    os.close(fd)
+    print(f"OK: created {path} (enabled = false)")
+    sys.exit(0)
+try:
+    fd = os.open(name, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK | os.O_CLOEXEC, dir_fd=dfd)
+    st = os.fstat(fd)
+    if not stat.S_ISREG(st.st_mode) or st.st_nlink != 1:
+        os.close(fd)
+        raise OSError(f"{stat.filemode(st.st_mode)}, {st.st_nlink} link(s)")
+except OSError as e:
+    print(f"WARN: {path}: not a regular singly-linked file ({e}) — left alone", file=sys.stderr)
+    sys.exit(0)
+os.fchown(fd, -1, gid)
+os.fchmod(fd, 0o660)
+os.close(fd)
+print(f"INFO: {path} already exists — kept, group/mode re-asserted")
+PY
 
 # ── systemd ────────────────────────────────────────────────────────────────
 # Capture BEFORE the unit lands — the only reliable first-install signal. The
@@ -138,20 +179,6 @@ sa02m_atomic_install -m 0644 -o root -g root \
     "$UNIT_SRC/sa02m-homekit.service" /etc/systemd/system/
 systemctl daemon-reload
 sa02m_svc_apply "$UNIT" app off
-
-# A never-started bridge leaves no status.json; the card would read it as
-# unknown. Write `disabled` only when the file is absent (never clobber a live
-# daemon's status). The dir belongs to the daemon user, so root never opens a
-# name there for writing: mktemp (O_EXCL) + rename, which replaces a planted
-# symlink instead of following it.
-if [ ! -e /run/sa02m-homekit/status.json ]; then
-    if _hk_tmp=$(mktemp /run/sa02m-homekit/.status.XXXXXX 2>/dev/null); then
-        printf '{"state":"disabled","ts":%s,"reason":"","message":"HomeKit bridge disabled","enabled":false}\n' \
-            "$(date +%s)" > "$_hk_tmp"
-        chmod 0644 "$_hk_tmp" 2>/dev/null || true
-        mv -f -- "$_hk_tmp" /run/sa02m-homekit/status.json || rm -f -- "$_hk_tmp"
-    fi
-fi
 
 # ── Privileged CGI helper + sudoers (before the CGI that calls them) ───────
 sa02m_atomic_install -m 0755 -o root -g root \

@@ -182,8 +182,8 @@ OTA обновляет код, установку делает установщ�
 модуль необязательный и в заводской образ не входит. OTA и офлайн-пакет несут
 его код на **каждую** плату (`opt/sa02m-homekit/**`, юнит
 `sa02m-homekit.service`, `usr/local/sbin/sa02m-homekit-web-trigger.sh`,
-`etc/tmpfiles.d/sa02m-homekit.conf`, грант `etc/sudoers.d/sa02m-homekit`, CGI
-`sa02m_homekit_api.cgi` и `static/js/app/homekit.js`), но **установить** мост
+грант `etc/sudoers.d/sa02m-homekit`, CGI `sa02m_homekit_api.cgi` и
+`static/js/app/homekit.js`), но **установить** мост
 не могут: venv `/opt/sa02m-homekit-venv` (HAP-python по хеш-lock), системный
 пользователь `sa02m-homekit`, каталоги и засевка
 `/etc/sa02m-homekit/sa02m-homekit.conf` живут только в `scripts/06c-homekit.sh`.
@@ -764,9 +764,10 @@ Q-A: некоммерческое использование, в заводск�
   входит в обычный `install.sh`). Без него `06c-homekit.sh` пишет
   `HomeKit needs Alice package` и выходит, ничего не поставив.
 - Зависимости venv — из PyPI (нужен интернет на плате) **или** из wheelhouse
-  `/opt/vendor-installers/homekit/` (офлайн). Колёса для платы скачиваются на ПК
-  по lock-файлу командой из `docs/decisions/homekit-home-connect.md` (G1,
-  «Откуда lock и как он проверен», шаг 1) и копируются в этот каталог.
+  `/opt/vendor-installers/homekit/` (офлайн). Колёса для платы (armv7l,
+  CPython 3.12, с проверкой хэшей lock-файла) скачиваются на ПК командой
+  `bash scripts/dev/build-homekit-wheelhouse.sh <каталог>` и копируются в этот
+  каталог.
 - apt-пакеты `python3-venv`, `python3-paho-mqtt`, `python3-cffi-backend`
   установщик ставит сам, если их нет.
 
@@ -795,7 +796,8 @@ lock, не пересобирается. Порядок шагов и почем
 ```
 systemctl is-enabled sa02m-homekit           # disabled
 systemctl is-active sa02m-homekit            # inactive
-cat /run/sa02m-homekit/status.json           # "state":"disabled"
+ls /run/sa02m-homekit/                       # пусто: мост не запускался, установщик статус не пишет
+curl -s -b "session_token=<токен>" http://127.0.0.1/cgi-bin/sa02m_homekit_api.cgi   # "state":"disabled" (из конфига)
 /opt/sa02m-homekit-venv/bin/python -c 'import pyhap.accessory_driver, segno; print("ok")'
 stat -c '%a %U:%G %n' /var/lib/sa02m-homekit /run/sa02m-homekit \
       /etc/sa02m-homekit /etc/sa02m-homekit/sa02m-homekit.conf

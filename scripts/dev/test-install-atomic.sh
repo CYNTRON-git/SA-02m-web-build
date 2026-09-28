@@ -23,7 +23,7 @@
 # empty sweep cannot pass, and driven to failure on a scratch copy with one
 # site reverted (case 7c) plus a planted raw unit write in install.sh (case 7d
 # - install.sh carries zero install -m sites today, so 7c alone would leave the
-# "and install.sh" half of the claim unmeasured). Cases 7e-7h (1.0.6.55) plant
+# "and install.sh" half of the claim unmeasured). Cases 7e-7h (1.0.6.57) plant
 # the three shapes the sweep used to miss — `cp` through a literal dir
 # variable, /lib/systemd/system/, a `"$VAR"; }` one-line body — plus a
 # negative control for an ambiguous variable. RED observed 2026-09-27 on
@@ -220,7 +220,7 @@ else
     else
         bad "7d a raw unit write planted in install.sh was NOT caught (rc=$rrc): $(printf '%s\n' "$red" | head -3 | tr '\n' ' ')"
     fi
-    # 7e-7h: the three shapes the sweep was blind to until 1.0.6.55, each
+    # 7e-7h: the three shapes the sweep was blind to until 1.0.6.57, each
     # planted in the byte shape that actually shipped (scripts/05-cloud-agent.sh
     # and scripts/06-gateway.sh on 1.0.6.54, where this row was GREEN over four
     # raw unit/binary writes). A fresh scratch copy per case so one plant can

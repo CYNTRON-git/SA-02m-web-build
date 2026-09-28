@@ -179,7 +179,7 @@ class TestCloudDiscoveryWritable(unittest.TestCase):
 
 
 class TestHomekitVisible(unittest.TestCase):
-    """`homekit_visible` (1.0.6.55, docs/contracts/alice-mqtt-mapping.md §Tile
+    """`homekit_visible` (1.0.6.57, docs/contracts/alice-mqtt-mapping.md §Tile
     fields): strict bool, absent is kept absent (the HomeKit bridge reads
     absent as HIDDEN), and the Yandex/cloud discovery lists ignore it."""
 

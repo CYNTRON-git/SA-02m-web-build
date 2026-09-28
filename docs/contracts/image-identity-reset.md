@@ -227,7 +227,7 @@ firstrun этой конкретной платы. Очистка Алисы н�
 
 **Keep-list HomeKit:** каталоги `/var/lib/sa02m-homekit/`,
 `/run/sa02m-homekit/`, `/etc/sa02m-homekit/` (пере-утверждаются
-`etc/tmpfiles.d/sa02m-homekit.conf`, `rm -rf` по дереву запрещён); `interface`
+`/etc/tmpfiles.d/sa02m-homekit.conf`, `rm -rf` по дереву запрещён); `interface`
 и `port` конфига; `/opt/sa02m-homekit/**`, `/opt/sa02m-homekit-venv/`, unit-файл
 — установленный софт.
 
@@ -245,10 +245,10 @@ firstrun этой конкретной платы. Очистка Алисы н�
 держит ключи в памяти и записал бы их обратно.
 
 Оба слоя действуют (слой 1 — `opt/sa02m-homekit/sa02m_homekit/identity.py`,
-слой 2 — пять площадок); проверка — часть H строки `alice-image-identity`.
+слой 2 — пять площадок, шесть файлов); проверка — часть H строки `alice-image-identity`.
 
 Политика factory reset для HomeKit (§1, «СТЕРЕТЬ») **исполняется**:
 `wipe_homekit_pairings()` в `etc/sa02m-factory-reset-runner.sh` стирает
 содержимое `/var/lib/sa02m-homekit/` и возвращает конфиг к шаблону
 (`homekit-bridge.md` §14); проверяет `scripts/dev/test-factory-reset-runner.py`
-(H1–H7b), строка реестра ожидает регистрации.
+(H1–H7b), строка реестра `factory-reset-runner`.

@@ -89,7 +89,7 @@ def allowed(p: str) -> bool:
 # boot anyway; created any other way the CGI cannot save the restored confs.
 DIR_SPEC = {
     "/etc/sa02m-alice": (0o770, "root", "www-data"),
-    # etc/tmpfiles.d/sa02m-homekit.conf (and scripts/06c-homekit.sh).
+    # opt/sa02m-homekit/tmpfiles.d/sa02m-homekit.conf (and scripts/06c-homekit.sh).
     "/etc/sa02m-homekit": (0o770, "root", "www-data"),
 }
 
