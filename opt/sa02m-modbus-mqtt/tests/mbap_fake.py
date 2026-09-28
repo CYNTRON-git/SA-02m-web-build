@@ -58,6 +58,7 @@ class FakeMbapServer:
         self._lock = threading.Lock()
         self._conns: list = []
         self._lsock = None
+        self._accept_thread = None
         self.port = 0
         self.start()
 
@@ -69,18 +70,46 @@ class FakeMbapServer:
         s.bind(("127.0.0.1", self.port))
         s.listen(16)
         self.port = s.getsockname()[1]
-        self._lsock = s
-        threading.Thread(target=self._accept_loop, args=(s,), daemon=True).start()
+        with self._lock:
+            self._lsock = s
+        t = threading.Thread(target=self._accept_loop, args=(s,), daemon=True)
+        self._accept_thread = t
+        t.start()
 
     def stop(self) -> None:
-        """The device goes away: listener closed (connect refused), sessions reset."""
-        if self._lsock is not None:
+        """The device goes away: listener closed (connect refused), sessions reset.
+
+        Idempotent. A bare close() is not enough on Linux: while the accept
+        thread is blocked in accept() the kernel keeps the listening socket
+        alive and the port keeps accepting, so the device never "goes away".
+        shutdown() wakes that accept(); the join makes sure no connection it
+        was completing is appended after the sessions below are dropped.
+        """
+        with self._lock:
+            lsock, self._lsock = self._lsock, None
+            thread, self._accept_thread = self._accept_thread, None
+        if lsock is not None:
             try:
-                self._lsock.close()
+                lsock.shutdown(socket.SHUT_RDWR)
             except OSError:
                 pass
-            self._lsock = None
-        self.drop_sessions()
+            try:
+                lsock.close()
+            except OSError:
+                pass
+        if thread is not None and thread is not threading.current_thread():
+            thread.join(timeout=2.0)
+        # Same Linux trap for an established session: a close() while its
+        # _serve thread sits in recv() defers the teardown until the peer
+        # sends again, so shut it down first to drop it NOW.
+        with self._lock:
+            conns, self._conns = self._conns, []
+        for c in conns:
+            try:
+                c.shutdown(socket.SHUT_RDWR)
+            except OSError:
+                pass
+            _rst_close(c)
 
     def drop_sessions(self) -> None:
         """Close every established session (MP-02 idle close / reboot)."""
@@ -98,7 +127,13 @@ class FakeMbapServer:
             except OSError:
                 return
             with self._lock:
-                self.accepts += 1
+                stopped = self._lsock is not lsock
+                if not stopped:
+                    self.accepts += 1
+            if stopped:
+                # Completed in the window before stop() shut the listener.
+                _rst_close(conn)
+                return
             if self.on_accept == "reset":
                 _rst_close(conn)
                 continue
