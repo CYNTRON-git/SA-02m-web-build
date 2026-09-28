@@ -170,15 +170,20 @@ if ! repo_url_allowed "$REPO_URL"; then
     exit 1
 fi
 
-# ── Never clobber a RUNNING transaction (1.0.6.52, F5b) ─────────────────────
+# ── Never clobber a RUNNING transaction (1.0.6.52 F5b; widened 1.0.6.62, audit 2026-09-28 M1) ─
 # A second «Применить» while a runner works used to clone again and hand a NEW
-# transaction.json over the live one (handoff_to_shared_runner). Refused here,
-# before the clone, when the transaction is at a busy stage AND its runner is
-# alive; a transaction whose runner is gone is left alone — re-applying is a
-# legitimate recovery, and so is the reboot (recover → verify). Same liveness
-# test as the CGI side (www/network_config/cgi-bin/lib_web_update.sh) — a
-# second copy by necessity: a root helper must not source a www-data-writable
-# file. Keep the two in step. Harness: scripts/dev/test-web-update-launcher-guard.sh.
+# transaction.json over the live one (handoff_to_shared_runner). Two guards:
+# HERE, before the clone, on every non-terminal stage with a live runner
+# (until 1.0.6.62 only applying|verifying|committing|rolling_back — a runner at
+# validating/backing_up, 10–30 s on the A7, was not protected); and AGAIN in
+# handoff_to_shared_runner, under the runner's own lock, right before the
+# write — the clone takes 30–60 s and a runner that became alive meanwhile is
+# invisible to this one. A transaction whose runner is gone is left alone —
+# re-applying is a legitimate recovery, and so is the reboot (recover →
+# verify). Same liveness test as the CGI side
+# (www/network_config/cgi-bin/lib_web_update.sh) — a second copy by necessity:
+# a root helper must not source a www-data-writable file. Keep the two in
+# step. Harness: scripts/dev/test-web-update-launcher-guard.sh.
 update_runner_alive() {
     local lock="$UPDATE_STATEDIR/update.lock" pid cmd units
     if [ -r "$lock" ]; then
@@ -202,23 +207,35 @@ update_runner_alive() {
     fi
     return 1
 }
-txn_stage=""; txn_id=""
-if [ -r "$UPDATE_STATEDIR/transaction.json" ]; then
-    read -r txn_stage txn_id < <(python3 -c 'import json,sys
+# Every stage the runner still owns (the non-terminal set of
+# opt/sa02m-update/lib/transaction.py) — the one home for both guards.
+TXN_BUSY_STAGES="uploaded validating backing_up applying verifying committing rolling_back"
+read_txn() {  # → txn_stage txn_id (empty when there is no readable transaction)
+    txn_stage=""; txn_id=""
+    if [ -r "$UPDATE_STATEDIR/transaction.json" ]; then
+        read -r txn_stage txn_id < <(python3 -c 'import json,sys
 try:
     d=json.load(open(sys.argv[1],encoding="utf-8")); print(str(d.get("stage") or "-"), str(d.get("id") or "-"))
 except Exception:
     pass' "$UPDATE_STATEDIR/transaction.json" 2>/dev/null | tr -d '\r') || true
-fi
-case "$txn_stage" in
-    applying|verifying|committing|rolling_back)
-        if update_runner_alive; then
-            log "ERROR: обновление уже выполняется (txn ${txn_id:-?} stage=$txn_stage) — повторный запуск отклонён"
-            printf 'error' > "$STATUS_FILE"
-            exit 1
-        fi
-        ;;
-esac
+    fi
+}
+# refuse_if_running WHERE — a transaction at a busy stage whose runner is alive
+# → the «уже выполняется» line, update_status=error, exit 1; the EXIT trap
+# removes the legacy lock (and, before the handoff narrows it, the clone).
+refuse_if_running() {
+    read_txn
+    case " $TXN_BUSY_STAGES " in
+        *" $txn_stage "*)
+            if update_runner_alive; then
+                log "ERROR: обновление уже выполняется (txn ${txn_id:-?} stage=$txn_stage; $1) — повторный запуск отклонён"
+                printf 'error' > "$STATUS_FILE"
+                exit 1
+            fi
+            ;;
+    esac
+}
+refuse_if_running "до клонирования"
 
 # Temporary directory for clone
 TMPDIR=$(mktemp -d /tmp/sa02m-web-update-XXXXXX)
@@ -306,6 +323,31 @@ handoff_to_shared_runner() {
     fi
 
     mkdir -p "$UPDATE_STATEDIR" "$UPDATE_STATEDIR/state" "$UPDATE_STATEDIR/incoming"
+
+    # ── The runner's own lock, taken here and inherited through `exec` (1.0.6.62) ─
+    # Same descriptor and mode as the runner's try_lock (fd 9, opened for APPEND
+    # so a contender never truncates the holder's pid line): a live runner holds
+    # it, so this launcher cannot write transaction.json over its transaction —
+    # by construction, not by the stage list above. fd 9 is not close-on-exec,
+    # so the lock rides into the runner; its try_lock re-opens fd 9 on the same
+    # path — closing this description (the lock drops) and `flock -n 9` re-takes
+    # it in the same process at once: no deadlock, no second lock file, and the
+    # only unguarded instant is the one every runner entry point already has
+    # between its open and its flock. The pid line stays the runner's to write.
+    # A busy lock refuses whatever holds it (a missing flock(1) refuses too —
+    # the safe side). The pre-clone guard ran 30–60 s ago: a runner that became
+    # alive since and is between its lock holds (the cgroup handover closes fd 9
+    # for a moment) is caught by the re-check UNDER the lock, before the write.
+    # Harness: scripts/dev/test-web-update-launcher-guard.sh L9–L11.
+    exec 9>>"$UPDATE_STATEDIR/update.lock"
+    if ! flock -n 9; then
+        read_txn
+        log "ERROR: обновление уже выполняется (лок $UPDATE_STATEDIR/update.lock занят; txn ${txn_id:-?} stage=${txn_stage:-?}) — повторный запуск отклонён"
+        printf 'error' > "$STATUS_FILE"
+        exit 1
+    fi
+    refuse_if_running "после клонирования, под локом раннера"
+
     # Keep clone for runner overlay (cleanup trap must not remove it after handoff).
     export SA02M_UPDATE_GITHUB_OVERLAY="$TMPDIR/repo"
     trap 'rm -f "$LOCKFILE"' EXIT

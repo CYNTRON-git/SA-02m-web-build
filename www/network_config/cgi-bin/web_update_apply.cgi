@@ -485,7 +485,14 @@ esac
 
 _json_headers
 
-if _legacy_running; then
+# «Уже выполняется» is judged by the ONE liveness home (lib_web_update.sh), not
+# only by the legacy launcher lock: once the launcher has exec'd the runner that
+# lock is gone, and until 1.0.6.62 a second helper was launched on top of a live
+# runner — its clone ended 30–60 s later in a handoff over the live transaction
+# (audit 2026-09-28 M1; the launcher-side guard is etc/sa02m-web-update-apply.sh).
+# The answer is the «running» body the panel already handles; a dead runner does
+# not block (re-apply is a recovery path). Harness: test-web-update-apply-guard.sh P.
+if _legacy_running || web_upd_runner_alive; then
   log_tail=$(_legacy_log_tail)
   log_tail="${log_tail%\\n}"
   printf '{"ok":true,"status":"running","log":"%s","legacy":{"status":"running"}}\n' "$log_tail"
