@@ -49,9 +49,11 @@ fi
 python3 -c "import paho.mqtt" 2>/dev/null || sa02m_pkg_install_tier optional python3-paho-mqtt
 
 # ── Unprivileged system user (plan D11) ────────────────────────────────────
-# No shell, no home. www-data as a supplementary group lets the daemon hand
-# the web card its 0640 /run files; www-data is NOT in the daemon's group, so
-# it never reads the tokens (promise P4).
+# No shell, no home, and in NO other group: www-data would let the client read
+# the panel credentials and every web conf (audit 2026-09-28). What it needs
+# instead lands with the tmpfiles conf below (setgid /run dir, a read ACL on
+# its conf); gate `daemon-least-privilege`. www-data is NOT in the daemon's
+# group either, so it never reads the tokens (promise P4).
 if ! id -u "$HC_USER" >/dev/null 2>&1; then
     if useradd --system --user-group --no-create-home --home-dir /nonexistent \
             --shell /usr/sbin/nologin --comment "SA-02m Home Connect client" "$HC_USER" >>"$LOG_FILE" 2>&1; then
@@ -61,11 +63,17 @@ if ! id -u "$HC_USER" >/dev/null 2>&1; then
         exit 0
     fi
 fi
+# Upgrade: an account created before the least-privilege change is in
+# www-data — take it out (a running client picks the new groups up at the
+# restart `sa02m_svc_apply` does below).
 _hc_groups=$(id -nG "$HC_USER" 2>/dev/null) || _hc_groups=""
 case " $_hc_groups " in
-    *" www-data "*) : ;;
-    *) usermod -a -G www-data "$HC_USER" >>"$LOG_FILE" 2>&1 \
-           || log WARN "[06d-homeconnect] не удалось добавить $HC_USER в группу www-data — карточка не прочитает состояние входа" ;;
+    *" www-data "*)
+        if gpasswd -d "$HC_USER" www-data >>"$LOG_FILE" 2>&1; then
+            log OK "$HC_USER исключён из группы www-data"
+        else
+            log WARN "[06d-homeconnect] не удалось исключить $HC_USER из группы www-data — клиент читает лишнее (gpasswd -d $HC_USER www-data)"
+        fi ;;
 esac
 
 # ── Package tree (BEFORE the conf seed: the seed is rendered by it) ────────
@@ -84,14 +92,18 @@ chmod -R u=rwX,go=rX "$INSTALL_DIR"
 install -m 0644 -o root -g root \
     "$OPT_SRC/tmpfiles.d/sa02m-homeconnect.conf" /etc/tmpfiles.d/sa02m-homeconnect.conf
 sed -i 's/\r$//' /etc/tmpfiles.d/sa02m-homeconnect.conf
+# It also carries the daemon's read ACL on its conf: only systemd-tmpfiles
+# applies it — the unit re-applies it before every start too (ExecStartPre).
 if command -v systemd-tmpfiles >/dev/null 2>&1; then
     systemd-tmpfiles --create /etc/tmpfiles.d/sa02m-homeconnect.conf >>"$LOG_FILE" 2>&1 \
-        || log WARN "[06d-homeconnect] systemd-tmpfiles --create вернул ошибку — каталоги создаю напрямую"
+        || log WARN "[06d-homeconnect] systemd-tmpfiles --create вернул ошибку — каталоги создаю напрямую, право чтения конфига (ACL) проверьте: getfacl /etc/sa02m-homeconnect"
+else
+    log WARN "[06d-homeconnect] нет systemd-tmpfiles — право чтения конфига (ACL) не выдано, клиент не прочитает свой конфиг"
 fi
 # Same modes as the tmpfiles entries (idempotent re-assert; tmpfiles may be
-# absent in a stripped rootfs).
+# absent in a stripped rootfs). chmod keeps the ACL entries (it sets the mask).
 install -d -m 0700 -o "$HC_USER" -g "$HC_USER" /var/lib/sa02m-homeconnect
-install -d -m 0750 -o "$HC_USER" -g www-data /run/sa02m-homeconnect
+install -d -m 2750 -o "$HC_USER" -g www-data /run/sa02m-homeconnect
 install -d -m 0770 -o root -g www-data /etc/sa02m-homeconnect
 
 # ── Conf seed — only if absent (the card owns it afterwards) ───────────────

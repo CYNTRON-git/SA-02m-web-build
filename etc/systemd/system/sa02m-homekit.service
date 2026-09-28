@@ -29,12 +29,19 @@ MemoryMax=64M
 CPUQuota=25%
 TasksMax=32
 Nice=10
-# Unprivileged (D11): nothing in the bridge needs root. www-data as a
-# supplementary group reads the device document (0660 root:www-data) and
-# gives the web card read access to the 0640 /run files the daemon creates.
+# Unprivileged (D11): nothing in the bridge needs root — and NOT group
+# www-data: this listener is on the LAN before pairing, and www-data reads the
+# panel credentials, the gateway YAML and every Alice conf. What it needs
+# instead (docs/contracts/homekit-bridge.md §13): /run/sa02m-homekit is setgid
+# www-data (the files the card reads inherit the group), and ACLs grant read
+# on its conf and the Alice device document — a DEFAULT ACL on each directory,
+# so an atomic rename keeps the grant. Gate: `daemon-least-privilege`.
 User=sa02m-homekit
 Group=sa02m-homekit
-SupplementaryGroups=www-data
+# `+`: as root, before the sandbox; `-`: a missing conf (an OTA-only board,
+# where this unit cannot start anyway) is not a start failure. Re-applies the
+# modes and ACLs a restore or a hand edit may have dropped.
+ExecStartPre=-+/usr/bin/systemd-tmpfiles --create /etc/tmpfiles.d/sa02m-homekit.conf
 UMask=0077
 NoNewPrivileges=true
 # strict: /etc (including the group-writable device document and the conf) is
