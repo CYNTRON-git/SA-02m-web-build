@@ -74,6 +74,13 @@ def interfaces() -> List[Dict[str, Any]]:
     ]
 
 
+def _conf_mtime() -> Optional[float]:
+    try:
+        return os.stat(C.CONF_FILE).st_mtime
+    except OSError:
+        return None
+
+
 def merged_status(now: Optional[float] = None) -> Response:
     """Conf + status.json + projection.json → the card's view."""
     now = time.time() if now is None else now
@@ -96,7 +103,13 @@ def merged_status(now: Optional[float] = None) -> Response:
             state = C.STATE_ERROR
         elif state == C.STATE_DISABLED:
             # Enabled a moment ago; the unit has not written its first status.
-            state = C.STATE_STARTING
+            # "A moment" runs from the later of the status write and the conf
+            # write (the enable), so an old disabled status does not read as
+            # stale right after «Включить», yet a unit that never starts does.
+            state, reason = C.STATE_STARTING, ""
+            marks = [t for t in (st.get("ts"), _conf_mtime())
+                     if isinstance(t, (int, float)) and not isinstance(t, bool)]
+            st = dict(st, ts=max(marks) if marks else None)
         if state in C.HEARTBEAT_STATES:
             ts = st.get("ts")
             fresh = (

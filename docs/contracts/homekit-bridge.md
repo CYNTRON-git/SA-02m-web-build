@@ -323,9 +323,12 @@ HAP-python отвечает контроллеру `-70402`: **ложного у
 **Правило слияния** (`api.merged_status` — единственный дом; CGI след
 установки сам не проверяет): нет следа → `not_installed`; конфиг выключен →
 `disabled`; включён и нет `status.json` → `starting`; включён, а в файле
-`disabled` → `starting` (только что включили); живое состояние (`starting`,
-`running`, `no_interface`, `port_in_use`) с `ts` дальше 90 с от текущего
-времени → `error` + `status_stale`; `missing_deps` и `error` пишутся один раз и
+`disabled` → `starting` (только что включили), и его возраст отсчитывается
+от более позднего из `ts` статуса и времени записи конфига (момента
+включения) — старый статус `disabled` не даёт `status_stale` сразу после
+«Включить», а демон, молчащий дольше 90 с после включения, даёт; живое
+состояние (`starting`, `running`, `no_interface`, `port_in_use`) с `ts`
+дальше 90 с от текущего времени → `error` + `status_stale`; `missing_deps` и `error` пишутся один раз и
 верны в любом возрасте; иначе — состояние демона.
 
 ## 11. CGI API — `cgi-bin/sa02m_homekit_api.cgi`

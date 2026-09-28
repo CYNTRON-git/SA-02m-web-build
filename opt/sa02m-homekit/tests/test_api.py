@@ -94,6 +94,24 @@ class StatusMergeTests(ApiCase):
         self.status(C.STATE_DISABLED)
         self.assertEqual(api.merged_status()["state"], C.STATE_STARTING)
 
+    def _age_conf(self, age):
+        t = time.time() - age
+        os.utime(self.paths["CONF_FILE"], (t, t))
+
+    def test_just_enabled_over_an_old_disabled_status_is_starting_not_stale(self):
+        # The disabled status predates the stale window; the user enabled now.
+        self.status(C.STATE_DISABLED, age=C.STATUS_STALE_S + 600)
+        self.conf(enabled=True)
+        m = api.merged_status()
+        self.assertEqual((m["state"], m["reason"]), (C.STATE_STARTING, ""))
+
+    def test_daemon_silent_past_the_window_after_enable_is_stale(self):
+        self.status(C.STATE_DISABLED, age=C.STATUS_STALE_S + 600)
+        self.conf(enabled=True)
+        self._age_conf(C.STATUS_STALE_S + 5)
+        m = api.merged_status()
+        self.assertEqual((m["state"], m["reason"]), (C.STATE_ERROR, C.REASON_STATUS_STALE))
+
     def test_fresh_running(self):
         self.conf(enabled=True)
         self.status(C.STATE_RUNNING, paired=False, pairings=0, accessories=3, address="192.168.1.136",
