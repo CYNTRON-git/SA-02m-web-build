@@ -40,7 +40,7 @@ install -d -m 0750 -o "$FLASHER_USER" -g "$FLASHER_USER" "$LOG_DIR"
 # ── Shared register maps BEFORE the daemon tree ───────────────────────────
 # Dependency before consumer: the packages are additive (an old daemon keeps
 # importing from a newer one), a daemon newer than its package fails at import
-# after a mid-install reset (bench 1.136, .ai-dev/8d/bench-136-reset.md D5 B;
+# after a mid-install reset (bench 1.136, docs/bugs/bench-136-reset.md D5 B;
 # order pinned by scripts/dev/test-installer-order.sh).
 # Carel: imported by the scan/config-window path.
 sa02m_install_carel_pkg "$BASE_DIR"

@@ -290,7 +290,7 @@ PY
 # window this hold protects, and there is no reason to add one when a runtime
 # override does the job. It is NOT the incident's cause: D4 excludes it by
 # timing, and the row that USED to lead there - the HW watchdog after a PID-1
-# stall - is now excluded too, on the board (.ai-dev/8d/bench-136-reset.md, D4
+# stall - is now excluded too, on the board (docs/bugs/bench-136-reset.md, D4
 # addendum). Measured on 1.136, 2026-09-09: taking this hold makes PID 1 CLOSE
 # /dev/watchdog0, so the timer is disarmed rather than merely unfed - the board
 # then survives 40 s past its 16 s hardware timeout, and survives it again

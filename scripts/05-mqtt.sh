@@ -155,7 +155,7 @@ install -d -m 0755 -o root -g root "$BRIDGE_DIR"
 # module newer than its package crash-loops: bench 1.136 reset mid-install and
 # came back with a 1.0.6.40 bridge_led.py (reads sa02m_led.MB2WS_TEXT_BASE at
 # import) over a torn /opt/sa02m-led — 119 restarts. Order pinned by
-# scripts/dev/test-installer-order.sh (.ai-dev/8d/bench-136-reset.md, D5 B).
+# scripts/dev/test-installer-order.sh (docs/bugs/bench-136-reset.md, D5 B).
 # Carel: imported by bridge_carel.py and mqtt_bus_scan.py; LED: by bridge_led.py.
 sa02m_install_carel_pkg "$BASE_DIR"
 sa02m_install_led_pkg "$BASE_DIR"

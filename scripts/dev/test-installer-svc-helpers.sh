@@ -834,7 +834,7 @@ echo "── 14. a 0-byte unit fragment is BROKEN, not operator-masked ──"
 # systemd never masks a unit whose fragment lives in /etc (a mask is a symlink
 # to /dev/null), so `masked` + a 0-byte REGULAR file there is a torn install:
 # state `broken` ⇒ the module's first-install default, with a WARN naming it.
-# (.ai-dev/8d/bench-136-reset.md, D5 step C.)
+# (docs/bugs/bench-136-reset.md, D5 step C.)
 
 # 14a. masked + 0-byte regular fragment ⇒ en=broken; app on ⇒ enable + start
 reset_case

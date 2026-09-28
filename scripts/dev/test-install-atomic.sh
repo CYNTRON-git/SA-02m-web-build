@@ -4,7 +4,7 @@
 # test-install-atomic.sh — regression harness for the atomic live-path write
 # (scripts/lib.sh sa02m_atomic_install) and for the rule that every live-path
 # `install -m` site in scripts/*.sh AND install.sh goes through it. Quality row
-# `install-atomic`. 8D bench-136 reset (.ai-dev/8d/bench-136-reset.md, D5 step A).
+# `install-atomic`. 8D bench-136 reset (docs/bugs/bench-136-reset.md, D5 step A).
 #
 # Why this exists: a hard reset at 22:15 on bench 1.136 left
 # /etc/systemd/system/sa02m-flasher.service as a 0-byte regular file — systemd

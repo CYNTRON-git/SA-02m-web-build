@@ -4,7 +4,7 @@
 # `sa02m_install_led_pkg "$BASE_DIR"` in scripts/05-mqtt.sh turns case 1a RED —
 # measured, so this harness is CASED, not exempt.
 # test-installer-order.sh — regression harness for the install ORDER the
-# 8D bench-136 reset requires (.ai-dev/8d/bench-136-reset.md, D5 step B).
+# 8D bench-136 reset requires (docs/bugs/bench-136-reset.md, D5 step B).
 # Quality row `installer-order`.
 #
 # Why this exists: after the 1.136 reset the board ran a 1.0.6.40 bridge

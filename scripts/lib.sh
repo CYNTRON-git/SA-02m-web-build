@@ -516,7 +516,7 @@ $//' "$dst/$(basename "$f")" 2>/dev/null || true
 # either old or new — never the 0-byte file `install -m` leaves between its
 # truncate and its fill. Bench 1.136 (2026-09-08) reset mid-install and booted
 # with an empty sa02m-flasher.service, which systemd reads as MASKED
-# (.ai-dev/8d/bench-136-reset.md). Shape: install to DST.sa02m-tmp.$$ in the
+# (docs/bugs/bench-136-reset.md). Shape: install to DST.sa02m-tmp.$$ in the
 # same directory, fsync the tmp (data on disk BEFORE the rename — ext4
 # commit=600 on the board otherwise leaves a named-but-empty file), then
 # `mv -f` over DST (a same-directory rename is atomic). DST given as a
@@ -607,7 +607,7 @@ sa02m_atomic_install() {
 # window this hold protects, and there is no reason to add one when a runtime
 # override does the job. It is NOT the incident's cause: D4 excludes it by
 # timing, and the row that USED to lead there - the HW watchdog after a PID-1
-# stall - is now excluded too, on the board (.ai-dev/8d/bench-136-reset.md, D4
+# stall - is now excluded too, on the board (docs/bugs/bench-136-reset.md, D4
 # addendum). Measured on 1.136, 2026-09-09: taking this hold makes PID 1 CLOSE
 # /dev/watchdog0, so the timer is disarmed rather than merely unfed - the board
 # then survives 40 s past its 16 s hardware timeout, and survives it again
@@ -848,7 +848,7 @@ _sa02m_unit_file_on_disk() {
 # unit file as masked (systemd.unit(5)) but never CREATES a mask in /etc as a
 # regular file (a mask is a /dev/null symlink), so `masked` + this witness is
 # the shape a hard reset mid-`install -m` leaves (bench 1.136, 2026-09-08:
-# sa02m-flasher.service, 0 bytes — .ai-dev/8d/bench-136-reset.md). Only full
+# sa02m-flasher.service, 0 bytes — docs/bugs/bench-136-reset.md). Only full
 # fragments are judged, never `.d/` drop-ins. SA02M_UNIT_FILE_DIRS is a test
 # seam (word-split deliberately, like SA02M_SYSV_RC_DIRS).
 _sa02m_unit_fragment_broken() {

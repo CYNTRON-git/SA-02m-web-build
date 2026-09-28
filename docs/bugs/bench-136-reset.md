@@ -1,15 +1,30 @@
 # 8D — bench 1.136 hard reset mid `install.sh --refresh` (2026-09-08)
 
-Run-note (`.ai-dev/procedures/8d.md`). Branch `1.0.6.41`. **Tracked, not transient:**
-twelve tracked files cite this path from code comments and gate headers, so deleting it
-at D8 would dangle every one of them. Per the rule that case bought
-(`8d.md` §Run-note), it graduates to `docs/bugs/bench-136-reset.md` at D8 with its
-citations re-pointed in the same commit — it is never simply deleted, and never left
-parked here as a permanent store. **This 8D is OPEN:** D4 is re-judged (see the
-addendum), D5-D8 are not done.
-Backlog: `.ai-dev/backlog.md` [HIGH] 2026-09-08 «Bench 1.136 reset in the middle of
-`install.sh --refresh`» → RESOLVED by this work. Facts below are the Orchestrator's SSH
-evidence; code facts are `file:line` at HEAD (1.0.6.40 content).
+**Graduated 2026-09-28 (1.0.6.58, audit 2026-09-24 L6)** from the run-note
+`.ai-dev/8d/bench-136-reset.md` (`.ai-dev/procedures/8d.md` §Run-note: a note that
+tracked files cite graduates here at D8 instead of being deleted). Twelve tracked files cite
+this path from code comments and gate headers — the evidence they point at is below, kept
+as it was written; sections from «D5» on are the 1.0.6.41 work record, not current
+instructions.
+
+**Status at graduation — what is closed, what is still open:**
+- **D5 A–E + G** — built in 1.0.6.41 (evidence: «D6 progress» below).
+- **D5 F (install lock)** — built in **1.0.6.51**: `install.sh` holds
+  `/run/sa02m-imaging.lock` for its run and releases it only if it took it; pinned by
+  `scripts/dev/test-watchdog-hold.sh` case 12 (row `watchdog-hold`) and three
+  `comment-mutation-proof` cases. The «not built» lines below (D6 progress, Handoff,
+  Progress note) predate that release.
+- **Read 6** (does the Manager `RuntimeWatchdogSec` write take on 1.136?) — answered on the
+  board 2026-09-09: yes on systemd 255.4 (row `watchdog-hold`'s record).
+- **OPEN — the cause of the resets.** After the D4 addendum only power delivery / an
+  external reset remains; no software path is left. A further full install on 1.136 is not
+  to be started until a serial console is attached (D4 addendum, «Attempt ceiling») — the
+  journal-on-disk policy of 1.0.6.51 (`etc/systemd/sa02m-journald.conf`, 1-min sync) has
+  since narrowed the always-lost logging window. Closing this is the Operator's call; it is
+  tracked in `.ai-dev/backlog.md`, not here.
+
+Facts below are the Orchestrator's SSH evidence; code facts are `file:line` at HEAD
+(1.0.6.40 content).
 
 ## D1 — Team
 
