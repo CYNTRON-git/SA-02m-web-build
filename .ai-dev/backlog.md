@@ -8,6 +8,32 @@ commit's diff of this file).
 
 ## Open
 
+- [OPEN] 2026-09-29 **[LOW] A partial section skip reads as a row PASS (1.0.6.62 review A3).**
+  `test-web-update-launcher-guard.sh` runs L1–L7 everywhere but L8–L11 only where `flock(1)` exists; on
+  git-bash the row prints «PASS (all checks; SKIPPED here: L8–L11 (no flock))» and the runner counts it as
+  a PASS. The runner has two verdicts for a skip (whole-row exit 77) and none for a partial one. Fix
+  direction: a third runner verdict (e.g. exit 78 = PASS-with-skips, printed and summarised apart), or
+  split L8–L11 into its own row that exits 77 where `flock` is absent.
+- [OPEN] 2026-09-29 **[LOW] Children spawned while the update lock fd 9 is held inherit it (1.0.6.62
+  review A7).** In practice they cannot outlive the runner's re-take of the lock after `exec`; recorded so
+  a later long-lived child (a background helper started from the launcher) is checked against it.
+- [OPEN] 2026-09-29 **[LOW] Launcher-guard harness prose (1.0.6.62 review A8).**
+  `scripts/dev/test-web-update-launcher-guard.sh` L9 comment: two lines over the ~125-char wrap, and a
+  history paragraph («L9 was first built with the holder's pid…») that amends the «6 FAIL» record to 7
+  instead of superseding it; the RED record already lives in commit `58306526`'s body. Fold into one
+  current paragraph.
+- [OPEN] 2026-09-29 **[LOW] `run.mjs --touched main` diffs two-dot `main..HEAD` (1.0.6.62 review A9,
+  1.0.6.64 builder).** Once `main` moves past a branch's base, the selection includes main's own changes:
+  it errs to more rows but misreports the branch's scope (81 files / 68 rows vs the true 6 files). Fix:
+  resolve `--touched <ref>` against `git merge-base <ref> HEAD` (the `...` set) and print the base it used.
+- [OPEN] 2026-09-29 **[LOW] One transient `comment-mutation-proof` baseline failure (1.0.6.62 review
+  A10).** Under host load from parallel agents the review beat once printed «mqtt-set-contract is not green
+  on an unmutated tree»; three direct runs and a full re-run («ALL OK — 68 comment-out mutation(s)») were
+  green. Watch for a recurrence; then read the baseline run's time budget like the 2026-09-24 flakes.
+- [OPEN] 2026-09-29 **[LOW] The offline update's `confirm_version` stage check still lists six stages
+  (1.0.6.62).** Online «Применить» now refuses on every non-terminal stage (G7); the offline path's own
+  stage check was not widened, because the launcher's lock already covers it. Recorded so a change to the
+  offline launcher keeps that lock as its guard, or widens the check to match G7.
 - [OPEN] 2026-09-28 **[LOW] Hardware watchdog held off from boot recover until verify completes
   (audit 2026-09-28 L5).** `recover_transaction` `verifying|committing` → `install_imaging_lock`
   (`etc/sa02m-update-runner.sh:2522`), then `schedule_boot_verify` returns with the lock kept

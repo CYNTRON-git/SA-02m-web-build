@@ -456,6 +456,71 @@ else bad "H3b reused pid in the legacy lock → status '$(status_of "$body")', s
 rm -f "$BIN/systemctl" "$UPD/transaction.json" "$UPD/update.lock" "$STATE/update.lock" "$STATE/update_status"
 unset SA02M_UPDATE_STATEDIR
 
+# ═══ P. pre-launch: a live RUNNER refuses the second launch (1.0.6.62, audit 2026-09-28 M1) ═══
+# Until 1.0.6.62 the «уже выполняется» branch before `sudo` read only the
+# launcher's legacy lock (_legacy_running). Once the launcher has exec'd the
+# runner that lock is gone: a live update then looks like the runner's lock pid
+# (cmdline sa02m-update-runner) or an active update unit — and the CGI launched
+# a second helper anyway, whose clone (30–60 s) ended in a handoff over the live
+# transaction (the launcher-side half: test-web-update-launcher-guard.sh
+# L8–L11). Now the branch judges web_upd_runner_alive — the ONE liveness home
+# GET and the POST verdict already use — and answers the same «running» body
+# without a launch. A dead runner still launches (P3: re-apply is a recovery
+# path — and the non-vacuity anchor for P1/P2: the fixture launches when it
+# should, so a refusal is the guard's, not a broken sandbox).
+# RED observed 2026-09-28 on the pre-fix CGI (d66d7b6): P1 and P2 «sudo called:
+# yes» — both launched the second helper; P3 holds on both trees.
+echo
+echo "── P. pre-launch: a live runner refuses a second launch ──"
+export SA02M_UPDATE_STATEDIR="$UPD"
+rm -f "$UPD/transaction.json" "$UPD/update.lock" "$STATE/update.lock" "$STATE/update_status"
+cat > "$BIN/systemctl" <<'SHIM'
+#!/bin/bash
+case "${1:-}" in is-active) exit 3 ;; *) exit 0 ;; esac
+SHIM
+chmod +x "$BIN/systemctl"
+write_check "{\"checked_at\":\"$(now_utc)\",\"deployed_version\":\"1.0.6.29\",\"remote_version\":\"1.0.6.38\",\"update_available\":true}"
+bash -c 'exec -a sa02m-update-runner sleep 60' &
+P_RUNNER_PID=$!
+trap 'kill "$LIVE_PID" "$OTHER_PID" "$H_RUNNER_PID" "$LAUNCHER_PID" "$H_OTHER_PID" "$P_RUNNER_PID" 2>/dev/null; rm -rf "$T"' EXIT
+sleep 0.3
+shim_handoff nothing
+# P1 runner lock pid alive + cmdline = runner, no legacy lock → running, NO launch
+write_txn validating "$(now_utc)"; printf '%s\n' "$P_RUNNER_PID" > "$UPD/update.lock"
+body=$(run_cgi)
+if [ "$(status_of "$body")" = running ] && ! sudo_called; then ok "P1 live runner (lock pid + cmdline), no legacy lock → running, no second launch"
+else bad "P1 live runner → status '$(status_of "$body")', sudo called: $(sudo_called && echo yes || echo no) (want running, no launch) — a second helper would clone over the live transaction"; fi
+# P2 no lock pid, sa02m-update.service activating (oneshot mid-run) → running, NO launch
+rm -f "$UPD/update.lock"
+cat > "$BIN/systemctl" <<'SHIM'
+#!/bin/bash
+case "${1:-}" in
+  is-active) exit 3 ;;
+  show)
+    u=""; for a in "$@"; do u=$a; done
+    case "$*" in *ActiveState*) if [ "$u" = sa02m-update.service ]; then echo activating; else echo inactive; fi ;; esac
+    exit 0 ;;
+  *) exit 0 ;;
+esac
+SHIM
+chmod +x "$BIN/systemctl"
+body=$(run_cgi)
+if [ "$(status_of "$body")" = running ] && ! sudo_called; then ok "P2 sa02m-update.service activating (offline apply mid-run), no lock pid → running, no second launch"
+else bad "P2 update unit activating → status '$(status_of "$body")', sudo called: $(sudo_called && echo yes || echo no) (want running, no launch)"; fi
+# P3 the runner is gone (dead lock pid, units inactive), the transaction stale → launched once (recovery path; the anchor)
+cat > "$BIN/systemctl" <<'SHIM'
+#!/bin/bash
+case "${1:-}" in is-active) exit 3 ;; *) exit 0 ;; esac
+SHIM
+chmod +x "$BIN/systemctl"
+write_txn validating "$OLD_TS"; printf '%s\n' "$DEAD_PID" > "$UPD/update.lock"
+shim_handoff txn
+body=$(run_cgi)
+if [ "$(sudo_count)" = 1 ] && [ "$(status_of "$body")" = running ]; then ok "P3 dead runner (stale validating) → launched once, running (re-apply is a recovery path)"
+else bad "P3 dead runner → sudo calls $(sudo_count), status '$(status_of "$body")' (want 1 launch, running) — P1/P2 would be vacuous"; fi
+rm -f "$BIN/systemctl" "$UPD/transaction.json" "$UPD/update.lock" "$STATE/update.lock" "$STATE/update_status"
+unset SA02M_UPDATE_STATEDIR
+
 echo
 if [ "$fails" -eq 0 ]; then
   echo "test-web-update-apply-guard: ALL OK — the guard refuses everything it cannot prove and launches only on a fresh, newer check"
