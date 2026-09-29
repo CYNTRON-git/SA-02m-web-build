@@ -62,7 +62,7 @@
    (Operator 2026-09-28) — RED on 0c5ba82's status.js, 1 FAIL; 10i (control)
    keeps that toast for any other refusal — RED with the suppression widened
    to every error, 1 FAIL. 10z (A2): an XHR send with no scripted answer in
-   any section-10 world FAILS (10 worlds counted).
+   any section-10 world FAILS (11 worlds counted).
 
    Run: node scripts/dev/test-app-csrf-recovery.mjs
         (APP_JS=<path> / STATUS_JS=<path> for other copies — the RED recipe) */
@@ -485,6 +485,16 @@ const lastStatus = (arr) => (arr.length ? arr[arr.length - 1].t : null);
   eq('10i the generic toast is kept', w.toasts.join('|'), 'Ошибка развёртывания проекта');
 }
 {
+  // Control, no-opts path: a network error (XHR onerror) finishes the MPLC widget
+  // through _mplcProjFinish's DEFAULT arguments — its toast must stay (review A8:
+  // mutating `!opts ||` to `opts &&` dropped it with every other case green).
+  const w = makeWorld([], { cookie: COOKIES, xhr: ['reject'] });
+  w.ctx.deployMplcProject();
+  await settleXhr();
+  eq('10j MPLC network error: one XHR, no refresh, no transit note', w.xhrs.length + ',' + w.calls.length + ',' + (w.window.SA02M_CSRF_BLOCKED || ''), '1,0,');
+  eq('10j the generic toast is kept on the no-opts finish', w.toasts.join('|'), 'Ошибка развёртывания проекта');
+}
+{
   const w = makeWorld([], { cookie: COOKIES, xhr: ['reject'] });
   w.ctx.uploadOfflineUpdateFile({ name: 'pkg.sa02m' });
   await settleXhr();
@@ -492,8 +502,8 @@ const lastStatus = (arr) => (arr.length ? arr[arr.length - 1].t : null);
   eq('10h one XHR, no logout', w.xhrs.length + ',' + w.replaced.length, '1,0');
 }
 // No case sent an XHR its script did not answer (an extra send would otherwise
-// surface only as a silent onerror); non-vacuous — all ten worlds are counted.
-eq('10z no unscripted XHR send in any section-10 case (10 worlds)', XHR_WORLDS.length + ':' + XHR_WORLDS.reduce((n, w) => n + w.unscripted, 0), '10:0');
+// surface only as a silent onerror); non-vacuous — all eleven worlds are counted.
+eq('10z no unscripted XHR send in any section-10 case (11 worlds)', XHR_WORLDS.length + ':' + XHR_WORLDS.reduce((n, w) => n + w.unscripted, 0), '11:0');
 
 if (fails) {
   process.stdout.write('test-app-csrf-recovery: ' + fails + ' FAIL\n');
