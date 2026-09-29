@@ -580,9 +580,12 @@ import { aiSensorLabel, aiUnitPrecision } from "./ai-sensors.js?v=1.0.6.63";
     ) {
       return;
     }
+    // Daemon POSTs carry the panel's CSRF token like every CGI POST (1.0.6.65,
+    // selective-csrf-policy.md «Демоны»); withCsrfHeaders is app.js's global —
+    // the module runs after the classic bundles. Gate: js-post-csrf-headers.
     fetchJson("api/devices/widgets/remove", {
       method: "POST",
-      headers: { "Content-Type": "application/json" },
+      headers: withCsrfHeaders({ "Content-Type": "application/json" }),
       body: JSON.stringify({ id: id }),
     })
       .then(() => {
@@ -597,7 +600,7 @@ import { aiSensorLabel, aiUnitPrecision } from "./ai-sensors.js?v=1.0.6.63";
   function addWidget(id) {
     return fetchJson("api/devices/widgets/add", {
       method: "POST",
-      headers: { "Content-Type": "application/json" },
+      headers: withCsrfHeaders({ "Content-Type": "application/json" }),
       body: JSON.stringify({ id: id }),
     })
       .then(() => {
