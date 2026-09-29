@@ -80,12 +80,11 @@ commit's diff of this file).
   rerun until green. **Queued:** fix on its own branch after `1.0.6.65` (CSRF on the same auth
   surface) merges — position 3 in this session's queue. Direction: find the timing assumption in
   case 59 (lockout window vs wall clock) and make it deterministic; RED = a forced slow run.
-- [OPEN] 2026-09-29 **[LOW] Template poller: a block split resets the pass resume point to 0**
-  (`opt/sa02m-modbus-mqtt/bridge_template.py:473-475`, branch `feature/template-poller-pult`),
-  dropping a stall's resume point in the same pass — live channels stay stale for about three
-  back-off windows once per block; nothing starves (review A3). **Queued:** fix on the same branch
-  before it ships (keep the resume point by unit, not index) — position 4, after the rebase onto
-  `1.0.6.69`.
+- [RESOLVED] 2026-09-29 **[LOW] Template poller: a block split resets the pass resume point to 0**
+  (review A3) — fixed on branch `feature/template-poller-pult` by `944c2306` (the resume point is
+  re-mapped to the same unit after `_split_units`); pinned by
+  `test_template_block_read.py::TestStallOnBlock::test_split_in_a_stalled_pass_keeps_the_resume_point`;
+  fixup review APPROVED.
 
 - [RESOLVED] 2026-09-28 **[MED] HomeKit conf `preserve` followed a planted symlink as root.**
   `opt/sa02m-homekit/sa02m_homekit/fsutil.py` `atomic_write(preserve=True)` read the old conf's
