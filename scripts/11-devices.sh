@@ -3,7 +3,12 @@
 # 11-devices.sh  •  вкладка «Устройства» (ДТВ / СЭ-02м-3): API + logger
 #   opt/sa02m-devices → /opt/sa02m-devices
 #   systemd: sa02m-devices-api, sa02m-devices-logger
-#   nginx: /api/devices* → 127.0.0.1:8765 (из etc/nginx/network_config.conf)
+#   nginx: /api/devices* → upstream sa02m_devices_api = unix:/run/sa02m-devices/api.sock,
+#          backup 127.0.0.1:8765 (из etc/nginx/network_config.conf)
+#   ORDER: nginx is rendered BEFORE the units are (re)started — the daemon reads
+#   the live site file at start to decide whether to keep the TCP compat
+#   listener (STAND_API_TCP_COMPAT=auto); rendering after the restart would
+#   leave 127.0.0.1:8765 open until the next reboot. Gate: devices-api-upstream.
 # ═══════════════════════════════════════════════════════════════════════════
 set -euo pipefail
 
@@ -52,6 +57,26 @@ if [ -f "$ETC_DIR/tmpfiles.d/sa02m-devices.conf" ]; then
 fi
 install -d -m 0755 /var/lib/sa02m-stand
 
+# nginx proxy /api/devices* (если в репо есть полный conf) — rendered FIRST,
+# before the daemon is (re)started below: it sniffs this file at start to
+# decide on the TCP compat listener (see the header).
+if [ -f "$ETC_DIR/nginx/network_config.conf" ]; then
+    sed "s|__PORT__|$PORT|g; s|__WEB_ROOT__|$WEB_ROOT|g" \
+        "$ETC_DIR/nginx/network_config.conf" \
+        > /etc/nginx/sites-available/network_config
+    rm -f /etc/nginx/sites-enabled/network_config \
+        /etc/nginx/sites-enabled/000-sa02m-network_config
+    ln -sf /etc/nginx/sites-available/network_config \
+        /etc/nginx/sites-enabled/000-sa02m-network_config
+    if nginx -t >/dev/null 2>&1; then
+        systemctl reload nginx \
+            && log OK "nginx: /api/devices* → unix:/run/sa02m-devices/api.sock (backup 127.0.0.1:8765)" \
+            || log WARN "nginx reload не удался"
+    else
+        log WARN "nginx -t failed после обновления network_config"
+    fi
+fi
+
 # Capture BEFORE the unit files land (first-install signal); operator stops
 # survive the upgrade (docs/contracts/installer-refresh-policy.md).
 sa02m_svc_capture sa02m-devices-api.service sa02m-devices-logger.service
@@ -89,21 +114,3 @@ fi
 # scripts/dev/test-installer-svc-helpers.sh. Its one home is the bench runbook
 # docs/bench-board-target-state.md.
 sa02m_svc_restart_if_active sa02m-stand-api.service
-
-# nginx proxy /api/devices* (если в репо есть полный conf)
-if [ -f "$ETC_DIR/nginx/network_config.conf" ]; then
-    sed "s|__PORT__|$PORT|g; s|__WEB_ROOT__|$WEB_ROOT|g" \
-        "$ETC_DIR/nginx/network_config.conf" \
-        > /etc/nginx/sites-available/network_config
-    rm -f /etc/nginx/sites-enabled/network_config \
-        /etc/nginx/sites-enabled/000-sa02m-network_config
-    ln -sf /etc/nginx/sites-available/network_config \
-        /etc/nginx/sites-enabled/000-sa02m-network_config
-    if nginx -t >/dev/null 2>&1; then
-        systemctl reload nginx \
-            && log OK "nginx: /api/devices* → :8765" \
-            || log WARN "nginx reload не удался"
-    else
-        log WARN "nginx -t failed после обновления network_config"
-    fi
-fi

@@ -7,10 +7,25 @@ Wants=sa02m-modbus-mqtt.service
 Type=simple
 WorkingDirectory=/opt/sa02m-devices
 Environment=PYTHONPATH=/opt/sa02m-devices
+# Primary listener: the AF_UNIX socket nginx's upstream targets (0660 root:www-data,
+# the daemon re-asserts the mode). The loopback TCP pair below is the compat
+# listener — STAND_API_TCP_COMPAT=auto keeps it open only while the live nginx
+# site file still targets 127.0.0.1:8765 (an OTA-only board; GitHub-OTA does not
+# carry the site file — docs/deployment.md). 0/1 force it. The daemon reads the
+# site file at start: scripts/11-devices.sh renders nginx BEFORE (re)starting
+# this unit for that reason. Operator overrides go in a drop-in, never in
+# /etc/default/sa02m-devices (repo-owned, re-installed on every update).
+Environment=STAND_API_SOCKET=/run/sa02m-devices/api.sock
+Environment=STAND_API_TCP_COMPAT=auto
 Environment=STAND_API_HOST=127.0.0.1
 Environment=STAND_API_PORT=8765
 EnvironmentFile=-/etc/default/sa02m-devices
 ExecStart=/usr/bin/python3 /opt/sa02m-devices/sa02m_devices_api.py
+# /run/sa02m-devices for the socket: dir 0755 (traversable by www-data), the
+# socket's own 0660 is the boundary. systemd wipes it on stop; the daemon
+# unlinks a stale inode itself after a crash.
+RuntimeDirectory=sa02m-devices
+RuntimeDirectoryMode=0755
 Restart=always
 RestartSec=2
 

@@ -17,6 +17,11 @@ HTTP-сервис демона (stdlib http.server поверх unix-socket).
     GET  /jobs/<id>/events            — SSE-стрим событий
     GET  /status                      — активные задачи, poll_locked
     GET  /health                      — {"ok": true, "version": "...", "poll_locked": bool} (БЕЗ авторизации)
+
+Every POST route additionally needs the panel's X-SA02M-CSRF token (1.0.6.65,
+docs/decisions/selective-csrf-policy.md «Демоны»); a refusal is HTTP 200 +
+{"ok":false,"error":"csrf","error_code":"E_CSRF","reason":…} — the CGI layer's
+body, so the panel's one reaction covers both layers. GET routes: session only.
 """
 from __future__ import annotations
 
@@ -42,7 +47,7 @@ from urllib.parse import parse_qs, urlparse
 
 from . import __version__
 from . import mplc_lease
-from .auth import check_internal_token, check_session_store
+from .auth import check_csrf, check_internal_token, check_session_store, csrf_error_body
 from .config import FlasherConfig, load_config
 from .firmware_repo import FirmwareRepo
 from .jobs import Job, JobKind, JobManager, JobState, format_sse
@@ -166,6 +171,33 @@ def _send_json(handler: BaseHTTPRequestHandler, data: Any, *, status: int = 200)
 
 def _send_error(handler: BaseHTTPRequestHandler, status: int, message: str) -> None:
     _send_json(handler, {"error": message}, status=status)
+
+
+def _discard_body(handler: BaseHTTPRequestHandler, cap: int = 16 * 1024 * 1024) -> None:
+    """Drain an unread request body before an early answer (the CSRF refusal).
+
+    Closing a socket with unread inbound data sends a TCP RST, which can discard
+    the queued response on the client side (nginx logs «upstream prematurely
+    closed» and answers 502 instead of our body; reproduced on the dev box as
+    WinError 10053), and on a kept-alive connection the leftover bytes would be
+    parsed as the next request. A body past `cap` is not drained — the
+    connection is closed instead (a refused multipart upload is rare and short).
+    """
+    try:
+        length = int(handler.headers.get("Content-Length") or 0)
+    except ValueError:
+        length = 0
+    if length <= 0:
+        return
+    if length > cap:
+        handler.close_connection = True
+        return
+    remaining = length
+    while remaining > 0:
+        chunk = handler.rfile.read(min(65536, remaining))
+        if not chunk:
+            break
+        remaining -= len(chunk)
 
 
 def _read_json_body(handler: BaseHTTPRequestHandler) -> Dict[str, Any]:
@@ -306,6 +338,21 @@ class Handler(BaseHTTPRequestHandler):
             return True
         return check_session_store(cookie, ctx.cfg.session_dir)
 
+    def _internal_caller(self) -> bool:
+        """True only for the local INTERNAL_TOKEN seam — never a browser.
+
+        A non-empty X-SA02M-Auth can only come from a local caller on the unix
+        socket (nginx blanks it on both flasher locations — gate
+        flasher-auth-header-strip). Such a caller has no panel session and no
+        CSRF token by construction, so the CSRF gate in _dispatch does not apply
+        to it; INTERNAL_TOKEN stays as documented, unchanged and inert by default.
+        A session-authenticated request is never exempt, whatever the config.
+        """
+        ctx: ServiceContext = self.server.context  # type: ignore[attr-defined]
+        if not ctx.cfg.internal_token:
+            return False
+        return check_internal_token(self.headers.get("X-SA02M-Auth"), ctx.cfg.internal_token)
+
     def _dispatch(self, method: str, path: str) -> None:
         ctx: ServiceContext = self.server.context  # type: ignore[attr-defined]
         parsed = urlparse(path)
@@ -321,6 +368,20 @@ class Handler(BaseHTTPRequestHandler):
                 return _send_json(self, health_payload(ctx))
             if not self._check_auth():
                 return _send_error(self, HTTPStatus.UNAUTHORIZED, "unauthorized")
+            # Every POST carries the panel's CSRF token (selective-csrf-policy.md
+            # «Демоны», 1.0.6.65): ONE rule for every mutating route, checked
+            # before the first route so no handler runs and no body is parsed
+            # on a refusal (it is only drained — _discard_body). The refusal
+            # rides HTTP 200 with the CGI-shaped E_CSRF body (the one deliberate
+            # exception to this daemon's real-status idiom) so app.js's single
+            # reaction — refresh the token once, retry once — covers this layer
+            # too. Pinned by cgi-csrf-policy (DAEMON
+            # ledger) + daemon-csrf-behaviour.
+            if method == "POST" and not self._internal_caller():
+                ok, reason = check_csrf(self.headers.get("Cookie"), self.headers.get("X-SA02M-CSRF"), ctx.cfg.session_dir)
+                if not ok:
+                    _discard_body(self)
+                    return _send_json(self, csrf_error_body(reason))
 
             if method == "GET" and p == "/status":
                 return self._handle_status(ctx)
