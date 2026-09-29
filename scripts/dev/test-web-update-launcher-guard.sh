@@ -10,22 +10,26 @@
 # Why: the offline POST path of web_update_apply.cgi answers E_LOCK busy on a
 # running stage, the GitHub POST path had no such check — a second «Применить»
 # cloned the repo again and its handoff OVERWROTE transaction.json under the
-# live runner (sa02m-web-update-apply.sh handoff_to_shared_runner). The guard
-# runs BEFORE the clone: a transaction at applying / verifying / committing /
-# rolling_back whose runner is alive → log, update_status=error, exit 1. A
-# transaction whose runner is gone (stale) is NOT protected — re-applying is a
-# legitimate recovery, and recover/verify at boot is the other one. Liveness
-# is the same test as the CGI side (cgi-bin/lib_web_update.sh) — a second copy
-# by necessity: a root helper must not source a www-data-writable file.
+# live runner (sa02m-web-update-apply.sh handoff_to_shared_runner). L1–L7 pin
+# the guard that runs BEFORE the clone: a transaction at a busy stage whose
+# runner is alive → log, update_status=error, exit 1 (L1/L6 use applying /
+# verifying; the full non-terminal set and the second guard under the runner's
+# lock are L8–L11, below). A transaction whose runner is gone (stale) is NOT
+# protected — re-applying is a legitimate recovery, and recover/verify at boot
+# is the other one. Liveness is the same test as the CGI side
+# (cgi-bin/lib_web_update.sh) — a second copy by necessity: a root helper must
+# not source a www-data-writable file.
 #
-# Method: run the REAL launcher end to end with both state dirs sandboxed
-# (SA02M_WEB_BUILD_STATEDIR — the legacy lock/status/log dir, the same seam the
-# CGI honours — and SA02M_UPDATE_STATEDIR), a PATH-first `git` shim that
-# records its argv and FAILS the clone (so every run stops right after the
-# guard, whichever way it went), a `systemctl` shim answering inactive, and a
-# live-runner fixture (a process whose argv[0] is sa02m-update-runner). The
-# observable is whether `git … clone` was attempted, plus update_status and the
-# exit code. Nothing touches the real filesystem, no root, no network.
+# Method (L1–L7): run the REAL launcher end to end with both state dirs
+# sandboxed (SA02M_WEB_BUILD_STATEDIR — the legacy lock/status/log dir, the
+# same seam the CGI honours — and SA02M_UPDATE_STATEDIR), a PATH-first `git`
+# shim that records its argv and FAILS the clone (so each of these runs stops
+# right after the pre-clone guard, whichever way it went), a `systemctl` shim
+# answering inactive, and a live-runner fixture (a process whose argv[0] is
+# sa02m-update-runner). The observable is whether `git … clone` was attempted,
+# plus update_status and the exit code. L8–L11 replace the git shim with one
+# whose clone succeeds (their own method note, below). Nothing touches the
+# real filesystem, no root, no network.
 #
 # Drive-to-failure: WEB_UPDATE_LAUNCHER=<(git show 6ba943d:etc/sa02m-web-update-apply.sh) \
 #   bash scripts/dev/test-web-update-launcher-guard.sh   → L1 RED (the
@@ -170,7 +174,8 @@ cloned && ok "L7 rolling_back with a dead runner (the bench residue) → «Пр�
 # stage is guarded before the clone (L8); the launcher takes the runner's OWN
 # flock on $SA02M_UPDATE_STATEDIR/update.lock (fd 9, opened for append — the
 # runner's try_lock idiom) before it writes transaction.json, refuses when it is
-# held (L9), re-checks liveness under it (L10 — the cgroup handover releases the
+# held by a holder the liveness test cannot name — no pid line, no unit (L9:
+# the refusal must be the «лок … занят» one), re-checks liveness under it (L10 — the cgroup handover releases the
 # lock for a moment while the runner is alive), and holds it through `exec` so
 # the runner inherits it and re-takes it on the same descriptor without a
 # deadlock (L11 — also the non-vacuity anchor: the clone + handoff really run).
@@ -195,6 +200,13 @@ cloned && ok "L7 rolling_back with a dead runner (the bench residue) → «Пр�
 # exec'd); L11 «fd9=none held_at_exec=no» (nothing inherited — a contender's
 # flock -n succeeded against the just-exec'd runner). L11's handoff line and
 # its re-take line hold on both trees.
+# L9 was first built with the holder's pid in the lock file, so the liveness
+# re-check refused before the flock mattered (review 1.0.6.62, B1). Its holder
+# now leaves no pid line. RED observed 2026-09-29 (WSL) on the fixed launcher
+# with the flock result ignored (`flock -n 9; if false; then`): exactly the two
+# L9 lines fail («txn id now <new uuid> … runner exec'd: yes» and no «лок …
+# занят» line), rc 1, in each of 3 runs. GREEN on the fixed launcher, 5 of 5. The pre-fix
+# launcher now fails 7 lines (L9's log line is the 7th).
 echo
 echo "── L8–L11: clobber past the pre-clone guard (runner lock inheritance) ──"
 skipped=""
@@ -252,11 +264,15 @@ SHIM
   HOLD_PIDS=""
   trap 'kill "$LIVE_PID" "$LIVE2_PID" $HOLD_PIDS 2>/dev/null; rm -rf "$T"' EXIT
   sleep 0.3
+  # The holders WAIT for the lock (flock -w), never -n: the readiness probe
+  # below is itself a flock(1) that holds the lock for an instant, and a -n
+  # holder landing in that instant exited 99 — a flaky «holder does not hold»
+  # fixture failure under WSL (1-in-3 runs) that the -w form removes.
   spawn_holder() {  # → HOLD_PID; the lock file names it
-    bash -c 'exec 9>>"$0" && flock -n 9 || exit 99; exec -a sa02m-update-runner sleep 900' "$UPD/update.lock" </dev/null >/dev/null 2>&1 &
+    bash -c 'exec 9>>"$0" && flock -w 10 9 || exit 99; exec -a sa02m-update-runner sleep 900' "$UPD/update.lock" </dev/null >/dev/null 2>&1 &
     HOLD_PID=$!; HOLD_PIDS="$HOLD_PIDS $HOLD_PID"
     local i=0
-    while flock -n "$UPD/update.lock" true 2>/dev/null; do i=$((i + 1)); [ "$i" -ge 40 ] && break; sleep 0.1; done
+    while flock -n "$UPD/update.lock" true 2>/dev/null; do i=$((i + 1)); [ "$i" -ge 100 ] && break; sleep 0.1; done
     printf '%s\n' "$HOLD_PID" > "$UPD/update.lock"
   }
   txn_id() { python3 -c 'import json,sys; print(json.load(open(sys.argv[1],encoding="utf-8")).get("id",""))' "$UPD/transaction.json" 2>/dev/null | tr -d '\r'; }
@@ -289,10 +305,12 @@ SHIM
   cat > "$T/on-clone" <<HOOK
 #!/bin/bash
 printf '{"schema_version":1,"id":"abcdef12-0000-4000-8000-000000000009","operation":"update","source":"file","stage":"validating","progress_pct":5,"result":"pending","error_code":null,"error_message":null,"updated_at":"%s"}\n' "\$(date -u +%Y-%m-%dT%H:%M:%SZ)" > "$UPD/transaction.json"
-bash -c 'exec 9>>"\$0" && flock -n 9 || exit 99; exec -a sa02m-update-runner sleep 900' "$UPD/update.lock" </dev/null >/dev/null 2>&1 &
+bash -c 'exec 9>>"\$0" && flock -w 10 9 || exit 99; exec -a sa02m-update-runner sleep 900' "$UPD/update.lock" </dev/null >/dev/null 2>&1 &
 echo \$! > "$T/hold9.pid"
-i=0; while flock -n "$UPD/update.lock" true 2>/dev/null; do i=\$((i + 1)); [ "\$i" -ge 40 ] && exit 1; sleep 0.1; done
-printf '%s\n' "\$(cat "$T/hold9.pid")" > "$UPD/update.lock"
+i=0; while flock -n "$UPD/update.lock" true 2>/dev/null; do i=\$((i + 1)); [ "\$i" -ge 100 ] && exit 1; sleep 0.1; done
+# NO pid line: the holder is one the liveness test cannot name (a runner
+# between its flock and its pid write, a launcher between its flock and exec),
+# so only the launcher's own flock can refuse here.
 cp "$UPD/transaction.json" "$T/txn.before"
 exit 0
 HOOK
@@ -301,9 +319,14 @@ HOOK
   [ -s "$T/hold9.pid" ] && HOLD_PIDS="$HOLD_PIDS $(cat "$T/hold9.pid")"
   if ! cloned || [ ! -s "$T/txn.before" ]; then
     bad "L9 fixture: the clone/hook did not run (cloned: $(cloned && echo yes || echo no), rc=$rc) — nothing was raced"
+  elif [ -s "$UPD/update.lock" ]; then
+    bad "L9 fixture: the lock file names a pid ('$(tr -d '\n' < "$UPD/update.lock")') — the liveness re-check could refuse instead of the flock"
   else
     BEFORE_ID=abcdef12-0000-4000-8000-000000000009
-    refused_intact "L9 a runner took the lock during the clone (validating)"
+    refused_intact "L9 an unnamed holder took the lock during the clone (validating)"
+    grep -qE 'лок .*update\.lock занят' "$LEGACY/update.log" 2>/dev/null \
+      && ok "L9 the refusal is the busy-lock one («лок … занят»), not the liveness re-check" \
+      || bad "L9 no «лок … занят» line in the update log — the flock result decided nothing"
   fi
   [ -s "$T/hold9.pid" ] && kill "$(cat "$T/hold9.pid")" 2>/dev/null
 
