@@ -16,19 +16,27 @@
 #   READ_ONLY_SUDO  cgi|reason  — invokes sudo but only reads (no token needed);
 #   EXCEPTIONS      cgi|reason  — documented policy exception (logout);
 #   EXCLUDED        cgi|reason  — not session-authed / not an endpoint of the class.
-#   DAEMON_MUTATING file|scope-def|first-POST-route — the two HTTP daemons behind
+#   DAEMON_MUTATING file|scope-def|dispatch-ERE — the two HTTP daemons behind
 #                   nginx (1.0.6.65, audit 2026-09-24 M3): the flasher's
 #                   `_dispatch` and devices-api's `do_POST` hold ONE rule («every
-#                   POST needs X-SA02M-CSRF») as one `check_csrf(` CALL that
-#                   must sit AFTER the scope's def line and BEFORE its first
-#                   POST route line (no per-route ledger: the daemons gate the
-#                   method, not the path). Paths are repo-root-relative, Python
-#                   `#` comments blanked by the same lib_check.sh stripper; the
-#                   import line (`import check_csrf`) carries no paren and so
-#                   cannot satisfy the call pin. Floor DAEMON_FLOOR rows.
-#                   Refusal transport on the daemons is HTTP 200 + the same
-#                   E_CSRF body (decision «Демоны»); the behavioural half is the
-#                   daemon-csrf-behaviour row.
+#                   POST needs X-SA02M-CSRF») as one `check_csrf(` CALL. The pin
+#                   is GENERIC, not anchored on one route: inside the scope (the
+#                   def line to the next def at the same or a lower indent) the
+#                   csrf call must exist, and EVERY live line matching the row's
+#                   dispatch ERE (a POST route test, a handler call, a body
+#                   read) must come AFTER it — a new route added above the gate,
+#                   or an existing one moved above it, FAILS naming the line
+#                   (review B3, 1.0.6.65: the first cut pinned one literal
+#                   route and stayed ALL OK on both mutations). >= 1 dispatch
+#                   line after the call (non-vacuity). Paths are
+#                   repo-root-relative, Python `#` comments blanked by the same
+#                   lib_check.sh stripper; the import line (`import check_csrf`)
+#                   carries no paren and cannot satisfy the call pin. Floor
+#                   DAEMON_FLOOR rows. The ERE is per daemon (its own routing
+#                   idiom) and is the thing to widen when a daemon grows a new
+#                   dispatch shape. Refusal transport on the daemons is HTTP
+#                   200 + the same E_CSRF body (decision «Демоны»); the
+#                   behavioural half is the daemon-csrf-behaviour row.
 #
 # PINS per MUTATING row, read COMMENT-STRIPPED via lib_check.sh (capture, then
 # match — never `| grep -q`, trap 1 of lib_check.sh):
@@ -65,9 +73,13 @@
 # Comment-out cases (mqtt_scan / web_update_check / services_ctrl csrf lines)
 # registered in comment-mutation-proof.
 # PROVEN RED again (2026-09-28, 1.0.6.65) for the DAEMON ledger: on the 1.0.6.56
-# daemons both rows FAIL («no live check_csrf( call between def _dispatch( and
-# the first POST route» / same for do_POST); GREEN with the gates in. Cases
-# (`check_csrf(` in service.py and api.py) registered in comment-mutation-proof.
+# daemons both rows FAIL (no live check_csrf( call in the scope); GREEN with
+# the gates in. Generic pin (2026-09-29, review B3): on copies of 5d898efa's
+# daemons, M1a (a `/flash` POST route inserted above the gate in service.py)
+# and M1b (the widgets/add block moved above check_csrf( in api.py) each FAIL
+# naming the moved line; both stayed ALL OK under the first cut's literal
+# anchor. Cases (`check_csrf(` in service.py and api.py) registered in
+# comment-mutation-proof.
 #
 # Run: bash .ai-dev/quality/checks/cgi-csrf-policy.sh
 #      CGI_DIR=<dir> judges another copy of cgi-bin (the RED run).
@@ -132,8 +144,8 @@ index.cgi|302 redirect, no work
 # The two HTTP daemons: repo-root path | the def line opening the gated scope |
 # the FIRST POST route line inside it (the anchor the csrf call must precede).
 DAEMON_MUTATING='
-opt/sa02m-flasher/sa02m_flasher/service.py|def _dispatch(|if method == "POST" and p == "/ports/release":
-opt/sa02m-devices/sa02m_devices/api.py|def do_POST(|if path == "/api/devices/widgets/remove":
+opt/sa02m-flasher/sa02m_flasher/service.py|def _dispatch(|method == "POST" and (p|m)([^A-Za-z0-9_]|$)|return self\._handle_|_read_json_body\(|_extract_multipart\(
+opt/sa02m-devices/sa02m_devices/api.py|def do_POST(|path (==|in|!=)[[:space:]]|path\.startswith|handle_[a-z_]+\(|_read_json\(|_handle_export\(
 '
 MUTATING_FLOOR=25
 READ_ONLY_FLOOR=3
@@ -214,32 +226,47 @@ done <<<"$(rows_of "$MUTATING")"
 n_daemon=$(rows_of "$DAEMON_MUTATING" | grep -c .)
 if [ "$n_daemon" -ge "$DAEMON_FLOOR" ]; then ok "ledger: $n_daemon DAEMON_MUTATING rows (floor $DAEMON_FLOOR)"
 else bad "ledger: $n_daemon DAEMON_MUTATING rows < floor $DAEMON_FLOOR — a daemon row was dropped"; fi
-while IFS='|' read -r file scope anchor; do
+while IFS='|' read -r file scope ere; do
     [ -n "$file" ] || continue
     [ -f "$file" ] || { bad "DAEMON row names an absent file: $file"; continue; }
     text=$(stripped_text "$file")
     [ -n "$text" ] || { bad "$file: empty after comment-stripping — nothing to pin"; continue; }
     scope_hits=$(grep -nF -- "$scope" <<<"$text")
     n_scope=$(printf '%s\n' "$scope_hits" | grep -c .)
-    anchor_hits=$(grep -nF -- "$anchor" <<<"$text")
-    n_anchor=$(printf '%s\n' "$anchor_hits" | grep -c .)
-    if [ "$n_scope" -ne 1 ] || [ "$n_anchor" -ne 1 ]; then
-        bad "$file: scope '$scope' matches $n_scope live line(s), anchor '$anchor' matches $n_anchor — expected exactly 1 each; re-anchor this DAEMON row consciously"
+    if [ "$n_scope" -ne 1 ]; then
+        bad "$file: scope '$scope' matches $n_scope live line(s), expected exactly 1 — re-anchor this DAEMON row consciously"
         continue
     fi
-    scope_ln=${scope_hits%%:*}; anchor_ln=${anchor_hits%%:*}
-    # The CALL (`check_csrf(`), never the import: the first live call inside the scope.
-    csrf_hits=$(grep -nE 'check_csrf\(' <<<"$text")
-    hit_ln=""
-    while IFS= read -r h; do
-        [ -n "$h" ] || continue
-        ln=${h%%:*}
-        if [ "$ln" -gt "$scope_ln" ] && [ "$ln" -lt "$anchor_ln" ]; then hit_ln=$ln; break; fi
-    done <<<"$csrf_hits"
-    if [ -n "$hit_ln" ]; then
-        ok "$file: check_csrf( call at line $hit_ln sits inside $scope (line $scope_ln) before the first POST route (line $anchor_ln)"
-    else
-        bad "$file: no live check_csrf( call between $scope (line $scope_ln) and the first POST route (line $anchor_ln) — a daemon POST runs without the X-SA02M-CSRF token (policy: selective-csrf-policy.md «Демоны»)"
+    scope_ln=${scope_hits%%:*}
+    # Scope end: the next live `def` at the same or a lower indent (or EOF).
+    scope_end=$(awk -v s="$scope_ln" '
+        NR == s { match($0, /^[[:space:]]*/); ind = RLENGTH; next }
+        NR > s && /^[[:space:]]*def[[:space:]]/ { match($0, /^[[:space:]]*/); if (RLENGTH <= ind) { print NR; found = 1; exit } }
+        END { if (!found) print NR + 1 }
+    ' <<<"$text")
+    in_scope=$(awk -v s="$scope_ln" -v e="$scope_end" 'NR > s && NR < e { printf "%d:%s\n", NR, $0 }' <<<"$text")
+    csrf_hit=$(grep -E '^[0-9]+:.*check_csrf\(' <<<"$in_scope")
+    if [ -z "$csrf_hit" ]; then
+        bad "$file: no live check_csrf( call inside $scope (lines $scope_ln-$((scope_end - 1))) — a daemon POST runs without the X-SA02M-CSRF token (policy: selective-csrf-policy.md «Демоны»)"
+        continue
+    fi
+    csrf_ln=${csrf_hit%%:*}
+    dispatch=$(grep -E "^[0-9]+:.*($ere)" <<<"$in_scope")
+    n_before=0; n_after=0
+    while IFS= read -r d; do
+        [ -n "$d" ] || continue
+        ln=${d%%:*}
+        if [ "$ln" -lt "$csrf_ln" ]; then
+            n_before=$((n_before + 1))
+            bad "$file: line $ln dispatches before the check_csrf( call at line $csrf_ln — '${d#*:}' (a route/handler/body read above the gate runs without the token)"
+        else
+            n_after=$((n_after + 1))
+        fi
+    done <<<"$dispatch"
+    if [ "$n_after" -eq 0 ]; then
+        bad "$file: no dispatch line matches the row's ERE after the check_csrf( call — the ERE stopped seeing the routes (non-vacuity)"
+    elif [ "$n_before" -eq 0 ]; then
+        ok "$file: check_csrf( call at line $csrf_ln precedes all $n_after dispatch lines of $scope"
     fi
 done <<<"$(rows_of "$DAEMON_MUTATING")"
 

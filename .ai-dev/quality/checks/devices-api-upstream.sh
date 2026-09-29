@@ -1,25 +1,33 @@
 #!/usr/bin/env bash
-# devices-api-upstream — nginx reaches sa02m-devices-api through its AF_UNIX
-# socket first, and the three homes of that socket path agree.
+# devices-api-upstream — nginx reaches sa02m-devices-api ONLY through its
+# AF_UNIX socket, and the three homes of that socket path agree.
 #
 # WHY. Until 1.0.6.65 the daemon listened on 127.0.0.1:8765 with no auth of its
 # own: any local process (mosquitto, nodered, CODESYS, a cmd_exec.cgi shell as
 # www-data) read the archive and changed widgets past the panel session
 # (backlog «sa02m-devices-api listens on 127.0.0.1:8765 with no auth of its
-# own»). The fix moves the daemon behind /run/sa02m-devices/api.sock (0660
-# root:www-data — the fs mode is the boundary) with nginx as its only client,
-# keeps 127.0.0.1:8765 as the nginx `backup` for bench 1.135 (the stand's
-# gunicorn owns the port, no socket exists) and for an OTA-only board (GitHub-OTA
-# does not carry the site file — docs/deployment.md), and lets the daemon close
-# TCP itself once the LIVE site file names the socket (STAND_API_TCP_COMPAT=auto).
-# That last decision reads the exact string this gate pins: change it in one
-# home and the daemon closes TCP while nginx still targets it → 502.
+# own»). Two things close that now: the daemon checks the panel session itself
+# (daemon-csrf-behaviour), and nginx talks to it over /run/sa02m-devices/api.sock
+# (0660 root:www-data). The socket mode does NOT make nginx the only client —
+# every www-data process can connect; the session check is what holds there.
+#
+# NO TCP SERVER IN THE UPSTREAM — Operator decision 2026-09-29 (review B1). A
+# `server 127.0.0.1:8765 backup;` line shipped in 1.0.6.65's first cut: once the
+# site file names the socket the daemon frees :8765 on purpose, and nginx then
+# forwarded the panel's session cookie, X-SA02M-CSRF and the body to whatever
+# local non-root process had bound the free port, every time the socket leg
+# failed (each daemon restart / OTA, a crash, an operator stop). The upstream is
+# the socket and nothing else; bench 1.135 binds its stand gunicorn to the same
+# socket instead (docs/bench-board-target-state.md). An OTA-only board is not
+# affected: its old site file still proxies to the literal port, which the
+# daemon keeps open for it (STAND_API_TCP_COMPAT=auto), and this gate judges
+# the repo's site file, not that board's.
 #
 # PINS, comment-stripped via lib_check.sh (a `#` on a pinned line is a miss):
-#   1. etc/nginx/network_config.conf: an `upstream sa02m_devices_api {` block whose
-#      FIRST live `server` line is `server unix:/run/sa02m-devices/api.sock;`
-#      (primary — no `backup` word) and which carries `server 127.0.0.1:8765 backup;`
-#      — the comment-mutation case is the primary line.
+#   1. etc/nginx/network_config.conf: an `upstream sa02m_devices_api {` block
+#      whose live `server` lines are EXACTLY one — `server unix:/run/sa02m-devices/api.sock;`.
+#      Any other live server line (a `backup`, a TCP address, a second socket)
+#      FAILS naming it. The comment-mutation case is the socket line.
 #   2. every location block whose head names /api/devices proxies to
 #      `http://sa02m_devices_api` and none still proxies to a literal
 #      127.0.0.1:8765; >= LOC_MIN such blocks (non-vacuity).
@@ -35,7 +43,9 @@
 #
 # PROVEN RED (2026-09-28, 1.0.6.65) on the 1.0.6.56 tree: no upstream block, both
 # locations on the literal port, installer order and log string old, unit and
-# daemon without the socket → 9 FAIL; GREEN after the change.
+# daemon without the socket → 9 FAIL; GREEN after the change. RED again
+# (2026-09-29) on 5d898efa for pin 1's widened half: the shipped
+# `server 127.0.0.1:8765 backup;` line FAILS; GREEN once it was removed.
 #
 # Run: bash .ai-dev/quality/checks/devices-api-upstream.sh
 set -u
@@ -72,16 +82,20 @@ if [ -z "$upblock" ]; then
     bad "$CONF has no live 'upstream $UP {' block — nginx cannot reach the daemon's socket"
 else
     servers=$(grep -E '^[[:space:]]*server[[:space:]]' <<<"$upblock")
-    first=${servers%%$'\n'*}
-    if grep -qE "^[[:space:]]*server[[:space:]]+unix:${SOCK}[[:space:]]*;" <<<"$first"; then
-        ok "upstream $UP: primary is unix:$SOCK"
-    else
-        bad "upstream $UP: the FIRST live server line is not 'server unix:$SOCK;' (got: ${first:-<none>}) — the socket must be primary"
-    fi
-    if grep -qE '^[[:space:]]*server[[:space:]]+127\.0\.0\.1:8765[[:space:]]+backup[[:space:]]*;' <<<"$upblock"; then
-        ok "upstream $UP: 127.0.0.1:8765 is the backup (bench 1.135 / OTA-only boards)"
-    else
-        bad "upstream $UP: no live 'server 127.0.0.1:8765 backup;' — bench 1.135 and OTA-only boards lose the tab"
+    n_servers=$(grep -c . <<<"$servers")
+    n_sock=0
+    while IFS= read -r line; do
+        [ -n "$line" ] || continue
+        if grep -qE "^[[:space:]]*server[[:space:]]+unix:${SOCK}[[:space:]]*;" <<<"$line"; then
+            n_sock=$((n_sock + 1))
+        else
+            bad "upstream $UP: live server line '${line#"${line%%[![:space:]]*}"}' — the upstream must be the socket ONLY (a backup/TCP server hands the panel session to whoever binds that port; Operator decision 2026-09-29)"
+        fi
+    done <<<"$servers"
+    if [ "$n_sock" -eq 1 ] && [ "$n_servers" -eq 1 ]; then
+        ok "upstream $UP: exactly one server, unix:$SOCK"
+    elif [ "$n_sock" -eq 0 ]; then
+        bad "upstream $UP: no live 'server unix:$SOCK;' line — nginx cannot reach the daemon's socket"
     fi
 fi
 
