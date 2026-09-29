@@ -97,7 +97,9 @@ the rest of the fleet keeps polling.
 Supported: `reg_type` coil/discrete/input/holding; `format`
 u16/s16/u32/s32/float (32-bit honours `word_order`); `scale`/`offset`/`units`/
 `type`/`readonly`/`enabled`; `device.setup` holding writes; writable
-holding/coil channels.
+holding/coil channels. Block reads (`max_read_registers`, `max_reg_hole`,
+`max_bit_hole` on the `device` object) are defined in
+`docs/contracts/template-device.md` §3.
 
 Deferred — **skipped loudly** (a WARN per channel, never mis-polled): bitfield
 addresses (`reg:shift:width`), `bcd`/`string`/`u64`/`s64`/`u8`/`s8`,
