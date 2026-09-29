@@ -130,7 +130,7 @@ commit's diff of this file).
   same day by the 1.0.6.51 planner's measurement and re-checked by the orchestrator.) Fix in
   1.0.6.51 (Operator decision A-1: Armbian hooks off, journal persistent, 1-min sync; reaches a
   board only via a full install or the next golden image, not OTA).
-- [OPEN] 2026-09-23 **[MED] Bench 1.135 COM3 answers ~500 short/CRC polls per hour, bus-wide, and
+- [RESOLVED 2026-09-29 — wiring: the CE-02m3's second RS-485 port; see DATA 2026-09-29] 2026-09-23 **[MED] Bench 1.135 COM3 answers ~500 short/CRC polls per hour, bus-wide, and
   the flood caps journal retention at ~1.5 days.** Measured after the 1.0.6.50 deploy, rate unchanged
   across it (not caused by it): carel-COM3-1/-2, mr02m-COM3-10, led-COM3-13 all log `Short response`
   / `CRC mismatch`; COM1/2/4/5 together log ~11/h. Only the bridge (PID of `modbus_mqtt_bridge.py`)
@@ -152,6 +152,20 @@ commit's diff of this file).
   step is a person at the stand — unplug one device at a time and re-sample the framing-error rate;
   no release carries this until that data exists. The Carel in-reply-pause loss (its own entry) is a
   separate, software cause.
+  DATA 2026-09-29 — ROOT CAUSE FOUND. A line scan (all five ports × 2400–115200 × N/E × addr 1–15) found
+  TWO device groups on the COM3 wire: 19200 (Carel 1/2, MR-02m 6AI6AO @6 — then not in the bridge
+  config, MR-02m 6DO8DI @10, LED @13) and 115200 (16DO @2, 6DO @4, 14DI @5, CE-02m3 @14, SENSOR @15 — none
+  configured on COM3). The CE-02m3 has two RS-485 ports: port 1 on COM2 (polled by the bridge at 115200),
+  port 2 on COM3 (the Operator's hypothesis). Controlled test, bridge stopped, clean 19200 polling on COM3
+  in 45 s phases: COM2 silent → 1527 clean / 0 bad, fe +0; the CE-02m3 polled on COM2 → 325/366, fe +179;
+  silent → 1530/0; polled → 290/384, fe +161 — answering on port 1 drives the COM3 line through port 2.
+  The Operator disconnected port 2 and wired the 19200 chain to COM3 directly: the same test 1524/0 ·
+  1490/0 · 1540/0 · 1498/0, fe +0 in every phase; real bridge 3 min: Short/CRC 0 on all COM3 devices and
+  on the CE, COM3 fe 0/min (was 20–92/min), poll cycle ~270 ms (was ~290). Rejected on the way: a foreign
+  master (passive sniff: 0 bytes in 32 s), Fast Modbus scanning on COM3 (off 5 min: fe unchanged), the
+  devices themselves (600 clean exchanges each). Follow-ups: the defect report went to the CE-02m-3
+  firmware session (2026-09-29); the wiring warning is in README («Modbus→MQTT мост»); the 6AI6AO @6 was
+  added to the bench bridge config the same day.
 - [OPEN] 2026-09-09 **[MED] An Alice «включи» is answered DONE while `sa02m-rules` is down.**
   The registry publishes `/devices/sa02m-rules-<sid>/controls/run/on` and reports success;
   with the engine stopped the publish is simply lost and the user gets «сделано» for a
@@ -923,6 +937,12 @@ commit's diff of this file).
   `.ai-dev/quality/run.mjs`; an upgrade that overwrites it would drop this project's runner fixes (the
   SKIP verdict, the `--touched` union) — check `.ai-dev/procedures/upgrade.md` handling before the next
   tooling bump.
+- [OPEN] 2026-09-29 **[LOW] Review advisories left open at the 1.0.6.61 ship.** MP-02 template
+  (`opt/sa02m-modbus-mqtt/templates/`): (1) the fan_mode / operator-window semantics are told in three
+  places (`config-mp02-ahu.json` `_comment`, `templates/README.md`, the test comment) and already word the
+  window differently — keep the firmware requirement in `_comment`, the semantics in README, the local
+  why in the test; (2) the read side of `fan_mode` (raw 10 → «1.0») is not pinned directly — seed
+  `193: 10` in the MP-02 read test. Queued behind the 1.0.6.62–.68 train.
 - [OPEN] 2026-09-29 **[LOW] Review advisories left open at the 1.0.6.60 ship (three review rounds).**
   Update runner (`etc/sa02m-update-runner.sh`): (A14) `docs/deployment.md` gives the operator no next step
   after «rollback incomplete» (journal 15d, archive (h)/(h2)/(i)) — and if the new VERSION already landed,
@@ -1127,7 +1147,11 @@ commit's diff of this file).
   carries port and address; the topic inventory is a flat list). Fix: carry the family to the window —
   the bridge publishes it as control meta, or `sa02m_alice_topics.cgi` returns a device→family map.
   Found by the 1.0.6.31 review; recorded in `docs/contracts/carel-ahu.md` §6.
-- [OPEN] 2026-09-03 **[MED] Carel polling loses ~1.5 % of frames on an in-reply pause.** Bench 1.135,
+- [RESOLVED 2026-09-29 — not a Carel pause: the COM3 entry's DATA 2026-09-29 is the cause; the
+  read-to-length fix was built, reviewed (APPROVED) and NOT shipped on the Operator's decision after a
+  10-min bench A/B: Carel Short 99 → 98, control MR-02m 91 → 96, zero recovered pauses, poll cycle
+  289 → 295 ms; the unshipped branch is `1.0.6.64` (local, `18f9fba0`…`1419353d`), the number is not
+  reused] 2026-09-03 **[MED] Carel polling loses ~1.5 % of frames on an in-reply pause.** Bench 1.135,
   COM3 19200, both PLCs polled: ~9 `Short response` per minute for two devices, values still correct
   and fresh (the retry recovers the frame; no offline). The «phantom `mr02m-COM3-10`» hypothesis was
   tested and REJECTED (same rate with it removed). Cause: `bridge_serial.py` ends the read at the first
