@@ -12,7 +12,9 @@ Three layers, so the claims are measured, not narrated:
   * a LIVE AF_UNIX server on a temp path (POSIX only — skipped elsewhere; the
     Orchestrator runs the suite under WSL): mode, HTTP over the socket, the 401
     without a cookie, and the two bind-failure cases that must NEVER raise (an
-    exit fails the OTA health gate `units_active` and rolls the update back).
+    exit fails the OTA health gate `units_active` and rolls the update back)
+    and the socket-bind failure that must NOT open TCP when nginx names the
+    socket (no TCP backup upstream — Operator decision 2026-09-29).
 
 Proven RED on the 1.0.6.56 api.py: no `tcp_compat_decision`, no `build_listeners`,
 no UnixStreamServer reference, no socket-path literal.
@@ -36,7 +38,6 @@ _MARK = "unix:" + _SOCK
 _SITE_WITH_SOCKET = """
 upstream sa02m_devices_api {
     server unix:/run/sa02m-devices/api.sock;
-    server 127.0.0.1:8765 backup;
 }
 server { location /api/devices/ { proxy_pass http://sa02m_devices_api; } }
 """
@@ -210,20 +211,40 @@ class TestUnixSocketLive(unittest.TestCase):
         status, j = _http_over_unix(self.sock, "GET /api/devices HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n")
         self.assertEqual((status, j), (401, {"ok": False, "error": "unauthorized"}))
 
-    def test_socket_bind_failure_forces_tcp_compat(self) -> None:
-        """The 'fail to availability' half of F3: with no socket the nginx upstream can
-        only reach the daemon through its `backup` — so the TCP listener opens even
-        when the site file names the socket, and the process stays up."""
+    def _unbindable(self) -> str:
         bad_parent = self.d / "file"
         bad_parent.write_text("x", encoding="utf-8")
+        return str(bad_parent / "api.sock")   # parent is a regular file → bind raises
+
+    def test_socket_bind_failure_does_not_open_tcp_when_nginx_names_the_socket(self) -> None:
+        """Operator decision 2026-09-29 (no TCP backup upstream): with the site file
+        naming the socket, nginx can reach nothing but the socket, so a failed socket
+        bind must NOT open 127.0.0.1:8765 — that listener would serve nobody and
+        would only hold a port the upstream never uses. The process still does not
+        raise (an exit fails the OTA health gate)."""
         servers, notes = api.build_listeners(
-            socket_path=str(bad_parent / "api.sock"), host="127.0.0.1", port=0,
+            socket_path=self._unbindable(), host="127.0.0.1", port=0,
             compat_mode="auto", site_text=_SITE_WITH_SOCKET, session_dir=str(self.d),
+        )
+        try:
+            self.assertEqual(servers, [], notes)
+            self.assertTrue(any("not bound" in n for n in notes), notes)
+            self.assertTrue(any("TCP compat: off" in n for n in notes), notes)
+            self.assertTrue(any("no listener bound" in n for n in notes), notes)
+        finally:
+            for s in servers:
+                s.server_close()
+
+    def test_socket_bind_failure_keeps_tcp_for_an_old_site_file(self) -> None:
+        """The OTA-only board: its site file still proxies to the literal port, so
+        TCP compat is on by the decision alone — a failed socket changes nothing."""
+        servers, notes = api.build_listeners(
+            socket_path=self._unbindable(), host="127.0.0.1", port=0,
+            compat_mode="auto", site_text=_SITE_OLD, session_dir=str(self.d),
         )
         try:
             self.assertEqual(len(servers), 1, notes)
             self.assertEqual(servers[0].socket.family, socket.AF_INET)
-            self.assertTrue(any("forced on" in n for n in notes), notes)
         finally:
             for s in servers:
                 s.server_close()

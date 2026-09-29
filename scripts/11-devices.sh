@@ -3,8 +3,9 @@
 # 11-devices.sh  •  вкладка «Устройства» (ДТВ / СЭ-02м-3): API + logger
 #   opt/sa02m-devices → /opt/sa02m-devices
 #   systemd: sa02m-devices-api, sa02m-devices-logger
-#   nginx: /api/devices* → upstream sa02m_devices_api = unix:/run/sa02m-devices/api.sock,
-#          backup 127.0.0.1:8765 (из etc/nginx/network_config.conf)
+#   nginx: /api/devices* → upstream sa02m_devices_api = unix:/run/sa02m-devices/api.sock
+#          only (из etc/nginx/network_config.conf; bench 1.135 binds its stand
+#          gunicorn to the same socket — docs/bench-board-target-state.md §10)
 #   ORDER: nginx is rendered BEFORE the units are (re)started — the daemon reads
 #   the live site file at start to decide whether to keep the TCP compat
 #   listener (STAND_API_TCP_COMPAT=auto); rendering after the restart would
@@ -70,7 +71,7 @@ if [ -f "$ETC_DIR/nginx/network_config.conf" ]; then
         /etc/nginx/sites-enabled/000-sa02m-network_config
     if nginx -t >/dev/null 2>&1; then
         systemctl reload nginx \
-            && log OK "nginx: /api/devices* → unix:/run/sa02m-devices/api.sock (backup 127.0.0.1:8765)" \
+            && log OK "nginx: /api/devices* → unix:/run/sa02m-devices/api.sock" \
             || log WARN "nginx reload не удался"
     else
         log WARN "nginx -t failed после обновления network_config"
@@ -101,16 +102,18 @@ else
     log WARN "не удалось запустить sa02m-devices-* — см. journalctl -u sa02m-devices-api"
 fi
 
-# HardPy stand (1.135): gunicorn sa02m-stand-api owns :8765; devices-api is
-# Condition-skipped (10-stand-disable.conf). Restart the stand API so a
-# devices-package / nginx refresh does not leave a stale gunicorn worker
-# serving /api/devices* (12AI history kind=mr lives in that process).
-# Never-widen: only bounce a running stand API (1.135 owns :8765).
+# HardPy stand (1.135): gunicorn sa02m-stand-api serves /api/devices* (since
+# 1.0.6.65 on the same unix socket — docs/bench-board-target-state.md §10);
+# devices-api is Condition-skipped (10-stand-disable.conf). Restart the stand
+# API so a devices-package / nginx refresh does not leave a stale gunicorn
+# worker serving /api/devices* (12AI history kind=mr lives in that process).
+# Never-widen: only bounce a running stand API.
 # The unit is bench-only and NOT in this tree (no etc/systemd/ fragment): a
 # field board has no such unit and the helper is a logged no-op there. That
 # no-op is a MEASURED guarantee, not an assumption — until 1.0.6.41 the absent
 # unit aborted this module rc=4 here (bench 1.136, 2026-09-09) and everything
-# below, the nginx block included, was skipped; pinned by case 12d of
+# below it was skipped (the nginx block sat below then; since 1.0.6.65 it is
+# rendered first, above the units); pinned by case 12d of
 # scripts/dev/test-installer-svc-helpers.sh. Its one home is the bench runbook
 # docs/bench-board-target-state.md.
 sa02m_svc_restart_if_active sa02m-stand-api.service

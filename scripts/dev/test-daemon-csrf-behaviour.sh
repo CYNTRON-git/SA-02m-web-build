@@ -35,7 +35,7 @@
 # test_api_socket all 12 non-live tests RED (no tcp_compat_decision /
 # build_listeners / bind_unix_listener / socket literals; the live class
 # skipped on Windows). GREEN after the fix, on Windows and under WSL (the live
-# AF_UNIX class included — 17/17, 0 skipped).
+# AF_UNIX class included, none skipped).
 #
 # Run: bash scripts/dev/test-daemon-csrf-behaviour.sh
 set -uo pipefail

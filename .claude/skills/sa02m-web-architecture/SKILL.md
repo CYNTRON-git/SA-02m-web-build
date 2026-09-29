@@ -17,7 +17,7 @@ grep needs.
 browser ── static ──▶ nginx ──▶ /var/www/network_config (index.html, static/*)
         ── /cgi-bin/*.cgi ──▶ nginx ▶ fcgiwrap ▶ bash CGI ▶ device scripts //proc
         ── /api/flasher/* ──▶ sa02m-flasher.service (Python daemon)
-        ── /api/devices*  ──▶ sa02m-devices-api unix:/run/sa02m-devices/api.sock (backup :8765)
+        ── /api/devices*  ──▶ sa02m-devices-api unix:/run/sa02m-devices/api.sock
                                  stand 1.135: sa02m-stand-api (gunicorn)
 ```
 

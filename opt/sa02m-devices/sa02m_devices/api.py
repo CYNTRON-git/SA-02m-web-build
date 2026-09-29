@@ -21,14 +21,17 @@ Until then the daemon trusted nginx's auth_request alone and any local process
 could read the archive and change widgets on 127.0.0.1:8765.
 
 Listeners: the AF_UNIX socket /run/sa02m-devices/api.sock (0660 root:www-data —
-the fs mode is the boundary; nginx is its only client) and, governed by
-STAND_API_TCP_COMPAT=auto|0|1, the loopback TCP port 127.0.0.1:8765. `auto`
-keeps TCP open only while the LIVE nginx site file does not name the socket
-(GitHub-OTA does not carry the site file — docs/deployment.md), and fails to
-availability: an unreadable site file, or a socket that cannot be bound, keeps
-TCP open (still behind the session check) rather than leaving the tab dead. A
-bind failure never exits the process — an exit would fail the OTA health gate
-`units_active` and roll a good update back.
+nginx and every other www-data process can connect; the session check above is
+what holds for all of them) and, governed by STAND_API_TCP_COMPAT=auto|0|1, the
+loopback TCP port 127.0.0.1:8765. `auto` keeps TCP open only while the LIVE
+nginx site file does not name the socket — an OTA-only board, whose old site
+file still proxies to the literal port (GitHub-OTA does not carry the site
+file — docs/deployment.md); an unreadable site file also keeps it open (we
+cannot tell). That listener serves only such a board: the shipped upstream
+names the socket and nothing else (no TCP backup — Operator decision
+2026-09-29), so a socket that cannot be bound does NOT open TCP — it would
+serve nobody. A bind failure never exits the process — an exit would fail the
+OTA health gate `units_active` and roll a good update back.
 """
 from __future__ import annotations
 
@@ -172,11 +175,12 @@ def build_listeners(
     """Bind what can be bound; never raise on a bind failure.
 
     Returns (servers, notes). `notes` is the start-up log — which listeners are
-    open and why. A socket-bind failure forces TCP compat ON (nginx's `backup`
-    upstream is 127.0.0.1:8765 — the only way to reach the daemon without the
-    socket); a TCP-bind failure (port owned by another process, e.g. the stand's
-    gunicorn) leaves the socket alone. Zero listeners is reported, not raised:
-    the process stays up so the unit stays active (OTA health gate).
+    open and why. TCP opens only on tcp_compat_decision — a socket-bind failure
+    does not change it (nginx's upstream is the socket only, so a TCP listener
+    would serve nobody on a board whose site file names the socket); a TCP-bind
+    failure (port owned by another process) leaves the socket alone. Zero
+    listeners is reported, not raised: the process stays up so the unit stays
+    active (OTA health gate) and the journal names why.
     """
     handler = handler_cls or DevicesAPIHandler
     servers: list = []
@@ -185,7 +189,6 @@ def build_listeners(
     if socket_path:
         if not _HAVE_AF_UNIX:
             notes.append("AF_UNIX listener not bound: unavailable on this platform")
-            open_tcp, why = True, "TCP compat: forced on — no AF_UNIX support here"
         else:
             try:
                 srv = bind_unix_listener(socket_path, handler)
@@ -194,7 +197,6 @@ def build_listeners(
                 notes.append("AF_UNIX listener: " + socket_path + " (0660 " + SOCKET_GROUP + ")")
             except OSError as exc:
                 notes.append("AF_UNIX listener " + socket_path + " not bound: " + str(exc))
-                open_tcp, why = True, "TCP compat: forced on — socket bind failed, nginx can only reach the backup 127.0.0.1:8765"
     else:
         notes.append("AF_UNIX listener: disabled (empty STAND_API_SOCKET)")
     notes.append(why)

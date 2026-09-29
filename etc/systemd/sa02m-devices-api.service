@@ -7,11 +7,13 @@ Wants=sa02m-modbus-mqtt.service
 Type=simple
 WorkingDirectory=/opt/sa02m-devices
 Environment=PYTHONPATH=/opt/sa02m-devices
-# Primary listener: the AF_UNIX socket nginx's upstream targets (0660 root:www-data,
-# the daemon re-asserts the mode). The loopback TCP pair below is the compat
-# listener — STAND_API_TCP_COMPAT=auto keeps it open only while the live nginx
-# site file still targets 127.0.0.1:8765 (an OTA-only board; GitHub-OTA does not
-# carry the site file — docs/deployment.md). 0/1 force it. The daemon reads the
+# Primary listener: the AF_UNIX socket, the ONLY server of nginx's upstream
+# (0660 root:www-data, the daemon re-asserts the mode; any www-data process can
+# connect — the daemon's session check is what holds). The loopback TCP pair
+# below is the compat listener for an OTA-only board whose old site file still
+# proxies to 127.0.0.1:8765 (GitHub-OTA does not carry the site file —
+# docs/deployment.md): STAND_API_TCP_COMPAT=auto keeps it open only while the
+# live site file does not name the socket. 0/1 force it. The daemon reads the
 # site file at start: scripts/11-devices.sh renders nginx BEFORE (re)starting
 # this unit for that reason. Operator overrides go in a drop-in, never in
 # /etc/default/sa02m-devices (repo-owned, re-installed on every update).
