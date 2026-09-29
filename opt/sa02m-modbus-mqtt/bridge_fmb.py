@@ -190,10 +190,12 @@ class FastModbusEventPortManager:
             "fail_passes": 0,
             # CE only: the firmware the last contract choice was made on, the
             # version whose "no 0x18" line was already logged, and whether the
-            # power-event disable refusal was already logged.
+            # power-event disable refusal / a raising version getter was
+            # already logged.
             "fw": None,
             "fw_gate_logged": "",
             "power_off_warned": False,
+            "fw_getter_logged": False,
             # True when the last pass put no 0x18 on the bus at all.
             "wire_blocked": False,
         }
@@ -245,8 +247,7 @@ class FastModbusEventPortManager:
                                            if c != preferred]
         return tuple(contracts)
 
-    @staticmethod
-    def _ce_firmware(dev: dict):
+    def _ce_firmware(self, dev: dict):
         """(major, minor, patch, build) from the poller, or None when it has
         not been read (a duck-typed poller without the method counts as
         unknown — never as permission to send a 0x18)."""
@@ -256,7 +257,15 @@ class FastModbusEventPortManager:
             return None
         try:
             fw = getter()
-        except Exception:
+        except Exception as e:
+            # A getter that raises is a poller bug, not a device answer: the
+            # "firmware unknown" line alone would hide it. Once per
+            # registration — the configure retry repeats it for every window.
+            if not dev.get("fw_getter_logged"):
+                dev["fw_getter_logged"] = True
+                self._log.warning(
+                    "firmware version getter for %s raised %r — treated as "
+                    "unknown", dev.get("id"), e)
             return None
         return tuple(fw) if fw else None
 
@@ -629,7 +638,8 @@ class FastModbusEventPortManager:
         """EnableEvents for registered devices.
 
         only_ready: skip devices that have not completed classic reads yet
-        (CE wedged after 0x18 while silent — arm FMB only after mark_ok).
+        (arm FMB only after mark_ok). Not what keeps a CE-02m-3 from wedging —
+        its firmware version does (docs/contracts/fmb-event-wire.md §3).
         """
         if not self._devices:
             return
