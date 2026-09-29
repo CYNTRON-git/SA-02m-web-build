@@ -524,23 +524,33 @@ in place, without restarting it and without dropping the Socket.IO session:
 
 ### Broker reconnect (1.0.6.66)
 
-A restart of the local broker never leaves the client deaf or lying. paho
-brings the **socket** back by itself (its reconnect thread, delay 1 → 30 s);
-the client owns what the library does not — both profiles, one code path
+A restart of the local broker — whenever it lands, including before the
+link's first CONNACK — does not leave the client deaf or lying (the one
+unguarded residual is named at the end of this list). paho brings the
+**socket** back by itself (its reconnect thread, delay 1 → 30 s); the client
+owns what the library does not — both profiles, one code path
 (`sa02m_alice/client/mqtt_link.py`):
 
-- **Every CONNACK past the first re-subscribes the CURRENT topic set** —
-  catalogue + availability `/meta/error` + `uptime_s` + the Yandex unit's
-  auto-provision watch topics — at QoS 1, from paho's `on_connect`. The first
-  CONNACK subscribes nothing: the main thread's connect pass owns the initial
+- **A subscribe pass counts only if it ran whole inside one live session**
+  (connected throughout, every topic accepted by the library). The CURRENT
+  topic set — catalogue + availability `/meta/error` + `uptime_s` + the
+  Yandex unit's auto-provision watch topics — is re-subscribed at QoS 1 from
+  paho's `on_connect` on **every CONNACK past the first**, and on a first
+  CONNACK that follows a pass made before it (the broker closed the fresh
+  socket before accepting it; the pass got `NO_CONN`, or was taken by the
+  library into a socket already dying). A pass that overlaps a CONNACK is
+  re-run once. On a normal start the first CONNACK precedes any pass and
+  subscribes nothing: the main thread's connect pass owns the initial
   subscribe (after Socket.IO connect + document re-read, under the global
   retained window — 1.0.6.16 / 1.0.6.19 unchanged). A subscription diff
   `apply_reload` lost to a down socket is healed by the next full re-subscribe.
 - **The retained burst after a re-subscribe is cached, never reported**: the
   per-subscription grace (§Topics) is armed for the whole set BEFORE the first
-  SUBSCRIBE goes out. One `origin=snapshot` frame follows once
-  `RETAINED_GRACE_S` has elapsed (the «Reconnect snapshot» path, §Rate limits);
-  the history cadence is held while that push is pending.
+  SUBSCRIBE goes out. One `origin=snapshot` frame follows each re-subscribe
+  once `RETAINED_GRACE_S` has elapsed and the link is still up (the
+  «Reconnect snapshot» path, §Rate limits) — a link that drops again inside
+  the grace sends nothing until the next session's own grace; the history
+  cadence is held while that push is pending.
 - **While the broker link is down** an action answers `ERROR /
   DEVICE_UNREACHABLE` for the capability and **nothing is handed to paho** — a
   QoS 1 publish on a disconnected client is kept by the library and re-sent
@@ -549,7 +559,7 @@ the client owns what the library does not — both profiles, one code path
   cache (unchanged). Residual, named: a drop landing between the connected
   check and paho's own socket test can still queue one message — milliseconds
   wide on the loopback broker.
-- **Observable**: one INFO journal line per reconnect —
+- **Observable**: one INFO journal line per re-subscribe from `on_connect` —
   `MQTT reconnected (#n, session_present=…): resubscribed K topics` — and two
   additive status-file keys, `mqtt_connected: bool` / `mqtt_reconnects: int`
   (§Client status file), written within one watchdog tick of the change;
@@ -560,12 +570,23 @@ the client owns what the library does not — both profiles, one code path
   process, greppable in the broker log. A broker refused at cold start is still
   labelled `gateway_unreachable` on the card; the journal and `status.message`
   now name the broker (`MqttUnavailable`).
+- Residual, named: the client counts a SUBSCRIBE the library accepted inside a
+  live session as done and does not read the broker's SUBACK return codes. A
+  broker that refused a topic (`0x80`) would leave that topic deaf with
+  `mqtt_connected: true`; the local listener this client uses (`127.0.0.1:1883`,
+  anonymous by design) carries no ACL that could — `etc/mosquitto/10listeners.conf`
+  sets `per_listener_settings true` and puts the `acl_file` on the 1884
+  listener only.
 
-Validating: `tests/test_mqtt_reconnect_run.py` (through `run()`: the
-re-subscribe, one snapshot after the grace and none while deaf, the refused
-command, the status keys), `tests/test_mqtt_link.py` (the link in isolation),
+Validating: `tests/test_mqtt_reconnect_run.py` (through `run()`, **both
+profiles**: the re-subscribe, the re-subscribe after a drop before the first
+CONNACK, one snapshot after the grace and none while deaf — including a drop
+inside the grace — the refused command, the status keys),
+`tests/test_mqtt_link.py` (the link in isolation, including a CONNACK landing
+mid-pass),
 `tests/test_mqtt_link_broker.py` (the real paho against a mini broker — the
-library's callback arity, its own re-dial, retained re-delivery, the wire; it
+library's callback arity, its own re-dial, retained re-delivery, a broker that
+closes every socket before CONNACK while the initial pass runs, the wire; it
 skips loudly where paho is absent, so CI reports a skip and the dev box / the
 board run it).
 
@@ -789,8 +810,9 @@ permission-blind and returns a false "absent").
   source of cert truth for unprivileged readers. Additive: older keys unchanged.
   In the `connected` state the file also carries `mqtt_connected: bool` and
   `mqtt_reconnects: int` (1.0.6.66, §Broker reconnect) — the broker link
-  underneath the gateway session, and the CONNACKs past the first this process
-  has seen.
+  underneath the gateway session, and the CONNACKs past the first on that
+  link (the client opens a new link, and the count restarts at 0, each time
+  it re-dials the gateway).
 - Перечень состояний — одна строка, один дом в этом документе (её читает
   валидирующий тест; дом в коде — константы `STATE_*` в
   `sa02m_alice/common/constants.py`):

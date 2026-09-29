@@ -682,8 +682,11 @@ def run(profile: str = C.PROFILE_YANDEX) -> int:
                 # Keep the last good document — a corrupt file must not kill
                 # the connect path, but it must not pass silently either.
                 log.error("device document reload at connect failed: %s", exc)
-            for topic in sorted(current_topics()):
-                mqtt.subscribe(topic, qos=1)
+            # Through the link, not a bare subscribe loop: the link records
+            # that this pass ran and whether it ran inside a live session, so
+            # a broker that dropped the socket before its first CONNACK gets
+            # the whole set again on that CONNACK (mqtt_link module doc).
+            mqtt.subscribe_all()
             # Allow retained storm to pass, then accept live updates
             time.sleep(1.0)
             ignore_retained["active"] = False
@@ -696,12 +699,15 @@ def run(profile: str = C.PROFILE_YANDEX) -> int:
             last_snapshot = last_heartbeat
             # Broker-link bookkeeping. The paho thread only re-subscribes;
             # the snapshot, the status write and the sender stay here. A
-            # reconnect is noticed as a change of the link's CONNACK counter,
-            # and the refreshed cache is pushed once, after the same grace
-            # window `subscribe_all` armed — never from the half-refreshed
-            # cache inside it.
+            # re-subscribe from on_connect is noticed as a change of the
+            # link's `resubscribes` counter, and the refreshed cache is pushed
+            # once, after the same grace window `subscribe_all` armed — never
+            # from the half-refreshed cache inside it. The baseline is 0, not
+            # the current value: the link is fresh on every pass of this
+            # loop, so one that already re-subscribed during the settle sleep
+            # (a CONNACK after a failed initial pass) still gets its push.
             mqtt_up = bool(mqtt.connected)
-            reconnects_seen = int(mqtt.reconnects)
+            resubscribes_seen = 0
             resnap_at: Optional[float] = None
             while not _stop.is_set() and sio.connected and not _unlinked.is_set():
                 if not profile_enabled(profile):
@@ -715,9 +721,9 @@ def run(profile: str = C.PROFILE_YANDEX) -> int:
                         else "MQTT broker disconnected; waiting for reconnect"
                     )
                     last_heartbeat = now
-                reconnects_now = int(mqtt.reconnects)
-                if reconnects_now != reconnects_seen:
-                    reconnects_seen = reconnects_now
+                resubscribes_now = int(mqtt.resubscribes)
+                if resubscribes_now != resubscribes_seen:
+                    resubscribes_seen = resubscribes_now
                     resnap_at = now + C.RETAINED_GRACE_S
                 if resnap_at is not None and mqtt_up and now >= resnap_at:
                     resnap_at = None

@@ -14,15 +14,21 @@ docs/contracts/alice-mqtt-mapping.md §Broker reconnect.
 
 Two rules the shape is built around:
 
-* **CONNACK #1 does not subscribe.** The main thread's initial pass owns the
-  first subscribe — after `sio.connect()` + `registry.reload()`, under the
-  global retained window, exactly as shipped in 1.0.6.16/1.0.6.19 — so the
-  connect settle window is untouched. Every CONNACK past the first
-  re-subscribes the CURRENT set (the provider is read at that moment, not at
-  construction). Counting CONNACKs rather than flagging «main pass done» is
-  deliberate: a drop mid-way through the initial pass leaves a count-gated #2
-  re-subscribing the full set, where a flag-gated one would leave the topics
-  sent before the drop unsubscribed until the next reconnect.
+* **A subscribe pass counts only if it ran whole inside one live session.**
+  On a normal start the main thread's initial pass owns the first subscribe —
+  after `sio.connect()` + `registry.reload()`, under the global retained
+  window, exactly as shipped in 1.0.6.16/1.0.6.19 — so a CONNACK #1 that
+  arrives before ANY pass subscribes nothing and the settle window is
+  untouched. Every other CONNACK re-subscribes the CURRENT set (the provider
+  is read at that moment, not at construction): every CONNACK past the
+  first, and a CONNACK #1 that follows a pass made before it. That last case
+  is the broker closing the fresh socket before its first CONNACK: the pass
+  got NO_CONN — or, worse, paho accepted the SUBSCRIBEs into a socket that
+  was already dying — and trusting it left the client deaf behind a status
+  file that said `mqtt_connected: true` (review 1.0.6.66, B1). A pass that
+  overlaps a CONNACK (failures before it, the CONNACK landing mid-pass) is
+  re-run once by whoever finishes second, so neither thread can leave the
+  other's topics unsubscribed.
 * **Every paho callback catches its own exceptions.** A raising callback is
   re-raised into the network thread unless `suppress_exceptions`, which kills
   `loop_forever` — MQTT dead for good, worse than the defect. `*_` in the
@@ -37,8 +43,7 @@ from __future__ import annotations
 
 import logging
 import threading
-import time
-from typing import Any, Callable, Iterable, Optional
+from typing import Any, Callable, Iterable, Optional, Tuple
 
 from .reload_watch import RetainedGrace
 
@@ -100,7 +105,6 @@ class MqttLink:
         log: Optional[logging.Logger] = None,
         client_id: str = "",
         client_factory: Optional[Callable[[str], Any]] = None,
-        clock: Callable[[], float] = time.monotonic,
     ) -> None:
         self._host = host
         self._port = int(port)
@@ -111,15 +115,19 @@ class MqttLink:
         self._log = log or logging.getLogger("sa02m_alice.client")
         self._client_id = client_id
         self._factory = client_factory or _paho_client
-        self._clock = clock
         self._client: Any = None
-        # Set on CONNACK rc 0, cleared in on_disconnect and by close(). Every
-        # set/clear/read is atomic on its own — the main thread reads it once
-        # per tick and before a command; nothing needs a wider lock.
+        # Set on CONNACK rc 0, cleared in on_disconnect and by close(). The
+        # main thread reads it once per tick and before a command. The pass
+        # bookkeeping below is decided against it under `_lock` — see
+        # `subscribe_all` / `_on_connect` for the hand-off.
         self._connected = threading.Event()
         self._lock = threading.Lock()
         self._connacks = 0
-        self._last_reconnect_at: Optional[float] = None
+        # True once any subscribe pass has run on this link — what tells a
+        # CONNACK #1 «a pass already went out before me, redo it» from «no
+        # pass yet, the main thread's initial pass is still to come».
+        self._pass_ran = False
+        self._resubscribes = 0
 
     # -- lifecycle (main thread) ----------------------------------------------
     def connect(self) -> "MqttLink":
@@ -160,39 +168,66 @@ class MqttLink:
 
     @property
     def reconnects(self) -> int:
-        """CONNACKs past the first for this instance — the status-file counter,
-        and what the main thread compares per tick to notice a reconnect."""
+        """CONNACKs past the first on this link — the `mqtt_reconnects`
+        status counter. A fresh link (after a gateway re-dial) starts at 0."""
         with self._lock:
             return max(0, self._connacks - 1)
 
     @property
-    def last_reconnect_at(self) -> Optional[float]:
-        """Monotonic time of the latest CONNACK past the first; None before one."""
+    def resubscribes(self) -> int:
+        """Full passes made from `on_connect` on this link. The main thread
+        pushes one snapshot, after the grace, each time this moves."""
         with self._lock:
-            return self._last_reconnect_at
+            return self._resubscribes
 
     # -- subscriptions (main thread on the initial pass, paho thread after) ---
     def subscribe_all(self) -> int:
         """Subscribe the CURRENT set at QoS 1, grace armed for all of it first.
-        Returns the count the client accepted; a refused topic is logged."""
-        topics = sorted(set(self._topics()))
-        if not topics:
-            return 0
-        # ARM BEFORE SUBSCRIBE — the broker can deliver the retained burst on
-        # the network thread before subscribe() returns (reload_watch rule).
-        self._grace.arm(topics, self._grace_s)
-        accepted = 0
-        for topic in topics:
-            try:
-                rc, _mid = self._client.subscribe(topic, qos=1)
-            except Exception as exc:
-                self._log.error("MQTT subscribe failed for %s: %s", topic, exc)
-                continue
-            if rc != 0:
-                self._log.warning("MQTT subscribe refused for %s (rc=%s)", topic, rc)
-                continue
-            accepted += 1
+        Returns the count the client accepted; a refused topic is logged.
+
+        The pass is TRUSTED only if the whole of it ran inside one live
+        session — connected at the start, the same CONNACK at the end, every
+        topic accepted. An untrusted pass that ends while connected (a CONNACK
+        landed during it) is re-run once here; one that ends while down is
+        left to the CONNACK that follows, which sees `_pass_ran`."""
+        accepted, total, retry = self._pass()
+        if retry:
+            self._log.info(
+                "MQTT subscribe pass overlapped a (re)connect (%d/%d accepted); re-running it",
+                accepted, total)
+            accepted, total, _retry = self._pass()
         return accepted
+
+    def _pass(self) -> Tuple[int, int, bool]:
+        with self._lock:
+            start_n = self._connacks
+            start_up = self._connected.is_set()
+        topics = sorted(set(self._topics()))
+        accepted = 0
+        if topics:
+            # ARM BEFORE SUBSCRIBE — the broker can deliver the retained burst
+            # on the network thread before subscribe() returns (reload_watch).
+            self._grace.arm(topics, self._grace_s)
+            for topic in topics:
+                try:
+                    rc, _mid = self._client.subscribe(topic, qos=1)
+                except Exception as exc:
+                    self._log.error("MQTT subscribe failed for %s: %s", topic, exc)
+                    continue
+                if rc != 0:
+                    self._log.warning("MQTT subscribe refused for %s (rc=%s)", topic, rc)
+                    continue
+                accepted += 1
+        with self._lock:
+            # Decided under the same lock `_on_connect` takes to count a
+            # CONNACK and read `_pass_ran`: either that CONNACK sees this pass
+            # and redoes it, or this pass sees that CONNACK and re-runs.
+            self._pass_ran = True
+            now_up = self._connected.is_set()
+            trusted = (start_up and now_up and self._connacks == start_n
+                       and accepted == len(topics))
+            retry = not trusted and now_up
+        return accepted, len(topics), retry
 
     def subscribe(self, topic: str, qos: int = 1) -> Any:
         """Pass-through for apply_reload and the auto-provision extra."""
@@ -226,13 +261,14 @@ class MqttLink:
             with self._lock:
                 self._connacks += 1
                 n = self._connacks
-            self._connected.set()
-            if n == 1:
-                # The main thread's initial pass subscribes (module doc).
+                self._connected.set()
+                redo = n > 1 or self._pass_ran
+            if not redo:
+                # No pass yet: the main thread's initial pass subscribes.
                 return
             count = self.subscribe_all()
             with self._lock:
-                self._last_reconnect_at = self._clock()
+                self._resubscribes += 1
             if isinstance(flags, dict):
                 session_present = flags.get("session present", 0)
             else:
