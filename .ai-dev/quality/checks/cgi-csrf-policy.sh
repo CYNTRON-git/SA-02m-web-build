@@ -16,6 +16,19 @@
 #   READ_ONLY_SUDO  cgi|reason  — invokes sudo but only reads (no token needed);
 #   EXCEPTIONS      cgi|reason  — documented policy exception (logout);
 #   EXCLUDED        cgi|reason  — not session-authed / not an endpoint of the class.
+#   DAEMON_MUTATING file|scope-def|first-POST-route — the two HTTP daemons behind
+#                   nginx (1.0.6.65, audit 2026-09-24 M3): the flasher's
+#                   `_dispatch` and devices-api's `do_POST` hold ONE rule («every
+#                   POST needs X-SA02M-CSRF») as one `check_csrf(` CALL that
+#                   must sit AFTER the scope's def line and BEFORE its first
+#                   POST route line (no per-route ledger: the daemons gate the
+#                   method, not the path). Paths are repo-root-relative, Python
+#                   `#` comments blanked by the same lib_check.sh stripper; the
+#                   import line (`import check_csrf`) carries no paren and so
+#                   cannot satisfy the call pin. Floor DAEMON_FLOOR rows.
+#                   Refusal transport on the daemons is HTTP 200 + the same
+#                   E_CSRF body (decision «Демоны»); the behavioural half is the
+#                   daemon-csrf-behaviour row.
 #
 # PINS per MUTATING row, read COMMENT-STRIPPED via lib_check.sh (capture, then
 # match — never `| grep -q`, trap 1 of lib_check.sh):
@@ -51,6 +64,10 @@
 # MUTATING rows ok, sweep 28/42 all ledgered. GREEN on the fixed tree (25/25).
 # Comment-out cases (mqtt_scan / web_update_check / services_ctrl csrf lines)
 # registered in comment-mutation-proof.
+# PROVEN RED again (2026-09-28, 1.0.6.65) for the DAEMON ledger: on the 1.0.6.56
+# daemons both rows FAIL («no live check_csrf( call between def _dispatch( and
+# the first POST route» / same for do_POST); GREEN with the gates in. Cases
+# (`check_csrf(` in service.py and api.py) registered in comment-mutation-proof.
 #
 # Run: bash .ai-dev/quality/checks/cgi-csrf-policy.sh
 #      CGI_DIR=<dir> judges another copy of cgi-bin (the RED run).
@@ -112,8 +129,15 @@ EXCLUDED='
 login.cgi|mints the session; not session-authed
 index.cgi|302 redirect, no work
 '
+# The two HTTP daemons: repo-root path | the def line opening the gated scope |
+# the FIRST POST route line inside it (the anchor the csrf call must precede).
+DAEMON_MUTATING='
+opt/sa02m-flasher/sa02m_flasher/service.py|def _dispatch(|if method == "POST" and p == "/ports/release":
+opt/sa02m-devices/sa02m_devices/api.py|def do_POST(|if path == "/api/devices/widgets/remove":
+'
 MUTATING_FLOOR=25
 READ_ONLY_FLOOR=3
+DAEMON_FLOOR=2
 
 # Trigger tokens (ERE on a comment-stripped line). The sudo form also catches
 # the python-list spelling ["sudo", …] that a `sudo ` (trailing space) grep misses.
@@ -186,6 +210,39 @@ while IFS='|' read -r name anchor; do
     fi
 done <<<"$(rows_of "$MUTATING")"
 
+# ── pins per DAEMON_MUTATING row ────────────────────────────────────────────
+n_daemon=$(rows_of "$DAEMON_MUTATING" | grep -c .)
+if [ "$n_daemon" -ge "$DAEMON_FLOOR" ]; then ok "ledger: $n_daemon DAEMON_MUTATING rows (floor $DAEMON_FLOOR)"
+else bad "ledger: $n_daemon DAEMON_MUTATING rows < floor $DAEMON_FLOOR — a daemon row was dropped"; fi
+while IFS='|' read -r file scope anchor; do
+    [ -n "$file" ] || continue
+    [ -f "$file" ] || { bad "DAEMON row names an absent file: $file"; continue; }
+    text=$(stripped_text "$file")
+    [ -n "$text" ] || { bad "$file: empty after comment-stripping — nothing to pin"; continue; }
+    scope_hits=$(grep -nF -- "$scope" <<<"$text")
+    n_scope=$(printf '%s\n' "$scope_hits" | grep -c .)
+    anchor_hits=$(grep -nF -- "$anchor" <<<"$text")
+    n_anchor=$(printf '%s\n' "$anchor_hits" | grep -c .)
+    if [ "$n_scope" -ne 1 ] || [ "$n_anchor" -ne 1 ]; then
+        bad "$file: scope '$scope' matches $n_scope live line(s), anchor '$anchor' matches $n_anchor — expected exactly 1 each; re-anchor this DAEMON row consciously"
+        continue
+    fi
+    scope_ln=${scope_hits%%:*}; anchor_ln=${anchor_hits%%:*}
+    # The CALL (`check_csrf(`), never the import: the first live call inside the scope.
+    csrf_hits=$(grep -nE 'check_csrf\(' <<<"$text")
+    hit_ln=""
+    while IFS= read -r h; do
+        [ -n "$h" ] || continue
+        ln=${h%%:*}
+        if [ "$ln" -gt "$scope_ln" ] && [ "$ln" -lt "$anchor_ln" ]; then hit_ln=$ln; break; fi
+    done <<<"$csrf_hits"
+    if [ -n "$hit_ln" ]; then
+        ok "$file: check_csrf( call at line $hit_ln sits inside $scope (line $scope_ln) before the first POST route (line $anchor_ln)"
+    else
+        bad "$file: no live check_csrf( call between $scope (line $scope_ln) and the first POST route (line $anchor_ln) — a daemon POST runs without the X-SA02M-CSRF token (policy: selective-csrf-policy.md «Демоны»)"
+    fi
+done <<<"$(rows_of "$DAEMON_MUTATING")"
+
 # ── open-world sweep ────────────────────────────────────────────────────────
 ledgered=$(printf '%s\n%s\n%s\n' "$(names_of "$MUTATING")" "$(names_of "$READ_ONLY_SUDO")" "$(names_of "$EXCEPTIONS")")
 n_hits=0
@@ -209,7 +266,7 @@ fi
 
 echo
 if [ "$fails" -eq 0 ]; then
-    echo "cgi-csrf-policy: ALL OK — $n_mut mutating CGIs are POST-only + token-before-mutation; $n_ro read-only sudo, 1 exception, ledgered"
+    echo "cgi-csrf-policy: ALL OK — $n_mut mutating CGIs are POST-only + token-before-mutation; $n_ro read-only sudo, 1 exception, ledgered; $n_daemon daemons gate every POST on the token"
     exit 0
 fi
 echo "cgi-csrf-policy: $fails FAILURE(S)"
