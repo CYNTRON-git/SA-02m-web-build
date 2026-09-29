@@ -26,6 +26,24 @@ byte_order in-register swaps, consists_of composites, condition expressions,
 sub-devices, and Jinja templates. A template whose every channel is unsupported
 logs an ERROR and publishes no controls (mis-import surfaced, not silently dead).
 
+Block reads (device-level max_read_registers / max_reg_hole / max_bit_hole, WB
+semantics): absent or 1 = one request per channel in template order, exactly as
+before; > 1 merges same-type channels into blocks up to the cap, bridging holes
+of at most the given size. A failed block read is followed by a sweep of its
+channels read singly — in the same pass, or, when the device goes into
+back-off, resumed by the next pass at the channel after the stall (the block
+is not asked again until the sweep ends). A block whose last two attempts each
+failed while its sweep read at least one channel is split back into single
+reads for good; an attempt whose sweep read nothing resets that count. The
+refusal is recognised by that behaviour, not by an exception code, because the
+RS-485 transport does not surface the code today.
+
+A silent device stops the pass: once a failed read puts it in back-off the
+pass ends there, and the next pass resumes where this one stopped (the next
+unit, or the unfinished sweep), so a dead device costs offline_after_fails
+transactions once, then one per back-off window, and a live device with broken
+leading channels still reads the rest.
+
 Classic polling only in v1 (no Fast Modbus): fmb_event_ranges() inherits [] from
 the base. The port-lease invariant is inherited structurally — TemplatePoller
 never opens a port, it only uses DevicePoller's FC wrappers.
@@ -58,6 +76,13 @@ _BIT_REG_TYPES = ("coil", "discrete")        # 1 bit, format ignored
 # A bare template name: no path separators, no traversal, no absolute path.
 _TEMPLATE_NAME_RE = re.compile(r"^[A-Za-z0-9._-]+$")
 
+# Modbus per-request maxima: FC03/04 registers, FC01/02 bits.
+_PROTO_MAX_REGS = 125
+_PROTO_MAX_BITS = 2000
+# Consecutive passes a block must fail while its channels read singly before it
+# is split for good.
+_GROUP_SPLIT_AFTER = 2
+
 
 class TemplateParseError(Exception):
     """A template file could not be located or parsed into any poll channel."""
@@ -82,6 +107,66 @@ class TemplateChannel:
         self.units = units
         self.readonly = readonly
         self.words = words
+
+
+class _ReadUnit:
+    """One read request: a single channel, or a block of same-type channels."""
+
+    __slots__ = ("channels", "reg_type", "start", "count", "split_streak",
+                 "first_idx", "sweep_at", "sweep_ok")
+
+    def __init__(self, channels, reg_type, first_idx):
+        self.channels = channels
+        self.reg_type = reg_type
+        self.start = min(ch.address for ch in channels)
+        self.count = max(ch.address + ch.words for ch in channels) - self.start
+        self.split_streak = 0
+        self.first_idx = first_idx
+        # Single-read sweep after a failed block read: index of the next
+        # channel to read (None = no sweep pending), and whether the sweep has
+        # read any channel so far.
+        self.sweep_at = None
+        self.sweep_ok = False
+
+
+def _build_read_units(channels, max_read, reg_hole, bit_hole) -> list:
+    """Plan the poll pass: the read requests, in template order of first channel.
+
+    max_read == 1 → one unit per channel, in template order (the pre-grouping
+    wire). Otherwise per reg_type: channels sorted by (address, template index)
+    join the current block while the gap to it is at most the hole and the
+    block stays within the cap; a channel is never split.
+    """
+    if max_read == 1:
+        return [_ReadUnit([ch], ch.reg_type, i) for i, ch in enumerate(channels)]
+    by_type: dict = {}
+    for i, ch in enumerate(channels):
+        by_type.setdefault(ch.reg_type, []).append((ch.address, i, ch))
+    units = []
+    for reg_type, items in by_type.items():
+        bits = reg_type in _BIT_REG_TYPES
+        proto_max = _PROTO_MAX_BITS if bits else _PROTO_MAX_REGS
+        cap = proto_max if max_read == 0 or max_read > proto_max else max_read
+        hole = bit_hole if bits else reg_hole
+        items.sort(key=lambda t: (t[0], t[1]))
+        cur: list = []
+        start = end = 0
+        for address, idx, ch in items:
+            last = address + ch.words - 1
+            if cur and address <= end + 1 + hole and max(end, last) - start + 1 <= cap:
+                cur.append((idx, ch))
+                end = max(end, last)
+                continue
+            if cur:
+                units.append(_ReadUnit([c for _, c in cur], reg_type,
+                                       min(i for i, _ in cur)))
+            cur = [(idx, ch)]
+            start, end = address, last
+        if cur:
+            units.append(_ReadUnit([c for _, c in cur], reg_type,
+                                   min(i for i, _ in cur)))
+    units.sort(key=lambda u: u.first_idx)
+    return units
 
 
 def _resolve_template_path(name: str) -> Path:
@@ -143,6 +228,8 @@ class TemplatePoller(DevicePoller):
         self._device_name = ""
         self._setup_writes: list[tuple[int, int]] = []
         self._channels: list[TemplateChannel] = []
+        self._units: list[_ReadUnit] = []
+        self._resume_idx = 0
         self._load_error = ""
         try:
             self._load_template()
@@ -183,6 +270,23 @@ class TemplatePoller(DevicePoller):
             # A wholly-unsupported template = mis-import: surface it, do not run.
             raise TemplateParseError(
                 f"template {self._template_name!r} yielded no supported channels")
+
+        max_read, reg_hole, bit_hole = self._parse_grouping(device)
+        self._units = _build_read_units(self._channels, max_read, reg_hole, bit_hole)
+
+    def _parse_grouping(self, device: dict) -> tuple[int, int, int]:
+        """Device-level block-read fields; anything but a non-negative int is
+        refused with a WARN and replaced by its default (1 = no grouping)."""
+        out = []
+        for key, default in (("max_read_registers", 1), ("max_reg_hole", 0),
+                             ("max_bit_hole", 0)):
+            val = device.get(key, default)
+            if isinstance(val, bool) or not isinstance(val, int) or val < 0:
+                self.log.warning("template %s: device %s=%r invalid — using %d",
+                                 self._template_name, key, val, default)
+                val = default
+            out.append(val)
+        return out[0], out[1], out[2]
 
     def _parse_channel(self, raw: dict):
         name = raw.get("name")
@@ -341,30 +445,147 @@ class TemplatePoller(DevicePoller):
         self._setup_writeback()
 
     def poll_io(self) -> None:
-        if self._load_error or not self._channels:
+        if self._load_error or not self._units:
             return
         now = self._monotonic()
         if now - self._t_poll < self._poll_s:
             return
         self._t_poll = now
-        for ch in self._channels:
+        n = len(self._units)
+        start = self._resume_idx
+        self._resume_idx = 0
+        to_split: list[_ReadUnit] = []
+        for k in range(n):
+            i = (start + k) % n
+            ok = self._poll_unit(self._units[i], to_split)
+            if not ok and self.in_backoff():
+                # The device went silent: stop spending the shared line on it,
+                # and resume where the pass stopped so a stalled head never
+                # starves the tail of a live device — at this unit while its
+                # single-read sweep is unfinished, else at the next unit.
+                stalled = self._units[i]
+                self._resume_idx = i if stalled.sweep_at is not None else (i + 1) % n
+                # The units this pass skips keep their last value: say it is
+                # stale, as their own failed read would have (docs/MQTT_TOPICS.md).
+                for rest in range(k + 1, n):
+                    self._flag_stale(self._units[(start + rest) % n].channels)
+                break
+        if to_split:
+            self._split_units(to_split)
+            self._resume_idx = 0
+        DeviceLiveCache.flush_file(self.device_id)
+
+    def _split_units(self, to_split: list) -> None:
+        """Replace each refused block by its channels' single reads, in place."""
+        index = {id(ch): i for i, ch in enumerate(self._channels)}
+        units: list[_ReadUnit] = []
+        for unit in self._units:
+            if unit not in to_split:
+                units.append(unit)
+                continue
+            self.log.warning(
+                "template %s: block %s %d+%d refused twice while its channels "
+                "read singly — reading them singly from now on",
+                self._template_name, unit.reg_type, unit.start, unit.count)
+            for ch in sorted(unit.channels, key=lambda c: index[id(c)]):
+                units.append(_ReadUnit([ch], ch.reg_type, index[id(ch)]))
+        self._units = units
+
+    def _poll_unit(self, unit: _ReadUnit, to_split: list) -> bool:
+        """Read one unit and publish it.
+
+        True = at least one value was read and the unit did not end the pass
+        in back-off; False with in_backoff() = the pass must stop here.
+        """
+        if len(unit.channels) == 1:
+            return self._poll_single(unit.channels[0])
+        if unit.sweep_at is None:
             t_read = self._monotonic()
             try:
-                words = self._read_channel(ch)
+                data = self._read_span(unit)
             except Exception as e:
-                self.log.debug("template read %s: %s", ch.name, e)
-                # Read-error convention (docs/MQTT_TOPICS.md): the channel keeps
-                # its last good value but says it is stale — never a silent freeze.
-                self.pub.pub_error(self.device_id, ch.name, "r")
-                continue
-            if ch.reg_type in _BIT_REG_TYPES:
-                self._wb_publish_poll(ch.name, str(words[0] & 1), t_read)
+                self.log.debug("template read block %s %d+%d: %s",
+                               unit.reg_type, unit.start, unit.count, e)
+                # The values must not be lost to a block the device will not
+                # serve: sweep its channels singly — now, or from the next pass
+                # when this failure already put the device in back-off.
+                unit.sweep_at = 0
+                unit.sweep_ok = False
+                if self.in_backoff():
+                    self._flag_stale(unit.channels)
+                    return False
             else:
-                value = self._decode(ch, words)
-                self._wb_publish_poll(
-                    ch.name, self._format_value(ch, value), t_read)
-            self.pub.pub_error(self.device_id, ch.name, "")
-        DeviceLiveCache.flush_file(self.device_id)
+                for ch in unit.channels:
+                    off = ch.address - unit.start
+                    self._publish_value(ch, data[off:off + ch.words], t_read)
+                unit.split_streak = 0
+                return True
+        return self._sweep_singles(unit, to_split)
+
+    def _sweep_singles(self, unit: _ReadUnit, to_split: list) -> bool:
+        """Read a refused block's channels one by one from unit.sweep_at.
+
+        A back-off stall keeps the sweep pending at the next channel. A sweep
+        that reaches the end closes the block attempt: at least one channel
+        read → one more refusal counted (split at _GROUP_SPLIT_AFTER); none
+        read → the device was silent, not refusing, and the count restarts.
+        """
+        chans = unit.channels
+        read_now = False
+        stalled = False
+        for j in range(unit.sweep_at, len(chans)):
+            if self._poll_single(chans[j]):
+                read_now = unit.sweep_ok = True
+            elif self.in_backoff():
+                self._flag_stale(chans[j + 1:])
+                if j + 1 < len(chans):
+                    unit.sweep_at = j + 1
+                    return False
+                stalled = True
+                break
+        unit.sweep_at = None
+        if unit.sweep_ok:
+            unit.split_streak += 1
+            if unit.split_streak >= _GROUP_SPLIT_AFTER:
+                to_split.append(unit)
+        else:
+            unit.split_streak = 0
+        return read_now and not stalled
+
+    def _poll_single(self, ch: TemplateChannel) -> bool:
+        t_read = self._monotonic()
+        try:
+            words = self._read_channel(ch)
+        except Exception as e:
+            self.log.debug("template read %s: %s", ch.name, e)
+            # Read-error convention (docs/MQTT_TOPICS.md): the channel keeps
+            # its last good value but says it is stale — never a silent freeze.
+            self.pub.pub_error(self.device_id, ch.name, "r")
+            return False
+        self._publish_value(ch, words, t_read)
+        return True
+
+    def _publish_value(self, ch: TemplateChannel, words: list, t_read: float) -> None:
+        if ch.reg_type in _BIT_REG_TYPES:
+            self._wb_publish_poll(ch.name, str(words[0] & 1), t_read)
+        else:
+            value = self._decode(ch, words)
+            self._wb_publish_poll(
+                ch.name, self._format_value(ch, value), t_read)
+        self.pub.pub_error(self.device_id, ch.name, "")
+
+    def _flag_stale(self, channels) -> None:
+        for ch in channels:
+            self.pub.pub_error(self.device_id, ch.name, "r")
+
+    def _read_span(self, unit: _ReadUnit) -> list:
+        if unit.reg_type == "coil":
+            return self.read_coils(self.address, unit.start, unit.count)
+        if unit.reg_type == "discrete":
+            return self.read_discrete_inputs(self.address, unit.start, unit.count)
+        if unit.reg_type == "input":
+            return self.read_input_registers(self.address, unit.start, unit.count)
+        return self.read_holding_registers(self.address, unit.start, unit.count)
 
     def _read_channel(self, ch: TemplateChannel) -> list:
         if ch.reg_type == "coil":
