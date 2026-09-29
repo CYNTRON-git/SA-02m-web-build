@@ -547,7 +547,7 @@ commit's diff of this file).
   API had before it moved to a root-only unix socket (1.0.6.24, `88032f4`). Fix direction: the same
   move (AF_UNIX socket, 0660 root:www-data) or a shared local secret set by nginx only. Threat model
   row to add with the fix.
-- [OPEN] 2026-09-23 **[LOW] XHR upload paths have no CSRF refresh-and-retry of their own.** The
+- [RESOLVED 1.0.6.63] 2026-09-23 **[LOW] XHR upload paths have no CSRF refresh-and-retry of their own.** The
   panel's two XMLHttpRequest uploads (`status.js` ~:1756 and ~:2318, offline package / MPLC project)
   read the refreshed token but bypass the fetch wrapper, so an E_CSRF there still ends the upload
   with a plain error instead of the 1.0.6.53 refresh-once-retry-once path. Route them through the
