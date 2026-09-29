@@ -58,6 +58,34 @@ commit's diff of this file).
   резервную копию и установить» button text is clipped in the three-column layout. Evidence: session
   shots `A-proxy-toast-*.png`; `ui-layout` did not flag (2) — check why its intra-box clipping pass misses
   a button label before fixing. Queued behind the 1.0.6.60–.68 train.
+- [OPEN] 2026-09-29 **[MED] RTU Modbus exception replies are misreported as «Short response» — a live
+  device that answers «illegal address» is treated as silent and driven offline.**
+  `opt/sa02m-modbus-mqtt/bridge_serial.py:444-459` (`_transact`): `_modbus_read_frame_len` (`:154`)
+  sizes an exception frame at 5 bytes, `_read_rtu_response` returns those 5 bytes, and the length
+  check at `:444` raises `Short response: 5/N` before the exception branch at `:457` — which is
+  unreachable for reads. The TCP path decodes exceptions correctly. Found by the Pult audit plan
+  (2026-09-29). **Queued, not deferred:** fix on its own branch from `main` right after the
+  unmerged `1.0.6.64` (commits `fix(1.0.6.64)…` edit the same `_transact`/frame-length hunks)
+  merges — position 1 in this session's queue. Fix direction: CRC-check the short frame, then
+  raise a typed exception error before the length check; RED-first test with a 5-byte exception
+  frame on a fake serial.
+- [OPEN] 2026-09-29 **[LOW] `docs/threat-model.md:307` says the 1883 broker accepts LAN publishes
+  without auth; the repo binds it to 127.0.0.1 only** (`etc/mosquitto/10listeners.conf:8`, LAN
+  goes to 1884 with auth). Correct the row after `1.0.6.65` (it edits the threat model) merges —
+  position 2 in this session's queue.
+- [OPEN] 2026-09-29 **[MED] Gate `web-auth-behaviour` case 59 (login lockout) flakes on the Windows
+  host** — red 2 of 5 runs alone on an unchanged tree, and under parallel load it also turns the
+  `comment-mutation-proof` baseline red (seen by the template-poller-pult review, round 2). A gate
+  that fails at random is a hollow gate in reverse (`quality-gate-rigor.md`): it trains people to
+  rerun until green. **Queued:** fix on its own branch after `1.0.6.65` (CSRF on the same auth
+  surface) merges — position 3 in this session's queue. Direction: find the timing assumption in
+  case 59 (lockout window vs wall clock) and make it deterministic; RED = a forced slow run.
+- [OPEN] 2026-09-29 **[LOW] Template poller: a block split resets the pass resume point to 0**
+  (`opt/sa02m-modbus-mqtt/bridge_template.py:473-475`, branch `feature/template-poller-pult`),
+  dropping a stall's resume point in the same pass — live channels stay stale for about three
+  back-off windows once per block; nothing starves (review A3). **Queued:** fix on the same branch
+  before it ships (keep the resume point by unit, not index) — position 4, after the rebase onto
+  `1.0.6.69`.
 
 - [RESOLVED] 2026-09-28 **[MED] HomeKit conf `preserve` followed a planted symlink as root.**
   `opt/sa02m-homekit/sa02m_homekit/fsutil.py` `atomic_write(preserve=True)` read the old conf's
