@@ -346,6 +346,7 @@ class CE02M3Poller(DevicePoller):
         self._en_pf    = ch.get("power_factor", True)
         self._en_freq  = ch.get("frequency", True)
         self._en_ener  = ch.get("energy", True)
+        self._fw_version: tuple[int, int, int, int] | None = None
 
     @staticmethod
     def _s16(v: int) -> int:
@@ -590,8 +591,39 @@ class CE02M3Poller(DevicePoller):
         except Exception:
             pass
 
+    # Firmware version, holding 320..323 = (major, minor, patch, build). The
+    # FMB manager picks the configure_events wire from it
+    # (docs/contracts/fmb-event-wire.md §3), so it is read before any 0x18.
+    CE_FW_VERSION_REG = 320
+
+    def _read_fw_version(self) -> None:
+        try:
+            r = self.read_holding_registers(self.address,
+                                            self.CE_FW_VERSION_REG, 4)
+            if len(r) < 4:
+                raise IOError("short reply: %d of 4 registers" % len(r))
+            self._fw_version = tuple(int(v) & 0xFFFF for v in r[:4])
+            self.log.info("firmware %s",
+                          ".".join(str(v) for v in self._fw_version))
+        except Exception as e:
+            self._fw_version = None
+            self.log.warning("firmware version read (HR%d x4): %s",
+                             self.CE_FW_VERSION_REG, e)
+
+    def fmb_firmware_version(self):
+        """Cached version; re-read on demand while unknown. Called on the
+        port thread by the FMB manager right before it decides on a 0x18."""
+        if self._fw_version is None:
+            self._read_fw_version()
+        return self._fw_version
+
+    def fmb_firmware_invalidate(self) -> None:
+        """A reboot event may follow a reflash — forget the cached version."""
+        self._fw_version = None
+
     def setup(self) -> None:
         self._publish_meta()
+        self._read_fw_version()
 
     def poll_io(self) -> None:
         # Honor poll_power_s — continuous scheduler used to hammer FC04×48

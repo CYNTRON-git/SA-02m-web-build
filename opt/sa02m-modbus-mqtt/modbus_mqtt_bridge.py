@@ -67,6 +67,8 @@ from bridge_fmb import (  # noqa: F401
     FMB_BALANCING_THRESHOLD_S, FMB_MAX_POLL_TIME_S,
     FMB_RECONFIGURE_BACKOFF_S, FMB_UNPARSED_LOG_PERIOD_S,
     FastModbusEventPortManager,
+    CE_FMB_WB_MIN_FW, CE_FMB_POWER_EVENTS_FW, CE_FMB_POWER_DISABLE_RANGE,
+    fmb_configure_reply_mask, fmb_configure_reply_confirms,
 )
 from bridge_mqtt import (  # noqa: F401
     DEVICE_BASE, LIVE_CACHE_DIR, DeviceLiveCache,

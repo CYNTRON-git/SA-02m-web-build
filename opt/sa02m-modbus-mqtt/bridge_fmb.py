@@ -61,6 +61,64 @@ FMB_UNPARSED_LOG_PERIOD_S = 10.0  # unparsable-frame log throttle: the burst
                                   # loop runs at 20 Hz, so an unthrottled line
                                   # would write ~20 journal records/s per port
 
+# CE-02m-3 event wire by firmware version (HR320..323) — the table and the
+# upper-port wedge behind the floor: docs/contracts/fmb-event-wire.md §3.
+CE_FMB_WB_MIN_FW = (1, 0, 6, 13)
+CE_FMB_POWER_EVENTS_FW = (1, 0, 7, 6)   # P/Q/S/f/PF events on by default
+CE_FMB_POWER_DISABLE_RANGE = (FMB_EVT_INPUT, 518, 29)   # 518..546, setting 0
+
+
+def _fmt_fw(fw) -> str:
+    return ".".join(str(v) for v in fw) if fw else "unknown"
+
+
+def fmb_configure_reply_mask(resp: bytes, addr: int) -> bytes | None:
+    """Mask bytes of a configure_events reply
+    `[addr][0x46][0x18][MASK_LEN][mask…][CRC]`, or None when no CRC-valid
+    reply is found. Leading arbitration bytes are skipped."""
+    resp = bytes(resp or b"")
+    for i in range(len(resp)):
+        if not (resp[i] == addr and resp[i + 1:i + 3] == b"\x46\x18"):
+            continue
+        if i + 4 > len(resp):
+            break
+        end = i + 4 + resp[i + 3]
+        if end + 2 > len(resp):
+            continue
+        if crc16(resp[i:end]) == (resp[end] | (resp[end + 1] << 8)):
+            return resp[i + 4:end]
+    return None
+
+
+def fmb_expected_mask(requested: list[tuple[int, int]]) -> bytes:
+    """Post-apply mask the WB contract promises for [(count, setting)]: one
+    bit per register (set = enabled), ceil(count/8) bytes per range, LSB
+    first, each range byte-aligned."""
+    out = bytearray()
+    for count, setting in requested:
+        for i in range(0, count, 8):
+            n = min(8, count - i)
+            out.append(((1 << n) - 1) if setting else 0)
+    return bytes(out)
+
+
+def fmb_configure_reply_confirms(resp: bytes, addr: int,
+                                 requested: list[tuple[int, int]]) -> bool:
+    """True only when the reply's mask equals the requested state on every
+    requested register (padding bits past COUNT are not compared)."""
+    mask = fmb_configure_reply_mask(resp, addr)
+    want = fmb_expected_mask(requested)
+    if mask is None or len(mask) != len(want):
+        return False
+    pos = 0
+    for count, _setting in requested:
+        for i in range(0, count, 8):
+            used = (1 << min(8, count - i)) - 1
+            if (mask[pos] ^ want[pos]) & used:
+                return False
+            pos += 1
+    return True
+
 
 class FastModbusEventPortManager:
     """Wire-protocol helper for one RS-485 port (no own thread).
@@ -130,6 +188,14 @@ class FastModbusEventPortManager:
             "configured": False,
             "retry_at": 0.0,
             "fail_passes": 0,
+            # CE only: the firmware the last contract choice was made on, the
+            # version whose "no 0x18" line was already logged, and whether the
+            # power-event disable refusal was already logged.
+            "fw": None,
+            "fw_gate_logged": "",
+            "power_off_warned": False,
+            # True when the last pass put no 0x18 on the bus at all.
+            "wire_blocked": False,
         }
         # A module reflashed since the last registration may have swapped
         # generations — start from "nothing known", let the handshake decide.
@@ -138,17 +204,33 @@ class FastModbusEventPortManager:
     # --- configure_events (0x18) for one device ------------------------------
 
     def _configure_contracts(self, addr: int, dev: dict) -> tuple[str, ...]:
-        """Which configure_events forms to try for this device, in order.
+        """Which configure_events forms to try for this device, in order;
+        () = send no 0x18 at all.
 
-        WB is probed only where it can pay off: MR-02m (the only family whose
-        firmware branch speaks it) or an explicit yaml opt-in. An unexpected
-        0x18 form once wedged a CE-02m-3 on COM2, recoverable only by a power
-        cycle (CHANGELOG 1.0.5.46), and neither CE nor DTV ever receives MR-02m
-        firmware — so probing them carries the documented risk for no gain.
-        A handshake-confirmed contract goes first, so the extra probe is paid
-        at most once per slave rather than on every reconfigure.
+        A `ce02m3` under `auto` is decided by its firmware version alone: WB
+        from CE_FMB_WB_MIN_FW, nothing below it or while the version is
+        unknown — older CE firmware can go deaf on its upper port after ANY
+        0x18 until a power cycle (docs/contracts/fmb-event-wire.md §3).
+        Otherwise WB is probed only where it can pay off: MR-02m or an
+        explicit yaml opt-in; DTV stays legacy. A handshake-confirmed contract
+        goes first, so the extra probe is paid at most once per slave rather
+        than on every reconfigure.
         """
         mode = dev.get("wire_mode", "auto")
+        if dev.get("type") == "ce02m3":
+            dev["fw"] = self._ce_firmware(dev)
+            if mode == "auto":
+                fw = dev["fw"]
+                if fw is not None and fw >= CE_FMB_WB_MIN_FW:
+                    return ("wb",)
+                seen = _fmt_fw(fw)
+                if dev.get("fw_gate_logged") != seen:
+                    dev["fw_gate_logged"] = seen
+                    self._log.warning(
+                        "configure_events addr=%d: CE-02m-3 firmware %s — no "
+                        "0x18 sent (WB wire needs >= %s); classic polling only",
+                        addr, seen, _fmt_fw(CE_FMB_WB_MIN_FW))
+                return ()
         if mode == "legacy":
             contracts = ["legacy"]
         elif mode == "wb" or dev.get("type") == "mr02m":
@@ -163,26 +245,58 @@ class FastModbusEventPortManager:
                                            if c != preferred]
         return tuple(contracts)
 
+    @staticmethod
+    def _ce_firmware(dev: dict):
+        """(major, minor, patch, build) from the poller, or None when it has
+        not been read (a duck-typed poller without the method counts as
+        unknown — never as permission to send a 0x18)."""
+        poller = dev.get("poller")
+        getter = getattr(poller, "fmb_firmware_version", None)
+        if getter is None:
+            return None
+        try:
+            fw = getter()
+        except Exception:
+            return None
+        return tuple(fw) if fw else None
+
     def _configure_device(self, ser: ModbusSerial, addr: int, dev: dict) -> bool:
         """One configure pass over the still-unacked ranges. Per-range
         graceful: a rejected range stays on classic polling while the rest
         get events. Returns True when no range is left pending."""
+        # CE-02m-3 speaks the WB contract as specified: the reply carries the
+        # post-apply mask, so a WB subscription counts only when that mask
+        # confirms it. MR-02m's mask is not verified yet (prefix ACK, as for
+        # every legacy slave) — docs/contracts/fmb-event-wire.md §1.
+        verify_mask = dev.get("type") == "ce02m3"
 
-        def _try(frame: bytes) -> tuple[bool, str]:
+        def _try(frame: bytes, requested) -> tuple[bool, str]:
             try:
                 # ACK: [addr][0x46][0x18][mask_len][mask…][CRC] — mask_len
                 # depends on count; leading 0xFF arbitration noise possible.
                 resp = ser.fmb_send_recv(frame, 5, 48, 0.4)
-                for i in range(max(0, len(resp) - 4)):
-                    if (resp[i] == addr and resp[i + 1] == 0x46
-                            and resp[i + 2] == 0x18):
-                        return True, ""
-                return False, ""
             except Exception as e:
                 return False, f" ({e})"
+            if requested is not None:
+                if fmb_configure_reply_confirms(resp, addr, requested):
+                    return True, ""
+                mask = fmb_configure_reply_mask(resp, addr)
+                return False, (
+                    " (reply mask %s, want %s)"
+                    % (mask.hex() if mask is not None else "none/CRC-bad",
+                       fmb_expected_mask(requested).hex()))
+            for i in range(max(0, len(resp) - 4)):
+                if (resp[i] == addr and resp[i + 1] == 0x46
+                        and resp[i + 2] == 0x18):
+                    return True, ""
+            return False, ""
 
         contracts = self._configure_contracts(addr, dev)
+        dev["wire_blocked"] = not contracts
+        if not contracts:
+            return not dev["pending"]
         still_pending: list[tuple[int, int, int]] = []
+        wb_confirmed = False
         for (evt_type, start_reg, count) in dev["pending"]:
             ok = False
             err = ""
@@ -191,13 +305,16 @@ class FastModbusEventPortManager:
                 build = (build_fmb_configure_events_wb if contract == "wb"
                          else build_fmb_configure_events)
                 ok, attempt_err = _try(
-                    build(addr, evt_type, start_reg, count, 1))
+                    build(addr, evt_type, start_reg, count, 1),
+                    [(count, 1)] if verify_mask and contract == "wb"
+                    else None)
                 err = err or attempt_err
                 if ok:
                     used = contract
                     break
             if ok:
                 dev["configured"] = True
+                wb_confirmed = wb_confirmed or used == "wb"
                 # The handshake is the authoritative generation signal: from
                 # here the parser no longer has to guess for this slave.
                 self._wb_frame_slaves[addr] = (used == "wb")
@@ -215,7 +332,33 @@ class FastModbusEventPortManager:
                     "rejected%s — classic polling covers this range",
                     addr, evt_type, start_reg, count, err)
         dev["pending"] = still_pending
+        if (wb_confirmed and dev.get("type") == "ce02m3"
+                and dev.get("fw") is not None
+                and dev["fw"] >= CE_FMB_POWER_EVENTS_FW):
+            self._disable_ce_power_events(ser, addr, dev, _try)
         return not still_pending
+
+    def _disable_ce_power_events(self, ser: ModbusSerial, addr: int,
+                                 dev: dict, try_frame) -> None:
+        """CE >= 1.0.7.6 enables P/Q/S/f/PF events by default; the bridge does
+        not subscribe to them (int32 pairs, polled by FC04), so switch the
+        range off. Non-fatal: the dispatcher drops 518+ anyway."""
+        evt_type, start_reg, count = CE_FMB_POWER_DISABLE_RANGE
+        ok, err = try_frame(
+            build_fmb_configure_events_wb(addr, evt_type, start_reg, count, 0),
+            [(count, 0)])
+        if ok:
+            dev["power_off_warned"] = False
+            self._log.info(
+                "configure_events addr=%d power events %d..%d disabled",
+                addr, start_reg, start_reg + count - 1)
+            return
+        self._log.log(
+            logging.DEBUG if dev.get("power_off_warned") else logging.WARNING,
+            "configure_events addr=%d power events %d..%d disable not "
+            "confirmed%s — ignored, the dispatcher drops them",
+            addr, start_reg, start_reg + count - 1, err)
+        dev["power_off_warned"] = True
 
     # --- poll_events (0x10) loop ---------------------------------------------
 
@@ -426,6 +569,12 @@ class FastModbusEventPortManager:
             # A reboot is also what a just-reflashed module sends: the cached
             # generation may now be wrong, so the next handshake re-decides.
             self._wb_frame_slaves.pop(slave_id, None)
+            # Same for a firmware version cached by the poller: the wire it
+            # picks must come from what runs now, never from before a reflash.
+            invalidate = getattr(dev.get("poller"), "fmb_firmware_invalidate",
+                                 None)
+            if invalidate is not None:
+                invalidate()
             # The reboot event proves the device is talking — reconfigure
             # immediately, regardless of a backoff from an earlier silence.
             self._note_success(dev)
@@ -499,6 +648,10 @@ class FastModbusEventPortManager:
                     continue
             for _attempt in range(3):
                 if self._configure_device(ser, addr, dev):
+                    break
+                if dev.get("wire_blocked"):
+                    # Nothing went on the bus — a retry within the pass would
+                    # only hold the port thread for the sleeps.
                     break
                 time.sleep(0.5)
             if dev["configured"]:
