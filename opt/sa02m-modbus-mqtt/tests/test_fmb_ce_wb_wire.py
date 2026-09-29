@@ -415,6 +415,140 @@ class TestMaskScope(unittest.TestCase):
         self.assertIs(mgr._wb_frame_slaves[5], True)
 
 
+# ── 3c. Reply-mask edges: wrong length, padding bits, the disable call site ──
+def reply(mask: bytes) -> bytes:
+    """CRC-valid configure_events reply carrying `mask` from addr 14."""
+    return with_crc(bytes([ADDR, 0x46, 0x18, len(mask)]) + mask)
+
+
+class TestReplyMaskLength(unittest.TestCase):
+    """Contract §1: a reply whose mask is not ceil(count/8) bytes per range is
+    «не применён» — even when its CRC is valid. A longer mask must not be
+    accepted on its leading bytes; a shorter one must not raise out of the
+    configure pass (configure_all runs unwrapped at port start-up)."""
+
+    def test_wrong_length_masks_confirm_nothing_and_never_raise(self):
+        cases = [(b"\x0f\x00", [(4, 1)]),           # longer, leading byte OK
+                 (b"", [(4, 1)]),                   # empty
+                 (b"\x00\x00\x00", [(29, 0)]),      # shorter than 4 bytes
+                 (b"\x0f", [(4, 1), (3, 1)])]       # one range short
+        for mask, requested in cases:
+            with self.subTest(mask=mask.hex(), requested=requested):
+                self.assertFalse(bridge.fmb_configure_reply_confirms(
+                    reply(mask), ADDR, requested))
+
+    def test_longer_mask_leaves_the_range_pending(self):
+        mgr, dev = make_ce((1, 0, 7, 5))
+        bus = CeWireBus()
+        bus.reply_for[510] = reply(b"\x0f\x00")
+        self.assertFalse(mgr._configure_device(bus, ADDR, dev))
+        self.assertEqual(dev["pending"], [(bridge.FMB_EVT_INPUT, 510, 4)])
+
+    def test_empty_mask_leaves_the_range_pending(self):
+        mgr, dev = make_ce((1, 0, 7, 5))
+        bus = CeWireBus()
+        bus.reply_for[510] = reply(b"")
+        self.assertFalse(mgr._configure_device(bus, ADDR, dev))
+        self.assertEqual(dev["pending"], [(bridge.FMB_EVT_INPUT, 510, 4)])
+
+    def test_short_disable_mask_is_refused_not_raised(self):
+        mgr, dev = make_ce((1, 0, 7, 6))
+        bus = CeWireBus()
+        bus.reply_for[518] = reply(b"\x00\x00\x00")
+        with self.assertLogs("fmb.COMT", level="WARNING") as cm:
+            self.assertTrue(mgr._configure_device(bus, ADDR, dev))
+        self.assertTrue(any("518" in r.getMessage()
+                            and "not confirmed" in r.getMessage()
+                            for r in cm.records),
+                        [r.getMessage() for r in cm.records])
+
+    def test_configure_all_survives_a_short_mask(self):
+        import bridge_fmb
+        from unittest import mock
+        mgr, dev = make_ce((1, 0, 7, 5))
+        dev["poller"].device_id = "ce02m3-ut-14"
+        bus = CeWireBus()
+        bus.reply_for[510] = reply(b"")
+        with mock.patch.object(bridge_fmb.time, "sleep", lambda s: None), \
+                mock.patch.object(bridge, "get_port", lambda *a, **k: bus):
+            mgr.configure_all(only_ready=True)          # must not raise
+        self.assertTrue(dev["configured"])              # 500..502 confirmed
+        self.assertEqual(dev["pending"], [(bridge.FMB_EVT_INPUT, 510, 4)])
+
+
+class TestReplyMaskPadding(unittest.TestCase):
+    """Contract §1: bits past COUNT in a range's last mask byte are padding
+    and are not compared."""
+
+    def test_padding_bits_set_still_confirm(self):
+        self.assertTrue(bridge.fmb_configure_reply_confirms(
+            reply(b"\xff"), ADDR, [(4, 1)]))
+        # 29 registers disabled: bits 5..7 of byte 4 are padding.
+        self.assertTrue(bridge.fmb_configure_reply_confirms(
+            reply(b"\x00\x00\x00\xe0"), ADDR, [(29, 0)]))
+
+    def test_padding_bits_set_configure_the_range(self):
+        mgr, dev = make_ce((1, 0, 7, 5))
+        bus = CeWireBus()
+        bus.reply_for[500] = reply(b"\xff")     # 3 used bits + 5 padding
+        bus.reply_for[510] = reply(b"\xff")     # 4 used bits + 4 padding
+        self.assertTrue(mgr._configure_device(bus, ADDR, dev))
+        self.assertEqual(dev["pending"], [])
+
+
+class TestPowerDisableConfirmation(unittest.TestCase):
+    """Contract §3: the 518..546 disable waits for a ZERO mask — checked at
+    the call site, not only in the pure helper."""
+
+    def test_zero_mask_reply_is_confirmed(self):
+        mgr, dev = make_ce((1, 0, 7, 6))
+        bus = CeWireBus()                   # answers the disable with 0x00 x4
+        with self.assertLogs("fmb.COMT", level="DEBUG") as cm:
+            self.assertTrue(mgr._configure_device(bus, ADDR, dev))
+        msgs = [r.getMessage() for r in cm.records]
+        self.assertTrue(any("518..546 disabled" in m for m in msgs), msgs)
+        self.assertFalse(any("not confirmed" in m for m in msgs), msgs)
+        self.assertFalse([r for r in cm.records if r.levelno >= 30], msgs)
+        self.assertFalse(dev["power_off_warned"])
+
+    def test_non_zero_mask_reply_is_not_confirmed(self):
+        mgr, dev = make_ce((1, 0, 7, 6))
+        bus = CeWireBus()
+        bus.reply_for[518] = reply(b"\x00\x00\x10\x00")   # reg 538 left on
+        with self.assertLogs("fmb.COMT", level="DEBUG") as cm:
+            self.assertTrue(mgr._configure_device(bus, ADDR, dev))
+        msgs = [r.getMessage() for r in cm.records]
+        self.assertFalse(any("518..546 disabled" in m for m in msgs), msgs)
+        self.assertTrue(any("not confirmed" in m and "00001000" in m
+                            for m in msgs), msgs)
+        self.assertTrue(dev["power_off_warned"])
+        self.assertEqual(dev["pending"], [])
+
+
+# ── 3d. A firmware getter that raises fails closed, and says so ─────────────
+class _RaisingFwPoller(CeFwPoller):
+    def fmb_firmware_version(self):
+        raise RuntimeError("fw getter boom")
+
+
+class TestFirmwareGetterRaises(unittest.TestCase):
+    def test_raise_sends_nothing_and_is_logged_once(self):
+        mgr = bridge.FastModbusEventPortManager("/dev/COMT", 115200)
+        mgr.register_device(ADDR, "ce02m3-ut-14", list(CE_RANGES),
+                            lambda *a: None, poller=_RaisingFwPoller(None),
+                            dev_type="ce02m3")
+        dev = mgr._devices[ADDR]
+        bus = CeWireBus()
+        with self.assertLogs("fmb.COMT", level="DEBUG") as cm:
+            self.assertFalse(mgr._configure_device(bus, ADDR, dev))
+            self.assertFalse(mgr._configure_device(bus, ADDR, dev))
+        self.assertEqual(bus.sent, [])
+        self.assertEqual(dev["pending"], CE_RANGES)
+        boom = [r for r in cm.records if "fw getter boom" in r.getMessage()
+                and r.levelno >= 30]
+        self.assertEqual(len(boom), 1, [r.getMessage() for r in cm.records])
+
+
 # ── 4. CE version read (HR320..323) ──────────────────────────────────────────
 class _NullPub:
     def __getattr__(self, name):
