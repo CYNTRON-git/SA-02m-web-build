@@ -10,8 +10,10 @@ both configure_events grammars. Pins:
   * the generation cache: seeded by the handshake, cleared on reboot and on
     re-registration, and a legacy-confirmed slave is never probed with WB again;
   * fallback: legacy only after WB goes unanswered, never a double frame;
-  * scope: no WB probe for CE-02m-3 / DTV under `auto`, and the
-    `fmb_event_wire: wb` hatch overrides that.
+  * scope: no WB probe for DTV under `auto`; a CE-02m-3 under `auto` gets no
+    0x18 at all without a firmware version (the per-version wire is pinned in
+    test_fmb_ce_wb_wire.py), whatever the generation cache says; the
+    `fmb_event_wire: wb` hatch overrides both.
 
 Contract home: docs/contracts/fmb-event-wire.md.
 
@@ -97,11 +99,18 @@ def decode_configure(frame: bytes) -> tuple[str, int, int, int]:
 
 
 class WireFakeSerial:
-    """fmb_send_recv fake that acks per (contract, evt_type) pair."""
+    """fmb_send_recv fake that acks per (contract, evt_type) pair.
 
-    def __init__(self, acks):
+    mask_replies=True answers a WB frame the way the WB contract specifies
+    (CRC-valid reply, one set bit per requested register) — needed wherever
+    the bridge verifies the mask (CE-02m-3). Elsewhere the prefix-only ack
+    below is all the bridge reads.
+    """
+
+    def __init__(self, acks, mask_replies=False):
         # acks: iterable of (contract, evt_type)
         self.acks = set(acks)
+        self.mask_replies = mask_replies
         self.sent: list[tuple[str, int, int, int]] = []
 
     def fmb_send_recv(self, frame, min_len, max_len, timeout):
@@ -109,6 +118,11 @@ class WireFakeSerial:
         decoded = decode_configure(bytes(frame))
         self.sent.append(decoded)
         if (decoded[0], decoded[1]) in self.acks:
+            if self.mask_replies and decoded[0] == "wb":
+                count = decoded[3]
+                mask = bytes((1 << min(8, count - i)) - 1
+                             for i in range(0, count, 8))
+                return with_crc(bytes([addr, 0x46, 0x18, len(mask)]) + mask)
             return bytes([addr, 0x46, 0x18, 1, 0x00, 0x00, 0x00])
         raise TimeoutError("no configure ack")
 
@@ -116,11 +130,22 @@ class WireFakeSerial:
         return [s[0] for s in self.sent]
 
 
-def make_mgr(dev_type="mr02m", wire_mode="auto", addr=5, ranges=None):
+class FwPoller:
+    """Duck-typed poller that only reports a firmware version."""
+
+    def __init__(self, fw):
+        self.fw = fw
+
+    def fmb_firmware_version(self):
+        return self.fw
+
+
+def make_mgr(dev_type="mr02m", wire_mode="auto", addr=5, ranges=None,
+             poller=None):
     mgr = bridge.FastModbusEventPortManager("/dev/COMT", 115200)
     mgr.register_device(addr, f"{dev_type}-ut-{addr}",
                         ranges if ranges is not None else MR_RANGES,
-                        lambda *a: None, dev_type=dev_type,
+                        lambda *a: None, poller=poller, dev_type=dev_type,
                         wire_mode=wire_mode)
     return mgr, mgr._devices[addr]
 
@@ -242,11 +267,19 @@ class TestFallback(unittest.TestCase):
 
 # ── 9. Scope of the WB probe ─────────────────────────────────────────────────
 class TestWbProbeScope(unittest.TestCase):
-    def test_ce02m3_gets_no_wb_frame_under_auto(self):
+    def test_ce02m3_without_a_known_firmware_gets_no_frame_under_auto(self):
+        # Supersedes test_ce02m3_gets_no_wb_frame_under_auto, which pinned
+        # ["legacy", "legacy"] here: CE <= 1.0.6.12 goes deaf on its upper
+        # port after a 0x18 until a power cycle (CE-02m-3 root cause,
+        # docs/contracts/fmb-event-wire.md §3), so with no version known
+        # nothing may go on the bus — neither form, even one it would ack.
         mgr, dev = make_mgr(dev_type="ce02m3", addr=14, ranges=CE_RANGES)
-        ser = WireFakeSerial({("legacy", bridge.FMB_EVT_INPUT)})
-        self.assertTrue(mgr._configure_device(ser, 14, dev))
-        self.assertEqual(ser.contracts(), ["legacy", "legacy"])
+        ser = WireFakeSerial({("legacy", bridge.FMB_EVT_INPUT),
+                              ("wb", bridge.FMB_EVT_INPUT)},
+                             mask_replies=True)
+        self.assertFalse(mgr._configure_device(ser, 14, dev))
+        self.assertEqual(ser.contracts(), [])
+        self.assertEqual(dev["pending"], CE_RANGES)
 
     def test_dtv_gets_no_wb_frame_under_auto(self):
         mgr, dev = make_mgr(dev_type="dtv", addr=15,
@@ -255,16 +288,27 @@ class TestWbProbeScope(unittest.TestCase):
         self.assertFalse(mgr._configure_device(ser, 15, dev))
         self.assertEqual(ser.contracts(), ["legacy"])
 
-    def test_cached_wb_does_not_unlock_the_probe_for_ce02m3(self):
-        # The cache can be filled by the parser's guess (_parse_event_records
-        # setdefault), not only by a handshake — so a CE cached as WB must
-        # still never see a WB frame. Cost of the alternative: a wedged
-        # CE-02m-3 recoverable only by a power cycle (CHANGELOG 1.0.5.46).
-        mgr, dev = make_mgr(dev_type="ce02m3", addr=14, ranges=CE_RANGES)
-        mgr._wb_frame_slaves[14] = True
-        ser = WireFakeSerial({("legacy", bridge.FMB_EVT_INPUT)})
-        self.assertTrue(mgr._configure_device(ser, 14, dev))
-        self.assertEqual(ser.contracts(), ["legacy", "legacy"])
+    def test_cached_generation_does_not_change_the_ce02m3_wire(self):
+        # Supersedes test_cached_wb_does_not_unlock_the_probe_for_ce02m3
+        # (which expected legacy frames): the cache can be filled by the
+        # parser's guess (_parse_event_records setdefault), not only by a
+        # handshake, so it must never pick the CE wire. The firmware version
+        # alone does — a cached WB guess sends nothing to a CE of unknown
+        # firmware, and a cached legacy guess never sends a legacy frame to a
+        # WB-firmware CE (it rejects it without a reply; <= 1.0.6.12 wedges).
+        both = {("legacy", bridge.FMB_EVT_INPUT), ("wb", bridge.FMB_EVT_INPUT)}
+        cases = [(None, True, []), (None, False, []),
+                 ((1, 0, 7, 5), False, ["wb", "wb"]),
+                 ((1, 0, 7, 5), True, ["wb", "wb"])]
+        for fw, cached, want in cases:
+            with self.subTest(fw=fw, cached_wb=cached):
+                mgr, dev = make_mgr(dev_type="ce02m3", addr=14,
+                                    ranges=CE_RANGES, poller=FwPoller(fw))
+                mgr._wb_frame_slaves[14] = cached
+                ser = WireFakeSerial(both, mask_replies=True)
+                self.assertEqual(mgr._configure_device(ser, 14, dev),
+                                 bool(want))
+                self.assertEqual(ser.contracts(), want)
 
     def test_cached_wb_does_not_unlock_the_probe_for_dtv(self):
         mgr, dev = make_mgr(dev_type="dtv", addr=15,
@@ -275,9 +319,12 @@ class TestWbProbeScope(unittest.TestCase):
         self.assertEqual(ser.contracts(), ["legacy"])
 
     def test_explicit_wb_hatch_probes_ce02m3(self):
+        # The hatch ignores the firmware version (none is known here). The
+        # fake answers with a real mask: the bridge verifies it for CE.
         mgr, dev = make_mgr(dev_type="ce02m3", wire_mode="wb", addr=14,
                             ranges=CE_RANGES)
-        ser = WireFakeSerial({("wb", bridge.FMB_EVT_INPUT)})
+        ser = WireFakeSerial({("wb", bridge.FMB_EVT_INPUT)},
+                             mask_replies=True)
         self.assertTrue(mgr._configure_device(ser, 14, dev))
         self.assertEqual(ser.contracts(), ["wb", "wb"])
 

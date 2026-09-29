@@ -6,7 +6,9 @@ Pure-unit: no serial port, no MQTT broker — fakes only. Pins:
   * dispatch semantics (writeback grace, signed/0x8000, reg→channel maps);
   * per-range graceful configure_events;
   * the configure retry backoff for a slave that answers classic polls but
-    never ACKs configure_events (1.0.6.51, the COM2 storm on bench 1.135).
+    never ACKs configure_events (1.0.6.51, the COM2 storm on bench 1.135) —
+    on a legacy DTV, on a CE-02m-3 whose WB mask never confirms, and for a
+    CE-02m-3 that gets no 0x18 at all (firmware unknown or wedge-prone).
 
 Run dev-side:  python -m unittest discover opt/sa02m-modbus-mqtt/tests
           or:  python -m pytest opt/sa02m-modbus-mqtt/tests
@@ -323,7 +325,7 @@ class TestManagerConfigurePerRange(unittest.TestCase):
 class _ReadyPoller:
     """Classic reads done (the only_ready gate passes); records coverage."""
 
-    device_id = "ce02m3-ut-14"
+    device_id = "dtv-ut-15"
 
     def __init__(self):
         self.covered: list[bool] = []
@@ -338,22 +340,68 @@ class _ReadyPoller:
         pass
 
 
+class _CeReadyPoller(_ReadyPoller):
+    """_ReadyPoller that also reports a CE-02m-3 firmware version."""
+
+    device_id = "ce02m3-ut-14"
+
+    def __init__(self, fw):
+        super().__init__()
+        self.fw = fw
+
+    def fmb_firmware_version(self):
+        return self.fw
+
+
+class WbMaskFakeSerial(FakeSerial):
+    """FakeSerial for a slave on the WB wire: acks a WB frame (wire code =
+    internal type + 1) with the CRC-valid post-apply mask the bridge verifies
+    for CE-02m-3; anything else gets no reply."""
+
+    def fmb_send_recv(self, frame, min_len, max_len, timeout):
+        frame = bytes(frame)
+        self.sent.append(frame)
+        addr, data_len, wire, count = frame[0], frame[3], frame[4], frame[7]
+        if data_len == 4 + count and (wire - 1) in self.ack_types:
+            mask = bytes((1 << min(8, count - i)) - 1
+                         for i in range(0, count, 8))
+            body = bytes([addr, 0x46, 0x18, len(mask)]) + mask
+            c = bridge.crc16(body)
+            return body + bytes([c & 0xFF, c >> 8])
+        raise TimeoutError("no configure ack")
+
+
 class TestManagerUnsupportedBackoff(unittest.TestCase):
-    """Bench 1.135, 2026-09-23: ce02m3-COM2-14 (fast_modbus: true) answers
-    classic polls but never ACKs its two INPUT ranges, so has_configured()
+    """Bench 1.135, 2026-09-23: ce02m3-COM2-14 (fast_modbus: true) answered
+    classic polls but never ACKed its two INPUT ranges, so has_configured()
     stayed False and the run loop's 15 s retry re-ran the full configure pass
     (3 attempts x 2 ranges x 0.4 s) forever — ~3.4 s of every 15 s of COM2 and
-    1,673 journal lines/h, re-sending the 0x18 frame CHANGELOG 1.0.5.46 records
-    wedging a CE. The retry must back off 15 s → doubling → 15 min."""
+    1,673 journal lines/h. The retry must back off 15 s → doubling → 15 min.
 
-    ADDR = 14
-    RANGES = [(bridge.FMB_EVT_INPUT, 500, 3), (bridge.FMB_EVT_INPUT, 510, 4)]
+    The mechanism is device-agnostic. It runs here on a legacy DTV whose
+    ranges are never ACKed (FMB mode off, Holding 122 != 1): since 1.0.6.70 a
+    CE-02m-3 under `auto` never gets the legacy frame that bench case sent
+    (docs/contracts/fmb-event-wire.md §3). The CE cases are the subclass below
+    (WB wire, mask never confirmed) and TestManagerCeBlockedWireBackoff (no
+    0x18 at all)."""
+
+    ADDR = 15
+    RANGES = [(bridge.FMB_EVT_COIL, 1, 2), (bridge.FMB_EVT_INPUT, 25, 6)]
+    DEV_TYPE = "dtv"
+    DEV_ID = "dtv-ut-15"
+    ACK_ALL = {bridge.FMB_EVT_COIL, bridge.FMB_EVT_INPUT}
+
+    def make_serial(self):
+        return FakeSerial(set())                # nothing is ever ACKed
+
+    def make_poller(self):
+        return _ReadyPoller()
 
     def setUp(self):
         import bridge_fmb
         from unittest import mock
         self.clock = [1000.0]
-        self.ser = FakeSerial(set())            # nothing is ever ACKed
+        self.ser = self.make_serial()
         patches = [
             mock.patch.object(bridge_fmb.time, "monotonic",
                               lambda: self.clock[0]),
@@ -364,10 +412,10 @@ class TestManagerUnsupportedBackoff(unittest.TestCase):
             p.start()
             self.addCleanup(p.stop)
         self.mgr = bridge.FastModbusEventPortManager("/dev/COMT", 19200)
-        self.poller = _ReadyPoller()
-        self.mgr.register_device(self.ADDR, "ce02m3-ut-14", list(self.RANGES),
+        self.poller = self.make_poller()
+        self.mgr.register_device(self.ADDR, self.DEV_ID, list(self.RANGES),
                                  lambda *a: None, poller=self.poller,
-                                 dev_type="ce02m3")
+                                 dev_type=self.DEV_TYPE)
         self.dev = self.mgr._devices[self.ADDR]
 
     def _pass_at(self, t: float) -> int:
@@ -428,9 +476,10 @@ class TestManagerUnsupportedBackoff(unittest.TestCase):
         self._pass_at(1000.0)
         self._pass_at(1015.0)
         self.assertEqual(self.dev["fail_passes"], 2)
-        self.ser.ack_types = {bridge.FMB_EVT_INPUT}
+        self.ser.ack_types = set(self.ACK_ALL)
         self._pass_at(1045.0)
         self.assertTrue(self.dev["configured"])
+        self.assertEqual(self.dev["pending"], [])
         self.assertEqual(self.dev["fail_passes"], 0)
 
     def test_reconfigure_pending_uses_the_same_backoff(self):
@@ -440,6 +489,99 @@ class TestManagerUnsupportedBackoff(unittest.TestCase):
         self.mgr.reconfigure_pending()
         self.assertEqual(self.dev["fail_passes"], 4)
         self.assertEqual(self.dev["retry_at"], 2000.0 + 120.0)
+
+
+class TestManagerUnsupportedBackoffCeWb(TestManagerUnsupportedBackoff):
+    """The same backoff for a CE-02m-3 on the WB wire (fw 1.0.7.5) whose
+    subscription is never confirmed by a reply mask — the successor of the
+    CE bench case above."""
+
+    ADDR = 14
+    RANGES = [(bridge.FMB_EVT_INPUT, 500, 3), (bridge.FMB_EVT_INPUT, 510, 4)]
+    DEV_TYPE = "ce02m3"
+    DEV_ID = "ce02m3-ut-14"
+    ACK_ALL = {bridge.FMB_EVT_INPUT}
+
+    def make_serial(self):
+        return WbMaskFakeSerial(set())
+
+    def make_poller(self):
+        return _CeReadyPoller((1, 0, 7, 5))
+
+
+class TestManagerCeBlockedWireBackoff(unittest.TestCase):
+    """A CE-02m-3 under `auto` with an unknown or wedge-prone firmware gets
+    no 0x18 at all. That pass is a failed pass for the backoff (the version
+    is re-asked at most once per window), holds the port for no sleep, and
+    the reason is logged once, not per pass."""
+
+    ADDR = 14
+    RANGES = [(bridge.FMB_EVT_INPUT, 500, 3), (bridge.FMB_EVT_INPUT, 510, 4)]
+
+    def setUp(self):
+        import bridge_fmb
+        from unittest import mock
+        self.clock = [1000.0]
+        self.sleeps: list[float] = []
+        self.ser = WbMaskFakeSerial({bridge.FMB_EVT_INPUT})
+        patches = [
+            mock.patch.object(bridge_fmb.time, "monotonic",
+                              lambda: self.clock[0]),
+            mock.patch.object(bridge_fmb.time, "sleep", self.sleeps.append),
+            mock.patch.object(bridge, "get_port", lambda *a, **k: self.ser),
+        ]
+        for p in patches:
+            p.start()
+            self.addCleanup(p.stop)
+        self.mgr = bridge.FastModbusEventPortManager("/dev/COMT", 115200)
+        self.poller = _CeReadyPoller(None)
+        self.mgr.register_device(self.ADDR, "ce02m3-ut-14", list(self.RANGES),
+                                 lambda *a: None, poller=self.poller,
+                                 dev_type="ce02m3")
+        self.dev = self.mgr._devices[self.ADDR]
+
+    def _pass_at(self, t: float) -> None:
+        self.clock[0] = t
+        self.mgr.retry_unconfigured()
+
+    def _assert_blocked_pass(self, fw) -> None:
+        self.poller.fw = fw
+        with self.assertLogs("fmb.COMT", level="WARNING") as cm:
+            self._pass_at(1000.0)
+        self.assertEqual(self.ser.sent, [])
+        self.assertEqual(self.sleeps, [])
+        self.assertEqual(self.dev["fail_passes"], 1)
+        self.assertEqual(self.dev["retry_at"], 1015.0)
+        self.assertTrue(any("next attempt in 15 s (pass 1)" in r.getMessage()
+                            for r in cm.records))
+
+    def test_unknown_firmware_pass_sends_nothing_and_counts_as_failed(self):
+        self._assert_blocked_pass(None)
+
+    def test_wedge_prone_firmware_pass_sends_nothing_and_counts_as_failed(self):
+        self._assert_blocked_pass((1, 0, 6, 12))
+
+    def test_reason_logged_once_across_passes(self):
+        with self.assertLogs("fmb.COMT", level="DEBUG") as cm:
+            self._pass_at(1000.0)
+            self._pass_at(1015.0)
+            self._pass_at(1045.0)
+        why = [r for r in cm.records if "no 0x18 sent" in r.getMessage()]
+        self.assertEqual(len(why), 1, [r.getMessage() for r in cm.records])
+        self.assertEqual(self.dev["fail_passes"], 3)
+
+    def test_version_known_at_the_next_window_subscribes(self):
+        self._pass_at(1000.0)
+        self.poller.fw = (1, 0, 7, 5)
+        self._pass_at(1010.0)                   # inside the 15 s window
+        self.assertEqual(self.ser.sent, [])
+        self._pass_at(1015.0)
+        self.assertTrue(self.dev["configured"])
+        self.assertEqual(self.dev["pending"], [])
+        self.assertEqual(self.dev["fail_passes"], 0)
+        self.assertEqual(len(self.ser.sent), 2)
+        self.assertTrue(all(f[3] == 4 + f[7] for f in self.ser.sent),
+                        "only WB frames")
 
 
 if __name__ == "__main__":
