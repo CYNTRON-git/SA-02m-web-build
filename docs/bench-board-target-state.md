@@ -290,8 +290,7 @@ site-файл ещё ведёт на `127.0.0.1:8765`, и gunicorn, уже пе�
    ```bash
    systemctl daemon-reload && systemctl restart sa02m-stand-api
    ls -l /run/sa02m-devices/api.sock          # srw-rw---- … www-data
-   curl -s -o /dev/null -w '%{http_code}
-' --unix-socket /run/sa02m-devices/api.sock http://localhost/api/devices   # любой HTTP-код = gunicorn слушает сокет
+   curl -s -o /dev/null -w '%{http_code}\n' --unix-socket /run/sa02m-devices/api.sock http://localhost/api/devices   # любой HTTP-код = gunicorn слушает сокет
    nginx -t && systemctl reload nginx
    ```
 
