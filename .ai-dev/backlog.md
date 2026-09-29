@@ -107,7 +107,7 @@ commit's diff of this file).
   converters, the «Умный дом» window, `docs/contracts/alice-mqtt-mapping.md`, and
   `led-mb2ws.md` where it applies. Design and evidence: the 1.0.6.51 plan's F-C5(b); the plan
   is transient, so re-derive.
-- [OPEN] 2026-09-23 **[LOW] `scripts/sync-app-version.py` writes CRLF on Windows.** It calls
+- [RESOLVED 1.0.6.60] 2026-09-23 **[LOW] `scripts/sync-app-version.py` writes CRLF on Windows.** It calls
   `write_text` without `newline="\n"`, so a version sync run from a Windows checkout leaves the
   version homes (VERSION, index.html, login.html, three bundles) CRLF in the working tree. On
   1.0.6.51 the Builder converted them back to LF by hand. Git normalises on commit, but any local
@@ -246,7 +246,7 @@ commit's diff of this file).
   `metric` column staying the resume marker) so no single lock is long, or give the migration
   window its own longer busy timeout. The measured bound is now stated in
   `docs/contracts/carel-ahu.md` and `CHANGELOG.md` rather than promised away.
-- [OPEN] 2026-09-09 **[MED] Two live-path `install -m` sites under `etc/` remain**, and
+- [RESOLVED 1.0.6.60 — both sites atomic; the codemod docstring is the record] 2026-09-09 **[MED] Two live-path `install -m` sites under `etc/` remain**, and
   neither is blocked by a missing helper — **my earlier record here was false**: it claimed
   closing them «needs the helper duplicated into a device-side lib», but `atomic_install_file()`
   already existed at `etc/sa02m-update-runner.sh `atomic_install_file()`` (used its two callers) and
@@ -494,7 +494,11 @@ commit's diff of this file).
   after MAXFAIL failures — brute force is unthrottled» FAILED once inside a full `build` beat on
   2026-09-24 (87/88) and passed on the immediate re-run and every later run — a timing window of
   the throttle test under load, class (1); not reproduced, not investigated. When it recurs: read the
-  case's time budget against the throttle's window and pin the fixture like R1.
+  case's time budget against the throttle's window and pin the fixture like R1. RECURRED 2026-09-28
+  three times under load (1.0.6.58 builder; 1.0.6.60 reviews rounds 2 and 3; standalone re-run green each
+  time) — the 2 s lockout window is the suspect. (3) `test-web-update-apply-guard.sh` rows 7, R4 and H1/H1b
+  fail under WSL on `d66d7b6` as well (1.0.6.62 builder + reviewer, twice) — the ~1.2 s sudo shim appears to
+  leak into the next row. Both queued behind the 1.0.6.63–.68 train (2-agent cap).
 - [OPEN] 2026-09-23 **[MED] `sa02m-devices-api` listens on `127.0.0.1:8765` with no auth of its
   own.** `opt/sa02m-devices/sa02m_devices/api.py` reads only Content-Length and relies entirely on
   nginx's `auth_request` in front of `/api/devices*`; any local process or user on the board can
@@ -919,6 +923,20 @@ commit's diff of this file).
   `.ai-dev/quality/run.mjs`; an upgrade that overwrites it would drop this project's runner fixes (the
   SKIP verdict, the `--touched` union) — check `.ai-dev/procedures/upgrade.md` handling before the next
   tooling bump.
+- [OPEN] 2026-09-29 **[LOW] Review advisories left open at the 1.0.6.60 ship (three review rounds).**
+  Update runner (`etc/sa02m-update-runner.sh`): (A14) `docs/deployment.md` gives the operator no next step
+  after «rollback incomplete» (journal 15d, archive (h)/(h2)/(i)) — and if the new VERSION already landed,
+  the update check may not offer that version again; write the remedy (re-run the delivering update /
+  `sa02m-update-remedy.sh`) and check the retry path. (A9) FIFO retention of rollback archives
+  (`build_rollback_archive`, `ls -1t | tail -n +3`) can prune the CURRENT archive after a backward clock
+  step — exclude `$archive` from the prune set. (A13) harness case (j) does not pin a refused DIRECTORY
+  fsync (`sync -- "$STATEDIR/rollback" || true` survives). (A5) a newline in an archive member name splits
+  the `read -r` walk (fails safe to «rollback incomplete»; `-print0` is stricter). (A15) the runner is
+  ~2745 lines — the decomposition worklist entry owns the split. Harnesses: (A3)
+  `scripts/dev/test-nodered-ctl.sh` `svc_dst_is_live()` duplicates the codemod's `LIVE_PREFIXES` with no
+  sync pin; (A4) style-level shellcheck notes grew in the two harnesses. (A10) is the `web-auth-behaviour`
+  case 59 flake — see «Two load-induced harness flakes». (A11, the shellcheck row printing PASS when absent)
+  is closed by 1.0.6.58's SKIP verdict. Queued behind the 1.0.6.63–.68 train.
 - [OPEN] 2026-09-28 **[LOW] Review advisories left open at the 1.0.6.58 ship (four review rounds).**
   Alice gateway probe (`opt/sa02m-alice/sa02m_alice/config/api.py`, `_read_probe_cache` and the detached
   refresher): (A1) the refresher has no hard runtime bound — `setsid` takes it out from under the CGI's
