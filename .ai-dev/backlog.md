@@ -8,13 +8,33 @@ commit's diff of this file).
 
 ## Open
 
+- [OPEN] 2026-09-28 **[LOW] Hardware watchdog held off from boot recover until verify completes
+  (audit 2026-09-28 L5).** `recover_transaction` `verifying|committing` → `install_imaging_lock`
+  (`etc/sa02m-update-runner.sh:2522`), then `schedule_boot_verify` returns with the lock kept
+  (`:2582-2600`): the manager watchdog stays at 0 from early boot until `sa02m-update-verify` finishes
+  (1–3 min on every recovered boot) — and open-ended if the verify unit is accepted (`--no-block`) but its
+  ExecStart fails, since `cleanup_imaging_lock` runs only on the «cannot schedule» path (`:2597`). Fix
+  direction: take the lock inside `cmd_verify` only (it already handles an absent lock, `:2631-2635`), or a
+  bounded fallback; harness case in `test-update-recover-boot.sh`. Queued behind the 1.0.6.60–.68 train
+  (2-agent cap, Operator 2026-09-28).
+- [OPEN] 2026-09-28 **[LOW] Two layout nits seen in the 1.0.6.63 headless shots (pre-existing, not that
+  change's).** (1) The E_CSRF widget line «Ошибка защиты сессии — повторите действие» wraps to two lines
+  in the narrow «Обновление веб» card (the same string 1.0.6.53 G8 already ships there) — against the
+  one-line-label rule (`web-code-rigor.md ## CSS / UI floors`). (2) Light theme at 1280 px: the «Создать
+  резервную копию и установить» button text is clipped in the three-column layout. Evidence: session
+  shots `A-proxy-toast-*.png`; `ui-layout` did not flag (2) — check why its intra-box clipping pass misses
+  a button label before fixing. Queued behind the 1.0.6.60–.68 train.
+
 - [OPEN] 2026-09-24 **[MED] `install.sh --port N` is not persisted — the next re-render resets nginx to
   9999.** `scripts/03-webserver.sh:12` and `scripts/11-devices.sh:18` default `PORT` to 9999 and render
   `etc/nginx/network_config.conf` with it; `scripts/update-www-only.sh` never sets it, and nothing saves
   the port chosen at install time. A board installed with `--port N` is switched back to 9999 by the
   next www-only deploy (or refresh without `--port`). Found by the 1.0.6.53 fixup review (round 5),
   verified by grep. Fix direction: persist the port (e.g. `/etc/sa02m_web.env` `SA02M_WEB_PORT`) at
-  install and read it in both renderers; harness case.
+  install and read it in both renderers; harness case. OTA consequence (audit 2026-09-28 L4): the
+  runner's health gate hard-codes `http://127.0.0.1:9999/login.html` (`etc/sa02m-update-runner.sh:857`),
+  so a board installed with `--port N` fails the gate and rolls back EVERY OTA — the persisted port must
+  feed the health probe too.
 - [OPEN] 2026-09-24 **[LOW] 1.0.6.53 review advisories left open.** A8: `docs/deployment.md` (nginx
   lanes bullet) cites `11-devices.sh:94-101` for the `nginx -t` + reload, which sit at `:102-108` — cite
   `:94-108`. A10: the backlog entry «The GitHub-OTA runner never deploys the nginx site config» mixes
@@ -255,10 +275,6 @@ commit's diff of this file).
   corrected it. Full enumeration, including the sites that ARE the atomic staging
   write: the docstring of `scripts/dev/codemod-install-atomic.py`, the one home of «which
   install sites are live-path».
-- [OPEN] 2026-09-09 **[LOW] 8D step F (install lock) not built.** The installer does not
-  hold `/run/sa02m-imaging.lock` for its run, so the userspace watchdog is not told to
-  stand down. Class-level measure, not this incident's trigger (nothing in A–E/G
-  depends on it).
 - [OPEN] 2026-09-09 **[LOW] `scripts/update-www-only.sh`: the non-unit, non-`/usr/local`
   `install -m` sites are still non-atomic** — widen the codemod's `LIVE_PREFIXES` or
   record why those paths are not live-path.
@@ -492,19 +508,6 @@ commit's diff of this file).
   read the refreshed token but bypass the fetch wrapper, so an E_CSRF there still ends the upload
   with a plain error instead of the 1.0.6.53 refresh-once-retry-once path. Route them through the
   same reaction or document the difference in `docs/contracts/cloud-panel-proxy.md`.
-- [OPEN] 2026-09-23 **[LOW, honesty] `ui-layout` reports PASS when Playwright is absent.** In a
-  checkout without `scripts/dev/node_modules` (a fresh git worktree, 2026-09-23) the review beat
-  printed `ui-layout: skipped — playwright not installed` followed by `PASS  ui-layout`, while
-  `cloud-card-smoke` and `sh-modal-layout-smoke` in the same state correctly FAILED with «chromium/
-  playwright missing». quality-gate-rigor.md: a skipped row is reported as skipped, never as
-  passed. Fix: exit non-zero (or the runner's SKIP status, if it has one) when the driver cannot
-  run; add the case to `run.test.mjs`. Queued for R58 (gates and tools).
-  WIDENED by audit 2026-09-24 L1: the runner HAS no skip status, so every whole-row skip exits 0 and
-  prints PASS — `shellcheck.sh:15-17`, `pytest-suite.sh:32-37` (15 rows), `sh-model-schema.sh:52-53`,
-  `ui-layout.mjs:763-765`. Only shellcheck skips on the dev box today (run under WSL: rc 0, full set,
-  so no live defect). `ui-layout.mjs:114` still says «CI has no …» (stale since 1.0.6.49). Fix: a
-  runner SKIP status (exit-code convention, printed as SKIP, counted apart) + a `run.test.mjs` case;
-  1.0.6.54's `sudoers-visudo` row is the newest caller that needs it.
 - [OPEN] 2026-09-23 **[LOW] Known limit: the delivering GitHub OTA on a ≤1.0.6.51 board still
   freezes at 85 %.** `self_reexec_before_deploy` copies the INSTALLED runner and execs the copy,
   so the whole delivering apply (health gate included) runs under the OLD code and dies at
@@ -892,33 +895,9 @@ commit's diff of this file).
   `<hash>.csrf` sits next to it), or (b) record the exemption with its reason in
   `docs/decisions/selective-csrf-policy.md` and correct the threat-model line. Not the devices-api
   loopback entry (a different class).
-- [OPEN] 2026-09-24 **[LOW] The OTA destination allow-list lives in four places and one has drifted
-  (audit L2).** `etc/sa02m-update-runner.sh` twice (identical blocks), `scripts/pack-offline-update.py`,
-  `opt/sa02m-update/lib/validate_package.py`; the runner admits any `/opt/mplc4/…`, the other two a
-  closed two-name set. No parity row (`mplc-ota-deploy-contract.sh:54` pins one prefix). Fix: runner
-  decomposition seam (a) in the worklist entry (one Python module next to `validate_package.py`).
-- [OPEN] 2026-09-24 **[LOW] The journal-on-disk policy has no repo gate (audit L3).**
-  `etc/systemd/sa02m-journald.conf` `Storage=persistent` and `etc/default/armbian-ramlog`
-  `ENABLED=false` are checked only on a board (`verify-release-on-board.sh`); a comment-out stays green
-  in the repo. Fix: a static pin + a `comment-mutation-proof` case.
-- [OPEN] 2026-09-24 **[LOW] `docs/contracts/sh-model.md` reads as implemented (audit L5).** §0 says
-  the daemon, the UI and Alice «строятся против неё», but no producer or consumer exists in `opt www
-  etc scripts`; the shipped «Умный дом»/Alice build on `alice-mqtt-mapping.md`. Fix: a status line
-  (design contract, not implemented) so a review does not judge shipped code against it.
-- [OPEN] 2026-09-24 **[LOW] `.ai-dev/8d/bench-136-reset.md` parked since 2026-09-09 (audit L6).** Its
-  own header forbids parking; D5 step F and D8 are not done. Graduate it to `docs/bugs/` with its
-  citations re-pointed, or the Operator closes D5-F.
-- [OPEN] 2026-09-24 **[LOW] Contracts missing from their rows' `covers` (audit L7, the 09-16 L3 class
-  recurring).** `docs/contracts/web-update.md` is in none of the 14 runner rows' `covers` (e.g.
-  `update-recover-boot`, which it cites as the G2/G5 gate); `docs/contracts/cloud-panel-proxy.md` is
-  absent from `app-csrf-recovery`, `web-auth-behaviour`, `cgi-csrf-behaviour`. A contract edit then
-  re-runs nothing under `--touched`. Every contract still has ≥1 validating row.
 - [OPEN] 2026-09-24 **[LOW, advisory] CHANGELOG release prose is heavy (audit L8).** 1.0.6.52 is 176
   lines, .51 115, .53 92; the file is 6,128 lines. A release entry states user impact; the mechanism
   lives in the contract or the commit.
-- [OPEN] 2026-09-24 **[LOW, latent] The flasher uses `cgi.FieldStorage` (audit L9).**
-  `opt/sa02m-flasher/sa02m_flasher/service.py:191`; the `cgi` module is gone in Python 3.13, so
-  firmware upload breaks on a distro upgrade. Read the board's Python version first.
 
 - [OPEN] 2026-09-27 **[LOW] Modbus TCP follow-ups from the 1.0.6.56 review.** A3: the add-dialog TCP
   logic (`mqtt.js` connection selector, narrowing, ids, refusal toast) has no JS unit test — only headless
@@ -928,6 +907,32 @@ commit's diff of this file).
   `stand_devices.py` 750, `bridge_serial.py` 699 — decompose worklist.
 - [OPEN] 2026-09-27 **[LOW] No direct unit test of `ModbusSerial` bit parsing** (FC01/FC02 are covered only
   through the shared helper by the TCP round-trips since 1.0.6.56).
+
+- [OPEN] 2026-09-28 **[MED] Cause of the bench 1.136 resets is still unknown (power or an external
+  reset).** Closed parts of the 2026-09-09 8D are recorded in `docs/bugs/bench-136-reset.md` (D5 step F —
+  the install lock — shipped in 1.0.6.51). Standing rule: no further install on 1.136 without a serial
+  console attached; the next step is a console capture across one reset.
+- [OPEN] 2026-09-28 **[LOW] Quality follow-ups from 1.0.6.58.** (1) A CI strict mode: a SKIP should be a
+  FAIL where the environment is supposed to have the tool (e.g. an env var set in `web-quality.yml`).
+  (2) A gate requiring every row a contract cites to carry that contract in its `covers` — stops the audit
+  L7 class recurring. (3) Upgrade risk: the ai-dev installer ships its own template of
+  `.ai-dev/quality/run.mjs`; an upgrade that overwrites it would drop this project's runner fixes (the
+  SKIP verdict, the `--touched` union) — check `.ai-dev/procedures/upgrade.md` handling before the next
+  tooling bump.
+- [OPEN] 2026-09-28 **[LOW] Review advisories left open at the 1.0.6.58 ship (four review rounds).**
+  Alice gateway probe (`opt/sa02m-alice/sa02m_alice/config/api.py`, `_read_probe_cache` and the detached
+  refresher): (A1) the refresher has no hard runtime bound — `setsid` takes it out from under the CGI's
+  timeout and urllib's timeout does not cover DNS; past the 30 s stale-lock window a second refresher
+  breaks the lock and the first one's final unlink-by-path may delete the new holder's lock; (A2) the
+  stale-lock break is check-then-act (worst case: one duplicate probe); (A7) the «Проверка шлюза…» string
+  and its DICT entry are never rendered (only `kind:'err'` text shows) — drop or render it. (A4) `api.py`
+  is 1,621 lines — a `decompose` candidate (worklist entry). Quality runner: (A8) section E empties PATH, so
+  the skipper harnesses `cd /` before reaching their skip line — the skip is reached by accident, not by
+  design; (A12) the section F scanner reads a heredoc inside `$(…)` as code (no live script affected);
+  (A13) contrived exit shapes neither scanned nor named in the scope sentence (`(exit "$fails")`,
+  `trap 'exit "$fails"'`, `exit $(( f>0 ? f : 0 ))`, `process.exitCode +=`). Flasher: (A9) the multipart
+  parser holds the whole upload in RAM (nginx caps it at 8 MB). Queued behind the 1.0.6.60–.68 train
+  (2-agent cap, Operator 2026-09-28); verdict text: the 1.0.6.58 PR's review stamp history.
 
 <!-- Whole-project audit 2026-08-28 at 1.0.6.23 (3 parallel auditors: contracts,
      security, docs). Suite was GREEN (build 47/47, review 6/6) and branch
@@ -967,7 +972,9 @@ commit's diff of this file).
   `run_validate_and_extract` 292 and `prepare_github_overlay` 254 (mostly embedded Python). Seams:
   (a) the GitHub manifest builder (`map_dst` + `DST_RE`) and the validator's second `DST_RE`/`DEL_RE`/
   `PRESERVE` → one Python module in `opt/sa02m-update/lib/` next to `validate_package.py` (closes the
-  four-home allow-list entry); (b) deploy/journal/rollback core; (c) services + health gate;
+  four-home allow-list entry; also fix there audit 2026-09-28 L3 — `map_dst` sends the non-unit drop-ins
+  `etc/systemd/sa02m-journald.conf` / `sa02m-watchdog.conf` to `/etc/systemd/system/` on every OTA,
+  harmless to systemd but a misleading stray file on the board); (b) deploy/journal/rollback core; (c) services + health gate;
   (d) recover/reclaim/verify state machine; (e) watchdog/imaging lock. Constraints: the delivering
   update runs the INSTALLED runner (`self_reexec_before_deploy` copies one file), so a sourced-lib
   split gives old-runner + new-lib skew — keep the bash single-file, move only Python out; three

@@ -50,7 +50,7 @@ set -u
 cd "$(dirname "${BASH_SOURCE[0]}")/../.." || exit 1
 
 SRC="${WEB_UPDATE_LAUNCHER:-etc/sa02m-web-update-apply.sh}"
-command -v python3 >/dev/null 2>&1 || { echo "SKIP  python3 unavailable (launcher requires it)"; exit 0; }
+command -v python3 >/dev/null 2>&1 || { echo "SKIP  python3 unavailable (launcher requires it)"; exit 77; }  # run.mjs SKIP_EXIT
 T=$(mktemp -d) || exit 1
 cat "$SRC" > "$T/launcher.sh" 2>/dev/null || { echo "FAIL  cannot read launcher source: $SRC"; exit 1; }
 LAUNCHER="$T/launcher.sh"

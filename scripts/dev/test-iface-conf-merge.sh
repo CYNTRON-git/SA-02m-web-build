@@ -185,5 +185,5 @@ awk '/cp -f "\$conf"/{seen=1} /rm -f "\$conf"/{if(!seen){exit 1}}' "$HLP" && ok 
 
 echo "---"
 if [ "$fails" = 0 ]; then echo "iface-conf-merge: all checks passed"; else echo "iface-conf-merge: $fails check(s) FAILED"; fi
-exit "$fails"
+exit $(( fails > 0 ))  # never the count: 77 reads SKIP, 256 reads PASS (run.mjs SKIP_EXIT)
 

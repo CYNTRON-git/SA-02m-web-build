@@ -9,14 +9,21 @@ pass. The registry itself is the one home for *what* each row checks
 
 ## Rows that SKIP on a Windows dev box
 
-`node .ai-dev/quality/run.mjs review` prints `PASS` for a skipped row. That is
-by design — a missing optional tool must not block a dev machine — but it means
-**a green local run is not evidence for these rows**:
+A row that cannot run here exits 77 and `node .ai-dev/quality/run.mjs` prints
+`SKIP` for it, counts it apart and names it in the summary (the convention's home
+is `run.mjs`'s header); the beat stays green — a missing optional tool must not
+block a dev machine. Before 1.0.6.58 a skip exited 0 and printed `PASS`. Either
+way **a green local run is not evidence for these rows** — a partial skip (one
+assert inside a row that otherwise ran) still prints PASS for the row:
 
 | Row | Skips when | Real authority |
 |---|---|---|
-| `shellcheck` | `shellcheck` not on `PATH` | Linux CI |
-| `ui-layout` | playwright not installed (the skip is a dev-box courtesy; install locally with `npm run ui-layout:install`) | Linux CI — installs the scripts/dev harness + chromium since 1.0.6.49 (`web-quality.yml`) |
+| `shellcheck` | `shellcheck` not on `PATH` (whole row SKIP) | Linux CI |
+| `py-unit-*` (pytest-suite.sh), `sh-model-schema` | pytest / a listed dep / `jsonschema` not importable by the first working `python3`/`python`/`py` (whole row SKIP) | Linux CI (`web-quality.yml` installs them) |
+| `update-deploy-skip` | the mode probe: git-bash cannot represent POSIX modes (whole row SKIP — the live one on a Windows box); also no `python3` | WSL / Linux CI |
+| `update-conditional-restart`, `update-recover-boot`, `web-update-launcher-guard` | no `python3` (whole row SKIP) | Linux CI |
+| `cache-bust-r` | no reference state reachable (no `origin/<ver>`, `origin/<ver-1>`, `origin/main`; whole row SKIP) | the local build beat (CI's clean checkout is toothless by design — the row's own header) |
+| `ui-layout` | playwright not installed (whole row SKIP; the skip is a dev-box courtesy; install locally with `npm run ui-layout:install`) | Linux CI — installs the scripts/dev harness + chromium since 1.0.6.49 (`web-quality.yml`) |
 | `cloud-card-smoke` | **never — it does NOT skip**: exit 2 RED without playwright/chromium (deliberate, never a vacuous green); local install = `npm run ui-layout:install` | Linux CI (same install step) |
 | `sh-modal-layout-smoke` | **never — it does NOT skip**: exit 2 RED without playwright/chromium (deliberate); local install = `npm run ui-layout:install` | Linux CI (same install step) |
 | `i18n-dict-contract` | never (node only) | Linux CI |
@@ -24,7 +31,7 @@ by design — a missing optional tool must not block a dev machine — but it me
 | `web-auth-behaviour` | two POSIX-mode asserts skip off Linux | Linux CI |
 | `install-atomic` | case 8b only: MSYS derives a mode from the file body (a `#!` first line reads 755, anything else 644) and ignores `chmod`, so `-m 644` and `-m 755` are indistinguishable | Linux CI |
 | `update-cgroup-escape` | E5's «lock held again» assert only: git-bash has no `flock`, so the harness shims it as a no-op and prints SKIP for that one line | Linux CI |
-| `sudoers-visudo` | `visudo` not on `PATH` (git-bash): the whole row prints SKIP and exits 0, so the runner shows PASS | WSL / Linux CI (`sudo` package) |
+| `sudoers-visudo` | `visudo` not on `PATH` (git-bash): whole row SKIP | WSL / Linux CI (`sudo` package) |
 
 When reporting results, say "skipped", never "passed". A reviewer that reports a
 skipped row as a pass is making a false claim about verification.

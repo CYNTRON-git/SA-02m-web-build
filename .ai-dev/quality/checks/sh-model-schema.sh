@@ -14,8 +14,9 @@
 # positive-only check while guaranteeing nothing.
 #
 # METHOD. Deps-guarded (like .ai-dev/quality/checks/pytest-suite.sh): skips
-# CLEANLY (exit 0, one INFO line) when no python / no `jsonschema` module is
-# present, so local dev without the dep is never blocked; CI installs jsonschema
+# CLEANLY (exit 77 = run.mjs SKIP_EXIT, reported SKIP, one INFO line) when the
+# `jsonschema` module is absent, so local dev without the dep is never blocked
+# (no python at all is a FAIL); CI installs jsonschema
 # (web-quality.yml) and the row is REAL there. Validation uses the stable
 # jsonschema library API (Draft202012Validator) rather than the `python -m
 # jsonschema` CLI the contract's manual recipe names: that CLI is DEPRECATED and
@@ -45,7 +46,7 @@ done
 [ -n "$PY" ] || { echo "$ROW: no working python interpreter"; exit 1; }
 
 if ! "$PY" -c "import jsonschema" >/dev/null 2>&1; then
-    echo "$ROW: python module 'jsonschema' not installed - skipped (installed in CI + dev)"; exit 0
+    echo "$ROW: python module 'jsonschema' not installed - skipped (installed in CI + dev)"; exit 77
 fi
 
 [ -r "$SCHEMA" ]  || { echo "$ROW: schema not readable at $SCHEMA"; exit 1; }

@@ -30,7 +30,7 @@ pass() { printf 'mplc-project-deploy-contract: ok    %s\n' "$*"; }
 for f in "$CGI" "$HELPER" "$LIBPY" "$INSTALLER"; do
     [ -f "$f" ] || fail "missing file: $f"
 done
-[ "$fails" = 0 ] || { printf 'mplc-project-deploy-contract: %s check(s) failed\n' "$fails"; exit "$fails"; }
+[ "$fails" = 0 ] || { printf 'mplc-project-deploy-contract: %s check(s) failed\n' "$fails"; exit 1; }
 
 # ── 1. CGI: auth + CSRF BEFORE any mutation ────────────────────────────────
 if stripped_has "$CGI" 'web_session_check_cookie'; then
@@ -201,4 +201,4 @@ else
 fi
 
 [ "$fails" = 0 ] || printf 'mplc-project-deploy-contract: %s check(s) failed — see docs/contracts/mplc-project-deploy.md\n' "$fails"
-exit "$fails"
+exit $(( fails > 0 ))  # never the count: 77 reads SKIP, 256 reads PASS (run.mjs SKIP_EXIT)

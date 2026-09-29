@@ -290,7 +290,7 @@ PY
 # window this hold protects, and there is no reason to add one when a runtime
 # override does the job. It is NOT the incident's cause: D4 excludes it by
 # timing, and the row that USED to lead there - the HW watchdog after a PID-1
-# stall - is now excluded too, on the board (.ai-dev/8d/bench-136-reset.md, D4
+# stall - is now excluded too, on the board (docs/bugs/bench-136-reset.md, D4
 # addendum). Measured on 1.136, 2026-09-09: taking this hold makes PID 1 CLOSE
 # /dev/watchdog0, so the timer is disarmed rather than merely unfed - the board
 # then survives 40 s past its 16 s hardware timeout, and survives it again
@@ -644,9 +644,11 @@ overlay = Path(os.environ["OVERLAY"])
 meta = Path(os.environ["META"])
 meta.mkdir(parents=True, exist_ok=True)
 
+# One of four copies of the destination allow-list (runner x2, packer, validator);
+# the ota-dst-allowlist-parity row keeps them equal - change all four together.
 DST_RE = re.compile(
     r"^/(var/www/network_config/|usr/local/(sbin|lib|libexec)/|"
-    r"opt/sa02m-[a-z0-9-]+/|opt/mplc4/|"
+    r"opt/sa02m-[a-z0-9-]+/|opt/mplc4/(mplc_cyntron|mplc_protocol_fast_modbus)\.so$|"
     r"etc/systemd/system/sa02m-|"
     r"etc/nginx/|etc/tmpfiles\.d/|etc/sudoers\.d/|"
     r"etc/default/sa02m-|"
@@ -947,9 +949,11 @@ meta = os.path.join(staging, "meta")
 os.makedirs(overlay, exist_ok=True)
 os.makedirs(meta, exist_ok=True)
 
+# One of four copies of the destination allow-list (runner x2, packer, validator);
+# the ota-dst-allowlist-parity row keeps them equal - change all four together.
 DST_RE = re.compile(
     r"^/(var/www/network_config/|usr/local/(sbin|lib|libexec)/|"
-    r"opt/sa02m-[a-z0-9-]+/|opt/mplc4/|"
+    r"opt/sa02m-[a-z0-9-]+/|opt/mplc4/(mplc_cyntron|mplc_protocol_fast_modbus)\.so$|"
     r"etc/systemd/system/sa02m-|"
     r"etc/nginx/|etc/tmpfiles\.d/|etc/sudoers\.d/|"
     r"etc/default/sa02m-|"

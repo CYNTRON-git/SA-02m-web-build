@@ -8,6 +8,7 @@ from __future__ import annotations
 import configparser
 import json
 import logging
+import math
 import os
 import socketserver
 import stat
@@ -273,12 +274,215 @@ def probe_gateway(http_url: Optional[str] = None, timeout: float = C.GATEWAY_PRO
         }
 
 
+# ── Gateway reachability for the status poll ────────────────────────────────
+# The card polls full_config() every 5 s. Probing the gateway on each poll made
+# every status GET pay a 5 s-timeout network round trip and let one slow ping
+# flip the card to «Шлюз недоступен» while the client stayed connected (bench
+# 1.135, 2026-09-28: 8 of 22 polls). The rule and its fields are homed in
+# docs/contracts/alice-mqtt-mapping.md §Gateway reachability.
+
+def _probe_cache_path() -> str:
+    return os.path.join(C.VAR_DIR, "gateway_probe.json")
+
+
+def _probe_lock_path() -> str:
+    return os.path.join(C.VAR_DIR, "gateway_probe.lock")
+
+
+def _read_probe_cache() -> Optional[Dict[str, Any]]:
+    try:
+        with open(_probe_cache_path(), encoding="utf-8") as fh:
+            data = json.load(fh)
+    except (OSError, ValueError):
+        return None
+    if not isinstance(data, dict) or not isinstance(data.get("probe"), dict):
+        return None
+    # Every field the poll computes with is checked here, once: a malformed one
+    # makes the whole cache "no evidence" (refreshed and overwritten) instead of
+    # an exception out of full_config() or a bogus success on record. bool is an
+    # int subclass in Python and is refused explicitly. json.load accepts NaN and
+    # Infinity, so a timestamp must also be finite, and not in the future beyond
+    # the clock skew — a cache written before a backward clock step would
+    # otherwise freeze its verdict until the clock caught up (review A10).
+    horizon = time.time() + C.GATEWAY_PROBE_CLOCK_SKEW_S
+
+    def _stamp_ok(v: Any) -> bool:
+        return (not isinstance(v, bool) and isinstance(v, (int, float))
+                and math.isfinite(v) and v <= horizon)
+
+    if not _stamp_ok(data.get("ts")):
+        return None
+    fail_count = data.get("fail_count", 0)
+    if isinstance(fail_count, bool) or not isinstance(fail_count, int) or fail_count < 0:
+        return None
+    ok_ts = data.get("ok_ts")
+    if ok_ts is not None and not _stamp_ok(ok_ts):
+        return None
+    return data
+
+
+def _record_probe(probe: Dict[str, Any]) -> Dict[str, Any]:
+    """Fold one probe result into the cache (consecutive-failure count, last
+    success) and write it atomically. The state dir is created by
+    tmpfiles.d, never here: without it the result is returned uncached."""
+    now = time.time()
+    prev = _read_probe_cache() or {}
+    ok = bool(probe.get("available"))
+    cache = {
+        "ts": now,
+        "probe": probe,
+        "ok_ts": now if ok else prev.get("ok_ts"),
+        "fail_count": 0 if ok else int(prev.get("fail_count") or 0) + 1,
+    }
+    if os.path.isdir(C.VAR_DIR):
+        tmp = _probe_cache_path() + ".%d.tmp" % os.getpid()
+        try:
+            with open(tmp, "w", encoding="utf-8") as fh:
+                json.dump(cache, fh)
+            os.chmod(tmp, 0o644)
+            os.replace(tmp, _probe_cache_path())
+        except OSError as exc:
+            log.warning("gateway probe cache not written: %s", exc)
+            try:
+                os.unlink(tmp)
+            except OSError:
+                pass
+    return cache
+
+
+def refresh_probe_cache() -> Dict[str, Any]:
+    return _record_probe(probe_gateway())
+
+
+def _take_probe_lock() -> bool:
+    path = _probe_lock_path()
+    for _ in range(2):
+        try:
+            os.close(os.open(path, os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o600))
+            return True
+        except FileExistsError:
+            try:
+                age = time.time() - os.stat(path).st_mtime
+            except OSError:
+                continue  # vanished between the two calls — try again
+            if age <= C.GATEWAY_PROBE_LOCK_STALE_S:
+                return False
+            try:
+                os.unlink(path)  # a refresher killed mid-probe
+            except OSError:
+                return False
+        except OSError:
+            return False
+    return False
+
+
+def _release_probe_lock() -> None:
+    try:
+        os.unlink(_probe_lock_path())
+    except OSError:
+        pass
+
+
+def _spawn_probe_refresh() -> bool:
+    """Refresh the probe cache in a detached grandchild and return at once.
+
+    The CGI's stdout is the pipe its bash wrapper captures, so the grandchild
+    points fds 0-2 at /dev/null before probing — otherwise the response would
+    wait for the probe. setsid() takes it out of the process group the CGI's
+    `timeout` signals. Double fork: the CGI reaps the first child at once and
+    leaves no zombie. Returns False where it cannot run (no fork, no state dir,
+    another refresher holds the lock)."""
+    if not hasattr(os, "fork") or not os.path.isdir(C.VAR_DIR):
+        return False
+    if not _take_probe_lock():
+        return False
+    try:
+        pid = os.fork()
+    except OSError:
+        _release_probe_lock()
+        return False
+    if pid:
+        try:
+            os.waitpid(pid, 0)
+        except OSError:
+            pass
+        return True
+    try:
+        os.setsid()
+        if os.fork():
+            os._exit(0)
+        devnull = os.open(os.devnull, os.O_RDWR)
+        for fd in (0, 1, 2):
+            os.dup2(devnull, fd)
+        try:
+            refresh_probe_cache()
+        finally:
+            _release_probe_lock()
+    except BaseException:  # noqa: BLE001 — a detached child never unwinds into the caller
+        pass
+    os._exit(0)
+
+
+def _client_session_live(status: Dict[str, Any]) -> bool:
+    # A client older than the 30 s heartbeat writes no `ts`; its `connected`
+    # is what link.linked has always trusted. With a `ts`, a file the client
+    # stopped refreshing (killed without a final write) is not proof.
+    if status.get("state") != C.STATE_CONNECTED:
+        return False
+    ts = status.get("ts")
+    if not isinstance(ts, (int, float)):
+        return True
+    return time.time() - ts <= C.STATUS_STALE_S
+
+
+def gateway_reachability(status: Dict[str, Any]) -> Dict[str, Any]:
+    """{available, state, source, probe[, checked_at]} for the status poll."""
+    if _client_session_live(status):
+        return {
+            "available": True,
+            "state": "reachable",
+            "source": "client",
+            "probe": {"ok": True, "available": True, "source": "client"},
+        }
+    cache = _read_probe_cache()
+    now = time.time()
+    if cache is not None:
+        ttl = C.GATEWAY_PROBE_TTL_S if cache["probe"].get("available") else C.GATEWAY_PROBE_RETRY_S
+        due = now - cache["ts"] >= ttl
+    else:
+        due = True
+    if due:
+        if os.environ.get("SA02M_ALICE_PROBE_REFRESH") == "spawn":
+            _spawn_probe_refresh()
+        else:
+            cache = refresh_probe_cache()
+            now = time.time()
+    if cache is None or now - cache["ts"] > C.GATEWAY_PROBE_MAX_AGE_S:
+        return {
+            "available": False,
+            "state": "checking",
+            "source": "probe",
+            "probe": cache["probe"] if cache else None,
+        }
+    probe = cache["probe"]
+    available = bool(probe.get("available")) or bool(
+        cache.get("ok_ts") and int(cache.get("fail_count") or 0) < C.GATEWAY_PROBE_FAIL_THRESHOLD
+    )
+    return {
+        "available": available,
+        "state": "reachable" if available else "unreachable",
+        "source": "probe",
+        "probe": probe,
+        "checked_at": int(cache["ts"]),
+    }
+
+
 def full_config() -> Dict[str, Any]:
     cfg = default_client_cfg()
     _wss, http, _path = gateway_urls()
     devices = load_devices()
     status = read_status_file()
-    probe = probe_gateway(http)
+    reach = gateway_reachability(status)
     enabled = client_enabled(cfg)
     cert_present, cert_check = cert_presence(status)
     connected = status.get("state") == C.STATE_CONNECTED
@@ -307,8 +511,14 @@ def full_config() -> Dict[str, Any]:
         "gateway": {
             "wss_url": _wss,
             "http_url": http,
-            "available": bool(probe.get("available")),
-            "probe": probe,
+            "available": reach["available"],
+            # reachable | unreachable | checking (no evidence yet — the UI
+            # shows a neutral «проверка», never «недоступен»)
+            "state": reach["state"],
+            # client (live session is the proof) | probe (cached ping)
+            "source": reach["source"],
+            "checked_at": reach.get("checked_at"),
+            "probe": reach["probe"],
         },
         "mtls": {
             # True / False when known; None when this process cannot tell
@@ -321,7 +531,7 @@ def full_config() -> Dict[str, Any]:
         "status": status,
         # Read-only: the scenes marked «в Алису» in the cloud editor, shown
         # on the «Умный дом» card beside the bound devices. One 0644 JSON
-        # read per Alice poll, beside the gateway probe already here. An
+        # read per Alice poll, beside the status-file read already here. An
         # older cached bundle simply ignores the key; a newer bundle against
         # an older CGI renders no rows (`(d.scene_devices || [])`).
         "scene_devices": scene_devices.web_scene_rows(devices),
@@ -336,7 +546,7 @@ def full_config() -> Dict[str, Any]:
             "linked": bool(
                 enabled
                 and cert_present is not False
-                and probe.get("available")
+                and reach["available"]
                 and connected
             ),
             "state": status.get("state") or ("disabled" if not enabled else "unknown"),

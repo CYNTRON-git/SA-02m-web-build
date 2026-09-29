@@ -178,6 +178,10 @@ function aliceFriendlyStatus(d) {
   const avail = !!(d.gateway && d.gateway.available);
   const st = (d.status && d.status.state) || (enabled ? 'unknown' : 'disabled');
   if (!enabled) return { text: 'Отключено', kind: 'unk' };
+  // No evidence yet (the backend's cached probe is still being taken —
+  // docs/contracts/alice-mqtt-mapping.md §Gateway reachability): a missing
+  // answer is not a negative one, so the pill stays neutral.
+  if (!avail && d.gateway && d.gateway.state === 'checking') return { text: 'Проверка шлюза…', kind: 'unk' };
   if (!avail) {
     const probe = d.gateway && d.gateway.probe;
     const raw = (probe && probe.message) || '';
@@ -186,6 +190,15 @@ function aliceFriendlyStatus(d) {
   }
   const entry = ALICE_STATE_MAP[st] || ALICE_STATE_MAP.unknown;
   return { text: entry[0], kind: entry[1] };
+}
+
+// The «Шлюз» badge: same three-way reading as the pill (reachable /
+// unreachable / checking); an older backend without `state` is two-way.
+function aliceGatewayBadge(d) {
+  const gw = d.gateway || {};
+  if (gw.available) return { text: 'Доступен', kind: 'ok' };
+  if (gw.state === 'checking') return { text: 'Проверяется', kind: 'unk' };
+  return { text: 'Недоступен', kind: 'err' };
 }
 
 // Listeners riding this file's poll (smarthome.js). A listener registered
@@ -229,7 +242,8 @@ function aliceRender(d) {
   const friendly = aliceFriendlyStatus(d);
 
   aliceSetBadge($('alice-svc-state'), enabled ? 'Включен' : 'Выключен', enabled ? 'ok' : 'unk');
-  aliceSetBadge($('alice-gw-state'), avail ? 'Доступен' : 'Недоступен', avail ? 'ok' : 'err');
+  const gwBadge = aliceGatewayBadge(d);
+  aliceSetBadge($('alice-gw-state'), gwBadge.text, gwBadge.kind);
   aliceSetBadge($('alice-conn-state'), entry[0], entry[1]);
 
   // mtls.cert_present is tri-state: true / false / null-or-absent (the API could
@@ -473,11 +487,12 @@ let _aliceFastPollGen = 0;
 // restart, enable/disable), the 5 s cadence makes the card look stuck for
 // several seconds. Poll faster for a short window instead.
 //
-// CHAINED, never setInterval: the status endpoint probes the gateway with a
-// 5 s timeout inside its own CGI, so a fixed-rate 1 Hz timer would stack
-// overlapping requests on a slow uplink — exactly the post-enrollment case —
-// and hold several of the 8 shared fcgiwrap workers (web-code-rigor
-// ## Architecture: no per-request network work piled onto a polled endpoint).
+// CHAINED, never setInterval: each status GET forks bash + python on the
+// shared board (the gateway probe itself is cached and refreshed off the
+// request since 1.0.6.58 — docs/contracts/alice-mqtt-mapping.md §Gateway
+// reachability), so a fixed-rate 1 Hz timer could still stack overlapping
+// requests on a loaded board and hold several of the 8 shared fcgiwrap
+// workers (web-code-rigor ## Architecture).
 // Each tick waits for its own refresh to settle, and the window ends early
 // once the state stops being transitional.
 const ALICE_POLL_MS = 5000;

@@ -69,7 +69,7 @@ SA-02m-2 `192.168.0.136`), открывает `http://<ip>:9999` , входит 
 5. **Удалённый доступ через облако** `[?]` — `docs/contracts/cloud-enrollment.md`,
    `docs/contracts/cloud-agent-status.md`.
 6. **Голосовое управление и сценарии** `[?]` — `docs/contracts/alice-mqtt-mapping.md`,
-   `docs/contracts/cloud-scenarios.md`, `docs/contracts/sh-model.md`.
+   `docs/contracts/cloud-scenarios.md`; `docs/contracts/sh-model.md` — проект, не реализован.
 7. **Архив и графики приборов** `[?]` — `docs/contracts/devices-mr-history.md`,
    `docs/contracts/carel-ahu.md`.
 

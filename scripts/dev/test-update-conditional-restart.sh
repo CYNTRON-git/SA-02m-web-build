@@ -93,7 +93,7 @@ set -u
 cd "$(dirname "${BASH_SOURCE[0]}")/../.." || exit 1
 
 SRC="${UPDATE_RUNNER_SRC:-etc/sa02m-update-runner.sh}"
-command -v python3 >/dev/null 2>&1 || { echo "SKIP  python3 unavailable (runner requires it)"; exit 0; }
+command -v python3 >/dev/null 2>&1 || { echo "SKIP  python3 unavailable (runner requires it)"; exit 77; }  # run.mjs SKIP_EXIT
 T=$(mktemp -d) || exit 1
 trap 'rm -rf "$T"' EXIT
 # TW: the sandbox root in the form python receives (header, class 2).

@@ -3,7 +3,7 @@
 # test-offline-update-wrapper.sh — regression harness for the offline wrapper
 # (scripts/offline-full-update.sh): the post-check table (D5 step D) and the
 # detached launch line (D5 step E). Quality row `offline-update-wrapper`.
-# 8D bench-136 reset (.ai-dev/8d/bench-136-reset.md).
+# 8D bench-136 reset (docs/bugs/bench-136-reset.md).
 #
 # Comment-mutation: section 6 pins live lines and IS registered in
 # comment-mutation-proof (commenting the launch line out turns 6a RED on

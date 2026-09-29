@@ -3,7 +3,7 @@
 # test-watchdog-hold.sh — regression harness for the runtime-watchdog hold
 # shared by install.sh (scripts/lib.sh), etc/sa02m-update-runner.sh and
 # etc/sa02m-factory-reset-runner.sh. Quality row `watchdog-hold`.
-# 8D bench-136 reset (.ai-dev/8d/bench-136-reset.md, D5 G).
+# 8D bench-136 reset (docs/bugs/bench-136-reset.md, D5 G).
 #
 # Why this exists: the runners' precedent guard was
 # `systemctl set-property --runtime Manager RuntimeWatchdogSec=0 … || true`

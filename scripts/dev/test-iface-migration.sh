@@ -105,4 +105,4 @@ grep -q 'metric 100' "$CD/eth1.conf" && ok "eth1 options carried over" || bad "e
 
 echo "---"
 if [ "$fails" = 0 ]; then echo "iface-migration: all checks passed"; else echo "iface-migration: $fails check(s) FAILED"; fi
-exit "$fails"
+exit $(( fails > 0 ))  # never the count: 77 reads SKIP, 256 reads PASS (run.mjs SKIP_EXIT)

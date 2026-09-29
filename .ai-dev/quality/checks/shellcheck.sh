@@ -14,7 +14,7 @@ set -u
 
 if ! command -v shellcheck >/dev/null 2>&1; then
   echo "shellcheck: skipped (not installed here; CI/Linux runs it)"
-  exit 0
+  exit 77  # run.mjs SKIP_EXIT: reported SKIP, never PASS
 fi
 
 # Scope = every Bash surface in the repo: CGI endpoints and libs, device

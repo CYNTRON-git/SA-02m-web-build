@@ -111,10 +111,11 @@
 
    Usage:   node .ai-dev/quality/checks/ui-layout.mjs
             npm run ui-layout           (after: npm run ui-layout:install)
-   Skips gracefully (exit 0) when playwright / chromium is absent — CI has no
-   browser, so this is an on-demand real-layer check, not a headless-less gate.
-   Honesty about what that costs: a skipped row is reported as skipped, never as
-   passed (.ai-dev/notes/quality-gate-environment.md). The row that used to sit
+   Skips (exit 77, run.mjs SKIP_EXIT — the runner prints SKIP, never PASS) when
+   playwright / chromium is absent: a dev-box courtesy only. Linux CI installs the
+   scripts/dev harness + chromium (web-quality.yml, since 1.0.6.49), so there the
+   row RUNS; a skip is reported as a skip, never as a pass
+   (.ai-dev/notes/quality-gate-environment.md). The row that used to sit
    beside this one under the same contract, `headless-smoke`, was RETIRED in
    1.0.6.24 for exactly that reason — it needed a live board too, so it skipped
    in every environment it was ever invoked in, CI included, while reporting
@@ -763,7 +764,7 @@ async function run() {
   const pw = await loadPlaywright();
   if (!pw) {
     console.log('ui-layout: skipped — playwright not installed (run: npm run ui-layout:install)');
-    process.exit(0);
+    process.exit(77); // run.mjs SKIP_EXIT: reported SKIP, never PASS
   }
   let browser;
   try {
@@ -773,7 +774,7 @@ async function run() {
     if (/Executable doesn't exist|please run the following command|npx playwright install|download.*browser|Looks like Playwright/i.test(msg)) {
       console.log('ui-layout: skipped — chromium browser not installed (run: npm run ui-layout:install)');
       console.log('  ' + msg.split('\n')[0]);
-      process.exit(0);
+      process.exit(77); // run.mjs SKIP_EXIT
     }
     throw e;
   }

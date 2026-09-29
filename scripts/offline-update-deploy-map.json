@@ -1,20 +1,6 @@
 {
   "schema_version": 1,
   "purpose": "CI/review and pack-offline-update.py only. Never read on the device. Runtime allowlist is manifest.deploy[].",
-  "dst_prefix_allowlist": [
-    "/var/www/network_config/",
-    "/usr/local/sbin/",
-    "/usr/local/lib/",
-    "/usr/local/libexec/",
-    "/opt/sa02m-",
-    "/opt/mplc4/",
-    "/etc/systemd/system/sa02m-",
-    "/etc/nginx/",
-    "/etc/tmpfiles.d/",
-    "/etc/sudoers.d/",
-    "/etc/default/",
-    "/etc/sa02m-update/trusted-keys/"
-  ],
   "prefix_rules": [
     {
       "src_prefix": "www/network_config/",

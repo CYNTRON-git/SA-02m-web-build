@@ -74,4 +74,4 @@ print('ok')
     || fail "offline deploy-map wrong mode for extension-less sbin helpers"
 
 [ "$fails" = 0 ] || printf 'ota-deploy-mode-contract: %s check(s) failed — see private/BUG-ota-mode-0644.md\n' "$fails"
-exit "$fails"
+exit $(( fails > 0 ))  # never the count: 77 reads SKIP, 256 reads PASS (run.mjs SKIP_EXIT)

@@ -548,4 +548,4 @@ warned && bad "WARNed about a foreign head it correctly left alone" || ok "forei
 
 echo "---"
 if [ "$fails" = 0 ]; then echo "iface-gw-repair: all checks passed"; else echo "iface-gw-repair: $fails check(s) FAILED"; fi
-exit "$fails"
+exit $(( fails > 0 ))  # never the count: 77 reads SKIP, 256 reads PASS (run.mjs SKIP_EXIT)

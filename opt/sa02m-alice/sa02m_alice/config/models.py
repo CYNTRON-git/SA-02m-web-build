@@ -70,6 +70,11 @@ CLOUD_ONLY_FLOAT_INSTANCES = {
     "heat_valve",
     "fan_speed",
     "fan_step",
+    # CE-02m-3 mains frequency (unit.hertz) on the «Фаза А/В/С» devices —
+    # Yandex has no Hz instance. Documents on the bench boards carry it from
+    # the unshipped 1.0.6.36 auto-provision; without this row they could not
+    # be re-saved (1.0.6.58).
+    "frequency",
 }
 
 # Mode-capability instances → the values Yandex accepts. Unlike the cloud-only

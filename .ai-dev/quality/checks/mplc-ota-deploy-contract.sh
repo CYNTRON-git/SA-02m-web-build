@@ -66,4 +66,4 @@ stripped_has opt/sa02m-update/lib/validate_package.py 'opt/mplc4/(mplc_cyntron|m
     || fail "validate_package missing /opt/mplc4 plugin allow"
 
 [ "$fails" = 0 ] || printf 'mplc-ota-deploy-contract: %s check(s) failed\n' "$fails"
-exit "$fails"
+exit $(( fails > 0 ))  # never the count: 77 reads SKIP, 256 reads PASS (run.mjs SKIP_EXIT)

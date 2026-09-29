@@ -138,7 +138,7 @@ fi
 # timeout (etc/systemd/sa02m-watchdog.conf). An installer that starves PID 1
 # — I/O bursts on eMMC with the update tree in tmpfs — is then a HARD RESET,
 # which is what left bench 1.136 with a 0-byte unit file and five minutes of
-# unwritten log (.ai-dev/8d/bench-136-reset.md D4). Steps A/B make the tree
+# unwritten log (docs/bugs/bench-136-reset.md D4). Steps A/B make the tree
 # survive such a reset; this makes the reset itself less likely.
 # Never fatal, always honest: the helper READS THE PROPERTY BACK, so a manager
 # that ignores the write (systemd < 250) is reported, not assumed.
@@ -205,7 +205,7 @@ fi
 # then tears at most ONE module's writes. Bench 1.136 (ext4 commit=600) lost
 # the last five minutes of installer writes to the page cache — the durable log
 # stopped at 22:14:43 while the run went on to 22:20
-# (.ai-dev/8d/bench-136-reset.md; order pinned by scripts/dev/test-installer-order.sh).
+# (docs/bugs/bench-136-reset.md; order pinned by scripts/dev/test-installer-order.sh).
 # The module's exit code is returned unchanged: a mandatory module aborts the
 # installer under set -e, an optional one is `|| log WARN` at its call site.
 sa02m_run_module() {

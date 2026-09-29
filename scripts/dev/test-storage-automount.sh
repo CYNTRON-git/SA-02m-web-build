@@ -589,4 +589,4 @@ if [ "$fails" = 0 ]; then
 else
     echo "storage-automount-decision: $fails check(s) FAILED"
 fi
-exit "$fails"
+exit $(( fails > 0 ))  # never the count: 77 reads SKIP, 256 reads PASS (run.mjs SKIP_EXIT)

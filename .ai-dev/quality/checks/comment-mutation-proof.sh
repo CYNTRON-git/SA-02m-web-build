@@ -94,6 +94,7 @@ set -uo pipefail
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../../.." && pwd)"
 
 fails=0
+skips=0
 ok()  { printf 'comment-mutation-proof: ok    %s\n' "$*"; }
 bad() { printf 'comment-mutation-proof: FAIL  %s\n' "$*"; fails=$((fails + 1)); }
 
@@ -167,6 +168,14 @@ update-recover-boot|scripts/pack-offline-update.py|"sa02m-update-verify.service"
 update-recover-boot|etc/sa02m-update-runner.sh|trap '"'"'exit 143'"'"' INT TERM
 no-absolute-api-paths|www/network_config/static/js/devices.js|"api/devices
 flasher-auth-header-strip|etc/nginx/network_config.conf|X-SA02M-Auth  "";
+ota-dst-allowlist-parity|opt/sa02m-update/lib/validate_package.py|re.compile(r"^/etc/nginx/"),
+ota-dst-allowlist-parity|scripts/pack-offline-update.py|r"etc/systemd/system/sa02m-|"
+ota-dst-allowlist-parity|etc/sa02m-update-runner.sh|r"etc/systemd/system/sa02m-|"
+journal-on-disk-policy|etc/systemd/sa02m-journald.conf|Storage=persistent
+journal-on-disk-policy|etc/systemd/sa02m-journald.conf|SyncIntervalSec=1m
+journal-on-disk-policy|etc/default/armbian-ramlog|ENABLED=false
+journal-on-disk-policy|scripts/01-system.sh|sa02m_atomic_install -m 644 "$ETC_REPO/default/armbian-ramlog"
+journal-on-disk-policy|scripts/01-system.sh|sa02m_atomic_install -m 644 "$ETC_REPO/systemd/sa02m-journald.conf"
 '
 
 command -v git >/dev/null 2>&1 || { echo "comment-mutation-proof: FAIL — git is required to build the pristine copy"; exit 1; }
@@ -273,13 +282,24 @@ comment_token() {  # $1 = path ; prints `#`, `//`, or `html`
 }
 
 # One green baseline per gate, cached: a gate that is already RED would make
-# every mutation below look successful.
+# every mutation below look successful. A gate that SKIPS here (exit 77, run.mjs
+# SKIP_EXIT — its tool is not installed) cannot be measured on this host: its
+# cases are reported SKIP and counted, never ok and never FAIL, because a
+# mutation under a skipping gate would "stay green" for a reason that has
+# nothing to do with the pin. Returns 0 = green, 1 = red, 2 = skipped.
+# Reading 77 as "skip" relies on no gate exiting 77 by counting failures:
+# run.test.mjs section F scans every registry-run script's own exit shapes
+# (literal / boolean / marked) — within the scope it states, not sourced
+# files or a trailing `return "$var"` (review F1/F5, 1.0.6.58).
 declare -A baseline_done=()
 green_baseline() {  # $1 = gate id
-    local g="$1"
+    local g="$1" rc
     [ -n "${baseline_done[$g]:-}" ] && return "${baseline_done[$g]}"
-    if run_gate "$g"; then
+    run_gate "$g"; rc=$?
+    if [ "$rc" -eq 0 ]; then
         baseline_done[$g]=0
+    elif [ "$rc" -eq 77 ]; then
+        baseline_done[$g]=2
     else
         baseline_done[$g]=1
         bad "$g is not green on an unmutated tree — its mutation results below prove nothing"
@@ -297,7 +317,13 @@ while IFS='|' read -r gate file needle; do
         bad "$gate: target file $file is absent from HEAD — the pin moved; re-point this case"
         continue
     fi
-    green_baseline "$gate" || continue
+    green_baseline "$gate"; brc=$?
+    if [ "$brc" -eq 2 ]; then
+        printf "comment-mutation-proof: SKIP  %s skips in this environment (exit 77) — its case on '%s' in %s is NOT measured here\n" "$gate" "$needle" "$file"
+        skips=$((skips + 1))
+        continue
+    fi
+    [ "$brc" -eq 0 ] || continue
 
     cp "$TREE/$file" "$PRISTINE/current"
     # Comment out every non-comment line carrying the pinned text. index() is a
@@ -337,8 +363,11 @@ while IFS='|' read -r gate file needle; do
     fi
     cp "$TMP/mutated" "$TREE/$file"
 
-    if run_gate "$gate"; then
+    run_gate "$gate"; mrc=$?
+    if [ "$mrc" -eq 0 ]; then
         bad "$gate stays GREEN with '$needle' commented out in $file — the gate is hollow"
+    elif [ "$mrc" -eq 77 ]; then
+        bad "$gate turns into a SKIP (exit 77) with '$needle' commented out in $file — a skip is not RED, the gate is hollow"
     else
         ok "$gate goes RED when '$needle' is commented out in $file"
     fi
@@ -456,7 +485,11 @@ coverage_check
 
 echo
 if [ "$fails" -eq 0 ]; then
-    echo "comment-mutation-proof: ALL OK — $n_cases comment-out mutation(s) each turned their gate RED"
+    if [ "$skips" -gt 0 ]; then
+        echo "comment-mutation-proof: ALL OK — $((n_cases - skips)) of $n_cases comment-out mutation(s) each turned their gate RED; $skips SKIPPED (the gate skips in this environment — not measured here, CI is the authority)"
+    else
+        echo "comment-mutation-proof: ALL OK — $n_cases comment-out mutation(s) each turned their gate RED"
+    fi
     exit 0
 fi
 echo "comment-mutation-proof: $fails FAILURE(S)"

@@ -8,8 +8,10 @@
 #
 # Usage: pytest-suite.sh <row-id> <daemon-dir> [import-dep ...]
 #
-# Skips CLEANLY (exit 0, one INFO line) when no python / pytest / a listed
-# runtime dep is missing, so local dev without the device deps is never blocked.
+# Skips CLEANLY (exit 77 = run.mjs SKIP_EXIT, one INFO line) when pytest or a
+# listed runtime dep is missing: the runner prints SKIP (never PASS) and the beat
+# stays green, so local dev without the device deps is never blocked. No python
+# interpreter at all is a FAIL, not a skip.
 # The gate is made REAL in CI, where .github/workflows/web-quality.yml installs
 # pytest + the deps (the same skipped-locally / runs-in-CI contract the lint row
 # uses). It runs `pytest <daemon-dir>/tests` from inside the daemon dir (the
@@ -30,11 +32,11 @@ done
 [ -n "$PY" ] || { echo "$id: no working python interpreter"; exit 1; }
 
 if ! "$PY" -c "import pytest" >/dev/null 2>&1; then
-    echo "$id: pytest not installed — skipped (installed in CI + dev)"; exit 0
+    echo "$id: pytest not installed — skipped (installed in CI + dev)"; exit 77
 fi
 for m in "$@"; do
     if ! "$PY" -c "import $m" >/dev/null 2>&1; then
-        echo "$id: runtime dep '$m' missing — skipped (installed in CI)"; exit 0
+        echo "$id: runtime dep '$m' missing — skipped (installed in CI)"; exit 77
     fi
 done
 

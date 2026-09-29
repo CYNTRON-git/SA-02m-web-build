@@ -4,7 +4,7 @@
     "id": "short stable name",
     "checks": "one plain line: what this tool catches",
     "config": "path to its native config beside this file, or null if none",
-    "run": "the command to run it (from the project root — the runner's cwd)",
+    "run": "the command to run it (from the project root — the runner's cwd). Exit 0 = PASS; exit 77 = SKIP (the row could not run in this environment — printed SKIP, never PASS, beat stays green; the convention's home is run.mjs's header); any other status = FAIL",
     "beat": "build | review | ship",
     "covers": "optional array of path prefixes/globs; run.mjs --touched runs a row only when the diff touches a covered path (rows without covers always run)",
     "init": "one line: how to install/enable it",
@@ -142,7 +142,7 @@
       "config": null,
       "run": "bash scripts/dev/test-alice-reload-handshake.sh",
       "beat": "build",
-      "covers": ["opt/sa02m-alice/", "usr/local/sbin/sa02m-alice-web-trigger.sh", "scripts/dev/test-alice-reload-handshake.sh"],
+      "covers": ["opt/sa02m-alice/", "usr/local/sbin/sa02m-alice-web-trigger.sh", "scripts/dev/test-alice-reload-handshake.sh", "docs/contracts/alice-mqtt-mapping.md"],
       "init": "bash + grep + sed + mktemp (present everywhere the project builds) — run on demand: bash scripts/dev/test-alice-reload-handshake.sh"
     },
     {
@@ -151,7 +151,7 @@
       "config": null,
       "run": "bash scripts/dev/test-alice-topics-cgi.sh",
       "beat": "build",
-      "covers": ["www/network_config/cgi-bin/sa02m_alice_topics.cgi", "www/network_config/cgi-bin/lib_web_auth.sh", "opt/sa02m-alice/sa02m_alice/config/topics.py", "opt/sa02m-alice/sa02m_alice/config/inventory.py", "scripts/dev/test-alice-topics-cgi.sh"],
+      "covers": ["www/network_config/cgi-bin/sa02m_alice_topics.cgi", "www/network_config/cgi-bin/lib_web_auth.sh", "opt/sa02m-alice/sa02m_alice/config/topics.py", "opt/sa02m-alice/sa02m_alice/config/inventory.py", "scripts/dev/test-alice-topics-cgi.sh", "docs/contracts/alice-mqtt-mapping.md"],
       "init": "bash + python3 + coreutils timeout (present everywhere the project builds) — run on demand: bash scripts/dev/test-alice-topics-cgi.sh"
     },
     {
@@ -255,12 +255,12 @@
     },
     {
       "id": "sudoers-visudo",
-      "checks": "Syntax of every committed sudoers drop-in: `visudo -cf` over etc/sudoers.d/* (CR stripped first, as the legacy launcher does). A malformed drop-in breaks sudo globally on the board — every root CGI helper and the update launcher itself; the deploy paths (installer, OTA runner since 1.0.6.54, legacy launcher) refuse one only at install time on the device, and sudoers-pin-contract pins grants, not syntax (audit 2026-09-24, M2). Non-vacuous: no drop-in found FAILS. Where visudo is absent (Windows git-bash) the script prints a loud SKIP line and exits 0 — run.mjs has no skip status, so the row reads PASS there; recorded in .ai-dev/notes/quality-gate-environment.md, WSL/Linux CI is the authority. RED observed 2026-09-24 under WSL: SUDOERS_VISUDO_DIR=<copy with `NOPASSWD /bin/true` (no colon) appended to sa02m-www> → «FAIL … sa02m-www … syntax error», rc=1; an empty dir → «no drop-in found», rc=1; the six real files → ALL OK.",
+      "checks": "Syntax of every committed sudoers drop-in: `visudo -cf` over etc/sudoers.d/* (CR stripped first, as the legacy launcher does). A malformed drop-in breaks sudo globally on the board — every root CGI helper and the update launcher itself; the deploy paths (installer, OTA runner since 1.0.6.54, legacy launcher) refuse one only at install time on the device, and sudoers-pin-contract pins grants, not syntax (audit 2026-09-24, M2). Non-vacuous: no drop-in found FAILS. Where visudo is absent (Windows git-bash) the script prints a loud SKIP line and exits 77 — the runner reports the row as SKIP, never PASS (since 1.0.6.58; recorded in .ai-dev/notes/quality-gate-environment.md), WSL/Linux CI is the authority. RED observed 2026-09-24 under WSL: SUDOERS_VISUDO_DIR=<copy with `NOPASSWD /bin/true` (no colon) appended to sa02m-www> → «FAIL … sa02m-www … syntax error», rc=1; an empty dir → «no drop-in found», rc=1; the six real files → ALL OK.",
       "config": null,
       "run": "bash .ai-dev/quality/checks/sudoers-visudo.sh",
       "beat": "build",
       "covers": ["etc/sudoers.d/", ".ai-dev/quality/checks/sudoers-visudo.sh"],
-      "init": "bash + visudo (sudo package; absent on Windows git-bash → loud SKIP)"
+      "init": "bash + visudo (sudo package; absent on Windows git-bash → loud SKIP, exit 77)"
     },
     {
       "id": "mplc-ota-deploy-contract",
@@ -270,6 +270,15 @@
       "beat": "build",
       "covers": ["firmware/mplc4/", "etc/sa02m-update-runner.sh", "scripts/offline-update-allowlist.txt", "scripts/offline-update-deploy-map.json", "scripts/update-www-only.sh", "opt/sa02m-update/lib/validate_package.py", ".ai-dev/quality/checks/mplc-ota-deploy-contract.sh"],
       "init": "bash + grep + python3"
+    },
+    {
+      "id": "ota-dst-allowlist-parity",
+      "checks": "The OTA destination allow-list (which live paths an update may write, as root) has four homes - etc/sa02m-update-runner.sh twice (DST_RE in the GitHub manifest builder and in the offline-package extract), scripts/pack-offline-update.py (DST_PREFIX_RE) and opt/sa02m-update/lib/validate_package.py (_DST_PREFIX_RES) - and they must admit the SAME set. Each home is parsed as Python with `ast` (a commented-out alternative vanishes exactly as at run time), the alternations are split at their top-level `|` and the four alternative sets must be identical; then every home's COMPILED predicate is driven over a probe table - 14 allowed destinations accepted, 12 near misses refused (another /opt/mplc4 file, a plugin with a suffix or a sub-path, /etc/default/grub, /usr/local/bin, the dhcp hook with a suffix, a non-sa02m unit) - so four homes drifting wide together still FAIL. Also FAILS if scripts/offline-update-deploy-map.json grows a `dst_prefix_allowlist` again (an unread fifth copy that had drifted; removed in 1.0.6.58). Non-vacuous: exactly two runner blocks, >=10 alternatives per home, every home answering every probe. RED observed 2026-09-28 on the 1.0.6.56 tree: 16 failures - both runner blocks admitting any /opt/mplc4/ path (start_mplc4.sh, other_plugin.so, mplc_cyntron.so.bak, sub/mplc_cyntron.so), the packer's plugin alternative without its `$` admitting mplc_cyntron.so.bak, and the deploy-map copy present (audit 2026-09-24 L2); GREEN after narrowing both runner blocks to the closed plugin set, anchoring the packer's, and deleting the deploy-map copy. Comment-out mutation cased in comment-mutation-proof for the validator, the packer and the runner.",
+      "config": null,
+      "run": "bash .ai-dev/quality/checks/ota-dst-allowlist-parity.sh",
+      "beat": "build",
+      "covers": ["etc/sa02m-update-runner.sh", "scripts/pack-offline-update.py", "opt/sa02m-update/lib/validate_package.py", "scripts/offline-update-deploy-map.json", ".ai-dev/quality/checks/ota-dst-allowlist-parity.sh"],
+      "init": "bash + python3 (stdlib ast/re)"
     },
     {
       "id": "ota-deploy-mode-contract",
@@ -288,6 +297,15 @@
       "beat": "build",
       "covers": ["etc/", "scripts/", "install.sh", "opt/sa02m-mqtt-opcua/", ".ai-dev/quality/checks/kernel-policy-contract.sh", "docs/contracts/kernel-conditional-services.md"],
       "init": "bash + grep (present everywhere the project builds)"
+    },
+    {
+      "id": "journal-on-disk-policy",
+      "checks": "The journal-on-disk policy (1.0.6.51) in the repo, not only on a board: etc/systemd/sa02m-journald.conf read as journald reads it ([Journal] section, `#`/`;` ignored, the LAST assignment wins) must yield Storage=persistent and SyncIntervalSec=1m; etc/default/armbian-ramlog read as the Armbian scripts source it (last non-comment ENABLED=, quotes stripped) must yield false; and scripts/01-system.sh must still install both (comment-stripped) with the Armbian file FIRST. The effective value is compared, so a later override (Storage=volatile below the pinned line, ENABLED=\"true\" appended) FAILS, not only a missing line. Until this row the policy was checked only on a board (verify-release-on-board.sh check 14), so a comment-out stayed green in the repo (audit 2026-09-24 L3). Non-vacuous: a missing file, a missing [Journal] section or an unset key FAILS. RED observed 2026-09-28 on a copy of the tree for each of: Storage= commented, SyncIntervalSec= commented, Storage=volatile appended, [Journal] commented, ENABLED= commented, ENABLED=\"true\" appended, each 01-system.sh install line commented, armbian-ramlog deleted; GREEN on the real tree. Comment-out mutation cased in comment-mutation-proof for all four pinned lines.",
+      "config": null,
+      "run": "bash .ai-dev/quality/checks/journal-on-disk-policy.sh",
+      "beat": "build",
+      "covers": ["etc/systemd/sa02m-journald.conf", "etc/default/armbian-ramlog", "scripts/01-system.sh", ".ai-dev/quality/checks/journal-on-disk-policy.sh", ".ai-dev/quality/checks/lib_check.sh"],
+      "init": "bash + awk + grep (lib_check.sh)"
     },
     {
       "id": "watchdog-cap",
@@ -403,7 +421,7 @@
       "config": null,
       "run": "bash .ai-dev/quality/checks/health-gate-operator-disabled.sh",
       "beat": "build",
-      "covers": ["etc/sa02m-update-runner.sh", ".ai-dev/quality/checks/health-gate-operator-disabled.sh"],
+      "covers": ["etc/sa02m-update-runner.sh", ".ai-dev/quality/checks/health-gate-operator-disabled.sh", "docs/contracts/web-update.md"],
       "init": "bash + sed + grep (present everywhere the project builds)"
     },
     {
@@ -417,11 +435,11 @@
     },
     {
       "id": "update-deploy-skip",
-      "checks": "Functional RED/GREEN regression for the deploy-skip guard in the update runner (etc/sa02m-update-runner.sh apply_deploy_items + its is_unchanged predicate) — a web update re-installed ALL ~344 deploy files every run (cp -a backup + install-to-tmp + 2x fsync + a python3 journal spawn PER FILE) even when a patch release changed only a handful (Operator: 'обновление ставит все 300+ файлов заново, даже если изменились единицы'). Extracts the SHIPPED is_unchanged / apply_deploy_items / journal_append / atomic_install_file / rollback_from_journal (literal-prefix awk slices, portable across mawk/gawk), stubs only txn (file-backed, survives the deploy loop's subshell) / log / manifest_path, and runs a mixed deploy against a sandbox manifest whose owner axis is the test user's own id (non-root). Asserts: an identical file (content AND mode AND owner) is SKIPPED — no journal line, no backup, dst inode+mtime untouched; a content-changed file still deploys with its replace journal line; a right-content wrong-mode file (0644-vs-0755) is RE-DEPLOYED (the over-skip tripwire); files_done==files_total with skips counted (the recover-verify invariant); and rollback restores the changed file while leaving the skipped file intact (the 1.0.6.2 recovery contract). No root, no device. Non-vacuous: a broken extraction FAILS; the guard-presence check keeps the drive-to-failure run (UPDATE_RUNNER_SRC=main) RED on the skip assertion while the changed-content/wrong-mode assertions stay the over-skip tripwires. Since 1.0.6.40 (case 4b/5b): when the sandbox manifest deploys the runner binary, stamp_runner_version_after_deploy writes the manifest version to $RUNNER_VERSION_FILE through a journal record; a manifest without the runner leaves the stamp untouched; rollback restores the pre-update stamp — a pre-1.0.6.40 runner (no stamp function) FAILS 4b. Since 1.0.6.54 (fast OTA — the 33-minute deploy was ~2,100 python3 starts, four per item): case 4c/4d the progress cadence is time-based (SA02M_UPDATE_PROGRESS_S, 0 in the harness ⇒ every item patches; sequence 0 1 2 3 4) and the final files_done==files_total patch is issued exactly once; case 6 the fsync order per changed file is traced through `sync`/`mv` function shims — sync -d backup → sync -d journal → sync -d tmp → mv → sync dir (the rollback copy durable BEFORE the journal line naming it, the line durable BEFORE the rename it describes; the backup step since round 7); case 7 a dst carrying `\"` and `\\` gets a journal line that json.loads parses with keys op/dst/backup/mode/owner and rolls back (the old string-built line raised and failed the whole apply); case 8 a 100-item manifest (90 unchanged / 10 changed) under a counting python3 PATH shim starts python3 at most twice in apply_deploy_items, the count and this host's wall time printed as an info line. RED observed 2026-09-24 on 3c98af0 under WSL: 6 FAIL (sequence 0 4 4; no sync -d in the trace; quote-dst rc=1, no journal line, rollback unproven; 432 starts). Cases 9a/9b (review 1.0.6.54 F1, pre-existing on main): `install`/`mv` forwarders refuse one item's destination — the apply must FAIL (rc=1, `ERROR: atomic install failed: <dst>` logged, files_done < files_total, no *.tmp.* left) and rollback over the partial journal restores the earlier item; RED on 5ac004c: rc=0, files_done=3, no error line, one tmp left (atomic_install_file's status was its last `sync … || sync`). Since round 3 every apply in the harness runs through run_apply — `if ! apply_deploy_items`, cmd_apply's own calling shape, where bash suspends errexit for the whole function body — so the harness can no longer be stricter than production. Case 10 (F2): a `\\u0000` inside the last item's dst makes the NUL-list emitter exit non-zero and apply_deploy_items return 1 before its first txn_patch (item 1 untouched, no `files_total=` written, `ERROR: deploy list` logged, the reason on stderr); case 10b: any other emitter failure (deploy.items pre-created as a directory ⇒ python traceback — the ENOSPC / unreadable-manifest path) fails the same way. RED on 1484330 (the emitter exited but `total=$(…)` was unchecked): 10 rc=0, item 1 deployed, `files_total=` empty then `files_done=1 progress_pct=100`; 10b rc=0, `files_total=` empty, a zero-item success. Round 4 (G6 — the journal knows every renamed file, and the backup it names exists): case 11a a `cp` forwarder refuses item 2's backup, 11b the journal path is a directory, 11c a `sync` forwarder refuses the journal's `sync -d` — each must fail the apply BEFORE the rename (rc=1, `ERROR: backup failed:` / `ERROR: journal write failed: <dst>` logged, no *.tmp.* left, later items untouched) and rollback over the journal that exists leaves every file OLD; 11d the runner stamp with an unwritable journal → rc=1, stamp untouched; 11e a dead manifest read in the stamp stays soft (rc=0) but logs `WARN: runner stamp: manifest read failed`; 12a–12c apply_deletes (now extracted) with a dead delete-list read / an unwritable journal / a failed backup → rc=1, target kept; 12d a healthy delete still deletes and journals. RED on 0f0fc86: 10 FAIL — 11a rc=0 and after rollback g2 NEW (the backup the journal named did not exist), 11b/11c rc=0 with every file renamed, 11d stamp 9.9.9.9 installed without a record, 11e no WARN, 12a–12c rc=0 (12b/12c target DELETED). Every 11/13 case asserts the EXACT g1|g2|g3 state after the failed apply (the failing item still OLD = not renamed). Round 5: 11f a failing `sha256sum` (the backup is named by the dst's hash) → rc=1 before the rename, every file OLD — the unchecked capture used to make the backups/ directory the recorded backup; 13a a `sync` forwarder refuses `sync -d` on item 2's tmp → rc=1, item 2 not renamed; 13b it refuses the directory fsync after item 1's rename → rc=1, item 1 renamed and journalled, restored by the rollback (atomic_install_file has no bare-`sync` fallback any more); 14a stop_before_apply (now extracted, with the shipped die) with a dead stop list, driven as cmd_apply runs it (set -e, then a deploy marker) → dies E_APPLY / stage=error, no deploy marker, no systemctl call; 14b a healthy list stops sa02m-flasher and the apply proceeds. RED on b277e7e: 5 FAIL — 11f every file NEW even after rollback (2 asserts), 13a/13b rc=0 with every file renamed, 14a «deploy PROCEEDED, systemctl calls=''». Round 6: 15a–15e rollback_from_journal (errexit on, as cmd_apply runs it) — a torn last line (15a) or a NUL tail (15b) is skipped (logged) and every file restored, stage rolled_back; a replace record with its backup gone (15c) or a restore that raises (15d) is logged by file and the OTHER records still restore, stage=error «rollback incomplete»; the restore is tmp → rename (new inode) with the backup's mode and — as root — owner (15e); 16a/16b a sudoers drop-in (SA02M_SUDOERS_DIR) is validated with `visudo -cf` on the STAGED file before the rename — a refusal fails the apply with the live grant untouched, an accepted one is installed with exactly one visudo call; 10c the deploy list vanishing after the emit → rc=1 «read 0 of 1», never a short success. RED on fb78136: 10 FAIL (15a/15b rc=1 and every file NEW; 15c reported rolled_back with a NEW file; 15d rc=1 with items 1–2 NEW; 15e same inode, owner 0:0; 16a/16b no visudo call at all; 10c rc=0). Round 7 (review R4-1 — the root fs is commit=600 + journal_data_writeback, so an un-synced rollback copy read back EMPTY after a power cut and the journal-driven rollback installed it): 11g / 11h / 12e a `sync` forwarder refuses the backup's `sync -d` in the deploy loop / the runner stamp / apply_deletes → rc=1, `ERROR: backup failed` (`runner stamp: backup failed`), nothing renamed or deleted and NO journal line for that item. RED on 8e21bee: 6 FAIL (case 6 no backup sync before the journal's; 11g rc=0, every file NEW, item 2 journalled; 11h stamp installed with its record; 12e rc=0, target deleted and journalled). SKIPs on Windows git-bash (mode probe) — WSL/Linux is the authority.",
+      "checks": "Functional RED/GREEN regression for the deploy-skip guard in the update runner (etc/sa02m-update-runner.sh apply_deploy_items + its is_unchanged predicate) — a web update re-installed ALL ~344 deploy files every run (cp -a backup + install-to-tmp + 2x fsync + a python3 journal spawn PER FILE) even when a patch release changed only a handful (Operator: 'обновление ставит все 300+ файлов заново, даже если изменились единицы'). Extracts the SHIPPED is_unchanged / apply_deploy_items / journal_append / atomic_install_file / rollback_from_journal (literal-prefix awk slices, portable across mawk/gawk), stubs only txn (file-backed, survives the deploy loop's subshell) / log / manifest_path, and runs a mixed deploy against a sandbox manifest whose owner axis is the test user's own id (non-root). Asserts: an identical file (content AND mode AND owner) is SKIPPED — no journal line, no backup, dst inode+mtime untouched; a content-changed file still deploys with its replace journal line; a right-content wrong-mode file (0644-vs-0755) is RE-DEPLOYED (the over-skip tripwire); files_done==files_total with skips counted (the recover-verify invariant); and rollback restores the changed file while leaving the skipped file intact (the 1.0.6.2 recovery contract). No root, no device. Non-vacuous: a broken extraction FAILS; the guard-presence check keeps the drive-to-failure run (UPDATE_RUNNER_SRC=main) RED on the skip assertion while the changed-content/wrong-mode assertions stay the over-skip tripwires. Since 1.0.6.40 (case 4b/5b): when the sandbox manifest deploys the runner binary, stamp_runner_version_after_deploy writes the manifest version to $RUNNER_VERSION_FILE through a journal record; a manifest without the runner leaves the stamp untouched; rollback restores the pre-update stamp — a pre-1.0.6.40 runner (no stamp function) FAILS 4b. Since 1.0.6.54 (fast OTA — the 33-minute deploy was ~2,100 python3 starts, four per item): case 4c/4d the progress cadence is time-based (SA02M_UPDATE_PROGRESS_S, 0 in the harness ⇒ every item patches; sequence 0 1 2 3 4) and the final files_done==files_total patch is issued exactly once; case 6 the fsync order per changed file is traced through `sync`/`mv` function shims — sync -d backup → sync -d journal → sync -d tmp → mv → sync dir (the rollback copy durable BEFORE the journal line naming it, the line durable BEFORE the rename it describes; the backup step since round 7); case 7 a dst carrying `\"` and `\\` gets a journal line that json.loads parses with keys op/dst/backup/mode/owner and rolls back (the old string-built line raised and failed the whole apply); case 8 a 100-item manifest (90 unchanged / 10 changed) under a counting python3 PATH shim starts python3 at most twice in apply_deploy_items, the count and this host's wall time printed as an info line. RED observed 2026-09-24 on 3c98af0 under WSL: 6 FAIL (sequence 0 4 4; no sync -d in the trace; quote-dst rc=1, no journal line, rollback unproven; 432 starts). Cases 9a/9b (review 1.0.6.54 F1, pre-existing on main): `install`/`mv` forwarders refuse one item's destination — the apply must FAIL (rc=1, `ERROR: atomic install failed: <dst>` logged, files_done < files_total, no *.tmp.* left) and rollback over the partial journal restores the earlier item; RED on 5ac004c: rc=0, files_done=3, no error line, one tmp left (atomic_install_file's status was its last `sync … || sync`). Since round 3 every apply in the harness runs through run_apply — `if ! apply_deploy_items`, cmd_apply's own calling shape, where bash suspends errexit for the whole function body — so the harness can no longer be stricter than production. Case 10 (F2): a `\\u0000` inside the last item's dst makes the NUL-list emitter exit non-zero and apply_deploy_items return 1 before its first txn_patch (item 1 untouched, no `files_total=` written, `ERROR: deploy list` logged, the reason on stderr); case 10b: any other emitter failure (deploy.items pre-created as a directory ⇒ python traceback — the ENOSPC / unreadable-manifest path) fails the same way. RED on 1484330 (the emitter exited but `total=$(…)` was unchecked): 10 rc=0, item 1 deployed, `files_total=` empty then `files_done=1 progress_pct=100`; 10b rc=0, `files_total=` empty, a zero-item success. Round 4 (G6 — the journal knows every renamed file, and the backup it names exists): case 11a a `cp` forwarder refuses item 2's backup, 11b the journal path is a directory, 11c a `sync` forwarder refuses the journal's `sync -d` — each must fail the apply BEFORE the rename (rc=1, `ERROR: backup failed:` / `ERROR: journal write failed: <dst>` logged, no *.tmp.* left, later items untouched) and rollback over the journal that exists leaves every file OLD; 11d the runner stamp with an unwritable journal → rc=1, stamp untouched; 11e a dead manifest read in the stamp stays soft (rc=0) but logs `WARN: runner stamp: manifest read failed`; 12a–12c apply_deletes (now extracted) with a dead delete-list read / an unwritable journal / a failed backup → rc=1, target kept; 12d a healthy delete still deletes and journals. RED on 0f0fc86: 10 FAIL — 11a rc=0 and after rollback g2 NEW (the backup the journal named did not exist), 11b/11c rc=0 with every file renamed, 11d stamp 9.9.9.9 installed without a record, 11e no WARN, 12a–12c rc=0 (12b/12c target DELETED). Every 11/13 case asserts the EXACT g1|g2|g3 state after the failed apply (the failing item still OLD = not renamed). Round 5: 11f a failing `sha256sum` (the backup is named by the dst's hash) → rc=1 before the rename, every file OLD — the unchecked capture used to make the backups/ directory the recorded backup; 13a a `sync` forwarder refuses `sync -d` on item 2's tmp → rc=1, item 2 not renamed; 13b it refuses the directory fsync after item 1's rename → rc=1, item 1 renamed and journalled, restored by the rollback (atomic_install_file has no bare-`sync` fallback any more); 14a stop_before_apply (now extracted, with the shipped die) with a dead stop list, driven as cmd_apply runs it (set -e, then a deploy marker) → dies E_APPLY / stage=error, no deploy marker, no systemctl call; 14b a healthy list stops sa02m-flasher and the apply proceeds. RED on b277e7e: 5 FAIL — 11f every file NEW even after rollback (2 asserts), 13a/13b rc=0 with every file renamed, 14a «deploy PROCEEDED, systemctl calls=''». Round 6: 15a–15e rollback_from_journal (errexit on, as cmd_apply runs it) — a torn last line (15a) or a NUL tail (15b) is skipped (logged) and every file restored, stage rolled_back; a replace record with its backup gone (15c) or a restore that raises (15d) is logged by file and the OTHER records still restore, stage=error «rollback incomplete»; the restore is tmp → rename (new inode) with the backup's mode and — as root — owner (15e); 16a/16b a sudoers drop-in (SA02M_SUDOERS_DIR) is validated with `visudo -cf` on the STAGED file before the rename — a refusal fails the apply with the live grant untouched, an accepted one is installed with exactly one visudo call; 10c the deploy list vanishing after the emit → rc=1 «read 0 of 1», never a short success. RED on fb78136: 10 FAIL (15a/15b rc=1 and every file NEW; 15c reported rolled_back with a NEW file; 15d rc=1 with items 1–2 NEW; 15e same inode, owner 0:0; 16a/16b no visudo call at all; 10c rc=0). Round 7 (review R4-1 — the root fs is commit=600 + journal_data_writeback, so an un-synced rollback copy read back EMPTY after a power cut and the journal-driven rollback installed it): 11g / 11h / 12e a `sync` forwarder refuses the backup's `sync -d` in the deploy loop / the runner stamp / apply_deletes → rc=1, `ERROR: backup failed` (`runner stamp: backup failed`), nothing renamed or deleted and NO journal line for that item. RED on 8e21bee: 6 FAIL (case 6 no backup sync before the journal's; 11g rc=0, every file NEW, item 2 journalled; 11h stamp installed with its record; 12e rc=0, target deleted and journalled). SKIPs on Windows git-bash (mode probe; exit 77 since 1.0.6.58, so the runner reports SKIP, never PASS — it read PASS before) — WSL/Linux is the authority.",
       "config": null,
       "run": "bash scripts/dev/test-update-deploy-skip.sh",
       "beat": "build",
-      "covers": ["etc/sa02m-update-runner.sh", "scripts/dev/test-update-deploy-skip.sh"],
+      "covers": ["etc/sa02m-update-runner.sh", "scripts/dev/test-update-deploy-skip.sh", "docs/contracts/web-update.md"],
       "init": "bash + python3 + coreutils cmp/stat/install (present everywhere the project builds) — run on demand: bash scripts/dev/test-update-deploy-skip.sh"
     },
     {
@@ -430,7 +448,7 @@
       "config": null,
       "run": "bash scripts/dev/test-update-conditional-restart.sh",
       "beat": "build",
-      "covers": ["etc/sa02m-update-runner.sh", "scripts/dev/test-update-conditional-restart.sh", "scripts/pack-offline-update.py", "opt/sa02m-update/lib/validate_package.py"],
+      "covers": ["etc/sa02m-update-runner.sh", "scripts/dev/test-update-conditional-restart.sh", "scripts/pack-offline-update.py", "opt/sa02m-update/lib/validate_package.py", "docs/contracts/web-update.md"],
       "init": "bash + python3 + coreutils (present everywhere the project builds) — run on demand: bash scripts/dev/test-update-conditional-restart.sh"
     },
     {
@@ -439,7 +457,7 @@
       "config": null,
       "run": "bash scripts/dev/test-update-recover-boot.sh",
       "beat": "build",
-      "covers": ["etc/sa02m-update-runner.sh", "etc/systemd/sa02m-update-verify.service", "etc/systemd/sa02m-update-recover.service", "scripts/dev/test-update-recover-boot.sh", "scripts/03-webserver.sh", "scripts/update-www-only.sh", "scripts/pack-offline-update.py", ".ai-dev/quality/checks/lib_check.sh", "scripts/sa02m-update-remedy.sh"],
+      "covers": ["etc/sa02m-update-runner.sh", "etc/systemd/sa02m-update-verify.service", "etc/systemd/sa02m-update-recover.service", "scripts/dev/test-update-recover-boot.sh", "scripts/03-webserver.sh", "scripts/update-www-only.sh", "scripts/pack-offline-update.py", ".ai-dev/quality/checks/lib_check.sh", "scripts/sa02m-update-remedy.sh", "docs/contracts/web-update.md"],
       "init": "bash + python3 + coreutils (systemctl/systemd-run/busctl are shimmed) — run on demand: bash scripts/dev/test-update-recover-boot.sh"
     },
     {
@@ -448,7 +466,7 @@
       "config": null,
       "run": "bash scripts/dev/test-update-cgroup-escape.sh",
       "beat": "build",
-      "covers": ["etc/sa02m-update-runner.sh", "scripts/dev/test-update-cgroup-escape.sh"],
+      "covers": ["etc/sa02m-update-runner.sh", "scripts/dev/test-update-cgroup-escape.sh", "docs/contracts/web-update.md"],
       "init": "bash + coreutils (systemd-run is shimmed; flock optional — its absence prints one SKIP) — run on demand: bash scripts/dev/test-update-cgroup-escape.sh"
     },
     {
@@ -457,7 +475,7 @@
       "config": null,
       "run": "bash scripts/dev/test-web-update-launcher-guard.sh",
       "beat": "build",
-      "covers": ["etc/sa02m-web-update-apply.sh", "scripts/dev/test-web-update-launcher-guard.sh"],
+      "covers": ["etc/sa02m-web-update-apply.sh", "scripts/dev/test-web-update-launcher-guard.sh", "docs/contracts/web-update.md"],
       "init": "bash + python3 + coreutils (git/systemctl are shimmed) — run on demand: bash scripts/dev/test-web-update-launcher-guard.sh"
     },
     {
@@ -478,7 +496,8 @@
       "covers": [
         "opt/sa02m-cloud-agent/binding_core.py",
         "opt/sa02m-alice/sa02m_alice/common/binding_core.py",
-        ".ai-dev/quality/checks/binding-reset-parity.sh"
+        ".ai-dev/quality/checks/binding-reset-parity.sh",
+        "docs/contracts/alice-mqtt-mapping.md"
       ],
       "init": "bash + cmp + grep (present everywhere the project builds) — run on demand: bash .ai-dev/quality/checks/binding-reset-parity.sh"
     },
@@ -596,7 +615,7 @@
       "config": null,
       "run": "bash .ai-dev/quality/checks/web-update-csrf-contract.sh",
       "beat": "build",
-      "covers": ["www/network_config/cgi-bin/web_update_apply.cgi", ".ai-dev/quality/checks/web-update-csrf-contract.sh", ".ai-dev/quality/checks/lib_check.sh"],
+      "covers": ["www/network_config/cgi-bin/web_update_apply.cgi", ".ai-dev/quality/checks/web-update-csrf-contract.sh", ".ai-dev/quality/checks/lib_check.sh", "docs/contracts/web-update.md"],
       "init": "bash + coreutils — no device"
     },
     {
@@ -605,7 +624,7 @@
       "config": null,
       "run": "bash .ai-dev/quality/checks/cgi-csrf-policy.sh",
       "beat": "build",
-      "covers": ["www/network_config/cgi-bin/", ".ai-dev/quality/checks/cgi-csrf-policy.sh", ".ai-dev/quality/checks/lib_check.sh", "docs/decisions/selective-csrf-policy.md"],
+      "covers": ["www/network_config/cgi-bin/", ".ai-dev/quality/checks/cgi-csrf-policy.sh", ".ai-dev/quality/checks/lib_check.sh", "docs/decisions/selective-csrf-policy.md", "docs/contracts/web-update.md"],
       "init": "bash + coreutils — no device. CGI_DIR=<dir> judges another copy of cgi-bin (the RED recipe)."
     },
     {
@@ -614,7 +633,7 @@
       "config": null,
       "run": "bash scripts/dev/test-cgi-csrf-behaviour.sh",
       "beat": "build",
-      "covers": ["www/network_config/cgi-bin/mqtt_scan.cgi", "www/network_config/cgi-bin/web_update_check.cgi", "www/network_config/cgi-bin/csrf_token.cgi", "www/network_config/cgi-bin/lib_web_auth.sh", "scripts/dev/test-cgi-csrf-behaviour.sh", "docs/contracts/web-update.md"],
+      "covers": ["www/network_config/cgi-bin/mqtt_scan.cgi", "www/network_config/cgi-bin/web_update_check.cgi", "www/network_config/cgi-bin/csrf_token.cgi", "www/network_config/cgi-bin/lib_web_auth.sh", "scripts/dev/test-cgi-csrf-behaviour.sh", "docs/contracts/web-update.md", "docs/contracts/cloud-panel-proxy.md"],
       "init": "bash + python3 + coreutils (present everywhere the project builds) — run on demand: bash scripts/dev/test-cgi-csrf-behaviour.sh; CGI_DIR=<dir> drives another copy (the RED recipe)."
     },
     {
@@ -623,7 +642,7 @@
       "config": null,
       "run": "bash scripts/dev/test-web-auth.sh",
       "beat": "build",
-      "covers": ["www/network_config/cgi-bin/lib_web_auth.sh", "www/network_config/cgi-bin/login.cgi", "scripts/dev/test-web-auth.sh", "etc/tmpfiles.d/sa02m-web-login.conf", "scripts/03-webserver.sh", "scripts/update-www-only.sh", "etc/sa02m-web-update-apply.sh", "scripts/offline-update-allowlist.txt", "etc/sa02m-update-runner.sh"],
+      "covers": ["www/network_config/cgi-bin/lib_web_auth.sh", "www/network_config/cgi-bin/login.cgi", "scripts/dev/test-web-auth.sh", "etc/tmpfiles.d/sa02m-web-login.conf", "scripts/03-webserver.sh", "scripts/update-www-only.sh", "etc/sa02m-web-update-apply.sh", "scripts/offline-update-allowlist.txt", "etc/sa02m-update-runner.sh", "docs/contracts/cloud-panel-proxy.md"],
       "init": "bash + coreutils (sha256sum, od, install) — no root, no /run, no /etc access"
     },
     {
@@ -670,7 +689,7 @@
       "config": null,
       "run": "bash scripts/dev/test-web-update-apply-guard.sh",
       "beat": "build",
-      "covers": ["www/network_config/cgi-bin/web_update_apply.cgi", "www/network_config/cgi-bin/lib_web_update.sh", "www/network_config/cgi-bin/reboot.cgi", "www/network_config/cgi-bin/lib_web_auth.sh", "scripts/dev/test-web-update-apply-guard.sh", "docs/contracts/web-update.md"],
+      "covers": ["www/network_config/cgi-bin/web_update_apply.cgi", "www/network_config/cgi-bin/lib_web_update.sh", "www/network_config/cgi-bin/reboot.cgi", "www/network_config/cgi-bin/lib_web_auth.sh", "scripts/dev/test-web-update-apply-guard.sh", "docs/contracts/web-update.md", "docs/contracts/cloud-panel-proxy.md"],
       "init": "bash + python3 + coreutils (present everywhere the project builds) — run on demand: bash scripts/dev/test-web-update-apply-guard.sh"
     },
     {
@@ -688,7 +707,7 @@
       "config": null,
       "run": "node scripts/dev/test-app-csrf-recovery.mjs",
       "beat": "build",
-      "covers": ["www/network_config/static/js/app.js", "www/network_config/static/js/app/init.js", "scripts/dev/test-app-csrf-recovery.mjs", "docs/decisions/selective-csrf-policy.md"],
+      "covers": ["www/network_config/static/js/app.js", "www/network_config/static/js/app/init.js", "scripts/dev/test-app-csrf-recovery.mjs", "docs/decisions/selective-csrf-policy.md", "docs/contracts/cloud-panel-proxy.md"],
       "init": "Node 18+ (stdlib only). Run on demand: node scripts/dev/test-app-csrf-recovery.mjs; APP_JS=<path> drives another copy (the RED recipe)."
     },
     {
@@ -746,6 +765,15 @@
       "init": "Python 3.10+ as python3, python, or py (stdlib only, no deps) — same interpreter picker as version-consistency; run on demand: python3 scripts/dev/test_sync_app_version.py"
     },
     {
+      "id": "js-unit-alice-gateway",
+      "checks": "The «Яндекс Алиса» card's gateway pill and «Шлюз» badge against the §Gateway reachability contract (docs/contracts/alice-mqtt-mapping.md): `gateway.state = checking` (no evidence yet) makes the «Шлюз» badge read the neutral «Проверяется» (kind unk), never «Недоступен», and aliceFriendlyStatus return {«Проверка шлюза…», unk} instead of {«Шлюз недоступен», err} — the card renders that status text only for kind err, so what the operator SEES while checking is the badge, and the absence of the «Шлюз недоступен» card line; the test asserts the helpers' return values, not the rendered DOM; a connected client reads «Подключено»; `unreachable` and an older backend's bare `available:false` still read «Шлюз недоступен» / «Недоступен»; a TLS-trust failure keeps «сертификат шлюза не доверенный»; a disabled client reads «Отключено». aliceFriendlyStatus / aliceGatewayBadge / ALICE_STATE_MAP are cut out of the SHIPPED app/alice.js by brace matching and evaluated in a sandbox. RED observed 2026-09-28 on the pre-fix alice.js: aliceGatewayBadge absent (extraction FAIL), and aliceFriendlyStatus rendered `checking` as {text:'Шлюз недоступен', kind:'err'}.",
+      "config": null,
+      "run": "node scripts/dev/test-alice-gateway-status.mjs",
+      "beat": "build",
+      "covers": ["www/network_config/static/js/app/alice.js", "scripts/dev/test-alice-gateway-status.mjs", "docs/contracts/alice-mqtt-mapping.md"],
+      "init": "Node 18+ (stdlib only)"
+    },
+    {
       "id": "js-unit-flasher-signatures",
       "checks": "flasher.js module-signature recognition/caps/route functions (isMpModuleSignatureForFirmwareHint, capsFromSignature, resolveDeviceFlashRoute) against every recognized MR-02m spelling incl. count-first 6AI6AO/AO6AI6 — a regression here silently misroutes bootloader-mode flashing or the RS-485 line profile with no server-side signal.",
       "config": null,
@@ -778,17 +806,17 @@
       "config": null,
       "run": "node scripts/dev/test-clear-session-cookie.mjs",
       "beat": "review",
-      "covers": ["www/network_config/static/js/", "scripts/dev/test-clear-session-cookie.mjs"],
+      "covers": ["www/network_config/static/js/", "scripts/dev/test-clear-session-cookie.mjs", "docs/contracts/cloud-panel-proxy.md"],
       "init": "Node 18+ (stdlib only). Run on demand: node scripts/dev/test-clear-session-cookie.mjs"
     },
     {
       "id": "quality-runner-self-test",
-      "checks": "The quality runner's own touched-file detection (computeTouchedFiles() in run.mjs) — a regression there silently degrades --touched scoping to a false-green pass instead of running the real subset. Pins the UNION rule (1.0.6.24): the touched set is the committed <base>..HEAD diff PLUS the working tree (staged + unstaged + untracked, read with `git status --porcelain -z` so a quoted or renamed path is not mangled). Before that fix the working tree was a last resort reached only on an empty committed diff, so on any branch with a commit a Builder's own uncommitted handback selected NO rows and the documented pre-handback command returned green without checking the new work. Also pins the bare-path-prefix form of `covers`. Section C also pins the COMMITTED half of the union against git's quoting: a committed path holding a non-ASCII byte must come back verbatim and match its own `covers` pattern, which it did not until `-z` reached committedTouchedFiles() (1.0.6.24 review Q3).",
+      "checks": "The quality runner's own touched-file detection (computeTouchedFiles() in run.mjs) — a regression there silently degrades --touched scoping to a false-green pass instead of running the real subset. Pins the UNION rule (1.0.6.24): the touched set is the committed <base>..HEAD diff PLUS the working tree (staged + unstaged + untracked, read with `git status --porcelain -z` so a quoted or renamed path is not mangled). Before that fix the working tree was a last resort reached only on an empty committed diff, so on any branch with a commit a Builder's own uncommitted handback selected NO rows and the documented pre-handback command returned green without checking the new work. Also pins the bare-path-prefix form of `covers`. Section C also pins the COMMITTED half of the union against git's quoting: a committed path holding a non-ASCII byte must come back verbatim and match its own `covers` pattern, which it did not until `-z` reached committedTouchedFiles() (1.0.6.24 review Q3). Section D pins the SKIP verdict (audit 2026-09-24 L1): a row exiting 77 prints SKIP (never PASS), is counted apart from the passes and named in the summary, and leaves the beat green; a real failure beside it still turns the beat red, and exits 1/2/3/76/78 stay FAILs. Section E pins that every whole-row skipper returns 77 with its skip line when its tool is forced absent — all ten: shellcheck.sh and sudoers-visudo.sh (empty PATH); pytest-suite.sh (pytest, then a listed dep) and sh-model-schema.sh (jsonschema) via a PYTHONPATH shadow module; ui-layout.mjs via a copy outside the repo (no playwright); cache-bust-r.sh via a throwaway repo with no reference ref and fetching disabled; scripts/dev/test-update-conditional-restart.sh, test-update-deploy-skip.sh, test-update-recover-boot.sh and test-web-update-launcher-guard.sh with no python3 on PATH (update-deploy-skip's second skip, the POSIX-mode probe, is not forced here — it is the live SKIP on a Windows host and runs for real on Linux). RED observed before the fix: 12 assertions, the runner printing `PASS  d-skip` and `build: 2/2 passed`, every skipper rc 0. Section F (review F1, 1.0.6.58) pins that no registry-run script exits with a COUNT: a gate ending in `exit \"$fails\"` reports 77 failures as an environment SKIP (beat green) and 256 failures as exit 0 (PASS). Every row is enumerated with the check-script resolution comment-mutation-proof uses (>=60 scripts or FAIL); a script's own exit must be a literal, a boolean `$(( … > 0 ))`, or carry an `exit-status:` marker naming why a variable is safe (the two smoke drivers' die(code), whose callers pass literals). A shell lexer with a quoting STACK drops quoted strings, `$(…)`/backtick substitutions (a subshell's exit is not the script's), comments and heredoc bodies first, so an awk `exit`, a message saying \"exit $rc\" or a shim's `exit \"${RC}\"` is not the script's own, while a `\"$(sed 's/\"x\"/y/')\"` nesting keeps sync; a case-arm exit (`bad) exit \"$fails\" ;;`) is read; in .mjs `process.exitCode = <count>` is flagged like `process.exit(<count>)`. Non-vacuous: every scanned shell script must lex to a closed state — a file ending inside an open quote, substitution or heredoc FAILS (the lexer lost sync and may have hidden code). The scanner self-tests on eighteen synthetic shapes. Scope, stated — NOT scanned: files a row's script sources; embedded python/awk status (the surrounding bash maps it); a script whose final command is a function ending `return \"$var\"`. RED observed on 1617e74: 16 sites in 15 scripts — 9 in 8 checks/ scripts (mplc-project-deploy-contract twice), 5 scripts/dev/ shell gates, and the die(code) exit of the 2 smoke drivers; GREEN after each became `exit $(( fails > 0 ))` / `exit 1` / an `exit-status:` marker. The first lexer (a quote flag, not a stack) lost sync at test-alice-reload-handshake.sh:95 and never saw lines 96–198; the review round-2 mutations there, in a case arm and via process.exitCode were GREEN on that lexer and are RED on this one. `covers` is the two check homes plus the registry, because section F reads every check script.",
       "config": null,
       "run": "node .ai-dev/quality/run.test.mjs",
       "beat": "review",
-      "covers": [".ai-dev/quality/run.mjs", ".ai-dev/quality/run.test.mjs"],
-      "init": "Node 18+ (stdlib only, spins up a temp git repo)"
+      "covers": [".ai-dev/quality/run.mjs", ".ai-dev/quality/run.test.mjs", ".ai-dev/quality/tools.json", ".ai-dev/quality/checks/", "scripts/dev/"],
+      "init": "Node 18+ and bash + python3 (stdlib only; spins up a temp git repo and runs the skippers with their tool forced absent)"
     },
     {
       "id": "install-sh-syntax",
@@ -807,7 +835,7 @@
       "run": "bash .ai-dev/quality/checks/shellcheck.sh",
       "beat": "review",
       "covers": null,
-      "init": "shellcheck (preinstalled on GitHub ubuntu runners; `apt install shellcheck` / `brew install shellcheck` locally). Absent -> the row skips (exit 0), so Windows/dev boxes without it stay green; the Linux CI is the enforcing run."
+      "init": "shellcheck (preinstalled on GitHub ubuntu runners; `apt install shellcheck` / `brew install shellcheck` locally). Absent -> the row skips (exit 77: the runner prints SKIP, never PASS; the beat stays green), so Windows/dev boxes without it are not blocked; the Linux CI is the enforcing run."
     },
     {
       "id": "check-lib",
@@ -833,8 +861,8 @@
       "config": null,
       "run": "node .ai-dev/quality/checks/ui-layout.mjs",
       "beat": "review",
-      "covers": ["www/network_config/static/", "www/network_config/index.html", ".ai-dev/quality/checks/ui-layout.mjs"],
-      "init": "npm run ui-layout:install (installs the scripts/dev playwright harness + chromium, reused by the driver). CI installs the harness + chromium since 1.0.6.49 (web-quality.yml: `npm --prefix scripts/dev ci` + `playwright install --with-deps chromium`), so on Linux CI this row RUNS; absent chromium/playwright the row skips (exit 0) — a dev-box courtesy only, never the CI state (a skip is reported as a skip, .ai-dev/notes/quality-gate-environment.md). Run on demand: npm run ui-layout. Exit 3 = the driver could not bind its local port (INFRA ERROR, not a layout result); by default it binds an ephemeral port, UI_LAYOUT_PORT=<n> pins one."
+      "covers": ["www/network_config/static/", "www/network_config/index.html", ".ai-dev/quality/checks/ui-layout.mjs", "docs/contracts/cloud-panel-proxy.md"],
+      "init": "npm run ui-layout:install (installs the scripts/dev playwright harness + chromium, reused by the driver). CI installs the harness + chromium since 1.0.6.49 (web-quality.yml: `npm --prefix scripts/dev ci` + `playwright install --with-deps chromium`), so on Linux CI this row RUNS; absent chromium/playwright the row skips (exit 77: the runner prints SKIP, never PASS) — a dev-box courtesy only, never the CI state (a skip is reported as a skip, .ai-dev/notes/quality-gate-environment.md). Run on demand: npm run ui-layout. Exit 3 = the driver could not bind its local port (INFRA ERROR, not a layout result); by default it binds an ephemeral port, UI_LAYOUT_PORT=<n> pins one."
     },
     {
       "id": "cloud-card-smoke",
@@ -894,7 +922,7 @@
     },
     {
       "id": "cache-bust-r",
-      "checks": "A served static asset whose bytes changed carries a changed ?v=+&r= pair on every URL naming it (index.html / login.html src+href, and ?v= ES-module import specifiers under static/js/**) versus a reference git state, so a board that cached the old URL refetches — the &r= intra-release bust documented in sa02m-domain.md (Version discipline) that sync-app-version.py never touches and nothing gated (audit 2026-09-08 C11/F12). Reference = the first that exists of origin/<VERSION> (the pushed state of THIS release branch — same ?v=, only &r= can bust: the check with teeth), origin/<VERSION-1>, origin/main; a remote-tracking ref is used as-is, else a bounded `git fetch --depth=1` (CACHE_BUST_R_NO_FETCH=1 disables); none reachable ⇒ printed as skip, exit 0. The WORKING TREE is compared (the Builder does not commit). HONESTY: CI's clean checkout equals its own pushed ref, so CI reports '0 with changed bytes' — non-vacuous but toothless there; the gate bites on the local build beat. Blobs via git hash-object vs <ref>:path; an asset the ref did not reference is new and skipped; a changed asset whose pair equals the ref's FAILS naming asset + file + token. Non-vacuous: unreadable VERSION, no git, zero asset URLs parsed, or zero assets comparable against the ref FAILS. Exempt from comment-mutation-proof by header marker (behavioural over git blobs; drive-to-failure = revert one &r= token).",
+      "checks": "A served static asset whose bytes changed carries a changed ?v=+&r= pair on every URL naming it (index.html / login.html src+href, and ?v= ES-module import specifiers under static/js/**) versus a reference git state, so a board that cached the old URL refetches — the &r= intra-release bust documented in sa02m-domain.md (Version discipline) that sync-app-version.py never touches and nothing gated (audit 2026-09-08 C11/F12). Reference = the first that exists of origin/<VERSION> (the pushed state of THIS release branch — same ?v=, only &r= can bust: the check with teeth), origin/<VERSION-1>, origin/main; a remote-tracking ref is used as-is, else a bounded `git fetch --depth=1` (CACHE_BUST_R_NO_FETCH=1 disables); none reachable ⇒ printed as skip, exit 77 (the runner reports SKIP, never PASS). The WORKING TREE is compared (the Builder does not commit). HONESTY: CI's clean checkout equals its own pushed ref, so CI reports '0 with changed bytes' — non-vacuous but toothless there; the gate bites on the local build beat. Blobs via git hash-object vs <ref>:path; an asset the ref did not reference is new and skipped; a changed asset whose pair equals the ref's FAILS naming asset + file + token. Non-vacuous: unreadable VERSION, no git, zero asset URLs parsed, or zero assets comparable against the ref FAILS. Exempt from comment-mutation-proof by header marker (behavioural over git blobs; drive-to-failure = revert one &r= token).",
       "config": null,
       "run": "bash .ai-dev/quality/checks/cache-bust-r.sh",
       "beat": "build",
@@ -952,7 +980,7 @@
       "config": null,
       "run": "bash scripts/dev/test-watchdog-hold.sh",
       "beat": "build",
-      "covers": ["scripts/lib.sh", "install.sh", "etc/sa02m-update-runner.sh", "etc/sa02m-factory-reset-runner.sh", "etc/systemd/sa02m-watchdog.conf", "etc/sa02m-userspace-watchdog.sh", "scripts/dev/test-watchdog-hold.sh"],
+      "covers": ["scripts/lib.sh", "install.sh", "etc/sa02m-update-runner.sh", "etc/sa02m-factory-reset-runner.sh", "etc/systemd/sa02m-watchdog.conf", "etc/sa02m-userspace-watchdog.sh", "scripts/dev/test-watchdog-hold.sh", "docs/contracts/web-update.md"],
       "init": "bash + coreutils (busctl/systemctl are shimmed) - run on demand: bash scripts/dev/test-watchdog-hold.sh"
     },
     {

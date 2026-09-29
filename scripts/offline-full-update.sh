@@ -217,7 +217,7 @@ ofu_unit_fragment_empty() {   # 0 iff the unit's /etc fragment is a 0-byte regul
     # empty, and systemd reads an empty unit as MASKED (systemd.unit(5)).
     # Bench 1.136 booted with sa02m-flasher.service at 0 bytes and the
     # re-run's post-checks called it «состояние сохранено»
-    # (.ai-dev/8d/bench-136-reset.md, D5 step D). A mask systemd itself made
+    # (docs/bugs/bench-136-reset.md, D5 step D). A mask systemd itself made
     # is a /dev/null SYMLINK — never judged here. SA02M_OFU_UNIT_DIR is the
     # harness seam (scripts/dev/test-offline-update-postcheck.sh).
     local d=${SA02M_OFU_UNIT_DIR:-/etc/systemd/system} f
@@ -377,7 +377,7 @@ else log ERR "install.sh: синтаксическая ошибка — уста
 # paramiko exec_command whose channel closes, the 1.136 launch at 22:07) can
 # still signal the whole session, and an inherited dead stdin turns any read
 # into an error. Its own session + a real /dev/null stdin is the form that ran
-# 1.136 to completion at 22:48 (.ai-dev/8d/bench-136-reset.md D2/D5 E; the
+# 1.136 to completion at 22:48 (docs/bugs/bench-136-reset.md D2/D5 E; the
 # non-tty runbook paragraph is docs/deployment.md «Офлайн-вариант»).
 # $! stays install.sh's own PID: this script is non-interactive (no job
 # control), so the background child is NOT a process-group leader and setsid

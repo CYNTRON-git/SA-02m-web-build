@@ -11,6 +11,12 @@
      B. coversToRegex()'s handling of a bare path PREFIX.
      C. computeTouchedFiles() ignoring the working tree once the branch has a
         commit — the Builder's own handback invisible to `--touched`.
+     D. run() printing PASS for a row that could not run here (no skip
+        verdict existed; audit 2026-09-24 L1) — now exit 77 = SKIP.
+     E. the whole-row skippers returning 0 instead of 77 when their tool is
+        forced absent.
+     F. a registry-run script exiting with a failure COUNT (77 failures read
+        as SKIP, 256 as PASS — review F1, 1.0.6.58).
    ───────────────────────────────────────────────────────────────────────────
    Regression A: the fallback used to `.trim()` the WHOLE multi-line
    `git status --short` output before splitting into lines. Trimming the
@@ -53,11 +59,16 @@
    the actual fallback path (no origin remote, branch even with main, one
    unstaged modification) rather than a copy of the parsing logic.
    ═══════════════════════════════════════════════════════════════════════════ */
-import { execSync } from 'node:child_process';
-import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { execSync, spawnSync } from 'node:child_process';
+import { copyFileSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
-import { join } from 'node:path';
-import { computeTouchedFiles, coversToRegex, fileMatchesCovers, workingTreeFiles } from './run.mjs';
+import { dirname, join } from 'node:path';
+import { fileURLToPath } from 'node:url';
+import * as runner from './run.mjs';
+import { computeTouchedFiles, coversToRegex, fileMatchesCovers, run, workingTreeFiles } from './run.mjs';
+// Read off the namespace so the pre-fix runner (no such export) yields
+// undefined and section D goes RED on assertions instead of a link error.
+const SKIP_EXIT = runner.SKIP_EXIT;
 
 let failures = 0;
 function check(cond, msg) {
@@ -209,9 +220,342 @@ check(coversToRegex('etc/') instanceof RegExp, 'coversToRegex() returns a RegExp
 check(fileMatchesCovers(['etc/x'], ['nope/', 'etc/']) === true,
   'fileMatchesCovers() ORs across patterns — a later pattern still matches');
 
+// ── D. a documented environment skip is reported as SKIP, never as PASS ───
+// A row that cannot run here (its tool is not installed) used to exit 0, and
+// the runner printed `PASS` for it — five rows did exactly that on a box
+// without their tool (audit 2026-09-24 L1). The runner now reads SKIP_EXIT
+// (77) as a skip: printed SKIP, counted apart from the passes, named in the
+// summary, and NOT a red beat. Every other non-zero code stays a FAIL.
+function runCaptured(rows, beat = 'build') {
+  const d = mkdtempSync(join(tmpdir(), 'sa02m-run-mjs-test-skip-'));
+  const reg = join(d, 'tools.json');
+  writeFileSync(reg, JSON.stringify({ tools: rows }));
+  const lines = [];
+  const origLog = console.log;
+  const origErr = console.error;
+  console.log = (...a) => { lines.push(a.join(' ')); };
+  console.error = (...a) => { lines.push(a.join(' ')); };
+  let rc;
+  try {
+    rc = run(beat, d, reg, null);
+  } finally {
+    console.log = origLog;
+    console.error = origErr;
+    rmSync(d, { recursive: true, force: true });
+  }
+  return { rc, out: lines.join('\n') };
+}
+const exitRow = (id, code) => ({ id, beat: 'build', run: 'node -e "process.exit(' + code + ')"' });
+
+check(SKIP_EXIT === 77, 'skip: SKIP_EXIT is 77 (the automake convention every converted row returns)');
+{
+  const { rc, out } = runCaptured([exitRow('d-pass', 0), exitRow('d-skip', SKIP_EXIT)]);
+  check(rc === 0, 'skip: a pass + a documented skip is a GREEN beat (rc 0) — got ' + rc);
+  check(/^SKIP  d-skip$/m.test(out), 'skip: the skipped row prints `SKIP  d-skip`');
+  check(!/^PASS  d-skip$/m.test(out), 'skip: the skipped row does NOT print `PASS  d-skip` — the L1 defect');
+  check(/^PASS  d-pass$/m.test(out), 'skip: the passing row still prints PASS');
+  check(/build: 1\/2 passed/.test(out) && !/2\/2 passed/.test(out),
+    'skip: the summary counts the skip apart from the passes (1/2 passed, never 2/2) — got ' + JSON.stringify(out.split('\n').pop()));
+  check(/1 SKIPPED/.test(out) && /d-skip/.test(out.split('\n').pop()),
+    'skip: the summary names the skip count and the skipped row id');
+}
+{
+  const { rc, out } = runCaptured([exitRow('d-pass', 0), exitRow('d-skip', SKIP_EXIT), exitRow('d-fail', 1)]);
+  check(rc === 1, 'skip: a skip does not mask a real failure (rc 1) — got ' + rc);
+  check(/^FAIL  d-fail$/m.test(out) && /1 FAILED/.test(out), 'skip: the failing row prints FAIL and is counted');
+}
+{
+  // Non-vacuity of the mapping: only 77 is a skip. The neighbouring codes a
+  // row really uses (1 = check failed, 2 = usage/infra, 3 = ui-layout INFRA
+  // ERROR) must stay FAILs, or "skip" would swallow real breakage.
+  for (const code of [1, 2, 3, 76, 78]) {
+    const { rc, out } = runCaptured([exitRow('d-code' + code, code)]);
+    check(rc === 1 && /^FAIL  d-code/m.test(out) && !/SKIP/.test(out),
+      'skip: exit ' + code + ' is a FAIL, not a SKIP');
+  }
+}
+{
+  const { rc, out } = runCaptured([exitRow('d-only-skip', SKIP_EXIT)]);
+  check(rc === 0 && /build: 0\/1 passed/.test(out),
+    'skip: a beat whose only row skipped reads 0/1 passed, green but not "passed" — got ' + JSON.stringify(out));
+}
+
+// ── E. the whole-row skippers return SKIP_EXIT, not 0 ─────────────────────
+// Each row below skips its whole run when its tool is absent. Forced absence:
+// an empty PATH for a binary probe (the scripts use only builtins before the
+// probe), a PYTHONPATH shadow module that refuses to import for a python dep,
+// and a copy of the driver outside the repo (no scripts/dev/node_modules) for
+// playwright. Each must exit 77 AND print its skip line — the line alone was
+// already there when the row read PASS.
+const REPO = join(dirname(fileURLToPath(import.meta.url)), '..', '..');
+function sh(cmd, env) {
+  const r = spawnSync('bash', ['-c', cmd], { cwd: REPO, env: { ...process.env, ...env }, encoding: 'utf8' });
+  return { rc: r.status, out: (r.stdout || '') + (r.stderr || '') };
+}
+{
+  const r = sh('PATH=/nonexistent-sa02m-skip-probe; exec "$BASH" .ai-dev/quality/checks/shellcheck.sh');
+  check(r.rc === SKIP_EXIT && /shellcheck: skipped/.test(r.out),
+    'skipper: shellcheck.sh without shellcheck exits 77 with its skip line — got rc ' + r.rc + ' ' + JSON.stringify(r.out.trim()));
+}
+{
+  const r = sh('PATH=/nonexistent-sa02m-skip-probe; exec "$BASH" .ai-dev/quality/checks/sudoers-visudo.sh');
+  check(r.rc === SKIP_EXIT && /sudoers-visudo: SKIP/.test(r.out),
+    'skipper: sudoers-visudo.sh without visudo exits 77 with its skip line — got rc ' + r.rc + ' ' + JSON.stringify(r.out.trim()));
+}
+{
+  const shadow = mkdtempSync(join(tmpdir(), 'sa02m-run-mjs-test-pyshadow-'));
+  try {
+    for (const m of ['pytest', 'jsonschema', 'cryptography']) {
+      writeFileSync(join(shadow, m + '.py'), 'raise ImportError("shadowed by run.test.mjs section E")\n');
+    }
+    const env = { PYTHONPATH: shadow };
+    let r = sh('bash .ai-dev/quality/checks/pytest-suite.sh e-row opt/sa02m-update', env);
+    check(r.rc === SKIP_EXIT && /e-row: pytest not installed/.test(r.out),
+      'skipper: pytest-suite.sh without pytest exits 77 — got rc ' + r.rc + ' ' + JSON.stringify(r.out.trim()));
+    // The per-dep branch: pytest importable, a listed runtime dep not.
+    writeFileSync(join(shadow, 'pytest.py'), '# importable stand-in\n');
+    r = sh('bash .ai-dev/quality/checks/pytest-suite.sh e-row opt/sa02m-update cryptography', env);
+    check(r.rc === SKIP_EXIT && /e-row: runtime dep 'cryptography' missing/.test(r.out),
+      'skipper: pytest-suite.sh without a listed dep exits 77 — got rc ' + r.rc + ' ' + JSON.stringify(r.out.trim()));
+    r = sh('bash .ai-dev/quality/checks/sh-model-schema.sh', env);
+    check(r.rc === SKIP_EXIT && /jsonschema' not installed - skipped/.test(r.out),
+      'skipper: sh-model-schema.sh without jsonschema exits 77 — got rc ' + r.rc + ' ' + JSON.stringify(r.out.trim()));
+  } finally {
+    rmSync(shadow, { recursive: true, force: true });
+  }
+}
+// The runner harnesses under scripts/dev/ that guard on python3 skip the whole
+// row without it (found by the L1 sweep beyond the entry's list).
+for (const [script, line] of [
+  ['scripts/dev/test-update-conditional-restart.sh', 'SKIP  python3 unavailable'],
+  ['scripts/dev/test-update-deploy-skip.sh', 'SKIP  python3 unavailable'],
+  ['scripts/dev/test-update-recover-boot.sh', 'SKIP  python3 unavailable'],
+  ['scripts/dev/test-web-update-launcher-guard.sh', 'SKIP  python3 unavailable'],
+]) {
+  const r = sh('PATH=/nonexistent-sa02m-skip-probe; exec "$BASH" ' + script);
+  check(r.rc === SKIP_EXIT && r.out.includes(line),
+    'skipper: ' + script + ' without python3 exits 77 — got rc ' + r.rc + ' ' + JSON.stringify(r.out.trim().slice(-160)));
+}
+{
+  // cache-bust-r with no reference state reachable: a throwaway repo carrying
+  // only the check and a VERSION, no origin refs, fetching disabled.
+  const d = mkdtempSync(join(tmpdir(), 'sa02m-run-mjs-test-cachebust-'));
+  try {
+    mkdirSync(join(d, '.ai-dev', 'quality', 'checks'), { recursive: true });
+    mkdirSync(join(d, 'www', 'network_config'), { recursive: true });
+    copyFileSync(join(REPO, '.ai-dev', 'quality', 'checks', 'cache-bust-r.sh'), join(d, '.ai-dev', 'quality', 'checks', 'cache-bust-r.sh'));
+    writeFileSync(join(d, 'www', 'network_config', 'VERSION'), '1.0.6.57\n');
+    const g = (c) => execSync('git ' + c, { cwd: d, stdio: 'pipe', env });
+    g('init -q -b main'); g('add -A'); g('commit -q -m base');
+    const r = spawnSync('bash', ['.ai-dev/quality/checks/cache-bust-r.sh'],
+      { cwd: d, env: { ...process.env, CACHE_BUST_R_NO_FETCH: '1' }, encoding: 'utf8' });
+    const out = (r.stdout || '') + (r.stderr || '');
+    check(r.status === SKIP_EXIT && /cache-bust-r: skip  no reference state reachable/.test(out),
+      'skipper: cache-bust-r.sh with no reference state exits 77 — got rc ' + r.status + ' ' + JSON.stringify(out.trim()));
+  } finally {
+    rmSync(d, { recursive: true, force: true });
+  }
+}
+{
+  const d = mkdtempSync(join(tmpdir(), 'sa02m-run-mjs-test-uilayout-'));
+  try {
+    const checksDir = join(d, '.ai-dev', 'quality', 'checks');
+    mkdirSync(checksDir, { recursive: true });
+    copyFileSync(join(REPO, '.ai-dev', 'quality', 'checks', 'ui-layout.mjs'), join(checksDir, 'ui-layout.mjs'));
+    const r = spawnSync(process.execPath, [join(checksDir, 'ui-layout.mjs')], { cwd: d, encoding: 'utf8' });
+    const out = (r.stdout || '') + (r.stderr || '');
+    check(r.status === SKIP_EXIT && /ui-layout: skipped — playwright not installed/.test(out),
+      'skipper: ui-layout.mjs without playwright exits 77 — got rc ' + r.status + ' ' + JSON.stringify(out.trim().slice(0, 200)));
+  } finally {
+    rmSync(d, { recursive: true, force: true });
+  }
+}
+
+// ── F. no registry-run script exits with a COUNT ───────────────────────────
+// SKIP_EXIT (77) is only honest if no gate can reach 77 by accident. A gate
+// ending in `exit "$fails"` reports 77 failures as an environment SKIP (beat
+// green) and 256 failures as exit 0 (PASS) — review F1, 1.0.6.58 (the measured
+// RED lives in the quality-runner-self-test row). The rule: a registry-run script's OWN exit status
+// is a literal, a boolean `$(( … > 0 ))`, or carries an `exit-status:` marker
+// naming why a variable is safe. Every row is enumerated (the same
+// check-script resolution comment-mutation-proof uses), not a list of names.
+// Scope, stated: heredoc bodies are skipped — they are shims standing in for
+// external tools (a fake `mkfs.exfat` exiting "${SHIM_MKFS_RC}") or embedded
+// python whose status the bash around it reads — and only the script the row
+// names is read, not what it sources. Also NOT scanned: a script whose final
+// command is a function ending `return "$var"`. `process.exitCode = …` in a
+// node row IS scanned, like `process.exit(…)`.
+const EXIT_MARK = /exit-status:\s*\S/;
+// Shell lexer, just enough for this rule: yields each line's TOP-LEVEL code
+// (quoted strings, `$(…)` / backtick substitutions — awk programs, messages,
+// printf'd shims, a subshell's own exit — collapse to `Q`, comments drop,
+// heredoc bodies are skipped), so an `exit` inside a string, an awk program or
+// a command substitution is never mistaken for the script's own. Quoting is a
+// STACK, not a flag: `"$(sed 's/"x"/y/')"` nests a single- and a double-quoted
+// string inside a substitution inside a double-quoted string (review F5 — a
+// flag lost sync there and hid ~100 lines of test-alice-reload-handshake.sh).
+// Returns { lines, open }: `open` is the state left at EOF — anything but
+// empty means the lexer lost sync, and the caller FAILS rather than trusting a
+// scan that may have skipped code.
+function shLex(text) {
+  const lines = text.split(/\r?\n/);
+  const out = [];
+  const stack = [];      // frames: { k: "'" | '"' | '$' (ANSI-C) | '(' (subst, depth) | '`' }
+  const pending = [];    // heredoc terminators opened on the current line
+  let inHeredoc = null;
+  for (let i = 0; i < lines.length; i++) {
+    const ln = lines[i];
+    if (inHeredoc) {
+      if ((inHeredoc.dash ? ln.replace(/^\t+/, '') : ln) === inHeredoc.tag) inHeredoc = pending.shift() || null;
+      out.push('');
+      continue;
+    }
+    let code = '';
+    for (let j = 0; j < ln.length; j++) {
+      const c = ln[j];
+      const top = stack[stack.length - 1];
+      if (top && top.k === "'") { if (c === "'") stack.pop(); continue; }
+      if (top && top.k === '$') {
+        if (c === '\\') { j++; continue; }
+        if (c === "'") stack.pop();
+        continue;
+      }
+      if (top && top.k === '`') {
+        if (c === '\\') { j++; continue; }
+        if (c === '`') stack.pop();
+        continue;
+      }
+      if (top && top.k === '"') {
+        if (c === '\\') { j++; continue; }
+        if (c === '"') { stack.pop(); continue; }
+        if (c === '$' && ln[j + 1] === '(') { stack.push({ k: '(', d: 1 }); j++; continue; }
+        if (c === '`') { stack.push({ k: '`' }); continue; }
+        continue;
+      }
+      // Top level, or inside a command substitution: both are shell code.
+      const inSub = top && top.k === '(';
+      if (c === '\\') { j++; continue; }
+      if (c === "'") { stack.push({ k: "'" }); if (!inSub) code += 'Q'; continue; }
+      if (c === '"') { stack.push({ k: '"' }); if (!inSub) code += 'Q'; continue; }
+      if (c === '$' && ln[j + 1] === "'") { stack.push({ k: '$' }); j++; if (!inSub) code += 'Q'; continue; }
+      if (c === '`') { stack.push({ k: '`' }); if (!inSub) code += 'Q'; continue; }
+      // Arithmetic `$(( … ))` at top level stays verbatim: it is an exit
+      // operand the rule reads (`exit $(( fails > 0 ))`), not a subshell.
+      if (!inSub && ln.startsWith('$((', j)) {
+        const end = ln.indexOf('))', j + 3);
+        if (end > 0) { code += ln.slice(j, end + 2); j = end + 1; continue; }
+      }
+      if (c === '$' && ln[j + 1] === '(') { stack.push({ k: '(', d: 1 }); j++; if (!inSub) code += 'Q'; continue; }
+      if (c === '#' && (j === 0 || /[\s;&|(]/.test(ln[j - 1]))) break;
+      if (inSub) {
+        if (c === '(') top.d++;
+        else if (c === ')' && --top.d === 0) stack.pop();
+        continue;
+      }
+      if (c === '<' && ln[j + 1] === '<' && ln[j + 2] !== '<') {
+        const m = ln.slice(j).match(/^<<(-?)\s*(['"]?)([A-Za-z_][A-Za-z0-9_]*)\2/);
+        if (m) { pending.push({ tag: m[3], dash: m[1] === '-' }); j += m[0].length - 1; code += '<<H'; continue; }
+      }
+      code += c;
+    }
+    out.push(code);
+    if (!stack.length && pending.length) inHeredoc = pending.shift();
+  }
+  const open = stack.map((f) => f.k).join('') + (inHeredoc ? '<<' + inHeredoc.tag : '') +
+    pending.map((p) => '<<' + p.tag).join('');
+  return { lines: out, open };
+}
+
+function exitViolations(text, lang) {
+  const out = [];
+  const lines = text.split(/\r?\n/);
+  if (lang === 'sh') {
+    const lex = shLex(text);
+    if (lex.open) out.push('EOF: the lexer ends inside `' + lex.open + '` — it lost sync, so the scan of this file cannot be trusted');
+    lex.lines.forEach((code, i) => {
+      // `)` is a case arm: `bad) exit "$fails" ;;` is the script's own exit.
+      const re = /(?:^|[;{)]|&&|\|\||\bthen|\belse|\bdo)\s*exit\s+(\$\(\([^)]*\)\)|[^\s;&|)}]+)/g;
+      let m;
+      while ((m = re.exec(code))) {
+        const op = m[1];
+        const ok = /^\d+$/.test(op) || /^\$\(\(.*(>|!=|==|<).*\)\)$/.test(op) || EXIT_MARK.test(lines[i]);
+        if (!ok) out.push((i + 1) + ': ' + lines[i].trim());
+      }
+    });
+  } else {
+    lines.forEach((ln, i) => {
+      if (/^\s*(#|\/\/)/.test(ln)) return;
+      const re = lang === 'py' ? /(?:sys\.exit|SystemExit)\(([^)]*)\)/g : /process\.exit\(([^)]*)\)/g;
+      let m;
+      while ((m = re.exec(ln))) {
+        const op = m[1].trim();
+        const ok = op === '' || /^\d+$/.test(op) || /\?\s*\d+\s*:\s*\d+$/.test(op) ||
+          /^f?['"]/.test(op) || EXIT_MARK.test(ln);
+        if (!ok) out.push((i + 1) + ': ' + ln.trim());
+      }
+      // The other way node sets its status (review F5): the same rule.
+      if (lang === 'mjs') {
+        const ec = ln.match(/process\.exitCode\s*=\s*([^;]+)/);
+        if (ec) {
+          const op = ec[1].trim();
+          if (!(/^\d+$/.test(op) || /\?\s*\d+\s*:\s*\d+$/.test(op) || EXIT_MARK.test(ln))) out.push((i + 1) + ': ' + ln.trim());
+        }
+      }
+    });
+  }
+  return out;
+}
+
+{
+  // Non-vacuity of the scanner itself: each shape it must see, and must not.
+  check(exitViolations('fails=3\nexit "$fails"\n', 'sh').length === 1, 'exit-scan: `exit "$fails"` is flagged');
+  check(exitViolations('[ "$f" = 0 ] || { echo x; exit "$f"; }\n', 'sh').length === 1, 'exit-scan: an exit inside `{ …; }` is flagged');
+  check(exitViolations('exit $rc\n', 'sh').length === 1, 'exit-scan: an unquoted `exit $rc` is flagged');
+  check(exitViolations('exit 1\nexit 77  # SKIP\n[ x ] || exit 1\n', 'sh').length === 0, 'exit-scan: literal exits pass');
+  check(exitViolations('exit $(( fails > 0 ))\n', 'sh').length === 0, 'exit-scan: a boolean `$(( … > 0 ))` passes');
+  check(exitViolations('cat > f <<\'SHIM\'\nexit "${X:-0}"\nSHIM\nexit 0\n', 'sh').length === 0, 'exit-scan: a heredoc shim body is not the script\'s own exit');
+  check(exitViolations('cat > f <<\'SHIM\'\nexit 0\nSHIM\nexit "$fails"\n', 'sh').length === 1, 'exit-scan: the scan resumes after the heredoc terminator');
+  check(exitViolations('bad "exit $RC, expected 0"\n', 'sh').length === 0, 'exit-scan: "exit $RC" inside a message string is not an exit');
+  // Spliced so this file's own scan does not read the fixture as an exit.
+  check(exitViolations('process.' + 'exit(failures);\n', 'mjs').length === 1, 'exit-scan: a count handed to process.exit is flagged');
+  check(exitViolations('process.exit(failures ? 1 : 0);\nprocess.exit(77);\n', 'mjs').length === 0, 'exit-scan: literal and boolean-ternary exits pass');
+  check(exitViolations('sys.exit(fails)\n', 'py').length === 1, 'exit-scan: sys.exit(<count>) is flagged');
+  // Review F5 shapes. The nested-quote line is test-alice-reload-handshake.sh:95
+  // verbatim; with a quote FLAG it swallowed the rest of that file.
+  check(exitViolations('x="$(grep -E \'^A=\' f | sed -E \'s/.*"([^"]+)".*/\\1/\')"\nexit "$fails"\n', 'sh').length === 1,
+    'exit-scan: `"$(… \'…"…"…\' …)"` nesting does not hide the lines after it');
+  check(exitViolations('case "$r" in\n  ok) exit 0 ;;\n  bad) exit "$fails" ;;\nesac\n', 'sh').length === 1,
+    'exit-scan: an exit in a case arm is flagged');
+  check(exitViolations('n=$(printf \'%s\' "$x"; exit 3)\nexit 0\n', 'sh').length === 0,
+    'exit-scan: an exit inside `$(…)` is the subshell\'s, not the script\'s');
+  check(exitViolations('echo "unterminated\nexit 0\n', 'sh').some((v) => v.startsWith('EOF:')),
+    'exit-scan: a file that ends inside an open quote FAILS (lexer desync is not a clean scan)');
+  check(exitViolations('cat <<EOF\nno terminator\n', 'sh').some((v) => v.startsWith('EOF:')),
+    'exit-scan: a file that ends inside an open heredoc FAILS');
+  check(exitViolations('process.' + 'exitCode = failures;\n', 'mjs').length === 1,
+    'exit-scan: a count handed to the node exit-code property is flagged');
+  check(exitViolations('process.' + 'exitCode = failures ? 1 : 0;\n', 'mjs').length === 0,
+    'exit-scan: a boolean node exit-code passes');
+}
+{
+  const reg = JSON.parse(readFileSync(join(REPO, '.ai-dev', 'quality', 'tools.json'), 'utf8'));
+  const scriptRe = /(?:\.ai-dev\/quality\/|scripts\/dev\/)[A-Za-z0-9_.\/-]+\.(?:sh|mjs|py)/g;
+  const scripts = new Set();
+  for (const t of reg.tools || []) for (const m of String(t.run || '').matchAll(scriptRe)) scripts.add(m[0]);
+  check(scripts.size >= 60, 'exit-scan: the registry resolves >=60 check scripts (got ' + scripts.size + ') — a broken enumeration FAILS, it does not pass empty');
+  const bad = [];
+  for (const s of [...scripts].sort()) {
+    let text;
+    try { text = readFileSync(join(REPO, s), 'utf8'); } catch { bad.push(s + ': unreadable'); continue; }
+    for (const v of exitViolations(text, s.split('.').pop())) bad.push(s + ':' + v);
+  }
+  check(bad.length === 0, 'exit-scan: no registry-run script exits with a count (77 would read SKIP, 256 would read PASS)' +
+    (bad.length ? ' — ' + bad.length + ' site(s):\n      ' + bad.join('\n      ') : ''));
+}
+
 if (failures) {
   console.error('quality-runner-self-test: ' + failures + ' assertion(s) failed');
   process.exit(1);
 }
-console.log('quality-runner-self-test: computeTouchedFiles() fallback + covers prefix/glob matching ok');
+console.log('quality-runner-self-test: computeTouchedFiles() fallback + covers prefix/glob matching + SKIP status ok');
 process.exit(0);

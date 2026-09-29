@@ -54,6 +54,8 @@ PRESERVE_PATHS: Tuple[str, ...] = (
     "/var/lib/sa02m-alice/",
 )
 
+# One of four copies of the destination allow-list (runner x2, packer, validator);
+# the ota-dst-allowlist-parity row keeps them equal - change all four together.
 _DST_PREFIX_RES = (
     re.compile(r"^/var/www/network_config/"),
     re.compile(r"^/usr/local/(sbin|lib|libexec)/"),

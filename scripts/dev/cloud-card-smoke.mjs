@@ -76,7 +76,7 @@ const THEMES = ['dark', 'light'];
 
 function die(code, ...lines) {
   for (const l of lines) (code === 0 ? console.log : console.error)(l);
-  process.exit(code);
+  process.exit(code); // exit-status: every die() caller passes a literal (1 = FAIL, 2 = infra), never a count
 }
 
 /* ── Preflight — every failure here is exit 1, never 2 ──────────────────── */

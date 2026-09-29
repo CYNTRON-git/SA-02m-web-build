@@ -86,7 +86,13 @@ Validating tests: `opt/sa02m-alice/tests/test_auto_provision.py`.
 - `ce02m3-` → three `devices.types.smart_meter.electricity` (фаза A/B/C):
   voltage, amperage, power; `electricity_meter` from
   `energy_active_import_a|b|c` (`scale` 0.001 Wh→kWh) when those topics
-  exist, else total `energy_active_import` on phase C only.
+  exist, else total `energy_active_import` on phase C only. A phase device
+  MAY additionally carry `frequency` (`unit.hertz`) as a **`cloud_only`
+  float** — Yandex has no Hz instance, so it never reaches Yandex and is
+  shown on the cloud control page only; the validator admits it solely with
+  `cloud_only: true` (`CLOUD_ONLY_FLOAT_INSTANCES`; the boards' documents
+  carry it from the 1.0.6.36 auto-provision, 1.0.6.58). Validating:
+  `tests/test_cloud_only_items.py TestCePhaseFrequency`.
 - A second pass is a no-op. Lights, Carel, sirens and other bindings stay.
 - After persist the in-process registry reloads (same `apply_reload` path
   as a CGI edit). The hub catalog is the next `alice_devices_list`.
@@ -680,6 +686,44 @@ re-measured on this branch.
   linked/paired success.
 - Config CRUD and MQTT topic inventory work without the gateway.
 
+## Gateway reachability — поле `gateway` в опросе статуса (1.0.6.58)
+
+Карточка опрашивает `sa02m_alice_api.cgi` GET (`full_config`) каждые 5 с. Опрос
+**не ходит в сеть**: до 1.0.6.58 каждый GET пинговал
+`https://alice.cyntron.ru/v1.0/ping` с тайм-аутом 5 с, и один медленный пинг
+переключал карточку в «Шлюз недоступен» при живом подключении (стенд 1.135,
+2026-09-28: 8 из 22 опросов за 3 мин, каждый GET 4–12 с).
+
+- **Живая сессия клиента — сама доказательство.** `status.state == connected` и
+  `ts` не старше `STATUS_STALE_S` (или `ts` нет — клиент без heartbeat) ⇒
+  `available: true`, `source: "client"`; проба не выполняется.
+- **Иначе — кеш пробы** `/var/lib/sa02m-alice/gateway_probe.json`
+  (`{ts, probe, ok_ts, fail_count}`; не идентичность платы, в образ уходить
+  может — на клоне он просто устаревает). Обновляется не чаще
+  `GATEWAY_PROBE_TTL_S` (60 с) после успеха и `GATEWAY_PROBE_RETRY_S` (15 с)
+  после неудачи. Под CGI (`SA02M_ALICE_PROBE_REFRESH=spawn`) обновление идёт
+  отсоединённым процессом, ответ опроса его не ждёт; вне CGI (служба
+  `sa02m-alice-config`, тесты) — в запросе, но так же не чаще TTL. Каталог
+  кеша создаёт tmpfiles.d, не веб-слой: без него ответ просто не кешируется.
+- **Одна неудача не переключает.** После успеха `available` остаётся `true`,
+  пока подряд не наберётся `GATEWAY_PROBE_FAIL_THRESHOLD` (2) неудачных проб;
+  без успеха в истории первая же неудача — `false`.
+- **Нет данных — не отрицательный ответ.** Кеша нет или он старше
+  `GATEWAY_PROBE_MAX_AGE_S` (180 с) ⇒ `state: "checking"`, `available: false`;
+  карточка показывает нейтральное «Проверяется», а не «Недоступен».
+- Поля: `gateway.available` (bool, как раньше), `gateway.state ∈ reachable |
+  unreachable | checking`, `gateway.source ∈ client | probe`,
+  `gateway.checked_at` (время пробы, для `source: probe`), `gateway.probe`
+  (последний результат пробы; для `source: client` — `{available: true,
+  source: "client"}`). Старый закешированный бандл читает только `available`
+  и на время `checking` покажет «Шлюз недоступен» — секунды, не ложное
+  «доступен».
+- **Действия, которым нужен свежий ответ** — `link` / `complete_link` /
+  `unlink` и POST `available` — по-прежнему пробуют шлюз сами, мимо кеша.
+- Проверка: `opt/sa02m-alice/tests/test_gateway_reachability.py` (строка
+  `py-unit-alice`) и `scripts/dev/test-alice-gateway-status.mjs` (строка
+  `js-unit-alice-gateway`, карточка).
+
 ## Client status file → web API cert / link truth (1.0.5.80)
 
 The cert dir `/var/lib/sa02m-alice` is root-only (key 0600 root) and stays so;
@@ -731,7 +775,7 @@ permission-blind and returns a false "absent").
   `"local"` (own `isfile()`, only when the process can traverse the dir; a
   missing dir is a definite `false`), `"unreadable"` (dir present, not
   traversable → `null`). Never a false `false`.
-- `link.linked` = enabled ∧ gateway available ∧ `status.state == connected` ∧
+- `link.linked` = enabled ∧ `gateway.available` (§Gateway reachability) ∧ `status.state == connected` ∧
   `cert_present is not false` — a live mTLS session is itself proof of the cert;
   only an explicit `false` vetoes.
 - UI (`app/alice.js`): «Сертификат» renders `true`→«Есть», `false`→«Нет»,

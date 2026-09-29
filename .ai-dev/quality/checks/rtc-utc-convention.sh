@@ -332,4 +332,4 @@ if [ "$fails" -eq "$fails_before_pin6" ]; then
 fi
 
 [ "$fails" = 0 ] || printf 'rtc-utc: %s check(s) failed — convention home: %s\n' "$fails" "$CONVENTION_HOME"
-exit "$fails"
+exit $(( fails > 0 ))  # never the count: 77 reads SKIP, 256 reads PASS (run.mjs SKIP_EXIT)
