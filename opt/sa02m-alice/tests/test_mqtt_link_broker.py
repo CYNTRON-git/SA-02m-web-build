@@ -264,7 +264,23 @@ class TestRealPahoThroughMqttLink(unittest.TestCase):
         self.assertEqual(self._subscribes_on(2), {(TOPIC_A, 1), (TOPIC_B, 1)})
         self.assertEqual(self.seen[1], (TOPIC_A, "21.5", True, True))
         self.assertEqual(self.link.reconnects, 1)
-        self.assertIsNotNone(self.link.last_reconnect_at)
+
+    def test_a_drop_before_the_first_connack_is_healed_by_it(self):
+        """Review B1 on the real library: the broker closes every socket before
+        CONNACK while the initial pass runs, then comes back. Its CONNACK is
+        the link's first; the set must be subscribed on that session and the
+        retained value must arrive under the grace."""
+        self.broker.refuse = True
+        self.link.connect()
+        self.link.subscribe_all()  # whatever paho answers, the broker took nothing
+        time.sleep(0.2)
+        self.assertEqual(self.broker.subscribes, [])
+        self.broker.refuse = False
+        self._wait(lambda: self.link.connected, 15, "paho's re-dial + CONNACK #1")
+        self._wait(lambda: len(self.seen) >= 1, 5,
+                   "the retained value — only a subscribe on the live session delivers it")
+        self.assertEqual(self._subscribes_on(1), {(TOPIC_A, 1), (TOPIC_B, 1)})
+        self.assertEqual(self.seen[0], (TOPIC_A, "21.5", True, True))
 
     def test_a_command_is_refused_while_down_and_never_replayed(self):
         self.link.connect()

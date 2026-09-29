@@ -76,7 +76,6 @@ class TestConnackRules(_LinkCase):
         self.assertTrue(link.connected)
         self.assertEqual(self.fake().subscribed, [])
         self.assertEqual(link.reconnects, 0)
-        self.assertIsNone(link.last_reconnect_at)
 
     def test_reconnect_subscribes_the_current_set_at_qos1_grace_armed_first(self):
         link = self.link().connect()
@@ -95,7 +94,6 @@ class TestConnackRules(_LinkCase):
         # Every subscribe saw its topic already inside the grace window.
         self.assertEqual(self.armed_at_subscribe, [(t, True) for t in sorted(self.topics)])
         self.assertEqual(link.reconnects, 1)
-        self.assertIsNotNone(link.last_reconnect_at)
 
     def test_topics_provider_is_read_at_reconnect_time_not_at_construction(self):
         link = self.link().connect()
@@ -116,6 +114,58 @@ class TestConnackRules(_LinkCase):
             fake.accept()
             self.assertEqual(link.reconnects, n)
         self.assertEqual(len(fake.subscribed), 3 * len(self.topics))
+
+    def test_a_pass_made_before_the_first_connack_is_redone_by_it(self):
+        """Review B1: a pass the broker never took (the socket died before
+        CONNACK #1) must not be trusted by the CONNACK that follows."""
+        link = self.link().connect()
+        fake = self.fake()
+        fake.up = False  # closed by the broker before CONNACK #1
+        self.assertEqual(link.subscribe_all(), 0)
+        self.armed_at_subscribe.clear()
+        fake.accept()  # CONNACK #1
+        self.assertTrue(link.connected)
+        self.assertEqual({t for t, _q in fake.subscribed}, self.topics)
+        self.assertTrue(all(q == 1 for _t, q in fake.subscribed), fake.subscribed)
+        self.assertEqual(self.armed_at_subscribe, [(t, True) for t in sorted(self.topics)])
+
+    def test_a_pass_accepted_by_the_library_before_connack_is_not_trusted(self):
+        """paho can accept a SUBSCRIBE into a socket that is already dying
+        (rc 0, packet lost with the socket) — any pass made before this
+        session's CONNACK is redone by it, whatever the rc said."""
+        link = self.link().connect()
+        fake = self.fake()  # up: paho has not noticed the drop yet
+        self.assertEqual(link.subscribe_all(), len(self.topics))
+        fake.up = False  # ...and the socket goes, taking the SUBSCRIBEs with it
+        fake.accept()  # CONNACK #1 on the next socket
+        self.assertEqual(len(fake.subscribed), 2 * len(self.topics), fake.subscribed)
+
+    def test_a_connack_landing_mid_pass_reruns_the_pass(self):
+        """The CONNACK arrives on paho's thread WHILE the main thread's pass is
+        failing: neither side may leave the other's topics unsubscribed."""
+        topics = sorted(self.topics)
+
+        class _ConnackMidPass(FakePahoClient):
+            def subscribe(self, topic, qos=0, *_a, **_k):
+                rc = super().subscribe(topic, qos)
+                if rc[0] != 0 and not self.calls.count(("mid-pass-connack",)):
+                    self.calls.append(("mid-pass-connack",))
+                    self.accept()  # delivered between two subscribes of the pass
+                return rc
+
+        link = self.link(client_factory=lambda cid: _ConnackMidPass(1, client_id=cid)).connect()
+        fake = self.fake()
+        fake.up = False
+        link.subscribe_all()
+        self.assertIn(("mid-pass-connack",), fake.calls, "harness: the CONNACK never landed mid-pass")
+        self.assertEqual({t for t, _q in fake.subscribed}, set(topics), fake.subscribed)
+
+    def test_a_complete_pass_after_connack_is_not_repeated(self):
+        link = self.link().connect()
+        fake = self.fake()
+        fake.accept()
+        self.assertEqual(link.subscribe_all(), len(self.topics))
+        self.assertEqual(len(fake.subscribed), len(self.topics))
 
     def test_refused_connack_neither_connects_nor_subscribes(self):
         link = self.link().connect()
@@ -149,7 +199,7 @@ class TestConnackRules(_LinkCase):
         fake = self.fake()
         fake.accept()
         self.assertEqual(link.subscribe_all(), len(self.topics))
-        fake.up = False  # NO_CONN from every subscribe
+        fake.drop(rc=0)  # link down: NO_CONN from every subscribe
         with self.assertLogs(self.log, level="WARNING") as captured:
             self.assertEqual(link.subscribe_all(), 0)
         self.assertEqual(len(captured.output), len(self.topics))

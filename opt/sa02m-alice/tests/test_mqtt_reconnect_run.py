@@ -60,10 +60,12 @@ from tests.fake_paho import FakePahoClient, fake_paho_modules  # noqa: E402
 _PATCHED = (
     "ETC_DIR", "CLIENT_CONF", "DEVICES_CONF", "SERVER_CONF", "VAR_DIR",
     "CERT_FILE", "KEY_FILE", "CA_FILE", "PENDING_CLAIM_FILE", "STATUS_FILE",
+    "STATUS_FILE_CLOUD",
 )
 CLIENT_CONF_SEED = (
     "[client]\n"
     "client_enabled = true\n"
+    "cloud_control_enabled = true\n"
     "log_level = INFO\n"
     "mqtt_host = 127.0.0.1\n"
     "mqtt_port = 1883\n"
@@ -93,8 +95,9 @@ SWITCH_DOC = {
     ],
 }
 # The set a (re)connect must hold: the registry's catalogue + availability
-# topics, plus the Yandex unit's auto-provision watch topics.
+# topics, plus — Yandex unit only — the auto-provision watch topics.
 EXPECTED_TOPICS = set(DeviceRegistry(SWITCH_DOC).subscribe_topics()) | set(WATCH_TOPICS)
+EXPECTED_TOPICS_CLOUD = set(DeviceRegistry(SWITCH_DOC, profile=C.PROFILE_CLOUD).subscribe_topics())
 ACTION_ON = {
     "request_id": "r1",
     "payload": {
@@ -174,6 +177,11 @@ class _Clock:
 
 
 class _RunHarness(unittest.TestCase):
+    PROFILE = C.PROFILE_YANDEX
+
+    def expected_topics(self):
+        return EXPECTED_TOPICS_CLOUD if self.PROFILE == C.PROFILE_CLOUD else EXPECTED_TOPICS
+
     def setUp(self):
         self.tmp = tempfile.TemporaryDirectory()
         self.addCleanup(self.tmp.cleanup)
@@ -192,8 +200,9 @@ class _RunHarness(unittest.TestCase):
         C.KEY_FILE = os.path.join(var, "device.key.pem")
         C.CA_FILE = os.path.join(var, "ca.crt.pem")
         C.PENDING_CLAIM_FILE = os.path.join(var, "pending_claim.json")
-        self.status_path = os.path.join(self.tmp.name, "run", "status.json")
-        C.STATUS_FILE = self.status_path
+        C.STATUS_FILE = os.path.join(self.tmp.name, "run", "status.json")
+        C.STATUS_FILE_CLOUD = os.path.join(self.tmp.name, "run", "status-cloud.json")
+        self.status_path = C.STATUS_FILE_CLOUD if self.PROFILE == C.PROFILE_CLOUD else C.STATUS_FILE
         self._write(C.CLIENT_CONF, CLIENT_CONF_SEED)
         self._write(C.SERVER_CONF, SERVER_CONF_SEED)
         for path in (C.CERT_FILE, C.KEY_FILE, C.CA_FILE):
@@ -207,6 +216,11 @@ class _RunHarness(unittest.TestCase):
         auto = mock.patch.object(FakePahoClient, "auto_connack", True)
         auto.start()
         self.addCleanup(auto.stop)
+        # The cloud profile authenticates with the cloud agent's identity; the
+        # fake Socket.IO never mints a token, so presence is all run() reads.
+        ident = mock.patch.object(client_main, "cloud_identity_present", return_value=True)
+        ident.start()
+        self.addCleanup(ident.stop)
 
     @staticmethod
     def _reset_globals():
@@ -265,7 +279,7 @@ class _RunHarness(unittest.TestCase):
                 mock.patch.object(client_main, "reconnect_delay", return_value=0.0), \
                 mock.patch.object(sio_connection, "import_socketio", return_value=None), \
                 mock.patch.object(client_main._stop, "wait", side_effect=budget_wait):
-            return client_main.run()
+            return client_main.run(self.PROFILE)
 
 
 class TestResubscribeThroughRun(_RunHarness):
@@ -286,17 +300,17 @@ class TestResubscribeThroughRun(_RunHarness):
 
         self.assertEqual(self.run_client(script), 0)
         initial = marks["initial"]
-        self.assertEqual({t for t, _q in initial}, EXPECTED_TOPICS,
+        self.assertEqual({t for t, _q in initial}, self.expected_topics(),
                          "the initial pass must subscribe the whole set")
         again = self.paho().subscribed[len(initial):]
         self.assertEqual(
-            {t for t, _q in again}, EXPECTED_TOPICS,
+            {t for t, _q in again}, self.expected_topics(),
             "after the broker re-accepted the connection the CURRENT set was not "
             "re-subscribed; subscribes after the drop: %r" % (again,))
         self.assertTrue(all(q == 1 for _t, q in again), again)
         self.assertEqual(self.paho().unsubscribed, [])
         # Unique per process, greppable in the broker log (contract §Broker reconnect).
-        self.assertEqual(self.paho().client_id, "sa02m-alice-%s-%d" % (C.PROFILE_YANDEX, os.getpid()))
+        self.assertEqual(self.paho().client_id, "sa02m-alice-%s-%d" % (self.PROFILE, os.getpid()))
 
     def test_one_snapshot_after_the_grace_and_none_while_deaf(self):
         """T3 — re-report once the retained burst has settled; a cadence
@@ -390,6 +404,83 @@ class TestResubscribeThroughRun(_RunHarness):
         self.assertEqual(seen["up"]["state"], C.STATE_CONNECTED)
 
 
+    def test_a_drop_inside_the_grace_defers_the_push_to_the_next_session(self):
+        """Review A1. The link drops again inside the post-reconnect grace:
+        the pending push must not leave from the frozen cache while deaf; the
+        next session's re-subscribe gets its own push after its own grace."""
+        marks = {}
+
+        def script(n, clock):
+            paho = self.paho()
+            if n == 1:
+                paho.deliver(DO_TOPIC, "1", retain=True)
+            elif n == 2:
+                paho.drop()
+            elif n == 3:
+                paho.accept()  # re-subscribe #1: a push is now pending
+            elif n == 4:
+                marks["pending"] = len(self.snapshots())
+                paho.drop()  # ...and the link goes again inside the grace
+                clock.offset += C.RETAINED_GRACE_S + 1.0  # the pending push is due
+            elif n == 5:
+                marks["deaf"] = len(self.snapshots())
+                paho.accept()  # re-subscribe #2
+            elif n == 6:
+                clock.offset += C.RETAINED_GRACE_S + 1.0
+            elif n >= 8:
+                client_main._stop.set()
+
+        self.assertEqual(self.run_client(script), 0)
+        self.assertEqual(
+            marks["deaf"] - marks["pending"], 0,
+            "the post-reconnect push left while the broker link was down")
+        self.assertEqual(
+            len(self.snapshots()) - marks["deaf"], 1,
+            "the next session's re-subscribe must be followed by exactly one push")
+
+
+class TestBrokerDropBeforeFirstConnack(_RunHarness):
+    def test_a_pass_made_before_the_first_connack_is_redone_by_it(self):
+        """Review 1.0.6.66 B1. The broker closes the fresh socket after the TCP
+        accept but before CONNACK #1 and stays down across the Socket.IO
+        connect, so every subscribe of the initial pass gets NO_CONN. When
+        it comes back, its CONNACK is the link's FIRST — and a first CONNACK
+        that trusts the failed pass leaves the client deaf while the status
+        file says `mqtt_connected: true`."""
+        marks = {}
+
+        def dead_before_connack(paho_self):
+            paho_self.calls.append(("loop_start",))
+            paho_self.up = False  # socket closed by the broker, no CONNACK
+
+        def script(n, clock):
+            paho = self.paho()
+            if n == 1:  # the settle sleep, right after the initial pass
+                marks["before"] = list(paho.subscribed)
+                paho.accept()  # the broker is back: CONNACK #1
+                paho.deliver(DO_TOPIC, "1", retain=True)  # its retained burst
+            elif n == 2:
+                marks["after"] = list(paho.subscribed)
+                marks["status"] = self.status()
+                marks["snaps"] = len(self.snapshots())
+                clock.offset += C.RETAINED_GRACE_S + 1.0
+            elif n >= 5:
+                client_main._stop.set()
+
+        with mock.patch.object(FakePahoClient, "loop_start", dead_before_connack):
+            self.assertEqual(self.run_client(script), 0)
+        self.assertEqual(marks["before"], [], "harness: the initial pass must have met a dead socket")
+        self.assertEqual(
+            {t for t, _q in marks["after"]}, self.expected_topics(),
+            "the first CONNACK after a pass the broker never took left the client deaf; "
+            "subscribes: %r" % (marks["after"],))
+        self.assertTrue(all(q == 1 for _t, q in marks["after"]), marks["after"])
+        self.assertIs(marks["status"].get("mqtt_connected"), True, marks["status"])
+        self.assertEqual(
+            len(self.snapshots()) - marks["snaps"], 1,
+            "the late re-subscribe must be followed by one snapshot after the grace")
+
+
 class TestColdStartBrokerRefusal(_RunHarness):
     def test_a_refused_broker_is_named_in_the_status_message(self):
         """A broker refusing at connect must not read like a gateway failure
@@ -408,6 +499,18 @@ class TestColdStartBrokerRefusal(_RunHarness):
         self.assertEqual(_LiveSio.instances, [], "the gateway was dialled without a broker")
         message = self.status()["message"]
         self.assertIn("MQTT broker 127.0.0.1:1883", message)
+
+
+class TestResubscribeThroughRunCloud(TestResubscribeThroughRun):
+    """Review A3: the same run() path on `--profile cloud` (sa02m-cloud-control)
+    — no auto-provision watch topics, its own status file, its own client id,
+    the 30 s history cadence (T3's offset crosses it too)."""
+
+    PROFILE = C.PROFILE_CLOUD
+
+
+class TestBrokerDropBeforeFirstConnackCloud(TestBrokerDropBeforeFirstConnack):
+    PROFILE = C.PROFILE_CLOUD
 
 
 if __name__ == "__main__":
