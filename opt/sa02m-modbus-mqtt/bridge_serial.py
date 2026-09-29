@@ -215,10 +215,9 @@ def build_fmb_configure_events(addr: int, evt_type: int,
     """configure_events (0x18), legacy single-range form.
 
     Type byte is the INTERNAL code (FMB_EVT_* 0..3 / 0x0F) and one priority
-    covers the whole range. Understood by MR-02m releases <= 1.0.10.4x and by
-    DTV / CE-02m-3; newer MR-02m firmware rejects it, so the bridge falls back
-    to this form only after the WB one goes unanswered.
-    Grammar home: docs/contracts/fmb-event-wire.md.
+    covers the whole range. Which device and firmware gets this form — and
+    which gets no 0x18 at all — is the table in docs/contracts/fmb-event-wire.md
+    §3 (the grammar home too).
     """
     data = bytes([addr, 0x46, 0x18, 5,
                   evt_type, start_reg >> 8, start_reg & 0xFF, count, priority])

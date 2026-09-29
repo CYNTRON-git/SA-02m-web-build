@@ -285,8 +285,9 @@ def compose_pollers(devices_cfg: list, pub: MQTTPublisher):
             # Fast Modbus is an RS-485 broadcast protocol: never armed on a
             # TCP bus, whatever `fast_modbus` says.
             continue
-        # Default ON for MR/DTV. CE: explicit fast_modbus:true only — early
-        # configure_events while silent wedged CE on COM2 (RX frozen).
+        # Default ON for MR/DTV. CE: explicit fast_modbus:true only (opt-in);
+        # whether a CE then gets any 0x18, and which form, is decided by its
+        # firmware version (docs/contracts/fmb-event-wire.md §3).
         want_fmb = bool(dev_cfg["fast_modbus"]) if "fast_modbus" in dev_cfg \
             else dev_type in ("mr02m", "dtv")
         if want_fmb:

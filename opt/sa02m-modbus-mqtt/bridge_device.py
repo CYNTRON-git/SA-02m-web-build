@@ -350,8 +350,9 @@ class PortCycleScheduler:
             except Exception as e:
                 self._log.error("setup %s: %s", p.device_id, e)
 
-        # Classic warmup before any FC46 0x18 — a silent/hung slave must not
-        # get configure_events (observed CE COM2 wedge after early 0x18).
+        # Classic warmup before any FC46 0x18 — configure_events goes only to
+        # a slave that already answers classic reads. Not the fix for the CE
+        # COM2 wedge (CE firmware, docs/contracts/fmb-event-wire.md §3).
         if not self._stop.is_set():
             for p in self._pollers:
                 if self._stop.is_set():

@@ -38,9 +38,8 @@ devices:
   #   name: "MR-02m 6DO8DI (COM1 addr=5)"
   #   # fast_modbus: true   # по умолчанию ON для mr02m/dtv (false — только classic)
   #   # fmb_event_wire: auto  # форма кадра configure_events: auto|wb|legacy.
-  #                         # auto (умолч.): WB-кадр пробуется только для mr02m,
-  #                         # при отсутствии ответа — откат на legacy-кадр.
-  #                         # Грамматики: docs/contracts/fmb-event-wire.md
+  #                         # auto (умолч.): по типу устройства и версии прошивки
+  #                         # (таблица: docs/contracts/fmb-event-wire.md §3).
   #   poll_s: 1              # полный опрос DO/DI + AO/AI (с); poll_do_di_s/poll_ai_ao_s — устар., синхронизируются с poll_s
   #   poll_diag_s: 60
   #   poll_insurance_s: 30   # страхующий classic-опрос каналов под FMB-событиями (dtv; ≥0.5 c)
