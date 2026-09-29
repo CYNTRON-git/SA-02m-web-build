@@ -150,6 +150,7 @@ version-consistency|www/network_config/static/js/app.js|const APP_VERSION
 mqtt-install-secret|scripts/05-mqtt.sh|mosquitto_passwd
 rtc-utc-convention|www/network_config/cgi-bin/lib_rtc.sh|--systohc --utc
 nodered-ctl-install|etc/sa02m-web-service-ctl.sh|nodered_guard_major_upgrade || return 1
+nodered-ctl-install|etc/sa02m-web-service-ctl.sh|atomic_install_unit "$_nr_unit" /etc/systemd/system/nodered.service
 iface-dns-ensure|etc/fix-eth.sh|dns_ensure "$iface"
 uboot-bootscr-format|tools/imaging/make-image.sh|run_firstboot_patch "$RAW_IMG" ||
 storage-automount-decision|etc/storage-mount.sh|mount -t ntfs3 -o rw,noatime

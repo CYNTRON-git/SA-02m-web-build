@@ -1208,6 +1208,15 @@ PY
         tar -czf "$archive" --verbatim-files-from -T "$list" || die E_APPLY "rollback archive failed"
     fi
     chmod 0600 "$archive"
+    # Durable BEFORE the caller records stage=applying: on the board's ext4
+    # (commit=600 + journal_data_writeback) an archive never fdatasync'ed can
+    # be empty or partial after the very power loss the archive fallback
+    # exists for — the R4-1 reasoning G6 applies to the journal's backups.
+    # Checked, no bare-`sync` fallback (it cannot report an error); a failure
+    # stops the update here, before any file is touched. Gate:
+    # update-recover-rollback (j).
+    sync -d -- "$archive" || die E_APPLY "rollback archive not durable (fdatasync failed)"
+    sync -- "$STATEDIR/rollback" || die E_APPLY "rollback archive not durable (directory fsync failed)"
     # FIFO retention: keep max 2
     ls -1t "$STATEDIR/rollback"/pre-update-*.tar.gz 2>/dev/null | tail -n +3 | while read -r old; do
         rm -f "$old"
@@ -1686,7 +1695,13 @@ run_migrations() {
 #     rename → dir fsync, never a truncate-then-fill of the live path;
 #   - any failure ends in stage=error «rollback incomplete (…)» with the
 #     caller's code, never rolled_back over a partly restored tree.
-# Gates: update-deploy-skip 15a-15e, update-recover-boot R10.
+# With no journal (staging lost), the ARCHIVE FALLBACK restores the
+# pre-update archive under the same rules: each member atomically through
+# atomic_install_file, and only from an archive tar read to the end (an
+# unreadable archive restores nothing); a failed member / an unreadable
+# archive / no archive at all each end in «rollback incomplete (…)».
+# Gates: update-deploy-skip 15a-15e, update-recover-boot R10,
+# update-recover-rollback (c)-(j).
 rollback_from_journal() {
     local txn=$1 code=${2:-E_APPLY} message=${3:-}
     local j="$STATEDIR/staging/$txn/journal.jsonl"
@@ -1789,17 +1804,57 @@ PY
             tmp=$(mktemp -d "$STATEDIR/staging/rollback-extract.XXXXXX")
             # -p preserves each member's mode/owner so the restore keeps exec bits
             # (else systemd 203/EXEC on the restored scripts) and restrictive perms.
-            tar -xpzf "$archive" -C "$tmp" || true
-            # Archive stored absolute paths; walk and restore each with its real mode.
-            find "$tmp" -type f | while IFS= read -r f; do
-                local rel="${f#"$tmp"}"
-                if [ -n "$rel" ]; then
-                    mkdir -p "$(dirname "$rel")"
-                    install -m "$(stat -c '%a' "$f")" -o "$(stat -c '%u' "$f")" \
-                        -g "$(stat -c '%g' "$f")" "$f" "$rel"
+            # A tar failure restores NOTHING (fail-closed) and ends «rollback
+            # incomplete». The only integrity check over the payload is the
+            # gzip CRC, verified once at the END of the stream, so when tar
+            # fails no extracted byte is proven: GNU tar leaves the member it
+            # was writing truncated (and without its -p mode), and a corrupt —
+            # not truncated — stream can yield a same-size member with wrong
+            # bytes, which no per-member size check would catch. Restoring
+            # the extracted tree would atomically put a torn file over a valid
+            # live one (1.0.6.60 review B6). tar rc 0 is the one point where
+            # every member is CRC-proven. Gate: update-recover-rollback (h), (h2).
+            local tar_rc=0
+            tar -xpzf "$archive" -C "$tmp" || tar_rc=$?
+            # Archive stored absolute paths; walk and restore each with its real
+            # mode/owner through atomic_install_file (tmp beside the target →
+            # fdatasync → rename-over → dir fsync) — the same old-or-new
+            # guarantee the journal replay above gives. Until 1.0.6.60 this was
+            # a bare `install -m … "$f" "$rel"`: truncate-then-fill of a LIVE
+            # path (/usr/local/**, /etc/systemd/system/** are what the archive
+            # holds) on the one path that runs when the board is already
+            # mid-failure. The loop runs in THIS shell (process substitution,
+            # not `find | while`) so a failed member reaches $incomplete — a
+            # subshell's count would be lost, and under errexit its death used
+            # to kill the runner at rolling_back. Gate: update-recover-rollback
+            # (c)-(g).
+            local n_failed=0 n_total=0 f rel
+            if [ "$tar_rc" -ne 0 ]; then
+                log "rollback: archive $archive unreadable (tar rc=$tar_rc) - nothing restored from it (no member is CRC-proven)"
+                incomplete="rollback archive unreadable (tar rc=$tar_rc); nothing restored from it"
+            else
+                while IFS= read -r f; do
+                    rel="${f#"$tmp"}"
+                    [ -n "$rel" ] || continue
+                    n_total=$((n_total + 1))
+                    if ! atomic_install_file "$f" "$rel" "$(stat -c '%a' "$f")" "$(stat -c '%u:%g' "$f")"; then
+                        n_failed=$((n_failed + 1))
+                        log "rollback: FAIL restore $rel from archive"
+                    fi
+                done < <(find "$tmp" -type f)
+                if [ "$n_failed" -gt 0 ]; then
+                    incomplete="$n_failed of $n_total archive member(s) not restored"
                 fi
-            done
+            fi
             rm -rf "$tmp"
+        else
+            # No journal AND no archive: nothing can be restored, so this is
+            # not a rollback. The archive is built at stage=backing_up before
+            # any file is deployed, and recover's backing_up branch never gets
+            # here without one — reaching this means the archive was lost.
+            # Until 1.0.6.60 it ended rolled_back. Gate: update-recover-rollback (i).
+            log "rollback: no journal and no rollback archive (${archive:-unset}) - nothing restored"
+            incomplete="no journal and no rollback archive; nothing restored"
         fi
     fi
     restart_after_rollback "$txn" || true
