@@ -518,11 +518,12 @@ class TestShippedMp02Ahu(unittest.TestCase):
         ("temp_setpoint", 3, 190, 1),
         ("humidity_setpoint", 3, 191, 1),
         ("fan_speed_manual", 3, 192, 1),
+        ("fan_mode", 3, 193, 1),
         ("alarm_ack", 1, 2, 1),
         ("alarm_reset", 1, 3, 1),
     ]
     WRITABLE = {"run", "mode", "temp_setpoint", "humidity_setpoint",
-                "fan_speed_manual", "alarm_ack", "alarm_reset"}
+                "fan_speed_manual", "fan_mode", "alarm_ack", "alarm_reset"}
 
     def _load(self, pub=None):
         # Capture WARNING+ on the device logger; the sentinel keeps assertLogs
@@ -541,12 +542,12 @@ class TestShippedMp02Ahu(unittest.TestCase):
     def _ch(self, p, name):
         return next(c for c in p._channels if c.name == name)
 
-    def test_parses_all_23_channels_without_skip(self):
+    def test_parses_all_24_channels_without_skip(self):
         p, _pub = self._load()
         self.assertFalse(p._load_error)
         self.assertEqual([c.name for c in p._channels],
                          [r[0] for r in self.EXPECTED_READS])
-        self.assertEqual(len(p._channels), 23)
+        self.assertEqual(len(p._channels), 24)
         self.assertEqual(p._setup_writes, [])   # no device.setup writes
 
     def test_bootloader_register_129_not_addressed(self):
@@ -621,6 +622,10 @@ class TestShippedMp02Ahu(unittest.TestCase):
                  ("temp_setpoint", "5", 190, 50),
                  ("humidity_setpoint", "45.5", 191, 455),
                  ("fan_speed_manual", "100", 192, 1000),
+                 # HR 193 = fan mode, operator window x10: 0 = auto, 10 = manual
+                 # (MP-02 clamps anything else: < 5 -> auto, else manual).
+                 ("fan_mode", "1", 193, 10),
+                 ("fan_mode", "0", 193, 0),
                  ("mode", "2", 100, 2)]
         for name, payload, reg, raw in cases:
             with self.subTest(name=name, payload=payload):

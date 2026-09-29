@@ -12,7 +12,7 @@ family class. Contract + supported schema: `docs/contracts/template-device.md`.
   the v1 supported schema. Used by the runtime tests and the web add-by-template
   picker. It is not a real device.
 - `config-mp02-ahu.json` (`template: mp02-ahu`) — the CYNTRON **MP-02** PLC
-  running its air-handling-unit (AHU / ПВУ) program, 23 controls. Authored by
+  running its air-handling-unit (AHU / ПВУ) program, 24 controls. Authored by
   the MP-02 firmware team from their own register map, not a Wiren Board file
   (source: MP-02 firmware repo `CYNTRON-git/PLC_STM32F427` — a **private**
   repository, readable by CYNTRON staff only —
@@ -27,6 +27,12 @@ family class. Contract + supported schema: `docs/contracts/template-device.md`.
     **operator window** — they need MP-02 firmware with the operator window
     (HR 190…193, coil 16; 2026-09-27) or newer. Out-of-range setpoints are clamped
     by the PLC; the read-back shows the accepted value.
+  - `fan_mode` (holding 193, same ×10 window: `0` = auto, `1` = manual, on the
+    wire 0/10; the PLC clamps anything else — < 5 → auto, else manual) needs
+    MP-02 firmware of 2026-09-28 or newer; on older firmware it reads 0 and a
+    write is refused by the PLC (exception 02 → `/meta/error = w`). In manual
+    mode the fan runs at `fan_speed_manual` regardless of the unit's own mode,
+    within the PLC's min/max limits.
   - `run` reads back the **operator start latch**, not the unit's state: a
     unit started by its schedule reads `run = 0` while running. Use
     `status_code` / `sequencer_state` for the real state.

@@ -4,7 +4,7 @@
   <img src="https://img.shields.io/badge/platform-Armbian%20%7C%20Linux%20ARM-orange?style=flat-square"/>
   <img src="https://img.shields.io/badge/stack-nginx%20%2B%20fcgiwrap%20%2B%20Bash%20CGI-blue?style=flat-square"/>
   <img src="https://img.shields.io/badge/license-MIT-green?style=flat-square"/>
-  <img src="https://img.shields.io/badge/version-1.0.6.60-cyan?style=flat-square"/>
+  <img src="https://img.shields.io/badge/version-1.0.6.61-cyan?style=flat-square"/>
 </p>
 
 Веб-интерфейс для **[сервера автоматизации СА-02м](https://cyntron.ru/catalog/ustroystva_avtomatizatsii/servery_avtomatizatsii/)** производства [ЦИНТРОН](https://cyntron.ru) на базе процессорного модуля [A40i-2eth](https://cyntron.ru/catalog/ustroystva_avtomatizatsii/komplektuyushchie/7705/) (Allwinner A40i, Linux).
@@ -123,7 +123,7 @@ echo 'SA02M_HW_VARIANT=sa02m-2eth' > /etc/sa02m_hw_variant.conf
 
 ### MQTT (Modbus→MQTT мост)
 - **Брокер Mosquitto** — локальный порт `1883` (только localhost), внешний `1884` с ACL и пользователем `mqttuser` для подключения SCADA/ПК.
-- **Modbus→MQTT мост** (`sa02m-modbus-mqtt.service`) — опрос MR-02м, ДТВ, СЭ-02м-3, Carel (c.pCOmini / uAria) и ленты LED (type 120) по RS-485 и публикация в MQTT (`/devices/<id>/controls/*`). Смешанный baud на одном COM не поддерживается.
+- **Modbus→MQTT мост** (`sa02m-modbus-mqtt.service`) — опрос MR-02м, ДТВ, СЭ-02м-3, Carel (c.pCOmini / uAria) и ленты LED (type 120) по RS-485 и публикация в MQTT (`/devices/<id>/controls/*`). Смешанный baud на одном COM не поддерживается. **Не подключайте оба порта RS-485 одного СЭ-02м-3 к линиям одной платы:** пока счётчик отвечает по одному порту, второй порт даёт помехи на свою линию — у всех устройств на ней теряется до половины ответов (стенд 1.135, 2026-09-29; дефект передан команде прошивки СЭ-02м-3).
 - **DI в режиме «Кнопка»** — счётчики `di_N_short` / `di_N_long` / `di_N_double` для сценарного движка (`docs/MQTT_TOPICS.md`).
 - **Шаблоны устройств** — 15 JSON-шаблонов в `etc/sa02m-device-templates/` (все варианты MR-02м, ДТВ, CE-02m-3): каналы DO/DI/AO/AI, счётчики импульсов, AI в вольтах как в desktop flasher.
 - **Веб-вкладка «MQTT»** — поиск устройств на шине, ручное добавление, настройка каналов, live-значения, монитор топиков (SSE), панель подключения с ПК (пароль маскируется как `******`).

@@ -1,5 +1,5 @@
 {
-  "_comment": "SA-02m device template for the MP-02 PLC running the air handling unit program (AHU). Self-authored from the MP-02 register map (docs/MODBUS_MAP.md, Net/mb_map.h, Plc/apps/ahu/ahu_prog.c) - not a Wiren Board file. Addresses are raw protocol addresses (0-based). Floats are IEEE-754, high word first. Operator window 190..193 and coil 16 need MP-02 firmware from 2026-09-27 or newer.",
+  "_comment": "SA-02m device template for the MP-02 PLC running the air handling unit program (AHU). Self-authored from the MP-02 register map (docs/MODBUS_MAP.md, Net/mb_map.h, Plc/apps/ahu/ahu_prog.c) - not a Wiren Board file. Addresses are raw protocol addresses (0-based). Floats are IEEE-754, high word first. Operator window 190..192 and coil 16 need MP-02 firmware from 2026-09-27 or newer; HR 193 (fan_mode: 0 = auto, 1 = manual, sent x10 as 0/10 like the rest of the window; MP-02 clamps < 5 to auto, else manual) needs firmware from 2026-09-28 — older firmware reads it as 0 and refuses writes with exception 02.",
   "device": {
     "name": "MP-02 AHU",
     "device_type": "cyntron-mp02-ahu",
@@ -26,6 +26,7 @@
       {"name": "temp_setpoint", "reg_type": "holding", "address": 190, "type": "value", "format": "s16", "scale": 0.1, "units": "°C", "readonly": false},
       {"name": "humidity_setpoint", "reg_type": "holding", "address": 191, "type": "value", "format": "s16", "scale": 0.1, "units": "%", "readonly": false},
       {"name": "fan_speed_manual", "reg_type": "holding", "address": 192, "type": "value", "format": "s16", "scale": 0.1, "units": "%", "readonly": false},
+      {"name": "fan_mode",      "reg_type": "holding", "address": 193, "type": "value", "format": "s16", "scale": 0.1, "readonly": false},
       {"name": "alarm_ack",     "reg_type": "coil",    "address": 2,   "type": "pushbutton", "readonly": false},
       {"name": "alarm_reset",   "reg_type": "coil",    "address": 3,   "type": "pushbutton", "readonly": false}
     ]
