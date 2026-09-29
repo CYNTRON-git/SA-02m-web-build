@@ -426,6 +426,7 @@ class TestResubscribeThroughRun(_RunHarness):
                 marks["deaf"] = len(self.snapshots())
                 paho.accept()  # re-subscribe #2
             elif n == 6:
+                marks["in_grace"] = len(self.snapshots())  # before the grace ends
                 clock.offset += C.RETAINED_GRACE_S + 1.0
             elif n >= 8:
                 client_main._stop.set()
@@ -434,6 +435,9 @@ class TestResubscribeThroughRun(_RunHarness):
         self.assertEqual(
             marks["deaf"] - marks["pending"], 0,
             "the post-reconnect push left while the broker link was down")
+        self.assertEqual(
+            marks["in_grace"] - marks["deaf"], 0,
+            "the next session pushed inside its own grace, from a half-refreshed cache")
         self.assertEqual(
             len(self.snapshots()) - marks["deaf"], 1,
             "the next session's re-subscribe must be followed by exactly one push")
