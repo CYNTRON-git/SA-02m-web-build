@@ -536,7 +536,10 @@ commit's diff of this file).
   the throttle test under load, class (1); not reproduced, not investigated. When it recurs: read the
   case's time budget against the throttle's window and pin the fixture like R1. RECURRED 2026-09-28
   three times under load (1.0.6.58 builder; 1.0.6.60 reviews rounds 2 and 3; standalone re-run green each
-  time) — the 2 s lockout window is the suspect. (3) `test-web-update-apply-guard.sh` rows 7, R4 and H1/H1b
+  time) — the 2 s lockout window is the suspect. FIXED 1.0.6.63: the window was the cause (three
+  failures + the check outran 2 s under a loaded build; 3 of 4 standalone runs red on 2026-09-29) — the
+  harness now uses a 30 s window for 57–61 and judges 62 with a 1 s window at check time, after an
+  explicit «locked» precondition. (3) `test-web-update-apply-guard.sh` rows 7, R4 and H1/H1b
   fail under WSL on `d66d7b6` as well (1.0.6.62 builder + reviewer, twice) — the ~1.2 s sudo shim appears to
   leak into the next row. Both queued behind the 1.0.6.63–.68 train (2-agent cap).
 - [OPEN] 2026-09-23 **[MED] `sa02m-devices-api` listens on `127.0.0.1:8765` with no auth of its
