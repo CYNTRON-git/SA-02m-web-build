@@ -8,6 +8,9 @@ commit's diff of this file).
 
 ## Open
 
+- [OPEN] 2026-09-29 **[LOW] `test-web-auth.sh` section 8 comment still says «tiny window» (1.0.6.63 review A12).**
+  Cases 57–61 now run with a 30 s window and 62 judges expiry with a 1 s window at check time; the
+  section header above them should say so. Comment only.
 - [OPEN] 2026-09-29 **[LOW] A partial section skip reads as a row PASS (1.0.6.62 review A3).**
   `test-web-update-launcher-guard.sh` runs L1–L7 everywhere but L8–L11 only where `flock(1)` exists; on
   git-bash the row prints «PASS (all checks; SKIPPED here: L8–L11 (no flock))» and the runner counts it as
@@ -541,7 +544,7 @@ commit's diff of this file).
   harness now uses a 30 s window for 57–61 and judges 62 with a 1 s window at check time, after an
   explicit «locked» precondition. (3) `test-web-update-apply-guard.sh` rows 7, R4 and H1/H1b
   fail under WSL on `d66d7b6` as well (1.0.6.62 builder + reviewer, twice) — the ~1.2 s sudo shim appears to
-  leak into the next row. Both queued behind the 1.0.6.63–.68 train (2-agent cap).
+  leak into the next row. Item (3) is still queued behind the 1.0.6.63–.68 train (2-agent cap).
 - [OPEN] 2026-09-23 **[MED] `sa02m-devices-api` listens on `127.0.0.1:8765` with no auth of its
   own.** `opt/sa02m-devices/sa02m_devices/api.py` reads only Content-Length and relies entirely on
   nginx's `auth_request` in front of `/api/devices*`; any local process or user on the board can
