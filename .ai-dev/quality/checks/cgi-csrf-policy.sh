@@ -142,7 +142,8 @@ login.cgi|mints the session; not session-authed
 index.cgi|302 redirect, no work
 '
 # The two HTTP daemons: repo-root path | the def line opening the gated scope |
-# the FIRST POST route line inside it (the anchor the csrf call must precede).
+# the generic mutation-route pattern every POST handler inside it matches (the
+# csrf call must precede each match).
 DAEMON_MUTATING='
 opt/sa02m-flasher/sa02m_flasher/service.py|def _dispatch(|method == "POST" and (p|m)([^A-Za-z0-9_]|$)|return self\._handle_|_read_json_body\(|_extract_multipart\(
 opt/sa02m-devices/sa02m_devices/api.py|def do_POST(|path (==|in|!=)[[:space:]]|path\.startswith|handle_[a-z_]+\(|_read_json\(|_handle_export\(

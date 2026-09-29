@@ -121,7 +121,7 @@ else bad "only $n_loc /api/devices location block(s) (floor $LOC_MIN) — a loca
 while IFS=$'\x1f' read -r head has_up has_port; do
     [ -n "$head" ] || continue
     if [ "$has_up" = 1 ] && [ "$has_port" = 0 ]; then ok "${head%%\{*}— proxy_pass http://$UP"
-    else bad "${head%%\{*}— must proxy_pass http://$UP (socket-primary), never the literal 127.0.0.1:8765"; fi
+    else bad "${head%%\{*}— must proxy_pass http://$UP (socket-only), never the literal 127.0.0.1:8765"; fi
 done <<<"$records"
 
 # ── 3. installer order + log string ─────────────────────────────────────────
@@ -149,7 +149,7 @@ else bad "$API: SOCKET_UPSTREAM_MARK no longer derives from SOCKET_PATH_DEFAULT 
 
 echo
 if [ "$fails" -eq 0 ]; then
-    echo "devices-api-upstream: ALL OK — socket-primary upstream, both locations on it, installer order, unit and daemon agree on $SOCK"
+    echo "devices-api-upstream: ALL OK — socket-only upstream, both locations on it, installer order, unit and daemon agree on $SOCK"
     exit 0
 fi
 echo "devices-api-upstream: $fails FAILED"

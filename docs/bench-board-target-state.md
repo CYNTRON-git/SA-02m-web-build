@@ -243,8 +243,10 @@ refresh его не выключит — нужен явный `disable --now`.
 `/run/sa02m-devices` `0755`. Иначе после рендера нового site-файла вкладка
 «Устройства» на 1.135 отвечает 502.
 
-Шаги (Оператор, на 1.135, **до** или сразу после установки 1.0.6.65 —
-`11-devices.sh` перерисует nginx на сокет в любом случае):
+Шаги (Оператор, на 1.135, **сразу после** установки 1.0.6.65: до неё
+site-файл ещё ведёт на `127.0.0.1:8765`, и gunicorn, уже переведённый на
+сокет, дал бы 502 до самой установки; `11-devices.sh` перерисует nginx на
+сокет в любом случае):
 
 1. Посмотреть текущую строку запуска и все места, где стенд ходит на порт:
 
@@ -264,13 +266,18 @@ refresh его не выключит — нужен явный `disable --now`.
    RuntimeDirectoryMode=0755
    UMask=0117
    ExecStart=
-   ExecStart=<исходная команда gunicorn> --bind unix:/run/sa02m-devices/api.sock
-   ExecStartPost=/bin/sh -c 'for i in $(seq 1 100); do [ -S /run/sa02m-devices/api.sock ] && break; sleep 0.1; done; chgrp www-data /run/sa02m-devices/api.sock && chmod 0660 /run/sa02m-devices/api.sock'
+   ExecStart=<исходная команда gunicorn> --bind unix:/run/sa02m-devices/api.sock --umask 0117
+   ExecStartPost=+/bin/sh -c 'for i in $(seq 1 100); do [ -S /run/sa02m-devices/api.sock ] && break; sleep 0.1; done; chgrp www-data /run/sa02m-devices/api.sock && chmod 0660 /run/sa02m-devices/api.sock'
    ```
 
-   `UMask=0117` даёт сокету `0660` с момента создания, `ExecStartPost`
-   дожидается сокета и выставляет группу `www-data` (nginx) и режим ещё раз —
-   так же, как это делает `sa02m-devices-api` (`bind_unix_listener`).
+   Режим сокета при создании задаёт `--umask 0117` самого gunicorn: при
+   `bind` он ставит свой umask (по умолчанию 0 — сокет открыт всем), поэтому
+   `UMask=` юнита на сокет не действует и нужен только для прочих файлов.
+   `ExecStartPost` с префиксом `+` выполняется от root при любом `User=`
+   стенда (не-root не смог бы сменить группу — `&&` уронил бы юнит, и
+   вкладка ответила бы 502): он дожидается сокета и выставляет группу
+   `www-data` (nginx) и режим `0660` — так же, как это делает
+   `sa02m-devices-api` (`bind_unix_listener`).
    Если шаг 1 нашёл потребителей самого порта на стенде (HardPy-тесты и т. п.),
    добавить **второй** `--bind 127.0.0.1:8765` к той же строке — это
    стендовое решение, на полевые платы оно не попадает. Проверяет ли

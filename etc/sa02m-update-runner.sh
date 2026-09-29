@@ -2239,7 +2239,7 @@ for v in vals:
             # An operator-disabled required unit is NOT a health failure: the
             # operator deliberately took it out of service (never-widen). A shared
             # HardPy stand masks sa02m-devices-api because the stand app serves
-            # :8765 instead — requiring it active would wrongly roll back every
+            # the devices API instead — requiring it active would wrongly roll back every
             # update there. masked / masked-runtime / disabled ⇒ skip; an ENABLED
             # unit that is merely down still fails (a real regression).
             local _en_state _cond

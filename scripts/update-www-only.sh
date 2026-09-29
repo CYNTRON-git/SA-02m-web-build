@@ -429,7 +429,7 @@ if [ -d "$BRIDGE_DIR" ] && [ -f "$MQTT_OPT/modbus_mqtt_bridge.py" ]; then
     fi
 fi
 
-# Devices tab (DTV / CE-02m-3): API :8765 + SQLite logger + nginx /api/devices*
+# Devices tab (DTV / CE-02m-3): API on /run/sa02m-devices/api.sock + SQLite logger + nginx /api/devices*
 if [ -f "$SCRIPT_DIR/11-devices.sh" ] && [ -d "$REPO_ROOT/opt/sa02m-devices/sa02m_devices" ]; then
     bash "$SCRIPT_DIR/11-devices.sh" \
         && log OK "sa02m-devices (API+logger) установлен/обновлён" \
