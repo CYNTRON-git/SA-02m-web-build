@@ -30,7 +30,42 @@
    refresh and a second mismatch still log out; GET bodies were never
    inspected; the 401 path is untouched; a non-JSON body is returned as is).
 
-   Run: node scripts/dev/test-app-csrf-recovery.mjs   (APP_JS=<path> for another copy) */
+   XHR UPLOADS (section 10, 1.0.6.63). The two file uploads in status.js
+   (offline package — uploadOfflineUpdateFile; MPLC project — deployMplcProject)
+   use XMLHttpRequest for upload progress, which the fetch wrapper never sees;
+   until 1.0.6.63 an E_CSRF there was a bare «Ошибка: csrf» with no refresh and
+   no re-send (backlog 2026-09-23). Both functions are brace-extracted from the
+   SHIPPED status.js and run in the SAME world on top of the app.js region,
+   against a fake XMLHttpRequest + FormData (scripted answers, one per send) and
+   recording stubs for the widget helpers. Observables: the XHRs created (url,
+   method, the X-SA02M-CSRF header and how many times it was set, the body
+   object identity), the refresh GET on the fetch stub, the widget's status
+   line / finish call / inspect call, the toast, a logout. The table is the
+   wrapper's: no_header with a token in hand → transit toast, one XHR, no
+   refresh; any other reason → one GET csrf_token.cgi, the SAME FormData
+   instance re-sent once with the refreshed header (progress wired again), the
+   caller sees the retry's answer; the retry's own E_CSRF → transit note or
+   logout, never a third XHR; a failed refresh → logout; a network error is
+   the caller's own path (no refresh).
+   PROVEN RED on d66d7b6 (1.0.6.56, APP_JS= + STATUS_JS= `git show` copies):
+   22 FAIL — 10a/10c/10d/10e/10f re-send counts and headers (one XHR, no
+   refresh GET, no retry, no logout after a failed refresh or a second
+   refusal), 10b/10g no transit toast / no SA02M_CSRF_BLOCKED, 10b widget line
+   «Ошибка: csrf»; 10.0 and 10h hold on both trees (a plain answer and a
+   network error were never the problem), as do 0–9.
+   10b «the transit toast is the only toast» (review 1.0.6.63 B1): RED on
+   0c5ba82 with toast('Ошибка: csrf','error') added to the offline upload's
+   E_CSRF branch — 1 FAIL, where the earlier «widget line not toasted» check
+   stayed green. 10g runs the REAL _mplcProjFinish (+ _mplcProjErrText,
+   MPLC_PROJ_ERR_UI; wrapped only to record the call): on E_CSRF the error
+   line stays and the generic «Ошибка развёртывания проекта» toast is skipped
+   (Operator 2026-09-28) — RED on 0c5ba82's status.js, 1 FAIL; 10i (control)
+   keeps that toast for any other refusal — RED with the suppression widened
+   to every error, 1 FAIL. 10z (A2): an XHR send with no scripted answer in
+   any section-10 world FAILS (11 worlds counted).
+
+   Run: node scripts/dev/test-app-csrf-recovery.mjs
+        (APP_JS=<path> / STATUS_JS=<path> for other copies — the RED recipe) */
 import fs from 'fs';
 import path from 'path';
 import vm from 'vm';
@@ -39,6 +74,8 @@ import { fileURLToPath } from 'url';
 const HERE = path.dirname(fileURLToPath(import.meta.url));
 const SRC = process.env.APP_JS || path.join(HERE, '..', '..', 'www', 'network_config', 'static', 'js', 'app.js');
 const src = fs.readFileSync(SRC, 'utf8');
+const STATUS_SRC = process.env.STATUS_JS || path.join(HERE, '..', '..', 'www', 'network_config', 'static', 'js', 'app', 'status.js');
+const statusSrc = fs.readFileSync(STATUS_SRC, 'utf8');
 
 let fails = 0;
 function ok(name) { process.stdout.write('  ok    ' + name + '\n'); }
@@ -47,16 +84,34 @@ function eq(name, got, want) {
   if (got === want) ok(name); else bad(name, 'got ' + JSON.stringify(got) + ' want ' + JSON.stringify(want));
 }
 
-function extractFn(name) {
-  const start = src.indexOf('function ' + name + '(');
-  if (start < 0) throw new Error('missing function ' + name);
-  let i = src.indexOf('{', start), depth = 0;
-  for (; i < src.length; i++) {
-    if (src[i] === '{') depth++;
-    else if (src[i] === '}') { depth--; if (depth === 0) return src.slice(start, i + 1); }
+function extractFnFrom(source, name) {
+  const start = source.indexOf('function ' + name + '(');
+  if (start < 0) throw new Error('missing function ' + name + ' in ' + (source === src ? SRC : STATUS_SRC));
+  let i = source.indexOf('{', start), depth = 0;
+  for (; i < source.length; i++) {
+    if (source[i] === '{') depth++;
+    else if (source[i] === '}') { depth--; if (depth === 0) return source.slice(start, i + 1); }
   }
   throw new Error('unclosed function ' + name);
 }
+function extractFn(name) { return extractFnFrom(src, name); }
+// `var NAME = { … };` — a top-level object literal, brace-matched.
+function extractVarObjFrom(source, name) {
+  const start = source.indexOf('var ' + name + ' = {');
+  if (start < 0) throw new Error('missing var ' + name + ' in ' + STATUS_SRC);
+  let i = source.indexOf('{', start), depth = 0;
+  for (; i < source.length; i++) {
+    if (source[i] === '{') depth++;
+    else if (source[i] === '}') { depth--; if (depth === 0) return source.slice(start, i + 1) + ';'; }
+  }
+  throw new Error('unclosed var ' + name);
+}
+// The two XHR upload sites, from the shipped status.js (section 10) — plus the
+// MPLC widget's REAL finish path (its toast is part of what 10g/10i measure).
+const UPLOADS = [
+  extractVarObjFrom(statusSrc, 'MPLC_PROJ_ERR_UI'),
+  ...['uploadOfflineUpdateFile', 'deployMplcProject', '_mplcProjFinish', '_mplcProjErrText'].map((n) => extractFnFrom(statusSrc, n))
+].join('\n\n');
 // The guard region: from the `401 → login` banner to the Navigation banner.
 // Both trees carry the banners; the region holds the old IIFE or the new
 // installer + helpers, so the same cases run against either.
@@ -126,12 +181,83 @@ function makeWorld(script, opts) {
     toast: (m) => toasts.push(String(m)),
     setTimeout, clearTimeout, Promise, Object, String, decodeURIComponent, RegExp, Error
   };
-  vm.runInNewContext(HELPERS + '\n\n' + REGION, ctx, { filename: 'app.js-guard-extract' });
+  vm.createContext(ctx);
+  vm.runInContext(HELPERS + '\n\n' + REGION, ctx, { filename: 'app.js-guard-extract' });
   if (window.fetch === rawFetch) throw new Error('the guard region installed no fetch wrapper — the region moved or is empty');
-  return { ctx, window, document, calls, replaced, toasts, jar };
+  const world = { ctx, window, document, calls, replaced, toasts, jar };
+  if (opts.xhr) installUploadWorld(world, opts.xhr);
+  return world;
+}
+
+/* Section 10's half of the world: a fake XMLHttpRequest (one scripted answer
+   per send(), delivered from a timer like a real load event), a fake FormData,
+   an always-present DOM, recording stubs for the status.js widget helpers the
+   two upload functions call — then the shipped upload functions themselves. */
+const XHR_WORLDS = [];   // every section-10 world, for the end-of-section unscripted-send check
+function installUploadWorld(world, xhrScript) {
+  XHR_WORLDS.push(world);
+  const ctx = world.ctx;
+  const xhrs = world.xhrs = [];
+  world.unscripted = 0;
+  world.upd = { status: [], progress: [], enabled: [], inspect: [] };
+  world.mplc = { status: [], progress: [], finish: [], polling: 0 };
+  function FakeFormData() { this.parts = []; }
+  FakeFormData.prototype.append = function (k, v, name) { this.parts.push({ k, v, name }); };
+  function FakeXHR() {
+    this.status = 0; this.responseText = ''; this.upload = {}; this.headers = {}; this.headerSets = 0;
+    this.timeout = 0; this.withCredentials = false; this.sends = 0;
+    xhrs.push(this);
+  }
+  FakeXHR.prototype.open = function (m, u) { this.method = String(m).toUpperCase(); this.url = u; };
+  FakeXHR.prototype.setRequestHeader = function (k, v) { this.headerSets += 1; this.headers[k] = v; };
+  FakeXHR.prototype.send = function (body) {
+    const self = this;
+    self.sends += 1;
+    self.body = body;
+    const a = xhrScript.shift();
+    setTimeout(function () {
+      if (a === undefined) { world.unscripted += 1; if (self.onerror) self.onerror(); return; }
+      if (a === 'reject') { if (self.onerror) self.onerror(); return; }
+      if (a === 'timeout') { if (self.ontimeout) self.ontimeout(); return; }
+      if (self.upload.onprogress) self.upload.onprogress({ lengthComputable: true, loaded: 1, total: 1 });
+      self.status = a.status;
+      self.responseText = a.body === null ? 'not json' : JSON.stringify(a.body);
+      if (self.onload) self.onload();
+    }, 0);
+  };
+  world.document.getElementById = (id) => ({ id, disabled: false, hidden: false, textContent: '', checked: true });
+  Object.assign(ctx, {
+    XMLHttpRequest: FakeXHR, FormData: FakeFormData,
+    // offline package upload
+    _webUpdOfflineReady: true, _webUpdTxnActive: false,
+    _webUpdSetStatus: (t, k) => world.upd.status.push({ t, k }),
+    _webUpdSetProgress: (p, l) => world.upd.progress.push({ p, l }),
+    setOfflineUpdateEnabled: (r) => world.upd.enabled.push(!!r),
+    applyOfflineInspectUI: (i) => world.upd.inspect.push(i),
+    // MPLC project deploy
+    _mplcProjFile: { name: 'proj.zip' }, _mplcProjActive: false,
+    _mplcProjFlasherBusy: () => false,
+    _mplcProjSetStatus: (t, k) => world.mplc.status.push({ t, k }),
+    _mplcProjSetProgress: (p, l) => world.mplc.progress.push({ p, l }),
+    _mplcProjStagePct: () => 0,
+    _mplcProjStartPolling: () => { world.mplc.polling += 1; },
+    // what the REAL _mplcProjFinish touches besides the recorded status/progress
+    _mplcProjPollTimer: null, _mplcProjPollInFlight: false,
+    onMplcProjectConfirmToggle: () => {}, cancelMplcProjectPick: () => {}, loadMplcProjectMeta: () => {}
+  });
+  vm.runInContext(UPLOADS, ctx, { filename: 'status.js-uploads-extract' });
+  if (typeof ctx.uploadOfflineUpdateFile !== 'function' || typeof ctx.deployMplcProject !== 'function' ||
+      typeof ctx._mplcProjFinish !== 'function' || typeof ctx.MPLC_PROJ_ERR_UI !== 'object') {
+    throw new Error('the status.js upload functions did not evaluate');
+  }
+  // Record every finish call, then run the shipped body (its toast and status line).
+  const realFinish = ctx._mplcProjFinish;
+  ctx._mplcProjFinish = function (r, j) { world.mplc.finish.push({ r, j }); return realFinish.apply(this, arguments); };
 }
 
 const settle = () => new Promise((r) => setTimeout(r, 40));
+// An XHR case: two timer-delivered answers with a promise chain between them.
+const settleXhr = () => new Promise((r) => setTimeout(r, 120));
 
 async function post(world, url, extraInit) {
   const init = Object.assign({ method: 'POST', credentials: 'same-origin', headers: world.ctx.withCsrfHeaders() }, extraInit || {});
@@ -255,6 +381,129 @@ process.stdout.write('9. a non-JSON 200 body on a POST is returned untouched\n')
   await settle();
   eq('9 the response resolves (status 200), nothing else happens', status === 200 && w.calls.length === 1 && w.replaced.length, 0);
 }
+
+process.stdout.write('10. XHR uploads (status.js) follow the same table (' + STATUS_SRC + ')\n');
+const COOKIES = 'session_token=' + TOK + '; sa02m_csrf=' + TOK;
+const UPLOAD_OK = { status: 200, body: { ok: true, inspect: { version: '1.0.6.63', signature_ok: true, compatible: true } } };
+const DEPLOY_OK = { status: 200, body: { ok: true, pending: true, stage: 'validate' } };
+const E_CSRF_WIDGET_LINE = 'Ошибка защиты сессии — повторите действие';
+const lastStatus = (arr) => (arr.length ? arr[arr.length - 1].t : null);
+{
+  // Non-vacuity: a plain answer → exactly one XHR, header set once, the body handed on.
+  const w = makeWorld([], { cookie: COOKIES, xhr: [UPLOAD_OK] });
+  w.ctx.uploadOfflineUpdateFile({ name: 'pkg.sa02m' });
+  await settleXhr();
+  eq('10.0 one XHR POST cgi-bin/web_update_upload.cgi', w.xhrs.length === 1 && w.xhrs[0].method + ' ' + w.xhrs[0].url, 'POST cgi-bin/web_update_upload.cgi');
+  eq('10.0 X-SA02M-CSRF set exactly once with the token in hand', w.xhrs[0] && w.xhrs[0].headerSets === 1 && w.xhrs[0].headers['X-SA02M-CSRF'], TOK);
+  eq('10.0 the caller sees the answer (inspect applied, «Пакет загружен»)', w.upd.inspect.length === 1 && w.toasts.indexOf('Пакет загружен') >= 0, true);
+  eq('10.0 no refresh, no logout', w.calls.length + w.replaced.length, 0);
+}
+{
+  const w = makeWorld([TOKEN_OK], { cookie: COOKIES, xhr: [E_CSRF('mismatch'), UPLOAD_OK] });
+  w.ctx.uploadOfflineUpdateFile({ name: 'pkg.sa02m' });
+  await settleXhr();
+  eq('10a mismatch → two XHRs to the same endpoint', w.xhrs.length === 2 && w.xhrs[1].method + ' ' + w.xhrs[1].url, 'POST cgi-bin/web_update_upload.cgi');
+  eq('10a one refresh GET cgi-bin/csrf_token.cgi between them', w.calls.length === 1 && w.calls[0].method + ' ' + w.calls[0].url, 'GET cgi-bin/csrf_token.cgi');
+  eq('10a the retry carries the refreshed token, set once', w.xhrs[1] && w.xhrs[1].headerSets === 1 && w.xhrs[1].headers['X-SA02M-CSRF'], NEWTOK);
+  eq('10a the SAME FormData instance is re-sent (the body is not rebuilt)', w.xhrs[1] && w.xhrs[0].body === w.xhrs[1].body && w.xhrs[0].body.parts[0].name, 'pkg.sa02m');
+  eq('10a each XHR object is sent once', w.xhrs.map((x) => x.sends).join(','), '1,1');
+  eq('10a progress is wired on the retry too', w.xhrs[1] && typeof w.xhrs[1].upload.onprogress, 'function');
+  eq('10a the caller sees the retry\'s answer once (inspect applied once)', w.upd.inspect.length === 1 && w.toasts.filter((t) => t === 'Пакет загружен').length, 1);
+  eq('10a no logout, no transit toast', w.replaced.length + w.toasts.filter((t) => t.indexOf('X-SA02M-CSRF') >= 0).length, 0);
+}
+{
+  const w = makeWorld([], { cookie: COOKIES, xhr: [E_CSRF('no_header')] });
+  w.ctx.uploadOfflineUpdateFile({ name: 'pkg.sa02m' });
+  await settleXhr();
+  eq('10b no_header with a token in hand → one XHR, no refresh, no retry', w.xhrs.length + ',' + w.calls.length, '1,0');
+  eq('10b the toast names the stripped header', w.toasts.some((t) => t.indexOf('X-SA02M-CSRF') >= 0), true);
+  eq('10b window.SA02M_CSRF_BLOCKED records the transit strip', w.window.SA02M_CSRF_BLOCKED, 'no_header');
+  eq('10b no logout, the session cookie survives', w.replaced.length === 0 && w.jar.has('session_token'), true);
+  eq('10b the widget shows its own E_CSRF line, not the raw code', lastStatus(w.upd.status), E_CSRF_WIDGET_LINE);
+  eq('10b the widget line is not toasted a second time', w.toasts.indexOf(E_CSRF_WIDGET_LINE), -1);
+  // The transit toast is the ONLY toast: any second one (the widget line, a raw
+  // «Ошибка: csrf», a generic upload error) is the double message 10b forbids.
+  eq('10b the transit toast is the only toast', w.toasts.length === 1 && w.toasts[0].indexOf('X-SA02M-CSRF') >= 0, true);
+  eq('10b nothing was applied', w.upd.inspect.length, 0);
+}
+{
+  const w = makeWorld([TOKEN_OK], { cookie: COOKIES, xhr: [E_CSRF('mismatch'), E_CSRF('mismatch')] });
+  w.ctx.uploadOfflineUpdateFile({ name: 'pkg.sa02m' });
+  await settleXhr();
+  eq('10c the retry refused again (mismatch) → logout once', w.replaced.join(','), 'login.html');
+  eq('10c the session cookie is cleared', w.jar.has('session_token'), false);
+  eq('10c exactly two XHRs and one refresh — no third attempt', w.xhrs.length + ',' + w.calls.length, '2,1');
+}
+{
+  // A session older than the mirror cookie AND a stripping proxy: the first XHR
+  // goes out with no header (no token in hand) → no_token_file → refresh OK →
+  // the retry (now with a token) still says no_header → transit, not logout.
+  const w = makeWorld([TOKEN_OK], { cookie: 'session_token=' + TOK, xhr: [E_CSRF('no_token_file'), E_CSRF('no_header')] });
+  w.ctx.uploadOfflineUpdateFile({ name: 'pkg.sa02m' });
+  await settleXhr();
+  eq('10d the first XHR carried no header (no token in hand)', w.xhrs[0] && w.xhrs[0].headerSets, 0);
+  eq('10d the retry carried the refreshed token', w.xhrs[1] && w.xhrs[1].headers['X-SA02M-CSRF'], NEWTOK);
+  eq('10d no_header on the retry → the transit message, NOT a logout', w.replaced.length === 0 && w.toasts.some((t) => t.indexOf('X-SA02M-CSRF') >= 0), true);
+  eq('10d no third attempt', w.xhrs.length, 2);
+}
+{
+  const w = makeWorld([TOKEN_UNAUTH], { cookie: COOKIES, xhr: [E_CSRF('mismatch')] });
+  w.ctx.uploadOfflineUpdateFile({ name: 'pkg.sa02m' });
+  await settleXhr();
+  eq('10e refresh answers unauthorized → logout once, no retry', w.replaced.join(',') + ' ' + w.xhrs.length, 'login.html 1');
+}
+{
+  const w = makeWorld([TOKEN_OK], { cookie: COOKIES, xhr: [E_CSRF('mismatch'), DEPLOY_OK] });
+  w.ctx.deployMplcProject();
+  await settleXhr();
+  eq('10f MPLC deploy: mismatch → two XHRs to cgi-bin/mplc_project_deploy.cgi', w.xhrs.length === 2 && w.xhrs.every((x) => x.method + ' ' + x.url === 'POST cgi-bin/mplc_project_deploy.cgi'), true);
+  eq('10f the retry carries the refreshed token, set once', w.xhrs[1] && w.xhrs[1].headerSets === 1 && w.xhrs[1].headers['X-SA02M-CSRF'], NEWTOK);
+  eq('10f the SAME FormData instance is re-sent', w.xhrs[1] && w.xhrs[0].body === w.xhrs[1].body && w.xhrs[0].body.parts[0].name, 'proj.zip');
+  eq('10f the accepted retry hands over to the stage poll, no finish(error)', w.mplc.polling + ',' + w.mplc.finish.length, '1,0');
+  eq('10f no logout', w.replaced.length, 0);
+}
+{
+  const w = makeWorld([], { cookie: COOKIES, xhr: [E_CSRF('no_header')] });
+  w.ctx.deployMplcProject();
+  await settleXhr();
+  eq('10g MPLC deploy: no_header → one XHR, no refresh', w.xhrs.length + ',' + w.calls.length, '1,0');
+  eq('10g the toast names the stripped header, no logout', w.replaced.length === 0 && w.toasts.some((t) => t.indexOf('X-SA02M-CSRF') >= 0), true);
+  eq('10g the widget finishes with the E_CSRF body (its own error line)', w.mplc.finish.length === 1 && w.mplc.finish[0].r === 'error' && w.mplc.finish[0].j && w.mplc.finish[0].j.error_code, 'E_CSRF');
+  eq('10g the poll never starts', w.mplc.polling, 0);
+  // The REAL _mplcProjFinish ran: its error line stays, its generic toast does not
+  // (Operator 2026-09-28 — one toast, the proxy one).
+  eq('10g the MPLC status line shows the E_CSRF error words', lastStatus(w.mplc.status), 'Ошибка: ошибка защиты сессии');
+  eq('10g the transit toast is the only toast (no «Ошибка развёртывания проекта»)', w.toasts.length === 1 && w.toasts[0].indexOf('X-SA02M-CSRF') >= 0, true);
+}
+{
+  // Control: any other MPLC refusal keeps the generic toast — the suppression is E_CSRF-only.
+  const w = makeWorld([], { cookie: COOKIES, xhr: [{ status: 200, body: { ok: false, error_code: 'E_ZIP' } }] });
+  w.ctx.deployMplcProject();
+  await settleXhr();
+  eq('10i MPLC E_ZIP: one XHR, no refresh, no transit note', w.xhrs.length + ',' + w.calls.length + ',' + (w.window.SA02M_CSRF_BLOCKED || ''), '1,0,');
+  eq('10i the status line shows the E_ZIP words', lastStatus(w.mplc.status), 'Ошибка: это не архив ZIP');
+  eq('10i the generic toast is kept', w.toasts.join('|'), 'Ошибка развёртывания проекта');
+}
+{
+  // Control, no-opts path: a network error (XHR onerror) finishes the MPLC widget
+  // through _mplcProjFinish's DEFAULT arguments — its toast must stay (review A8:
+  // mutating `!opts ||` to `opts &&` dropped it with every other case green).
+  const w = makeWorld([], { cookie: COOKIES, xhr: ['reject'] });
+  w.ctx.deployMplcProject();
+  await settleXhr();
+  eq('10j MPLC network error: one XHR, no refresh, no transit note', w.xhrs.length + ',' + w.calls.length + ',' + (w.window.SA02M_CSRF_BLOCKED || ''), '1,0,');
+  eq('10j the generic toast is kept on the no-opts finish', w.toasts.join('|'), 'Ошибка развёртывания проекта');
+}
+{
+  const w = makeWorld([], { cookie: COOKIES, xhr: ['reject'] });
+  w.ctx.uploadOfflineUpdateFile({ name: 'pkg.sa02m' });
+  await settleXhr();
+  eq('10h a network error is the caller\'s own path: «Ошибка загрузки файла», no refresh', lastStatus(w.upd.status) + ' ' + w.calls.length, 'Ошибка загрузки файла 0');
+  eq('10h one XHR, no logout', w.xhrs.length + ',' + w.replaced.length, '1,0');
+}
+// No case sent an XHR its script did not answer (an extra send would otherwise
+// surface only as a silent onerror); non-vacuous — all eleven worlds are counted.
+eq('10z no unscripted XHR send in any section-10 case (11 worlds)', XHR_WORLDS.length + ':' + XHR_WORLDS.reduce((n, w) => n + w.unscripted, 0), '11:0');
 
 if (fails) {
   process.stdout.write('test-app-csrf-recovery: ' + fails + ' FAIL\n');

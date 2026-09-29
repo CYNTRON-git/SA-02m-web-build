@@ -8,6 +8,9 @@ commit's diff of this file).
 
 ## Open
 
+- [OPEN] 2026-09-29 **[LOW] `test-web-auth.sh` section 8 comment still says «tiny window» (1.0.6.63 review A12).**
+  Cases 57–61 now run with a 30 s window and 62 judges expiry with a 1 s window at check time; the
+  section header above them should say so. Comment only.
 - [OPEN] 2026-09-29 **[LOW] A partial section skip reads as a row PASS (1.0.6.62 review A3).**
   `test-web-update-launcher-guard.sh` runs L1–L7 everywhere but L8–L11 only where `flock(1)` exists; on
   git-bash the row prints «PASS (all checks; SKIPPED here: L8–L11 (no flock))» and the runner counts it as
@@ -536,9 +539,12 @@ commit's diff of this file).
   the throttle test under load, class (1); not reproduced, not investigated. When it recurs: read the
   case's time budget against the throttle's window and pin the fixture like R1. RECURRED 2026-09-28
   three times under load (1.0.6.58 builder; 1.0.6.60 reviews rounds 2 and 3; standalone re-run green each
-  time) — the 2 s lockout window is the suspect. (3) `test-web-update-apply-guard.sh` rows 7, R4 and H1/H1b
+  time) — the 2 s lockout window is the suspect. FIXED 1.0.6.63: the window was the cause (three
+  failures + the check outran 2 s under a loaded build; 3 of 4 standalone runs red on 2026-09-29) — the
+  harness now uses a 30 s window for 57–61 and judges 62 with a 1 s window at check time, after an
+  explicit «locked» precondition. (3) `test-web-update-apply-guard.sh` rows 7, R4 and H1/H1b
   fail under WSL on `d66d7b6` as well (1.0.6.62 builder + reviewer, twice) — the ~1.2 s sudo shim appears to
-  leak into the next row. Both queued behind the 1.0.6.63–.68 train (2-agent cap).
+  leak into the next row. Item (3) is still queued behind the 1.0.6.63–.68 train (2-agent cap).
 - [OPEN] 2026-09-23 **[MED] `sa02m-devices-api` listens on `127.0.0.1:8765` with no auth of its
   own.** `opt/sa02m-devices/sa02m_devices/api.py` reads only Content-Length and relies entirely on
   nginx's `auth_request` in front of `/api/devices*`; any local process or user on the board can
@@ -547,7 +553,7 @@ commit's diff of this file).
   API had before it moved to a root-only unix socket (1.0.6.24, `88032f4`). Fix direction: the same
   move (AF_UNIX socket, 0660 root:www-data) or a shared local secret set by nginx only. Threat model
   row to add with the fix.
-- [OPEN] 2026-09-23 **[LOW] XHR upload paths have no CSRF refresh-and-retry of their own.** The
+- [RESOLVED 1.0.6.63] 2026-09-23 **[LOW] XHR upload paths have no CSRF refresh-and-retry of their own.** The
   panel's two XMLHttpRequest uploads (`status.js` ~:1756 and ~:2318, offline package / MPLC project)
   read the refreshed token but bypass the fetch wrapper, so an E_CSRF there still ends the upload
   with a plain error instead of the 1.0.6.53 refresh-once-retry-once path. Route them through the

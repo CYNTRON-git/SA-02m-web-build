@@ -464,7 +464,10 @@ stage "55 no credential at all"    "SA02M_WEB_USER='admin'
 #   web_login_check fails CLOSED on a broken dir             -> 63 RED
 export SA02M_LOGIN_DIR="$T/login"
 export SA02M_LOGIN_MAXFAIL=3
-export SA02M_LOGIN_LOCKOUT=2
+# A window far longer than the forks below can take: with 2 s, three failures
+# plus the check ran past the window under a loaded full build and case 59
+# read the EXPIRED window as «not locked» (flake, backlog 2026-09-24).
+export SA02M_LOGIN_LOCKOUT=30
 export REMOTE_ADDR="203.0.113.7"
 
 web_login_record_success   # clean slate for this client
@@ -486,9 +489,12 @@ web_login_check && ok "61 a successful login clears the counter" \
                 || bad "61 the counter was not cleared on success"
 # Window expiry → auto-unlock; a lockout is never permanent.
 web_login_record_failure; web_login_record_failure; web_login_record_failure
-web_login_check || true    # locked now
-sleep 3                    # > SA02M_LOGIN_LOCKOUT (2s)
-web_login_check && ok "62 the lockout auto-clears after the window (never permanent)" \
+web_login_check && bad "62 precondition: three failures did not lock (see 59)" \
+                || ok "62 precondition: locked inside the window"
+# Expiry is judged against the window in force at CHECK time: shrink it to 1 s
+# and wait past it — deterministic whatever the fork latency above was.
+sleep 2
+SA02M_LOGIN_LOCKOUT=1 web_login_check && ok "62 the lockout auto-clears after the window (never permanent)" \
                 || bad "62 the lockout did not expire — a legitimate operator stays locked out"
 # Fail OPEN when the state dir is unusable — a broken /run must never lock everyone out.
 if SA02M_LOGIN_DIR="/dev/null/nope" web_login_check; then

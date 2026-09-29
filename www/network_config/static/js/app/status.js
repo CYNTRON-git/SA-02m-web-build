@@ -1757,32 +1757,39 @@ function uploadOfflineUpdateFile(file) {
 
   var fd = new FormData();
   fd.append('file', file, file.name);
-  var xhr = new XMLHttpRequest();
-  xhr.open('POST', 'cgi-bin/web_update_upload.cgi', true);
-  xhr.withCredentials = true;
-  xhr.timeout = 600000;
-  var csrf = getSa02mCsrfToken();
-  if (csrf) xhr.setRequestHeader('X-SA02M-CSRF', csrf);
-  xhr.upload.onprogress = function (ev) {
-    if (!ev.lengthComputable) return;
-    var pct = Math.round((ev.loaded / ev.total) * 100);
-    var label = 'Загрузка файла… ' + pct + '%';
-    _webUpdSetStatus(label, 'is-warn');
-    _webUpdSetProgress(pct, pct + '%');
+  // One XMLHttpRequest per attempt: sa02mXhrWithCsrfRetry (app.js) runs this
+  // factory once, and once more after a token refresh on a non-transit
+  // E_CSRF — the same FormData (a stable File handle) with the fresh header,
+  // the progress bar restarting with it. Network/timeout errors stay per attempt.
+  var send = function (csrf, onAnswer) {
+    var xhr = new XMLHttpRequest();
+    xhr.open('POST', 'cgi-bin/web_update_upload.cgi', true);
+    xhr.withCredentials = true;
+    xhr.timeout = 600000;
+    if (csrf) xhr.setRequestHeader('X-SA02M-CSRF', csrf);
+    xhr.upload.onprogress = function (ev) {
+      if (!ev.lengthComputable) return;
+      var pct = Math.round((ev.loaded / ev.total) * 100);
+      var label = 'Загрузка файла… ' + pct + '%';
+      _webUpdSetStatus(label, 'is-warn');
+      _webUpdSetProgress(pct, pct + '%');
+    };
+    xhr.onerror = function () {
+      _webUpdSetProgress(null, '');
+      _webUpdSetStatus('Ошибка загрузки файла', 'is-err');
+      setOfflineUpdateEnabled(_webUpdOfflineReady);
+      toast('Ошибка загрузки файла', 'error');
+    };
+    xhr.ontimeout = function () {
+      _webUpdSetProgress(null, '');
+      _webUpdSetStatus('Таймаут загрузки файла', 'is-err');
+      setOfflineUpdateEnabled(_webUpdOfflineReady);
+      toast('Таймаут — повторите', 'error');
+    };
+    xhr.onload = function () { onAnswer(xhr); };
+    xhr.send(fd);
   };
-  xhr.onerror = function () {
-    _webUpdSetProgress(null, '');
-    _webUpdSetStatus('Ошибка загрузки файла', 'is-err');
-    setOfflineUpdateEnabled(_webUpdOfflineReady);
-    toast('Ошибка загрузки файла', 'error');
-  };
-  xhr.ontimeout = function () {
-    _webUpdSetProgress(null, '');
-    _webUpdSetStatus('Таймаут загрузки файла', 'is-err');
-    setOfflineUpdateEnabled(_webUpdOfflineReady);
-    toast('Таймаут — повторите', 'error');
-  };
-  xhr.onload = function () {
+  sa02mXhrWithCsrfRetry(send, function (xhr) {
     setOfflineUpdateEnabled(_webUpdOfflineReady);
     var j = null;
     try { j = JSON.parse(xhr.responseText || '{}'); } catch (e) { j = null; }
@@ -1791,6 +1798,13 @@ function uploadOfflineUpdateFile(file) {
       _webUpdSetStatus('Сервис загрузки недоступен', 'is-err');
       setOfflineUpdateEnabled(false);
       toast('Сервис загрузки недоступен', 'error');
+      return;
+    }
+    if (j && j.error_code === 'E_CSRF') {
+      // Refused before it ran, and app.js has already reacted (transit toast /
+      // refresh + re-send / logout) — only the widget's own line, no second toast.
+      _webUpdSetProgress(null, '');
+      _webUpdSetStatus('Ошибка защиты сессии — повторите действие', 'is-err');
       return;
     }
     if (xhr.status < 200 || xhr.status >= 300 || !j || j.ok === false) {
@@ -1804,8 +1818,7 @@ function uploadOfflineUpdateFile(file) {
     _webUpdSetProgress(100, '100%');
     applyOfflineInspectUI(j.inspect || j, j);
     toast('Пакет загружен', 'success');
-  };
-  xhr.send(fd);
+  });
 }
 
 function applyOfflineUpdate() {
@@ -2319,33 +2332,43 @@ function deployMplcProject() {
 
   var fd = new FormData();
   fd.append('file', _mplcProjFile, _mplcProjFile.name);
-  var xhr = new XMLHttpRequest();
-  xhr.open('POST', 'cgi-bin/mplc_project_deploy.cgi', true);
-  xhr.withCredentials = true;
-  xhr.timeout = 120000;
-  var csrf = getSa02mCsrfToken();
-  if (csrf) xhr.setRequestHeader('X-SA02M-CSRF', csrf);
-  xhr.upload.onprogress = function (ev) {
-    if (!ev.lengthComputable) return;
-    var pct = Math.round((ev.loaded / ev.total) * 100);
-    _mplcProjSetStatus('Загрузка файла…', 'is-warn');
-    _mplcProjSetProgress(pct, pct + '%');
+  // One XMLHttpRequest per attempt — re-run once by sa02mXhrWithCsrfRetry
+  // (app.js) after a token refresh, same FormData, fresh header (the
+  // offline-package upload above has the full note).
+  var send = function (csrf, onAnswer) {
+    var xhr = new XMLHttpRequest();
+    xhr.open('POST', 'cgi-bin/mplc_project_deploy.cgi', true);
+    xhr.withCredentials = true;
+    xhr.timeout = 120000;
+    if (csrf) xhr.setRequestHeader('X-SA02M-CSRF', csrf);
+    xhr.upload.onprogress = function (ev) {
+      if (!ev.lengthComputable) return;
+      var pct = Math.round((ev.loaded / ev.total) * 100);
+      _mplcProjSetStatus('Загрузка файла…', 'is-warn');
+      _mplcProjSetProgress(pct, pct + '%');
+    };
+    xhr.onerror = function () { _mplcProjFinish('error', { error_message: 'нет связи с сервером' }); };
+    xhr.ontimeout = function () { _mplcProjFinish('error', { error_message: 'таймаут загрузки' }); };
+    xhr.onload = function () { onAnswer(xhr); };
+    xhr.send(fd);
   };
-  xhr.onerror = function () { _mplcProjFinish('error', { error_message: 'нет связи с сервером' }); };
-  xhr.ontimeout = function () { _mplcProjFinish('error', { error_message: 'таймаут загрузки' }); };
-  xhr.onload = function () {
+  sa02mXhrWithCsrfRetry(send, function (xhr) {
     var j = null;
     try { j = JSON.parse(xhr.responseText || '{}'); } catch (e) { j = null; }
     if (!j || xhr.status < 200 || xhr.status >= 300 || j.ok === false) {
-      _mplcProjFinish('error', j || { error_message: 'HTTP ' + xhr.status });
+      // An E_CSRF here is the refusal app.js already reacted to (proxy toast, or
+      // logout): the status line keeps MPLC_PROJ_ERR_UI's words, but no second,
+      // generic toast — Operator 2026-09-28, the offline upload / online Apply
+      // precedent. Every other error keeps its toast.
+      var csrfRefused = !!(j && j.error_code === 'E_CSRF');
+      _mplcProjFinish('error', j || { error_message: 'HTTP ' + xhr.status }, { toast: !csrfRefused });
       return;
     }
     // Accepted — the deploy runs in the background; poll for its stages.
     _mplcProjSetStatus('Проверка файла…', 'is-warn');
     _mplcProjSetProgress(_mplcProjStagePct('validate'), '0%');
     _mplcProjStartPolling();
-  };
-  xhr.send(fd);
+  });
 }
 
 function _mplcProjApplyStatusUI(j) {
@@ -2397,7 +2420,9 @@ function _mplcProjStartPolling() {
   _mplcProjPollOnce();
 }
 
-function _mplcProjFinish(result, j) {
+// opts.toast === false: the error line only, no «Ошибка развёртывания проекта»
+// toast (a caller that already told the user — the E_CSRF upload refusal).
+function _mplcProjFinish(result, j, opts) {
   _mplcProjActive = false;
   if (_mplcProjPollTimer) { clearTimeout(_mplcProjPollTimer); _mplcProjPollTimer = null; }
   _mplcProjPollInFlight = false;
@@ -2413,7 +2438,7 @@ function _mplcProjFinish(result, j) {
   } else {
     _mplcProjSetStatus(uiT('Ошибка') + ': ' + uiT(_mplcProjErrText(j || {})), 'is-err');
     _mplcProjSetProgress(null, '');
-    toast('Ошибка развёртывания проекта', 'error');
+    if (!opts || opts.toast !== false) toast('Ошибка развёртывания проекта', 'error');
     onMplcProjectConfirmToggle();
   }
 }
