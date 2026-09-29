@@ -423,6 +423,28 @@ class TestStallOnBlock(_Base):
         values = self._values(pub)
         self.assertEqual((values.get("b"), values.get("c")), ("11", "12"), values)
 
+    def test_split_in_a_stalled_pass_keeps_the_resume_point(self):
+        # Review A3: a pass that splits a block AND stalls later must still
+        # resume after the stall — the split renumbers the units, so the resume
+        # point is kept by unit, not by list index (which reset to 0).
+        channels = [_u16("a", 0, "input"), _u16("b", 1, "input"),
+                    _u16("y", 100), _u16("z1", 200), _u16("z2", 300),
+                    _u16("z3", 400), _u16("w", 500)]
+        p, pub = self._poller(channels, {"max_read_registers": 10})
+        fake = FakeSerial(regs={0: 10, 1: 11, 100: 1, 500: 5},
+                          fail_addrs={200, 300, 400}, max_count=1)
+        # Pass 1: block refused (count 1), stall at z3 → resume at w.
+        self.assertEqual(self._window(p, fake)[-1], (3, 400, 1))
+        # Pass 2: w, then the block refused again → split; stall at z3 again.
+        with self.assertLogs(LOGGER, level="WARNING"):
+            reads = self._window(p, fake)
+        self.assertEqual(reads[:2], [(3, 500, 1), (4, 0, 2)])
+        self.assertEqual(reads[-1], (3, 400, 1))
+        pub.pub_control.reset_mock()
+        reads = self._window(p, fake)
+        self.assertEqual(reads[0], (3, 500, 1), reads)   # w first, not a
+        self.assertEqual(self._values(pub).get("w"), "5")
+
     def test_dead_grouped_device_costs_one_read_per_window(self):
         p, _pub = self._poller([_u16(f"c{i}", i, "input") for i in range(6)],
                                {"max_read_registers": 10}, offline_after_fails=3)

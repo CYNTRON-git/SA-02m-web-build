@@ -471,8 +471,14 @@ class TemplatePoller(DevicePoller):
                     self._flag_stale(self._units[(start + rest) % n].channels)
                 break
         if to_split:
+            # A split renumbers the units: carry the resume point over by unit
+            # — a surviving unit keeps its place, a split one resumes at its
+            # first single read — so a stall in this pass is not forgotten.
+            resume = self._units[self._resume_idx].channels
             self._split_units(to_split)
-            self._resume_idx = 0
+            self._resume_idx = next(
+                j for j, u in enumerate(self._units)
+                if any(u.channels[0] is ch for ch in resume))
         DeviceLiveCache.flush_file(self.device_id)
 
     def _split_units(self, to_split: list) -> None:
