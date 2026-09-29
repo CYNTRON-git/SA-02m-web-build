@@ -31,9 +31,11 @@
    RED, measured 2026-09-28 on d66d7b6 (1.0.6.56): 31 POST sites, 5 without the
    token — flasher.js:201 (apiPost), :361 (apiUpload), :1918 (configApi),
    devices.js:584 (removeWidget), :599 (addWidget); GREEN after the five gained
-   `withCsrfHeaders`. The comment-mutation case (`//` before the devices.js
-   `headers: withCsrfHeaders(` line inside fetchJson) is registered in
-   comment-mutation-proof.
+   `withCsrfHeaders`. The comment-mutation case is registered in
+   comment-mutation-proof: its literal is the guarded `withCsrfHeaders(...)`
+   call on the `headers:` line of the two devices.js widget POSTs (the
+   removeWidget and addWidget call sites, not fetchJson) — it matches both
+   lines, and `//` on them leaves each init with no token call.
 
    Run: node .ai-dev/quality/checks/js-post-csrf-headers.mjs
    ═══════════════════════════════════════════════════════════════════════════ */

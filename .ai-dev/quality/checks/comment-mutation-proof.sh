@@ -179,7 +179,7 @@ journal-on-disk-policy|scripts/01-system.sh|sa02m_atomic_install -m 644 "$ETC_RE
 journal-on-disk-policy|scripts/01-system.sh|sa02m_atomic_install -m 644 "$ETC_REPO/systemd/sa02m-journald.conf"
 cgi-csrf-policy|opt/sa02m-flasher/sa02m_flasher/service.py|check_csrf(
 cgi-csrf-policy|opt/sa02m-devices/sa02m_devices/api.py|check_csrf(
-js-post-csrf-headers|www/network_config/static/js/devices.js|headers: withCsrfHeaders({ "Content-Type": "application/json" }),
+js-post-csrf-headers|www/network_config/static/js/devices.js|? withCsrfHeaders({ "Content-Type": "application/json" })
 websession-parity|opt/sa02m-devices/sa02m_devices/websession.py|def check_csrf(
 devices-api-upstream|etc/nginx/network_config.conf|server unix:/run/sa02m-devices/api.sock;
 '
