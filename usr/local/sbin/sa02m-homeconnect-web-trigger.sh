@@ -51,14 +51,30 @@ PKG_DIR=/opt/sa02m-homeconnect
 # site, no bytecode written); the conf path is fixed and passed explicitly; a
 # non-regular conf (a FIFO would block the open) is refused first, and the
 # read is bounded by `timeout` against a swap between that check and the open.
-# Anything but a clean "1" (package absent, load() raising) is "not enabled".
+# Anything but a clean "1" is "not enabled"; anything but a clean 0/1 (package
+# absent, load() raising, the timeout) is also logged once with its cause, so
+# a `skipped` is diagnosable. The cause travels on stdout as one `error:` line
+# (stderr stays discarded, so a stray interpreter warning cannot turn a real
+# "1" into "not enabled").
 hc_conf_enabled() {
-    local out
+    local out rc=0
     [ -f "$CONF" ] && [ -r "$CONF" ] || return 1
-    out=$(timeout 5 env -i PATH=/usr/bin:/bin python3 -I -B -c \
-        'import sys; sys.path.insert(0, sys.argv[1]); from sa02m_homeconnect import config; print("1" if config.load(sys.argv[2]).enabled else "0")' \
-        "$PKG_DIR" "$CONF" 2>/dev/null) || return 1
-    [ "$out" = 1 ]
+    out=$(timeout 5 env -i PATH=/usr/bin:/bin python3 -I -B -c '
+import sys
+try:
+    sys.path.insert(0, sys.argv[1])
+    from sa02m_homeconnect import config
+    print("1" if config.load(sys.argv[2]).enabled else "0")
+except BaseException as exc:
+    print("error: %s: %s" % (type(exc).__name__, exc))
+' "$PKG_DIR" "$CONF" 2>/dev/null) || rc=$?
+    case "$out" in
+        1) return 0 ;;
+        0) return 1 ;;
+    esac
+    out=${out//[^[:print:]]/ }
+    hc_log "conf read of $CONF gave no 0/1 answer (rc=$rc): ${out:0:200} — treated as not enabled"
+    return 1
 }
 
 hc_log() {
