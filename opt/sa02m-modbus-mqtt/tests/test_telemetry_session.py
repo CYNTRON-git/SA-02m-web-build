@@ -284,6 +284,148 @@ class TestTheInstanceLock(SessionTestCase):
                          "the guard created the missing directory itself")
 
 
+@unittest.skipUnless(os.name == "posix", "symlinks, hard links and uids are POSIX")
+class TestTheInstanceLockTrustsOnlyItsOwnFile(SessionTestCase):
+    """Review F1 (1.0.6.68). /run/lock is world-writable, and this daemon runs
+    as root and TRUNCATES and WRITES the file it opens. Before the fix the open
+    followed a planted symlink, so any local uid — www-data after a CGI
+    compromise — could point the lock path at a root file and have the next
+    service start rewrite it as `<pid>\\n`, mode 0644 (reproduced on WSL with
+    fs.protected_symlinks/regular = 0: a root 0600 secret came back 0644).
+
+    The guard's answer to anything that is not a regular file of our own with a
+    single link is the SAME fail-open it already had for a missing /run/lock:
+    one WARN, run unguarded, touch nothing. Never exit 75 on such a file —
+    a foreign owner keeping it flocked would otherwise hold the unit in a
+    permanent restart loop, a denial of the board's MQTT device.
+    """
+
+    VICTIM = b"root:SECRET-HASH:19000:0:99999:7:::\n"
+
+    def setUp(self):
+        super().setUp()
+        self._tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self._tmp.cleanup)
+        self.dir = Path(self._tmp.name)
+        self.lock_path = self.dir / "sa02m-telemetry.lock"
+        os.environ[LOCK_ENV] = str(self.lock_path)
+        self.victim = self.dir / "victim"
+        self.victim.write_bytes(self.VICTIM)
+        os.chmod(self.victim, 0o600)
+
+    def _release(self, client):
+        fd = getattr(client, "_instance_lock_fd", None)
+        if fd is not None:
+            os.close(fd)
+
+    def take(self, client):
+        """Call the guard; a SystemExit here is the permanent-restart failure."""
+        self.addCleanup(self._release, client)
+        with self.assertLogs(tel.log, level="WARNING") as caught:
+            try:
+                client._take_instance_lock()
+            except SystemExit as exc:
+                self.fail(f"exited {exc.code} on a lock file that is not ours — "
+                          f"the unit would restart forever")
+        return [ln for ln in caught.output if "instance lock unavailable" in ln]
+
+    def assert_victim_untouched(self):
+        self.assertEqual(self.victim.read_bytes(), self.VICTIM,
+                         "root wrote through the lock path into another file")
+        self.assertEqual(self.victim.stat().st_mode & 0o777, 0o600,
+                         "root changed the mode of another file")
+
+    def test_a_planted_symlink_is_never_followed(self):
+        """RED before the fix: the victim came back `<pid>\\n`, mode 0644."""
+        os.symlink(self.victim, self.lock_path)
+        client = self.make()
+
+        warns = self.take(client)
+
+        self.assert_victim_untouched()
+        self.assertEqual(len(warns), 1)
+        self.assertIn(str(self.lock_path), warns[0])
+        self.assertIsNone(client._instance_lock_fd)
+
+    def test_a_dangling_symlink_creates_nothing(self):
+        """O_CREAT through a dangling link would make root create the file the
+        link names — an attacker-chosen path. RED before the fix."""
+        target = self.dir / "created-by-root"
+        os.symlink(target, self.lock_path)
+        client = self.make()
+
+        warns = self.take(client)
+
+        self.assertFalse(os.path.lexists(target),
+                         "root created a file at the symlink's target")
+        self.assertEqual(len(warns), 1)
+        self.assertIsNone(client._instance_lock_fd)
+
+    def test_a_hard_link_to_another_file_is_never_written(self):
+        """A second name for someone else's file is not our lock file either:
+        st_nlink must be 1. RED before the fix."""
+        os.link(self.victim, self.lock_path)
+        client = self.make()
+
+        warns = self.take(client)
+
+        self.assert_victim_untouched()
+        self.assertEqual(len(warns), 1)
+        self.assertIn("link", warns[0])
+
+    def test_a_foreign_owned_file_its_owner_keeps_flocked_is_not_a_second_copy(self):
+        """The owner check runs BEFORE the flock: a file another uid owns (and
+        holds) is refused as untrusted — WARN and run unguarded — never read as
+        «another instance holds the lock». RED before the fix: SystemExit(75).
+        The uid is made foreign by patching geteuid, so this runs as any user;
+        the case below does the same with a real chown where it can."""
+        self.lock_path.write_bytes(b"4242\n")
+        os.chmod(self.lock_path, 0o600)
+        holder = None
+        if tel.fcntl is not None:
+            holder = os.open(str(self.lock_path), os.O_RDWR)
+            tel.fcntl.flock(holder, tel.fcntl.LOCK_EX | tel.fcntl.LOCK_NB)
+            self.addCleanup(os.close, holder)
+        client = self.make()
+
+        with mock.patch.object(tel.os, "geteuid",
+                               return_value=self.lock_path.stat().st_uid + 1):
+            warns = self.take(client)
+
+        self.assertEqual(self.lock_path.read_bytes(), b"4242\n")
+        self.assertEqual(self.lock_path.stat().st_mode & 0o777, 0o600)
+        self.assertEqual(len(warns), 1)
+        self.assertIn("owned by uid", warns[0])
+        self.assertIsNone(client._instance_lock_fd)
+
+    @unittest.skipUnless(hasattr(os, "geteuid") and os.geteuid() == 0,
+                         "a real chown to another uid needs root")
+    def test_a_really_chowned_file_is_not_trusted(self):
+        """The same with the kernel's own uid, as the board would see it."""
+        self.lock_path.write_bytes(b"4242\n")
+        os.chown(self.lock_path, 65534, 65534)
+        client = self.make()
+
+        warns = self.take(client)
+
+        self.assertEqual(self.lock_path.read_bytes(), b"4242\n")
+        self.assertEqual(self.lock_path.stat().st_uid, 65534)
+        self.assertEqual(len(warns), 1)
+
+    def test_our_own_leftover_file_is_still_taken(self):
+        """Non-vacuity for every refusal above: a regular, single-link file of
+        our own — what a previous instance leaves behind — is taken, and the
+        pid hint rewritten."""
+        self.lock_path.write_bytes(b"999999\n")
+        client = self.make()
+
+        client._take_instance_lock()
+        self.addCleanup(self._release, client)
+
+        self.assertIsNotNone(client._instance_lock_fd)
+        self.assertEqual(self.lock_path.read_text().strip(), str(os.getpid()))
+
+
 # ── Item 2: the eviction detector ────────────────────────────────────────────
 class TestTheEvictionDetector(SessionTestCase):
     """Three short sessions are a storm; one long one is a broker restart."""

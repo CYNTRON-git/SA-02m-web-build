@@ -572,6 +572,84 @@ class TestARealSecondHolder(LockTestCase):
         self.assertEqual(self.exp.out_writes, [ALL_OFF & ~(1 << BIT_DO)])
 
 
+@unittest.skipUnless(os.name == "posix", "symlinks and FIFOs are POSIX")
+class TestTheBusLockFileIsNeverFollowed(unittest.TestCase):
+    """Review A3 (1.0.6.68; the defect dates from 1.0.6.42). The PCA9536 lock
+    lives in world-writable /run/lock and this root daemon CREATES it 0666 when
+    it is missing. Before the fix that create, and the chmod after it, followed
+    a symlink: a dangling link planted there made root create a world-writable
+    file at the path the link names; a link to an existing file handed that
+    file to the flock. Now the open refuses a link outright (O_NOFOLLOW) and
+    anything that is not a regular file — and every refusal is the refusal the
+    daemon already had for an unopenable lock: None, so the command answers
+    «bus busy» and nothing reaches the expander.
+
+    What is deliberately NOT refused: a regular lock file owned by another uid.
+    This lock is SHARED with www-data's CGI, which may well have created it; the
+    daemon only flocks it and never writes or chmods an existing file."""
+
+    def setUp(self):
+        self._tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self._tmp.cleanup)
+        self.dir = Path(self._tmp.name)
+        self.path = self.dir / "sa02m-pca9536.lock"
+        self.victim = self.dir / "victim"
+        self.victim.write_bytes(b"do not touch\n")
+        os.chmod(self.victim, 0o600)
+
+    def open(self):
+        fd = tel._open_lock_file(str(self.path))
+        if fd is not None:
+            self.addCleanup(os.close, fd)
+        return fd
+
+    def test_a_symlink_to_an_existing_file_is_refused(self):
+        """RED before the fix: the link was followed and an fd returned."""
+        os.symlink(self.victim, self.path)
+        with self.assertLogs(tel.log, level="WARNING") as caught:
+            fd = self.open()
+        self.assertIsNone(fd, "the bus lock was taken through a planted symlink")
+        self.assertEqual(self.victim.stat().st_mode & 0o777, 0o600)
+        self.assertEqual(self.victim.read_bytes(), b"do not touch\n")
+        self.assertTrue(any(str(self.path) in ln for ln in caught.output))
+
+    def test_a_dangling_symlink_creates_nothing(self):
+        """RED before the fix: root created the target, mode 0666."""
+        target = self.dir / "created-by-root"
+        os.symlink(target, self.path)
+        with self.assertLogs(tel.log, level="WARNING"):
+            fd = self.open()
+        self.assertIsNone(fd)
+        self.assertFalse(os.path.lexists(target),
+                         "root created a world-writable file at the link's target")
+
+    def test_a_fifo_is_not_a_lock_file(self):
+        """RED before the fix: an O_RDWR open of a FIFO succeeds on Linux."""
+        os.mkfifo(self.path)
+        with self.assertLogs(tel.log, level="WARNING"):
+            fd = self.open()
+        self.assertIsNone(fd)
+
+    def test_a_missing_lock_file_is_created_world_writable(self):
+        """Non-vacuity for the refusals: the normal create still works and
+        still gives the CGI's www-data a file it can open (tmpfiles.d
+        declares the same 0666)."""
+        fd = self.open()
+        self.assertIsNotNone(fd)
+        self.assertTrue(self.path.is_file())
+        self.assertEqual(self.path.stat().st_mode & 0o777, 0o666)
+
+    def test_an_existing_lock_file_is_opened_and_left_as_it_is(self):
+        """Somebody else's regular lock file (the CGI's) is used as-is: no
+        chmod, no truncation."""
+        self.path.write_bytes(b"x")
+        os.chmod(self.path, 0o640)
+        fd = self.open()
+        self.assertIsNotNone(fd)
+        self.assertEqual(self.path.stat().st_mode & 0o777, 0o640)
+        self.assertEqual(self.path.read_bytes(), b"x")
+
+
 class TestTheOwnerGate(LockTestCase):
     """MPLC4/KLogic hold the bus without taking our lock -- so we ask."""
 
@@ -1664,6 +1742,65 @@ class TestTheFallbacksMatchTheCgi(unittest.TestCase):
         `val(k)` whose key is not a string literal."""
         _found, offences = conf_reads(self._daemon_source())
         self.assertEqual(offences, [], "\n".join(offences))
+
+    # -- every read shape the ledger must see, injected into the real source --
+    # Review F2 (1.0.6.68): the first AST version still passed two of these
+    # (O11, O12) while the py-unit row text promised they fail. Each case below
+    # plants ONE escape into the daemon's own source and must produce an
+    # offence; the unmodified source must produce none (the sibling case above),
+    # so neither half can pass by the other being broken.
+    ESCAPES = {
+        # O11: a second function named `val` — the old check allowed
+        # _read_conf_value inside ANY function of that name.
+        "a nested val() outside HwProfile.load": (
+            "    try:\n        result = subprocess.run(\n"
+            "            [\"i2cget\"",
+            "    def val(k):\n        return _read_conf_value(_hw_conf_path(), k)\n"
+            "    val(\"SA02M_I2C_LOCK_FILE\")\n"),
+        # O12: the reader under another name, reading a key nobody pinned.
+        # The same name, but a reader of its own that never names
+        # _read_conf_value — only the «one val» rule sees this one.
+        "a second val with a reader of its own": (
+            "def _hw_conf_path() -> str:\n",
+            "def val(k):\n"
+            "    return open(_hw_conf_path()).read().split(k + '_SECRET=')[-1]\n\n\n"),
+        "_read_conf_value aliased": (
+            "def _hw_conf_path() -> str:\n",
+            "_rcv = _read_conf_value\n\n\n"
+            "def _hw_secret() -> str:\n"
+            "    return _rcv(_hw_conf_path(), 'SA02M_I2C_SECRET_KEY')\n\n\n"),
+        "_read_conf_value reached by a string": (
+            "def _hw_conf_path() -> str:\n",
+            "def _hw_secret() -> str:\n"
+            "    return getattr(sys.modules[__name__], \"_read_conf_value\")"
+            "(_hw_conf_path(), 'SA02M_I2C_SECRET_KEY')\n\n\n"),
+        "the val closure aliased inside load": (
+            "        extra = _hw_extra_output_mask(val)\n",
+            "        v = val\n        _probe = v('SA02M_I2C_UNPINNED')\n"),
+        "a key assembled in a variable": (
+            "        extra = _hw_extra_output_mask(val)\n",
+            "        k = \"SA02M_I2C_UNPINNED\"\n        _probe = val(k)\n"),
+        "a literal smuggled through the prefix form": (
+            "        extra = _hw_extra_output_mask(val)\n",
+            "        _probe = val(\"SA02M_I2C_BIT_\" + \"SECRET\")\n"),
+        "a prefix nobody declared": (
+            "        extra = _hw_extra_output_mask(val)\n",
+            "        _probe = val(\"SA02M_I2C_X_\" + ch.upper())\n"),
+    }
+
+    def test_every_escape_shape_is_an_offence(self):
+        """RED before the review-F2 fix for O11, O12, the string-reached
+        reader, the aliased closure and the smuggled prefix literal."""
+        src = self._daemon_source()
+        for name, (anchor, addition) in self.ESCAPES.items():
+            with self.subTest(escape=name):
+                self.assertIn(anchor, src,
+                              "the injection anchor moved — re-point this case "
+                              "rather than let it test nothing")
+                mutated = src.replace(anchor, addition + anchor, 1)
+                _found, offences = conf_reads(mutated)
+                self.assertTrue(offences,
+                                f"{name}: the ledger saw nothing wrong")
 
     def test_the_probe_conf_is_read_key_by_key(self):
         """Non-vacuity for the drop-one case: each key is really consumed, so
