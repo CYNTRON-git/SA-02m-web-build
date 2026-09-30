@@ -89,7 +89,9 @@ class LogicBase:
 
 class SwitchLight(LogicBase):
     """Выключатель → группа света: short toggles the group, double turns it
-    off, a long press dims smoothly (alternating direction, release stops)."""
+    off, a long press dims smoothly (alternating direction, release stops);
+    a latching switch (`switch_type` latching / auto) sets the group to its
+    position instead."""
 
     def __init__(self, rt: Any, params: Dict[str, Any]) -> None:
         super().__init__(rt, params)
@@ -102,12 +104,25 @@ class SwitchLight(LogicBase):
         return sw if isinstance(sw, str) else ""
 
     def on_state(self, device: str, cap: str, value: Any, prev: Any) -> None:
-        # Latching switches report on_off changes instead of press events;
-        # «auto» accepts them as short presses (momentary models use di_N).
+        # Latching switches report on_off changes instead of press events
+        # («auto» accepts them too; momentary models use di_N gestures). The
+        # lights FOLLOW the switch position — a toggle here turned a room lit
+        # from the app OFF when the switch went to 1 (Operator 2026-09-29).
         if self.p.get("switch_type") in ("latching", "auto") \
                 and device == self._switch() and cap == "on_off" \
                 and prev is not None and _truthy(value) != _truthy(prev):
-            self._toggle()
+            self._follow(_truthy(value))
+
+    def _follow(self, on: bool) -> None:
+        """Set the group to the switch position; a light already there is
+        left alone (no write — the global rate window stays for real work)."""
+        bri = self._last_brightness if self.p.get("memory") is not False else None
+        for d in _ids(self.p, "lights"):
+            lit = _truthy(self.rt.get(d, "on_off"))
+            if on and not lit:
+                self._light_on(d, bri)
+            elif not on and (lit or self.rt.get(d, "on_off") is None):
+                self._off(d)
 
     def on_button(self, device: str, input_name: str, gesture: str) -> None:
         if device != self._switch():
