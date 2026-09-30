@@ -37,14 +37,22 @@ import { aiSensorLabel, aiUnitPrecision } from "./ai-sensors.js?v=1.0.6.68";
   let availableDevices = [];
   let eventsSig = "";
 
+  /* Card-title chip icons: one per device kind, saying what the device IS.
+     24×24 stroke drawings; stroke width/caps come from the #tab-devices chip
+     rule in main.css. ДТВ = thermometer (room climate sensor), СЭ = lightning
+     (electricity meter), MR = analog wave (only AI-bearing modules get a card),
+     Carel = the «Умный дом» fan symbol (air-handling unit) — referenced from the
+     index.html sprite so the unit shows the same fan in both places. */
   const ICO_DTV =
-    '<svg viewBox="0 0 24 24"><path d="M12 2v10"/><path d="M8 14a4 4 0 1 0 8 0c0-2.5-2-4-4-6-2 2-4 3.5-4 6z"/></svg>';
+    '<svg viewBox="0 0 24 24"><path d="M10 13.5V5a2 2 0 0 1 4 0v8.5a4 4 0 1 1-4 0z"/><path d="M12 17V9"/></svg>';
   const ICO_CE =
     '<svg viewBox="0 0 24 24"><path d="M13 2L4 14h7l-1 8 10-14h-7l0-6z"/></svg>';
   const ICO_MR =
     '<svg viewBox="0 0 24 24"><path d="M3 12c2-6 4-6 6 0s4 6 6 0 4-6 6 0"/></svg>';
-  const ICO_CAREL =
-    '<svg viewBox="0 0 24 24"><path d="M4 14h16v2H4zm2-4h3v8H6zm5-4h3v12h-3zm5 6h3v6h-3z"/></svg>';
+  const ICO_CAREL = '<svg viewBox="0 0 24 24"><use href="#i-fan"/></svg>';
+  /* MTDx62-MB presence sensor (person + radar waves) — for its card (1.0.6.69). */
+  const ICO_PRESENCE =
+    '<svg viewBox="0 0 24 24"><circle cx="8" cy="7" r="3"/><path d="M3 20v-1.5a5 5 0 0 1 10 0V20"/><path d="M16.5 9a4 4 0 0 1 0 6"/><path d="M19.5 6.5a8 8 0 0 1 0 11"/></svg>';
 
   const DTV_METRICS = [
     ["room_temp", "Температура"],
