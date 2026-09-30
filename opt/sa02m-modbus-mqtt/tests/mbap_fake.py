@@ -74,12 +74,22 @@ class FakeMbapServer:
 
     def stop(self) -> None:
         """The device goes away: listener closed (connect refused), sessions reset."""
-        if self._lsock is not None:
+        lsock, self._lsock = self._lsock, None
+        if lsock is not None:
+            # close() alone does not stop a Linux listener: the accept thread
+            # blocked in accept() holds its own reference to the socket, so it
+            # keeps listening and accepts the next connect before it notices.
+            # shutdown() wakes that accept() and stops the listen at once;
+            # Windows refuses shutdown() on a listener (ENOTCONN) but already
+            # aborts the accept on close().
             try:
-                self._lsock.close()
+                lsock.shutdown(socket.SHUT_RDWR)
             except OSError:
                 pass
-            self._lsock = None
+            try:
+                lsock.close()
+            except OSError:
+                pass
         self.drop_sessions()
 
     def drop_sessions(self) -> None:
@@ -96,6 +106,10 @@ class FakeMbapServer:
             try:
                 conn, _ = lsock.accept()
             except OSError:
+                return
+            if self._lsock is not lsock:
+                # Raced with stop(): the device is gone, so is this session.
+                _rst_close(conn)
                 return
             with self._lock:
                 self.accepts += 1
