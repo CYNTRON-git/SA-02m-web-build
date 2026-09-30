@@ -1482,17 +1482,37 @@ class TestTheI2cTimeoutComesFromTheConf(LockTestCase):
         self.assertTrue(any("i2c timeout 1s" in line for line in caught.output))
 
 
+# The per-channel keys the daemon reads by PREFIX (`"SA02M_I2C_BIT_" +
+# ch.upper()`); the one place a val() argument may be other than a whole key.
+LEDGER_PREFIXES = ("SA02M_I2C_BIT_", "SA02M_GPIO_")
+READER = "_read_conf_value"
+
+
 def conf_reads(src: str) -> tuple[set, list]:
     """Every /etc/sa02m_hw.conf key the daemon reads, enumerated by AST.
 
-    Returns (keys, offences). A key is a `val(...)` call whose single argument
-    is a `SA02M_…` string literal, or the per-channel prefix form
-    `val("SA02M_I2C_BIT_" + …)` (recorded as its literal prefix). Anything
-    else — a key assembled in a variable, a non-literal argument — is an
-    OFFENCE, as is a `_read_conf_value` call outside the two functions allowed
-    to make one (`_resolve_device_id` for the telemetry conf, and load()'s
-    `val` closure for the hardware conf). Quoting style is invisible to the
-    parser, which is the point: the regex this replaced saw one idiom.
+    Returns (keys, offences). The rules, each an OFFENCE when broken:
+
+      * `val` is bound exactly once — the closure defined directly inside
+        HwProfile.load — plus parameters of that name that receive it. A second
+        `def val`, an assignment, import or lambda bound to `val` is an offence
+        (review F2's O11: a nested `def val` elsewhere was allowed to call the
+        reader because the check went by function NAME).
+      * the name `val` is used only to CALL it or to PASS it straight to a
+        function defined in this module — never aliased (`v = val`) or wrapped.
+      * a val() call takes exactly one positional argument: a string literal
+        `SA02M_…` (the key), or `"<prefix>" + <name>.upper()` for a prefix in
+        LEDGER_PREFIXES (recorded as the prefix). Anything else — a variable,
+        another literal glued on, an undeclared prefix — cannot be enumerated.
+      * the reader `_read_conf_value` is referenced ONLY as the callee of a
+        call inside `_resolve_device_id` or inside that load() closure: any
+        other reference — an alias (review F2's O12), an attribute, a string
+        naming it (getattr/globals) — is an offence, whether or not it is
+        called there.
+
+    This is a structural check of the source as written. It does not claim to
+    defeat deliberate obfuscation outside those shapes (exec, a name computed
+    at run time); it claims every read written in any of them fails.
     """
     tree = ast.parse(src)
     parents: dict = {}
@@ -1500,40 +1520,108 @@ def conf_reads(src: str) -> tuple[set, list]:
         for child in ast.iter_child_nodes(node):
             parents[child] = node
 
-    def enclosing_function(node):
+    def enclosing_scope(node):
         while node in parents:
             node = parents[node]
-            if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
-                return node.name
+            if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef,
+                                 ast.Lambda)):
+                return node
         return None
+
+    module_functions = {n.name for n in ast.walk(tree)
+                        if isinstance(n, (ast.FunctionDef, ast.AsyncFunctionDef))}
+
+    load_val = None
+    for node in ast.walk(tree):
+        if (isinstance(node, ast.FunctionDef) and node.name == "val"
+                and isinstance(parents.get(node), ast.FunctionDef)
+                and parents[node].name == "load"
+                and isinstance(parents.get(parents[node]), ast.ClassDef)
+                and parents[parents[node]].name == "HwProfile"):
+            load_val = node
+    resolve_id = next((n for n in tree.body if isinstance(n, ast.FunctionDef)
+                       and n.name == "_resolve_device_id"), None)
 
     keys: set = set()
     offences: list = []
+    if load_val is None:
+        offences.append("HwProfile.load's `val` closure was not found — the "
+                        "ledger cannot tell the sanctioned reader from any other")
+
+    def key_of(call):
+        if len(call.args) != 1 or call.keywords:
+            return None
+        arg = call.args[0]
+        if isinstance(arg, ast.Constant) and isinstance(arg.value, str):
+            return arg.value if arg.value.startswith("SA02M_") else None
+        if (isinstance(arg, ast.BinOp) and isinstance(arg.op, ast.Add)
+                and isinstance(arg.left, ast.Constant)
+                and arg.left.value in LEDGER_PREFIXES
+                and isinstance(arg.right, ast.Call)
+                and not arg.right.args and not arg.right.keywords
+                and isinstance(arg.right.func, ast.Attribute)
+                and arg.right.func.attr == "upper"
+                and isinstance(arg.right.func.value, ast.Name)):
+            return arg.left.value
+        return None
+
+    def callee_name(func):
+        if isinstance(func, ast.Name):
+            return func.id
+        if isinstance(func, ast.Attribute):
+            return func.attr
+        return None
+
     for node in ast.walk(tree):
-        if not isinstance(node, ast.Call) or not isinstance(node.func, ast.Name):
-            continue
-        if node.func.id == "val":
-            arg = node.args[0] if len(node.args) == 1 else None
-            literal = None
-            if isinstance(arg, ast.Constant) and isinstance(arg.value, str):
-                literal = arg.value
-            elif (isinstance(arg, ast.BinOp) and isinstance(arg.op, ast.Add)
-                  and isinstance(arg.left, ast.Constant)
-                  and isinstance(arg.left.value, str)):
-                literal = arg.left.value
-            if literal is None or not literal.startswith("SA02M_") or node.keywords:
+        where = f"line {getattr(node, 'lineno', '?')}"
+        parent = parents.get(node)
+
+        # -- every binding of the name `val` ------------------------------
+        if (isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef))
+                and node.name == "val" and node is not load_val):
+            offences.append(f"{where}: a second function named `val` — only "
+                            f"HwProfile.load's closure may carry that name")
+        elif isinstance(node, ast.Name) and node.id == "val" and isinstance(
+                node.ctx, (ast.Store, ast.Del)):
+            offences.append(f"{where}: `val` rebound — the ledger could no "
+                            f"longer tell which reader a val() call is")
+        elif isinstance(node, ast.alias) and "val" in (node.name, node.asname):
+            offences.append(f"{where}: `val` imported")
+
+        # -- every use of the name `val` ----------------------------------
+        elif isinstance(node, ast.Name) and node.id == "val":
+            if isinstance(parent, ast.Call) and parent.func is node:
+                key = key_of(parent)
+                if key is None:
+                    offences.append(
+                        f"{where}: val() called with something other than one "
+                        f"SA02M_ string literal or a declared prefix + "
+                        f"<name>.upper() — the ledger cannot enumerate it")
+                else:
+                    keys.add(key)
+            elif (isinstance(parent, ast.Call) and node in parent.args
+                    and callee_name(parent.func) in module_functions):
+                pass            # handed to a helper of ours, which calls it
+            else:
+                offences.append(f"{where}: `val` used other than by calling "
+                                f"it or passing it to a helper of this module "
+                                f"(an alias or wrapper hides its reads)")
+
+        # -- every reference to the reader ---------------------------------
+        elif isinstance(node, ast.Name) and node.id == READER:
+            scope = enclosing_scope(node)
+            called = isinstance(parent, ast.Call) and parent.func is node
+            if not (called and scope is not None
+                    and scope in (load_val, resolve_id)):
                 offences.append(
-                    f"line {node.lineno}: val() called with a key that is not "
-                    f"a single SA02M_ string literal — the ledger cannot see it")
-                continue
-            keys.add(literal)
-        elif node.func.id == "_read_conf_value":
-            fn = enclosing_function(node)
-            if fn not in ("_resolve_device_id", "val"):
-                offences.append(
-                    f"line {node.lineno}: _read_conf_value called from "
-                    f"{fn!r} — every hardware-conf read goes through load()'s "
-                    f"val closure so the ledger enumerates it")
+                    f"{where}: {READER} referenced outside the two sanctioned "
+                    f"calls (_resolve_device_id, HwProfile.load's val) — every "
+                    f"hardware-conf read goes through val so the ledger sees it")
+        elif isinstance(node, ast.Attribute) and node.attr == READER:
+            offences.append(f"{where}: {READER} reached as an attribute")
+        elif (isinstance(node, ast.Constant) and node.value == READER):
+            offences.append(f"{where}: {READER} named in a string — a getattr/"
+                            f"globals lookup the ledger cannot follow")
     return keys, offences
 
 
@@ -1600,7 +1688,7 @@ class TestTheFallbacksMatchTheCgi(unittest.TestCase):
 
     # Keys the daemon reads by PREFIX, one per channel. Each is handled by its
     # own case below rather than by the scalar ledger.
-    PREFIX_KEYS = ("SA02M_I2C_BIT_", "SA02M_GPIO_")
+    PREFIX_KEYS = LEDGER_PREFIXES
 
     def setUp(self):
         self.lib = self.REPO / self.LIB_HW

@@ -29,6 +29,7 @@ import os
 import re
 import sys
 import time
+import stat
 import shutil
 import signal
 import socket
@@ -616,27 +617,78 @@ def _beeper_override_start_worker(profile: "HwProfile") -> bool:
     return True
 
 
+# Both lock files live in world-writable /run/lock and this daemon runs as
+# root, so neither open may follow a symlink an unprivileged uid planted there
+# (1.0.6.68, review F1/A3). getattr: absent on a Windows dev host.
+_O_NOFOLLOW = getattr(os, "O_NOFOLLOW", 0)
+_O_CLOEXEC = getattr(os, "O_CLOEXEC", 0)
+
+
+def _untrusted_lock_file(fd: int, require_owner: bool) -> str:
+    """Why the file behind `fd` must not be used as a lock; '' when it may.
+
+    Not a regular file (a FIFO or a device someone planted), or a second name
+    for another file (st_nlink > 1 — a hard link survives O_NOFOLLOW). With
+    `require_owner`, also a file this uid does not own: that is for a lock
+    this daemon WRITES; the shared PCA9536 lock is legitimately www-data's.
+    """
+    try:
+        st = os.fstat(fd)
+    except OSError as exc:
+        return f"cannot be inspected: {exc}"
+    if not stat.S_ISREG(st.st_mode):
+        return "is not a regular file"
+    if st.st_nlink != 1:
+        return f"has {st.st_nlink} links — a second name for another file"
+    geteuid = getattr(os, "geteuid", None)
+    if require_owner and geteuid is not None and st.st_uid != geteuid():
+        return f"is owned by uid {st.st_uid}, not by this daemon (uid {geteuid()})"
+    return ""
+
+
 def _open_lock_file(path: str) -> int | None:
-    """The lock file's fd, created if missing; None when it cannot be opened."""
+    """The lock file's fd, created if missing; None when it cannot be opened.
+
+    None is also the answer for a path that is a symlink or not a regular
+    file: the caller then refuses the command as «bus busy», which is the
+    safe side — root never creates, chmods or flocks a file a planted link
+    points at.
+    """
     try:
         os.makedirs(os.path.dirname(path) or ".", exist_ok=True)
     except OSError:
         pass
-    if not os.path.exists(path):
-        try:
-            os.close(os.open(path, os.O_CREAT | os.O_RDWR, 0o666))
-            os.chmod(path, 0o666)   # explicit: 0o666 above is cut by the umask
-        except OSError:
-            pass
+    # Read-write and NEVER truncating, for the reason lib_hw.sh
+    # sa02m_hw_i2c_with_lock spells out at its own `exec 9<>`: /run/lock is a
+    # sticky tmpfs, so an O_TRUNC open of a lock file another uid created
+    # fails with EACCES — www-data's CGI and this root daemon share it.
+    flags = os.O_RDWR | _O_NOFOLLOW | _O_CLOEXEC
     try:
-        # Read-write and NEVER truncating, for the reason lib_hw.sh
-        # sa02m_hw_i2c_with_lock spells out at its own `exec 9<>`: /run/lock is
-        # a sticky tmpfs, so an O_TRUNC open of a lock file another uid created
-        # fails with EACCES — www-data's CGI and this root daemon share it.
-        return os.open(path, os.O_RDWR)
+        # O_EXCL: the chmod below is for a file THIS call created, and only
+        # through the fd — never by path, which a link could redirect.
+        fd = os.open(path, flags | os.O_CREAT | os.O_EXCL, 0o666)
+        created = True
+    except FileExistsError:
+        created = False
+        try:
+            fd = os.open(path, flags)
+        except OSError as exc:
+            log.warning("cannot open the I2C lock file %s: %s", path, exc)
+            return None
     except OSError as exc:
         log.warning("cannot open the I2C lock file %s: %s", path, exc)
         return None
+    untrusted = _untrusted_lock_file(fd, require_owner=False)
+    if untrusted:
+        os.close(fd)
+        log.warning("refusing the I2C lock file %s: it %s", path, untrusted)
+        return None
+    if created:
+        try:
+            os.fchmod(fd, 0o666)    # explicit: 0o666 above is cut by the umask
+        except (OSError, AttributeError):
+            pass
+    return fd
 
 
 def _flock_wait(fd: int, wait_s: float) -> bool:
@@ -1377,6 +1429,15 @@ class TelemetryClient:
         or an unopenable path (/run/lock missing) runs unguarded. This guard
         prevents a duplicate; it is not a safety floor, and a daemon that
         refuses to start because a tmpfs directory is absent is worse.
+
+        /run/lock is world-writable and this is root truncating and writing
+        the file it opens, so only a file that is provably OURS is used: the
+        open never follows a symlink, and a path that is not a regular file of
+        this uid with a single link takes the same unguarded path — nothing is
+        written, chmodded or truncated. Its ownership is checked BEFORE the
+        flock, so a foreign file its owner keeps flocked is refused as
+        untrusted, never read as «another instance» — that reading would hold
+        the unit in a permanent exit-75 restart loop.
         """
         self._instance_lock_fd = None
         path = os.environ.get(INSTANCE_LOCK_ENV) or INSTANCE_LOCK_FILE_DEFAULT
@@ -1386,9 +1447,15 @@ class TelemetryClient:
             log.warning(unguarded, f"no flock on this host, {path}")
             return
         try:
-            fd = os.open(path, os.O_RDWR | os.O_CREAT, 0o644)
+            fd = os.open(path, os.O_RDWR | os.O_CREAT | _O_NOFOLLOW | _O_CLOEXEC,
+                         0o644)
         except OSError as exc:
             log.warning(unguarded, f"{path}: {exc}")
+            return
+        untrusted = _untrusted_lock_file(fd, require_owner=True)
+        if untrusted:
+            os.close(fd)
+            log.warning(unguarded, f"{path} {untrusted}")
             return
         try:
             fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
@@ -1499,8 +1566,11 @@ class TelemetryClient:
                     ctrl, self._hw.profile.refusals.get(ctrl, "not configured"),
                 )
                 return
-            val = msg.payload.decode().strip()
-            on = val not in ("0", "false", "False", "")
+            # Not `val`: that name is load()'s conf reader, and the conf-key
+            # ledger (tests/test_telemetry_hw_lock.py conf_reads) forbids any
+            # other binding of it.
+            text = msg.payload.decode().strip()
+            on = text not in ("0", "false", "False", "")
             accepted, why = self._hw.set_channel(ctrl, on)
             if accepted:
                 self._pub(f"controls/{ctrl}", "1" if on else "0")
