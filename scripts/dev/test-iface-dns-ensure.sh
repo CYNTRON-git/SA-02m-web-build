@@ -340,15 +340,21 @@ fi
 # reachable: with logger absent too, a helper missing the guard would fall into
 # rung 2, fail `resolvconf -u`, and log nothing anyway — the case would pass on
 # a broken helper. So this PATH keeps the logger shim and drops only resolvconf.
+# A host resolvconf in /usr/bin or /bin is hidden (lib_path_mask.sh), so whether
+# it «is installed» is this harness's call on every host, not a host-dependent
+# FAIL below.
 BIN2="$T/bin-nores"; mkdir -p "$BIN2"
 command cp "$BIN/logger" "$BIN/ip" "$BIN2/"
+# shellcheck source=scripts/dev/lib_path_mask.sh
+. scripts/dev/lib_path_mask.sh || { echo "FAIL  scripts/dev/lib_path_mask.sh not loadable"; exit 1; }
+NORES_PATH="$BIN2:$(PATH=/usr/bin:/bin path_without "$T/hostmask" resolvconf)"
 reset
 conf_static eth0 "dns-nameservers 77.88.8.8"
 : > "$RESOLV"
-if PATH="$BIN2:/usr/bin:/bin" command -v resolvconf >/dev/null 2>&1; then
+if PATH="$NORES_PATH" command -v resolvconf >/dev/null 2>&1; then
     bad "harness: resolvconf is reachable in the 'absent' PATH — the case cannot test anything"
 else
-    out=$(PATH="$BIN2:/usr/bin:/bin" "$DNS" eth0 2>&1); rc=$?
+    out=$(PATH="$NORES_PATH" "$DNS" eth0 2>&1); rc=$?
     if [ "$rc" = 0 ] && [ -z "$out" ] && [ ! -s "$LOGGED" ] && [ ! -e "$RC_RUN/eth0.inet" ]; then
         ok "degradation: resolvconf absent = clean SILENT no-op, exit 0 (guard pinned via a live logger)"
     else
