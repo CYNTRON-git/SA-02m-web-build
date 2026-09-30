@@ -14,6 +14,13 @@ commit's diff of this file).
   ci-linux-green (PATH masking via scripts/dev/lib_path_mask.sh; sandboxed CGI copy). Other `scripts/dev/`
   harnesses that remove a stand-in and rely on `command -v` failing, or run a shipped CGI whose side
   effects are real on a writable host, were not swept. The CI runner has passwordless sudo.
+- [OPEN] 2026-09-30 **[LOW] `devices-api-upstream` passes on two identical socket lines (1.0.6.65 review R3-A1).**
+  `.ai-dev/quality/checks/devices-api-upstream.sh:95-99` has no branch for more than one socket line although its
+  header says «EXACTLY one». Add the else branch and a mutation case.
+- [OPEN] 2026-09-30 **[LOW] INTERNAL_TOKEN reasoning restated in four places (1.0.6.65 review R4-A1).**
+  `opt/sa02m-flasher/sa02m_flasher/config.py:52`, `service.py:331-336`, `service.py:345-351`,
+  `etc/sa02m_flasher.conf:34-35` (the last still states the nginx overwrite unconditionally). Point them at
+  `docs/decisions/selective-csrf-policy.md` «Демоны» instead of restating it.
 - [OPEN] 2026-09-29 **[LOW] `test-web-auth.sh` section 8 comment still says «tiny window» (1.0.6.63 review A12).**
   Cases 57–61 now run with a 30 s window and 62 judges expiry with a 1 s window at check time; the
   section header above them should say so. Comment only.
@@ -554,7 +561,7 @@ commit's diff of this file).
   RESOLVED 2026-09-30 (branch ci-linux-green): (1) and (2) were already fixed (1.0.6.52, 1.0.6.63); (3) was
   case 5's launch stand-in still holding the lock on fast Linux hosts and reboot.cgi's real background
   chain firing on root hosts — apply-guard now waits for its stand-ins and drives a sandboxed reboot.cgi.
-- [OPEN] 2026-09-23 **[MED] `sa02m-devices-api` listens on `127.0.0.1:8765` with no auth of its
+- [RESOLVED 1.0.6.65] 2026-09-23 **[MED] `sa02m-devices-api` listens on `127.0.0.1:8765` with no auth of its
   own.** `opt/sa02m-devices/sa02m_devices/api.py` reads only Content-Length and relies entirely on
   nginx's `auth_request` in front of `/api/devices*`; any local process or user on the board can
   open the loopback port and bypass the panel's session. Found while sweeping the `X-SA02M-Auth`
