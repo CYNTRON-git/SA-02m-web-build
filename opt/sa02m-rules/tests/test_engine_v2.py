@@ -654,17 +654,28 @@ class StoreV2Tests(unittest.TestCase):
         self.assertEqual(s["action"][2]["transition_s"], 5.0)
 
     def test_invalid_v2_fields_dropped(self):
+        """Every invalid trigger is still dropped, but a trigger list with
+        NOTHING left is no longer stored as an empty one (store-hardening,
+        Operator 2026-09-29): the save is refused and each drop is named."""
+        bad = [{"kind": "every", "minutes": 0},      # out of range
+               {"kind": "button", "device": "mr", "gesture": "triple"},
+               {"kind": "presence", "event": "maybe"}]
+        reasons = [{"part": "trigger", "index": i, "reason": "bad_value"}
+                   for i in range(3)]
+        r = store.apply_command({"name": "t", "trigger": bad}, self.path)
+        self.assertEqual(r, {"ok": False, "error": "invalid_elements",
+                             "dropped": reasons})
+        self.assertEqual(store.load(self.path)["scenarios"], [])
         r = store.apply_command({
             "name": "t",
-            "trigger": [{"kind": "every", "minutes": 0},      # out of range
-                        {"kind": "button", "device": "mr", "gesture": "triple"},
-                        {"kind": "presence", "event": "maybe"}],
+            "trigger": bad + [{"kind": "boot"}],
             "end": {"after_s": 10, "mode": "off"},            # below 60
             "params": {"blob": "x" * 5000},                   # > 4 KB
         }, self.path)
         self.assertTrue(r["ok"])
+        self.assertEqual(r.get("dropped"), reasons)
         s = store.load(self.path)["scenarios"][0]
-        self.assertEqual(s["trigger"], [])
+        self.assertEqual(s["trigger"], [{"kind": "boot"}])
         self.assertNotIn("end", s)
         self.assertNotIn("params", s)
 

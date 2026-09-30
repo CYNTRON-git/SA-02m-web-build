@@ -54,16 +54,30 @@ class StoreTests(unittest.TestCase):
         self.assertIn("notify_queue", r)
 
     def test_rejects_ssh_and_bad_name(self):
+        """The `ssh`-only save used to answer ok and store an EMPTY action
+        list (a silently gutted scenario); since the store-hardening change
+        (Operator 2026-09-29) it is refused with `invalid_elements`, and an
+        `ssh` next to a valid action is still dropped — and named."""
         r = store.apply_command({"name": "bad@name"}, self.path)
         self.assertFalse(r["ok"])
         r = store.apply_command({
             "name": "ok",
             "action": [{"kind": "ssh", "cmd": "reboot"}],
         }, self.path)
+        self.assertEqual(r, {"ok": False, "error": "invalid_elements", "dropped": [
+            {"part": "action", "index": 0, "reason": "unknown_kind"}]})
+        self.assertEqual(store.load(self.path)["scenarios"], [])
+        r = store.apply_command({
+            "name": "ok",
+            "action": [{"kind": "ssh", "cmd": "reboot"},
+                       {"kind": "notify", "text": "hi"}],
+        }, self.path)
         self.assertTrue(r["ok"])
-        self.assertEqual(r["scenario"]["summary"], "if ? then ?")
+        self.assertEqual(r["scenario"]["summary"], "if ? then notify")
+        self.assertEqual(r.get("dropped"), [
+            {"part": "action", "index": 0, "reason": "unknown_kind"}])
         doc = store.load(self.path)
-        self.assertEqual(doc["scenarios"][0]["action"], [])
+        self.assertEqual(doc["scenarios"][0]["action"], [{"kind": "notify", "text": "hi"}])
 
     def test_invalid_json_keeps_previous(self):
         store.apply_command({"name": "keep"}, self.path)
