@@ -47,13 +47,19 @@
 #      config.load() directly
 #   P  root safety: a module planted on PYTHONPATH is never imported by the
 #      helper's conf read (env -i + python3 -I)
-#   L  a conf read with no 0/1 answer (package absent, load() raising, a
-#      timeout) is `skipped` AND logged once with its cause; a clean answer
-#      logs nothing
+#   L  a conf read with no 0/1 answer is `skipped` AND logged in EXACTLY one
+#      line naming its cause: L1 package absent, L3 load() raising with a
+#      newline in its message (blanked — pins the sanitiser), L4 load()
+#      hanging past the helper's timeout (a real kill: the timeout shim
+#      delegates to the host's timeout(1)); L2 a clean answer logs nothing
 #
 # Comment-mutation cases to register with the row (measured RED here):
 #   commenting out `hk_write_disabled_status "$since"` → D2 RED;
-#   commenting out `rm -f -- "$VAR_DIR/state.json" 2>/dev/null || true` → G1 RED.
+#   commenting out `rm -f -- "$VAR_DIR/state.json" 2>/dev/null || true` → G1 RED;
+#   commenting out the sanitiser `out=${out//[^[:print:]]/ }` → L3 RED (a stray
+#   log line). The `hk_log "conf read of …"` line itself is pinned by L1/L3/L4
+#   (a comment-out leaves zero lines — measured RED, not registered: each case
+#   re-runs this whole harness).
 #
 # Run: bash scripts/dev/test-homekit-trigger.sh      (bash, python3, flock)
 #      HK_TRIGGER_SRC=<file> judges another copy of the helper (the RED run).
@@ -111,10 +117,14 @@ esac
 exit 0
 EOF
 # timeout: `timeout N cmd…` → run cmd with the BOUNDED mark.
-cat > "$SHIM/timeout" <<'EOF'
+# The host's own timeout, resolved before $SHIM is on PATH: the shim marks its
+# child as bounded AND really bounds it, so L4 can observe a real kill.
+REAL_TIMEOUT=$(command -v timeout || true)
+cat > "$SHIM/timeout" <<EOF
 #!/usr/bin/env bash
+if [ -n "$REAL_TIMEOUT" ]; then HK_VIA_TIMEOUT=1 exec "$REAL_TIMEOUT" "\$@"; fi
 shift
-HK_VIA_TIMEOUT=1 exec "$@"
+HK_VIA_TIMEOUT=1 exec "\$@"
 EOF
 printf '#!/usr/bin/env bash\nprintf "logger %%s\\n" "$*" >> "$HK_LOGS"\nexit 0\n' > "$SHIM/logger"
 chmod +x "$SHIM"/*
@@ -514,26 +524,48 @@ else
     bad "P poisoned PYTHONPATH: imported=$([ -e "$SB/poisoned" ] && echo yes || echo no) rc=$RC restart=$(calls_of restart) out=$(cat "$SB/out")"
 fi
 
-echo "L. a conf read that gives no 0/1 answer is logged"
-reset_tree true
+echo "L. a conf read that gives no 0/1 answer is logged, exactly once"
+# One line per cause: exactly one `conf read` line, and no stray line that the
+# logger shim did not open (an unblanked newline in the cause makes one).
+# An absent log (nothing logged since reset_tree) counts 0, never "".
+log_lines()    { [ -f "$SB/logger.log" ] || { echo 0; return; }; grep -c 'conf read' "$SB/logger.log" || true; }
+stray_lines()  { [ -f "$SB/logger.log" ] || { echo 0; return; }; grep -vc '^logger ' "$SB/logger.log" || true; }
+log_dump()     { local s; s=$(tr '\n' '|' < "$SB/logger.log" 2>/dev/null); printf '%s' "${s:0:300}"; }
+plant_pkg() {  # $1 = dir, $2 = body of load()
+    mkdir -p "$1/sa02m_homekit"
+    : > "$1/sa02m_homekit/__init__.py"
+    printf 'def load(path):\n%s\n' "$2" > "$1/sa02m_homekit/config.py"
+}
+l_case() {  # $1 = id, $2 = pkg dir, $3 = the cause the one line must carry
+    reset_tree true
+    export HK_TEST_PKG_DIR="$2"
+    run_trigger restart
+    unset HK_TEST_PKG_DIR
+    local line
+    line=$(grep -F 'conf read' "$SB/logger.log" 2>/dev/null || true)
+    if [ "$RC" -eq 0 ] && [ "$(n_calls)" -eq 0 ] && out_has '"applied":"skipped"' \
+       && [ "$(log_lines)" -eq 1 ] && [ "$(stray_lines)" -eq 0 ] && [[ $line == *"$3"* ]]; then
+        ok "$1 ⇒ skipped, exactly one log line carrying '$3'"
+    else
+        bad "$1: rc=$RC calls=$(n_calls) conf-read lines=$(log_lines) stray=$(stray_lines) out=$(cat "$SB/out") log=$(log_dump)"
+    fi
+}
 mkdir -p "$SB/nopkg"
-export HK_TEST_PKG_DIR="$SB/nopkg"
-run_trigger restart
-unset HK_TEST_PKG_DIR
-logged=$(grep -F 'conf read' "$SB/logger.log" 2>/dev/null)
-if [ "$RC" -eq 0 ] && [ "$(n_calls)" -eq 0 ] && out_has '"applied":"skipped"'    && [ -n "$logged" ] && [[ $logged == *ModuleNotFoundError* ]] && [[ $logged == *rc=* ]]; then
-    ok "L1 package absent ⇒ skipped, and ONE log line names the cause (ModuleNotFoundError)"
+l_case "L1 package absent" "$SB/nopkg" "ModuleNotFoundError"
+plant_pkg "$SB/raisepkg" '    raise RuntimeError("boom\nsecond line")'
+l_case "L3 load() raises with a newline in its message (the newline blanked)" "$SB/raisepkg" "RuntimeError: boom second line"
+if [ -n "$REAL_TIMEOUT" ]; then
+    plant_pkg "$SB/hangpkg" '    import time; time.sleep(30); raise RuntimeError("not killed")'
+    l_case "L4 load() hangs past the helper's timeout (a real kill)" "$SB/hangpkg" "rc=124"
 else
-    bad "L1 undiagnosable conf read: rc=$RC calls=$(n_calls) out=$(cat "$SB/out") log=$(tr '
-' ' ' < "$SB/logger.log" 2>/dev/null | head -c 300)"
+    bad "L4 no host timeout(1) found — the timeout branch cannot be driven here (vacuous)"
 fi
 reset_tree false
 run_trigger restart
-if [ "$RC" -eq 0 ] && out_has '"applied":"skipped"' && ! grep -qF 'conf read' "$SB/logger.log" 2>/dev/null; then
+if [ "$RC" -eq 0 ] && out_has '"applied":"skipped"' && [ "$(log_lines)" -eq 0 ]; then
     ok "L2 a clean \"not enabled\" answer logs nothing"
 else
-    bad "L2 noise on a clean answer: rc=$RC log=$(tr '
-' ' ' < "$SB/logger.log" 2>/dev/null | head -c 300)"
+    bad "L2 noise on a clean answer: rc=$RC log=$(log_dump)"
 fi
 
 echo "Z. non-vacuity"

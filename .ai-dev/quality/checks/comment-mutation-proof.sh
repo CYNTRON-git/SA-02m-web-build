@@ -193,6 +193,7 @@ journal-on-disk-policy|scripts/01-system.sh|sa02m_atomic_install -m 644 "$ETC_RE
 journal-on-disk-policy|scripts/01-system.sh|sa02m_atomic_install -m 644 "$ETC_REPO/systemd/sa02m-journald.conf"
 homekit-trigger|usr/local/sbin/sa02m-homekit-web-trigger.sh|hk_write_disabled_status "$since"
 homekit-trigger|usr/local/sbin/sa02m-homekit-web-trigger.sh|rm -f -- "$VAR_DIR/state.json" 2>/dev/null || true
+homekit-trigger|usr/local/sbin/sa02m-homekit-web-trigger.sh|out=${out//[^[:print:]]/ }
 homekit-wheelhouse|scripts/dev/build-homekit-wheelhouse.sh|is not an armv7l or pure-Python wheel
 homekit-cgi|www/network_config/cgi-bin/sa02m_homekit_api.cgi|TRIG_OUT=$(timeout 11 sudo -n /usr/local/sbin/sa02m-homekit-web-trigger.sh "$VERB" 2>/dev/null) || TRIG_RC=$?
 cgi-csrf-policy|www/network_config/cgi-bin/sa02m_homekit_api.cgi|web_csrf_validate
@@ -215,6 +216,7 @@ factory-reset-runner|etc/sa02m-factory-reset-runner.sh|fr_safe remove-name "$HK_
 factory-reset-runner|etc/sa02m-factory-reset-runner.sh||| fail E_INTERNAL "transaction id is not a plain token"
 homeconnect-trigger|usr/local/sbin/sa02m-homeconnect-web-trigger.sh|rm -f -- "$VAR_DIR/tokens.json" 2>/dev/null || true
 homeconnect-trigger|usr/local/sbin/sa02m-homeconnect-web-trigger.sh|rm -f -- "$LINK_FILE" 2>/dev/null || true
+homeconnect-trigger|usr/local/sbin/sa02m-homeconnect-web-trigger.sh|out=${out//[^[:print:]]/ }
 homeconnect-cgi|www/network_config/cgi-bin/sa02m_homeconnect_api.cgi|TRIG_OUT=$(timeout 11 sudo -n /usr/local/sbin/sa02m-homeconnect-web-trigger.sh "$VERB" 2>/dev/null) || TRIG_RC=$?
 cgi-csrf-policy|www/network_config/cgi-bin/sa02m_homeconnect_api.cgi|web_csrf_validate
 sudoers-pin-contract|etc/sudoers.d/sa02m-homeconnect|/usr/local/sbin/sa02m-homeconnect-web-trigger.sh unlink
