@@ -51,7 +51,9 @@ dashboard + every «Управление» sub-pane (one surface each) across ph
 × both HW variants and measures real `getBoundingClientRect` / Range geometry.
 A third, geometry-only surface renders the «Устройства» cards from a stubbed
 `/api/devices` (RU + EN) and gates that every value fits its tile with no
-layout jump — the fixture and width list are in the driver.
+layout jump, every card header stays one line with nothing overlapping, and
+no tile text is left in Russian in EN — the fixture and width list are in the
+driver.
 
 GATED checks (a real violation exits non-zero, gated at the supported widths):
 services column alignment · horizontal overflow, BOTH the page scrolling sideways

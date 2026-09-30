@@ -68,10 +68,14 @@
        «0.12 mg/m³» to «.12 mg/m» at 1280 px (1.0.6.64). Plus NO LAYOUT JUMP:
        every card is as tall with the live values as with «—» placeholders
        (fitting a value may shrink it or put its unit on the tile's spare line,
-       never grow the tile). GATED at every devices width, together with (h);
+       never grow the tile). Plus each card HEADER: title on one line (an
+       ellipsis is fine), rename pen on the title's line, no overlap among the
+       painted title text, pen, badges, status pill and remove button. Plus, in
+       EN cells, no tile label/value/unit/index/caption still Russian (the
+       i18n floor; device names are data). GATED at every devices width, together with (h);
        (a)/(e) follow the viewport's overflowGate. Non-vacuous: every card kind
        rendered, ≥ DEV_ROWS_MIN runs measured AND populated (a value still «—»
-       fits trivially). The devices surface is geometry-only: touch, font and
+       fits trivially), every card header measured, ≥ DEV_ROWS_MIN EN texts. The devices surface is geometry-only: touch, font and
        contrast are NOT measured there (honest limit — its controls and
        colours are outside this check).
      • every visible interactive control ≥ 44×44 CSS px, or a whitelisted
@@ -240,6 +244,14 @@ const VARIANTS = ['sa02m-1eth', 'sa02m-2eth'];
 // fix: devices-kpi-fit.js not loaded → 120 (j) «value truncated» failures;
 // the @container 12AI rule disabled → 8 «layout jump» failures at 1240 (a
 // wrapped «1013.3 mbar» unit grows the MR card 267.4 → 302.1 px).
+// Header + EN checks — RED on 62f9352c: 56 failures. 20 headers: at 1101 the
+// rename pen of all four cards sits under the ONLINE pill (a stale
+// `padding-right: 2rem` later in main.css overrode the 92 px reserve) and the
+// СЭ pen drops to its own line; the same at 1240 for СЭ. 36 EN texts: «Энергия»
+// and «кВт·ч» at every width and theme. GREEN (0) after. Mutations, each RED on
+// the fix: title nowrap removed → «title wraps onto 2–3 lines» (28); title
+// max-width removed → «rename pen is not on the title's line» (28); the
+// 'Энергия' DICT entry removed → 18 «still Russian in EN».
 const DEVICES_VIEWPORTS = [
   { name: 'desktop',        width: 1440, height: 900,  overflowGate: true },
   { name: 'laptop',         width: 1280, height: 800,  overflowGate: true },
@@ -441,7 +453,9 @@ const MANAGEMENT_SERVICES = {
 // longest a real device plausibly reports — sign, full precision, the longest
 // units (mg/m³, mmHg, кВт·ч, mbar, «%, RH») and the Carel text state. The
 // shape is the one devices.js reads (docs/contracts/devices-mr-history.md,
-// carel-ahu.md); precision comes from its fmt()/aiUnitPrecision().
+// carel-ahu.md); precision comes from its fmt()/aiUnitPrecision(). Four MR
+// channels carry sensor codes whose card caption is Russian source text
+// (34/38/40/41), so the EN cells exercise their translation too.
 const DEVICES_LIVE = {
   ok: true,
   available: [],
@@ -456,8 +470,8 @@ const DEVICES_LIVE = {
   mr: [
     { id: 'mr02m-COM4-12', kind: 'mr', label: 'MR-02m 12AI № 12', module_type: '12AI', ai_count: 12, ok: true, age_s: 1,
       channels: [
-        [-50.5, '°C', 3], [10, 'V', 1], [20, 'mA', 2], [336.45, 'kΩ', 6], [99.9, '%, RH', 5], [1013.3, 'mbar', 1],
-        [101.33, 'kPa', 1], [-40.1, '°F', 3], [2.345, 'kW', 1], [999.9, 'ppm', 1], [0.123, 'A', 1], [49.99, 'Hz', 1],
+        [-50.5, '°C', 3], [10, 'V', 34], [20, 'mA', 40], [336.45, 'kΩ', 6], [99.9, '%, RH', 5], [1013.3, 'mbar', 1],
+        [101.33, 'kPa', 1], [-40.1, '°F', 41], [2.345, 'kW', 1], [999.9, 'ppm', 1], [0.123, 'A', 38], [49.99, 'Hz', 1],
       ].map(([value, unit, code], i) => ({ ch: i + 1, key: `ai_${i + 1}`, enabled: true, value, unit, sensor_code: code })) },
     { id: 'mr02m-COM4-7', kind: 'mr', label: 'MR-02m 6AI6AO № 7', module_type: '6AI6AO', ai_count: 6, ok: true, age_s: 1,
       channels: [[-50.5, '°C'], [10, 'V'], [20, 'mA'], [336.45, 'kΩ'], [1013.3, 'mbar'], [101.33, 'kPa']]
@@ -536,7 +550,7 @@ const rnd1 = (n) => Math.round(n * 10) / 10;
 function pageMeasure(arg) {
   const { surface, sub, TOUCH_MIN, EPS, CLIP_EPS, HCLIP_EPS, CENTRE_EPS, FONT_MIN,
           KPI_CENTRE_MAX_W, KPI_TILE_VAL_SEL, MANAGE_ONE_COL_MAX_W,
-          wlSelectors, wlFont } = arg;
+          wlSelectors, wlFont, lang } = arg;
   const vw = window.innerWidth;
 
   const describe = (el) => {
@@ -786,6 +800,84 @@ function pageMeasure(arg) {
       }
     });
     devFit.kinds = [...kinds];
+
+    // (j2) card HEADER: the title is one line (an ellipsis is fine), the rename
+    // pen sits on the title's line, and no two header pieces overlap — title
+    // TEXT (Range, what is painted), pen, presence/alert badges, status pill,
+    // remove button — nor leave the card's content box. The defect: at 1101 px
+    // the СЭ title wrapped and ran under the absolutely placed ONLINE pill,
+    // and the pen dropped to its own line (1.0.6.64).
+    devFit.heads = 0;
+    const lineTops = (rects) => [...new Set([...rects].filter((r) => r.width > 0.5)
+      .map((r) => Math.round(r.top)))];
+    document.querySelectorAll('#dev-grid .dev-card').forEach((card) => {
+      const title = card.querySelector('.dev-card-title');
+      const cr0 = card.getBoundingClientRect();
+      if (!title || !visible(card, cr0)) return;
+      devFit.heads++;
+      const why = [];
+      const rg = document.createRange();
+      rg.selectNodeContents(title);
+      const lines = lineTops(rg.getClientRects());
+      if (lines.length > 1) why.push(`title wraps onto ${lines.length} lines`);
+      // The painted text: the laid-out run, cut to the title's own box when the
+      // title clips it (an ellipsized name keeps its full run in the Range).
+      const tr0 = rg.getBoundingClientRect();
+      const tb = title.getBoundingClientRect();
+      const clips = /hidden|clip/.test(getComputedStyle(title).overflowX);
+      const tr = { top: tr0.top, bottom: tr0.bottom,
+                   left: clips ? Math.max(tr0.left, tb.left) : tr0.left,
+                   right: clips ? Math.min(tr0.right, tb.right) : tr0.right };
+      const parts = [['title text', tr]];
+      for (const [name, sel] of [['rename pen', '.dev-card-rename'], ['presence badge', '[data-role="presence"]'],
+        ['alert badge', '.dev-alert-badge'], ['status pill', '[data-role="status"]'], ['remove button', '.dev-card-remove']]) {
+        const el = card.querySelector(sel);
+        if (!el) continue;
+        const r = el.getBoundingClientRect();
+        if (visible(el, r)) parts.push([name, r]);
+      }
+      const pen = parts.find((p) => p[0] === 'rename pen');
+      if (pen && !(pen[1].top < tr.bottom && pen[1].bottom > tr.top)) {
+        why.push(`rename pen is not on the title's line (pen ${rnd(pen[1].top)}..${rnd(pen[1].bottom)}, title ${rnd(tr.top)}..${rnd(tr.bottom)})`);
+      }
+      for (let i = 0; i < parts.length; i++) {
+        for (let j = i + 1; j < parts.length; j++) {
+          const a = parts[i][1], b = parts[j][1];
+          const ix = Math.min(a.right, b.right) - Math.max(a.left, b.left);
+          const iy = Math.min(a.bottom, b.bottom) - Math.max(a.top, b.top);
+          if (ix > EPS && iy > EPS) why.push(`${parts[i][0]} overlaps ${parts[j][0]} by ${rnd(ix)}×${rnd(iy)}px`);
+        }
+      }
+      const ccs = getComputedStyle(card);
+      const cl = cr0.left + parseFloat(ccs.borderLeftWidth) + parseFloat(ccs.paddingLeft);
+      const crr = cr0.right - parseFloat(ccs.borderRightWidth) - parseFloat(ccs.paddingRight);
+      for (const [name, r] of parts) {
+        if (r.left < cl - EPS || r.right > crr + EPS) why.push(`${name} ${rnd(r.left)}..${rnd(r.right)} leaves the card content ${rnd(cl)}..${rnd(crr)}`);
+      }
+      if (why.length) {
+        devFit.bad.push({ check: 'header', tile: `${card.dataset.kind} header`,
+                          text: (title.textContent || '').trim(), why });
+      }
+    });
+
+    // (j3) EN cells: no Russian source text left in a tile's label, value, unit,
+    // index or caption — every one of them has its DICT entry (the i18n floor,
+    // web-code-rigor.md). Device NAMES are data and are not checked.
+    devFit.enRuns = 0;
+    if (lang === 'en') {
+      document.querySelectorAll('#dev-grid .dev-kpi').forEach((kpi) => {
+        const card = kpi.closest('.dev-card');
+        kpi.querySelectorAll('.dev-kpi-lbl, .dev-kpi-val, .dev-kpi-unit, .dev-kpi-idx, .dev-kpi-sub').forEach((el) => {
+          const t = (el.textContent || '').trim();
+          if (!t) return;
+          devFit.enRuns++;
+          if (/[А-Яа-яЁё]/.test(t)) {
+            devFit.bad.push({ check: 'i18n', tile: `${card ? card.dataset.kind : '?'}/${kpi.dataset.key || '?'}`, text: t,
+                              why: [`.${el.className.split(' ')[0]} still Russian in EN — no DICT translation`] });
+          }
+        });
+      });
+    }
   }
 
   return { overflow, undersized, controlCount, svcColumns, cards,
@@ -1054,7 +1146,7 @@ async function run() {
 
           const m = await page.evaluate(pageMeasure, {
             surface: surface.kind, sub: surface.sub, TOUCH_MIN, EPS, CLIP_EPS, HCLIP_EPS, CENTRE_EPS, FONT_MIN,
-            KPI_CENTRE_MAX_W, KPI_TILE_VAL_SEL, MANAGE_ONE_COL_MAX_W, wlSelectors, wlFont,
+            KPI_CENTRE_MAX_W, KPI_TILE_VAL_SEL, MANAGE_ONE_COL_MAX_W, wlSelectors, wlFont, lang,
           });
 
           // (a) horizontal overflow — scroll (page moves) OR clipped (content
@@ -1208,8 +1300,15 @@ async function run() {
                 `(floor ${DEV_ROWS_MIN}), card kinds [${df.kinds.join(', ')}]${missing.length ? ` — missing ${missing.join(', ')}` : ''} ` +
                 `— the stubbed /api/devices did not render (selector rotted or fixture unread)`);
             }
+            if (df.heads < DEV_KINDS.length) {
+              failures.push(`[${cellName}] devices header check: only ${df.heads} card headers measured — the cards did not render`);
+            }
+            if (lang === 'en' && df.enRuns < DEV_ROWS_MIN) {
+              failures.push(`[${cellName}] devices EN check: only ${df.enRuns} tile texts measured (floor ${DEV_ROWS_MIN}) — nothing to check`);
+            }
             for (const b of df.bad) {
-              failures.push(`[${cellName}] device value does not fit its tile: ${b.tile} «${b.text}» — ${b.why.join('; ')}`);
+              const what = b.check === 'header' ? 'device card header broken' : b.check === 'i18n' ? 'device tile text untranslated' : 'device value does not fit its tile';
+              failures.push(`[${cellName}] ${what}: ${b.tile} «${b.text}» — ${b.why.join('; ')}`);
             }
             // No layout jump: the same cards with «—» placeholders must be exactly
             // as tall — the fit may shrink a value or use the tile's spare line,
