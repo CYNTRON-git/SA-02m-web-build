@@ -26,6 +26,12 @@ INBOX_MAX = 4096
 #: past it a new topic is simply not warned about again.
 WARNED_TOPICS_MAX = 256
 
+
+def _sampled(n: int) -> bool:
+    """Repeat-failure log sampling: the 100th, 1000th, then every 10000th."""
+    return n in (100, 1000) or n % 10000 == 0
+
+
 # Package lives next to this file when installed to /opt/sa02m-rules.
 _HERE = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 if _HERE not in sys.path:
@@ -90,6 +96,7 @@ class RulesApp:
         self._failed = 0
         self._warned_non_finite: set = set()
         self._warned_failed: set = set()
+        self._step_failures: Dict[str, int] = {}
         self.reload_index()
         # Pre-create the mirror: Engine.__init__ adopts the existing doc and
         # may publish template state (rule_enabled) via pub_state, which
@@ -220,6 +227,22 @@ class RulesApp:
             if self._dropped in (1, 100, 1000) or self._dropped % 10000 == 0:
                 LOG.warning("inbox full: %d message(s) dropped", self._dropped)
 
+    def _step(self, name: str, fn: Any) -> None:
+        """Run one main-loop step so its exception cannot end the process:
+        main() has no handler but the stop one, and a persistent cause (a
+        stored scenario, a boot trigger) would crash-loop the unit. Logged
+        with a traceback the first time, then sampled; Exception only, so the
+        SIGTERM SystemExit and a KeyboardInterrupt still unwind."""
+        try:
+            fn()
+        except Exception:
+            n = self._step_failures.get(name, 0) + 1
+            self._step_failures[name] = n
+            if n == 1:
+                LOG.exception("%s failed; continuing", name)
+            elif _sampled(n):
+                LOG.warning("%s failed %d times so far", name, n)
+
     @staticmethod
     def _first_time(seen: set, topic: str) -> bool:
         """True once per topic, while the bounded memory has room."""
@@ -243,7 +266,7 @@ class RulesApp:
                 self._failed += 1
                 if self._first_time(self._warned_failed, topic):
                     LOG.exception("message on %r skipped", topic)
-                elif self._failed in (100, 1000) or self._failed % 10000 == 0:
+                elif _sampled(self._failed):
                     LOG.warning("%d message(s) skipped after an error, "
                                 "latest on %r", self._failed, topic)
 
@@ -323,8 +346,8 @@ class RulesApp:
     def tick(self) -> None:
         self.reload()
         self._drain_inbox()
-        self.engine.tick()
-        self.engine.logic_status_poll()
+        self._step("engine.tick", self.engine.tick)
+        self._step("logic_status_poll", self.engine.logic_status_poll)
         run_flag = self.path + ".run"
         try:
             with open(run_flag, encoding="utf-8") as fh:
@@ -336,7 +359,7 @@ class RulesApp:
             self.engine.run_now(sid)
 
     def boot(self) -> None:
-        self.engine.on_boot()
+        self._step("on_boot", self.engine.on_boot)
 
     def stop(self) -> None:
         """Shutdown: the buffered run records reach the journal."""
