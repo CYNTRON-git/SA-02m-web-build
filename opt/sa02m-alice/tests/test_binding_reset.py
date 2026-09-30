@@ -1617,6 +1617,7 @@ class TestLocalUnlinkSuccess(_BindingBase):
         self.assertEqual(self.binding_present(), [])
         self.assertIs(result["client_enabled"], True)
         self.assertTrue(config_store.client_enabled())
+        self.assertEqual(self.read(C.DEVICES_CONF), DEVICES_CONF_SEED.encode("utf-8"))
         self.assertTrue(self.marker()[0])
 
     def test_the_local_button_no_longer_switches_the_client_off(self):

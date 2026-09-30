@@ -5,6 +5,14 @@
 
 ---
 
+## [2026-09-30 22:36] branch: 1.0.7.0
+
+**Файл(ы):** `opt/sa02m-alice/sa02m_alice/client/converters.py` (`yandex_to_color_setting`)
+**Тип:** Некорректное поведение
+**Описание:** Голосовая команда цвета публиковала в MQTT десятичное число (`1122867`). Лента принимает только `#RRGGBB` и такую запись отвергает, цвет не меняется.
+**Причина:** `yandex_to_color_setting` для instance `rgb` возвращал `str(int(value))`.
+**Исправление:** Публикация `#RRGGBB` в диапазоне 0…0xFFFFFF. Цветовая температура публикуется целым числом кельвинов и отвергается вне 2700…6500.
+
 ## [2026-09-30 22:10] branch: 1.0.7.0
 
 **Файл(ы):** `opt/sa02m-modbus-mqtt/sa02m_telemetry.py` (`_take_instance_lock`), `opt/sa02m-modbus-mqtt/tests/test_telemetry_session.py`

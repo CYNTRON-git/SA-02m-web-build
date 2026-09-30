@@ -409,6 +409,15 @@ def _validate_mqtt_item(item: Dict[str, Any], kind: str) -> Tuple[Optional[Dict[
                 return None, "invalid range %s" % key
         if float(rng["min"]) >= float(rng["max"]) or float(rng["precision"]) <= 0:
             return None, "invalid range bounds"
+    elif t == "devices.capabilities.color_setting":
+        # Same strictness as mode: discovery copies parameters as-is, so a
+        # foreign instance would reach Yandex and be refused there instead.
+        params = item.get("parameters")
+        if not isinstance(params, dict):
+            return None, "color_setting capability requires parameters"
+        instance = str(params.get("instance") or "")
+        if instance not in ("rgb", "temperature_k"):
+            return None, "invalid color_setting instance"
     elif t == "devices.capabilities.mode":
         # Shaped like the range branch above, and for the same reason: the
         # parameters reach Yandex verbatim, so a mode with no values is a

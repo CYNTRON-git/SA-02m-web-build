@@ -263,21 +263,39 @@ def mqtt_to_color_setting(raw: str, parameters: Optional[Dict[str, Any]] = None)
     }
 
 
+# Yandex colour temperature is an integer kelvin in this window. Anything
+# outside it is refused: a 0…100 fraction or a two-digit "45" must not be
+# published as if it were a colour.
+_KELVIN_MIN = 2700
+_KELVIN_MAX = 6500
+
+
 def yandex_to_color_setting(state: Dict[str, Any]) -> Tuple[Optional[str], Optional[str]]:
     if not isinstance(state, dict):
         return None, C.ERR_INVALID_VALUE
     instance = state.get("instance", "rgb")
     value = state.get("value")
+    # bool is an int subclass; int(True) is 1 and must not become a colour.
+    if isinstance(value, bool):
+        return None, C.ERR_INVALID_VALUE
     if instance == "temperature_k":
         try:
-            return str(int(value)), None
+            kelvin = int(value)
         except (TypeError, ValueError):
             return None, C.ERR_INVALID_VALUE
+        if kelvin < _KELVIN_MIN or kelvin > _KELVIN_MAX:
+            return None, C.ERR_INVALID_VALUE
+        return str(kelvin), None
     if instance == "rgb":
         try:
-            return str(int(value)), None
+            colour = int(value)
         except (TypeError, ValueError):
             return None, C.ERR_INVALID_VALUE
+        if colour < 0 or colour > 0xFFFFFF:
+            return None, C.ERR_INVALID_VALUE
+        # The LED bridge accepts only #RRGGBB. A decimal string is refused
+        # and the strip stays on its previous colour.
+        return "#%06X" % colour, None
     return None, C.ERR_INVALID_ACTION
 
 

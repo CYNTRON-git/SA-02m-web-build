@@ -588,6 +588,7 @@
                   <span><span data-i18n="Устройств в Алисе">Устройств в Алисе</span>: <span id="alice-sh-count">—</span></span>
                   <a href="#" id="alice-sh-link" onclick="shOpenModal(); return false;" aria-haspopup="dialog" aria-controls="sh-modal"><span data-i18n="Умный дом">Умный дом</span></a>
                 </p>
+                <p class="field-hint text-sm" data-i18n="Клиент выключен, пока его не включат. «Отвязать» не удаляет список устройств.">Клиент выключен, пока его не включат. «Отвязать» не удаляет список устройств.</p>
                 <div id="alice-msg" class="cloud-msg" role="status" hidden></div>
               </div>
               <div class="cloud-agent-ctrl system-manage-tile-foot">
@@ -1550,6 +1551,11 @@
           </label>
         </div>
         <div class="field">
+          <div class="btn-row">
+            <button type="button" class="btn btn-sm" id="sh-preset-light" onclick="shApplyPreset('light')" data-i18n="Светильник">Светильник</button>
+            <button type="button" class="btn btn-sm" id="sh-preset-curtain" onclick="shApplyPreset('curtain')" data-i18n="Штора">Штора</button>
+          </div>
+          <p class="field-hint text-sm" id="sh-preset-hint" hidden></p>
           <label id="sh-rows-label" data-i18n="Показания">Показания</label>
           <div id="sh-rows" class="sh-rows" role="group" aria-labelledby="sh-rows-label"></div>
           <p class="field-hint text-sm" id="sh-btn-hint" data-i18n="Вход не в режиме «Кнопка»" hidden>Вход не в режиме «Кнопка»</p>
@@ -1607,7 +1613,7 @@
   </div>
 </div>
 
-<script src="static/js/i18n.js?v=1.0.7.0&r=tcpchk1m"></script>
+<script src="static/js/i18n.js?v=1.0.7.0&r=lamp1"></script>
 <script src="static/js/app.js?v=1.0.7.0&r=xhrcsrf1"></script>
 <script src="static/js/app/status.js?v=1.0.7.0&r=xhrcsrf1"></script>
 <script src="static/js/app/hw.js?v=1.0.7.0&r=devhist1"></script>
@@ -1624,7 +1630,7 @@
 <script type="module" src="static/js/devices.js?v=1.0.7.0&r=devico1m"></script>
 <script src="static/js/cloud.js?v=1.0.7.0&r=audit39a"></script>
 <script src="static/js/app/alice.js?v=1.0.7.0&r=alicegw58"></script>
-<script src="static/js/app/smarthome.js?v=1.0.7.0&r=expose1"></script>
+<script src="static/js/app/smarthome.js?v=1.0.7.0&r=lamp1"></script>
 <script src="static/js/app/homekit.js?v=1.0.7.0&r=hk1"></script>
 <script src="static/js/app/homeconnect.js?v=1.0.7.0&r=hk1"></script>
 

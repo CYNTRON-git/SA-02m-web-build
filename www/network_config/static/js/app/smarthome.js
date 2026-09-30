@@ -304,6 +304,14 @@ const SH_KINDS = {
   plant_state: { kindOf: 'event', instance: 'plant_state', events: ['run', 'stop', 'alarm'], cloudOnly: true, type: 'devices.types.ventilation' },
   unit_status: { kindOf: 'event', instance: 'unit_status', cloudOnly: true, type: 'devices.types.ventilation' },
   alarm:       { kindOf: 'event', instance: 'alarm', events: ['alarm', 'normal'], cloudOnly: true, type: 'devices.types.ventilation' },
+  // Lamp card: brightness is the LED's 0…255 channel, not a percent. Colour
+  // is rgb only — the strip's `white` is a separate PWM channel and its
+  // `temperature` is an NTC in °C, so neither is a colour temperature.
+  brightness:  { kindOf: 'range', instance: 'brightness', range: { min: 0, max: 255, precision: 1 }, type: 'devices.types.light' },
+  color:       { kindOf: 'color', instance: 'rgb', type: 'devices.types.light' },
+  // Curtain / valve position, «на 50 %». The on/off row is a separate kind
+  // (`switch`) on one command topic; two reverse outputs are not one switch.
+  open_pct:    { kindOf: 'range', instance: 'open', unit: 'unit.percent', range: { min: 0, max: 100, precision: 1 }, type: 'devices.types.openable.curtain' },
 };
 
 // Russian source labels — NOT passed through uiT() when a row is built: the
@@ -333,6 +341,9 @@ const SH_KIND_LABELS = {
   plant_state: 'Состояние установки',
   unit_status: 'Статус установки (текст)',
   alarm: 'Авария',
+  brightness: 'Яркость',
+  color: 'Цвет',
+  open_pct: 'Положение, %',
 };
 
 // Sentinel option value for a hand-edited binding whose instance is outside
@@ -347,6 +358,7 @@ const SH_MANAGED_TYPES = [
   'devices.capabilities.range',
   'devices.properties.float',
   'devices.properties.event',
+  'devices.capabilities.color_setting',
 ];
 
 function shIsManagedItem(item) {
@@ -401,16 +413,19 @@ function shDetectRows(dev) {
 function shMakeManagedItem(kind, topic, inverted) {
   const spec = SH_KINDS[kind];
   if (spec && spec.kindOf === 'range') {
+    const parameters = {
+      instance: spec.instance,
+      range: { min: spec.range.min, max: spec.range.max, precision: spec.range.precision },
+    };
+    // Brightness is 0…255 with no unit. Every older range kind has one, and
+    // omitting the key keeps those documents byte-identical.
+    if (spec.unit) parameters.unit = spec.unit;
     return {
       type: 'devices.capabilities.range',
       mqtt: topic,
       retrievable: true,
       reportable: true,
-      parameters: {
-        instance: spec.instance,
-        unit: spec.unit,
-        range: { min: spec.range.min, max: spec.range.max, precision: spec.range.precision },
-      },
+      parameters: parameters,
     };
   }
   if (!spec || spec.kindOf === 'cap') {
@@ -426,6 +441,15 @@ function shMakeManagedItem(kind, topic, inverted) {
     if (inverted) cap.inverted = true;
     if (spec && spec.writable === false) cap.writable = false;
     return cap;
+  }
+  if (spec.kindOf === 'color') {
+    return {
+      type: 'devices.capabilities.color_setting',
+      mqtt: topic,
+      retrievable: true,
+      reportable: true,
+      parameters: { instance: spec.instance },
+    };
   }
   if (spec.kindOf === 'event') {
     const item = {
@@ -779,10 +803,35 @@ function shApplyLedTopic(row, topic) {
   const ctrl = shLedControl(topic);
   if (!ctrl) return;
   const kindSel = row && row.querySelector('.sh-row-kind');
-  if (ctrl === 'power' && kindSel && SH_KINDS.switch && !kindSel.disabled) kindSel.value = 'switch';
-  if (!shDtypeTouched) {
+  const ledKind = { power: 'switch', brightness: 'brightness', color: 'color' }[ctrl];
+  if (ledKind && kindSel && SH_KINDS[ledKind] && !kindSel.disabled) kindSel.value = ledKind;
+  if (!shDtypeTouched && ledKind) {
     shSetDtype('devices.types.light');
     shSyncTypeUi();
+  }
+}
+
+const SH_PRESETS = {
+  light: { type: 'devices.types.light', rows: ['switch', 'brightness', 'color'], hint: '' },
+  curtain: {
+    type: 'devices.types.openable.curtain',
+    rows: ['switch', 'open_pct'],
+    hint: 'Два обратных выхода не склеиваются в одно включение. Сценарий публикует одну команду — её и привяжите. Клапан — тот же набор, тип «Клапан».',
+  },
+};
+
+function shApplyPreset(name) {
+  const preset = SH_PRESETS[name];
+  if (!preset) return;
+  shClearRows();
+  preset.rows.forEach(function (kind) { shAddRow(kind, '', null); });
+  shDtypeTouched = true;
+  shSetDtype(preset.type);
+  shSyncTypeUi();
+  const hint = $('sh-preset-hint');
+  if (hint) {
+    hint.textContent = preset.hint ? uiT(preset.hint) : '';
+    hint.hidden = !preset.hint;
   }
 }
 
@@ -1772,7 +1821,7 @@ async function shAddDevice() {
     if (!d.ok) {
       shSetBindMsg(d.message || d.error || uiT('Ошибка'), false);
     } else {
-      shSetBindMsg(uiT('Устройство сохранено'), true);
+      shSetBindMsg(uiT('Устройство сохранено. Список в приложении обновится по «Обновить список устройств».'), true);
       shCancelEdit();
     }
     await shRefresh();

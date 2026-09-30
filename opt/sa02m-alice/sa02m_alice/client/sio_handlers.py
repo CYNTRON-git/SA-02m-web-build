@@ -25,6 +25,7 @@ class SioHandlers:
         emit_response: EmitFn,
         profile: str = C.PROFILE_YANDEX,
         on_unlink: Optional[UnlinkFn] = None,
+        on_list: Optional[UnlinkFn] = None,
     ) -> None:
         self.registry = registry
         self._publish = publish_mqtt
@@ -35,6 +36,10 @@ class SioHandlers:
         # caller (and every test that builds a handler for the device events)
         # keeps working — a handler without it logs and does nothing.
         self._on_unlink = on_unlink
+        # After the list answer: one snapshot of devices that already have a
+        # cached value. Absent on the cloud profile and in tests that only
+        # check the list payload.
+        self._after_list = on_list
 
     def handle(self, event: str, data: Any) -> None:
         # ANY receipt of controller_unlink is authoritative regardless of the
@@ -102,6 +107,8 @@ class SioHandlers:
                 payload["scenario_library"] = extra.get("library") or ""
                 payload["rules_engine"] = int(extra.get("rules_engine") or 1)
         self._emit_response({"request_id": request_id, "payload": payload})
+        if self._after_list is not None:
+            self._after_list()
 
     def _on_query(self, request_id: Optional[str], devices: List[Any]) -> None:
         ids = [str(d.get("id")) for d in devices if isinstance(d, dict) and d.get("id")]

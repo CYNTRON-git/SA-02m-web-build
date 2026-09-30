@@ -153,6 +153,26 @@ def _write_status(state: str, *, profile: str = C.PROFILE_YANDEX, **kw: Any) -> 
         log.debug("status write failed: %s", exc)
 
 
+def _emit_known_snapshot(
+    sender: Optional[StateSender], registry: DeviceRegistry
+) -> None:
+    """One snapshot of devices that already have a cached value.
+
+    The list answer itself is served from the cache. This frame is for a
+    listener that only watches device_state, so a temperature that arrived
+    before «Обновить список устройств» is not drawn as waiting. A device
+    with no cached value is left out. Retained messages stay unreported
+    until something calls this — the subscribe burst does not.
+    """
+    if sender is None:
+        return
+    live = [d for d in registry.query_devices() if not d.get("error_code")]
+    if not live:
+        return
+    sender.offer_snapshot(live)
+    sender.flush_now()
+
+
 def _emit_cache_snapshot(
     sender: Optional[StateSender], registry: DeviceRegistry
 ) -> None:
@@ -567,6 +587,8 @@ def run(profile: str = C.PROFILE_YANDEX) -> int:
         on_unlink=None if cloud else on_unlink,
     )
     sender = StateSender(emit_state)
+    if not cloud:
+        handlers._after_list = lambda: _emit_known_snapshot(sender, registry)
 
     def on_sio_event(event: str, data: Any) -> None:
         handlers.handle(event, data)
