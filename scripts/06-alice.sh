@@ -91,7 +91,7 @@ chgrp www-data /etc/sa02m-alice 2>/dev/null || true
 # group instead (www-data:sa02m-alice-devices 0640 — the grant's one home is
 # usr/local/sbin/sa02m-daemon-access.sh, run by 06c and at every bridge start):
 # resetting it to www-data here would cut the bridge off, so it is left alone.
-python3 - /etc/sa02m-alice www-data sa02m-alice-devices <<'PY' || true
+python3 -I - /etc/sa02m-alice www-data sa02m-alice-devices <<'PY' || true
 import grp, os, stat, sys
 conf_dir, group, hk_group = sys.argv[1], sys.argv[2], sys.argv[3]
 gid = grp.getgrnam(group).gr_gid

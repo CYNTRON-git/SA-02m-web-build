@@ -694,8 +694,8 @@ else:
 granted_any = granted_all + granted_heredoc
 
 # ── Argument pinning for the privileged web triggers ──────────────────────
-# A sudoers Cmnd written WITHOUT arguments permits ANY argument vector. These
-# four are the escalation surface B1 is about, so each granted form must carry
+# A sudoers Cmnd written WITHOUT arguments permits ANY argument vector. The
+# helpers in PIN_REQUIRED are the escalation surface B1 is about, so each granted form must carry
 # at least one argument. Non-vacuous: zero grants for a helper is a FAIL.
 PIN_REQUIRED = [
     "/usr/local/sbin/sa02m-cloud-web-trigger.sh",
