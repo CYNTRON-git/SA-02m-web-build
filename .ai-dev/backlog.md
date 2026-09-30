@@ -8,6 +8,12 @@ commit's diff of this file).
 
 ## Open
 
+- [OPEN] 2026-09-30 **[MED] Sweep the other harnesses for host-binary / host-root side effects (ci-linux-green
+  finding).** Two harnesses could, on a ROOT host, reach real system actions: firstboot-sb-csum a real
+  `fsfreeze -f /`, web-update-apply-guard reboot.cgi's real `sudo … reboot -f` chain. Both fixed on
+  ci-linux-green (PATH masking via scripts/dev/lib_path_mask.sh; sandboxed CGI copy). Other `scripts/dev/`
+  harnesses that remove a stand-in and rely on `command -v` failing, or run a shipped CGI whose side
+  effects are real on a writable host, were not swept. The CI runner has passwordless sudo.
 - [OPEN] 2026-09-29 **[LOW] `test-web-auth.sh` section 8 comment still says «tiny window» (1.0.6.63 review A12).**
   Cases 57–61 now run with a 30 s window and 62 judges expiry with a 1 s window at check time; the
   section header above them should say so. Comment only.
@@ -531,7 +537,7 @@ commit's diff of this file).
   установкой (`03-webserver.sh`), www-only из чекаута с `etc/` + `opt/sa02m-devices/`
   (`update-www-only.sh` → `11-devices.sh`), офлайн-пакетом и образом — никогда GitHub-OTA; правка
   nginx, которая должна дойти до флота, едет одним из этих путей. Until decided, the texts say (b).
-- [OPEN] 2026-09-24 **[LOW] Two load-induced harness flakes.** (1) `test-web-update-apply-guard.sh`
+- [RESOLVED ci-linux-green] 2026-09-24 **[LOW] Two load-induced harness flakes.** (1) `test-web-update-apply-guard.sh`
   R1: the live-runner fixture was `sleep 30`; under quality-runner load section R reached it 44–50 s
   later → false RED. FIXED in 1.0.6.52 (`sleep 900`). (2) `test-web-auth.sh` case 59 «NOT locked
   after MAXFAIL failures — brute force is unthrottled» FAILED once inside a full `build` beat on
@@ -545,6 +551,9 @@ commit's diff of this file).
   explicit «locked» precondition. (3) `test-web-update-apply-guard.sh` rows 7, R4 and H1/H1b
   fail under WSL on `d66d7b6` as well (1.0.6.62 builder + reviewer, twice) — the ~1.2 s sudo shim appears to
   leak into the next row. Item (3) is still queued behind the 1.0.6.63–.68 train (2-agent cap).
+  RESOLVED 2026-09-30 (branch ci-linux-green): (1) and (2) were already fixed (1.0.6.52, 1.0.6.63); (3) was
+  case 5's launch stand-in still holding the lock on fast Linux hosts and reboot.cgi's real background
+  chain firing on root hosts — apply-guard now waits for its stand-ins and drives a sandboxed reboot.cgi.
 - [OPEN] 2026-09-23 **[MED] `sa02m-devices-api` listens on `127.0.0.1:8765` with no auth of its
   own.** `opt/sa02m-devices/sa02m_devices/api.py` reads only Content-Length and relies entirely on
   nginx's `auth_request` in front of `/api/devices*`; any local process or user on the board can

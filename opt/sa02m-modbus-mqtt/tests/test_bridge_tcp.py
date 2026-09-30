@@ -174,6 +174,29 @@ class TestStaleSession(_ServerCase):
         self.assertEqual(self.srv.accepts, 1)
 
 
+class TestFakeServerStop(unittest.TestCase):
+    """The fake's own promise every offline test rests on: stop() = refused.
+
+    On Linux a bare close() left the listener alive under the blocked accept
+    thread, so the "device gone" reconnect SUCCEEDED and three offline tests
+    failed on the CI runner only (the board's OS) while Windows passed.
+    """
+
+    def test_stop_refuses_the_next_connect_and_start_serves_again(self):
+        srv = FakeMbapServer()
+        self.addCleanup(srv.stop)
+        time.sleep(0.1)                   # the accept thread is parked in accept()
+        srv.stop()
+        with self.assertRaises(OSError):
+            socket.create_connection(("127.0.0.1", srv.port), timeout=1.0).close()
+        self.assertEqual(srv.accepts, 0)
+        srv.start()                       # same port, as the offline tests use it
+        c = _client(srv, timeout=0.5)
+        self.addCleanup(c.close)
+        self.assertEqual(c.read_holding_registers(1, 0, 1), [0])
+        self.assertEqual(srv.accepts, 1)
+
+
 class TestBackoff(unittest.TestCase):
     def test_refused_then_no_connect_attempt_inside_the_window(self):
         c = bridge_tcp.ModbusTcpClient("127.0.0.1", free_port(), timeout=0.5,
