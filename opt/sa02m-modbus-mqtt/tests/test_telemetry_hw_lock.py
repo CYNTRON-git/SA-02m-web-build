@@ -1845,13 +1845,13 @@ class TestTheFallbacksMatchTheCgi(unittest.TestCase):
             "            [\"i2cget\"",
             "    def val(k):\n        return _read_conf_value(_hw_conf_path(), k)\n"
             "    val(\"SA02M_I2C_LOCK_FILE\")\n"),
-        # O12: the reader under another name, reading a key nobody pinned.
         # The same name, but a reader of its own that never names
         # _read_conf_value — only the «one val» rule sees this one.
         "a second val with a reader of its own": (
             "def _hw_conf_path() -> str:\n",
             "def val(k):\n"
             "    return open(_hw_conf_path()).read().split(k + '_SECRET=')[-1]\n\n\n"),
+        # O12: the reader under another name, reading a key nobody pinned.
         "_read_conf_value aliased": (
             "def _hw_conf_path() -> str:\n",
             "_rcv = _read_conf_value\n\n\n"
@@ -1874,18 +1874,78 @@ class TestTheFallbacksMatchTheCgi(unittest.TestCase):
         "a prefix nobody declared": (
             "        extra = _hw_extra_output_mask(val)\n",
             "        _probe = val(\"SA02M_I2C_X_\" + ch.upper())\n"),
+        # -- review round 2, N2 (Operator: tighten). A case is a list of
+        # (anchor, addition) edits where one escape needs two sites.
+        # R1: `val` handed to a helper that receives it under ANOTHER name —
+        # the helper's call reads an unpinned key and nothing named `val`
+        # appears in it. The rule: the receiving parameter must be `val`.
+        "val handed to a helper under another name (R1)": [
+            ("def _hw_conf_path() -> str:\n",
+             "def _peek(reader):\n    return reader('SA02M_I2C_UNPINNED')\n\n\n"),
+            ("        extra = _hw_extra_output_mask(val)\n",
+             "        _probe = _peek(val)\n")],
+        "val handed to a staticmethod under another name": [
+            ("    @staticmethod\n    def _resolve_backend(val) -> str:\n",
+             "    @staticmethod\n    def _peek(rd) -> str:\n"
+             "        return rd('SA02M_I2C_UNPINNED')\n\n"),
+            ("        extra = _hw_extra_output_mask(val)\n",
+             "        _probe = cls._peek(val)\n")],
+        # Only the «callee is a function of this daemon» rule (M10) sees this.
+        "val wrapped by functools.partial": (
+            "        extra = _hw_extra_output_mask(val)\n",
+            "        import functools\n"
+            "        _probe = functools.partial(val, 'SA02M_I2C_UNPINNED')()\n"),
+        # Only the attribute rule (M11) sees this.
+        "_read_conf_value reached as a module attribute": (
+            "def _hw_conf_path() -> str:\n",
+            "def _hw_secret() -> str:\n"
+            "    return sys.modules[__name__]._read_conf_value("
+            "_hw_conf_path(), 'SA02M_I2C_SECRET_KEY')\n\n\n"),
+        # R2: the reader imported back under another name.
+        "_read_conf_value re-imported under another name (R2)": (
+            "def _hw_conf_path() -> str:\n",
+            "def _hw_secret() -> str:\n"
+            "    from sa02m_telemetry import _read_conf_value as _r\n"
+            "    return _r(_hw_conf_path(), 'SA02M_I2C_SECRET')\n\n\n"),
+        # Only the «val is never rebound» rule sees these two.
+        "val rebound inside load": (
+            "        extra = _hw_extra_output_mask(val)\n",
+            "        val = str\n"),
+        "val imported": (
+            "def _hw_conf_path() -> str:\n",
+            "from os import getenv as val\n\n\n"),
+        # Only the «no keywords» half of the argument rule sees this.
+        "a keyword argument beside the key": (
+            "        extra = _hw_extra_output_mask(val)\n",
+            "        _probe = val('SA02M_I2C_LOCK_FILE', default='x')\n"),
+        # Only the «the literal is a SA02M_ key» half sees this.
+        "a literal key outside SA02M_": (
+            "        extra = _hw_extra_output_mask(val)\n",
+            "        _probe = val('I2C_SECRET')\n"),
+        # Only the «called from one of the two sanctioned scopes» half of the
+        # reader rule sees this (T4e's first mutation, kept as a case).
+        "the reader called directly from another function": (
+            "def _hw_conf_path() -> str:\n",
+            "def _hw_secret() -> str:\n"
+            "    return _read_conf_value(_hw_conf_path(), 'SA02M_I2C_SECRET_KEY')\n\n\n"),
     }
 
     def test_every_escape_shape_is_an_offence(self):
         """RED before the review-F2 fix for O11, O12, the string-reached
-        reader, the aliased closure and the smuggled prefix literal."""
+        reader, the aliased closure and the smuggled prefix literal; RED
+        before the round-2 N2 fix for R1, the renamed staticmethod parameter
+        and the re-imported reader."""
         src = self._daemon_source()
-        for name, (anchor, addition) in self.ESCAPES.items():
+        for name, spec in self.ESCAPES.items():
+            edits = spec if isinstance(spec, list) else [spec]
             with self.subTest(escape=name):
-                self.assertIn(anchor, src,
-                              "the injection anchor moved — re-point this case "
-                              "rather than let it test nothing")
-                mutated = src.replace(anchor, addition + anchor, 1)
+                mutated = src
+                for anchor, addition in edits:
+                    self.assertIn(anchor, mutated,
+                                  "the injection anchor moved — re-point this "
+                                  "case rather than let it test nothing")
+                    mutated = mutated.replace(anchor, addition + anchor, 1)
+                compile(mutated, "<escape>", "exec")    # a broken case is RED
                 _found, offences = conf_reads(mutated)
                 self.assertTrue(offences,
                                 f"{name}: the ledger saw nothing wrong")

@@ -73,6 +73,8 @@ import sa02m_telemetry as tel  # noqa: E402
 # The plan's names, spelled once here so a renamed constant fails these cases
 # by name rather than by an AttributeError three frames down.
 LOCK_ENV = "SA02M_TELEMETRY_LOCK_FILE"
+# os.geteuid does not exist on Windows; decorators evaluate at import.
+IS_ROOT = hasattr(os, "geteuid") and os.geteuid() == 0
 STORM_PHRASE = "already connected, closing old connection"
 
 
@@ -204,13 +206,17 @@ class TestTheInstanceLock(SessionTestCase):
                                fake.LOCK_EX | fake.LOCK_NB)])
 
     @unittest.skipUnless(os.name == "posix", "POSIX file modes only")
-    def test_the_lock_file_is_root_readable_not_group_writable(self):
-        """0644: unlike the PCA9536 lock this one is not shared with www-data,
-        so nothing needs to flock it but this daemon."""
+    def test_the_lock_file_is_open_to_its_owner_only(self):
+        """0600: unlike the PCA9536 lock this one is not shared with www-data,
+        so nothing but this daemon may even OPEN it. Readable is not harmless
+        here: flock(2) takes LOCK_EX through a read-only fd, so a 0644 file
+        let any local uid hold the lock and keep the unit in its exit-75
+        restart loop (review round 2, N1). The expectation moved from 0644 to
+        0600 by that finding's order — a tightened pin, not a loosened one."""
         client = self.make()
         client._take_instance_lock()
         self.addCleanup(self._release, client)
-        self.assertEqual(self.lock_path.stat().st_mode & 0o777, 0o644)
+        self.assertEqual(self.lock_path.stat().st_mode & 0o777, 0o600)
 
     @unittest.skipIf(tel.fcntl is None,
                      "no fcntl on this host (Windows) — the OS primitive is "
@@ -298,6 +304,10 @@ class TestTheInstanceLockTrustsOnlyItsOwnFile(SessionTestCase):
     one WARN, run unguarded, touch nothing. Never exit 75 on such a file —
     a foreign owner keeping it flocked would otherwise hold the unit in a
     permanent restart loop, a denial of the board's MQTT device.
+
+    That closes the loop only for a file another uid OWNS. A file that is ours
+    but that another uid can OPEN is the other half of the same denial —
+    TestTheInstanceLockCannotBeSquatted below (the lock is 0600).
     """
 
     VICTIM = b"root:SECRET-HASH:19000:0:99999:7:::\n"
@@ -424,6 +434,162 @@ class TestTheInstanceLockTrustsOnlyItsOwnFile(SessionTestCase):
 
         self.assertIsNotNone(client._instance_lock_fd)
         self.assertEqual(self.lock_path.read_text().strip(), str(os.getpid()))
+
+
+@unittest.skipUnless(os.name == "posix" and tel.fcntl is not None,
+                     "file modes, flock and setuid are POSIX")
+class TestTheInstanceLockCannotBeSquatted(SessionTestCase):
+    """Review round 2, N1 (1.0.6.68). The trust check above refuses a lock file
+    another uid OWNS; it did nothing about one another uid can merely OPEN.
+    flock(2) takes LOCK_EX through a read-only fd, so while the daemon created
+    its lock 0644 (and re-applied 0644 on every start) any local uid could open
+    it, hold the lock, and turn every later start into «another instance holds
+    … exiting with status 75» — Restart=on-failure makes that a permanent loop,
+    and every OTA restarts the unit (reproduced on WSL with `su nobody`).
+
+    Now the file is created 0600 and narrowed to 0600 through the fd BEFORE the
+    flock, so a leftover 0644 from an earlier build is closed on the first
+    start — even one that ends in a legitimate exit 75.
+
+    What this cannot undo, stated rather than implied: a uid that opened a
+    wider leftover file BEFORE that first narrowing keeps its fd, and with it
+    the ability to hold the lock until it closes it or the board reboots
+    (/run/lock is a tmpfs). Only a board that ran a pre-fix build of this
+    branch can carry such a file.
+    """
+
+    NOBODY = 65534
+
+    def setUp(self):
+        super().setUp()
+        self._tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self._tmp.cleanup)
+        # Sticky and world-writable like /run/lock, so a refusal below comes
+        # from the FILE's mode — a 0700 temp dir would refuse `nobody` for the
+        # wrong reason and the case would pass while testing nothing.
+        os.chmod(self._tmp.name, 0o1777)
+        self.lock_path = Path(self._tmp.name) / "sa02m-telemetry.lock"
+        os.environ[LOCK_ENV] = str(self.lock_path)
+
+    def _release(self, client):
+        fd = getattr(client, "_instance_lock_fd", None)
+        if fd is not None:
+            os.close(fd)
+            client._instance_lock_fd = None
+
+    def as_nobody(self, hold: bool):
+        """In a forked child running as uid/gid 65534: open the lock file
+        read-only and, when `hold`, take LOCK_EX|LOCK_NB and keep it.
+
+        Returns (result, release): result is 0 when the child got the fd (and
+        the lock, if asked), else the errno it hit; release() ends the child,
+        which drops whatever it held."""
+        res_r, res_w = os.pipe()
+        go_r, go_w = os.pipe()
+        pid = os.fork()
+        if pid == 0:                                    # the squatter
+            code = b"-1"
+            try:
+                os.close(res_r)
+                os.close(go_w)
+                os.setgroups([])
+                os.setgid(self.NOBODY)
+                os.setuid(self.NOBODY)
+                try:
+                    fd = os.open(str(self.lock_path), os.O_RDONLY)
+                except OSError as exc:
+                    code = str(exc.errno).encode()
+                else:
+                    if hold:
+                        tel.fcntl.flock(fd, tel.fcntl.LOCK_EX | tel.fcntl.LOCK_NB)
+                    code = b"0"
+                os.write(res_w, code)
+                os.read(go_r, 1)                        # hold until released
+            finally:
+                os._exit(0)
+        os.close(res_w)
+        os.close(go_r)
+        result = int(os.read(res_r, 16) or b"-1")
+        os.close(res_r)
+        released = []
+
+        def release():
+            if not released:
+                released.append(True)
+                os.close(go_w)
+                os.waitpid(pid, 0)
+        self.addCleanup(release)
+        return result, release
+
+    def take_and_exit(self):
+        """A first daemon takes the lock and exits (its fd, and flock, gone)."""
+        client = self.make()
+        client._take_instance_lock()
+        self.assertIsNotNone(client._instance_lock_fd)
+        self._release(client)
+
+    @unittest.skipUnless(IS_ROOT, "setuid to nobody needs root")
+    def test_nobody_cannot_even_open_the_lock_file(self):
+        """RED before the fix: the open succeeded (result 0, not EACCES)."""
+        import errno
+        self.take_and_exit()
+
+        result, release = self.as_nobody(hold=False)
+        release()
+
+        self.assertEqual(result, errno.EACCES,
+                         "another uid could open the instance lock — and a "
+                         "read-only fd is enough to flock it")
+
+    @unittest.skipUnless(IS_ROOT, "setuid to nobody needs root")
+    def test_a_squatter_cannot_keep_the_service_down(self):
+        """The reviewer's scenario end to end: root takes the lock and exits,
+        `nobody` tries to hold it, root starts again. RED before the fix:
+        SystemExit 75, the permanent restart loop."""
+        self.take_and_exit()
+        result, release = self.as_nobody(hold=True)
+
+        client = self.make()
+        try:
+            client._take_instance_lock()
+        except SystemExit as exc:
+            self.fail(f"a lock held by uid {self.NOBODY} made the daemon exit "
+                      f"{exc.code} (squatter open result {result})")
+        finally:
+            release()
+        self.addCleanup(self._release, client)
+        self.assertIsNotNone(client._instance_lock_fd)
+
+    def test_a_leftover_world_readable_file_is_narrowed(self):
+        """A 0644 file left by an earlier build: taken, and 0600 after.
+        RED before the fix: the daemon re-applied 0644 itself."""
+        self.lock_path.write_bytes(b"1\n")
+        os.chmod(self.lock_path, 0o644)
+        client = self.make()
+
+        client._take_instance_lock()
+        self.addCleanup(self._release, client)
+
+        self.assertEqual(self.lock_path.stat().st_mode & 0o777, 0o600)
+
+    def test_the_narrowing_happens_before_the_flock(self):
+        """Even a start that ends in a legitimate exit 75 (another copy of the
+        daemon holds the lock) leaves the file 0600, so the next start cannot
+        find it open to everyone. Pins the ORDER: a narrowing moved after the
+        flock would never run on this path. RED before the fix (0644)."""
+        self.lock_path.write_bytes(b"1\n")
+        os.chmod(self.lock_path, 0o644)
+        holder = os.open(str(self.lock_path), os.O_RDWR)
+        self.addCleanup(os.close, holder)
+        tel.fcntl.flock(holder, tel.fcntl.LOCK_EX | tel.fcntl.LOCK_NB)
+        client = self.make()
+
+        with self.assertLogs(tel.log, level="ERROR"):
+            with self.assertRaises(SystemExit) as ctx:
+                client._take_instance_lock()
+
+        self.assertEqual(ctx.exception.code, tel.EXIT_ANOTHER_INSTANCE)
+        self.assertEqual(self.lock_path.stat().st_mode & 0o777, 0o600)
 
 
 # ── Item 2: the eviction detector ────────────────────────────────────────────
