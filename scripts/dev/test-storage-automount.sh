@@ -154,10 +154,22 @@ for noop in logger sync sleep umount fsck; do
     printf '#!/bin/bash\nprintf "%s %%s\\n" "$*" >> "$T_DIR/%s.log"\nexit 0\n' "$noop" "$noop" > "$BIN/$noop"
 done
 chmod +x "$BIN"/*
-PATH="$BIN:$PATH"
+
+# Whether mount.ntfs-3g "is installed" (do_mount's `command -v` guard) is the
+# harness's call alone, never the host's: a bare prepend let the CI runner's
+# own /usr/sbin/mount.ntfs-3g (ubuntu-latest ships ntfs-3g) answer case 8 — RED
+# on the runner, GREEN on a host without ntfs-3g (lib_path_mask.sh).
+# shellcheck source=scripts/dev/lib_path_mask.sh
+. scripts/dev/lib_path_mask.sh || { echo "FAIL  scripts/dev/lib_path_mask.sh not loadable"; exit 1; }
+PATH="$BIN:$(path_without "$T/hostmask" mount.ntfs-3g)"
 
 ntfs3g_present() { printf '#!/bin/bash\nexit 0\n' > "$BIN/mount.ntfs-3g"; chmod +x "$BIN/mount.ntfs-3g"; }
-ntfs3g_absent()  { rm -f "$BIN/mount.ntfs-3g"; }
+ntfs3g_absent()  {
+    rm -f "$BIN/mount.ntfs-3g"
+    if command -v mount.ntfs-3g >/dev/null 2>&1; then
+        bad "harness cannot hide mount.ntfs-3g ($(command -v mount.ntfs-3g)) — the absent case would test the host"
+    fi
+}
 
 # ── harness helpers ────────────────────────────────────────────────────────
 load_src() {   # $1 = conf body ("" = no conf file at all)

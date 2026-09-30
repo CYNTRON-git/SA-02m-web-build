@@ -285,7 +285,13 @@ case "$*" in *print*) printf 'BYT;\n/dev/mmcblk2:15269888s:sd/mmc:512:512:msdos:
 exit 0
 SHIM
 chmod +x "$T/bin"/*
-export PATH="$T/bin:$PATH"
+# The host's own fsfreeze is masked (lib_path_mask.sh): 5e removes the shim to
+# play «fsfreeze not installed», and util-linux on the CI runner answered
+# `command -v` instead — a real `fsfreeze -f /` that fails unprivileged (CI
+# 2026-09-29) and FREEZES the root filesystem when the harness runs as root.
+# shellcheck source=scripts/dev/lib_path_mask.sh
+. scripts/dev/lib_path_mask.sh || { echo "FAIL  scripts/dev/lib_path_mask.sh not loadable"; exit 1; }
+export PATH="$T/bin:$(path_without "$T/hostmask" fsfreeze)"
 
 reset_shims() {  # $@ = dd sequence (fixture paths)
     : > "$CALLS"; rm -f "$T/dd.n" "$T/frozen-logsize" "$T/done-before-freeze" "$T/wrote-while-frozen" "$T/log" \
@@ -423,8 +429,12 @@ run_fn ensure_primary_sb_checksum >/dev/null 2>&1; rc=$?
 
 reset_shims "$GOOD_FX"
 mv "$T/bin/fsfreeze" "$T/fsfreeze.away"
+if command -v fsfreeze >/dev/null 2>&1; then
+    bad "5e harness cannot hide fsfreeze ($(command -v fsfreeze)) — the case would drive the HOST's fsfreeze on /"
+    mv "$T/fsfreeze.away" "$T/bin/fsfreeze"
+fi
 run_fn ensure_primary_sb_checksum >/dev/null 2>&1; rc=$?
-mv "$T/fsfreeze.away" "$T/bin/fsfreeze"
+[ -e "$T/fsfreeze.away" ] && mv "$T/fsfreeze.away" "$T/bin/fsfreeze"
 if [ "$rc" = 0 ] && grep -q 'ERROR: fsfreeze not found' "$T/log" && [ "$(count_calls '^dd ')" = 1 ] \
    && grep -q 'checksum OK' "$T/log"; then
     ok "5e fsfreeze missing: ERROR logged, verification still runs (rc follows the on-disk state)"
