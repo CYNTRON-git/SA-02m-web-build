@@ -446,6 +446,284 @@ class PartialUpdateTests(_Tmp):
         r = store.apply_command({"id": "fresh", "enabled": False}, self.path)
         self.assertEqual(r, {"ok": False, "error": "invalid name"})
 
+    def test_null_body_parts_mean_not_sent(self):
+        """`null` is «not sent» (contract §«Частичное обновление»): it must
+        not overwrite the stored part."""
+        r = store.apply_command({
+            "id": "s3", "name": "Вечер", "enabled": False, "type": "block",
+            "trigger": None, "condition": None, "action": None, "code": None,
+            "template": None, "params": None}, self.path)
+        self.assertTrue(r["ok"], r)
+        s = self.stored()[0]
+        self.assertFalse(s["enabled"])
+        self.assertEqual(s["trigger"], self.BODY["trigger"])
+        self.assertEqual(s["action"], self.BODY["action"])
+        self.assertEqual(s["end"], self.BODY["end"])
+
+    def test_null_template_and_params_keep_a_logic_scenario(self):
+        store.apply_command({"id": "l1", "name": "logic", "type": "logic",
+                             "template": "switch_light",
+                             "params": {"switch": "sw", "lights": ["a"]}}, self.path)
+        r = store.apply_command({"id": "l1", "enabled": False, "template": None,
+                                 "params": None}, self.path)
+        self.assertTrue(r["ok"], r)
+        s = [x for x in self.stored() if x["id"] == "l1"][0]
+        self.assertEqual((s["template"], s.get("params"), s["enabled"]),
+                         ("switch_light", {"switch": "sw", "lights": ["a"]}, False))
+
+
+# ── review round: raw delivery on property topics (B2) ─────────────────
+class PropertyTopicRawDeliveryTests(_App):
+    """A topic the document lists as a PROPERTY still reaches the raw
+    (MQTT device, control) path: button counters, the di_N classifier and
+    raw-named state triggers live there."""
+    alice_doc = {"devices": [
+        {"id": "door", "capabilities": [], "properties": [
+            {"type": "devices.properties.event", "mqtt": "/devices/mr1/controls/di_1",
+             "parameters": {"instance": "open"}},
+            {"type": "devices.properties.event", "mqtt": "/devices/mr1/controls/di_2_short",
+             "parameters": {"instance": "button"}}]},
+        {"id": "lamp", "capabilities": [
+            {"type": "devices.capabilities.on_off", "mqtt": "/devices/r/controls/K1"}]}]}
+
+    def _fired(self, app):
+        return [r.get("id") for r in app.engine.doc.get("runs") or []]
+
+    def test_raw_triggers_and_property_triggers_both_fire(self):
+        notify = [{"kind": "notify", "text": "x"}]
+        app, _client = self.app([
+            _row("b1", [{"kind": "button", "device": "mr1", "input": "di_2",
+                         "gesture": "single"}], notify),
+            _row("s1", [{"kind": "state", "device": "mr1", "cap": "di_1",
+                         "op": "==", "value": 1}], notify),
+            _row("p1", [{"kind": "state", "device": "door", "cap": "open",
+                         "op": "==", "value": 1}], notify)])
+        for topic, val in (("/devices/mr1/controls/di_2_short", "5"),
+                           ("/devices/mr1/controls/di_2_short", "6"),
+                           ("/devices/mr1/controls/di_1", "0"),
+                           ("/devices/mr1/controls/di_1", "1")):
+            app._apply_message(topic, val)
+        self.assertEqual(sorted(self._fired(app)), ["b1", "p1", "s1"])
+
+
+# ── review round: bounded `dropped` (B3) ───────────────────────────────
+class BoundedDroppedTests(_Tmp):
+    alice_doc = None
+
+    def test_a_huge_list_gets_one_over_limit_entry(self):
+        r = store.apply_command({
+            "name": "t", "trigger": [{"kind": "boot"}] * 100000,
+            "condition": {"all": [{"kind": "mode", "value": "home"}] * 100000},
+            "action": [{"kind": "notify", "text": "x"}] * 100000}, self.path)
+        self.assertTrue(r["ok"])
+        self.assertEqual([d for d in r.get("dropped") or [] if d["reason"] == "over_limit"], [
+            {"part": "trigger", "index": 8, "reason": "over_limit"},
+            {"part": "condition", "index": 8, "reason": "over_limit"},
+            {"part": "action", "index": 20, "reason": "over_limit"}])
+        self.assertLess(len(json.dumps(r.get("dropped"))), 1024)
+
+    def test_a_huge_batch_refusal_stays_small(self):
+        rows = [{"id": "r%d" % i, "name": "r%d" % i, "trigger": list(range(100000))}
+                for i in range(16)]
+        r = store.apply_command({"upsert": rows}, self.path)
+        self.assertEqual(r.get("error"), "invalid_elements")
+        self.assertLess(len(json.dumps(r)), 4096)
+
+
+# ── review round: ramp / transition refusal is journaled (B4a) ─────────
+class RampTargetRefusalTests(_App):
+    def _run(self, action):
+        app, client = self.app([_row("r1", [], [action])])
+        clock = [1000.0]
+        app.engine._now = lambda: clock[0]
+        rec = app.engine.run_now("r1")
+        for _ in range(12):
+            clock[0] += 1
+            app.engine.tick()
+        return app, client, rec
+
+    def test_ambiguous_ramp_and_transition_set_journal_last_error(self):
+        for action in ({"kind": "ramp", "device": "ahu1", "cap": "range",
+                        "to": 40, "seconds": 4},
+                       {"kind": "set", "device": "ahu1", "cap": "range",
+                        "value": 40, "transition_s": 4}):
+            with self.subTest(kind=action["kind"]):
+                app, client, rec = self._run(action)
+                self.assertEqual(client.published, [])
+                self.assertEqual(rec["error"], "ambiguous target")
+                self.assertEqual(app.engine.doc["scenarios"][0]["last_error"],
+                                 "ambiguous target")
+
+    def test_a_ramp_on_a_named_instance_still_runs(self):
+        _app, client, rec = self._run({"kind": "ramp", "device": "ahu1", "cap": "range",
+                                       "instance": "fan_speed", "to": 40, "seconds": 4})
+        self.assertTrue(rec["ok"], rec)
+        self.assertEqual(client.published[-1], (AHU + "/fan_speed/on", "40"))
+
+
+# ── review round: logic templates reach a light's brightness (B4b) ─────
+class LogicBrightnessTests(_App):
+    """Bench-shaped light: on_off on an MR-02m DO, brightness as a `range`
+    with `parameters.instance: brightness` on the LED module."""
+    alice_doc = {"devices": [
+        {"id": "sw", "capabilities": [
+            {"type": "devices.capabilities.on_off",
+             "mqtt": "/devices/mr02m-COM3-10/controls/di_1"}]},
+        {"id": "lamp", "capabilities": [
+            {"type": "devices.capabilities.on_off",
+             "mqtt": "/devices/mr02m-COM3-10/controls/do_1"},
+            {"type": "devices.capabilities.range",
+             "mqtt": "/devices/led-COM3-13/controls/bright",
+             "parameters": {"instance": "brightness", "range": {"min": 0, "max": 100}}}]}]}
+
+    def test_caps_of_names_the_brightness_instance(self):
+        app, _client = self.app([])
+        self.assertIn("brightness", app.caps_of("lamp"))
+
+    def test_switch_light_memory_writes_the_brightness_capability(self):
+        app, client = self.app([{
+            "id": "l1", "name": "l1", "enabled": True, "type": "logic",
+            "template": "switch_light", "trigger": [], "condition": {}, "action": [],
+            "params": {"switch": "sw", "lights": ["lamp"], "switch_type": "latching"}}])
+        app._apply_message("/devices/mr02m-COM3-10/controls/di_1", "0")
+        app._apply_message("/devices/mr02m-COM3-10/controls/di_1", "1")
+        self.assertEqual(client.published, [
+            ("/devices/led-COM3-13/controls/bright/on", "100"),
+            ("/devices/mr02m-COM3-10/controls/do_1/on", "1")])
+
+    def test_logic_reads_and_hears_brightness_by_its_instance_name(self):
+        app, _client = self.app([])
+        heard = []
+
+        class Probe:
+            def on_state(self, device, cap, value, prev):
+                heard.append((device, cap, value))
+
+        app.engine._logic["probe"] = Probe()
+        app._apply_message("/devices/led-COM3-13/controls/bright", "40")
+        self.assertEqual(engine.LogicRuntime(app.engine, "probe").get("lamp", "brightness"), 40)
+        self.assertIn(("lamp", "brightness", 40), heard)
+
+
+# ── review round: non-finite / odd numbers never crash a save (B4c) ────
+class NumericFuzzTests(_Tmp):
+    alice_doc = None
+    ODD = (float("nan"), float("inf"), float("-inf"), 10 ** 30, True, "x", None)
+
+    def _apply(self, body):
+        try:
+            return store.apply_command(body, self.path)
+        except Exception as exc:  # the defect: error:"internal" upstream
+            self.fail("%r raised %r" % (body, exc))
+
+    def test_every_numeric_field_survives_odd_values(self):
+        ok = [{"kind": "notify", "text": "x"}]
+        for v in self.ODD:
+            bodies = [
+                {"name": "t", "trigger": [{"kind": "time", "at": "07:00", "days": [v, 1]}], "action": ok},
+                {"name": "t", "trigger": [{"kind": "sun", "offset": v}], "action": ok},
+                {"name": "t", "trigger": [{"kind": "sun", "days": [v]}], "action": ok},
+                {"name": "t", "trigger": [{"kind": "every", "minutes": v}, {"kind": "boot"}], "action": ok},
+                {"name": "t", "trigger": [{"kind": "state", "device": "s", "cap": "t",
+                                           "op": "enters_range", "value": {"min": v, "max": 5}},
+                                          {"kind": "boot"}], "action": ok},
+                {"name": "t", "condition": {"all": [{"kind": "state", "device": "s", "cap": "t",
+                                                     "op": ">", "value": 1, "for_s": v}]}, "action": ok},
+                {"name": "t", "condition": {"all": [{"kind": "weekday", "days": [v, 2]}]}, "action": ok},
+                {"name": "t", "action": [{"kind": "delay", "seconds": v}] + ok},
+                {"name": "t", "action": [{"kind": "ramp", "device": "l", "cap": "b",
+                                          "to": v, "seconds": 5}] + ok},
+                {"name": "t", "action": [{"kind": "ramp", "device": "l", "cap": "b",
+                                          "to": 5, "seconds": v}] + ok},
+                {"name": "t", "action": [{"kind": "set", "device": "l", "cap": "b",
+                                          "value": 1, "transition_s": v}]},
+                {"name": "t", "order": v, "action": ok},
+                {"name": "t", "template_id": "tpl", "template_version": v, "action": ok},
+                {"name": "t", "end": {"after_s": v, "mode": "off"}, "action": ok},
+            ]
+            for body in bodies:
+                body["id"] = "f"  # one row: the 64-row cap must not end the sweep
+                with self.subTest(value=repr(v), body=json.dumps(body, default=str)[:90]):
+                    r = self._apply(body)
+                    self.assertTrue(r.get("ok"), r)
+
+    def test_documented_outcomes(self):
+        ok = [{"kind": "notify", "text": "x"}]
+        r = self._apply({"name": "a", "trigger": [
+            {"kind": "time", "at": "07:00", "days": [float("nan"), True, 3]},
+            {"kind": "sun", "offset": float("inf")}], "action": ok})
+        self.assertTrue(r["ok"], r)
+        trig = self.stored()[-1]["trigger"]
+        self.assertEqual(trig[0]["days"], [3])        # other values dropped
+        self.assertEqual(trig[1]["offset"], 0)        # not a finite number ⇒ 0
+        r = self._apply({"name": "b", "action": [
+            {"kind": "ramp", "device": "l", "cap": "b", "to": float("nan"), "seconds": 5}] + ok})
+        self.assertEqual(r.get("dropped"), [{"part": "action", "index": 0, "reason": "bad_value"}])
+        r = self._apply({"name": "c", "order": float("inf"),
+                         "end": {"after_s": float("inf"), "mode": "off"}, "action": ok})
+        s = self.stored()[-1]
+        self.assertEqual((s["order"], "end" in s), (0, False))
+
+
+# ── review round: every contract reason code is emitted (B5) ───────────
+class ReasonCodeTests(_Tmp):
+    """One case per reason code of the contract table
+    (cloud-scenarios.md §«Проверка при сохранении»)."""
+
+    CASES = (
+        ("not_object", "action", ["notify"]),
+        ("unknown_kind", "action", [{"kind": "ssh"}]),
+        ("not_in_scene", "action", [{"kind": "delay", "seconds": 5}]),
+        ("bad_device", "action", [{"kind": "set", "device": "a/b", "value": 1}]),
+        ("bad_cap", "action", [{"kind": "set", "device": "lamp", "cap": "on/#", "value": 1}]),
+        ("bad_instance", "action", [{"kind": "set", "device": "lamp", "cap": "range",
+                                     "instance": "a b", "value": 1}]),
+        ("bad_value", "action", [{"kind": "mode", "value": "moon"}]),
+        ("bad_id", "action", [{"kind": "scene", "id": "../x"}]),
+        ("bad_url", "action", [{"kind": "http", "url": "http://127.0.0.1/x"}]),
+        ("unknown_target", "action", [{"kind": "set", "device": "climate", "value": 1}]),
+        ("ambiguous_target", "action", [{"kind": "set", "device": "ahu1", "cap": "range",
+                                         "value": 1}]),
+        ("not_list", "trigger", {"kind": "boot"}),
+        ("bad_device", "trigger", [{"kind": "button", "device": "", "gesture": "single"}]),
+        ("bad_instance", "condition", {"all": [{"kind": "state", "device": "s", "cap": "t",
+                                                "instance": 5, "op": "==", "value": 1}]}),
+        ("not_object", "condition", {"all": [7]}),
+        ("unknown_kind", "condition", {"all": [{"kind": "moon"}]}),
+    )
+
+    def test_each_code_is_emitted_where_the_table_says(self):
+        seen = set()
+        for reason, part, value in self.CASES:
+            with self.subTest(reason=reason, part=part):
+                body = {"name": "t", part: value,
+                        "type": "scene" if reason == "not_in_scene" else "block"}
+                if part != "action":
+                    body["action"] = [{"kind": "notify", "text": "x"}]
+                dropped = []
+                store.validate_row(body, dropped=dropped, targets=store._target_index())
+                index = None if reason == "not_list" else 0
+                self.assertEqual(dropped, [{"part": part, "index": index, "reason": reason}])
+                seen.add(reason)
+        self.assertEqual(seen, {"not_object", "unknown_kind", "not_in_scene", "bad_device",
+                                "bad_cap", "bad_instance", "bad_value", "bad_id", "bad_url",
+                                "unknown_target", "ambiguous_target", "not_list"})
+
+    def test_a_successful_batch_names_the_row_of_each_drop(self):
+        r = store.apply_command({"upsert": [
+            {"id": "a", "name": "a", "action": [{"kind": "notify", "text": "x"}]},
+            {"id": "b", "name": "b", "action": [{"kind": "ssh"},
+                                                {"kind": "notify", "text": "y"}]}]},
+            self.path)
+        self.assertTrue(r["ok"], r)
+        self.assertEqual(r.get("dropped"), [
+            {"part": "action", "index": 0, "reason": "unknown_kind", "row": 1}])
+        r = store.apply_command({"replace": True, "scenarios": [
+            {"name": "c", "trigger": [{"kind": "moon"}, {"kind": "boot"}]}]}, self.path)
+        self.assertTrue(r["ok"], r)
+        self.assertEqual(r.get("dropped"), [
+            {"part": "trigger", "index": 0, "reason": "unknown_kind", "row": 0}])
+
 
 
 if __name__ == "__main__":
