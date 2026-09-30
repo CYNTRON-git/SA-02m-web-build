@@ -63,6 +63,7 @@ EXPECTED_MODULES = [
     "bridge_mqtt",
     "bridge_mr02m",
     "bridge_mr02m_map",
+    "bridge_probe",
     "bridge_serial",
     "bridge_tcp",
     "bridge_template",

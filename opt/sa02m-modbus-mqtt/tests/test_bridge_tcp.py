@@ -497,6 +497,27 @@ class TestPool(unittest.TestCase):
         self.assertIsNot(a, c)
         self.assertTrue(a._refuse_self)
 
+    def test_timeout_disagreement_warns_once_first_entry_wins(self):
+        """Review 1.0.6.56 A7: two entries behind one host:port with different
+        tcp_timeout_s (only a hand-edited YAML can do it — the panel has no
+        timeout field) used to be silently first-wins. One WARN per endpoint
+        naming both values; a third disagreeing entry adds no second line, an
+        agreeing entry says nothing, and the pooled client keeps the first
+        timeout (docs/contracts/bridge-modbus-tcp.md §2)."""
+        with mock.patch.dict(bridge_tcp._tcp_pool, clear=True):
+            a = bridge_tcp.get_tcp_client("192.0.2.10", 502, 1.0)
+            with self.assertLogs(a._log.name, level="WARNING") as logs:
+                b = bridge_tcp.get_tcp_client("192.0.2.10", 502, 2.0)
+                c = bridge_tcp.get_tcp_client("192.0.2.10", 502, 2.0)
+                d = bridge_tcp.get_tcp_client("192.0.2.10", 502, 1.0)
+        self.assertTrue(a is b is c is d)
+        self.assertEqual(a._timeout, 1.0)
+        warns = [ln for ln in logs.output if ln.startswith("WARNING")]
+        self.assertEqual(len(warns), 1, logs.output)
+        self.assertIn("2.0", warns[0])
+        self.assertIn("1.0", warns[0])
+        self.assertIn("first entry wins", warns[0])
+
 
 class TestStats(unittest.TestCase):
     def test_suffix_reports_deltas(self):
