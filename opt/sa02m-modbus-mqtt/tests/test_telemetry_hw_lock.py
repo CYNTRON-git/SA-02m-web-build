@@ -1495,24 +1495,38 @@ def conf_reads(src: str) -> tuple[set, list]:
 
       * `val` is bound exactly once — the closure defined directly inside
         HwProfile.load — plus parameters of that name that receive it. A second
-        `def val`, an assignment, import or lambda bound to `val` is an offence
-        (review F2's O11: a nested `def val` elsewhere was allowed to call the
-        reader because the check went by function NAME).
-      * the name `val` is used only to CALL it or to PASS it straight to a
-        function defined in this module — never aliased (`v = val`) or wrapped.
-      * a val() call takes exactly one positional argument: a string literal
-        `SA02M_…` (the key), or `"<prefix>" + <name>.upper()` for a prefix in
-        LEDGER_PREFIXES (recorded as the prefix). Anything else — a variable,
-        another literal glued on, an undeclared prefix — cannot be enumerated.
+        `def val`, an assignment (a lambda included) or an import binding `val`
+        is an offence (review F2's O11: a nested `def val` elsewhere was
+        allowed to call the reader because the check went by function NAME).
+      * the name `val` is used only to CALL it or to PASS it as a positional
+        argument to ONE function or method defined in this daemon whose
+        receiving parameter is itself named `val` — so every call made through
+        it is a val() call this check reads. Anything else is an offence: an
+        alias (`v = val`), a wrapper that is not ours (`functools.partial`), a
+        keyword or starred argument, or our own helper receiving it under
+        another name (review round 2's R1: `_peek(val)` into
+        `def _peek(reader)`, whose `reader('SA02M_…')` was invisible).
+      * a val() call takes exactly one positional argument and no keyword: a
+        string literal `SA02M_…` (the key), or `"<prefix>" + <name>.upper()`
+        for a prefix in LEDGER_PREFIXES (recorded as the prefix). Anything
+        else — a variable, another literal glued on, an undeclared prefix —
+        cannot be enumerated.
       * the reader `_read_conf_value` is referenced ONLY as the callee of a
         call inside `_resolve_device_id` or inside that load() closure: any
-        other reference — an alias (review F2's O12), an attribute, a string
-        naming it (getattr/globals) — is an offence, whether or not it is
-        called there.
+        other reference — an alias (review F2's O12), an import of it under
+        any name (R2), an attribute, a string naming it (getattr/globals) — is
+        an offence, whether or not it is called there.
 
-    This is a structural check of the source as written. It does not claim to
-    defeat deliberate obfuscation outside those shapes (exec, a name computed
-    at run time); it claims every read written in any of them fails.
+    Each rule has an escape case in TestTheFallbacksMatchTheCgi.ESCAPES that
+    only it catches or that it co-catches; the round-2 mutation run relaxed
+    each rule alone and recorded the case going RED.
+
+    What it does NOT claim: it is a structural check of the source as written,
+    not a sandbox. A read written outside these shapes on purpose — exec/eval,
+    a name computed at run time, the conf file parsed by hand under a name
+    other than `val` — is not seen; nor is a call to `_resolve_device_id`'s
+    sanctioned reader with a hardware key (review round 2's R8), since that
+    site is allowed by name.
     """
     tree = ast.parse(src)
     parents: dict = {}
@@ -1528,8 +1542,10 @@ def conf_reads(src: str) -> tuple[set, list]:
                 return node
         return None
 
-    module_functions = {n.name for n in ast.walk(tree)
-                        if isinstance(n, (ast.FunctionDef, ast.AsyncFunctionDef))}
+    defs_by_name: dict = {}
+    for n in ast.walk(tree):
+        if isinstance(n, (ast.FunctionDef, ast.AsyncFunctionDef)):
+            defs_by_name.setdefault(n.name, []).append(n)
 
     load_val = None
     for node in ast.walk(tree):
@@ -1572,6 +1588,21 @@ def conf_reads(src: str) -> tuple[set, list]:
             return func.attr
         return None
 
+    def receiving_param(call, index):
+        """The parameter name a positional argument of `call` binds to, when
+        the callee is exactly ONE function or method defined in the daemon;
+        None when it is not ours (or ambiguous), so it cannot be followed."""
+        defs = defs_by_name.get(callee_name(call.func), [])
+        if len(defs) != 1:
+            return None
+        fn = defs[0]
+        params = fn.args.posonlyargs + fn.args.args
+        static = any(isinstance(d, ast.Name) and d.id == "staticmethod"
+                     for d in fn.decorator_list)
+        if isinstance(parents.get(fn), ast.ClassDef) and not static:
+            params = params[1:]         # self / cls is bound by the call
+        return params[index].arg if index < len(params) else ""
+
     for node in ast.walk(tree):
         where = f"line {getattr(node, 'lineno', '?')}"
         parent = parents.get(node)
@@ -1587,9 +1618,15 @@ def conf_reads(src: str) -> tuple[set, list]:
                             f"longer tell which reader a val() call is")
         elif isinstance(node, ast.alias) and "val" in (node.name, node.asname):
             offences.append(f"{where}: `val` imported")
+        elif isinstance(node, ast.alias) and READER in (node.name, node.asname):
+            offences.append(f"{where}: {READER} imported (R2) — under another "
+                            f"name its calls are invisible to the ledger")
 
         # -- every use of the name `val` ----------------------------------
-        elif isinstance(node, ast.Name) and node.id == "val":
+        # (Load only: a rebinding is the rule above's, so each rule is the one
+        # that fails when its own shape appears.)
+        elif (isinstance(node, ast.Name) and node.id == "val"
+                and isinstance(node.ctx, ast.Load)):
             if isinstance(parent, ast.Call) and parent.func is node:
                 key = key_of(parent)
                 if key is None:
@@ -1599,9 +1636,20 @@ def conf_reads(src: str) -> tuple[set, list]:
                         f"<name>.upper() — the ledger cannot enumerate it")
                 else:
                     keys.add(key)
-            elif (isinstance(parent, ast.Call) and node in parent.args
-                    and callee_name(parent.func) in module_functions):
-                pass            # handed to a helper of ours, which calls it
+            elif isinstance(parent, ast.Call) and node in parent.args:
+                param = receiving_param(parent, parent.args.index(node))
+                if param is None:
+                    offences.append(
+                        f"{where}: `val` passed to "
+                        f"{callee_name(parent.func) or 'an expression'}, which "
+                        f"is not one function of this daemon — a wrapper "
+                        f"(functools.partial and the like) hides its reads")
+                elif param != "val":
+                    offences.append(
+                        f"{where}: `val` handed to {callee_name(parent.func)} "
+                        f"as `{param or '*args'}` — calls through another name "
+                        f"are not followed, so the parameter must be `val` "
+                        f"(review round 2, R1)")
             else:
                 offences.append(f"{where}: `val` used other than by calling "
                                 f"it or passing it to a helper of this module "

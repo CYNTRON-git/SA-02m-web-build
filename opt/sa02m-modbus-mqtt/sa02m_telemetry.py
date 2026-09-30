@@ -100,10 +100,14 @@ LOOPBACK_NAMES = ("localhost", "ip6-localhost", "ip6-loopback")
 # delay to min_delay after every successful CONNACK — so two same-id clients
 # evict each other forever, one second apart (the 2026-08-27 storm on 1.135).
 # Its own file, never the PCA9536 lock: every CGI write would otherwise look
-# like a second daemon. Root-only (0644) because nothing else flocks it. The
-# env override is the tests' sandbox, spelled like SA02M_HW_CONF.
+# like a second daemon. The env override is the tests' sandbox, spelled like
+# SA02M_HW_CONF.
 INSTANCE_LOCK_ENV = "SA02M_TELEMETRY_LOCK_FILE"
 INSTANCE_LOCK_FILE_DEFAULT = "/run/lock/sa02m-telemetry.lock"
+# 0600, not 0644: flock(2) takes LOCK_EX through a READ-only fd, so a lock any
+# uid can open is a lock any uid can hold — and each start would then exit 75
+# into a permanent restart loop. Nothing but this daemon needs to open it.
+INSTANCE_LOCK_MODE = 0o600
 # EX_TEMPFAIL — the number lib_hw.sh uses for «busy». A failure status, so the
 # unit's Restart=on-failure + RestartSec=10s retries while a stray runs and
 # comes up by itself within 10 s of the stray's death.
@@ -1438,6 +1442,13 @@ class TelemetryClient:
         flock, so a foreign file its owner keeps flocked is refused as
         untrusted, never read as «another instance» — that reading would hold
         the unit in a permanent exit-75 restart loop.
+
+        The other half of that loop is a file that is ours but that another
+        uid can OPEN: flock needs only a read-only fd. So the file is created
+        INSTANCE_LOCK_MODE (0600) and narrowed to it through the fd before the
+        flock. The one case this cannot reach: a uid that opened a wider
+        leftover of an earlier build before that narrowing keeps its fd until
+        it closes it or /run/lock (a tmpfs) is cleared by a reboot.
         """
         self._instance_lock_fd = None
         path = os.environ.get(INSTANCE_LOCK_ENV) or INSTANCE_LOCK_FILE_DEFAULT
@@ -1448,7 +1459,7 @@ class TelemetryClient:
             return
         try:
             fd = os.open(path, os.O_RDWR | os.O_CREAT | _O_NOFOLLOW | _O_CLOEXEC,
-                         0o644)
+                         INSTANCE_LOCK_MODE)
         except OSError as exc:
             log.warning(unguarded, f"{path}: {exc}")
             return
@@ -1457,6 +1468,14 @@ class TelemetryClient:
             os.close(fd)
             log.warning(unguarded, f"{path} {untrusted}")
             return
+        # Narrowed through the fd BEFORE the flock, so even a start that ends
+        # in a legitimate exit 75 leaves no 0644 leftover of an earlier build
+        # open to other uids. A uid that opened it earlier keeps its fd — that
+        # much no chmod can take back (a reboot clears /run/lock).
+        try:
+            os.fchmod(fd, INSTANCE_LOCK_MODE)
+        except (OSError, AttributeError):
+            pass
         try:
             fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
         except OSError:
@@ -1471,10 +1490,6 @@ class TelemetryClient:
                       "RestartSec", path, pid_hint or "unknown",
                       EXIT_ANOTHER_INSTANCE)
             sys.exit(EXIT_ANOTHER_INSTANCE)
-        try:
-            os.fchmod(fd, 0o644)        # the umask may have narrowed O_CREAT's
-        except (OSError, AttributeError):
-            pass
         try:
             os.ftruncate(fd, 0)
             os.lseek(fd, 0, os.SEEK_SET)
