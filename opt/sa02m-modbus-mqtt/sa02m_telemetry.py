@@ -12,6 +12,12 @@ same flock and honours the same owner gate they do — see the shared-bus sectio
 below. One channel does not simply refuse when that gate says the bus is held:
 since 1.0.6.43 a `beeper` command falls back to the override file the panel
 button has always used, so a cloud «beep» sounds while the PLC keeps the bus.
+A command driven on the bus is reported done only once the output register
+reads back with the commanded bit (1.0.6.68, as lib_hw.sh does); an i2cset that
+exits 0 is not by itself proof the pin moved.
+
+One copy per board: run() takes an instance lock before it reaches the broker,
+because two copies share one MQTT client id and evict each other at ~1 Hz.
 
 Device ID: the board name itself (the hostname, e.g. ``SA-02m``) — no prefix,
 resolved by :func:`_resolve_device_id`. Topic canon: docs/MQTT_TOPICS.md.
@@ -23,6 +29,7 @@ import os
 import re
 import sys
 import time
+import stat
 import shutil
 import signal
 import socket
@@ -87,6 +94,39 @@ LEGACY_CLEAR_COLLECT_S = 3.0
 LEGACY_CLEAR_MAX_TOPICS = 500
 LEGACY_CLEAR_CONNECT_WAIT_S = 5.0
 LOOPBACK_NAMES = ("localhost", "ip6-localhost", "ip6-loopback")
+
+# ── One instance per board (1.0.6.68) ────────────────────────────────────────
+# Two copies of this daemon share one client id, and paho resets its reconnect
+# delay to min_delay after every successful CONNACK — so two same-id clients
+# evict each other forever, one second apart (the 2026-08-27 storm on 1.135).
+# Its own file, never the PCA9536 lock: every CGI write would otherwise look
+# like a second daemon. The env override is the tests' sandbox, spelled like
+# SA02M_HW_CONF.
+INSTANCE_LOCK_ENV = "SA02M_TELEMETRY_LOCK_FILE"
+INSTANCE_LOCK_FILE_DEFAULT = "/run/lock/sa02m-telemetry.lock"
+# 0600, not 0644: flock(2) takes LOCK_EX through a READ-only fd, so a lock any
+# uid can open is a lock any uid can hold — and each start would then exit 75
+# into a permanent restart loop. Nothing but this daemon needs to open it.
+INSTANCE_LOCK_MODE = 0o600
+# EX_TEMPFAIL — the number lib_hw.sh uses for «busy». A failure status, so the
+# unit's Restart=on-failure + RestartSec=10s retries while a stray runs and
+# comes up by itself within 10 s of the stray's death.
+EXIT_ANOTHER_INSTANCE = 75
+
+# ── Same-id eviction: diagnosis and a bounded cadence (1.0.6.68) ─────────────
+# A session shorter than SHORT_SESSION_S is an eviction; STORM_SESSIONS of them
+# in a row raise paho's minimum reconnect delay so the fight drops from ~60 to
+# ≤6 handshakes a minute and the journal names the cause. One session outliving
+# HEALTHY_SESSION_S restores the normal delay. Session DURATION only — never the
+# reason code, whose type differs between paho v1 and v2. A broker restart is
+# one long session and one reconnect, so it never trips this.
+SHORT_SESSION_S = 10.0
+STORM_SESSIONS = 3
+NORMAL_MIN_DELAY_S = 1
+STORM_MIN_DELAY_S = 10
+RECONNECT_MAX_DELAY_S = 120          # paho's own default, stated
+HEALTHY_SESSION_S = 60.0
+STORM_WARN_EVERY_S = 60.0
 
 logging.basicConfig(
     level=logging.INFO,
@@ -319,11 +359,14 @@ def clear_legacy_retained(
 
 
 # ── Hardware control (PCA9536, wired per /etc/sa02m_hw.conf) ─────────────────
-def _i2cget(bus: int, addr: int, reg: int) -> int | None:
+# `timeout_s` is REQUIRED, with no default: it is the profile's resolved
+# SA02M_I2C_TIMEOUT_SEC (1.0.6.68), and a call site that forgot it must fail at
+# once rather than quietly keep a second hard-coded value beside the conf's.
+def _i2cget(bus: int, addr: int, reg: int, timeout_s: float) -> int | None:
     try:
         result = subprocess.run(
             ["i2cget", "-y", str(bus), hex(addr), hex(reg)],
-            capture_output=True, text=True, timeout=1
+            capture_output=True, text=True, timeout=timeout_s
         )
         if result.returncode == 0:
             return int(result.stdout.strip(), 16)
@@ -332,11 +375,12 @@ def _i2cget(bus: int, addr: int, reg: int) -> int | None:
     return None
 
 
-def _i2cset(bus: int, addr: int, reg: int, value: int) -> bool:
+def _i2cset(bus: int, addr: int, reg: int, value: int,
+            timeout_s: float) -> bool:
     try:
         result = subprocess.run(
             ["i2cset", "-y", str(bus), hex(addr), hex(reg), hex(value)],
-            capture_output=True, timeout=1
+            capture_output=True, timeout=timeout_s
         )
         return result.returncode == 0
     except Exception:
@@ -362,6 +406,7 @@ def _i2cset(bus: int, addr: int, reg: int, value: int) -> bool:
 # Python daemon gets to reading a shell file's defaults.
 HW_LOCK_FILE_DEFAULT = "/run/lock/sa02m-pca9536.lock"    # SA02M_I2C_LOCK_FILE
 HW_LOCK_WAIT_SEC_DEFAULT = 1.0                           # SA02M_I2C_LOCK_WAIT_SEC
+HW_I2C_TIMEOUT_SEC_DEFAULT = 1.0                         # SA02M_I2C_TIMEOUT_SEC
 HW_OWNER_UNITS_DEFAULT = (                               # SA02M_I2C_OWNER_UNITS
     "mplc.service", "mplc4.service", "klogic.service", "klogicd.service",
 )
@@ -377,6 +422,11 @@ HW_OWNER_PROBE_TIMEOUT_S = 2.0
 # Python's flock() has no timeout and signal.alarm is main-thread-only, while
 # these calls run on paho's network thread — so the bounded wait is a poll.
 HW_LOCK_POLL_S = 0.02
+# The worst case of ONE command on paho's network thread — every owner probe,
+# the lock wait, and three i2c calls (read, write, read-back) — must stay under
+# the point where the broker drops us: 1.5 × the 60 s keepalive passed to
+# connect(). Shipped values cost ≈22 s; a conf past this is named at startup.
+HW_COMMAND_BUDGET_S = 90.0
 
 # ── The one channel that pre-empts a busy bus (1.0.6.43) ────────────────────
 # The Operator's decision, not an agent's: a cloud/Alice «beep» takes the same
@@ -393,6 +443,14 @@ HW_BEEPER_CHANNEL = "beeper"
 HW_BEEPER_OVERRIDE_SEC_DEFAULT = 7        # SA02M_BEEPER_WEB_OVERRIDE_SEC
 HW_BEEPER_OVERRIDE_FILE_DEFAULT = "/run/sa02m-hw-override/beeper.env"
 HW_BEEPER_OVERRIDE_WORKER_DEFAULT = "/usr/local/sbin/sa02m-beeper-override.sh"
+# The override directory's one home (1.0.6.68): this tmpfiles.d line, which
+# recreates it www-data-owned on every boot. The daemon runs as root and no
+# longer creates it — a root-owned directory is exactly what stops www-data's
+# CGI staging its own temp file there, i.e. it broke the PANEL's beep. Quoted
+# in the refusal, and pinned against the provisioner by
+# tests/test_telemetry_hw_lock.py TestTheOverrideDirectoryHasOneHome.
+HW_BEEPER_OVERRIDE_TMPFILES_SOURCE = "scripts/03-webserver.sh"
+HW_BEEPER_OVERRIDE_TMPFILES_LINE = "d /run/sa02m-hw-override 0775 www-data www-data -"
 
 # Returned in place of a result when the bus lock could not be taken. A
 # sentinel rather than None: None is what a failed i2cget returns, and the two
@@ -463,6 +521,10 @@ def _bus_busy_reason(profile: "HwProfile") -> str:
     if profile.lock_wait_s is None:
         return (f"unparseable SA02M_I2C_LOCK_WAIT_SEC in {profile.source} — "
                 "refusing rather than driving a shared bus on a guessed wait")
+    if profile.i2c_timeout_s is None:
+        return (f"unparseable or non-positive SA02M_I2C_TIMEOUT_SEC in "
+                f"{profile.source} — refusing rather than running i2c tools "
+                "unbounded on the MQTT thread")
     return (f"{profile.lock_file} stayed held by another owner for the whole "
             f"{profile.lock_wait_s:g}s wait")
 
@@ -488,20 +550,18 @@ def _beeper_override_write(profile: "HwProfile", on: bool) -> tuple[bool, str]:
     """
     path = profile.beeper_override_file
     directory = os.path.dirname(path) or "."
-    # The directory's real home is the tmpfiles.d entry in
-    # scripts/03-webserver.sh (`d /run/sa02m-hw-override 0775 www-data
-    # www-data`), which recreates it on every boot of a board that has the
-    # feature at all. This makedirs is the CGI's own fallback, mirrored: if it
-    # ever fires here the directory ends up root-owned, and www-data's CGI
-    # would then be unable to stage its temp file in it.
-    try:
-        os.makedirs(directory, exist_ok=True)
-    except OSError as exc:
-        return False, f"{path}: {exc}"
-    try:
-        os.chmod(directory, 0o775)
-    except OSError:
-        pass
+    # NOT the CGI's makedirs fallback, deliberately (1.0.6.68). In the CGI it
+    # is right — www-data creating a www-data directory. In this root daemon it
+    # created a ROOT-owned directory in which www-data can no longer stage its
+    # temp file, so one cloud beep broke every later panel beep. A board
+    # without the tmpfiles.d entry gets a named refusal instead, and the
+    # panel's first click creates the directory with the right owner.
+    if not os.path.isdir(directory):
+        return False, (
+            f"{directory} is missing — it is provisioned by tmpfiles.d "
+            f"({HW_BEEPER_OVERRIDE_TMPFILES_SOURCE}: "
+            f"'{HW_BEEPER_OVERRIDE_TMPFILES_LINE}'); this root daemon will "
+            f"not create it")
     expires_at = int(time.time()) + profile.beeper_override_sec
     # The CGI's temp name is `${file}.$$` — unique because every request is its
     # own process. In one long-lived daemon the pid is shared, so the thread id
@@ -561,27 +621,78 @@ def _beeper_override_start_worker(profile: "HwProfile") -> bool:
     return True
 
 
+# Both lock files live in world-writable /run/lock and this daemon runs as
+# root, so neither open may follow a symlink an unprivileged uid planted there
+# (1.0.6.68, review F1/A3). getattr: absent on a Windows dev host.
+_O_NOFOLLOW = getattr(os, "O_NOFOLLOW", 0)
+_O_CLOEXEC = getattr(os, "O_CLOEXEC", 0)
+
+
+def _untrusted_lock_file(fd: int, require_owner: bool) -> str:
+    """Why the file behind `fd` must not be used as a lock; '' when it may.
+
+    Not a regular file (a FIFO or a device someone planted), or a second name
+    for another file (st_nlink > 1 — a hard link survives O_NOFOLLOW). With
+    `require_owner`, also a file this uid does not own: that is for a lock
+    this daemon WRITES; the shared PCA9536 lock is legitimately www-data's.
+    """
+    try:
+        st = os.fstat(fd)
+    except OSError as exc:
+        return f"cannot be inspected: {exc}"
+    if not stat.S_ISREG(st.st_mode):
+        return "is not a regular file"
+    if st.st_nlink != 1:
+        return f"has {st.st_nlink} links — a second name for another file"
+    geteuid = getattr(os, "geteuid", None)
+    if require_owner and geteuid is not None and st.st_uid != geteuid():
+        return f"is owned by uid {st.st_uid}, not by this daemon (uid {geteuid()})"
+    return ""
+
+
 def _open_lock_file(path: str) -> int | None:
-    """The lock file's fd, created if missing; None when it cannot be opened."""
+    """The lock file's fd, created if missing; None when it cannot be opened.
+
+    None is also the answer for a path that is a symlink or not a regular
+    file: the caller then refuses the command as «bus busy», which is the
+    safe side — root never creates, chmods or flocks a file a planted link
+    points at.
+    """
     try:
         os.makedirs(os.path.dirname(path) or ".", exist_ok=True)
     except OSError:
         pass
-    if not os.path.exists(path):
-        try:
-            os.close(os.open(path, os.O_CREAT | os.O_RDWR, 0o666))
-            os.chmod(path, 0o666)   # explicit: 0o666 above is cut by the umask
-        except OSError:
-            pass
+    # Read-write and NEVER truncating, for the reason lib_hw.sh
+    # sa02m_hw_i2c_with_lock spells out at its own `exec 9<>`: /run/lock is a
+    # sticky tmpfs, so an O_TRUNC open of a lock file another uid created
+    # fails with EACCES — www-data's CGI and this root daemon share it.
+    flags = os.O_RDWR | _O_NOFOLLOW | _O_CLOEXEC
     try:
-        # Read-write and NEVER truncating, for the reason lib_hw.sh
-        # sa02m_hw_i2c_with_lock spells out at its own `exec 9<>`: /run/lock is
-        # a sticky tmpfs, so an O_TRUNC open of a lock file another uid created
-        # fails with EACCES — www-data's CGI and this root daemon share it.
-        return os.open(path, os.O_RDWR)
+        # O_EXCL: the chmod below is for a file THIS call created, and only
+        # through the fd — never by path, which a link could redirect.
+        fd = os.open(path, flags | os.O_CREAT | os.O_EXCL, 0o666)
+        created = True
+    except FileExistsError:
+        created = False
+        try:
+            fd = os.open(path, flags)
+        except OSError as exc:
+            log.warning("cannot open the I2C lock file %s: %s", path, exc)
+            return None
     except OSError as exc:
         log.warning("cannot open the I2C lock file %s: %s", path, exc)
         return None
+    untrusted = _untrusted_lock_file(fd, require_owner=False)
+    if untrusted:
+        os.close(fd)
+        log.warning("refusing the I2C lock file %s: it %s", path, untrusted)
+        return None
+    if created:
+        try:
+            os.fchmod(fd, 0o666)    # explicit: 0o666 above is cut by the umask
+        except (OSError, AttributeError):
+            pass
+    return fd
 
 
 def _flock_wait(fd: int, wait_s: float) -> bool:
@@ -607,7 +718,9 @@ def _with_bus_lock(profile: "HwProfile", fn):
     point: the read and the write of a read-modify-write must not be separable
     by another owner, so the lock covers both or it covers nothing worth having.
     """
-    if profile.lock_wait_s is None:
+    # An unusable wait or i2c timeout refuses every bus operation, named by
+    # _bus_busy_reason: neither is a value to guess at on paho's thread.
+    if profile.lock_wait_s is None or profile.i2c_timeout_s is None:
         return BUS_BUSY
 
     if fcntl is None:
@@ -723,6 +836,34 @@ def _hw_parse_wait(raw: str) -> float | None:
     return value if value >= 0 else None
 
 
+def _hw_parse_timeout(raw: str) -> float | None:
+    """SA02M_I2C_TIMEOUT_SEC: the bound on each i2cget/i2cset; None = refuse.
+
+    lib_hw.sh passes this value to coreutils `timeout`, so the two consumers of
+    one bus wait the same time. Blank — or an absent conf — is the shipped
+    default, the fail-safe reading every other key here takes. That is one
+    recorded divergence from the CGI: lib_hw.sh applies its `:-1` BEFORE
+    sourcing the conf, so an explicitly blank value yields `timeout ""` and a
+    failing tool there, while this daemon runs with 1 s. Nothing shipped writes
+    a blank value; documented rather than «fixed» in the CGI.
+
+    Not a number, not finite, or ≤ 0 returns None, and every bus operation is
+    refused with a line naming the key: `timeout 0` DISABLES the bound, a
+    negative value errors, and an unbounded i2cget on paho's network thread
+    takes MQTT down with it.
+    """
+    raw = (raw or "").strip()
+    if not raw:
+        return HW_I2C_TIMEOUT_SEC_DEFAULT
+    try:
+        value = float(raw)
+    except ValueError:
+        return None
+    if value != value or value in (float("inf"), float("-inf")) or value <= 0:
+        return None
+    return value
+
+
 def _hw_parse_override_sec(raw: str) -> int:
     """The buzzer override's TTL in seconds; never None, exactly as the CGI.
 
@@ -799,6 +940,7 @@ class HwProfile:
                  source, extra_output_mask=HW_EXTRA_OUTPUT_MASK_DEFAULT,
                  lock_file=HW_LOCK_FILE_DEFAULT,
                  lock_wait_s=HW_LOCK_WAIT_SEC_DEFAULT,
+                 i2c_timeout_s=HW_I2C_TIMEOUT_SEC_DEFAULT,
                  owner_units=HW_OWNER_UNITS_DEFAULT,
                  owner_procs=HW_OWNER_PROCS_DEFAULT, respect_owner=True,
                  beeper_override_sec=HW_BEEPER_OVERRIDE_SEC_DEFAULT,
@@ -814,6 +956,8 @@ class HwProfile:
         # Who else may be on the byte, and how we take our turn on it.
         self.lock_file = lock_file
         self.lock_wait_s = lock_wait_s
+        # None = unusable conf value: every bus operation refuses by name.
+        self.i2c_timeout_s = i2c_timeout_s
         self.owner_units = owner_units
         self.owner_procs = owner_procs
         self.respect_owner = respect_owner
@@ -891,6 +1035,8 @@ class HwProfile:
                    lock_file=(val("SA02M_I2C_LOCK_FILE") or "").strip()
                    or HW_LOCK_FILE_DEFAULT,
                    lock_wait_s=_hw_parse_wait(val("SA02M_I2C_LOCK_WAIT_SEC")),
+                   i2c_timeout_s=_hw_parse_timeout(
+                       val("SA02M_I2C_TIMEOUT_SEC")),
                    owner_units=_hw_parse_word_list(
                        val("SA02M_I2C_OWNER_UNITS"), HW_OWNER_UNITS_DEFAULT),
                    owner_procs=_hw_parse_word_list(
@@ -994,13 +1140,14 @@ class PCA9536Control:
         outputs = self._profile.output_mask() | self._profile.extra_output_mask
         config_mask = 0xF0 | ((~outputs) & 0x0F)
         if not _i2cset(self._profile.bus, self._profile.addr,
-                       self.REG_DIR, config_mask):
+                       self.REG_DIR, config_mask, self._profile.i2c_timeout_s):
             return False
         self._direction_applied = True
         return True
 
     def _read_out(self) -> int | None:
-        return _i2cget(self._profile.bus, self._profile.addr, self.REG_OUT)
+        return _i2cget(self._profile.bus, self._profile.addr, self.REG_OUT,
+                       self._profile.i2c_timeout_s)
 
     def read_channels(self) -> tuple[dict[str, int], str]:
         """Every configured channel's LOGICAL level, from ONE locked port read.
@@ -1068,9 +1215,16 @@ class PCA9536Control:
         one of those bits is the discrete output.
 
         A refusal — an owner holding the bus, a lock that did not come free
-        within the configured wait, a port that would not answer — comes back
-        with a reason for the caller to log. Never a silent no-op, and never a
-        write on a bus this daemon could not take.
+        within the configured wait, a port that would not answer, a write the
+        port took but that does not read back — comes back with a reason for
+        the caller to log. Never a silent no-op, and never a write on a bus
+        this daemon could not take.
+
+        «Accepted» for a bus write means MEASURED (1.0.6.68): the output
+        register is read back inside the same lock bracket and the commanded
+        bit compared, as lib_hw.sh sa02m_hw_i2c_write_channel_locked does. An
+        i2cset exit status of 0 alone is not reported as the pin having moved.
+        The direction register is not verified, mirroring lib_hw.sh.
 
         `detail` is that reason on a refusal. On an ACCEPTED command it is
         empty for a plain bus write and names the path taken when the command
@@ -1113,8 +1267,19 @@ class PCA9536Control:
         high = on if not self._profile.is_active_low(channel) else not on
         new = (reg | mask) if high else (reg & ~mask)
         if not _i2cset(self._profile.bus, self._profile.addr,
-                       self.REG_OUT, new & 0xFF):
+                       self.REG_OUT, new & 0xFF, self._profile.i2c_timeout_s):
             return False, "the expander refused the write"
+        # The read-back, INSIDE the bracket: a verify taken after the unlock
+        # could observe another owner's write and fail a command that landed.
+        # Only the commanded bit is compared, as lib_hw.sh compares it.
+        verify = self._read_out()
+        if verify is None:
+            return False, ("the expander took the write but would not answer "
+                           "the read-back")
+        if (verify & mask) != (new & mask):
+            bit = self._profile.bits[channel]
+            return False, (f"the expander took the write but reads back "
+                           f"0x{verify:02X}, not 0x{new & 0xFF:02X}, on bit {bit}")
         return True, ""
 
 
@@ -1221,6 +1386,7 @@ class TelemetryClient:
         # pinned up to 64 chars, so truncate — the package idiom
         # (mqtt_live_snapshot.py, mqtt_monitor_stream.py).
         client_id = f"{self._device_id}-telemetry"[:MQTT_CLIENT_ID_MAX]
+        self._client_id = client_id
         # Pin paho to the v1 callback API so the (client, userdata, flags, rc)
         # signatures below stay valid on paho-mqtt 2.x (default there is v2).
         try:
@@ -1245,6 +1411,92 @@ class TelemetryClient:
         self._hw: PCA9536Control | None = None
         self._meta_done = False
         self._legacy_cleared = False
+        # Held for the process lifetime once taken (see _take_instance_lock).
+        self._instance_lock_fd: int | None = None
+        # The eviction detector's state. Written ONLY on paho's network thread
+        # (_on_connect / _on_disconnect); the main thread never reads it.
+        self._connected_at: float | None = None
+        self._short_sessions = 0
+        self._storm_active = False
+        self._last_storm_warn_at: float | None = None
+
+    def _take_instance_lock(self) -> None:
+        """One copy per board. Exits 75 when another copy holds the lock.
+
+        flock on our own file, kept open for the process lifetime: the kernel
+        releases it on any death, so there is no stale-lock path to get wrong.
+        The pid written into the file is a hint for the journal line; the
+        flock is the truth, which is why the file is never truncated before
+        the lock is held.
+
+        Fail-OPEN on the guard itself, once and loudly: no fcntl (a dev host)
+        or an unopenable path (/run/lock missing) runs unguarded. This guard
+        prevents a duplicate; it is not a safety floor, and a daemon that
+        refuses to start because a tmpfs directory is absent is worse.
+
+        /run/lock is world-writable and this is root truncating and writing
+        the file it opens, so only a file that is provably OURS is used: the
+        open never follows a symlink, and a path that is not a regular file of
+        this uid with a single link takes the same unguarded path — nothing is
+        written, chmodded or truncated. Its ownership is checked BEFORE the
+        flock, so a foreign file its owner keeps flocked is refused as
+        untrusted, never read as «another instance» — that reading would hold
+        the unit in a permanent exit-75 restart loop.
+
+        The other half of that loop is a file that is ours but that another
+        uid can OPEN: flock needs only a read-only fd. So the file is created
+        INSTANCE_LOCK_MODE (0600) and narrowed to it through the fd before the
+        flock. The one case this cannot reach: a uid that opened a wider
+        leftover of an earlier build before that narrowing keeps its fd until
+        it closes it or /run/lock (a tmpfs) is cleared by a reboot.
+        """
+        self._instance_lock_fd = None
+        path = os.environ.get(INSTANCE_LOCK_ENV) or INSTANCE_LOCK_FILE_DEFAULT
+        unguarded = ("instance lock unavailable (%s) — running unguarded; two "
+                     "copies would evict each other on the broker")
+        if fcntl is None:
+            log.warning(unguarded, f"no flock on this host, {path}")
+            return
+        try:
+            fd = os.open(path, os.O_RDWR | os.O_CREAT | _O_NOFOLLOW | _O_CLOEXEC,
+                         INSTANCE_LOCK_MODE)
+        except OSError as exc:
+            log.warning(unguarded, f"{path}: {exc}")
+            return
+        untrusted = _untrusted_lock_file(fd, require_owner=True)
+        if untrusted:
+            os.close(fd)
+            log.warning(unguarded, f"{path} {untrusted}")
+            return
+        # Narrowed through the fd BEFORE the flock, so even a start that ends
+        # in a legitimate exit 75 leaves no 0644 leftover of an earlier build
+        # open to other uids. A uid that opened it earlier keeps its fd — that
+        # much no chmod can take back (a reboot clears /run/lock).
+        try:
+            os.fchmod(fd, INSTANCE_LOCK_MODE)
+        except (OSError, AttributeError):
+            pass
+        try:
+            fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except OSError:
+            try:
+                os.lseek(fd, 0, os.SEEK_SET)
+                pid_hint = os.read(fd, 32).decode("ascii", "replace").strip()
+            except OSError:
+                pid_hint = ""
+            os.close(fd)
+            log.error("another sa02m-telemetry instance holds %s (pid %s) — "
+                      "exiting with status %d; systemd retries after "
+                      "RestartSec", path, pid_hint or "unknown",
+                      EXIT_ANOTHER_INSTANCE)
+            sys.exit(EXIT_ANOTHER_INSTANCE)
+        try:
+            os.ftruncate(fd, 0)
+            os.lseek(fd, 0, os.SEEK_SET)
+            os.write(fd, f"{os.getpid()}\n".encode("ascii"))
+        except OSError:
+            pass                        # a hint only; the lock is held
+        self._instance_lock_fd = fd
 
     # paho-mqtt v1: (client, userdata, flags, rc)
     # paho-mqtt v2: (client, userdata, connect_flags, reason_code, properties)
@@ -1254,6 +1506,7 @@ class TelemetryClient:
             log.warning("MQTT connect failed: %s", rc)
             return
         self._connected = True
+        self._connected_at = time.monotonic()
         log.info("MQTT connected")
         self._subscribe_writeback()
         self._pub("controls/connection", "1")
@@ -1265,6 +1518,45 @@ class TelemetryClient:
         self._connected = False
         rc = extra[0] if extra else flags_or_rc
         log.warning("MQTT disconnected: %s", rc)
+        connected_at, self._connected_at = self._connected_at, None
+        # A shutdown disconnect is not a lost session, and a refused CONNACK
+        # reaches here with no session behind it: neither counts.
+        if _stop.is_set() or connected_at is None:
+            return
+        self._count_session(time.monotonic() - connected_at)
+
+    def _count_session(self, session_s: float) -> None:
+        """The eviction detector. paho calls _reconnect_wait AFTER
+        on_disconnect, so a delay set here governs the very next reconnect."""
+        if session_s < SHORT_SESSION_S:
+            self._short_sessions += 1
+            if self._short_sessions < STORM_SESSIONS:
+                return
+            if not self._storm_active:
+                self._client.reconnect_delay_set(STORM_MIN_DELAY_S,
+                                                 RECONNECT_MAX_DELAY_S)
+                self._storm_active = True
+            now = time.monotonic()
+            if (self._last_storm_warn_at is None
+                    or now - self._last_storm_warn_at >= STORM_WARN_EVERY_S):
+                self._last_storm_warn_at = now
+                log.warning(
+                    "MQTT session lost %d times within %.0fs of connecting — "
+                    "most likely another client is using client id %r on "
+                    "%s:%d (broker log: 'already connected, closing old "
+                    "connection'); reconnect delay raised to %ds until a "
+                    "session outlives %.0fs",
+                    self._short_sessions, SHORT_SESSION_S, self._client_id,
+                    MQTT_BROKER, MQTT_PORT, STORM_MIN_DELAY_S,
+                    HEALTHY_SESSION_S)
+            return
+        self._short_sessions = 0
+        if self._storm_active and session_s >= HEALTHY_SESSION_S:
+            self._client.reconnect_delay_set(NORMAL_MIN_DELAY_S,
+                                             RECONNECT_MAX_DELAY_S)
+            self._storm_active = False
+            log.info("MQTT session stable for %.0fs — reconnect delay back to "
+                     "%ds", session_s, NORMAL_MIN_DELAY_S)
 
     def _subscribe_writeback(self) -> None:
         dev = self._device_id
@@ -1289,8 +1581,11 @@ class TelemetryClient:
                     ctrl, self._hw.profile.refusals.get(ctrl, "not configured"),
                 )
                 return
-            val = msg.payload.decode().strip()
-            on = val not in ("0", "false", "False", "")
+            # Not `val`: that name is load()'s conf reader, and the conf-key
+            # ledger (tests/test_telemetry_hw_lock.py conf_reads) forbids any
+            # other binding of it.
+            text = msg.payload.decode().strip()
+            on = text not in ("0", "false", "False", "")
             accepted, why = self._hw.set_channel(ctrl, on)
             if accepted:
                 self._pub(f"controls/{ctrl}", "1" if on else "0")
@@ -1370,7 +1665,9 @@ class TelemetryClient:
                 return
             except Exception as e:
                 log.error("MQTT connect error: %s — retry in 5s", e)
-                time.sleep(5)
+                # The stop event, not time.sleep: SIGTERM while the broker is
+                # down must exit now, not after the pause.
+                _stop.wait(5)
 
     def init_hw(self) -> None:
         profile = HwProfile.load()
@@ -1405,12 +1702,27 @@ class TelemetryClient:
         if detail:
             log.warning("PCA9536 direction register %s — it is applied by the "
                         "first command that gets the bus", detail)
+        timeout = profile.i2c_timeout_s
         log.info(
-            "HW channels from %s: %s (active-low mask 0x%X, bus lock %s)",
+            "HW channels from %s: %s (active-low mask 0x%X, bus lock %s, "
+            "i2c timeout %s)",
             profile.source,
             ", ".join(f"{c}=bit{profile.bits[c]}" for c in hw.channels()),
             profile.active_low_mask, profile.lock_file,
+            f"{timeout:g}s" if timeout is not None
+            else "unusable — every bus operation is refused",
         )
+        if timeout is not None and profile.lock_wait_s is not None:
+            worst = (3 * timeout + profile.lock_wait_s + HW_OWNER_PROBE_TIMEOUT_S
+                     * (len(profile.owner_units) + len(profile.owner_procs)))
+            if worst > HW_COMMAND_BUDGET_S:
+                log.warning(
+                    "a single command could outlive the MQTT keepalive window: "
+                    "up to %.0fs on the network thread (3 × SA02M_I2C_TIMEOUT_SEC "
+                    "%gs + owner probes + lock wait) against a %.0fs budget — "
+                    "the broker would drop this client mid-command; lower the "
+                    "values in %s", worst, timeout, HW_COMMAND_BUDGET_S,
+                    profile.source)
 
     def _clear_legacy_retained(self) -> None:
         """Once per process, off the _on_connect callback thread."""
@@ -1437,6 +1749,9 @@ class TelemetryClient:
             "telemetry device id: %s (source: %s)",
             self._device_id, self._device_id_source,
         )
+        # BEFORE connect(): a second copy must exit without ever reaching the
+        # broker, or it evicts the first one on its way out.
+        self._take_instance_lock()
         self.connect()
         # HW FIRST, then the clear. _on_connect subscribes to controls/*/on the
         # moment the broker answers, so anything between connect() and a ready

@@ -393,12 +393,17 @@ class TestHardwareNotReadyIsNeverSilent(unittest.TestCase):
         so everything between connect() and a ready self._hw is a window where a
         command is accepted and dropped. The clear sleeps 3 s per legacy id — put
         before init_hw() it stretched that window from <1 s to 6-14 s (B1).
+
+        The instance lock (1.0.6.68) comes BEFORE connect(): a second copy must
+        exit without ever reaching the broker, or it evicts the first one on
+        the way out — the 1 Hz storm this release exists to prevent.
         """
         calls = []
         stub = types.SimpleNamespace(
             _device_id="SA-02m",
             _device_id_source="hostname",
             _client=FakeClient([]),
+            _take_instance_lock=lambda: calls.append("lock"),
             connect=lambda: calls.append("connect"),
             init_hw=lambda: calls.append("init_hw"),
             _clear_legacy_retained=lambda: calls.append("clear"),
@@ -412,7 +417,7 @@ class TestHardwareNotReadyIsNeverSilent(unittest.TestCase):
                 tel.TelemetryClient.run(stub)
         finally:
             tel._stop.clear()
-        self.assertEqual(calls[:3], ["connect", "init_hw", "clear"])
+        self.assertEqual(calls[:4], ["lock", "connect", "init_hw", "clear"])
 
     def test_published_driver_marker_is_what_the_clear_compares(self):
         # One home, ratcheted: the legacy clear proves ownership by comparing

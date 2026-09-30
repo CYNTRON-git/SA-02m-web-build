@@ -8,6 +8,12 @@ commit's diff of this file).
 
 ## Open
 
+- [OPEN] 2026-09-30 **[LOW] 1.0.6.68 review advisories (round 3), assigned after the ship.** D1: the
+  conf-read ledger matches the callee by NAME (an unbound method call or a same-named lambda stays GREEN) —
+  say «matched by name» in the non-claim and test the `self`-skip branch. D2: a failed narrowing `fchmod`
+  of the instance lock is silent — one WARN line. D3: the 0600 create mode is not tested on its own (create
+  0644 + fchmod kept stays GREEN). B1: the shared PCA9536 bus lock (0666, shared with www-data) can be
+  flock-squatted → commands answer «bus busy» (fail-closed, since 1.0.6.42) — provision it via tmpfiles.d.
 - [OPEN] 2026-09-30 **[MED] Sweep the other harnesses for host-binary / host-root side effects (ci-linux-green
   finding).** Two harnesses could, on a ROOT host, reach real system actions: firstboot-sb-csum a real
   `fsfreeze -f /`, web-update-apply-guard reboot.cgi's real `sudo … reboot -f` chain. Both fixed on
@@ -236,7 +242,7 @@ commit's diff of this file).
   and skip. Any real fix is a change to the worker's own contract — e.g. it takes a lock and a
   second instance exits — which is `etc/sa02m-beeper-override.sh`'s to make, not the daemon's.
   Recorded because it is an ACCEPTANCE nobody had written down. Found by the 1.0.6.43 ship review.
-- [OPEN] 2026-09-10 **[LOW] The daemon's `makedirs` fallback could root-own the shared override
+- [RESOLVED 1.0.6.68] 2026-09-10 **[LOW] The daemon's `makedirs` fallback could root-own the shared override
   directory.** If `/run/sa02m-hw-override` is ever missing when the telemetry daemon writes the
   beeper override, root creates it and the www-data CGI can no longer stage its temp file there —
   the PANEL's own override would start failing, having been broken by the daemon. Unreachable on
@@ -263,7 +269,7 @@ commit's diff of this file).
   rather than silently made to match after the release was stamped. Resolving it is a choice
   about which consumer moves: matching the CGI drops bit3 (KLogic's blue LED) on both when a
   conf carries a blank line, matching the daemon keeps it. Found by the 1.0.6.42 round-2 review.
-- [OPEN] 2026-09-10 **[MED] The daemon's conf-key ledger is a TEXT SCAN for one idiom, not an
+- [RESOLVED 1.0.6.68] 2026-09-10 **[MED] The daemon's conf-key ledger is a TEXT SCAN for one idiom, not an
   enumeration — and the next queued fix walks straight into its blind spot.** The pin added in
   `680ebe7` finds keys with `re.findall(r'val\("(SA02M_[A-Z0-9_]*)"', src)`. The 1.0.6.42 round-2
   reviewer defeated it three ways, each leaving the ledger GREEN: `_read_conf_value(path,
@@ -274,13 +280,13 @@ commit's diff of this file).
   `SA02M_I2C_TIMEOUT_SEC` there naturally uses `_read_conf_value` — a seventh mirrored default
   that the ledger would not see while the registry still promises coverage. **Fix the two
   together, on one branch**, and make the scan see every read idiom (or make the code use one).
-- [OPEN] 2026-09-09 **[LOW] The telemetry daemon hard-codes its I2C subprocess timeout instead
+- [RESOLVED 1.0.6.68] 2026-09-09 **[LOW] The telemetry daemon hard-codes its I2C subprocess timeout instead
   of reading `SA02M_I2C_TIMEOUT_SEC`** — `_i2cget`/`_i2cset` pass `timeout=1`, a second copy of a
   conf value that happens to equal the shipped default. A board that raised it would have the
   CGI waiting 3 s and the daemon 1 s on the same bus. Found while fixing the channel map
   (1.0.6.42); it is the same one-home defect class as the map itself, one layer down. Fix is to
   read it where the rest of the profile is read.
-- [OPEN] 2026-09-09 **[LOW] The telemetry daemon does not read back after a hardware write.**
+- [RESOLVED 1.0.6.68] 2026-09-09 **[LOW] The telemetry daemon does not read back after a hardware write.**
   `lib_hw.sh` verifies the output register after writing it; the daemon publishes success on the
   `i2cset` return code alone. On the byte that carries the discrete output, «the write returned
   0» and «the pin moved» are not the same claim — this release's whole subject is the gap
@@ -418,7 +424,7 @@ commit's diff of this file).
   simply inject a default, because a topic already publishing µg/m³ would then be
   scaled wrongly — so either warn when a known-conversion instance arrives without a
   scale, or carry the source unit explicitly. Do not silently coerce.
-- [OPEN] 2026-08-27 **[MED] Telemetry self-evicts in a ~1 Hz reconnect loop.** Broker log
+- [RESOLVED 1.0.6.68] 2026-08-27 **[MED] Telemetry self-evicts in a ~1 Hz reconnect loop.** Broker log
   on 1.135 (cloud session, measured): `Client sa02m-SA-02m-telemetry already connected,
   closing old connection` repeating at ~1 Hz for 2.5 hours, journal alternating
   `MQTT connected` / `MQTT disconnected: Unspecified error`, 31 s of CPU burned — from a
