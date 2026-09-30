@@ -782,6 +782,8 @@ def validate_row(body: Dict[str, Any], existing_id: Optional[str] = None,
         raw = body.get(part)
         if raw and not isinstance(raw, list):
             sink.append({"part": part, "index": None, "reason": "not_list"})
+    if body.get("condition") and not isinstance(body.get("condition"), dict):
+        sink.append({"part": "condition", "index": None, "reason": "not_object"})
     row: Dict[str, Any] = {
         "id": sid or "",
         "name": name,
@@ -833,12 +835,20 @@ def validate_row(body: Dict[str, Any], existing_id: Optional[str] = None,
 
 
 def _gutted(body: Dict[str, Any], row: Dict[str, Any]) -> bool:
-    """The body carried trigger / action content and cleaning kept none of
-    it — storing that row would silently gut the scenario."""
+    """The body carried trigger / action / condition content and cleaning
+    kept none of it — storing that row would silently gut the scenario (an
+    emptied condition list makes it fire MORE often than asked; Operator
+    2026-09-30)."""
     for part in ("trigger", "action"):
         raw = body.get(part)
         if raw and not row[part]:
             return True
+    cond = body.get("condition")
+    if cond and not row["condition"]:
+        if not isinstance(cond, dict):
+            return True
+        key = "any" if isinstance(cond.get("any"), list) else "all"
+        return bool(cond.get(key)) if isinstance(cond.get(key), list) else False
     return False
 
 
