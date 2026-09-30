@@ -136,12 +136,66 @@ class SwitchLightTests(unittest.TestCase):
         inst.on_button("sw", "di_1", "single")        # on at 70
         self.assertIn(("l1", "brightness", 70), rt.writes)
 
-    def test_latching_switch_toggles_on_on_off_change(self):
+    def test_latching_switch_follows_its_position(self):
+        """Supersedes test_latching_switch_toggles_on_on_off_change (the old
+        rule: any on_off change TOGGLED the group, so a switch moved to 1
+        while an app had already lit the room turned it OFF). Operator
+        2026-09-29: a latching switch sets the lights to its position; the
+        old test's assertion (0→1 with the group off lights it) is kept."""
+        for switch_type in ("latching", "auto"):
+            with self.subTest(switch_type=switch_type):
+                inst, rt = self.make(switch_type=switch_type)
+                rt.set("sw", "on_off", 0)
+                rt.writes.clear()
+                inst.on_state("sw", "on_off", 1, 0)          # group off → on
+                self.assertIn(("l1", "on_off", 1), rt.writes)
+                self.assertIn(("l2", "on_off", 1), rt.writes)
+                self.assertIn(("l1", "brightness", 100), rt.writes)  # memory
+                rt.writes.clear()
+                inst.on_state("sw", "on_off", 0, 1)          # position 0 → off
+                self.assertEqual(rt.writes, [("l1", "on_off", 0), ("l2", "on_off", 0)])
+
+    def test_latching_switch_to_on_keeps_an_app_lit_room_on(self):
         inst, rt = self.make(switch_type="latching")
-        rt.set("sw", "on_off", 0)
-        rt.writes.clear()
+        rt.feed("l1", "on_off", 1)       # lit from the app
+        rt.feed("l2", "on_off", 1)
         inst.on_state("sw", "on_off", 1, 0)
-        self.assertIn(("l1", "on_off", 1), rt.writes)
+        self.assertNotIn(("l1", "on_off", 0), rt.writes)
+        self.assertNotIn(("l2", "on_off", 0), rt.writes)
+        self.assertEqual(rt.state["l1"]["on_off"], 1)
+        # Mixed room: the dark lamp joins, the lit one is not switched off.
+        inst, rt = self.make(switch_type="latching")
+        rt.feed("l1", "on_off", 1)
+        inst.on_state("sw", "on_off", 1, 0)
+        self.assertEqual([w for w in rt.writes if w[1] == "on_off"], [("l2", "on_off", 1)])
+
+    def test_latching_switch_to_off_with_the_room_already_dark_stays_dark(self):
+        inst, rt = self.make(switch_type="latching")
+        rt.feed("l1", "on_off", 0)
+        rt.feed("l2", "on_off", 0)
+        inst.on_state("sw", "on_off", 0, 1)
+        self.assertNotIn(("l1", "on_off", 1), rt.writes)
+        self.assertNotIn(("l2", "on_off", 1), rt.writes)
+
+    def test_latching_switch_ignores_the_first_value_and_repeats(self):
+        inst, rt = self.make(switch_type="latching")
+        inst.on_state("sw", "on_off", 1, None)       # baseline after start
+        inst.on_state("sw", "on_off", 1, 1)          # no change
+        self.assertEqual(rt.writes, [])
+
+    def test_pulse_switch_keeps_toggling(self):
+        inst, rt = self.make()                       # no switch_type: pulse
+        rt.feed("l1", "on_off", 1)
+        rt.feed("l2", "on_off", 1)
+        inst.on_state("sw", "on_off", 1, 0)          # ignored: pulse uses gestures
+        self.assertEqual(rt.writes, [])
+        inst.on_button("sw", "di_1", "single")       # toggle: lit → off
+        self.assertEqual(rt.writes, [("l1", "on_off", 0), ("l2", "on_off", 0)])
+        inst, rt = self.make(switch_type="auto")     # auto: gestures still toggle
+        rt.feed("l1", "on_off", 1)
+        rt.feed("l2", "on_off", 1)
+        inst.on_button("sw", "di_1", "single")
+        self.assertEqual(rt.writes, [("l1", "on_off", 0), ("l2", "on_off", 0)])
 
 
 class MotionLightTests(unittest.TestCase):
