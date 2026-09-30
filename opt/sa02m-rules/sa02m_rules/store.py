@@ -404,7 +404,7 @@ def _clean_state_op(item: Dict[str, Any], row: Dict[str, Any],
             return False
         try:
             lo, hi = float(rng.get("min")), float(rng.get("max"))
-        except (TypeError, ValueError):
+        except (TypeError, ValueError, OverflowError):
             return False
         if not (math.isfinite(lo) and math.isfinite(hi)):
             return False
@@ -419,6 +419,43 @@ def _clean_state_op(item: Dict[str, Any], row: Dict[str, Any],
 
 def _no_drop(_index: int, _reason: str) -> None:
     pass
+
+
+#: A `set` value: a string of at most this many characters, or a list /
+#: object whose JSON is at most this many bytes (a colour, a mode word).
+SET_VALUE_MAX = 256
+
+
+def _clean_value(v: Any) -> bool:
+    """True for a `set` value the store keeps: null, a bool, a finite
+    number, a bounded string or a bounded list/object."""
+    if v is None or isinstance(v, bool):
+        return True
+    if isinstance(v, (int, float)):
+        return _finite(v)
+    if isinstance(v, str):
+        return len(v) <= SET_VALUE_MAX
+    if isinstance(v, (list, dict)):
+        try:
+            blob = json.dumps(v, ensure_ascii=False, allow_nan=False)
+        except (TypeError, ValueError, OverflowError, RecursionError):
+            return False
+        return len(blob.encode("utf-8")) <= SET_VALUE_MAX
+    return False
+
+
+def _bad_condition_container(cond: Any) -> bool:
+    """A condition object whose `all`/`any` is present but not a list, or
+    that carries neither while carrying something (`{"mode": [...]}`).
+    `null` values count as absent — `{"all": null}` is «no conditions»."""
+    if not isinstance(cond, dict):
+        return False
+    carried = {k: v for k, v in cond.items() if v is not None}
+    if not carried:
+        return False
+    if any(k in carried and not isinstance(carried[k], list) for k in ("all", "any")):
+        return True
+    return not any(isinstance(carried.get(k), list) for k in ("all", "any"))
 
 
 def _clean_target(item: Dict[str, Any], row: Dict[str, Any]) -> str:
@@ -443,9 +480,15 @@ def _clean_target(item: Dict[str, Any], row: Dict[str, Any]) -> str:
 
 
 def _finite(v: Any) -> bool:
-    """A real, finite number — never a bool, NaN or ±inf (Python's JSON
-    parser accepts `NaN` / `Infinity`, and int() of them raises)."""
-    return isinstance(v, (int, float)) and not isinstance(v, bool) and math.isfinite(v)
+    """A real, finite number — never a bool, NaN, ±inf or an int past the
+    float range (Python's JSON parser accepts `NaN` / `Infinity` and turns
+    a 400-digit literal into an int that math.isfinite() cannot take)."""
+    if not isinstance(v, (int, float)) or isinstance(v, bool):
+        return False
+    try:
+        return math.isfinite(v)
+    except OverflowError:
+        return False
 
 
 def _to_int(v: Any, default: int) -> int:
@@ -637,6 +680,8 @@ def _action_item(item: Any, scene_only: bool,
         if reason:
             return None, reason
         if kind == "set":
+            if not _clean_value(item.get("value")):
+                return None, "bad_value"
             row["value"] = item.get("value")
             transition = _to_float(item.get("transition_s") or 0, 0.0)
             if transition > 0:
@@ -784,6 +829,8 @@ def validate_row(body: Dict[str, Any], existing_id: Optional[str] = None,
             sink.append({"part": part, "index": None, "reason": "not_list"})
     if body.get("condition") and not isinstance(body.get("condition"), dict):
         sink.append({"part": "condition", "index": None, "reason": "not_object"})
+    elif _bad_condition_container(body.get("condition")):
+        sink.append({"part": "condition", "index": None, "reason": "not_list"})
     row: Dict[str, Any] = {
         "id": sid or "",
         "name": name,
@@ -844,6 +891,8 @@ def _gutted(body: Dict[str, Any], row: Dict[str, Any]) -> bool:
         if raw and not row[part]:
             return True
     cond = body.get("condition")
+    if _bad_condition_container(cond):
+        return True
     if cond and not row["condition"]:
         if not isinstance(cond, dict):
             return True
