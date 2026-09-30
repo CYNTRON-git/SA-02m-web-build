@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import json
 import logging
+import math
 import os
 import re
 import tempfile
@@ -405,6 +406,8 @@ def _clean_state_op(item: Dict[str, Any], row: Dict[str, Any],
             lo, hi = float(rng.get("min")), float(rng.get("max"))
         except (TypeError, ValueError):
             return False
+        if not (math.isfinite(lo) and math.isfinite(hi)):
+            return False
         row["value"] = {"min": lo, "max": hi}
     elif op in EVENT_OPS:
         row.pop("value", None)
@@ -439,8 +442,33 @@ def _clean_target(item: Dict[str, Any], row: Dict[str, Any]) -> str:
     return ""
 
 
+def _finite(v: Any) -> bool:
+    """A real, finite number — never a bool, NaN or ±inf (Python's JSON
+    parser accepts `NaN` / `Infinity`, and int() of them raises)."""
+    return isinstance(v, (int, float)) and not isinstance(v, bool) and math.isfinite(v)
+
+
+def _to_int(v: Any, default: int) -> int:
+    """int(v) for a store field, `default` for anything int() refuses or
+    that is not finite — a save never dies on a number (error:"internal")."""
+    if isinstance(v, float) and not math.isfinite(v):
+        return default
+    try:
+        return int(v)
+    except (TypeError, ValueError, OverflowError):
+        return default
+
+
+def _to_float(v: Any, default: float) -> float:
+    try:
+        f = float(v)
+    except (TypeError, ValueError, OverflowError):
+        return default
+    return f if math.isfinite(f) else default
+
+
 def _clean_days(days: Any) -> List[int]:
-    return [int(d) for d in days if isinstance(d, (int, float)) and 0 <= int(d) <= 6][:7]
+    return [int(d) for d in days if _finite(d) and 0 <= int(d) <= 6][:7]
 
 
 def _trigger_item(item: Any) -> Tuple[Optional[Dict[str, Any]], str]:
@@ -465,10 +493,7 @@ def _trigger_item(item: Any) -> Tuple[Optional[Dict[str, Any]], str]:
             row["days"] = _clean_days(item["days"])
     elif kind == "sun":
         row["event"] = "sunset" if item.get("event") == "sunset" else "sunrise"
-        try:
-            row["offset"] = max(-180, min(180, int(item.get("offset") or 0)))
-        except (TypeError, ValueError):
-            row["offset"] = 0
+        row["offset"] = max(-180, min(180, _to_int(item.get("offset") or 0, 0)))
         # Own coordinates (the cloud's location of the scenario); absent ⇒
         # the board's (service._geo). Present but not a number in range is
         # a drop, never a silent fallback to the board's coordinates.
@@ -483,10 +508,7 @@ def _trigger_item(item: Any) -> Tuple[Optional[Dict[str, Any]], str]:
         if isinstance(item.get("days"), list):
             row["days"] = _clean_days(item["days"])
     elif kind == "every":
-        try:
-            minutes = int(item.get("minutes") or 0)
-        except (TypeError, ValueError):
-            return None, "bad_value"
+        minutes = _to_int(item.get("minutes") or 0, 0)
         if not 1 <= minutes <= 60:
             return None, "bad_value"
         row["minutes"] = minutes
@@ -514,8 +536,8 @@ def _clean_trigger(raw: Any, drop: Callable[[int, str], None] = _no_drop) -> Lis
     out = []
     for i, item in enumerate(raw):
         if i >= TRIGGERS_MAX:
-            drop(i, "over_limit")
-            continue
+            drop(i, "over_limit")  # once: the rest is not walked (bounded answer)
+            break
         row, reason = _trigger_item(item)
         if row is None:
             drop(i, reason)
@@ -575,10 +597,7 @@ def _condition_item(item: Any) -> Tuple[Optional[Dict[str, Any]], str]:
             row["op"] = "=="
             row["value"] = 0
         # enters_range / leaves_range stay as-is: level «inside/outside».
-        try:
-            for_s = int(item.get("for_s") or 0)
-        except (TypeError, ValueError):
-            for_s = 0
+        for_s = _to_int(item.get("for_s") or 0, 0)
         if for_s > 0:
             row["for_s"] = min(for_s, 86400)
         return row, ""
@@ -593,8 +612,8 @@ def _clean_condition(raw: Any, drop: Callable[[int, str], None] = _no_drop) -> D
     cleaned = []
     for i, item in enumerate(items):
         if i >= CONDITIONS_MAX:
-            drop(i, "over_limit")
-            continue
+            drop(i, "over_limit")  # once: the rest is not walked (bounded answer)
+            break
         row, reason = _condition_item(item)
         if row is None:
             drop(i, reason)
@@ -619,21 +638,15 @@ def _action_item(item: Any, scene_only: bool,
             return None, reason
         if kind == "set":
             row["value"] = item.get("value")
-            try:
-                transition = float(item.get("transition_s") or 0)
-            except (TypeError, ValueError):
-                transition = 0.0
+            transition = _to_float(item.get("transition_s") or 0, 0.0)
             if transition > 0:
                 row["transition_s"] = min(transition, 300.0)
     elif kind == "ramp":
         if not isinstance(item.get("device"), str) or not ID_RE.match(item["device"]):
             return None, "bad_device"
-        if not isinstance(item.get("to"), (int, float)) or isinstance(item.get("to"), bool):
+        if not _finite(item.get("to")):
             return None, "bad_value"
-        try:
-            seconds = float(item.get("seconds") or 0)
-        except (TypeError, ValueError):
-            return None, "bad_value"
+        seconds = _to_float(item.get("seconds") or 0, 0.0)
         if not 1.0 <= seconds <= 300.0:
             return None, "bad_value"
         reason = _clean_target(item, row)
@@ -642,9 +655,12 @@ def _action_item(item: Any, scene_only: bool,
         row["to"] = item.get("to")
         row["seconds"] = seconds
     elif kind == "delay":
+        raw_s = item.get("seconds") or 1
+        if isinstance(raw_s, float) and not math.isfinite(raw_s):
+            return None, "bad_value"
         try:
-            row["seconds"] = max(1, min(300, int(item.get("seconds") or 1)))
-        except (TypeError, ValueError):
+            row["seconds"] = max(1, min(300, int(raw_s)))
+        except (TypeError, ValueError, OverflowError):
             return None, "bad_value"
     elif kind in ("scenario", "scene"):
         if not isinstance(item.get("id"), str) or not ID_RE.match(item["id"]):
@@ -686,8 +702,8 @@ def _clean_action(raw: Any, scene_only: bool = False,
     out = []
     for i, item in enumerate(raw):
         if i >= ACTIONS_MAX:
-            drop(i, "over_limit")
-            continue
+            drop(i, "over_limit")  # once: the rest is not walked (bounded answer)
+            break
         row, reason = _action_item(item, scene_only, targets)
         if row is None:
             drop(i, reason)
@@ -708,10 +724,7 @@ def _clean_end(raw: Any) -> Optional[Dict[str, Any]]:
         return None
     if raw.get("mode") not in ("off", "restore"):
         return None
-    try:
-        after_s = int(raw.get("after_s") or 0)
-    except (TypeError, ValueError):
-        return None
+    after_s = _to_int(raw.get("after_s") or 0, 0)
     if not 60 <= after_s <= 14400:
         return None
     return {"after_s": after_s, "mode": raw["mode"]}
@@ -797,10 +810,7 @@ def validate_row(body: Dict[str, Any], existing_id: Optional[str] = None,
     template_id = body.get("template_id")
     if isinstance(template_id, str) and TEMPLATE_RE.match(template_id):
         row["template_id"] = template_id
-        try:
-            row["template_version"] = max(1, int(body.get("template_version") or 1))
-        except (TypeError, ValueError):
-            row["template_version"] = 1
+        row["template_version"] = max(1, _to_int(body.get("template_version") or 1, 1))
     if body.get("source") in ("wizard", "manual"):
         row["source"] = body["source"]
     params = _clean_params(body.get("params"))
@@ -817,10 +827,7 @@ def validate_row(body: Dict[str, Any], existing_id: Optional[str] = None,
                 if k in ("room_id", "group_id") and isinstance(v, str)}
         if keep:
             row["captured_from"] = keep
-    try:
-        row["order"] = int(body.get("order") or 0)
-    except (TypeError, ValueError):
-        row["order"] = 0
+    row["order"] = _to_int(body.get("order") or 0, 0)
     row["summary"] = _summary(row)
     return row, ""
 
@@ -1017,7 +1024,8 @@ def apply_command(body: Dict[str, Any], path: str = DEFAULT_PATH) -> Dict[str, A
         # parts were validated when stored, so the target check is not
         # re-run (a device renamed since must not block a rename/disable).
         merged = {k: v for k, v in prev_row.items() if k not in _LAST_KEYS}
-        merged.update(body)
+        merged.update({k: v for k, v in body.items()
+                       if not (k in _BODY_PARTS and v is None)})  # null = not sent
         row, err, dropped = _checked_row(merged, sid, None)
     else:
         row, err, dropped = _checked_row(body, sid or None, _target_index())
