@@ -83,6 +83,34 @@ class StepGuardTests(unittest.TestCase):
         self.app.tick()  # the service carries on after a failed boot
         self.assertEqual(self.calls, ["tick", "poll"])
 
+    def test_a_raising_document_reload_does_not_end_the_tick(self):
+        """A changed scenarios.json the engine cannot adopt: the tick keeps
+        running on the previous document."""
+        self.app.engine.adopt = _boom
+        st = os.stat(self.path)
+        os.utime(self.path, (st.st_atime, st.st_mtime + 10))
+        self._run_flag()
+        with self.assertLogs("sa02m-rules", level="WARNING") as cap:
+            self.app.tick()  # RED without the guard: RuntimeError escapes
+        self.assertEqual(self.calls, ["tick", "poll", "run:s1"])
+        self.assertTrue(any("reload" in r.getMessage()
+                            for r in cap.records), cap.output)
+
+    def test_a_raising_run_now_does_not_end_the_tick(self):
+        """The cloud's `.run` flag names a scenario whose run raises: the
+        flag is still consumed (no retry every second) and the service
+        carries on."""
+        self.app.engine.run_now = _boom
+        self._run_flag()
+        with self.assertLogs("sa02m-rules", level="WARNING") as cap:
+            self.app.tick()  # RED without the guard
+        self.assertFalse(os.path.exists(self.path + ".run"))
+        self.assertEqual(self.calls, ["tick", "poll"])
+        self.assertTrue(any("run_now" in r.getMessage()
+                            for r in cap.records), cap.output)
+        self.app.tick()
+        self.assertEqual(self.calls, ["tick", "poll", "tick", "poll"])
+
     def test_a_persistent_failure_is_sampled_not_logged_every_second(self):
         self.app.engine.tick = _boom
         with self.assertLogs("sa02m-rules", level="WARNING") as cap:
@@ -109,6 +137,22 @@ class StepGuardTests(unittest.TestCase):
                             self.app.boot()
                         else:
                             self.app.tick()
+                    self.setUp()
+
+    def test_a_stop_still_unwinds_through_reload_and_run_now(self):
+        for step in ("adopt", "run_now"):
+            for exc in (SystemExit(0), KeyboardInterrupt()):
+                with self.subTest(step=step, exc=type(exc).__name__):
+                    def stop(*_a, _exc=exc, **_k):
+                        raise _exc
+                    setattr(self.app.engine, step, stop)
+                    if step == "adopt":
+                        st = os.stat(self.path)
+                        os.utime(self.path, (st.st_atime, st.st_mtime + 10))
+                    else:
+                        self._run_flag()
+                    with self.assertRaises(type(exc)):
+                        self.app.tick()
                     self.setUp()
 
     def test_real_steps_still_run_unguarded_path_unchanged(self):
