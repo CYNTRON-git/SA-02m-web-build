@@ -84,11 +84,15 @@ past 64 answers `too_many`; `MAX_WRITES=8` direct write actions
 (`set`/`toggle`/`ramp`) per row — a row with more answers
 `too_many_writes` (the engine's per-run cap is the **same constant**, so a
 stored row can never half-apply; nested `scenario`/`scene` children count
-toward the run's cap); `params` ≤ 4 KiB as stored: NaN, ±Infinity and
-integers past float range inside `params` are stored as `null` (the template
-then uses its default) and the bound is judged after that; a `last_run` the
-client sends is never stored or echoed (it is the board's own record), so the
-store and every answer stay strict JSON; `runs` 50; `notify_queue` 20.
+toward the run's cap); `params` ≤ 4096 UTF-8 bytes of compact JSON as
+stored: NaN, ±Infinity and integers past float range inside `params` are
+stored as `null` (the template then uses its default) and the bound is judged
+after that; an oversize `params` is not stored and the answer names it in
+`dropped` as `{"part": "params", "index": null, "reason": "too_large"}`
+(§«Проверка при сохранении»); a `last_run` the client sends is never stored or
+echoed (it is the board's own record), so the store and every answer stay
+strict JSON; a row saved again by `id` — single, `upsert` or `replace` — keeps
+the board's `last_run` / `last_error`; `runs` 50; `notify_queue` 20.
 
 **Two files, one view (1.0.6.41).** The document (`scenarios.json`) holds
 scenarios, library and vars and is written only when that content changes
@@ -208,9 +212,15 @@ exposed to Alice.
 элемента есть `row`. Ответ без выброшенных элементов ключа
 `dropped` не содержит.
 
-Элемент `dropped`: `part` — `trigger` | `condition` | `action`; `index` —
-позиция элемента в присланном списке (для условий — в списке `all`/`any`);
-`reason` — код из таблиц ниже.
+Элемент `dropped`: `part` — `trigger` | `condition` | `action` | `params`;
+`index` — позиция элемента в присланном списке (для условий — в списке
+`all`/`any`; `null` для целого поля); `reason` — код из таблиц ниже.
+
+`params` больше 4096 байт UTF-8 в компактном JSON (после замены NaN,
+±Infinity и чисел вне диапазона на `null`) не сохраняется, а ответ называет
+это: `{"part": "params", "index": null, "reason": "too_large"}`. Сохранение не
+отменяется — шаблон работает на значениях по умолчанию, и редактор должен
+показать это автору.
 
 Общие причины: `not_object` — элемент не объект; `unknown_kind` — неизвестный
 `kind`; `over_limit` — первый элемент сверх лимита строки (триггеров 8,
