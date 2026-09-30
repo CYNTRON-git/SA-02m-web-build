@@ -27,9 +27,23 @@ from sa02m_homeconnect import constants as C
 from sa02m_homeconnect import main as M
 from sa02m_homeconnect.status import StatusWriter
 from sa02m_homeconnect.token_store import TokenSet, TokenStore
-from sa02m_homeconnect.transport import Transport
+from sa02m_homeconnect.transport import NetworkError, Transport
 
 from .test_daemon import CLIENT, FAST, FakeLink
+
+
+class NoNetworkTransport:
+    """Fails every cloud call at once, touching no port. A real connect to a
+    closed loopback port is refused at once on one host and times out on
+    another (a dropped SYN under WSL mirrored networking), and that made the
+    stop race the REST retry back-off — the test is about the conf, not the
+    network."""
+
+    def request(self, *_a, **_kw):
+        raise NetworkError("no network in this test")
+
+    def open_stream(self, *_a, **_kw):
+        raise NetworkError("no network in this test")
 
 
 @contextlib.contextmanager
@@ -68,14 +82,15 @@ class ConfUnreadableTest(unittest.TestCase):
         values.update(kw)
         config.save(config.ClientConfig(**values), self.conf_path)
 
-    def daemon(self):
+    def daemon(self, transport_factory=None):
         return M.Daemon(
             stop=threading.Event(), status=StatusWriter(self.run_dir), conf_path=self.conf_path,
             tokens_path=os.path.join(self.var, C.TOKENS_NAME),
             budget_path=os.path.join(self.var, C.BUDGET_NAME),
             appliances_path=os.path.join(self.var, C.APPLIANCES_NAME),
             base_url_override="http://127.0.0.1:9",
-            transport_factory=lambda b: Transport(b, allow_loopback_http=True, timeout=0.2),
+            transport_factory=transport_factory
+            or (lambda b: Transport(b, allow_loopback_http=True, timeout=0.2)),
             mqtt_factory=lambda: self.link, check_dependencies=lambda: [])
 
     def status(self):
@@ -118,14 +133,22 @@ class ConfUnreadableTest(unittest.TestCase):
         TokenStore(os.path.join(self.var, C.TOKENS_NAME)).save(TokenSet(
             access_token="AT-PRE", refresh_token="RT-PRE", expires_at=now + 86400,
             scope=C.SCOPES, host="api", client_id=CLIENT, linked_at=now))
-        d = self.daemon()
+        # The REST calls fail at once and retry with no pause, so the loop
+        # reaches its next conf check within ticks, whatever the host does
+        # with a connect to a closed port.
+        backoff = mock.patch.multiple(C, API_BACKOFF_BASE_S=0.0, API_BACKOFF_MAX_S=0.0)
+        backoff.start()
+        self.addCleanup(backoff.stop)
+        d = self.daemon(transport_factory=lambda _base: NoNetworkTransport())
         result = {}
         t = threading.Thread(target=lambda: result.setdefault("rc", d.run()), daemon=True)
         t.start()
         deadline = time.time() + 5
         while time.time() < deadline and not os.path.exists(os.path.join(self.run_dir, "status.json")):
             time.sleep(0.02)
-        with unreadable(self.conf_path), self.assertLogs("sa02m_homeconnect", "ERROR"):
+        # Capture first: the loop re-reads the conf every CONF_POLL_S, so its
+        # ERROR can come the instant the conf turns unreadable.
+        with self.assertLogs("sa02m_homeconnect", "ERROR"), unreadable(self.conf_path):
             t.join(5)
         self.assertFalse(t.is_alive())
         self.assertEqual(result.get("rc"), M.EXIT_OK)
