@@ -42,14 +42,21 @@ class StatusWriterTests(unittest.TestCase):
     def test_setup_and_projection_are_0640_group_www_data(self):
         self._setup()
         self.w.write_projection({"accessories": [], "skipped": [], "skipped_total": 0})
+        try:
+            web_gid = grp.getgrnam(C.WEB_GROUP).gr_gid
+        except KeyError:
+            web_gid = None
+        # fsutil._own_new sets the group best-effort: root, or a writer in the
+        # group, gets it; any other writer keeps what the directory gave the new
+        # file — its own gid in a plain dir, the dir's gid in a setgid one (the
+        # board's run dir, contract §13). CI's `runner` is the second case.
+        can_set = web_gid is not None and (os.geteuid() == 0 or web_gid in os.getgroups())
+        dir_st = os.stat(self.dir)
+        fallback = dir_st.st_gid if dir_st.st_mode & stat.S_ISGID else os.getegid()
         for path in (self.w.setup_path, self.w.projection_path):
             st = os.stat(path)
             self.assertEqual(stat.S_IMODE(st.st_mode), 0o640, path)
-            try:
-                gid = grp.getgrnam(C.WEB_GROUP).gr_gid
-            except KeyError:
-                self.skipTest("SKIPPED, NOT PASSED: no %s group on this host" % C.WEB_GROUP)
-            self.assertEqual(st.st_gid, gid, path)
+            self.assertEqual(st.st_gid, web_gid if can_set else fallback, path)
 
     def test_setup_survives_only_running_and_unpaired(self):
         self._setup()
