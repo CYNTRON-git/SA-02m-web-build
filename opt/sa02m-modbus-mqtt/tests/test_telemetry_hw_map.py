@@ -121,16 +121,23 @@ class FakeExpander:
         self.regs = {REG_OUT: out, REG_DIR: 0xFF}
         self.writes: list[tuple[int, int, int, int]] = []
         self.reads: list[tuple[int, int, int]] = []
+        # The per-call subprocess timeout the daemon now passes (1.0.6.68);
+        # recorded beside, not inside, the register tuples so the pin
+        # assertions above keep their shape. Defaults to None on the FAKE only
+        # — the real helpers require it (tests/test_telemetry_hw_lock.py).
+        self.timeouts: list = []
         self.readable = readable
 
-    def get(self, bus: int, addr: int, reg: int):
+    def get(self, bus: int, addr: int, reg: int, timeout_s=None):
         self.reads.append((bus, addr, reg))
+        self.timeouts.append(timeout_s)
         if not self.readable:
             return None
         return self.regs.get(reg)
 
-    def set(self, bus: int, addr: int, reg: int, value: int) -> bool:
+    def set(self, bus: int, addr: int, reg: int, value: int, timeout_s=None) -> bool:
         self.writes.append((bus, addr, reg, value))
+        self.timeouts.append(timeout_s)
         self.regs[reg] = value & 0xFF
         return True
 
@@ -472,11 +479,11 @@ class TestTheNoRealBusGuardFires(HwTestCase):
 
     def test_a_bypassed_i2cget_fails_loudly(self):
         with self.assertRaises(RealSubprocessAttempt):
-            REAL_I2CGET(2, 0x41, REG_OUT)
+            REAL_I2CGET(2, 0x41, REG_OUT, 1.0)
 
     def test_a_bypassed_i2cset_fails_loudly(self):
         with self.assertRaises(RealSubprocessAttempt):
-            REAL_I2CSET(2, 0x41, REG_OUT, ALL_OFF)
+            REAL_I2CSET(2, 0x41, REG_OUT, ALL_OFF, 1.0)
 
     def test_the_shims_are_still_what_the_suite_actually_calls(self):
         """Non-vacuity for the two cases above: the guard fires only on the

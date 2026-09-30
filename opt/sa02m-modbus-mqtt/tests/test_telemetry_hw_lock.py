@@ -51,6 +51,7 @@ from __future__ import annotations
 
 import os
 import sys
+import ast
 import time
 import types
 import tempfile
@@ -179,17 +180,24 @@ class FakeExpander:
         self.regs = {REG_OUT: out, REG_DIR: 0xFF}
         self.writes: list[tuple[int, int, int, int]] = []
         self.reads: list[tuple[int, int, int]] = []
+        # The per-call subprocess timeout the daemon now passes (1.0.6.68);
+        # recorded beside, not inside, the register tuples so every timeline
+        # and register pin keeps its shape. Defaults to None on the FAKE only
+        # — the real helpers require it (TestTheTimeoutReachesTheSubprocess).
+        self.timeouts: list = []
         self.readable = readable
 
-    def get(self, bus: int, addr: int, reg: int):
+    def get(self, bus: int, addr: int, reg: int, timeout_s=None):
         self.reads.append((bus, addr, reg))
+        self.timeouts.append(timeout_s)
         self.timeline.append("read")
         if not self.readable:
             return None
         return self.regs.get(reg)
 
-    def set(self, bus: int, addr: int, reg: int, value: int) -> bool:
+    def set(self, bus: int, addr: int, reg: int, value: int, timeout_s=None) -> bool:
         self.writes.append((bus, addr, reg, value))
+        self.timeouts.append(timeout_s)
         self.timeline.append("write" if reg == REG_OUT else "write-dir")
         self.regs[reg] = value & 0xFF
         return True
@@ -197,6 +205,33 @@ class FakeExpander:
     @property
     def out_writes(self) -> list[int]:
         return [v for (_b, _a, r, v) in self.writes if r == REG_OUT]
+
+
+class StuckExpander(FakeExpander):
+    """Takes every write and moves nothing on the output port.
+
+    What a wedged, write-protected or mis-addressed port looks like from the
+    bus: i2cset returns 0, the byte never changes. The direction register still
+    takes so init() succeeds and the case measures the command path alone.
+    """
+
+    def set(self, bus: int, addr: int, reg: int, value: int, timeout_s=None) -> bool:
+        self.writes.append((bus, addr, reg, value))
+        self.timeouts.append(timeout_s)
+        self.timeline.append("write" if reg == REG_OUT else "write-dir")
+        if reg != REG_OUT:
+            self.regs[reg] = value & 0xFF
+        return True
+
+
+class MuteAfterWriteExpander(FakeExpander):
+    """Answers the pre-write read, takes the write, then stops answering."""
+
+    def set(self, bus: int, addr: int, reg: int, value: int, timeout_s=None) -> bool:
+        ok = super().set(bus, addr, reg, value, timeout_s)
+        if reg == REG_OUT:
+            self.readable = False
+        return ok
 
 
 class LockTestCase(unittest.TestCase):
@@ -219,7 +254,14 @@ class LockTestCase(unittest.TestCase):
         self.lock_path = Path(self._tmp.name) / "pca9536.lock"
         # The beeper override lives in the sandbox too: NOTHING here may touch
         # a real /run path, for the same reason nothing may reach a real bus.
+        # The directory is provisioned HERE, the way tmpfiles.d provisions it
+        # on the board (scripts/03-webserver.sh, 0775 www-data): since 1.0.6.68
+        # the daemon refuses to create it, so a fixture that relied on the
+        # daemon's makedirs would refuse every override case for the wrong
+        # reason. The absent-directory case provisions nothing on purpose.
         self.override_dir = Path(self._tmp.name) / "hw-override"
+        self.override_dir.mkdir(mode=0o775)
+        os.chmod(self.override_dir, 0o775)
         self.override_path = self.override_dir / "beeper.env"
         self.worker_path = Path(self._tmp.name) / "sa02m-beeper-override.sh"
         self.worker_path.write_text("#!/bin/sh\nexit 0\n", encoding="utf-8")
@@ -319,9 +361,23 @@ class LockTestCase(unittest.TestCase):
         self.timeline.clear()
         self.exp.writes.clear()
         self.exp.reads.clear()
+        self.exp.timeouts.clear()
         self.probe_calls.clear()
         self.spawns.clear()
         return stub
+
+    def swap_expander(self, exp: FakeExpander) -> FakeExpander:
+        """Replace the fake register file for one case (a stuck or mute port).
+
+        Re-patches the two shims setUp installed; the raiser behind them
+        stays, so a bypass still fails loudly.
+        """
+        self.exp = exp
+        for name, fn in (("_i2cget", exp.get), ("_i2cset", exp.set)):
+            p = mock.patch.object(tel, name, fn)
+            p.start()
+            self.addCleanup(p.stop)
+        return exp
 
     def read_override(self) -> dict:
         """The override file parsed the way etc/sa02m-beeper-override.sh reads
@@ -346,15 +402,24 @@ class TestTheLockBracketsTheWholeReadModifyWrite(LockTestCase):
         """RED before the fix: the timeline was ('read', 'write') with no lock
         at all. A fix that locked only the write would give
         ('read', 'lock', 'write', 'unlock') -- still racing, and still passing
-        a naive assertion -- so the whole sequence is pinned."""
+        a naive assertion -- so the whole sequence is pinned.
+
+        Since 1.0.6.68 the bracket holds one more read: the output register is
+        read BACK after the write, inside the same lock, as lib_hw.sh
+        sa02m_hw_i2c_write_channel_locked does. Inside, not after: a verify
+        taken after the unlock could observe another owner's write and fail a
+        command that had landed. This is the ordered behaviour change of that
+        release (plan item 5, T5c), not a loosened pin -- the sequence is still
+        exact."""
         stub = self.ready_client()
 
         self.send(stub, "do", b"1")
 
         self.assertEqual(
-            self.timeline, ["lock", "read", "write", "unlock"],
-            "the read-modify-write must run inside ONE held lock: the read and "
-            "the write of the same byte cannot be separable by another owner",
+            self.timeline, ["lock", "read", "write", "read", "unlock"],
+            "the read-modify-write AND its read-back must run inside ONE held "
+            "lock: the read, the write and the verify of the same byte cannot "
+            "be separable by another owner",
         )
 
     def test_the_lock_is_released_after_the_write(self):
@@ -863,15 +928,156 @@ class TestTheBeeperOverridePreEmptsABusyBus(LockTestCase):
             f"{caught.output}")
 
     @unittest.skipUnless(os.name == "posix", "POSIX file modes only")
-    def test_the_file_and_its_directory_carry_the_modes_the_cgi_declares(self):
-        """664 / 775, so the OTHER producer — www-data's CGI — can still
-        replace a file this root daemon wrote, and the worker can read it."""
+    def test_the_file_carries_the_mode_the_cgi_declares(self):
+        """664, so the OTHER producer — www-data's CGI — can still replace a
+        file this root daemon wrote, and the worker can read it. The
+        directory's 775 is tmpfiles.d's to guarantee (scripts/03-webserver.sh,
+        pinned by TestTheOverrideDirectoryHasOneHome), not the daemon's:
+        1.0.6.68 took the makedirs out, so there is no directory mode of the
+        daemon's to assert any more."""
         stub = self._busy_client()
 
         self.send(stub, "beeper", b"1")
 
         self.assertEqual(self.override_path.stat().st_mode & 0o777, 0o664)
-        self.assertEqual(self.override_dir.stat().st_mode & 0o777, 0o775)
+
+    def test_a_missing_override_directory_is_a_named_refusal_not_a_root_mkdir(self):
+        """T6a. RED before 1.0.6.68: the daemon created the directory itself,
+        as root, and accepted the command. A root-owned /run/sa02m-hw-override
+        is exactly what breaks the PANEL's beep — www-data can no longer stage
+        its temp file in it — so the fallback that mirrored the CGI (where it
+        is right: www-data creating a www-data directory) is wrong in root's
+        hands. The directory's one home is the tmpfiles.d entry; a board
+        without it gets a loud refusal that names it, and the panel's first
+        click still provisions the directory correctly."""
+        nowhere = Path(self._tmp.name) / "not-provisioned" / "beeper.env"
+        stub = self._busy_client(override_file=nowhere)
+
+        with self.assertLogs(tel.log, level="WARNING") as caught:
+            self.send(stub, "beeper", b"1")
+            self.assertFalse(nowhere.parent.exists(),
+                             "the root daemon created the override directory")
+            self.assertEqual(stub.published, [],
+                             "a beep that could not be staged published state")
+            self.assertEqual(self.spawns, [],
+                             "the worker was started for a file that never landed")
+
+        joined = " ".join(caught.output)
+        self.assertIn("tmpfiles.d", joined,
+                      f"the refusal must name where the directory comes from: "
+                      f"{caught.output}")
+        self.assertIn(str(nowhere.parent), joined)
+
+
+class TestTheOverrideDirectoryHasOneHome(unittest.TestCase):
+    """T6c. The daemon now refuses to create /run/sa02m-hw-override, so the
+    guarantee «the directory exists on a board that has the feature» rests on
+    ONE line of scripts/03-webserver.sh. Shape (c) of
+    docs/agent-rules/quality-gate-rigor.md: the file that can BREAK the
+    guarantee is the one that is read, and it is named in the py-unit row's
+    `covers` for that reason. The daemon quotes that very line in its refusal,
+    from the same constant, so the journal never points at a stale recipe.
+    """
+
+    REPO = Path(__file__).resolve().parents[3]
+    PROVISIONER = "scripts/03-webserver.sh"
+
+    def test_tmpfiles_provisions_the_directory_the_daemon_refuses_to_create(self):
+        text = (self.REPO / self.PROVISIONER).read_text(encoding="utf-8",
+                                                        errors="replace")
+        self.assertIn(
+            tel.HW_BEEPER_OVERRIDE_TMPFILES_LINE, text.splitlines(),
+            f"{self.PROVISIONER} no longer carries the exact tmpfiles.d line "
+            f"{tel.HW_BEEPER_OVERRIDE_TMPFILES_LINE!r} — with the daemon's "
+            f"makedirs gone, nothing would create the override directory")
+
+    def test_the_pinned_line_describes_the_default_override_directory(self):
+        """Non-vacuity: the line must be a `d` entry for the directory of the
+        default override file, 0775 and www-data-owned — not merely present."""
+        line = tel.HW_BEEPER_OVERRIDE_TMPFILES_LINE
+        directory = os.path.dirname(tel.HW_BEEPER_OVERRIDE_FILE_DEFAULT)
+        self.assertEqual(line.split(),
+                         ["d", directory, "0775", "www-data", "www-data", "-"])
+
+
+class TestAPublishedStateIsAMeasuredState(LockTestCase):
+    """Item 5 of 1.0.6.68: «the write returned 0» is not «the pin moved».
+
+    The 1.0.6.42 rule — publish nothing this daemon did not write — had a
+    gap: an i2cset that exits 0 against a port that did not take the byte was
+    reported as «HW do = 1» and published. lib_hw.sh
+    sa02m_hw_i2c_write_channel_locked reads register 0x01 back after its
+    write and returns RC_IO on a mismatch; the daemon now does the same,
+    INSIDE the lock bracket. On a mismatch nothing is published (fork F6):
+    the retained value is the last poll's measured level, which on a bit that
+    did not move is already the truth, and the ≤30 s poll republishes it.
+    """
+
+    def test_a_write_the_port_did_not_take_is_refused_and_publishes_nothing(self):
+        """T5a. RED before 1.0.6.68: accepted, `controls/do 1` published."""
+        self.swap_expander(StuckExpander(self.timeline))
+        stub = self.ready_client()
+
+        with self.assertLogs(tel.log, level="WARNING") as caught:
+            self.send(stub, "do", b"1")
+            self.assertEqual(stub.published, [],
+                             "a pin that did not move was published as moved")
+
+        self.assertEqual(self.timeline, ["lock", "read", "write", "read", "unlock"],
+                         "the read-back must sit inside the same lock bracket")
+        joined = " ".join(caught.output)
+        self.assertIn("reads back 0x", joined,
+                      f"the refusal must show the byte it read: {caught.output}")
+        self.assertIn(f"bit {BIT_DO}", joined,
+                      f"the refusal must name the bit it compared: {caught.output}")
+
+    def test_a_port_that_goes_quiet_after_the_write_is_refused_by_name(self):
+        """T5b. The write landed for all we know — but we do not know, and a
+        published state is a measured state."""
+        self.swap_expander(MuteAfterWriteExpander(self.timeline))
+        stub = self.ready_client()
+
+        with self.assertLogs(tel.log, level="WARNING") as caught:
+            self.send(stub, "do", b"1")
+            self.assertEqual(stub.published, [])
+
+        self.assertTrue(any("read-back" in line for line in caught.output),
+                        f"the refusal must say the read-back went unanswered: "
+                        f"{caught.output}")
+        self.assertEqual(self.timeline, ["lock", "read", "write", "read", "unlock"])
+
+    def test_a_write_that_reads_back_is_accepted_and_published(self):
+        """Non-vacuity for the two refusals: the same path with a port that
+        takes the byte still publishes, and the verify is the LAST bus access
+        before the unlock."""
+        stub = self.ready_client()
+
+        with self.assertLogs(tel.log, level="INFO") as caught:
+            self.send(stub, "do", b"1")
+
+        self.assertEqual(stub.published, [("controls/do", "1")])
+        self.assertEqual(self.exp.out_writes, [ALL_OFF & ~(1 << BIT_DO)])
+        self.assertEqual(self.timeline[-2:], ["read", "unlock"])
+        self.assertTrue(any("HW do = 1" in line for line in caught.output))
+
+    def test_the_read_back_compares_only_the_commanded_bit(self):
+        """Another owner may legitimately move a DIFFERENT bit between our
+        write and our verify (both under the lock, so not really — but the
+        comparison is masked to the commanded bit exactly as lib_hw.sh's is,
+        and that is pinned rather than assumed)."""
+        class DriftingExpander(FakeExpander):
+            def set(self, bus, addr, reg, value, timeout_s=None):
+                ok = super().set(bus, addr, reg, value, timeout_s)
+                if reg == REG_OUT:
+                    self.regs[REG_OUT] ^= (1 << BIT_ALARM_LED)   # someone else's bit
+                return ok
+
+        self.swap_expander(DriftingExpander(self.timeline))
+        stub = self.ready_client()
+
+        self.send(stub, "do", b"1")
+
+        self.assertEqual(stub.published, [("controls/do", "1")])
 
 
 class TestTheOverrideFileMatchesItsConsumer(unittest.TestCase):
@@ -998,8 +1204,12 @@ class TestDeferredDirectionRegister(LockTestCase):
         self.timeline.clear()
         self.send(stub, "do", b"1")
 
+        # The trailing "read" is the 1.0.6.68 read-back of the output port
+        # (the same move as the timeline pin in
+        # TestTheLockBracketsTheWholeReadModifyWrite); the direction write
+        # itself stays unverified, as lib_hw.sh's is.
         self.assertEqual(self.timeline,
-                         ["lock", "write-dir", "read", "write", "unlock"])
+                         ["lock", "write-dir", "read", "write", "read", "unlock"])
 
     def test_a_real_io_failure_at_init_still_disables_control(self):
         """The pre-existing behaviour, unchanged: an expander that will not
@@ -1026,17 +1236,227 @@ class TestTheNoRealBusGuardFires(LockTestCase):
 
     def test_a_bypassed_i2cget_fails_loudly(self):
         with self.assertRaises(RealSubprocessAttempt):
-            REAL_I2CGET(2, 0x41, REG_OUT)
+            REAL_I2CGET(2, 0x41, REG_OUT, 1.0)
 
     def test_a_bypassed_i2cset_fails_loudly(self):
         with self.assertRaises(RealSubprocessAttempt):
-            REAL_I2CSET(2, 0x41, REG_OUT, ALL_OFF)
+            REAL_I2CSET(2, 0x41, REG_OUT, ALL_OFF, 1.0)
 
     def test_the_shims_are_still_what_the_suite_actually_calls(self):
         """Non-vacuity: every other case here must reach the fake register
         file, not this raiser."""
         self.assertIsNot(tel._i2cget, REAL_I2CGET)
         self.assertIsNot(tel._i2cset, REAL_I2CSET)
+
+
+class TestTheTimeoutReachesTheSubprocess(unittest.TestCase):
+    """T4b. Outside LockTestCase's raiser ON PURPOSE: this is the one place the
+    REAL helpers run, against a recording subprocess.run, so the value the
+    profile resolved is seen arriving at the `timeout=` keyword coreutils-free
+    Python enforces. A unit test on the fake expander cannot see this seam."""
+
+    def setUp(self):
+        self.calls: list[tuple[list[str], dict]] = []
+
+        def recorder(argv, **kwargs):
+            self.calls.append(([str(a) for a in argv], kwargs))
+            return tel.subprocess.CompletedProcess(argv, 0, stdout="0x0f",
+                                                   stderr="")
+
+        p = mock.patch.object(tel.subprocess, "run", recorder)
+        p.start()
+        self.addCleanup(p.stop)
+
+    def test_i2cget_passes_the_timeout_it_was_given(self):
+        self.assertEqual(REAL_I2CGET(2, 0x41, 1, 2.5), 0x0F)
+        argv, kwargs = self.calls[0]
+        self.assertEqual(argv[:2], ["i2cget", "-y"])
+        self.assertEqual(kwargs["timeout"], 2.5)
+
+    def test_i2cset_passes_the_timeout_it_was_given(self):
+        self.assertTrue(REAL_I2CSET(2, 0x41, 1, 0x0F, 2.5))
+        argv, kwargs = self.calls[0]
+        self.assertEqual(argv[:2], ["i2cset", "-y"])
+        self.assertEqual(kwargs["timeout"], 2.5)
+
+    def test_the_timeout_is_required_not_defaulted(self):
+        """A call site that forgets it fails at once instead of quietly
+        keeping 1 s — the whole point of a positional argument here."""
+        with self.assertRaises(TypeError):
+            REAL_I2CGET(2, 0x41, 1)
+        with self.assertRaises(TypeError):
+            REAL_I2CSET(2, 0x41, 1, 0x0F)
+        self.assertEqual(self.calls, [], "a call with no timeout reached the bus")
+
+
+class TestTheI2cTimeoutComesFromTheConf(LockTestCase):
+    """Item 4 of 1.0.6.68: SA02M_I2C_TIMEOUT_SEC from its one home.
+
+    The daemon hard-coded `timeout=1` in both helpers while /etc/sa02m_hw.conf
+    carried the key and lib_hw.sh read it — two consumers of one bus waiting
+    different times. Now the profile resolves it beside the other mirrored
+    keys and every helper call carries it. An unusable value REFUSES rather
+    than runs unbounded: coreutils `timeout 0` disables the bound and a
+    negative errors out, and an unbounded i2cget on paho's network thread
+    takes MQTT down with it.
+    """
+
+    def test_the_configured_timeout_reaches_every_expander_call(self):
+        """T4c. The full composition — conf → HwProfile → PCA9536Control →
+        helper — that a helper-only test cannot reach."""
+        stub = self.ready_client(extra="SA02M_I2C_TIMEOUT_SEC=2.5\n")
+
+        self.send(stub, "do", b"1")
+
+        bus_ops = [t for t in self.timeline if t in ("read", "write")]
+        self.assertTrue(bus_ops, "no expander call was recorded at all")
+        self.assertEqual(len(self.exp.timeouts), len(bus_ops))
+        self.assertEqual(set(self.exp.timeouts), {2.5},
+                         f"an expander call kept a timeout other than the "
+                         f"conf's: {self.exp.timeouts}")
+
+    def test_the_direction_register_write_carries_the_timeout_too(self):
+        self.write_conf(extra="SA02M_I2C_TIMEOUT_SEC=2.5\n")
+        stub = self.make_client()
+
+        tel.TelemetryClient.init_hw(stub)
+
+        self.assertEqual(self.timeline, ["lock", "write-dir", "unlock"])
+        self.assertEqual(self.exp.timeouts, [2.5])
+
+    def test_an_unusable_timeout_refuses_every_bus_operation_by_name(self):
+        """T4d. banana / 0 / -1: refused, the WARN names the key, nothing
+        reaches the bus, nothing is published."""
+        for raw in ("banana", "0", "-1"):
+            with self.subTest(raw=raw):
+                stub = self.ready_client(extra=f"SA02M_I2C_TIMEOUT_SEC={raw}\n")
+                self.assertIsNone(stub._hw.profile.i2c_timeout_s)
+
+                with self.assertLogs(tel.log, level="WARNING") as caught:
+                    self.send(stub, "do", b"1")
+                    self.assertEqual(self.exp.reads, [],
+                                     "a read went out on an unbounded timeout")
+                    self.assertEqual(self.exp.writes, [])
+                    self.assertEqual(stub.published, [])
+
+                self.assertTrue(
+                    any("SA02M_I2C_TIMEOUT_SEC" in line for line in caught.output),
+                    f"the refusal must name the key it could not use: "
+                    f"{caught.output}")
+
+    def test_a_blank_or_absent_key_is_the_shipped_default(self):
+        """Blank is the fail-safe reading the other keys already take —
+        lib_hw.sh sources the conf AFTER its defaults, so a blank there yields
+        `timeout ""` and a failing tool; the divergence is documented in
+        _hw_parse_timeout, not «fixed» in the CGI."""
+        stub = self.ready_client(extra="SA02M_I2C_TIMEOUT_SEC=\n")
+        self.assertEqual(stub._hw.profile.i2c_timeout_s, 1.0)
+        self.send(stub, "do", b"1")
+        self.assertEqual(set(self.exp.timeouts), {1.0})
+
+        stub = self.ready_client()                      # the key absent
+        self.assertEqual(stub._hw.profile.i2c_timeout_s,
+                         tel.HW_I2C_TIMEOUT_SEC_DEFAULT)
+
+    def test_the_parser_never_returns_what_coreutils_would_read_as_unbounded(self):
+        for raw in ("0", "0.0", "-1", "-0.5", "banana", "1s", "inf", "nan"):
+            with self.subTest(raw=raw):
+                self.assertIsNone(tel._hw_parse_timeout(raw))
+        self.assertEqual(tel._hw_parse_timeout(""), tel.HW_I2C_TIMEOUT_SEC_DEFAULT)
+        self.assertEqual(tel._hw_parse_timeout("   "), tel.HW_I2C_TIMEOUT_SEC_DEFAULT)
+        self.assertEqual(tel._hw_parse_timeout("2.5"), 2.5)
+        self.assertEqual(tel._hw_parse_timeout(" 3 "), 3.0)
+
+    def test_the_resolved_timeout_is_observable_in_the_startup_line(self):
+        """V4's observable: the «HW channels from …» INFO names the value."""
+        self.write_conf(extra="SA02M_I2C_TIMEOUT_SEC=2.5\n")
+        stub = self.make_client()
+
+        with self.assertLogs(tel.log, level="INFO") as caught:
+            tel.TelemetryClient.init_hw(stub)
+
+        self.assertTrue(any("i2c timeout 2.5s" in line for line in caught.output),
+                        caught.output)
+
+    def test_a_conf_whose_worst_case_outlives_the_keepalive_window_warns(self):
+        """One command on paho's thread costs up to `probes + lock wait +
+        3 × timeout`; past 90 s (1.5 × the 60 s keepalive) the broker drops us
+        mid-command. Shipped values sit at ≈22 s; a conf that breaks the
+        budget is named once at startup, not discovered on the first beep."""
+        self.write_conf(extra="SA02M_I2C_TIMEOUT_SEC=40\n")   # 120 + 18 + 1
+        stub = self.make_client()
+
+        with self.assertLogs(tel.log, level="WARNING") as caught:
+            tel.TelemetryClient.init_hw(stub)
+
+        self.assertTrue(any("keepalive" in line for line in caught.output),
+                        caught.output)
+
+    def test_the_shipped_values_stay_inside_the_keepalive_budget(self):
+        self.write_conf()                                      # 3 + 18 + 1
+        stub = self.make_client()
+
+        with self.assertLogs(tel.log, level="INFO") as caught:
+            tel.TelemetryClient.init_hw(stub)
+
+        self.assertFalse(any("keepalive" in line for line in caught.output),
+                         caught.output)
+        self.assertTrue(any("i2c timeout 1s" in line for line in caught.output))
+
+
+def conf_reads(src: str) -> tuple[set, list]:
+    """Every /etc/sa02m_hw.conf key the daemon reads, enumerated by AST.
+
+    Returns (keys, offences). A key is a `val(...)` call whose single argument
+    is a `SA02M_…` string literal, or the per-channel prefix form
+    `val("SA02M_I2C_BIT_" + …)` (recorded as its literal prefix). Anything
+    else — a key assembled in a variable, a non-literal argument — is an
+    OFFENCE, as is a `_read_conf_value` call outside the two functions allowed
+    to make one (`_resolve_device_id` for the telemetry conf, and load()'s
+    `val` closure for the hardware conf). Quoting style is invisible to the
+    parser, which is the point: the regex this replaced saw one idiom.
+    """
+    tree = ast.parse(src)
+    parents: dict = {}
+    for node in ast.walk(tree):
+        for child in ast.iter_child_nodes(node):
+            parents[child] = node
+
+    def enclosing_function(node):
+        while node in parents:
+            node = parents[node]
+            if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
+                return node.name
+        return None
+
+    keys: set = set()
+    offences: list = []
+    for node in ast.walk(tree):
+        if not isinstance(node, ast.Call) or not isinstance(node.func, ast.Name):
+            continue
+        if node.func.id == "val":
+            arg = node.args[0] if len(node.args) == 1 else None
+            literal = None
+            if isinstance(arg, ast.Constant) and isinstance(arg.value, str):
+                literal = arg.value
+            elif (isinstance(arg, ast.BinOp) and isinstance(arg.op, ast.Add)
+                  and isinstance(arg.left, ast.Constant)
+                  and isinstance(arg.left.value, str)):
+                literal = arg.left.value
+            if literal is None or not literal.startswith("SA02M_") or node.keywords:
+                offences.append(
+                    f"line {node.lineno}: val() called with a key that is not "
+                    f"a single SA02M_ string literal — the ledger cannot see it")
+                continue
+            keys.add(literal)
+        elif node.func.id == "_read_conf_value":
+            fn = enclosing_function(node)
+            if fn not in ("_resolve_device_id", "val"):
+                offences.append(
+                    f"line {node.lineno}: _read_conf_value called from "
+                    f"{fn!r} — every hardware-conf read goes through load()'s "
+                    f"val closure so the ledger enumerates it")
+    return keys, offences
 
 
 class TestTheFallbacksMatchTheCgi(unittest.TestCase):
@@ -1087,6 +1507,7 @@ class TestTheFallbacksMatchTheCgi(unittest.TestCase):
         ("SA02M_I2C_EXTRA_OUTPUT_MASK", "0x04"),
         ("SA02M_I2C_LOCK_FILE", PROBE_LOCK_FILE),
         ("SA02M_I2C_LOCK_WAIT_SEC", "4"),
+        ("SA02M_I2C_TIMEOUT_SEC", "2.5"),
         ("SA02M_I2C_OWNER_UNITS", '"probe-a.service probe-b.service"'),
         ("SA02M_I2C_OWNER_PROCS", '"probe-a probe-b"'),
         ("SA02M_I2C_RESPECT_OWNER", "0"),
@@ -1173,6 +1594,10 @@ class TestTheFallbacksMatchTheCgi(unittest.TestCase):
                 lambda p: p.lock_file, lambda d: d, self.PROBE_LOCK_FILE),
             "SA02M_I2C_LOCK_WAIT_SEC": (
                 lambda p: p.lock_wait_s, lambda d: float(d), 4.0),
+            # 1.0.6.68: the i2c tool timeout, hard-coded at 1 s until then
+            # while the CGI read this key (T4a).
+            "SA02M_I2C_TIMEOUT_SEC": (
+                lambda p: p.i2c_timeout_s, float, 2.5),
             "SA02M_I2C_OWNER_UNITS": (
                 lambda p: p.owner_units, lambda d: tuple(d.split()),
                 ("probe-a.service", "probe-b.service")),
@@ -1183,11 +1608,8 @@ class TestTheFallbacksMatchTheCgi(unittest.TestCase):
                 lambda p: p.respect_owner,
                 lambda d: d not in self._respect_owner_off_values(), False),
             # 1.0.6.43: the beeper override, now written by this daemon too.
-            # Read through the SAME `val("…")` idiom the enumeration above
-            # scans for, deliberately — the ledger's known blind spot (a
-            # `_read_conf_value` call, a single-quoted val) is recorded in
-            # .ai-dev/backlog.md, and adding keys it cannot see is the defect
-            # that entry exists to prevent.
+            # Read through load()'s `val` closure like every other key, so the
+            # AST enumeration (conf_reads) sees them whatever the quoting.
             "SA02M_BEEPER_WEB_OVERRIDE_SEC": (
                 lambda p: p.beeper_override_sec, lambda d: int(d), 3),
             "SA02M_BEEPER_OVERRIDE_FILE": (
@@ -1205,20 +1627,43 @@ class TestTheFallbacksMatchTheCgi(unittest.TestCase):
         return str(path)
 
     # -- the three halves ---------------------------------------------------
+    def _daemon_source(self) -> str:
+        return (self.REPO / self.DAEMON).read_text(encoding="utf-8",
+                                                   errors="replace")
+
     def test_every_conf_key_the_daemon_reads_is_in_this_ledger(self):
         """The enumeration itself, so a seventh duplicated default cannot be
         added without either a pin or a deliberate row here (B1's real cause:
-        the pin covered five of six keys while its description promised all)."""
-        import re
-        src = (self.REPO / self.DAEMON).read_text(encoding="utf-8",
-                                                  errors="replace")
-        found = set(re.findall(r'val\("(SA02M_[A-Z0-9_]*)"', src))
+        the pin covered five of six keys while its description promised all).
+
+        T4e (1.0.6.68): enumerated by AST, not by regex. The regex this
+        replaced matched ONE idiom — a double-quoted `val("…")` — and the
+        1.0.6.42 round-2 review defeated it three ways that left it GREEN: a
+        direct `_read_conf_value` call, a single-quoted `val('…')` of an
+        unpinned key, and a key assembled in a variable. The parser sees every
+        quoting; the other two shapes are OFFENCES asserted in the sibling
+        case below. Proven RED on a scratch copy of the daemon for all three
+        (the commit body records the mutations).
+        """
+        found, _offences = conf_reads(self._daemon_source())
+        ledger = set(self._ledger()) | set(self.PREFIX_KEYS)
+        self.assertGreaterEqual(
+            len(found), len(self._ledger()),
+            "the AST walk found fewer val() reads than the ledger has rows — "
+            "the enumeration is not seeing the daemon, which is a FAILURE, "
+            "not a pass")
         self.assertEqual(
-            found, set(self._ledger()) | set(self.PREFIX_KEYS),
+            found, ledger,
             "the set of /etc/sa02m_hw.conf keys sa02m_telemetry.py reads no "
             "longer matches this ledger — a new one needs its pin, a removed "
-            "one needs its row deleted, and a regex that matched nothing at "
-            "all is a FAILURE, not a pass")
+            "one needs its row deleted")
+
+    def test_every_conf_read_is_one_the_ledger_can_see(self):
+        """The two escapes the regex could not catch, now failures by name:
+        `_read_conf_value` outside `_resolve_device_id` / load()'s `val`, and a
+        `val(k)` whose key is not a string literal."""
+        _found, offences = conf_reads(self._daemon_source())
+        self.assertEqual(offences, [], "\n".join(offences))
 
     def test_the_probe_conf_is_read_key_by_key(self):
         """Non-vacuity for the drop-one case: each key is really consumed, so
@@ -1255,6 +1700,12 @@ class TestTheFallbacksMatchTheCgi(unittest.TestCase):
     def test_lock_wait_default_matches(self):
         self.assertEqual(float(self._default("SA02M_I2C_LOCK_WAIT_SEC")),
                          tel.HW_LOCK_WAIT_SEC_DEFAULT)
+
+    def test_i2c_timeout_default_matches(self):
+        """lib_hw.sh `timeout "${SA02M_I2C_TIMEOUT_SEC:-1}"` and the daemon
+        must wait the same time on the same bus (1.0.6.68)."""
+        self.assertEqual(float(self._default("SA02M_I2C_TIMEOUT_SEC")),
+                         tel.HW_I2C_TIMEOUT_SEC_DEFAULT)
 
     def test_owner_unit_and_proc_defaults_match(self):
         self.assertEqual(tuple(self._default("SA02M_I2C_OWNER_UNITS").split()),
