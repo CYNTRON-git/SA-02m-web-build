@@ -725,6 +725,62 @@ class ReasonCodeTests(_Tmp):
             {"part": "trigger", "index": 0, "reason": "unknown_kind", "row": 0}])
 
 
+# ── Operator 2026-09-30: a gutted condition list is refused too ────────
+class GuttedConditionTests(_Tmp):
+    """A condition list sent non-empty that cleans to nothing used to be
+    stored as «no conditions» — the scenario then fired MORE often than its
+    author asked. It is refused like an empty trigger/action list."""
+    alice_doc = None
+    OK = {"trigger": [{"kind": "boot"}], "action": [{"kind": "notify", "text": "x"}]}
+    BAD = [{"kind": "mode", "value": "moon"}]
+    DROP = [{"part": "condition", "index": 0, "reason": "bad_value"}]
+
+    def test_single_save_is_refused_for_all_and_any(self):
+        for key in ("all", "any"):
+            with self.subTest(key=key):
+                r = store.apply_command(dict(self.OK, name="t", condition={key: self.BAD}),
+                                        self.path)
+                self.assertEqual(r, {"ok": False, "error": "invalid_elements",
+                                     "dropped": self.DROP})
+                self.assertEqual(self.stored(), [])
+
+    def test_a_non_object_condition_is_refused(self):
+        r = store.apply_command(dict(self.OK, name="t", condition=self.BAD), self.path)
+        self.assertEqual(r, {"ok": False, "error": "invalid_elements", "dropped": [
+            {"part": "condition", "index": None, "reason": "not_object"}]})
+        self.assertEqual(self.stored(), [])
+
+    def test_batches_are_all_or_nothing(self):
+        self.assertTrue(store.apply_command(dict(self.OK, name="keep"), self.path)["ok"])
+        r = store.apply_command({"upsert": [dict(self.OK, id="a", name="a"),
+                                            dict(self.OK, id="b", name="b",
+                                                 condition={"all": self.BAD})]}, self.path)
+        self.assertEqual(r, {"ok": False, "error": "invalid_elements", "row": 1,
+                             "dropped": self.DROP})
+        r = store.apply_command({"replace": True, "scenarios": [
+            dict(self.OK, name="c", condition={"any": self.BAD})]}, self.path)
+        self.assertEqual(r, {"ok": False, "error": "invalid_elements", "row": 0,
+                             "dropped": self.DROP})
+        self.assertEqual([s["name"] for s in self.stored()], ["keep"])
+
+    def test_empty_or_absent_conditions_are_not_a_refusal(self):
+        for cond in (None, {}, {"all": []}, {"any": []}):
+            with self.subTest(condition=cond):
+                body = dict(self.OK, name="t")
+                if cond is not None:
+                    body["condition"] = cond
+                self.assertTrue(store.apply_command(body, self.path)["ok"])
+
+    def test_partial_update_keeps_the_stored_conditions(self):
+        cond = {"all": [{"kind": "mode", "value": "home"}]}
+        self.assertTrue(store.apply_command(dict(self.OK, id="s1", name="t",
+                                                 condition=cond), self.path)["ok"])
+        for body in ({"id": "s1", "enabled": False},
+                     {"id": "s1", "enabled": True, "condition": None}):
+            with self.subTest(body=body):
+                self.assertTrue(store.apply_command(body, self.path)["ok"])
+                self.assertEqual(self.stored()[0]["condition"], cond)
+
 
 if __name__ == "__main__":
     unittest.main()
