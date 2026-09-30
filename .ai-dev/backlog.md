@@ -69,22 +69,25 @@ commit's diff of this file).
   merges — position 1 in this session's queue. Fix direction: CRC-check the short frame, then
   raise a typed exception error before the length check; RED-first test with a 5-byte exception
   frame on a fake serial.
-- [OPEN] 2026-09-29 **[LOW] `docs/threat-model.md:307` says the 1883 broker accepts LAN publishes
-  without auth; the repo binds it to 127.0.0.1 only** (`etc/mosquitto/10listeners.conf:8`, LAN
-  goes to 1884 with auth). Correct the row after `1.0.6.65` (it edits the threat model) merges —
-  position 2 in this session's queue.
+- [OPEN] 2026-09-29 **[LOW] `docs/threat-model.md` row `A2/A3→S1` «Публикация из LAN в `1883` (без
+  auth) …» says the 1883 broker accepts LAN publishes without auth; the repo binds it to 127.0.0.1
+  only** (`etc/mosquitto/10listeners.conf:8`, LAN goes to 1884 with auth). Other rows cite the same
+  premise (grep `1883` in that file). Unblocked: `1.0.6.65` (it edited the threat model) has
+  merged — ready to dispatch, position 2 in this session's queue.
 - [OPEN] 2026-09-29 **[MED] Gate `web-auth-behaviour` case 59 (login lockout) flakes on the Windows
   host** — red 2 of 5 runs alone on an unchanged tree, and under parallel load it also turns the
   `comment-mutation-proof` baseline red (seen by the template-poller-pult review, round 2). A gate
   that fails at random is a hollow gate in reverse (`quality-gate-rigor.md`): it trains people to
-  rerun until green. **Queued:** fix on its own branch after `1.0.6.65` (CSRF on the same auth
-  surface) merges — position 3 in this session's queue. Direction: find the timing assumption in
-  case 59 (lockout window vs wall clock) and make it deterministic; RED = a forced slow run.
-- [RESOLVED] 2026-09-29 **[LOW] Template poller: a block split resets the pass resume point to 0**
-  (review A3) — fixed on branch `feature/template-poller-pult` by `944c2306` (the resume point is
-  re-mapped to the same unit after `_split_units`); pinned by
-  `test_template_block_read.py::TestStallOnBlock::test_split_in_a_stalled_pass_keeps_the_resume_point`;
-  fixup review APPROVED.
+  rerun until green. **Queued:** fix on its own branch; unblocked — `1.0.6.65` (CSRF on the same
+  auth surface) has merged — ready to dispatch, position 3 in this session's queue. Direction: find
+  the timing assumption in case 59 (lockout window vs wall clock) and make it deterministic; RED = a
+  forced slow run.
+- [RESOLVED template-poller-pult] 2026-09-29 **[LOW] Template poller: a block split resets the pass
+  resume point to 0** (review A3). Closed by the stop rule of review B1: a pass stops early only
+  when nothing answered in it nor in the previous pass, and a split needs a channel that answered,
+  so a split pass always runs to the end and the next pass starts at the first unit
+  (`bridge_template.py` `poll_io`). Pinned by
+  `test_template_block_read.py::TestStallOnBlock::test_split_pass_with_a_failing_run_reads_to_the_end`.
 
 - [RESOLVED] 2026-09-28 **[MED] HomeKit conf `preserve` followed a planted symlink as root.**
   `opt/sa02m-homekit/sa02m_homekit/fsutil.py` `atomic_write(preserve=True)` read the old conf's
