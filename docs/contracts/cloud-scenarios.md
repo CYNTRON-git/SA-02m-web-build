@@ -84,9 +84,11 @@ past 64 answers `too_many`; `MAX_WRITES=8` direct write actions
 (`set`/`toggle`/`ramp`) per row — a row with more answers
 `too_many_writes` (the engine's per-run cap is the **same constant**, so a
 stored row can never half-apply; nested `scenario`/`scene` children count
-toward the run's cap); `params` ≤ 4 KiB, NaN / ±Infinity inside `params` are
-stored as `null` (the template then uses its default), so the store and every
-answer stay strict JSON; `runs` 50; `notify_queue` 20.
+toward the run's cap); `params` ≤ 4 KiB as stored: NaN, ±Infinity and
+integers past float range inside `params` are stored as `null` (the template
+then uses its default) and the bound is judged after that; a `last_run` the
+client sends is never stored or echoed (it is the board's own record), so the
+store and every answer stay strict JSON; `runs` 50; `notify_queue` 20.
 
 **Two files, one view (1.0.6.41).** The document (`scenarios.json`) holds
 scenarios, library and vars and is written only when that content changes
