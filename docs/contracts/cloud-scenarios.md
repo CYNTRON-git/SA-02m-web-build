@@ -11,8 +11,8 @@ are cited, not restated.
 Landed 1.0.6.37. Validating tests: `opt/sa02m-alice/tests/test_scenario_events.py`,
 `opt/sa02m-alice/tests/test_cloud_control_api.py` (row `py-unit-alice`) and
 `opt/sa02m-rules/tests/` — `test_engine.py`, `test_engine_v2.py`,
-`test_security.py`, `test_logic_templates.py` (row `py-unit-rules`, since
-1.0.6.39; before that no beat ran them).
+`test_security.py`, `test_logic_templates.py`, `test_store_hardening.py`
+(row `py-unit-rules`, since 1.0.6.39; before that no beat ran them).
 
 ---
 
@@ -117,7 +117,8 @@ journal is truth once it exists.
 Names that become MQTT topic segments are charset-validated at the store:
 `device` matches `[A-Za-z0-9_.:-]{1,64}`, `cap` matches
 `[A-Za-z0-9_.:-]{1,32}` (absent ⇒ `on_off`); a trigger, condition or
-action failing either is dropped from the row. The engine re-checks both
+action failing either is dropped from the row and named in the answer
+(§«Проверка при сохранении» below). The engine re-checks both
 on every write, whatever the caller (block, scene, logic template, `end`,
 `Hub.set`), and the service re-checks them once more where the topic is
 actually built (`RulesApp.pub` — the last line before the wire, reached by
@@ -132,13 +133,14 @@ path):
 | Body | Effect |
 |---|---|
 | `{library}` (no `name`/`id`) | replace the JS library string (≤16 KiB) |
-| `{replace:true, scenarios:[…]}` | full replace; **all** rows validated first |
+| `{replace:true, scenarios:[…]}` | full replace; **all** rows validated first — one refused row refuses the call, nothing written |
 | `{id, delete:true}` | delete one |
 | `{id, get:true}` | full document of one scenario (list rows are summaries) |
 | `{upsert:[…]}` | batch upsert, validate **all** first (never half-written) |
 | `{ack_notify:true}` | drain `notify_queue` |
 | `{id, run_now:true}` | flag file `<path>.run`; wait up to 2.5 s for the engine tick |
 | other object with `name` | single upsert |
+| `{id, …}` of an existing scenario, none of `trigger`/`condition`/`action`/`code`/`template`/`params` | partial update (§«Частичное обновление») |
 
 Success payload always carries `ok`, `scenarios` (listed summaries),
 `runs` (last 20), `notify_queue`, `library`.
@@ -159,6 +161,134 @@ job is unchanged (validate, persist, one writer). `captured_from.group_id`
 is still **stored and not read on the board**: it is cloud-side provenance of
 a group capture. The hub **may** present a scene marked `alice_expose` as
 exposed to Alice.
+
+### Проверка при сохранении
+
+Единственный источник правил, по которым плата принимает сценарий; проверка
+редактора в облаке перед сохранением ссылается сюда и не ведёт своей копии.
+Код — `sa02m_rules.store` (`validate_row`, `_checked_row`).
+
+**Отказ сохранения.** Если в теле пришёл непустой список `trigger` (или
+`action`), а после очистки в нём не осталось ни одного элемента, сценарий не
+сохраняется — плата отвечает:
+
+```json
+{"ok": false, "error": "invalid_elements",
+ "dropped": [{"part": "trigger", "index": 0, "reason": "bad_cap"}]}
+```
+
+Для пакетных `upsert` и `replace` отказ одной строки отменяет весь вызов
+(ничего не записано), в ответе добавляется `"row": <позиция строки в
+запросе>`. Значение `trigger`/`action`, которое не является списком, считается
+непустым и выброшенным целиком (`index: null`, `reason: "not_list"`).
+Условия (`condition`) сохранение не отменяют: выброшенные элементы только
+перечисляются в `dropped`.
+
+**Частично годный список** сохраняется как раньше (без выброшенных
+элементов), но успешный ответ несёт `dropped` с тем же форматом; в ответе
+пакета у каждого элемента есть `row`. Ответ без выброшенных элементов ключа
+`dropped` не содержит.
+
+Элемент `dropped`: `part` — `trigger` | `condition` | `action`; `index` —
+позиция элемента в присланном списке (для условий — в списке `all`/`any`);
+`reason` — код из таблиц ниже.
+
+Общие причины: `not_object` — элемент не объект; `unknown_kind` — неизвестный
+`kind`; `over_limit` — элемент сверх лимита строки (триггеров 8, условий 8,
+действий 20). Лимит записей `set`/`toggle`/`ramp` в строке — `MAX_WRITES=8`;
+превышение отклоняет всё сохранение (`too_many_writes`, без `dropped`).
+
+Поля, общие для адресных элементов: `device` — `[A-Za-z0-9_.:-]{1,64}`
+(`bad_device`); `cap` — `[A-Za-z0-9_.:-]{1,32}`, отсутствует ⇒ `on_off`
+(`bad_cap`); `instance` — необязателен, тот же набор символов, что у `cap`
+(`bad_instance`); смысл `instance` — §«Цель записи».
+
+Триггеры:
+
+| `kind` | Обязательно | Допустимо / как хранится | Причины |
+|---|---|---|---|
+| `state` | `device` | `cap`, `instance`; `op` ∈ `== != > < >= <= changed rises_above drops_below enters_range leaves_range motion_detected motion_cleared opened closed`, неизвестный ⇒ `==`; `value` для `enters_range`/`leaves_range` — `{min, max}` из чисел (обязательно); для `motion_*`/`opened`/`closed` не хранится; для остальных — любое значение, не проверяется (отсутствует ⇒ `null`) | `bad_device`, `bad_cap`, `bad_instance`, `bad_value` |
+| `time` | `at` — `HH:MM` | `days` — список 0..6 (пн = 0), прочие значения отбрасываются | `bad_value` |
+| `sun` | — | `event` `sunrise` \| `sunset` (иное ⇒ `sunrise`); `offset` — минуты, обрезается до −180..180 (не число ⇒ 0); `lat` −90..90 и `lon` −180..180 — числа, необязательны; `days` — как у `time` | `bad_value` (`lat`/`lon` не число или вне диапазона) |
+| `boot` | — | — | — |
+| `every` | `minutes` 1..60 | — | `bad_value` |
+| `button` | `device`, `gesture` ∈ `single double long long_release` | `input` `di_N` (неверный игнорируется) | `bad_device`, `bad_value` |
+| `presence` | `event` `arrive` \| `leave` | — | `bad_value` |
+
+Условия (`{"all": […]}` или `{"any": […]}`):
+
+| `kind` | Обязательно | Допустимо / как хранится | Причины |
+|---|---|---|---|
+| `time_window` | `preset` `any`/`day`/`night` или `from` + `to` в `HH:MM` | — | `bad_value` |
+| `weekday` | непустой `days` (0..6) или `preset` `workday`/`weekend` | — | `bad_value` |
+| `mode` | `value` ∈ `home away night holiday` | — | `bad_value` |
+| `state` | `device` | как триггер `state`, но без `changed` (⇒ `==`); `rises_above` ⇒ `>`, `drops_below` ⇒ `<`, `motion_detected`/`opened` ⇒ `== 1`, `motion_cleared`/`closed` ⇒ `== 0`; `for_s` ≥ 1 (до 86400) | `bad_device`, `bad_cap`, `bad_instance`, `bad_value` |
+
+Действия (в `scene` допустим только `set`, остальные — `not_in_scene`):
+
+| `kind` | Обязательно | Допустимо / как хранится | Причины |
+|---|---|---|---|
+| `set` | `device` | `cap`, `instance`; `value` — любое значение, не проверяется; `transition_s` > 0 ⇒ до 300 | `bad_device`, `bad_cap`, `bad_instance`, `unknown_target`, `ambiguous_target` |
+| `toggle` | `device` | `cap`, `instance` | как у `set` |
+| `ramp` | `device`, `to` (число), `seconds` 1..300 | `cap`, `instance` | как у `set` + `bad_value` |
+| `delay` | — | `seconds` — число, приводится к целому и обрезается до 1..300 (нет ⇒ 1) | `bad_value` |
+| `scenario`, `scene` | `id` — `[A-Za-z0-9_.:-]{1,64}` | — | `bad_id` |
+| `mode` | `value` ∈ `home away night holiday` | — | `bad_value` |
+| `notify` | непустой `text` | обрезается до 240 символов | `bad_value` |
+| `http` | `url` по политике §Outbound HTTP (статическая часть) | `method` `GET` \| `POST`; `body` до 2000 символов | `bad_url` |
+
+### Цель записи: `device`, `cap`, `instance`
+
+Действия `set`/`toggle`/`ramp` при сохранении сверяются с документом
+устройств Алисы (`/etc/sa02m-alice/sa02m-alice-devices.conf`, переопределение
+`SA02M_ALICE_DEVICES`; код — `sa02m_rules/device_index.py`). Цель записи —
+только **умение** (`capabilities`) устройства; свойства (`properties`,
+датчики) целью записи не бывают:
+
+- `cap` без `instance` находит умение этого типа, если оно у устройства
+  **одно**. Если умений типа несколько (у Carel `range` — скорость
+  вентилятора и уставка), цель без `instance` неоднозначна —
+  `ambiguous_target`;
+- `cap` + `instance` находит умение этого типа с таким
+  `parameters.instance` — тем самым, которое облако берёт из документа
+  устройства при сборке сценария (`{"kind":"set","device":…,"cap":"range",
+  "instance":<parameters.instance>,"value":…}`);
+- не найдено — `unknown_target` (устройства нет в документе, у него нет
+  такого умения или такого `instance`).
+
+Документ не читается (нет файла, битый JSON) — проверка пропускается и
+сохранение идёт как раньше; предупреждение пишется в журнал один раз, пока
+документ не станет читаемым.
+
+**При выполнении** то же правило держит сервис (`RulesApp.pub`): для
+устройства из документа неоднозначный тип без `instance` и неизвестный
+`instance` **не публикуются** — запуск получает `last_error`
+`"ambiguous target"` / `"unknown target"`, никакого угадывания. Так же
+отвечает `Hub.set` в `type=code` (ошибка запуска). Устройство, которого нет в
+документе, и не перечисленный в документе `cap` известного устройства
+(оба — без `instance`) публикуются по сырому топику
+`/devices/<device>/controls/<cap>/on`, как раньше, — такие цели остаются только в строках, сохранённых до этой проверки
+или пока документ не читался.
+
+**Чтение состояния.** Сообщение на топике из документа обновляет все ключи,
+привязанные к нему: тип умения (если умение этого типа одно),
+`<тип>|<instance>` для умения с `instance` и `instance` свойства
+(`temperature`, `motion`, …). Триггер/условие `state` с `instance` реагирует
+только на своё умение; неоднозначный тип без `instance` не срабатывает
+никогда. Свойство адресуется `cap` = его `instance` (так облако и собирает
+триггеры по датчикам), без сырого топика.
+
+### Частичное обновление
+
+Одиночное сохранение с `id` существующего сценария, в котором нет ни одного
+из `trigger`, `condition`, `action`, `code`, `template`, `params` (или они
+`null`), меняет только присланные ключи (`name`, `enabled`, `order`, `type`,
+`end`, …) и сохраняет остальное тело сценария. Кнопка «включить/выключить»
+облака шлёт `{id, name, enabled, type}` — раньше это сохраняло сценарий с
+пустыми триггерами и действиями. `name` в частичном обновлении не обязателен.
+Тело, которое несёт хотя бы один из этих ключей, — полная замена, как
+раньше. Цели записи при частичном обновлении повторно не сверяются
+(документ устройств мог измениться — выключение сценария это не блокирует).
 
 ---
 
@@ -186,7 +316,12 @@ logged) and `tick()` drains the queue in arrival order before timers.
 
 Triggers (`kind`): `state`, `time`, `sun`, `boot`, `every` `{minutes}`,
 `button` `{device, input?, gesture}`, `presence` arrive/leave on
-`Vars.home_mode`.
+`Vars.home_mode`. Fields and limits of each kind: §«Проверка при сохранении».
+
+`sun` считается по собственным `lat`/`lon` триггера, если они есть, иначе по
+координатам платы (`/etc/sa02m-alice/location.json`, затем
+`/etc/sa02m/location.json`, затем `SA02M_LAT`/`SA02M_LON`); `days` (0..6,
+пн = 0) ограничивает дни недели так же, как у `time`.
 
 State operators: level `== != > < >= <=` (a level holds on every value,
 including the first one observed after the engine starts); edge `changed` /
@@ -302,6 +437,16 @@ newer) and rejected at run time with `last_error="unknown template"`.
 `humidity_fan`, `co2_ventilation`, `humidifier`, `away_home`
 (`sa02m_rules/logic_templates.py`). Cloud catalog ids that are not in
 this tuple stay in the store and do not run.
+
+`switch_light` и фиксируемый выключатель: при `switch_type` `latching` или
+`auto` изменение `on_off` выключателя **ставит группу света в положение
+выключателя** — 1 включает (яркость по `memory`: последняя яркость диммера,
+`memory: false` — без записи яркости), 0 выключает. Светильник, который уже
+в нужном положении, не трогается: свет, включённый из приложения, остаётся
+включённым, когда выключатель переходит в 1. Первое значение после старта
+(снимок MQTT) и повтор того же значения ничего не делают. Кнопочный
+выключатель (жесты `di_N`, в том числе при `auto`) по-прежнему: одиночное
+нажатие переключает группу, двойное выключает, долгое — диммирование.
 
 ---
 
