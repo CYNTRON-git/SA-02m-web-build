@@ -38,11 +38,15 @@ reads for good; an attempt whose sweep read nothing resets that count. The
 refusal is recognised by that behaviour, not by an exception code, because the
 RS-485 transport does not surface the code today.
 
-A silent device stops the pass: once a failed read puts it in back-off the
-pass ends there, and the next pass resumes where this one stopped (the next
-unit, or the unfinished sweep), so a dead device costs offline_after_fails
-transactions once, then one per back-off window, and a live device with broken
-leading channels still reads the rest.
+A silent device stops the pass: once a failed read puts it in back-off, and
+nothing has answered in this pass nor in the previous one, the pass ends there
+and the next pass resumes where this one stopped (the next unit, or the
+unfinished sweep). A device that never answers therefore costs
+offline_after_fails transactions once, then one per back-off window. A device
+that answered in either pass is read in full, as before the stop existed, so a
+live device with broken channels keeps its availability and its writes — and a
+device that goes silent after answering is read in full in the pass it fell
+silent in and the next one, then costs one transaction per window.
 
 Classic polling only in v1 (no Fast Modbus): fmb_event_ranges() inherits [] from
 the base. The port-lease invariant is inherited structurally — TemplatePoller
@@ -230,6 +234,12 @@ class TemplatePoller(DevicePoller):
         self._channels: list[TemplateChannel] = []
         self._units: list[_ReadUnit] = []
         self._resume_idx = 0
+        # Whether any read has succeeded in the current / the previous pass: a
+        # pass may stop early only when both are False (_may_stop). The
+        # previous pass starts False so a device that never answers is
+        # detected in offline_after_fails transactions.
+        self._answered_now = False
+        self._answered_before = False
         self._load_error = ""
         try:
             self._load_template()
@@ -454,15 +464,16 @@ class TemplatePoller(DevicePoller):
         n = len(self._units)
         start = self._resume_idx
         self._resume_idx = 0
+        self._answered_now = False
         to_split: list[_ReadUnit] = []
         for k in range(n):
             i = (start + k) % n
             ok = self._poll_unit(self._units[i], to_split)
-            if not ok and self.in_backoff():
-                # The device went silent: stop spending the shared line on it,
+            if not ok and self._may_stop():
+                # The device is silent: stop spending the shared line on it,
                 # and resume where the pass stopped so a stalled head never
-                # starves the tail of a live device — at this unit while its
-                # single-read sweep is unfinished, else at the next unit.
+                # starves the tail — at this unit while its single-read sweep
+                # is unfinished, else at the next unit.
                 stalled = self._units[i]
                 self._resume_idx = i if stalled.sweep_at is not None else (i + 1) % n
                 # The units this pass skips keep their last value: say it is
@@ -471,15 +482,21 @@ class TemplatePoller(DevicePoller):
                     self._flag_stale(self._units[(start + rest) % n].channels)
                 break
         if to_split:
-            # A split renumbers the units: carry the resume point over by unit
-            # — a surviving unit keeps its place, a split one resumes at its
-            # first single read — so a stall in this pass is not forgotten.
-            resume = self._units[self._resume_idx].channels
+            # Only a pass that ran to the end splits: a sweep that read a
+            # channel means the device answered, and _may_stop never ends such
+            # a pass. So the resume point is the first unit, which the
+            # renumbering keeps first.
             self._split_units(to_split)
-            self._resume_idx = next(
-                j for j, u in enumerate(self._units)
-                if any(u.channels[0] is ch for ch in resume))
+        self._answered_before = self._answered_now
         DeviceLiveCache.flush_file(self.device_id)
+
+    def _may_stop(self) -> bool:
+        """The pass may end here: the device is in back-off and nothing has
+        answered in this pass nor in the previous one. A device that answered
+        is read in full — stopping it would end the pass in back-off, offline,
+        with its writes refused, which a full pass does not (review B1)."""
+        return (self.in_backoff() and not self._answered_now
+                and not self._answered_before)
 
     def _split_units(self, to_split: list) -> None:
         """Replace each refused block by its channels' single reads, in place."""
@@ -500,8 +517,8 @@ class TemplatePoller(DevicePoller):
     def _poll_unit(self, unit: _ReadUnit, to_split: list) -> bool:
         """Read one unit and publish it.
 
-        True = at least one value was read and the unit did not end the pass
-        in back-off; False with in_backoff() = the pass must stop here.
+        True = at least one value was read; False with _may_stop() = the pass
+        must stop here.
         """
         if len(unit.channels) == 1:
             return self._poll_single(unit.channels[0])
@@ -514,13 +531,14 @@ class TemplatePoller(DevicePoller):
                                unit.reg_type, unit.start, unit.count, e)
                 # The values must not be lost to a block the device will not
                 # serve: sweep its channels singly — now, or from the next pass
-                # when this failure already put the device in back-off.
+                # when this failure stops the pass.
                 unit.sweep_at = 0
                 unit.sweep_ok = False
-                if self.in_backoff():
+                if self._may_stop():
                     self._flag_stale(unit.channels)
                     return False
             else:
+                self._answered_now = True
                 for ch in unit.channels:
                     off = ch.address - unit.start
                     self._publish_value(ch, data[off:off + ch.words], t_read)
@@ -531,23 +549,22 @@ class TemplatePoller(DevicePoller):
     def _sweep_singles(self, unit: _ReadUnit, to_split: list) -> bool:
         """Read a refused block's channels one by one from unit.sweep_at.
 
-        A back-off stall keeps the sweep pending at the next channel. A sweep
-        that reaches the end closes the block attempt: at least one channel
-        read → one more refusal counted (split at _GROUP_SPLIT_AFTER); none
-        read → the device was silent, not refusing, and the count restarts.
+        A stall that stops the pass (_may_stop) keeps the sweep pending at the
+        next channel. A sweep that reaches the end closes the block attempt: at
+        least one channel read → one more refusal counted (split at
+        _GROUP_SPLIT_AFTER); none read → the device was silent, not refusing,
+        and the count restarts.
         """
         chans = unit.channels
         read_now = False
-        stalled = False
         for j in range(unit.sweep_at, len(chans)):
             if self._poll_single(chans[j]):
                 read_now = unit.sweep_ok = True
-            elif self.in_backoff():
+            elif self._may_stop():
                 self._flag_stale(chans[j + 1:])
                 if j + 1 < len(chans):
                     unit.sweep_at = j + 1
                     return False
-                stalled = True
                 break
         unit.sweep_at = None
         if unit.sweep_ok:
@@ -556,7 +573,7 @@ class TemplatePoller(DevicePoller):
                 to_split.append(unit)
         else:
             unit.split_streak = 0
-        return read_now and not stalled
+        return read_now
 
     def _poll_single(self, ch: TemplateChannel) -> bool:
         t_read = self._monotonic()
@@ -568,6 +585,7 @@ class TemplatePoller(DevicePoller):
             # its last good value but says it is stale — never a silent freeze.
             self.pub.pub_error(self.device_id, ch.name, "r")
             return False
+        self._answered_now = True
         self._publish_value(ch, words, t_read)
         return True
 

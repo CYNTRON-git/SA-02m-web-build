@@ -2,8 +2,10 @@
 """TemplatePoller — a silent device stops costing the line, and block reads.
 
 Pins docs/contracts/template-device.md §3 (grouping fields) and §5 (a silent
-device): G1 a dead template device costs at most `offline_after_fails`
-transactions on its first failing pass and one per back-off window after it;
+device): G1 a template device that never answered costs at most
+`offline_after_fails` transactions on its first pass and one per back-off
+window after it, while a device that answered in this pass or the previous one
+is read in full — it stays online and writable despite broken channels;
 G2 a template without grouping fields is polled exactly as before (one request
 per channel, template order); G3 `max_read_registers` > 1 reads the declared
 registers in blocks, and a block the device refuses while its channels read
@@ -184,6 +186,144 @@ class TestSilentDevice(_Base):
         self.assertEqual((values.get("c3"), values.get("c4"), values.get("c5")),
                          ("30", "40", "50"))
 
+    def test_dead_device_costs_one_read_per_window(self):
+        p, _pub = self._poller(SIX_HOLDING, offline_after_fails=3)
+        fake = FakeSerial(dead=True)
+        self._pass(p, fake)
+        self.assertEqual(len(fake.reads), 3, fake.reads)
+        for _ in range(8):
+            fake.reads.clear()
+            p._backoff_until = 0.0
+            self._pass(p, fake)
+            self.assertEqual(len(fake.reads), 1, fake.reads)
+        self.assertFalse(p._online)
+
+
+class TestLiveDeviceStaysOnline(_Base):
+    """Review B1: the early stop never leaves a device that answers offline.
+
+    A pass stops early only when nothing answered in it nor in the previous
+    pass. A live device with broken channels therefore reads every channel
+    each pass and ends it online, so its writes are not refused
+    ("writeback skipped: device offline") and its healthy channels never flip
+    to "r" — the same as before the stop existed (plan §5.3: meta/error,
+    back-off and writes unchanged)."""
+
+    def _window(self, p, fake):
+        p._backoff_until = 0.0
+        fake.reads.clear()
+        self._pass(p, fake)
+        return list(fake.reads)
+
+    def test_live_device_with_broken_head_ends_pass_online(self):
+        p, pub = self._poller(SIX_HOLDING, offline_after_fails=3)
+        fake = FakeSerial(regs={3: 30, 4: 40, 5: 50}, fail_addrs={0, 1, 2})
+        # Bridge start (contract §5): nothing has answered yet, so the first
+        # pass stops at c2 and flags the rest once; the second resumes at c3
+        # and ends on the failing run; from the third on, a full pass.
+        self.assertEqual(self._window(p, fake), [(3, 0, 1), (3, 1, 1), (3, 2, 1)])
+        self.assertFalse(p._online)
+        self.assertEqual(self._window(p, fake), [(3, i, 1) for i in (3, 4, 5, 0, 1, 2)])
+        self.assertFalse(p._online)
+        self._window(p, fake)
+        self.assertTrue(p._online, "device left offline at rest")
+        stale = [c.args[1] for c in pub.pub_error.call_args_list
+                 if c.args[2] == "r" and c.args[1] in ("c3", "c4", "c5")]
+        self.assertEqual(stale, ["c3", "c4", "c5"])     # once, at the start
+        self.assertFalse(p.in_backoff())
+        # At rest every pass reads every channel, in template order.
+        self.assertEqual(self._window(p, fake), [(3, i, 1) for i in range(6)])
+        self.assertTrue(p._online)
+
+    def test_grouped_device_answering_only_in_blocks_stays_online(self):
+        # A good block read is an answer too: three failing singles between
+        # two good blocks do not stop the pass, from the very first one.
+        channels = [_u16("a", 0, "input"), _u16("b", 1, "input"),
+                    _u16("x", 100), _u16("y", 200), _u16("z", 300),
+                    _u16("c", 10, "input"), _u16("d", 11, "input")]
+        p, pub = self._poller(channels, {"max_read_registers": 10})
+        fake = FakeSerial(regs={0: 1, 1: 2, 10: 3, 11: 4},
+                          fail_addrs={100, 200, 300})
+        wire = [(4, 0, 2), (3, 100, 1), (3, 200, 1), (3, 300, 1), (4, 10, 2)]
+        for n in range(1, 4):
+            with self.subTest(pass_no=n):
+                self.assertEqual(self._window(p, fake), wire)
+                self.assertTrue(p._online)
+                self.assertFalse(p.in_backoff())
+        self.assertFalse([c for c in pub.pub_error.call_args_list
+                          if c.args[2] == "r" and c.args[1] in "abcd"])
+
+    def test_refused_block_after_a_failing_run_is_swept_in_the_same_pass(self):
+        # The device answered (w), then a failing run put it in back-off: the
+        # refused block that follows — whose own first channel is broken — is
+        # still swept singly in this pass, not deferred to the next one.
+        channels = [_u16("w", 500), _u16("x", 100), _u16("y", 200),
+                    _u16("z", 300), _u16("e", 0, "input"),
+                    _u16("a", 1, "input"), _u16("b", 2, "input")]
+        p, pub = self._poller(channels, {"max_read_registers": 10})
+        fake = FakeSerial(regs={500: 5, 1: 11, 2: 12},
+                          fail_addrs={100, 200, 300, 0})
+        wire = [(3, 500, 1), (3, 100, 1), (3, 200, 1), (3, 300, 1),
+                (4, 0, 3), (4, 0, 1), (4, 1, 1), (4, 2, 1)]
+        self.assertEqual(self._window(p, fake), wire)
+        self.assertEqual({k: v for k, v in self._values(pub).items()
+                          if k in "ab"}, {"a": "11", "b": "12"})
+        self.assertTrue(p._online)
+        self.assertFalse([c for c in pub.pub_error.call_args_list
+                          if c.args[2] == "r" and c.args[1] in "wab"])
+
+    def test_mp02_with_four_failing_setpoints_matches_the_ungrouped_wire(self):
+        # The shipped MP-02 template (24 channels) on firmware that does not
+        # serve HR 190..193: four consecutive failures mid-pass, healthy
+        # channels on both sides. Every pass must read all 24 channels in
+        # template order — the pre-stop wire — and end with the device online.
+        # The scheduler skips a device in back-off, so no window is forced
+        # open here: a pass that ended in back-off would stop the loop.
+        failing = {190, 191, 192, 193}
+        with mock.patch.dict("os.environ",
+                             {"SA02M_WB_TEMPLATES_DIR":
+                              str(BRIDGE_DIR / "templates")}):
+            p = bridge_template.TemplatePoller(
+                {"id": DEVICE_ID, "type": "template", "template": "mp02-ahu",
+                 "port": "/dev/COM5", "address": 1}, mock.Mock())
+        pub = p.pub
+        wire = [(1 if ch.reg_type == "coil" else
+                 3 if ch.reg_type == "holding" else 4, ch.address, ch.words)
+                for ch in p._channels]
+        self.assertEqual(len(wire), 24)
+        healthy = [ch.name for ch in p._channels if ch.address not in failing]
+        self.assertEqual(len(healthy), 20)
+        fake = FakeSerial(fail_addrs=failing)
+        for n in range(1, 6):
+            with self.subTest(pass_no=n):
+                self.assertFalse(p.in_backoff(), "scheduler would skip the pass")
+                fake.reads.clear()
+                self._pass(p, fake)
+                self.assertEqual(fake.reads, wire)
+                self.assertTrue(p._online)
+        flipped = sorted({c.args[1] for c in pub.pub_error.call_args_list
+                          if c.args[2] == "r" and c.args[1] in healthy})
+        self.assertEqual(flipped, [], "healthy channels flagged stale")
+
+    def test_device_that_goes_silent_in_operation_costs_full_passes_first(self):
+        # The cost of the rule, pinned: a pass is read in full while the
+        # device answered in it or in the previous one (as before the stop
+        # existed). Silent from a pass boundary → one full silent pass;
+        # silent midway through a pass → that pass is read in full too. Then
+        # one read per window.
+        for label, last_live_pass in (
+                ("between passes", FakeSerial()),
+                ("midway", FakeSerial(fail_addrs={2, 3, 4, 5}))):
+            with self.subTest(label):
+                p, _pub = self._poller(SIX_HOLDING, offline_after_fails=3)
+                self._window(p, FakeSerial())
+                self.assertEqual(len(self._window(p, last_live_pass)), 6)
+                fake = FakeSerial(dead=True)
+                self.assertEqual(len(self._window(p, fake)), 6)
+                self.assertFalse(p._online)
+                for _ in range(4):
+                    self.assertEqual(len(self._window(p, fake)), 1)
+
 
 MIXED = [
     {"name": "sp", "reg_type": "holding", "address": 10, "format": "u16"},
@@ -349,6 +489,23 @@ class TestRejectedBlock(_Base):
         self.assertNotIn(mock.call(DEVICE_ID, "a", "r"),
                          pub.pub_error.call_args_list)
 
+    def test_intermittent_block_refusal_does_not_split(self):
+        # Review A2 (contract §3 «Счёт обнуляется успешным чтением пачки»): a
+        # refusal, then a good block read, then a refusal is not two refusals
+        # in a row — the block stays a block.
+        p, _pub = self._poller([_u16("a", 0, "input"), _u16("b", 1, "input")],
+                               {"max_read_registers": 10})
+        fake = FakeSerial(regs={0: 10, 1: 11}, max_count=1)
+        self._pass(p, fake)                       # refused, singles read: 1
+        fake.max_count = None
+        self._pass(p, fake)                       # block read OK: count reset
+        fake.max_count = 1
+        self._pass(p, fake)                       # refused again: 1, not 2
+        fake.max_count = None
+        fake.reads.clear()
+        self._pass(p, fake)
+        self.assertEqual(fake.reads, [(4, 0, 2)])
+
     def test_dead_device_grouped_stops_at_threshold(self):
         p, pub = self._poller([_u16(f"c{i}", i, "input") for i in range(6)],
                               {"max_read_registers": 10},
@@ -423,27 +580,30 @@ class TestStallOnBlock(_Base):
         values = self._values(pub)
         self.assertEqual((values.get("b"), values.get("c")), ("11", "12"), values)
 
-    def test_split_in_a_stalled_pass_keeps_the_resume_point(self):
-        # Review A3: a pass that splits a block AND stalls later must still
-        # resume after the stall — the split renumbers the units, so the resume
-        # point is kept by unit, not by list index (which reset to 0).
+    def test_split_pass_with_a_failing_run_reads_to_the_end(self):
+        # Review A3, restated for review B1: a block split and a later run of
+        # failures in the same pass. The device answered in that pass, so the
+        # pass reads to the end (the tail w is not dropped) and the next pass
+        # starts at the first unit — now the block's first single read.
         channels = [_u16("a", 0, "input"), _u16("b", 1, "input"),
                     _u16("y", 100), _u16("z1", 200), _u16("z2", 300),
                     _u16("z3", 400), _u16("w", 500)]
         p, pub = self._poller(channels, {"max_read_registers": 10})
         fake = FakeSerial(regs={0: 10, 1: 11, 100: 1, 500: 5},
                           fail_addrs={200, 300, 400}, max_count=1)
-        # Pass 1: block refused (count 1), stall at z3 → resume at w.
-        self.assertEqual(self._window(p, fake)[-1], (3, 400, 1))
-        # Pass 2: w, then the block refused again → split; stall at z3 again.
+        tail = [(3, 100, 1), (3, 200, 1), (3, 300, 1), (3, 400, 1), (3, 500, 1)]
+        swept = [(4, 0, 2), (4, 0, 1), (4, 1, 1)]
+        # Pass 1: block refused (count 1), the failing run crosses the
+        # threshold, the pass goes on to w.
+        self.assertEqual(self._window(p, fake), swept + tail)
+        # Pass 2: refused again → split, and still read to the end.
         with self.assertLogs(LOGGER, level="WARNING"):
-            reads = self._window(p, fake)
-        self.assertEqual(reads[:2], [(3, 500, 1), (4, 0, 2)])
-        self.assertEqual(reads[-1], (3, 400, 1))
+            self.assertEqual(self._window(p, fake), swept + tail)
         pub.pub_control.reset_mock()
-        reads = self._window(p, fake)
-        self.assertEqual(reads[0], (3, 500, 1), reads)   # w first, not a
+        self.assertEqual(self._window(p, fake),
+                         [(4, 0, 1), (4, 1, 1)] + tail)
         self.assertEqual(self._values(pub).get("w"), "5")
+        self.assertTrue(p._online)
 
     def test_dead_grouped_device_costs_one_read_per_window(self):
         p, _pub = self._poller([_u16(f"c{i}", i, "input") for i in range(6)],
@@ -463,12 +623,13 @@ class TestStallOnBlock(_Base):
         with self.assertLogs(LOGGER, level="WARNING") as cm:
             self._window(p, fake)                   # refused, singles read: 1
             fake.dead = True
-            self._window(p, fake)                   # refused, silent: stall
-            self._window(p, fake)                   # sweep ends, nothing read
-            fake.dead = False
+            # The last pass answered, so this one is read in full: refused,
+            # and the sweep reads nothing — the count restarts.
             self._window(p, fake)
-            self._window(p, fake)
-            p_before = self._window(p, fake)
+            self._window(p, fake)                   # silent twice: stops at
+            fake.dead = False                       # the block, sweep pending
+            self._window(p, fake)                   # sweep reads: count 1
+            p_before = self._window(p, fake)        # refused again: 2, split
             p_after = self._window(p, fake)
         self.assertEqual(p_before[0], (4, 0, 3), p_before)   # still a block
         self.assertEqual(p_after, [(4, 0, 1), (4, 1, 1), (4, 2, 1)], p_after)
