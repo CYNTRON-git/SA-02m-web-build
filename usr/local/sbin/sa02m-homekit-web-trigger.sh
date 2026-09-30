@@ -43,13 +43,19 @@ LOCK_WAIT_S=5
 
 # enabled=true in the conf? The same truth set as sa02m_homekit/config.py
 # (`1|true|yes|on`, case-insensitive; `=` or `:`; no inline comments — the
-# daemon's configparser does not strip them either). Read line by line, no
-# pipe (quality-gate-rigor (f)).
+# daemon's configparser does not strip them either). Only the [bridge]
+# section counts, and the key matches in any case (configparser lower-cases
+# keys), as in the daemon. Read line by line, no pipe (quality-gate-rigor (f)).
 hk_conf_enabled() {
-    local line val
+    local line val section=""
     [ -f "$CONF" ] && [ -r "$CONF" ] || return 1
     while IFS= read -r line || [ -n "$line" ]; do
-        [[ $line =~ ^[[:blank:]]*enabled[[:blank:]]*[=:][[:blank:]]*(.*[^[:blank:]])?[[:blank:]]*$ ]] || continue
+        if [[ $line =~ ^[[:blank:]]*\[([^]]*)\][[:blank:]]*$ ]]; then
+            section=${BASH_REMATCH[1]}
+            continue
+        fi
+        [ "$section" = bridge ] || continue
+        [[ $line =~ ^[[:blank:]]*[Ee][Nn][Aa][Bb][Ll][Ee][Dd][[:blank:]]*[=:][[:blank:]]*(.*[^[:blank:]])?[[:blank:]]*$ ]] || continue
         val=${BASH_REMATCH[1]:-}
         case "${val,,}" in 1|true|yes|on) return 0 ;; *) return 1 ;; esac
     done < "$CONF"

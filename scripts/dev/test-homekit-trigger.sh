@@ -28,7 +28,9 @@
 #      the exception text via logger, stdout stays the JSON answer, no temp
 #      left (RED on the pre-fix `2>/dev/null`: the cause was dropped)
 #   E  enable: unmask + enable + restart, all bounded
-#   F  restart: conf enabled ⇒ restart; conf disabled ⇒ `skipped`, no restart
+#   F  restart: conf enabled ⇒ restart; conf disabled ⇒ `skipped`, no restart;
+#      an `enabled = true` OUTSIDE [bridge] does not count; `ENABLED = true`
+#      does (configparser lower-cases keys)
 #   G  reset-pairing: removes EXACTLY state.json + .hk-*.tmp; aids.json,
 #      identity.json, the conf and a `.hk-*.tmp` DIRECTORY stay; starts again
 #      only when enabled; refuses a symlinked or missing state dir; refuses to
@@ -36,7 +38,8 @@
 #      stop (is-active exits non-zero for both `deactivating` and `inactive`)
 #   H  lock: a verb while another holds the lock answers `busy`
 #   I  conf truth set parity with the daemon: hk_conf_enabled agrees with
-#      sa02m_homekit.config.load().enabled over a sample matrix
+#      sa02m_homekit.config.load().enabled over a sample matrix (key case and
+#      a key in another section included)
 #
 # Comment-mutation cases to register with the row (measured RED here):
 #   commenting out `hk_write_disabled_status "$since"` → D2 RED;
@@ -293,6 +296,23 @@ if [ "$RC" -eq 0 ] && [ "$(n_calls)" -eq 0 ] && out_has '"applied":"skipped"'; t
 else
     bad "F2 conf disabled: rc=$RC calls=$(n_calls) out=$(cat "$SB/out")"
 fi
+reset_tree false
+hk_c="$SB/root/etc/sa02m-homekit/sa02m-homekit.conf"
+{ printf '[other]\nenabled = true\n\n'; cat "$hk_c"; } > "$hk_c.new" && mv "$hk_c.new" "$hk_c"
+run_trigger restart
+if [ "$RC" -eq 0 ] && [ "$(n_calls)" -eq 0 ] && out_has '"applied":"skipped"'; then
+    ok "F3 an \`enabled = true\` outside [bridge] does not count (the daemon reads [bridge] only)"
+else
+    bad "F3 section-blind enabled read: rc=$RC calls=$(n_calls) out=$(cat "$SB/out")"
+fi
+reset_tree false
+printf '[bridge]\nENABLED = true\ninterface = eth0\nport = 21064\n' > "$hk_c"
+run_trigger restart
+if [ "$RC" -eq 0 ] && [ "$(calls_of restart)" -eq 1 ] && out_has '"applied":"restart"'; then
+    ok "F4 \`ENABLED = true\` counts (configparser lower-cases keys) ⇒ restart"
+else
+    bad "F4 case-sensitive enabled read: rc=$RC restart=$(calls_of restart) out=$(cat "$SB/out")"
+fi
 
 echo "G. reset-pairing"
 seed_store() {
@@ -418,13 +438,16 @@ enabled = on
 enabled = 1
 enabled = 0
 enabled: true
+ENABLED = true
+Enabled = true
 enabled = true # a comment
 enabled = maybe
 # enabled = true
 enabled =
+[other]\nenabled = true
 SAMPLES
-    [ "$i_n" -ge 12 ] || bad "I only $i_n parity samples ran (non-vacuity floor 12)"
-    [ "$i_bad" -eq 0 ] && [ "$i_n" -ge 12 ] && ok "I helper and daemon agree on all $i_n conf samples"
+    [ "$i_n" -ge 15 ] || bad "I only $i_n parity samples ran (non-vacuity floor 15)"
+    [ "$i_bad" -eq 0 ] && [ "$i_n" -ge 15 ] && ok "I helper and daemon agree on all $i_n conf samples"
 else
     bad "I $PKG/sa02m_homekit/config.py absent — the parity half cannot run"
 fi
