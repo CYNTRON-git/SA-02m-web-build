@@ -84,7 +84,9 @@ past 64 answers `too_many`; `MAX_WRITES=8` direct write actions
 (`set`/`toggle`/`ramp`) per row — a row with more answers
 `too_many_writes` (the engine's per-run cap is the **same constant**, so a
 stored row can never half-apply; nested `scenario`/`scene` children count
-toward the run's cap); `params` ≤ 4 KiB; `runs` 50; `notify_queue` 20.
+toward the run's cap); `params` ≤ 4 KiB, NaN / ±Infinity inside `params` are
+stored as `null` (the template then uses its default), so the store and every
+answer stay strict JSON; `runs` 50; `notify_queue` 20.
 
 **Two files, one view (1.0.6.41).** The document (`scenarios.json`) holds
 scenarios, library and vars and is written only when that content changes
@@ -180,15 +182,24 @@ exposed to Alice.
 Для пакетных `upsert` и `replace` отказ одной строки отменяет весь вызов
 (ничего не записано), в ответе добавляется `"row": <позиция строки в
 запросе>`. Значение `trigger`/`action`, которое не является списком, считается
-непустым и выброшенным целиком (`index: null`, `reason: "not_list"`); так же
-`condition`, которое не является объектом (`part: "condition"`, `index: null`,
-`reason: "not_object"`), и объект условий, у которого `all`/`any` есть, но не
-список, или который несёт что-то кроме них (`{"mode": […]}`) —
-`part: "condition"`, `index: null`, `reason: "not_list"`. Отсутствующие,
-`null`, `{}`, `{"all": null}` и пустые `all`/`any` условия — не отказ: у
-сценария просто нет условий. Опустевший список условий
-отклоняется потому, что сохранённый без условий сценарий срабатывал бы чаще,
-чем задумано.
+непустым и выброшенным целиком (`index: null`, `reason: "not_list"`).
+
+Условия — объект с одним списком, `all` или `any`; сохраняется ровно один из
+них. Отказ (`part: "condition"`, `index: null`):
+
+- `not_object` — `condition` непустое, но не объект (`[H]`, `"home"`, `1`);
+- `not_list` — у объекта есть ключ, отличный от `all`/`any`, со значением не
+  `null` (`{"mode": […]}`, `{"ALL": […]}`, `{"all": […], "note": "x"}`), или
+  `all`/`any` — не список;
+- `all_and_any` — оба списка непустые: движок проверяет один список, и
+  какой из них имел в виду автор — догадка.
+
+Пустой список рядом с непустым означает «нет условий» только со своей
+стороны: сохраняется непустой (`{"all": [H], "any": []}` ⇒ `{"all": [H]}`).
+Отсутствующие, `null`, пустые значения (`{}`, `[]`, `""`, `0`, `false`),
+`{"all": null}` и пустые `all`/`any` — не отказ: у сценария нет условий.
+Опустевший после очистки список условий отклоняется, потому что сохранённый
+без условий сценарий срабатывал бы чаще, чем задумано.
 
 **Частично годный список** сохраняется без выброшенных элементов, а
 успешный ответ несёт `dropped` с тем же форматом; в ответе пакета у каждого
@@ -224,7 +235,7 @@ exposed to Alice.
 
 | `kind` | Обязательно | Допустимо / как хранится | Причины |
 |---|---|---|---|
-| `state` | `device` | `cap`, `instance`; `op` ∈ `== != > < >= <= changed rises_above drops_below enters_range leaves_range motion_detected motion_cleared opened closed`, неизвестный ⇒ `==`; `value` для `enters_range`/`leaves_range` — `{min, max}` из чисел (обязательно); для `motion_*`/`opened`/`closed` не хранится; для остальных — любое значение, не проверяется (отсутствует ⇒ `null`) | `bad_device`, `bad_cap`, `bad_instance`, `bad_value` |
+| `state` | `device` | `cap`, `instance`; `op` ∈ `== != > < >= <= changed rises_above drops_below enters_range leaves_range motion_detected motion_cleared opened closed`, неизвестный ⇒ `==`; `value` для `enters_range`/`leaves_range` — `{min, max}` из чисел (обязательно); для `motion_*`/`opened`/`closed` не хранится; для остальных — как `value` у `set` (`null`, логическое, конечное число, строка до 256 символов, список/объект до 256 байт JSON), иначе `bad_value` | `bad_device`, `bad_cap`, `bad_instance`, `bad_value` |
 | `time` | `at` — `HH:MM` | `days` — список 0..6 (пн = 0), прочие значения отбрасываются | `bad_value` |
 | `sun` | — | `event` `sunrise` \| `sunset` (иное ⇒ `sunrise`); `offset` — минуты, обрезается до −180..180 (не число ⇒ 0); `lat` −90..90 и `lon` −180..180 — числа, необязательны; `days` — как у `time` | `bad_value` (`lat`/`lon` не число или вне диапазона) |
 | `boot` | — | — | — |
