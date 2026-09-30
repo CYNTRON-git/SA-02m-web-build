@@ -12,13 +12,16 @@ fsync per second).
 from __future__ import annotations
 
 import json
+import logging
 import os
 import re
 import tempfile
 import time
-from typing import Any, Callable, Dict, List, Optional, Tuple
+from typing import Any, Callable, Dict, List, Optional, Set, Tuple
 
-from sa02m_rules import http_guard
+from sa02m_rules import device_index, http_guard
+
+LOG = logging.getLogger("sa02m-rules.store")
 
 NAME_RE = re.compile(r"^[\w \-./+]{1,64}$", re.UNICODE)
 ID_RE = re.compile(r"^[A-Za-z0-9_.:-]{1,64}$")
@@ -48,6 +51,10 @@ SCENARIOS_MAX = 64
 #: (`too_many_writes`) exactly what the engine would abort at run time.
 MAX_WRITES = 8
 _WRITE_KINDS = ("set", "toggle", "ramp")
+#: Elements kept per row; the rest are dropped as `over_limit`.
+TRIGGERS_MAX = 8
+CONDITIONS_MAX = 8
+ACTIONS_MAX = 20
 #: Outbound HTTP requests per engine run — the `http` action and the sandbox
 #: `Http` share ONE counter per run, so a scenario cannot loop over targets
 #: and turn the board into a scanner or an amplifier. Run-time only, unlike
@@ -407,212 +414,284 @@ def _clean_state_op(item: Dict[str, Any], row: Dict[str, Any],
     return True
 
 
-def _clean_trigger(raw: Any) -> Optional[List[Dict[str, Any]]]:
+def _no_drop(_index: int, _reason: str) -> None:
+    pass
+
+
+def _clean_target(item: Dict[str, Any], row: Dict[str, Any]) -> str:
+    """device + cap (+ optional instance) of a state trigger / condition /
+    write action → "" or the drop reason. `instance` names one capability
+    of a type the device carries more than once (the Alice document's
+    `parameters.instance`), charset-checked like `cap`."""
+    if not isinstance(item.get("device"), str) or not ID_RE.match(item["device"]):
+        return "bad_device"
+    cap = _clean_cap(item.get("cap"))
+    if cap is None:
+        return "bad_cap"
+    inst = item.get("instance")
+    if inst is not None and inst != "":
+        if not isinstance(inst, str) or not CAP_RE.match(inst):
+            return "bad_instance"
+    row["device"] = item["device"]
+    row["cap"] = cap
+    if inst:
+        row["instance"] = inst
+    return ""
+
+
+def _clean_days(days: Any) -> List[int]:
+    return [int(d) for d in days if isinstance(d, (int, float)) and 0 <= int(d) <= 6][:7]
+
+
+def _trigger_item(item: Any) -> Tuple[Optional[Dict[str, Any]], str]:
+    if not isinstance(item, dict):
+        return None, "not_object"
+    kind = item.get("kind")
+    if kind not in TRIGGER_KINDS:
+        return None, "unknown_kind"
+    row: Dict[str, Any] = {"kind": kind}
+    if kind == "state":
+        reason = _clean_target(item, row)
+        if reason:
+            return None, reason
+        if not _clean_state_op(item, row):
+            return None, "bad_value"
+    elif kind == "time":
+        at = str(item.get("at") or "")
+        if not re.match(r"^\d{2}:\d{2}$", at):
+            return None, "bad_value"
+        row["at"] = at
+        if isinstance(item.get("days"), list):
+            row["days"] = _clean_days(item["days"])
+    elif kind == "sun":
+        row["event"] = "sunset" if item.get("event") == "sunset" else "sunrise"
+        try:
+            row["offset"] = max(-180, min(180, int(item.get("offset") or 0)))
+        except (TypeError, ValueError):
+            row["offset"] = 0
+        # Own coordinates (the cloud's location of the scenario); absent ⇒
+        # the board's (service._geo). Present but not a number in range is
+        # a drop, never a silent fallback to the board's coordinates.
+        for key, lim in (("lat", 90.0), ("lon", 180.0)):
+            v = item.get(key)
+            if v is None:
+                continue
+            if isinstance(v, bool) or not isinstance(v, (int, float)) \
+                    or not -lim <= v <= lim:
+                return None, "bad_value"
+            row[key] = float(v)
+        if isinstance(item.get("days"), list):
+            row["days"] = _clean_days(item["days"])
+    elif kind == "every":
+        try:
+            minutes = int(item.get("minutes") or 0)
+        except (TypeError, ValueError):
+            return None, "bad_value"
+        if not 1 <= minutes <= 60:
+            return None, "bad_value"
+        row["minutes"] = minutes
+    elif kind == "button":
+        if not isinstance(item.get("device"), str) or not ID_RE.match(item["device"]):
+            return None, "bad_device"
+        gesture = item.get("gesture")
+        if gesture not in GESTURES:
+            return None, "bad_value"
+        row["device"] = item["device"]
+        row["gesture"] = gesture
+        inp = item.get("input")
+        if isinstance(inp, str) and BUTTON_INPUT_RE.match(inp):
+            row["input"] = inp
+    elif kind == "presence":
+        if item.get("event") not in ("arrive", "leave"):
+            return None, "bad_value"
+        row["event"] = item["event"]
+    return row, ""
+
+
+def _clean_trigger(raw: Any, drop: Callable[[int, str], None] = _no_drop) -> List[Dict[str, Any]]:
     if not isinstance(raw, list):
         return []
     out = []
-    for item in raw[:8]:
-        if not isinstance(item, dict):
+    for i, item in enumerate(raw):
+        if i >= TRIGGERS_MAX:
+            drop(i, "over_limit")
             continue
-        kind = item.get("kind")
-        if kind not in TRIGGER_KINDS:
+        row, reason = _trigger_item(item)
+        if row is None:
+            drop(i, reason)
             continue
-        row: Dict[str, Any] = {"kind": kind}
-        if kind == "state":
-            if not isinstance(item.get("device"), str) or not ID_RE.match(item["device"]):
-                continue
-            cap = _clean_cap(item.get("cap"))
-            if cap is None:
-                continue
-            row["device"] = item["device"]
-            row["cap"] = cap
-            if not _clean_state_op(item, row):
-                continue
-        elif kind == "time":
-            at = str(item.get("at") or "")
-            if not re.match(r"^\d{2}:\d{2}$", at):
-                continue
-            row["at"] = at
-            days = item.get("days")
-            if isinstance(days, list):
-                row["days"] = [int(d) for d in days if isinstance(d, (int, float)) and 0 <= int(d) <= 6][:7]
-        elif kind == "sun":
-            row["event"] = "sunset" if item.get("event") == "sunset" else "sunrise"
-            try:
-                row["offset"] = max(-180, min(180, int(item.get("offset") or 0)))
-            except (TypeError, ValueError):
-                row["offset"] = 0
-        elif kind == "every":
-            try:
-                minutes = int(item.get("minutes") or 0)
-            except (TypeError, ValueError):
-                continue
-            if not 1 <= minutes <= 60:
-                continue
-            row["minutes"] = minutes
-        elif kind == "button":
-            if not isinstance(item.get("device"), str) or not ID_RE.match(item["device"]):
-                continue
-            gesture = item.get("gesture")
-            if gesture not in GESTURES:
-                continue
-            row["device"] = item["device"]
-            row["gesture"] = gesture
-            inp = item.get("input")
-            if isinstance(inp, str) and BUTTON_INPUT_RE.match(inp):
-                row["input"] = inp
-        elif kind == "presence":
-            if item.get("event") not in ("arrive", "leave"):
-                continue
-            row["event"] = item["event"]
         out.append(row)
     return out
 
 
-def _clean_condition(raw: Any) -> Dict[str, Any]:
+def _condition_item(item: Any) -> Tuple[Optional[Dict[str, Any]], str]:
+    if not isinstance(item, dict):
+        return None, "not_object"
+    kind = item.get("kind")
+    if kind == "time_window":
+        preset = item.get("preset")
+        if preset in ("any", "day", "night"):
+            return {"kind": "time_window", "preset": preset}, ""
+        fr, to = str(item.get("from") or ""), str(item.get("to") or "")
+        if re.match(r"^\d{2}:\d{2}$", fr) and re.match(r"^\d{2}:\d{2}$", to):
+            return {"kind": "time_window", "from": fr, "to": to}, ""
+        return None, "bad_value"
+    if kind == "weekday":
+        row: Dict[str, Any] = {"kind": "weekday"}
+        days = item.get("days")
+        if isinstance(days, list) and days:
+            row["days"] = _clean_days(days)
+            if not row["days"]:
+                return None, "bad_value"
+        elif item.get("preset") in ("workday", "weekend"):
+            row["preset"] = item["preset"]
+        else:
+            return None, "bad_value"
+        return row, ""
+    if kind == "mode":
+        if item.get("value") in HOME_MODES:
+            return {"kind": "mode", "value": item["value"]}, ""
+        return None, "bad_value"
+    if kind == "state":
+        row = {"kind": "state"}
+        reason = _clean_target(item, row)
+        if reason:
+            return None, reason
+        # Conditions are level-only (contract: no `changed`); for_s asks
+        # the level to hold steadily for N seconds. Edge/event ops keep
+        # their steady-state level meaning («is above», «is inside the
+        # range», «is open») — the engine evaluates them as levels.
+        if not _clean_state_op(item, row, allow_changed=False):
+            return None, "bad_value"
+        op = row.get("op")
+        if op == "rises_above":
+            row["op"] = ">"
+        elif op == "drops_below":
+            row["op"] = "<"
+        elif op in ("motion_detected", "opened"):
+            row["op"] = "=="
+            row["value"] = 1
+        elif op in ("motion_cleared", "closed"):
+            row["op"] = "=="
+            row["value"] = 0
+        # enters_range / leaves_range stay as-is: level «inside/outside».
+        try:
+            for_s = int(item.get("for_s") or 0)
+        except (TypeError, ValueError):
+            for_s = 0
+        if for_s > 0:
+            row["for_s"] = min(for_s, 86400)
+        return row, ""
+    return None, "unknown_kind"
+
+
+def _clean_condition(raw: Any, drop: Callable[[int, str], None] = _no_drop) -> Dict[str, Any]:
     if not isinstance(raw, dict):
         return {}
     key = "any" if isinstance(raw.get("any"), list) else "all"
     items = raw.get(key) if isinstance(raw.get(key), list) else []
     cleaned = []
-    for item in items[:8]:
-        if not isinstance(item, dict):
+    for i, item in enumerate(items):
+        if i >= CONDITIONS_MAX:
+            drop(i, "over_limit")
             continue
-        kind = item.get("kind")
-        if kind == "time_window":
-            preset = item.get("preset")
-            if preset in ("any", "day", "night"):
-                cleaned.append({"kind": "time_window", "preset": preset})
-                continue
-            fr, to = str(item.get("from") or ""), str(item.get("to") or "")
-            if re.match(r"^\d{2}:\d{2}$", fr) and re.match(r"^\d{2}:\d{2}$", to):
-                cleaned.append({"kind": "time_window", "from": fr, "to": to})
-        elif kind == "weekday":
-            row: Dict[str, Any] = {"kind": "weekday"}
-            days = item.get("days")
-            if isinstance(days, list) and days:
-                row["days"] = [int(d) for d in days
-                               if isinstance(d, (int, float)) and 0 <= int(d) <= 6][:7]
-                if not row["days"]:
-                    continue
-            elif item.get("preset") in ("workday", "weekend"):
-                row["preset"] = item["preset"]
-            else:
-                continue
-            cleaned.append(row)
-        elif kind == "mode":
-            if item.get("value") in HOME_MODES:
-                cleaned.append({"kind": "mode", "value": item["value"]})
-        elif kind == "state":
-            if not (isinstance(item.get("device"), str) and ID_RE.match(item["device"])):
-                continue
-            cap = _clean_cap(item.get("cap"))
-            if cap is None:
-                continue
-            row = {"kind": "state", "device": item["device"], "cap": cap}
-            # Conditions are level-only (contract: no `changed`); for_s asks
-            # the level to hold steadily for N seconds. Edge/event ops keep
-            # their steady-state level meaning («is above», «is inside the
-            # range», «is open») — the engine evaluates them as levels.
-            if not _clean_state_op(item, row, allow_changed=False):
-                continue
-            op = row.get("op")
-            if op == "rises_above":
-                row["op"] = ">"
-            elif op == "drops_below":
-                row["op"] = "<"
-            elif op in ("motion_detected", "opened"):
-                row["op"] = "=="
-                row["value"] = 1
-            elif op in ("motion_cleared", "closed"):
-                row["op"] = "=="
-                row["value"] = 0
-            # enters_range / leaves_range stay as-is: level «inside/outside».
-            try:
-                for_s = int(item.get("for_s") or 0)
-            except (TypeError, ValueError):
-                for_s = 0
-            if for_s > 0:
-                row["for_s"] = min(for_s, 86400)
-            cleaned.append(row)
+        row, reason = _condition_item(item)
+        if row is None:
+            drop(i, reason)
+            continue
+        cleaned.append(row)
     return {key: cleaned} if cleaned else {}
 
 
-def _clean_action(raw: Any, scene_only: bool = False) -> Optional[List[Dict[str, Any]]]:
+def _action_item(item: Any, scene_only: bool,
+                 targets: Any) -> Tuple[Optional[Dict[str, Any]], str]:
+    if not isinstance(item, dict):
+        return None, "not_object"
+    kind = item.get("kind")
+    if kind not in ACTION_KINDS:
+        return None, "unknown_kind"
+    if scene_only and kind != "set":
+        return None, "not_in_scene"  # a scene IS a list of set actions (contract §Scenes)
+    row: Dict[str, Any] = {"kind": kind}
+    if kind in ("set", "toggle"):
+        reason = _clean_target(item, row)
+        if reason:
+            return None, reason
+        if kind == "set":
+            row["value"] = item.get("value")
+            try:
+                transition = float(item.get("transition_s") or 0)
+            except (TypeError, ValueError):
+                transition = 0.0
+            if transition > 0:
+                row["transition_s"] = min(transition, 300.0)
+    elif kind == "ramp":
+        if not isinstance(item.get("device"), str) or not ID_RE.match(item["device"]):
+            return None, "bad_device"
+        if not isinstance(item.get("to"), (int, float)) or isinstance(item.get("to"), bool):
+            return None, "bad_value"
+        try:
+            seconds = float(item.get("seconds") or 0)
+        except (TypeError, ValueError):
+            return None, "bad_value"
+        if not 1.0 <= seconds <= 300.0:
+            return None, "bad_value"
+        reason = _clean_target(item, row)
+        if reason:
+            return None, reason
+        row["to"] = item.get("to")
+        row["seconds"] = seconds
+    elif kind == "delay":
+        try:
+            row["seconds"] = max(1, min(300, int(item.get("seconds") or 1)))
+        except (TypeError, ValueError):
+            return None, "bad_value"
+    elif kind in ("scenario", "scene"):
+        if not isinstance(item.get("id"), str) or not ID_RE.match(item["id"]):
+            return None, "bad_id"
+        row["id"] = item["id"]
+    elif kind == "mode":
+        if item.get("value") not in HOME_MODES:
+            return None, "bad_value"
+        row["value"] = item["value"]
+    elif kind == "notify":
+        text = str(item.get("text") or "").strip()[:240]
+        if not text:
+            return None, "bad_value"
+        row["text"] = text
+    elif kind == "http":
+        url = str(item.get("url") or "").strip()[:http_guard.URL_MAX]
+        # Static half of the target policy (no DNS here); the engine
+        # resolves and re-checks at request time (http_guard).
+        if http_guard.check_url(url, resolve=False):
+            return None, "bad_url"
+        row["url"] = url
+        row["method"] = "POST" if str(item.get("method") or "").upper() == "POST" else "GET"
+        if item.get("body") is not None:
+            row["body"] = str(item.get("body"))[:2000]
+    if targets is not None and kind in _WRITE_KINDS:
+        _topic, reason = targets.resolve(row["device"], row["cap"], row.get("instance", ""))
+        if reason:
+            return None, reason
+    return row, ""
+
+
+def _clean_action(raw: Any, scene_only: bool = False,
+                  drop: Callable[[int, str], None] = _no_drop,
+                  targets: Any = None) -> List[Dict[str, Any]]:
+    """`targets` (a device_index.DeviceIndex, or None to skip) drops a
+    set/toggle/ramp the Alice device document cannot resolve."""
     if not isinstance(raw, list):
         return []
     out = []
-    for item in raw[:20]:
-        if not isinstance(item, dict):
+    for i, item in enumerate(raw):
+        if i >= ACTIONS_MAX:
+            drop(i, "over_limit")
             continue
-        kind = item.get("kind")
-        if kind not in ACTION_KINDS:
+        row, reason = _action_item(item, scene_only, targets)
+        if row is None:
+            drop(i, reason)
             continue
-        if scene_only and kind != "set":
-            continue  # a scene IS a list of set actions (contract §Scenes)
-        row = {"kind": kind}
-        if kind in ("set", "toggle"):
-            if not isinstance(item.get("device"), str) or not ID_RE.match(item["device"]):
-                continue
-            cap = _clean_cap(item.get("cap"))
-            if cap is None:
-                continue
-            row["device"] = item["device"]
-            row["cap"] = cap
-            if kind == "set":
-                row["value"] = item.get("value")
-                try:
-                    transition = float(item.get("transition_s") or 0)
-                except (TypeError, ValueError):
-                    transition = 0.0
-                if transition > 0:
-                    row["transition_s"] = min(transition, 300.0)
-        elif kind == "ramp":
-            if not isinstance(item.get("device"), str) or not ID_RE.match(item["device"]):
-                continue
-            if not isinstance(item.get("to"), (int, float)) or isinstance(item.get("to"), bool):
-                continue
-            try:
-                seconds = float(item.get("seconds") or 0)
-            except (TypeError, ValueError):
-                continue
-            if not 1.0 <= seconds <= 300.0:
-                continue
-            cap = _clean_cap(item.get("cap"))
-            if cap is None:
-                continue
-            row["device"] = item["device"]
-            row["cap"] = cap
-            row["to"] = item.get("to")
-            row["seconds"] = seconds
-        elif kind == "delay":
-            try:
-                row["seconds"] = max(1, min(300, int(item.get("seconds") or 1)))
-            except (TypeError, ValueError):
-                continue
-        elif kind in ("scenario", "scene"):
-            if not isinstance(item.get("id"), str) or not ID_RE.match(item["id"]):
-                continue
-            row["id"] = item["id"]
-        elif kind == "mode":
-            if item.get("value") not in HOME_MODES:
-                continue
-            row["value"] = item["value"]
-        elif kind == "notify":
-            text = str(item.get("text") or "").strip()[:240]
-            if not text:
-                continue
-            row["text"] = text
-        elif kind == "http":
-            url = str(item.get("url") or "").strip()[:http_guard.URL_MAX]
-            # Static half of the target policy (no DNS here); the engine
-            # resolves and re-checks at request time (http_guard).
-            if http_guard.check_url(url, resolve=False):
-                continue
-            row["url"] = url
-            row["method"] = "POST" if str(item.get("method") or "").upper() == "POST" else "GET"
-            if item.get("body") is not None:
-                row["body"] = str(item.get("body"))[:2000]
         out.append(row)
     return out
 
@@ -665,7 +744,17 @@ def _summary(s: Dict[str, Any]) -> str:
     return "if %s then %s" % (t0, a0)
 
 
-def validate_row(body: Dict[str, Any], existing_id: Optional[str] = None) -> Tuple[Optional[Dict[str, Any]], str]:
+def validate_row(body: Dict[str, Any], existing_id: Optional[str] = None,
+                 dropped: Optional[List[Dict[str, Any]]] = None,
+                 targets: Any = None) -> Tuple[Optional[Dict[str, Any]], str]:
+    """Clean one scenario body. Every trigger / condition / action element
+    it drops is appended to `dropped` as {part, index, reason}; whether a
+    drop refuses the save is `apply_command`'s call (`_checked_row`)."""
+    sink: List[Dict[str, Any]] = dropped if dropped is not None else []
+
+    def drop_in(part: str) -> Callable[[int, str], None]:
+        return lambda i, reason: sink.append({"part": part, "index": i, "reason": reason})
+
     name = body.get("name")
     if not isinstance(name, str):
         return None, "invalid name"
@@ -676,15 +765,20 @@ def validate_row(body: Dict[str, Any], existing_id: Optional[str] = None) -> Tup
     if sid and not ID_RE.match(sid):
         return None, "invalid id"
     typ = body.get("type") if body.get("type") in TYPES else "block"
+    for part in ("trigger", "action"):
+        raw = body.get(part)
+        if raw and not isinstance(raw, list):
+            sink.append({"part": part, "index": None, "reason": "not_list"})
     row: Dict[str, Any] = {
         "id": sid or "",
         "name": name,
         "enabled": body.get("enabled") is not False,
         "type": typ,
         "order": 0,
-        "trigger": _clean_trigger(body.get("trigger")),
-        "condition": _clean_condition(body.get("condition")),
-        "action": _clean_action(body.get("action"), scene_only=(typ == "scene")),
+        "trigger": _clean_trigger(body.get("trigger"), drop_in("trigger")),
+        "condition": _clean_condition(body.get("condition"), drop_in("condition")),
+        "action": _clean_action(body.get("action"), scene_only=(typ == "scene"),
+                                drop=drop_in("action"), targets=targets),
         "code": str(body.get("code") or "")[:8000] if typ == "code" else "",
         "summary": "",
         "last_run": body.get("last_run"),
@@ -731,6 +825,64 @@ def validate_row(body: Dict[str, Any], existing_id: Optional[str] = None) -> Tup
     return row, ""
 
 
+def _gutted(body: Dict[str, Any], row: Dict[str, Any]) -> bool:
+    """The body carried trigger / action content and cleaning kept none of
+    it — storing that row would silently gut the scenario."""
+    for part in ("trigger", "action"):
+        raw = body.get(part)
+        if raw and not row[part]:
+            return True
+    return False
+
+
+#: Body parts of a scenario: a single-path save carrying none of them for an
+#: EXISTING id is a partial update (name / enabled / order / …) that keeps
+#: the stored body (the cloud's enable/disable button sends {id,name,enabled,
+#: type} — it used to store an empty scenario).
+_BODY_PARTS = ("trigger", "condition", "action", "code", "template", "params")
+
+_UNREADABLE_WARNED: Set[str] = set()
+
+
+def _target_index() -> Any:
+    """The Alice device document's index, or None — the target check is
+    skipped (logged once per document path) while the document cannot be
+    read, so an absent or broken document never refuses every save."""
+    path = device_index.devices_path()
+    ix = device_index.load_index(path)
+    if ix.loaded:
+        _UNREADABLE_WARNED.discard(path)
+        return ix
+    if path not in _UNREADABLE_WARNED:
+        _UNREADABLE_WARNED.add(path)
+        LOG.warning("device document %s unreadable: write targets are not "
+                    "checked until it can be read", path)
+    return None
+
+
+def _checked_row(body: Dict[str, Any], existing_id: Optional[str],
+                 targets: Any) -> Tuple[Optional[Dict[str, Any]], str, List[Dict[str, Any]]]:
+    """validate_row + the refusal rule: (row, "", dropped) or
+    (None, error, dropped) — `invalid_elements` for a gutted body."""
+    dropped: List[Dict[str, Any]] = []
+    row, err = validate_row(body, existing_id, dropped=dropped, targets=targets)
+    if err:
+        return None, err, []
+    if _gutted(body, row):
+        return None, "invalid_elements", dropped
+    return row, "", dropped
+
+
+def _refused(err: str, dropped: List[Dict[str, Any]],
+             row_index: Optional[int] = None) -> Dict[str, Any]:
+    out: Dict[str, Any] = {"ok": False, "error": err}
+    if err == "invalid_elements":
+        if row_index is not None:
+            out["row"] = row_index
+        out["dropped"] = dropped
+    return out
+
+
 def _ok(doc: Dict[str, Any], **extra: Any) -> Dict[str, Any]:
     """Success payload: always carry list + journal so the hub cache can patch."""
     out: Dict[str, Any] = {
@@ -765,23 +917,26 @@ def apply_command(body: Dict[str, Any], path: str = DEFAULT_PATH) -> Dict[str, A
         return _ok(doc)
     if body.get("replace") is True and isinstance(body.get("scenarios"), list):
         cleaned = []
+        all_dropped: List[Dict[str, Any]] = []
+        targets = _target_index()
         # Seed the mint with every explicit id of the batch FIRST: an id-less
         # row minted before an explicit row carrying the same id used to land
         # two rows under one id (review 1.0.6.39 N2).
         ids = _explicit_ids(body["scenarios"][:SCENARIOS_MAX])
-        for raw in body["scenarios"][:SCENARIOS_MAX]:
+        for i, raw in enumerate(body["scenarios"][:SCENARIOS_MAX]):
             if not isinstance(raw, dict):
                 continue
-            row, err = validate_row(raw)
+            row, err, dropped = _checked_row(raw, None, targets)
             if err:
-                return {"ok": False, "error": err}
+                return _refused(err, dropped, i)  # all-or-nothing
+            all_dropped += [dict(d, row=i) for d in dropped]
             if not row["id"]:
                 row["id"] = _new_id(ids)
                 ids.append(row["id"])
             cleaned.append(row)
         doc["scenarios"] = cleaned
         save(doc, path)
-        return _ok(doc)
+        return _ok(doc, **({"dropped": all_dropped} if all_dropped else {}))
     sid = body.get("id") if isinstance(body.get("id"), str) else ""
     if body.get("delete") is True:
         if not sid or not ID_RE.match(sid):
@@ -806,17 +961,21 @@ def apply_command(body: Dict[str, Any], path: str = DEFAULT_PATH) -> Dict[str, A
         # Batch upsert: validate ALL entries first so a template compile never
         # lands half-written (docs/contracts/cloud-scenarios.md §Channel).
         cleaned = []
+        all_dropped = []
+        targets = _target_index()
         ids = [s.get("id") for s in doc["scenarios"]
                if isinstance(s, dict) and isinstance(s.get("id"), str)]
         # Explicit batch ids seed the mint too (review 1.0.6.39 N2): a minted
         # id must never collide with an explicit id later in the same batch.
         ids += _explicit_ids(body["upsert"][:16])
-        for raw in body["upsert"][:16]:
+        for i, raw in enumerate(body["upsert"][:16]):
             if not isinstance(raw, dict):
                 return {"ok": False, "error": "bad json"}
-            row, err = validate_row(raw, raw.get("id") if isinstance(raw.get("id"), str) else None)
+            row, err, dropped = _checked_row(
+                raw, raw.get("id") if isinstance(raw.get("id"), str) else None, targets)
             if err:
-                return {"ok": False, "error": err}
+                return _refused(err, dropped, i)
+            all_dropped += [dict(d, row=i) for d in dropped]
             if not row["id"]:
                 row["id"] = _new_id(ids)
             # Every resulting id, client-supplied or minted: the cap is judged
@@ -837,7 +996,7 @@ def apply_command(body: Dict[str, Any], path: str = DEFAULT_PATH) -> Dict[str, A
                 row["last_error"] = prev.get("last_error") or ""
                 doc["scenarios"][idx] = row
         save(doc, path)
-        return _ok(doc)
+        return _ok(doc, **({"dropped": all_dropped} if all_dropped else {}))
     if body.get("ack_notify") is True:
         take_notify(doc, path)
         return _ok(doc, notify_queue=[])
@@ -851,9 +1010,19 @@ def apply_command(body: Dict[str, Any], path: str = DEFAULT_PATH) -> Dict[str, A
         _atomic_write(flag, sid)
         _wait_run_flag(flag)
         return _ok(load(path), run_now=sid)
-    row, err = validate_row(body, sid or None)
+    prev_row = next((s for s in doc["scenarios"] if isinstance(s, dict)
+                     and sid and s.get("id") == sid), None)
+    if prev_row is not None and all(body.get(k) is None for k in _BODY_PARTS):
+        # Partial update: the carried keys over the stored row. The body
+        # parts were validated when stored, so the target check is not
+        # re-run (a device renamed since must not block a rename/disable).
+        merged = {k: v for k, v in prev_row.items() if k not in _LAST_KEYS}
+        merged.update(body)
+        row, err, dropped = _checked_row(merged, sid, None)
+    else:
+        row, err, dropped = _checked_row(body, sid or None, _target_index())
     if err:
-        return {"ok": False, "error": err}
+        return _refused(err, dropped)
     ids = [s.get("id") for s in doc["scenarios"] if isinstance(s, dict)]
     if not row["id"]:
         row["id"] = _new_id([i for i in ids if isinstance(i, str)])
@@ -869,7 +1038,9 @@ def apply_command(body: Dict[str, Any], path: str = DEFAULT_PATH) -> Dict[str, A
         doc["scenarios"][idx] = row
     save(doc, path)
     listed_now = listed(doc)
-    return _ok(doc, scenario=listed_now[next(i for i, s in enumerate(listed_now) if s["id"] == row["id"])])
+    extra: Dict[str, Any] = {"dropped": dropped} if dropped else {}
+    return _ok(doc, scenario=listed_now[next(i for i, s in enumerate(listed_now) if s["id"] == row["id"])],
+               **extra)
 
 
 def append_run(doc: Dict[str, Any], rec: Dict[str, Any], path: str = DEFAULT_PATH) -> None:

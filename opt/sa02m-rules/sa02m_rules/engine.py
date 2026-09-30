@@ -16,6 +16,7 @@ from collections import deque
 from typing import Any, Callable, Deque, Dict, List, Optional, Set, Tuple
 
 from sa02m_rules import http_guard
+from sa02m_rules.device_index import state_key
 from sa02m_rules.store import (
     CAP_RE, EDGE_OPS, EVENT_OPS, GESTURES, HOME_MODES, ID_RE, LEVEL_OPS,
     MAX_WRITES, Journal, charge_http, load, migrate_journal, save)
@@ -91,6 +92,20 @@ def state_get(state: Dict[str, Dict[str, Any]], device: Any, cap: Any) -> Any:
     if not isinstance(device, str) or not isinstance(cap, str):
         return None
     return (state.get(device) or {}).get(cap)
+
+
+def _item_key(item: Dict[str, Any]) -> Any:
+    """The state-mirror key a stored trigger / condition reads: its `cap`,
+    narrowed by `instance` (device_index.state_key) when it names one."""
+    cap = item.get("cap")
+    if not isinstance(cap, str):
+        return cap
+    return state_key(cap, item.get("instance") or "")
+
+
+def _key_parts(key: Tuple[Any, ...]) -> Tuple[Any, Any, str]:
+    """(device, cap[, instance]) as stored in a run's snapshot / turned_on."""
+    return key[0], key[1], (key[2] if len(key) > 2 else "")
 
 
 def _hm(now: float) -> Tuple[int, int, int]:
@@ -179,8 +194,8 @@ class _Run:
         self.http_calls: List[int] = [0]
         self.actions = 0
         self.spent = 0.0
-        self.snapshot: Optional[Dict[Tuple[str, str], Any]] = None
-        self.turned_on: List[Tuple[str, str]] = []
+        self.snapshot: Optional[Dict[Tuple[str, ...], Any]] = None
+        self.turned_on: List[Tuple[str, ...]] = []
         self.source = source
         self.error = ""
         self.root: Optional[Dict[str, Any]] = None
@@ -426,14 +441,20 @@ class Engine:
     # ── writes ─────────────────────────────────────────────────────────
     def _write(self, device: Any, cap: Any, value: Any,
                run: Optional[_Run], from_ramp: bool = False,
-               force: bool = False) -> bool:
+               force: bool = False, instance: str = "") -> bool:
         """Publish a control write. `force` skips the rate window (still
         counted in it) — the `end` safety auto-off must land whatever
-        unrelated traffic filled the window (verdict A7)."""
+        unrelated traffic filled the window (verdict A7). `instance` names
+        one of several capabilities of the `cap` type (device_index); a
+        target the publisher cannot resolve — an ambiguous type without an
+        instance, an unknown instance — comes back as the publisher's reason
+        string and is never guessed: nothing published, `run.error` set."""
         if not isinstance(device, str) or not isinstance(cap, str):
             return False
         if not ID_RE.match(device) or not CAP_RE.match(cap):
             return False  # every caller's names reach an MQTT topic (A2)
+        if instance and (not isinstance(instance, str) or not CAP_RE.match(instance)):
+            return False
         now = self._now()
         win = self._writes_win
         while win and now - win[0] > WRITE_WINDOW_S:
@@ -442,18 +463,25 @@ class Engine:
             if run is not None:
                 run.error = "write cap"
             return False
+        skey = state_key(cap, instance)
+        before = state_get(self.state, device, skey)
+        if not from_ramp:
+            self._cancel("ramp:%s:%s" % (device, skey))
+        refused = (self._pub(device, cap, value, instance) if instance
+                   else self._pub(device, cap, value))
+        if isinstance(refused, str) and refused:
+            if run is not None:
+                run.error = refused
+            return False
         if run is not None:
-            key = (device, cap)
+            key: Tuple[str, ...] = (device, cap, instance) if instance else (device, cap)
             if run.snapshot is not None and key not in run.snapshot \
                     and len(run.snapshot) < SNAPSHOT_MAX:
-                run.snapshot[key] = state_get(self.state, device, cap)
+                run.snapshot[key] = before
             if cap == "on_off" and _truthy(value) and key not in run.turned_on:
                 run.turned_on.append(key)
-        if not from_ramp:
-            self._cancel("ramp:%s:%s" % (device, cap))
-        self._pub(device, cap, value)
         win.append(now)
-        self.state.setdefault(device, {})[cap] = value
+        self.state.setdefault(device, {})[skey] = value
         return True
 
     # ── events in ──────────────────────────────────────────────────────
@@ -594,7 +622,8 @@ class Engine:
             if kind == "boot" and event.get("kind") == "boot":
                 return True
             if kind == "state" and event.get("kind") == "state":
-                if event.get("device") != tr.get("device") or event.get("cap") != tr.get("cap"):
+                if event.get("device") != tr.get("device") \
+                        or event.get("cap") != _item_key(tr):
                     continue
                 op = tr.get("op") or "=="
                 if op == "changed":
@@ -726,7 +755,9 @@ class Engine:
                     continue
                 if not item.get("for_s"):
                     continue
-                key = (str(item.get("device")), str(item.get("cap") or "on_off"))
+                key = (str(item.get("device")),
+                       state_key(str(item.get("cap") or "on_off"),
+                                 item.get("instance") or ""))
                 self._for_s_index.setdefault(key, []).append((s["id"], ci, item))
                 # Seed from the current mirror so a value that already holds
                 # starts its hold clock now, not on the next MQTT update.
@@ -795,7 +826,7 @@ class Engine:
             return self.home_mode() == str(item.get("value") or "home")
         if kind == "state":
             holds = self._cond_state_level(
-                item, state_get(self.state, item.get("device"), item.get("cap")))
+                item, state_get(self.state, item.get("device"), _item_key(item)))
             for_s = item.get("for_s")
             if not for_s:
                 return holds
@@ -883,7 +914,14 @@ class Engine:
                         self._run(s, "time", source="scenario")
                     break
                 if kind == "sun":
-                    rise, sett = sun_times(now, self.lat, self.lon)
+                    days = tr.get("days")
+                    if isinstance(days, list) and days and _hm(now)[2] not in days:
+                        continue
+                    # The trigger's own coordinates when it carries them
+                    # (store-validated numbers), the board's otherwise.
+                    lat = tr.get("lat") if isinstance(tr.get("lat"), (int, float)) else self.lat
+                    lon = tr.get("lon") if isinstance(tr.get("lon"), (int, float)) else self.lon
+                    rise, sett = sun_times(now, float(lat), float(lon))
                     target = sett if tr.get("event") == "sunset" else rise
                     target += float(tr.get("offset") or 0) * 60.0
                     if abs(now - target) > 30:
@@ -980,6 +1018,7 @@ class Engine:
                    frames: List[list]) -> Optional[str]:
         """True = keep going, "pushed" = child frame on the stack, None = abort."""
         kind = act.get("kind")
+        inst = act.get("instance") if isinstance(act.get("instance"), str) else ""
         if kind == "set":
             if run.writes >= MAX_WRITES:
                 run.error = "write cap"
@@ -990,19 +1029,19 @@ class Engine:
             if transition > 0 and num is not None:
                 self._start_ramp(run, str(act.get("device")),
                                  str(act.get("cap") or "on_off"),
-                                 num, transition)
+                                 num, transition, inst)
             else:
                 self._write(act.get("device"), str(act.get("cap") or "on_off"),
-                            value, run)
+                            value, run, instance=inst)
             run.writes += 1
         elif kind == "toggle":
             if run.writes >= MAX_WRITES:
                 run.error = "write cap"
                 return None
             cur = state_get(self.state, act.get("device"),
-                            str(act.get("cap") or "on_off"))
+                            state_key(str(act.get("cap") or "on_off"), inst))
             self._write(act.get("device"), str(act.get("cap") or "on_off"),
-                        0 if _truthy(cur) else 1, run)
+                        0 if _truthy(cur) else 1, run, instance=inst)
             run.writes += 1
         elif kind == "ramp":
             if run.writes >= MAX_WRITES:
@@ -1010,7 +1049,8 @@ class Engine:
                 return None
             self._start_ramp(run, str(act.get("device")),
                              str(act.get("cap") or "on_off"),
-                             float(act.get("to")), float(act.get("seconds") or 1))
+                             float(act.get("to")), float(act.get("seconds") or 1),
+                             inst)
             run.writes += 1
         elif kind == "mode":
             self.set_home_mode(str(act.get("value") or ""))
@@ -1070,20 +1110,22 @@ class Engine:
 
     # ── ramp ───────────────────────────────────────────────────────────
     def _start_ramp(self, run: Optional[_Run], device: str, cap: str,
-                    to: float, seconds: float) -> None:
+                    to: float, seconds: float, instance: str = "") -> None:
         seconds = max(1.0, min(300.0, seconds))
-        cur = _as_num(state_get(self.state, device, cap))
+        skey = state_key(cap, instance)
+        cur = _as_num(state_get(self.state, device, skey))
         start = cur if cur is not None else 0.0
         steps = max(1, min(30, int(seconds / 2)))
         if run is not None and run.snapshot is not None:
-            key = (device, cap)
-            if key not in run.snapshot and len(run.snapshot) < SNAPSHOT_MAX:
-                run.snapshot[key] = state_get(self.state, device, cap)
-        key = "ramp:%s:%s" % (device, cap)
+            snap_key: Tuple[str, ...] = (device, cap, instance) if instance else (device, cap)
+            if snap_key not in run.snapshot and len(run.snapshot) < SNAPSHOT_MAX:
+                run.snapshot[snap_key] = state_get(self.state, device, skey)
+        key = "ramp:%s:%s" % (device, skey)
         self._cancel(key)
         self._schedule(seconds / steps, "ramp", key,
-                       {"device": device, "cap": cap, "from": start,
-                        "to": to, "i": 0, "n": steps, "dt": seconds / steps})
+                       {"device": device, "cap": cap, "instance": instance,
+                        "from": start, "to": to, "i": 0, "n": steps,
+                        "dt": seconds / steps})
 
     def _ramp_step(self, key: str, payload: Dict[str, Any], due: float) -> None:
         payload["i"] += 1
@@ -1097,7 +1139,7 @@ class Engine:
         else:
             value = round(value, 2)
         self._write(payload["device"], payload["cap"], value, None,
-                    from_ramp=True)
+                    from_ramp=True, instance=payload.get("instance") or "")
         if i < n:
             # Due-relative, not fire-relative: a late tick must not stretch
             # the ramp (a 1 Hz service tick can lag under load).
@@ -1109,13 +1151,17 @@ class Engine:
         self._publish_tpl_state(sid, "end_after_s", 0)
         refused = False
         if payload.get("mode") == "off":
-            for device, cap in payload.get("turned_on") or []:
-                refused |= not self._write(device, cap, 0, None, force=True)
+            for key in payload.get("turned_on") or []:
+                device, cap, inst = _key_parts(key)
+                refused |= not self._write(device, cap, 0, None, force=True,
+                                           instance=inst)
         elif payload.get("mode") == "restore":
             snap = payload.get("snapshot") or {}
-            for (device, cap), value in snap.items():
+            for key, value in snap.items():
+                device, cap, inst = _key_parts(key)
                 if value is not None:
-                    refused |= not self._write(device, cap, value, None, force=True)
+                    refused |= not self._write(device, cap, value, None,
+                                               force=True, instance=inst)
         if refused:
             # Never silent: the load stays on and the cloud must see why.
             s = self._scenario(sid)

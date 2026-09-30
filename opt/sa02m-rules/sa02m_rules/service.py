@@ -27,6 +27,9 @@ _HERE = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 if _HERE not in sys.path:
     sys.path.insert(0, _HERE)
 
+# load_mqtt_index is re-exported: callers and tests read the index from here.
+from sa02m_rules.device_index import (  # noqa: F401
+    DeviceIndex, cap_short, devices_path, load_index, load_mqtt_index, state_key)
 from sa02m_rules.engine import Engine
 from sa02m_rules.store import CAP_RE, DEFAULT_PATH, ID_RE, load
 
@@ -35,8 +38,7 @@ MQTT_PORT = int(os.environ.get("SA02M_MQTT_PORT", "1883"))
 LAT = float(os.environ.get("SA02M_LAT", "55.75"))
 LON = float(os.environ.get("SA02M_LON", "37.62"))
 PATH = os.environ.get("SA02M_RULES_PATH", DEFAULT_PATH)
-ALICE_DEVICES = os.environ.get(
-    "SA02M_ALICE_DEVICES", "/etc/sa02m-alice/sa02m-alice-devices.conf")
+ALICE_DEVICES = devices_path()
 
 #: Our own virtual device per scenario (contract cloud-scenarios.md §MQTT
 #: mirror). `RUN_CONTROL` is its ONE command control: `<device>/controls/run/on`
@@ -59,43 +61,6 @@ def subscribe_all(client: Any) -> None:
         client.subscribe(topic, qos=1)
 
 
-def cap_short(raw: str) -> str:
-    s = (raw or "").strip()
-    if s.startswith("devices.capabilities."):
-        return s.rsplit(".", 1)[-1]
-    return s or "on_off"
-
-
-def load_mqtt_index(path: str = ALICE_DEVICES):
-    """Alice device id + cap short name → MQTT state topic (no `/on`)."""
-    by_dev_cap: Dict[str, Any] = {}
-    by_topic: Dict[str, Any] = {}
-    readonly = set()
-    try:
-        with open(path, encoding="utf-8") as fh:
-            data = json.load(fh)
-    except (OSError, ValueError, TypeError):
-        return by_dev_cap, by_topic, readonly
-    for d in data.get("devices") if isinstance(data, dict) else []:
-        if not isinstance(d, dict):
-            continue
-        did = str(d.get("id") or "").strip()
-        if not did:
-            continue
-        for cap in d.get("capabilities") or []:
-            if not isinstance(cap, dict):
-                continue
-            mqtt = str(cap.get("mqtt") or "").rstrip("/")
-            if not mqtt:
-                continue
-            short = cap_short(str(cap.get("type") or ""))
-            by_dev_cap[(did, short)] = mqtt
-            by_topic[mqtt] = (did, short)
-            if cap.get("writable") is False:
-                readonly.add((did, short))
-    return by_dev_cap, by_topic, readonly
-
-
 def _geo() -> tuple:
     for cand in ("/etc/sa02m-alice/location.json", "/etc/sa02m/location.json"):
         try:
@@ -115,9 +80,7 @@ class RulesApp:
         self._last_mtime = 0.0
         self._alice_mtime = 0.0
         self._alice_path = ALICE_DEVICES
-        self._by_dev_cap: Dict[Any, str] = {}
-        self._by_topic: Dict[str, Any] = {}
-        self._readonly = set()
+        self._index = DeviceIndex()
         self._inbox: "queue.Queue[tuple]" = queue.Queue(maxsize=INBOX_MAX)
         self._dropped = 0
         self.reload_index()
@@ -136,36 +99,58 @@ class RulesApp:
             self._last_mtime = 0.0
 
     def caps_of(self, device: str) -> tuple:
-        return tuple(short for (did, short) in self._by_dev_cap if did == device)
+        return self._index.caps_of(device)
 
     def reload_index(self) -> None:
         try:
             mtime = os.path.getmtime(self._alice_path)
         except OSError:
             mtime = 0.0
-        if mtime == self._alice_mtime and self._by_dev_cap:
+        if mtime == self._alice_mtime and self._index.loaded:
             return
-        self._by_dev_cap, self._by_topic, self._readonly = load_mqtt_index(self._alice_path)
+        self._index = load_index(self._alice_path)
         self._alice_mtime = mtime
 
     def mqtt_topic(self, device: str, cap: str) -> str:
         short = cap_short(cap)
-        mapped = self._by_dev_cap.get((device, short))
+        mapped = self._index.cap_topics.get((device, short))
         if mapped:
             return mapped
         return "/devices/%s/controls/%s" % (device, short)
 
-    def pub(self, device: str, cap: str, value: Any) -> None:
+    def target_topic(self, device: str, short: str, instance: str = "") -> tuple:
+        """(state topic, "") or (None, reason) for a write. A device the
+        Alice document knows is resolved by device_index — an ambiguous type
+        without an instance or an unknown instance is refused, never guessed
+        (the last-listed capability used to win). An unlisted cap of a known
+        device, and any device the document does not know, keep the raw
+        `/devices/<device>/controls/<cap>` fallback (the store refuses such
+        targets at save while the document is readable)."""
+        if device in self._index.devices:
+            topic, reason = self._index.resolve(device, short, instance)
+            if topic:
+                return topic, ""
+            if reason == "ambiguous_target" or instance:
+                return None, reason
+        elif instance:
+            return None, "unknown_target"
+        return "/devices/%s/controls/%s" % (device, short), ""
+
+    def pub(self, device: str, cap: str, value: Any, instance: str = "") -> Any:
+        """Publish a control write. Returns None, or a reason string when
+        the target cannot be resolved (the engine journals it as the run's
+        `last_error`)."""
         if not device or not cap:
-            return
+            return None
         short = cap_short(cap)
         # Last line before the wire: both scenario paths (block actions and
         # the sandbox's Hub.set) end here, so this is where a name that
         # escapes its topic segment — a wildcard, a `/`, whitespace — is
         # stopped whatever let it through upstream. Regex home: store.
-        if not ID_RE.match(str(device)) or not CAP_RE.match(str(short)):
+        if not ID_RE.match(str(device)) or not CAP_RE.match(str(short)) \
+                or (instance and not CAP_RE.match(str(instance))):
             LOG.warning("publish refused: bad device/cap %r/%r", device, short)
-            return
+            return None
         if str(device).startswith(RULES_DEVICE_PREFIX):
             # Our own virtual devices are OURS: `pub_state` writes their
             # retained state and nothing writes their `/on`. Without this a
@@ -173,15 +158,21 @@ class RulesApp:
             # the intake below hands straight back to the engine — a scenario
             # able to re-trigger itself through the broker.
             LOG.warning("publish refused: %s is a scenario device", device)
-            return
-        if (device, short) in self._readonly:
-            return
-        topic = self.mqtt_topic(device, cap) + "/on"
+            return None
+        key = state_key(short, instance)
+        if (device, key) in self._index.readonly:
+            return None
+        topic, reason = self.target_topic(str(device), short, instance)
+        if not topic:
+            LOG.warning("publish refused: %s/%s%s — %s", device, short,
+                        "[%s]" % instance if instance else "", reason)
+            return reason.replace("_", " ")
         payload = "1" if value in (True, 1, "1", "on", "true") else (
             "0" if value in (False, 0, "0", "off", "false") else str(value)
         )
-        self._publish(topic, payload, retain=False)
-        self.state.setdefault(device, {})[short] = value
+        self._publish(topic + "/on", payload, retain=False)
+        self.state.setdefault(device, {})[key] = value
+        return None
 
     def pub_state(self, device: str, cap: str, value: Any) -> None:
         """State topic (retained) for our own virtual sa02m-rules-* devices —
@@ -260,11 +251,9 @@ class RulesApp:
         if len(parts) != 4 or parts[0] != "devices" or parts[2] != "controls":
             return
         state_topic = "/" + "/".join(parts)
-        mapped = self._by_topic.get(state_topic)
-        if mapped:
-            device, cap = mapped
-        else:
-            device, cap = parts[1], parts[3]
+        # Every (device, key) the document binds to this topic: a capability
+        # by its type and/or `type|instance`, a property by its instance.
+        mapped = self._index.topic_keys.get(state_topic)
         try:
             value: Any = json.loads(raw)
         except ValueError:
@@ -272,9 +261,10 @@ class RulesApp:
         self.reload()
         if mapped:
             self.engine.alias_state(parts[1], parts[3], value)
-            self.engine.on_state(device, cap, value)
+            for device, key in mapped:
+                self.engine.on_state(device, key, value)
         else:
-            self.engine.on_state(device, cap, value)
+            self.engine.on_state(parts[1], parts[3], value)
 
     def reload(self) -> None:
         self.reload_index()

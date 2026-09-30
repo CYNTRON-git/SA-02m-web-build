@@ -166,7 +166,12 @@ class Hub:
         device, cap = str(device), str(cap)
         if not ID_RE.match(device) or not CAP_RE.match(cap):
             raise RuntimeError("bad device/cap")
-        self._pub(device, cap, value)
+        # The publisher answers a reason string for a target it will not
+        # guess (an ambiguous range without an instance): the run fails
+        # with it instead of «succeeding» with nothing sent.
+        refused = self._pub(device, cap, value)
+        if isinstance(refused, str) and refused:
+            raise RuntimeError(refused)
         self._writes[0] += 1
 
     def subscribe(self, device: str, cap: str = "on_off") -> Any:
