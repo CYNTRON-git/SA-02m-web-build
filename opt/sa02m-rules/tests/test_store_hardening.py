@@ -1010,14 +1010,21 @@ class OverRangeIntFieldTests(_Tmp):
                                  "trigger": [{"kind": "every", "minutes": True},
                                              {"kind": "sun", "offset": True}],
                                  "action": [{"kind": "delay", "seconds": True},
+                                            {"kind": "set", "device": "l", "cap": "b",
+                                             "value": 1, "transition_s": True},
+                                            {"kind": "ramp", "device": "l", "cap": "b",
+                                             "to": 5, "seconds": True},
                                             {"kind": "notify", "text": "x"}]}, self.path)
         self.assertTrue(r["ok"], r)
         s = self.stored()[0]
         self.assertEqual((s["order"], s["template_version"]), (0, 1))
         self.assertEqual(s["trigger"], [{"kind": "sun", "event": "sunrise", "offset": 0}])
+        self.assertEqual(s["action"][0], {"kind": "set", "device": "l", "cap": "b",
+                                          "value": 1})  # transition_s: true is no transition
         self.assertEqual(r.get("dropped"), [
             {"part": "trigger", "index": 0, "reason": "bad_value"},
-            {"part": "action", "index": 0, "reason": "bad_value"}])
+            {"part": "action", "index": 0, "reason": "bad_value"},
+            {"part": "action", "index": 2, "reason": "bad_value"}])  # ramp seconds: true
 
 
 class StrictJsonStoreTests(_Tmp):
@@ -1059,6 +1066,63 @@ class StrictJsonStoreTests(_Tmp):
                     {"part": "trigger", "index": 0, "reason": "bad_value"},
                     {"part": "condition", "index": 0, "reason": "bad_value"}])
                 self._strict()
+
+
+# ── review round 4 ─────────────────────────────────────────────────────
+class ClientLastRunTests(_Tmp):
+    """R4-B1: `last_run` is the board's record of a run; a value the client
+    sends is never stored or echoed (a NaN there broke the strict-JSON
+    answer)."""
+    alice_doc = None
+
+    def _strict_file(self):
+        with open(self.path, encoding="utf-8") as fh:
+            json.loads(fh.read(), parse_constant=lambda c: self.fail("token %s" % c))
+
+    def test_single_and_batch_saves_ignore_a_client_last_run(self):
+        act = [{"kind": "notify", "text": "x"}]
+        for body in ({"name": "t", "last_run": float("nan"), "action": act},
+                     {"upsert": [{"id": "u", "name": "u", "last_run": float("inf"),
+                                  "action": act}]},
+                     {"replace": True, "scenarios": [{"name": "r", "last_run": 12345.0,
+                                                      "action": act}]}):
+            with self.subTest(body=list(body)[0]):
+                r = store.apply_command(body, self.path)
+                self.assertTrue(r["ok"], r)
+                json.dumps(r, allow_nan=False)
+                self._strict_file()
+                self.assertEqual([x["last_run"] for x in r["scenarios"]],
+                                 [None] * len(r["scenarios"]))
+
+
+class ParamsBoundTests(_Tmp):
+    """A14 / A16: an integer past float range inside `params` is stored as
+    null like NaN; the 4 KiB bound is judged on the value as stored."""
+    alice_doc = None
+
+    def _save(self, params):
+        r = store.apply_command({"id": "p", "name": "t", "type": "logic",
+                                 "template": "thermostat", "params": params}, self.path)
+        self.assertTrue(r["ok"], r)
+        json.dumps(r, allow_nan=False)
+        return self.stored()[0].get("params")
+
+    def test_an_over_range_int_becomes_null(self):
+        self.assertEqual(self._save({"day_temp": 10 ** 400, "night_temp": [-10 ** 400, 19]}),
+                         {"day_temp": None, "night_temp": [None, 19]})
+
+    def test_the_bound_is_judged_after_normalising(self):
+        nans = [float("nan")] * 40
+        filler = 4096 - 8 - len(json.dumps({"a": "", "b": nans}, ensure_ascii=False))
+        grows = {"a": "x" * filler, "b": nans}
+        sent = len(json.dumps(grows, ensure_ascii=False))
+        stored = len(json.dumps({"a": "x" * filler, "b": [None] * 40}, ensure_ascii=False))
+        self.assertLessEqual(sent, 4096)
+        self.assertGreater(stored, 4096)          # non-vacuous: it really grows
+        self.assertIsNone(self._save(grows))      # judged as stored ⇒ over the bound
+        shrinks = {"a": "x" * 3000, "big": 10 ** 1500}
+        self.assertGreater(len(json.dumps(shrinks)), 4096)
+        self.assertEqual(self._save(shrinks), {"a": "x" * 3000, "big": None})
 
 
 if __name__ == "__main__":
