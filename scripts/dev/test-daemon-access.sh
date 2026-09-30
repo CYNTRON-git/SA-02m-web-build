@@ -53,7 +53,8 @@
 #
 # Root is required (chown to foreign uids, setpriv). Not root: re-exec through
 # `sudo -n` where that works (the CI runner), else every case is printed as
-# SKIP and the run exits 0 — a SKIP is not a pass (quality-gate-rigor.md).
+# SKIP and the run exits 77 (run.mjs SKIP_EXIT), so the runner reports the row
+# as SKIP, never PASS — a SKIP is not a pass (quality-gate-rigor.md).
 # DAEMON_ACCESS_SRC=<copy> judges another copy of the helper (the RED recipe).
 set -u
 ROOT=$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)
@@ -72,7 +73,7 @@ if [ "$(id -u)" != 0 ]; then
     fi
     for c in A B C D E F G H I J K L; do echo "SKIP  $c needs root (chown to foreign uids, setpriv) — not run (a skip is not a pass)"; done
     echo "test-daemon-access: SKIPPED, NOT PASSED (not root, no sudo -n)"
-    exit 0
+    exit 77
 fi
 
 fails=0
