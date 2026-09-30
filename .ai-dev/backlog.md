@@ -21,6 +21,12 @@ commit's diff of this file).
   `opt/sa02m-flasher/sa02m_flasher/config.py:52`, `service.py:331-336`, `service.py:345-351`,
   `etc/sa02m_flasher.conf:34-35` (the last still states the nginx overwrite unconditionally). Point them at
   `docs/decisions/selective-csrf-policy.md` «Демоны» instead of restating it.
+- [OPEN] 2026-09-30 **[LOW] Alice client reconnect: two claims argued, not tested (1.0.6.66 review N2, N3).**
+  N2: the `accepted == len(topics)` clause of the pass-trust check has no test of its own. N3: the link's
+  lock/ordering discipline (CONNACK side vs pass side, each re-checks the other inside one lock) is argued
+  in review, not pinned — moving `connected.set()` out of the lock keeps every test green.
+- [OPEN] 2026-09-30 **[LOW] `opt/sa02m-alice/sa02m_alice/client/main.py` is 912 lines (1.0.6.66 review A4).**
+  A `decompose` candidate (reconnect/push loop, session lifecycle, status file).
 - [OPEN] 2026-09-29 **[LOW] `test-web-auth.sh` section 8 comment still says «tiny window» (1.0.6.63 review A12).**
   Cases 57–61 now run with a 30 s window and 62 judges expiry with a 1 s window at check time; the
   section header above them should say so. Comment only.
@@ -438,7 +444,7 @@ commit's diff of this file).
   JS↔contract side. Fix direction: a small assertion in the headless driver (the
   linked-state card offers «Отвязать», never «Завершить привязку»).
 
-- [OPEN] 2026-08-27 **[MED] Alice client never resubscribes MQTT after a broker
+- [RESOLVED 1.0.6.66] 2026-08-27 **[MED] Alice client never resubscribes MQTT after a broker
   reconnect.** Subscriptions are taken once, right after `mqtt.connect()`
   (`client/main.py`, the connect path); `loop_start()` reconnects the socket but
   paho does NOT restore subscriptions — the documented idiom is to subscribe

@@ -15,8 +15,9 @@ Machine-facing contract for `opt/sa02m-alice`. Human overview:
   elapses. Caching them was the 1.0.6.16 fix — dropping them left every sensor
   empty in the Alice app until the bridge happened to republish. The rule is
   **per subscription, not per connect**: it covers the burst after Socket.IO
-  connect AND the burst for a topic a reload newly subscribes (a bounded grace
-  window per added topic, `RETAINED_GRACE_S`).
+  connect, the burst for a topic a reload newly subscribes (a bounded grace
+  window per added topic, `RETAINED_GRACE_S`), and the burst after the client
+  re-subscribes on a broker reconnect (§Broker reconnect).
 
 ### Binding inventory — what the picker may offer (1.0.6.38)
 
@@ -521,6 +522,74 @@ in place, without restarting it and without dropping the Socket.IO session:
   instead of being lost. Validating: `tests/test_devices_lock.py` (the real
   contention case needs Linux; it skips loudly elsewhere).
 
+### Broker reconnect (1.0.6.66)
+
+A restart of the local broker — whenever it lands, including before the
+link's first CONNACK — does not leave the client deaf or lying (the one
+unguarded residual is named at the end of this list). paho brings the
+**socket** back by itself (its reconnect thread, delay 1 → 30 s); the client
+owns what the library does not — both profiles, one code path
+(`sa02m_alice/client/mqtt_link.py`):
+
+- **A subscribe pass counts only if it ran whole inside one live session**
+  (connected throughout, every topic accepted by the library). The CURRENT
+  topic set — catalogue + availability `/meta/error` + `uptime_s` + the
+  Yandex unit's auto-provision watch topics — is re-subscribed at QoS 1 from
+  paho's `on_connect` on **every CONNACK past the first**, and on a first
+  CONNACK that follows a pass made before it (the broker closed the fresh
+  socket before accepting it; the pass got `NO_CONN`, or was taken by the
+  library into a socket already dying). A pass that overlaps a CONNACK is
+  re-run once. On a normal start the first CONNACK precedes any pass and
+  subscribes nothing: the main thread's connect pass owns the initial
+  subscribe (after Socket.IO connect + document re-read, under the global
+  retained window — 1.0.6.16 / 1.0.6.19 unchanged). A subscription diff
+  `apply_reload` lost to a down socket is healed by the next full re-subscribe.
+- **The retained burst after a re-subscribe is cached, never reported**: the
+  per-subscription grace (§Topics) is armed for the whole set BEFORE the first
+  SUBSCRIBE goes out. One `origin=snapshot` frame follows each re-subscribe
+  once `RETAINED_GRACE_S` has elapsed and the link is still up (the
+  «Reconnect snapshot» path, §Rate limits) — a link that drops again inside
+  the grace sends nothing until the next session's own grace; the history
+  cadence is held while that push is pending.
+- **While the broker link is down** an action answers `ERROR /
+  DEVICE_UNREACHABLE` for the capability and **nothing is handed to paho** — a
+  QoS 1 publish on a disconnected client is kept by the library and re-sent
+  after the next CONNACK, i.e. a delayed actuation; the history snapshot is not
+  sent (a frozen cache is not current state); `query` still answers from the
+  cache (unchanged). Residual, named: a drop landing between the connected
+  check and paho's own socket test can still queue one message — milliseconds
+  wide on the loopback broker.
+- **Observable**: one INFO journal line per re-subscribe from `on_connect` —
+  `MQTT reconnected (#n, session_present=…): resubscribed K topics` — and two
+  additive status-file keys, `mqtt_connected: bool` / `mqtt_reconnects: int`
+  (§Client status file), written within one watchdog tick of the change;
+  `state` stays `connected` while the gateway session is up.
+- Not changed, on purpose: `clean_session` stays `true` (a persistent session
+  depends on broker persistence and a fixed id, and the image-prep step erases
+  `mosquitto.db`); the client id is `sa02m-alice-<profile>-<pid>` — unique per
+  process, greppable in the broker log. A broker refused at cold start is still
+  labelled `gateway_unreachable` on the card; the journal and `status.message`
+  now name the broker (`MqttUnavailable`).
+- Residual, named: the client counts a SUBSCRIBE the library accepted inside a
+  live session as done and does not read the broker's SUBACK return codes. A
+  broker that refused a topic (`0x80`) would leave that topic deaf with
+  `mqtt_connected: true`; the local listener this client uses (`127.0.0.1:1883`,
+  anonymous by design) carries no ACL that could — `etc/mosquitto/10listeners.conf`
+  sets `per_listener_settings true` and puts the `acl_file` on the 1884
+  listener only.
+
+Validating: `tests/test_mqtt_reconnect_run.py` (through `run()`, **both
+profiles**: the re-subscribe, the re-subscribe after a drop before the first
+CONNACK, one snapshot after the grace and none while deaf — including a drop
+inside the grace — the refused command, the status keys),
+`tests/test_mqtt_link.py` (the link in isolation, including a CONNACK landing
+mid-pass),
+`tests/test_mqtt_link_broker.py` (the real paho against a mini broker — the
+library's callback arity, its own re-dial, retained re-delivery, a broker that
+closes every socket before CONNACK while the initial pass runs, the wire; it
+skips loudly where paho is absent, so CI reports a skip and the dev box / the
+board run it).
+
 ## Socket.IO events (controller ↔ gateway, both profiles)
 
 The package is the smart-home transport; `alice` is a historical name. A
@@ -592,7 +661,9 @@ the command (Yandex scenario: switch + socket on one module in one burst).
 A **scene device** (`/devices/sa02m-rules-…`) is outside all of this: it
 carries no readable state and its silence is never `DEVICE_UNREACHABLE`
 (§Scene devices) — only the device-level `/meta/error` flag can take one
-down.
+down. A command the **broker** cannot take — the client's MQTT link is down
+or the library refuses the publish — is `ERROR / DEVICE_UNREACHABLE` for that
+capability and is never queued for later (§Broker reconnect).
 
 **Unreachable transition (one `device_state`).** When a catalog device
 crosses from reachable to `DEVICE_UNREACHABLE`, the client emits one
@@ -650,9 +721,11 @@ first post-reconnect report leaves the board. Live MQTT still uses `offer`.
 Retained bursts stay cached-not-reported. A `query_devices()` entry with
 neither capabilities nor properties does not emit unless it is a
 `DEVICE_UNREACHABLE` stub from `take_unreachable_transitions` (one per
-down-edge). No `callback/discovery`.
+down-edge). No `callback/discovery`. The same push runs once after a broker
+reconnect, `RETAINED_GRACE_S` after the re-subscribe (§Broker reconnect).
 
-**History snapshot.** While Socket.IO is connected, the same
+**History snapshot.** While Socket.IO is connected **and the broker link is
+up** (§Broker reconnect — not from a frozen cache), the same
 `offer_snapshot` + `flush_now` runs from the MQTT cache: every
 `STATE_SNAPSHOT_S` (30 s) on the **cloud** profile (hub stale bound — do not
 lengthen), and every `STATE_SNAPSHOT_YANDEX_S` (60 s) on the **Yandex**
@@ -735,6 +808,11 @@ permission-blind and returns a false "absent").
   bool, config_watch: bool, …}` — `cert_present` is evaluated by the client on
   EVERY write (`sa02m_alice/client/main.py::_write_status`), so the file is the
   source of cert truth for unprivileged readers. Additive: older keys unchanged.
+  In the `connected` state the file also carries `mqtt_connected: bool` and
+  `mqtt_reconnects: int` (1.0.6.66, §Broker reconnect) — the broker link
+  underneath the gateway session, and the CONNACKs past the first on that
+  link (the client opens a new link, and the count restarts at 0, each time
+  it re-dials the gateway).
 - Перечень состояний — одна строка, один дом в этом документе (её читает
   валидирующий тест; дом в коде — константы `STATE_*` в
   `sa02m_alice/common/constants.py`):

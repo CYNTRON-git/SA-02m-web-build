@@ -43,6 +43,7 @@ from ..common.fw_version import HW_VARIANT, get_fw_version
 from .auto_provision import AutoProvisioner, WATCH_TOPICS
 from .device_registry import DeviceRegistry
 from .fleet_token import FleetTokenError, cloud_identity_present, mint_control_token, read_cloud_identity
+from .mqtt_link import MqttLink
 from .reload_watch import (
     DevicesWatcher,
     RetainedGrace,
@@ -156,9 +157,10 @@ def _emit_cache_snapshot(
 ) -> None:
     """Push the MQTT cache through the rate-bypass snapshot path.
 
-    Reconnect, in-place document reload, and the 30 s history cadence all
-    share this: query is unrated, live `offer` is not. No-op if sender is
-    unset or stopped (`offer_snapshot` already no-ops when stopped).
+    Reconnect, in-place document reload, the MQTT resubscribe after a broker
+    restart (once its retained grace has elapsed), and the 30 s history
+    cadence all share this: query is unrated, live `offer` is not. No-op if
+    sender is unset or stopped (`offer_snapshot` already no-ops when stopped).
     """
     if sender is None:
         return
@@ -305,20 +307,33 @@ def _setup_logging(level: str) -> None:
     )
 
 
-def _mqtt_client(host: str, port: int):
-    try:
-        import paho.mqtt.client as mqtt  # type: ignore
-    except ImportError as exc:
-        raise RuntimeError(
-            "paho-mqtt is not installed (required when client_enabled=true)"
-        ) from exc
-    # paho-mqtt 1.x / 2.x
-    try:
-        client = mqtt.Client(mqtt.CallbackAPIVersion.VERSION1)  # type: ignore[attr-defined]
-    except Exception:
-        client = mqtt.Client()
-    client.connect(host, port, keepalive=60)
-    return client
+def _mqtt_client(
+    host: str,
+    port: int,
+    *,
+    topics=None,
+    grace: Optional[RetainedGrace] = None,
+    on_message=None,
+    client_id: str = "",
+) -> MqttLink:
+    """Connect the broker link and return it (`mqtt_link.MqttLink`).
+
+    The name and the positional `(host, port)` are a test seam — the binding
+    and cloud-profile suites patch this by name and never reach the link —
+    so the link's collaborators arrive as keywords. `run()` passes all four;
+    the defaults only keep the seam's old call shape constructible.
+    """
+    link = MqttLink(
+        host,
+        port,
+        topics=topics or (lambda: ()),
+        grace=grace or RetainedGrace(),
+        grace_s=C.RETAINED_GRACE_S,
+        on_message=on_message or (lambda _c, _u, _m: None),
+        log=log,
+        client_id=client_id,
+    )
+    return link.connect()
 
 
 def _cloud_token_provider(token_url: str):
@@ -476,15 +491,26 @@ def run(profile: str = C.PROFILE_YANDEX) -> int:
     mqtt_host = cfg.get("client", "mqtt_host", fallback=C.DEFAULT_MQTT_HOST)
     mqtt_port = cfg.getint("client", "mqtt_port", fallback=C.DEFAULT_MQTT_PORT)
 
-    mqtt = None
+    mqtt: Optional[MqttLink] = None
     sio: Optional[AliceSocketIO] = None
     sender: Optional[StateSender] = None
     ignore_retained = {"active": True}
 
+    def current_topics():
+        """The set a (re)connect must hold — one home for the union the
+        initial pass subscribes and every later CONNACK re-subscribes."""
+        topics = set(registry.subscribe_topics())
+        if provisioner is not None:
+            topics |= set(WATCH_TOPICS)
+        return topics
+
     def publish(topic: str, payload: str) -> None:
         if mqtt is None:
             raise ConnectionError("MQTT not connected")
-        mqtt.publish(topic, payload, qos=1, retain=False)
+        # Raises while the broker is down or refuses the publish — the
+        # handler then marks the capability DEVICE_UNREACHABLE instead of
+        # answering DONE for a command paho would replay on reconnect.
+        mqtt.publish_command(topic, payload)
 
     def emit_response(data: Dict[str, Any]) -> None:
         if sio is None:
@@ -501,6 +527,14 @@ def run(profile: str = C.PROFILE_YANDEX) -> int:
             sio.emit(C.EVT_DEVICE_STATE, data)
         except Exception as exc:
             log.error("device_state emit failed: %s", exc)
+            return
+        # The only positive evidence that a report left the board; DEBUG so a
+        # bench run can switch it on without touching the default journal.
+        log.debug(
+            "device_state sent: origin=%s devices=%d",
+            data.get("origin"),
+            len((data.get("payload") or {}).get("devices") or []),
+        )
 
     def on_unlink() -> None:
         """Act on the gateway's controller_unlink. Runs on the Socket.IO thread.
@@ -569,12 +603,18 @@ def run(profile: str = C.PROFILE_YANDEX) -> int:
                 sender.flush_now()
 
     def write_connected(message: str) -> None:
+        link = mqtt
         _write_status(
             C.STATE_CONNECTED,
             profile=profile,
             message=message,
             gateway_wss=wss,
             client_enabled=True,
+            # Additive (contract §Client status file): `state` stays
+            # `connected` while the gateway session is up; these two tell the
+            # truth about the broker link underneath it.
+            mqtt_connected=bool(link is not None and link.connected),
+            mqtt_reconnects=int(link.reconnects) if link is not None else 0,
         )
 
     # Main reconnect loop
@@ -603,9 +643,19 @@ def run(profile: str = C.PROFILE_YANDEX) -> int:
                 attempt = 0  # a fresh binding deserves a fresh ladder
                 continue
         try:
-            mqtt = _mqtt_client(mqtt_host, mqtt_port)
-            mqtt.on_message = on_mqtt_message
-            mqtt.loop_start()
+            # The link owns on_message, the loop thread and — on every
+            # CONNACK past the first — the re-subscribe. A per-process client
+            # id: two units and a hand-run instance must never share one (the
+            # broker kicks the older session), and the prefix is greppable in
+            # the broker log.
+            mqtt = _mqtt_client(
+                mqtt_host,
+                mqtt_port,
+                topics=current_topics,
+                grace=grace,
+                on_message=on_mqtt_message,
+                client_id="sa02m-alice-%s-%d" % (profile, os.getpid()),
+            )
             # Subscribe after SIO connect (WB pattern); briefly ignore retained
             ignore_retained["active"] = True
 
@@ -632,11 +682,11 @@ def run(profile: str = C.PROFILE_YANDEX) -> int:
                 # Keep the last good document — a corrupt file must not kill
                 # the connect path, but it must not pass silently either.
                 log.error("device document reload at connect failed: %s", exc)
-            for topic in registry.subscribe_topics():
-                mqtt.subscribe(topic, qos=1)
-            if provisioner is not None:
-                for topic in WATCH_TOPICS:
-                    mqtt.subscribe(topic, qos=1)
+            # Through the link, not a bare subscribe loop: the link records
+            # that this pass ran and whether it ran inside a live session, so
+            # a broker that dropped the socket before its first CONNACK gets
+            # the whole set again on that CONNACK (mqtt_link module doc).
+            mqtt.subscribe_all()
             # Allow retained storm to pass, then accept live updates
             time.sleep(1.0)
             ignore_retained["active"] = False
@@ -647,9 +697,40 @@ def run(profile: str = C.PROFILE_YANDEX) -> int:
             # profile_enabled() already does every tick — a rounding error.
             last_heartbeat = time.monotonic()
             last_snapshot = last_heartbeat
+            # Broker-link bookkeeping. The paho thread only re-subscribes;
+            # the snapshot, the status write and the sender stay here. A
+            # re-subscribe from on_connect is noticed as a change of the
+            # link's `resubscribes` counter, and the refreshed cache is pushed
+            # once, after the same grace window `subscribe_all` armed — never
+            # from the half-refreshed cache inside it. The baseline is 0, not
+            # the current value: the link is fresh on every pass of this
+            # loop, so one that already re-subscribed during the settle sleep
+            # (a CONNACK after a failed initial pass) still gets its push.
+            mqtt_up = bool(mqtt.connected)
+            resubscribes_seen = 0
+            resnap_at: Optional[float] = None
             while not _stop.is_set() and sio.connected and not _unlinked.is_set():
                 if not profile_enabled(profile):
                     break
+                now = time.monotonic()
+                mqtt_now = bool(mqtt.connected)
+                if mqtt_now != mqtt_up:
+                    mqtt_up = mqtt_now
+                    write_connected(
+                        "MQTT reconnected" if mqtt_now
+                        else "MQTT broker disconnected; waiting for reconnect"
+                    )
+                    last_heartbeat = now
+                resubscribes_now = int(mqtt.resubscribes)
+                if resubscribes_now != resubscribes_seen:
+                    resubscribes_seen = resubscribes_now
+                    resnap_at = now + C.RETAINED_GRACE_S
+                if resnap_at is not None and mqtt_up and now >= resnap_at:
+                    resnap_at = None
+                    _emit_cache_snapshot(sender, registry)
+                    write_connected("MQTT reconnected")
+                    last_snapshot = now
+                    last_heartbeat = now
                 if provisioner is not None and provisioner.tick():
                     # We just wrote the document — consume the fingerprint so
                     # the next watcher tick does not reload twice, then subscribe
@@ -688,7 +769,10 @@ def run(profile: str = C.PROFILE_YANDEX) -> int:
                 # Cloud stays at STATE_SNAPSHOT_S (30 s, stale bound).
                 # Yandex uses STATE_SNAPSHOT_YANDEX_S (60 s, graphs).
                 snap_s = C.STATE_SNAPSHOT_S if cloud else C.STATE_SNAPSHOT_YANDEX_S
-                if time.monotonic() - last_snapshot >= snap_s:
+                # Not while the broker link is down (a frozen cache is not
+                # current state) and not while a post-reconnect push is
+                # pending (that one lands once the retained burst settled).
+                if mqtt_up and resnap_at is None and time.monotonic() - last_snapshot >= snap_s:
                     _emit_cache_snapshot(sender, registry)
                     last_snapshot = time.monotonic()
                 if time.monotonic() - last_heartbeat >= C.STATUS_HEARTBEAT_S:
@@ -796,11 +880,7 @@ def run(profile: str = C.PROFILE_YANDEX) -> int:
                 except Exception:
                     pass
             if mqtt:
-                try:
-                    mqtt.loop_stop()
-                    mqtt.disconnect()
-                except Exception:
-                    pass
+                mqtt.close()
     return 0
 
 
