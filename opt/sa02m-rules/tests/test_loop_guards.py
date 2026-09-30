@@ -84,8 +84,11 @@ class StepGuardTests(unittest.TestCase):
         self.assertEqual(self.calls, ["tick", "poll"])
 
     def test_a_raising_document_reload_does_not_end_the_tick(self):
-        """A changed scenarios.json the engine cannot adopt: the tick keeps
-        running on the previous document."""
+        """A reload that raises (adopt itself mocked to raise) does not end
+        the tick: the drain, timers, poll and `.run` flag still run. It does
+        not keep the previous document — `_adopt` swaps the document before
+        arming; a row that cannot be armed is handled per row inside
+        `_adopt` (AdoptGuardTests)."""
         self.app.engine.adopt = _boom
         st = os.stat(self.path)
         os.utime(self.path, (st.st_atime, st.st_mtime + 10))
@@ -164,6 +167,113 @@ class StepGuardTests(unittest.TestCase):
         self.app.tick()
         self.assertFalse(os.path.exists(self.path + ".run"))
         self.assertEqual(self.calls, ["run:nope"])
+
+
+def _every(sid, minutes):
+    return {"id": sid, "name": sid, "enabled": True, "type": "block",
+            "trigger": [{"kind": "every", "minutes": minutes}],
+            "condition": {}, "action": []}
+
+
+def _armed(e):
+    """Timer keys that are live (their generation not cancelled)."""
+    return {key for (_d, _s, _k, key, gen, _p) in e._heap
+            if gen == e._gen.get(key, 0)}
+
+
+class AdoptGuardTests(unittest.TestCase):
+    """Arming is guarded per scenario inside Engine._adopt (review round 1,
+    F2): one row that cannot be armed is logged and skipped, every other row
+    arms — on the hot path (reload) and the cold path (service start), where
+    an unguarded raise crash-looped the unit on the same document."""
+
+    def setUp(self):
+        self.td = tempfile.TemporaryDirectory()
+        self.addCleanup(self.td.cleanup)
+        self.path = os.path.join(self.td.name, "scenarios.json")
+
+    def _save(self, rows):
+        store.save({"scenarios": rows, "runs": [], "notify_queue": [],
+                    "library": "", "vars": {}}, self.path)
+
+    def test_hot_reload_arms_the_rows_after_a_bad_one(self):
+        """The reviewer's probe: [a] → [b(minutes "abc"), c]."""
+        self._save([_every("a", 1)])
+        app = rules_service.RulesApp(_Client(), self.path)
+        self.assertIn("a:every:0", _armed(app.engine))
+        self._save([_every("b", "abc"), _every("c", 1)])
+        st = os.stat(self.path)
+        os.utime(self.path, (st.st_atime, st.st_mtime + 10))
+        with self.assertLogs("sa02m-rules", level="WARNING") as cap:
+            app.tick()
+        armed = _armed(app.engine)
+        # RED on a7fafa6d: c was never armed, a's timer was still live.
+        self.assertIn("c:every:0", armed)
+        self.assertNotIn("a:every:0", armed)
+        self.assertNotIn("b:every:0", armed)
+        self.assertTrue(any("'b'" in r.getMessage() for r in cap.records),
+                        cap.output)
+
+    def test_cold_start_on_a_bad_row_does_not_raise(self):
+        self._save([_every("b", "abc"), _every("c", 1)])
+        with self.assertLogs("sa02m-rules", level="WARNING"):
+            # RED on a7fafa6d: ValueError out of Engine.__init__ — the
+            # restart-loop on the same document.
+            app = rules_service.RulesApp(_Client(), self.path)
+        self.assertIn("c:every:0", _armed(app.engine))
+        self.assertNotIn("b:every:0", _armed(app.engine))
+
+    def test_a_row_that_cannot_be_armed_is_journaled(self):
+        self._save([_every("b", "abc")])
+        with self.assertLogs("sa02m-rules", level="WARNING"):
+            app = rules_service.RulesApp(_Client(), self.path)
+        row = app.engine._scenario("b")
+        self.assertIn("not armed", row.get("last_error") or "")
+
+    def test_a_half_armed_bad_row_leaves_no_live_timer(self):
+        """Triggers [every 1, every "abc"]: the first schedules before the
+        second raises. «Not armed» must mean no timer of that row is live —
+        _cancel_prefix only bumped keys already in _gen, so a timer never
+        cancelled before stayed live and ran the row it had refused."""
+        bad = _every("b", 1)
+        bad["trigger"].append({"kind": "every", "minutes": "abc"})
+        self._save([bad, _every("c", 1)])
+        with self.assertLogs("sa02m-rules", level="WARNING"):
+            app = rules_service.RulesApp(_Client(), self.path)
+        self.assertNotIn("b:every:0", _armed(app.engine))  # RED before the fix
+        self.assertIn("c:every:0", _armed(app.engine))
+
+    def test_editing_an_every_row_does_not_double_its_runs(self):
+        """Found while fixing F2 (also on main ee4252d2): editing an `every`
+        row armed a second chain beside the uncancelled first one — every
+        further edit added another."""
+        from sa02m_rules import engine as eng
+        self._save([_every("a", 1)])
+        clock = [1000.0]
+        e = eng.Engine(lambda *_a: None, self.path, now=lambda: clock[0],
+                       pub_state=lambda *_a: None)
+        runs = []
+        real = e._run
+        e._run = lambda s, why, source: (runs.append(clock[0]), real(s, why, source))[1]
+        edited = _every("a", 2)
+        e.adopt({"scenarios": [edited], "library": "", "vars": {}})
+        for _ in range(10 * 60):
+            clock[0] += 1
+            e.tick()
+        self.assertEqual(len(runs), 5)  # RED on ee4252d2..a7fafa6d: 10
+
+    def test_a_non_object_condition_does_not_stop_the_index(self):
+        """_rebuild_for_s_index read `condition.get` on any shape."""
+        bad = _every("d", 1)
+        bad["condition"] = ["not", "an", "object"]
+        held = _every("c", 1)
+        held["condition"] = {"all": [{"kind": "state", "device": "m",
+                                      "cap": "v", "op": ">", "value": 5,
+                                      "for_s": 30}]}
+        self._save([bad, held])
+        app = rules_service.RulesApp(_Client(), self.path)  # RED: AttributeError
+        self.assertIn(("m", "v"), app.engine._for_s_index)
+        self.assertIn("c:every:0", _armed(app.engine))
 
 
 if __name__ == "__main__":

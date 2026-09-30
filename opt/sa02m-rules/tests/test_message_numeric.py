@@ -229,6 +229,174 @@ class AsNumTests(unittest.TestCase):
         self.assertFalse(engine.non_finite(10 ** 300))
 
 
+class UnknownReadingTests(unittest.TestCase):
+    """A non-finite reading makes the value UNKNOWN (Operator, review round 1
+    D1): the mirror goes to None, nothing fires on that transition, and the
+    next real reading is a first sight — level operators judge it, `changed`
+    and edge operators take it as their baseline (as after an engine start).
+    A faulted Carel probe publishes exactly `"nan"` (bridge_carel `_num`)."""
+
+    def setUp(self):
+        self.td = tempfile.TemporaryDirectory()
+        self.addCleanup(self.td.cleanup)
+        self.path = os.path.join(self.td.name, "scenarios.json")
+        store.save({"scenarios": [
+            {"id": "chg", "name": "chg", "enabled": True, "type": "block",
+             "trigger": [{"kind": "state", "device": "m", "cap": "v",
+                          "op": "changed"}],
+             "condition": {}, "action": [{"kind": "set", "device": "led_chg",
+                                          "cap": "on_off", "value": 1}]},
+            _scenario("ne", "!=", "led_ne"),
+            _scenario("gt", ">", "led_gt"),
+            {"id": "up", "name": "up", "enabled": True, "type": "block",
+             "trigger": [{"kind": "state", "device": "m", "cap": "v",
+                          "op": "rises_above", "value": 20}],
+             "condition": {}, "action": [{"kind": "set", "device": "led_up",
+                                          "cap": "on_off", "value": 1}]},
+            {"id": "th", "name": "th", "enabled": True, "type": "logic",
+             "template": "thermostat", "trigger": [], "condition": {},
+             "action": [],
+             "params": {"sensors": ["t1", "t2"], "heaters": ["h1"]}},
+        ], "runs": [], "notify_queue": [], "library": "", "vars": {}},
+            self.path)
+        self.client = _Client()
+        self.app = rules_service.RulesApp(self.client, self.path)
+        self.client.published.clear()
+
+    def feed(self, topic, payload):
+        self.app.on_message(None, None, types.SimpleNamespace(
+            topic=topic, payload=payload.encode("utf-8")))
+        self.app.tick()
+
+    def commands(self):
+        return sorted(t for t, _p in self.client.published if t.endswith("/on"))
+
+    def test_a_good_value_then_nan_becomes_unknown_and_fires_nothing(self):
+        for bad in ("nan", "NaN", "inf", "-Infinity", "1e400", HUGE):
+            with self.subTest(bad=bad[:12]):
+                self.setUp()
+                self.feed(TOPIC, "25")
+                self.client.published.clear()
+                self.feed(TOPIC, bad)
+                # RED on a7fafa6d: the last good value (25) persisted.
+                self.assertIsNone(self.app.state["m"]["v"])
+                self.assertEqual(self.commands(), [],
+                                 "the transition to unknown fired something")
+
+    def test_the_reading_after_unknown_is_a_first_sight(self):
+        self.feed(TOPIC, "10")
+        self.feed(TOPIC, "nan")
+        self.client.published.clear()
+        self.feed(TOPIC, "30")
+        # Level operators judge it; `changed` and the 10→30 crossing do not
+        # fire — the value between them is unknown, not 10.
+        self.assertEqual(self.commands(),
+                         ["/devices/led_gt/controls/on_off/on",
+                          "/devices/led_ne/controls/on_off/on"])
+
+    def test_carel_probe_fault_is_skipped_by_thermostat_averaging(self):
+        self.feed("/devices/t1/controls/temperature", "20")
+        self.feed("/devices/t2/controls/temperature", "30")
+        th = self.app.engine._logic["th"]
+        self.assertEqual(th._temp(), 25.0)
+        self.client.published.clear()
+        self.feed("/devices/t2/controls/temperature", "nan")
+        self.assertIsNone(self.app.state["t2"]["temperature"])
+        self.assertEqual(th._temp(), 20.0,
+                         "the faulted probe's last good value still averaged")
+        self.assertEqual(self.commands(), [])
+
+    def test_a_mapped_topic_forgets_both_its_keys(self):
+        """A topic the Alice index maps to (device, capability) feeds two
+        mirror keys — the raw control and the mapped one; both go unknown."""
+        devices = os.path.join(self.td.name, "devices.conf")
+        with open(devices, "w", encoding="utf-8") as fh:
+            fh.write('{"devices":[{"id":"lamp","capabilities":['
+                     '{"type":"devices.capabilities.on_off",'
+                     '"mqtt":"/devices/SA-02m/controls/alarm_led"}]}]}')
+        self.app._alice_path = devices
+        self.app._alice_mtime = 0.0
+        self.app.reload_index()
+        self.feed("/devices/SA-02m/controls/alarm_led", "1")
+        self.assertEqual(self.app.state["lamp"]["on_off"], 1)
+        self.feed("/devices/SA-02m/controls/alarm_led", "nan")
+        self.assertIsNone(self.app.state["lamp"]["on_off"])       # RED: 1 kept
+        self.assertIsNone(self.app.state["SA-02m"]["alarm_led"])
+
+    def test_an_int_past_the_json_digit_limit_is_unknown(self):
+        """>4300 digits: json.loads refuses it (ValueError), the raw string
+        still float-parses to inf — unknown, not a crash, not a string."""
+        self.feed(TOPIC, "25")
+        self.client.published.clear()
+        self.feed(TOPIC, "9" * 5000)
+        self.assertIsNone(self.app.state["m"]["v"])
+        self.assertEqual(self.commands(), [])
+
+
+class DrainEdgeCaseTests(unittest.TestCase):
+    def setUp(self):
+        self.td = tempfile.TemporaryDirectory()
+        self.addCleanup(self.td.cleanup)
+        self.path = os.path.join(self.td.name, "scenarios.json")
+        store.save({"scenarios": [], "runs": [], "notify_queue": [],
+                    "library": "", "vars": {}}, self.path)
+        self.app = rules_service.RulesApp(_Client(), self.path)
+
+    def deliver(self, topic, payload):
+        self.app.on_message(None, None, types.SimpleNamespace(
+            topic=topic, payload=payload))
+
+    def test_deep_nesting_is_skipped_by_the_drain_guard(self):
+        """`[`×100000 makes json.loads raise RecursionError — not a
+        ValueError, so it reaches the per-message guard, which skips it."""
+        self.deliver("/devices/deep/controls/v", b"[" * 100000)
+        self.deliver("/devices/ok/controls/v", b"2")
+        with self.assertLogs("sa02m-rules", level="WARNING") as cap:
+            self.app.tick()
+        self.assertEqual(self.app.state["ok"]["v"], 2)
+        self.assertTrue(any("/devices/deep/controls/v" in r.getMessage()
+                            for r in cap.records), cap.output)
+
+    def test_inbox_overflow_is_logged_first_then_sampled(self):
+        with self.assertLogs("sa02m-rules", level="WARNING") as cap:
+            for i in range(rules_service.INBOX_MAX + 150):
+                self.deliver("/devices/x/controls/c", b"%d" % i)
+        full = [r.getMessage() for r in cap.records if "inbox full" in r.getMessage()]
+        self.assertEqual(full, ["inbox full: 1 message(s) dropped",
+                                "inbox full: 100 message(s) dropped"])
+
+
+class RampFromUnknownTests(unittest.TestCase):
+    def test_a_ramp_from_a_non_finite_value_starts_at_zero(self):
+        td = tempfile.TemporaryDirectory()
+        self.addCleanup(td.cleanup)
+        path = os.path.join(td.name, "scenarios.json")
+        store.save({"scenarios": [{
+            "id": "r", "name": "r", "enabled": True, "type": "block",
+            "trigger": [], "condition": {},
+            "action": [{"kind": "ramp", "device": "m", "cap": "brightness",
+                        "to": 100, "seconds": 10}]}],
+            "runs": [], "notify_queue": [], "library": "", "vars": {}}, path)
+        pubs = []
+        clock = [1000.0]
+        e = engine.Engine(lambda d, c, v: pubs.append((d, c, v)), path,
+                          now=lambda: clock[0], pub_state=lambda *_a: None)
+        for cur in (float("inf"), float("nan"), 10 ** 400):
+            with self.subTest(cur=str(cur)[:8]):
+                pubs.clear()
+                e.alias_state("m", "brightness", cur)
+                e.run_now("r")
+                ramps = [p for (_d, _s, kind, key, gen, p) in e._heap
+                         if kind == "ramp" and gen == e._gen.get(key, 0)]
+                self.assertEqual(len(ramps), 1)
+                self.assertEqual(ramps[0]["from"], 0.0)
+                for _ in range(40):
+                    clock[0] += 1
+                    e.tick()
+                self.assertTrue(pubs)
+                self.assertEqual(pubs[-1], ("m", "brightness", 100))
+
+
 if __name__ == "__main__":
     logging.basicConfig()
     unittest.main()
