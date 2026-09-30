@@ -673,7 +673,8 @@ class StoreV2Tests(unittest.TestCase):
             "params": {"blob": "x" * 5000},                   # > 4 KB
         }, self.path)
         self.assertTrue(r["ok"])
-        self.assertEqual(r.get("dropped"), reasons)
+        self.assertEqual(r.get("dropped"), reasons + [
+            {"part": "params", "index": None, "reason": "too_large"}])
         s = store.load(self.path)["scenarios"][0]
         self.assertEqual(s["trigger"], [{"kind": "boot"}])
         self.assertNotIn("end", s)

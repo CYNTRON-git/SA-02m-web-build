@@ -1111,18 +1111,74 @@ class ParamsBoundTests(_Tmp):
         self.assertEqual(self._save({"day_temp": 10 ** 400, "night_temp": [-10 ** 400, 19]}),
                          {"day_temp": None, "night_temp": [None, 19]})
 
+    @staticmethod
+    def _bytes(v):
+        """The store's measure: compact JSON, UTF-8 bytes."""
+        return len(json.dumps(v, ensure_ascii=False, separators=(",", ":")).encode("utf-8"))
+
     def test_the_bound_is_judged_after_normalising(self):
         nans = [float("nan")] * 40
-        filler = 4096 - 8 - len(json.dumps({"a": "", "b": nans}, ensure_ascii=False))
+        filler = 4096 - 8 - self._bytes({"a": "", "b": nans})
         grows = {"a": "x" * filler, "b": nans}
-        sent = len(json.dumps(grows, ensure_ascii=False))
-        stored = len(json.dumps({"a": "x" * filler, "b": [None] * 40}, ensure_ascii=False))
+        sent = self._bytes(grows)
+        stored = self._bytes({"a": "x" * filler, "b": [None] * 40})
         self.assertLessEqual(sent, 4096)
         self.assertGreater(stored, 4096)          # non-vacuous: it really grows
         self.assertIsNone(self._save(grows))      # judged as stored ⇒ over the bound
         shrinks = {"a": "x" * 3000, "big": 10 ** 1500}
         self.assertGreater(len(json.dumps(shrinks)), 4096)
         self.assertEqual(self._save(shrinks), {"a": "x" * 3000, "big": None})
+
+
+# ── review round 5 ─────────────────────────────────────────────────────
+class LastRunCarryTests(_Tmp):
+    """A17: a row saved again by id — through `replace` as through
+    `upsert` — keeps the board's last_run / last_error in the answer."""
+    alice_doc = None
+
+    def setUp(self):
+        super().setUp()
+        self.assertTrue(store.apply_command({"id": "s1", "name": "t"}, self.path)["ok"])
+        store.save_journal({"runs": [], "notify_queue": [],
+                            "last": {"s1": {"last_run": 4242.0, "last_error": "boom"}}},
+                           store.journal_path(self.path))
+
+    def test_replace_and_upsert_carry_the_record(self):
+        for body in ({"replace": True, "scenarios": [{"id": "s1", "name": "t2"}]},
+                     {"upsert": [{"id": "s1", "name": "t3"}]}):
+            with self.subTest(verb=list(body)[0]):
+                r = store.apply_command(body, self.path)
+                self.assertTrue(r["ok"], r)
+                row = [x for x in r["scenarios"] if x["id"] == "s1"][0]
+                self.assertEqual((row["last_run"], row["last_error"]), (4242.0, "boom"))
+
+
+class ParamsSizeTests(_Tmp):
+    """A18: the `params` bound is UTF-8 bytes of the compact normalised JSON,
+    and an oversize `params` is named in `dropped` (`part: "params"`,
+    `reason: "too_large"`) instead of vanishing silently."""
+    alice_doc = None
+    TOO_LARGE = [{"part": "params", "index": None, "reason": "too_large"}]
+
+    def _save(self, params):
+        r = store.apply_command({"id": "p", "name": "t", "type": "logic",
+                                 "template": "thermostat", "params": params}, self.path)
+        self.assertTrue(r["ok"], r)
+        return r, self.stored()[0].get("params")
+
+    def test_cyrillic_is_measured_in_bytes(self):
+        params = {"note": "я" * 3000}          # 3000 characters, ~6000 bytes
+        r, stored = self._save(params)
+        self.assertIsNone(stored)
+        self.assertEqual(r.get("dropped"), self.TOO_LARGE)
+
+    def test_the_bound_is_exactly_4096_compact_bytes(self):
+        r, stored = self._save({"a": "x" * 4088})   # {"a":"…"} = 4096 bytes
+        self.assertEqual(stored, {"a": "x" * 4088})
+        self.assertNotIn("dropped", r)
+        r, stored = self._save({"a": "x" * 4089})
+        self.assertIsNone(stored)
+        self.assertEqual(r.get("dropped"), self.TOO_LARGE)
 
 
 if __name__ == "__main__":
