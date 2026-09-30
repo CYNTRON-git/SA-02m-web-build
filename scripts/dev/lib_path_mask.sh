@@ -28,7 +28,10 @@ path_without() {
             local abs
             for c in "$@"; do skip+=( ! -name "$c" ); done
             # Absolute, so a relative PATH entry's mirror links do not dangle.
-            abs=$(cd "$d" && pwd -P) || return 1
+            # CDPATH emptied for this cd: a relative entry would otherwise be
+            # looked up in CDPATH first (mirroring the wrong directory) and cd
+            # would print that directory into $abs.
+            abs=$(CDPATH='' cd -- "$d" && pwd -P) || return 1
             find "$abs" -mindepth 1 -maxdepth 1 "${skip[@]}" \
                 -exec ln -s -t "$maskdir/$n" {} + 2>/dev/null
             d="$maskdir/$n"

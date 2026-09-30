@@ -158,6 +158,8 @@ alice-conf-homes|etc/sa02m-web-backup.sh|if not stat.S_ISREG(st.st_mode): raise 
 alice-conf-homes|etc/sa02m-web-backup.sh|if st.st_nlink > 1 and not dir_root_only: raise Unsafe(
 alice-conf-homes|scripts/06-alice.sh|if not stat.S_ISREG(st.st_mode) or st.st_nlink != 1: raise
 runner-version-stamp|scripts/03-webserver.sh|sa02m_stamp_runner_version "$SCRIPT_DIR/../www/network_config/VERSION"
+path-mask-lib|scripts/dev/lib_path_mask.sh|d="$maskdir/$n"
+path-mask-lib|scripts/dev/lib_path_mask.sh|abs=$(CDPATH='"'"''"'"' cd -- "$d" && pwd -P) || return 1
 runner-version-stamp|scripts/update-www-only.sh|sa02m_stamp_runner_version "$REPO_ROOT/www/network_config/VERSION"
 runner-version-stamp|scripts/lib.sh|install -m 0644 "$statedir/runner.version.tmp" "$statedir/runner.version"
 runner-version-stamp|etc/sa02m-update-runner.sh|if ! stamp_runner_version_after_deploy "$txn"; then
