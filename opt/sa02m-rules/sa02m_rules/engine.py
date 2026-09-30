@@ -41,11 +41,16 @@ SNAPSHOT_MAX = 16
 _COUNTER_SUFFIX = {"short": "single", "long": "long", "double": "double"}
 
 
-def _as_num(v: Any) -> Optional[float]:
+def _raw_num(v: Any) -> Optional[float]:
+    """`v` as a float that may be nan/±inf, or None when it is not numeric."""
     if isinstance(v, bool):
         return 1.0 if v else 0.0
-    if isinstance(v, (int, float)) and not isinstance(v, bool):
-        return float(v)
+    if isinstance(v, (int, float)):
+        try:
+            return float(v)
+        except OverflowError:
+            # A 309+ digit MQTT payload is valid JSON: an int float() refuses.
+            return math.inf if v > 0 else -math.inf
     if isinstance(v, str):
         s = v.strip().lower()
         if s in ("1", "on", "true", "yes"):
@@ -57,6 +62,20 @@ def _as_num(v: Any) -> Optional[float]:
         except ValueError:
             return None
     return None
+
+
+def _as_num(v: Any) -> Optional[float]:
+    """Finite float or None — total, so no reading can raise out of a
+    comparison; a non-finite value is «not a number» and fires nothing."""
+    n = _raw_num(v)
+    return n if n is not None and math.isfinite(n) else None
+
+
+def non_finite(v: Any) -> bool:
+    """`v` reads as a number but not a finite one (nan, ±inf, an int past
+    float range) — the MQTT intake drops such a reading (service.py)."""
+    n = _raw_num(v)
+    return n is not None and not math.isfinite(n)
 
 
 def _truthy(v: Any) -> bool:
