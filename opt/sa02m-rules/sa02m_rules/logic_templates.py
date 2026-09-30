@@ -12,6 +12,7 @@ caps_of, publish_status. Writes go through the engine's global write window.
 """
 from __future__ import annotations
 
+import math
 from typing import Any, Dict, List, Optional, Tuple
 
 _MOTION_CAPS = ("motion",)
@@ -29,11 +30,21 @@ def _ids(params: Dict[str, Any], key: str) -> List[str]:
     return [v] if isinstance(v, str) and v else []
 
 
-def _num(v: Any, default: float) -> float:
+def _reading(v: Any) -> Optional[float]:
+    """`v` as a finite float, or None — «unknown», skipped like a missing
+    sensor. float() alone raises OverflowError on a 309+ digit int and passes
+    nan/±inf through, which would switch actors (contract cloud-scenarios.md
+    §Engine v2, unknown readings)."""
     try:
-        return float(v)
-    except (TypeError, ValueError):
-        return default
+        f = float(v)
+    except (TypeError, ValueError, OverflowError):
+        return None
+    return f if math.isfinite(f) else None
+
+
+def _num(v: Any, default: float) -> float:
+    f = _reading(v)
+    return default if f is None else f
 
 
 def _truthy(v: Any) -> bool:
@@ -213,12 +224,9 @@ class MotionLight(LogicBase):
             return
         lux_sensor = self.p.get("lux_sensor")
         if isinstance(lux_sensor, str) and lux_sensor:
-            lux = self.rt.get(lux_sensor, _ILLUMINATION_CAP)
-            try:
-                if lux is not None and float(lux) > _num(self.p.get("lux_threshold"), 30):
-                    return
-            except (TypeError, ValueError):
-                pass
+            lux = _reading(self.rt.get(lux_sensor, _ILLUMINATION_CAP))
+            if lux is not None and lux > _num(self.p.get("lux_threshold"), 30):
+                return
         night = self.rt.is_night()
         if self.p.get("night_only") and not night:
             return
@@ -357,12 +365,9 @@ class Thermostat(LogicBase):
     def _temp(self) -> Optional[float]:
         vals = []
         for d in _ids(self.p, "sensors"):
-            try:
-                v = self.rt.get(d, _TEMPERATURE_CAP)
-                if v is not None:
-                    vals.append(float(v))
-            except (TypeError, ValueError):
-                continue
+            v = _reading(self.rt.get(d, _TEMPERATURE_CAP))
+            if v is not None:
+                vals.append(v)
         return sum(vals) / len(vals) if vals else None
 
     def _setpoint(self) -> float:
@@ -456,12 +461,9 @@ class HumidityFan(LogicBase):
     def _rh(self) -> Optional[float]:
         vals = []
         for d in _ids(self.p, "sensors"):
-            try:
-                v = self.rt.get(d, _HUMIDITY_CAP)
-                if v is not None:
-                    vals.append(float(v))
-            except (TypeError, ValueError):
-                continue
+            v = _reading(self.rt.get(d, _HUMIDITY_CAP))
+            if v is not None:
+                vals.append(v)
         return max(vals) if vals else None
 
     def _set(self, on: bool) -> None:
@@ -512,12 +514,9 @@ class Co2Ventilation(LogicBase):
     def _evaluate(self) -> None:
         vals = []
         for d in _ids(self.p, "sensors"):
-            try:
-                v = self.rt.get(d, _CO2_CAP)
-                if v is not None:
-                    vals.append(float(v))
-            except (TypeError, ValueError):
-                continue
+            v = _reading(self.rt.get(d, _CO2_CAP))
+            if v is not None:
+                vals.append(v)
         if not vals:
             return
         ppm = max(vals)
@@ -542,9 +541,8 @@ class Humidifier(LogicBase):
     def on_state(self, device: str, cap: str, value: Any, prev: Any) -> None:
         if device not in _ids(self.p, "sensors") or cap != _HUMIDITY_CAP:
             return
-        try:
-            rh = float(value)
-        except (TypeError, ValueError):
+        rh = _reading(value)
+        if rh is None:
             return
         target = _num(self.p.get("target_rh"), 45)
         hyst = _num(self.p.get("hysteresis"), 5)

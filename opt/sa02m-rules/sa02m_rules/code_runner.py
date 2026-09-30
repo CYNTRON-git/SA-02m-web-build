@@ -243,6 +243,41 @@ class Http:
         return "http %s" % status
 
 
+def _non_finite_inside(root: Any, fix: bool) -> bool:
+    """True when a NaN/±Infinity float sits anywhere inside `root` (dicts,
+    lists, tuples; cycles visited once). With `fix`, each one is replaced by
+    None in place — a tuple holding one becomes a list, which is what it
+    persists as anyway."""
+    found = False
+    if isinstance(root, float):
+        return not math.isfinite(root)
+    stack, seen = [root], set()
+    while stack:
+        cur = stack.pop()
+        if id(cur) in seen:
+            continue
+        seen.add(id(cur))
+        if isinstance(cur, dict):
+            slots = list(cur.items())
+        elif isinstance(cur, (list, tuple)):
+            slots = list(enumerate(cur))
+        else:
+            continue
+        for k, v in slots:
+            if isinstance(v, float) and not math.isfinite(v):
+                found = True
+                if not fix:
+                    return True
+                cur[k] = None
+            elif isinstance(v, tuple) and fix:
+                as_list = list(v)
+                cur[k] = as_list
+                stack.append(as_list)
+            elif isinstance(v, (dict, list, tuple)):
+                stack.append(v)
+    return found
+
+
 class Vars:
     _HOME_MODES = ("home", "away", "night", "holiday")
 
@@ -254,6 +289,10 @@ class Vars:
         return self._b.get(str(key), default)
 
     def set(self, key: str, value: Any) -> None:
+        # Vars persist with the document: NaN/Infinity would make that JSON
+        # non-strict. Refused here, where the author gets a run error.
+        if _non_finite_inside(value, fix=False):
+            raise ValueError("Vars.set: NaN/Infinity is not a finite number")
         if len(self._b) >= 32 and str(key) not in self._b:
             return
         self._b[str(key)[:32]] = value
@@ -339,6 +378,10 @@ def run_code(s: Dict[str, Any], library: str, state: Dict[str, Dict[str, Any]],
                 err = str(exc)[:200]
             if dl.expired and not err:
                 err = "timeout"  # the body swallowed the raise and finished on its own
+            # Vars.get hands out the stored object: an in-place append of a
+            # NaN bypasses Vars.set. Normalised here, before anything persists.
+            if _non_finite_inside(vars_bucket, fix=True) and not err:
+                err = "Vars: NaN/Infinity is not a finite number (stored as None)"
     rec = {"ts": now, "id": s.get("id"), "name": s.get("name"), "error": err, "ok": not err}
     s["last_run"] = now
     s["last_error"] = err

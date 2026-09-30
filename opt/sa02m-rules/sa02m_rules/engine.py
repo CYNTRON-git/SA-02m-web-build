@@ -10,6 +10,7 @@ budget never counts scheduler waits.
 from __future__ import annotations
 
 import heapq
+import logging
 import math
 import time
 from collections import deque
@@ -21,6 +22,7 @@ from sa02m_rules.store import (
     CAP_RE, EDGE_OPS, EVENT_OPS, GESTURES, HOME_MODES, ID_RE, LEVEL_OPS,
     MAX_WRITES, Journal, charge_http, load, migrate_journal, save)
 
+LOG = logging.getLogger("sa02m-rules")
 Pub = Callable[[str, str, Any], None]
 MAX_DEPTH = 3
 # MAX_WRITES (direct writes per run) is the store's constant — validation
@@ -73,7 +75,8 @@ def _as_num(v: Any) -> Optional[float]:
 
 def non_finite(v: Any) -> bool:
     """`v` reads as a number but not a finite one (nan, ±inf, an int past
-    float range) — the MQTT intake drops such a reading (service.py)."""
+    float range) — the MQTT intake treats such a reading as an unknown
+    value (service.py, Engine.forget_state)."""
     n = _raw_num(v)
     return n is not None and not math.isfinite(n)
 
@@ -374,9 +377,12 @@ class Engine:
         self._gen[key] = self._gen.get(key, 0) + 1
 
     def _cancel_prefix(self, prefix: str) -> None:
-        for key in list(self._gen):
+        # The heap's keys too: a timer never cancelled before has no _gen
+        # entry, and skipping it left it live — an edited `every` row ran
+        # from two chains, a refused row from its half-armed timer.
+        for key in set(self._gen) | {e[3] for e in self._heap}:
             if key.startswith(prefix):
-                self._gen[key] += 1
+                self._gen[key] = self._gen.get(key, 0) + 1
 
     # ── doc adoption (hot reload) ──────────────────────────────────────
     @staticmethod
@@ -415,9 +421,19 @@ class Engine:
             self._cancel_prefix(sid + ":")
             self._trig_prev = {k: v for k, v in self._trig_prev.items()
                                if k[0] != sid}
-            self._arm_scenario(s)
-            self._publish_tpl_state(sid, "rule_enabled",
-                                    1 if s.get("enabled") is not False else 0)
+            # Per row: `load()` does not validate, so one row that cannot be
+            # armed must not leave the rows after it unarmed — nor raise out
+            # of Engine.__init__ and crash-loop the unit on the same document.
+            try:
+                self._arm_scenario(s)
+                self._publish_tpl_state(sid, "rule_enabled",
+                                        1 if s.get("enabled") is not False else 0)
+            except Exception as exc:
+                self._cancel_prefix(sid + ":")
+                self._logic.pop(sid, None)
+                LOG.exception("scenario %r not armed", sid)
+                self.journal.set_last(s, s.get("last_run"),
+                                      "not armed: %s" % type(exc).__name__)
         for sid in set(old) - new_ids:
             self._cancel_prefix(sid + ":")
             self._logic.pop(sid, None)
@@ -558,6 +574,24 @@ class Engine:
 
     def on_boot(self) -> None:
         self._dispatch({"kind": "boot"})
+
+    def forget_state(self, device: str, cap: str) -> None:
+        """The value is UNKNOWN (a non-finite reading — service intake): the
+        mirror goes to None and nothing is dispatched, so no trigger fires on
+        the transition. The next real reading is a first sight, as after an
+        engine start: level operators judge it; `changed`, edge operators and
+        `for_s` hold clocks take it as their baseline."""
+        self.state.setdefault(device, {})[cap] = None
+        self._observed.discard((device, cap))
+        for sid, ci, _item in self._for_s_index.get((device, cap)) or []:
+            self._for_s.pop((sid, ci), None)
+        for s in self.doc.get("scenarios") or []:
+            if not isinstance(s, dict):
+                continue
+            for i, tr in enumerate(s.get("trigger") or []):
+                if isinstance(tr, dict) and tr.get("kind") == "state" \
+                        and tr.get("device") == device and tr.get("cap") == cap:
+                    self._trig_prev.pop((str(s.get("id")), i), None)
 
     def run_now(self, sid: str) -> Optional[Dict[str, Any]]:
         s = self._scenario(sid)
@@ -797,6 +831,8 @@ class Engine:
             if not isinstance(s, dict) or not s.get("id"):
                 continue
             cond = s.get("condition") or {}
+            if not isinstance(cond, dict):
+                continue  # unvalidated row shape: no hold clocks to index
             items = cond.get("any") if isinstance(cond.get("any"), list) \
                 else cond.get("all")
             if not isinstance(items, list):

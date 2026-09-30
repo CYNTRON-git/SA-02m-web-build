@@ -224,7 +224,7 @@ class RulesApp:
             self._inbox.put_nowait((topic, raw))
         except queue.Full:
             self._dropped += 1
-            if self._dropped in (1, 100, 1000) or self._dropped % 10000 == 0:
+            if self._dropped == 1 or _sampled(self._dropped):
                 LOG.warning("inbox full: %d message(s) dropped", self._dropped)
 
     def _step(self, name: str, fn: Any, *args: Any) -> None:
@@ -313,10 +313,16 @@ class RulesApp:
         except ValueError:
             value = raw
         if non_finite(value):
-            # nan / ±inf / a 309+ digit int is not a reading: the mirror keeps
-            # its last value, no trigger or logic template sees it.
+            # nan / ±inf / a 309+ digit int is not a reading: the value is
+            # UNKNOWN (a faulted Carel probe publishes "nan") — the last good
+            # value must not live on, and nothing fires on the transition.
             if self._first_time(self._warned_non_finite, state_topic):
-                LOG.warning("non-finite value on %r ignored", state_topic)
+                LOG.warning("non-finite value on %r: value unknown", state_topic)
+            # Every key this topic feeds: the raw (device, control) name, and
+            # the mapped (device, capability) when the index binds one.
+            self.engine.forget_state(parts[1], parts[3])
+            if mapped:
+                self.engine.forget_state(device, cap)
             return
         self.reload()
         # The raw (MQTT device, control) path carries button counters, the
