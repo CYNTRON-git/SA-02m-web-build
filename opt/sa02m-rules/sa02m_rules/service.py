@@ -121,20 +121,17 @@ class RulesApp:
         return "/devices/%s/controls/%s" % (device, short)
 
     def target_topic(self, device: str, short: str, instance: str = "") -> tuple:
-        """(state topic, "") or (None, reason) for a write. A device the
-        Alice document knows is resolved by device_index — an ambiguous type
-        without an instance or an unknown instance is refused, never guessed
-        (the last-listed capability used to win). An unlisted cap of a known
-        device, and any device the document does not know, keep the raw
-        `/devices/<device>/controls/<cap>` fallback (the store refuses such
-        targets at save while the document is readable)."""
+        """(state topic, "") or (None, reason) for a write, on every path
+        (block, `type=code` Hub.set, logic templates, `end`). A device the
+        Alice document knows is resolved by device_index only — an
+        ambiguous type, an unknown instance or a cap the document does not
+        list is refused, never guessed. The raw `/devices/<device>/controls/
+        <cap>` topic is kept only for a device the document does not list at
+        all (and for every device while the document cannot be read)."""
         if device in self._index.devices:
             topic, reason = self._index.resolve(device, short, instance)
-            if topic:
-                return topic, ""
-            if reason == "ambiguous_target" or instance:
-                return None, reason
-        elif instance:
+            return (topic, "") if topic else (None, reason)
+        if instance:
             return None, "unknown_target"
         return "/devices/%s/controls/%s" % (device, short), ""
 

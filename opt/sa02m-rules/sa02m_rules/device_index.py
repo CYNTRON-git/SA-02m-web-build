@@ -28,6 +28,13 @@ DEFAULT_PATH = "/etc/sa02m-alice/sa02m-alice-devices.conf"
 
 Key = Tuple[str, str]
 
+#: Capability names logic templates WRITE (switch_light / circadian) that the
+#: document carries as `parameters.instance` of a typed capability. Only
+#: these are aliased: a sensor name a template READS (`temperature`,
+#: `humidity`, `co2`, …) must never resolve to a setpoint/target capability
+#: of the same instance — a thermostat would regulate on its own setpoint.
+WRITE_ALIASES = ("brightness", "temperature_k")
+
 
 def devices_path() -> str:
     """Read at CALL time: the service, the store (inside the Alice daemon)
@@ -91,12 +98,13 @@ class DeviceIndex:
     def alias(self, device: str, name: str) -> Tuple[str, str]:
         """A logic template's capability name → (cap, instance). Templates
         speak Alice instance names (`brightness`), the document carries them
-        as `parameters.instance` of a typed capability (`range`). The name
-        maps to that capability when exactly one capability of the device
-        carries it and nothing else on the device answers to the name (a
-        capability type or a property instance — `temperature` on a Carel
-        unit is both a setpoint instance and a sensor); otherwise the name
-        is used as it stands."""
+        as `parameters.instance` of a typed capability (`range`). Only a
+        WRITE_ALIASES name is mapped, and only when exactly one capability
+        of the device carries it and nothing else on the device answers to
+        the name (a capability type, or a property — a property always
+        wins); otherwise the name is used as it stands."""
+        if name not in WRITE_ALIASES:
+            return name, ""
         if (device, name) in self.cap_topics or (device, name) in self.prop_topics:
             return name, ""
         types = self.cap_instances.get((device, name)) or []
