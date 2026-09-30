@@ -212,13 +212,14 @@ class LogicRuntime:
         return self._e._now()
 
     def get(self, device: str, cap: str = "on_off") -> Any:
-        return state_get(self._e.state, device, cap)
+        return state_get(self._e.state, device, state_key(*self._e.cap_alias(device, cap)))
 
     def caps_of(self, device: str) -> Tuple[str, ...]:
         return self._e.caps_of(device)
 
     def set(self, device: str, cap: str, value: Any) -> bool:
-        return self._e._write(device, cap, value, None)
+        real_cap, instance = self._e.cap_alias(device, cap)
+        return self._e._write(device, real_cap, value, None, instance=instance)
 
     def schedule(self, delay_s: float, key: str) -> None:
         self._e._schedule(delay_s, "logic", "%s:logic:%s" % (self.sid, key),
@@ -292,6 +293,8 @@ class Engine:
         self._logic: Dict[str, Any] = {}
         self._tpl_state: Dict[str, Dict[str, Any]] = {}
         self._caps_provider: Optional[Callable[[str], Tuple[str, ...]]] = None
+        self._alias_provider: Optional[Callable[[str, str], Tuple[str, str]]] = None
+        self._target_check: Optional[Callable[[str, str, str], str]] = None
         self._fingerprint = ""
         self._adopt(self.doc, force=True)
 
@@ -306,6 +309,34 @@ class Engine:
             return self._caps_provider(device)
         except Exception:
             return ()
+
+    def set_alias_provider(self, fn: Callable[[str, str], Tuple[str, str]]) -> None:
+        self._alias_provider = fn
+
+    def cap_alias(self, device: str, name: str) -> Tuple[str, str]:
+        """A logic template's capability name → (cap, instance)
+        (device_index.DeviceIndex.alias); unchanged without a provider."""
+        if self._alias_provider is not None:
+            try:
+                return self._alias_provider(device, name)
+            except Exception:
+                pass
+        return name, ""
+
+    def set_target_check(self, fn: Callable[[str, str, str], str]) -> None:
+        """`fn(device, cap, instance)` → "" or the reason a write to that
+        target would be refused. Lets a ramp (whose steps write later, with
+        no run) refuse up front and journal it like a plain write."""
+        self._target_check = fn
+
+    def _logic_cap(self, device: str, cap: str) -> str:
+        """The name a logic template knows a state key by: `range|brightness`
+        is `brightness` when the alias maps that name back to it."""
+        if "|" in cap:
+            real_cap, instance = cap.split("|", 1)
+            if self.cap_alias(device, instance) == (real_cap, instance):
+                return instance
+        return cap
 
     # ── scheduler ──────────────────────────────────────────────────────
     def _schedule(self, delay_s: float, kind: str, key: str, payload: Any = None) -> None:
@@ -500,8 +531,9 @@ class Engine:
             return
         self._for_s_touch(device, cap, value)
         self._button_state(device, cap, value, prev)
+        logic_cap = self._logic_cap(device, cap)
         for inst in list(self._logic.values()):
-            inst.on_state(device, cap, value, prev)
+            inst.on_state(device, logic_cap, value, prev)
         self._dispatch({"kind": "state", "device": device, "cap": cap,
                         "value": value, "prev": prev, "observed": observed})
 
@@ -1111,6 +1143,12 @@ class Engine:
     # ── ramp ───────────────────────────────────────────────────────────
     def _start_ramp(self, run: Optional[_Run], device: str, cap: str,
                     to: float, seconds: float, instance: str = "") -> None:
+        if self._target_check is not None:
+            refused = self._target_check(device, cap, instance)
+            if refused:
+                if run is not None:
+                    run.error = refused
+                return  # never scheduled: the steps would be refused one by one
         seconds = max(1.0, min(300.0, seconds))
         skey = state_key(cap, instance)
         cur = _as_num(state_get(self.state, device, skey))

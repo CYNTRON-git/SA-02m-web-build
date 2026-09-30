@@ -63,6 +63,8 @@ class DeviceIndex:
         self.readonly: Set[Key] = set()
         self.ambiguous: Set[Key] = set()
         self.cap_types: Dict[str, Set[str]] = {}
+        #: (device, parameters.instance) → the capability types carrying it.
+        self.cap_instances: Dict[Key, List[str]] = {}
         self.devices: Set[str] = set()
 
     def _add_topic(self, topic: str, key: Key) -> None:
@@ -86,8 +88,28 @@ class DeviceIndex:
             return None, "ambiguous_target"
         return None, "unknown_target"
 
+    def alias(self, device: str, name: str) -> Tuple[str, str]:
+        """A logic template's capability name → (cap, instance). Templates
+        speak Alice instance names (`brightness`), the document carries them
+        as `parameters.instance` of a typed capability (`range`). The name
+        maps to that capability when exactly one capability of the device
+        carries it and nothing else on the device answers to the name (a
+        capability type or a property instance — `temperature` on a Carel
+        unit is both a setpoint instance and a sensor); otherwise the name
+        is used as it stands."""
+        if (device, name) in self.cap_topics or (device, name) in self.prop_topics:
+            return name, ""
+        types = self.cap_instances.get((device, name)) or []
+        if len(types) == 1:
+            return types[0], name
+        return name, ""
+
     def caps_of(self, device: str) -> Tuple[str, ...]:
-        return tuple(sorted(self.cap_types.get(device, ())))
+        """Capability types plus the instance names `alias` resolves."""
+        names = set(self.cap_types.get(device, ()))
+        names.update(inst for (did, inst) in self.cap_instances
+                     if did == device and self.alias(device, inst)[1])
+        return tuple(sorted(names))
 
 
 def _instance(item: Dict[str, Any]) -> str:
@@ -131,6 +153,9 @@ def load_index(path: Optional[str] = None) -> DeviceIndex:
                 ix.ambiguous.add((did, short))
             if inst:
                 keys.append(state_key(short, inst))
+                types = ix.cap_instances.setdefault((did, inst), [])
+                if short not in types:
+                    types.append(short)
             for key in keys:
                 ix.cap_topics[(did, key)] = topic
                 ix._add_topic(topic, (did, key))

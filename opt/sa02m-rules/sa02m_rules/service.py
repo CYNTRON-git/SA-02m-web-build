@@ -93,6 +93,8 @@ class RulesApp:
                              pub_state=self.pub_state)
         self.state = self.engine.state  # shared MQTT state mirror
         self.engine.set_caps_provider(self.caps_of)
+        self.engine.set_alias_provider(lambda device, name: self._index.alias(device, name))
+        self.engine.set_target_check(self.check_target)
         try:
             self._last_mtime = os.path.getmtime(self.path)
         except OSError:
@@ -135,6 +137,12 @@ class RulesApp:
         elif instance:
             return None, "unknown_target"
         return "/devices/%s/controls/%s" % (device, short), ""
+
+    def check_target(self, device: str, cap: str, instance: str = "") -> str:
+        """"" or the `last_error` a write to this target gets (the engine
+        asks before it schedules a ramp)."""
+        topic, reason = self.target_topic(str(device), cap_short(cap), instance)
+        return "" if topic else reason.replace("_", " ")
 
     def pub(self, device: str, cap: str, value: Any, instance: str = "") -> Any:
         """Publish a control write. Returns None, or a reason string when
@@ -259,12 +267,17 @@ class RulesApp:
         except ValueError:
             value = raw
         self.reload()
-        if mapped:
+        # The raw (MQTT device, control) path carries button counters, the
+        # di_N edge classifier and raw-named state triggers: a topic the
+        # document binds only as a PROPERTY (a DI as an `open`/`button`
+        # event) still reaches it. A capability topic mirrors the raw name
+        # without dispatch, as it always has.
+        if mapped and any(k in self._index.cap_topics for k in mapped):
             self.engine.alias_state(parts[1], parts[3], value)
-            for device, key in mapped:
-                self.engine.on_state(device, key, value)
         else:
             self.engine.on_state(parts[1], parts[3], value)
+        for device, key in mapped or ():
+            self.engine.on_state(device, key, value)
 
     def reload(self) -> None:
         self.reload_index()
