@@ -196,11 +196,17 @@
     return res.json();
   }
 
+  // Every daemon POST carries the panel's CSRF token like every CGI POST
+  // (1.0.6.65, selective-csrf-policy.md «Демоны»); a refusal is E_CSRF and
+  // app.js's fetch guard refreshes + retries once. Gate: js-post-csrf-headers.
+  // The typeof guard (plan §5.2) keeps a page whose app.js failed to load from
+  // throwing here: the request then goes out without the token and the daemon
+  // answers E_CSRF — a refusal, never a silent mutation.
   async function apiPost(path, body) {
     const res = await fetch(API + path, {
       method: 'POST',
       credentials: 'same-origin',
-      headers: { 'Content-Type': 'application/json; charset=utf-8' },
+      headers: typeof withCsrfHeaders === 'function' ? withCsrfHeaders({ 'Content-Type': 'application/json; charset=utf-8' }) : { 'Content-Type': 'application/json; charset=utf-8' },
       body: JSON.stringify(body || {}),
     });
     if (!res.ok) {
@@ -358,7 +364,8 @@
   async function apiUpload(path, file) {
     const fd = new FormData();
     fd.append('file', file);
-    const res = await fetch(API + path, { method: 'POST', credentials: 'same-origin', body: fd });
+    // FormData keeps its own multipart Content-Type (boundary) — only the token is added.
+    const res = await fetch(API + path, { method: 'POST', credentials: 'same-origin', headers: typeof withCsrfHeaders === 'function' ? withCsrfHeaders({}) : {}, body: fd });
     if (!res.ok) {
       let msg = `HTTP ${res.status}`;
       try { const data = await res.json(); if (data && data.error) msg = data.error; } catch (_) {}
@@ -1914,10 +1921,12 @@
         : null;
       let res;
       try {
+        // Known: the abort timer keeps running through the guard's one CSRF
+        // retry — a device-config retry outliving CONFIG_API_TIMEOUT_MS aborts.
         res = await fetch(API + path, {
           method: 'POST',
           credentials: 'same-origin',
-          headers: { 'Content-Type': 'application/json; charset=utf-8' },
+          headers: typeof withCsrfHeaders === 'function' ? withCsrfHeaders({ 'Content-Type': 'application/json; charset=utf-8' }) : { 'Content-Type': 'application/json; charset=utf-8' },
           body: JSON.stringify(body || {}),
           signal: ctrl ? ctrl.signal : undefined,
         });

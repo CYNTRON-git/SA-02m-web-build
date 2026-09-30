@@ -48,7 +48,7 @@ CREATE INDEX IF NOT EXISTS idx_mr_device_ch_ts ON mr_samples(device_id, ch, ts);
   (`STAND_DEVICES_MR_INTERVAL_S`), ≤12 строк/10 с на 12AI, без нового I/O к
   устройству (читается уже собранный `live_snapshot()`).
 
-## HTTP (через nginx `/api/devices*` → `sa02m-devices-api` :8765)
+## HTTP (через nginx `/api/devices*` → `sa02m-devices-api`, unix-сокет `/run/sa02m-devices/api.sock`)
 
 `GET /api/devices/history?kind=mr&device_id=<id>&range=<key>[&channel=<N>]`
 

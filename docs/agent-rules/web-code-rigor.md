@@ -53,6 +53,10 @@ a review; cite it.
   port-lease probe hit the daemon without `-f` and was dead for 3.5 weeks, and
   the two rollback guards hit the CGI layer with `-f` and could not fail at all.
   A probe whose exit code is load-bearing states which layer it talks to.
+  One deliberate exception on the daemon side: a CSRF refusal on a daemon POST
+  (flasher, devices-api) is HTTP 200 + the CGI `E_CSRF` body, so the panel's one
+  reaction covers both layers (`docs/decisions/selective-csrf-policy.md`
+  «Демоны») — a probe of a mutating daemon route asserts the body too.
 - **Timeouts everywhere**: any call that can hang (curl to the flasher daemon,
   `systemctl` on a wedged unit, an i2c read) carries `timeout N` or the tool's
   own timeout flag. fcgiwrap/nginx read timeouts are finite — a hung endpoint

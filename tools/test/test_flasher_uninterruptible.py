@@ -10,7 +10,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
-from sa02m_common import FLASHER_SOCK, REPO_ROOT, WEB_COOKIE, connect_ssh  # noqa: E402
+from sa02m_common import FLASHER_SOCK, REPO_ROOT, WEB_COOKIE, connect_ssh, csrf_curl_header  # noqa: E402
 
 FW_REMOTE = "/var/lib/sa02m-flasher/firmware/MR-02m_1.0.9.1.fw"
 
@@ -23,7 +23,7 @@ def run(client, cmd: str, timeout: float = 120.0) -> tuple[int, str, str]:
 
 
 def flasher_curl(client, method: str, path: str, body: dict | None = None) -> tuple[int, str]:
-    auth = f"-H 'Cookie: {WEB_COOKIE}'"
+    auth = f"-H 'Cookie: {WEB_COOKIE}'" + (" " + csrf_curl_header() if method == "POST" else "")
     if body is None:
         cmd = (
             f"curl -sS --unix-socket {FLASHER_SOCK} -X {method} "
@@ -64,7 +64,7 @@ def main() -> int:
     run(
         client,
         f"curl -sS --unix-socket {FLASHER_SOCK} -X POST "
-        f"-H 'Cookie: {WEB_COOKIE}' -H 'Content-Type: application/json' "
+        f"-H 'Cookie: {WEB_COOKIE}' {csrf_curl_header()} -H 'Content-Type: application/json' "
         "-d '{\"download\":false}' http://localhost/firmware/refresh >/dev/null || true",
     )
 

@@ -9,7 +9,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
-from sa02m_common import FLASHER_SOCK, WEB_COOKIE, connect_ssh  # noqa: E402
+from sa02m_common import FLASHER_SOCK, WEB_COOKIE, connect_ssh, csrf_curl_header  # noqa: E402
 
 AUTH = f"-H 'Cookie: {WEB_COOKIE}'"
 FW_FILE = "MR-02m_1.0.9.1.fw"
@@ -23,12 +23,13 @@ def run(client, cmd, timeout=180):
 
 
 def curl(client, method, path, body=None):
+    auth = AUTH + (" " + csrf_curl_header() if method == "POST" else "")
     if body is None:
-        cmd = f"curl -sS --unix-socket {FLASHER_SOCK} -X {method} {AUTH} http://localhost{path} -w '\\n%{{http_code}}'"
+        cmd = f"curl -sS --unix-socket {FLASHER_SOCK} -X {method} {auth} http://localhost{path} -w '\\n%{{http_code}}'"
     else:
         js = json.dumps(body, ensure_ascii=False).replace("'", "'\\''")
         cmd = (
-            f"curl -sS --unix-socket {FLASHER_SOCK} -X {method} {AUTH} "
+            f"curl -sS --unix-socket {FLASHER_SOCK} -X {method} {auth} "
             f"-H 'Content-Type: application/json' -d '{js}' http://localhost{path} -w '\\n%{{http_code}}'"
         )
     code, out, _ = run(client, cmd, timeout=120)

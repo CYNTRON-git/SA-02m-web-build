@@ -227,3 +227,76 @@ refresh его не выключит — нужен явный `disable --now`.
 файлов в `/var/lib/sa02m-alice/`, ключи `/run/sa02m-cloud-status.json`,
 `systemctl --failed`, `VERSION`. Не `enable`/`disable`/`start`/`stop` на
 1.136.
+
+---
+
+## 10. Стенд 1.135: `sa02m-stand-api` на сокете «Устройств» (с 1.0.6.65)
+
+С 1.0.6.65 nginx ходит к «Устройствам» **только** через unix-сокет
+`/run/sa02m-devices/api.sock` — запасного `127.0.0.1:8765` в upstream больше
+нет (решение Оператора 2026-09-29: порт, который наш демон освобождает,
+занял бы любой локальный процесс и получал бы cookie сессии панели). На 1.135
+`/api/devices*` отдаёт стендовый gunicorn `sa02m-stand-api` (вне этого
+репозитория), а `sa02m-devices-api` выключен drop-in'ом `10-stand-disable.conf`.
+Значит, gunicorn стенда должен слушать **тот же сокет с тем же владельцем и
+режимом**, что и наш демон: `0660`, группа `www-data`, каталог
+`/run/sa02m-devices` `0755`. Иначе после рендера нового site-файла вкладка
+«Устройства» на 1.135 отвечает 502.
+
+Шаги (Оператор, на 1.135, **сразу после** установки 1.0.6.65: до неё
+site-файл ещё ведёт на `127.0.0.1:8765`, и gunicorn, уже переведённый на
+сокет, дал бы 502 до самой установки; `11-devices.sh` перерисует nginx на
+сокет в любом случае):
+
+1. Посмотреть текущую строку запуска и все места, где стенд ходит на порт:
+
+   ```bash
+   systemctl cat sa02m-stand-api | grep -E '^(ExecStart|User|Group|UMask|RuntimeDirectory)'
+   grep -rn 8765 /etc/systemd/system/sa02m-stand-api.service* <каталог-проекта-стенда> 2>/dev/null
+   ```
+
+2. Создать drop-in (подставить свою `ExecStart` из шага 1, заменив
+   `--bind 127.0.0.1:8765` / `-b 127.0.0.1:8765` на сокет; пустая
+   `ExecStart=` обязательна — она сбрасывает исходную):
+
+   ```ini
+   # /etc/systemd/system/sa02m-stand-api.service.d/20-devices-socket.conf
+   [Service]
+   RuntimeDirectory=sa02m-devices
+   RuntimeDirectoryMode=0755
+   UMask=0117
+   ExecStart=
+   ExecStart=<исходная команда gunicorn> --bind unix:/run/sa02m-devices/api.sock --umask 0117
+   ExecStartPost=+/bin/sh -c 'for i in $(seq 1 100); do [ -S /run/sa02m-devices/api.sock ] && break; sleep 0.1; done; chgrp www-data /run/sa02m-devices/api.sock && chmod 0660 /run/sa02m-devices/api.sock'
+   ```
+
+   Режим сокета при создании задаёт `--umask 0117` самого gunicorn: при
+   `bind` он ставит свой umask (по умолчанию 0 — сокет открыт всем), поэтому
+   `UMask=` юнита на сокет не действует и нужен только для прочих файлов.
+   `ExecStartPost` с префиксом `+` выполняется от root при любом `User=`
+   стенда (не-root не смог бы сменить группу — `&&` уронил бы юнит, и
+   вкладка ответила бы 502): он дожидается сокета и выставляет группу
+   `www-data` (nginx) и режим `0660` — так же, как это делает
+   `sa02m-devices-api` (`bind_unix_listener`).
+   Если шаг 1 нашёл потребителей самого порта на стенде (HardPy-тесты и т. п.),
+   добавить **второй** `--bind 127.0.0.1:8765` к той же строке — это
+   стендовое решение, на полевые платы оно не попадает. Проверяет ли
+   стендовый gunicorn сессию панели сам, этот репозиторий не знает (код вне
+   дерева): если нет — на стенде к нему доходит любой процесс группы
+   `www-data` (и порта, если он оставлен), в отличие от `sa02m-devices-api`.
+
+3. Применить и проверить:
+
+   ```bash
+   systemctl daemon-reload && systemctl restart sa02m-stand-api
+   ls -l /run/sa02m-devices/api.sock          # srw-rw---- … www-data
+   curl -s -o /dev/null -w '%{http_code}\n' --unix-socket /run/sa02m-devices/api.sock http://localhost/api/devices   # любой HTTP-код = gunicorn слушает сокет
+   nginx -t && systemctl reload nginx
+   ```
+
+   Затем в панели — вкладка «Устройства»: карточки живые, график 12AI
+   рисуется (`kind=mr`).
+
+4. Откат: `rm /etc/systemd/system/sa02m-stand-api.service.d/20-devices-socket.conf
+   && systemctl daemon-reload && systemctl restart sa02m-stand-api` — при
+   site-файле ≥1.0.6.65 вкладка «Устройства» на стенде тогда отвечает 502.

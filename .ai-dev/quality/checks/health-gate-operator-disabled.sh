@@ -2,7 +2,7 @@
 # Static gate: the update runner's health check must SKIP an operator-disabled
 # required unit (masked / masked-runtime / disabled) instead of rolling the update
 # back — the never-widen rule (a shared HardPy stand masks sa02m-devices-api because
-# its own app serves :8765). An ENABLED-but-down unit must still FAIL. Verifies the
+# its own app serves the devices API). An ENABLED-but-down unit must still FAIL. Verifies the
 # skip logic is present, correctly gated, and positioned before the fail path in
 # etc/sa02m-update-runner.sh's health_check units loop (since 1.0.6.52 the health
 # gate is its own function and the per-unit probe is unit_settled — the settle

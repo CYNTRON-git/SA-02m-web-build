@@ -4,7 +4,7 @@
   <img src="https://img.shields.io/badge/platform-Armbian%20%7C%20Linux%20ARM-orange?style=flat-square"/>
   <img src="https://img.shields.io/badge/stack-nginx%20%2B%20fcgiwrap%20%2B%20Bash%20CGI-blue?style=flat-square"/>
   <img src="https://img.shields.io/badge/license-MIT-green?style=flat-square"/>
-  <img src="https://img.shields.io/badge/version-1.0.6.63-cyan?style=flat-square"/>
+  <img src="https://img.shields.io/badge/version-1.0.6.65-cyan?style=flat-square"/>
 </p>
 
 Веб-интерфейс для **[сервера автоматизации СА-02м](https://cyntron.ru/catalog/ustroystva_avtomatizatsii/servery_avtomatizatsii/)** производства [ЦИНТРОН](https://cyntron.ru) на базе процессорного модуля [A40i-2eth](https://cyntron.ru/catalog/ustroystva_avtomatizatsii/komplektuyushchie/7705/) (Allwinner A40i, Linux).
@@ -143,7 +143,7 @@ echo 'SA02M_HW_VARIANT=sa02m-2eth' > /etc/sa02m_hw_variant.conf
 ### Устройства (ДТВ / СЭ-02м-3 / AI-каналы MR-02м / Carel / LED)
 - **Вкладка «Устройства»** — живые показания ДТВ, анализаторов сети (СЭ-02м-3), аналоговых каналов MR-02м, вентустановок Carel (c.pCOmini / uAria) и адресной ленты LED (type 120) карточками, без ручной настройки: список строится из MQTT-кэша моста.
 - **Архив и графики** — служба `sa02m-devices-logger` пишет измерения в SQLite; клик по карточке открывает график (Canvas 2D) за выбранный период, с экспортом в Excel и журналом пиков СЭ. Carel — `kind=carel`, та же 10 с каденция, что у MR.
-- **Backend** — Python-демон `sa02m-devices-api` на `:8765`, проксируется nginx как `/api/devices*` (не CGI); код `opt/sa02m-devices/`. На стенде 1.135 `:8765` держит gunicorn `sa02m-stand-api` (`11-devices.sh` рестартует его, если юнит активен).
+- **Backend** — Python-демон `sa02m-devices-api` за nginx как `/api/devices*` (не CGI): только unix-сокет `/run/sa02m-devices/api.sock`; порт `127.0.0.1:8765` демон держит лишь на плате со старым site-файлом nginx (обновлённой только через «Обновление веб»); сессию панели проверяет сам. Код `opt/sa02m-devices/`. На стенде 1.135 `/api/devices*` отдаёт gunicorn `sa02m-stand-api` на том же сокете (`docs/bench-board-target-state.md` §10; `11-devices.sh` рестартует его, если юнит активен).
 - Контракты: `docs/contracts/devices-mr-history.md`, `docs/contracts/template-device.md`, `docs/contracts/carel-ahu.md`, `docs/contracts/led-mb2ws.md`.
 
 ### Яндекс Алиса
@@ -1478,8 +1478,8 @@ hwclock -r   # прочитать время из PCF8563
 | обновление и резерв | `web_update_*.cgi`, `web_backup.cgi`, `web_factory_reset.cgi`, `mplc_project_deploy.cgi` | OTA/офлайн-обновление, бэкап, сброс, деплой проекта MPLC |
 
 Вкладка «Устройства» ходит **не в CGI**, а в демон `sa02m-devices-api`
-(`:8765`), который nginx проксирует как `/api/devices*`; на стенде 1.135
-тот же порт держит `sa02m-stand-api`. Прошивальщик — в
+(unix-сокет `/run/sa02m-devices/api.sock`), который nginx проксирует как
+`/api/devices*`; на стенде 1.135 тот же сокет держит `sa02m-stand-api`. Прошивальщик — в
 `sa02m-flasher` через `/api/flasher/*` (см. ниже).
 
 Начиная с `1.0.2`, `status.cgi` поддерживает раздельные части ответа, чтобы виджеты обновлялись независимо и не ждали общий медленный JSON.

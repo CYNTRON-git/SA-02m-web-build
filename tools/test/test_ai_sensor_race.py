@@ -9,7 +9,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
-from sa02m_common import WEB_COOKIE, connect_ssh  # noqa: E402
+from sa02m_common import WEB_COOKIE, connect_ssh, csrf_curl_header  # noqa: E402
 
 DEV6 = {
     "address": 6,
@@ -33,7 +33,7 @@ def api(c, path, body):
     p = json.dumps(body, ensure_ascii=False).replace("'", "'\"'\"'")
     raw = run(
         c,
-        f"curl -s -b '{WEB_COOKIE}' -H 'Content-Type: application/json' "
+        f"curl -s -b '{WEB_COOKIE}' {csrf_curl_header()} -H 'Content-Type: application/json' "
         f"-d '{p}' 'http://127.0.0.1:9999/api/flasher{path}'",
     )
     for line in raw.splitlines():

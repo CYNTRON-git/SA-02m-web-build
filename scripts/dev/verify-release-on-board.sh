@@ -127,7 +127,7 @@ for u in nginx mosquitto sa02m-rules sa02m-alice sa02m-devices-logger sa02m-modb
     [ "$s" = active ] || BAD="$BAD $u=$s"
 done
 # The devices API is served by sa02m-devices-api, or by the stand's gunicorn
-# (sa02m-stand-api owns :8765 on a stand board) — either owner is a PASS.
+# (sa02m-stand-api on a stand board, bound to the same socket since 1.0.6.65) — either owner is a PASS.
 DA=$(systemctl is-active sa02m-devices-api 2>/dev/null)
 DS=$(systemctl is-active sa02m-stand-api 2>/dev/null)
 [ "$DA" = active ] || [ "$DS" = active ] || BAD="$BAD devices-api=$DA stand-api=$DS"

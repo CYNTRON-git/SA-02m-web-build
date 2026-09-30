@@ -43,6 +43,24 @@ def web_cookie() -> str:
     return f"session_token={token}"
 
 
+def csrf_curl_header() -> str:
+    """curl-фрагмент `-H "X-SA02M-CSRF: …"` для мутирующего запроса к демонам.
+
+    С 1.0.6.65 каждый POST к прошивальщику (и к «Устройствам») требует тот же
+    токен, что и CGI (docs/decisions/selective-csrf-policy.md «Демоны»), иначе
+    HTTP 200 + `E_CSRF`. Токен берётся так же, как его берёт панель: `GET
+    cgi-bin/csrf_token.cgi` с cookie сессии. Фрагмент вычисляется НА ПЛАТЕ
+    (подстановка `$(…)` в той же команде, что уходит по SSH), поэтому годится
+    для любого инструмента, собирающего команду curl для удалённой оболочки.
+    Пустой ответ даёт пустой заголовок — демон ответит `E_CSRF no_header`,
+    ошибка видна, а не проглочена.
+    """
+    return (
+        "-H \"X-SA02M-CSRF: $(curl -s -m 10 -b '" + web_cookie() + "' '"
+        + WEB_BASE + "/cgi-bin/csrf_token.cgi' | grep -o '[a-f0-9]\\{64\\}')\""
+    )
+
+
 def __getattr__(name: str) -> str:
     """Разрешение имени WEB_COOKIE через PEP 562 — НЕ ленивое для потребителей.
 
