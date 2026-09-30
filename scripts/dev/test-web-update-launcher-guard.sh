@@ -29,7 +29,7 @@
 # sa02m-update-runner). The observable is whether `git … clone` was attempted,
 # plus update_status and the exit code. L8–L11 replace the git shim with one
 # whose clone succeeds (their own method note, below). Nothing touches the
-# real filesystem, no root, no network.
+# real filesystem (see «Keep the launcher off the host» below), no root, no network.
 #
 # Drive-to-failure: WEB_UPDATE_LAUNCHER=<(git show 6ba943d:etc/sa02m-web-update-apply.sh) \
 #   bash scripts/dev/test-web-update-launcher-guard.sh   → L1 RED (the
@@ -58,6 +58,34 @@ command -v python3 >/dev/null 2>&1 || { echo "SKIP  python3 unavailable (launche
 T=$(mktemp -d) || exit 1
 cat "$SRC" > "$T/launcher.sh" 2>/dev/null || { echo "FAIL  cannot read launcher source: $SRC"; exit 1; }
 LAUNCHER="$T/launcher.sh"
+
+# ── Keep the launcher off the host (2026-09-30 sweep) ───────────────────────
+# The launcher runs as root on the board, and this copy runs as whoever runs the
+# harness — root on a root host or under the CI runner's sudo. So the copy is cut
+# off from three host roots, and a copy where any cut did not take is never run:
+#   * the legacy deploy (rsync --delete into /var/www/network_config, installs
+#     into /etc/sudoers.d, /etc/tmpfiles.d, /opt, /usr/local): no case wants it,
+#     yet one broken fixture reaches it — L1–L7 give a non-executable runner and
+#     rely on the git shim refusing the clone, and any failed handoff falls
+#     through to it. Its entry line becomes a recorded `exit 97`;
+#   * the host's sourced helper lib and WEB_ROOT, which the handoff reads.
+# A fourth root is TMPDIR: the launcher's EXIT trap removes "${TMPDIR:-}", and
+# until its own mktemp (after the pre-clone guard) that is the CALLER's TMPDIR —
+# a run with TMPDIR exported had it rm -rf'd (strace, 2026-09-30). sudo's
+# env_reset strips TMPDIR on the board, so every launcher run below goes through
+# `env -u TMPDIR`, and a decoy TMPDIR exported here must survive the whole run.
+sed -i -e "s|^LIB=/usr/local/lib/sa02m-web-build-lib\.sh\$|LIB=$T/no-host-lib.sh|" \
+       -e "s|^WEB_ROOT=/var/www/network_config\$|WEB_ROOT=$T/www|" \
+       -e "s|^log \"Using legacy rsync deploy .*|echo reached >> \"$T/legacy.reached\"; exit 97|" "$LAUNCHER"
+if ! grep -qxF "LIB=$T/no-host-lib.sh" "$LAUNCHER" || ! grep -qxF "WEB_ROOT=$T/www" "$LAUNCHER" \
+   || ! grep -qxF "echo reached >> \"$T/legacy.reached\"; exit 97" "$LAUNCHER" \
+   || grep -q 'Using legacy rsync deploy' "$LAUNCHER"; then
+  echo "FAIL  the launcher copy is not sandboxed (host lib / WEB_ROOT / legacy-deploy entry not retargeted) — refusing to run it"
+  rm -rf "$T"; exit 1
+fi
+legacy_reached() { [ -e "$T/legacy.reached" ]; }
+DECOY_TMPDIR="$T/caller-tmpdir"; mkdir -p "$DECOY_TMPDIR"; : > "$DECOY_TMPDIR/keep"
+export TMPDIR="$DECOY_TMPDIR"
 
 fails=0
 ok()  { printf 'ok    %s\n' "$1"; }
@@ -92,7 +120,7 @@ write_txn() {  # $1=stage
 }
 run_launcher() {
   rm -f "$T/git.calls" "$LEGACY/update_status" "$LEGACY/update.lock"
-  bash "$LAUNCHER" >/dev/null 2>&1; rc=$?
+  env -u TMPDIR bash "$LAUNCHER" >/dev/null 2>&1; rc=$?
 }
 cloned() { grep -q ' clone ' "$T/git.calls" 2>/dev/null; }
 status_is() { [ "$(cat "$LEGACY/update_status" 2>/dev/null)" = "$1" ]; }
@@ -126,7 +154,7 @@ write_txn done
 run_launcher_locked() {
   rm -f "$T/git.calls" "$LEGACY/update_status"
   printf '%s\n' "$LIVE_PID" > "$LEGACY/update.lock"
-  bash "$LAUNCHER" >/dev/null 2>&1; rc=$?
+  env -u TMPDIR bash "$LAUNCHER" >/dev/null 2>&1; rc=$?
 }
 run_launcher_locked
 [ "$rc" -ne 0 ] && ! cloned && ok "L5 the legacy launcher lock (live pid) still refuses a second launcher" \
@@ -368,6 +396,9 @@ d=json.load(open(sys.argv[1],encoding="utf-8")); raise SystemExit(0 if d.get("st
     || bad "L11 re-take over the inherited descriptor FAILED ($(grep '^reacquire=' "$T/runner.calls" 2>/dev/null)) — the real runner would die on E_LOCK against its own launcher"
 fi
 
+legacy_reached && bad "a case reached the launcher's legacy deploy (stopped at the sandbox's exit 97) — a fixture broke the handoff; on a root host that path writes /var/www, /etc/sudoers.d, /opt"
+[ -f "$DECOY_TMPDIR/keep" ] && ok "the caller's TMPDIR survived every launcher run (env -u TMPDIR)" \
+  || bad "the caller's TMPDIR ($DECOY_TMPDIR) was removed — a launcher run inherited it and its EXIT trap rm -rf'd it"
 echo "-----"
 if [ "$fails" -eq 0 ]; then echo "PASS (all checks${skipped:+; SKIPPED here: $skipped})"; exit 0
 else echo "FAIL ($fails check(s)${skipped:+; SKIPPED here: $skipped})"; exit 1; fi
