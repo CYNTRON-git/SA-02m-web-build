@@ -68,7 +68,7 @@ const REACH_MS = 6000;
 
 function die(code, ...lines) {
   for (const l of lines) (code === 0 ? console.log : console.error)(l);
-  process.exit(code);
+  process.exit(code); // exit-status: every die() caller passes a literal (1 = FAIL, 2 = infra), never a count
 }
 
 let failures = 0;

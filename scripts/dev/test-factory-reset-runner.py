@@ -616,7 +616,7 @@ else:
     except SyntaxError as e:
         bad(f"P fr_safe does not compile: {e}")
     ns: dict = {"__name__": "fr_safe_test"}
-    body = src.rsplit("sys.exit(main(sys.argv[1:]))", 1)[0]
+    body = src.rsplit("sys.exit(main(sys.argv[1:]))", 1)[0]  # exit-status: a string searched in fr_safe's source, not this script's exit
     with tempfile.TemporaryDirectory(prefix="frr-u1-") as td:
         tdp = Path(td)
         d = tdp / "d"
