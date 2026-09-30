@@ -243,14 +243,15 @@ class Http:
         return "http %s" % status
 
 
-def _non_finite_inside(root: Any, fix: bool) -> bool:
+def non_finite_inside(root: Any, fix: bool) -> bool:
     """True when a NaN/±Infinity float sits anywhere inside `root` (dicts,
     lists, tuples; cycles visited once). With `fix`, each one is replaced by
-    None in place — a tuple holding one becomes a list, which is what it
-    persists as anyway."""
-    found = False
+    None in place; a tuple is rebuilt as a list ONLY when it holds one (at
+    any depth), since a tuple cannot be changed in place — every other value,
+    tuples included, is left exactly as it was."""
     if isinstance(root, float):
         return not math.isfinite(root)
+    found = False
     stack, seen = [root], set()
     while stack:
         cur = stack.pop()
@@ -269,11 +270,15 @@ def _non_finite_inside(root: Any, fix: bool) -> bool:
                 if not fix:
                     return True
                 cur[k] = None
-            elif isinstance(v, tuple) and fix:
-                as_list = list(v)
-                cur[k] = as_list
-                stack.append(as_list)
-            elif isinstance(v, (dict, list, tuple)):
+            elif isinstance(v, tuple):
+                if fix and non_finite_inside(v, fix=False):
+                    found = True
+                    as_list = list(v)
+                    cur[k] = as_list
+                    stack.append(as_list)
+                elif not fix:
+                    stack.append(v)
+            elif isinstance(v, (dict, list)):
                 stack.append(v)
     return found
 
@@ -284,6 +289,8 @@ class Vars:
     def __init__(self, bucket: Dict[str, Any], on_home_mode: Optional[Callable] = None):
         self._b = bucket
         self._on_home_mode = on_home_mode
+        #: A NaN/Infinity was scrubbed to None (run_code journals it).
+        self.scrubbed = False
 
     def get(self, key: str, default: Any = None) -> Any:
         return self._b.get(str(key), default)
@@ -291,7 +298,7 @@ class Vars:
     def set(self, key: str, value: Any) -> None:
         # Vars persist with the document: NaN/Infinity would make that JSON
         # non-strict. Refused here, where the author gets a run error.
-        if _non_finite_inside(value, fix=False):
+        if non_finite_inside(value, fix=False):
             raise ValueError("Vars.set: NaN/Infinity is not a finite number")
         if len(self._b) >= 32 and str(key) not in self._b:
             return
@@ -309,6 +316,10 @@ class Vars:
         if mode not in self._HOME_MODES:
             raise RuntimeError("bad home_mode")
         if self._on_home_mode is not None:
+            # The engine SAVES the document here, mid-run: scrub first, so
+            # a value slipped in by mutation never reaches scenarios.json.
+            if non_finite_inside(self._b, fix=True):
+                self.scrubbed = True
             self._on_home_mode(mode)  # engine validates + fires presence
         else:
             self._b["home_mode"] = mode
@@ -379,8 +390,10 @@ def run_code(s: Dict[str, Any], library: str, state: Dict[str, Dict[str, Any]],
             if dl.expired and not err:
                 err = "timeout"  # the body swallowed the raise and finished on its own
             # Vars.get hands out the stored object: an in-place append of a
-            # NaN bypasses Vars.set. Normalised here, before anything persists.
-            if _non_finite_inside(vars_bucket, fix=True) and not err:
+            # NaN bypasses Vars.set. Scrubbed at the mid-run save
+            # (Vars.home_mode) and here, before the engine keeps the bucket.
+            scrubbed = non_finite_inside(vars_bucket, fix=True)
+            if (scrubbed or env["Vars"].scrubbed) and not err:
                 err = "Vars: NaN/Infinity is not a finite number (stored as None)"
     rec = {"ts": now, "id": s.get("id"), "name": s.get("name"), "error": err, "ok": not err}
     s["last_run"] = now
