@@ -794,10 +794,11 @@ def _clean_end(raw: Any) -> Optional[Dict[str, Any]]:
 
 
 def _strict_json(v: Any) -> Any:
-    """`v` with every NaN / ±Infinity float replaced by None — the store and
-    the cloud answer stay strict JSON (a template reads None as «use the
-    default»)."""
-    if isinstance(v, float) and not math.isfinite(v):
+    """`v` with every NaN / ±Infinity float and every integer past float
+    range replaced by None — the store and the cloud answer stay strict
+    JSON, and a template never meets a number float() refuses (it reads
+    None as «use the default»)."""
+    if isinstance(v, (int, float)) and not isinstance(v, bool) and not _finite(v):
         return None
     if isinstance(v, dict):
         return {k: _strict_json(x) for k, x in v.items()}
@@ -812,15 +813,15 @@ def _clean_params(raw: Any) -> Optional[Dict[str, Any]]:
     if not isinstance(raw, dict) or not raw:
         return None
     try:
-        blob = json.dumps(raw, ensure_ascii=False)
+        params = _strict_json(raw)
+        # The bound is judged on what is stored (NaN ⇒ null grows a value,
+        # a 400-digit int ⇒ null shrinks it).
+        blob = json.dumps(params, ensure_ascii=False, allow_nan=False)
     except (TypeError, ValueError, OverflowError, RecursionError):
         return None
     if len(blob) > PARAMS_MAX_BYTES:
         return None
-    try:
-        return _strict_json(raw)
-    except RecursionError:
-        return None
+    return params
 
 
 def _summary(s: Dict[str, Any]) -> str:
@@ -879,7 +880,9 @@ def validate_row(body: Dict[str, Any], existing_id: Optional[str] = None,
                                 drop=drop_in("action"), targets=targets),
         "code": str(body.get("code") or "")[:8000] if typ == "code" else "",
         "summary": "",
-        "last_run": body.get("last_run"),
+        # The board's own record (journal): a client value is never stored
+        # or echoed — a NaN there made the answer non-strict JSON.
+        "last_run": None,
         "last_error": "",
     }
     if sum(1 for a in row["action"] if a.get("kind") in _WRITE_KINDS) > MAX_WRITES:
