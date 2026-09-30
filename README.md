@@ -46,7 +46,7 @@ echo 'SA02M_HW_VARIANT=sa02m-2eth' > /etc/sa02m_hw_variant.conf
 
 ## Содержание
 
-- [Возможности](#возможности) — в т.ч. [Устройства](#устройства-дтв--сэ-02м-3--ai-каналы-mr-02м--carel--led), [Яндекс Алиса](#яндекс-алиса), [Облако](#облако-удалённый-доступ), [Сценарии](#сценарии-на-плате)
+- [Возможности](#возможности) — в т.ч. [Устройства](#устройства-дтв--сэ-02м-3--ai-каналы-mr-02м--carel--led), [Яндекс Алиса](#яндекс-алиса), [Apple HomeKit](#apple-homekit), [Home Connect](#home-connect-бытовые-приборы-bsh), [Облако](#облако-удалённый-доступ), [Сценарии](#сценарии-на-плате)
 - [Скриншоты](#скриншоты)
 - [Требования](#требования)
 - [Установка на СА-02м](#установка-на-са-02м)
@@ -152,6 +152,16 @@ echo 'SA02M_HW_VARIANT=sa02m-2eth' > /etc/sa02m_hw_variant.conf
 - **Службы** — `sa02m-alice-client` (связь с gateway Алисы), `sa02m-cloud-control` (тот же пакет, профиль `cloud`: управление из облака `cloud.cyntron.ru`) и `sa02m-alice-config` (локальный конфиг-API); все поставляются **выключенными**, включает оператор (карточки «Облако» / «Яндекс Алиса»).
 - Установка — только `scripts/06-alice.sh` / `install.sh` (OTA обновляет, но не устанавливает: `docs/deployment.md`). Подробности: `docs/ALICE_INTEGRATION.md`, контракт `docs/contracts/alice-mqtt-mapping.md`.
 - **Облачный каталог (профиль `cloud`, с 1.0.6.37)** — переименование, комнаты, группы и сценарии едут тем же Socket.IO, что управление из `cloud.cyntron.ru`. Контракт канала: `docs/contracts/cloud-scenarios.md`.
+
+### Apple HomeKit
+- **Мост в приложение Apple «Дом»** — служба `sa02m-homekit` показывает в «Доме» те устройства «Умного дома», у которых отмечено «Показывать в HomeKit» (по умолчанию ни одного): реле, розетки, клапаны, вентиляторы, лампы с яркостью, датчики температуры, влажности, освещённости, движения, открытия, протечки, дыма. Устройство, которое плата сейчас не читает, в «Доме» — «Не отвечает».
+- **Карточка «Apple HomeKit»** во вкладке «Управление»: включение, QR-код и код сопряжения (только пока мост не сопряжён), выбор проводного интерфейса и порта, «Сбросить сопряжение». Мост **не сертифицирован Apple** — при добавлении iPhone просит подтвердить «Всё равно добавить».
+- **Необязательная установка**, в заводской образ не входит: `install.sh --with-homekit` (нужен пакет Алисы); OTA обновляет установленный мост, но не устанавливает его. Подробности: `docs/HOMEKIT_INTEGRATION.md`, контракт `docs/contracts/homekit-bridge.md`.
+
+### Home Connect (бытовые приборы BSH)
+- **Приборы Bosch / Siemens / Neff / Gaggenau из облака Home Connect** — служба `sa02m-homeconnect` публикует их состояние на локальном брокере как устройства `/devices/hc-…` (идёт ли программа, закончилась ли, сколько осталось, открыта ли дверь). **Только чтение** — плата приборами не управляет.
+- **Карточка «Home Connect»** во вкладке «Управление»: Client ID своего приложения BSH, включение, вход в аккаунт владельца по коду/QR с телефона, счёт запросов к облаку (лимит BSH — 1000 в сутки), «Отключить аккаунт».
+- **Необязательная установка**, в заводской образ не входит: `install.sh --with-homeconnect`; нужен интернет на плате. С российского IP облако BSH на стенде не ответило (соединение открывается, ответа нет). Подробности: `docs/HOME_CONNECT_INTEGRATION.md`, контракт `docs/contracts/home-connect.md`.
 
 ### Сценарии на плате
 - **Служба `sa02m-rules`** — движок сценариев на контроллере (`rules_engine=2`): расписание, пороги, кнопки MR-02м (`di_N_short/long/double`), присутствие, сцены, end off/restore. Store `/etc/sa02m-rules/scenarios.json`.
@@ -289,6 +299,8 @@ chmod +x install.sh scripts/*.sh etc/*.sh
 | `06-gateway.sh` | RS-485→Ethernet шлюз, gateway CGI, systemd unit | `SA02M_SKIP_GATEWAY=1` |
 | `06-alice.sh` | Яндекс Алиса: `opt/sa02m-alice`, обе службы **выключены** по умолчанию | `SA02M_SKIP_ALICE=1` |
 | `06b-rules.sh` | Сценарии на плате: `opt/sa02m-rules`, `sa02m-rules.service` | `SA02M_SKIP_RULES=1` |
+| `06c-homekit.sh` | Мост Apple HomeKit: `opt/sa02m-homekit` + venv, служба **выключена**; ставится **только** с `--with-homekit` / `SA02M_WITH_HOMEKIT=1` (уже установленный — обновляется) | `SA02M_SKIP_HOMEKIT=1` |
+| `06d-homeconnect.sh` | Клиент BSH Home Connect (только чтение): `opt/sa02m-homeconnect`, без pip, служба **выключена**; ставится **только** с `--with-homeconnect` / `SA02M_WITH_HOMECONNECT=1` (уже установленный — обновляется) | `SA02M_SKIP_HOMECONNECT=1` |
 | `07-nodered.sh` | Node.js LTS + Node-RED, `nodered.service`, UI на порту 1880 | `SA02M_SKIP_NODERED=1` |
 | `08-codesys.sh` | CODESYS Control SL (только при наличии vendor-payload) | `SA02M_SKIP_CODESYS=1` |
 | `09-mplc.sh` | MasterSCADA MPLC 4D Runtime (только при наличии vendor-payload) | `SA02M_SKIP_MPLC=1` |
@@ -412,6 +424,10 @@ sudo ./install.sh [ПАРАМЕТРЫ]
                    служб сохраняется (docs/contracts/installer-refresh-policy.md)
   --with-optional  Явно ставить/обновлять сторонние стеки, в том числе
                    удалённые оператором через панель
+  --with-homekit   Установить мост Apple HomeKit (необязательный модуль,
+                   служба выключена до включения на карточке)
+  --with-homeconnect  Установить клиент BSH Home Connect (только чтение,
+                   необязательный модуль, служба выключена)
 ```
 
 ### Примеры
@@ -2050,6 +2066,8 @@ sudo /usr/local/sbin/sa02m-web-update-apply
 | [docs/MQTT_TOPICS.md](docs/MQTT_TOPICS.md) | Схема MQTT-топиков, доступность, device ID |
 | [docs/MPLC4_MQTT.md](docs/MPLC4_MQTT.md) | MPLC4 vs Python-мост, настройка Modbus/MQTT в MasterSCADA |
 | [docs/ALICE_INTEGRATION.md](docs/ALICE_INTEGRATION.md) | Интеграция с Яндекс Алисой (native-путь через gateway) |
+| [docs/HOMEKIT_INTEGRATION.md](docs/HOMEKIT_INTEGRATION.md) | Мост Apple HomeKit: установка, сопряжение iPhone, сброс, неполадки |
+| [docs/HOME_CONNECT_INTEGRATION.md](docs/HOME_CONNECT_INTEGRATION.md) | Приборы BSH Home Connect: своё приложение и Client ID, вход по коду, лимит, неполадки |
 | [docs/OFFLINE_UPDATE_PACKAGE_V1.md](docs/OFFLINE_UPDATE_PACKAGE_V1.md) | Формат офлайн-пакета обновления `.sa02m` |
 | [docs/bugs/BUGLOG.md](docs/bugs/BUGLOG.md) | Известные проблемы и обходные пути |
 | [docs/audits/](docs/audits/) | Отчёты аудитов (исторические срезы) |

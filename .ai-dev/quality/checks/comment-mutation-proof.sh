@@ -79,9 +79,12 @@
 # scripts/, tools/imaging/ and install.sh, so an edit to any of those can move a
 # pin and make a case vacuous — and `covers` must name what can BREAK the check,
 # not only where the check lives (docs/agent-rules/quality-gate-rigor.md (c)).
-# The cost is that a `--touched` review run almost always includes this row's
-# ~3.5 min (29 mutations plus one green baseline per gate; it was ~60 s at 20
-# cases). That is the fail-safe direction, and CI runs the full set regardless.
+# The cost is that a `--touched` review run almost always includes this row —
+# minutes, not seconds: every case re-runs its WHOLE gate, so the behavioural
+# harnesses dominate (each factory-reset-runner case, and its baseline, is a
+# full harness run at ~27 s, measured 2026-09-27; count them in CASES below —
+# a number written here goes stale). That is the fail-safe direction, and CI
+# runs the full set regardless.
 #
 # NOT COVERED, and why: a gate whose pins are all fail-IF-PRESENT sweeps
 # (no-retired-session-token, the negative halves of installer-svc-policy-gate)
@@ -138,6 +141,17 @@ watchdog-hold|install.sh|sa02m_restore_runtime_watchdog || true
 watchdog-hold|install.sh|set -C; date -Iseconds > "$SA02M_IMAGING_LOCK"
 watchdog-hold|install.sh|SA02M_OWN_IMAGING_LOCK=1
 watchdog-hold|install.sh|rm -f "$SA02M_IMAGING_LOCK"
+alice-conf-homes|opt/sa02m-update/lib/validate_package.py|"/etc/sa02m-alice/",
+alice-conf-homes|etc/sa02m-update-runner.sh|"/etc/sa02m-alice/",
+alice-conf-homes|etc/sa02m-restore-backup.sh|sa02m-alice/sa02m-alice-(client|devices)
+alice-conf-homes|etc/sa02m-restore-backup.sh|if why is not None: raise RestoreRefused(why)
+alice-conf-homes|etc/sa02m-restore-backup.sh|"/etc/sa02m-alice": (0o771
+alice-conf-homes|etc/sa02m-restore-backup.sh|if not pinned(cur_st, st): raise Unsafe(f"{nxt} is a symlink in
+alice-conf-homes|etc/sa02m-web-backup.sh|if not pinned(cur_st, st): raise Unsafe(f"{nxt} is a symlink in
+alice-conf-homes|etc/sa02m-web-backup.sh|if not pinned(cur_st, st): raise Unsafe(f"{nxt} is a directory in
+alice-conf-homes|etc/sa02m-web-backup.sh|if not stat.S_ISREG(st.st_mode): raise Unsafe(
+alice-conf-homes|etc/sa02m-web-backup.sh|if st.st_nlink > 1 and not dir_root_only: raise Unsafe(
+alice-conf-homes|scripts/06-alice.sh|if not stat.S_ISREG(st.st_mode) or st.st_nlink != 1: raise
 runner-version-stamp|scripts/03-webserver.sh|sa02m_stamp_runner_version "$SCRIPT_DIR/../www/network_config/VERSION"
 runner-version-stamp|scripts/update-www-only.sh|sa02m_stamp_runner_version "$REPO_ROOT/www/network_config/VERSION"
 runner-version-stamp|scripts/lib.sh|install -m 0644 "$statedir/runner.version.tmp" "$statedir/runner.version"
@@ -183,6 +197,59 @@ cgi-csrf-policy|opt/sa02m-devices/sa02m_devices/api.py|check_csrf(
 js-post-csrf-headers|www/network_config/static/js/devices.js|? withCsrfHeaders({ "Content-Type": "application/json" })
 websession-parity|opt/sa02m-devices/sa02m_devices/websession.py|def check_csrf(
 devices-api-upstream|etc/nginx/network_config.conf|server unix:/run/sa02m-devices/api.sock;
+homekit-trigger|usr/local/sbin/sa02m-homekit-web-trigger.sh|hk_write_disabled_status "$since"
+homekit-trigger|usr/local/sbin/sa02m-homekit-web-trigger.sh|rm -f -- "$VAR_DIR/state.json" 2>/dev/null || true
+homekit-trigger|usr/local/sbin/sa02m-homekit-web-trigger.sh|out=${out//[^[:print:]]/ }
+homekit-wheelhouse|scripts/dev/build-homekit-wheelhouse.sh|is not an armv7l or pure-Python wheel
+homekit-cgi|www/network_config/cgi-bin/sa02m_homekit_api.cgi|TRIG_OUT=$(timeout 11 sudo -n /usr/local/sbin/sa02m-homekit-web-trigger.sh "$VERB" 2>/dev/null) || TRIG_RC=$?
+cgi-csrf-policy|www/network_config/cgi-bin/sa02m_homekit_api.cgi|web_csrf_validate
+alice-conf-homes|opt/sa02m-update/lib/validate_package.py|"/etc/sa02m-homekit/",
+alice-conf-homes|etc/sa02m-update-runner.sh|"/var/lib/sa02m-homekit/",
+alice-conf-homes|etc/sa02m-web-backup.sh|/etc/sa02m-homekit/sa02m-homekit.conf
+alice-conf-homes|etc/sa02m-restore-backup.sh|re.compile(r"^/etc/sa02m-homekit/sa02m-homekit
+alice-conf-homes|etc/sa02m-restore-backup.sh|"/etc/sa02m-homekit": (0o2750
+installer-order|install.sh|sa02m_run_module 06c-homekit.sh
+installer-svc-policy-gate|scripts/06c-homekit.sh|sa02m_svc_capture "$UNIT"
+factory-reset-runner|etc/sa02m-factory-reset-runner.sh|  wipe_homekit_pairings
+factory-reset-runner|etc/sa02m-factory-reset-runner.sh|fr_safe verify-backup "$out"
+factory-reset-runner|etc/sa02m-factory-reset-runner.sh|!= (ours.st_dev, ours.st_ino): drop_swapped(target)
+factory-reset-runner|etc/sa02m-factory-reset-runner.sh|if foreign: drop_foreign(pfd, dreal, name, lst, kind)
+factory-reset-runner|etc/sa02m-factory-reset-runner.sh|if dirty: scrub_log(fd, f"{dreal}/{name}")
+factory-reset-runner|etc/sa02m-factory-reset-runner.sh|  release_statedir
+factory-reset-runner|etc/sa02m-factory-reset-runner.sh||| chmod "$STATEDIR_MODE" "$STATEDIR"
+factory-reset-runner|etc/sa02m-factory-reset-runner.sh|systemctl stop "$HK_UNIT"
+factory-reset-runner|etc/sa02m-factory-reset-runner.sh|fr_safe remove-name "$HK_RUN_DIR" setup.json
+factory-reset-runner|etc/sa02m-factory-reset-runner.sh||| fail E_INTERNAL "transaction id is not a plain token"
+homeconnect-trigger|usr/local/sbin/sa02m-homeconnect-web-trigger.sh|rm -f -- "$VAR_DIR/tokens.json" 2>/dev/null || true
+homeconnect-trigger|usr/local/sbin/sa02m-homeconnect-web-trigger.sh|rm -f -- "$LINK_FILE" 2>/dev/null || true
+homeconnect-trigger|usr/local/sbin/sa02m-homeconnect-web-trigger.sh|out=${out//[^[:print:]]/ }
+homeconnect-cgi|www/network_config/cgi-bin/sa02m_homeconnect_api.cgi|TRIG_OUT=$(timeout 11 sudo -n /usr/local/sbin/sa02m-homeconnect-web-trigger.sh "$VERB" 2>/dev/null) || TRIG_RC=$?
+cgi-csrf-policy|www/network_config/cgi-bin/sa02m_homeconnect_api.cgi|web_csrf_validate
+sudoers-pin-contract|etc/sudoers.d/sa02m-homeconnect|/usr/local/sbin/sa02m-homeconnect-web-trigger.sh unlink
+alice-conf-homes|opt/sa02m-update/lib/validate_package.py|"/etc/sa02m-homeconnect/",
+alice-conf-homes|etc/sa02m-update-runner.sh|"/var/lib/sa02m-homeconnect/",
+alice-conf-homes|etc/sa02m-restore-backup.sh|re.compile(r"^/etc/sa02m-homeconnect/sa02m-homeconnect
+alice-conf-homes|etc/sa02m-restore-backup.sh|"/etc/sa02m-homeconnect": (0o2750
+alice-conf-homes|scripts/06d-homeconnect.sh|os.fchmod(fd, 0o640)
+installer-order|install.sh|sa02m_run_module 06d-homeconnect.sh
+installer-svc-policy-gate|scripts/06d-homeconnect.sh|sa02m_svc_capture "$UNIT"
+factory-reset-runner|etc/sa02m-factory-reset-runner.sh|  wipe_homeconnect_signin
+factory-reset-runner|etc/sa02m-factory-reset-runner.sh|systemctl stop "$HC_UNIT"
+factory-reset-runner|etc/sa02m-factory-reset-runner.sh|fr_safe remove-name "$HC_RUN_DIR" link.json
+factory-reset-runner|etc/sa02m-factory-reset-runner.sh|unit_stopped "$HK_UNIT" || fail E_APPLY
+factory-reset-runner|etc/sa02m-factory-reset-runner.sh|unit_stopped "$HC_UNIT" || fail E_APPLY
+factory-reset-runner|etc/sa02m-factory-reset-runner.sh|  restart_stopped_units
+factory-reset-runner|etc/sa02m-factory-reset-runner.sh|remember_if_active "$HK_UNIT"
+daemon-least-privilege|scripts/06c-homekit.sh|if gpasswd -d "$HK_USER" www-data >>"$LOG_FILE" 2>&1; then
+daemon-least-privilege|etc/systemd/system/sa02m-homeconnect.service|ExecStartPre=-+/usr/local/sbin/sa02m-daemon-access.sh apply homeconnect
+daemon-least-privilege|scripts/06c-homekit.sh|HK_ACCESS_OUT=$(timeout 120 /usr/local/sbin/sa02m-daemon-access.sh apply homekit 2>&1) || hk_access_rc=$?
+daemon-least-privilege|scripts/06c-homekit.sh|HK_DEVDOC_GROUP=sa02m-alice-devices
+daemon-least-privilege|opt/sa02m-homekit/tmpfiles.d/sa02m-homekit.conf|d /etc/sa02m-homekit 2750 www-data sa02m-homekit -
+daemon-least-privilege|usr/local/sbin/sa02m-daemon-access.sh|ops+=("f:$DEVDOC:0640:$WEB_UID:$DEVDOC_GID:${WEB_GID:-x},$DEVDOC_GID")
+daemon-least-privilege|usr/local/sbin/sa02m-daemon-access.sh|DENY_READ="/etc/sa02m_web.env /etc/sa02m-alice/sa02m-alice-devices.conf"
+daemon-access-effect|usr/local/sbin/sa02m-daemon-access.sh|probe yes "$DAEMON" r "$CONF"
+daemon-access-effect|usr/local/sbin/sa02m-daemon-access.sh|ops+=("f:$CONF:0640:$WEB_UID:$DAEMON_GID:${WEB_GID:-x},$DAEMON_GID")
+daemon-access-effect|usr/local/sbin/sa02m-daemon-access.sh|os.fchown(fd, uid, gid)
 '
 
 command -v git >/dev/null 2>&1 || { echo "comment-mutation-proof: FAIL — git is required to build the pristine copy"; exit 1; }

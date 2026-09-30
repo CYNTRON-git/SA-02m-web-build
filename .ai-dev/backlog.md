@@ -79,6 +79,16 @@ commit's diff of this file).
   shots `A-proxy-toast-*.png`; `ui-layout` did not flag (2) — check why its intra-box clipping pass misses
   a button label before fixing. Queued behind the 1.0.6.60–.68 train.
 
+- [RESOLVED] 2026-09-28 **[MED] HomeKit conf `preserve` followed a planted symlink as root.**
+  `opt/sa02m-homekit/sa02m_homekit/fsutil.py` `atomic_write(preserve=True)` read the old conf's
+  owner/mode with `os.stat` (follows symlinks); root reaches it via `homekit_sync_enabled`
+  (`etc/sa02m-web-service-ctl.sh`) → `config.save`, so www-data planting
+  `/etc/sa02m-homekit/sa02m-homekit.conf -> <any file>` in the (then 0770) dir made root mint the new conf
+  with the target's owner/mode (web-card lockout; special bits carried). Found by the round-2
+  review (A2). Fixed on the 1.0.6.57 HomeKit branch: `lstat`, preserve only from a regular
+  single-link file, setuid/setgid/sticky stripped, else the §13 default (today
+  `www-data:sa02m-homekit` 0640 in a 2750 dir — the group scheme that replaced the 0770
+  root:www-data layout); `test_config` cases RED before, GREEN after.
 - [OPEN] 2026-09-24 **[MED] `install.sh --port N` is not persisted — the next re-render resets nginx to
   9999.** `scripts/03-webserver.sh:12` and `scripts/11-devices.sh:18` default `PORT` to 9999 and render
   `etc/nginx/network_config.conf` with it; `scripts/update-www-only.sh` never sets it, and nothing saves

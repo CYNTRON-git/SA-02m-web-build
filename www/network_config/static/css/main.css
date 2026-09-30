@@ -147,6 +147,11 @@
   --status-green:     var(--green);     /* #32d74b */
   --status-orange:    var(--orange);    /* #ff9f0a */
   --status-blue:      #4da2ff;          /* NEW — HIG systemBlue, brightened for AA on dark */
+  /* HomeKit setup QR (#homekit-qr): dark modules on a light plate in BOTH
+     themes — phone scanners expect dark-on-light, and an inverted code fails
+     on many of them. #000000 on #ffffff = 21:1. */
+  --qr-fg:            #000000;
+  --qr-bg:            #ffffff;
   /* NEW/changed colour-pair AA ratios (WCAG 2.1, web-diagnostic-tools ## Contrast):
        --status-blue #4da2ff  on --bg #161618       6.82:1  PASS (normal ≥4.5)
                               on --bg-card #242426   5.85:1  PASS
@@ -248,6 +253,8 @@ html[data-theme="light"] {
   --status-green:     var(--green);
   --status-orange:    var(--orange);
   --status-blue:      #0064e0;   /* NEW */
+  --qr-fg:            #000000;   /* same as dark, on purpose (scanner contrast) */
+  --qr-bg:            #ffffff;
 }
 
 html[data-theme="light"] .log-box {
@@ -2114,16 +2121,22 @@ html[data-theme="light"] .nav-item.active { color: var(--btn-primary-hover); }
    past the card edge (ui-layout measured right=416 px) — it drops to its own
    line instead. */
 .alice-sh-summary { display: flex; flex-wrap: wrap; justify-content: space-between; align-items: center; gap: 0 8px; color: var(--text-sec); }
+/* «не передаётся: M ›» on the HomeKit card — same link treatment, flush right. */
+.homekit-skip-line { display: flex; justify-content: flex-end; margin: 0; }
+.homekit-skip-line[hidden] { display: none !important; }
 /* The link is a tap target: --tap tall (ui-layout measured 40.3 px without it).
    Dark: --cyan #22d3ee on --bg-card #242426 = 8.57:1. */
-.alice-sh-summary a {
+.alice-sh-summary a,
+.homekit-skip-line a {
   display: inline-flex; align-items: center; min-height: var(--tap);
   color: var(--cyan); text-decoration: none; white-space: nowrap;
 }
 /* Light: --cyan #0891b2 on the white card is 3.68:1 (ui-layout, AA fail);
    --cyan-hover #0e7490 measures 5.36:1 on #ffffff (4.80:1 on --bg-panel). */
-html[data-theme="light"] .alice-sh-summary a { color: var(--cyan-hover); }
-.alice-sh-summary a:hover { text-decoration: underline; }
+html[data-theme="light"] .alice-sh-summary a,
+html[data-theme="light"] .homekit-skip-line a { color: var(--cyan-hover); }
+.alice-sh-summary a:hover,
+.homekit-skip-line a:hover { text-decoration: underline; }
 .conn-offline-note .conn-recheck-btn {
   width: 100%;
 }
@@ -2164,6 +2177,137 @@ html[data-theme="light"] .alice-sh-summary a { color: var(--cyan-hover); }
 }
 html[data-theme="light"] .alice-reg-link { color: var(--cyan-hover); }
 .alice-reg-link[hidden] { display: none !important; }
+
+/* ── Apple HomeKit card (#homekit-card, app/homekit.js) ─────────────────────
+   Alice-card skeleton; no new colour pairs except the QR plate (--qr-*). */
+.system-manage-homekit-card .cloud-meta .badge,
+.system-manage-homeconnect-card .cloud-meta .badge {
+  display: inline-block;
+  font-size: 11px;
+  font-weight: 600;
+  line-height: 1.15;
+  padding: 1px 7px;
+  box-shadow: none;
+  vertical-align: middle;
+}
+/* .btn sets display:inline-flex, outranking the UA [hidden] rule. */
+#homekit-btn-reset[hidden] { display: none !important; }
+#homekit-card .homekit-setup > .btn { width: 100%; justify-content: center; }
+.homekit-skip-list {
+  list-style: none;
+  margin: 0;
+  padding: 6px 0 0;
+  border-top: 1px solid var(--border);
+  max-height: 168px;
+  overflow-y: auto;
+  font-size: .8rem;
+  line-height: 1.35;
+  color: var(--text-sec);
+}
+.homekit-skip-list li { padding: 2px 0; overflow-wrap: anywhere; }
+.homekit-skip-list .homekit-skip-name { color: var(--text); }
+.homekit-code-box { display: flex; flex-direction: column; align-items: center; gap: 6px; margin-top: 10px; }
+.homekit-code-box[hidden] { display: none !important; }
+/* The global `svg { stroke: currentColor }` would outline every module. */
+.homekit-qr {
+  display: block;
+  width: 180px;
+  height: 180px;
+  max-width: 100%;
+  stroke: none;
+  border-radius: var(--radius-xs);
+}
+.homekit-qr .homekit-qr-bg { fill: var(--qr-bg); stroke: none; }
+.homekit-qr .homekit-qr-m { fill: var(--qr-fg); stroke: none; }
+.homekit-code {
+  font: 700 1.4rem/1.2 var(--font-mono);
+  letter-spacing: .08em;
+  color: var(--text);
+  user-select: all;
+  white-space: nowrap;
+}
+.homekit-setup-hint { margin: 0 !important; text-align: center; }
+.homekit-net summary {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  min-height: var(--tap);
+  cursor: pointer;
+  color: var(--text-sec);
+  font-size: .8rem;
+  list-style: none;
+}
+.homekit-net summary::-webkit-details-marker { display: none; }
+/* display:flex drops the native disclosure triangle — draw it back. */
+.homekit-net summary::before { content: "▸"; transition: transform var(--transition); }
+.homekit-net[open] summary::before { transform: rotate(90deg); }
+.homekit-net .field { margin: 6px 0 8px; }
+.homekit-net .btn { width: 100%; justify-content: center; }
+.homekit-note { margin: 0 !important; font-size: .78rem !important; }
+/* «Устройства для HomeKit»: one line per device — box, name (ellipsis), a
+   muted skip reason. Existing tokens only: --text on the card (the
+   .homekit-skip-name pair), --text-sec for the reason (the list's own pair). */
+.homekit-devs-hint { margin: 6px 0 0 !important; }
+.homekit-devs-hint[hidden] { display: none !important; }
+.homekit-dev-list { max-height: 240px; margin-top: 4px; }
+.homekit-dev-list li { padding: 0; }
+.homekit-dev-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-height: var(--tap);
+  cursor: pointer;
+}
+.homekit-dev-row input { flex: 0 0 auto; margin: 0; }
+.homekit-dev-name {
+  flex: 1 1 auto;
+  min-width: 0;
+  color: var(--text);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.homekit-dev-why { flex: 0 1 auto; min-width: 0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.homekit-devs .btn { margin-top: 6px; }
+
+/* ── BSH Home Connect card (#homeconnect-card, app/homeconnect.js) ──────────
+   Reuses the HomeKit card's list / code box / QR / details / note classes
+   (one home for those rules); no new colour pairs — link = the cyan pair of
+   .homekit-skip-line a, badges and text = existing tokens. */
+#homeconnect-btn-unlink[hidden] { display: none !important; }
+/* .homekit-qr sets display:block, outranking the UA [hidden] rule. */
+#homeconnect-qr[hidden] { display: none !important; }
+.homeconnect-link-row { margin-top: 8px; }
+.homeconnect-link-row[hidden] { display: none !important; }
+.homeconnect-link-row .btn { width: 100%; justify-content: center; }
+.homeconnect-apps-list li {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 2px 6px;
+}
+.homeconnect-apps-list .homeconnect-app-name { color: var(--text); flex: 1 1 auto; min-width: 0; overflow-wrap: anywhere; }
+.homeconnect-apps-list .homeconnect-app-meta { color: var(--text-sec); overflow-wrap: anywhere; }
+.homeconnect-apps-list .badge {
+  font-size: 11px;
+  font-weight: 600;
+  line-height: 1.15;
+  padding: 1px 7px;
+  box-shadow: none;
+}
+/* Dark: --cyan #22d3ee on --bg-card #242426 = 8.57:1; light: --cyan-hover
+   #0e7490 on #ffffff = 5.36:1 (the .homekit-skip-line a pair). */
+.homeconnect-verify-link {
+  display: inline-flex;
+  align-items: center;
+  min-height: var(--tap);
+  color: var(--cyan);
+  font-size: .85rem;
+  text-decoration: underline;
+  white-space: nowrap;
+}
+html[data-theme="light"] .homeconnect-verify-link { color: var(--cyan-hover); }
+.homeconnect-cid input { width: 100%; font-family: var(--font-mono); }
 
 /* In-card ephemeral banners moved to .toast-area (1.0.6.37). Keep the
    slots in the DOM for older scripts, but they must never grow .ctrl-card. */
@@ -2334,6 +2478,23 @@ html[data-theme="light"] .alice-reg-link { color: var(--cyan-hover); }
 /* Same explicit guard this file already documents for #sh-icon-field: a rule
    that gives the field a display would outrank the UA [hidden] rule. */
 #sh-inv-field[hidden] { display: none !important; }
+/* Same guards for the HomeKit toggle field and the «Отметить все» button
+   (.btn is inline-flex). */
+#sh-hk-field[hidden],
+#sh-hk-all[hidden],
+#sh-co2-field[hidden],
+#sh-hk-scenes[hidden],
+#sh-btn-hint[hidden],
+#sh-export-hint[hidden] { display: none !important; }
+/* «Сцены в HomeKit»: one clickable row per scene (toggle + name). A label
+   inside .field is display:block, small and secondary (`.field label`), so
+   the row restores the device-row look with a matching-specificity rule. */
+.field label.sh-hk-scene-row {
+  display: flex; align-items: center; gap: 12px; margin-bottom: 0;
+  font-size: inherit; font-weight: 400; color: var(--text);
+  min-height: var(--tap); cursor: pointer;
+}
+#sh-hk-all { margin-bottom: 8px; }
 
 /* Stacked: the kind keeps the delete button on its own line (an orphaned ✕
    on a line of its own reads as belonging to the next row), the long topic
@@ -2482,7 +2643,9 @@ html[data-theme="light"] .alice-reg-link { color: var(--cyan-hover); }
 
 #alice-msg.cloud-msg,
 #cloud-ctrl-msg.cloud-msg,
-#sh-bind-msg.cloud-msg {
+#sh-bind-msg.cloud-msg,
+#homekit-msg.cloud-msg,
+#homeconnect-msg.cloud-msg {
   margin-top: 4px;
   padding: 8px 12px;
   border-radius: var(--radius-sm);
@@ -2491,14 +2654,18 @@ html[data-theme="light"] .alice-reg-link { color: var(--cyan-hover); }
 }
 #alice-msg.cloud-msg.is-ok,
 #cloud-ctrl-msg.cloud-msg.is-ok,
-#sh-bind-msg.cloud-msg.is-ok {
+#sh-bind-msg.cloud-msg.is-ok,
+#homekit-msg.cloud-msg.is-ok,
+#homeconnect-msg.cloud-msg.is-ok {
   background: var(--badge-ok-bg);
   color: var(--green);
   border: 1px solid var(--badge-ok-border);
 }
 #alice-msg.cloud-msg.is-err,
 #cloud-ctrl-msg.cloud-msg.is-err,
-#sh-bind-msg.cloud-msg.is-err {
+#sh-bind-msg.cloud-msg.is-err,
+#homekit-msg.cloud-msg.is-err,
+#homeconnect-msg.cloud-msg.is-err {
   background: var(--badge-err-bg);
   color: var(--red);
   border: 1px solid var(--badge-err-border);

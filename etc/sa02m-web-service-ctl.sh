@@ -226,6 +226,22 @@ service_present() {
         mqtt-telemetry)
             [ -x /opt/sa02m-modbus-mqtt/sa02m_telemetry.py ] && return 0
             ;;
+        homekit)
+            # Installed ⇔ the install.sh footprint (scripts/06c-homekit.sh): the
+            # venv interpreter and the system user. OTA delivers the unit file
+            # to every board, and a unit whose User= does not exist can never
+            # start — without this the list would offer a dead «Пуск».
+            [ -x /opt/sa02m-homekit-venv/bin/python ] || return 1
+            id -u sa02m-homekit >/dev/null 2>&1 || return 1
+            ;;
+        homeconnect)
+            # Installed ⇔ the install.sh footprint (scripts/06d-homeconnect.sh):
+            # the package and the system user. OTA delivers the unit file and
+            # the package to every board; a unit whose User= does not exist can
+            # never start — without this the list would offer a dead «Пуск».
+            [ -d /opt/sa02m-homeconnect/sa02m_homeconnect ] || return 1
+            id -u sa02m-homeconnect >/dev/null 2>&1 || return 1
+            ;;
     esac
     _old_ifs=$IFS
     IFS=,
@@ -387,12 +403,48 @@ unit_admin_enabled() {
 # flag through its one home (sa02m_alice config_store — same code path as the
 # Alice card's enable/disable). Bounded; a failed write is logged and start
 # proceeds (it will then fail honestly on the runtime-active check).
+# Both syncs run as root (sudo from services_ctrl.cgi keeps the CGI's cwd,
+# which www-data owns): `python3 -I` never puts the cwd, PYTHONPATH or the user
+# site on sys.path, and the package root is inserted explicitly — a module
+# planted in the cwd under the imported name is never run as root. Pinned by
+# scripts/dev/test-service-ctl-policy.sh section 3.
 alice_sync_client_enabled() {
     _val=$1  # true|false
-    PYTHONPATH=/opt/sa02m-alice timeout 15 python3 -c "
+    timeout 15 python3 -I -c "
+import sys; sys.path.insert(0, '/opt/sa02m-alice')
 from sa02m_alice.common.config_store import set_client_enabled
 set_client_enabled($([ "$_val" = true ] && echo True || echo False))
 " >>"$LOG" 2>&1 || echo "$(date '+%Y-%m-%d %H:%M:%S') sa02m-web-service-ctl: alice client_enabled=${_val} write FAILED" >>"$LOG" 2>&1
+}
+
+# homekit: same shape as alice — the daemon exits 0 (standby) while
+# enabled=false in /etc/sa02m-homekit/sa02m-homekit.conf, so Пуск/Стоп sync the
+# flag through its one home (sa02m_homekit.config — the code path the HomeKit
+# card's enable/disable uses). Bounded; a failed write is logged and the start
+# then fails honestly on the runtime-active check.
+homekit_sync_enabled() {
+    _val=$1  # true|false
+    timeout 15 python3 -I -c "
+import sys; sys.path.insert(0, '/opt/sa02m-homekit')
+from sa02m_homekit import config
+c = config.load()
+c.enabled = $([ "$_val" = true ] && echo True || echo False)
+config.save(c)
+" >>"$LOG" 2>&1 || echo "$(date '+%Y-%m-%d %H:%M:%S') sa02m-web-service-ctl: homekit enabled=${_val} write FAILED" >>"$LOG" 2>&1
+}
+
+# homeconnect: same shape — the client exits 0 (standby) while enabled=false in
+# /etc/sa02m-homeconnect/sa02m-homeconnect.conf; Пуск/Стоп sync the flag
+# through its one home (sa02m_homeconnect.config, the card's code path).
+homeconnect_sync_enabled() {
+    _val=$1  # true|false
+    timeout 15 python3 -I -c "
+import sys; sys.path.insert(0, '/opt/sa02m-homeconnect')
+from sa02m_homeconnect import config
+c = config.load()
+c.enabled = $([ "$_val" = true ] && echo True || echo False)
+config.save(c)
+" >>"$LOG" 2>&1 || echo "$(date '+%Y-%m-%d %H:%M:%S') sa02m-web-service-ctl: homeconnect enabled=${_val} write FAILED" >>"$LOG" 2>&1
 }
 
 # id | UI label | candidate units (first existing wins)
@@ -401,6 +453,8 @@ set_client_enabled($([ "$_val" = true ] && echo True || echo False))
 # it shows Пуск/Стоп like mosquitto/mqtt-bridge (install-time-only overlay).
 SERVICE_DEFS=$(cat <<'SVC_DEFS'
 alice|Яндекс Алиса|sa02m-alice-client.service
+homekit|Apple HomeKit|sa02m-homekit.service
+homeconnect|Home Connect|sa02m-homeconnect.service
 docker|Docker|docker.service
 codesys|CODESYS|codesyscontrol.service,codesys.service,CODESYSControl.service,CODESYSControlRuntime.service
 mplc4|MPLC4|mplc4.service
@@ -733,6 +787,12 @@ cmd_stop() {
     if [ "$_id" = "alice" ]; then
         alice_sync_client_enabled false
     fi
+    if [ "$_id" = "homekit" ]; then
+        homekit_sync_enabled false
+    fi
+    if [ "$_id" = "homeconnect" ]; then
+        homeconnect_sync_enabled false
+    fi
     if [ -n "$_u" ]; then
         sc_run_slow stop "$_u" >>"$LOG" 2>&1 || true
         sc_run_slow disable "$_u" >>"$LOG" 2>&1 || true
@@ -802,6 +862,12 @@ cmd_start() {
     fi
     if [ "$_id" = "alice" ]; then
         alice_sync_client_enabled true
+    fi
+    if [ "$_id" = "homekit" ]; then
+        homekit_sync_enabled true
+    fi
+    if [ "$_id" = "homeconnect" ]; then
+        homeconnect_sync_enabled true
     fi
     if [ -n "$_u" ]; then
         sc_run_slow unmask "$_u" >>"$LOG" 2>&1 || true

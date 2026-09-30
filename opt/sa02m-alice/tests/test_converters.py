@@ -53,6 +53,18 @@ class TestRange(unittest.TestCase):
         )
         self.assertEqual(payload, "100")
 
+    def test_unparseable_payload_yields_no_block(self):
+        # A garbled setpoint/brightness must never be reported as a real 0
+        # (X1): the block is omitted, like the float/event converters do.
+        for raw in ("", "abc", None, "  "):
+            self.assertIsNone(converters.mqtt_to_range(raw, {"instance": "temperature"}))
+            self.assertIsNone(converters.capability_mqtt_to_yandex(
+                "devices.capabilities.range", raw, {"instance": "temperature"}))
+
+    def test_parseable_payload_keeps_value(self):
+        block = converters.mqtt_to_range(" 21.5 ", {"instance": "temperature"})
+        self.assertEqual(block["state"], {"instance": "temperature", "value": 21.5})
+
 
 class TestFloatAndColor(unittest.TestCase):
     def test_float(self):

@@ -771,6 +771,92 @@ sa02m_pip_install() {
     return 0
 }
 
+# sa02m_venv_install_locked <venv_dir> <lock_file> <probe_modules> [<wheelhouse_dir>]
+# The one home for "a module's Python deps in a DEDICATED venv from a
+# hash-pinned lock" (first caller: 06c-homekit.sh — HAP-python needs a newer
+# `cryptography` than apt's, and a system-wide upgrade would move the OTA
+# signature verifier, D1 in docs/decisions/homekit-home-connect.md). The venv
+# is created --system-site-packages so apt packages (paho-mqtt) are reused;
+# every other package comes ONLY from the lock: `--require-hashes --no-deps
+# --only-binary=:all:` (no resolver, no sdist build, no unpinned transitive
+# dep). Source: <wheelhouse_dir> when present (offline media, --no-index),
+# else PyPI when online; offline without a wheelhouse ⇒ WARN, return 1.
+# Idempotent: a venv whose stamp (<venv>/.sa02m-lock.sha256) equals the
+# lock's sha256 and whose interpreter imports <probe_modules> (a caller-fixed
+# `import` list, "a.b, c" — never caller data) is left alone —
+# a re-run does nothing. An install builds <venv>.sa02m-new next to the live
+# venv and swaps it in only when complete and importable, so a torn or failed
+# run leaves the previous venv serving (a venv survives the rename: the
+# interpreter derives its prefix from its own location; nothing here uses
+# the console-script shebangs). Returns 0 iff <venv> is current; never aborts.
+sa02m_venv_install_locked() {
+    local venv=$1 lock=$2 probe=$3 wheelhouse=${4:-}
+    local sec=${SA02M_PIP_TIMEOUT_SEC:-600}
+    local new="$venv.sa02m-new" old="$venv.sa02m-old" want have=""
+    local -a src=()
+    if [ ! -f "$lock" ]; then
+        log WARN "lock-файл $lock не найден — зависимости $venv не установлены"
+        return 1
+    fi
+    want=$(sha256sum < "$lock" 2>/dev/null) || want=""
+    want=${want%% *}
+    if [ -z "$want" ]; then
+        log WARN "не удалось посчитать sha256 $lock — зависимости $venv не установлены"
+        return 1
+    fi
+    if [ -x "$venv/bin/python" ] && [ -f "$venv/.sa02m-lock.sha256" ]; then
+        have=$(head -c 128 "$venv/.sa02m-lock.sha256" 2>/dev/null) || have=""
+        have=${have%%[[:space:]]*}
+        if [ "$have" = "$want" ] && "$venv/bin/python" -c "import $probe" >/dev/null 2>&1; then
+            log INFO "venv $venv уже соответствует $(basename "$lock") — без изменений"
+            return 0
+        fi
+    fi
+    if [ -n "$wheelhouse" ] && [ -d "$wheelhouse" ]; then
+        src=(--no-index --find-links "$wheelhouse")
+        log INFO "venv $venv: колёса из $wheelhouse (офлайн)"
+    elif sa02m_online; then
+        log INFO "venv $venv: колёса из PyPI по хешам $(basename "$lock")"
+    else
+        log WARN "ОФФЛАЙН и нет wheelhouse${wheelhouse:+ ($wheelhouse)}: зависимости $venv не установлены"
+        return 1
+    fi
+    rm -rf -- "$new" "$old" 2>/dev/null || true
+    if ! timeout "$sec" python3 -m venv --system-site-packages "$new" >>"$LOG_FILE" 2>&1; then
+        rm -rf -- "$new" 2>/dev/null || true
+        log WARN "python3 -m venv не удался (нужен пакет python3-venv) — зависимости $venv не установлены"
+        return 1
+    fi
+    if ! timeout "$sec" "$new/bin/python" -m pip install --quiet --no-cache-dir \
+            --disable-pip-version-check --require-hashes --no-deps --only-binary=:all: \
+            "${src[@]}" -r "$lock" >>"$LOG_FILE" 2>&1; then
+        rm -rf -- "$new" 2>/dev/null || true
+        log WARN "установка колёс по $(basename "$lock") не удалась/таймаут — живой $venv не тронут (см. $LOG_FILE)"
+        return 1
+    fi
+    if ! "$new/bin/python" -c "import $probe" >>"$LOG_FILE" 2>&1; then
+        rm -rf -- "$new" 2>/dev/null || true
+        log WARN "новый venv не импортирует $probe — живой $venv не тронут"
+        return 1
+    fi
+    printf '%s\n' "$want" > "$new/.sa02m-lock.sha256"
+    sync
+    if [ -e "$venv" ] && ! mv -- "$venv" "$old"; then
+        rm -rf -- "$new" 2>/dev/null || true
+        log WARN "не удалось убрать старый $venv — новый venv не установлен"
+        return 1
+    fi
+    if ! mv -- "$new" "$venv"; then
+        [ -e "$old" ] && mv -- "$old" "$venv" 2>/dev/null
+        log WARN "не удалось поставить новый venv на место $venv — возвращён прежний"
+        return 1
+    fi
+    sync
+    rm -rf -- "$old" 2>/dev/null || true
+    log OK "venv $venv установлен по $(basename "$lock")"
+    return 0
+}
+
 # ── Service state: capture BEFORE, apply AFTER ───────────────────────────────
 # The ONE home for «what may the installer do to a unit's enable/run state».
 # Contract and decision table: docs/contracts/installer-refresh-policy.md.

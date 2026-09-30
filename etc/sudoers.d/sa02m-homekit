@@ -1,0 +1,18 @@
+# SA-02m Apple HomeKit bridge — the COMPLETE sudoers grant for www-data's
+# HomeKit CGI (www/network_config/cgi-bin/sa02m_homekit_api.cgi).
+#
+# Installed WHOLESALE (visudo-validated) by scripts/06c-homekit.sh via
+# sa02m_install_sudoers; OTA and the offline package deliver the same committed
+# file (etc/sudoers.d/ prefix rule), so a corrected grant reaches every board.
+#
+# SECURITY (audit B1 class): verb-pinned to exactly the four verbs the CGI
+# sends. A Cmnd written without arguments would permit ANY argument vector.
+# The helper re-validates argv itself (a fixed `case`, one argument only) —
+# the pin narrows the surface, the in-helper check is the guard.
+#
+# Gate: .ai-dev/quality/checks/sudoers-pin-contract.sh (complete-ledger check).
+
+www-data ALL=(root) NOPASSWD: /usr/local/sbin/sa02m-homekit-web-trigger.sh enable, \
+    /usr/local/sbin/sa02m-homekit-web-trigger.sh disable, \
+    /usr/local/sbin/sa02m-homekit-web-trigger.sh restart, \
+    /usr/local/sbin/sa02m-homekit-web-trigger.sh reset-pairing

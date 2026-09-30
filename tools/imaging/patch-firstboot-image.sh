@@ -184,6 +184,142 @@ assert_alice_enrollment_clean() {
     fi
 }
 
+# HomeKit bridge identity — offline copy of the clear-list in
+# docs/contracts/image-identity-reset.md §7 (duplicated in autorun.sh / autorun-fel.sh /
+# ssh-flash-safe.sh for the same reason as the Alice block, pinned by the
+# alice-image-identity quality row). The pairing store
+# holds the accessory's long-term key and the paired iPhones: a clone carrying
+# it IS the donor's accessory. Contents go, the dirs stay (tmpfiles.d owns
+# them); interface/port and the installed software stay.
+wipe_homekit_identity() {
+    local root=$1
+    # `.hk-*` is the atomic-write sidecar shape (fsutil.atomic_write): a torn
+    # write of the pairing store is the same key under another name, and `*`
+    # does not expand to dot-files.
+    # A symlink AT the store is dropped, never descended: on a mounted image an
+    # absolute link resolves on the HOST, and the glob would empty a host dir.
+    # tmpfiles.d re-creates the real dir at boot.
+    if [ -L "$root/var/lib/sa02m-homekit" ]; then
+        rm -f "$root/var/lib/sa02m-homekit"
+    else
+        rm -f "$root/var/lib/sa02m-homekit"/* \
+              "$root/var/lib/sa02m-homekit"/.hk-*
+    fi
+    # A symlink at the conf is never the installer's (the dir is
+    # www-data-writable on the board), and on a mounted image an absolute link resolves on
+    # the HOST running this script — sed -i would copy a host file into the
+    # image. Drop the link instead: an absent conf reads as disabled.
+    if [ -L "$root/etc/sa02m-homekit/sa02m-homekit.conf" ]; then
+        rm -f "$root/etc/sa02m-homekit/sa02m-homekit.conf"
+    elif [ -f "$root/etc/sa02m-homekit/sa02m-homekit.conf" ]; then
+        # configparser reads the key case-insensitively and accepts `:` too.
+        sed -i 's/^[[:space:]]*[Ee][Nn][Aa][Bb][Ll][Ee][Dd][[:space:]]*[=:].*/enabled = false/' \
+            "$root/etc/sa02m-homekit/sa02m-homekit.conf"
+    fi
+    rm -f "$root/etc/systemd/system/multi-user.target.wants/sa02m-homekit.service"
+}
+
+# Fatal by design, the belt for the HomeKit half — same reason as
+# assert_alice_enrollment_clean: it also covers a capture whose donor-side wipe
+# did not run (`--no-id-reset` keeps the donor's machine-id, so the daemon's
+# own machine-id binding would not regenerate the keys on the clone).
+assert_homekit_identity_clean() {
+    local root=$1 f
+    # A link at the store itself: a dangling absolute one expands the entry
+    # globs below to nothing, so it is checked by name first.
+    if [ -L "$root/var/lib/sa02m-homekit" ]; then
+        die "image identity: /var/lib/sa02m-homekit is a symlink — the HomeKit pairing store must be a plain dir or absent"
+    fi
+    # Nothing may remain in the state dir — not a whitelist of known names but
+    # an empty one, so a sidecar shape nobody has invented yet also stops the
+    # build. `-L` too: a dangling link is still an entry.
+    for f in "$root/var/lib/sa02m-homekit"/* "$root/var/lib/sa02m-homekit"/.[!.]* \
+             "$root/var/lib/sa02m-homekit"/..?*; do
+        [ -e "$f" ] || [ -L "$f" ] || continue
+        die "image identity: ${f#"$root"} survived — the HomeKit pairing store must be empty in an image"
+    done
+    f="$root/etc/sa02m-homekit/sa02m-homekit.conf"
+    if [ -L "$f" ]; then
+        die "image identity: ${f#"$root"} is a symlink — the HomeKit conf must be a regular file or absent"
+    fi
+    if [ -f "$f" ] && grep -Eiq '^[[:space:]]*enabled[[:space:]]*[=:][[:space:]]*(1|true|yes|on)[[:space:]]*$' "$f"; then
+        die "image identity: the HomeKit bridge is still enabled in ${f#"$root"}"
+    fi
+    # `-L` as well as `-e`: the wants entry is an ABSOLUTE link, which `-e`
+    # resolves on the host running this script, not in the image.
+    f="$root/etc/systemd/system/multi-user.target.wants/sa02m-homekit.service"
+    if [ -e "$f" ] || [ -L "$f" ]; then
+        die "image identity: sa02m-homekit is still enabled in the image"
+    fi
+}
+
+# Home Connect sign-in — offline copy of the clear-list in
+# docs/contracts/image-identity-reset.md §8 (no repo on the media, so the block is
+# duplicated and pinned by the alice-image-identity quality row, part C). The
+# state dir holds the OAuth refresh token of the donor's BSH account: a clone
+# carrying it reads the donor household's appliances. Contents go, the dirs
+# stay (tmpfiles.d owns them); the Client ID and the installed software stay.
+wipe_homeconnect_identity() {
+    local root=$1
+    # `.hc-*` is the atomic-write sidecar shape (fsutil.atomic_write): a torn
+    # write of the token file is the same secret under another name, and `*`
+    # does not expand to dot-files.
+    # A symlink AT the state dir is dropped, never descended: on a mounted image
+    # an absolute link resolves on the HOST, and the glob would empty a host dir.
+    # tmpfiles.d re-creates the real dir at boot.
+    if [ -L "$root/var/lib/sa02m-homeconnect" ]; then
+        rm -f "$root/var/lib/sa02m-homeconnect"
+    else
+        rm -f "$root/var/lib/sa02m-homeconnect"/* \
+              "$root/var/lib/sa02m-homeconnect"/.hc-*
+    fi
+    # A symlink at the conf is never the installer's (the dir is
+    # www-data-writable on the board), and on a mounted image an absolute link resolves on
+    # the HOST running this script — sed -i would copy a host file into the
+    # image. Drop the link instead: an absent conf reads as disabled.
+    if [ -L "$root/etc/sa02m-homeconnect/sa02m-homeconnect.conf" ]; then
+        rm -f "$root/etc/sa02m-homeconnect/sa02m-homeconnect.conf"
+    elif [ -f "$root/etc/sa02m-homeconnect/sa02m-homeconnect.conf" ]; then
+        # configparser reads the key case-insensitively and accepts `:` too.
+        sed -i 's/^[[:space:]]*[Ee][Nn][Aa][Bb][Ll][Ee][Dd][[:space:]]*[=:].*/enabled = false/' \
+            "$root/etc/sa02m-homeconnect/sa02m-homeconnect.conf"
+    fi
+    rm -f "$root/etc/systemd/system/multi-user.target.wants/sa02m-homeconnect.service"
+}
+
+# Fatal by design, the belt for the Home Connect half — same reason as
+# assert_homekit_identity_clean: it also covers a capture whose donor-side
+# wipe did not run. Unlike HomeKit there is no machine-id self-heal at all: a
+# token that reaches an image IS the donor's account on every clone.
+assert_homeconnect_identity_clean() {
+    local root=$1 f
+    # A link at the state dir itself: a dangling absolute one expands the entry
+    # globs below to nothing, so it is checked by name first.
+    if [ -L "$root/var/lib/sa02m-homeconnect" ]; then
+        die "image identity: /var/lib/sa02m-homeconnect is a symlink — the Home Connect state dir must be a plain dir or absent"
+    fi
+    # Nothing may remain in the state dir — not a whitelist of known names but
+    # an empty one. `-L` too: a dangling link is still an entry.
+    for f in "$root/var/lib/sa02m-homeconnect"/* "$root/var/lib/sa02m-homeconnect"/.[!.]* \
+             "$root/var/lib/sa02m-homeconnect"/..?*; do
+        [ -e "$f" ] || [ -L "$f" ] || continue
+        die "image identity: ${f#"$root"} survived — the Home Connect state dir must be empty in an image"
+    done
+    f="$root/etc/sa02m-homeconnect/sa02m-homeconnect.conf"
+    if [ -L "$f" ]; then
+        die "image identity: ${f#"$root"} is a symlink — the Home Connect conf must be a regular file or absent"
+    fi
+    if [ -f "$f" ] && grep -Eiq '^[[:space:]]*enabled[[:space:]]*[=:][[:space:]]*(1|true|yes|on)[[:space:]]*$' "$f"; then
+        die "image identity: the Home Connect client is still enabled in ${f#"$root"}"
+    fi
+    # `-L` as well as `-e`: the wants entry is an ABSOLUTE link, which `-e`
+    # resolves on the host running this script, not in the image.
+    f="$root/etc/systemd/system/multi-user.target.wants/sa02m-homeconnect.service"
+    if [ -e "$f" ] || [ -L "$f" ]; then
+        die "image identity: sa02m-homeconnect is still enabled in the image"
+    fi
+}
+
 mnt=""
 boot_mnt=""
 loop=$(losetup --partscan -f --show "$IMG") || die "losetup failed"
@@ -353,6 +489,18 @@ assert_alice_enrollment_clean "$mnt"
 if [ "$alice_had_ca" = 1 ] && [ ! -f "$mnt/var/lib/sa02m-alice/ca.crt.pem" ]; then
     die "image identity: ca.crt.pem was removed — that is the SHARED gateway CA, not board identity; every clone's client would break"
 fi
+
+# ── Wipe donor HomeKit bridge identity (contract §7) ───────────────────────
+# UNCONDITIONAL and fatal, for the same reason as the Alice block above.
+log "wipe HomeKit bridge identity in image"
+wipe_homekit_identity "$mnt"
+assert_homekit_identity_clean "$mnt"
+
+# ── Wipe donor Home Connect sign-in (contract §8) ──────────────────────────
+# UNCONDITIONAL and fatal, for the same reason as the blocks above.
+log "wipe Home Connect sign-in in image"
+wipe_homeconnect_identity "$mnt"
+assert_homeconnect_identity_clean "$mnt"
 log "image identity: clean"
 
 sync

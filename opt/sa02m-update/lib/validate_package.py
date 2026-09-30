@@ -49,9 +49,20 @@ PRESERVE_PATHS: Tuple[str, ...] = (
     "/etc/sa02m-cloud/",
     "/var/lib/sa02m-flasher/",
     "/var/lib/sa02m-update/",
+    # Live Alice conf layout (sa02m_alice common/constants.py); the two flat
+    # names below it are the older layout, kept so an old board stays covered.
+    "/etc/sa02m-alice/",
     "/etc/sa02m-alice-client.conf",
     "/etc/sa02m-alice-devices.conf",
     "/var/lib/sa02m-alice/",
+    # HomeKit bridge: the operator's conf and the pairing store
+    # (docs/contracts/homekit-bridge.md §13-§14).
+    "/etc/sa02m-homekit/",
+    "/var/lib/sa02m-homekit/",
+    # Home Connect client: the operator's conf and the OAuth tokens + call
+    # budget (docs/contracts/home-connect.md §12).
+    "/etc/sa02m-homeconnect/",
+    "/var/lib/sa02m-homeconnect/",
 )
 
 # One of four copies of the destination allow-list (runner x2, packer, validator);

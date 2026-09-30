@@ -88,13 +88,17 @@ class RulesExposureWatcher:
     never stats.
 
     Yandex profile only — the cloud profile lists no scene devices (F4), so
-    the cloud unit constructs no watcher.
+    the cloud unit constructs no watcher. The HomeKit bridge builds its own
+    with `fingerprint=scene_devices.homekit_exposure_fingerprint` (every scene
+    row matters there: ticking lives in the device document, not the store).
     """
 
     def __init__(self, path: Optional[str] = None,
-                 load: Optional[Callable[[str], Dict[str, Any]]] = None) -> None:
+                 load: Optional[Callable[[str], Dict[str, Any]]] = None,
+                 fingerprint: Optional[Callable[[Any], Tuple[Any, ...]]] = None) -> None:
         self._path = scene_devices.rules_store_path() if path is None else path
         self._load = load or scene_devices.load_rules_doc
+        self._fingerprint = fingerprint or scene_devices.exposure_fingerprint
         # Seed both stages at construction so a quiet first tick is not a change.
         self._fp = devices_fingerprint(self._path) if self._path else None
         self._exposure = self._read_exposure()
@@ -111,7 +115,7 @@ class RulesExposureWatcher:
         if not self._path:
             return ()
         try:
-            return scene_devices.exposure_fingerprint(self._load(self._path))
+            return self._fingerprint(self._load(self._path))
         except Exception as exc:
             log = logging.getLogger("sa02m_alice.client")
             log.error("scenario store unreadable for exposure watch: %s", exc)

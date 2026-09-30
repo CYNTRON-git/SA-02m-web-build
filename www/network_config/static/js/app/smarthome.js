@@ -279,11 +279,24 @@ const SH_KINDS = {
   amperage:    { kindOf: 'float', instance: 'amperage',    unit: 'unit.ampere',              scale: 1,       type: 'devices.types.sensor' },
   power:       { kindOf: 'float', instance: 'power',       unit: 'unit.watt',                scale: 1,       type: 'devices.types.sensor' },
   motion:      { kindOf: 'event', instance: 'motion',      events: ['detected', 'not_detected'], type: 'devices.types.sensor.motion' },
+  // A door/lid contact (a Home Connect `door_open`, a reed DI): the Yandex
+  // open sensor, HomeKit ContactSensor (M12).
+  open:        { kindOf: 'event', instance: 'open',        events: ['opened', 'closed'], type: 'devices.types.sensor.open' },
+  // A report-only on/off (`writable: false`): Alice answers INVALID_ACTION and
+  // publishes nothing, HomeKit shows a sensor (M06). The validator stamps it on
+  // every Home Connect binding anyway (read-only source).
+  state_ro:    { kindOf: 'cap', writable: false, type: 'devices.types.sensor' },
+  // An MR-02m DI in «Кнопка» mode: HomeKit StatelessProgrammableSwitch (M16)
+  // from the module's press counters beside the DI topic.
+  button:      { kindOf: 'event', instance: 'button', events: ['click', 'double_click', 'long_press'], type: 'devices.types.sensor.button' },
   // Ventilation unit (Carel AHU). `range` is a writable setpoint, so its
   // bounds travel with it; `cloudOnly` marks a reading Yandex has no instance
   // for — it reaches the cloud control page and is dropped from everything
   // the Alice profile sends (docs/contracts/alice-mqtt-mapping.md).
   setpoint:    { kindOf: 'range', instance: 'temperature', unit: 'unit.temperature.celsius', range: { min: 0, max: 99, precision: 0.5 }, type: 'devices.types.ventilation' },
+  // Thermostat setpoint (HomeKit Thermostat, M17: bounds 0–50 °C). A stored
+  // range row still resolves to `setpoint` (listed first) and round-trips.
+  thermostat_setpoint: { kindOf: 'range', instance: 'temperature', unit: 'unit.temperature.celsius', range: { min: 5, max: 35, precision: 0.5 }, type: 'devices.types.thermostat' },
   supply_temp: { kindOf: 'float', instance: 'temperature', unit: 'unit.temperature.celsius', scale: 1, type: 'devices.types.ventilation' },
   return_water: { kindOf: 'float', instance: 'return_water_temperature', unit: 'unit.temperature.celsius', scale: 1, cloudOnly: true, type: 'devices.types.ventilation' },
   room_temp:   { kindOf: 'float', instance: 'room_temperature', unit: 'unit.temperature.celsius', scale: 1, cloudOnly: true, type: 'devices.types.ventilation' },
@@ -308,7 +321,11 @@ const SH_KIND_LABELS = {
   amperage: 'Ток',
   power: 'Мощность',
   motion: 'Движение',
+  open: 'Открытие',
+  state_ro: 'Состояние (только чтение)',
+  button: 'Кнопка',
   setpoint: 'Уставка температуры',
+  thermostat_setpoint: 'Уставка термостата',
   supply_temp: 'Температура притока',
   return_water: 'Температура обратной воды',
   room_temp: 'Температура в помещении',
@@ -344,7 +361,7 @@ function shItemInstance(item) {
 // is one we do not offer.
 function shKindForItem(item) {
   if (!item) return SH_KIND_RAW;
-  if (item.type === 'devices.capabilities.on_off') return 'switch';
+  if (item.type === 'devices.capabilities.on_off') return item.writable === false ? 'state_ro' : 'switch';
   const inst = shItemInstance(item);
   const isRange = item.type === 'devices.capabilities.range';
   const wantEvent = item.type === 'devices.properties.event';
@@ -407,6 +424,7 @@ function shMakeManagedItem(kind, topic, inverted) {
     // Emitted ONLY when true — an unchecked box writes the item a pre-1.0.6.29
     // version wrote (the `scale` rule; the validator drops a stored `false`).
     if (inverted) cap.inverted = true;
+    if (spec && spec.writable === false) cap.writable = false;
     return cap;
   }
   if (spec.kindOf === 'event') {
@@ -555,7 +573,7 @@ function shAddRow(kind, topic, rawItem) {
   row._shRawItem = rawItem || null;
   row._shOrigKind = rawItem ? k : null;
   host.appendChild(row);
-  shSyncInvertedField();
+  shSyncRowFields();
   return row;
 }
 
@@ -568,6 +586,67 @@ function shSyncInvertedField() {
   const field = $('sh-inv-field');
   if (!field) return;
   field.hidden = !shHasOnOffRow();
+}
+
+// Every device-level control that depends on the rows, re-synced together.
+function shSyncRowFields() {
+  shSyncInvertedField();
+  shSyncCo2Field();
+  shSyncButtonHint();
+}
+
+// The rows' current (kind, topic) pairs.
+function shRowKinds() {
+  const host = shRowsHost();
+  const out = [];
+  (host ? host.querySelectorAll('.sh-bind-row') : []).forEach(function (row) {
+    const sel = row.querySelector('.sh-row-kind');
+    const inp = row.querySelector('.sh-row-topic');
+    const kind = (sel && sel.value) || '';
+    const raw = row._shRawItem;
+    // A locked raw row still names its instance (a hand-edited co2 item).
+    const inst = kind === SH_KIND_RAW ? shItemInstance(raw) : ((SH_KINDS[kind] || {}).instance || '');
+    out.push({ kind: kind, instance: inst, topic: (inp && inp.value) || '' });
+  });
+  return out;
+}
+
+// «Порог CO₂, ppm» — HomeKit's CarbonDioxideDetected threshold (M15), shown
+// only while the device has a CO₂ reading and the HomeKit module is installed.
+function shSyncCo2Field() {
+  const field = $('sh-co2-field');
+  if (!field) return;
+  field.hidden = !shHomekitInstalled() || !shRowKinds().some(function (r) { return r.instance === 'co2_level'; });
+}
+
+// A «Кнопка» row fires in HomeKit only from the module's press counters, which
+// the picker lists only while the DI is in «Кнопка» mode. Unknown inventory ⇒
+// no hint (nothing is known either way).
+function shButtonHasCounters(topic) {
+  return /\/controls\/di_\d{1,2}$/.test(topic) && !!shTopicMeta[topic + '_short'];
+}
+
+function shSyncButtonHint() {
+  const hint = $('sh-btn-hint');
+  if (!hint) return;
+  hint.hidden = !shInvOk || !shRowKinds().some(function (r) {
+    return r.kind === 'button' && r.topic && !shButtonHasCounters(r.topic);
+  });
+}
+
+// O5 (Operator 2026-09-28): a NEW device led by a «Кнопка» row starts hidden
+// from Alice — Yandex gets no press reports yet. Only until the operator
+// touches the toggle; an edited device keeps its stored flag.
+let shExportTouched = false;
+
+function shSyncButtonExport() {
+  const exportEl = $('sh-dev-export');
+  const hint = $('sh-export-hint');
+  if (!exportEl || shEditId || shExportTouched) return;
+  const first = shRowKinds()[0];
+  const button = !!first && first.kind === 'button';
+  exportEl.checked = !button;
+  if (hint) hint.hidden = !button;
 }
 
 function shHasOnOffRow() {
@@ -583,7 +662,7 @@ function shHasOnOffRow() {
 function shClearRows() {
   const host = shRowsHost();
   if (host) host.innerHTML = '';
-  shSyncInvertedField();
+  shSyncRowFields();
 }
 
 // Add mode starts on one empty row; the device type follows it, so the form
@@ -657,7 +736,7 @@ function shRowsClick(e) {
   }
   row.parentNode.removeChild(row);
   // Deleting the on/off row takes the «Инвертировать» field with it.
-  shSyncInvertedField();
+  shSyncRowFields();
   shSetBindMsg('', true);
 }
 
@@ -707,6 +786,30 @@ function shApplyLedTopic(row, topic) {
   }
 }
 
+// A Home Connect control is read-only (the client publishes no `/on`): a
+// writable «Переключатель» row picked onto one would be stamped read-only by
+// the validator anyway, so the row says so up front — `door_open` as a door
+// contact, any other switch control as a read-only state.
+function shHcControl(topic) {
+  const m = /^\/devices\/hc-[a-z0-9-]+\/controls\/([a-z_]+)$/.exec(String(topic || ''));
+  return m ? m[1] : '';
+}
+
+function shApplyHcTopic(row, topic) {
+  const ctrl = shHcControl(topic);
+  const kindSel = row && row.querySelector('.sh-row-kind');
+  if (!ctrl || !kindSel || kindSel.disabled) return;
+  const spec = SH_KINDS[kindSel.value];
+  if (!spec || spec.kindOf !== 'cap' || spec.writable === false) return;
+  kindSel.value = ctrl === 'door_open' ? 'open' : 'state_ro';
+  const host = shRowsHost();
+  const first = host && host.querySelector('.sh-bind-row .sh-row-kind');
+  if (!shDtypeTouched && first === kindSel) {
+    shSetDtype(SH_KINDS[kindSel.value].type);
+    shSyncTypeUi();
+  }
+}
+
 function shRowsChange(e) {
   const sel = e.target;
   // Any change inside a row (kind or topic) marks it as the operator's: a
@@ -714,7 +817,10 @@ function shRowsChange(e) {
   const row = sel && sel.closest ? sel.closest('.sh-bind-row') : null;
   if (row) row._shTouched = true;
   // A kind change may reveal or hide the «Инвертировать» field.
-  if (sel && sel.classList && sel.classList.contains('sh-row-kind')) shSyncInvertedField();
+  if (sel && sel.classList && sel.classList.contains('sh-row-kind')) {
+    shSyncRowFields();
+    shSyncButtonExport();
+  }
   if (!sel || !sel.classList || !sel.classList.contains('sh-row-kind')) return;
   if (shDtypeTouched) return;
   const host = shRowsHost();
@@ -810,7 +916,7 @@ const SH_PICK_CHIPS = [
 function shPreferredGroups(kind) {
   const spec = SH_KINDS[kind];
   if (!spec) return [];
-  if (spec.kindOf === 'cap') return ['do', 'di'];
+  if (spec.kindOf === 'cap') return spec.writable === false ? ['di', 'other'] : ['do', 'di'];
   if (spec.kindOf === 'range') return ['ao', 'other'];
   if (spec.kindOf === 'event') return ['di', 'other'];
   return ['ai', 'other'];
@@ -846,6 +952,7 @@ function shPickDevSub(dev) {
   if (dev.port) parts.push(dev.port);
   if (dev.address != null && dev.address !== '') parts.push(uiT('адрес') + ' ' + dev.address);
   if (dev.type === 'controller') parts.push(uiT('встроенные выходы'));
+  if (dev.type === 'homeconnect') parts.push(dev.brand ? 'Home Connect · ' + dev.brand : 'Home Connect');
   return parts.join(' · ');
 }
 
@@ -1109,7 +1216,8 @@ function shApplyPickedTopic(row, topic) {
   shSyncBindButton(row);
   shApplyCarelTopic(row, topic);
   shApplyLedTopic(row, topic);
-  shSyncInvertedField();
+  shApplyHcTopic(row, topic);
+  shSyncRowFields();
 }
 
 function shPickApply(topic) {
@@ -1264,11 +1372,39 @@ function shVisibleInAlice(dev) {
   return !dev || dev.alice_visible !== false;
 }
 
+// HomeKit exposure is opt-in: only an explicit `true` exposes (absent ⇒
+// hidden — the opposite default of alice_visible, docs/contracts/
+// homekit-bridge.md), so a writer that drops the key can only hide.
+function shVisibleInHomekit(dev) {
+  return !!dev && dev.homekit_visible === true;
+}
+
+// app/homekit.js publishes whether the module is installed (null until its
+// first answer). The HomeKit controls show only on a positive answer.
+function shHomekitInstalled() {
+  return window.sa02mHomekitInstalled === true;
+}
+
+function shSyncHomekitField() {
+  const on = shHomekitInstalled();
+  const field = $('sh-hk-field');
+  if (field) field.hidden = !on;
+  const all = $('sh-hk-all');
+  if (all) {
+    let pending = 0;
+    Object.keys(shDevCache).forEach(function (id) { if (!shVisibleInHomekit(shDevCache[id])) pending++; });
+    all.hidden = !on || pending === 0;
+    all.disabled = _shHkTicking;
+  }
+  shSyncCo2Field();
+}
+
 // ── Render (poll-driven) ────────────────────────────────────────────────────
 // Edit-mode state: id being edited + the last rendered device objects by id
 // (source for prefill and id/room_id/type preservation).
 let shEditId = null;
 let shDevCache = {};
+let _shHkTicking = false;
 let shRoomCache = {};
 let shRoomSig = '';
 
@@ -1361,8 +1497,9 @@ function shRenderDevices(devices, rooms, sceneDevices) {
     const room = shRoomCache[dev.room_id];
     const meta = shDeviceTypeLabel(dev.type) + shReadingCount(dev) +
       (room ? ' · ' + (room.name || room.id) : '');
-    const hidden = shVisibleInAlice(dev) ? '' :
-      ' <span class="badge badge-unk">' + escHtml(uiT('скрыто из Алисы')) + '</span>';
+    const hidden = (shVisibleInAlice(dev) ? '' :
+      ' <span class="badge badge-unk">' + escHtml(uiT('скрыто из Алисы')) + '</span>') +
+      (shHomekitInstalled() && shVisibleInHomekit(dev) ? ' <span class="badge badge-unk">HomeKit</span>' : '');
     return '<div class="sh-dev-row" data-id="' + escAttr(dev.id || '') + '">' +
       '<svg class="sh-icon" aria-hidden="true"><use href="#i-' + escAttr(shDeviceIcon(dev)) + '"></use></svg>' +
       '<span class="mono text-sm">' + escHtml(dev.name || dev.id) + '</span> ' +
@@ -1372,6 +1509,70 @@ function shRenderDevices(devices, rooms, sceneDevices) {
       '<button type="button" class="btn btn-sm btn-danger" data-act="del">' + escHtml(uiT('Удалить')) + '</button>' +
       '</span></div>';
   }).join('') + sceneHtml;
+}
+
+// «Сцены в HomeKit» (#sh-hk-scenes, Phase 3 C): one checkbox per scene row of
+// the scenario store (`scene_catalog`), ticked = id ∈ the device document's
+// `homekit_scenes`. Shown only while the HomeKit module is installed and the
+// board read its store (no `scene_catalog` ⇒ hidden). The list is poll-owned
+// — except while a toggle is in flight, when the poll leaves it alone so a
+// stale answer cannot flip the box the operator just clicked.
+const _shScenePending = {};
+
+function shHkSceneRowHtml(scene, ticked) {
+  const name = String(scene.name || scene.scene_id || '');
+  return '<label class="sh-dev-row sh-hk-scene-row">' +
+    '<input type="checkbox" class="toggle" data-scene="' + escAttr(scene.scene_id || '') + '"' +
+    (ticked ? ' checked' : '') +
+    ' aria-label="' + escAttr(uiT('Показывать в HomeKit') + ': ' + name) + '">' +
+    '<span class="mono text-sm">' + escHtml(name) + '</span>' +
+    (scene.enabled === false ? ' <span class="badge badge-unk">' + escHtml(uiT('выключена')) + '</span>' : '') +
+    '</label>';
+}
+
+function shRenderHkScenes(d) {
+  const box = $('sh-hk-scenes');
+  const list = $('sh-hk-scene-list');
+  if (!box || !list) return;
+  const catalog = d && Array.isArray(d.scene_catalog) ? d.scene_catalog : null;
+  box.hidden = !shHomekitInstalled() || !catalog;
+  if (box.hidden || Object.keys(_shScenePending).length) return;
+  const ticked = (d.devices && Array.isArray(d.devices.homekit_scenes)) ? d.devices.homekit_scenes : [];
+  if (!catalog.length) {
+    list.innerHTML = '<p class="field-hint">' + escHtml(uiT('Сцен нет')) + '</p>';
+    return;
+  }
+  list.innerHTML = catalog.map(function (sc) {
+    return shHkSceneRowHtml(sc, ticked.indexOf(sc.scene_id) !== -1);
+  }).join('');
+}
+
+async function shSceneToggle(input) {
+  const sid = input.getAttribute('data-scene') || '';
+  if (!sid || _shScenePending[sid]) return;
+  const want = !!input.checked;
+  _shScenePending[sid] = true;
+  input.disabled = true;
+  let ok = false;
+  try {
+    const d = await shApi({ action: 'set_scene_homekit', scene_id: sid, visible: want });
+    ok = !!(d && d.ok);
+  } catch (e) {
+    ok = false;
+  }
+  delete _shScenePending[sid];
+  input.disabled = false;
+  if (!ok) {
+    input.checked = !want;
+    if (typeof cardNotice === 'function') cardNotice(uiT('Не удалось сохранить'), false);
+    else if (typeof toast === 'function') toast(uiT('Не удалось сохранить'), 'error', 5000);
+  }
+  await shRefresh();
+}
+
+function shSceneListChange(e) {
+  const input = e.target;
+  if (input && input.matches && input.matches('input[data-scene]')) shSceneToggle(input);
 }
 
 // Last poll payload, kept so a language switch can re-render the counts and
@@ -1390,6 +1591,8 @@ function shOnData(d) {
   const sceneDevices = d.scene_devices || [];
   shRenderRooms(rooms);
   shRenderDevices(devices, rooms, sceneDevices);
+  shSyncHomekitField();
+  shRenderHkScenes(d);
   const counts = shCountsText(rooms, devices, sceneDevices);
   const card = $('sh-counts');
   if (card) card.textContent = counts;
@@ -1449,6 +1652,7 @@ async function shLoadTopics() {
   }
   shSyncManualSuggestions();
   shSyncAllBindButtons();
+  shSyncButtonHint();
 }
 
 // Hand-entry suggestions (fail-closed mode only) — a datalist, so the field
@@ -1542,6 +1746,12 @@ async function shAddDevice() {
   device.room_id = (roomSel && roomSel.value) || '';
   const exportEl = $('sh-dev-export');
   device.alice_visible = exportEl ? !!exportEl.checked : true;
+  // The upsert replaces the whole row: while the toggle is shown it is the
+  // truth; while hidden (module not installed / not yet known) an edited
+  // device keeps its stored flag from the deep copy and a new one stays
+  // without the key (hidden).
+  const hkEl = $('sh-dev-homekit');
+  if (hkEl && shHomekitInstalled()) device.homekit_visible = !!hkEl.checked;
   // The icon belongs to on/off tiles only; an empty value drops the key.
   const iconSel = $('sh-dev-icon');
   device.icon = shIsOnOffType(dtype) && iconSel ? iconSel.value : '';
@@ -1552,6 +1762,11 @@ async function shAddDevice() {
   });
   device.capabilities = caps;
   device.properties = props;
+  const co2Err = shApplyCo2Threshold(props);
+  if (co2Err) {
+    shSetBindMsg(co2Err, false);
+    return;
+  }
   try {
     const d = await shApi({ action: 'upsert_device', device: device });
     if (!d.ok) {
@@ -1564,6 +1779,35 @@ async function shAddDevice() {
   } catch (e) {
     shSetBindMsg(uiT('Ошибка запроса API Алисы'), false);
   }
+}
+
+// The CO₂ field owns `co2_alarm_ppm` on the device's one co2_level item while
+// it is shown (item level, never inside `parameters`); hidden (module not
+// installed) the stored key round-trips untouched. Empty ⇒ key dropped (the
+// bridge default applies). The server validator is authoritative; this only
+// mirrors its 400–5000 range. Returns an error text or ''.
+function shApplyCo2Threshold(props) {
+  const field = $('sh-co2-field');
+  const input = $('sh-dev-co2-alarm');
+  if (!field || field.hidden || !input) return '';
+  const item = props.find(function (it) {
+    return it && it.type === 'devices.properties.float' && shItemInstance(it) === 'co2_level';
+  });
+  if (!item) return '';
+  const raw = String(input.value || '').trim();
+  if (!raw) { delete item.co2_alarm_ppm; return ''; }
+  const n = Number(raw);
+  if (!/^\d{3,4}$/.test(raw) || n < 400 || n > 5000) return uiT('Порог CO₂: 400–5000 ppm');
+  item.co2_alarm_ppm = n;
+  return '';
+}
+
+function shStoredCo2Threshold(dev) {
+  const item = ((dev && dev.properties) || []).find(function (it) {
+    return it && it.type === 'devices.properties.float' && shItemInstance(it) === 'co2_level';
+  });
+  const v = item && item.co2_alarm_ppm;
+  return typeof v === 'number' ? String(v) : '';
 }
 
 // Alice `_NAME_RE`: 1–64 letters/digits/spaces/-./+ (JS \w is ASCII, so \p{L}).
@@ -1678,6 +1922,8 @@ function shBeginEdit(id) {
   if (roomSel) roomSel.value = shRoomCache[dev.room_id] ? dev.room_id : '';
   const exportEl = $('sh-dev-export');
   if (exportEl) exportEl.checked = shVisibleInAlice(dev);
+  const hkEl = $('sh-dev-homekit');
+  if (hkEl) hkEl.checked = shVisibleInHomekit(dev);
   shClearRows();
   const rows = shDetectRows(dev);
   if (!rows.length) shAddRow(SH_DEFAULT_KIND, '', null);
@@ -1685,7 +1931,11 @@ function shBeginEdit(id) {
   // The stored flag lives on the device's single on/off binding.
   const invEl = $('sh-dev-inverted');
   if (invEl) invEl.checked = rows.some(function (r) { return r.inverted; });
-  shSyncInvertedField();
+  const co2El = $('sh-dev-co2-alarm');
+  if (co2El) co2El.value = shStoredCo2Threshold(dev);
+  const exportHint = $('sh-export-hint');
+  if (exportHint) exportHint.hidden = true;
+  shSyncRowFields();
   const save = $('sh-dev-save');
   if (save) save.textContent = uiT('Сохранить');
   const cancel = $('sh-dev-cancel');
@@ -1701,8 +1951,15 @@ function shCancelEdit() {
   if (roomSel) roomSel.value = '';
   const exportEl = $('sh-dev-export');
   if (exportEl) exportEl.checked = true;
+  const hkEl = $('sh-dev-homekit');
+  if (hkEl) hkEl.checked = false;
   const invEl = $('sh-dev-inverted');
   if (invEl) invEl.checked = false;
+  const co2El = $('sh-dev-co2-alarm');
+  if (co2El) co2El.value = '';
+  shExportTouched = false;
+  const exportHint = $('sh-export-hint');
+  if (exportHint) exportHint.hidden = true;
   shDtypeTouched = false;
   shIconTouched = false;
   shClearRows();
@@ -1732,6 +1989,37 @@ async function shDeleteDevice(id) {
   }
 }
 
+// «Отметить все для HomeKit» (plan Q-D): ONE `set_homekit_visible` request
+// for every not-yet-exposed device (config/api.py) — never one upsert per
+// device, which timed out behind nginx on a loaded board (bench 1.135). A
+// device edited in the form right now is skipped: saving it here would race
+// the operator's unsaved edits.
+async function shHomekitTickAll() {
+  if (_shHkTicking || !shHomekitInstalled()) return;
+  const ids = Object.keys(shDevCache).filter(function (id) {
+    return id !== shEditId && !shVisibleInHomekit(shDevCache[id]);
+  });
+  if (!ids.length) return;
+  if (!window.confirm(uiT('Показать в HomeKit все устройства') + ' (' + ids.length + ')?')) return;
+  _shHkTicking = true;
+  shSyncHomekitField();
+  const visible = {};
+  ids.forEach(function (id) { visible[id] = true; });
+  let ok = false;
+  try {
+    const d = await shApi({ action: 'set_homekit_visible', visible: visible });
+    ok = !!(d && d.ok);
+  } catch (e) {
+    ok = false;
+  }
+  _shHkTicking = false;
+  if (ok) shSetBindMsg(uiT('Все устройства отмечены для HomeKit'), true);
+  else shSetBindMsg(uiT('Не удалось отметить') + ': ' + ids.length, false);
+  await shRefresh();
+  shSyncHomekitField();
+  if (typeof window.homekitRefresh === 'function') window.homekitRefresh();
+}
+
 // ── Modal («Комнаты и устройства») ──────────────────────────────────────────
 // Reuses the shared mqtt-modal markup/behaviour, not a new one.
 function shModalEsc(e) {
@@ -1751,6 +2039,8 @@ async function shOpenModal() {
   m.removeAttribute('hidden');
   document.addEventListener('keydown', shModalEsc);
   shRefresh();
+  shSyncHomekitField();
+  if (typeof window.homekitRefresh === 'function') window.homekitRefresh();
   // Topics FIRST: the seeded row's topic picker would otherwise open empty.
   // The seed is in `finally` so a timed-out or throwing inventory still leaves
   // the operator a row (the picker then offers hand entry — fail-closed).
@@ -1814,6 +2104,14 @@ function shInit() {
   }
   const icon = $('sh-dev-icon');
   if (icon) icon.addEventListener('change', function () { shIconTouched = true; shRenderPreview(); });
+  const exportEl = $('sh-dev-export');
+  if (exportEl) exportEl.addEventListener('change', function () {
+    shExportTouched = true;
+    const hint = $('sh-export-hint');
+    if (hint) hint.hidden = true;
+  });
+  const sceneList = $('sh-hk-scene-list');
+  if (sceneList) sceneList.addEventListener('change', shSceneListChange);
   const roomInput = $('sh-room-name');
   if (roomInput) {
     roomInput.addEventListener('keydown', function (e) {
@@ -1822,6 +2120,12 @@ function shInit() {
   }
   shRefreshI18n();
   if (typeof window.sa02mAliceOnData === 'function') window.sa02mAliceOnData(shOnData);
+  // Installed/not-installed flips (app/homekit.js): the toggle and the row
+  // badges follow at once, not on the next Alice poll.
+  document.addEventListener('sa02m-homekit-status', function () {
+    shSyncHomekitField();
+    if (_shLastData) shOnData(_shLastData);
+  });
 }
 
 // Language switch (called by i18n.js updateControl, and once at init). The
@@ -1863,6 +2167,7 @@ window.shAddRow = shAddRow;
 window.shAddDevice = shAddDevice;
 window.shCancelEdit = shCancelEdit;
 window.shAddRoom = shAddRoom;
+window.shHomekitTickAll = shHomekitTickAll;
 
 if (document.readyState === 'loading') {
   document.addEventListener('DOMContentLoaded', shInit);

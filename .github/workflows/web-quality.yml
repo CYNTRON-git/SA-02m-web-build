@@ -6,9 +6,14 @@ name: web-quality
 # runner wholesale (both beats) and never re-lists individual tools.
 # ubuntu-latest already provides bash + python3; Node, the Python test deps and
 # — since 1.0.6.49 — the scripts/dev Playwright harness + chromium are set up
-# here, so the three headless review rows (ui-layout, cloud-card-smoke,
-# sh-modal-layout-smoke) run for real instead of skipping or exiting 2
-# (audit 2026-09-16, H3).
+# here, so the headless review rows (ui-layout, cloud-card-smoke,
+# sh-modal-layout-smoke, homekit-card-smoke, homeconnect-card-smoke) run for real
+# instead of skipping or
+# exiting 2 (audit 2026-09-16, H3). Since 1.0.6.57 a venv built from
+# opt/sa02m-homekit/requirements.lock makes py-unit-homekit's HAP-python/segno
+# tests run instead of skipping. The Home Connect client needs nothing extra:
+# py-unit-homeconnect is stdlib-only (paho is faked), and its card smoke uses
+# the same harness + chromium as the other headless rows.
 
 # push->main deliberately absent: each shipped feature otherwise costs two
 # identical runs (PR + post-squash re-validation of the same tree) against a
@@ -30,6 +35,20 @@ jobs:
           node-version: '20'
       - name: Install Python test deps (make the py-unit-* pytest rows real, not skipped)
         run: python3 -m pip install --quiet pytest pyserial pyyaml cryptography jsonschema
+      # The board's own install contract (docs/decisions/homekit-home-connect.md
+      # G1): system python3 + apt python3-cffi-backend, venv with
+      # --system-site-packages, `pip install --no-deps` from the hash-pinned
+      # lock. The lock's x86_64 wheels are cp312, so a runner image whose
+      # python3 is not 3.12 FAILS this step by name instead of skipping tests.
+      - name: HomeKit test venv from the lock (py-unit-homekit runs the pyhap/segno tests, not skips)
+        run: |
+          /usr/bin/python3 -c 'import sys; v = sys.version_info[:2]; sys.exit(0 if v == (3, 12) else "requirements.lock x86_64 wheels are cp312; runner python3 is %d.%d" % v)'
+          sudo apt-get update -qq
+          sudo apt-get install -y --no-install-recommends python3-venv python3-cffi-backend
+          /usr/bin/python3 -m venv --system-site-packages "$RUNNER_TEMP/hk-venv"
+          "$RUNNER_TEMP/hk-venv/bin/pip" install --quiet --no-deps -r opt/sa02m-homekit/requirements.lock
+          "$RUNNER_TEMP/hk-venv/bin/python" -c 'import pyhap.accessory_driver, segno'
+          echo "SA02M_HOMEKIT_TEST_PY=$RUNNER_TEMP/hk-venv/bin/python" >> "$GITHUB_ENV"
       - name: Cache Playwright browsers (review-beat chromium; ci-budget.md)
         uses: actions/cache@v4
         with:
@@ -38,7 +57,7 @@ jobs:
       # `npm ci` (lockfile-exact) instead of the root `ui-layout:install` script's
       # `npm install`: CI must run the pinned harness, the dev box may float.
       # `--with-deps` adds the Ubuntu shared libs chromium needs (runner sudo).
-      - name: Install the dev harness + chromium (the three headless rows — ui-layout, cloud-card-smoke, sh-modal-layout-smoke)
+      - name: Install the dev harness + chromium (the headless rows — ui-layout, cloud-card-smoke, sh-modal-layout-smoke, homekit-card-smoke, homeconnect-card-smoke)
         run: |
           npm --prefix scripts/dev ci
           node scripts/dev/node_modules/playwright/cli.js install --with-deps chromium

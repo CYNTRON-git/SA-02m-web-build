@@ -1,0 +1,68 @@
+[Unit]
+Description=SA-02m Apple HomeKit bridge (HAP over the smart-home device document)
+Documentation=file:///opt/sa02m-homekit/THIRD_PARTY.md
+# The broker carries every device value the bridge projects; the listener binds
+# the chosen wired interface's IPv4, which the daemon re-reads every 10 s (a
+# late DHCP lease is picked up, never a reason to fail the start).
+After=network-online.target mosquitto.service
+Wants=network-online.target
+
+[Service]
+Type=simple
+WorkingDirectory=/opt/sa02m-homekit
+Environment=PYTHONUNBUFFERED=1
+Environment=PYTHONDONTWRITEBYTECODE=1
+Environment=PYTHONPATH=/opt/sa02m-homekit:/opt/sa02m-alice
+# The dedicated venv holds HAP-python and its hash-pinned deps (D1); apt
+# paho-mqtt is reused through --system-site-packages.
+ExecStart=/opt/sa02m-homekit-venv/bin/python -m sa02m_homekit.main
+# enabled=false or missing deps -> the daemon writes its status and exits 0;
+# never a restart storm on an intentional standby.
+Restart=on-failure
+RestartSec=10s
+# A stop finishes inside the web trigger's 10 s `timeout systemctl stop`: the
+# card's «Сбросить сопряжение» deletes the pairing store only once the unit is
+# fully `inactive`, so a slower stop would fail the reset instead of racing it.
+TimeoutStopSec=8s
+# Resource ceiling on a SoC shared with CODESYS/MPLC4/mosquitto (D8).
+MemoryMax=64M
+CPUQuota=25%
+TasksMax=32
+Nice=10
+# Unprivileged (D11): nothing in the bridge needs root — and NOT group
+# www-data: this listener is on the LAN before pairing, and www-data reads the
+# panel credentials, the gateway YAML and every Alice conf. What it needs
+# instead (docs/contracts/homekit-bridge.md §13), plain Unix groups, no ACL:
+# /run/sa02m-homekit is setgid www-data (the files the card reads inherit the
+# group); its conf dir is www-data:sa02m-homekit 2750 (setgid: every file saved
+# there is the bridge's group, read-only for it); the Alice device document is
+# group sa02m-alice-devices, which the account joins in /etc/group (systemd
+# applies those groups at start). Gate: `daemon-least-privilege`.
+User=sa02m-homekit
+Group=sa02m-homekit
+# `+`: as root, before the sandbox; `-`: never a start failure — a failed probe
+# is in this unit's journal and the daemon then reports `conf_unreadable` on
+# the card. Re-asserts the modes a restore or a hand edit may have dropped and
+# proves the read AS the daemon (the installer's last step runs the same).
+ExecStartPre=-+/usr/local/sbin/sa02m-daemon-access.sh apply homekit
+UMask=0077
+NoNewPrivileges=true
+# strict: /etc (including the conf and the device document) is
+# read-only for this unit; the writable tree is exactly its own two dirs.
+ProtectSystem=strict
+ReadWritePaths=/var/lib/sa02m-homekit /run/sa02m-homekit
+ProtectHome=true
+PrivateTmp=true
+PrivateDevices=true
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectControlGroups=true
+RestrictNamespaces=true
+RestrictRealtime=true
+LockPersonality=true
+# TCP listener + mDNS (UDP 5353), the local broker, and netlink for the
+# interface address lookup (ifaddr).
+RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX AF_NETLINK
+
+[Install]
+WantedBy=multi-user.target

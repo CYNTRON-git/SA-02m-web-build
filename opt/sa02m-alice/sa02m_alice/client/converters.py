@@ -94,13 +94,17 @@ def yandex_to_on_off(
     return ("1" if apply_on_off_inversion(value, inverted) else "0"), None
 
 
-def mqtt_to_range(raw: str, parameters: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
+def mqtt_to_range(
+    raw: str, parameters: Optional[Dict[str, Any]] = None
+) -> Optional[Dict[str, Any]]:
     params = parameters or {}
     instance = params.get("instance", "brightness")
     try:
         value = float(str(raw).strip())
     except (TypeError, ValueError):
-        value = 0.0
+        # Same "omit rather than fabricate" rule as the float property: a
+        # garbled setpoint/brightness shown as 0 would read as a real value.
+        return None
     return {
         "type": "devices.capabilities.range",
         "state": {"instance": instance, "value": value},

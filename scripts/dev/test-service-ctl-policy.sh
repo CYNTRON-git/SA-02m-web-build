@@ -222,6 +222,58 @@ else
     bad "lib absent uninstall: rc=$rc"
 fi
 
+echo "── 3. the root flag syncs never import from the caller's cwd ──"
+# The ctl runs as root via `sudo -n` from services_ctrl.cgi; sudo keeps the
+# cwd, and the CGI's cwd (cgi-bin) is www-data-owned. `python3 -c` puts the
+# cwd FIRST on sys.path, ahead of PYTHONPATH — so a package planted there under
+# the imported name ran as root. Each planted module only drops a marker file.
+mkdir -p "$T/cwd/sa02m_alice/common" "$T/cwd/sa02m_homekit" "$T/cwd/sa02m_homeconnect"
+: > "$T/cwd/sa02m_alice/__init__.py"
+: > "$T/cwd/sa02m_alice/common/__init__.py"
+printf 'open(%s, "w").write("alice")\ndef set_client_enabled(v):\n    pass\n' "'$T/planted-alice'" \
+    > "$T/cwd/sa02m_alice/common/config_store.py"
+printf 'open(%s, "w").write("homekit")\n' "'$T/planted-homekit'" > "$T/cwd/sa02m_homekit/__init__.py"
+: > "$T/cwd/sa02m_homekit/config.py"
+printf 'open(%s, "w").write("homeconnect")\n' "'$T/planted-homeconnect'" > "$T/cwd/sa02m_homeconnect/__init__.py"
+: > "$T/cwd/sa02m_homeconnect/config.py"
+( cd "$T/cwd" && alice_sync_client_enabled true ) >/dev/null 2>&1
+( cd "$T/cwd" && homekit_sync_enabled true ) >/dev/null 2>&1
+( cd "$T/cwd" && homeconnect_sync_enabled true ) >/dev/null 2>&1
+if [ ! -e "$T/planted-alice" ]; then
+    ok "alice_sync_client_enabled: a sa02m_alice package planted in the cwd is NOT imported"
+else
+    bad "alice_sync_client_enabled imported a sa02m_alice package planted in the caller's cwd — www-data code as root"
+fi
+if [ ! -e "$T/planted-homekit" ]; then
+    ok "homekit_sync_enabled: a sa02m_homekit package planted in the cwd is NOT imported"
+else
+    bad "homekit_sync_enabled imported a sa02m_homekit package planted in the caller's cwd — www-data code as root"
+fi
+if [ ! -e "$T/planted-homeconnect" ]; then
+    ok "homeconnect_sync_enabled: a sa02m_homeconnect package planted in the cwd is NOT imported"
+else
+    bad "homeconnect_sync_enabled imported a sa02m_homeconnect package planted in the caller's cwd — www-data code as root"
+fi
+# Non-vacuity: the planted package IS importable from that cwd by a bare
+# `python3 -c` (the shape the fix removes), so a green above is not an
+# accident of the plant.
+rm -f "$T/planted-homekit"
+( cd "$T/cwd" && python3 -c 'import sa02m_homekit' ) >/dev/null 2>&1
+if [ -e "$T/planted-homekit" ]; then
+    ok "control: a bare python3 -c in that cwd does import the plant (the case is live)"
+    rm -f "$T/planted-homekit"
+else
+    bad "control: the planted package is not importable at all — the two cases above prove nothing"
+fi
+rm -f "$T/planted-homeconnect"
+( cd "$T/cwd" && python3 -c 'import sa02m_homeconnect' ) >/dev/null 2>&1
+if [ -e "$T/planted-homeconnect" ]; then
+    ok "control: a bare python3 -c in that cwd does import the Home Connect plant (the case is live)"
+    rm -f "$T/planted-homeconnect"
+else
+    bad "control: the planted sa02m_homeconnect is not importable at all — its case above proves nothing"
+fi
+
 echo ""
 if [ "$fails" -eq 0 ]; then
     echo "service-ctl-policy-write: ALL OK"

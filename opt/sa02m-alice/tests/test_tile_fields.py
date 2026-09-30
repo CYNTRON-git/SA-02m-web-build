@@ -176,3 +176,37 @@ class TestCloudDiscoveryWritable(unittest.TestCase):
         self.assertNotIn("writable", yandex)
         self.assertIs(cloud.get("writable"), False)
 
+
+
+class TestHomekitVisible(unittest.TestCase):
+    """`homekit_visible` (1.0.6.57, docs/contracts/alice-mqtt-mapping.md §Tile
+    fields): strict bool, absent is kept absent (the HomeKit bridge reads
+    absent as HIDDEN), and the Yandex/cloud discovery lists ignore it."""
+
+    def test_absent_stays_absent(self):
+        out, err = models.validate_device(_switch())
+        self.assertIsNone(err)
+        self.assertNotIn("homekit_visible", out)
+
+    def test_bool_round_trips(self):
+        for value in (True, False):
+            out, err = models.validate_device(_switch(homekit_visible=value))
+            self.assertIsNone(err)
+            self.assertIs(out["homekit_visible"], value)
+
+    def test_non_bool_rejected(self):
+        for bad in ("true", 1, None, "yes"):
+            out, err = models.validate_device(_switch(homekit_visible=bad))
+            self.assertIsNone(out, bad)
+            self.assertEqual(err, "invalid homekit_visible")
+
+    def test_yandex_discovery_ignores_homekit_flag(self):
+        doc = {"rooms": [], "devices": [
+            _switch("d1", homekit_visible=False),
+            _switch("d2", homekit_visible=True),
+        ]}
+        reg = DeviceRegistry(doc)
+        ids = [d["id"] for d in reg.discovery_devices(C.PROFILE_YANDEX)]
+        self.assertEqual(ids, ["d1", "d2"])
+        for entry in reg.discovery_devices(C.PROFILE_YANDEX):
+            self.assertNotIn("homekit_visible", entry)

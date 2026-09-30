@@ -1,0 +1,63 @@
+[Unit]
+Description=SA-02m Home Connect client (BSH appliances as read-only MQTT devices)
+Documentation=file:///opt/sa02m-homeconnect/THIRD_PARTY.md
+# Publishes to the local broker; the cloud side retries on its own backoff, so
+# a late network is never a reason to fail the start.
+After=network-online.target mosquitto.service
+Wants=network-online.target
+
+[Service]
+Type=simple
+WorkingDirectory=/opt/sa02m-homeconnect
+Environment=PYTHONUNBUFFERED=1
+Environment=PYTHONDONTWRITEBYTECODE=1
+Environment=PYTHONPATH=/opt/sa02m-homeconnect
+# Stdlib + apt python3-paho-mqtt only (no venv, no pip): OTA carries all of it.
+ExecStart=/usr/bin/python3 -m sa02m_homeconnect
+# enabled=false or paho missing -> the daemon writes its status and exits 0;
+# never a restart storm on an intentional standby.
+Restart=on-failure
+RestartSec=10s
+# A stop finishes inside the web trigger's 10 s `timeout systemctl stop`: the
+# card's «Отключить аккаунт» deletes the tokens only once the unit is fully
+# `inactive`, so a slower stop would fail the unlink instead of racing it.
+TimeoutStopSec=8s
+# Resource ceiling on a SoC shared with CODESYS/MPLC4/mosquitto (plan D8).
+MemoryMax=32M
+CPUQuota=20%
+TasksMax=16
+Nice=10
+# Unprivileged (plan D11): nothing in the client needs root — and NOT group
+# www-data (that group reads the panel credentials and every web conf).
+# /run/sa02m-homeconnect is setgid www-data, so the 0640 files the card reads
+# inherit the group; its conf dir is www-data:sa02m-homeconnect 2750 (setgid:
+# the conf saved there is the client's group, read-only for it) — plain Unix
+# groups, no ACL (docs/contracts/home-connect.md §11). www-data is NOT in this
+# unit's group, so it never reads the tokens. Gate: `daemon-least-privilege`.
+User=sa02m-homeconnect
+Group=sa02m-homeconnect
+# `+`: as root, before the sandbox; `-`: never a start failure — a failed probe
+# is in this unit's journal and the daemon then reports `conf_unreadable`.
+# Re-asserts the modes a restore may have dropped and proves the read AS the
+# daemon (the installer's last step runs the same).
+ExecStartPre=-+/usr/local/sbin/sa02m-daemon-access.sh apply homeconnect
+UMask=0077
+NoNewPrivileges=true
+# strict: /etc (including the conf) is read-only for this unit;
+# the writable tree is exactly its own two dirs.
+ProtectSystem=strict
+ReadWritePaths=/var/lib/sa02m-homeconnect /run/sa02m-homeconnect
+ProtectHome=true
+PrivateTmp=true
+PrivateDevices=true
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectControlGroups=true
+RestrictNamespaces=true
+RestrictRealtime=true
+LockPersonality=true
+# HTTPS to the BSH cloud and the local broker; no listener, no netlink.
+RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX
+
+[Install]
+WantedBy=multi-user.target

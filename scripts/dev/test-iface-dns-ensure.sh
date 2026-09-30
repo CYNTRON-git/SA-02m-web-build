@@ -17,8 +17,11 @@
 # copy the SHIPPED helpers into a scratch tree and sed-retarget their four
 # absolute roots (interfaces.d, /run/resolvconf/interface, /etc/resolv.conf,
 # /etc/sa02m_network.conf, /sys/class/net) into it; `resolvconf`, `logger` and
-# `ip` are recording PATH shims. No root, no device, no systemd, nothing
-# touches the real system. There is deliberately NO env seam in the shipped
+# `ip` are recording PATH shims (plus a scripted `systemctl` shim for the
+# coldboot bootstrap, kept on PATH through the last run of shipped code — the
+# POSIX-shell dialect run, which REFUSES to start if `systemctl` does not
+# resolve to it). No root, no device, no systemd, nothing touches the real
+# system. There is deliberately NO env seam in the shipped
 # helpers — the retarget is the test's job.
 #
 # Non-vacuous: a failed or over-wide retarget, a missing helper, a shim that
@@ -593,21 +596,28 @@ SHIM_MARK="$T/state/dns-ensure-enabled.once"
   printf 'DNS_BOOTSTRAP_MARKER=%s\n' "$SHIM_MARK"
   sed -n '/^dns_ensure_bootstrap() {/,/^}$/p' "$COLD_SRC"
 } > "$T/bootstrap.sh"
-if ! grep -q '^dns_ensure_bootstrap() {' "$T/bootstrap.sh" \
-   || ! grep -q 'systemctl enable' "$T/bootstrap.sh" \
-   || ! grep -Fq "DNS_ENSURE_UNIT_FILE=$SHIM_UNIT" "$T/bootstrap.sh" \
-   || ! grep -q '^dns_ensure_bootstrap$' "$COLD_SRC"; then
-    bad "harness: bootstrap extraction empty/un-retargeted, or the shim is never CALLED in coldboot"
-else
-    SC="$T/systemctl.log"
-    cat > "$BIN/systemctl" <<SHIM
+# The scripted systemctl shim is installed UNCONDITIONALLY and stays on PATH
+# until the last run of shipped bootstrap code (the POSIX-shell dialect run
+# below). dns_ensure_bootstrap calls `systemctl is-enabled` / `systemctl
+# enable` by name, so any run of it without this shim reaches the host's real
+# systemctl — which, on a host whose answer is `disabled`, ENABLES a unit on
+# the machine running the suite. Until 2026-09-27 the shim was removed at the
+# end of this block while the dialect run still executed the shipped function.
+SC="$T/systemctl.log"
+cat > "$BIN/systemctl" <<SHIM
 #!/bin/bash
 echo "systemctl \$*" >> "$SC"
 if [ "\${1:-}" = "is-enabled" ]; then printf '%s\n' "\$(cat "$T/is-enabled" 2>/dev/null)"; exit 0; fi
 if [ "\${1:-}" = "enable" ]; then [ -n "\${SC_ENABLE_FAIL:-}" ] && exit 1; printf 'enabled\n' > "$T/is-enabled"; fi
 exit 0
 SHIM
-    chmod +x "$BIN/systemctl"
+chmod +x "$BIN/systemctl"
+if ! grep -q '^dns_ensure_bootstrap() {' "$T/bootstrap.sh" \
+   || ! grep -q 'systemctl enable' "$T/bootstrap.sh" \
+   || ! grep -Fq "DNS_ENSURE_UNIT_FILE=$SHIM_UNIT" "$T/bootstrap.sh" \
+   || ! grep -q '^dns_ensure_bootstrap$' "$COLD_SRC"; then
+    bad "harness: bootstrap extraction empty/un-retargeted, or the shim is never CALLED in coldboot"
+else
     # `: >` not `rm -f`: grep -c on a MISSING file prints nothing, so enables()
     # would return the empty string and every =0 comparison would misfire.
     boot() { : > "$SC"; ( log() { :; }; . "$T/bootstrap.sh"; dns_ensure_bootstrap ); return $?; }
@@ -654,7 +664,6 @@ SHIM
     else
         bad "bootstrap: enable-failure path rc=$rc marker=$([ -e "$SHIM_MARK" ] && echo y || echo n)"
     fi
-    command rm -f "$BIN/systemctl"
 fi
 
 # ═══ shell-dialect safety of the SHIPPED #!/bin/sh scripts ════════════════
@@ -719,11 +728,19 @@ else
     { printf '#!/bin/sh\nlog() { :; }\n. "%s"\ndns_ensure_bootstrap\necho REACHED_END\nexit 0\n' "$T/bootstrap_ro.sh"
     } > "$T/dialect_driver.sh"
     printf 'disabled\n' > "$T/is-enabled"
-    dout=$($POSIX_SH "$T/dialect_driver.sh" 2>&1); drc=$?
-    if [ "$drc" = 0 ] && [ "${dout#*REACHED_END}" != "$dout" ]; then
-        ok "dialect: under $POSIX_SH an unwritable marker does NOT abort the shim — it runs on to completion"
+    : > "$SC"
+    dsc=$(command -v systemctl 2>/dev/null)
+    if [ "$dsc" != "$BIN/systemctl" ]; then
+        # Host-safety precondition: never run the shipped function against a
+        # systemctl that is not the shim (it would act on this host's units).
+        bad "dialect: systemctl resolves to '${dsc:-<not found>}', not the shim — the POSIX-shell run is REFUSED (it would reach the host)"
     else
-        bad "dialect: under $POSIX_SH the shim died on an unwritable marker (rc=$drc out='$dout')"
+        dout=$($POSIX_SH "$T/dialect_driver.sh" 2>&1); drc=$?
+        if [ "$drc" = 0 ] && [ "${dout#*REACHED_END}" != "$dout" ] && grep -q '^systemctl is-enabled ' "$SC"; then
+            ok "dialect: under $POSIX_SH an unwritable marker does NOT abort the shim — it runs on to completion (systemctl answered by the shim)"
+        else
+            bad "dialect: under $POSIX_SH the shim died on an unwritable marker, or never asked the systemctl shim (rc=$drc out='$dout' shim-calls='$(tr '\n' ';' < "$SC")')"
+        fi
     fi
 
     # Both helpers are #!/bin/sh but every case above ran them through the
@@ -752,6 +769,7 @@ else
         bad "dialect: a helper misbehaved under $POSIX_SH (rc=$r1/$r2/$r3/$r4/$r5 out='$d1$d2$d3$d4$d5')"
     fi
 fi
+command rm -f "$BIN/systemctl"   # no shipped code runs past this point
 
 # Deploying the unit file is NOT the guarantee: the runner only enables what the
 # manifest's services.enable lists. ONLINE half: the runner's own generator

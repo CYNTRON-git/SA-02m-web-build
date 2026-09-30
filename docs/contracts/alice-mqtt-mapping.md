@@ -53,7 +53,24 @@ so the picker works with no gateway and no bus. Rules:
   controls its live cache carries — the bridge polls it, so what it publishes
   is the truth;
 - the board's own four controls are always offered, so the picker is never
-  empty on a fresh board.
+  empty on a fresh board;
+- **Home Connect appliances** (1.0.6.57) come from
+  `/run/sa02m-homeconnect/inventory.json` (`docs/contracts/home-connect.md`
+  §6; env `SA02M_HOMECONNECT_INVENTORY`). The file belongs to another uid, so
+  the reader is a boundary: size > 64 KiB (`HC_INVENTORY_MAX_BYTES`, read at
+  most cap+1) or not JSON ⇒ no Home Connect entries, never an error; at most
+  32 appliances (`HC_MAX_APPLIANCES`, pinned to `MAX_APPLIANCES` of that
+  package); `device_id` must match `^hc-[a-z0-9-]{1,61}$`; the offered controls
+  are the intersection with `HC_BINDABLE_CONTROLS` (yes/no controls only —
+  `operation_state`, `active_program`, `last_event`, `last_event_ts` carry
+  text or an epoch no Yandex/HAP type holds honestly; the numeric
+  `remaining_s` / `progress_pct` wait for a numeric binding kind), all
+  `rw: "r"`;
+  topics are built from the validated id and a table name only. An appliance
+  sorts after every COM device and before the controller; a disconnected one
+  is still offered (bindability is not liveness), one with nothing bindable is
+  not. Validating: `tests/test_inventory_homeconnect.py`, case 8 of
+  `scripts/dev/test-alice-topics-cgi.sh`.
 
 **Budget and shape (1.0.6.39).** The CGI wraps its python in `timeout` at
 `TOPICS_CGI_TIMEOUT_S` (15 s, `constants.py`; shell default
@@ -132,6 +149,20 @@ Optional capability field `writable` (bool; **absent ⇒ `true`**).
 `not controllable` (`docs/contracts/cloud-device-control.md` in the
 cloud repo).
 
+**Read-only sources.** A capability bound to `/devices/hc-…` (the Home
+Connect client, which subscribes to nothing — `home-connect.md` «RO») is
+normalised by `validate_device`: an `on_off` is stored with `writable: false`
+(stamped, whatever the writer sent); any other capability type is refused
+`read-only source`. So no consumer — Alice, the cloud page, HomeKit, the rules
+service — can report a command to an appliance as done. Freshness: the client
+republishes live values every `VALUE_HEARTBEAT_S` = 60 s while its stream is
+alive and the registry ages a non-Modbus topic past `STATUS_STALE_S` = 90 s
+(both pinned by `tests/test_inventory_homeconnect.py`). Residual: a consumer
+that (re)subscribes 90–120 s after the stream died answers the retained value
+until the client's retained `meta/error = "r"` lands at 120 s
+(`home-connect.md` §5). Validating: `tests/test_models.py
+TestHomeConnectReadOnly`.
+
 ### Device document id namespace
 
 Ids inside the stored document are the operator's (minted by the config API,
@@ -142,7 +173,34 @@ prefixes are named here:
 | Prefix | Owner | Written to the document? |
 |---|---|---|
 | `scene-<board>-<sid>` | scene devices (below) | never — in memory per build |
+| `scene-hk-<sid>` | HomeKit scene rows (profile `homekit`, below) — board-independent | never — in memory per build |
 | everything else | the operator / auto-provision | yes |
+
+The HomeKit bridge (`sa02m-homekit`, `docs/contracts/homekit-bridge.md`) reads
+the same document through `DeviceRegistry` and never writes it.
+
+**Top-level `homekit_scenes`** (1.0.6.57): the scenario ids ticked «Показывать в
+HomeKit» on the «Умный дом» card — a list of `_ID_RE` strings, de-duplicated,
+≤ 64 (`models.validate_homekit_scenes`, `HOMEKIT_SCENES_MAX` = the store's
+`SCENARIOS_MAX`). Absent ⇒ no scene is in HomeKit. Its ONE writer is the
+config API action `set_scene_homekit {scene_id, visible}` (under
+`devices_lock`; ids that are no longer `type: scene` rows are pruned only when
+the scenario store was read, and a tick needs a readable store —
+`not_found` otherwise). Not a binding mutation: the Alice units are not
+restarted and neither discovery profile reads the list (`alice_expose` and
+`homekit_scenes` never open a scene in each other's ecosystem —
+`homekit-bridge.md` §2). Every other document writer load→mutate→saves the
+whole dict, so the key survives them. The card reads the scene list from
+`full_config().scene_catalog` (`[{scene_id, name, enabled}]`, every
+`type: scene` row, from the same single store read that feeds
+`scene_devices`; absent when the store could not be read). "Could not be
+read" has ONE home, `scene_devices.read_rules_doc`: no rules stack, or a
+store file that exists but cannot be opened, decoded or parsed, or whose top
+level is not an object (`sa02m_rules.store.load` itself answers an empty
+document for such a file); an absent file reads as no scenes. Validating:
+`tests/test_scene_homekit_api.py` (real corrupt store), `tests/test_scene_devices.py`
+(`RealStoreReadabilityTests`, incl. a mode-0000 file read as a non-root uid),
+`tests/test_discovery_phase3.py`.
 
 A saved device that already owns a generated id **wins**: the stored
 document is the operator's and an in-memory row never replaces it.
@@ -245,7 +303,7 @@ not conjure one.
 Validating: `tests/test_cloud_control_api.py::TestUpsertDeviceRooms`,
 `::TestUpsertRoomMembership`, `tests/test_models.py::TestRoomId`.
 
-### Tile fields (`alice_visible`, `icon`) — 1.0.6.26
+### Tile fields (`alice_visible`, `icon`, `homekit_visible`) — 1.0.6.26 / 1.0.6.57
 
 Two optional device-level keys beside `room_id`, validated by
 `config/models.py::validate_device`:
@@ -261,6 +319,29 @@ Two optional device-level keys beside `room_id`, validated by
   siren | generic`; `""`/`null` drops the key). A tile icon for the cloud
   control page; the ids match that page's sprite and the board's own
   `#sh-icons`. Never forwarded to Yandex.
+- `homekit_visible` (bool; **absent ⇒ hidden** — the opposite default of
+  `alice_visible`, on purpose; 1.0.6.57). Read only by the HomeKit bridge:
+  a device reaches Apple Home only while this is `true`
+  (`docs/contracts/homekit-bridge.md` §2 — the exposure rule, its skip reason
+  `hidden`, and what the bridge does with it live there). A non-bool value is
+  rejected (`invalid homekit_visible`); an absent key stays absent (never
+  written back as `false`). The config API's upsert replaces the whole device
+  row, so a stale writer that saves a device without the key — an old cached
+  «Умный дом» tab — can only HIDE it, never expose it; the current form
+  round-trips the stored value on every save, also while the module is not
+  installed. Neither discovery profile forwards it (Yandex, cloud page).
+  Its bulk writer is the config API action `set_homekit_visible {visible:
+  {<device id>: bool, …}}` (the «Apple HomeKit» card's device list and «Отметить
+  все для HomeKit»): one write under `devices_lock`; the map is non-empty,
+  ≤ `HOMEKIT_VISIBLE_MAX` = 256 entries, keys `_ID_RE`, values strict bools
+  (`invalid_homekit_visible` / `too_many` otherwise); an id not in the
+  document refuses the whole request (`not_found`, nothing written); only the
+  named rows change and only this key — no other row is re-validated, so a
+  stored row the current validator would refuse does not block its
+  neighbours. Not a binding mutation: the CGI restarts no Alice unit after
+  it. Answer: `{ok, changed, visible: [ids now true]}`.
+  Validating: `tests/test_tile_fields.py` (`TestHomekitVisible`) and
+  `tests/test_homekit_visible_api.py` (the bulk `set_homekit_visible` action).
 
 Discovery per profile (`device_registry.discovery_devices(profile)`): the
 Yandex profile carries only the Yandex fields; the **cloud profile lists every
@@ -334,7 +415,10 @@ A sensor binding is a device whose `properties` carry one
 - The bridge publishes engineering units — `float(raw) × scale` is the whole
   conversion; negative values (CE power export) parse as-is.
 - An unparseable MQTT payload converts to NO reading (the property is omitted
-  from query/state) — never a fabricated `0.0`.
+  from query/state) — never a fabricated `0.0`. The same rule holds for a
+  `devices.capabilities.range` value (brightness, a setpoint): a garbled
+  payload yields no block, never `0` (`converters.mqtt_to_range`,
+  `tests/test_converters.py TestRange`).
 - **A real `power: 0` IS sent, and that is a deliberate deviation from Yandex's
   stated range** (their float table says power «должно быть больше 0»).
   Operator decision, 2026-08-27: an idle line genuinely draws 0 W, and a
@@ -389,6 +473,18 @@ leak a non-Yandex field to the platform.
   decimals. No other code multiplies a reading.
 - In use: kPa → mmHg `7.50062` (DTV pressure), mg/m³ → µg/m³ `1000` (TVOC),
   Wh → kWh `0.001` (CE `electricity_meter`).
+
+### CO₂ threshold (`co2_alarm_ppm`, item level, never sent to Yandex) — 1.0.6.57
+
+The HomeKit bridge's `CarbonDioxideDetected` threshold (`homekit-bridge.md`
+§3, row M15) sits beside `mqtt` on the `devices.properties.float`
+`co2_level` item — the `scale` rule: never inside `parameters`. Validated
+(`models._validate_co2_alarm`): strict int (not bool), `400 ≤ v ≤ 5000`; on
+any other item `co2_alarm_ppm is only valid on a co2_level property`; absent
+stays absent (the bridge default applies). Discovery copies only
+type/retrievable/reportable/parameters, so neither profile ever forwards it
+(`tests/test_discovery_phase3.py`). The «Умный дом» card writes it from the
+«Порог CO₂, ppm» field while the HomeKit module is installed.
 
 ### Inverted (`on_off`, item level, never sent to Yandex) — 1.0.6.29
 
@@ -799,9 +895,16 @@ re-measured on this branch.
 
 ## Client status file → web API cert / link truth (1.0.5.80)
 
-The cert dir `/var/lib/sa02m-alice` is root-only (key 0600 root) and stays so;
-the web API runs as `www-data` and MUST NOT probe it (an `isfile()` there is
-permission-blind and returns a false "absent").
+The cert dir `/var/lib/sa02m-alice` is `www-data:www-data 0700` (key 0600,
+owner www-data) — the enroll write runs as `www-data` inside
+`sa02m_alice_api.cgi`, and the client that uses the cert runs as root; no other
+user can enter it (home of the mode: `etc/tmpfiles.d/sa02m-alice.conf`,
+re-asserted by `scripts/06-alice.sh`; why: `docs/bugs/BUGLOG.md` 2026-08-26
+13:30, 1.0.6.14). A reader that cannot enter the dir MUST NOT probe it with
+`isfile()` — that is permission-blind and returns a false "absent" — so the
+status file below is the first source of cert truth, and a local check runs
+only where the caller can actually traverse the dir
+(`sa02m_alice/config/api.py::cert_presence`).
 
 - **Status file** `/run/sa02m-alice/status.json` (client, root, mode 0644,
   rewritten on every state change): `{state, ts, version, cert_present:
@@ -915,6 +1018,22 @@ Validating tests: `opt/sa02m-alice/tests/test_cloud_profile.py`,
 `test_state_origin.py`, `test_tile_fields.py`, `test_cloud_control_api.py`;
 the trigger verbs by `scripts/dev/test-alice-reload-handshake.sh` and the
 sudoers pin by `.ai-dev/quality/checks/sudoers-pin-contract.sh`.
+
+### Catalogue profiles other than `yandex` / `cloud` (1.0.6.57)
+
+A `DeviceRegistry` built with any other profile — today only `homekit`
+(`constants.PROFILE_HOMEKIT`), the HomeKit bridge's
+(`docs/contracts/homekit-bridge.md` §1) — reads the catalogue through the same
+`_items` filter as every other path: `cloud_only` items are dropped (as on
+`yandex`). The Alice-exposed scene rows are never attached there. The
+`homekit` profile attaches instead the scenes ticked in `homekit_scenes` that
+are enabled `type: scene` rows, as `scene-hk-<sid>` (the scene row shape
+above plus `scene_id` and `homekit_visible: true`;
+`scene_devices.homekit_scene_projection`); any other profile attaches none. `catalogue_items()` returns that view — deep
+copies in document order, with no `alice_visible` filtering and nothing
+stripped (that is Yandex policy). Validating:
+`opt/sa02m-homekit/tests/test_registry_profile.py`,
+`opt/sa02m-alice/tests/test_device_registry.py` (`TestCatalogueItems`).
 
 ## Non-goals
 

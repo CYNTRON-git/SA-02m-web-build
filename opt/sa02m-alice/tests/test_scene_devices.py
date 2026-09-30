@@ -446,5 +446,266 @@ class FullConfigTests(_Wiring):
         self.assertEqual(self.full_config()["scene_devices"], [])
 
 
+class HomekitSceneTests(unittest.TestCase):
+    """The HomeKit reader of scenes (Phase 3 C): its own flag home
+    (`homekit_scenes` in the DEVICE document), its own id space, isolation
+    from `alice_expose` both ways."""
+
+    def test_id_is_board_independent_and_charset_safe(self):
+        self.assertEqual(scene_devices.homekit_scene_device_id("s1"), "scene-hk-s1")
+        self.assertIsNone(scene_devices.homekit_scene_device_id("a b"))
+        self.assertIsNone(scene_devices.homekit_scene_device_id(None))
+        # 55 chars fit (9 + 55 = 64); 56 would not be a valid id — not truncated.
+        self.assertIsNotNone(scene_devices.homekit_scene_device_id("x" * 55))
+        self.assertIsNone(scene_devices.homekit_scene_device_id("x" * 56))
+
+    def test_ticked_view_ignores_garbage(self):
+        doc = {"homekit_scenes": ["s1", "s1", 5, "bad id", None, "s2"]}
+        self.assertEqual(scene_devices.homekit_ticked(doc), ["s1", "s2"])
+        self.assertEqual(scene_devices.homekit_ticked({"homekit_scenes": "s1"}), [])
+        self.assertEqual(scene_devices.homekit_ticked({}), [])
+
+    def test_only_ticked_enabled_scenes_become_rows(self):
+        rules = _doc(_scene("s1"), _scene("s2", name="Ночь"), _scene("s3", enabled=False),
+                     {"id": "b1", "type": "block", "name": "Блок"})
+        rows, skipped, known = scene_devices.homekit_scene_projection(
+            rules, ROOMS, ["s2", "s3", "b1", "ghost"])
+        self.assertEqual([r["id"] for r in rows], ["scene-hk-s2"])
+        row = rows[0]
+        self.assertEqual(row["scene_id"], "s2")
+        self.assertIs(row["homekit_visible"], True)
+        self.assertEqual(row["room_id"], "r1")
+        cap = row["capabilities"][0]
+        self.assertEqual(cap["mqtt"], "/devices/sa02m-rules-s2/controls/run")
+        self.assertEqual((cap["retrievable"], cap["reportable"]), (False, False))
+        self.assertEqual(skipped, [{"device_id": "scene-hk-s3", "name": "Вечер", "item": None,
+                                    "reason": "scene_disabled"}])
+        # Every scene row is known (aid retention), ticked or not, enabled or not.
+        self.assertEqual(known, ["scene-hk-s1", "scene-hk-s2", "scene-hk-s3"])
+
+    def test_alice_expose_never_opens_a_scene_in_homekit(self):
+        rules = _doc(_scene("s1", alice_expose=True))
+        rows, _skipped, _known = scene_devices.homekit_scene_projection(rules, ROOMS, [])
+        self.assertEqual(rows, [])
+
+    def test_a_homekit_tick_never_opens_a_scene_in_alice(self):
+        rules = _doc(_scene("s1", alice_expose=False))
+        self.assertEqual(scene_devices.exposed_scene_devices(rules, ROOMS, "B"), [])
+
+    def test_fingerprint_covers_every_scene_row(self):
+        base = _doc(_scene("s1", alice_expose=False))
+        fp = scene_devices.homekit_exposure_fingerprint(base)
+        self.assertEqual(len(fp), 1)
+        for change in ({"name": "Другое"}, {"enabled": False},
+                       {"captured_from": {"room_id": "r2"}}):
+            self.assertNotEqual(scene_devices.homekit_exposure_fingerprint(
+                _doc(_scene("s1", alice_expose=False, **change))), fp, change)
+        # Run state and non-scene rows never move it.
+        noisy = _doc(_scene("s1", alice_expose=False, last_run=123),
+                     {"id": "b1", "type": "block", "name": "x"})
+        self.assertEqual(scene_devices.homekit_exposure_fingerprint(noisy), fp)
+        self.assertEqual(scene_devices.homekit_exposure_fingerprint("garbage"), ())
+
+    def test_scene_catalog_lists_every_scene_row(self):
+        rules = _doc(_scene("s1"), _scene("s2", enabled=False),
+                     {"id": "b1", "type": "block", "name": "x"}, "junk")
+        self.assertEqual(scene_devices.scene_catalog(rules), [
+            {"scene_id": "s1", "name": "Вечер", "enabled": True},
+            {"scene_id": "s2", "name": "Вечер", "enabled": False},
+        ])
+
+    def test_read_rules_doc_tells_unreadable_from_empty(self):
+        with mock.patch.object(scene_devices, "rules_store", return_value=None):
+            self.assertEqual(scene_devices.read_rules_doc(), ({}, False))
+        with tempfile.TemporaryDirectory() as td:
+            path = os.path.join(td, "scenarios.json")
+            with open(path, "w", encoding="utf-8") as fh:
+                json.dump({"scenarios": [_scene()]}, fh, ensure_ascii=False)
+            doc, ok = scene_devices.read_rules_doc(path)
+            self.assertTrue(ok)
+            self.assertEqual(len(doc["scenarios"]), 1)
+
+            class _Broken:
+                DEFAULT_PATH = path
+
+                @staticmethod
+                def load(_p):
+                    raise ValueError("torn")
+            with mock.patch.object(scene_devices, "rules_store", return_value=_Broken):
+                with self.assertLogs("sa02m_alice.config.scene_devices", "ERROR"):
+                    self.assertEqual(scene_devices.read_rules_doc(path), ({}, False))
+
+
+class RealStoreReadabilityTests(unittest.TestCase):
+    """B1: readability is decided by `read_rules_doc` against the REAL
+    `sa02m_rules.store` — which answers `empty_doc()` for a corrupt or
+    unopenable file instead of raising, so nothing here is patched."""
+
+    def setUp(self):
+        self._td = tempfile.TemporaryDirectory()
+        self.addCleanup(self._td.cleanup)
+        self.path = os.path.join(self._td.name, "scenarios.json")
+        store = scene_devices.rules_store()
+        self.assertIsNotNone(store, "the real rules store must be importable")
+        self.assertEqual(store.__name__, "sa02m_rules.store")
+
+    def write(self, text):
+        with open(self.path, "w", encoding="utf-8") as fh:
+            fh.write(text)
+
+    def test_the_real_store_hides_corruption(self):
+        # The premise of the probe: store.load itself cannot tell.
+        self.write('{"scenarios": [')
+        self.assertEqual(scene_devices.rules_store().load(self.path).get("scenarios"), [])
+
+    def test_truncated_json_is_unreadable(self):
+        self.write('{"scenarios": [{"id": "s1", "na')
+        with self.assertLogs("sa02m_alice.config.scene_devices", "ERROR"):
+            self.assertEqual(scene_devices.read_rules_doc(self.path), ({}, False))
+
+    def test_a_top_level_that_is_not_an_object_is_unreadable(self):
+        for text in ("[]", '"x"', "5", "null"):
+            self.write(text)
+            with self.assertLogs("sa02m_alice.config.scene_devices", "ERROR"):
+                self.assertEqual(scene_devices.read_rules_doc(self.path), ({}, False), text)
+
+    def test_undecodable_bytes_are_unreadable(self):
+        with open(self.path, "wb") as fh:
+            fh.write(b'{"scenarios": ["\xff\xfe"]}')
+        with self.assertLogs("sa02m_alice.config.scene_devices", "ERROR"):
+            self.assertEqual(scene_devices.read_rules_doc(self.path), ({}, False))
+
+    def test_a_path_that_cannot_be_opened_is_unreadable(self):
+        # A directory where the file should be: open() fails even for root.
+        os.mkdir(self.path)
+        with self.assertLogs("sa02m_alice.config.scene_devices", "ERROR"):
+            self.assertEqual(scene_devices.read_rules_doc(self.path), ({}, False))
+
+    def test_an_absent_file_is_readable_with_no_scenes(self):
+        doc, ok = scene_devices.read_rules_doc(self.path)
+        self.assertTrue(ok)
+        self.assertEqual(doc.get("scenarios"), [])
+
+    def test_a_valid_store_is_readable(self):
+        self.write(json.dumps({"scenarios": [_scene()]}, ensure_ascii=False))
+        doc, ok = scene_devices.read_rules_doc(self.path)
+        self.assertTrue(ok)
+        self.assertEqual([r["id"] for r in doc["scenarios"]], ["s1"])
+
+    def test_a_mode_0000_file_is_unreadable_for_a_non_root_uid(self):
+        if not hasattr(os, "geteuid"):
+            self.skipTest("SKIPPED, NOT PASSED: no POSIX uids on this host (os.geteuid absent)")
+        self.write(json.dumps({"scenarios": [_scene()]}, ensure_ascii=False))
+        os.chmod(self.path, 0)
+        if os.geteuid() != 0:
+            with self.assertLogs("sa02m_alice.config.scene_devices", "ERROR"):
+                self.assertEqual(scene_devices.read_rules_doc(self.path), ({}, False))
+            return
+        # Root reads a 0000 file anyway: run the real reader as `nobody` over
+        # a world-readable copy of both packages. Everything `nobody` must
+        # reach — the interpreter, the packages, the store's directory — lives
+        # where every ancestor is o+x, so the ONLY thing refused is the file's
+        # own mode (a refused directory would pass this test for the wrong
+        # reason). Where that cannot be arranged the test is SKIPPED, loudly.
+        import pwd
+        import shutil
+        import subprocess
+        try:
+            nobody = pwd.getpwnam("nobody")
+        except KeyError:
+            self.skipTest("SKIPPED, NOT PASSED: no `nobody` user to drop to")
+        base = next((d for d in ("/var/tmp", "/tmp", "/dev/shm") if _others_can_traverse(d)), None)
+        if base is None:
+            self.skipTest("SKIPPED, NOT PASSED: no temp root `nobody` can traverse")
+        python = next((c for c in (sys.executable, os.path.realpath(sys.executable), "/usr/bin/python3")
+                       if os.path.isfile(c) and _others_can_run(c)), None)
+        if python is None:
+            self.skipTest("SKIPPED, NOT PASSED: no interpreter `nobody` can run (%s)" % sys.executable)
+        work = tempfile.mkdtemp(prefix="sa02m-mode0000-", dir=base)
+        self.addCleanup(shutil.rmtree, work, True)
+        os.chmod(work, 0o755)
+        store = os.path.join(work, "scenarios.json")
+        with open(store, "w", encoding="utf-8") as fh:
+            fh.write(json.dumps({"scenarios": [_scene()]}, ensure_ascii=False))
+        pkgs = os.path.join(work, "pkgs")
+        shutil.copytree(os.path.join(ALICE_ROOT, "sa02m_alice"), os.path.join(pkgs, "sa02m_alice"),
+                        ignore=shutil.ignore_patterns("__pycache__"))
+        shutil.copytree(os.path.join(RULES_ROOT, "sa02m_rules"), os.path.join(pkgs, "sa02m_rules"),
+                        ignore=shutil.ignore_patterns("__pycache__"))
+        for root, dirs, files in os.walk(work):
+            os.chmod(root, 0o755)
+            for name in files:
+                os.chmod(os.path.join(root, name), 0o644)
+        os.chmod(store, 0)
+        probe = ("import json, sys; from sa02m_alice.config import scene_devices as s; "
+                 "print(json.dumps(list(s.read_rules_doc(sys.argv[1]))))")
+
+        def drop():
+            os.setgid(nobody.pw_gid)
+            os.setuid(nobody.pw_uid)
+
+        try:
+            res = subprocess.run([python, "-c", probe, store], preexec_fn=drop,
+                                 cwd=pkgs, env={"PYTHONPATH": pkgs, "PATH": os.environ.get("PATH", ""),
+                                                "SA02M_RULES_DIR": pkgs},
+                                 capture_output=True, text=True, timeout=30)
+        except (OSError, subprocess.SubprocessError) as exc:
+            self.skipTest("SKIPPED, NOT PASSED: the probe could not start as `nobody` (%s: %s)"
+                          % (type(exc).__name__, exc))
+        if res.returncode != 0 and "ModuleNotFoundError" in res.stderr:
+            self.skipTest("SKIPPED, NOT PASSED: a dependency is not readable as `nobody`: %s"
+                          % res.stderr.strip()[-200:])
+        self.assertEqual(res.returncode, 0, res.stderr)
+        self.assertEqual(json.loads(res.stdout.strip().splitlines()[-1]), [{}, False], res.stderr)
+
+
+def _others_can_traverse(path):
+    """Every directory from `/` to `path` (resolved) grants o+x."""
+    import stat
+    cur = os.path.realpath(path)
+    while True:
+        try:
+            if not stat.S_IMODE(os.stat(cur).st_mode) & 0o001:
+                return False
+        except OSError:
+            return False
+        parent = os.path.dirname(cur)
+        if parent == cur:
+            return True
+        cur = parent
+
+
+def _others_can_run(path):
+    import stat
+    real = os.path.realpath(path)
+    try:
+        mode = stat.S_IMODE(os.stat(real).st_mode)
+    except OSError:
+        return False
+    return bool(mode & 0o001) and _others_can_traverse(os.path.dirname(real)) \
+        and _others_can_traverse(os.path.dirname(os.path.abspath(path)))
+
+
+class HomekitProfileWiringTests(_Wiring):
+    """The `homekit` catalogue profile attaches the ticked scenes — and only
+    those — through the real DeviceRegistry."""
+
+    def test_ticked_scene_is_attached_on_homekit_only(self):
+        self.write_store(_scene("s1", alice_expose=False), _scene("s2"))
+        doc = self.devices_doc()
+        doc["homekit_scenes"] = ["s1"]
+        hk = self.registry(doc, profile=C.PROFILE_HOMEKIT)
+        ids = [did for did, _d, _c, _p in hk.catalogue_items()]
+        self.assertEqual(ids, ["lamp", "scene-hk-s1"])
+        ya = self.registry(doc, profile=C.PROFILE_YANDEX)
+        ya_ids = [d["id"] for d in ya.discovery_devices(C.PROFILE_YANDEX)]
+        self.assertNotIn("scene-hk-s1", ya_ids)
+        self.assertIn(self.scene_dev_id("s2"), ya_ids)     # the Alice-exposed one
+
+    def test_nothing_ticked_attaches_nothing(self):
+        hk = self.registry(self.devices_doc(), profile=C.PROFILE_HOMEKIT)
+        self.assertEqual([d for d, _x, _c, _p in hk.catalogue_items()], ["lamp"])
+
+
 if __name__ == "__main__":
     unittest.main()

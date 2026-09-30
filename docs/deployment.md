@@ -169,7 +169,7 @@ OTA и офлайн-пакет **копируют файлы по карте н�
 `etc/tmpfiles.d/sa02m-alice.conf`, грант `etc/sudoers.d/sa02m-alice`, CGI и
 `static/js/app/alice.js`) по карте
 проходит, поэтому OTA **обновляет уже установленную** Алису. Но **установить**
-её OTA не может: python-socketio, каталоги `/etc/sa02m-alice` (0770 root:www-data),
+её OTA не может: python-socketio, каталоги `/etc/sa02m-alice` (0771 root:www-data),
 `/var/lib/sa02m-alice` (0700 www-data), `/run/sa02m-alice` и засевка
 `/etc/sa02m-alice/*.conf` живут только в `scripts/06-alice.sh`.
 
@@ -187,6 +187,32 @@ OTA и офлайн-пакет **копируют файлы по карте н�
 точечного `sudo bash scripts/06-alice.sh`. Та же логика — для любого модуля
 установщика (`11-devices`, `05-cloud-agent`, `08-codesys`, `12-docker`, `07-nodered`):
 OTA обновляет код, установку делает установщик.
+
+**Практическое правило для HomeKit.** То же, что у Алисы, с одной разницей:
+модуль необязательный и в заводской образ не входит. OTA и офлайн-пакет несут
+его код на **каждую** плату (`opt/sa02m-homekit/**`, юнит
+`sa02m-homekit.service`, `usr/local/sbin/sa02m-homekit-web-trigger.sh`,
+грант `etc/sudoers.d/sa02m-homekit`, CGI `sa02m_homekit_api.cgi` и
+`static/js/app/homekit.js`), но **установить** мост
+не могут: venv `/opt/sa02m-homekit-venv` (HAP-python по хеш-lock), системный
+пользователь `sa02m-homekit`, каталоги и засевка
+`/etc/sa02m-homekit/sa02m-homekit.conf` живут только в `scripts/06c-homekit.sh`.
+Плата без этого прогона показывает на карточке «не установлен», а в каталоге
+служб строки «Apple HomeKit» нет (приехавший по OTA юнит без своего
+пользователя стартовать не может). Установка — раздел «Необязательный модуль
+Apple HomeKit» ниже.
+
+**Практическое правило для Home Connect.** То же, что у HomeKit, без venv:
+клиент — стандартная библиотека Python плюс apt `python3-paho-mqtt`, поэтому
+весь его код (`opt/sa02m-homeconnect/**`, юнит `sa02m-homeconnect.service`,
+`usr/local/sbin/sa02m-homeconnect-web-trigger.sh`, грант
+`etc/sudoers.d/sa02m-homeconnect`, CGI `sa02m_homeconnect_api.cgi`,
+`static/js/app/homeconnect.js`) приезжает по OTA на каждую плату, а
+**установка** — системный пользователь `sa02m-homeconnect`, каталоги и засевка
+`/etc/sa02m-homeconnect/sa02m-homeconnect.conf` — только в
+`scripts/06d-homeconnect.sh`. Без этого прогона карточка показывает «не
+установлен», строки «Home Connect» в каталоге служб нет. Установка — раздел
+«Необязательный модуль Home Connect» ниже.
 
 Состояние updater: `/var/lib/sa02m-update` (runner `/usr/local/libexec/sa02m-update-runner`,
 ключи `/etc/sa02m-update/trusted-keys/`). Bootstrap релиза N ставит runner/keys/units
@@ -747,6 +773,185 @@ archive/<ветка>:refs/heads/<ветка>` — вернёт прежний ti
 
 ---
 
+## Необязательный модуль Apple HomeKit (`06c-homekit.sh`)
+
+Мост Apple HomeKit ставится **только по явному запросу** (решение Оператора
+Q-A: некоммерческое использование, в заводской образ не входит). Контракт —
+`docs/contracts/homekit-bridge.md`; руководство для наладчика —
+`docs/HOMEKIT_INTEGRATION.md`.
+
+### Предусловия
+
+- Установлен пакет Алисы: `/opt/sa02m-alice/sa02m_alice` (`scripts/06-alice.sh`,
+  входит в обычный `install.sh`). Без него `06c-homekit.sh` пишет
+  `HomeKit needs Alice package` и выходит, ничего не поставив.
+- Пакет Алисы (и пакет сценариев) **не старше моста**. `update-www-only.sh`
+  их не везёт, поэтому после него плата может нести новый мост при старой Алисе
+  (стенд 1.135: мост падал по кругу). `06c-homekit.sh` первым делом проверяет
+  установленные пакеты на все символы, которые берёт мост (список —
+  `opt/sa02m-homekit/sa02m_homekit/peers.py`). Устаревший пакет он обновляет
+  из того же дерева модулем этого пакета (`06-alice.sh`, `06b-rules.sh`; они
+  перезапускают только работающие службы), если модуль не пропущен
+  `SA02M_SKIP_ALICE=1` / `SA02M_SKIP_RULES=1`. Если пакет Алисы остался старым,
+  06c пишет «обновите пакет Алисы: запустите 06-alice.sh или полную установку»
+  и выходит с кодом 1, ничего не поставив. Старый пакет сценариев — только
+  предупреждение: в HomeKit не будет сцен.
+- Зависимости venv — из PyPI (нужен интернет на плате) **или** из wheelhouse
+  `/opt/vendor-installers/homekit/` (офлайн). Колёса для платы (armv7l,
+  CPython 3.12, с проверкой хэшей lock-файла) скачиваются на ПК командой
+  `bash scripts/dev/build-homekit-wheelhouse.sh <каталог>` и копируются в этот
+  каталог.
+- apt-пакеты `python3-venv`, `python3-paho-mqtt`, `python3-cffi-backend`
+  установщик ставит сам, если их нет.
+
+### Шаги
+
+```
+# вариант 1: вместе с полной установкой / обновлением
+sudo ./install.sh --refresh --with-homekit        # или SA02M_WITH_HOMEKIT=1
+# вариант 2: только модуль, на плате, где install.sh уже отработал
+sudo bash scripts/06c-homekit.sh
+```
+
+Уже установленный мост `install.sh` обновляет и без флага (признак — есть
+пользователь `sa02m-homekit`); `SA02M_SKIP_HOMEKIT=1` — не трогать модуль вовсе.
+Повторный запуск идемпотентен: обновляет код, не трогает конфиг, хранилище
+сопряжения и решение оператора «включён/выключен»; venv, уже совпадающий с
+lock, не пересобирается. Порядок шагов и почему он такой — шапка
+`scripts/06c-homekit.sh`. Если venv не собрался (нет сети и нет wheelhouse),
+пакет, юнит и карточка всё равно ставятся, а карточка показывает «нет
+компонентов» — повторить установку при сети или с wheelhouse. Если на
+карточке «Обновите пакет Алисы», мост нашёл старый пакет Алисы при запуске:
+`sudo bash scripts/06-alice.sh` (или полная установка) из того же дерева,
+затем «Выключить» и «Включить» на карточке: остановившийся мост сам не
+перезапускается (как и после «нет компонентов»).
+
+### Проверка на стенде
+
+После установки (мост ещё выключен):
+
+```
+systemctl is-enabled sa02m-homekit           # disabled
+systemctl is-active sa02m-homekit            # inactive
+ls /run/sa02m-homekit/                       # пусто: мост не запускался, установщик статус не пишет
+curl -s -b "session_token=<токен>" http://127.0.0.1/cgi-bin/sa02m_homekit_api.cgi   # "state":"disabled" (из конфига)
+/opt/sa02m-homekit-venv/bin/python -c 'import pyhap.accessory_driver, segno; print("ok")'
+stat -c '%a %U:%G %n' /var/lib/sa02m-homekit /run/sa02m-homekit \
+      /etc/sa02m-homekit /etc/sa02m-homekit/sa02m-homekit.conf \
+      /etc/sa02m-alice /etc/sa02m-alice/sa02m-alice-devices.conf
+# 700 sa02m-homekit:sa02m-homekit · 2750 sa02m-homekit:www-data ·
+# 2750 www-data:sa02m-homekit · 640 www-data:sa02m-homekit ·
+# 771 root:www-data · 640 www-data:sa02m-alice-devices
+id -nG sa02m-homekit                         # sa02m-homekit sa02m-alice-devices — без www-data
+getent group sa02m-alice-devices             # …:sa02m-homekit,www-data — ровно два члена
+runuser -u sa02m-homekit -- test -r /etc/sa02m-homekit/sa02m-homekit.conf && echo ok
+runuser -u sa02m-homekit -- test -r /etc/sa02m-alice/sa02m-alice-devices.conf && echo ok
+runuser -u sa02m-homekit -- test -r /etc/sa02m_web.env || echo "нет доступа — так и должно быть"
+/usr/local/sbin/sa02m-daemon-access.sh check homekit   # «доступ sa02m-homekit подтверждён: …», код 0
+```
+
+Мост не входит в группу `www-data` (она читает пароль панели). Чтение выдано
+группами, без ACL: каталог конфига — `www-data` с setgid-группой моста,
+документ устройств — через группу `sa02m-alice-devices`; права и доступ
+установщик проверяет последним шагом (`sa02m-daemon-access.sh apply homekit`,
+провал — строка «ОШИБКА: … не может читать <файл>» и выход 1), юнит — перед
+каждым стартом (провал — в `journalctl -u sa02m-homekit`, на карточке «Нет
+доступа к настройкам»). Лечение: повторить `scripts/06c-homekit.sh` или
+`install.sh --refresh` — оба идемпотентно чинят и плату со старой ACL-выдачей
+(9cf41b5), и плату, где мост ещё в `www-data`. Режимы файлов чинит и простой
+перезапуск моста (или `sudo /usr/local/sbin/sa02m-daemon-access.sh apply
+homekit`), но группу `sa02m-alice-devices` и членство в ней создаёт только
+`06c` — OTA их не несёт. Одна проверка на всё — `check` выше (от имени моста
+и `www-data`, с `timeout`).
+
+После «Включить» на карточке «Управление → Apple HomeKit»:
+
+```
+cat /run/sa02m-homekit/status.json                 # "state":"running", адрес eth0
+ss -ltnp 'sport = :21064'                          # слушает ТОЛЬКО <IPv4 eth0>:21064
+ss -ulpn 'sport = :5353'                           # mDNS процесса моста
+stat -c '%a %n' /var/lib/sa02m-homekit/state.json  # 600
+sudo -u www-data cat /var/lib/sa02m-homekit/state.json   # Permission denied
+journalctl -u sa02m-homekit -b --no-pager | grep -E '[0-9]{3}-[0-9]{2}-[0-9]{3}|X-HM://' \
+      || echo "кода в журнале нет"
+```
+
+Сопряжение с настоящим iPhone и удалённый путь через домашний центр Apple —
+процедура G4 в `docs/decisions/homekit-home-connect.md` (там же записываются
+результаты). Удаление модуля не автоматизировано.
+
+## Необязательный модуль Home Connect (`06d-homeconnect.sh`)
+
+Клиент BSH Home Connect (приборы Bosch/Siemens/Neff/Gaggenau как устройства
+MQTT, **только чтение** — решение Оператора Q-E) ставится **только по явному
+запросу**, в заводской образ не входит. Контракт —
+`docs/contracts/home-connect.md`; руководство для наладчика —
+`docs/HOME_CONNECT_INTEGRATION.md`.
+
+### Предусловия
+
+- `scripts/05-mqtt.sh` отработал (mosquitto и `python3-paho-mqtt` — клиент
+  публикует на `127.0.0.1:1883`); если paho нет, `06d` ставит его сам
+  (`sa02m_pkg_install_tier optional`), без него клиент честно показывает «нет
+  компонентов».
+- Никакого pip и никакого wheelhouse: модуль ставится и без интернета на плате
+  (интернет нужен позже — самому клиенту, для облака BSH).
+
+### Шаги
+
+```
+# вариант 1: вместе с полной установкой / обновлением
+sudo ./install.sh --refresh --with-homeconnect    # или SA02M_WITH_HOMECONNECT=1
+# вариант 2: только модуль, на плате, где install.sh уже отработал
+sudo bash scripts/06d-homeconnect.sh
+```
+
+Уже установленный клиент `install.sh` обновляет и без флага (признак — есть
+пользователь `sa02m-homeconnect`); `SA02M_SKIP_HOMECONNECT=1` — не трогать
+модуль вовсе. Повторный запуск идемпотентен: обновляет код, не трогает конфиг
+(Client ID), токены, счёт вызовов и решение оператора «включён/выключен».
+Конфиг засевается собственной функцией пакета (`config.render` значений по
+умолчанию: `enabled = false`, без Client ID, хост `api`) — отдельного файла-
+шаблона нет. Порядок шагов и почему он такой — шапка
+`scripts/06d-homeconnect.sh`.
+
+### Проверка на стенде
+
+После установки (клиент ещё выключен):
+
+```
+systemctl is-enabled sa02m-homeconnect           # disabled
+systemctl is-active sa02m-homeconnect            # inactive
+curl -s -b "session_token=<токен>" http://127.0.0.1/cgi-bin/sa02m_homeconnect_api.cgi   # "state":"disabled", "read_only":true
+stat -c '%a %U:%G %n' /var/lib/sa02m-homeconnect /run/sa02m-homeconnect \
+      /etc/sa02m-homeconnect /etc/sa02m-homeconnect/sa02m-homeconnect.conf
+# 700 sa02m-homeconnect:sa02m-homeconnect · 2750 sa02m-homeconnect:www-data ·
+# 2750 www-data:sa02m-homeconnect · 640 www-data:sa02m-homeconnect
+id -nG sa02m-homeconnect                     # sa02m-homeconnect — без www-data
+runuser -u sa02m-homeconnect -- test -r /etc/sa02m-homeconnect/sa02m-homeconnect.conf && echo "конфиг читается"
+runuser -u sa02m-homeconnect -- test -r /etc/sa02m_web.env || echo "нет доступа — так и должно быть"
+/usr/local/sbin/sa02m-daemon-access.sh check homeconnect   # «доступ sa02m-homeconnect подтверждён: …», код 0
+```
+
+Провал проверки при установке останавливает `06d-homeconnect.sh` строкой
+«ОШИБКА: … не может читать <файл>»; лечение и смысл те же, что у моста
+HomeKit выше.
+
+После «Client ID → Включить → Подключить» и входа на странице BSH:
+
+```
+cat /run/sa02m-homeconnect/status.json            # "state":"connected", "stream":"up"
+stat -c '%a %n' /var/lib/sa02m-homeconnect/tokens.json   # 600
+sudo -u www-data cat /var/lib/sa02m-homeconnect/tokens.json   # Permission denied
+journalctl -u sa02m-homeconnect -b --no-pager | grep -iE 'access_token|refresh_token|device_code' \
+      || echo "токенов в журнале нет"
+mosquitto_sub -h 127.0.0.1 -v -t '/devices/hc-+/controls/#' -C 20
+```
+
+Доступность облака BSH из России и настоящий вход SingleKey ID — процедуры
+G6/G7 в `docs/decisions/homekit-home-connect.md` (там же записываются
+результаты). Удаление модуля не автоматизировано.
+
 ## Подготовка золотого образа (мастер для клонирования)
 
 Единственный дом процедуры санитизации платы-мастера перед снятием образа eMMC
@@ -838,6 +1043,50 @@ sed -i 's/^[[:space:]]*client_enabled[[:space:]]*=.*/client_enabled = false/' \
 как единственная защита, а ради двух вещей: off-device бэкапа (шаг 1) и ручного
 `dd` мимо `make-image.sh`, куда автоматика не дотягивается.
 
+### 2a. HomeKit — сбросить (если модуль установлен)
+
+Мастер заводского образа моста HomeKit нести не должен (решение Q-A: модуль —
+необязательная установка). Проверка: `id -u sa02m-homekit` → «no such user».
+Если модуль на мастере всё же установлен — снять его идентичность (хранилище
+пар донора сделало бы каждый клон тем же аксессуаром для iPhone донора):
+
+```
+systemctl stop sa02m-homekit
+systemctl disable sa02m-homekit
+rm -f /var/lib/sa02m-homekit/* /var/lib/sa02m-homekit/.hk-*
+rm -f /run/sa02m-homekit/*
+sed -i 's/^[[:space:]]*enabled[[:space:]]*=.*/enabled = false/' \
+      /etc/sa02m-homekit/sa02m-homekit.conf
+```
+
+Каталоги остаются (их пере-утверждает `tmpfiles.d`). Проверка:
+`ls -A /var/lib/sa02m-homekit` пусто; `systemctl is-enabled sa02m-homekit` =
+`disabled`; в конфиге `enabled = false`. Что делает с этим пайплайн снятия
+образа и что пока нет — `docs/contracts/image-identity-reset.md` §7.
+
+### 2b. Home Connect — отвязать (если модуль установлен)
+
+Мастер нести вход в аккаунт BSH не должен: токен — вход **владельца**, и каждый
+клон читал бы его приборы. Проверка: `id -u sa02m-homeconnect` → «no such
+user». Если модуль установлен — сначала `enabled = false` (остановленный с
+выключенным конфигом клиент сам удаляет свои retained-топики `hc-*` с брокера),
+затем остановка, затем содержимое каталогов:
+
+```
+sed -i 's/^[[:space:]]*enabled[[:space:]]*=.*/enabled = false/' \
+      /etc/sa02m-homeconnect/sa02m-homeconnect.conf
+systemctl stop sa02m-homeconnect
+systemctl disable sa02m-homeconnect
+rm -f /var/lib/sa02m-homeconnect/* /var/lib/sa02m-homeconnect/.hc-*
+rm -f /run/sa02m-homeconnect/*
+```
+
+Client ID интегратора в конфиге остаётся (не секрет). Проверка:
+`ls -A /var/lib/sa02m-homeconnect` пусто; `systemctl is-enabled
+sa02m-homeconnect` = `disabled`; в конфиге `enabled = false`. Пайплайн снятия
+образа делает то же на пяти площадках — `docs/contracts/image-identity-reset.md`
+§8.
+
 ### 3. Облако — отвязать
 
 ```
@@ -919,7 +1168,7 @@ systemctl start mplc4
 | Службы | Состояние |
 |---|---|
 | mplc4, mosquitto, nginx, sa02m-flasher, sa02m-modbus-mqtt, sa02m-devices-api | running + enabled |
-| docker (+ docker.socket), nodered, klogic, codesyscontrol, codemeter (+ webadmin/logger), sa02m-alice-client, sa02m-cloud-agent/-frpc/-heartbeat | stopped + disabled |
+| docker (+ docker.socket), nodered, klogic, codesyscontrol, codemeter (+ webadmin/logger), sa02m-alice-client, sa02m-cloud-agent/-frpc/-heartbeat, sa02m-homekit (если установлен, шаг 2a) | stopped + disabled |
 | regen-ssh-host-keys, sa02m-rootfs-expand | enabled (helper'ы первого старта клона) |
 
 Проверка: `systemctl is-active <svc>` и `systemctl is-enabled <svc>` по каждой
@@ -996,6 +1245,10 @@ enabled-служба `regen-ssh-host-keys` на первом старте кло
       `"devices": []`), ни одной привязки донора (обе раскладки, если есть).
 - [ ] `client_enabled = false` в `sa02m-alice-client.conf`, служба
       `sa02m-alice-client` = `disabled`.
+- [ ] HomeKit: пользователя `sa02m-homekit` нет, либо (шаг 2a)
+      `/var/lib/sa02m-homekit` пуст, `enabled = false`, служба `disabled`.
+- [ ] Home Connect: пользователя `sa02m-homeconnect` нет, либо (шаг 2b)
+      `/var/lib/sa02m-homeconnect` пуст, `enabled = false`, служба `disabled`.
 - [ ] `enrolled = false` и пустой `device_id` в `agent.conf`.
 - [ ] в `sa02m-modbus-mqtt.yaml` — `devices: []` (0 устройств).
 - [ ] `stat -c %s /etc/machine-id` = `0`.

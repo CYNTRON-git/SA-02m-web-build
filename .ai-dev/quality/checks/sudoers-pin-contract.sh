@@ -2,9 +2,10 @@
 # sudoers-pin-contract — the escalation-CLOSED gate for audit B1.
 #
 # Proves that an authenticated web session can no longer reach root without the
-# device root password. It reads ALL SIX homes that grant www-data root — the
-# five committed etc/sudoers.d/ drop-ins plus the tree-wide ban on a runtime
-# append — not one file: until 1.0.6.24 it read only etc/sudoers.d/sa02m-www,
+# device root password. It reads EVERY home that grants www-data root — each
+# committed etc/sudoers.d/ drop-in (an open-world sweep: a drop-in the ledger
+# does not name FAILS) plus the tree-wide ban on a runtime append — not one
+# file: until 1.0.6.24 it read only etc/sudoers.d/sa02m-www,
 # so two unpinned grants (gateway, cloud) and two injection-shaped helpers were
 # structurally invisible to the check that was supposed to prove B1 closed
 # (.ai-dev/audit/security-verdict.md M1/H1/H2).
@@ -527,7 +528,47 @@ LEDGER = {
         "/usr/local/sbin/sa02m-alice-web-trigger.sh cloud-enable",
         "/usr/local/sbin/sa02m-alice-web-trigger.sh cloud-disable",
     ],
+    # Apple HomeKit bridge (docs/contracts/homekit-bridge.md): the four verbs
+    # sa02m_homekit_api.cgi nudges; the helper re-validates argv itself.
+    "etc/sudoers.d/sa02m-homekit": [
+        "/usr/local/sbin/sa02m-homekit-web-trigger.sh enable",
+        "/usr/local/sbin/sa02m-homekit-web-trigger.sh disable",
+        "/usr/local/sbin/sa02m-homekit-web-trigger.sh restart",
+        "/usr/local/sbin/sa02m-homekit-web-trigger.sh reset-pairing",
+    ],
+    # BSH Home Connect client (docs/contracts/home-connect.md §10): the four
+    # verbs sa02m_homeconnect_api.cgi nudges; the helper re-validates argv.
+    "etc/sudoers.d/sa02m-homeconnect": [
+        "/usr/local/sbin/sa02m-homeconnect-web-trigger.sh enable",
+        "/usr/local/sbin/sa02m-homeconnect-web-trigger.sh disable",
+        "/usr/local/sbin/sa02m-homeconnect-web-trigger.sh restart",
+        "/usr/local/sbin/sa02m-homeconnect-web-trigger.sh unlink",
+    ],
 }
+
+# Open world: every committed drop-in that grants www-data anything is a
+# ledger home. A new grant file the ledger does not name was structurally
+# invisible to every check below — the incomplete-enumeration shape
+# (quality-gate-rigor.md (b)) this gate was rebuilt to close. A drop-in that
+# grants only another account (sa02m-flasher's own daemon user) is outside
+# this gate's subject and is named as such. Non-vacuous: an empty directory
+# sweep FAILS.
+committed_homes = sorted(
+    p.as_posix() for p in Path("etc/sudoers.d").iterdir() if p.is_file()
+) if Path("etc/sudoers.d").is_dir() else []
+if not committed_homes:
+    bad("etc/sudoers.d/ swept to ZERO files — the open-world home check is vacuous")
+open_world_bad = 0
+for h in committed_homes:
+    if h in LEDGER:
+        continue
+    if parse_sudoers(h):
+        bad("committed sudoers home %s grants www-data but is NOT in the ledger — its grants are checked by nothing (add a LEDGER entry)" % h)
+        open_world_bad += 1
+    else:
+        ok("committed sudoers home %s grants www-data nothing (another account's drop-in) — outside the ledger by subject" % h)
+if committed_homes and not open_world_bad:
+    ok("every committed sudoers home granting www-data is ledgered (%d files in etc/sudoers.d/)" % len(committed_homes))
 
 granted_all = []
 for home in sorted(LEDGER):
@@ -652,13 +693,15 @@ else:
 # the two unpinned escalation grants were hiding.
 granted_any = granted_all + granted_heredoc
 
-# ── Argument pinning for the three privileged web triggers ─────────────────
-# A sudoers Cmnd written WITHOUT arguments permits ANY argument vector. These
-# three are the escalation surface B1 is about, so each granted form must carry
+# ── Argument pinning for the privileged web triggers ──────────────────────
+# A sudoers Cmnd written WITHOUT arguments permits ANY argument vector. The
+# helpers in PIN_REQUIRED are the escalation surface B1 is about, so each granted form must carry
 # at least one argument. Non-vacuous: zero grants for a helper is a FAIL.
 PIN_REQUIRED = [
     "/usr/local/sbin/sa02m-cloud-web-trigger.sh",
     "/usr/local/sbin/sa02m-alice-web-trigger.sh",
+    "/usr/local/sbin/sa02m-homekit-web-trigger.sh",
+    "/usr/local/sbin/sa02m-homeconnect-web-trigger.sh",
     "/usr/local/sbin/sa02m-gateway-config-apply.sh",
 ]
 for helper in PIN_REQUIRED:

@@ -34,6 +34,11 @@ STATUS_FILE_CLOUD = os.environ.get(
 PROFILE_YANDEX = "yandex"
 PROFILE_CLOUD = "cloud"
 PROFILES = (PROFILE_YANDEX, PROFILE_CLOUD)
+# A catalogue profile, not a client session (no unit runs it): the HomeKit
+# bridge builds its own DeviceRegistry with it (sa02m_homekit.constants
+# CATALOGUE_PROFILE, pinned equal by that package's tests). It attaches the
+# scenes ticked in `homekit_scenes`, never the Alice-exposed ones.
+PROFILE_HOMEKIT = "homekit"
 
 # Cloud identity — written by the cloud agent at enrollment (Phase C), never by
 # this package. The secret is 0600 root: only the root client reads it.

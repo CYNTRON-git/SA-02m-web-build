@@ -11,11 +11,15 @@
 # .ai-dev/quality/checks/iface-naming-contract.sh).
 #
 # Method: extract the SHIPPED functions from apply.cgi and retarget the two
-# absolute roots (/sys/class/net, /var/log/sa02m_install.log) plus the pinned
-# root-write helper (sa02m-iface-conf-write.sh, audit B1) into a scratch tree, so
-# the logic under test is byte-for-byte what runs on the device. `sudo` (incl.
-# its `-n` flag), the pinned write helper and the lib_net_iface helpers are
-# stubbed; nothing touches the real system.
+# absolute roots (/sys/class/net, /var/log/sa02m_install.log) plus the two pinned
+# root helpers (sa02m-iface-conf-write.sh, audit B1; sa02m-conf-rm.sh) into a
+# scratch tree, so the logic under test is byte-for-byte what runs on the device.
+# `sudo` (incl. its `-n` flag), both pinned helpers and the lib_net_iface helpers
+# are stubbed; nothing touches the real system. The `sudo` stub runs ONLY a stub
+# FUNCTION: any other target (an absolute helper path a future apply.cgi adds and
+# this retarget does not know) is refused and FAILS the run — until 2026-09-27
+# the stub passed `sudo -n /usr/local/sbin/sa02m-conf-rm.sh …` straight through,
+# executing the host's installed helper as the user running the suite.
 #
 # Run: bash scripts/dev/test-iface-conf-merge.sh   (stdlib bash only, no deps)
 # ═══════════════════════════════════════════════════════════════════════════
@@ -33,7 +37,7 @@ bad() { printf 'FAIL  %s\n' "$1"; fails=$((fails + 1)); }
 
 sed -n '/^PRESERVE_MAX_LINES=/,/^timeout_run() {/p' "$APPLY" \
   | sed '$d' \
-  | sed "s#/sys/class/net/#$ND/#g; s#/var/log/sa02m_install.log#$T/install.log#g; s#/usr/local/sbin/sa02m-iface-conf-write.sh#iface_conf_write_stub#g" > "$T/fn.sh"
+  | sed "s#/sys/class/net/#$ND/#g; s#/var/log/sa02m_install.log#$T/install.log#g; s#/usr/local/sbin/sa02m-iface-conf-write.sh#iface_conf_write_stub#g; s#/usr/local/sbin/sa02m-conf-rm.sh#conf_rm_stub#g" > "$T/fn.sh"
 if ! grep -q '^write_lan_pair()' "$T/fn.sh"; then
     echo "FAIL  could not extract the merge functions from $APPLY (did the section markers move?)"
     exit 1
@@ -48,8 +52,19 @@ fi
 # (So a synthetic foreign line like `post-up KEEPME` is preserved by the merge
 # here but WOULD be rejected by the real content validator; real confs carry only
 # the allow-listed klogic / default-route hooks.)
-sudo() { [ "${1:-}" = "-n" ] && shift; "$@"; }
+SUDO_REFUSED="$T/sudo-refused.log"
+sudo() {
+    [ "${1:-}" = "-n" ] && shift
+    if [ "$(type -t "${1:-}")" = function ]; then "$@"; return; fi
+    printf '%s\n' "$*" >> "$SUDO_REFUSED"
+    echo "sudo stub: REFUSED '${1:-}' — not a stub function; it would run a host binary" >&2
+    return 1
+}
 iface_conf_write_stub() { cat > "$1"; }
+# The pinned rm helper answers «not available» (rc 1), so lan_conf_retire takes
+# the retire-to-comments fallback the sibling cases assert; the helper's own
+# refusal surface is pinned statically at the end of this harness.
+conf_rm_stub() { printf '%s\n' "$*" >> "$T/conf-rm.calls"; return 1; }
 lan_iface_conf() { printf '%s/%s.conf' "$CD" "$1"; }
 lan_iface_sibling() {
     case "$1" in eth0) printf end0 ;; end0) printf eth0 ;; eth1) printf end1 ;; end1) printf eth1 ;; *) printf '' ;; esac
@@ -182,6 +197,14 @@ fi
 grep -q 'case "\$conf" in' "$HLP" && ok "validation is a literal case (no regex/glob)" || bad "case validation missing"
 grep -q -- '-L "\$conf"' "$HLP" && ok "symlink refusal present before rm" || bad "symlink refusal missing"
 awk '/cp -f "\$conf"/{seen=1} /rm -f "\$conf"/{if(!seen){exit 1}}' "$HLP" && ok "backup precedes rm" || bad "rm without preceding backup"
+
+# Host-safety: no `sudo` call may have reached past the stubs, and the retire
+# path must really have asked the rm stub (else the fallback cases above were
+# reached some other way).
+if [ -s "$SUDO_REFUSED" ]; then bad "host-safety: sudo stub refused non-stub target(s): $(tr '\n' ';' < "$SUDO_REFUSED")"
+else ok "host-safety: every sudo call landed on a stub function"; fi
+[ -s "$T/conf-rm.calls" ] && ok "retire path asked the pinned rm helper (stubbed: unavailable) before falling back" \
+    || bad "retire path never asked the rm helper stub — the retarget of sa02m-conf-rm.sh missed, or the path changed"
 
 echo "---"
 if [ "$fails" = 0 ]; then echo "iface-conf-merge: all checks passed"; else echo "iface-conf-merge: $fails check(s) FAILED"; fi

@@ -51,8 +51,10 @@ fi
 
 # ── Runtime dirs ───────────────────────────────────────────────────────────
 # 0770: the CGI (www-data) writes client/devices confs via atomic tmp+rename,
-# which needs WRITE on the dir, not just on the conf files.
-install -d -m 0770 -o root -g www-data /etc/sa02m-alice
+# which needs WRITE on the dir, not just on the conf files. o+x (0771): traverse
+# without listing for the HomeKit bridge, which reads the device document only
+# (etc/tmpfiles.d/sa02m-alice.conf says why that opens nothing else).
+install -d -m 0771 -o root -g www-data /etc/sa02m-alice
 # State dir is www-data-owned: the enroll write (device key/cert, pending
 # claim) runs as www-data inside sa02m_alice_api.cgi. Idempotent migration:
 # install -d re-asserts owner/mode on an existing dir, file contents untouched.
@@ -75,12 +77,53 @@ for f in sa02m-alice-client.conf sa02m-alice-devices.conf sa02m-alice-server.con
     fi
 done
 # www-data reads AND writes client/devices confs directly (CGI atomic write —
-# hence the 0770 dir above); server.conf stays 0640 root:www-data read-only.
-chmod 0640 /etc/sa02m-alice/*.conf 2>/dev/null || true
-chgrp www-data /etc/sa02m-alice /etc/sa02m-alice/*.conf 2>/dev/null || true
-# Allow www-data to update devices/client via API running as www-data in CGI
-chmod 0660 /etc/sa02m-alice/sa02m-alice-client.conf \
-           /etc/sa02m-alice/sa02m-alice-devices.conf 2>/dev/null || true
+# hence the group-writable 0771 dir above). server.conf is 0640 root:www-data:
+# www-data cannot write the file, but through that dir it can delete or replace it by
+# name, and the Alice units read it as root — the mode alone does not make it
+# root-controlled.
+# That same group write lets www-data plant any name here, and chmod/chgrp follow a
+# symlink: a planted `sa02m-alice-client.conf -> /etc/sudoers.d/x` would get
+# group www-data + 0660 (root escalation). So root touches only a regular,
+# singly-linked file, through an O_NOFOLLOW fd; anything else is reported on
+# stderr and left alone. Pinned by the quality row `alice-conf-homes` (case 9).
+chgrp www-data /etc/sa02m-alice 2>/dev/null || true
+# Where the HomeKit bridge is installed the device document belongs to its read
+# group instead (www-data:sa02m-alice-devices 0640 — the grant's one home is
+# usr/local/sbin/sa02m-daemon-access.sh, run by 06c and at every bridge start):
+# resetting it to www-data here would cut the bridge off, so it is left alone.
+python3 -I - /etc/sa02m-alice www-data sa02m-alice-devices <<'PY' || true
+import grp, os, stat, sys
+conf_dir, group, hk_group = sys.argv[1], sys.argv[2], sys.argv[3]
+gid = grp.getgrnam(group).gr_gid
+RW = ("sa02m-alice-client.conf", "sa02m-alice-devices.conf")
+try:
+    grp.getgrnam(hk_group)
+    HOMEKIT_OWNED = ("sa02m-alice-devices.conf",)
+except KeyError:
+    HOMEKIT_OWNED = ()
+dfd = os.open(conf_dir, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
+for name in sorted(os.listdir(dfd)):
+    if not name.endswith(".conf") or name in HOMEKIT_OWNED:
+        continue
+    fd = None
+    try:
+        fd = os.open(name, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK | os.O_CLOEXEC, dir_fd=dfd)
+        st = os.fstat(fd)
+        if not stat.S_ISREG(st.st_mode) or st.st_nlink != 1: raise OSError(f"{stat.filemode(st.st_mode)}, {st.st_nlink} link(s)")
+    except OSError as e:
+        print(f"WARN: {conf_dir}/{name}: not a regular singly-linked file ({e}) — mode/group left alone", file=sys.stderr)
+        if fd is not None:
+            os.close(fd)
+        continue
+    mode = 0o660 if name in RW else 0o640
+    try:
+        os.fchown(fd, -1, gid)
+        os.fchmod(fd, mode)
+    except OSError as e:
+        print(f"WARN: {conf_dir}/{name}: could not set group {group} and mode {mode:o} ({e.strerror}) — check it by hand", file=sys.stderr)
+    finally:
+        os.close(fd)
+PY
 
 # ── systemd ────────────────────────────────────────────────────────────────
 # Capture prior state BEFORE (re)installing the units — the only reliable

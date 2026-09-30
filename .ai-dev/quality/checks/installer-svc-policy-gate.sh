@@ -20,8 +20,10 @@
 #
 # Run: bash .ai-dev/quality/checks/installer-svc-policy-gate.sh
 #
-# The negative sweeps (a)-(e) already skip comment lines by construction; the
-# COUNTS in (f) and the banner pin in (g) did not, and a count that includes
+# The negative sweeps (a)-(c) and (e) skip comment lines by construction, and
+# (d) reads its capture from comment-stripped text (since 1.0.6.57 — before it
+# a commented-out capture still counted); the COUNTS in (f) and the banner pin
+# in (g) did not, and a count that includes
 # commented-out call sites is a non-vacuity floor that a mass comment-out slides
 # straight under (audit 2026-08-28, finding C3 — the hollow-gate class). Both
 # now read comment-stripped text via lib_check.sh.
@@ -106,6 +108,10 @@ else
 fi
 
 # ── (d) every app apply has a preceding capture in the same file ───────────
+# The capture is looked up in COMMENT-STRIPPED text (lib_check.sh): a raw grep
+# counted `#sa02m_svc_capture "$UNIT"` as a capture, so commenting the capture
+# out of scripts/06c-homekit.sh left this gate GREEN (found 1.0.6.57 while
+# registering the HomeKit module; comment-mutation-proof now cases it).
 d_bad=""
 for f in "${MODULES[@]}"; do
     [ "$f" = scripts/lib.sh ] && continue
@@ -116,10 +122,10 @@ for f in "${MODULES[@]}"; do
         case "$unit" in
             \$*|\"\$*)
                 # variable unit: require ANY capture earlier in the file
-                first_cap=$(grep -nE 'sa02m_svc_capture[[:space:]]' "$f" | head -1 | cut -d: -f1)
+                first_cap=$(stripped_first_line "$f" 'sa02m_svc_capture[[:space:]]')
                 ;;
             *)
-                first_cap=$(grep -nE "sa02m_svc_capture[[:space:]].*$unit" "$f" | head -1 | cut -d: -f1)
+                first_cap=$(stripped_first_line "$f" "sa02m_svc_capture[[:space:]].*$unit")
                 ;;
         esac
         if [ -z "$first_cap" ] || [ "$first_cap" -ge "$ln" ]; then

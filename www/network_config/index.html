@@ -594,6 +594,95 @@
                 <button type="button" class="btn btn-sm btn-primary" id="alice-btn-enable" onclick="aliceToggleClient()" disabled>…</button>
               </div>
             </div>
+            <!-- Apple HomeKit bridge (app/homekit.js, sa02m_homekit_api.cgi;
+                 docs/contracts/homekit-bridge.md). Every value below is
+                 renderer-owned; the setup code and QR exist in the DOM only
+                 after «Показать код» and only while the bridge is unpaired. -->
+            <div class="ctrl-card system-manage-tile system-manage-alice-card system-manage-homekit-card" id="homekit-card">
+              <div class="ctrl-card-main">
+                <h3 class="system-manage-tile-title">Apple HomeKit</h3>
+                <dl class="cloud-meta web-upd-meta">
+                  <div><dt data-i18n="Мост">Мост</dt><dd id="homekit-state"><span class="badge badge-unk">…</span></dd></div>
+                  <div><dt data-i18n="Сопряжение">Сопряжение</dt><dd id="homekit-paired">—</dd></div>
+                  <div><dt data-i18n="Аксессуаров">Аксессуаров</dt><dd id="homekit-acc">—</dd></div>
+                  <div><dt data-i18n="Интерфейс">Интерфейс</dt><dd id="homekit-iface" class="mono">—</dd></div>
+                  <div><dt data-i18n="Адрес">Адрес</dt><dd id="homekit-addr" class="mono">—</dd></div>
+                </dl>
+                <p class="homekit-skip-line text-sm" id="homekit-skip-line" hidden>
+                  <a href="#" id="homekit-skip-link" onclick="homekitToggleSkipped(); return false;" aria-expanded="false" aria-controls="homekit-skip-list"><span id="homekit-skip-text"></span></a>
+                </p>
+                <ul class="homekit-skip-list" id="homekit-skip-list" hidden></ul>
+                <p class="field-hint text-sm homekit-devs-hint" id="homekit-devs-hint" data-i18n="Нет устройств: отметьте их ниже" hidden>Нет устройств: отметьте их ниже</p>
+                <details class="homekit-net homekit-devs" id="homekit-devs" hidden>
+                  <summary data-i18n="Устройства для HomeKit">Устройства для HomeKit</summary>
+                  <ul class="homekit-skip-list homekit-dev-list" id="homekit-dev-list"></ul>
+                  <button type="button" class="btn btn-sm" id="homekit-btn-devs" onclick="homekitSaveDevices()" data-i18n="Сохранить" disabled>Сохранить</button>
+                </details>
+                <div class="homekit-setup" id="homekit-setup" hidden>
+                  <button type="button" class="btn btn-sm btn-primary" id="homekit-btn-code" onclick="homekitShowCode()">Показать код</button>
+                  <div class="homekit-code-box" id="homekit-code-box" hidden>
+                    <svg class="homekit-qr" id="homekit-qr" role="img" aria-label="QR-код для приложения «Дом»" xmlns="http://www.w3.org/2000/svg" shape-rendering="crispEdges"></svg>
+                    <div class="homekit-code" id="homekit-code"></div>
+                  </div>
+                </div>
+                <details class="homekit-net" id="homekit-net" hidden>
+                  <summary data-i18n="Интерфейс и порт">Интерфейс и порт</summary>
+                  <div class="field">
+                    <label for="homekit-iface-sel" data-i18n="Интерфейс">Интерфейс</label>
+                    <select id="homekit-iface-sel"></select>
+                  </div>
+                  <div class="field">
+                    <label for="homekit-port-in" data-i18n="Порт">Порт</label>
+                    <input type="number" id="homekit-port-in" inputmode="numeric" min="1024" max="65535" step="1">
+                  </div>
+                  <button type="button" class="btn btn-sm" id="homekit-btn-net" onclick="homekitApplyNet()" data-i18n="Применить">Применить</button>
+                </details>
+                <div id="homekit-msg" class="cloud-msg" role="status" hidden></div>
+              </div>
+              <div class="cloud-agent-ctrl system-manage-tile-foot">
+                <button type="button" class="btn btn-sm btn-danger" id="homekit-btn-reset" onclick="homekitResetPairing()" hidden data-i18n="Сбросить сопряжение">Сбросить сопряжение</button>
+                <button type="button" class="btn btn-sm btn-primary" id="homekit-btn-enable" onclick="homekitToggle()" disabled>…</button>
+              </div>
+            </div>
+            <!-- BSH Home Connect, read-only (app/homeconnect.js,
+                 sa02m_homeconnect_api.cgi; docs/contracts/home-connect.md).
+                 Every value below is renderer-owned; the sign-in code, link
+                 and QR exist in the DOM only in `awaiting_user`. -->
+            <div class="ctrl-card system-manage-tile system-manage-alice-card system-manage-homeconnect-card" id="homeconnect-card">
+              <div class="ctrl-card-main">
+                <h3 class="system-manage-tile-title">Home Connect</h3>
+                <dl class="cloud-meta web-upd-meta">
+                  <div><dt data-i18n="Аккаунт">Аккаунт</dt><dd id="homeconnect-state"><span class="badge badge-unk">…</span></dd></div>
+                  <div><dt data-i18n="Приборы">Приборы</dt><dd id="homeconnect-apps">—</dd></div>
+                  <div><dt data-i18n="Запросов сегодня">Запросов сегодня</dt><dd id="homeconnect-budget" class="mono">—</dd></div>
+                  <div><dt data-i18n="Поток событий">Поток событий</dt><dd id="homeconnect-stream">—</dd></div>
+                </dl>
+                <ul class="homekit-skip-list homeconnect-apps-list" id="homeconnect-apps-list" hidden></ul>
+                <div class="homeconnect-link-row" id="homeconnect-link-row" hidden>
+                  <button type="button" class="btn btn-sm btn-primary" id="homeconnect-btn-link" onclick="homeconnectLink()" data-i18n="Подключить">Подключить</button>
+                </div>
+                <div class="homekit-code-box homeconnect-code-box" id="homeconnect-code-box" hidden>
+                  <svg class="homekit-qr" id="homeconnect-qr" role="img" aria-label="QR-код страницы входа Home Connect" xmlns="http://www.w3.org/2000/svg" shape-rendering="crispEdges" hidden></svg>
+                  <div class="homekit-code" id="homeconnect-code"></div>
+                  <a class="homeconnect-verify-link" id="homeconnect-verify-link" target="_blank" rel="noopener noreferrer" data-i18n="Войти на сайте Home Connect ↗">Войти на сайте Home Connect ↗</a>
+                  <p class="field-hint text-sm homekit-setup-hint" id="homeconnect-countdown"></p>
+                </div>
+                <details class="homekit-net homeconnect-cid" id="homeconnect-cid" hidden>
+                  <summary>Client ID</summary>
+                  <div class="field">
+                    <label for="homeconnect-client-in" data-i18n="Client ID приложения">Client ID приложения</label>
+                    <input type="text" id="homeconnect-client-in" maxlength="128" autocomplete="off" spellcheck="false">
+                  </div>
+                  <button type="button" class="btn btn-sm" id="homeconnect-btn-client" onclick="homeconnectSaveClientId()" data-i18n="Сохранить">Сохранить</button>
+                </details>
+                <div id="homeconnect-msg" class="cloud-msg" role="status" hidden></div>
+                <p class="field-hint text-sm homekit-note" data-i18n="Только чтение">Только чтение</p>
+              </div>
+              <div class="cloud-agent-ctrl system-manage-tile-foot">
+                <button type="button" class="btn btn-sm btn-danger" id="homeconnect-btn-unlink" onclick="homeconnectUnlink()" hidden data-i18n="Отключить аккаунт">Отключить аккаунт</button>
+                <button type="button" class="btn btn-sm btn-primary" id="homeconnect-btn-enable" onclick="homeconnectToggle()" disabled>…</button>
+              </div>
+            </div>
             <div class="ctrl-card system-manage-tile system-manage-cloud-card" id="cloud-card">
               <div class="ctrl-card-main">
                 <h3 class="system-manage-tile-title" data-i18n="Облако">Облако</h3>
@@ -1370,6 +1459,15 @@
         <div class="field">
           <label id="sh-device-list-label" data-i18n="Устройства">Устройства</label>
           <div id="sh-device-list" class="sh-device-list" role="group" aria-labelledby="sh-device-list-label"></div>
+          <button type="button" class="btn btn-sm" id="sh-hk-all" onclick="shHomekitTickAll()" hidden data-i18n="Отметить все для HomeKit">Отметить все для HomeKit</button>
+        </div>
+        <!-- «Сцены в HomeKit» — scene ticks (`homekit_scenes` in the device
+             document; docs/contracts/homekit-bridge.md §2). The list is
+             poll-owned (smarthome.js shRenderHkScenes); shown only while the
+             HomeKit module is installed and the board read its scenario store. -->
+        <div class="field" id="sh-hk-scenes" hidden>
+          <label id="sh-hk-scenes-label" data-i18n="Сцены в HomeKit">Сцены в HomeKit</label>
+          <div id="sh-hk-scene-list" class="sh-device-list" role="group" aria-labelledby="sh-hk-scenes-label"></div>
         </div>
       </div>
       <div class="sh-col sh-col-actions">
@@ -1411,10 +1509,29 @@
           <span id="sh-type-preview"><svg class="sh-icon" aria-hidden="true"><use href="#i-relay"></use></svg></span>
         </div>
         <div class="field sh-field-half">
-          <label class="sh-export-label" for="sh-dev-export">
+          <label class="sh-export-label sh-inv-label" for="sh-dev-export">
             <input type="checkbox" class="toggle" id="sh-dev-export" checked>
-            <span data-i18n="Показывать в Алисе">Показывать в Алисе</span>
+            <span class="sh-inv-text">
+              <span data-i18n="Показывать в Алисе">Показывать в Алисе</span>
+              <span class="sh-inv-hint" id="sh-export-hint" data-i18n="Алиса не получает нажатия" hidden>Алиса не получает нажатия</span>
+            </span>
           </label>
+        </div>
+        <!-- «Показывать в HomeKit» — opt-in, off by default (a device reaches
+             Apple Home only once ticked; docs/contracts/homekit-bridge.md).
+             Shown only while the HomeKit module is installed; smarthome.js
+             round-trips the stored flag on every save either way. -->
+        <div class="field sh-field-half" id="sh-hk-field" hidden>
+          <label class="sh-export-label" for="sh-dev-homekit">
+            <input type="checkbox" class="toggle" id="sh-dev-homekit">
+            <span data-i18n="Показывать в HomeKit">Показывать в HomeKit</span>
+          </label>
+        </div>
+        <!-- HomeKit CO₂ threshold (`co2_alarm_ppm`, row M15): shown only while
+             the device has a CO₂ reading and the module is installed. -->
+        <div class="field sh-field-half" id="sh-co2-field" hidden>
+          <label for="sh-dev-co2-alarm" data-i18n="Порог CO₂, ppm">Порог CO₂, ppm</label>
+          <input type="number" id="sh-dev-co2-alarm" min="400" max="5000" step="1" inputmode="numeric" placeholder="1000">
         </div>
         <!-- «Инвертировать» — active-low outputs (contract §Inverted). A device
              carries at most ONE on_off binding (validate_device refuses a second
@@ -1435,6 +1552,7 @@
         <div class="field">
           <label id="sh-rows-label" data-i18n="Показания">Показания</label>
           <div id="sh-rows" class="sh-rows" role="group" aria-labelledby="sh-rows-label"></div>
+          <p class="field-hint text-sm" id="sh-btn-hint" data-i18n="Вход не в режиме «Кнопка»" hidden>Вход не в режиме «Кнопка»</p>
           <button type="button" class="btn btn-sm" id="sh-row-add" onclick="shAddRow()" data-i18n="Добавить показание">Добавить показание</button>
         </div>
         <div class="btn-row">
@@ -1507,6 +1625,8 @@
 <script src="static/js/cloud.js?v=1.0.7.0&r=audit39a"></script>
 <script src="static/js/app/alice.js?v=1.0.7.0&r=alicegw58"></script>
 <script src="static/js/app/smarthome.js?v=1.0.7.0&r=expose1"></script>
+<script src="static/js/app/homekit.js?v=1.0.7.0&r=hk1"></script>
+<script src="static/js/app/homeconnect.js?v=1.0.7.0&r=hk1"></script>
 
 <div id="dev-modal" class="dev-modal" hidden>
   <div class="dev-modal-backdrop" id="dev-modal-backdrop"></div>

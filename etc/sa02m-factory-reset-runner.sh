@@ -24,18 +24,689 @@ BACKUP_BIN="${SA02M_WEB_BACKUP:-/usr/local/sbin/sa02m-web-backup.sh}"
 LISTS_DIR_FALLBACK="/etc/sa02m-factory-defaults/lists"
 CONFIRM_PHRASE="SA02M-RESET"
 
+# HomeKit bridge clear-list on factory reset (Operator decision Q-F: ERASE).
+# Home of the list: docs/contracts/homekit-bridge.md §14 + image-identity-reset.md
+# §7 — the store's contents go, the directories, the package and the unit stay.
+HK_UNIT=sa02m-homekit.service
+HK_VAR_DIR=/var/lib/sa02m-homekit
+HK_RUN_DIR=/run/sa02m-homekit
+HK_CONF=/etc/sa02m-homekit/sa02m-homekit.conf
+HK_PKG_DIR=/opt/sa02m-homekit
+# Home Connect client clear-list (Q-F: ERASE the sign-in). Home of the list:
+# docs/contracts/home-connect.md §12 + image-identity-reset.md §8 — the state
+# dir's contents (tokens, call budget, published appliances) go, the dirs, the
+# package and the unit stay.
+HC_UNIT=sa02m-homeconnect.service
+HC_VAR_DIR=/var/lib/sa02m-homeconnect
+HC_RUN_DIR=/run/sa02m-homeconnect
+HC_CONF=/etc/sa02m-homeconnect/sa02m-homeconnect.conf
+HC_PKG_DIR=/opt/sa02m-homeconnect
+# Units phase 1 of erase_owner_state found ACTIVE before it stopped them — the
+# ones a rollback starts again (restart_stopped_units).
+RESTART_UNITS=()
+
 SELF="${BASH_SOURCE[0]:-$0}"
 CMD="${1:-run}"
 
-mkdir -p "$STATEDIR" "$STATEDIR/backup-export" "$STATEDIR/rollback" "$STATEDIR/runner" \
-  "$STATEDIR/staging" "$STATEDIR/state"
-chmod 755 "$STATEDIR" 2>/dev/null || true
+# --- root file operations (fr_safe) ------------------------------------------
+# This runner is root and writes into directories others can write:
+# /etc/sa02m-alice is root:www-data 0771 and /etc/sa02m-homekit and
+# /etc/sa02m-homeconnect are www-data's own (any panel session plants any name
+# there through cmd_exec.cgi), /var/lib/sa02m-homekit and /var/lib/sa02m-homeconnect belong to
+# their daemons, and $STATEDIR is 0775 root:www-data (tmpfiles)
+# until prepare-statedir takes it. So nothing here chowns, chmods, seds or
+# copies BY NAME into those directories: every such write goes through fr_safe
+# — mkstemp (O_EXCL|O_NOFOLLOW) in the directory, owner/mode on the fd, fsync,
+# rename over; a symlinked or non-regular dest, or a symlink/foreign directory
+# anywhere on the path, is refused. The same discipline as
+# etc/sa02m-restore-backup.sh; the trusted-path resolver below is a THIRD
+# byte-identical copy of the block in etc/sa02m-web-backup.sh and
+# etc/sa02m-restore-backup.sh (none of the three root scripts can import
+# another: they run standalone on the board). Its identity with the backup's
+# copy, and every fr_safe verb, are pinned by scripts/dev/test-factory-reset-runner.py.
+IFS= read -r -d '' FR_SAFE_PY <<'PY' || true
+import grp, gzip, json, os, pwd, re, stat, sys, tarfile, tempfile
+
+# >>> trusted-path resolver — twin: etc/sa02m-web-backup.sh and
+# etc/sa02m-restore-backup.sh carry this block byte-identical (row
+# alice-conf-homes, case 7t); neither root script can import the other.
+# Why: both run as root, and /etc/sa02m-alice is root:www-data 0771, so www-data
+# (any panel session: cmd_exec.cgi) can create any name there. A name is
+# trusted only where nobody but root could have made it.
+class Unsafe(Exception):
+    pass
+
+TRUSTED_UIDS = {0, os.geteuid()}
+
+def root_only(st):
+    """Only a trusted uid can create, rename or replace a name in this directory."""
+    return stat.S_ISDIR(st.st_mode) and st.st_uid in TRUSTED_UIDS and not st.st_mode & 0o022
+
+def pinned(dir_st, st):
+    """Nobody else can replace this entry: its directory is root-only, or it is
+    a sticky, trusted-owned directory (/tmp) and the entry is trusted-owned."""
+    if root_only(dir_st):
+        return True
+    return (stat.S_ISDIR(dir_st.st_mode) and dir_st.st_uid in TRUSTED_UIDS
+            and bool(dir_st.st_mode & stat.S_ISVTX) and st.st_uid in TRUSTED_UIDS)
+
+def resolve_trusted(path):
+    """(resolved path, whether its last directory is root-only), or Unsafe.
+    A symlink is followed only when nobody else could have made or replaced it
+    (the installer's /etc/nginx/sites-enabled link); every directory on the way
+    must be pinned likewise, so none can be swapped between this walk and the
+    caller's open/rename. Only the LAST name may sit in a directory others can
+    write: the caller must then open it O_NOFOLLOW or replace it by rename."""
+    parts = [p for p in path.split("/") if p]
+    cur, cur_st, hops = "/", os.lstat("/"), 0
+    while parts:
+        name = parts.pop(0)
+        if name == ".":
+            continue
+        if name == "..":
+            cur = os.path.dirname(cur)
+            cur_st = os.lstat(cur)
+            continue
+        nxt = os.path.join(cur, name)
+        try:
+            st = os.lstat(nxt)
+        except FileNotFoundError:
+            if parts and not root_only(cur_st): raise Unsafe(f"{nxt} is missing in {cur}, which others can write")
+            return os.path.join(nxt, *parts), root_only(cur_st)
+        if stat.S_ISLNK(st.st_mode):
+            if not pinned(cur_st, st): raise Unsafe(f"{nxt} is a symlink in {cur}, which others can write")
+            hops += 1
+            if hops > 16:
+                raise Unsafe(f"{path}: too many levels of symlinks")
+            target = os.readlink(nxt)
+            if target.startswith("/"):
+                cur, cur_st = "/", os.lstat("/")
+            parts = [p for p in target.split("/") if p] + parts
+            continue
+        if parts:
+            if not stat.S_ISDIR(st.st_mode):
+                raise Unsafe(f"{nxt} is not a directory")
+            if not pinned(cur_st, st): raise Unsafe(f"{nxt} is a directory in {cur}, which others can write")
+            cur, cur_st = nxt, st
+            continue
+        return nxt, root_only(cur_st)
+    return cur, root_only(cur_st)
+# <<< trusted-path resolver
+
+class Refused(Exception):
+    pass
+
+# A missing conf directory is created with the owner/mode its tmpfiles line
+# gives it (etc/tmpfiles.d/sa02m-alice.conf, sa02m-homekit.conf,
+# sa02m-homeconnect.conf), never root:root 0755 — the CGI could not save its
+# conf into that.
+DIR_SPEC = {
+    "/etc/sa02m-alice": (0o771, "root", "www-data"),
+    "/etc/sa02m-homekit": (0o2750, "www-data", "sa02m-homekit"),
+    "/etc/sa02m-homeconnect": (0o2750, "www-data", "sa02m-homeconnect"),
+}
+NOFOLLOW_RD = os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK | os.O_CLOEXEC
+DIR_RD = os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW | os.O_CLOEXEC
+
+
+def warn(msg):
+    print(f"WARN: {msg}", file=sys.stderr)
+
+
+def owner_ids(spec):
+    """'user:group' or 'uid:gid' -> (uid, gid); an unknown name -> None."""
+    if not spec:
+        return None
+    user, _, group = spec.partition(":")
+    try:
+        uid = int(user) if user.isdigit() else pwd.getpwnam(user).pw_uid
+        gid = int(group) if group.isdigit() else grp.getgrnam(group or user).gr_gid
+    except KeyError as e:
+        warn(f"owner {spec}: {e} does not exist here — keeping root")
+        return None
+    return uid, gid
+
+
+def fsync_dir(d):
+    dfd = os.open(d, DIR_RD)
+    try:
+        os.fsync(dfd)
+    finally:
+        os.close(dfd)
+
+
+def ensure_parent(parent):
+    if os.path.lexists(parent):
+        return
+    resolve_trusted(parent)  # every directory above it pinned, or Unsafe
+    spec = DIR_SPEC.get(parent)
+    os.makedirs(os.path.dirname(parent), exist_ok=True)
+    if spec is None:
+        os.mkdir(parent, 0o755)
+        return
+    mode, owner, group = spec
+    os.mkdir(parent, 0o700)
+    ids = owner_ids(f"{owner}:{group}")
+    if ids is not None:
+        os.chown(parent, *ids, follow_symlinks=False)
+    os.chmod(parent, mode)
+
+
+def target_of(dest):
+    """(path to write, its lstat or None). Refused when writing `dest` as
+    root could follow a name somebody else planted: a symlink or directory in
+    a directory others can write anywhere on the way, a symlinked or
+    non-directory parent, a symlinked or non-regular dest."""
+    try:
+        target, _ = resolve_trusted(dest)
+    except Unsafe as e:
+        raise Refused(f"{e} — refusing to write {dest} (remove it and re-run)")
+    parent = os.path.dirname(target)
+    try:
+        pst = os.lstat(parent)
+    except FileNotFoundError:
+        return target, None
+    if stat.S_ISLNK(pst.st_mode) or not stat.S_ISDIR(pst.st_mode):
+        raise Refused(f"{parent} is a symlink or not a directory — refusing to write {os.path.basename(target)} into it")
+    try:
+        st = os.lstat(target)
+    except FileNotFoundError:
+        return target, None
+    if stat.S_ISLNK(st.st_mode): raise Refused(f"{target} is a symlink — refusing to write through it (remove it and re-run)")
+    if not stat.S_ISREG(st.st_mode): raise Refused(f"{target} exists and is not a regular file — refusing to replace it")
+    return target, st
+
+
+def replace_with(target, fill, mode, ids):
+    """Replace `target` by a new file: created O_EXCL|O_NOFOLLOW (mkstemp) in
+    the same directory, owner and mode set on the fd, fsync, rename over.
+    Nothing here follows a name planted later — rename replaces a symlink,
+    never its target."""
+    d, name = os.path.split(target)
+    fd, tmp = tempfile.mkstemp(dir=d, prefix=f".{name}.", suffix=".factory")
+    try:
+        with os.fdopen(fd, "wb") as out:
+            fill(out)
+            out.flush()
+            if ids is not None:
+                try:
+                    os.fchown(out.fileno(), *ids)
+                except OSError as e:
+                    warn(f"{target}: could not set owner {ids[0]}:{ids[1]} ({e.strerror})")
+            os.fchmod(out.fileno(), mode)
+            os.fsync(out.fileno())
+            ours = os.fstat(out.fileno())
+        os.replace(tmp, target)
+    except BaseException:
+        try:
+            os.unlink(tmp)
+        except OSError:
+            pass
+        raise
+    # Where others can write the directory they can swap the temp name for a
+    # symlink between mkstemp and the rename; the rename then lands THEIR
+    # entry at `target`. Never leave that in place.
+    st = os.lstat(target)
+    if (st.st_dev, st.st_ino) != (ours.st_dev, ours.st_ino): drop_swapped(target)
+    fsync_dir(d)
+
+
+def drop_swapped(target):
+    try:
+        os.unlink(target)
+    except OSError:
+        pass
+    raise Refused(f"{target}: the temp file was swapped before the rename — removed what was put in its place")
+
+
+def copy_from(src_fd):
+    def fill(out):
+        while True:
+            chunk = os.read(src_fd, 1 << 20)
+            if not chunk:
+                return
+            out.write(chunk)
+    return fill
+
+
+def open_regular(path, expect=None):
+    fd = os.open(path, NOFOLLOW_RD)
+    st = os.fstat(fd)
+    if not stat.S_ISREG(st.st_mode) or (expect is not None and (st.st_dev, st.st_ino) != (expect.st_dev, expect.st_ino)):
+        os.close(fd)
+        raise Refused(f"{path} changed under the runner or is not a regular file")
+    return fd, st
+
+
+def cmd_install(src, dest, mode, owner):
+    """A template onto a live conf path (atomic_install_file)."""
+    ensure_parent(os.path.dirname(dest))
+    target, st = target_of(dest)
+    ids = owner_ids(owner)
+    if ids is None and st is not None:
+        ids = (st.st_uid, st.st_gid)
+    sfd, _ = open_regular(src)
+    try:
+        replace_with(target, copy_from(sfd), int(mode, 8), ids)
+    finally:
+        os.close(sfd)
+
+
+def cmd_restore(src, dest):
+    """A journalled copy back onto its live path (rollback_from_journal):
+    owner and mode come from the journal copy (cp -a kept them)."""
+    ensure_parent(os.path.dirname(dest))
+    target, _ = target_of(dest)
+    sfd, sst = open_regular(src)
+    try:
+        replace_with(target, copy_from(sfd), stat.S_IMODE(sst.st_mode), (sst.st_uid, sst.st_gid))
+    finally:
+        os.close(sfd)
+
+
+def cmd_force_key(dest, key, value):
+    """`key = value` on every line that sets `key` in an INI conf, rewritten
+    through a new file (never sed -i: that reads through a planted symlink).
+    Both readers are configparser, which takes the key in any case and `:` as
+    well as `=` — every spelling they honour is forced."""
+    target, st = target_of(dest)
+    if st is None:
+        return
+    fd, fst = open_regular(target, st)
+    try:
+        data = b""
+        while True:
+            chunk = os.read(fd, 1 << 20)
+            if not chunk:
+                break
+            data += chunk
+    finally:
+        os.close(fd)
+    text = data.decode("utf-8", "surrogateescape")
+    pat = re.compile(r"^[ \t\r\f\v]*" + re.escape(key) + r"[ \t\r\f\v]*[=:].*$", re.M | re.I)
+    new = pat.sub(f"{key} = {value}", text)
+    if new == text:
+        return
+    body = new.encode("utf-8", "surrogateescape")
+    replace_with(target, lambda out: out.write(body), stat.S_IMODE(fst.st_mode), (fst.st_uid, fst.st_gid))
+
+
+def in_root_only_dir(path):
+    real, dir_ro = resolve_trusted(path)
+    if not dir_ro:
+        raise Refused(f"{os.path.dirname(real)} is writable by others — refusing to use {real}")
+    return real
+
+
+def cmd_write_new(out):
+    """stdin -> a NEW file only root can read (the mandatory backup)."""
+    real = in_root_only_dir(out)
+    fd = os.open(real, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW | os.O_CLOEXEC, 0o600)
+    try:
+        os.fchmod(fd, 0o600)
+        src = sys.stdin.buffer
+        while True:
+            chunk = src.read(1 << 20)
+            if not chunk:
+                break
+            os.write(fd, chunk)
+        os.fsync(fd)
+    except BaseException:
+        os.close(fd)
+        os.unlink(real)
+        raise
+    os.close(fd)
+    fsync_dir(os.path.dirname(real))
+
+
+def cmd_discard(path):
+    real = in_root_only_dir(path)
+    try:
+        os.unlink(real)
+    except FileNotFoundError:
+        pass
+
+
+def cmd_verify_backup(path):
+    """The archive sa02m-web-backup.sh streams: a complete gzip (CRC checked
+    to the end), manifest first, every manifest entry present."""
+    real = in_root_only_dir(path)
+    fd, st = open_regular(real)
+    with os.fdopen(fd, "rb") as f:
+        if st.st_size == 0:
+            raise Refused(f"{real} is empty")
+        with gzip.GzipFile(fileobj=f, mode="rb") as g:
+            while g.read(1 << 20):
+                pass
+        f.seek(0)
+        with tarfile.open(fileobj=f, mode="r:gz") as tar:
+            members = tar.getmembers()
+            if not members or members[0].name != "backup-manifest.json":
+                raise Refused(f"{real}: first member is not backup-manifest.json")
+            manifest = json.load(tar.extractfile(members[0]))
+            names = {m.name for m in members}
+            paths = manifest.get("paths")
+            if manifest.get("schema_version") != 1 or not isinstance(paths, list):
+                raise Refused(f"{real}: manifest is not a schema 1 backup manifest")
+            missing = [p.get("archive_path") for p in paths if p.get("archive_path") not in names]
+            if missing:
+                raise Refused(f"{real}: manifest entries missing from the archive: {missing[:5]}")
+    print(f"backup verified: {len(paths)} file(s), {st.st_size} bytes")
+
+
+def cmd_check_dir(path):
+    """A directory the runner clears with find/rm: a real directory whose own
+    name nobody else can replace."""
+    real = in_root_only_dir(path.rstrip("/") or "/")
+    st = os.lstat(real)
+    if not stat.S_ISDIR(st.st_mode):
+        raise Refused(f"{real} is not a directory")
+
+
+def rm_at(dfd, name):
+    st = os.lstat(name, dir_fd=dfd)
+    if stat.S_ISDIR(st.st_mode):
+        sub = os.open(name, DIR_RD, dir_fd=dfd)
+        try:
+            for n in os.listdir(sub):
+                rm_at(sub, n)
+        finally:
+            os.close(sub)
+        os.rmdir(name, dir_fd=dfd)
+    else:
+        os.unlink(name, dir_fd=dfd)
+
+
+def cmd_wipe_dir(path):
+    """Every entry of a daemon-owned directory, the directory itself kept.
+    Only fd-relative unlink/rmdir: a symlink inside is removed, never followed."""
+    real = in_root_only_dir(path)
+    dfd = os.open(real, DIR_RD)
+    try:
+        names = os.listdir(dfd)
+        for n in names:
+            rm_at(dfd, n)
+        left = os.listdir(dfd)
+        if left:
+            raise Refused(f"{real} still holds {left[:5]} after the wipe")
+        os.fsync(dfd)
+    finally:
+        os.close(dfd)
+    print(f"erased {len(names)} entr{'y' if len(names) == 1 else 'ies'} of {real}")
+
+
+def cmd_remove_name(dirpath, name):
+    try:
+        real = in_root_only_dir(dirpath)
+        dfd = os.open(real, DIR_RD)
+    except FileNotFoundError:
+        return
+    try:
+        os.unlink(name, dir_fd=dfd)
+        print(f"removed {real}/{name}")
+    except (FileNotFoundError, IsADirectoryError, PermissionError):
+        pass
+    finally:
+        os.close(dfd)
+
+
+# The optional modules whose conf a factory reset returns to its template:
+# package name, the conf dataclass whose defaults render() writes, a label.
+TEMPLATES = {
+    "hk": ("sa02m_homekit", "BridgeConfig", "HomeKit"),
+    "hc": ("sa02m_homeconnect", "ClientConfig", "Home Connect"),
+}
+
+
+def package_template(pkg_dir, kind):
+    """A module's conf template, from its one home: the installed package's
+    own render() of the defaults (== the installer's seed — the HomeKit
+    etc/sa02m-homekit/sa02m-homekit.conf, the Home Connect 06d render).
+    Imported as root only from directories only root can write; None when the
+    package is absent or not trusted."""
+    pkg, cls, label = TEMPLATES[kind]
+    for d in (pkg_dir, os.path.join(pkg_dir, pkg), os.path.join(pkg_dir, pkg, "__pycache__")):
+        try:
+            st = os.lstat(d)
+        except FileNotFoundError:
+            if d.endswith("__pycache__"):
+                continue
+            return None
+        if not root_only(st):
+            warn(f"{d} is not root-only — not importing the {label} package as root")
+            return None
+    sys.dont_write_bytecode = True
+    sys.path.insert(0, pkg_dir)
+    try:
+        config = __import__(pkg + ".config", fromlist=["config"])
+        return config.render(getattr(config, cls)()).encode("utf-8")
+    except Exception as e:  # noqa: BLE001 — any import failure means "no template"
+        warn(f"{label} package template unavailable ({e})")
+        return None
+
+
+def reset_conf(conf, pkg_dir, owner, kind):
+    target, st = target_of(conf)
+    if st is None:
+        return
+    body = package_template(pkg_dir, kind)
+    if body is None:
+        warn(f"{target}: no template — forcing enabled = false only")
+        cmd_force_key(conf, "enabled", "false")
+        return
+    # 0640 www-data:<daemon>: the CGI owns it, the daemon reads it through its
+    # group (homekit-bridge.md §13, home-connect.md §11).
+    replace_with(target, lambda out: out.write(body), 0o640, owner_ids(owner) or (st.st_uid, st.st_gid))
+    print(f"reset {target} to the package template (enabled = false)")
+
+
+def cmd_hk_reset_conf(conf, pkg_dir, owner):
+    reset_conf(conf, pkg_dir, owner, "hk")
+
+
+def cmd_hc_reset_conf(conf, pkg_dir, owner):
+    reset_conf(conf, pkg_dir, owner, "hc")
+
+
+def drop_foreign(pfd, dreal, name, lst, kind):
+    os.unlink(name, dir_fd=pfd)
+    print(f"removed {dreal}/{name}: {stat.filemode(lst.st_mode)}, uid {lst.st_uid}, "
+          f"{lst.st_nlink} link(s) — not the runner's {kind}")
+
+
+def scrub_log(fd, where):
+    os.ftruncate(fd, 0)
+    os.write(fd, b"log truncated by the factory-reset runner: it held a config backup "
+                 b"stream (an older runner appended the archive here)\n")
+    os.fsync(fd)
+    print(f"truncated {where}: it held a config backup stream")
+
+
+def cmd_prepare_statedir(statedir, logfile, lockfile, txnfile):
+    """The state dir is group-writable for the CGI (tmpfiles 0775 root:www-data)
+    until this runner takes it: fchmod 0755 first, so from here on no name in
+    it can be created, renamed or swapped by anybody else; then every name the
+    runner opens by path is checked once. rc 3: the dir itself is unusable;
+    rc 4: an entry in it is not the runner's own."""
+    try:
+        real, parent_ro = resolve_trusted(statedir)
+    except Unsafe as e:
+        print(f"REFUSED: {e}", file=sys.stderr)
+        sys.exit(3)
+    if not parent_ro:
+        print(f"REFUSED: {os.path.dirname(real)} is writable by others", file=sys.stderr)
+        sys.exit(3)
+    if not os.path.lexists(real):
+        os.mkdir(real, 0o755)
+    dfd = os.open(real, DIR_RD)
+    try:
+        st = os.fstat(dfd)
+        if st.st_uid not in TRUSTED_UIDS:
+            print(f"REFUSED: {real} is owned by uid {st.st_uid}", file=sys.stderr)
+            sys.exit(3)
+        os.fchmod(dfd, 0o755)
+        bad = []
+        for name, mode in (("backup-export", 0o700), ("rollback", 0o750), ("runner", 0o750),
+                           ("staging", 0o750), ("state", 0o750)):
+            try:
+                est = os.lstat(name, dir_fd=dfd)
+            except FileNotFoundError:
+                os.mkdir(name, mode, dir_fd=dfd)
+                est = os.lstat(name, dir_fd=dfd)
+            if not stat.S_ISDIR(est.st_mode) or est.st_uid not in TRUSTED_UIDS:
+                bad.append(f"{real}/{name} ({stat.filemode(est.st_mode)}, uid {est.st_uid})")
+                continue
+            sub = os.open(name, DIR_RD, dir_fd=dfd)
+            try:
+                cur = stat.S_IMODE(os.fstat(sub).st_mode)
+                want = 0o700 if name == "backup-export" else cur & ~0o022
+                if cur != want:
+                    os.fchmod(sub, want)
+            finally:
+                os.close(sub)
+        if bad:
+            print("REFUSED: not the runner's own directory — remove and re-run: " + ", ".join(bad), file=sys.stderr)
+            sys.exit(4)
+    finally:
+        os.close(dfd)
+    # The log, the lock and the transaction are opened by NAME later (bash
+    # redirections, python open), so a name planted while the dir was still
+    # group-writable is dealt with here, by lstat — never resolved: a link
+    # www-data made before the fchmod above would look root-made now.
+    for path, kind in ((logfile, "log"), (lockfile, "lock"), (txnfile, "txn")):
+        d, name = os.path.split(path)
+        try:
+            dreal, _ = resolve_trusted(d)
+            if not root_only(os.lstat(dreal)):
+                raise Refused(f"{dreal} is writable by others — refusing to use {name} in it")
+            pfd = os.open(dreal, DIR_RD)
+        except (Unsafe, Refused, OSError) as e:
+            print(f"REFUSED: {e}", file=sys.stderr)
+            sys.exit(4)
+        try:
+            try:
+                lst = os.lstat(name, dir_fd=pfd)
+                # The lock and the transaction may be the CGI's own regular
+                # files; the log is the runner's alone.
+                foreign = (not stat.S_ISREG(lst.st_mode) or lst.st_nlink != 1
+                           or (kind == "log" and lst.st_uid not in TRUSTED_UIDS))
+                if foreign: drop_foreign(pfd, dreal, name, lst, kind)
+            except FileNotFoundError:
+                pass
+            if kind != "log":
+                continue
+            fd = os.open(name, os.O_RDWR | os.O_APPEND | os.O_CREAT | os.O_NOFOLLOW | os.O_CLOEXEC,
+                         0o600, dir_fd=pfd)
+            try:
+                os.fchmod(fd, 0o600)
+                if os.geteuid() == 0:
+                    os.fchown(fd, 0, 0)
+                os.lseek(fd, 0, os.SEEK_SET)
+                dirty, tail = False, b""
+                while True:
+                    chunk = os.read(fd, 1 << 20)
+                    if not chunk:
+                        break
+                    if b"\x00" in chunk or b"\x1f\x8b\x08" in tail + chunk:
+                        dirty = True
+                        break
+                    tail = chunk[-2:]
+                if dirty: scrub_log(fd, f"{dreal}/{name}")
+            finally:
+                os.close(fd)
+        finally:
+            os.close(pfd)
+
+
+def main(argv):
+    cmds = {
+        "prepare-statedir": (cmd_prepare_statedir, 4),
+        "install": (cmd_install, 4),
+        "restore": (cmd_restore, 2),
+        "force-key": (cmd_force_key, 3),
+        "write-new": (cmd_write_new, 1),
+        "discard": (cmd_discard, 1),
+        "verify-backup": (cmd_verify_backup, 1),
+        "check-dir": (cmd_check_dir, 1),
+        "wipe-dir": (cmd_wipe_dir, 1),
+        "remove-name": (cmd_remove_name, 2),
+        "hk-reset-conf": (cmd_hk_reset_conf, 3),
+        "hc-reset-conf": (cmd_hc_reset_conf, 3),
+    }
+    if not argv or argv[0] not in cmds or len(argv) - 1 != cmds[argv[0]][1]:
+        print(f"usage: fr_safe {'|'.join(cmds)} ARGS", file=sys.stderr)
+        return 2
+    try:
+        cmds[argv[0]][0](*argv[1:])
+    except (Refused, Unsafe, OSError, tarfile.TarError, EOFError, ValueError) as e:
+        print(f"REFUSED: {argv[0]}: {e}", file=sys.stderr)
+        return 1
+    return 0
+
+
+sys.exit(main(sys.argv[1:]))
+PY
+fr_safe() { python3 -I -B -c "$FR_SAFE_PY" "$@"; }
+
+# prepare-statedir takes group write off $STATEDIR for the run, so nothing can
+# be planted in it while root works there; the CGI needs it back afterwards to
+# queue the next job (etc/tmpfiles.d/sa02m-update.conf: 0775 root:www-data, the
+# factory CGI mkstemps transaction.json there). release_statedir gives the mode
+# back on exit. It is read before the lock and carried across the self-copy
+# re-exec, which would otherwise read the already-locked 0755 and keep it.
+if [ "${SA02M_FACTORY_REEXEC:-}" = 1 ]; then
+  STATEDIR_MODE=${SA02M_FACTORY_STATEDIR_MODE:-}
+else
+  STATEDIR_MODE=$(stat -Lc '%a' "$STATEDIR" 2>/dev/null || true)
+fi
+case "$STATEDIR_MODE" in 755|775) ;; *) STATEDIR_MODE="" ;; esac
+export SA02M_FACTORY_STATEDIR_MODE="$STATEDIR_MODE"
+
+# Before anything is logged: the log, the lock and the transaction are names in
+# $STATEDIR. rc 3 = the dir itself unusable (nothing can be recorded there);
+# rc 4 = an entry in it is not the runner's own (recorded in the transaction).
+set +e
+_prep_out=$(fr_safe prepare-statedir "$STATEDIR" "$LOGFILE" "$LOCKFILE" "$TXN_JSON" 2>&1)
+_prep_rc=$?
+set -e
+if [ "$_prep_rc" -ne 0 ]; then
+  printf 'sa02m-factory-reset: %s\n' "$_prep_out" >&2
+  if [ "$_prep_rc" -eq 4 ]; then
+    python3 - "$TXN_JSON" "${_prep_out//$'\n'/ }" <<'PY' || true
+import json, os, sys, tempfile, time
+path, msg = sys.argv[1], sys.argv[2][:500]
+try:
+    fd = os.open(path, os.O_RDONLY | os.O_NOFOLLOW)
+    with os.fdopen(fd, encoding="utf-8") as f:
+        txn = json.load(f)
+except (OSError, ValueError):
+    txn = {}
+now = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
+txn.update(stage="error", result="failed", error_code="E_INTERNAL", error_message=msg,
+           updated_at=now, finished_at=now)
+fd, tmp = tempfile.mkstemp(prefix=".txn.", dir=os.path.dirname(path))
+with os.fdopen(fd, "w", encoding="utf-8") as f:
+    json.dump(txn, f, ensure_ascii=False, indent=2, sort_keys=True)
+    f.write("\n")
+    os.fchmod(f.fileno(), 0o644)
+os.replace(tmp, path)
+PY
+    # rc 4 comes after the fchmod 0755 on a path resolved as trusted: give the
+    # mode back by name once the error is recorded, as release_statedir does on
+    # a normal exit, or the panel cannot queue a job until reboot (rc 3 never:
+    # that path is not trusted).
+    [ -z "$STATEDIR_MODE" ] || chmod "$STATEDIR_MODE" "$STATEDIR" 2>/dev/null || true
+  fi
+  exit 1
+fi
 
 log() {
   local ts
   ts=$(date '+%Y-%m-%d %H:%M:%S')
   printf '%s %s\n' "$ts" "$*" | tee -a "$LOGFILE" >/dev/null
 }
+[ -z "$_prep_out" ] || log "state dir: ${_prep_out//$'\n'/; }"
+unset _prep_out _prep_rc
 
 iso_now() { date -u +%Y-%m-%dT%H:%M:%SZ; }
 
@@ -170,9 +841,13 @@ for a in sys.argv[2:]:
     else:
         fields[k] = v
 txn = {}
-if os.path.isfile(path):
-    with open(path, "r", encoding="utf-8") as f:
+# O_NOFOLLOW: the CGI (www-data) writes this file, so a symlink here is never
+# ours to read through (its target would be merged into a 0644 file).
+try:
+    with os.fdopen(os.open(path, os.O_RDONLY | os.O_NOFOLLOW), "r", encoding="utf-8") as f:
         txn = json.load(f)
+except FileNotFoundError:
+    pass
 now = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
 txn.setdefault("schema_version", 1)
 txn.setdefault("operation", "factory_reset")
@@ -194,6 +869,9 @@ try:
     with os.fdopen(fd, "w", encoding="utf-8") as f:
         f.write(data)
         f.flush()
+        # mkstemp makes 0600; the status CGI reads this as www-data (the
+        # update runner's transaction.py writes it 0644 too).
+        os.fchmod(f.fileno(), 0o644)
         os.fsync(f.fileno())
     os.replace(tmp, path)
     dir_fd = os.open(d, os.O_RDONLY)
@@ -212,7 +890,7 @@ PY
 
 txn_get() {
   local key=$1
-  python3 -c 'import json,sys; t=json.load(open(sys.argv[1],encoding="utf-8")); v=t.get(sys.argv[2]); print("" if v is None else v)' \
+  python3 -c 'import json,os,sys; t=json.load(os.fdopen(os.open(sys.argv[1],os.O_RDONLY|os.O_NOFOLLOW),encoding="utf-8")); v=t.get(sys.argv[2]); print("" if v is None else v)' \
     "$TXN_JSON" "$key" 2>/dev/null || true
 }
 
@@ -253,11 +931,15 @@ path_matches_glob() {
       [[ "$path" == "$pat"* || "$path/" == "$pat"* ]] && return 0
       return 1
       ;;
-    *\*)
-      # shell glob
+    *\**)
+      # A '*' in the BASENAME only (the lists' header): the directory must be
+      # the same, and the glob never spans a '/'. This arm used to read `*\*`
+      # — "ends in *" — so /etc/network/interfaces.d/*.conf matched nothing
+      # and every reset stopped at "dst not on wipe allowlist: …/eth0.conf".
+      [ "${path%/*}" = "${pat%/*}" ] || return 1
       # shellcheck disable=SC2254
-      case "$path" in
-        $pat) return 0 ;;
+      case "${path##*/}" in
+        ${pat##*/}) return 0 ;;
       esac
       return 1
       ;;
@@ -323,36 +1005,35 @@ assert_safe_dst() {
   fi
 }
 
-atomic_install_file() {
-  local src=$1 dst=$2 mode=$3 owner=$4
-  local dir tmp
-  assert_safe_dst "$dst"
-  dir=$(dirname "$dst")
-  mkdir -p "$dir"
-  tmp="$dst.tmp.$$"
-  # Journal prior content for rollback (copy, never tar -C /)
+# Journal prior content for rollback (copy, never tar -C /). cp -a copies a
+# symlink or FIFO as itself — it never reads through the name.
+journal_prior() {
+  local dst=$1
   if [ -e "$dst" ] || [ -L "$dst" ]; then
     local jdir="$JOURNAL_DIR/files"
-    mkdir -p "$jdir$dir"
+    mkdir -p "$jdir$(dirname "$dst")"
     cp -a "$dst" "$jdir$dst" 2>/dev/null || true
     printf '%s\n' "$dst" >>"$JOURNAL_DIR/touched.list"
   else
     printf '%s\n' "$dst" >>"$JOURNAL_DIR/created.list"
   fi
-  install -m "$mode" "$src" "$tmp"
-  # owner best-effort
-  if [ -n "$owner" ]; then
-    chown "$owner" "$tmp" 2>/dev/null || true
-  fi
-  sync
-  mv -f "$tmp" "$dst"
-  sync
+}
+
+atomic_install_file() {
+  local src=$1 dst=$2 mode=$3 owner=$4 out
+  assert_safe_dst "$dst"
+  journal_prior "$dst"
+  out=$(fr_safe install "$src" "$dst" "$mode" "$owner" 2>&1) || fail E_APPLY "cannot install $dst: $out"
+  [ -z "$out" ] || log "$out"
 }
 
 clear_dir_allowlisted() {
-  local dir=$1
+  local dir=$1 out
   assert_safe_dst "$dir"
   [ -d "$dir" ] || return 0
+  # find/rm below start from this name: it must be a real directory nobody
+  # else can swap for a symlink (find follows a symlinked start point).
+  out=$(fr_safe check-dir "$dir" 2>&1) || fail E_APPLY "refusing to clear $dir: $out"
   local jdir="$JOURNAL_DIR/files"
   mkdir -p "$jdir$dir"
   # Backup then remove contents (not the directory node)
@@ -374,15 +1055,33 @@ rollback_from_journal() {
     done <"$JOURNAL_DIR/created.list"
   fi
   if [ -d "$JOURNAL_DIR/files" ]; then
-    # Restore files by walking journal tree
+    # Restore files by walking journal tree — through fr_safe (a name planted in
+    # a www-data directory since the journal was taken is refused, not followed).
+    local rel out
     while IFS= read -r -d '' f; do
-      local rel="${f#"$JOURNAL_DIR/files"}"
+      rel="${f#"$JOURNAL_DIR/files"}"
       [ -n "$rel" ] || continue
-      mkdir -p "$(dirname "$rel")"
-      cp -a "$f" "$rel"
+      out=$(fr_safe restore "$f" "$rel" 2>&1) || log "WARN rollback could not restore $rel: $out"
     done < <(find "$JOURNAL_DIR/files" -type f -print0 2>/dev/null || true)
   fi
+  # After the confs are back, so a restarted daemon reads its own, not the template.
+  restart_stopped_units
   txn_write "stage=rolled_back" "result=rolled_back" || true
+}
+
+# Best effort by design: a unit that will not start is logged, never a reason
+# to abandon the rest of the rollback. Units that were not active before the
+# reset are not in the list and stay as they were.
+restart_stopped_units() {
+  local u
+  for u in "${RESTART_UNITS[@]}"; do
+    if timeout 20 systemctl start "$u" >/dev/null 2>&1; then
+      log "rollback: started $u again (it was active before the reset)"
+    else
+      log "WARN rollback: $u was active before the reset and did not start again — start it by hand"
+    fi
+  done
+  RESTART_UNITS=()
 }
 
 # --- apply templates ---------------------------------------------------------
@@ -452,14 +1151,128 @@ etc/sa02m-alice/sa02m-alice-client.conf	/etc/sa02m-alice/sa02m-alice-client.conf
 etc/sa02m-alice/sa02m-alice-devices.conf	/etc/sa02m-alice/sa02m-alice-devices.conf	0640	root:www-data
 MAP
 
-  # Alice: force client_enabled=false even if only one layout exists
+  # Alice: force client_enabled=false even if only one layout exists. Never
+  # sed -i here: /etc/sa02m-alice is www-data-writable and sed reads through a
+  # planted symlink; fr_safe rewrites a regular file through a new one.
+  local out
   for dst in /etc/sa02m-alice-client.conf /etc/sa02m-alice/sa02m-alice-client.conf; do
-    if [ -f "$dst" ] && is_wipe_allowed "$dst"; then
-      if grep -q 'client_enabled' "$dst" 2>/dev/null; then
-        sed -i 's/^[[:space:]]*client_enabled[[:space:]]*=.*/client_enabled = false/' "$dst" 2>/dev/null || true
-      fi
+    if { [ -e "$dst" ] || [ -L "$dst" ]; } && is_wipe_allowed "$dst"; then
+      out=$(fr_safe force-key "$dst" client_enabled false 2>&1) || fail E_APPLY "cannot force client_enabled = false in $dst: $out"
     fi
   done
+}
+
+# HomeKit + Home Connect (Q-F: factory reset ERASES the bridge's pairings and
+# the Home Connect sign-in — resale must not leave the previous owner's iPhones
+# in control of the relays, nor his BSH account readable from this board). Runs
+# LAST, after the reversible config part has verified, so a failed reset never
+# costs the pairings or the sign-in for nothing.
+# Two phases, because the erases cannot be rolled back and a refusal must leave
+# the board as it was:
+#   1. quiesce, per installed unit whose state is erased: its conf to the
+#      template (enabled = false — a daemon restarted behind our back exits
+#      instead of re-persisting keys or refreshing a token), then stop, then
+#      require systemd to report the unit fully down. A unit that will not stop
+#      -> E_APPLY: the configs (these confs included) roll back and NOTHING has
+#      been erased yet — a Home Connect refusal no longer costs the HomeKit
+#      pairings erased a step earlier;
+#   2. only once EVERY such unit is verified down: the irreversible erases.
+# A rollback (fail / the ERR trap) starts again every unit phase 1 found active
+# (restart_stopped_units) — its state was read before the conf reset, because a
+# daemon polling its conf would exit on the template before we looked.
+unit_stopped() {
+  local st
+  st=$(timeout 10 systemctl is-active "$1" 2>/dev/null) || true
+  case "$st" in
+    inactive|failed) return 0 ;;
+    *) return 1 ;;
+  esac
+}
+
+remember_if_active() {
+  local st
+  st=$(timeout 10 systemctl is-active "$1" 2>/dev/null) || true
+  case "$st" in
+    active|activating|reloading) RESTART_UNITS+=("$1") ;;
+  esac
+}
+
+homekit_installed() {
+  [ -e "$HK_VAR_DIR" ] || [ -L "$HK_VAR_DIR" ] || [ -e "$HK_CONF" ] || [ -L "$HK_CONF" ]
+}
+
+homeconnect_installed() {
+  [ -e "$HC_VAR_DIR" ] || [ -L "$HC_VAR_DIR" ] || [ -e "$HC_CONF" ] || [ -L "$HC_CONF" ]
+}
+
+quiesce_homekit() {
+  local out
+  remember_if_active "$HK_UNIT"
+  if [ -e "$HK_CONF" ] || [ -L "$HK_CONF" ]; then
+    journal_prior "$HK_CONF"
+    out=$(fr_safe hk-reset-conf "$HK_CONF" "$HK_PKG_DIR" www-data:sa02m-homekit 2>&1) || fail E_APPLY "HomeKit conf not reset: $out"
+    [ -z "$out" ] || log "homekit: $out"
+  fi
+  timeout 20 systemctl stop "$HK_UNIT" >/dev/null 2>&1 || true
+  unit_stopped "$HK_UNIT" || fail E_APPLY "HomeKit bridge did not stop — nothing was erased"
+}
+
+# The daemon, stopping with the conf already disabled, removes its retained
+# appliance topics instead of marking them stale.
+quiesce_homeconnect() {
+  local out
+  remember_if_active "$HC_UNIT"
+  if [ -e "$HC_CONF" ] || [ -L "$HC_CONF" ]; then
+    journal_prior "$HC_CONF"
+    out=$(fr_safe hc-reset-conf "$HC_CONF" "$HC_PKG_DIR" www-data:sa02m-homeconnect 2>&1) || fail E_APPLY "Home Connect conf not reset: $out"
+    [ -z "$out" ] || log "homeconnect: $out"
+  fi
+  timeout 20 systemctl stop "$HC_UNIT" >/dev/null 2>&1 || true
+  unit_stopped "$HC_UNIT" || fail E_APPLY "Home Connect client did not stop — nothing was erased"
+}
+
+# Phase 2 only — callers guarantee the unit is verified down.
+wipe_homekit_pairings() {
+  local out
+  if [ -e "$HK_VAR_DIR" ] || [ -L "$HK_VAR_DIR" ]; then
+    out=$(fr_safe wipe-dir "$HK_VAR_DIR" 2>&1) || fail E_APPLY "HomeKit pairing store not erased: $out"
+    log "homekit: $out"
+  fi
+  # A stopped daemon cannot withdraw its own setup code (same as the card's
+  # disable, usr/local/sbin/sa02m-homekit-web-trigger.sh).
+  out=$(fr_safe remove-name "$HK_RUN_DIR" setup.json 2>&1) || log "WARN homekit: $out"
+  [ -z "$out" ] || log "homekit: $out"
+  log "homekit: pairings erased, bridge off (docs/contracts/homekit-bridge.md §14)"
+}
+
+wipe_homeconnect_signin() {
+  local out
+  if [ -e "$HC_VAR_DIR" ] || [ -L "$HC_VAR_DIR" ]; then
+    out=$(fr_safe wipe-dir "$HC_VAR_DIR" 2>&1) || fail E_APPLY "Home Connect sign-in not erased: $out"
+    log "homeconnect: $out"
+  fi
+  # A killed daemon cannot withdraw a pending sign-in code (the card's
+  # disable/unlink do the same, usr/local/sbin/sa02m-homeconnect-web-trigger.sh).
+  out=$(fr_safe remove-name "$HC_RUN_DIR" link.json 2>&1) || log "WARN homeconnect: $out"
+  [ -z "$out" ] || log "homeconnect: $out"
+  log "homeconnect: sign-in erased, client off (docs/contracts/home-connect.md §12)"
+}
+
+# Every stop is verified inside its quiesce_* (fail exits), so reaching the
+# erase calls means every installed unit whose state goes is down. HomeKit is
+# quiesced first so a bridge that will not stop leaves Home Connect running.
+erase_owner_state() {
+  local hk=0 hc=0
+  if homekit_installed; then hk=1; else log "homekit: bridge not installed — nothing to erase"; fi
+  if homeconnect_installed; then hc=1; else log "homeconnect: client not installed — nothing to erase"; fi
+  if [ "$hk" = 1 ]; then quiesce_homekit; fi
+  if [ "$hc" = 1 ]; then quiesce_homeconnect; fi
+  if [ "$hk" = 1 ]; then
+    wipe_homekit_pairings
+  fi
+  if [ "$hc" = 1 ]; then
+    wipe_homeconnect_signin
+  fi
 }
 
 verify_reset() {
@@ -478,39 +1291,27 @@ verify_reset() {
   true
 }
 
+# The mandatory backup: the same restorable archive the panel downloads
+# (sa02m-web-backup.sh streams it to STDOUT and takes no arguments), written to
+# a NEW root-only file (0600 in the 0700 backup-export dir, O_EXCL|O_NOFOLLOW)
+# and verified whole before anything is reset. It carries .htpasswd,
+# sa02m_web.env, the cloud agent.conf and the Alice confs, so it never touches
+# the log. No fallback: an archive the restore cannot read, or an empty one, is
+# not the backup the reset promises — the reset stops instead.
 do_backup() {
-  local out=$1
-  mkdir -p "$(dirname "$out")"
-  if [ -x "$BACKUP_BIN" ]; then
-    if "$BACKUP_BIN" --output "$out" >>"$LOGFILE" 2>&1; then
-      return 0
-    fi
-    log "WARN backup helper failed; trying minimal tar of wipe allowlist"
+  local out=$1 msg=""
+  [ -x "$BACKUP_BIN" ] || fail E_BACKUP "backup helper $BACKUP_BIN missing — the mandatory backup cannot be taken"
+  if ! timeout 300 "$BACKUP_BIN" 2>>"$LOGFILE" | fr_safe write-new "$out" 2>>"$LOGFILE"; then
+    fr_safe discard "$out" >/dev/null 2>&1 || true
+    fail E_BACKUP "backup helper failed — nothing was reset"
   fi
-  # Minimal fallback: tar only wipe-allowlisted existing files (still not tar -C / for extract)
-  local listf="$STATEDIR/state/factory-backup-paths.txt"
-  : >"$listf"
-  local p
-  for p in "${WIPE_LIST[@]}"; do
-    case "$p" in
-      */)
-        [ -d "${p%/}" ] && printf '%s\n' "${p%/}" >>"$listf"
-        ;;
-      *\*)
-        # shellcheck disable=SC2086
-        compgen -G "$p" >>"$listf" 2>/dev/null || true
-        ;;
-      *)
-        [ -e "$p" ] && printf '%s\n' "$p" >>"$listf"
-        ;;
-    esac
-  done
-  if [ ! -s "$listf" ]; then
-    # create empty archive so stage can proceed (CGI already required backup_ok)
-    tar -czf "$out" --files-from=/dev/null 2>/dev/null || gzip -c </dev/null >"$out"
-    return 0
-  fi
-  tar -czf "$out" -T "$listf" --ignore-failed-read 2>>"$LOGFILE" || fail E_CMD "backup tar failed"
+  msg=$(fr_safe verify-backup "$out" 2>&1) || backup_invalid "$out" "$msg"
+  log "$msg"
+}
+
+backup_invalid() {
+  fr_safe discard "$1" >/dev/null 2>&1 || true
+  fail E_BACKUP "backup archive invalid — nothing was reset: $2"
 }
 
 run_reset() {
@@ -546,7 +1347,7 @@ path = sys.argv[1]
 args = sys.argv[2:]
 sep = args.index("--")
 wipe, preserve = args[:sep], args[sep + 1 :]
-txn = json.load(open(path, encoding="utf-8")) if os.path.isfile(path) else {}
+txn = json.load(os.fdopen(os.open(path, os.O_RDONLY | os.O_NOFOLLOW), encoding="utf-8"))
 txn["wipe_manifest"] = wipe
 txn["preserve_manifest"] = preserve
 txn["updated_at"] = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
@@ -556,6 +1357,7 @@ fd, tmp = tempfile.mkstemp(prefix=".txn.", dir=d)
 with os.fdopen(fd, "w", encoding="utf-8") as f:
     f.write(data)
     f.flush()
+    os.fchmod(f.fileno(), 0o644)
     os.fsync(f.fileno())
 os.replace(tmp, path)
 PY
@@ -564,6 +1366,9 @@ PY
   local txn_id runner_copy
   txn_id=$(txn_get id)
   [ -n "$txn_id" ] || txn_id="factory-$$"
+  # The CGI (www-data) wrote this id and it becomes a path component of the
+  # root self-copy that is exec'd next: a plain token only (uuid4, hex).
+  [[ "$txn_id" =~ ^[A-Za-z0-9-]{1,64}$ ]] || fail E_INTERNAL "transaction id is not a plain token"
   runner_copy="$STATEDIR/runner/$txn_id/runner"
   if [ "${SA02M_FACTORY_REEXEC:-}" != "1" ]; then
     mkdir -p "$(dirname "$runner_copy")"
@@ -592,11 +1397,12 @@ PY
   }
   trap rollback_on_err ERR
 
-  txn_write "stage=backing_up" "progress_pct=15" "backup_path=$backup_path"
+  txn_write "stage=backing_up" "progress_pct=15"
   do_backup "$backup_path"
   log "backup=$backup_path"
 
-  txn_write "stage=confirmed" "progress_pct=25"
+  # backup_path is shown only once the file exists and has verified.
+  txn_write "stage=confirmed" "progress_pct=25" "backup_path=$backup_path"
   install_imaging_lock
   txn_write "imaging_lock=true"
 
@@ -608,6 +1414,7 @@ PY
 
   txn_write "stage=verify" "progress_pct=85"
   verify_reset
+  erase_owner_state
 
   trap - ERR
 
@@ -637,6 +1444,19 @@ on_exit() {
     log "exiting with the imaging lock still held — releasing it"
     cleanup_imaging_lock || true
   fi
+  release_statedir
+}
+
+# Last act of the run: nothing is opened by name in $STATEDIR after this (the
+# next run's prepare-statedir re-checks whatever the CGI leaves there). The
+# path was resolved as trusted (root-only parent) before the run, so chmod by
+# name cannot be redirected.
+release_statedir() {
+  [ -n "$STATEDIR_MODE" ] || return 0
+  if ! chmod "$STATEDIR_MODE" "$STATEDIR" 2>/dev/null; then
+    log "WARN could not give $STATEDIR its mode $STATEDIR_MODE back — the panel cannot queue a job until reboot (tmpfiles)"
+  fi
+  STATEDIR_MODE=""
 }
 trap on_exit EXIT
 trap 'exit 143' INT TERM

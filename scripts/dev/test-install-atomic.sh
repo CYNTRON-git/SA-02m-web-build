@@ -23,7 +23,13 @@
 # empty sweep cannot pass, and driven to failure on a scratch copy with one
 # site reverted (case 7c) plus a planted raw unit write in install.sh (case 7d
 # - install.sh carries zero install -m sites today, so 7c alone would leave the
-# "and install.sh" half of the claim unmeasured).
+# "and install.sh" half of the claim unmeasured). Cases 7e-7h (1.0.6.57) plant
+# the three shapes the sweep used to miss — `cp` through a literal dir
+# variable, /lib/systemd/system/, a `"$VAR"; }` one-line body — plus a
+# negative control for an ambiguous variable. RED observed 2026-09-27 on
+# 9c4355d (1.0.6.54) with the widened codemod: --check rc=1 naming
+# scripts/05-cloud-agent.sh:57, :58, :113 and scripts/06-gateway.sh:93, while
+# the pre-widening codemod reported «ok» over the same tree.
 #
 # Sections 8-9 do the same for the OTA apply path — etc/sa02m-web-update-apply.sh,
 # how a FIELD board updates itself. It cannot source scripts/lib.sh (scripts/ is
@@ -172,7 +178,7 @@ else
     out=$(python3 "$CODEMOD" --check 2>&1); rc=$?
     out=$(printf '%s\n' "$out" | tr -d '\r')
     if [ "$rc" -eq 0 ]; then
-        ok "7a codemod --check: no raw live-path install -m site"
+        ok "7a codemod --check: no raw live-path install -m / cp site"
     else
         bad "7a codemod --check rc=$rc:"; printf '        %s\n' "$out" | head -20
     fi
@@ -214,6 +220,53 @@ else
     else
         bad "7d a raw unit write planted in install.sh was NOT caught (rc=$rrc): $(printf '%s\n' "$red" | head -3 | tr '\n' ' ')"
     fi
+    # 7e-7h: the three shapes the sweep was blind to until 1.0.6.57, each
+    # planted in the byte shape that actually shipped (scripts/05-cloud-agent.sh
+    # and scripts/06-gateway.sh on 1.0.6.54, where this row was GREEN over four
+    # raw unit/binary writes). A fresh scratch copy per case so one plant can
+    # never make another case's RED. 7h is the negative control: a variable
+    # assigned two different values must stay unresolved, never guessed.
+    plant_case() {  # <label> <expected-line-offset|none> <line>...
+        local label=$1 want=$2; shift 2
+        rm -rf "$T/scratch7"; mkdir -p "$T/scratch7/scripts"
+        cp scripts/*.sh "$T/scratch7/scripts/"; cp install.sh "$T/scratch7/"
+        local base; base=$(wc -l < "$T/scratch7/install.sh" | tr -d ' ')
+        printf '%s\n' "$@" >> "$T/scratch7/install.sh"
+        local out7 rc7
+        out7=$(cd "$T/scratch7" && python3 "$ROOT/$CODEMOD" --check 2>&1); rc7=$?
+        # Captured, then matched in-shell — never a producer piped into
+        # `grep -q` / `head` (quality-gate-rigor.md shape f).
+        out7=${out7//$'\r'/}
+        local brief=${out7//$'\n'/ }; brief=${brief:0:300}
+        if [ "$want" = none ]; then
+            if [ "$rc7" -eq 0 ]; then
+                ok "$label"
+            else
+                bad "$label (rc=$rc7): $brief"
+            fi
+            return
+        fi
+        local wl=$((base + want))
+        if [ "$rc7" -eq 1 ] && [[ $'\n'"$out7" == *$'\n'"install.sh:$wl:"* ]]; then
+            ok "$label (install.sh:$wl)"
+        else
+            bad "$label NOT caught (rc=$rc7, expected install.sh:$wl): $brief"
+        fi
+    }
+    plant_case "7e a raw 'cp' of a unit through a literal dir variable (the 05-cloud-agent.sh shape) turns --check RED" 2 \
+        'SYSTEMD_DIR="/etc/systemd/system"' \
+        'cp "$AGENT_SRC/sa02m-cloud-agent.service" "$SYSTEMD_DIR/"'
+    plant_case "7f a raw 'install -m' into /lib/systemd/system/ (the 06-gateway.sh shape) turns --check RED" 1 \
+        'install -m 0644 -o root -g root \' \
+        '    "$ETC_DIR/sa02m-serial-gateway.service" \' \
+        '    "/lib/systemd/system/$SVC_NAME.service"'
+    plant_case "7g a one-line function body ending '\"\$VAR\"; }' into /usr/local/bin (the frpc shape) turns --check RED" 2 \
+        'FRPC_BIN="/usr/local/bin/frpc"' \
+        '_frpc_install_bin() { install -m 0755 -o root -g root "$1" "$FRPC_BIN"; }'
+    plant_case "7h negative control: a variable assigned two different literals is not resolved (no guessed destination)" none \
+        'PLANT_DIR="/etc/systemd/system"' \
+        'PLANT_DIR="/opt/sa02m-plant"' \
+        'cp "$s" "$PLANT_DIR/"'
 fi
 
 echo "── 8. the OTA apply path's own atomic helper (etc/sa02m-web-update-apply.sh) ──"
