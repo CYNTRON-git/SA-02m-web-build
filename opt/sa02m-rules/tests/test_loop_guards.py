@@ -262,6 +262,54 @@ class AdoptGuardTests(unittest.TestCase):
             e.tick()
         self.assertEqual(len(runs), 5)  # RED on ee4252d2..a7fafa6d: 10
 
+    def test_editing_a_row_leaves_a_colon_named_sibling_armed(self):
+        """Ids may contain `:` (store ID_RE): cancelling `a` by the key
+        prefix `a:` also killed `a:b:every:0`, and `a:b` — unchanged — was
+        never re-armed (review round 2, R2-1)."""
+        from sa02m_rules import engine as eng
+        self._save([_every("a", 1), _every("a:b", 1)])
+        clock = [1000.0]
+        e = eng.Engine(lambda *_a: None, self.path, now=lambda: clock[0],
+                       pub_state=lambda *_a: None)
+        runs = []
+        real = e._run
+        e._run = lambda s, why, source: (runs.append(s["id"]), real(s, why, source))[1]
+        e.adopt({"scenarios": [_every("a", 2), _every("a:b", 1)],
+                 "library": "", "vars": {}})
+        for _ in range(10 * 60):
+            clock[0] += 1
+            e.tick()
+        self.assertEqual(runs.count("a"), 5)
+        self.assertEqual(runs.count("a:b"), 10)  # RED on ede32743: 0
+        self.assertIn("a:b:every:0", _armed(e))
+
+    def test_an_unarmed_row_is_off_until_the_document_changes(self):
+        """A row the engine could not fully arm is skipped WHOLE — no state
+        trigger, no manual run — and keeps its «not armed» error, until a
+        changed document arms it (review round 2, R2-3; chosen over
+        narrowing the contract sentence)."""
+        from sa02m_rules import engine as eng
+        bad = _every("b", "abc")
+        bad["trigger"].append({"kind": "state", "device": "m", "cap": "v",
+                               "op": ">", "value": 1})
+        bad["action"] = [{"kind": "set", "device": "led", "cap": "on_off",
+                          "value": 1}]
+        self._save([bad])
+        pubs = []
+        with self.assertLogs("sa02m-rules", level="WARNING"):
+            e = eng.Engine(lambda d, c, v: pubs.append((d, c, v)), self.path,
+                           now=lambda: 1000.0, pub_state=lambda *_a: None)
+        e.on_state("m", "v", 5)
+        self.assertEqual(pubs, [])  # RED on ede32743: the state trigger ran it
+        self.assertIsNone(e.run_now("b"))
+        self.assertEqual(pubs, [])
+        self.assertIn("not armed", e._scenario("b").get("last_error") or "")
+        fixed = dict(bad, trigger=[{"kind": "every", "minutes": 1},
+                                   bad["trigger"][1]])
+        e.adopt({"scenarios": [fixed], "library": "", "vars": {}})
+        e.on_state("m", "v", 6)
+        self.assertEqual(pubs, [("led", "on_off", 1)])
+
     def test_a_non_object_condition_does_not_stop_the_index(self):
         """_rebuild_for_s_index read `condition.get` on any shape."""
         bad = _every("d", 1)

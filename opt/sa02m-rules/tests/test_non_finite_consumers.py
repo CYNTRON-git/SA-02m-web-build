@@ -133,6 +133,63 @@ class VarsStrictTests(unittest.TestCase):
         self.assertEqual(bucket, {"x": 1.5, "y": [10 ** 300, "nan"],
                                   "z": {"a": True}})
 
+    def test_a_tuple_without_nan_stays_a_tuple(self):
+        """Only a tuple that holds a non-finite value is rebuilt as a list —
+        converting every tuple broke a later `{Vars.get('k'): …}` with
+        «unhashable type: 'list'» (review round 2, R2-2)."""
+        bucket = {}
+        rec = self.run_body("Vars.set('t', (2, 3))\n"
+                            "Vars.set('l', [1])\n"
+                            "Vars.get('l').append((4, math.nan))", bucket)
+        self.assertIs(type(bucket["t"]), tuple)  # RED on ede32743: a list
+        self.assertEqual(bucket["l"], [1, [4, None]])
+        self.assertFalse(rec["ok"])
+
+    def test_home_mode_mid_run_saves_strict_json(self):
+        """`Vars.home_mode = …` saves the document MID-run (engine
+        set_home_mode): a NaN slipped into Vars by mutation reached
+        scenarios.json before the post-run sweep (review round 2, R2-2)."""
+        from sa02m_rules import engine, store
+        path = os.path.join(os.path.dirname(self.path), "scenarios.json")
+        store.save({"scenarios": [{
+            "id": "c", "name": "c", "enabled": True, "type": "code",
+            "trigger": [], "condition": {}, "action": [],
+            "code": "Vars.set('lst', [1])\n"
+                    "Vars.get('lst').append(float('nan'))\n"
+                    "Vars.home_mode = 'away'\n"}],
+            "runs": [], "notify_queue": [], "library": "", "vars": {}}, path)
+        e = engine.Engine(lambda *_a: None, path, now=lambda: 1000.0,
+                          pub_state=lambda *_a: None)
+        rec = e.run_now("c")
+
+        def refuse(tok):
+            raise ValueError("non-strict JSON constant %s" % tok)
+        with open(path, encoding="utf-8") as fh:
+            on_disk = json.loads(fh.read(), parse_constant=refuse)  # RED: NaN
+        self.assertEqual(on_disk["vars"]["lst"], [1, None])
+        self.assertEqual(on_disk["vars"]["home_mode"], "away")
+        self.assertFalse(rec["ok"])
+        self.assertIn("finite", rec["error"])
+
+    def test_the_engine_save_path_itself_writes_strict_json(self):
+        """Independent of the sandbox: whatever sits in Vars when the engine
+        saves the document (set_home_mode — a `mode` action, the cloud, a
+        run) is written as strict JSON."""
+        from sa02m_rules import engine, store
+        path = os.path.join(os.path.dirname(self.path), "scenarios.json")
+        store.save({"scenarios": [], "runs": [], "notify_queue": [],
+                    "library": "", "vars": {}}, path)
+        e = engine.Engine(lambda *_a: None, path, now=lambda: 1000.0,
+                          pub_state=lambda *_a: None)
+        e.doc["vars"]["x"] = {"k": [float("inf")]}
+        e.set_home_mode("away")
+
+        def refuse(tok):
+            raise ValueError("non-strict JSON constant %s" % tok)
+        with open(path, encoding="utf-8") as fh:
+            on_disk = json.loads(fh.read(), parse_constant=refuse)
+        self.assertEqual(on_disk["vars"]["x"], {"k": [None]})
+
     def test_a_cyclic_value_does_not_hang_the_sweep(self):
         bucket = {}
         rec = self.run_body("l = [1]\nl.append(l)\nVars.set('c', l)", bucket)

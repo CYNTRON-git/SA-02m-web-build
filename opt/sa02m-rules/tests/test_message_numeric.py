@@ -333,6 +333,59 @@ class UnknownReadingTests(unittest.TestCase):
         self.assertEqual(self.commands(), [])
 
 
+class UnknownHoldTests(unittest.TestCase):
+    """`for_s` hold clocks take the reading after an unknown as their base
+    (contract «Неизвестное значение»; review round 2, R2-3): a hold that ran
+    before the gap does not count the time across it."""
+
+    def test_an_unknown_reading_restarts_a_for_s_hold(self):
+        td = tempfile.TemporaryDirectory()
+        self.addCleanup(td.cleanup)
+        path = os.path.join(td.name, "scenarios.json")
+        store.save({"scenarios": [{
+            "id": "h", "name": "h", "enabled": True, "type": "block",
+            "trigger": [], "action": [],
+            "condition": {"all": [{"kind": "state", "device": "m", "cap": "v",
+                                   "op": ">", "value": 20, "for_s": 30}]}}],
+            "runs": [], "notify_queue": [], "library": "", "vars": {}}, path)
+        clock = [1000.0]
+        e = engine.Engine(lambda *_a: None, path, now=lambda: clock[0],
+                          pub_state=lambda *_a: None)
+        h = e._scenario("h")
+        e.on_state("m", "v", 25)          # hold starts at 1000
+        clock[0] = 1020.0
+        e.forget_state("m", "v")          # unknown at 1020
+        clock[0] = 1025.0
+        e.on_state("m", "v", 26)          # the hold restarts here
+        clock[0] = 1040.0                 # 40 s after the first start
+        self.assertFalse(e._conditions_ok(h))  # RED without the reset
+        clock[0] = 1055.0                 # 30 s after the restart
+        self.assertTrue(e._conditions_ok(h))
+
+    def test_a_condition_judges_unknown_like_unseen(self):
+        """Contract «Неизвестное значение» (review round 2, A-R2-1): while
+        `x` is unknown, `x != 5` holds and `x > 5` does not — the same as a
+        value not yet seen after start."""
+        td = tempfile.TemporaryDirectory()
+        self.addCleanup(td.cleanup)
+        path = os.path.join(td.name, "scenarios.json")
+
+        def row(sid, op):
+            return {"id": sid, "name": sid, "enabled": True, "type": "block",
+                    "trigger": [], "action": [],
+                    "condition": {"all": [{"kind": "state", "device": "m",
+                                           "cap": "v", "op": op, "value": 5}]}}
+        store.save({"scenarios": [row("ne", "!="), row("gt", ">")],
+                    "runs": [], "notify_queue": [], "library": "",
+                    "vars": {}}, path)
+        e = engine.Engine(lambda *_a: None, path, now=lambda: 1000.0,
+                          pub_state=lambda *_a: None)
+        e.on_state("m", "v", 9)
+        e.forget_state("m", "v")
+        self.assertTrue(e._conditions_ok(e._scenario("ne")))
+        self.assertFalse(e._conditions_ok(e._scenario("gt")))
+
+
 class DrainEdgeCaseTests(unittest.TestCase):
     def setUp(self):
         self.td = tempfile.TemporaryDirectory()
