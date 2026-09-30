@@ -161,7 +161,7 @@ echo 'SA02M_HW_VARIANT=sa02m-2eth' > /etc/sa02m_hw_variant.conf
 ### Home Connect (бытовые приборы BSH)
 - **Приборы Bosch / Siemens / Neff / Gaggenau из облака Home Connect** — служба `sa02m-homeconnect` публикует их состояние на локальном брокере как устройства `/devices/hc-…` (идёт ли программа, закончилась ли, сколько осталось, открыта ли дверь). **Только чтение** — плата приборами не управляет.
 - **Карточка «Home Connect»** во вкладке «Управление»: Client ID своего приложения BSH, включение, вход в аккаунт владельца по коду/QR с телефона, счёт запросов к облаку (лимит BSH — 1000 в сутки), «Отключить аккаунт».
-- **Необязательная установка**, в заводской образ не входит: `install.sh --with-homeconnect`; нужен интернет на плате. Доступность облака BSH из России не проверена. Подробности: `docs/HOME_CONNECT_INTEGRATION.md`, контракт `docs/contracts/home-connect.md`.
+- **Необязательная установка**, в заводской образ не входит: `install.sh --with-homeconnect`; нужен интернет на плате. С российского IP облако BSH на стенде не ответило (соединение открывается, ответа нет). Подробности: `docs/HOME_CONNECT_INTEGRATION.md`, контракт `docs/contracts/home-connect.md`.
 
 ### Сценарии на плате
 - **Служба `sa02m-rules`** — движок сценариев на контроллере (`rules_engine=2`): расписание, пороги, кнопки MR-02м (`di_N_short/long/double`), присутствие, сцены, end off/restore. Store `/etc/sa02m-rules/scenarios.json`.
