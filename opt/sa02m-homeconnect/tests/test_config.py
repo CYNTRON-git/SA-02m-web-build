@@ -79,6 +79,19 @@ class ConfigTest(unittest.TestCase):
         self.assertEqual(conf.control_mode, "off")
         self.assertTrue(any("read-only" in w for w in conf.warnings))
 
+    def test_a_percent_sign_is_refused_like_any_bad_value_never_raises(self) -> None:
+        # The parser runs with interpolation=None: a `%` in any value is a
+        # plain character that the allow-lists refuse, never an exception out
+        # of load() (the API, the client and the root trigger all call it).
+        self.write("[account]\nenabled = true\nhost = api%\n[control]\nmode = off%\n")
+        conf = config.load(self.path)
+        self.assertTrue(conf.enabled)
+        self.assertEqual(conf.host, "api")
+        self.assertEqual(len(conf.warnings), 2)
+        for raw in ("100%", "%(x)s", "true%"):
+            self.write("[account]\nenabled = %s\n" % raw)
+            self.assertFalse(config.load(self.path).enabled, raw)
+
     def test_new_conf_mode_0640(self) -> None:
         # Contract §11: www-data:sa02m-homeconnect 0640 — the client READS its
         # conf through its group (no ACL: the product RT kernel has none).

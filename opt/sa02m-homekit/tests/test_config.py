@@ -154,6 +154,22 @@ class ConfTests(unittest.TestCase):
             self._write("[bridge]\nenabled = %s\n" % raw)
             self.assertIs(config.load(self.path).enabled, want, raw)
 
+    def test_a_percent_sign_is_refused_like_any_bad_value_never_raises(self):
+        # §8: a hand-edited value falls back to the default with a warning. A
+        # `%` must not reach configparser's interpolation — load() is called by
+        # the API GET, every POST, the daemon and the root trigger alike.
+        self._write("[bridge]\nenabled = true\ninterface = eth%\nport = 21064\n")
+        conf = config.load(self.path)
+        self.assertEqual((conf.enabled, conf.interface), (True, "eth0"))
+        self.assertTrue(conf.warnings)
+        self._write("[bridge]\nenabled = true\ninterface = eth0\nport = 21064%\n")
+        conf = config.load(self.path)
+        self.assertEqual(conf.port, C.DEFAULT_PORT)
+        self.assertTrue(conf.warnings)
+        for raw in ("100%", "%(x)s", "true%"):
+            self._write("[bridge]\nenabled = %s\n" % raw)
+            self.assertIs(config.load(self.path).enabled, False, raw)
+
 
 class AtomicWriteTests(unittest.TestCase):
     def setUp(self):

@@ -37,9 +37,13 @@
 #   I2 whole-file parity: CRLF, duplicate key (any case), duplicate section,
 #      a parse error in [account] or elsewhere, a continuation line, [DEFAULT]
 #      inheritance, `[account] ; c`, a key before any section, a UTF-8 BOM,
-#      non-UTF-8 bytes — helper vs config.load() directly
+#      non-UTF-8 bytes, a `%` in a value (no interpolation) — helper vs
+#      config.load() directly
 #   P  root safety: a module planted on PYTHONPATH is never imported by the
 #      helper's conf read (env -i + python3 -I)
+#   L  a conf read with no 0/1 answer (package absent, load() raising, a
+#      timeout) is `skipped` AND logged once with its cause; a clean answer
+#      logs nothing
 #
 # Comment-mutation cases registered with the row (measured RED here):
 #   commenting out `rm -f -- "$VAR_DIR/tokens.json" 2>/dev/null || true` → G1 RED;
@@ -142,7 +146,7 @@ run_trigger() {
         LINK_FILE=$RUN_DIR/link.json
         LOCK_FILE=$SB/lockfile
         LOCK_WAIT_S=${HC_LOCK_WAIT_S:-5}
-        PKG_DIR=$PKG
+        PKG_DIR=${HC_TEST_PKG_DIR:-$PKG}
         # shellcheck source=/dev/null
         . "$FN"
         hc_main "$@"
@@ -418,9 +422,11 @@ enabled = true\n[account]\nenabled = true\n
 \xef\xbb\xbf[account]\nenabled = true\n
 [account]\nenabled = true\nclient_id = \xff\n
 [account]\nenabled = true\n
+[account]\nenabled = true\nhost = api%\n
+[account]\nenabled = 100%\n
 SAMPLES
-    [ "$j_n" -ge 13 ] || bad "I2 only $j_n whole-file samples ran (non-vacuity floor 13)"
-    [ "$j_bad" -eq 0 ] && [ "$j_n" -ge 13 ] && ok "I2 helper and daemon agree on all $j_n whole-file samples"
+    [ "$j_n" -ge 15 ] || bad "I2 only $j_n whole-file samples ran (non-vacuity floor 15)"
+    [ "$j_bad" -eq 0 ] && [ "$j_n" -ge 15 ] && ok "I2 helper and daemon agree on all $j_n whole-file samples"
 else
     bad "I2 $PKG/sa02m_homeconnect/config.py absent — the parity half cannot run"
 fi
@@ -437,6 +443,28 @@ if [ ! -e "$SB/poisoned" ] && [ "$RC" -eq 0 ] && [ "$(calls_of restart)" -eq 1 ]
     ok "P a module planted on PYTHONPATH is never imported by the root conf read"
 else
     bad "P poisoned PYTHONPATH: imported=$([ -e "$SB/poisoned" ] && echo yes || echo no) rc=$RC restart=$(calls_of restart) out=$(cat "$SB/out")"
+fi
+
+echo "L. a conf read that gives no 0/1 answer is logged"
+reset_tree true
+mkdir -p "$SB/nopkg"
+export HC_TEST_PKG_DIR="$SB/nopkg"
+run_trigger restart
+unset HC_TEST_PKG_DIR
+logged=$(grep -F 'conf read' "$SB/logger.log" 2>/dev/null)
+if [ "$RC" -eq 0 ] && [ "$(n_calls)" -eq 0 ] && out_has '"applied":"skipped"'    && [ -n "$logged" ] && [[ $logged == *ModuleNotFoundError* ]] && [[ $logged == *rc=* ]]; then
+    ok "L1 package absent ⇒ skipped, and ONE log line names the cause (ModuleNotFoundError)"
+else
+    bad "L1 undiagnosable conf read: rc=$RC calls=$(n_calls) out=$(cat "$SB/out") log=$(tr '
+' ' ' < "$SB/logger.log" 2>/dev/null | head -c 300)"
+fi
+reset_tree false
+run_trigger restart
+if [ "$RC" -eq 0 ] && out_has '"applied":"skipped"' && ! grep -qF 'conf read' "$SB/logger.log" 2>/dev/null; then
+    ok "L2 a clean \"not enabled\" answer logs nothing"
+else
+    bad "L2 noise on a clean answer: rc=$RC log=$(tr '
+' ' ' < "$SB/logger.log" 2>/dev/null | head -c 300)"
 fi
 
 echo "Z. non-vacuity"
