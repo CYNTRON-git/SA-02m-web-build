@@ -16,6 +16,8 @@
  *   4. only a number wider than the tile at 10 px ellipsizes; its full text
  *      then goes to the value's title.
  * Fonts only ever shrink, and only the step-3 fallback can add a line.
+ * The same pass gives a card title that main.css ellipsizes its full name as
+ * a tooltip.
  *
  * Independent of devices.js (no shared state): a MutationObserver on #dev-grid
  * catches every text write (poll refresh, ДТВ sensor rotation, the i18n
@@ -157,6 +159,10 @@
     rows.forEach(reset);
     const ms = rows.map(measure);
     rows.forEach((row, i) => apply(row, ms[i]));
+    grid.querySelectorAll(".dev-card-title").forEach((t) => {
+      if (t.scrollWidth > t.clientWidth + 1) t.title = t.textContent;
+      else if (t.hasAttribute("title")) t.removeAttribute("title");
+    });
   }
 
   function schedule() {

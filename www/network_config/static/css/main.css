@@ -6178,10 +6178,18 @@ html[data-theme="light"] .mqtt-ch-live-ok { color: var(--cyan-hover); }
   margin: 8px 0 4px;
   font-size: 13px;
 }
+/* One line: a name longer than the room left of the pen ellipsizes (the full
+   name goes to its tooltip — devices-kpi-fit.js). The cap keeps the icon, the
+   title and the pen on one line: 100% minus the 18 px icon, the 1.25rem pen and
+   the two 8 px gaps between them; a presence/alert badge wraps below instead. */
 #tab-devices .dev-card-title {
   font-weight: 600;
-  min-width: 0;
+  flex: 0 1 auto; min-width: 0;
+  max-width: calc(100% - 18px - 1.25rem - 2 * 8px);
+  white-space: nowrap; overflow-x: clip; overflow-y: visible; text-overflow: ellipsis;
 }
+/* An empty alerts slot is not a flex item — it would add a gap to the line. */
+#tab-devices .dev-card [data-role="alerts"]:empty { display: none; }
 #tab-devices .dev-card {
   display: flex; flex-direction: column; width: 100%; max-width: 100%; min-width: 0;
   height: 100%; cursor: pointer; border: 1px solid var(--border); box-sizing: border-box;
@@ -6197,8 +6205,12 @@ html[data-theme="light"] .mqtt-ch-live-ok { color: var(--cyan-hover); }
 #tab-devices .dev-card.dev-stale .dev-kpi-val { color: var(--text-sec); }
 #tab-devices .dev-card .widget-title {
   display: flex; align-items: flex-start; gap: 8px; flex-wrap: wrap; row-gap: 6px;
+  /* 92 px = the out-of-flow .dev-head-right (status pill + remove button). */
   position: relative; padding-right: 92px;
 }
+/* MR and Carel cards carry no remove button: reserve the pill only. */
+#tab-devices .dev-card--mr .widget-title,
+#tab-devices .dev-card--carel .widget-title { padding-right: 70px; }
 /* Right cluster: online status + remove button, always pinned top-right for
    every card. Title + presence badge flow to its left and the presence badge
    wraps to a new line when it doesn't fit — the status never moves. */
@@ -6636,9 +6648,6 @@ html[data-theme="light"] .mqtt-ch-live-ok { color: var(--cyan-hover); }
 #tab-devices .dev-events-table .kind-voltage_down td:last-child { color: var(--cyan); }
 #tab-devices .dev-events-table .kind-current_spike td:last-child { color: var(--red); }
 #tab-devices .dev-events-mono { font-variant-numeric: tabular-nums; white-space: nowrap; }
-#tab-devices .dev-card .widget-title {
-  position: relative; padding-right: 2rem;
-}
 /* In the right cluster now — normal flex item, not absolute (was top/right:0
    which would overlap the status pill inside the positioned cluster). */
 #tab-devices .dev-card-remove {

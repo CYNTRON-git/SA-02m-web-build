@@ -108,7 +108,6 @@ const DICT_WHITELIST = [
   { s: 'Pb ср.', reason: 'CE phase-power column header' },
   { s: 'Pc ср.', reason: 'CE phase-power column header' },
   { s: 'P∑ ср.', reason: 'CE phase-power column header' },
-  { s: 'кВт·ч', reason: 'energy unit' },
   { s: '₽/кВт·ч', reason: 'tariff unit' },
   { s: 'ΔE × ₽/кВт·ч', reason: 'cost formula label' },
   { s: 'Архив: …', reason: 'archive-status placeholder, rewritten by devices.js' },
@@ -128,7 +127,7 @@ const DICT_WHITELIST = [
   { s: 'Реле 1', reason: 'HW output button title' },
   { s: 'Режим графика', reason: 'devices chart-mode button title' },
   { s: 'Скачать Excel (.xlsx) за выбранный период', reason: 'devices export button title' },
-  { s: '₽ за 1 кВт·ч', reason: 'tariff input title; currency + unit, see кВт·ч' },
+  { s: '₽ за 1 кВт·ч', reason: 'tariff input title; currency + unit' },
   { s: 'ΔE (кВт·ч) × тариф (₽/кВт·ч)', reason: 'cost formula title; see ΔE × ₽/кВт·ч' },
 ];
 
