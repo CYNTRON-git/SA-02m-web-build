@@ -608,7 +608,10 @@ class LogicBrightnessTests(_App):
 # ── review round: non-finite / odd numbers never crash a save (B4c) ────
 class NumericFuzzTests(_Tmp):
     alice_doc = None
-    ODD = (float("nan"), float("inf"), float("-inf"), 10 ** 30, True, "x", None)
+    #: 10**400 is a valid JSON integer beyond float range (math.isfinite and
+    #: float() raise OverflowError on it); 10**4000 stays under the int->str cap.
+    ODD = (float("nan"), float("inf"), float("-inf"), 10 ** 30, 10 ** 400,
+           -10 ** 400, 10 ** 4000, True, "x", None)
 
     def _apply(self, body):
         try:
@@ -780,6 +783,150 @@ class GuttedConditionTests(_Tmp):
             with self.subTest(body=body):
                 self.assertTrue(store.apply_command(body, self.path)["ok"])
                 self.assertEqual(self.stored()[0]["condition"], cond)
+
+
+# ── review round 2 ─────────────────────────────────────────────────────
+class SensorReadAliasTests(_App):
+    """R2-B2: the instance-name alias serves only names templates WRITE as a
+    capability (brightness). A sensor read (`temperature`, `humidity`, …)
+    never resolves to a setpoint/target capability — a thermostat on an AC
+    that exposes only a `range` `temperature` setpoint used to read the
+    setpoint as room temperature and switch its heater on."""
+    alice_doc = {"devices": [
+        {"id": "ac", "capabilities": [
+            {"type": "devices.capabilities.on_off", "mqtt": "/devices/ac/controls/power"},
+            {"type": "devices.capabilities.range", "mqtt": "/devices/ac/controls/sp",
+             "parameters": {"instance": "temperature"}},
+            {"type": "devices.capabilities.range", "mqtt": "/devices/ac/controls/rh",
+             "parameters": {"instance": "humidity"}}]},
+        {"id": "heater", "capabilities": [
+            {"type": "devices.capabilities.on_off", "mqtt": "/devices/r/controls/K1"}]},
+        {"id": "lamp2", "capabilities": [
+            {"type": "devices.capabilities.range", "mqtt": "/devices/led/controls/bright",
+             "parameters": {"instance": "brightness"}}],
+         "properties": [
+            {"type": "devices.properties.float", "mqtt": "/devices/lux/controls/level",
+             "parameters": {"instance": "brightness"}}]}]}
+
+    def test_a_setpoint_is_never_read_as_room_temperature(self):
+        app, client = self.app([{
+            "id": "th", "name": "th", "enabled": True, "type": "logic",
+            "template": "thermostat", "trigger": [], "condition": {}, "action": [],
+            "params": {"sensors": ["ac"], "heaters": ["heater"], "day_from": "00:00",
+                       "day_to": "23:59", "day_temp": 22, "night_temp": 22,
+                       "min_off_s": 0, "min_on_s": 0}}])
+        app._apply_message("/devices/ac/controls/sp", "16")
+        self.assertEqual(client.published, [])
+        rt = engine.LogicRuntime(app.engine, "th")
+        self.assertIsNone(rt.get("ac", "temperature"))
+        self.assertEqual(app.engine._logic["th"]._last_sensor_ts, 0.0)
+        app._apply_message("/devices/ac/controls/rh", "80")
+        self.assertIsNone(rt.get("ac", "humidity"))
+        self.assertNotIn("temperature", app.caps_of("ac"))
+        self.assertNotIn("humidity", app.caps_of("ac"))
+
+    def test_a_property_wins_over_a_written_instance_of_the_same_name(self):
+        app, _client = self.app([])
+        app._apply_message("/devices/led/controls/bright", "70")
+        app._apply_message("/devices/lux/controls/level", "300")
+        self.assertEqual(engine.LogicRuntime(app.engine, "x").get("lamp2", "brightness"), 300)
+        self.assertNotIn("brightness", app.caps_of("lamp2"))
+
+
+class KnownDeviceNoRawFallbackTests(_App):
+    """R2-B4: a device the Alice document knows is never written through a
+    raw `/devices/<id>/controls/<cap>` topic for a cap the document does not
+    list — on every path (block, `type=code` Hub.set, logic templates). The
+    raw fallback is only for devices the document does not list at all."""
+
+    def test_hub_set_on_an_unlisted_cap_is_refused(self):
+        app, client = self.app([{
+            "id": "c1", "name": "c1", "enabled": True, "type": "code",
+            "trigger": [], "condition": {}, "action": [],
+            "code": "Hub.set('lamp', 'brightness', 50)"}])
+        rec = app.engine.run_now("c1")
+        self.assertEqual(client.published, [])
+        self.assertEqual(rec["error"], "unknown target")
+
+    def test_a_logic_write_to_an_unlisted_cap_is_refused(self):
+        app, client = self.app([])
+        self.assertFalse(engine.LogicRuntime(app.engine, "x").set("ahu1", "co2", 1))
+        self.assertEqual(client.published, [])
+
+    def test_a_block_row_to_an_unlisted_cap_is_refused(self):
+        app, client = self.app([_row("s1", [], [
+            {"kind": "set", "device": "lamp", "cap": "brightness", "value": 50}])])
+        rec = app.engine.run_now("s1")
+        self.assertEqual(client.published, [])
+        self.assertEqual(rec["error"], "unknown target")
+
+    def test_a_device_the_document_does_not_list_keeps_the_raw_topic(self):
+        app, client = self.app([{
+            "id": "c1", "name": "c1", "enabled": True, "type": "code",
+            "trigger": [], "condition": {}, "action": [],
+            "code": "Hub.set('ghost', 'on_off', 1)"}])
+        self.assertTrue(app.engine.run_now("c1")["ok"])
+        self.assertEqual(client.published, [("/devices/ghost/controls/on_off/on", "1")])
+
+
+class UnreadableDocumentRawFallbackTests(_App):
+    alice_doc = None  # no document: every target keeps the raw topic
+
+    def test_raw_topic_while_the_document_cannot_be_read(self):
+        app, client = self.app([_row("s1", [], [
+            {"kind": "set", "device": "lamp", "cap": "brightness", "value": 50}])])
+        self.assertTrue(app.engine.run_now("s1")["ok"])
+        self.assertEqual(client.published, [("/devices/lamp/controls/brightness/on", "50")])
+
+
+class ConditionContainerTests(_Tmp):
+    """R2-B3: a condition object whose `all`/`any` is not a list, or that
+    carries neither, is `not_list` and refused — not stored as «no
+    conditions»."""
+    alice_doc = None
+    OK = {"trigger": [{"kind": "boot"}], "action": [{"kind": "notify", "text": "x"}]}
+
+    def test_non_list_containers_are_refused(self):
+        for cond in ({"all": {"kind": "mode", "value": "home"}}, {"any": "home"},
+                     {"all": "x"}, {"mode": [{"kind": "mode", "value": "home"}]},
+                     {"all": [{"kind": "mode", "value": "home"}], "any": "x"}):
+            with self.subTest(condition=cond):
+                r = store.apply_command(dict(self.OK, name="t", condition=cond), self.path)
+                self.assertEqual(r, {"ok": False, "error": "invalid_elements", "dropped": [
+                    {"part": "condition", "index": None, "reason": "not_list"}]})
+                self.assertEqual(self.stored(), [])
+
+    def test_null_containers_mean_no_conditions(self):
+        for cond in ({"all": None}, {"any": None}):
+            with self.subTest(condition=cond):
+                self.assertTrue(store.apply_command(dict(self.OK, name="t", condition=cond),
+                                                    self.path)["ok"])
+
+
+class SetValueBoundTests(_Tmp):
+    """A11: a `set` value is bounded at save — a finite number, a bool,
+    null, a string of at most 256 characters, or a list/object whose JSON is
+    at most 256 bytes; anything else is dropped as `bad_value`."""
+    alice_doc = None
+
+    def _drops(self, value):
+        r = store.apply_command({"name": "t", "action": [
+            {"kind": "set", "device": "l", "cap": "b", "value": value},
+            {"kind": "notify", "text": "x"}]}, self.path)
+        self.assertTrue(r["ok"], r)
+        return r.get("dropped")
+
+    def test_values_in_bounds_are_kept(self):
+        for value in (1, 2.5, True, None, "x" * 256, "я" * 256, {"h": 120}, [1, 2]):
+            with self.subTest(value=repr(value)[:40]):
+                self.assertIsNone(self._drops(value))
+
+    def test_oversize_or_non_finite_values_are_dropped(self):
+        bad = [{"part": "action", "index": 0, "reason": "bad_value"}]
+        for value in ("x" * 257, 10 ** 400, float("nan"), float("inf"),
+                      {"k": "v" * 300}, [0] * 200):
+            with self.subTest(value=repr(value)[:40]):
+                self.assertEqual(self._drops(value), bad)
 
 
 if __name__ == "__main__":
