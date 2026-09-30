@@ -1,7 +1,12 @@
 /* SA-02m MQTT tab — v1.0 */
 
-import { AI_SENSOR_LABELS } from './ai-sensors.js?v=1.0.6.66';
+import { AI_SENSOR_LABELS } from './ai-sensors.js?v=1.0.6.67';
 
+// The add-device dialog's Modbus TCP rules and wording (pure, unit-tested).
+import {
+  makeTcpDeviceId as tcpDeviceId, typeOptionAllowed, dialogRows, addrMax,
+  buildTcpEntry, saveRefusalText, probeResultView,
+} from './mqtt/tcp-dialog.js?v=1.0.6.67';
 
 function uiT(s) {
   return window.sa02mI18n ? window.sa02mI18n.t(String(s)) : String(s);
@@ -375,12 +380,10 @@ function makeDeviceId(type, port, addr) {
   return `${prefix}-${comName}-${addr}`;
 }
 
-/** Modbus TCP id: `<template>-tcp-<a_b_c_d>-<addr>` / `carel-tcp-<a_b_c_d>-<addr>`.
- *  A Carel id MUST start with `carel-` (the «Устройства» glob, the Alice prefix). */
+/** Modbus TCP id — the rule lives in mqtt/tcp-dialog.js; this resolves the
+ *  picked template's prefix from the DOM. */
 function makeTcpDeviceId(type, host, addr) {
-  const host_ = String(host || '').trim().replace(/\./g, '_');
-  const prefix = type === 'carel' ? 'carel' : templateIdPrefix();
-  return `${prefix}-tcp-${host_}-${addr}`;
+  return tcpDeviceId(type, templateIdPrefix(), host, addr);
 }
 
 /** Уже в конфиге на этом COM и Modbus-адресе. */
@@ -2469,24 +2472,25 @@ function addTransportIsTcp() {
 
 function onAddTypeChange() {
   const typeEl = document.getElementById('mqtt-add-type');
-  const isTemplate = !!typeEl && typeEl.value === 'template';
-  setRowShown('mqtt-add-template-row', isTemplate);
-  setRowShown('mqtt-add-carel-family-row',
-    addTransportIsTcp() && !!typeEl && typeEl.value === 'carel');
-  if (isTemplate) void loadTemplateCatalog(false);
+  const type = typeEl ? typeEl.value : '';
+  const rows = dialogRows(addTransportIsTcp(), type, !!_tcpCaps);
+  setRowShown('mqtt-add-template-row', rows.template);
+  setRowShown('mqtt-add-carel-family-row', rows.carelFamily);
+  if (rows.template) void loadTemplateCatalog(false);
   updateAddModalId();
 }
 
 /** RS-485 ⇄ Ethernet: the type list narrows to what the bridge takes over TCP
- *  (server's `capabilities.tcp_types`); the COM row gives way to IP + TCP port.
- *  The rules for the address itself are the server's — none are copied here. */
+ *  (server's `capabilities.tcp_types`); the COM row gives way to IP + TCP port
+ *  and «Проверить связь». The rules for the address itself are the server's —
+ *  none are copied here. */
 function onAddTransportChange() {
   const tcp = addTransportIsTcp();
   const typeEl = document.getElementById('mqtt-add-type');
   if (typeEl) {
-    const allowed = tcp ? _tcpCaps.tcp_types : null;
+    const tcpTypes = tcp ? _tcpCaps.tcp_types : null;
     for (const opt of typeEl.options) {
-      const on = tcp ? allowed.includes(opt.value) : opt.value !== 'carel';
+      const on = typeOptionAllowed(opt.value, tcp, tcpTypes);
       opt.hidden = !on;
       opt.disabled = !on;
     }
@@ -2496,12 +2500,13 @@ function onAddTransportChange() {
       if (first) typeEl.value = first.value;
     }
   }
-  setRowShown('mqtt-add-port-row', !tcp);
-  setRowShown('mqtt-add-host-row', tcp);
-  setRowShown('mqtt-add-tcp-port-row', tcp);
+  const rows = dialogRows(tcp, typeEl ? typeEl.value : '', !!_tcpCaps);
+  setRowShown('mqtt-add-port-row', rows.port);
+  setRowShown('mqtt-add-host-row', rows.host);
+  setRowShown('mqtt-add-tcp-port-row', rows.tcpPort);
+  setRowShown('mqtt-add-probe-row', rows.probe);
   const addrEl = document.getElementById('mqtt-add-addr');
-  // Unit 0 is the Modbus broadcast id; over TCP 1..255, on RS-485 1..247.
-  if (addrEl) addrEl.max = tcp ? '255' : '247';
+  if (addrEl) addrEl.max = String(addrMax(tcp));
   onAddTypeChange();
 }
 
@@ -2540,6 +2545,9 @@ function updateAddModalId() {
   const portEl = document.getElementById('mqtt-add-port');
   const addrEl = document.getElementById('mqtt-add-addr');
   const idEl = document.getElementById('mqtt-add-id');
+  // Every edit of type / template / family / host / address / transport lands
+  // here: a verdict must never sit under fields it was not measured for.
+  clearTcpProbeResult();
   if (!typeEl || !portEl || !addrEl || !idEl) return;
   if (addTransportIsTcp()) {
     const hostEl = document.getElementById('mqtt-add-host');
@@ -2549,40 +2557,42 @@ function updateAddModalId() {
   idEl.value = makeDeviceId(typeEl.value, portEl.value, addrEl.value);
 }
 
-/** Add a Modbus TCP device (YAML grammar: docs/contracts/bridge-modbus-tcp.md).
- *  Presence checks only — whether the address is allowed is decided by the
- *  server on save (the bridge's own validator), not re-implemented here. */
-function confirmAddTcpDevice(type, addr, name, idEl, templateName) {
+/** The dialog's Ethernet fields → the one entry shape (mqtt/tcp-dialog.js), or
+ *  null after a presence toast. Shared by «Добавить» and «Проверить связь». */
+function readTcpEntry(type, addr, name, idEl, templateName) {
   const hostEl = document.getElementById('mqtt-add-host');
   const tcpPortEl = document.getElementById('mqtt-add-tcp-port');
   const famEl = document.getElementById('mqtt-add-carel-family');
   const host = hostEl ? String(hostEl.value || '').trim() : '';
   if (!host) {
     showToast('Укажите IP-адрес устройства', 'warn');
-    return;
+    return null;
   }
-  const tcpPort = parseInt(tcpPortEl ? tcpPortEl.value : '', 10) || 502;
   let family = '';
   if (type === 'carel') {
     family = famEl ? String(famEl.value || '') : '';
     if (!family) {
       showToast('Выберите семейство Carel', 'warn');
-      return;
+      return null;
     }
   }
-  const id = idEl.value.trim() || makeTcpDeviceId(type, host, addr);
-  if (_config.devices.find(d => d.id === id)) {
-    showToast(`Устройство ${id} уже добавлено`, 'warn');
+  const id = (idEl ? idEl.value.trim() : '') || makeTcpDeviceId(type, host, addr);
+  return buildTcpEntry({
+    id, type, template: templateName, family, host,
+    tcpPort: tcpPortEl ? tcpPortEl.value : '', address: addr, name,
+  });
+}
+
+/** Add a Modbus TCP device (YAML grammar: docs/contracts/bridge-modbus-tcp.md).
+ *  Presence checks only — whether the address is allowed is decided by the
+ *  server on save (the bridge's own validator), not re-implemented here. */
+function confirmAddTcpDevice(type, addr, name, idEl, templateName) {
+  const dev = readTcpEntry(type, addr, name, idEl, templateName);
+  if (!dev) return;
+  if (_config.devices.find(d => d.id === dev.id)) {
+    showToast(`Устройство ${dev.id} уже добавлено`, 'warn');
     return;
   }
-  const dev = {id, type};
-  if (type === 'template') dev.template = templateName;
-  if (type === 'carel') dev.family = family;
-  Object.assign(dev, {transport: 'tcp', host, tcp_port: tcpPort, address: addr});
-  dev.name = name || (type === 'carel'
-    ? `Carel ${family === 'uaria' ? 'uAria' : 'c.pCOmini'} (${host}:${tcpPort} addr=${addr})`
-    : id);
-  dev.poll_s = 2;
 
   _config.devices.push(dev);
   markUnsaved();
@@ -2709,40 +2719,59 @@ async function saveAndApply() {
       }
     }, 4000);
   } else {
-    const why = saveRefusalText(res);
+    // A refused Modbus TCP entry reads in the operator's words (mqtt/tcp-dialog.js).
+    const why = saveRefusalText(res, uiT);
     showToast(why || ('Ошибка сохранения: ' + (res?.error || 'неизвестная')), 'err');
   }
 }
 
-// mqtt_config.cgi refusal of a Modbus TCP entry → the operator's words. The
-// codes are the bridge's (bridge_bus.REASONS, docs/contracts/bridge-modbus-tcp.md);
-// an unknown code falls back to the generic save error.
-const TCP_REFUSAL_TEXT = {
-  transport_unknown: () => uiT('Неизвестный способ подключения устройства'),
-  type_not_tcp_capable: () => uiT('По сети (Modbus TCP) подключаются только «Шаблон устройства» и Carel'),
-  carel_family_required: () => uiT('Для Carel по сети укажите семейство: c.pCOmini или uAria'),
-  host_missing: () => uiT('Укажите IP-адрес устройства'),
-  host_not_ipv4_literal: () => uiT('IP-адрес: четыре числа через точку, без ведущих нулей, например 192.168.1.20'),
-  // One code for loopback, 0.0.0.0, multicast and reserved (incl. 255.255.255.255)
-  // — the server does not say which, so the text names the three classes. The
-  // board's own LAN address is NOT judged here (it is refused at connect time).
-  host_forbidden: () => uiT('Адрес не допускается: служебный, групповой или адрес самой платы'),
-  tcp_port_invalid: () => uiT('TCP-порт должен быть от 1 до 65535'),
-  unit_invalid: () => uiT('Адрес Modbus по сети должен быть от 1 до 255'),
-  timeout_invalid: () => uiT('Таймаут Modbus TCP должен быть от 0,2 до 5 с'),
-  serial_keys_on_tcp: () => uiT('У сетевого устройства не указывают COM-порт и скорость'),
-  tcp_endpoint_limit: () => uiT('Слишком много сетевых устройств: не больше 16 разных адресов'),
-};
+// ── «Проверить связь» (docs/contracts/bridge-modbus-tcp.md §10) ────────────────
+// Bumped on every clear: a reply that lands after the fields changed (or after
+// the dialog was reopened) belongs to a question nobody is asking any more.
+let _tcpProbeSeq = 0;
 
-function saveRefusalText(res) {
-  if (!res) return '';
-  if (res.error === 'transport_validator_unavailable') {
-    return uiT('Проверка сетевых устройств недоступна: обновите мост MQTT на плате');
+function clearTcpProbeResult() {
+  _tcpProbeSeq++;
+  const resEl = document.getElementById('mqtt-add-probe-result');
+  if (!resEl) return;
+  // A no-break space keeps the line's height, so a verdict never shifts the
+  // fields below it.
+  resEl.textContent = '\u00a0';
+  resEl.className = 'field-hint';
+}
+
+/** One read-only Modbus TCP request from the board to the typed endpoint and
+ *  unit — a hint, never a gate on «Добавить». */
+async function probeTcpDevice() {
+  const btn = document.getElementById('mqtt-add-probe-btn');
+  const resEl = document.getElementById('mqtt-add-probe-result');
+  const typeEl = document.getElementById('mqtt-add-type');
+  const addrEl = document.getElementById('mqtt-add-addr');
+  const tEl = document.getElementById('mqtt-add-template');
+  if (!btn || !resEl || !typeEl || !addrEl || !addTransportIsTcp()) return;
+  const entry = readTcpEntry(typeEl.value, parseInt(addrEl.value, 10), '',
+    document.getElementById('mqtt-add-id'), tEl ? String(tEl.value || '').trim() : '');
+  if (!entry) return;
+  clearTcpProbeResult();
+  const seq = _tcpProbeSeq;
+  btn.disabled = true;
+  btn.textContent = uiT('Проверка…');
+  resEl.replaceChildren(h('span', {'class': 'mqtt-scan-spinner'}),
+    document.createTextNode(` ${uiT('Подключение к')} ${entry.host}:${entry.tcp_port}…`));
+  const res = await apiPost('cgi-bin/mqtt_tcp_probe.cgi', entry)
+    .catch(() => ({ ok: false, error: 'network' }));
+  btn.disabled = false;
+  btn.textContent = uiT('Проверить связь');
+  if (seq !== _tcpProbeSeq) return;
+  // The board echoes what it measured; a verdict for other fields is dropped.
+  if (res && res.ok === true
+      && (res.host !== entry.host || res.tcp_port !== entry.tcp_port || res.address !== entry.address)) {
+    resEl.textContent = '\u00a0';
+    return;
   }
-  if (res.error !== 'invalid_device') return '';
-  const text = TCP_REFUSAL_TEXT[res.reason];
-  if (!text) return '';
-  return res.id ? `${text()} (${res.id})` : text();
+  const view = probeResultView(res, uiT);
+  resEl.className = view.state === 'ok' ? 'field-hint is-ok' : 'field-hint warn';
+  resEl.textContent = view.text;
 }
 
 function markUnsaved() {
@@ -2880,6 +2909,8 @@ window.mqttConfirmAdd    = confirmAddDevice;
 window.mqttUpdateId      = updateAddModalId;
 window.mqttOnAddTypeChange = onAddTypeChange;
 window.mqttOnAddTransportChange = onAddTransportChange;
+window.mqttProbeTcp      = probeTcpDevice;
+window.mqttClearProbe    = clearTcpProbeResult;
 window.mqttShowScanModal = showScanModal;
 window.mqttHideScanModal = hideScanModal;
 window.mqttRunScan       = runScan;

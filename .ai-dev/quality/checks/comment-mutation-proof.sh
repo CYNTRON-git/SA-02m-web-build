@@ -124,6 +124,7 @@ led-shared-home|scripts/05-mqtt.sh|sa02m_install_led_pkg "$BASE_DIR"
 led-shared-home|scripts/update-www-only.sh|sa02m_install_led_pkg "$REPO_ROOT"
 gateway-acl-contract|www/network_config/cgi-bin/gateway_config.cgi|norm_allow_from(name, pcfg, all_errors)
 mqtt-config-transport-contract|www/network_config/cgi-bin/mqtt_config.cgi|refused = bridge_bus.validate_devices(devices)
+mqtt-tcp-probe-contract|www/network_config/cgi-bin/mqtt_tcp_probe.cgi|web_csrf_validate
 mqtt-set-contract|www/network_config/cgi-bin/mqtt_set.cgi|timeout 5 mosquitto_pub
 mqtt-set-contract|www/network_config/cgi-bin/mqtt_set.cgi|web_csrf_validate
 web-update-csrf-contract|www/network_config/cgi-bin/web_update_apply.cgi|web_csrf_validate

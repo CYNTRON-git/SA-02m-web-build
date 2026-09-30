@@ -167,7 +167,7 @@ sa02m_install_led_pkg "$BASE_DIR"
 # running (module interfaces stay backward-compatible) — the last copy is the
 # one that switches the composition. Keep this ordered list in sync with
 # tests/test_entry_surface.py EXPECTED_MODULES and scripts/update-www-only.sh.
-for f in bridge_serial.py bridge_bus.py bridge_tcp.py bridge_fmb.py bridge_meta.py \
+for f in bridge_serial.py bridge_bus.py bridge_probe.py bridge_tcp.py bridge_fmb.py bridge_meta.py \
          bridge_mqtt.py bridge_mr02m_map.py \
          bridge_device.py bridge_mr02m.py bridge_dtv_ce.py bridge_template.py bridge_carel.py bridge_led.py; do
     install -m 0755 -o root -g root "$OPT_DIR/$f" "$BRIDGE_DIR/$f"

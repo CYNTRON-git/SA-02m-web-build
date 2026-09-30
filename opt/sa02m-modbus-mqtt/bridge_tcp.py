@@ -131,6 +131,7 @@ class ModbusTcpClient:
         # unit id -> [timeouts in a row, window steps taken, retry_at, warned]
         self._units: dict[int, list] = {}
         self._self_logged = False
+        self._timeout_warned = False
         self._log = logging.getLogger("tcp.%s-%d" % (host, self._port))
 
     # --- connection ------------------------------------------------------------
@@ -393,4 +394,11 @@ def get_tcp_client(host: str, port: int, timeout: float = 1.0) -> ModbusTcpClien
         c = _tcp_pool.get(key)
         if c is None:
             c = _tcp_pool[key] = ModbusTcpClient(host, port, timeout)
+        elif float(timeout) != c._timeout and not c._timeout_warned:
+            # Once per endpoint: the pooled socket has ONE timeout, and a
+            # second entry asking for another would otherwise lose silently.
+            c._timeout_warned = True
+            c._log.warning("%s: tcp_timeout_s %.1f ignored — endpoint already "
+                           "opened with %.1f (first entry wins)",
+                           c.label, float(timeout), c._timeout)
         return c

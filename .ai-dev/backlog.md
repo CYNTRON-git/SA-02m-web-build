@@ -971,12 +971,9 @@ commit's diff of this file).
   lines, .51 115, .53 92; the file is 6,128 lines. A release entry states user impact; the mechanism
   lives in the contract or the commit.
 
-- [OPEN] 2026-09-27 **[LOW] Modbus TCP follow-ups from the 1.0.6.56 review.** A3: the add-dialog TCP
-  logic (`mqtt.js` connection selector, narrowing, ids, refusal toast) has no JS unit test — only headless
-  runs. A4: no «проверить связь» action — a wrong IP shows only after «Сохранить и применить». A7: devices
-  sharing one `host:tcp_port` use the first entry's `tcp_timeout_s` (documented in
-  `docs/contracts/bridge-modbus-tcp.md`) but nothing warns when entries disagree. A8: `mqtt.js` 2937 lines,
-  `stand_devices.py` 750, `bridge_serial.py` 699 — decompose worklist.
+- [OPEN] 2026-09-27 **[LOW] Modbus TCP follow-ups from the 1.0.6.56 review.** A8: `mqtt.js` 2937 lines,
+  `stand_devices.py` 750, `bridge_serial.py` 699 — decompose worklist. (A3 dialog unit test, A4 «проверить
+  связь», A7 timeout-disagreement WARN: RESOLVED 1.0.6.67.)
 - [OPEN] 2026-09-27 **[LOW] No direct unit test of `ModbusSerial` bit parsing** (FC01/FC02 are covered only
   through the shared helper by the TCP round-trips since 1.0.6.56).
 
