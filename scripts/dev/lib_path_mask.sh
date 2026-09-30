@@ -25,8 +25,11 @@ path_without() {
             n=$((n + 1))
             mkdir -p "$maskdir/$n" || return 1
             local -a skip=()
+            local abs
             for c in "$@"; do skip+=( ! -name "$c" ); done
-            find "$d" -mindepth 1 -maxdepth 1 "${skip[@]}" \
+            # Absolute, so a relative PATH entry's mirror links do not dangle.
+            abs=$(cd "$d" && pwd -P) || return 1
+            find "$abs" -mindepth 1 -maxdepth 1 "${skip[@]}" \
                 -exec ln -s -t "$maskdir/$n" {} + 2>/dev/null
             d="$maskdir/$n"
         fi
