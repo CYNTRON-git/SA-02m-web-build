@@ -2644,7 +2644,9 @@ html[data-theme="light"] .alice-reg-link { color: var(--cyan-hover); }
   line-height: 1.45;
 }
 .factory-reset-warnings li { margin: 0 0 6px; }
-.field-hint.is-ok { color: var(--green); }
+/* --badge-ok-fg, not --green: light --green #248a3d on the dialog's white is
+   4.40:1 (sub-AA at .72rem); the badge token is the AA-darkened green (dark = --green). */
+.field-hint.is-ok { color: var(--badge-ok-fg); }
 .system-manage-grid > .ctrl-card > .btn-group.system-manage-tile-foot-row,
 .system-manage-grid .system-manage-tile-foot.system-manage-tile-foot-row {
   flex-direction: row;
