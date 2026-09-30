@@ -38,28 +38,27 @@ RUN_DIR=/run/sa02m-homeconnect
 LINK_FILE=$RUN_DIR/link.json
 LOCK_FILE=/usr/local/sbin/sa02m-homeconnect-web-trigger.sh
 LOCK_WAIT_S=5
+# The daemon's package (root:root, go-w — scripts/06d-homeconnect.sh): root
+# imports its stdlib-only config module and nothing a non-root user can write.
+PKG_DIR=/opt/sa02m-homeconnect
 
 # >>> FUNCTIONS (extracted by scripts/dev/test-homeconnect-trigger.sh)
 
-# enabled=true in the conf? The same truth set as sa02m_homeconnect/config.py
-# (`1|true|yes|on`, case-insensitive; `=` or `:`; no inline comments — the
-# daemon's configparser does not strip them either). Only the [account]
-# section counts, as in the daemon. Read line by line, no pipe
-# (quality-gate-rigor (f)).
+# enabled=true in the conf? Decided by the daemon's OWN reader,
+# sa02m_homeconnect.config.load(), so the helper and the daemon cannot
+# disagree on any input (section, key case, CRLF, duplicates, [DEFAULT], parse
+# errors). Root safety: `env -i` + `python3 -I -B` (no PYTHON* env, no user
+# site, no bytecode written); the conf path is fixed and passed explicitly; a
+# non-regular conf (a FIFO would block the open) is refused first, and the
+# read is bounded by `timeout` against a swap between that check and the open.
+# Anything but a clean "1" (package absent, load() raising) is "not enabled".
 hc_conf_enabled() {
-    local line val section=""
+    local out
     [ -f "$CONF" ] && [ -r "$CONF" ] || return 1
-    while IFS= read -r line || [ -n "$line" ]; do
-        if [[ $line =~ ^[[:blank:]]*\[([^]]*)\][[:blank:]]*$ ]]; then
-            section=${BASH_REMATCH[1]}
-            continue
-        fi
-        [ "$section" = account ] || continue
-        [[ $line =~ ^[[:blank:]]*[Ee][Nn][Aa][Bb][Ll][Ee][Dd][[:blank:]]*[=:][[:blank:]]*(.*[^[:blank:]])?[[:blank:]]*$ ]] || continue
-        val=${BASH_REMATCH[1]:-}
-        case "${val,,}" in 1|true|yes|on) return 0 ;; *) return 1 ;; esac
-    done < "$CONF"
-    return 1
+    out=$(timeout 5 env -i PATH=/usr/bin:/bin python3 -I -B -c \
+        'import sys; sys.path.insert(0, sys.argv[1]); from sa02m_homeconnect import config; print("1" if config.load(sys.argv[2]).enabled else "0")' \
+        "$PKG_DIR" "$CONF" 2>/dev/null) || return 1
+    [ "$out" = 1 ]
 }
 
 hc_log() {
