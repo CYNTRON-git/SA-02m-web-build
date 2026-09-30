@@ -227,14 +227,14 @@ class RulesApp:
             if self._dropped in (1, 100, 1000) or self._dropped % 10000 == 0:
                 LOG.warning("inbox full: %d message(s) dropped", self._dropped)
 
-    def _step(self, name: str, fn: Any) -> None:
+    def _step(self, name: str, fn: Any, *args: Any) -> None:
         """Run one main-loop step so its exception cannot end the process:
         main() has no handler but the stop one, and a persistent cause (a
         stored scenario, a boot trigger) would crash-loop the unit. Logged
         with a traceback the first time, then sampled; Exception only, so the
         SIGTERM SystemExit and a KeyboardInterrupt still unwind."""
         try:
-            fn()
+            fn(*args)
         except Exception:
             n = self._step_failures.get(name, 0) + 1
             self._step_failures[name] = n
@@ -344,7 +344,9 @@ class RulesApp:
             self.engine.adopt(load(self.path))
 
     def tick(self) -> None:
-        self.reload()
+        # reload() stamps the new mtime before adopting, so a document that
+        # fails to adopt is logged once and not re-read every second.
+        self._step("reload", self.reload)
         self._drain_inbox()
         self._step("engine.tick", self.engine.tick)
         self._step("logic_status_poll", self.engine.logic_status_poll)
@@ -356,7 +358,8 @@ class RulesApp:
         except OSError:
             sid = ""
         if sid:
-            self.engine.run_now(sid)
+            # The flag is already unlinked: a run that raises is not retried.
+            self._step("run_now", self.engine.run_now, sid)
 
     def boot(self) -> None:
         self._step("on_boot", self.engine.on_boot)
