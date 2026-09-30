@@ -109,6 +109,7 @@ mqtt_config.cgi|sudo /usr/local/sbin/sa02m-mqtt-config-apply.sh
 mqtt_ctrl.cgi|sudo -n '"'"'$CTL'"'"' '"'"'$_act'"'"' mqtt-bridge
 mqtt_scan.cgi|sudo /usr/bin/python3 "$SCAN_PY"
 mqtt_set.cgi|timeout 5 mosquitto_pub
+mqtt_tcp_probe.cgi|timeout -k 1 "$PROBE_BUDGET_S" python3 -
 reboot.cgi|sudo -n /usr/local/sbin/sa02m-web-reboot.sh
 restart.cgi|sudo -n /usr/local/sbin/sa02m-web-restart-services.sh
 sa02m_alice_api.cgi|sudo -n /usr/local/sbin/sa02m-alice-web-trigger.sh "$ACTION"
@@ -128,7 +129,10 @@ web_update_upload.cgi|UPLOAD_JSON=$(
 # uploaded package) on its GET branch before the token; the mutation is the
 # multipart receive on the POST branch (UPLOAD_JSON=$( … receive_multipart_file)
 # after web_csrf_require. cpu_profile / kernel_ctrl read `status --json` on GET;
-# the anchor is the `set` on the POST branch.
+# the anchor is the `set` on the POST branch. mqtt_tcp_probe.cgi carries no
+# trigger token (www-data sockets, no sudo) so the sweep cannot discover it —
+# ledgered by declaration; its "mutation" is the outbound probe launch, and it
+# stays outside MUTATING_FLOOR (the sweep floor assumes triggered rows).
 READ_ONLY_SUDO='
 mqtt_status.cgi|sudo -n cat /etc/sa02m_mqtt.env + sudo -n sa02m-mqtt-external-info.py: reads only, nothing written
 status.cgi|sudo -n CTL list + sudo -n rs485-stats-helper driver/inuse: reads only (dashboard poll)
