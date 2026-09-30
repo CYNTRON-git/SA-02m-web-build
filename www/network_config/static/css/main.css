@@ -184,6 +184,14 @@ html {
      диаграмма всегда на светлой «бумаге» (обе темы) — читаема и сохраняет
      информативную синюю подсветку активной клеммы. */
   --wiring-plate: #ffffff;
+
+  /* «Устройства» card values: design sizes of a tile's value / unit (set per
+     card kind on .dev-kpi-row) and the per-tile fit scales devices-kpi-fit.js
+     writes inline on a row that does not fit (1 = design size). */
+  --kpi-val-fs: 1.28rem;
+  --kpi-unit-fs: 0.72rem;
+  --kpi-fit: 1;
+  --kpi-unit-fit: 1;
 }
 
 /* ── Светлая тема ───────────────────────────────────────────────────────── */
@@ -6262,16 +6270,34 @@ html[data-theme="light"] .mqtt-ch-live-ok { color: var(--cyan-hover); }
   background: var(--bg-panel, var(--bg-card)); border-radius: var(--radius-sm, 6px);
   box-sizing: border-box; text-align: center; overflow: hidden;
 }
+/* Value + unit on one line at the design size (--kpi-val-fs / --kpi-unit-fs:
+   :root defaults, overridden per card kind below). A run wider than its tile is shrunk per tile by
+   devices-kpi-fit.js through --kpi-fit / --kpi-unit-fit (value floor 10 px);
+   past that floor the unit wraps under the number (data-fit="wrap"), and only
+   a number too wide at the floor ellipsizes — never the two-sided cut the
+   centred overflow used to make («.12 mg/m»). */
 #tab-devices .dev-kpi-row {
   display: inline-flex; align-items: baseline; justify-content: center;
   gap: 4px; white-space: nowrap; line-height: 1.15;
-  max-width: 100%; overflow: hidden;
+  max-width: 100%; overflow-x: clip; overflow-y: visible;
 }
+#tab-devices .dev-kpi-row[data-fit="wrap"] { flex-wrap: wrap; row-gap: 0; }
 #tab-devices .dev-kpi-val {
-  font-size: 1.28rem; font-weight: 700; color: var(--text);
-  letter-spacing: -0.03em; font-variant-numeric: tabular-nums; max-width: 100%;
+  font-size: calc(var(--kpi-val-fs) * var(--kpi-fit));
+  font-weight: 700; color: var(--text);
+  letter-spacing: -0.03em; font-variant-numeric: tabular-nums;
+  /* Clip horizontally only: `hidden` would also clip the glyphs' 2 px of
+     ink above the 1.15 line box, and `clip` does not turn overflow-y into a
+     scroller the way `hidden` + `visible` would. */
+  max-width: 100%; min-width: 0;
+  overflow-x: clip; overflow-y: visible; text-overflow: ellipsis;
 }
-#tab-devices .dev-kpi-unit { font-size: 0.72rem; color: var(--cyan); font-weight: 600; }
+#tab-devices .dev-kpi-unit {
+  font-size: calc(var(--kpi-unit-fs) * var(--kpi-unit-fit));
+  color: var(--cyan); font-weight: 600; flex: 0 0 auto;
+}
+/* A unitless value (Carel state, fan step, a «—» channel) carries no gap. */
+#tab-devices .dev-kpi-unit:empty { display: none; }
 #tab-devices .dev-kpi-lbl {
   font-size: 0.78rem; font-weight: 600; color: var(--text-sec); line-height: 1.15; width: 100%;
   order: -1; margin-bottom: 1px;
@@ -6301,8 +6327,7 @@ html[data-theme="light"] .mqtt-ch-live-ok { color: var(--cyan-hover); }
   min-height: calc((3 * 4.35rem + 2 * 8px - 8px) / 2);
   gap: 4px; padding: 10px 6px;
 }
-#tab-devices .dev-card--dtv .dev-kpi-val { font-size: 1.7rem; }
-#tab-devices .dev-card--dtv .dev-kpi-unit { font-size: 0.88rem; }
+#tab-devices .dev-card--dtv .dev-kpi-row { --kpi-val-fs: 1.7rem; --kpi-unit-fs: 0.88rem; }
 #tab-devices .dev-card--dtv .dev-kpi-lbl { font-size: 0.82rem; }
 /* Rotating per-sensor chip caption below the ДТВ value (temp/rh/eco2/pressure);
    TVOC carries a static «ZMOD4410». Reserved min-height so the 2 s caption swap
@@ -6322,8 +6347,7 @@ html[data-theme="light"] .mqtt-ch-live-ok { color: var(--cyan-hover); }
   min-height: calc((3 * 4.35rem + 2 * 8px - 8px) / 2);
   gap: 4px; padding: 10px 6px;
 }
-#tab-devices .dev-card--carel .dev-kpi-val { font-size: 1.7rem; }
-#tab-devices .dev-card--carel .dev-kpi-unit { font-size: 0.88rem; }
+#tab-devices .dev-card--carel .dev-kpi-row { --kpi-val-fs: 1.7rem; --kpi-unit-fs: 0.88rem; }
 #tab-devices .dev-card--carel .dev-kpi-lbl { font-size: 0.82rem; }
 /* Sixth cell of the 3-column grid (row 2, column 3). «Сезон» fills the
    cell before it, the same way as «Приток» and «Клапан». */
@@ -6451,6 +6475,15 @@ html[data-theme="light"] .mqtt-ch-live-ok { color: var(--cyan-hover); }
 }
 #tab-devices .dev-metrics.dev-metrics--mr3 { grid-template-columns: repeat(3, minmax(0, 1fr)); }
 #tab-devices .dev-metrics.dev-metrics--mr4 { grid-template-columns: repeat(4, minmax(0, 1fr)); }
+/* 12AI in a narrow card (the 3-card grid near its 1101 px floor): four columns
+   leave a 44–55 px tile that no «1013.3 mbar» fits on one line at the 10 px
+   value floor (the unit would wrap and grow the row),
+   so it drops to three columns × 4 rows. Sized on the card, not the viewport.
+   The ≤700/≤400 rules below still win on a phone (same specificity, later). */
+#tab-devices .dev-card--mr { container-type: inline-size; }
+@container (max-width: 295px) {
+  #tab-devices .dev-metrics.dev-metrics--mr4 { grid-template-columns: repeat(3, minmax(0, 1fr)); }
+}
 /* 6AI: 2 rows stretched to fill the 3-row height (mirrors the ДТВ trick). */
 #tab-devices .dev-metrics.dev-metrics--mr3 .dev-kpi {
   min-height: calc((3 * 4.35rem + 2 * 8px - 8px) / 2);
@@ -6482,16 +6515,14 @@ html[data-theme="light"] .mqtt-ch-live-ok { color: var(--cyan-hover); }
 @media (max-width: 700px) {
   #tab-devices .dev-grid { grid-template-columns: minmax(0, 1fr); }
   #tab-devices .dev-metrics { grid-template-columns: repeat(3, minmax(0, 1fr)); }
-  #tab-devices .dev-kpi-val { font-size: 1.2rem; }
+  #tab-devices .dev-kpi-row { --kpi-val-fs: 1.2rem; }
   #tab-devices .dev-card--dtv .dev-metrics { min-height: 0; }
   #tab-devices .dev-card--dtv .dev-kpi { min-height: 4.35rem; }
-  #tab-devices .dev-card--dtv .dev-kpi-val { font-size: 1.45rem; }
-  #tab-devices .dev-card--dtv .dev-kpi-unit { font-size: 0.8rem; }
+  #tab-devices .dev-card--dtv .dev-kpi-row { --kpi-val-fs: 1.45rem; --kpi-unit-fs: 0.8rem; }
   #tab-devices .dev-card--carel .dev-metrics { min-height: 0; }
   #tab-devices .dev-card--carel .dev-kpi { min-height: 4.35rem; }
-  #tab-devices .dev-card--carel .dev-kpi-val { font-size: 1.45rem; }
+  #tab-devices .dev-card--carel .dev-kpi-row { --kpi-val-fs: 1.45rem; --kpi-unit-fs: 0.8rem; }
   #tab-devices .dev-card--carel .dev-kpi--sp .dev-step-val { font-size: 1.45rem; }
-  #tab-devices .dev-card--carel .dev-kpi-unit { font-size: 0.8rem; }
   /* MR: 12AI 4-col → 3-col on narrow; un-stretch the 6AI cells (as ДТВ). */
   #tab-devices .dev-metrics.dev-metrics--mr4 { grid-template-columns: repeat(3, minmax(0, 1fr)); }
   #tab-devices .dev-card--mr .dev-metrics { min-height: 0; }
