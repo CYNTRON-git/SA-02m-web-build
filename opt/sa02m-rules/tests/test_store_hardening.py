@@ -929,5 +929,137 @@ class SetValueBoundTests(_Tmp):
                 self.assertEqual(self._drops(value), bad)
 
 
+# ── review round 3 ─────────────────────────────────────────────────────
+class ConditionShapeTests(_Tmp):
+    """R3-B1: the stored condition is exactly one of `all` / `any`. An
+    empty sibling means «no conditions» on that side, so the non-empty list
+    is kept; both non-empty is ambiguous (the engine evaluates one list) and
+    refused `all_and_any`; a key other than `all` / `any` is refused
+    `not_list`."""
+    alice_doc = None
+    OK = {"trigger": [{"kind": "boot"}], "action": [{"kind": "notify", "text": "x"}]}
+    H = {"kind": "mode", "value": "home"}
+    A = {"kind": "mode", "value": "away"}
+
+    def _save(self, cond):
+        return store.apply_command(dict(self.OK, name="t", condition=cond), self.path)
+
+    def test_an_empty_sibling_keeps_the_non_empty_list(self):
+        for cond, stored in (({"all": [self.H], "any": []}, {"all": [self.H]}),
+                             ({"any": [self.A], "all": []}, {"any": [self.A]}),
+                             ({"any": [], "all": [self.H, self.A]},
+                              {"all": [self.H, self.A]})):
+            with self.subTest(condition=cond):
+                r = self._save(cond)
+                self.assertTrue(r["ok"], r)
+                self.assertNotIn("dropped", r)
+                self.assertEqual(self.stored()[-1]["condition"], stored)
+
+    def test_both_lists_non_empty_is_refused(self):
+        r = self._save({"all": [self.H], "any": [self.A]})
+        self.assertEqual(r, {"ok": False, "error": "invalid_elements", "dropped": [
+            {"part": "condition", "index": None, "reason": "all_and_any"}]})
+        self.assertEqual(self.stored(), [])
+
+    def test_a_foreign_key_is_refused(self):
+        for cond in ({"all": [], "mode": [self.A]}, {"all": [self.H], "mode": [self.A]},
+                     {"ALL": [self.H]}, {"all": [self.H], "note": "x"}):
+            with self.subTest(condition=cond):
+                r = self._save(cond)
+                self.assertEqual(r, {"ok": False, "error": "invalid_elements", "dropped": [
+                    {"part": "condition", "index": None, "reason": "not_list"}]})
+                self.assertEqual(self.stored(), [])
+
+    def test_a_gutted_list_next_to_an_empty_sibling_is_refused(self):
+        r = self._save({"all": [{"kind": "mode", "value": "moon"}], "any": []})
+        self.assertEqual(r, {"ok": False, "error": "invalid_elements", "dropped": [
+            {"part": "condition", "index": 0, "reason": "bad_value"}]})
+
+    def test_null_and_falsy_containers_mean_no_conditions(self):
+        """A13: `[]`, `""`, `0`, `false` and all-null objects carry nothing —
+        «no conditions», as the contract states; a truthy non-object is
+        `not_object`."""
+        for cond in ({"all": None, "mode": None}, {"any": [], "all": None}, [], "", 0, False):
+            with self.subTest(condition=cond):
+                r = self._save(cond)
+                self.assertTrue(r["ok"], r)
+                self.assertEqual(self.stored()[-1]["condition"], {})
+
+
+class OverRangeIntFieldTests(_Tmp):
+    """R3-B2: an integer past float range is «not a number» for `order`
+    (⇒ 0) and `template_version` (⇒ 1), as the contract's number rule says."""
+    alice_doc = None
+
+    def test_order_and_template_version_fall_back(self):
+        for order in (10 ** 400, -10 ** 400, "9" * 400):
+            with self.subTest(order=str(order)[:12]):
+                r = store.apply_command({"id": "o", "name": "t", "order": order,
+                                         "template_id": "tpl",
+                                         "template_version": order,
+                                         "action": [{"kind": "notify", "text": "x"}]},
+                                        self.path)
+                self.assertTrue(r["ok"], r)
+                s = self.stored()[0]
+                self.assertEqual((s["order"], s["template_version"]), (0, 1))
+
+    def test_a_bool_is_not_a_number(self):
+        """The same number rule: `true` is not 1."""
+        r = store.apply_command({"id": "b", "name": "t", "order": True,
+                                 "template_id": "tpl", "template_version": True,
+                                 "trigger": [{"kind": "every", "minutes": True},
+                                             {"kind": "sun", "offset": True}],
+                                 "action": [{"kind": "delay", "seconds": True},
+                                            {"kind": "notify", "text": "x"}]}, self.path)
+        self.assertTrue(r["ok"], r)
+        s = self.stored()[0]
+        self.assertEqual((s["order"], s["template_version"]), (0, 1))
+        self.assertEqual(s["trigger"], [{"kind": "sun", "event": "sunrise", "offset": 0}])
+        self.assertEqual(r.get("dropped"), [
+            {"part": "trigger", "index": 0, "reason": "bad_value"},
+            {"part": "action", "index": 0, "reason": "bad_value"}])
+
+
+class StrictJsonStoreTests(_Tmp):
+    """A12: nothing reaches the store (and the cloud answer) that a strict
+    JSON parser rejects. `params` are normalised (NaN / ±Infinity ⇒ null, so
+    the template uses its default); a scalar `state` value that is not a
+    finite number drops its trigger / condition as `bad_value`."""
+    alice_doc = None
+
+    def _strict(self):
+        with open(self.path, encoding="utf-8") as fh:
+            text = fh.read()
+        json.loads(text, parse_constant=lambda c: self.fail("non-strict token %s" % c))
+
+    def test_params_non_finite_numbers_become_null(self):
+        r = store.apply_command({
+            "name": "t", "type": "logic", "template": "thermostat",
+            "params": {"x": float("nan"), "y": [float("inf"), 1],
+                       "z": {"w": float("-inf"), "k": 2.5}}}, self.path)
+        self.assertTrue(r["ok"], r)
+        self.assertEqual(self.stored()[0]["params"],
+                         {"x": None, "y": [None, 1], "z": {"w": None, "k": 2.5}})
+        json.dumps(r, allow_nan=False)
+        self._strict()
+
+    def test_non_finite_state_values_are_dropped(self):
+        for v in (float("nan"), float("inf"), float("-inf"), 10 ** 400):
+            with self.subTest(value=repr(v)[:12]):
+                r = store.apply_command({
+                    "name": "t",
+                    "trigger": [{"kind": "state", "device": "s", "cap": "t", "op": ">",
+                                 "value": v}, {"kind": "boot"}],
+                    "condition": {"all": [{"kind": "state", "device": "s", "cap": "t",
+                                           "op": "==", "value": v},
+                                          {"kind": "mode", "value": "home"}]},
+                    "action": [{"kind": "notify", "text": "x"}]}, self.path)
+                self.assertTrue(r["ok"], r)
+                self.assertEqual(r.get("dropped"), [
+                    {"part": "trigger", "index": 0, "reason": "bad_value"},
+                    {"part": "condition", "index": 0, "reason": "bad_value"}])
+                self._strict()
+
+
 if __name__ == "__main__":
     unittest.main()
