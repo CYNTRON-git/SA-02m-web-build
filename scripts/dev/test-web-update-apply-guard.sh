@@ -71,16 +71,34 @@ export SA02M_SESSION_DIR="$T/sessions"
 # liveness from `kill -0 $!` — a test that answers EPERM for the real
 # sudo→root child, so the fixture modelled a mechanism the board never had
 # (section H below records the class). ──────────────────────────────────────
+# The shim marks itself live ($T/sudo.live.<pid>) until it has released the
+# lock: run_cgi waits for every mark to clear, so a launch never outlives its
+# own case. Without that wait case 7 met case 5's still-held lock whenever case
+# 6 took < 0.2 s (every Linux host: CI 2026-09-29, WSL) and got the «already
+# running» answer instead of its launch — green only where process start is
+# slow (Windows/git-bash).
 cat > "$BIN/sudo" <<SHIM
 #!/bin/bash
+: > "$T/sudo.live.\$\$"
 printf '%s\n' "\$*" >> "$T/sudo.calls"
 printf '%s' "\$\$" > "$STATE/update.lock"
 sleep 1.2
-rm -f "$STATE/update.lock"
+rm -f "$STATE/update.lock" "$T/sudo.live.\$\$"
 exit 0
 SHIM
 chmod +x "$BIN/sudo"
 PATH="$BIN:$PATH"; export PATH
+
+# settle_launches — block until no launch shim from an earlier case is alive
+# (bounded: a shim that never finishes FAILS the run instead of hanging it).
+settle_launches() {
+  local i live
+  for i in $(seq 1 100); do
+    live=$(compgen -G "$T/sudo.live.*") || return 0
+    sleep 0.1
+  done
+  bad "a launch shim never finished (${live//$'\n'/ }) — the next case would see its lock"
+}
 
 # ── a session + CSRF token from the shipped lib ────────────────────────────
 # shellcheck source=www/network_config/cgi-bin/lib_web_auth.sh
@@ -95,6 +113,7 @@ CSRF=$(web_csrf_token_for_session "$TOK")
 
 # run_cgi [cookie] [csrf] → body on stdout (CR stripped); resets the sudo ledger.
 run_cgi() {
+  settle_launches
   rm -f "$T/sudo.calls"
   REQUEST_METHOD=POST CONTENT_LENGTH=0 QUERY_STRING='' \
   HTTP_COOKIE="session_token=${1:-$TOK}" HTTP_X_SA02M_CSRF="${2:-$CSRF}" \
@@ -301,16 +320,38 @@ expect_get "G6 verifying, 600 s old, dead pid, sa02m-update-verify.service activ
 # committing / rolling_back AND a live runner → E_UPDATE_RUNNING, no sudo; a
 # STALE transaction (runner gone) stays rebootable — the reboot IS its recovery
 # path (recover → sa02m-update-verify at boot). The sudo chain of reboot.cgi
-# runs inside a nohup'd `sh -c` whose stdout is redirected into
-# /var/log/sa02m_install.log — absent on a dev host, so the shell never starts
-# it there and «sudo called» is observable only as an ABSENCE; the ok:true body
-# is the positive observable for the rebootable cases.
+# runs inside a nohup'd `sh -c`; the observables are the body AND whether that
+# nohup launch happened (nohup.calls — see «Sandbox» below): absent for the
+# refused cases, present for the rebootable ones.
 # RED, observed 2026-09-23 on the 1.0.6.50 reboot.cgi: R1 answers ok:true (it
 # refuses nothing); R2–R4 hold on both trees.
+# Sandbox (2026-09-29, CI Linux): the chain above is real wherever the host log
+# IS writable — a root shell (WSL, a container, the board) ran it, its
+# `sleep 1; sudo …` fired inside later cases (R4 «sudo called: yes», H1 «sudo
+# calls 3»), and once $T is gone that `sudo` is the host's own `reboot -f`. So R
+# drives a copy of the SHIPPED reboot.cgi (+ the two libs it sources) with the
+# log path sed-retargeted into $T, and `nohup` is a recording shim for the
+# section: the chain is observed (nohup.calls) on every host and never runs.
 echo
 echo "── R. reboot.cgi vs a running update ──"
-REBOOT_CGI="$(dirname "$CGI")/reboot.cgi"
-[ -f "$REBOOT_CGI" ] || { bad "R reboot.cgi not found beside the CGI: $REBOOT_CGI"; }
+REBOOT_SRC="$(dirname "$CGI")/reboot.cgi"
+REBOOT_CGI="$T/cgi-bin/reboot.cgi"
+mkdir -p "$T/cgi-bin"
+if [ -f "$REBOOT_SRC" ] && grep -q '/var/log/sa02m_install.log' "$REBOOT_SRC"; then
+  sed "s|/var/log/sa02m_install.log|$T/install.log|g" "$REBOOT_SRC" > "$REBOOT_CGI"
+  cp "$(dirname "$CGI")/lib_web_auth.sh" "$(dirname "$CGI")/lib_web_update.sh" "$T/cgi-bin/"
+  grep -q '/var/log/' "$REBOOT_CGI" && bad "R reboot.cgi copy still names /var/log — refusing to run it against the host"
+  grep -q 'nohup ' "$REBOOT_CGI" || bad "R reboot.cgi has no nohup launch left — the nohup observable would be vacuous"
+else
+  bad "R reboot.cgi not found beside the CGI, or it no longer logs to /var/log/sa02m_install.log (retarget would be vacuous): $REBOOT_SRC"
+fi
+cat > "$BIN/nohup" <<SHIM
+#!/bin/bash
+printf '%s\n' "\$*" >> "$T/nohup.calls"
+exit 0
+SHIM
+chmod +x "$BIN/nohup"
+nohup_called() { [ -f "$T/nohup.calls" ]; }
 export SA02M_UPDATE_STATEDIR="$UPD"
 cat > "$BIN/systemctl" <<'SHIM'
 #!/bin/bash
@@ -321,35 +362,38 @@ esac
 SHIM
 chmod +x "$BIN/systemctl"
 run_reboot() {  # [csrf]
-  rm -f "$T/sudo.calls"
+  rm -f "$T/sudo.calls" "$T/nohup.calls"
+  # Sourced under an EXIT-trap `wait` ($0 stays the CGI path its lib lookups
+  # use): the CGI's backgrounded nohup has recorded itself — or provably never
+  # started — by the time this returns, so neither verdict is a race.
   printf '{}' | REQUEST_METHOD=POST CONTENT_LENGTH=2 QUERY_STRING='' \
     HTTP_COOKIE="session_token=$TOK" HTTP_X_SA02M_CSRF="${1:-$CSRF}" \
-    bash "$REBOOT_CGI" 2>/dev/null | tr -d '\r'
+    bash -c 'trap wait EXIT; . "$0"' "$REBOOT_CGI" 2>/dev/null | tr -d '\r'
 }
 # R1 live runner at applying → refused, no sudo
 write_txn applying "$(now_utc)"; printf '%s\n' "$LIVE_PID" > "$UPD/update.lock"
-body=$(run_reboot); sleep 1.5
-if printf '%s' "$body" | grep -q '"error_code":"E_UPDATE_RUNNING"' && printf '%s' "$body" | grep -q '"ok":false' && ! sudo_called; then
+body=$(run_reboot)
+if printf '%s' "$body" | grep -q '"error_code":"E_UPDATE_RUNNING"' && printf '%s' "$body" | grep -q '"ok":false' && ! sudo_called && ! nohup_called; then
   ok "R1 live runner at applying → E_UPDATE_RUNNING, no reboot"
 else
-  bad "R1 live runner at applying → body: ${body##*$'\n\n'}, sudo called: $(sudo_called && echo yes || echo no) (want E_UPDATE_RUNNING, no sudo)"
+  bad "R1 live runner at applying → body: ${body##*$'\n\n'}, sudo called: $(sudo_called && echo yes || echo no), reboot chain launched: $(nohup_called && echo yes || echo no) (want E_UPDATE_RUNNING, no sudo, no launch)"
 fi
 # R2 stale transaction (runner gone) → rebootable
 write_txn verifying "$OLD_TS"; printf '%s\n' "$DEAD_PID" > "$UPD/update.lock"
 body=$(run_reboot)
-printf '%s' "$body" | grep -q '"ok":true' && ok "R2 stale transaction (dead runner) → reboot allowed (the recovery path)" \
-  || bad "R2 stale transaction → body: ${body##*$'\n\n'} (want ok:true)"
+printf '%s' "$body" | grep -q '"ok":true' && nohup_called && ok "R2 stale transaction (dead runner) → reboot allowed (the recovery path), reboot chain launched" \
+  || bad "R2 stale transaction → body: ${body##*$'\n\n'}, reboot chain launched: $(nohup_called && echo yes || echo no) (want ok:true + a launch)"
 # R3 terminal stage with a live pid in the lock → rebootable
 write_txn done "$(now_utc)"; printf '%s\n' "$LIVE_PID" > "$UPD/update.lock"
 body=$(run_reboot)
-printf '%s' "$body" | grep -q '"ok":true' && ok "R3 stage=done → reboot allowed" \
-  || bad "R3 stage=done → body: ${body##*$'\n\n'} (want ok:true)"
+printf '%s' "$body" | grep -q '"ok":true' && nohup_called && ok "R3 stage=done → reboot allowed, reboot chain launched" \
+  || bad "R3 stage=done → body: ${body##*$'\n\n'}, reboot chain launched: $(nohup_called && echo yes || echo no) (want ok:true + a launch)"
 # R4 CSRF still first: wrong token → E_CSRF, no sudo, even with a live runner
 write_txn applying "$(now_utc)"
-body=$(run_reboot "wrong-token"); sleep 1.5
-if printf '%s' "$body" | grep -q '"error_code":"E_CSRF"' && ! sudo_called; then ok "R4 wrong CSRF → E_CSRF before the update guard, no reboot"
-else bad "R4 wrong CSRF → body: ${body##*$'\n\n'}, sudo called: $(sudo_called && echo yes || echo no)"; fi
-rm -f "$BIN/systemctl" "$UPD/transaction.json" "$UPD/update.lock"
+body=$(run_reboot "wrong-token")
+if printf '%s' "$body" | grep -q '"error_code":"E_CSRF"' && ! sudo_called && ! nohup_called; then ok "R4 wrong CSRF → E_CSRF before the update guard, no reboot"
+else bad "R4 wrong CSRF → body: ${body##*$'\n\n'}, sudo called: $(sudo_called && echo yes || echo no), reboot chain launched: $(nohup_called && echo yes || echo no)"; fi
+rm -f "$BIN/systemctl" "$BIN/nohup" "$UPD/transaction.json" "$UPD/update.lock"
 unset SA02M_UPDATE_STATEDIR
 
 # ═══ H. POST verdict after the launch: the handoff race (1.0.6.53) ═══════════
