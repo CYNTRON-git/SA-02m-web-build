@@ -34,13 +34,13 @@ MR02M_MODULE_TYPES: dict[int, tuple[int, int, int, int]] = {
 # Holding 400+7*(ch-1): reg0 = ai_sensor_t (MODBUS_VARIABLES / module_profiles)
 MR02M_AI_HOLDING_BASE = 400
 MR02M_AI_CHANNEL_STRIDE = 7
-# Max regs per FC03 AI chunk (6 channels × 7). Full 12AI (84 regs / 173 B) often
-# truncates on half-duplex RS-485 @19200 with several slaves on the same COM.
-# Per-device override: yaml key `ai_read_chunk_regs` > env
+# Max regs per FC03 AI chunk (6 channels × 7) where the port sets no tighter
+# ceiling. Per-device override: yaml key `ai_read_chunk_regs` > env
 # SA02M_MR02M_AI_CHUNK_REGS > this default (resolve_ai_read_chunk_regs()).
-# A busy COM at 115200 with 6 slaves can truncate even 42 regs (bench SA02M-136,
-# 2026-07-24), but halving the chunk doubles the transactions and costs 26–73 %
-# more time per AI block — a per-device knob, not a global default change.
+# A fast 8250 line caps every read to fit its RX FIFO (bridge_serial
+# fifo_safe_read_regs): there the AI block reads 21 regs (3 channels) whatever
+# this resolves to — a 42-reg reply (89 B) overruns the 64 B FIFO, which is
+# what truncated it on bench 136 (2026-07-24) and 1.135 (2026-09-30).
 MR02M_AI_READ_CHUNK_REGS = 42
 MR02M_AI_CHUNK_ENV = "SA02M_MR02M_AI_CHUNK_REGS"
 MR02M_AI_READ_RETRIES = 3

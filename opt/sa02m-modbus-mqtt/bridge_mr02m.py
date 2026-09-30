@@ -174,9 +174,16 @@ class MR02mPoller(DevicePoller):
         """Read all AI holdings in channel-aligned chunks; None marks unread regs."""
         total = self._ai * MR02M_AI_CHANNEL_STRIDE
         block: list[int | None] = [None] * total
+        # Whole channels inside the port's read ceiling (bridge_serial
+        # fifo_safe_read_regs), so its generic split never tears a channel.
+        chunk = self._ai_chunk_regs
+        cap = getattr(self.get_port(), "max_read_regs", None)
+        if cap:
+            chunk = min(chunk, max(MR02M_AI_CHANNEL_STRIDE,
+                                   cap - cap % MR02M_AI_CHANNEL_STRIDE))
         off = 0
         while off < total:
-            n = min(self._ai_chunk_regs, total - off)
+            n = min(chunk, total - off)
             n = (n // MR02M_AI_CHANNEL_STRIDE) * MR02M_AI_CHANNEL_STRIDE
             if n < MR02M_AI_CHANNEL_STRIDE:
                 n = min(MR02M_AI_CHANNEL_STRIDE, total - off)
