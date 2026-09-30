@@ -71,7 +71,9 @@ def load(path: Optional[str] = None) -> BridgeConfig:
     except OSError as exc:
         return BridgeConfig(unreadable=True,
                             warnings=["unreadable conf: %s" % (exc.strerror or exc)])
-    cfg = configparser.ConfigParser()
+    # interpolation=None: a hand-edited `%` is a plain character the
+    # allow-lists refuse (§8), not an InterpolationSyntaxError out of load().
+    cfg = configparser.ConfigParser(interpolation=None)
     try:
         cfg.read_string(text, source=target)
     except configparser.Error as exc:
