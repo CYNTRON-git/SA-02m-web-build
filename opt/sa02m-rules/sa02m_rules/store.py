@@ -412,6 +412,8 @@ def _clean_state_op(item: Dict[str, Any], row: Dict[str, Any],
     elif op in EVENT_OPS:
         row.pop("value", None)
     else:
+        if not _clean_value(item.get("value")):
+            return False  # NaN / ±Infinity would make the store non-strict JSON
         row["value"] = item.get("value")
     row["op"] = op
     return True
@@ -444,18 +446,30 @@ def _clean_value(v: Any) -> bool:
     return False
 
 
-def _bad_condition_container(cond: Any) -> bool:
-    """A condition object whose `all`/`any` is present but not a list, or
-    that carries neither while carrying something (`{"mode": [...]}`).
+def _condition_container_reason(cond: Any) -> str:
+    """"" for a condition object the store can read, else the drop reason:
+    `not_list` — a non-null key other than `all` / `any`, or an `all` /
+    `any` that is not a list; `all_and_any` — both lists non-empty (the
+    engine evaluates ONE list, so which one the author meant is a guess).
     `null` values count as absent — `{"all": null}` is «no conditions»."""
     if not isinstance(cond, dict):
-        return False
+        return ""
     carried = {k: v for k, v in cond.items() if v is not None}
-    if not carried:
-        return False
-    if any(k in carried and not isinstance(carried[k], list) for k in ("all", "any")):
-        return True
-    return not any(isinstance(carried.get(k), list) for k in ("all", "any"))
+    if any(k not in ("all", "any") or not isinstance(v, list) for k, v in carried.items()):
+        return "not_list"
+    if carried.get("all") and carried.get("any"):
+        return "all_and_any"
+    return ""
+
+
+def _condition_key(cond: Dict[str, Any]) -> str:
+    """The one list a condition object carries: `any` when it is a
+    non-empty list and `all` is not, else `all` (an empty sibling is «no
+    conditions» on its side, never a reason to drop the other list)."""
+    if isinstance(cond.get("any"), list) and cond["any"] \
+            and not (isinstance(cond.get("all"), list) and cond["all"]):
+        return "any"
+    return "all"
 
 
 def _clean_target(item: Dict[str, Any], row: Dict[str, Any]) -> str:
@@ -494,15 +508,19 @@ def _finite(v: Any) -> bool:
 def _to_int(v: Any, default: int) -> int:
     """int(v) for a store field, `default` for anything int() refuses or
     that is not finite — a save never dies on a number (error:"internal")."""
-    if isinstance(v, float) and not math.isfinite(v):
-        return default
+    if isinstance(v, bool) or (isinstance(v, float) and not math.isfinite(v)):
+        return default  # a bool is not a number (contract §numbers)
     try:
-        return int(v)
+        n = int(v)
+        float(n)  # past float range ⇒ OverflowError ⇒ «not a number»
     except (TypeError, ValueError, OverflowError):
         return default
+    return n
 
 
 def _to_float(v: Any, default: float) -> float:
+    if isinstance(v, bool):
+        return default
     try:
         f = float(v)
     except (TypeError, ValueError, OverflowError):
@@ -650,7 +668,7 @@ def _condition_item(item: Any) -> Tuple[Optional[Dict[str, Any]], str]:
 def _clean_condition(raw: Any, drop: Callable[[int, str], None] = _no_drop) -> Dict[str, Any]:
     if not isinstance(raw, dict):
         return {}
-    key = "any" if isinstance(raw.get("any"), list) else "all"
+    key = _condition_key(raw)
     items = raw.get(key) if isinstance(raw.get(key), list) else []
     cleaned = []
     for i, item in enumerate(items):
@@ -701,7 +719,7 @@ def _action_item(item: Any, scene_only: bool,
         row["seconds"] = seconds
     elif kind == "delay":
         raw_s = item.get("seconds") or 1
-        if isinstance(raw_s, float) and not math.isfinite(raw_s):
+        if isinstance(raw_s, bool) or (isinstance(raw_s, float) and not math.isfinite(raw_s)):
             return None, "bad_value"
         try:
             row["seconds"] = max(1, min(300, int(raw_s)))
@@ -775,17 +793,34 @@ def _clean_end(raw: Any) -> Optional[Dict[str, Any]]:
     return {"after_s": after_s, "mode": raw["mode"]}
 
 
+def _strict_json(v: Any) -> Any:
+    """`v` with every NaN / ±Infinity float replaced by None — the store and
+    the cloud answer stay strict JSON (a template reads None as «use the
+    default»)."""
+    if isinstance(v, float) and not math.isfinite(v):
+        return None
+    if isinstance(v, dict):
+        return {k: _strict_json(x) for k, x in v.items()}
+    if isinstance(v, list):
+        return [_strict_json(x) for x in v]
+    return v
+
+
 def _clean_params(raw: Any) -> Optional[Dict[str, Any]]:
-    """Template params: object, ≤ 4 KB JSON (contract §Document)."""
+    """Template params: object, ≤ 4 KB JSON (contract §Document), non-finite
+    numbers normalised to null."""
     if not isinstance(raw, dict) or not raw:
         return None
     try:
         blob = json.dumps(raw, ensure_ascii=False)
-    except (TypeError, ValueError):
+    except (TypeError, ValueError, OverflowError, RecursionError):
         return None
     if len(blob) > PARAMS_MAX_BYTES:
         return None
-    return raw
+    try:
+        return _strict_json(raw)
+    except RecursionError:
+        return None
 
 
 def _summary(s: Dict[str, Any]) -> str:
@@ -829,8 +864,9 @@ def validate_row(body: Dict[str, Any], existing_id: Optional[str] = None,
             sink.append({"part": part, "index": None, "reason": "not_list"})
     if body.get("condition") and not isinstance(body.get("condition"), dict):
         sink.append({"part": "condition", "index": None, "reason": "not_object"})
-    elif _bad_condition_container(body.get("condition")):
-        sink.append({"part": "condition", "index": None, "reason": "not_list"})
+    elif _condition_container_reason(body.get("condition")):
+        sink.append({"part": "condition", "index": None,
+                     "reason": _condition_container_reason(body.get("condition"))})
     row: Dict[str, Any] = {
         "id": sid or "",
         "name": name,
@@ -891,13 +927,12 @@ def _gutted(body: Dict[str, Any], row: Dict[str, Any]) -> bool:
         if raw and not row[part]:
             return True
     cond = body.get("condition")
-    if _bad_condition_container(cond):
+    if _condition_container_reason(cond):
         return True
     if cond and not row["condition"]:
         if not isinstance(cond, dict):
             return True
-        key = "any" if isinstance(cond.get("any"), list) else "all"
-        return bool(cond.get(key)) if isinstance(cond.get(key), list) else False
+        return bool(cond.get(_condition_key(cond)))
     return False
 
 
