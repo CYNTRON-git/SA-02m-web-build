@@ -593,6 +593,8 @@ class RealStoreReadabilityTests(unittest.TestCase):
         self.assertEqual([r["id"] for r in doc["scenarios"]], ["s1"])
 
     def test_a_mode_0000_file_is_unreadable_for_a_non_root_uid(self):
+        if not hasattr(os, "geteuid"):
+            self.skipTest("SKIPPED, NOT PASSED: no POSIX uids on this host (os.geteuid absent)")
         self.write(json.dumps({"scenarios": [_scene()]}, ensure_ascii=False))
         os.chmod(self.path, 0)
         if os.geteuid() != 0:
