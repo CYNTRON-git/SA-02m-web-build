@@ -807,21 +807,22 @@ def _strict_json(v: Any) -> Any:
     return v
 
 
-def _clean_params(raw: Any) -> Optional[Dict[str, Any]]:
-    """Template params: object, ≤ 4 KB JSON (contract §Document), non-finite
-    numbers normalised to null."""
+def _clean_params(raw: Any) -> Tuple[Optional[Dict[str, Any]], str]:
+    """Template params → (params, "") or (None, reason). An object whose
+    compact JSON, as stored (non-finite numbers ⇒ null), is at most
+    PARAMS_MAX_BYTES UTF-8 bytes; over it ⇒ `too_large` (contract §Store).
+    Absent / empty / not an object ⇒ (None, "")."""
     if not isinstance(raw, dict) or not raw:
-        return None
+        return None, ""
     try:
         params = _strict_json(raw)
-        # The bound is judged on what is stored (NaN ⇒ null grows a value,
-        # a 400-digit int ⇒ null shrinks it).
-        blob = json.dumps(params, ensure_ascii=False, allow_nan=False)
+        blob = json.dumps(params, ensure_ascii=False, allow_nan=False,
+                          separators=(",", ":"))
     except (TypeError, ValueError, OverflowError, RecursionError):
-        return None
-    if len(blob) > PARAMS_MAX_BYTES:
-        return None
-    return params
+        return None, "too_large"  # nesting past the recursion limit
+    if len(blob.encode("utf-8")) > PARAMS_MAX_BYTES:
+        return None, "too_large"
+    return params, ""
 
 
 def _summary(s: Dict[str, Any]) -> str:
@@ -880,8 +881,8 @@ def validate_row(body: Dict[str, Any], existing_id: Optional[str] = None,
                                 drop=drop_in("action"), targets=targets),
         "code": str(body.get("code") or "")[:8000] if typ == "code" else "",
         "summary": "",
-        # The board's own record (journal): a client value is never stored
-        # or echoed — a NaN there made the answer non-strict JSON.
+        # Only the board records a run (journal); a client value is not a
+        # run, and echoing it would let a NaN into the strict-JSON answer.
         "last_run": None,
         "last_error": "",
     }
@@ -901,9 +902,12 @@ def validate_row(body: Dict[str, Any], existing_id: Optional[str] = None,
         row["template_version"] = max(1, _to_int(body.get("template_version") or 1, 1))
     if body.get("source") in ("wizard", "manual"):
         row["source"] = body["source"]
-    params = _clean_params(body.get("params"))
+    params, reason = _clean_params(body.get("params"))
     if params is not None:
         row["params"] = params
+    elif reason:
+        # Never silent: the template would run on defaults.
+        sink.append({"part": "params", "index": None, "reason": reason})
     end = _clean_end(body.get("end"))
     if end is not None:
         row["end"] = end
@@ -1027,6 +1031,7 @@ def apply_command(body: Dict[str, Any], path: str = DEFAULT_PATH) -> Dict[str, A
         # row minted before an explicit row carrying the same id used to land
         # two rows under one id (review 1.0.6.39 N2).
         ids = _explicit_ids(body["scenarios"][:SCENARIOS_MAX])
+        prev_by_id = {s.get("id"): s for s in doc["scenarios"] if isinstance(s, dict)}
         for i, raw in enumerate(body["scenarios"][:SCENARIOS_MAX]):
             if not isinstance(raw, dict):
                 continue
@@ -1037,6 +1042,10 @@ def apply_command(body: Dict[str, Any], path: str = DEFAULT_PATH) -> Dict[str, A
             if not row["id"]:
                 row["id"] = _new_id(ids)
                 ids.append(row["id"])
+            prev = prev_by_id.get(row["id"])
+            if prev is not None:  # the board's run record survives a replace
+                row["last_run"] = prev.get("last_run")
+                row["last_error"] = prev.get("last_error") or ""
             cleaned.append(row)
         doc["scenarios"] = cleaned
         save(doc, path)
