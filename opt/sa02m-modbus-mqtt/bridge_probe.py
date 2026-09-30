@@ -30,9 +30,9 @@ import bridge_bus
 PROBE_TIMEOUT_S = bridge_bus.TCP_TIMEOUT_DEFAULT_S   # connect, and then the reply
 PROBE_FC, PROBE_START, PROBE_QTY = 0x03, 0, 1
 PROBE_TID = 1                                        # the bridge's first tid too
-# A crashed probe must never wedge the button: > 2 x timeout + interpreter
-# start, < the CGI's shell budget so a killed probe's lock is stale by the
-# time the next click can come.
+# A crashed probe must never wedge the button: the lock goes stale after
+# more than the CGI's whole budget (`timeout -k 1 8` = 9 s), so a probe the
+# CGI killed can no longer be holding it when the next click comes.
 LOCK_STALE_S = 15.0
 
 VERDICTS = ("device_ok", "device_exception", "unit_silent", "not_modbus",
