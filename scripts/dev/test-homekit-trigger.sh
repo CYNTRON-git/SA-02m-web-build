@@ -40,6 +40,12 @@
 #   I  conf truth set parity with the daemon: hk_conf_enabled agrees with
 #      sa02m_homekit.config.load().enabled over a sample matrix (key case and
 #      a key in another section included)
+#   I2 whole-file parity: CRLF, duplicate key (any case), duplicate section,
+#      a parse error in [bridge] or elsewhere, a continuation line, [DEFAULT]
+#      inheritance, `[bridge] ; c`, a key before any section, a UTF-8 BOM,
+#      non-UTF-8 bytes — helper vs config.load() directly
+#   P  root safety: a module planted on PYTHONPATH is never imported by the
+#      helper's conf read (env -i + python3 -I)
 #
 # Comment-mutation cases to register with the row (measured RED here):
 #   commenting out `hk_write_disabled_status "$since"` → D2 RED;
@@ -135,6 +141,7 @@ run_trigger() {
         SETUP_FILE=$RUN_DIR/setup.json
         LOCK_FILE=$SB/lockfile
         LOCK_WAIT_S=${HK_LOCK_WAIT_S:-5}
+        PKG_DIR=$PKG
         # shellcheck source=/dev/null
         . "$FN"
         hk_main "$@"
@@ -423,7 +430,7 @@ if [ -f "$PKG/sa02m_homekit/config.py" ]; then
         conf="$SB/parity.conf"
         printf '[bridge]\n%b\ninterface = eth0\nport = 21064\n' "$sample" > "$conf"
         py=$(PYTHONPATH="$PKG" python3 -c 'import sys; from sa02m_homekit import config; print("1" if config.load(sys.argv[1]).enabled else "0")' "$conf" 2>/dev/null)
-        sh=$( ( CONF=$conf; . "$FN"; hk_conf_enabled && echo 1 || echo 0 ) 2>/dev/null )
+        sh=$( ( CONF=$conf; PKG_DIR=$PKG; . "$FN"; hk_conf_enabled && echo 1 || echo 0 ) 2>/dev/null )
         i_n=$((i_n + 1))
         if [ -z "$py" ] || [ "$py" != "$sh" ]; then
             bad "I sample '$sample': daemon says '${py:-<error>}', helper says '$sh'"
@@ -450,6 +457,55 @@ SAMPLES
     [ "$i_bad" -eq 0 ] && [ "$i_n" -ge 15 ] && ok "I helper and daemon agree on all $i_n conf samples"
 else
     bad "I $PKG/sa02m_homekit/config.py absent — the parity half cannot run"
+fi
+
+echo "I2. whole-file parity with sa02m_homekit.config (shapes a line reader gets wrong)"
+if [ -f "$PKG/sa02m_homekit/config.py" ]; then
+    j_n=0; j_bad=0
+    while IFS= read -r sample; do
+        [ -n "$sample" ] || continue
+        conf="$SB/parity2.conf"
+        printf '%b' "$sample" > "$conf"
+        py=$(PYTHONPATH="$PKG" python3 -c 'import sys; from sa02m_homekit import config; print("1" if config.load(sys.argv[1]).enabled else "0")' "$conf" 2>/dev/null)
+        sh=$( ( CONF=$conf; PKG_DIR=$PKG; . "$FN"; hk_conf_enabled && echo 1 || echo 0 ) 2>/dev/null )
+        j_n=$((j_n + 1))
+        if [ -z "$py" ] || [ "$py" != "$sh" ]; then
+            bad "I2 file '$sample': daemon says '${py:-<error>}', helper says '$sh'"
+            j_bad=$((j_bad + 1))
+        fi
+    done <<'SAMPLES'
+[bridge]\r\nenabled = true\r\ninterface = eth0\r\n
+[bridge]\nenabled = true\nenabled = false\n
+[bridge]\nenabled = true\nENABLED = false\n
+[bridge]\nenabled = true\n[bridge]\nport = 21064\n
+[bridge]\nenabled = true\ngarbage line\n
+[bridge]\nenabled = true\n[other]\ngarbage line\n
+[bridge]\nenabled = true\n  continued\n
+[DEFAULT]\nenabled = true\n[bridge]\ninterface = eth0\n
+[bridge] ; c\nenabled = true\n
+enabled = true\n[bridge]\nenabled = true\n
+\xef\xbb\xbf[bridge]\nenabled = true\n
+[bridge]\nenabled = true\nname = \xff\n
+[bridge]\nenabled = true\n
+SAMPLES
+    [ "$j_n" -ge 13 ] || bad "I2 only $j_n whole-file samples ran (non-vacuity floor 13)"
+    [ "$j_bad" -eq 0 ] && [ "$j_n" -ge 13 ] && ok "I2 helper and daemon agree on all $j_n whole-file samples"
+else
+    bad "I2 $PKG/sa02m_homekit/config.py absent — the parity half cannot run"
+fi
+
+echo "P. root safety of the conf read"
+reset_tree true
+mkdir -p "$SB/poison"
+rm -f "$SB/poisoned"
+printf 'open("%s/poisoned", "w").write("imported\\n")\nraise ImportError("poisoned")\n' "$SB" > "$SB/poison/configparser.py"
+export PYTHONPATH="$SB/poison"
+run_trigger restart
+unset PYTHONPATH
+if [ ! -e "$SB/poisoned" ] && [ "$RC" -eq 0 ] && [ "$(calls_of restart)" -eq 1 ] && out_has '"applied":"restart"'; then
+    ok "P a module planted on PYTHONPATH is never imported by the root conf read"
+else
+    bad "P poisoned PYTHONPATH: imported=$([ -e "$SB/poisoned" ] && echo yes || echo no) rc=$RC restart=$(calls_of restart) out=$(cat "$SB/out")"
 fi
 
 echo "Z. non-vacuity"

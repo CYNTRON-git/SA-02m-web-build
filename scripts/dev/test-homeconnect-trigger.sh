@@ -34,6 +34,12 @@
 #   H  lock: a verb while another holds the lock answers `busy`
 #   I  conf truth set parity with the daemon: hc_conf_enabled agrees with
 #      sa02m_homeconnect.config.load().enabled over a sample matrix
+#   I2 whole-file parity: CRLF, duplicate key (any case), duplicate section,
+#      a parse error in [account] or elsewhere, a continuation line, [DEFAULT]
+#      inheritance, `[account] ; c`, a key before any section, a UTF-8 BOM,
+#      non-UTF-8 bytes — helper vs config.load() directly
+#   P  root safety: a module planted on PYTHONPATH is never imported by the
+#      helper's conf read (env -i + python3 -I)
 #
 # Comment-mutation cases registered with the row (measured RED here):
 #   commenting out `rm -f -- "$VAR_DIR/tokens.json" 2>/dev/null || true` → G1 RED;
@@ -136,6 +142,7 @@ run_trigger() {
         LINK_FILE=$RUN_DIR/link.json
         LOCK_FILE=$SB/lockfile
         LOCK_WAIT_S=${HC_LOCK_WAIT_S:-5}
+        PKG_DIR=$PKG
         # shellcheck source=/dev/null
         . "$FN"
         hc_main "$@"
@@ -356,7 +363,7 @@ if [ -f "$PKG/sa02m_homeconnect/config.py" ]; then
         conf="$SB/parity.conf"
         printf '[account]\n%b\nclient_id = ABCDEFGH12345678\nhost = api\n\n[control]\nmode = off\n' "$sample" > "$conf"
         py=$(PYTHONPATH="$PKG" python3 -c 'import sys; from sa02m_homeconnect import config; print("1" if config.load(sys.argv[1]).enabled else "0")' "$conf" 2>/dev/null)
-        sh=$( ( CONF=$conf; . "$FN"; hc_conf_enabled && echo 1 || echo 0 ) 2>/dev/null )
+        sh=$( ( CONF=$conf; PKG_DIR=$PKG; . "$FN"; hc_conf_enabled && echo 1 || echo 0 ) 2>/dev/null )
         i_n=$((i_n + 1))
         if [ -z "$py" ] || [ "$py" != "$sh" ]; then
             bad "I sample '$sample': daemon says '${py:-<error>}', helper says '$sh'"
@@ -381,6 +388,55 @@ SAMPLES
     [ "$i_bad" -eq 0 ] && [ "$i_n" -ge 13 ] && ok "I helper and daemon agree on all $i_n conf samples"
 else
     bad "I $PKG/sa02m_homeconnect/config.py absent — the parity half cannot run"
+fi
+
+echo "I2. whole-file parity with sa02m_homeconnect.config (shapes a line reader gets wrong)"
+if [ -f "$PKG/sa02m_homeconnect/config.py" ]; then
+    j_n=0; j_bad=0
+    while IFS= read -r sample; do
+        [ -n "$sample" ] || continue
+        conf="$SB/parity2.conf"
+        printf '%b' "$sample" > "$conf"
+        py=$(PYTHONPATH="$PKG" python3 -c 'import sys; from sa02m_homeconnect import config; print("1" if config.load(sys.argv[1]).enabled else "0")' "$conf" 2>/dev/null)
+        sh=$( ( CONF=$conf; PKG_DIR=$PKG; . "$FN"; hc_conf_enabled && echo 1 || echo 0 ) 2>/dev/null )
+        j_n=$((j_n + 1))
+        if [ -z "$py" ] || [ "$py" != "$sh" ]; then
+            bad "I2 file '$sample': daemon says '${py:-<error>}', helper says '$sh'"
+            j_bad=$((j_bad + 1))
+        fi
+    done <<'SAMPLES'
+[account]\r\nenabled = true\r\nhost = api\r\n
+[account]\nenabled = true\nenabled = false\n
+[account]\nenabled = true\nENABLED = false\n
+[account]\nenabled = true\n[account]\nhost = api\n
+[account]\nenabled = true\ngarbage line\n
+[account]\nenabled = true\n[control]\ngarbage line\n
+[account]\nenabled = true\n  continued\n
+[DEFAULT]\nenabled = true\n[account]\nhost = api\n
+[account] ; c\nenabled = true\n
+enabled = true\n[account]\nenabled = true\n
+\xef\xbb\xbf[account]\nenabled = true\n
+[account]\nenabled = true\nclient_id = \xff\n
+[account]\nenabled = true\n
+SAMPLES
+    [ "$j_n" -ge 13 ] || bad "I2 only $j_n whole-file samples ran (non-vacuity floor 13)"
+    [ "$j_bad" -eq 0 ] && [ "$j_n" -ge 13 ] && ok "I2 helper and daemon agree on all $j_n whole-file samples"
+else
+    bad "I2 $PKG/sa02m_homeconnect/config.py absent — the parity half cannot run"
+fi
+
+echo "P. root safety of the conf read"
+reset_tree true
+mkdir -p "$SB/poison"
+rm -f "$SB/poisoned"
+printf 'open("%s/poisoned", "w").write("imported\\n")\nraise ImportError("poisoned")\n' "$SB" > "$SB/poison/configparser.py"
+export PYTHONPATH="$SB/poison"
+run_trigger restart
+unset PYTHONPATH
+if [ ! -e "$SB/poisoned" ] && [ "$RC" -eq 0 ] && [ "$(calls_of restart)" -eq 1 ] && out_has '"applied":"restart"'; then
+    ok "P a module planted on PYTHONPATH is never imported by the root conf read"
+else
+    bad "P poisoned PYTHONPATH: imported=$([ -e "$SB/poisoned" ] && echo yes || echo no) rc=$RC restart=$(calls_of restart) out=$(cat "$SB/out")"
 fi
 
 echo "Z. non-vacuity"
