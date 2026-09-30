@@ -8,34 +8,14 @@ commit's diff of this file).
 
 ## Open
 
-- [OPEN] 2026-09-30 **[LOW] 1.0.6.68 review advisories (round 3), assigned after the ship.** D1: the
-  conf-read ledger matches the callee by NAME (an unbound method call or a same-named lambda stays GREEN) —
-  say «matched by name» in the non-claim and test the `self`-skip branch. D2: a failed narrowing `fchmod`
-  of the instance lock is silent — one WARN line. D3: the 0600 create mode is not tested on its own (create
-  0644 + fchmod kept stays GREEN). B1: the shared PCA9536 bus lock (0666, shared with www-data) can be
-  flock-squatted → commands answer «bus busy» (fail-closed, since 1.0.6.42) — provision it via tmpfiles.d.
 - [OPEN] 2026-09-30 **[MED] Sweep the other harnesses for host-binary / host-root side effects (ci-linux-green
   finding).** Two harnesses could, on a ROOT host, reach real system actions: firstboot-sb-csum a real
   `fsfreeze -f /`, web-update-apply-guard reboot.cgi's real `sudo … reboot -f` chain. Both fixed on
   ci-linux-green (PATH masking via scripts/dev/lib_path_mask.sh; sandboxed CGI copy). Other `scripts/dev/`
   harnesses that remove a stand-in and rely on `command -v` failing, or run a shipped CGI whose side
   effects are real on a writable host, were not swept. The CI runner has passwordless sudo.
-- [OPEN] 2026-09-30 **[LOW] `devices-api-upstream` passes on two identical socket lines (1.0.6.65 review R3-A1).**
-  `.ai-dev/quality/checks/devices-api-upstream.sh:95-99` has no branch for more than one socket line although its
-  header says «EXACTLY one». Add the else branch and a mutation case.
-- [OPEN] 2026-09-30 **[LOW] INTERNAL_TOKEN reasoning restated in four places (1.0.6.65 review R4-A1).**
-  `opt/sa02m-flasher/sa02m_flasher/config.py:52`, `service.py:331-336`, `service.py:345-351`,
-  `etc/sa02m_flasher.conf:34-35` (the last still states the nginx overwrite unconditionally). Point them at
-  `docs/decisions/selective-csrf-policy.md` «Демоны» instead of restating it.
-- [OPEN] 2026-09-30 **[LOW] Alice client reconnect: two claims argued, not tested (1.0.6.66 review N2, N3).**
-  N2: the `accepted == len(topics)` clause of the pass-trust check has no test of its own. N3: the link's
-  lock/ordering discipline (CONNACK side vs pass side, each re-checks the other inside one lock) is argued
-  in review, not pinned — moving `connected.set()` out of the lock keeps every test green.
 - [OPEN] 2026-09-30 **[LOW] `opt/sa02m-alice/sa02m_alice/client/main.py` is 912 lines (1.0.6.66 review A4).**
   A `decompose` candidate (reconnect/push loop, session lifecycle, status file).
-- [OPEN] 2026-09-29 **[LOW] `test-web-auth.sh` section 8 comment still says «tiny window» (1.0.6.63 review A12).**
-  Cases 57–61 now run with a 30 s window and 62 judges expiry with a 1 s window at check time; the
-  section header above them should say so. Comment only.
 - [OPEN] 2026-09-29 **[LOW] A partial section skip reads as a row PASS (1.0.6.62 review A3).**
   `test-web-update-launcher-guard.sh` runs L1–L7 everywhere but L8–L11 only where `flock(1)` exists; on
   git-bash the row prints «PASS (all checks; SKIPPED here: L8–L11 (no flock))» and the runner counts it as

@@ -5,6 +5,22 @@
 
 ---
 
+## [2026-09-30 22:10] branch: 1.0.7.0
+
+**Файл(ы):** `opt/sa02m-modbus-mqtt/sa02m_telemetry.py` (`_take_instance_lock`), `opt/sa02m-modbus-mqtt/tests/test_telemetry_session.py`
+**Тип:** Некорректное поведение
+**Описание:** Если сузить файл «одна копия» телеметрии (`os.fchmod` до 0600) не удавалось, ошибка проглатывалась. Служба продолжала работу, а в журнале не было ни строки.
+**Причина:** `except (OSError, AttributeError): pass` после `os.fchmod` в `_take_instance_lock`.
+**Исправление:** Одна строка WARNING с путём и текстом ошибки, затем блокировка берётся как раньше. Тест мокает `fchmod` с `OSError` и требует эту строку; без неё проверка красная.
+
+## [2026-09-30 22:10] branch: 1.0.7.0
+
+**Файл(ы):** `etc/tmpfiles.d/sa02m-i2c-lock.conf`, `scripts/03-webserver.sh`, `scripts/update-www-only.sh`, `etc/sa02m-web-update-apply.sh`, `etc/sa02m-update-runner.sh`, `scripts/offline-update-allowlist.txt`
+**Тип:** Некорректное поведение
+**Описание:** Общий файл блокировки шины PCA9536 (`/run/lock/sa02m-pca9536.lock`, 0666) создавался только heredoc полной установки. Плата, которую обновляли через OTA или www-only, этого файла из репозитория не получала.
+**Причина:** Строка `f` жила в генерируемом `/etc/tmpfiles.d/sa02m.conf`, а не в закоммиченном файле `etc/tmpfiles.d/` — только такие файлы едут в OTA.
+**Исправление:** Отдельный `sa02m-i2c-lock.conf` (0666 root:www-data — и root, и www-data берут flock; sticky `/run/lock` не даёт bash `exec 9>` открыть чужой файл). Heredoc эту строку больше не повторяет. Установщик, www-only, legacy apply и раннер OTA ставят и применяют файл.
+
 ## [2026-09-30 13:00] branch: 1.0.6.68
 
 **Файл(ы):** `opt/sa02m-modbus-mqtt/sa02m_telemetry.py` (`_open_lock_file`), `opt/sa02m-modbus-mqtt/tests/test_telemetry_hw_lock.py` (`TestTheBusLockFileIsNeverFollowed`)

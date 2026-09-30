@@ -321,18 +321,17 @@ if ! command -v hwclock >/dev/null 2>&1; then
     sa02m_pkg_install_tier optional util-linux-extra
 fi
 
-# ── tmpfiles.d: lock file for PCA9536 I2C flock (www-data owned) + the web
-#    session store (www-data owned; holds per-login session tokens, recreated
-#    on boot since /run is tmpfs). Without this dir the CGI cannot mint or
-#    validate sessions and login fails — provision it here, not lazily.
+# ── tmpfiles.d: the web session store (www-data owned; holds per-login
+#    session tokens, recreated on boot since /run is tmpfs). Without this dir
+#    the CGI cannot mint or validate sessions and login fails — provision it
+#    here, not lazily. The PCA9536 flock file is the committed
+#    etc/tmpfiles.d/sa02m-i2c-lock.conf, installed below — not a second line
+#    in this heredoc (systemd-tmpfiles warns on two declarations of one path).
 #    The session dir MUST be 2750 (setgid, group www-data): the sa02m-flasher
 #    daemon runs in the www-data group and reads the session files by group, so
 #    the dir has to be group-traversable. A weaker 0700 here makes the daemon
 #    return 401 for otherwise-valid sessions (it cannot traverse the dir). ─────
 cat > /etc/tmpfiles.d/sa02m.conf <<'EOF'
-# 0666: root (stand/beeper) and www-data (CGI) must both flock; sticky /run/lock
-# rejects bash `exec 9>`(O_CREAT) on foreign-owned files — lib_hw opens RDWR.
-f /run/lock/sa02m-pca9536.lock 0666 root www-data -
 d /var/lib/sa02m-web-build 0755 root root -
 d /run/sa02m-web-sessions 2750 www-data www-data -
 d /run/sa02m-hw-override 0775 www-data www-data -
@@ -361,6 +360,18 @@ if [ -f "$ETC_DIR/tmpfiles.d/sa02m-web-login.conf" ]; then
         systemd-tmpfiles --create /etc/tmpfiles.d/sa02m-web-login.conf >>"$LOG_FILE" 2>&1 || true
     fi
     log OK "tmpfiles sa02m-web-login.conf (/run/sa02m-web-login)"
+fi
+
+# Shared PCA9536 flock. Committed file, same reason as the login dir: only a
+# committed etc/tmpfiles.d/ file reaches an already-installed board through
+# OTA / the offline package. 0666 stays in that file (see its header).
+if [ -f "$ETC_DIR/tmpfiles.d/sa02m-i2c-lock.conf" ]; then
+    install -m 644 "$ETC_DIR/tmpfiles.d/sa02m-i2c-lock.conf" /etc/tmpfiles.d/sa02m-i2c-lock.conf
+    sed -i 's/\r$//' /etc/tmpfiles.d/sa02m-i2c-lock.conf
+    if command -v systemd-tmpfiles >/dev/null 2>&1; then
+        systemd-tmpfiles --create /etc/tmpfiles.d/sa02m-i2c-lock.conf >>"$LOG_FILE" 2>&1 || true
+    fi
+    log OK "tmpfiles sa02m-i2c-lock.conf (/run/lock/sa02m-pca9536.lock)"
 fi
 
 if [ -f "$ETC_DIR/sa02m-beeper-override.sh" ]; then

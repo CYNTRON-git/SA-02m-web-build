@@ -452,7 +452,8 @@ stage "55 no credential at all"    "SA02M_WEB_USER='admin'
 # A single shared password over plain HTTP with no attempt limit is an
 # unthrottled oracle (threat model §5). web_login_check/record_failure/
 # record_success implement a per-client windowed lockout under /run. Driven here
-# with a tiny window against a scratch dir.
+# Cases 57–61 use a 30 s window (SA02M_LOGIN_LOCKOUT=30). Case 62 judges
+# expiry with a 1 s window at check time, after a 2 s sleep.
 #
 # Proven RED (1.0.6.24), mutations of a scratch copy of the lib:
 #   web_login_check always returns 0 (never locks)          -> 59 RED

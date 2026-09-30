@@ -118,6 +118,17 @@ if [ -f "$SCRIPT_DIR/../etc/tmpfiles.d/sa02m-web-login.conf" ]; then
     fi
     log OK "tmpfiles sa02m-web-login.conf (/run/sa02m-web-login)"
 fi
+# Shared PCA9536 flock. Same delivery rule as the login dir above: the one
+# home is etc/tmpfiles.d/sa02m-i2c-lock.conf.
+if [ -f "$SCRIPT_DIR/../etc/tmpfiles.d/sa02m-i2c-lock.conf" ]; then
+    install -m 644 "$SCRIPT_DIR/../etc/tmpfiles.d/sa02m-i2c-lock.conf" \
+        /etc/tmpfiles.d/sa02m-i2c-lock.conf
+    sed -i 's/\r$//' /etc/tmpfiles.d/sa02m-i2c-lock.conf
+    if command -v systemd-tmpfiles >/dev/null 2>&1; then
+        systemd-tmpfiles --create /etc/tmpfiles.d/sa02m-i2c-lock.conf 2>/dev/null || true
+    fi
+    log OK "tmpfiles sa02m-i2c-lock.conf (/run/lock/sa02m-pca9536.lock)"
+fi
 
 if systemctl is-active --quiet fcgiwrap 2>/dev/null; then
     systemctl restart fcgiwrap 2>/dev/null || true

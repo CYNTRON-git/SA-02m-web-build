@@ -483,10 +483,11 @@ for src in usr/local/sbin/sa02m-gateway-config-apply.sh \
     fi
 done
 
-# tmpfiles: runtime dirs the deployed CGI needs but www-data cannot create
-# itself under root-owned /run (the login-throttle store — without it the
-# lockout in lib_web_auth.sh fails OPEN; security review 1.0.6.24, F1).
-for conf in sa02m-web-login.conf; do
+# tmpfiles: runtime paths the deployed tree needs but www-data cannot create
+# under root-owned /run (the login-throttle store — without it the lockout in
+# lib_web_auth.sh fails OPEN, security review 1.0.6.24 F1; the shared PCA9536
+# flock, review 1.0.6.68 B1).
+for conf in sa02m-web-login.conf sa02m-i2c-lock.conf; do
     if [ -f "$TMPDIR/repo/etc/tmpfiles.d/$conf" ]; then
         install -m 644 "$TMPDIR/repo/etc/tmpfiles.d/$conf" "/etc/tmpfiles.d/$conf"
         sed -i 's/\r$//' "/etc/tmpfiles.d/$conf"

@@ -328,12 +328,7 @@ class Handler(BaseHTTPRequestHandler):
     def _check_auth(self) -> bool:
         ctx: ServiceContext = self.server.context  # type: ignore[attr-defined]
         cookie = self.headers.get("Cookie")
-        # X-SA02M-Auth is the edge-side INTERNAL_TOKEN seam, never a client
-        # credential: the value is a secret, and a page cannot send a custom
-        # header cross-origin without a CORS preflight this daemon never
-        # grants. Where the site file is delivered, nginx also overwrites a
-        # client value with "" (gate flasher-auth-header-strip) — an extra
-        # layer, absent on OTA-only boards. Empty INTERNAL_TOKEN = inert.
+        # X-SA02M-Auth: docs/decisions/selective-csrf-policy.md «Демоны».
         token = self.headers.get("X-SA02M-Auth")
         if ctx.cfg.internal_token and check_internal_token(token, ctx.cfg.internal_token):
             return True
@@ -342,12 +337,11 @@ class Handler(BaseHTTPRequestHandler):
     def _internal_caller(self) -> bool:
         """True only for the local INTERNAL_TOKEN seam — never a browser.
 
-        A matching X-SA02M-Auth needs the secret INTERNAL_TOKEN, and a browser
-        page cannot send the header cross-origin (no CORS preflight is ever
-        granted); nginx blanking it (gate flasher-auth-header-strip) is an extra
-        layer where the site file is delivered. Such a caller has no panel session and no
-        CSRF token by construction, so the CSRF gate in _dispatch does not apply
-        to it; INTERNAL_TOKEN stays as documented, unchanged and inert by default.
+        Why that seam is not a client credential:
+        docs/decisions/selective-csrf-policy.md «Демоны». Such a caller has
+        no panel session and no CSRF token, so the CSRF gate in _dispatch
+        does not apply; INTERNAL_TOKEN stays as documented, unchanged and
+        inert by default.
         A session-authenticated request is never exempt, whatever the config.
         """
         ctx: ServiceContext = self.server.context  # type: ignore[attr-defined]

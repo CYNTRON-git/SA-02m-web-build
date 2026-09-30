@@ -27,7 +27,9 @@
 #   1. etc/nginx/network_config.conf: an `upstream sa02m_devices_api {` block
 #      whose live `server` lines are EXACTLY one — `server unix:/run/sa02m-devices/api.sock;`.
 #      Any other live server line (a `backup`, a TCP address, a second socket)
-#      FAILS naming it. The comment-mutation case is the socket line.
+#      FAILS naming it. Two copies of that same socket line also FAIL
+#      (n_sock must be 1; before the else branch two copies stayed silent).
+#      The comment-mutation case is the socket line.
 #   2. every location block whose head names /api/devices proxies to
 #      `http://sa02m_devices_api` and none still proxies to a literal
 #      127.0.0.1:8765; >= LOC_MIN such blocks (non-vacuity).
@@ -96,6 +98,8 @@ else
         ok "upstream $UP: exactly one server, unix:$SOCK"
     elif [ "$n_sock" -eq 0 ]; then
         bad "upstream $UP: no live 'server unix:$SOCK;' line — nginx cannot reach the daemon's socket"
+    else
+        bad "upstream $UP: $n_sock live socket lines and $n_servers server lines — EXACTLY one socket line is required"
     fi
 fi
 

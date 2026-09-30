@@ -591,6 +591,40 @@ class TestTheInstanceLockCannotBeSquatted(SessionTestCase):
         self.assertEqual(ctx.exception.code, tel.EXIT_ANOTHER_INSTANCE)
         self.assertEqual(self.lock_path.stat().st_mode & 0o777, 0o600)
 
+    def test_a_failed_narrowing_is_logged_and_the_lock_is_still_taken(self):
+        """D2: fchmod failing is one warning, then the start continues.
+        RED before the warning: assertLogs finds nothing at WARNING."""
+        def boom(*_a, **_k):
+            raise OSError(1, "fchmod refused")
+
+        client = self.make()
+        with mock.patch.object(tel.os, "fchmod", boom):
+            with self.assertLogs(tel.log, level="WARNING") as caught:
+                client._take_instance_lock()
+        self.addCleanup(self._release, client)
+
+        self.assertIsNotNone(client._instance_lock_fd)
+        self.assertTrue(
+            any("not narrowed" in line for line in caught.output),
+            caught.output)
+
+    def test_a_new_lock_is_created_0600_when_fchmod_does_nothing(self):
+        """D3: the create mode is 0600 on its own. A no-op fchmod leaves
+        whatever os.open used. RED if the open mode is 0644 and fchmod is
+        what narrows a leftover — this file did not exist, so only the
+        open mode can make it 0600."""
+        self.assertFalse(self.lock_path.exists())
+
+        def noop(*_a, **_k):
+            return None
+
+        client = self.make()
+        with mock.patch.object(tel.os, "fchmod", noop):
+            client._take_instance_lock()
+        self.addCleanup(self._release, client)
+
+        self.assertEqual(self.lock_path.stat().st_mode & 0o777, 0o600)
+
 
 # ── Item 2: the eviction detector ────────────────────────────────────────────
 class TestTheEvictionDetector(SessionTestCase):

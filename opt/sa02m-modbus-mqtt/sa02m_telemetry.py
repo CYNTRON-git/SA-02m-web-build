@@ -1474,8 +1474,9 @@ class TelemetryClient:
         # much no chmod can take back (a reboot clears /run/lock).
         try:
             os.fchmod(fd, INSTANCE_LOCK_MODE)
-        except (OSError, AttributeError):
-            pass
+        except (OSError, AttributeError) as exc:
+            log.warning("instance lock not narrowed to %o (%s): %s",
+                        INSTANCE_LOCK_MODE, path, exc)
         try:
             fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
         except OSError:

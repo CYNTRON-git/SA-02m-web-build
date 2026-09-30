@@ -1526,7 +1526,8 @@ def conf_reads(src: str) -> tuple[set, list]:
     a name computed at run time, the conf file parsed by hand under a name
     other than `val` — is not seen; nor is a call to `_resolve_device_id`'s
     sanctioned reader with a hardware key (review round 2's R8), since that
-    site is allowed by name.
+    site is allowed by name. A callee is matched by name: an unbound method
+    or a same-named lambda is not told apart from the one definition found.
     """
     tree = ast.parse(src)
     parents: dict = {}
@@ -1997,6 +1998,32 @@ class TestTheFallbacksMatchTheCgi(unittest.TestCase):
                 _found, offences = conf_reads(mutated)
                 self.assertTrue(offences,
                                 f"{name}: the ledger saw nothing wrong")
+
+    def test_a_method_may_receive_val_as_its_own_parameter(self):
+        """The self-skip in receiving_param (review D1, 1.0.6.68).
+
+        `cls._take(val)` where `def _take(self, val)` is not an offence: the
+        parameter `val` binds to is `val`, after `self` is skipped. RED if
+        that skip is removed — the same call then binds `val` to `self`.
+        Matched by name: this does not claim an unbound method or a
+        same-named lambda is distinguished.
+        """
+        src = self._daemon_source()
+        method = (
+            "class HwProfile:\n"
+            "    def _take(self, val):\n"
+            "        return val(\"SA02M_I2C_LOCK_FILE\")\n")
+        call = (
+            "        extra = _hw_extra_output_mask(val)\n"
+            "        _probe = cls._take(val)\n")
+        self.assertIn("class HwProfile:\n", src)
+        self.assertIn("        extra = _hw_extra_output_mask(val)\n", src)
+        mutated = src.replace("class HwProfile:\n", method, 1)
+        mutated = mutated.replace(
+            "        extra = _hw_extra_output_mask(val)\n", call, 1)
+        compile(mutated, "<self-skip>", "exec")
+        _found, offences = conf_reads(mutated)
+        self.assertEqual(offences, [], "\n".join(offences))
 
     def test_the_probe_conf_is_read_key_by_key(self):
         """Non-vacuity for the drop-one case: each key is really consumed, so

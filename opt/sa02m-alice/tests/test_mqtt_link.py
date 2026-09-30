@@ -204,6 +204,71 @@ class TestConnackRules(_LinkCase):
             self.assertEqual(link.subscribe_all(), 0)
         self.assertEqual(len(captured.output), len(self.topics))
 
+    def test_one_refused_subscribe_while_up_reruns_the_pass(self):
+        """N2: `accepted == len(topics)` is part of pass trust. One refused
+        subscribe (rc != 0) while the link stays up is not a trusted pass, so
+        it runs again. RED if that clause is dropped: the partial pass is
+        trusted and the refused topic is not retried."""
+        seen = []
+
+        class _RefuseOnce(FakePahoClient):
+            def subscribe(self, topic, qos=0, *_a, **_k):
+                seen.append(topic)
+                if topic == TOPIC_A and seen.count(TOPIC_A) == 1:
+                    return (1, None)
+                return super().subscribe(topic, qos)
+
+        link = self.link(
+            client_factory=lambda cid: _RefuseOnce(
+                1, client_id=cid, on_subscribe_hook=self._hook)).connect()
+        fake = self.fake()
+        fake.accept()
+        with self.assertLogs(self.log, level="INFO") as captured:
+            self.assertEqual(link.subscribe_all(), len(self.topics))
+        self.assertEqual(seen.count(TOPIC_A), 2, seen)
+        text = "\n".join(captured.output)
+        self.assertIn("refused", text)
+        self.assertIn("re-running", text)
+        self.assertEqual(
+            sum(1 for t, _q in fake.subscribed if t == TOPIC_A), 1)
+
+    def test_connected_set_stays_inside_the_connack_lock(self):
+        """N3: `_connected.set()` stays in the same `with self._lock` as the
+        CONNACK increment. RED if set() is moved out of that lock — every
+        other test in this file stays green."""
+        import ast
+        with open(os.path.join(ROOT, "sa02m_alice", "client", "mqtt_link.py"),
+                  encoding="utf-8") as fh:
+            src = fh.read()
+        tree = ast.parse(src)
+        fn = next(n for n in ast.walk(tree)
+                  if isinstance(n, ast.FunctionDef) and n.name == "_on_connect")
+
+        def is_lock(item):
+            ctx = item.context_expr
+            return (isinstance(ctx, ast.Attribute) and ctx.attr == "_lock"
+                    and isinstance(ctx.value, ast.Name) and ctx.value.id == "self")
+
+        def has(nodes, kind):
+            for node in nodes:
+                for n in ast.walk(node):
+                    if (kind == "inc" and isinstance(n, ast.AugAssign)
+                            and isinstance(n.target, ast.Attribute)
+                            and n.target.attr == "_connacks"):
+                        return True
+                    if (kind == "set" and isinstance(n, ast.Call)
+                            and isinstance(n.func, ast.Attribute)
+                            and n.func.attr == "set"):
+                        value = n.func.value
+                        if isinstance(value, ast.Attribute) and value.attr == "_connected":
+                            return True
+            return False
+
+        held = [has(n.body, "set") for n in ast.walk(fn)
+                if isinstance(n, ast.With) and any(is_lock(i) for i in n.items)
+                and has(n.body, "inc")]
+        self.assertEqual(held, [True])
+
     def test_empty_provider_subscribes_nothing_and_arms_nothing(self):
         link = self.link(topics=lambda: set()).connect()
         self.fake().accept()

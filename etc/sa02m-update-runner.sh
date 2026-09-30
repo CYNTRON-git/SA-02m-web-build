@@ -2082,7 +2082,7 @@ for u in json.load(open(sys.argv[1],encoding="utf-8")).get("services",{}).get("e
     # 1.0.6.24, F1). Named list, not a glob: /etc/tmpfiles.d/ also holds distro
     # files this runner has no business re-applying mid-update.
     if command -v systemd-tmpfiles >/dev/null 2>&1; then
-        for _tf in sa02m-alice.conf sa02m-web-login.conf; do
+        for _tf in sa02m-alice.conf sa02m-web-login.conf sa02m-i2c-lock.conf; do
             [ -f "/etc/tmpfiles.d/$_tf" ] || continue
             timeout 30 systemd-tmpfiles --create "/etc/tmpfiles.d/$_tf" 2>/dev/null || true
         done
