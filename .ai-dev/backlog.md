@@ -617,14 +617,11 @@ commit's diff of this file).
   was rejected for exactly this; the password/sshpass path is the safe one); and the
   Alice check names `agent.conf` — current builds have
   `/etc/sa02m-alice/sa02m-alice-*.conf` (no agent.conf).
-- [OPEN] 2026-08-18 **[LOW→follow-up] Configurable serial parity/stopbits for
-  `type:template` (8N2 support).** The honesty/doc half of audit-2026-08-18 MED-1
-  is DONE in **1.0.5.78** (corrected the wrong "9600 8N2" comment → 8N1-only;
-  documented in `docs/contracts/template-device.md §8` + `templates/README.md` +
-  the YAML example). RESIDUAL: `bridge_serial.py:218-219,445` still hard-codes
-  8N1 (`parity=NONE, stopbits=ONE`), no config field — a WB device on 9600 **8N2**
-  cannot be polled. Follow-up: add YAML parity/stopbits and thread them through
-  `get_port`/`_ensure_open`. (Same as the "serial 8N2" deferred item.)
+- [OPEN] 2026-08-18 **[LOW→follow-up] Configurable serial parity for
+  `type:template`.** Stop bits 1 or 2 are in (`stopbits` on the device,
+  `get_port` key `port:baud:stopbits`, contract §8). Parity is still none.
+  A port that mixes the two stop-bit settings is logged and the second handle
+  does not open.
 - [OPEN] 2026-08-17 **[LOW] Cloud deploy/enrollment path absent from
   `docs/deployment.md` (audit 1.0.5.71 F4).** The cloud enrollment/deploy flow
   is undocumented in the deployment runbook, already flagged `[?]` in

@@ -40,6 +40,18 @@ from bridge_fmb import (
 from bridge_mqtt import DeviceLiveCache, MQTTPublisher
 
 
+def stopbits_of(value) -> int:
+    """Serial stop bits for one device: 1 (default, every CYNTRON module) or 2.
+
+    Anything else is 1. Parity is not configurable — the port stays 8N.
+    """
+    try:
+        n = int(value)
+    except (TypeError, ValueError):
+        return 1
+    return 2 if n == 2 else 1
+
+
 # ── Base device poller ─────────────────────────────────────────────────────────
 class DevicePoller:
     def __init__(self, cfg: dict, pub: MQTTPublisher):
@@ -52,9 +64,18 @@ class DevicePoller:
         self.port_path = self.bus.port
         self.baudrate  = self.bus.baudrate
         self.address   = int(cfg.get("address", 1))
+        self.stopbits  = stopbits_of(cfg.get("stopbits", 1))
         self._stop     = threading.Event()
         self._meta_ok  = False
         self.log       = logging.getLogger(f"dev.{self.device_id}")
+        if "stopbits" in cfg:
+            try:
+                declared = int(cfg["stopbits"])
+            except (TypeError, ValueError):
+                declared = None
+            if declared not in (1, 2):
+                self.log.warning(
+                    "stopbits %r is not 1 or 2; opening 8N1", cfg.get("stopbits"))
         # Availability / error back-off (wb-mqtt-serial style). A device that
         # stops answering must not keep hammering the shared half-duplex RS-485
         # bus and starving healthy devices, so failed reads back off
@@ -103,7 +124,8 @@ class DevicePoller:
         if self.bus.transport == bridge_bus.TRANSPORT_TCP:
             return bridge_tcp.get_tcp_client(
                 self.bus.host, self.bus.tcp_port, self.bus.timeout_s)
-        return bridge_serial.get_port(self.port_path, self.baudrate)
+        return bridge_serial.get_port(
+            self.port_path, self.baudrate, self.stopbits)
 
     # --- Writeback (очередь + worker, вне MQTT callback) ----------------------
 

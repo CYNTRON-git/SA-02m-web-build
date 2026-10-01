@@ -109,6 +109,23 @@ class TestResolver(unittest.TestCase):
                 with self.assertRaises(bridge_template.TemplateParseError):
                     bridge_template._resolve_template_path(bad)
 
+    def test_mtdx62_template_loads(self):
+        with mock.patch.dict("os.environ",
+                             {"SA02M_WB_TEMPLATES_DIR": str(TEMPLATES_DIR)}):
+            p = bridge_template.TemplatePoller(
+                {"id": "mtdx62-mb-COM3-20", "type": "template",
+                 "template": "mtdx62-mb", "port": "/dev/COM3",
+                 "address": 20, "baudrate": 19200}, mock.Mock())
+        by_name = {c.name: c for c in p._channels}
+        self.assertEqual(by_name["presence_status"].reg_type, "input")
+        self.assertEqual(by_name["presence_status"].address, 0)
+        self.assertEqual(by_name["illuminance"].scale, 0.1)
+        self.assertEqual(by_name["target_distance"].scale, 0.01)
+        self.assertEqual(by_name["detection_distance"].reg_type, "holding")
+        self.assertFalse(by_name["detection_distance"].readonly)
+        self.assertEqual(p.stopbits, 1)
+        self.assertEqual(p.address, 20)
+
     def test_missing_file_raises(self):
         with mock.patch.dict("os.environ",
                              {"SA02M_WB_TEMPLATES_DIR": str(TEMPLATES_DIR)}):

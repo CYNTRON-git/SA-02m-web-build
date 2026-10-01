@@ -100,6 +100,8 @@ from sa02m_devices.history_write import (  # noqa: F401
     insert_mr_sample,
     _insert_carel,
     insert_carel_sample,
+    _insert_mtd,
+    insert_mtd_sample,
     _number_is_finite,
     purge_old,
 )

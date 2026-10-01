@@ -106,6 +106,30 @@ def test_a_stale_removed_carel_id_from_an_older_config_is_ignored(tmp_path: Path
     assert arch["dtv"] == []
 
 
+def test_mtd_passes_through_view(tmp_path: Path):
+    """MTD262-MB is display-only: the card stays on the grid and cannot be removed."""
+    cfg = tmp_path / "widgets.json"
+    snap = {
+        "ok": True,
+        "dtv": [{"id": "dtv-A", "kind": "dtv", "ok": True}],
+        "ce": [],
+        "mr": [],
+        "carel": [],
+        "mtd": [{
+            "id": "mtdx62-mb-COM3-20",
+            "kind": "mtd",
+            "label": "MTD262-MB № 20 порт 3",
+            "ok": True,
+        }],
+    }
+    r = remove_widget("mtdx62-mb-COM3-20", device=snap["mtd"][0], path=cfg)
+    assert r["ok"] is False
+    view = apply_widgets_view(snap, path=cfg)
+    assert [d["id"] for d in view["mtd"]] == ["mtdx62-mb-COM3-20"]
+    assert view["devices"][-1]["id"] == "mtdx62-mb-COM3-20"
+    assert view["available"] == []
+
+
 def test_add_restores_widget(tmp_path: Path):
     cfg = tmp_path / "widgets.json"
     snap = {

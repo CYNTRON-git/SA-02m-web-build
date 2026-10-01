@@ -44,6 +44,10 @@ def _snapshot(ts: float, *, alarm: int, plant: str) -> dict:
             "plant_state": plant, "unit_on": 1, "alarm_count": alarm,
             "supply_temp": 26.5, "setpoint": 27.0,
         }],
+        "mtd": [{
+            "id": "mtdx62-mb-COM3-20", "kind": "mtd",
+            "presence": 1, "illuminance_lux": 346.5, "target_distance_m": 1.4,
+        }],
         "devices": [],
         "alerts": [],
     }
@@ -82,6 +86,7 @@ def test_logger_tick_lands_rows_in_every_sample_table(tmp_path: Path, monkeypatc
     # ONE row per tick since the wide table (1.0.6.41 B2) — the count pinned the
     # long table's cells, so it now reads the tick it always meant.
     assert _count(db, "carel_samples") == 1
+    assert _count(db, "mtd_samples") == 1
     assert state.last_mr == 100.0
     conn = sqlite3.connect(str(db))
     try:
@@ -114,3 +119,4 @@ def test_logger_tick_writes_mr_and_carel_again_after_the_interval(tmp_path: Path
     logger.logger_tick(target, state, now_m=100.0 + logger.MR_INTERVAL_S)
     assert _count(db, "mr_samples") == 2
     assert _count(db, "carel_samples") == 2  # one wide row per Carel cadence tick
+    assert _count(db, "mtd_samples") == 2

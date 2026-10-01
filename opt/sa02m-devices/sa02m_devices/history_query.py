@@ -14,6 +14,11 @@ from sa02m_devices.history_metrics import (
     HISTORY_GROUPS,
     METRICS,
 )
+from sa02m_devices.history_ce_roll import (
+    ce_chart_bucket_s,
+    load_ce_series,
+    merge_ce_series,
+)
 from sa02m_devices.history_ranges import _normalize_range, resolve_time_range
 from sa02m_devices.history_store import _connect, _read_paths, storage_status
 from sa02m_devices.history_write import _number_is_finite
@@ -140,6 +145,67 @@ def _merge_series_lists(
     return out
 
 
+def _history_ce_chart(
+    metric_id: str,
+    range_key: str,
+    path: Path | None,
+    device_id: str | None,
+) -> dict[str, Any]:
+    """СЭ power (mean W) or energy (ΔE kWh) at the bar-chart bucket.
+
+    Hour and day requests read `ce_roll` once backfill has caught up. The
+    JSON fields the chart already reads (`series`, `points`, `label`, `unit`)
+    stay; `prepared` + `bucket_s` tell the client not to bucket them again.
+    """
+    meta = METRICS[metric_id]
+    t0, t1, _generic = resolve_time_range(range_key)
+    bucket = ce_chart_bucket_s(range_key)
+    kind = "delta" if metric_id == "energy_kwh_import" else "avg"
+    did = (device_id or "").strip() or None
+    parts: list[dict[str, list[tuple[int, float, int]]]] = []
+    for dbfile in _read_paths(path):
+        if not dbfile.is_file():
+            continue
+        try:
+            conn = _connect(dbfile)
+        except sqlite3.Error:
+            continue
+        try:
+            if not did:
+                did = _first_device_id(conn, "ce_samples", t0, t1)
+            if not did:
+                continue
+            parts.append(load_ce_series(conn, did, t0, t1, bucket, kind))
+        finally:
+            conn.close()
+    series = merge_ce_series(
+        parts, list(meta["fields"]), dict(meta["labels"]), kind=kind
+    )
+    dec = meta.get("decimals")
+    if isinstance(dec, int):
+        series = _round_series_values(series, dec)
+    status = storage_status() if path is None else {}
+    return {
+        "ok": True,
+        "metric": metric_id,
+        "label": meta["label"],
+        "unit": meta["unit"],
+        "decimals": dec if isinstance(dec, int) else None,
+        "device": meta["device"],
+        "device_id": did or "",
+        "range": range_key,
+        "t0": t0,
+        "t1": t1,
+        "t0_ms": int(t0 * 1000),
+        "t1_ms": int(t1 * 1000),
+        "bucket_s": bucket,
+        "prepared": True,
+        "value_kind": kind,
+        "series": series,
+        **status,
+    }
+
+
 def history(
     metric_id: str,
     range_key: str = "1h",
@@ -153,6 +219,14 @@ def history(
     if not meta:
         return {"ok": False, "error": "unknown metric", "metric": metric_id}
     range_key = _normalize_range(range_key)
+    # Single-metric СЭ power/energy chart (the UI leaves bucket_s unset).
+    # An explicit bucket — overview batch, export — keeps the generic engine.
+    if (
+        metric_id in ("power", "energy_kwh_import")
+        and bucket_s is None
+        and agg is None
+    ):
+        return _history_ce_chart(metric_id, range_key, path, device_id)
     t0, t1, chart_bucket = resolve_time_range(range_key)
     if bucket_s is None:
         bucket_s = chart_bucket
@@ -227,6 +301,11 @@ def history_batch(
     bucket_s: float | None = None,
 ) -> dict[str, Any]:
     range_key = _normalize_range(range_key)
+    if bucket_s is None:
+        # Pin the generic chart bucket so «Общее» keeps its fine series.
+        # Power/energy single-metric charts leave bucket_s unset and read
+        # the pre-aggregated bar buckets instead.
+        _t0, _t1, bucket_s = resolve_time_range(range_key)
     if metric_ids:
         ids = [m for m in metric_ids if m in METRICS]
     elif group and group in HISTORY_GROUPS:
@@ -234,7 +313,7 @@ def history_batch(
     else:
         return {
             "ok": False,
-            "error": "specify group=climate|energy|ahu or metrics=…",
+            "error": "specify group=climate|energy|ahu|mtd or metrics=…",
         }
     out_metrics: list[dict[str, Any]] = []
     errors: list[str] = []

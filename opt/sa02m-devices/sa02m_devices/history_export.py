@@ -70,7 +70,7 @@ def collect_export_table(
     else:
         return {
             "ok": False,
-            "error": "укажите metric=… или group=climate|energy|ahu",
+            "error": "укажите metric=… или group=climate|energy|ahu|mtd",
             "headers": ["Время"],
             "rows": [],
             "device_id": did,

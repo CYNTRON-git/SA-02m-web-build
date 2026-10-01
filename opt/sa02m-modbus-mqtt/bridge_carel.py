@@ -255,6 +255,8 @@ class CarelPoller(DevicePoller):
         out["fan_step"] = int(fan[2])
         out["uaria_run"] = bool(self.read_coils(a, ca.COIL_UARIA_NET_ON_OFF, 1)[0])
         out["gs04"] = bool(self.read_coils(a, ca.COIL_UARIA_NET_ENABLE, 1)[0])
+        # NO3 «Нагрев/охлаждение». 0 нагрев, 1 охлаждение. Not a new address.
+        out["heat_cool"] = bool(self.read_coils(a, ca.COIL_UARIA_HEAT_COOL, 1)[0])
         di = self.read_discrete_inputs(a, 0, 86)
         out["pump"] = bool(di[ca.DI_UARIA_PUMP])
         out["crit"] = bool(di[ca.DI_UARIA_CRIT])
@@ -281,6 +283,9 @@ class CarelPoller(DevicePoller):
             "heat_valve": _num(snap.get("valve")),
             "setpoint": _num(snap.get("sp_w")),
             "setpoint_summer": _num(snap.get("sp_s")),
+            # Same words on both families: 0 зима, 1 лето. c.pCO coil 67,
+            # uAria coil 17 (0 нагрев / 1 охлаждение). Not a write.
+            "season": self._season_payload(snap),
             "pump": "1" if snap.get("pump") else "0",
             "alarm": "1" if alarms else "0",
             "alarm_count": str(len(alarms)),
@@ -296,6 +301,11 @@ class CarelPoller(DevicePoller):
             out["fan_exhaust"] = _num(snap.get("fan_ea"))
             out["room_temp"] = self._room_temp(snap)
         return out
+
+    def _season_payload(self, snap: dict) -> str:
+        if self.family == cc.FAMILY_UARIA:
+            return "1" if snap.get("heat_cool") else "0"
+        return "1" if snap.get("season_summer") else "0"
 
     @staticmethod
     def _room_temp(snap: dict):

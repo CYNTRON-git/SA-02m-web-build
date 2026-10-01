@@ -125,5 +125,36 @@ class TestDetectTypePrecedence(unittest.TestCase):
         self.assertEqual(sig, "ACME-1")
 
 
+class TestMtd262Fingerprint(unittest.TestCase):
+    def test_presence_1_with_the_identity_registers_is_the_sensor(self):
+        """Input 0 == 1 is also the MR-02m type code 6DO8DI. Holding 7..9
+        plus the status register must win, or a live MTD262 is filed as a module."""
+        def read_holding(ser, addr, reg, count=1, timeout=0.08):
+            if reg == 7:
+                return [addr, 19200, 0]
+            return None
+
+        def read_input(ser, addr, reg, count=1, timeout=0.08):
+            if reg == 0:
+                return [1]
+            if reg == 3:
+                return [1]
+            return None
+
+        with mock.patch.multiple(scan, read_holding=read_holding, read_input=read_input):
+            kind, _code, name, sig = scan.detect_type(None, 20)
+        self.assertEqual((kind, name, sig), ("template", "MTD262-MB", "MTDX62-MB"))
+
+    def test_presence_1_without_the_identity_stays_a_module(self):
+        with _fake_regs(input0=1):
+            kind, code, name, _sig = scan.detect_type(None, 20)
+        self.assertEqual((kind, code, name), ("mr02m", 1, "6DO8DI"))
+
+    def test_identity_rejects_a_baud_outside_the_sensor_list(self):
+        self.assertFalse(scan.mtdx62_match([20, 115200, 0], 20))
+        self.assertTrue(scan.mtdx62_match([20, 19200, 0], 20))
+        self.assertFalse(scan.mtdx62_match([1, 19200, 0], 20))
+
+
 if __name__ == "__main__":
     unittest.main()

@@ -21,13 +21,27 @@ JS-читаемую cookie `sa02m_csrf`; фронтенд шлёт его чер
 | Поле | Allow-list (закрытый) | Отказ |
 |---|---|---|
 | `device` | `^[a-zA-Z0-9._-]+$`, длина ≤ 64 | `bad_device` |
-| `control` | `^(do_([1-9]|1[0-6])|ao_([1-9]|1[0-2])|buzzer|leds)$` | `bad_control` |
-| `value` | для `do_*`/`buzzer`/`leds` — ровно `0` или `1`; для `ao_*` — целое `0..1000` | `bad_value` |
+| `control` | `^(do_([1-9]\|1[0-6])\|ao_([1-9]\|1[0-2])\|ai_type_([1-9]\|1[0-2])\|buzzer\|leds\|unit_on\|setpoint\|setpoint_summer\|fan_supply\|fan_step\|detection_distance\|detection_shielding_distance\|admission_confirmation_delay\|departure_disappearance_delay\|trigger_sensitivity\|maintain_sensitivity\|entrance_distance_reduction)$` | `bad_control` |
+| `value` | для `do_*`/`buzzer`/`leds`/`unit_on` — ровно `0` или `1`; для `ao_*` — целое `0..1000`; для `ai_type_*` — целое `0..42`; для `setpoint`/`setpoint_summer` — число `0..99` с не более чем одним знаком после точки; для `fan_supply` — целое `0..100`; для `fan_step` — целое `1..10`; для семи holdings MTD262-MB — число `0..65535` с не более чем двумя знаками после точки | `bad_value` |
 
 `ao_N` — живая уставка аналогового выхода: целое `0..1000` = `0..10.00 В`,
 пишется мостом в Holding-регистр `33 + N − 1` (тот же регистр, что «Задание»
 флэшера). Грамматика `do_*`/`buzzer`/`leds` не изменилась — обратная
 совместимость для развёрнутых клиентов сохранена.
+
+`ai_type_N` — код типа датчика аналогового входа `0..42` (`0` = «Выключен»).
+Мост пишет Holding `400 + 7*(N−1)` (регистр 0 блока канала) сразу, без
+рестарта, и правит `sensor_type` этого канала в YAML. Для ТХА и 3-проводного
+RTD вместе с P-каналом пишется N-нога.
+
+Carel (`unit_on`, `setpoint`, `setpoint_summer`, `fan_supply`, `fan_step`) —
+те же имена, на которые мост уже подписан (`/devices/<id>/controls/<имя>/on`,
+`docs/contracts/carel-ahu.md` §5). Уставка — градусы, как их публикует мост;
+потолок семьи применяет мост, CGI отвергает только то, что не число `0..99`.
+`fan_supply` — проценты притока c.pCOmini, `fan_step` — ступень uAria `1..10`.
+Семь имён MTD262-MB — физическое значение holding-канала шаблона (мост сам
+переводит его в слово регистра по `scale`). `net_enable`, `sys_mode` и
+`fan_exhaust` этим эндпоинтом не пишутся.
 
 ## Действие
 
@@ -71,7 +85,7 @@ timeout 5 mosquitto_pub -h 127.0.0.1 -p 1883 \
 (`.ai-dev/quality/checks/mqtt-set-contract.sh`, beat `build`) — единственный
 исполняемый владелец инвариантов выше. Гоняет ШТАТНЫЙ CGI в песочнице с
 настоящей сессией из `lib_web_auth.sh` и записывающими шимами
-`mosquitto_pub`/`timeout` (36 проверок: отказы без публикации, принятые
+`mosquitto_pub`/`timeout` (43 проверки: отказы без публикации, принятые
 векторы, отсутствие `-r`, loopback-константы, `timeout 5`, строка аудита,
 порядок auth→CSRF→allow-list→publish). Строка `comment-mutation-proof`
 дополнительно доказывает, что закомментированный `timeout 5 mosquitto_pub`
@@ -94,4 +108,6 @@ timeout 5 mosquitto_pub -h 127.0.0.1 -p 1883 \
    `/devices/<device>/controls/<control>/on`, payload = `value`,
    **в argv нет `-r`**, есть `timeout 5`. Проверить и DO (`control=do_3`
    `value=1`), и AO (`control=ao_1` `value=500` → payload `500`; границы
-   `value=0` и `value=1000` приняты).
+   `value=0` и `value=1000` приняты). Для типа датчика: `control=ai_type_1`
+   `value=0` → payload `0`; `control=ai_type_12` `value=42` → payload `42`;
+   `control=ai_type_13` → `bad_control`; `value=43` → `bad_value`.

@@ -21,6 +21,43 @@ def _write(cache: Path, name: str, controls: dict, *, ok: bool = True) -> None:
     )
 
 
+def test_mtdx62_snapshot(tmp_path: Path):
+    cache = tmp_path / "mqtt"
+    cache.mkdir()
+    _write(cache, "mtdx62-mb-COM3-20", {
+        "presence_status": "1",
+        "illuminance": "375.6",
+        "target_distance": "1.67",
+        "device_status": "1",
+        "detection_distance": "6.0",
+        "detection_shielding_distance": "0.6",
+        "admission_confirmation_delay": "0.1",
+        "departure_disappearance_delay": "30",
+        "trigger_sensitivity": "7",
+        "maintain_sensitivity": "7",
+        "entrance_distance_reduction": "0.6",
+    })
+    meta = parse_device_id("mtdx62-mb-COM3-20")
+    assert meta["kind"] == "mtd" and meta["port_num"] == 3 and meta["addr"] == 20
+    assert device_label("mtd", 20, 3) == "MTD262-MB № 20 порт 3"
+    snap = live_snapshot(cache)
+    assert len(snap["mtd"]) == 1
+    row = snap["mtd"][0]
+    assert row["kind"] == "mtd" and row["ok"] is True
+    assert row["presence"] == 1.0
+    assert row["illuminance_lux"] == 375.6
+    assert row["target_distance_m"] == 1.67
+    assert row["device_status"] == 1.0
+    assert row["detection_distance_m"] == 6.0
+    assert row["detection_shielding_m"] == 0.6
+    assert row["admission_delay_s"] == 0.1
+    assert row["departure_delay_s"] == 30.0
+    assert row["trigger_sensitivity"] == 7.0
+    assert row["maintain_sensitivity"] == 7.0
+    assert row["entrance_reduction_m"] == 0.6
+    assert snap["devices"][-1]["id"] == "mtdx62-mb-COM3-20"
+
+
 def test_parse_and_label():
     m = parse_device_id("ce02m3-COM2-14")
     assert m["kind"] == "ce" and m["port_num"] == 2 and m["addr"] == 14

@@ -66,6 +66,7 @@ CAREL_CONTROLS = (
     "heat_valve",
     "setpoint",
     "setpoint_summer",
+    "season",
     "net_enable",
     "sys_mode",
     "fan_supply",

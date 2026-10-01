@@ -86,12 +86,12 @@ def _insert_dtv(conn: sqlite3.Connection, ts: float, dtv: dict[str, Any]) -> Non
     )
 
 
-def _insert_ce(conn: sqlite3.Connection, ts: float, ce: dict[str, Any]) -> None:
+def _insert_ce(conn: sqlite3.Connection, ts: float, ce: dict[str, Any]) -> bool:
     volt = ce.get("voltage") if isinstance(ce.get("voltage"), dict) else {}
     curr = ce.get("current") if isinstance(ce.get("current"), dict) else {}
     pwr = ce.get("power_w") if isinstance(ce.get("power_w"), dict) else {}
     if not (ce.get("ok") or volt.get("a") is not None):
-        return
+        return False
     conn.execute(
         """
         INSERT OR REPLACE INTO ce_samples(
@@ -112,20 +112,44 @@ def _insert_ce(conn: sqlite3.Connection, ts: float, ce: dict[str, Any]) -> None:
             ce.get("energy_kwh_import"),
         ),
     )
+    return True
+
+
+def _ce_roll_tuple(ts: float, ce: dict[str, Any]) -> tuple[Any, ...]:
+    pwr = ce.get("power_w") if isinstance(ce.get("power_w"), dict) else {}
+    return (
+        ts,
+        str(ce.get("id") or ""),
+        pwr.get("a"),
+        pwr.get("b"),
+        pwr.get("c"),
+        pwr.get("total"),
+        ce.get("energy_kwh_import"),
+    )
 
 
 def insert_sample(snapshot: dict[str, Any], path: Path | None = None) -> None:
     """Записать снимок live_snapshot() — все ДТВ/СЭ в списках (по умолчанию)."""
+    from sa02m_devices.history_ce_roll import LOGGER_CHUNK, note_ce_rows
+
     ts = float(snapshot.get("ts") or time.time())
     dtv_list = _as_device_list(snapshot.get("dtv"))
     ce_list = _as_device_list(snapshot.get("ce"))
     conn = _connect(path)
     try:
-        with conn:
-            for dtv in dtv_list:
-                _insert_dtv(conn, ts, dtv)
-            for ce in ce_list:
-                _insert_ce(conn, ts, ce)
+        # IMMEDIATE so a chart-request backfill cannot fold the same rows.
+        conn.execute("BEGIN IMMEDIATE")
+        for dtv in dtv_list:
+            _insert_dtv(conn, ts, dtv)
+        rolled: list[tuple[Any, ...]] = []
+        for ce in ce_list:
+            if _insert_ce(conn, ts, ce):
+                rolled.append(_ce_roll_tuple(ts, ce))
+        note_ce_rows(conn, rolled, chunk=LOGGER_CHUNK)
+        conn.commit()
+    except Exception:
+        conn.rollback()
+        raise
     finally:
         conn.close()
 
@@ -218,6 +242,51 @@ def _insert_carel(conn: sqlite3.Connection, ts: float, carel: dict[str, Any]) ->
         conn.execute(_CAREL_INSERT_SQL, (ts, device_id, *values))
 
 
+def _mtd_presence(val: Any) -> float | None:
+    """Archive presence as 0 or 1. The bridge already publishes 0/1; do not scale."""
+    if val is None or not _number_is_finite(val):
+        return None
+    return 1.0 if float(val) > 0 else 0.0
+
+
+def _mtd_published(val: Any) -> float | None:
+    """Illuminance (lux) and target distance (m) as the bridge published them."""
+    if val is None or not _number_is_finite(val):
+        return None
+    return float(val)
+
+
+def _insert_mtd(conn: sqlite3.Connection, ts: float, mtd: dict[str, Any]) -> None:
+    ill = _mtd_published(mtd.get("illuminance_lux"))
+    dist = _mtd_published(mtd.get("target_distance_m"))
+    pres = _mtd_presence(mtd.get("presence"))
+    if ill is None and dist is None and pres is None:
+        return
+    conn.execute(
+        """
+        INSERT OR REPLACE INTO mtd_samples(
+            ts, device_id, illuminance_lux, target_distance_m, presence
+        ) VALUES (?,?,?,?,?)
+        """,
+        (ts, str(mtd.get("id") or ""), ill, dist, pres),
+    )
+
+
+def insert_mtd_sample(snapshot: dict[str, Any], path: Path | None = None) -> None:
+    """Записать MTD262-MB (освещённость, дистанция, присутствие) из снимка."""
+    ts = float(snapshot.get("ts") or time.time())
+    mtd_list = _as_device_list(snapshot.get("mtd"))
+    if not mtd_list:
+        return
+    conn = _connect(path)
+    try:
+        with conn:
+            for mtd in mtd_list:
+                _insert_mtd(conn, ts, mtd)
+    finally:
+        conn.close()
+
+
 def insert_carel_sample(snapshot: dict[str, Any], path: Path | None = None) -> None:
     """Записать Carel AHU из снимка (та же 10 с каденция, что у MR)."""
     ts = float(snapshot.get("ts") or time.time())
@@ -246,11 +315,17 @@ def purge_old(path: Path | None = None, *, now: float | None = None) -> dict[str
             c2 = conn.execute(
                 "DELETE FROM ce_samples WHERE ts < ?", (cutoff,)
             ).rowcount
+            from sa02m_devices.history_ce_roll import purge_ce_roll
+
+            purge_ce_roll(conn, cutoff)
             c3 = conn.execute(
                 "DELETE FROM mr_samples WHERE ts < ?", (cutoff,)
             ).rowcount
             c4 = conn.execute(
                 "DELETE FROM carel_samples WHERE ts < ?", (cutoff,)
+            ).rowcount
+            c5 = conn.execute(
+                "DELETE FROM mtd_samples WHERE ts < ?", (cutoff,)
             ).rowcount
         ev_deleted = 0
         try:
@@ -267,6 +342,7 @@ def purge_old(path: Path | None = None, *, now: float | None = None) -> dict[str
             "ce_deleted": int(c2 or 0),
             "mr_deleted": int(c3 or 0),
             "carel_deleted": int(c4 or 0),
+            "mtd_deleted": int(c5 or 0),
             "events_deleted": int(ev_deleted),
             "cutoff": cutoff,
         }

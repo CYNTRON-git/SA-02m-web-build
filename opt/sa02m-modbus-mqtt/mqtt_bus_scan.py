@@ -33,6 +33,20 @@ MR02M_TYPE_LABELS_RU = {
 
 _SIG_LATIN = str.maketrans("АВОИДТ", "AVOIDT")
 
+# Saifuli MTDX62-MB (MTD262-MB 24 GHz, MTD062-MB 5.8 GHz): the same public map.
+# Holding 7 is the slave id, holding 8 a baud from this set, holding 9 parity
+# 0/1/2. Input 0 is presence (0/1), input 3 is the self-test code (0..6).
+_MTD_BAUDS = frozenset((1200, 2400, 4800, 9600, 19200, 38400, 57600))
+MTD_TEMPLATE = "mtdx62-mb"
+
+
+def mtdx62_match(ident, addr) -> bool:
+    """Holding 7..9 of an MTDX62-MB: own slave id, a listed baud, parity 0..2."""
+    if not ident or len(ident) < 3:
+        return False
+    slave, baud, parity = int(ident[0]), int(ident[1]), int(ident[2])
+    return slave == int(addr) and baud in _MTD_BAUDS and parity in (0, 1, 2)
+
 
 def _latinize_sig(s: str) -> str:
     return (s or "").upper().translate(_SIG_LATIN).replace(" ", "").replace("_", "").replace("-", "")
@@ -286,6 +300,22 @@ def detect_type(ser, addr, *, read_signature: bool = False):
         if r1[0] == 0xD712:
             return "dtv", 0, "ДТВ-RS-485", ""
 
+    # Before Input reg 0. A live MTD262 reports presence 1 there, and 1 is
+    # also the MR-02m type code 6DO8DI — the holding 7..9 identity plus the
+    # self-test register is what keeps the sensor from being filed as a module.
+    ident = read_holding(ser, addr, 7, 3, timeout=0.15)
+    if not mtdx62_match(ident, addr):
+        # 19200 on a long line: the first frame is often late. One retry
+        # before Input reg 0, which is 1 for a person present and is also
+        # the MR-02m type code 6DO8DI.
+        ident = read_holding(ser, addr, 7, 3, timeout=0.25)
+    if mtdx62_match(ident, addr):
+        presence = read_input(ser, addr, 0, 1, timeout=0.05)
+        status = read_input(ser, addr, 3, 1, timeout=0.05)
+        if (presence and presence[0] in (0, 1)
+                and status and 0 <= status[0] <= 6):
+            return "template", 0, "MTD262-MB", "MTDX62-MB"
+
     inp = read_input(ser, addr, 0, 1, timeout=0.05)
     # Type 120 is the RGBW_WS2812 strip, not an MR-02m I/O module — but the
     # SIGNATURE (holding 290, the device's own EEPROM) beats Input reg 0 in
@@ -346,6 +376,8 @@ def scan_short_name(dev_type, module_type, _type_name, addr, signature=""):
         return "СЭ-02м-3"
     if dev_type == "led":
         return "LED"
+    if dev_type == "template":
+        return "MTD262-MB"
     if signature and signature not in ("unknown", ""):
         return signature
     return f"Устройство {addr}"
@@ -383,6 +415,52 @@ def params_path_ok(path: Path) -> bool:
 def refuse(msg: str) -> None:
     print(json.dumps({"ok": False, "error": msg, "devices": []}, ensure_ascii=False))
     sys.exit(0)
+
+
+def _scan_row(ser, addr, *, baudrate, stopbits):
+    dev_type, module_type, type_name, signature = detect_type(
+        ser, addr, read_signature=False)
+    row = {
+        "addr": addr,
+        "type": dev_type,
+        "module_type": module_type,
+        "type_name": type_name,
+        "signature": signature,
+        "name": scan_short_name(
+            dev_type, module_type, type_name, addr, signature),
+        "baudrate": int(baudrate),
+        "stopbits": 2 if int(stopbits) == 2 else 1,
+    }
+    if dev_type == "template":
+        row["template"] = MTD_TEMPLATE
+    return row
+
+
+def _mtd_stop2_pass(port, baud, max_addr, already):
+    """Addresses silent on the 8N1 sweep that answer as an MTDX62-MB at 8N2.
+
+    A hit is kept only when detect_type says template. `already` is updated
+    so a later pass at another baud does not report the same slave twice.
+    """
+    found = []
+    try:
+        ser = serial.Serial(
+            port, baud, bytesize=8, parity="N", stopbits=2, timeout=0.1)
+    except Exception:
+        return found
+    try:
+        time.sleep(0.05)
+        for addr in sorted(std_scan(ser, max_addr)):
+            if addr in already:
+                continue
+            row = _scan_row(ser, addr, baudrate=baud, stopbits=2)
+            if row["type"] != "template":
+                continue
+            found.append(row)
+            already.add(addr)
+    finally:
+        ser.close()
+    return found
 
 
 def main() -> None:
@@ -425,17 +503,33 @@ def main() -> None:
 
             devices = []
             for addr in addrs:
-                dev_type, module_type, type_name, signature = detect_type(
-                    ser, addr, read_signature=False)
-                devices.append({
-                    "addr": addr,
-                    "type": dev_type,
-                    "module_type": module_type,
-                    "type_name": type_name,
-                    "signature": signature,
-                    "name": scan_short_name(
-                        dev_type, module_type, type_name, addr, signature),
-                })
+                devices.append(_scan_row(
+                    ser, addr, baudrate=baud, stopbits=1))
+            # Fast Modbus lists only our modules. An MTD262 on the same
+            # 19200 line does not answer the fast scan, and stopping there
+            # would file it later as an 8N2 hit. Probe the addresses the
+            # fast scan missed, still at 8N1, and keep an MTD fingerprint.
+            if fast_addrs:
+                known = {d["addr"] for d in devices}
+                for addr in sorted(std_scan(ser, max_addr)):
+                    if addr in known:
+                        continue
+                    row = _scan_row(ser, addr, baudrate=baud, stopbits=1)
+                    if row["type"] != "template":
+                        continue
+                    devices.append(row)
+
+        # The sweep above is 8N1. A sensor that answers only at 2 stop bits
+        # is silent there, so a second pass reads the addresses it missed and
+        # keeps one only when the MTD fingerprint matches — an 8N1 module
+        # that also answers 8N2 is not re-added. The same pass then runs at
+        # 9600 (factory rate) and 19200 (a sensor moved onto a CYNTRON port)
+        # when that was not the baud the operator already chose.
+        already = {d["addr"] for d in devices}
+        devices.extend(_mtd_stop2_pass(port, baud, max_addr, already))
+        for extra in (9600, 19200):
+            if extra != baud:
+                devices.extend(_mtd_stop2_pass(port, extra, max_addr, already))
 
         print(json.dumps({
             "ok": True,

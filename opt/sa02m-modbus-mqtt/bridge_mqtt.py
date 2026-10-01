@@ -54,6 +54,14 @@ class DeviceLiveCache:
             cls._units.setdefault(device_id, {})[name] = units
 
     @classmethod
+    def drop_unit(cls, device_id: str, name: str) -> None:
+        """Drop a cached unit so a type with no unit (code 0) does not keep the old one."""
+        with cls._lock:
+            bucket = cls._units.get(device_id)
+            if bucket:
+                bucket.pop(name, None)
+
+    @classmethod
     def set_error(cls, device_id: str, name: str, err: str) -> None:
         with cls._lock:
             bucket = cls._errors.setdefault(device_id, {})

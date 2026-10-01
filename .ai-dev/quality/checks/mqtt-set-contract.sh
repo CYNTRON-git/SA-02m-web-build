@@ -208,6 +208,8 @@ expect_error "11 control do_0"                  bad_control POST "$GOOD_COOKIE" 
 expect_error "12 control ao_13 (past AO range)" bad_control POST "$GOOD_COOKIE" "$CSRF" "device=d1&control=ao_13&value=500"
 expect_error "13 control do_1;x"                bad_control POST "$GOOD_COOKIE" "$CSRF" "device=d1&control=do_1;x&value=1"
 expect_error "14 control unknown word"          bad_control POST "$GOOD_COOKIE" "$CSRF" "device=d1&control=relay&value=1"
+expect_error "14b control ai_type_13"           bad_control POST "$GOOD_COOKIE" "$CSRF" "device=d1&control=ai_type_13&value=1"
+expect_error "14c control ai_type_0"            bad_control POST "$GOOD_COOKIE" "$CSRF" "device=d1&control=ai_type_0&value=0"
 
 # 15-19: value grammar per control class.
 expect_error "15 do_1 value=2"                  bad_value POST "$GOOD_COOKIE" "$CSRF" "device=d1&control=do_1&value=2"
@@ -215,6 +217,8 @@ expect_error "16 do_1 value=x"                  bad_value POST "$GOOD_COOKIE" "$
 expect_error "17 buzzer value empty"            bad_value POST "$GOOD_COOKIE" "$CSRF" "device=d1&control=buzzer&value="
 expect_error "18 ao_1 value=1001 (over range)"  bad_value POST "$GOOD_COOKIE" "$CSRF" "device=d1&control=ao_1&value=1001"
 expect_error "19 ao_1 value=x"                  bad_value POST "$GOOD_COOKIE" "$CSRF" "device=d1&control=ao_1&value=x"
+expect_error "19b ai_type_1 value=43"           bad_value POST "$GOOD_COOKIE" "$CSRF" "device=d1&control=ai_type_1&value=43"
+expect_error "19c ai_type_1 value=x"            bad_value POST "$GOOD_COOKIE" "$CSRF" "device=d1&control=ai_type_1&value=x"
 
 # 20-24: the accepted vectors — exactly one publish each, correct topic/payload.
 expect_publish "20 DO on"        "mr02m-COM1-5" do_3   1    1
@@ -223,6 +227,19 @@ expect_publish "22 buzzer"       "sa02m-local"  buzzer 1    1
 expect_publish "23 AO mid"       "mr02m-COM4-6" ao_1   500  500
 expect_publish "24 AO bounds hi" "mr02m-COM4-6" ao_12  1000 1000
 expect_publish "25 AO leading zeros normalised" "mr02m-COM4-6" ao_2 0500 500
+expect_publish "25b AI type off"                "mr02m-COM4-6" ai_type_1 0 0
+expect_publish "25c AI type hi"                 "mr02m-COM4-6" ai_type_12 42 42
+expect_publish "25d AI type leading zero"       "mr02m-COM4-6" ai_type_2 08 8
+expect_error "25e setpoint two decimals"        bad_value POST "$GOOD_COOKIE" "$CSRF" "device=carel-COM3-1&control=setpoint&value=23.55"
+expect_error "25f setpoint over 99"             bad_value POST "$GOOD_COOKIE" "$CSRF" "device=carel-COM3-1&control=setpoint&value=99.5"
+expect_error "25g fan_step 0"                   bad_value POST "$GOOD_COOKIE" "$CSRF" "device=carel-COM3-1&control=fan_step&value=0"
+expect_error "25h fan_step 11"                  bad_value POST "$GOOD_COOKIE" "$CSRF" "device=carel-COM3-1&control=fan_step&value=11"
+expect_error "25i fan_exhaust is not a web control" bad_control POST "$GOOD_COOKIE" "$CSRF" "device=carel-COM3-1&control=fan_exhaust&value=40"
+expect_publish "25j Carel on"                   "carel-COM3-1" unit_on 1 1
+expect_publish "25k Carel setpoint"             "carel-COM3-1" setpoint 23.5 23.5
+expect_publish "25l Carel fan percent"          "carel-COM3-1" fan_supply 70 70
+expect_publish "25m Carel fan step"             "carel-COM3-2" fan_step 7 7
+expect_publish "25n MTD distance"               "mtdx62-mb-COM3-20" detection_distance 12.5 12.5
 
 # 26: the retain flag must not appear in ANY accepted publish's argv, and the
 # broker coordinates must be the loopback constants.
@@ -323,7 +340,7 @@ fi
 
 echo
 if [ "$fails" -eq 0 ]; then
-    echo "mqtt-set-contract: ALL OK — 36 case(s) green (behaviour + source floors)"
+    echo "mqtt-set-contract: ALL OK — behaviour + source floors green"
     exit 0
 fi
 echo "mqtt-set-contract: $fails FAILURE(S)"

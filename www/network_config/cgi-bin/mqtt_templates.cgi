@@ -32,6 +32,7 @@ if base.is_dir():
             name = name[len("config-"):]
         title = name
         device_type = ""
+        channels = []
         try:
             with open(f, encoding="utf-8") as fh:
                 doc = json.load(fh)
@@ -40,11 +41,30 @@ if base.is_dir():
                 dev = {}
             device_type = str(dev.get("device_type", "") or "")
             title = str(dev.get("title") or dev.get("name") or name)
+            raw_ch = dev.get("channels")
+            if isinstance(raw_ch, list):
+                for item in raw_ch:
+                    if not isinstance(item, dict) or "reg_type" not in item:
+                        continue
+                    ch_name = item.get("name")
+                    if not isinstance(ch_name, str) or not ch_name:
+                        continue
+                    channels.append({
+                        "name": ch_name,
+                        "title": str(item.get("title") or ch_name),
+                        "reg_type": str(item.get("reg_type") or ""),
+                        "type": str(item.get("type") or ""),
+                        "units": str(item.get("units") or ""),
+                        "readonly": item.get("readonly") is not False,
+                    })
         except Exception:
             pass
         # verified:false — register maps are unverified against hardware until
         # the operator bench-confirms them (docs/contracts/template-device.md).
+        # channels: the MQTT accordion draws these rows. An empty list is a
+        # template the parser could not read — the UI must not invent controls.
         out.append({"name": name, "title": title,
-                    "device_type": device_type, "verified": False})
+                    "device_type": device_type, "verified": False,
+                    "channels": channels})
 print(json.dumps({"ok": True, "templates": out}))
 PYEOF

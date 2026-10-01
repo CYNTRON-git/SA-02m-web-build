@@ -313,7 +313,24 @@ def compose_pollers(devices_cfg: list, pub: MQTTPublisher):
                   "port:baud and all but one will fail to open. Put the odd "
                   "device on its own COM port or change its baud.",
                   path, ", ".join(str(b) for b in bauds))
+    for path, framed in _mixed_stopbits(by_port).items():
+        log.error("%s is configured with both 8N1 and 8N2 (%s) — one physical "
+                  "line has one framing. Put the 8N2 device on its own COM port.",
+                  path, ", ".join(framed))
     return by_port, fmb_ports, refused
+
+
+def _mixed_stopbits(by_port: dict) -> dict:
+    """{port_path: [device ids]} when that port mixes stopbits 1 and 2."""
+    seen: dict[str, set] = {}
+    names: dict[str, list] = {}
+    for pollers in by_port.values():
+        for p in pollers:
+            if p.bus.transport != bridge_bus.TRANSPORT_RTU or not p.port_path:
+                continue
+            seen.setdefault(p.port_path, set()).add(getattr(p, "stopbits", 1))
+            names.setdefault(p.port_path, []).append(p.device_id)
+    return {path: names[path] for path, bits in seen.items() if len(bits) > 1}
 
 
 def make_port_scheduler(port_key: str, pollers: list, fmb_ports: dict):

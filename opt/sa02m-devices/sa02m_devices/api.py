@@ -7,6 +7,7 @@
   POST /api/devices/widgets/remove
   POST /api/devices/widgets/add
   GET  /api/devices/events           (?device_id=&limit=&t0=&t1=&kinds=a,b)
+  POST /api/devices/events/clear     (deletes the WHOLE journal — docs/contracts/carel-ahu.md)
   GET  /api/devices/history          (kind=carel carries events[] for t0..t1)
   GET  /api/devices/history/summary
   GET  /api/devices/history/export
@@ -43,6 +44,7 @@ import re
 import signal
 import socket
 import socketserver
+import sqlite3
 import stat
 import sys
 import threading
@@ -390,6 +392,22 @@ def handle_events(qs: dict[str, list[str]]) -> tuple[Any, int]:
     return device_events.list_events(limit=limit, device_id=device_id, **filt), 200
 
 
+def handle_events_clear() -> tuple[Any, int]:
+    """Delete every journal row (device_events.clear_events). A held write lock
+    is a real 503 `busy` (the daemon layer's status idiom) — the panel says
+    «retry», and the request never outlives the bound."""
+    try:
+        deleted = device_events.clear_events()
+    except device_events.EventsBusy:
+        log.warning("events clear: archive busy")
+        return {"ok": False, "error": "busy"}, 503
+    except (OSError, sqlite3.Error) as exc:
+        log.warning("events clear failed: %s", exc)
+        return {"ok": False, "error": "не удалось очистить журнал"}, 500
+    log.info("events clear: %d row(s) deleted", deleted)
+    return {"ok": True, "deleted": deleted}, 200
+
+
 def _attach_carel_events(data: dict[str, Any]) -> dict[str, Any]:
     """The kind=carel chart draws the fault moment from device_events, so the
     rows ride in the same response as the series (same device, same window)."""
@@ -450,7 +468,7 @@ def handle_history(qs: dict[str, list[str]]) -> tuple[Any, int]:
         return device_history_db.history(metric, range_key, device_id=device_id), 200
     return {
         "ok": False,
-        "error": "укажите metric=… или group=climate|energy|ahu",
+        "error": "укажите metric=… или group=climate|energy|ahu|mtd",
         **device_history_db.storage_status(),
     }, 400
 
@@ -555,6 +573,10 @@ class DevicesAPIHandler(BaseHTTPRequestHandler):
 
         if path == "/api/devices/widgets/add":
             data, status = handle_widgets_add(body, qs)
+            return _send_json(self, data, status)
+
+        if path == "/api/devices/events/clear":
+            data, status = handle_events_clear()
             return _send_json(self, data, status)
 
         return _send_json(self, {"ok": False, "error": "not found"}, 404)

@@ -105,11 +105,13 @@ def removed_set(path: Path | None = None) -> set[str]:
 
 def _kind_name(device: dict[str, Any] | None, device_id: str = "") -> str:
     kind = str((device or {}).get("kind") or "")
-    if kind in ("ce", "mr", "carel", "dtv"):
+    if kind in ("ce", "mr", "carel", "dtv", "mtd"):
         return kind
     did = str((device or {}).get("id") or device_id or "")
     if did.startswith("ce"):
         return "ce"
+    if did.startswith("mtdx62"):
+        return "mtd"
     if did.startswith("mr"):
         return "mr"
     if did.startswith("carel"):
@@ -118,7 +120,7 @@ def _kind_name(device: dict[str, Any] | None, device_id: str = "") -> str:
 
 
 # Kinds that never leave the grid or the archive (see the module docstring).
-_DISPLAY_ONLY_KINDS = frozenset({"mr", "carel"})
+_DISPLAY_ONLY_KINDS = frozenset({"mr", "carel", "mtd"})
 
 
 def _catalog_entry(device: dict[str, Any]) -> dict[str, Any]:
@@ -143,10 +145,15 @@ def remove_widget(
     did = str(device_id or "").strip()
     if not did:
         return {"ok": False, "error": "device_id пуст"}
-    if _kind_name(device, did) in _DISPLAY_ONLY_KINDS:
+    kind = _kind_name(device, did)
+    if kind in _DISPLAY_ONLY_KINDS:
+        if kind == "mtd":
+            msg = "Карточка MTD262-MB не снимается"
+        else:
+            msg = "Карточки Carel и MR-02m не снимаются: их архив ведётся всегда"
         return {
             "ok": False,
-            "error": "Карточки Carel и MR-02m не снимаются: их архив ведётся всегда",
+            "error": msg,
             "id": did,
         }
     cfg = load(path=path)
@@ -221,8 +228,14 @@ def apply_widgets_view(
     # live[mr] / live[carel]. AHU cards go FIRST (Operator decision F5).
     out["mr"] = [d for d in (out.get("mr") or []) if isinstance(d, dict)]
     out["carel"] = [d for d in (out.get("carel") or []) if isinstance(d, dict)]
+    # MTD262-MB is display-only, same as MR/Carel: always on the grid.
+    out["mtd"] = [d for d in (out.get("mtd") or []) if isinstance(d, dict)]
     out["devices"] = (
-        list(out["carel"]) + list(out["dtv"]) + list(out["ce"]) + list(out["mr"])
+        list(out["carel"])
+        + list(out["dtv"])
+        + list(out["ce"])
+        + list(out["mr"])
+        + list(out["mtd"])
     )
 
     available: list[dict[str, Any]] = []

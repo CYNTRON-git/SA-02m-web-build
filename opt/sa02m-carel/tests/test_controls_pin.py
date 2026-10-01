@@ -22,6 +22,8 @@ from sa02m_carel import controls as cc  # noqa: E402
 
 TOPICS_PY = (Path(__file__).resolve().parents[3]
              / "opt/sa02m-alice/sa02m_alice/config/topics.py")
+MQTT_JS = (Path(__file__).resolve().parents[3]
+           / "www/network_config/static/js/mqtt.js")
 
 
 class TestControlsPin(unittest.TestCase):
@@ -33,6 +35,23 @@ class TestControlsPin(unittest.TestCase):
         copied = tuple(re.findall(r'"([a-z0-9_]+)"', m.group(1)))
         self.assertEqual(copied, cc.control_names(),
                          "the alice picker copy has drifted from sa02m_carel.controls")
+
+    def test_the_mqtt_page_lists_exactly_these_controls(self):
+        """The MQTT accordion cannot import this package. A missing name is
+        the empty Carel channel list: the page draws only what this table names."""
+        self.assertTrue(MQTT_JS.is_file(), "mqtt.js not found at %s" % MQTT_JS)
+        text = MQTT_JS.read_text(encoding="utf-8")
+        m = re.search(r"const CAREL_CONTROLS = \[([\s\S]*?)\n\];", text)
+        self.assertIsNotNone(m, "mqtt.js no longer defines CAREL_CONTROLS")
+        copied = tuple(re.findall(r"name:\s*'([a-z0-9_]+)'", m.group(1)))
+        self.assertEqual(copied, cc.control_names(),
+                         "the MQTT channel list has drifted from sa02m_carel.controls")
+        # mqtt_set.cgi refuses these three (docs/contracts/mqtt-set-endpoint.md).
+        # A write box here would toast bad_control and look like a dead channel.
+        for name in ("net_enable", "sys_mode", "fan_exhaust"):
+            row = re.search(r"\{name:'%s'[^}]*\}" % name, m.group(1))
+            self.assertIsNotNone(row, "mqtt.js dropped %s" % name)
+            self.assertRegex(row.group(0), r"write:\s*''")
 
 
 class TestPlantStateWords(unittest.TestCase):

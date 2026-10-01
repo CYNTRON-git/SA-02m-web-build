@@ -112,6 +112,18 @@ _CREATE_CAREL = f"""
         PRIMARY KEY (ts, device_id)
     );
 """
+# MTDX62-MB: one wide row per tick, three charted readings. Settings and
+# device_status stay on the live card only.
+_CREATE_MTD = """
+    CREATE TABLE IF NOT EXISTS mtd_samples (
+        ts REAL NOT NULL,
+        device_id TEXT NOT NULL DEFAULT '',
+        illuminance_lux REAL,
+        target_distance_m REAL,
+        presence REAL,
+        PRIMARY KEY (ts, device_id)
+    );
+"""
 
 
 def _ensure_ce_power_phase_cols(conn: sqlite3.Connection) -> None:
@@ -307,7 +319,9 @@ def _connect(path: Path | None = None) -> sqlite3.Connection:
     journal, sync = journaling_for_fstype(fst)
     conn.execute(f"PRAGMA journal_mode={journal}")
     conn.execute(f"PRAGMA synchronous={sync}")
-    conn.executescript(_CREATE_DTV + _CREATE_CE + _CREATE_MR + _CREATE_CAREL)
+    conn.executescript(
+        _CREATE_DTV + _CREATE_CE + _CREATE_MR + _CREATE_CAREL + _CREATE_MTD
+    )
     # Before the `with conn:` block: the pivot script owns its own transaction.
     _migrate_carel_to_wide(conn)
     with conn:
@@ -337,6 +351,14 @@ def _connect(path: Path | None = None) -> sqlite3.Connection:
             "CREATE INDEX IF NOT EXISTS idx_carel_device_ts "
             "ON carel_samples(device_id, ts)"
         )
+        conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_mtd_device_ts "
+            "ON mtd_samples(device_id, ts)"
+        )
+    # executescript commits, so the rollup DDL stays outside the block above.
+    from sa02m_devices.history_ce_roll import ensure_ce_roll
+
+    ensure_ce_roll(conn)
     return conn
 
 

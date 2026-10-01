@@ -32,29 +32,46 @@ unit_is_active() {
     timeout 2 /usr/bin/systemctl is-active --quiet "$1" 2>/dev/null
 }
 
+port_listening() {
+    timeout 1 ss -H -ltn "sport = :$1" 2>/dev/null | awk 'NR==1 { found=1 } END { exit(found ? 0 : 1) }'
+}
+
 mosq_active=0
 mosq_uptime_s=0
 mosq_disabled=0
-# masked|disabled — same user_disabled-or-masked semantics as the Управление
-# tab (status.cgi svc-ctl mapping); disable-without-mask must render the same.
-en=$(unit_enabled_state mosquitto.service)
-case "$en" in
-    masked|disabled) mosq_disabled=1 ;;
-esac
-if (( mosq_disabled == 0 )); then
-    if pgrep -x mosquitto >/dev/null 2>&1; then
-        mosq_active=1
-        pid=$(pgrep -x mosquitto | head -1)
-        if [ -n "$pid" ] && [ -r "/proc/${pid}/stat" ]; then
-            boot_j=$(awk '{print $22}' "/proc/${pid}/stat" 2>/dev/null || echo 0)
-            clock_hz=$(getconf CLK_TCK 2>/dev/null || echo 100)
-            uptime_sys=$(awk '{printf "%d",$1}' /proc/uptime 2>/dev/null || echo 0)
-            mosq_uptime_s=$(( uptime_sys - boot_j / clock_hz ))
-            (( mosq_uptime_s < 0 )) && mosq_uptime_s=0
-        fi
-    elif unit_is_active mosquitto.service; then
-        mosq_active=1
+# Runtime first. `systemctl disable` does not stop a live broker, so
+# is-enabled=disabled must not paint «Отключен» while mosquitto is active.
+# «Отключен» is only a broker that is not running and whose unit is
+# disabled or masked. A down 1883/1884 listener is reported separately
+# and does not flip the whole broker to disabled.
+if pgrep -x mosquitto >/dev/null 2>&1; then
+    mosq_active=1
+    pid=$(pgrep -x mosquitto | head -1)
+    if [ -n "$pid" ] && [ -r "/proc/${pid}/stat" ]; then
+        boot_j=$(awk '{print $22}' "/proc/${pid}/stat" 2>/dev/null || echo 0)
+        clock_hz=$(getconf CLK_TCK 2>/dev/null || echo 100)
+        uptime_sys=$(awk '{printf "%d",$1}' /proc/uptime 2>/dev/null || echo 0)
+        mosq_uptime_s=$(( uptime_sys - boot_j / clock_hz ))
+        (( mosq_uptime_s < 0 )) && mosq_uptime_s=0
     fi
+elif unit_is_active mosquitto.service; then
+    mosq_active=1
+fi
+if (( mosq_active == 0 )); then
+    en=$(unit_enabled_state mosquitto.service)
+    case "$en" in
+        masked|disabled) mosq_disabled=1 ;;
+    esac
+fi
+
+listen_local=0
+listen_external=0
+if command -v ss >/dev/null 2>&1; then
+    port_listening 1883 && listen_local=1
+    port_listening 1884 && listen_external=1
+elif (( mosq_active == 1 )); then
+    listen_local=1
+    listen_external=1
 fi
 
 bridge_active=0
@@ -109,6 +126,8 @@ export BRIDGE_DISABLED=$bridge_disabled
 export TELEMETRY_ACTIVE=$telemetry_active
 export TELEMETRY_DISABLED=$telemetry_disabled
 export CLIENTS_CONNECTED=$clients_connected
+export LISTEN_LOCAL=$listen_local
+export LISTEN_EXTERNAL=$listen_external
 export PRIMARY_HOST
 
 python3 <<'PY'
@@ -169,6 +188,8 @@ print(
             "telemetry_active": int(os.environ.get("TELEMETRY_ACTIVE", 0)),
             "telemetry_disabled": int(os.environ.get("TELEMETRY_DISABLED", 0)),
             "clients_connected": int(os.environ.get("CLIENTS_CONNECTED", 0)),
+            "listen_local": int(os.environ.get("LISTEN_LOCAL", 0)),
+            "listen_external": int(os.environ.get("LISTEN_EXTERNAL", 0)),
             "port_local": 1883,
             "port_external": 1884,
             "host": ext.get("host") or os.environ.get("PRIMARY_HOST") or "",

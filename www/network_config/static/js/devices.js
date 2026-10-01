@@ -10,7 +10,7 @@ import { aiSensorLabel, aiUnitPrecision } from "./ai-sensors.js?v=1.0.7.0";
   let timer = null;
   let chartSeries = [];
   let chartMeta = { label: "", unit: "", range: "1h" };
-  /** kind: "dtv" | "ce" | "mr" | "carel" */
+  /** kind: "dtv" | "ce" | "mr" | "carel" | "mtd" */
   let activeDevice = "dtv";
   /** MQTT/cache id, e.g. ce02m3-COM2-14 */
   let activeDeviceId = "";
@@ -36,6 +36,12 @@ import { aiSensorLabel, aiUnitPrecision } from "./ai-sensors.js?v=1.0.7.0";
   /** Устройства, доступные для повторного добавления (из API). */
   let availableDevices = [];
   let eventsSig = "";
+  /** Rows in the last rendered journal — the «Очистить» button is disabled at 0. */
+  let eventsCount = 0;
+  let eventsClearPending = false;
+  /** Bumped on every clear: a poll that started before it renders nothing. */
+  let eventsGen = 0;
+  const EVENTS_CLEAR_TIMEOUT_MS = 20000;
 
   /* Card-title chip icons: one per device kind, saying what the device IS.
      24×24 stroke drawings; stroke width/caps come from the #tab-devices chip
@@ -80,6 +86,12 @@ import { aiSensorLabel, aiUnitPrecision } from "./ai-sensors.js?v=1.0.7.0";
     ["fan_supply", "Приток вент."],
     ["fan_exhaust", "Вытяжка"],
     ["fan_step", "Ступень вент."],
+  ];
+  /* Chart chips. Prefix matches METRICS (ДТВ already owns `presence`). */
+  const MTD_METRICS = [
+    ["mtd_illuminance", "Освещённость"],
+    ["mtd_target_distance", "Дистанция"],
+    ["mtd_presence", "Присутствие"],
   ];
 
   const COLORS = [
@@ -158,8 +170,9 @@ import { aiSensorLabel, aiUnitPrecision } from "./ai-sensors.js?v=1.0.7.0";
     const ce = Array.isArray(data.ce) ? data.ce : data.ce ? [data.ce] : [];
     const mr = Array.isArray(data.mr) ? data.mr : data.mr ? [data.mr] : [];
     const carel = Array.isArray(data.carel) ? data.carel : data.carel ? [data.carel] : [];
+    const mtd = Array.isArray(data.mtd) ? data.mtd : data.mtd ? [data.mtd] : [];
     // AHU cards first (Operator decision F5); mirrors stand_devices.live_snapshot.
-    return [...carel, ...dtv, ...ce, ...mr];
+    return [...carel, ...dtv, ...ce, ...mr, ...mtd];
   }
 
   /* MR-02m analog card body: fixed grid of ai_count cells (a disabled channel
@@ -323,6 +336,142 @@ import { aiSensorLabel, aiUnitPrecision } from "./ai-sensors.js?v=1.0.7.0";
       .join("");
   }
 
+  /* Six cells stay visible. The other four holdings open on a card click
+     (.dev-kpi--more). Holding 7..9 are not here. Input 3 (device_status)
+     stays polled for the scan fingerprint and is not drawn. */
+  const MTD_SETTINGS_MAIN = [
+    ["range", "м", "Дальность обнаружения", "detection_distance", "0.01", 2],
+    ["leave", "с", "Задержка выключения", "departure_disappearance_delay", "1", 0],
+    ["shield", "м", "Зона экранирования", "detection_shielding_distance", "0.01", 2],
+  ];
+  const MTD_SETTINGS_MORE = [
+    ["admit", "с", "Задержка подтверждения входа", "admission_confirmation_delay", "0.01", 2],
+    ["trig", "", "Чувствительность срабатывания", "trigger_sensitivity", "1", 0],
+    ["hold", "", "Чувствительность удержания", "maintain_sensitivity", "1", 0],
+    ["entry", "м", "Сокращение зоны входа", "entrance_distance_reduction", "0.01", 2],
+  ];
+
+  function mtdSettingHtml(rows, more) {
+    const extra = more ? " dev-kpi--more" : "";
+    return rows
+      .map(
+        ([key, unit, lbl, ctrl, scale]) =>
+          `<div class="dev-kpi dev-kpi--set${extra}" data-key="${key}">` +
+          `<span class="dev-kpi-lbl" title="${escapeAttr(lbl)}">${lbl}</span>` +
+          `<span class="dev-kpi-row">` +
+          `<input type="number" class="dev-mtd-set" data-f="${key}" data-ctrl="${ctrl}"` +
+          ` data-scale="${scale}" step="${scale}" inputmode="decimal"` +
+          ` title="Записать (Enter)" aria-label="${escapeAttr(lbl)}">` +
+          (unit ? `<span class="dev-kpi-unit">${unit}</span>` : "") +
+          `</span></div>`
+      )
+      .join("");
+  }
+
+  function buildMtdMetricsHtml() {
+    const readings = [
+      ["mtd_presence", "presence", "", "Присутствие"],
+      ["mtd_illuminance", "lux", "lux", "Освещённость"],
+      ["mtd_target_distance", "dist", "м", "Дистанция до цели"],
+    ];
+    const readHtml = readings
+      .map(
+        ([metric, key, unit, lbl]) =>
+          `<div class="dev-kpi" data-metric="${metric}" data-key="${key}">` +
+          `<span class="dev-kpi-lbl" title="${escapeAttr(lbl)}">${lbl}</span>` +
+          `<span class="dev-kpi-row"><span class="dev-kpi-val" data-f="${key}">—</span>` +
+          `<span class="dev-kpi-unit">${unit}</span></span>` +
+          `</div>`
+      )
+      .join("");
+    return readHtml + mtdSettingHtml(MTD_SETTINGS_MAIN, false) + mtdSettingHtml(MTD_SETTINGS_MORE, true);
+  }
+
+  /* Poll snapshot lags the Modbus echo by up to one devices tick (5 s).
+     Hold the value just sent so that snapshot cannot paint the previous
+     reading back into the field. Drop it when the register matches, the
+     wait expires, or the publish fails. */
+  const mtdPending = {};
+  const MTD_PENDING_MS = 12000;
+
+  function mtdPendingKey(id, control) {
+    return String(id || "") + "\0" + String(control || "");
+  }
+
+  function mtdDropPending(pending, server, digits, now) {
+    if (!pending) return false;
+    if (!(now <= pending.until)) return true;
+    const pn = Number(pending.value);
+    if (!Number.isFinite(pn)) return true;
+    const sn = Number(server);
+    if (!Number.isFinite(sn)) return false;
+    const d = digits > 0 ? digits : 0;
+    const f = Math.pow(10, d);
+    return Math.round(sn * f) === Math.round(pn * f);
+  }
+
+  function mtdSettingDisplay(server, pending, digits, now, focused, typed) {
+    if (focused) return typed == null ? "" : String(typed);
+    const d = digits > 0 ? digits : 0;
+    if (pending && !mtdDropPending(pending, server, digits, now)) {
+      return Number(pending.value).toFixed(d);
+    }
+    const sn = Number(server);
+    if (server == null || !Number.isFinite(sn)) return "";
+    return sn.toFixed(d);
+  }
+
+  function commitMtdSetting(deviceId, inp) {
+    if (!inp || !deviceId) return;
+    const scale = Number(inp.dataset.scale) || 1;
+    const raw = String(inp.value == null ? "" : inp.value).trim().replace(",", ".");
+    const n = Number(raw);
+    if (raw === "" || !Number.isFinite(n) || !(scale > 0)) {
+      inp.setCustomValidity("Вне диапазона регистра (0…65535)");
+      inp.reportValidity();
+      return;
+    }
+    const word = Math.round(n / scale);
+    if (word < 0 || word > 65535) {
+      inp.setCustomValidity("Вне диапазона регистра (0…65535)");
+      inp.reportValidity();
+      return;
+    }
+    inp.setCustomValidity("");
+    const ctrl = inp.dataset.ctrl;
+    const pkey = mtdPendingKey(deviceId, ctrl);
+    mtdPending[pkey] = { value: n, until: Date.now() + MTD_PENDING_MS };
+    fetch("cgi-bin/mqtt_set.cgi", {
+      method: "POST",
+      headers: withCsrfHeaders({
+        "Content-Type": "application/x-www-form-urlencoded",
+      }),
+      body:
+        "device=" +
+        encodeURIComponent(deviceId) +
+        "&control=" +
+        encodeURIComponent(ctrl) +
+        "&value=" +
+        encodeURIComponent(String(n)),
+      credentials: "same-origin",
+    })
+      .then((r) => r.json())
+      .then((j) => {
+        if (j && j.ok) {
+          if (typeof inp.blur === "function") inp.blur();
+          return;
+        }
+        delete mtdPending[pkey];
+        inp.setCustomValidity((j && j.error) || "Нет связи с сервером");
+        inp.reportValidity();
+      })
+      .catch(() => {
+        delete mtdPending[pkey];
+        inp.setCustomValidity("Нет связи с сервером");
+        inp.reportValidity();
+      });
+  }
+
   function buildCeMetricsHtml() {
     const rows = [
       ["voltage", "ua", "V", "Ua"],
@@ -346,24 +495,181 @@ import { aiSensorLabel, aiUnitPrecision } from "./ai-sensors.js?v=1.0.7.0";
       .join("");
   }
 
+  /* Stroke icons. They only label the setpoint rows: no color, no click.
+     «Сезон» is the words ЗИМА / ЛЕТО, not these icons. */
+  function carelSeasonIcon(which) {
+    const common =
+      'class="dev-season-ico" viewBox="0 0 24 24" aria-hidden="true" focusable="false"';
+    if (which === "winter") {
+      return (
+        '<svg ' + common + '>' +
+        `<g fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round">` +
+        `<path d="M12 2.5v19M4.6 6.8l14.8 10.4M19.4 6.8L4.6 17.2"/>` +
+        `<path d="M12 6.2 10.2 4.4M12 6.2l1.8-1.8M12 17.8 10.2 19.6M12 17.8l1.8 1.8"/>` +
+        `<path d="M7.2 9.1 5.1 8.4M7.2 9.1 7.6 6.9M16.8 14.9l2.1.7M16.8 14.9l-.4 2.2"/>` +
+        `<path d="M16.8 9.1l2.1-.7M16.8 9.1l-.4-2.2M7.2 14.9 5.1 15.6M7.2 14.9l.4 2.2"/>` +
+        `</g></svg>`
+      );
+    }
+    return (
+      '<svg ' + common + '>' +
+      `<g fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round">` +
+      `<circle cx="12" cy="12" r="3.3"/>` +
+      `<path d="M12 3.2v2.4M12 18.4v2.4M3.2 12h2.4M18.4 12h2.4M5.8 5.8l1.7 1.7M16.5 16.5l1.7 1.7M18.2 5.8l-1.7 1.7M7.5 16.5l-1.7 1.7"/>` +
+      `</g></svg>`
+    );
+  }
+
+  function carelSetpointTileHtml() {
+    return (
+      `<div class="dev-kpi dev-kpi--sp">` +
+      `<div class="dev-step-row">` +
+      `<span class="dev-season-mark" data-role="season" data-season="winter" role="img" aria-label="` +
+      uiT("Зима") +
+      `">` +
+      carelSeasonIcon("winter") +
+      `</span>` +
+      `<button type="button" class="dev-step-btn" data-role="sp-dec" aria-label="` +
+      uiT("Уменьшить уставку") +
+      `">−</button>` +
+      `<span class="dev-step-val"><span data-f="setpoint">—</span>` +
+      `<span class="dev-step-unit">°C</span></span>` +
+      `<button type="button" class="dev-step-btn" data-role="sp-inc" aria-label="` +
+      uiT("Увеличить уставку") +
+      `">+</button>` +
+      `</div>` +
+      `<div class="dev-step-row">` +
+      `<span class="dev-season-mark" data-role="season" data-season="summer" role="img" aria-label="` +
+      uiT("Лето") +
+      `">` +
+      carelSeasonIcon("summer") +
+      `</span>` +
+      `<button type="button" class="dev-step-btn" data-role="su-dec" aria-label="` +
+      uiT("Уменьшить летнюю уставку") +
+      `">−</button>` +
+      `<span class="dev-step-val"><span data-f="setpoint_summer">—</span>` +
+      `<span class="dev-step-unit">°C</span></span>` +
+      `<button type="button" class="dev-step-btn" data-role="su-inc" aria-label="` +
+      uiT("Увеличить летнюю уставку") +
+      `">+</button>` +
+      `</div>` +
+      `</div>`
+    );
+  }
+
+  function carelSeasonTileHtml() {
+    return (
+      `<div class="dev-kpi" data-key="season">` +
+      `<span class="dev-kpi-lbl">Сезон</span>` +
+      `<span class="dev-kpi-row"><span class="dev-kpi-val dev-season-val" data-f="season" data-role="season-val">—</span>` +
+      `</span></div>`
+    );
+  }
+
   function buildCarelMetricsHtml() {
+    /* Live tiles, then the setpoint tile pinned to cell 6 (row 2, col 3).
+       «Сезон» is an ordinary parameter and fills the cell before it. */
     const rows = [
-      ["plant", "plant", "", "Состояние"],
-      ["supply_temp", "supply", "°C", "Приток"],
-      ["return_water_temp", "return", "°C", "Обратка"],
-      ["setpoint", "setpoint", "°C", "Уставка"],
-      ["heat_valve", "valve", "%", "Клапан"],
-      ["fan", "fan", "", "Вентилятор"],
+      ["plant", "", "Состояние"],
+      ["supply", "°C", "Приток"],
+      ["return", "°C", "Обратка"],
+      ["valve", "%", "Клапан"],
     ];
-    return rows
-      .map(
-        ([metric, key, unit, lbl]) =>
-          `<div class="dev-kpi" data-metric="${metric}" data-key="${key}">` +
-          `<span class="dev-kpi-lbl">${lbl}</span>` +
-          `<span class="dev-kpi-row"><span class="dev-kpi-val" data-f="${key}">—</span>` +
-          `<span class="dev-kpi-unit" data-u="${key}">${unit}</span></span></div>`
-      )
-      .join("");
+    return (
+      rows
+        .map(
+          ([key, unit, lbl]) =>
+            `<div class="dev-kpi" data-key="${key}">` +
+            `<span class="dev-kpi-lbl">${lbl}</span>` +
+            `<span class="dev-kpi-row"><span class="dev-kpi-val" data-f="${key}">—</span>` +
+            `<span class="dev-kpi-unit">${unit}</span></span></div>`
+        )
+        .join("") +
+      carelSeasonTileHtml() +
+      carelSetpointTileHtml()
+    );
+  }
+
+  /* Carel card controls. Ladder values are the settled fan vocabulary
+     (sa02m_carel.carel_fan): uAria steps 2/4/7/10, c.pCO percents 20/40/70/100.
+     chartOpen is false — the history modal stays shut until «График». */
+  function carelControlModel(family) {
+    const uaria = family === "uaria";
+    const spMax = uaria ? 50 : 99;
+    return {
+      chartOpen: false,
+      controls: [
+        { id: "unit_on", kind: "switch", mqtt: "unit_on" },
+        {
+          id: "setpoint",
+          kind: "stepper",
+          mqtt: "setpoint",
+          unit: "°C",
+          min: 0,
+          max: spMax,
+          step: 0.5,
+        },
+        {
+          id: "setpoint_summer",
+          kind: "stepper",
+          mqtt: "setpoint_summer",
+          unit: "°C",
+          min: 0,
+          max: spMax,
+          step: 0.5,
+        },
+        {
+          id: "fan",
+          kind: "steps",
+          mqtt: uaria ? "fan_step" : "fan_supply",
+          steps: uaria
+            ? [
+                { id: "low", value: 2 },
+                { id: "medium", value: 4 },
+                { id: "high", value: 7 },
+                { id: "turbo", value: 10 },
+              ]
+            : [
+                { id: "low", value: 20 },
+                { id: "medium", value: 40 },
+                { id: "high", value: 70 },
+                { id: "turbo", value: 100 },
+              ],
+        },
+      ],
+    };
+  }
+
+  /* Nearest rung by distance; an equal distance picks the HIGHER rung
+     (step 6 → high, 55 % → high). Same rule as carel_fan.mode_from_value. */
+  function nearestFanStep(steps, raw) {
+    if (!steps || !steps.length) return null;
+    if (raw == null || raw === "") return null;
+    const value = Number(raw);
+    if (!Number.isFinite(value)) return null;
+    let best = 0;
+    for (let i = 1; i < steps.length; i++) {
+      if (Math.abs(value - steps[i].value) <= Math.abs(value - steps[best].value)) best = i;
+    }
+    return steps[best];
+  }
+
+  function clampStep(value, min, max, step) {
+    const places = String(step).indexOf(".") >= 0 ? 1 : 0;
+    let n = Number(value);
+    if (!Number.isFinite(n)) n = min;
+    n = Math.round(n / step) * step;
+    if (n < min) n = min;
+    if (n > max) n = max;
+    return Number(n.toFixed(places));
+  }
+
+  function fanLabel(id) {
+    if (id === "low") return uiT("Низк.");
+    if (id === "medium") return uiT("Сред.");
+    if (id === "high") return uiT("Выс.");
+    if (id === "turbo") return uiT("Макс.");
+    return "";
   }
 
   /* Custom device names (pencil rename), stored per browser keyed by device id.
@@ -475,14 +781,310 @@ import { aiSensorLabel, aiUnitPrecision } from "./ai-sensors.js?v=1.0.7.0";
 
   function cardKind(d) {
     const k = d && d.kind;
-    if (k === "ce" || k === "mr" || k === "carel" || k === "dtv") return k;
+    if (k === "ce" || k === "mr" || k === "carel" || k === "dtv" || k === "mtd") return k;
     return "dtv";
+  }
+
+  /* Optimistic Carel writes. A poll must not snap the control back before the
+     bridge echo; a render never publishes. */
+  const carelPending = {};
+  const CAREL_PENDING_MS = 8000;
+
+  function carelPendingKey(id, control) {
+    return String(id) + "\0" + control;
+  }
+
+  function rememberCarelPending(id, control, value) {
+    carelPending[carelPendingKey(id, control)] = { value: value, until: Date.now() + CAREL_PENDING_MS };
+  }
+
+  function dropCarelPending(id, control) {
+    delete carelPending[carelPendingKey(id, control)];
+  }
+
+  function carelPendingValue(id, control, server) {
+    const key = carelPendingKey(id, control);
+    const p = carelPending[key];
+    if (!p) return null;
+    if (Date.now() > p.until) {
+      delete carelPending[key];
+      return null;
+    }
+    const sn = Number(server);
+    const pn = Number(p.value);
+    if (Number.isFinite(sn) && Number.isFinite(pn) && Math.abs(sn - pn) < 0.05) {
+      delete carelPending[key];
+      return null;
+    }
+    return p.value;
+  }
+
+  function controlsDead(d) {
+    return !d || d.ok === false || isAgeStale(d);
+  }
+
+  function shownCarelNumber(d, mqtt, field) {
+    const pending = carelPendingValue(d && d.id, mqtt, d ? d[field] : null);
+    if (pending != null && Number.isFinite(Number(pending))) return Number(pending);
+    const n = Number(d && d[field]);
+    return Number.isFinite(n) ? n : null;
+  }
+
+  function setCtrlErr(card, text) {
+    const el = card && card.querySelector('[data-role="ctrl-err"]');
+    if (!el) return;
+    el.textContent = text || "";
+    el.hidden = !text;
+  }
+
+  function chartButtonHtml() {
+    return (
+      `<button type="button" class="btn btn-sm dev-chart-btn" data-role="chart">` +
+      uiT("График") +
+      `</button>`
+    );
+  }
+
+  function buildCarelControlsHtml(family) {
+    const fan = carelControlModel(family).controls.filter((c) => c.id === "fan")[0];
+    const steps = fan.steps
+      .map(
+        (s) =>
+          `<button type="button" class="dev-fan-btn" data-role="fan-step" data-step="${s.id}"` +
+          ` data-value="${s.value}" aria-pressed="false">${fanLabel(s.id)}</button>`
+      )
+      .join("");
+    return (
+      `<div class="dev-ctrl" data-role="ctrl">` +
+      `<div class="dev-fan">` +
+      `<span class="dev-ctrl-lbl">` +
+      uiT("Вентилятор") +
+      `</span>` +
+      `<div class="dev-fan-steps" data-mqtt="${fan.mqtt}">${steps}</div>` +
+      `</div>` +
+      `<p class="dev-ctrl-err" data-role="ctrl-err" hidden></p>` +
+      `<div class="dev-act-row">` +
+      chartButtonHtml() +
+      `<button type="button" class="dev-power" data-role="power" aria-pressed="false">` +
+      uiT("ВЫКЛЮЧЕНА") +
+      `</button>` +
+      `</div>` +
+      `</div>`
+    );
+  }
+
+  function sendCarel(card, id, control, value) {
+    fetch("cgi-bin/mqtt_set.cgi", {
+      method: "POST",
+      headers:
+        typeof withCsrfHeaders === "function"
+          ? withCsrfHeaders({ "Content-Type": "application/x-www-form-urlencoded" })
+          : { "Content-Type": "application/x-www-form-urlencoded" },
+      body:
+        "device=" +
+        encodeURIComponent(id) +
+        "&control=" +
+        encodeURIComponent(control) +
+        "&value=" +
+        encodeURIComponent(String(value)),
+      credentials: "same-origin",
+    })
+      .then((r) => r.json())
+      .then((j) => {
+        if (j && j.ok) {
+          setCtrlErr(card, "");
+          return;
+        }
+        dropCarelPending(id, control);
+        const d = lastDeviceById[id];
+        if (d) paintCarelControls(card, d);
+        setCtrlErr(card, uiT("Команда не ушла"));
+      })
+      .catch(() => {
+        dropCarelPending(id, control);
+        const d = lastDeviceById[id];
+        if (d) paintCarelControls(card, d);
+        setCtrlErr(card, uiT("Команда не ушла"));
+      });
+  }
+
+  function syncFanSteps(card, family) {
+    const box = card.querySelector(".dev-fan-steps");
+    if (!box) return null;
+    const fan = carelControlModel(family).controls.filter((c) => c.id === "fan")[0];
+    if (box.dataset.mqtt !== fan.mqtt) {
+      box.dataset.mqtt = fan.mqtt;
+      box.innerHTML = fan.steps
+        .map(
+          (s) =>
+            `<button type="button" class="dev-fan-btn" data-role="fan-step" data-step="${s.id}"` +
+            ` data-value="${s.value}" aria-pressed="false">${fanLabel(s.id)}</button>`
+        )
+        .join("");
+    } else {
+      box.querySelectorAll('[data-role="fan-step"]').forEach((btn) => {
+        const lab = fanLabel(btn.dataset.step);
+        if (btn.textContent !== lab) btn.textContent = lab;
+      });
+    }
+    return fan;
+  }
+
+  function paintCarelControls(card, d) {
+    if (!card || !d) return;
+    const dead = controlsDead(d);
+    const model = carelControlModel(d.family);
+    const on = shownCarelNumber(d, "unit_on", "unit_on");
+    const power = card.querySelector('[data-role="power"]');
+    if (power) {
+      const pressed = on != null && on >= 1;
+      power.setAttribute("aria-pressed", pressed ? "true" : "false");
+      const lab = uiT(pressed ? "ВКЛЮЧЕНА" : "ВЫКЛЮЧЕНА");
+      if (power.textContent !== lab) power.textContent = lab;
+      power.disabled = dead || on == null;
+    }
+    card.querySelectorAll('[data-role="season"]').forEach((el) => {
+      const key = el.dataset.season === "summer" ? "Лето" : "Зима";
+      const lab = uiT(key);
+      if (el.getAttribute("aria-label") !== lab) el.setAttribute("aria-label", lab);
+    });
+    const rows = [
+      ["setpoint", "setpoint", "sp-dec", "sp-inc"],
+      ["setpoint_summer", "setpoint_summer", "su-dec", "su-inc"],
+    ];
+    rows.forEach(([id, field, decRole, incRole]) => {
+      const spec = model.controls.filter((c) => c.id === id)[0];
+      const val = shownCarelNumber(d, spec.mqtt, field);
+      const node = card.querySelector('[data-f="' + field + '"]');
+      if (node) node.textContent = val == null ? "—" : val.toFixed(1);
+      const off = dead || val == null;
+      const dec = card.querySelector('[data-role="' + decRole + '"]');
+      const inc = card.querySelector('[data-role="' + incRole + '"]');
+      if (dec) dec.disabled = off;
+      if (inc) inc.disabled = off;
+    });
+    const fan = syncFanSteps(card, d.family);
+    const raw = shownCarelNumber(d, fan.mqtt, fan.mqtt);
+    const near = raw == null ? null : nearestFanStep(fan.steps, raw);
+    const fanOff = dead || raw == null;
+    card.querySelectorAll('[data-role="fan-step"]').forEach((btn) => {
+      btn.setAttribute("aria-pressed", near && btn.dataset.step === near.id ? "true" : "false");
+      btn.disabled = fanOff;
+    });
+    const chart = card.querySelector('[data-role="chart"]');
+    if (chart) {
+      const lab = uiT("График");
+      if (chart.textContent !== lab) chart.textContent = lab;
+    }
+    paintCarelSeason(card, d);
+  }
+
+  /* 0 → ЗИМА, 1 → ЛЕТО. c.pCO is coil 67. uAria is coil 17
+     «Нагрев/охлаждение» (0 нагрев, 1 охлаждение), same control name. */
+  function carelSeasonNow(d) {
+    if (!d || d.season == null || d.season === "") return null;
+    const n = Number(d.season);
+    if (!Number.isFinite(n)) return null;
+    return n >= 1 ? "summer" : "winter";
+  }
+
+  function paintCarelSeason(card, d) {
+    const el = card.querySelector('[data-role="season-val"]');
+    if (!el) return;
+    const season = carelSeasonNow(d);
+    if (season !== "winter" && season !== "summer") {
+      if (el.textContent !== "—") el.textContent = "—";
+      el.removeAttribute("data-season");
+      return;
+    }
+    el.dataset.season = season;
+    const label = uiT(season === "summer" ? "ЛЕТО" : "ЗИМА");
+    if (el.textContent !== label) el.textContent = label;
+  }
+
+  function nudgeCarel(card, id, specId, dir) {
+    const d = lastDeviceById[id];
+    if (!d || controlsDead(d)) return;
+    const spec = carelControlModel(d.family).controls.filter((c) => c.id === specId)[0];
+    const field = spec.mqtt;
+    const cur = shownCarelNumber(d, spec.mqtt, field);
+    if (cur == null) return;
+    const next = clampStep(cur + dir * spec.step, spec.min, spec.max, spec.step);
+    if (Math.abs(next - cur) < 0.001) return;
+    rememberCarelPending(id, spec.mqtt, next);
+    paintCarelControls(card, d);
+    sendCarel(card, id, spec.mqtt, next);
+  }
+
+  function wireCarelControls(el, id) {
+    const power = el.querySelector('[data-role="power"]');
+    if (power) {
+      power.addEventListener("click", (e) => {
+        e.preventDefault();
+        e.stopPropagation();
+        const d = lastDeviceById[id];
+        if (!d || controlsDead(d) || power.disabled) return;
+        const cur = shownCarelNumber(d, "unit_on", "unit_on");
+        if (cur == null) return;
+        const next = cur >= 1 ? 0 : 1;
+        rememberCarelPending(id, "unit_on", next);
+        paintCarelControls(el, d);
+        sendCarel(el, id, "unit_on", next);
+      });
+    }
+    const nudges = [
+      ["sp-dec", "setpoint", -1],
+      ["sp-inc", "setpoint", 1],
+      ["su-dec", "setpoint_summer", -1],
+      ["su-inc", "setpoint_summer", 1],
+    ];
+    nudges.forEach(([role, specId, dir]) => {
+      const btn = el.querySelector('[data-role="' + role + '"]');
+      if (!btn) return;
+      btn.addEventListener("click", (e) => {
+        e.preventDefault();
+        e.stopPropagation();
+        if (btn.disabled) return;
+        nudgeCarel(el, id, specId, dir);
+      });
+    });
+    const fanBox = el.querySelector(".dev-fan-steps");
+    if (fanBox) {
+      fanBox.addEventListener("click", (e) => {
+        const btn = e.target.closest && e.target.closest('[data-role="fan-step"]');
+        if (!btn || btn.disabled) return;
+        e.preventDefault();
+        e.stopPropagation();
+        const d = lastDeviceById[id];
+        if (!d || controlsDead(d)) return;
+        const fan = carelControlModel(d.family).controls.filter((c) => c.id === "fan")[0];
+        const value = Number(btn.dataset.value);
+        if (!Number.isFinite(value)) return;
+        const cur = shownCarelNumber(d, fan.mqtt, fan.mqtt);
+        if (cur != null && Math.abs(cur - value) < 0.05) return;
+        rememberCarelPending(id, fan.mqtt, value);
+        paintCarelControls(el, d);
+        sendCarel(el, id, fan.mqtt, value);
+      });
+    }
+  }
+
+  function wireChartButton(el, kind, id) {
+    const btn = el.querySelector('[data-role="chart"]');
+    if (!btn) return;
+    btn.addEventListener("click", (e) => {
+      e.preventDefault();
+      e.stopPropagation();
+      const d = lastDeviceById[id];
+      openModal(kind, id, d ? displayLabel(d) : id);
+    });
   }
 
   function buildCard(d) {
     const kind = cardKind(d);
     const isMr = kind === "mr";
     const isCarel = kind === "carel";
+    const isMtd = kind === "mtd";
     const id = String(d.id || "");
     const title = d.label || d.title || id;
     const el = document.createElement("article");
@@ -494,15 +1096,21 @@ import { aiSensorLabel, aiUnitPrecision } from "./ai-sensors.js?v=1.0.7.0";
         ? " dev-card--mr"
         : isCarel
         ? " dev-card--carel"
+        : isMtd
+        ? " dev-card--mtd"
         : "");
     el.dataset.deviceId = id;
     el.dataset.kind = kind;
-    // Every card opens the history modal (MR-02m AI included since 1.0.5.85).
-    el.setAttribute("role", "button");
-    el.tabIndex = 0;
-    el.title = "Открыть историю";
+    const controllable = isCarel || isMtd;
+    // Read-only cards open history from the card itself. A controllable card
+    // (Carel, MTD) keeps the chart behind «График» — closed until that button.
+    if (!controllable) {
+      el.setAttribute("role", "button");
+      el.tabIndex = 0;
+      el.title = "Открыть историю";
+    }
     const ico =
-      kind === "dtv" ? ICO_DTV : isMr ? ICO_MR : isCarel ? ICO_CAREL : ICO_CE;
+      kind === "dtv" ? ICO_DTV : isMr ? ICO_MR : isCarel ? ICO_CAREL : isMtd ? ICO_PRESENCE : ICO_CE;
     let metricsCls = "dev-metrics";
     let metricsHtml;
     if (isMr) {
@@ -510,6 +1118,8 @@ import { aiSensorLabel, aiUnitPrecision } from "./ai-sensors.js?v=1.0.7.0";
       metricsHtml = buildMrMetricsHtml(d);
     } else if (kind === "dtv") {
       metricsHtml = buildDtvMetricsHtml();
+    } else if (isMtd) {
+      metricsHtml = buildMtdMetricsHtml();
     } else if (isCarel) {
       metricsHtml = buildCarelMetricsHtml();
     } else {
@@ -530,34 +1140,56 @@ import { aiSensorLabel, aiUnitPrecision } from "./ai-sensors.js?v=1.0.7.0";
       `<span data-role="alerts"></span>` +
       `<span class="dev-head-right">` +
       `<span class="dev-pill ok" data-role="status">…</span>` +
-      (isMr || isCarel
+      (isMr || isCarel || isMtd
         ? ""
         : `<button type="button" class="dev-card-remove" data-role="remove" title="Удалить виджет (архив остановится, данные в БД сохранятся)" aria-label="Удалить виджет">×</button>`) +
       `</span>` +
       `</div>` +
       `<div class="widget-body dev-body"><div class="${metricsCls}">` +
       metricsHtml +
-      `</div></div>`;
-    el.addEventListener("click", (e) => {
-      if (e.target.closest('[data-role="remove"], [data-role="rename"]')) return;
-      // MR KPIs carry data-key="ai_N" (no data-metric); a KPI click opens that
-      // channel's chip. DTV/CE KPIs carry data-metric.
-      const kpi = isMr
-        ? e.target.closest(".dev-kpi[data-key]")
-        : e.target.closest(".dev-kpi[data-metric]");
-      const shortcut = kpi
-        ? isMr
-          ? kpi.dataset.key
-          : kpi.dataset.metric
-        : undefined;
-      openModal(kind, id, title, shortcut);
-    });
-    el.addEventListener("keydown", (e) => {
-      if (e.key === "Enter" || e.key === " ") {
-        e.preventDefault();
-        openModal(kind, id, title);
+      `</div>` +
+      (isCarel ? buildCarelControlsHtml(d.family) : isMtd ? chartButtonHtml() : "") +
+      `</div>`;
+    if (!controllable) {
+      el.addEventListener("click", (e) => {
+        if (e.target.closest('[data-role="remove"], [data-role="rename"], input, button')) return;
+        // MR KPIs carry data-key="ai_N" (no data-metric); a KPI click opens that
+        // channel's chip. DTV/CE chart KPIs carry data-metric.
+        const kpi = isMr
+          ? e.target.closest(".dev-kpi[data-key]")
+          : e.target.closest(".dev-kpi[data-metric]");
+        const shortcut = kpi
+          ? isMr
+            ? kpi.dataset.key
+            : kpi.dataset.metric
+          : undefined;
+        openModal(kind, id, title, shortcut);
+      });
+      el.addEventListener("keydown", (e) => {
+        if (e.key === "Enter" || e.key === " ") {
+          e.preventDefault();
+          openModal(kind, id, title);
+        }
+      });
+    } else {
+      wireChartButton(el, kind, id);
+      if (isCarel) wireCarelControls(el, id);
+      if (isMtd) {
+        el.setAttribute("aria-expanded", "false");
+        el.addEventListener("click", (e) => {
+          if (e.target.closest("input, button, a")) return;
+          const open = el.classList.toggle("is-open");
+          el.setAttribute("aria-expanded", open ? "true" : "false");
+        });
+        el.addEventListener("keydown", (e) => {
+          const inp = e.target.closest && e.target.closest("input.dev-mtd-set");
+          if (!inp || e.key !== "Enter") return;
+          e.preventDefault();
+          e.stopPropagation();
+          commitMtdSetting(id, inp);
+        });
       }
-    });
+    }
     const renameBtn = el.querySelector('[data-role="rename"]');
     if (renameBtn) {
       renameBtn.addEventListener("click", (e) => {
@@ -704,18 +1336,9 @@ import { aiSensorLabel, aiUnitPrecision } from "./ai-sensors.js?v=1.0.7.0";
       setField(card, "plant", d.plant_state_text || "—");
       setField(card, "supply", fmt(d.supply_temp, 1));
       setField(card, "return", fmt(d.return_water_temp, 1));
-      setField(card, "setpoint", fmt(d.setpoint, 1));
       setField(card, "valve", fmt(d.heat_valve, 0));
-      const fanEl = card.querySelector('[data-f="fan"]');
-      const fanUnit = card.querySelector('[data-u="fan"]');
-      if (d.family === "uaria") {
-        if (fanEl) fanEl.textContent = fmt(d.fan_step, 0);
-        if (fanUnit) fanUnit.textContent = "";
-      } else {
-        if (fanEl) fanEl.textContent = fmt(d.fan_supply, 0);
-        if (fanUnit) fanUnit.textContent = "%";
-      }
       card.classList.toggle("dev-has-alarm", Number(d.alarm) === 1);
+      paintCarelControls(card, d);
       return;
     }
     if (d.kind === "mr" || card.dataset.kind === "mr") {
@@ -750,6 +1373,50 @@ import { aiSensorLabel, aiUnitPrecision } from "./ai-sensors.js?v=1.0.7.0";
         kpi.classList.toggle("dev-kpi--off", c.enabled === false);
         kpi.classList.toggle("dev-kpi--err", c.ok === false);
       });
+      return;
+    }
+    if (d.kind === "mtd" || card.dataset.kind === "mtd") {
+      const present = Number(d.presence);
+      setField(
+        card,
+        "presence",
+        d.presence == null || Number.isNaN(present) ? "—" : present > 0 ? "да" : "нет"
+      );
+      setField(card, "lux", fmt(d.illuminance_lux, 1));
+      setField(card, "dist", fmt(d.target_distance_m, 2));
+      const sets = [
+        ["range", d.detection_distance_m, 2],
+        ["shield", d.detection_shielding_m, 2],
+        ["admit", d.admission_delay_s, 2],
+        ["leave", d.departure_delay_s, 0],
+        ["trig", d.trigger_sensitivity, 0],
+        ["hold", d.maintain_sensitivity, 0],
+        ["entry", d.entrance_reduction_m, 2],
+      ];
+      const now = Date.now();
+      const devId = String(d.id || "");
+      sets.forEach(([key, val, digits]) => {
+        const inp = card.querySelector('input.dev-mtd-set[data-f="' + key + '"]');
+        if (!inp) return;
+        const pkey = mtdPendingKey(devId, inp.dataset.ctrl);
+        const pending = mtdPending[pkey];
+        if (pending && mtdDropPending(pending, val, digits, now)) delete mtdPending[pkey];
+        const focused = document.activeElement === inp;
+        const next = mtdSettingDisplay(
+          val,
+          mtdPending[pkey] || null,
+          digits,
+          now,
+          focused,
+          inp.value
+        );
+        if (!focused && inp.value !== next) inp.value = next;
+      });
+      const chart = card.querySelector('[data-role="chart"]');
+      if (chart) {
+        const lab = uiT("График");
+        if (chart.textContent !== lab) chart.textContent = lab;
+      }
       return;
     }
     if (d.kind === "ce" || card.dataset.kind === "ce") {
@@ -799,20 +1466,76 @@ import { aiSensorLabel, aiUnitPrecision } from "./ai-sensors.js?v=1.0.7.0";
     // runtime-assembled string can never match a DICT key — i18n floor).
   }
 
+  /* Columns already used by the devices grid. Not a new breakpoint:
+     >1100px is 3, 1025–1100px is 2, ≤1024px is 1. */
+  function devGridCols() {
+    if (!window.matchMedia) return 3;
+    if (window.matchMedia("(max-width: 1024px)").matches) return 1;
+    if (window.matchMedia("(max-width: 1100px)").matches) return 2;
+    return 3;
+  }
+
+  /* Carel shares its row with СЭ-02м (9 parameters). If there is no СЭ,
+     the open seats of that row go to the next most loaded cards.
+     One column (phone) keeps the incoming order. */
+  function orderDeviceCards(list, cols) {
+    const items = Array.isArray(list) ? list.slice() : [];
+    const columns = cols === 2 || cols === 3 ? cols : 1;
+    if (columns < 2) return items;
+    const kindOf = function (d) {
+      const k = d && d.kind;
+      if (k === "ce" || k === "mr" || k === "carel" || k === "dtv" || k === "mtd") return k;
+      return "dtv";
+    };
+    const paramsOf = function (d) {
+      const k = kindOf(d);
+      if (k === "ce") return 9;
+      if (k === "mr") {
+        const n = Number(d && d.ai_count);
+        if (Number.isFinite(n) && n > 0) return n;
+        return Array.isArray(d && d.channels) ? d.channels.length : 0;
+      }
+      if (k === "dtv" || k === "mtd") return 6;
+      return 0;
+    };
+    const carel = [];
+    const ce = [];
+    const rest = [];
+    items.forEach((d) => {
+      const k = kindOf(d);
+      if (k === "carel") carel.push(d);
+      else if (k === "ce") ce.push(d);
+      else rest.push(d);
+    });
+    if (!carel.length) return items;
+    const head = carel.concat(ce);
+    const ranked = rest.slice().sort((a, b) => paramsOf(b) - paramsOf(a));
+    const rem = head.length % columns;
+    const padN = rem === 0 ? 0 : columns - rem;
+    const pad = ranked.slice(0, padN);
+    const chosen = head.concat(pad);
+    const tail = items.filter((d) => chosen.indexOf(d) < 0);
+    return chosen.concat(tail);
+  }
+
+  let lastRawDevices = null;
+
   function ensureCards(list) {
     const grid = $("dev-grid");
     if (!grid) return;
+    lastRawDevices = list;
+    const ordered = orderDeviceCards(list, devGridCols());
     const empty = $("dev-empty");
-    const sig = list.map((d) => d.id || "").join("|");
+    const sig = ordered.map((d) => d.id || "").join("|") + "#" + devGridCols();
     if (sig !== cardsSig) {
       cardsSig = sig;
       grid.querySelectorAll(".dev-card").forEach((el) => el.remove());
-      if (empty) empty.hidden = list.length > 0;
-      list.forEach((d) => grid.appendChild(buildCard(d)));
+      if (empty) empty.hidden = ordered.length > 0;
+      ordered.forEach((d) => grid.appendChild(buildCard(d)));
     } else if (empty) {
-      empty.hidden = list.length > 0;
+      empty.hidden = ordered.length > 0;
     }
-    list.forEach((d) => {
+    ordered.forEach((d) => {
       const want = String(d.id || "");
       const card = Array.from(grid.querySelectorAll(".dev-card")).find(
         (c) => c.dataset.deviceId === want
@@ -838,6 +1561,8 @@ import { aiSensorLabel, aiUnitPrecision } from "./ai-sensors.js?v=1.0.7.0";
     const meta = $("dev-events-meta");
     if (!body) return;
     const list = Array.isArray(events) ? events : [];
+    eventsCount = list.length;
+    syncEventsClearButton();
     const sig = list.map((e) => String(e.id || "") + ":" + String(e.ts || "")).join("|");
     if (sig === eventsSig && body.children.length) return;
     eventsSig = sig;
@@ -872,12 +1597,86 @@ import { aiSensorLabel, aiUnitPrecision } from "./ai-sensors.js?v=1.0.7.0";
   }
 
   function refreshEvents() {
+    const gen = eventsGen;
     return fetchJson("api/devices/events?limit=80")
       .then((data) => {
         if (!data || !data.ok) return;
+        if (gen !== eventsGen) return;
         renderEvents(data.events || []);
       })
       .catch(() => {});
+  }
+
+  function syncEventsClearButton() {
+    const btn = $("dev-events-clear-btn");
+    if (btn) btn.disabled = eventsClearPending || eventsCount === 0;
+  }
+
+  function eventsClearErrorText(status, body) {
+    if (body && body.error === "busy") {
+      return tl("Журнал не очищен: архив занят записью, повторите через несколько секунд");
+    }
+    if (body && body.error_code === "E_CSRF") {
+      return tl("Журнал не очищен: защита сессии отклонила запрос");
+    }
+    if (status === 401) return tl("Журнал не очищен: сессия истекла");
+    if (!status) return tl("Журнал не очищен: нет ответа от сервера");
+    return tl("Журнал не очищен: ошибка сервера") + " (HTTP " + status + ")";
+  }
+
+  function eventsClearToast(msg, type) {
+    if (typeof window.toast === "function") window.toast(msg, type, 6000);
+  }
+
+  /** «Очистить» — deletes the WHOLE journal (every device) on the daemon. The
+   *  table changes only on a confirmed `ok:true`; any failure keeps the list. */
+  function clearEventsJournal() {
+    if (eventsClearPending) return Promise.resolve(false);
+    if (
+      !window.confirm(
+        tl("Очистить журнал событий? Все события будут удалены без возможности восстановления.")
+      )
+    ) {
+      return Promise.resolve(false);
+    }
+    eventsClearPending = true;
+    eventsGen++;
+    syncEventsClearButton();
+    const ctrl = typeof AbortController === "function" ? new AbortController() : null;
+    const abortTimer = ctrl ? setTimeout(() => ctrl.abort(), EVENTS_CLEAR_TIMEOUT_MS) : null;
+    return fetch("api/devices/events/clear", {
+      method: "POST",
+      credentials: "same-origin",
+      headers: typeof withCsrfHeaders === "function" ? withCsrfHeaders({}) : {},
+      signal: ctrl ? ctrl.signal : undefined,
+    })
+      .then((r) =>
+        r.text().then((t) => {
+          let body = null;
+          try {
+            body = JSON.parse(t);
+          } catch (e) {
+            body = null;
+          }
+          return { status: r.status, body: body };
+        })
+      )
+      .catch(() => ({ status: 0, body: null }))
+      .then((res) => {
+        if (abortTimer) clearTimeout(abortTimer);
+        eventsClearPending = false;
+        const ok = res.status === 200 && !!res.body && res.body.ok === true;
+        if (ok) {
+          eventsGen++;
+          eventsSig = null;
+          renderEvents([]);
+          eventsClearToast(tl("Журнал событий очищен"), "success");
+        } else {
+          syncEventsClearButton();
+          eventsClearToast(eventsClearErrorText(res.status, res.body), "error");
+        }
+        return ok;
+      });
   }
 
   function refreshLive() {
@@ -896,7 +1695,7 @@ import { aiSensorLabel, aiUnitPrecision } from "./ai-sensors.js?v=1.0.7.0";
           empty.textContent =
             availableDevices.length > 0
               ? "Нет отображаемых виджетов. Нажмите «Добавить виджет», чтобы вернуть удалённые, или добавьте устройства на вкладке MQTT."
-              : "Нет устройств ДТВ / СЭ-02м-3 / Carel / MR-02m в MQTT. Добавьте их на вкладке MQTT — виджеты появятся здесь автоматически.";
+              : "Нет устройств ДТВ / СЭ-02м-3 / Carel / MR-02m / MTD262-MB в MQTT. Добавьте их на вкладке MQTT — виджеты появятся здесь автоматически.";
         }
       })
       .catch(() => {})
@@ -973,6 +1772,9 @@ import { aiSensorLabel, aiUnitPrecision } from "./ai-sensors.js?v=1.0.7.0";
       pressure_mmhg: 1,
       light_pct: 0,
       presence: 0,
+      mtd_illuminance: 1,
+      mtd_target_distance: 2,
+      mtd_presence: 0,
       voltage: 1,
       current: 3,
       power: 0,
@@ -1086,7 +1888,8 @@ import { aiSensorLabel, aiUnitPrecision } from "./ai-sensors.js?v=1.0.7.0";
     } else if (activeDevice === "carel") {
       params.kind = "carel";
     } else if (modalMode === "overview") {
-      params.group = activeDevice === "dtv" ? "climate" : "energy";
+      params.group =
+        activeDevice === "dtv" ? "climate" : activeDevice === "mtd" ? "mtd" : "energy";
     } else {
       params.metric = activeMetric;
     }
@@ -1100,6 +1903,8 @@ import { aiSensorLabel, aiUnitPrecision } from "./ai-sensors.js?v=1.0.7.0";
         ? "mr"
         : activeDevice === "carel"
         ? "carel"
+        : activeDevice === "mtd"
+        ? "mtd"
         : "ce") + "_export.xlsx";
     fetch(url, { credentials: "same-origin", cache: "no-store" })
       .then((r) => {
@@ -1330,6 +2135,314 @@ import { aiSensorLabel, aiUnitPrecision } from "./ai-sensors.js?v=1.0.7.0";
     return s;
   }
 
+  /* ── Legend show/hide + СЭ bar charts ─────────────────────────────────
+     A legend entry is a toggle button: a hidden series leaves the plot and the
+     Y domain but keeps its colour (bound to its original index, `_ci`), and the
+     last visible series can never be hidden. СЭ «Мощность» / «Энергия» draw bars
+     over local-clock buckets. The bucket and ΔE math lives here only: bench
+     history has no bucket parameter, so the line series are bucketed in the page. */
+
+  /** Identity of a series inside one chart; «Общее» series carry their metric. */
+  function seriesKey(ser, idx) {
+    const s = ser || {};
+    const id = s.field || s.label || String(idx);
+    return s.metric ? s.metric + ":" + id : String(id);
+  }
+
+  /** Toggle one key in the hidden list; the last visible key is never hidden. */
+  function toggleHiddenKey(hidden, key, allKeys) {
+    const cur = Array.isArray(hidden) ? hidden.slice() : [];
+    const at = cur.indexOf(key);
+    if (at >= 0) {
+      cur.splice(at, 1);
+      return cur;
+    }
+    const visible = (allKeys || []).filter((k) => cur.indexOf(k) < 0);
+    if (visible.length <= 1) return cur;
+    cur.push(key);
+    return cur;
+  }
+
+  /** Visible series as copies carrying their original colour index `_ci`; a
+      hidden list that would hide every series shows them all (never a blank plot). */
+  function visibleSeriesOf(series, hidden) {
+    const list = series || [];
+    const off = Array.isArray(hidden) ? hidden : [];
+    const tagged = list.map((s, i) =>
+      Object.assign({}, s, { _ci: s && s._ci != null ? s._ci : i })
+    );
+    const vis = tagged.filter((s, i) => off.indexOf(seriesKey(list[i], i)) < 0);
+    return vis.length ? vis : tagged;
+  }
+
+  /** "avg" (СЭ power) | "delta" (СЭ energy counter → ΔE) | "" (a line chart). */
+  function barModeFor(kind, mode, metric) {
+    if (kind !== "ce" || mode !== "metric") return "";
+    if (metric === "power") return "avg";
+    if (metric === "energy_kwh_import") return "delta";
+    return "";
+  }
+
+  /** Bar width (s): 1 ч→5 мин, 6 ч→15 мин, 24 ч→1 ч, 7 д / 30 д / calendar→1 сут.
+      A zoom window between presets takes the largest preset tier not above it;
+      under 1 ч → 1 мин. */
+  function barBucketSec(windowSec, calendarMode) {
+    if (calendarMode) return 86400;
+    const w = Number(windowSec) || 0;
+    if (w >= 7 * 86400) return 86400;
+    if (w >= 86400) return 3600;
+    if (w >= 6 * 3600) return 900;
+    if (w >= 3600) return 300;
+    return 60;
+  }
+
+  /** Bucket start (ms) on the LOCAL clock; a day bucket starts at local midnight. */
+  function barBucketStart(tMs, bucketSec) {
+    const t = Number(tMs);
+    if (bucketSec >= 86400) {
+      const d = new Date(t);
+      d.setHours(0, 0, 0, 0);
+      return d.getTime();
+    }
+    const ms = bucketSec * 1000;
+    const off = new Date(t).getTimezoneOffset() * 60000;
+    return Math.floor((t - off) / ms) * ms + off;
+  }
+
+  function barBucketEnd(startMs, bucketSec) {
+    if (bucketSec >= 86400) {
+      const d = new Date(startMs);
+      d.setDate(d.getDate() + 1);
+      return d.getTime();
+    }
+    return startMs + bucketSec * 1000;
+  }
+
+  /** Average of each bucket's finite samples → [[start, avg, end], …] (power bars). */
+  function bucketAvgPoints(points, bucketSec) {
+    const acc = new Map();
+    (points || []).forEach((p) => {
+      if (!p || p[1] == null) return;
+      const t = Number(p[0]);
+      const v = Number(p[1]);
+      if (!Number.isFinite(t) || !Number.isFinite(v)) return;
+      const b = barBucketStart(t, bucketSec);
+      const cur = acc.get(b);
+      if (cur) {
+        cur.s += v;
+        cur.n += 1;
+      } else {
+        acc.set(b, { s: v, n: 1 });
+      }
+    });
+    return Array.from(acc.keys())
+      .sort((a, b) => a - b)
+      .map((b) => [b, acc.get(b).s / acc.get(b).n, barBucketEnd(b, bucketSec)]);
+  }
+
+  /**
+   * ΔE per bucket from the cumulative counter → [[start, ΔE, end], …]. A rise
+   * between consecutive samples counts in the later sample's bucket. A drop is
+   * held: a recovery to the pre-drop level was a glitch (only the rise above that
+   * level counts); a second low sample is a counter reset and rebases. A rise whose
+   * earlier sample is not in the same or the previous bucket spans a gap and is not
+   * drawn (no fake spike after an outage); a bucket with no counted rise has no bar.
+   */
+  function bucketEnergyDeltaPoints(points, bucketSec) {
+    const pts = (points || [])
+      .filter((p) => p && p[1] != null)
+      .map((p) => [Number(p[0]), Number(p[1])])
+      .filter((p) => Number.isFinite(p[0]) && Number.isFinite(p[1]))
+      .sort((a, b) => a[0] - b[0]);
+    const acc = new Map();
+    let ref = null;
+    let low = 0;
+    let dropped = false;
+    let prevB = null;
+    pts.forEach(([t, v]) => {
+      const b = barBucketStart(t, bucketSec);
+      if (ref === null) {
+        ref = v;
+        prevB = b;
+        return;
+      }
+      let inc;
+      if (v >= ref) {
+        inc = v - ref;
+        ref = v;
+        dropped = false;
+      } else if (!dropped) {
+        dropped = true;
+        low = v;
+        inc = 0;
+      } else {
+        inc = Math.max(0, v - low);
+        ref = v;
+        dropped = false;
+      }
+      if (prevB === b || prevB === barBucketStart(b - 1, bucketSec)) {
+        acc.set(b, (acc.get(b) || 0) + inc);
+      }
+      prevB = b;
+    });
+    return Array.from(acc.keys())
+      .sort((a, b) => a - b)
+      .map((b) => [b, acc.get(b), barBucketEnd(b, bucketSec)]);
+  }
+
+  /** Line series → bar series (points [start, value, end]) for mode avg | delta. */
+  function toBarSeries(series, mode, bucketSec) {
+    return (series || []).map((s) =>
+      Object.assign({}, s, {
+        label: mode === "delta" ? "ΔE" : s.label,
+        points:
+          mode === "delta"
+            ? bucketEnergyDeltaPoints(s.points, bucketSec)
+            : bucketAvgPoints(s.points, bucketSec),
+        _bars: true,
+      })
+    );
+  }
+
+  /** Points the archive already aggregated to `bucketSec` (mean W or ΔE).
+      One bar per returned point — do not average or difference them again. */
+  function preparedBarSeries(series, mode, bucketSec) {
+    return (series || []).map((s) =>
+      Object.assign({}, s, {
+        label: mode === "delta" ? "ΔE" : s.label,
+        points: (s.points || [])
+          .filter((p) => p && p[1] != null)
+          .map((p) => [Number(p[0]), Number(p[1])])
+          .filter((p) => Number.isFinite(p[0]) && Number.isFinite(p[1]))
+          .map((p) => {
+            const start = barBucketStart(p[0], bucketSec);
+            return [start, p[1], barBucketEnd(start, bucketSec)];
+          }),
+        _bars: true,
+      })
+    );
+  }
+
+  /** X-axis label i of 0..nTicks: the edge labels always draw; a middle label
+      only with a 6 px gap to the label before it and to the last one. */
+  function xTickLabelFits(i, nTicks, left, labelW, prevRight, lastLeft) {
+    if (i === 0 || i === nTicks) return true;
+    return left >= prevRight + 6 && left + labelW <= lastLeft - 6;
+  }
+
+  /** Bar Y domain: bars rise from zero (a cropped baseline misstates the ratio
+      between bars); a negative value (export power) gets its own floor. 4 × a
+      nice step keeps the 4 grid lines on round values (0.05 / 25 / 100). */
+  function barYDomain(dataMin, dataMax) {
+    const lo = Math.min(0, Number(dataMin) || 0);
+    const hi = Math.max(0, Number(dataMax) || 0);
+    const minY = lo < 0 ? -4 * niceCeil((-lo * 1.08) / 4) : 0;
+    const maxY = hi > 0 ? 4 * niceCeil((hi * 1.08) / 4) : minY < 0 ? 0 : 1;
+    return { minY, maxY };
+  }
+
+  /** Side-by-side slots of n bars inside a bucket spanning [x0, x1] px. */
+  function barGroupSlots(x0, x1, n) {
+    if (!(n > 0)) return [];
+    const span = Math.max(0, x1 - x0);
+    const inner = span * 0.8;
+    const left = x0 + (span - inner) / 2;
+    const slot = inner / n;
+    const gap = slot > 4 ? 1 : 0;
+    const out = [];
+    for (let i = 0; i < n; i++) {
+      out.push({ x: left + i * slot + gap / 2, w: Math.max(1, slot - gap) });
+    }
+    return out;
+  }
+
+  /** Hover label of a bar bucket «HH:MM–HH:MM», dated once the axis carries dates
+      (rangeLabelKey past «1h»); an end on local midnight reads 24:00. */
+  function fmtBucketRange(t0, t1, rangeKey) {
+    const a = new Date(t0);
+    let end = fmtTime(new Date(t1));
+    if (end === "00:00" && t1 > t0) end = "24:00";
+    const span = fmtTime(a) + "–" + end;
+    if (rangeKey === "1h" || rangeKey === "sec") return span;
+    const dd = String(a.getDate()).padStart(2, "0");
+    const mo = String(a.getMonth() + 1).padStart(2, "0");
+    return dd + "." + mo + " " + span;
+  }
+
+  /** Status-line note naming what one bar is («расход за 5 мин»). */
+  function barStepLabel(mode, bucketSec) {
+    const span =
+      bucketSec >= 86400
+        ? "сутки"
+        : bucketSec >= 3600
+        ? "1 ч"
+        : Math.round(bucketSec / 60) + " мин";
+    return (mode === "delta" ? "расход за " : "среднее за ") + span;
+  }
+
+  const HIDDEN_LS_KEY = "sa02m_dev_hidden_series";
+  /** "<kind>:<metric|overview>" → hidden series keys; loaded once from localStorage. */
+  let hiddenSeriesMap = null;
+
+  function hiddenStateKey() {
+    return activeDevice + ":" + (modalMode === "overview" ? "overview" : activeMetric);
+  }
+
+  function hiddenSeriesFor(stateKey) {
+    if (!hiddenSeriesMap) {
+      hiddenSeriesMap = {};
+      try {
+        const raw = JSON.parse(localStorage.getItem(HIDDEN_LS_KEY) || "{}");
+        if (raw && typeof raw === "object" && !Array.isArray(raw)) {
+          Object.keys(raw).forEach((k) => {
+            if (Array.isArray(raw[k])) {
+              hiddenSeriesMap[k] = raw[k].filter((x) => typeof x === "string");
+            }
+          });
+        }
+      } catch (_e) {
+        /* ignore — in-memory state only */
+      }
+    }
+    return (hiddenSeriesMap[stateKey] || []).slice();
+  }
+
+  function setHiddenSeries(stateKey, list) {
+    hiddenSeriesFor(stateKey);
+    if (list.length) hiddenSeriesMap[stateKey] = list.slice();
+    else delete hiddenSeriesMap[stateKey];
+    try {
+      localStorage.setItem(HIDDEN_LS_KEY, JSON.stringify(hiddenSeriesMap));
+    } catch (_e) {
+      /* ignore — in-memory state only */
+    }
+  }
+
+  function onLegendToggle(key) {
+    if (!key) return;
+    const keys = (chartSeries || []).map((s, i) => seriesKey(s, i));
+    const stateKey = hiddenStateKey();
+    let cur = hiddenSeriesFor(stateKey);
+    // A stored list covering every current series is shown as all-visible
+    // (visibleSeriesOf); toggle from what the Operator actually sees.
+    if (keys.length && keys.every((k) => cur.indexOf(k) >= 0)) {
+      cur = cur.filter((k) => keys.indexOf(k) < 0);
+    }
+    setHiddenSeries(stateKey, toggleHiddenKey(cur, key, keys));
+    drawChart();
+    const status = $("dev-chart-status");
+    if (status && chartMeta.normalize && chartSeries.length) {
+      status.textContent = overviewStatusText();
+    }
+    const legend = $("dev-chart-legend");
+    const again =
+      legend &&
+      Array.from(legend.querySelectorAll(".dev-legend-item")).find(
+        (b) => b.getAttribute("data-series-key") === key
+      );
+    if (again) again.focus();
+  }
+
   function ensureChartOverlay(wrap) {
     if (!wrap) return { tipA: null, tipB: null, delta: null };
     let tipA = wrap.querySelector(".dev-chart-tip[data-tip='a']");
@@ -1378,14 +2491,31 @@ import { aiSensorLabel, aiUnitPrecision } from "./ai-sensors.js?v=1.0.7.0";
 
   function hitSeriesAtX(drawSeries, xMs, unitNote, normalize) {
     const rows = [];
-    (drawSeries || []).forEach((ser, idx) => {
+    (drawSeries || []).forEach((ser, i) => {
+      const idx = ser._ci != null ? ser._ci : i;
       const plotPts = ser.points || [];
       const rawPts = ser._rawPoints || plotPts;
       if (!plotPts.length) return;
+      const unit = ser.unit ? ser.unit : unitNote || "";
+      if (ser._bars) {
+        // A bar answers for its whole bucket: the hit is the bucket holding xMs.
+        const bar = plotPts.find((pt) => xMs >= pt[0] && xMs < pt[2]);
+        if (!bar) return;
+        rows.push({
+          idx,
+          label: ser.label || ser.field || ser.metric || "",
+          t: bar[0],
+          t1: bar[2],
+          y: bar[1],
+          plotY: bar[1],
+          unit,
+          metric: ser.metric || "",
+        });
+        return;
+      }
       const plotHit = nearestPoint(plotPts, xMs);
       if (!plotHit) return;
       const rawHit = nearestPoint(rawPts, plotHit[0]) || plotHit;
-      const unit = ser.unit ? ser.unit : unitNote || "";
       rows.push({
         idx,
         label: ser.label || ser.field || ser.metric || "",
@@ -1443,7 +2573,7 @@ import { aiSensorLabel, aiUnitPrecision } from "./ai-sensors.js?v=1.0.7.0";
 
   function snapMarkX(st, xMs) {
     const rows = hitSeriesAtX(
-      st.srcSeries || [],
+      visibleSeriesOf(st.srcSeries || [], st.opts && st.opts.hidden),
       xMs,
       (st.opts && st.opts.unitNote) || "",
       !!(st.opts && st.opts.normalize)
@@ -1521,9 +2651,11 @@ import { aiSensorLabel, aiUnitPrecision } from "./ai-sensors.js?v=1.0.7.0";
   function tipHtmlFromRows(rows, rangeKey, metric) {
     if (!rows || !rows.length) return "";
     const t0 = rows[0].t;
-    const lines = [
-      `<div class="dev-chart-tip-time">${escapeAttr(fmtTipTimeLabel(t0, rangeKey))}</div>`,
-    ];
+    const when =
+      rows[0].t1 != null
+        ? fmtBucketRange(t0, rows[0].t1, rangeKey)
+        : fmtTipTimeLabel(t0, rangeKey);
+    const lines = [`<div class="dev-chart-tip-time">${escapeAttr(when)}</div>`];
     rows.forEach((row) => {
       const color = COLORS[row.idx % COLORS.length];
       const unit = row.unit ? ` ${row.unit}` : "";
@@ -1772,14 +2904,27 @@ import { aiSensorLabel, aiUnitPrecision } from "./ai-sensors.js?v=1.0.7.0";
     ctx.fillStyle = th.bg;
     ctx.fillRect(0, 0, w, h);
 
-    const drawSeries = series || [];
+    // Hidden legend entries leave the plot, the Y domain and the hover rows.
+    const drawSeries = visibleSeriesOf(series || [], opts.hidden);
+    const bars = !!opts.bars;
 
     const all = flattenPoints(drawSeries);
     if (!all.length) {
       ctx.fillStyle = th.text;
       ctx.font = "13px ui-sans-serif, system-ui, sans-serif";
       ctx.fillText(opts.emptyText || "Нет данных", pad.l, h / 2);
-      if (opts.legendEl) renderLegendInto(opts.legendEl, [], "");
+      // Keep the legend clickable when only the SHOWN series are empty — the
+      // Operator must be able to bring a hidden series with data back.
+      if (opts.legendEl) {
+        renderLegendInto(
+          opts.legendEl,
+          flattenPoints(series || []).length ? series : [],
+          opts.unitNote || "",
+          opts.normalize,
+          opts.metric || "",
+          opts.hidden
+        );
+      }
       if (tipA) tipA.hidden = true;
       if (tipB) tipB.hidden = true;
       if (deltaEl) deltaEl.hidden = true;
@@ -1799,9 +2944,10 @@ import { aiSensorLabel, aiUnitPrecision } from "./ai-sensors.js?v=1.0.7.0";
       maxX = -Infinity,
       minY = Infinity,
       maxY = -Infinity;
-    all.forEach(([x, y]) => {
+    all.forEach(([x, y, xEnd]) => {
       if (x < minX) minX = x;
       if (x > maxX) maxX = x;
+      if (xEnd != null && xEnd > maxX) maxX = xEnd; // a bar spans to its bucket end
       if (y < minY) minY = y;
       if (y > maxY) maxY = y;
     });
@@ -1828,6 +2974,17 @@ import { aiSensorLabel, aiUnitPrecision } from "./ai-sensors.js?v=1.0.7.0";
       ctx.font = "11px ui-sans-serif, system-ui, sans-serif";
       const topLab = fmtYTick(maxY, yDecimals);
       pad.l = Math.min(72, Math.max(48, Math.ceil(ctx.measureText(topLab).width) + 12));
+    } else if (bars) {
+      const dom = barYDomain(minY, maxY);
+      minY = dom.minY;
+      maxY = dom.maxY;
+      yDecimals = yTickDecimals(minY, maxY, 4);
+      ctx.font = "11px ui-sans-serif, system-ui, sans-serif";
+      const labW = Math.max(
+        ctx.measureText(fmtYTick(maxY, yDecimals)).width,
+        ctx.measureText(fmtYTick(minY, yDecimals)).width
+      );
+      pad.l = Math.min(72, Math.max(48, Math.ceil(labW) + 12));
     } else {
       const dom = computeYDomain(minY, maxY);
       minY = dom.minY;
@@ -1863,6 +3020,10 @@ import { aiSensorLabel, aiUnitPrecision } from "./ai-sensors.js?v=1.0.7.0";
     // X ticks: 4–8 evenly spaced, bottom labels + light vertical grid
     const nTicks = Math.max(4, Math.min(8, Math.floor(plotW / 72)));
     ctx.textAlign = "center";
+    // First and last labels always; a middle one only where it clears the label
+    // drawn before it and the last one (dated labels collided at 500 px).
+    const lastLeft = w - pad.r - ctx.measureText(fmtTimeLabel(maxX, rangeKey)).width;
+    let prevRight = -Infinity;
     for (let i = 0; i <= nTicks; i++) {
       const xv = minX + ((maxX - minX) * i) / nTicks;
       const x = xScale(xv);
@@ -1886,13 +3047,38 @@ import { aiSensorLabel, aiUnitPrecision } from "./ai-sensors.js?v=1.0.7.0";
       } else {
         ctx.textAlign = "center";
       }
-      // skip if would heavily overlap neighbors (narrow canvas)
-      if (i > 0 && i < nTicks && labelW > (plotW / (nTicks + 1)) * 1.35) continue;
+      const left = i === 0 ? tx : i === nTicks ? tx - labelW : tx - labelW / 2;
+      if (!xTickLabelFits(i, nTicks, left, labelW, prevRight, lastLeft)) continue;
       ctx.fillText(label, tx, h - 10);
+      prevRight = left + labelW;
     }
     ctx.textAlign = "left";
 
-    drawSeries.forEach((ser, idx) => {
+    if (bars) {
+      // Visible series side by side inside each bucket (Pa/Pb/Pc/PΣ grouped);
+      // an exact zero keeps a 1 px stub so «0» reads apart from «no data».
+      const n = drawSeries.length;
+      const y0 = yScale(Math.max(minY, Math.min(maxY, 0)));
+      ctx.save();
+      ctx.beginPath();
+      ctx.rect(pad.l, pad.t, plotW, plotH);
+      ctx.clip();
+      drawSeries.forEach((ser, si) => {
+        ctx.fillStyle = COLORS[ser._ci % COLORS.length];
+        (ser.points || []).forEach((pt) => {
+          const slot = barGroupSlots(xScale(pt[0]), xScale(pt[2]), n)[si];
+          const y = yScale(pt[1]);
+          const hBar = Math.abs(y0 - y);
+          if (hBar >= 1) ctx.fillRect(slot.x, Math.min(y, y0), slot.w, hBar);
+          else ctx.fillRect(slot.x, y0 - 1, slot.w, 1);
+        });
+      });
+      ctx.restore();
+    }
+
+    drawSeries.forEach((ser) => {
+      if (bars) return;
+      const idx = ser._ci;
       const pts = ser.points || [];
       if (pts.length < 2) {
         if (pts.length === 1) {
@@ -1937,14 +3123,27 @@ import { aiSensorLabel, aiUnitPrecision } from "./ai-sensors.js?v=1.0.7.0";
     marks.forEach((mx, i) => {
       if (!Number.isFinite(mx)) return;
       drawCrosshairLine(ctx, xScale(mx), pad, plotH, true);
-      drawHitMarkers(ctx, markRows[i], xScale, yScale);
+      if (!bars) drawHitMarkers(ctx, markRows[i], xScale, yScale);
     });
 
     let hoverRows = [];
     if (marks.length < 2 && hoverX != null && Number.isFinite(hoverX)) {
       hoverRows = hitSeriesAtX(drawSeries, hoverX, unitNote, normalize);
-      drawCrosshairLine(ctx, xScale(hoverX), pad, plotH, false, th.text);
-      drawHitMarkers(ctx, hoverRows, xScale, yScale);
+      if (bars) {
+        // Hover shades the whole bucket the tip answers for.
+        if (hoverRows.length) {
+          const bx0 = Math.max(pad.l, xScale(hoverRows[0].t));
+          const bx1 = Math.min(w - pad.r, xScale(hoverRows[0].t1));
+          ctx.save();
+          ctx.globalAlpha = 0.16;
+          ctx.fillStyle = th.text;
+          ctx.fillRect(bx0, pad.t, Math.max(1, bx1 - bx0), plotH);
+          ctx.restore();
+        }
+      } else {
+        drawCrosshairLine(ctx, xScale(hoverX), pad, plotH, false, th.text);
+        drawHitMarkers(ctx, hoverRows, xScale, yScale);
+      }
     }
 
     if (tipA) tipA.hidden = true;
@@ -2021,12 +3220,14 @@ import { aiSensorLabel, aiUnitPrecision } from "./ai-sensors.js?v=1.0.7.0";
     }
 
     if (opts.legendEl) {
+      // Every series, hidden ones included — the legend is where they come back.
       renderLegendInto(
         opts.legendEl,
-        drawSeries,
+        series || [],
         opts.unitNote || "",
         opts.normalize,
-        opts.metric || ""
+        opts.metric || "",
+        opts.hidden
       );
     }
 
@@ -2050,13 +3251,18 @@ import { aiSensorLabel, aiUnitPrecision } from "./ai-sensors.js?v=1.0.7.0";
     bindChartPointer(canvas);
   }
 
-  function renderLegendInto(el, series, unitNote, normalized, metric) {
+  /** Legend = one toggle button per series (aria-pressed = shown). The markup is
+      rewritten only when it changes: a hover redraw must not destroy the button
+      that holds keyboard focus. */
+  function renderLegendInto(el, series, unitNote, normalized, metric, hidden) {
     if (!el) return;
-    if (!series.length) {
-      el.innerHTML = "";
-      return;
-    }
-    el.innerHTML = series
+    const list = series || [];
+    const off = Array.isArray(hidden) ? hidden : [];
+    const keys = list.map((s, i) => seriesKey(s, i));
+    let shownN = keys.filter((k) => off.indexOf(k) < 0).length;
+    const allOff = shownN === 0; // a stale list hiding everything shows everything
+    if (allOff) shownN = keys.length;
+    const html = list
       .map((s, i) => {
         const raw = s._rawPoints || s.points || [];
         const last = raw[raw.length - 1];
@@ -2067,11 +3273,32 @@ import { aiSensorLabel, aiUnitPrecision } from "./ai-sensors.js?v=1.0.7.0";
           ? (Number.isInteger(dec) ? fmt(last[1], dec) : fmtTipValue(last[1])) + unit
           : "—";
         const name = s.label || s.field || s.metric || "";
-        return `<span class="dev-legend-item"><i style="background:${
-          COLORS[i % COLORS.length]
-        }"></i>${escapeAttr(tl(name))} · ${escapeAttr(val)}</span>`;
+        const on = allOff || off.indexOf(keys[i]) < 0;
+        const lone = on && shownN <= 1;
+        const color = COLORS[i % COLORS.length];
+        const hint = lone ? "" : on ? "Скрыть с графика" : "Показать на графике";
+        const swatch = (on ? "background:" + color + ";" : "") + "border-color:" + color;
+        return (
+          '<button type="button" class="dev-legend-item" data-series-key="' +
+          escapeAttr(keys[i]) +
+          '" aria-pressed="' +
+          (on ? "true" : "false") +
+          '"' +
+          (lone ? ' aria-disabled="true"' : "") +
+          (hint ? ' title="' + hint + '"' : "") +
+          '><i style="' +
+          swatch +
+          '"></i>' +
+          escapeAttr(tl(name)) +
+          " · " +
+          escapeAttr(val) +
+          "</button>"
+        );
       })
       .join("");
+    if (el.__legendHtml === html) return;
+    el.__legendHtml = html;
+    el.innerHTML = html;
   }
 
   // A label rendered INSIDE a composite string (legend «name · value», the
@@ -2082,13 +3309,14 @@ import { aiSensorLabel, aiUnitPrecision } from "./ai-sensors.js?v=1.0.7.0";
     return k && window.sa02mI18n ? window.sa02mI18n.t(k) : k;
   }
 
-  function renderLegend(series) {
+  function renderLegend(series, hidden) {
     renderLegendInto(
       $("dev-chart-legend"),
       series,
       chartMeta.unit || "",
       false,
-      activeMetric
+      activeMetric,
+      hidden
     );
   }
 
@@ -2252,12 +3480,16 @@ import { aiSensorLabel, aiUnitPrecision } from "./ai-sensors.js?v=1.0.7.0";
         ? "mr"
         : kind === "carel"
         ? "carel"
+        : kind === "mtd"
+        ? "mtd"
         : "dtv";
     activeDeviceId = String(deviceId || "");
     activeDeviceLabel = String(label || "");
     const metrics =
       activeDevice === "mr"
         ? mrMetricsFor(deviceId)
+        : activeDevice === "mtd"
+        ? MTD_METRICS
         : activeDevice === "dtv"
         ? DTV_METRICS
         : activeDevice === "carel"
@@ -2284,6 +3516,8 @@ import { aiSensorLabel, aiUnitPrecision } from "./ai-sensors.js?v=1.0.7.0";
           ? "СЭ-02м-3"
           : activeDevice === "carel"
           ? "Carel"
+          : activeDevice === "mtd"
+          ? "MTD262-MB"
           : "MR-02m";
       const nm = activeDeviceLabel || fallback;
       titleEl.textContent = nm + " · история";
@@ -2379,11 +3613,14 @@ import { aiSensorLabel, aiUnitPrecision } from "./ai-sensors.js?v=1.0.7.0";
     if (modalMode === "overview") {
       const isMr = activeDevice === "mr";
       const isCarel = activeDevice === "carel";
+      const isMtd = activeDevice === "mtd";
       const overviewQs =
         isMr
           ? { kind: "mr", group: "all", ...rangeReqParams() }
           : isCarel
           ? { kind: "carel", ...rangeReqParams() }
+          : isMtd
+          ? { group: "mtd", ...rangeReqParams() }
           : {
               group: activeDevice === "dtv" ? "climate" : "energy",
               ...rangeReqParams(),
@@ -2408,6 +3645,8 @@ import { aiSensorLabel, aiUnitPrecision } from "./ai-sensors.js?v=1.0.7.0";
                 ? "MR-02m · Общее"
                 : activeDevice === "carel"
                 ? "Carel · Общее"
+                : activeDevice === "mtd"
+                ? "MTD262-MB · Общее"
                 : "Энергия · Общее",
             unit: "",
             range: rangeLabelKey(),
@@ -2415,24 +3654,8 @@ import { aiSensorLabel, aiUnitPrecision } from "./ai-sensors.js?v=1.0.7.0";
             windowMin: data.t0_ms,
             windowMax: data.t1_ms,
           };
-          const n = chartSeries.reduce((s, ser) => s + (ser.points || []).length, 0);
-          let dataMax = -Infinity;
-          chartSeries.forEach((ser) =>
-            (ser.points || []).forEach(([, y]) => {
-              const v = Number(y);
-              if (Number.isFinite(v) && v > dataMax) dataMax = v;
-            })
-          );
-          const yDom = Number.isFinite(dataMax)
-            ? computeSharedAbsYDomain(dataMax)
-            : { minY: 0, maxY: 1 };
           if (status) {
-            status.textContent = n
-              ? `${tl(chartMeta.label)} · ${rangeHumanLabel()} · ${chartSeries.length} ${tl("рядов")} · Y: 0…${fmtYTick(
-                  yDom.maxY,
-                  yTickDecimals(0, yDom.maxY, 4)
-                )} · ${n} ${tl("точек")}`
-              : "Нет точек за выбранный период";
+            status.textContent = overviewStatusText();
           }
           drawChart();
         })
@@ -2462,6 +3685,8 @@ import { aiSensorLabel, aiUnitPrecision } from "./ai-sensors.js?v=1.0.7.0";
           drawChart();
           return;
         }
+        const barMode = barModeFor(activeDevice, modalMode, activeMetric);
+        const prepared = !!(barMode && data.prepared && Number(data.bucket_s) > 0);
         chartMeta = {
           label: data.label || "",
           unit: data.unit || "",
@@ -2470,12 +3695,33 @@ import { aiSensorLabel, aiUnitPrecision } from "./ai-sensors.js?v=1.0.7.0";
           normalize: false,
           windowMin: data.t0_ms,
           windowMax: data.t1_ms,
+          barMode: barMode,
+          prepared: prepared,
+          bucketSec: prepared
+            ? Number(data.bucket_s)
+            : barMode
+            ? barBucketSec(windowSec, calendarMode)
+            : 0,
         };
         chartSeries = data.series || [];
-        const n = chartSeries.reduce((s, ser) => s + (ser.points || []).length, 0);
+        let n = 0;
+        if (prepared) {
+          const seen = {};
+          chartSeries.forEach((ser) =>
+            (ser.points || []).forEach((p) => {
+              if (p) seen[p[0]] = 1;
+            })
+          );
+          n = Object.keys(seen).length;
+        } else {
+          n = chartSeries.reduce((s, ser) => s + (ser.points || []).length, 0);
+        }
         if (status) {
+          const barNote = barMode
+            ? ` · ${tl(barStepLabel(barMode, chartMeta.bucketSec))}`
+            : "";
           status.textContent = n
-            ? `${tl(data.label || "")} · ${rangeHumanLabel()} · ${n} ${tl("точек")}`
+            ? `${tl(data.label || "")} · ${rangeHumanLabel()} · ${n} ${tl("точек")}${barNote}`
             : "Нет точек за выбранный период";
         }
         drawChart();
@@ -2489,9 +3735,39 @@ import { aiSensorLabel, aiUnitPrecision } from "./ai-sensors.js?v=1.0.7.0";
       });
   }
 
+  /** «Общее» status line over the SHOWN series — the Y range must match the
+      axis, which rescales when a legend entry is hidden. */
+  function overviewStatusText() {
+    const shown = visibleSeriesOf(chartSeries, hiddenSeriesFor(hiddenStateKey()));
+    const n = shown.reduce((s, ser) => s + (ser.points || []).length, 0);
+    if (!n) return "Нет точек за выбранный период";
+    let dataMax = -Infinity;
+    shown.forEach((ser) =>
+      (ser.points || []).forEach(([, y]) => {
+        const v = Number(y);
+        if (Number.isFinite(v) && v > dataMax) dataMax = v;
+      })
+    );
+    const yDom = Number.isFinite(dataMax)
+      ? computeSharedAbsYDomain(dataMax)
+      : { minY: 0, maxY: 1 };
+    return `${tl(chartMeta.label)} · ${rangeHumanLabel()} · ${shown.length} ${tl("рядов")} · Y: 0…${fmtYTick(
+      yDom.maxY,
+      yTickDecimals(0, yDom.maxY, 4)
+    )} · ${n} ${tl("точек")}`;
+  }
+
   function drawChart() {
     const normalize = !!chartMeta.normalize;
-    drawOntoCanvas($("dev-chart"), chartSeries, {
+    const hidden = hiddenSeriesFor(hiddenStateKey());
+    // СЭ power / energy: bars over the bucket the series was loaded for.
+    const barMode = chartMeta.barMode || "";
+    const shown = barMode
+      ? chartMeta.prepared
+        ? preparedBarSeries(chartSeries, barMode, chartMeta.bucketSec)
+        : toBarSeries(chartSeries, barMode, chartMeta.bucketSec)
+      : chartSeries;
+    drawOntoCanvas($("dev-chart"), shown, {
       range: chartMeta.range || rangeLabelKey(),
       normalize: normalize,
       legendEl: $("dev-chart-legend"),
@@ -2499,8 +3775,10 @@ import { aiSensorLabel, aiUnitPrecision } from "./ai-sensors.js?v=1.0.7.0";
       metric: chartMeta.metric || (normalize ? "" : activeMetric),
       windowMin: chartMeta.windowMin,
       windowMax: chartMeta.windowMax,
+      hidden: hidden,
+      bars: !!barMode,
     });
-    if (!normalize) renderLegend(chartSeries);
+    if (!normalize) renderLegend(shown, hidden);
   }
 
   /* ── Tab lifecycle ───────────────────────────────────────────────────── */
@@ -2589,6 +3867,14 @@ import { aiSensorLabel, aiUnitPrecision } from "./ai-sensors.js?v=1.0.7.0";
         openAddModal();
       });
     }
+    const clearBtn = $("dev-events-clear-btn");
+    if (clearBtn && !clearBtn.__bound) {
+      clearBtn.__bound = true;
+      clearBtn.addEventListener("click", (e) => {
+        e.preventDefault();
+        clearEventsJournal();
+      });
+    }
     const addClose = $("dev-add-modal-close");
     if (addClose && !addClose.__bound) {
       addClose.__bound = true;
@@ -2599,6 +3885,18 @@ import { aiSensorLabel, aiUnitPrecision } from "./ai-sensors.js?v=1.0.7.0";
       addBack.__bound = true;
       addBack.addEventListener("click", closeAddModal);
     }
+    const legend = $("dev-chart-legend");
+    if (legend && !legend.__bound) {
+      legend.__bound = true;
+      // Delegated: the legend markup is rebuilt by renderLegendInto.
+      legend.addEventListener("click", (e) => {
+        const btn = e.target && e.target.closest ? e.target.closest(".dev-legend-item") : null;
+        if (!btn || !legend.contains(btn)) return;
+        e.preventDefault();
+        if (btn.getAttribute("aria-disabled") === "true") return;
+        onLegendToggle(btn.getAttribute("data-series-key") || "");
+      });
+    }
     const chartWrap =
       $("dev-modal") && $("dev-modal").querySelector(".dev-chart-wrap");
     if (chartWrap && !chartWrap.__wheelBound) {
@@ -2608,6 +3906,7 @@ import { aiSensorLabel, aiUnitPrecision } from "./ai-sensors.js?v=1.0.7.0";
     }
     window.addEventListener("resize", () => {
       if ($("dev-modal") && !$("dev-modal").hidden) drawChart();
+      if (lastRawDevices) ensureCards(lastRawDevices);
     });
   }
 

@@ -149,6 +149,7 @@ RS-485; имя устройства по умолчанию — «Carel c.pCOmin
 | `supply_temp`, `return_water_temp`, `room_temp`, `outdoor_temp` | temperature | нет | приток, обратная вода, помещение, улица |
 | `heat_valve` | value % | нет | клапан нагрева |
 | `setpoint`, `setpoint_summer` | temperature | да | уставки зима/лето |
+| `season` | value | нет | 0 зима / 1 лето. c.pCO — катушка 67. uAria — катушка 17 «Нагрев/охлаждение» (0 нагрев, 1 охлаждение) |
 | `net_enable` | switch | да | Ma18 (crst) / Gs04 (uaria) |
 | `sys_mode`, `fan_supply`, `fan_exhaust` | value | да | только crst |
 | `fan_step` | value 1..10 | да | только uaria |
@@ -485,6 +486,25 @@ USB/SD, 5 с на eMMC), не на 10 с каденции архива, с `cool
 `event_kinds`; журнал — `GET /api/devices/events?device_id=&t0=&t1=&kinds=
 carel_alarm_on,…` (`t0`/`t1` — секунды epoch, `kinds` — имена через запятую,
 иное → 400); выгрузка — `…/export?kind=carel`.
+
+**Очистка журнала** (кнопка «Очистить» в блоке «Журнал событий» вкладки
+«Устройства»): `POST /api/devices/events/clear`, тела нет. Удаляет **все**
+строки `device_events` — всех устройств и видов, не только показанные 80 — и
+отвечает `{"ok":true,"deleted":N}`. Как любой POST демона, стоит за проверкой
+сессии (нет сессии → `401`) и `X-SA02M-CSRF` (нет/чужой токен → HTTP 200 +
+`E_CSRF`, ничего не удалено); GET по этому пути — `404`. Чистятся файлы, из
+которых строки могут попасть в журнал: активный архив (его одного читает
+`list_events`) и eMMC-staging, если это другой файл — перенос влил бы его строки
+обратно; ротированные `devices_history_*.db` не трогаются (журнал их не читает).
+Таблицы отсчётов (`dtv/ce/mr/carel/mtd_samples`, корзины `ce_roll`) не
+трогаются. Файла нет — `deleted:0`, файл не создаётся. Замок записи ждётся не
+дольше `STAND_DEVICES_EVENTS_CLEAR_BUSY_S` (по умолчанию 5 с), дальше — HTTP
+`503` `{"ok":false,"error":"busy"}` без удаления; при двух файлах занятость
+второго оставляет первый очищенным, повтор идемпотентен. Очистка не порождает
+событий заново: база детектора Carel берётся из `carel_samples`, а не из
+журнала, поэтому после очистки строка появится только при реальной смене
+`alarm` / `plant_state`. Проверки: `opt/sa02m-devices/tests/test_device_events_clear.py`,
+`test_api_events_clear.py`.
 
 Перенос eMMC → USB/SD (`device_history_migrate.HISTORY_TABLES`) несёт все
 пять таблиц — `dtv_samples`, `ce_samples`, `mr_samples`, `carel_samples`,

@@ -1,0 +1,11 @@
+[Unit]
+Description=SA-02m pin ttyS UART IRQs onto CPU3
+After=multi-user.target
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/sbin/sa02m-rt-tune.sh apply
+RemainAfterExit=yes
+
+[Install]
+WantedBy=multi-user.target

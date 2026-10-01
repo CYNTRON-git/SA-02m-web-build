@@ -270,6 +270,39 @@ METRICS: dict[str, dict[str, Any]] = {
         "decimals": 0,
         "agg": "max",
     },
+    # MTDX62-MB (MTD262-MB). Ids are prefixed: ДТВ already owns `presence`.
+    # Values are the bridge's published numbers (illuminance ×0.1 lux and
+    # distance ×0.01 m already applied). Presence is stored 0/1. `agg: max`
+    # so a bucket that saw a target stays 1. device_status is not archived:
+    # the template and the scan comment only say the code is 0..6.
+    "mtd_illuminance": {
+        "table": "mtd_samples",
+        "fields": ["illuminance_lux"],
+        "labels": {"illuminance_lux": "Освещённость"},
+        "label": "Освещённость",
+        "unit": "lux",
+        "device": "mtd",
+        "decimals": 1,
+    },
+    "mtd_target_distance": {
+        "table": "mtd_samples",
+        "fields": ["target_distance_m"],
+        "labels": {"target_distance_m": "Дистанция"},
+        "label": "Дистанция",
+        "unit": "m",
+        "device": "mtd",
+        "decimals": 2,
+    },
+    "mtd_presence": {
+        "table": "mtd_samples",
+        "fields": ["presence"],
+        "labels": {"presence": "Присутствие"},
+        "label": "Присутствие",
+        "unit": "",
+        "device": "mtd",
+        "decimals": 0,
+        "agg": "max",
+    },
 }
 
 HISTORY_GROUPS: dict[str, list[str]] = {
@@ -289,6 +322,7 @@ HISTORY_GROUPS: dict[str, list[str]] = {
         # appeared is read from these, not from the temperatures.
         "ahu_alarm", "ahu_alarm_count", "ahu_plant_state", "ahu_unit_on",
     ],
+    "mtd": ["mtd_illuminance", "mtd_target_distance", "mtd_presence"],
 }
 
 

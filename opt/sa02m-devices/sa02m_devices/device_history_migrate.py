@@ -22,6 +22,7 @@ HISTORY_TABLES: dict[str, tuple[str, ...]] = {
     "ce_samples": (),
     "mr_samples": (),
     "carel_samples": (),
+    "mtd_samples": (),
     "device_events": ("id",),
 }
 
@@ -105,6 +106,7 @@ _MERGED_KEY = {
     "ce_samples": "ce_merged",
     "mr_samples": "mr_merged",
     "carel_samples": "carel_merged",
+    "mtd_samples": "mtd_merged",
     "device_events": "events_merged",
 }
 
@@ -131,6 +133,11 @@ def merge_db_into(src_path: Path, dst_path: Path) -> dict[str, Any]:
         with dst:
             for table, skip in HISTORY_TABLES.items():
                 report[_MERGED_KEY[table]] = _merge_table(dst, src, table, skip)
+            # Raw ce rows may have landed past a rollup that was already
+            # marked caught-up. Drop the fold; the next read rebuilds it.
+            from sa02m_devices.history_ce_roll import reset_ce_roll
+
+            reset_ce_roll(dst)
         dst.execute("PRAGMA wal_checkpoint(TRUNCATE)")
         dst.commit()
         return report

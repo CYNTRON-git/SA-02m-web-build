@@ -29,6 +29,9 @@ CONTROLS: Tuple[Tuple[str, str, str, bool, Tuple[str, ...]], ...] = (
     ("heat_valve",       "value",       "%",  True,  BOTH),
     ("setpoint",         "temperature", "°C", False, BOTH),
     ("setpoint_summer",  "temperature", "°C", False, BOTH),
+    # 0 зима / 1 лето. c.pCO: coil 67. uAria: coil 17 «Нагрев/охлаждение»
+    # (0 нагрев, 1 охлаждение). HR34 is not this — it is нет/вручную/авто.
+    ("season",           "value",       "",   True,  BOTH),
     ("net_enable",       "switch",      "",   False, BOTH),
     ("sys_mode",         "value",       "",   False, (FAMILY_CRST,)),
     ("fan_supply",       "value",       "%",  False, (FAMILY_CRST,)),

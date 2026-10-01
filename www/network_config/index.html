@@ -8,7 +8,7 @@
   <meta name="theme-color" content="#161618" id="theme-color-meta">
   <title>СА-02м — Панель управления</title>
   <link rel="icon" type="image/svg+xml" href="static/favicon_cyntron.svg?v=1.0.7.0&r=devhist1">
-  <link rel="stylesheet" href="static/css/main.css?v=1.0.7.0&r=tcpchk1">
+  <link rel="stylesheet" href="static/css/main.css?v=1.0.7.0&r=seasonword1">
   <script>try{var _lt=localStorage.getItem('sa02m-theme')==='light';if(_lt)document.documentElement.setAttribute('data-theme','light');var _m=document.getElementById('theme-color-meta');if(_m)_m.setAttribute('content',_lt?'#ececf3':'#161618');}catch(e){}</script>
 </head>
 <body>
@@ -1110,7 +1110,10 @@
         <section class="dev-events widget" id="dev-events" aria-labelledby="dev-events-title">
           <div class="dev-events-head">
             <h3 id="dev-events-title" data-i18n="Журнал событий">Журнал событий</h3>
-            <span class="muted" id="dev-events-meta" data-i18n="Пиковые нагрузки СЭ · U/I">Пиковые нагрузки СЭ · U/I</span>
+            <div class="dev-events-tools">
+              <span class="muted" id="dev-events-meta" data-i18n="Пиковые нагрузки СЭ · U/I">Пиковые нагрузки СЭ · U/I</span>
+              <button type="button" class="btn btn-sm btn-danger dev-events-clear-btn" id="dev-events-clear-btn" title="Удалить все события журнала" data-i18n="Очистить" disabled>Очистить</button>
+            </div>
           </div>
           <div class="dev-events-table-wrap">
             <table class="dev-events-table" id="dev-events-table">
@@ -1165,46 +1168,27 @@
               <button class="btn btn-primary" id="mqtt-save-btn" onclick="mqttSaveAndApply()">Сохранить и применить</button>
             </div>
           </div>
+          <div class="mqtt-broker-connect">
+            <div class="mqtt-broker-connect-title">Подключение MQTT с ПК</div>
+            <p class="mqtt-client-hint">1884 + пароль · 1883 только localhost</p>
+            <div class="mqtt-broker-connect-fields">
+              <span class="mqtt-broker-kv"><span class="mqtt-broker-kv-k">Хост</span><span id="mqtt-ext-host" class="mono mqtt-copy-cell" title="Нажмите, чтобы скопировать">—</span></span>
+              <span class="mqtt-broker-kv"><span class="mqtt-broker-kv-k">Порт</span><span id="mqtt-ext-port" class="mono mqtt-copy-cell" title="Нажмите, чтобы скопировать">1884</span></span>
+              <span class="mqtt-broker-kv"><span class="mqtt-broker-kv-k">Логин</span><span id="mqtt-ext-user" class="mono mqtt-copy-cell" title="Нажмите, чтобы скопировать">mqttuser</span></span>
+              <span class="mqtt-broker-kv"><span class="mqtt-broker-kv-k">Пароль</span><span id="mqtt-ext-pass" class="mono mqtt-secret-cell" title="Нажмите, чтобы показать и скопировать">******</span></span>
+              <span class="mqtt-broker-kv"><span class="mqtt-broker-kv-k">Топик</span><span class="mono mqtt-copy-cell" data-copy-text="/devices/#" title="Нажмите, чтобы скопировать">/devices/#</span></span>
+            </div>
+          </div>
         </div>
 
         <div class="mqtt-top-row">
-          <!-- External MQTT client (PC / SCADA) -->
-          <div class="widget mqtt-client-widget mqtt-client-compact">
-            <div class="widget-title">Подключение MQTT с ПК</div>
-            <p class="mqtt-client-hint">1884 + пароль · 1883 только localhost</p>
-            <table class="mqtt-client-table">
-              <tbody>
-                <tr>
-                  <th>Хост</th>
-                  <td><span id="mqtt-ext-host" class="mono mqtt-copy-cell" title="Нажмите, чтобы скопировать">—</span></td>
-                </tr>
-                <tr>
-                  <th>Порт</th>
-                  <td><span id="mqtt-ext-port" class="mono mqtt-copy-cell" title="Нажмите, чтобы скопировать">1884</span></td>
-                </tr>
-                <tr>
-                  <th>Логин</th>
-                  <td><span id="mqtt-ext-user" class="mono mqtt-copy-cell" title="Нажмите, чтобы скопировать">mqttuser</span></td>
-                </tr>
-                <tr>
-                  <th>Пароль</th>
-                  <td><span id="mqtt-ext-pass" class="mono mqtt-secret-cell" title="Нажмите, чтобы показать и скопировать">******</span></td>
-                </tr>
-                <tr>
-                  <th>Топик</th>
-                  <td><span class="mono mqtt-copy-cell" data-copy-text="/devices/#" title="Нажмите, чтобы скопировать">/devices/#</span></td>
-                </tr>
-              </tbody>
-            </table>
-          </div>
-
           <!-- Device table -->
           <div class="widget mqtt-devices-widget">
             <div class="widget-title mqtt-devices-title">
               <span>Устройства на шине</span>
               <div class="mqtt-devices-actions">
-                <button class="btn btn-primary" onclick="mqttShowScanModal()">Поиск</button>
-                <button class="btn btn-sm" onclick="mqttShowAddModal()">Вручную</button>
+                <button class="btn" type="button" onclick="mqttShowAddModal()">Вручную</button>
+                <button class="btn" type="button" onclick="mqttShowScanModal()">Поиск</button>
               </div>
             </div>
             <div class="mqtt-devices-table-wrap">
@@ -1225,9 +1209,9 @@
         </div>
 
         <!-- Topic monitor -->
-        <div class="widget">
+        <div class="widget mqtt-monitor-widget">
           <div class="widget-title mqtt-monitor-title">
-            Монитор топиков
+            <span>Монитор топиков</span>
             <div class="mqtt-monitor-title-actions">
               <select id="mqtt-monitor-filter" class="mqtt-select-small" onchange="mqttStartMonitor()">
                 <option value="">— выберите устройство —</option>
@@ -1613,7 +1597,7 @@
   </div>
 </div>
 
-<script src="static/js/i18n.js?v=1.0.7.0&r=lamp1"></script>
+<script src="static/js/i18n.js?v=1.0.7.0&r=seasonword1"></script>
 <script src="static/js/app.js?v=1.0.7.0&r=xhrcsrf1"></script>
 <script src="static/js/app/status.js?v=1.0.7.0&r=xhrcsrf1"></script>
 <script src="static/js/app/hw.js?v=1.0.7.0&r=devhist1"></script>
@@ -1622,12 +1606,12 @@
 <script src="static/js/app/services.js?v=1.0.7.0&r=ota52a"></script>
 <script src="static/js/app/misc.js?v=1.0.7.0&r=hwname1"></script>
 <script src="static/js/app/init.js?v=1.0.7.0&r=cloud53a"></script>
-<script src="static/js/app/nav.js?v=1.0.7.0&r=devhist1"></script>
+<script src="static/js/app/nav.js?v=1.0.7.0&r=mtdui1"></script>
 <script src="static/js/flasher/led.js?v=1.0.7.0&r=led1"></script>
 <script src="static/js/flasher.js?v=1.0.7.0&r=csrf65a"></script>
-<script type="module" src="static/js/mqtt.js?v=1.0.7.0&r=tcpchk1"></script>
+<script type="module" src="static/js/mqtt.js?v=1.0.7.0&r=seasonua1"></script>
 <script src="static/js/gateway.js?v=1.0.7.0&r=audit39a"></script>
-<script type="module" src="static/js/devices.js?v=1.0.7.0&r=devico1m"></script>
+<script type="module" src="static/js/devices.js?v=1.0.7.0&r=mtdhold1"></script>
 <script src="static/js/cloud.js?v=1.0.7.0&r=audit39a"></script>
 <script src="static/js/app/alice.js?v=1.0.7.0&r=alicegw58"></script>
 <script src="static/js/app/smarthome.js?v=1.0.7.0&r=lamp1"></script>

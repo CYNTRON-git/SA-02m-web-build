@@ -11,6 +11,14 @@ family class. Contract + supported schema: `docs/contracts/template-device.md`.
 - `config-example.json` — a **self-authored** fictional demo meter documenting
   the v1 supported schema. Used by the runtime tests and the web add-by-template
   picker. It is not a real device.
+- `config-mtdx62-mb.json` (`template: mtdx62-mb`) — Saifuli **MTDX62-MB**
+  presence sensor (MTD262-MB 24 GHz and MTD062-MB 5.8 GHz, one map).
+  Clean-room from the public register list, not a Wiren Board file. The scan
+  names it when holding 7 is the slave id, holding 8 is a baud from the
+  sensor's list and holding 9 is parity 0..2, and input 0/3 read as presence
+  and status. It takes the baud of the port it is added to (a sensor on COM3
+  next to the other 19200 devices stays at 19200 8N1). `stopbits: 2` only if
+  the 8N1 sweep missed it.
 - `config-mp02-ahu.json` (`template: mp02-ahu`) — the CYNTRON **MP-02** PLC
   running its air-handling-unit (AHU / ПВУ) program, 24 controls. Authored by
   the MP-02 firmware team from their own register map, not a Wiren Board file
@@ -67,15 +75,13 @@ looks for `config-<name>.json` then `<name>.json` in this dir. Example:
   type: template
   template: example        # → templates/config-example.json
   port: /dev/COM5
-  baudrate: 9600           # only baudrate is configurable; the line is 8N1-only
+  baudrate: 9600           # parity stays none; stopbits defaults to 1
   address: 30
   name: "Example meter (COM5 addr=30)"
   poll_s: 2
 
-# Serial framing: the bridge opens the port **8N1** (parity=NONE, stopbits=ONE),
-# hard-coded — there is no parity/stopbits field. A Wiren Board device on its
-# common 9600 **8N2** factory line is NOT supported in v1 and will not answer
-# (see docs/contracts/template-device.md §8).
+# stopbits: 2   # only when this device is alone on the port and silent at 8N1
+# (docs/contracts/template-device.md §8). Two framings on one COM do not work.
 ```
 
 A template device can also be polled over Ethernet (Modbus TCP): the entry

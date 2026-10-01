@@ -1,0 +1,21 @@
+{
+  "_comment": "Clean-room SA-02m template for the Saifuli MTDX62-MB presence sensor. MTD262-MB (24 GHz) and MTD062-MB (5.8 GHz) share this map. Register numbers are the public Modbus map (holding 0..6 tuning, holding 7..9 identity, input 0..3 measurements). This file is not a Wiren Board template. Holding 7 is the slave id, holding 8 the baud, holding 9 the parity — those are not channels, writing them drops the sensor off the bus. The scan recognizes that triple plus input 0 (presence 0/1) and input 3 (status 0..6). On a port that already has devices the sensor uses that port's baud and 8N1. stopbits 2 is only for a sensor that answers the 8N2 pass and nothing else.",
+  "device": {
+    "name": "MTD262-MB / MTD062-MB",
+    "title": "MTD262-MB / MTD062-MB",
+    "device_type": "MTDX62-MB",
+    "channels": [
+      {"name": "presence_status", "title": "Присутствие", "reg_type": "input", "address": 0, "type": "switch", "format": "s16"},
+      {"name": "illuminance", "title": "Освещённость", "reg_type": "input", "address": 1, "type": "lux", "format": "s16", "scale": 0.1, "units": "lux"},
+      {"name": "target_distance", "title": "Дистанция до цели", "reg_type": "input", "address": 2, "type": "value", "format": "s16", "scale": 0.01, "units": "m"},
+      {"name": "device_status", "title": "Состояние", "reg_type": "input", "address": 3, "type": "value", "format": "s16"},
+      {"name": "detection_distance", "title": "Дальность обнаружения", "reg_type": "holding", "address": 0, "type": "value", "format": "u16", "scale": 0.01, "units": "m", "readonly": false},
+      {"name": "detection_shielding_distance", "title": "Зона экранирования", "reg_type": "holding", "address": 1, "type": "value", "format": "u16", "scale": 0.01, "units": "m", "readonly": false},
+      {"name": "admission_confirmation_delay", "title": "Задержка подтверждения входа", "reg_type": "holding", "address": 2, "type": "value", "format": "u16", "scale": 0.01, "units": "s", "readonly": false},
+      {"name": "departure_disappearance_delay", "title": "Задержка ухода", "reg_type": "holding", "address": 3, "type": "value", "format": "u16", "scale": 1, "units": "s", "readonly": false},
+      {"name": "trigger_sensitivity", "title": "Чувствительность срабатывания", "reg_type": "holding", "address": 4, "type": "value", "format": "u16", "readonly": false},
+      {"name": "maintain_sensitivity", "title": "Чувствительность удержания", "reg_type": "holding", "address": 5, "type": "value", "format": "u16", "readonly": false},
+      {"name": "entrance_distance_reduction", "title": "Сокращение зоны входа", "reg_type": "holding", "address": 6, "type": "value", "format": "u16", "scale": 0.01, "units": "m", "readonly": false}
+    ]
+  }
+}

@@ -10,7 +10,10 @@ audits).
 from __future__ import annotations
 
 import json as _json
+import os
+import threading
 import time
+from pathlib import Path
 
 from bridge_device import DevicePoller
 from bridge_mqtt import DeviceLiveCache, MQTTPublisher, _make_title
@@ -28,9 +31,13 @@ from bridge_mr02m_map import (
     MR_INP_DI_SHORT_CNT_BASE, MR_INP_DI_LONG_CNT_BASE,
     MR_INP_DI_DOUBLE_CNT_BASE,
     MR02M_SYS_CONTROLS, AI_RTD_CODES_3_WIRE, AI_TC_K_CODE,
-    _ai_register_is_legacy_enum, _resolve_ai_sensor_type,
+    _resolve_ai_sensor_type,
     AI_SENSOR_TYPES, _TEMP,
 )
+
+
+# Serialises YAML patches from writeback threads (one worker per port).
+_AI_TYPE_YAML_LOCK = threading.Lock()
 
 
 # ── MR-02m poller ─────────────────────────────────────────────────────────────
@@ -265,12 +272,10 @@ class MR02mPoller(DevicePoller):
             for attempt in range(4):
                 try:
                     cur = self.read_holding_registers(self.address, reg, 1)[0] & 0xFFFF
-                    if cur != 0 and cur != st and not _ai_register_is_legacy_enum(cur):
-                        self._ai_types[i] = cur
-                        self.log.info(
-                            "AI%d keeping device sensor_type %d (yaml %d)",
-                            i, cur, st)
-                        break
+                    # The saved type is the operator's choice. A register that
+                    # already holds a different modern code used to be kept,
+                    # so a change in the panel never reached the module and
+                    # the reading stayed in the old scale.
                     if cur == st:
                         self._ai_types[i] = st
                         break
@@ -279,10 +284,7 @@ class MR02mPoller(DevicePoller):
                     verify = self.read_holding_registers(self.address, reg, 1)[0] & 0xFFFF
                     if verify == st:
                         self._ai_types[i] = st
-                        mqtt_type, units, _ = AI_SENSOR_TYPES.get(st, _TEMP)
-                        self.pub.pub_control_meta(self.device_id, f"ai_{i}", "type", mqtt_type)
-                        if units:
-                            self.pub.pub_control_units(self.device_id, f"ai_{i}", units)
+                        self._publish_ai_scale(i, st)
                         self.log.info("AI%d sensor_type %d -> %d", i, cur, st)
                         time.sleep(0.25)
                         break
@@ -348,14 +350,11 @@ class MR02mPoller(DevicePoller):
             eff = self._ai_effective_sensor_type(i)
             st = int(eff) if eff is not None else -1
             self._ai_types[i] = st
-            if st >= 0:
-                mqtt_type, units, _ = AI_SENSOR_TYPES.get(st, _TEMP)
-            else:
-                mqtt_type, units = "value", ""
-            self.pub.pub_control_meta(self.device_id, n, "type", mqtt_type)
             self.pub.pub_control_meta(self.device_id, n, "readonly", "1")
-            if units:
-                self.pub.pub_control_units(self.device_id, n, units)
+            if st >= 0:
+                self._publish_ai_scale(i, st)
+            else:
+                self.pub.pub_control_meta(self.device_id, n, "type", "value")
             title = self._ch_title("ai", i, f"AI{i}")
             if title:
                 self.pub.pub_control_meta(self.device_id, n, "title", title)
@@ -536,12 +535,7 @@ class MR02mPoller(DevicePoller):
                 prev_st = self._ai_types.get(i, -1)
                 if dev_st != prev_st:
                     self._ai_types[i] = dev_st
-                    mqtt_type, units, _ = AI_SENSOR_TYPES.get(dev_st, _TEMP)
-                    self.pub.pub_control_meta(
-                        self.device_id, f"ai_{i}", "type", mqtt_type)
-                    if units:
-                        self.pub.pub_control_units(
-                            self.device_id, f"ai_{i}", units)
+                    self._publish_ai_scale(i, dev_st)
                 value_ch = i
                 parent = self._ai_n_parent_ch(i) if self._ai_uses_pairs() else None
                 if parent and self._ai_mirror_type_from_parent(dev_st):
@@ -656,6 +650,225 @@ class MR02mPoller(DevicePoller):
             except Exception:
                 pass
 
+    def _publish_ai_scale(self, ch: int, code: int) -> None:
+        """MQTT type + units for one AI channel. Code 0 drops the previous unit."""
+        n = f"ai_{ch}"
+        mqtt_type, units, _ = AI_SENSOR_TYPES.get(int(code) & 0xFFFF, _TEMP)
+        self.pub.pub_control_meta(self.device_id, n, "type", mqtt_type)
+        if units:
+            self.pub.pub_control_units(self.device_id, n, units)
+        else:
+            DeviceLiveCache.drop_unit(self.device_id, n)
+            self.pub.pub_control_meta(self.device_id, n, "units", "")
+
+    def _ai_type_pairs(self) -> bool:
+        mt = self._mod_type if self._mod_type is not None else self.cfg.get("module_type")
+        try:
+            return int(mt) in MR02M_AI_PAIR_TYPES
+        except (TypeError, ValueError):
+            return False
+
+    def _ai_cfg_entry(self, ch: int, create: bool) -> dict | None:
+        channels = self._channels if isinstance(self._channels, dict) else None
+        if channels is None:
+            return None
+        ai = channels.get("ai")
+        if not isinstance(ai, list):
+            if not create:
+                return None
+            ai = []
+            channels["ai"] = ai
+        for e in ai:
+            if isinstance(e, dict) and e.get("ch") == ch:
+                return e
+        if not create:
+            return None
+        e = {"ch": ch, "enabled": True}
+        ai.append(e)
+        return e
+
+    def _ai_type_write_targets(self, ch: int, code: int) -> list[int]:
+        """P plus its N leg when the new code is TC-K or 3-wire RTD."""
+        _do, _di, _ao, ai = self._layout_counts()
+        if ch < 1 or ch > ai:
+            return []
+        targets = [ch]
+        if (self._ai_type_pairs() and ch % 2 == 1
+                and self._ai_mirror_type_from_parent(code)):
+            nch = ch + 1
+            if nch <= ai:
+                targets.append(nch)
+        return targets
+
+    def _remember_ai_sensor_types(self, channels: list[int], code: int) -> None:
+        for tch in channels:
+            entry = self._ai_cfg_entry(tch, create=True)
+            if entry is not None:
+                entry["sensor_type"] = code
+            self._ai_types[tch] = code
+
+    def _ai_type_snapshot(self, channels: list[int]) -> dict[int, tuple[str, int | None]]:
+        snap: dict[int, tuple[str, int | None]] = {}
+        for tch in channels:
+            entry = self._ai_cfg_entry(tch, create=False)
+            if entry is None or "sensor_type" not in entry:
+                snap[tch] = ("absent", None)
+            else:
+                snap[tch] = ("set", int(entry["sensor_type"]) & 0xFFFF)
+        return snap
+
+    def _ai_type_restore(self, snap: dict[int, tuple[str, int | None]]) -> None:
+        for tch, (kind, val) in snap.items():
+            entry = self._ai_cfg_entry(tch, create=False)
+            if kind == "set" and val is not None:
+                if entry is not None:
+                    entry["sensor_type"] = val
+                self._ai_types[tch] = val
+            else:
+                if entry is not None:
+                    entry.pop("sensor_type", None)
+                self._ai_types.pop(tch, None)
+
+    def _publish_ai_reading(self, ch: int, code: int) -> None:
+        value_ch = ch
+        if self._ai_type_pairs():
+            parent = self._ai_n_parent_ch(ch)
+            if parent and self._ai_mirror_type_from_parent(code):
+                value_ch = parent
+        reg = (MR02M_AI_HOLDING_BASE
+               + (value_ch - 1) * MR02M_AI_CHANNEL_STRIDE + 3)
+        raw = int(self.read_holding_registers(self.address, reg, 1)[0]) & 0xFFFF
+        if raw >= 0x8000:
+            raw -= 0x10000
+        _, _, scale = AI_SENSOR_TYPES.get(code, _TEMP)
+        self.pub.pub_control(
+            self.device_id, f"ai_{ch}", str(round(raw * scale, 3)), force=True)
+        self.pub.pub_error(self.device_id, f"ai_{ch}", "")
+
+    def _persist_ai_sensor_types(self, updates: dict[int, int]) -> None:
+        """Patch sensor_type in the bridge YAML. Does not restart the bridge."""
+        if not updates:
+            return
+        path = Path(os.environ.get("SA02M_MQTT_CONFIG", "/etc/sa02m-modbus-mqtt.yaml"))
+        if not path.is_file():
+            self.log.warning("AI type yaml missing: %s", path)
+            return
+        import yaml
+        with _AI_TYPE_YAML_LOCK:
+            data = yaml.safe_load(path.read_text(encoding="utf-8")) or {}
+            if not isinstance(data, dict):
+                return
+            devices = data.get("devices")
+            if not isinstance(devices, list):
+                return
+            target = None
+            for dev in devices:
+                if isinstance(dev, dict) and str(dev.get("id", "")) == str(self.device_id):
+                    target = dev
+                    break
+            if target is None:
+                self.log.info("AI type yaml: %s is not in the config", self.device_id)
+                return
+            channels = target.get("channels")
+            if not isinstance(channels, dict):
+                channels = {}
+                target["channels"] = channels
+            ai = channels.get("ai")
+            if not isinstance(ai, list):
+                ai = []
+                channels["ai"] = ai
+            changed = False
+            for ch, code in updates.items():
+                code_i = int(code) & 0xFFFF
+                entry = None
+                for e in ai:
+                    if isinstance(e, dict) and e.get("ch") == int(ch):
+                        entry = e
+                        break
+                if entry is None:
+                    entry = {"ch": int(ch), "enabled": True}
+                    ai.append(entry)
+                prev = entry.get("sensor_type")
+                try:
+                    same = prev is not None and (int(prev) & 0xFFFF) == code_i
+                except (TypeError, ValueError):
+                    same = False
+                if not same:
+                    entry["sensor_type"] = code_i
+                    changed = True
+            if not changed:
+                return
+            text = (
+                "# SA-02m Modbus→MQTT bridge configuration\n"
+                "# Managed by web UI. Edit manually or via MQTT tab.\n\n"
+                + yaml.dump(data, allow_unicode=True, default_flow_style=False,
+                            sort_keys=False)
+            )
+            st = path.stat()
+            tmp = path.with_name(path.name + ".aitmp")
+            try:
+                tmp.write_text(text, encoding="utf-8")
+                try:
+                    os.chmod(tmp, st.st_mode & 0o777)
+                except OSError:
+                    pass
+                try:
+                    os.chown(tmp, st.st_uid, st.st_gid)
+                except (AttributeError, OSError):
+                    pass
+                os.replace(tmp, path)
+            finally:
+                if tmp.exists():
+                    tmp.unlink()
+
+    def _writeback_ai_type(self, ch: int, code: int) -> None:
+        """Записать тип датчика сразу: holding 400+7*(ch-1), память, YAML.
+
+        Рестарта моста нет. N-нога (ТХА / 3-проводный RTD) пишется вместе с P.
+        Код 0 («Выключен») записывается так же, как любой другой.
+        """
+        name = f"ai_type_{ch}"
+        if self._wb_offline_skip(name):
+            return
+        code = int(code) & 0xFFFF
+        if code > 42:
+            return
+        targets = self._ai_type_write_targets(ch, code)
+        if not targets:
+            return
+        snap = self._ai_type_snapshot(targets)
+        self._remember_ai_sensor_types(targets, code)
+        try:
+            for tch in targets:
+                reg = MR02M_AI_HOLDING_BASE + (tch - 1) * MR02M_AI_CHANNEL_STRIDE
+                self._wb_write_retry(
+                    lambda r=reg, c=code: self.write_register(self.address, r, c))
+            time.sleep(0.12)
+            for tch in targets:
+                reg = MR02M_AI_HOLDING_BASE + (tch - 1) * MR02M_AI_CHANNEL_STRIDE
+                verify = self.read_holding_registers(self.address, reg, 1)[0] & 0xFFFF
+                if verify != code:
+                    raise RuntimeError(f"AI{tch} sensor_type {verify} != {code}")
+            for tch in targets:
+                DeviceLiveCache.set_sensor_type(self.device_id, tch, code)
+                self._publish_ai_scale(tch, code)
+            time.sleep(0.2)
+            for tch in targets:
+                try:
+                    self._publish_ai_reading(tch, code)
+                except Exception as e:
+                    self.log.warning("AI%d reading after type %d: %s", tch, code, e)
+            try:
+                self._persist_ai_sensor_types({tch: code for tch in targets})
+            except Exception as e:
+                self.log.warning("AI type yaml: %s", e)
+            DeviceLiveCache.flush_file(self.device_id)
+            self.log.info("writeback AI type ch=%s -> %d targets=%s", ch, code, targets)
+        except Exception as e:
+            self._ai_type_restore(snap)
+            self.log.warning("writeback AI type %s: %s", name, e)
+            self.pub.pub_error(self.device_id, f"ai_{ch}", "w")
+
     def _writeback_do(self, ch: int, on: bool, t_enq: float | None = None) -> None:
         name = f"do_{ch}"
         if self._wb_offline_skip(name):
@@ -694,8 +907,8 @@ class MR02mPoller(DevicePoller):
         # published by Alice never wrote a coil (bench COM3-10, 2026-09-10).
         if self._wb_ready:
             return
-        do, _di, ao, _ai = self._layout_counts()
-        if do == 0 and ao == 0:
+        do, _di, ao, ai = self._layout_counts()
+        if do == 0 and ao == 0 and ai == 0:
             return
         for i in range(1, do + 1):
             def make_cb(ch: int):
@@ -730,8 +943,25 @@ class MR02mPoller(DevicePoller):
                         f"ao_{ch}", lambda: self._writeback_ao(ch, v))
                 return cb
             self.pub.subscribe_writeback(self.device_id, f"ao_{i}", make_ao_cb(i))
+
+        for i in range(1, ai + 1):
+            def make_ai_cb(ch: int):
+                def cb(client, userdata, msg):
+                    # Retained /on не переигрывается при рестарте (A4).
+                    if msg.retain:
+                        return
+                    try:
+                        v = int(float(msg.payload.decode().strip()))
+                    except (UnicodeDecodeError, ValueError):
+                        return
+                    if v < 0 or v > 42:
+                        return
+                    self._wb_submit(
+                        f"ai_type_{ch}", lambda c=ch, n=v: self._writeback_ai_type(c, n))
+                return cb
+            self.pub.subscribe_writeback(self.device_id, f"ai_type_{i}", make_ai_cb(i))
         self._wb_ready = True
-        self.log.info("writeback subscribed do=%d ao=%d", do, ao)
+        self.log.info("writeback subscribed do=%d ao=%d ai=%d", do, ao, ai)
 
     def setup(self) -> None:
         for _ in range(60):

@@ -15,7 +15,11 @@ from sa02m_devices.device_history_db import (
     db_path,
 )
 from sa02m_devices.stand_devices import CAREL_PLANT_RU, parse_device_id
-from sa02m_devices.stand_storage_path import journaling_for_fstype, mount_fstype
+from sa02m_devices.stand_storage_path import (
+    emmc_staging_path,
+    journaling_for_fstype,
+    mount_fstype,
+)
 
 try:
     from zoneinfo import ZoneInfo
@@ -60,6 +64,15 @@ def event_cooldown_s() -> float:
 
 def events_limit_default() -> int:
     return _ienv("STAND_DEVICES_EVENTS_LIMIT", 100)
+
+
+def events_clear_busy_s() -> float:
+    """How long a journal clear waits for the archive's write lock. Short on
+    purpose: the logger's own writes are sub-second, so a lock held longer is
+    a real conflict (a promote, a rotation) and the Operator gets `busy` to
+    retry rather than a request that sits out the logger's 30 s timeout."""
+    return _fenv("STAND_DEVICES_EVENTS_CLEAR_BUSY_S", 5.0)
+
 
 _PHASES = ("a", "b", "c")
 _PHASE_RU = {"a": "A", "b": "B", "c": "C"}
@@ -637,3 +650,89 @@ def purge_events(
         return int(n or 0)
     finally:
         conn.close()
+
+
+class EventsBusy(RuntimeError):
+    """The archive's write lock was not granted within events_clear_busy_s()."""
+
+
+def _is_busy(exc: sqlite3.Error) -> bool:
+    name = str(getattr(exc, "sqlite_errorname", "") or "")
+    if name.startswith(("SQLITE_BUSY", "SQLITE_LOCKED")):
+        return True
+    text = str(exc).lower()
+    return "locked" in text or "busy" in text
+
+
+def _clear_targets(path: Path | None) -> list[Path]:
+    """The files whose device_events rows can reach the journal.
+
+    The read path (list_events) reads the ACTIVE file only — rotated archives
+    are never read for events and are left alone. An explicit `path` is the
+    whole answer; otherwise the eMMC staging file joins when it is a different
+    file: a promote merges it INTO the active one, device_events included
+    (device_history_migrate.HISTORY_TABLES), so rows left there would come
+    back into a journal the Operator cleared."""
+    active = db_path(path)
+    out = [active]
+    if path is None:
+        staging = emmc_staging_path()
+        try:
+            same = staging.resolve() == active.resolve()
+        except OSError:
+            same = False
+        if not same:
+            out.append(staging)
+    return out
+
+
+def _clear_one(p: Path, busy_timeout_s: float) -> int:
+    # A plain connect, not _connect(): no schema DDL (the table either exists
+    # or there is nothing to clear) and the SHORT busy timeout, not 30 s.
+    conn = sqlite3.connect(str(p), timeout=busy_timeout_s, isolation_level=None)
+    try:
+        try:
+            has = conn.execute(
+                "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'device_events'"
+            ).fetchone()
+            if not has:
+                return 0
+            # IMMEDIATE takes the write lock up front, so a busy archive fails
+            # here — before anything is deleted — and inside the bound.
+            conn.execute("BEGIN IMMEDIATE")
+            try:
+                n = conn.execute("DELETE FROM device_events").rowcount
+                conn.execute("COMMIT")
+            except BaseException:
+                try:
+                    conn.execute("ROLLBACK")
+                except sqlite3.Error:
+                    pass
+                raise
+        except sqlite3.OperationalError as exc:
+            if _is_busy(exc):
+                raise EventsBusy(str(exc)) from exc
+            raise
+        return int(n or 0)
+    finally:
+        conn.close()
+
+
+def clear_events(
+    path: Path | None = None, *, busy_timeout_s: float | None = None
+) -> int:
+    """Delete EVERY device_events row (the «Очистить» button); return the count.
+
+    Sample tables (ce/dtv/mr/carel/mtd and ce_roll) are untouched. A file that
+    does not exist is not created. The Carel detector seeds its baseline from
+    carel_samples, not from this table, so a clear re-creates no cleared edge —
+    only a real change after it lands. Raises EventsBusy when a file's write
+    lock is not granted within the bound; files are cleared one by one, so a
+    busy second file leaves the first cleared — a retry is idempotent."""
+    timeout = events_clear_busy_s() if busy_timeout_s is None else float(busy_timeout_s)
+    total = 0
+    for p in _clear_targets(path):
+        if not p.is_file():
+            continue
+        total += _clear_one(p, timeout)
+    return total

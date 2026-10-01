@@ -300,9 +300,11 @@ class ModbusSerial:
         baudrate: int,
         timeout: float = 0.3,
         inter_frame_delay_s: float = MODBUS_INTER_FRAME_DELAY_S,
+        stopbits: int = 1,
     ):
         self._port = port
         self._baudrate = baudrate
+        self._stopbits = serial.STOPBITS_TWO if int(stopbits) == 2 else serial.STOPBITS_ONE
         self._timeout = timeout
         self._inter_frame_delay_s = max(0.0, float(inter_frame_delay_s))
         self._ser: serial.Serial | None = None
@@ -408,7 +410,7 @@ class ModbusSerial:
                 baudrate=self._baudrate,
                 bytesize=8,
                 parity=serial.PARITY_NONE,
-                stopbits=serial.STOPBITS_ONE,
+                stopbits=self._stopbits,
                 timeout=self._timeout,
             )
             try:
@@ -570,11 +572,18 @@ _port_pool: dict[str, ModbusSerial] = {}
 _port_pool_lock = threading.Lock()
 
 
-def get_port(port_path: str, baudrate: int) -> ModbusSerial:
-    key = f"{port_path}:{baudrate}"
+def get_port(port_path: str, baudrate: int, stopbits: int = 1) -> ModbusSerial:
+    """One handle per port + baud + stop bits. Parity stays none.
+
+    Stop bits are 1 (every CYNTRON module) or 2 (a factory MTDX62-MB line).
+    Two framings of one physical port are two exclusive opens; the second
+    fails and compose_pollers names the conflict.
+    """
+    stopbits = 2 if int(stopbits) == 2 else 1
+    key = f"{port_path}:{baudrate}:{stopbits}"
     with _port_pool_lock:
         if key not in _port_pool:
-            _port_pool[key] = ModbusSerial(port_path, baudrate)
+            _port_pool[key] = ModbusSerial(port_path, baudrate, stopbits=stopbits)
         return _port_pool[key]
 
 

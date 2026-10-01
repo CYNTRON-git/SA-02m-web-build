@@ -870,6 +870,15 @@
       "init": "Node 18+ (stdlib only), no extra dep — same posture as the js-unit row."
     },
     {
+      "id": "js-unit-devices-charts",
+      "checks": "devices.js history-chart helpers, brace-extracted from the shipped source (real RED/GREEN ratchet). (1) Legend show/hide: toggleHiddenKey hides/shows one series and never hides the last visible one; visibleSeriesOf filters hidden series, keeps each visible series' ORIGINAL colour index, and falls back to all-visible when a stale list would hide everything. (2) barModeFor: only СЭ «Мощность» (avg) and «Энергия» (delta) draw bars, single-metric mode only. (3) barBucketSec bucket table (1 ч→5 мин, 6 ч→15 мин, 24 ч→1 ч, 7 д/30 д/calendar→1 сут, zoom tiers between) and local-clock barBucketStart/End (day = local midnight, TZ pinned to Europe/Moscow). (4) bucketAvgPoints (power avg per bucket) and bucketEnergyDeltaPoints (ΔE from the counter: monotonic sums, reset rebases, one-sample dip = glitch, gap = empty bucket with its spanning rise undrawn, never negative); toBarSeries routes energy through ΔE, not an average. (5) barGroupSlots side-by-side grouping (ordered, non-overlapping, inside the bucket, lone bar centred). (6) barYDomain: bars rise from zero, grid lines on round values. (7) xTickLabelFits: a middle x label is skipped when it would collide with the one before it or the last one (dated labels overlapped at 500 px). (8) fmtBucketRange hover label. (9) every barStepLabel status note and both legend hints have an i18n DICT entry. A regression hides the last series (blank chart), recolours series on hide, draws energy spikes/negative bars, crops the bar baseline, overlaps axis labels, or ships an untranslated note.",
+      "config": null,
+      "run": "node scripts/dev/test-devices-history-charts.mjs",
+      "beat": "build",
+      "covers": ["www/network_config/static/js/devices.js", "www/network_config/static/js/i18n.js", "scripts/dev/test-devices-history-charts.mjs"],
+      "init": "Node 18+ (stdlib only), no extra dep — same posture as the js-unit-devices row."
+    },
+    {
       "id": "js-unit",
       "checks": "Frontend logic unit tests the js-syntax `node --check` cannot reach. Currently: clearSessionCookie() in app.js clears session_token at EVERY path prefix (the 401 auto-logout must evict the cloud-scoped Path=/devcfg/<id> cookie, not only Path=/). Stdlib-only Node (no framework), so no extra dep — mirrors the ui-layout row's dep-free/graceful posture.",
       "config": null,

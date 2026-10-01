@@ -179,6 +179,7 @@ class TestCrstPoll(unittest.TestCase):
     def test_setpoints_and_fans(self):
         self.assertEqual(self.values["setpoint"], "27.2")
         self.assertEqual(self.values["setpoint_summer"], "20.5")
+        self.assertEqual(self.values["season"], "0")  # coil 67 is winter
         self.assertEqual(self.values["fan_supply"], "80.0")
         self.assertEqual(self.values["fan_exhaust"], "80.0")
 
@@ -298,6 +299,12 @@ class TestUariaPoll(unittest.TestCase):
     def test_setpoint_and_fan_step(self):
         self.assertEqual(self.values["setpoint"], "22.0")
         self.assertEqual(self.values["fan_step"], "7")
+        self.assertEqual(self.values["season"], "0")  # coil 17 off = нагрев
+        regs, coils, discretes = uaria_bank()
+        coils[17] = 1
+        p, pub, _ = _poller("uaria", (regs, coils, discretes), address=2, app_version="")
+        p.poll_io()
+        self.assertEqual(_published(pub)["season"], "1")  # coil 17 on = охлаждение
 
     def test_running_from_the_network_coil(self):
         self.assertEqual(self.values["unit_on"], "1")

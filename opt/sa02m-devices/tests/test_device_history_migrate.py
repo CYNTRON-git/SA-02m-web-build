@@ -56,7 +56,8 @@ def _seed_staging(src: Path, now: float) -> None:
 
 def test_roster_names_every_table_once():
     assert set(migrate.HISTORY_TABLES) == {
-        "dtv_samples", "ce_samples", "mr_samples", "carel_samples", "device_events",
+        "dtv_samples", "ce_samples", "mr_samples", "carel_samples",
+        "mtd_samples", "device_events",
     }
 
 

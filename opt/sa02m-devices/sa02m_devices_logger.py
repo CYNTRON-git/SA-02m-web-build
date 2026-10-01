@@ -29,6 +29,7 @@ from sa02m_devices.device_events import (  # noqa: E402
 from sa02m_devices.device_history_db import (  # noqa: E402
     insert_carel_sample,
     insert_mr_sample,
+    insert_mtd_sample,
     insert_sample,
     purge_old,
     rotate_if_needed,
@@ -86,6 +87,7 @@ def logger_tick(target, state: LoggerState, *, now_m: float | None = None) -> No
     if now_m - state.last_mr >= MR_INTERVAL_S:
         insert_mr_sample(snap, path=target.active_path)
         insert_carel_sample(snap, path=target.active_path)
+        insert_mtd_sample(snap, path=target.active_path)
         state.last_mr = now_m
     try:
         created = detect_ce_events(snap, path=target.active_path)
@@ -109,12 +111,14 @@ def logger_tick(target, state: LoggerState, *, now_m: float | None = None) -> No
             or stats["ce_deleted"]
             or stats.get("mr_deleted")
             or stats.get("carel_deleted")
+            or stats.get("mtd_deleted")
             or stats.get("events_deleted")
         ):
             print(
                 f"purge: dtv={stats['dtv_deleted']} ce={stats['ce_deleted']} "
                 f"mr={stats.get('mr_deleted', 0)} "
                 f"carel={stats.get('carel_deleted', 0)} "
+                f"mtd={stats.get('mtd_deleted', 0)} "
                 f"events={stats.get('events_deleted', 0)}",
                 flush=True,
             )

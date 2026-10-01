@@ -1481,11 +1481,44 @@ html[data-theme="light"] .nav-item.active { color: var(--btn-primary-hover); }
   text-transform: none;
   letter-spacing: .02em;
 }
-.mqtt-monitor-title-actions {
-  float: right;
+/* Title and controls are one content-sized row. The card shrinks to that
+   row (no flex-grow, no float into the empty half of a full-width title).
+   The log matches the row width and scrolls; it does not stretch the card. */
+.mqtt-monitor-widget {
   display: flex;
+  flex-direction: column;
+  align-items: stretch;
+  flex: 0 0 auto;
+  align-self: start;
+  width: fit-content;
+  max-width: 100%;
+}
+.mqtt-monitor-title {
+  display: flex;
+  align-items: center;
+  justify-content: flex-start;
+  flex-wrap: nowrap;
+  gap: 10px;
+  width: max-content;
+  max-width: 100%;
+  margin-bottom: 8px;
+}
+.mqtt-monitor-title > span {
+  flex: 0 0 auto;
+  white-space: nowrap;
+}
+.mqtt-monitor-title-actions {
+  float: none;
+  display: flex;
+  flex: 0 0 auto;
+  flex-wrap: nowrap;
   gap: 6px;
   align-items: center;
+  margin: 0;
+}
+.mqtt-monitor-title-actions .mqtt-select-small {
+  height: 38px;
+  max-width: 280px;
 }
 
 .time-cards {
@@ -4485,12 +4518,62 @@ html[data-theme="light"] .homeconnect-verify-link { color: var(--cyan-hover); }
   display: inline-flex;
   align-items: center;
 }
+.mqtt-broker-topic {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 11px;
+  line-height: 1.25;
+  color: var(--text-sec);
+  white-space: nowrap;
+}
+.mqtt-broker-topic-k {
+  font-weight: 600;
+}
+.mqtt-broker-topic .mqtt-copy-cell {
+  font-size: 11px;
+  color: var(--text);
+}
 .mqtt-broker-actions {
   margin-left: auto;
   display: flex;
   align-items: center;
   flex-wrap: wrap;
   gap: 6px;
+}
+.mqtt-broker-connect {
+  margin-top: 10px;
+  padding-top: 10px;
+  border-top: 1px solid var(--border-faint, var(--border));
+}
+.mqtt-broker-connect-title {
+  font-size: 13px;
+  font-weight: 600;
+  line-height: var(--lh-body);
+  color: var(--text);
+  margin: 0 0 2px;
+}
+.mqtt-broker-connect .mqtt-client-hint {
+  margin: 0 0 8px;
+}
+.mqtt-broker-connect-fields {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px 16px;
+  font-size: 13px;
+  line-height: var(--lh-body);
+}
+.mqtt-broker-kv {
+  display: inline-flex;
+  align-items: baseline;
+  gap: 6px;
+  min-width: 0;
+}
+.mqtt-broker-kv-k {
+  font-weight: 600;
+  color: var(--text-sec);
+  white-space: nowrap;
 }
 
 /* Device table */
@@ -4591,6 +4674,38 @@ html[data-theme="light"] .homeconnect-verify-link { color: var(--cyan-hover); }
   max-height: 440px;
   overflow-y: auto;
   padding-right: 2px;
+}
+/* «Системные»: the shared 4.5rem live track is narrower than «2д 3ч 10м» and a
+   9-digit serial in Courier New. overflow-y:auto computes overflow-x to auto,
+   so that ink opened a horizontal scrollbar. Size label, topic key and value
+   to their text (no ellipsis); clip X only once they fit inside the card. */
+.mqtt-ch-widget-sys .mqtt-ch-widget-body {
+  overflow-x: hidden;
+}
+.mqtt-ch-widget-sys .mqtt-ch-row {
+  flex-wrap: nowrap;
+  min-width: 0;
+}
+.mqtt-ch-widget-sys .mqtt-ch-label-input {
+  flex: 1 1 auto;
+  width: auto;
+  min-width: 12.5rem;
+  max-width: none;
+}
+.mqtt-ch-widget-sys .topic-preview {
+  flex: 0 0 auto;
+  max-width: none;
+  overflow: visible;
+  text-overflow: clip;
+}
+.mqtt-ch-widget-sys .mqtt-ch-live {
+  width: auto;
+  min-width: 0;
+  max-width: none;
+  white-space: nowrap;
+}
+.mqtt-ch-widget-sys .mqtt-ch-unit {
+  min-width: 0;
 }
 .mqtt-ch-widget .mqtt-ch-row {
   border-bottom: 1px solid var(--border-faint);
@@ -4863,8 +4978,15 @@ html[data-theme="light"] .mqtt-ch-live-ok { color: var(--cyan-hover); }
 
 /* Topic monitor */
 .mqtt-monitor-log {
-  height: 240px;
-  overflow-y: auto;
+  /* Width 0 + min-width 100% and inline-size containment: the log fills the
+     title row and does not widen the fit-content card. Long lines scroll. */
+  contain: inline-size;
+  width: 0;
+  min-width: 100%;
+  box-sizing: border-box;
+  max-height: 240px;
+  height: auto;
+  overflow: auto;
   background: var(--bg);
   border: 1px solid var(--border);
   border-radius: 6px;
@@ -5367,6 +5489,9 @@ html[data-theme="light"] .mqtt-ch-live-ok { color: var(--cyan-hover); }
 
 /* ── S ≤700 — phone-landscape: single column, sidebar hidden (→ drawer, later phase). ── */
 @media (max-width: 700px) {
+  /* Scan results: drop the signature column so address, type, name and the
+     add button fit the dialog. */
+  .mqtt-scan-sig { display: none; }
   /* was @media ≤680 — config info tiles (shift: collapses at 700 not 680, Δ20px) */
   .cfg-info-tiles { grid-template-columns: 1fr; }
   /* was @media ≤760 — flasher DI split (shift: collapses at 700 not 760, Δ60px) */
@@ -5506,6 +5631,14 @@ html[data-theme="light"] .mqtt-ch-live-ok { color: var(--cyan-hover); }
   .flasher-actions { margin-left: 0; }
   .flasher-control-grid { grid-template-columns: 1fr; }
   .flasher-settings-row { grid-template-columns: 1fr; }
+}
+
+/* Phone portrait only: «с нач. мес.» and «за месяц» wrap onto two lines inside
+   the pill. Hide just those two (.dev-range-ce). 1ч–30д stay; landscape and
+   desktop keep both. nowrap keeps the remaining short labels on one line. */
+@media (max-width: 700px) and (orientation: portrait) {
+  #dev-range-group .dev-range-ce { display: none !important; }
+  #dev-range-group .dev-range-btn { white-space: nowrap; }
 }
 
 /* ── XS ≤560 — phone-portrait. ──────────────────────────────────────────────────────── */
@@ -5687,20 +5820,21 @@ html[data-theme="light"] .mqtt-ch-live-ok { color: var(--cyan-hover); }
   }
 }
 
-/* ── Short landscape (phone in landscape) — auto-hide the topbar on scroll-down
-   to reclaim the scarce vertical height (app/nav.js toggles .app.topbar-hidden);
-   scroll up shows it. Operator 2026-07-19. ─────────────────────────────────── */
-@media (orientation: landscape) and (max-height: 500px) {
+/* Landscape, including phones taller than 500px: hide the topbar on scroll-down
+   (app/nav.js toggles .app.topbar-hidden). Scroll up shows it. */
+@media (orientation: landscape) and (max-height: 720px) {
   .topbar {
-    transition: max-height .25s ease, padding .25s ease, border-bottom-width .25s ease;
+    transition: max-height .25s ease, height .25s ease, padding .25s ease, border-bottom-width .25s ease;
     overflow: hidden;
   }
   .app.topbar-hidden .topbar {
     max-height: 0 !important;
+    height: 0 !important;
     min-height: 0 !important;
     padding-top: 0;
     padding-bottom: 0;
     border-bottom-width: 0;
+    visibility: hidden;
   }
 }
 /* ── Devices tab DTV/CE (hardpy archive + RK3588 charts) ── */
@@ -5825,6 +5959,22 @@ html[data-theme="light"] .mqtt-ch-live-ok { color: var(--cyan-hover); }
   order: -1; margin-bottom: 1px;
   white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
 }
+/* MTD262-MB: 3 readings + 7 setpoints. History is the «График» button;
+   the number field writes the holding on Enter (same mqtt_set path as the MQTT tab). */
+#tab-devices .dev-card--mtd .dev-kpi-lbl {
+  font-size: 0.68rem; white-space: normal;
+  display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical;
+}
+#tab-devices .dev-card--mtd .dev-kpi[data-metric],
+#tab-devices .dev-card--mtd .dev-kpi--set { cursor: pointer; }
+#tab-devices .dev-card--mtd:not(.is-open) .dev-kpi--more { display: none; }
+#tab-devices .dev-mtd-set {
+  width: 4.4rem; max-width: 100%; box-sizing: border-box;
+  font: inherit; font-size: 1rem; font-weight: 700; font-variant-numeric: tabular-nums;
+  text-align: right; color: var(--text); background: transparent;
+  border: 1px solid var(--border); border-radius: 4px; padding: 1px 4px;
+  cursor: text;
+}
 /* ДТВ: 6 KPI vs 9 у СЭ — выше плитки, чтобы блок занял ту же высоту */
 #tab-devices .dev-card--dtv .dev-metrics {
   min-height: calc(3 * 4.35rem + 2 * 8px);
@@ -5857,6 +6007,12 @@ html[data-theme="light"] .mqtt-ch-live-ok { color: var(--cyan-hover); }
 #tab-devices .dev-card--carel .dev-kpi-val { font-size: 1.7rem; }
 #tab-devices .dev-card--carel .dev-kpi-unit { font-size: 0.88rem; }
 #tab-devices .dev-card--carel .dev-kpi-lbl { font-size: 0.82rem; }
+/* Sixth cell of the 3-column grid (row 2, column 3). «Сезон» fills the
+   cell before it, the same way as «Приток» and «Клапан». */
+#tab-devices .dev-card--carel .dev-kpi--sp {
+  grid-column: 3; grid-row: 2;
+  gap: 6px; padding: 6px 4px; height: auto;
+}
 /* Carel alarm: a SOLID red pill (the state pill's other two looks are tinted),
    inverse of .btn-danger's pair — --red-dim text on --red fill, both tokens
    themed: 4.91:1 dark (#3a0f0f on #ff453a), 4.99:1 light (#fde8ec on #c41e3a),
@@ -5865,6 +6021,99 @@ html[data-theme="light"] .mqtt-ch-live-ok { color: var(--cyan-hover); }
    in both themes with every text token below 2.3:1 on it (audit C5). */
 #tab-devices .dev-card--carel.dev-has-alarm .dev-pill {
   background: var(--red); border-color: var(--red); color: var(--red-dim);
+}
+/* Carel: history is «График», the card itself is not a click target.
+   MTD: a click on the card expands the other settings; «График» stays the chart. */
+#tab-devices .dev-card--carel { cursor: default; }
+#tab-devices .dev-card--mtd { cursor: pointer; }
+#tab-devices .dev-ctrl {
+  display: flex; flex-direction: column; gap: 8px; margin-top: 10px;
+}
+#tab-devices .dev-power,
+#tab-devices .dev-step-btn,
+#tab-devices .dev-fan-btn {
+  font: inherit; color: var(--text); background: var(--bg-input);
+  border: 1px solid var(--border-md); border-radius: var(--radius-sm);
+  cursor: pointer;
+}
+#tab-devices .dev-power {
+  min-height: 2.5rem; font-weight: 700; font-size: 1rem;
+}
+#tab-devices .dev-power[aria-pressed="true"],
+#tab-devices .dev-fan-btn[aria-pressed="true"] {
+  background: var(--cyan-dim); color: var(--cyan); border-color: var(--cyan);
+}
+#tab-devices .dev-power:disabled,
+#tab-devices .dev-step-btn:disabled,
+#tab-devices .dev-fan-btn:disabled { cursor: not-allowed; }
+#tab-devices .dev-power:disabled:not([aria-pressed="true"]),
+#tab-devices .dev-fan-btn:disabled:not([aria-pressed="true"]),
+#tab-devices .dev-step-btn:disabled { color: var(--text-sec); }
+#tab-devices .dev-step-row,
+#tab-devices .dev-fan { display: flex; align-items: center; gap: 6px; }
+#tab-devices .dev-ctrl-lbl {
+  flex: 0 0 5.2rem; font-size: 0.78rem; font-weight: 650; color: var(--text-sec);
+  white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+}
+#tab-devices .dev-step-btn {
+  width: 2rem; height: 2rem; font-size: 1.1rem; line-height: 1; padding: 0;
+}
+#tab-devices .dev-step-val {
+  min-width: 4.2rem; text-align: center; font-size: 1.15rem; font-weight: 700;
+  font-variant-numeric: tabular-nums; color: var(--text);
+}
+#tab-devices .dev-step-unit {
+  margin-left: 2px; font-size: 0.78rem; font-weight: 650; color: var(--cyan);
+}
+#tab-devices .dev-fan-steps {
+  display: flex; flex: 1 1 auto; gap: 4px; min-width: 0;
+}
+#tab-devices .dev-fan-btn {
+  flex: 1 1 0; min-width: 0; min-height: 2rem; padding: 4px 2px;
+  font-size: 0.72rem; font-weight: 650;
+}
+#tab-devices .dev-ctrl-err { margin: 0; font-size: 0.75rem; color: var(--red); }
+#tab-devices .dev-chart-btn { margin-top: 10px; align-self: flex-start; }
+#tab-devices .dev-act-row {
+  display: flex; align-items: center; justify-content: space-between; gap: 8px;
+}
+#tab-devices .dev-act-row .dev-chart-btn { margin-top: 0; }
+#tab-devices .dev-act-row .dev-power {
+  width: auto; flex: 0 0 auto; padding: 0 0.7rem;
+}
+#tab-devices .dev-card--carel .dev-kpi--sp .dev-step-row {
+  width: 100%; justify-content: center; flex-wrap: wrap; gap: 2px;
+}
+#tab-devices .dev-card--carel .dev-kpi--sp .dev-step-btn {
+  width: 1.5rem; height: 1.5rem; font-size: 1rem;
+}
+#tab-devices .dev-card--carel .dev-kpi--sp .dev-step-val {
+  min-width: 0; font-size: 0.95rem;
+}
+/* Setpoint snowflake and sun are uncolored labels, not controls. */
+#tab-devices .dev-season-mark {
+  width: 1.5rem; height: 1.5rem; padding: 1px;
+  display: inline-flex; align-items: center; justify-content: center;
+  flex: 0 0 auto;
+  background: transparent;
+  border: 1px solid var(--border-md);
+  border-radius: var(--radius-sm);
+  color: var(--text);
+  cursor: default;
+  pointer-events: none;
+}
+#tab-devices .dev-season-ico { width: 1.05rem; height: 1.05rem; display: block; }
+/* «Сезон» is the words ЗИМА / ЛЕТО. Color is the text, not an icon box.
+   Without a reading the cell is a plain «—», like «Приток». */
+#tab-devices .dev-card--carel .dev-season-val {
+  cursor: default;
+  pointer-events: none;
+}
+#tab-devices .dev-card--carel .dev-season-val[data-season="winter"] {
+  color: var(--cyan);
+}
+#tab-devices .dev-card--carel .dev-season-val[data-season="summer"] {
+  color: var(--yellow);
 }
 /* MR-02m analog card. Cell layout: «AI<n>» index on top, value+unit, then a
    short sensor-type caption below — value-first (no order:-1 as with dev-kpi-lbl).
@@ -5925,12 +6174,21 @@ html[data-theme="light"] .mqtt-ch-live-ok { color: var(--cyan-hover); }
      label) so title and online status stay on one line. */
   #tab-devices .dev-presence-txt { display: none; }
   #tab-devices .dev-presence { padding: 2px 7px; gap: 5px; }
+  #tab-devices .dev-power,
+  #tab-devices .dev-fan-btn,
+  #tab-devices .dev-chart-btn { min-height: 44px; }
+  #tab-devices .dev-step-btn { width: 44px; height: 44px; }
+  #tab-devices .dev-card--carel .dev-kpi--sp .dev-step-btn { width: 44px; height: 44px; }
+  #tab-devices .dev-card--carel .dev-kpi--sp { min-height: 8.5rem; height: auto; }
+  #tab-devices .dev-fan { flex-wrap: wrap; }
+  #tab-devices .dev-fan-steps { flex-basis: 100%; }
 }
 @media (max-width: 400px) {
   /* Very narrow portrait: 2 columns so values stay legible. */
   #tab-devices .dev-metrics { grid-template-columns: repeat(2, minmax(0, 1fr)); }
   #tab-devices .dev-metrics.dev-metrics--mr4,
   #tab-devices .dev-metrics.dev-metrics--mr3 { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  #tab-devices .dev-card--carel .dev-kpi--sp { grid-column: auto; grid-row: auto; }
 }
 #tab-devices .page-header--devices { margin-bottom: 16px; }
 #tab-devices .dev-page-title-row {
@@ -5957,6 +6215,15 @@ html[data-theme="light"] .mqtt-ch-live-ok { color: var(--cyan-hover); }
 }
 #tab-devices .dev-events-head h3 {
   margin: 0; font-size: 1rem; font-weight: 700; color: var(--text);
+}
+/* Meta + «Очистить» share the right side; the button keeps one line. */
+#tab-devices .dev-events-tools {
+  display: flex; flex-wrap: wrap; align-items: center; justify-content: flex-end;
+  gap: 8px 12px; margin-left: auto;
+}
+#tab-devices .dev-events-clear-btn { flex: 0 0 auto; }
+@media (max-width: 560px) {
+  #tab-devices .dev-events-tools { flex-basis: 100%; justify-content: space-between; }
 }
 #tab-devices .dev-events-table-wrap {
   overflow: auto; max-height: min(42vh, 360px);
@@ -6239,5 +6506,19 @@ html[data-theme="light"] .dev-chart-tip {
 .dev-chart-delta-row b { font-weight: 650; }
 .dev-chart-meta { display: flex; flex-wrap: wrap; justify-content: space-between; gap: 8px; font-size: 0.78rem; }
 .dev-chart-legend { display: flex; flex-wrap: wrap; gap: 10px 14px; }
-.dev-legend-item { display: inline-flex; align-items: center; gap: 6px; color: var(--text-sec); }
-.dev-legend-item i { width: 10px; height: 10px; border-radius: 2px; display: inline-block; }
+/* Legend entry = show/hide toggle (devices.js renderLegendInto): pressed = shown
+   (--text, filled swatch); unpressed = hidden (--text-sec, struck, hollow swatch). */
+.dev-legend-item {
+  display: inline-flex; align-items: center; gap: 6px;
+  margin: 0; padding: 3px 6px; border: 0; border-radius: 6px; background: transparent;
+  font: inherit; line-height: 1.3; color: var(--text); cursor: pointer;
+}
+.dev-legend-item:hover { background: var(--bg-panel); }
+.dev-legend-item:focus-visible { outline: 2px solid var(--cyan); outline-offset: 1px; }
+.dev-legend-item[aria-disabled="true"] { cursor: default; }
+.dev-legend-item[aria-disabled="true"]:hover { background: transparent; }
+.dev-legend-item i {
+  width: 10px; height: 10px; border-radius: 2px; display: inline-block;
+  border: 1.5px solid transparent; box-sizing: border-box; flex-shrink: 0;
+}
+.dev-legend-item[aria-pressed="false"] { color: var(--text-sec); text-decoration: line-through; }

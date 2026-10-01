@@ -1,7 +1,7 @@
-"""Live snapshot ДТВ / СЭ-02м-3 / MR-02m AI / Carel для вкладки «Устройства».
+"""Live snapshot ДТВ / СЭ-02м-3 / MR-02m AI / Carel / MTD262-MB для вкладки «Устройства».
 
 Источник: кэш sa02m-modbus-mqtt (`/run/sa02m-modbus-mqtt/<id>.json`).
-Все устройства dtv-* / ce02m3-* / carel-* из кэша → виджеты; MR — только AI.
+Все устройства dtv-* / ce02m3-* / carel-* / mtdx62-mb-* из кэша → виджеты; MR — только AI.
 Подпись «№ addr порт N».
 """
 
@@ -87,7 +87,7 @@ _DTV_EXT_MAX_C = 130.0     # sane external ceil (above any table OVER sentinel)
 # `carel-tcp-<a_b_c_d>-<addr>` — the host with dots as underscores, no COM port
 # (docs/contracts/bridge-modbus-tcp.md).
 _ID_RE = re.compile(
-    r"^(?:(?P<prefix>dtv|ce02m3|mr02m|carel)-COM(?P<port>\d+)-(?P<addr>\d+)"
+    r"^(?:(?P<prefix>dtv|ce02m3|mr02m|carel|mtdx62-mb)-COM(?P<port>\d+)-(?P<addr>\d+)"
     r"|carel-tcp-(?P<host>[0-9]{1,3}(?:_[0-9]{1,3}){3})-(?P<tcp_addr>[0-9]+))$",
     re.IGNORECASE,
 )
@@ -277,6 +277,8 @@ def parse_device_id(device_id: str) -> dict[str, Any]:
         kind = "mr"
     elif prefix == "carel":
         kind = "carel"
+    elif prefix == "mtdx62-mb":
+        kind = "mtd"
     else:
         kind = "ce"
     return {
@@ -295,6 +297,8 @@ def device_label(kind: str, addr: int | None, port_num: int | None) -> str:
         sku = "Carel"
     elif kind == "mr":
         sku = "MR-02m"
+    elif kind == "mtd":
+        sku = "MTD262-MB"
     else:
         sku = "СЭ-02м-3"
     a = "—" if addr is None else str(addr)
@@ -673,6 +677,8 @@ def _build_carel(
         "room_temp": _carel_metric(controls, errors, "room_temp"),
         "outdoor_temp": _carel_metric(controls, errors, "outdoor_temp"),
         "setpoint": _carel_metric(controls, errors, "setpoint"),
+        "setpoint_summer": _carel_metric(controls, errors, "setpoint_summer"),
+        "season": _f(controls.get("season")),
         "heat_valve": _carel_metric(controls, errors, "heat_valve"),
         "fan_supply": _carel_metric(controls, errors, "fan_supply"),
         "fan_exhaust": _carel_metric(controls, errors, "fan_exhaust"),
@@ -680,6 +686,46 @@ def _build_carel(
         "alarm": _f(controls.get("alarm")),
         "alarm_count": _f(controls.get("alarm_count")),
         "alarm_text": str(controls.get("alarm_text") or ""),
+        "alerts": [],
+    }
+
+
+def _build_mtd(raw: dict[str, Any] | None, *, fallback_id: str = "") -> dict[str, Any]:
+    """Карточка MTDX62-MB: живые controls из кэша моста, без архива."""
+    device_id = str((raw or {}).get("device") or fallback_id or "")
+    meta = parse_device_id(device_id)
+    controls = {}
+    if raw and isinstance(raw.get("controls"), dict):
+        controls = raw.get("controls") or {}
+    age = _age_s((raw or {}).get("ts"), (raw or {}).get("_mtime")) if raw else None
+    ok_flag = bool(raw) and bool((raw or {}).get("ok", True)) and bool(controls)
+    if age is not None and age > STALE_S:
+        ok_flag = False
+    label = device_label("mtd", meta.get("addr"), meta.get("port_num"))
+    return {
+        "id": device_id,
+        "kind": "mtd",
+        "sku": "MTD262-MB",
+        "label": label,
+        "title": label,
+        "port_num": meta.get("port_num"),
+        "addr": meta.get("addr"),
+        "com": meta.get("com") or "",
+        "ok": ok_flag,
+        "ts": (raw or {}).get("ts") if raw else None,
+        "age_s": age,
+        "age_label": _fmt_age(age),
+        "presence": _f(controls.get("presence_status")),
+        "illuminance_lux": _f(controls.get("illuminance")),
+        "target_distance_m": _f(controls.get("target_distance")),
+        "device_status": _f(controls.get("device_status")),
+        "detection_distance_m": _f(controls.get("detection_distance")),
+        "detection_shielding_m": _f(controls.get("detection_shielding_distance")),
+        "admission_delay_s": _f(controls.get("admission_confirmation_delay")),
+        "departure_delay_s": _f(controls.get("departure_disappearance_delay")),
+        "trigger_sensitivity": _f(controls.get("trigger_sensitivity")),
+        "maintain_sensitivity": _f(controls.get("maintain_sensitivity")),
+        "entrance_reduction_m": _f(controls.get("entrance_distance_reduction")),
         "alerts": [],
     }
 
@@ -721,6 +767,13 @@ def live_snapshot(cache_dir: Path | None = None) -> dict[str, Any]:
         built = _build_carel(raw, fallback_id=device_id)
         if built is not None:
             carel_list.append(built)
+    mtd_list: list[dict[str, Any]] = []
+    for path in _list_device_files(root, "mtdx62-mb"):
+        raw = _load_cache(path)
+        device_id = path.stem
+        if raw is not None and not raw.get("device"):
+            raw = {**raw, "device": device_id}
+        mtd_list.append(_build_mtd(raw, fallback_id=device_id))
     # Сортировка: порт, затем адрес
     def _sort_key(d: dict[str, Any]) -> tuple:
         return (
@@ -733,9 +786,11 @@ def live_snapshot(cache_dir: Path | None = None) -> dict[str, Any]:
     ce_list.sort(key=_sort_key)
     mr_list.sort(key=_sort_key)
     carel_list.sort(key=_sort_key)
+    mtd_list.sort(key=_sort_key)
     # AHU cards first — the ones the Operator looks at daily (decision F5,
     # 2026-09-03); the rest keep the additive dtv → ce → mr order.
-    devices = [*carel_list, *dtv_list, *ce_list, *mr_list]
+    # MTD262-MB is last: a presence sensor, not an AHU.
+    devices = [*carel_list, *dtv_list, *ce_list, *mr_list, *mtd_list]
     return {
         "ok": True,
         "ts": time.time(),
@@ -745,6 +800,7 @@ def live_snapshot(cache_dir: Path | None = None) -> dict[str, Any]:
         "ce": ce_list,
         "mr": mr_list,
         "carel": carel_list,
+        "mtd": mtd_list,
         "devices": devices,
         "alerts": [],
     }
