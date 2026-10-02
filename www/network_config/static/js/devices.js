@@ -390,9 +390,23 @@ import { aiSensorLabel, aiUnitPrecision } from "./ai-sensors.js?v=1.0.7.0";
   /* Poll snapshot lags the Modbus echo by up to one devices tick (5 s).
      Hold the value just sent so that snapshot cannot paint the previous
      reading back into the field. Drop it when the register matches, the
-     wait expires, or the publish fails. */
+     wait expires, or the publish fails.
+     Enter on type=number must not preventDefault: that cancels the field's
+     own commit and the browser paints the previous number immediately.
+     mtdDraft keeps the text the operator typed so a poll (or that revert)
+     cannot submit or display the stale register. */
   const mtdPending = {};
+  const mtdDraft = {};
   const MTD_PENDING_MS = 12000;
+  const MTD_SERVER_FIELD = {
+    detection_distance: "detection_distance_m",
+    detection_shielding_distance: "detection_shielding_m",
+    admission_confirmation_delay: "admission_delay_s",
+    departure_disappearance_delay: "departure_delay_s",
+    trigger_sensitivity: "trigger_sensitivity",
+    maintain_sensitivity: "maintain_sensitivity",
+    entrance_distance_reduction: "entrance_reduction_m",
+  };
 
   function mtdPendingKey(id, control) {
     return String(id || "") + "\0" + String(control || "");
@@ -421,26 +435,92 @@ import { aiSensorLabel, aiUnitPrecision } from "./ai-sensors.js?v=1.0.7.0";
     return sn.toFixed(d);
   }
 
+  /* «6,00» / «0,60» / «0,10» — the card shows a comma. type=number usually
+     exposes a dot in .value; a text edit or a locale that keeps the comma
+     must still parse. */
+  function mtdParseSetting(raw) {
+    const text = String(raw == null ? "" : raw).trim().replace(/\s/g, "").replace(",", ".");
+    if (text === "" || text === "." || text === "-" || text === "-.") return null;
+    const n = Number(text);
+    return Number.isFinite(n) ? n : null;
+  }
+
+  /* Prefer the typed draft when the number field has already snapped back
+     to the previous register value. */
+  function mtdCommitText(live, draft) {
+    if (draft != null && String(draft).trim() !== "") return String(draft).trim();
+    return String(live == null ? "" : live).trim();
+  }
+
+  function mtdControlDigits(scaleText) {
+    const scale = Number(scaleText);
+    if (!(scale > 0) || scale >= 1) return 0;
+    const s = String(scaleText);
+    const dot = s.indexOf(".");
+    return dot < 0 ? 0 : s.length - dot - 1;
+  }
+
+  function mtdServerNumber(deviceId, ctrl) {
+    const d = lastDeviceById[String(deviceId || "")];
+    if (!d) return null;
+    const field = MTD_SERVER_FIELD[ctrl];
+    if (!field || d[field] == null || d[field] === "") return null;
+    const n = Number(d[field]);
+    return Number.isFinite(n) ? n : null;
+  }
+
+  /* null = leave the input alone. A draft or a just-submitted pending value
+     wins over the stale snapshot. */
+  function mtdPollAssignment(server, pending, digits, now, focused, fieldValue, draft) {
+    if (focused) return null;
+    if (draft != null) {
+      const want = String(draft);
+      return String(fieldValue) === want ? null : want;
+    }
+    const next = mtdSettingDisplay(server, pending, digits, now, false, fieldValue);
+    return String(fieldValue) === String(next) ? null : next;
+  }
+
   function commitMtdSetting(deviceId, inp) {
     if (!inp || !deviceId) return;
     const scale = Number(inp.dataset.scale) || 1;
-    const raw = String(inp.value == null ? "" : inp.value).trim().replace(",", ".");
-    const n = Number(raw);
-    if (raw === "" || !Number.isFinite(n) || !(scale > 0)) {
+    const ctrl = inp.dataset.ctrl;
+    const pkey = mtdPendingKey(deviceId, ctrl);
+    const raw = mtdCommitText(inp.value, Object.prototype.hasOwnProperty.call(mtdDraft, pkey) ? mtdDraft[pkey] : null);
+    const n = mtdParseSetting(raw);
+    if (n == null || !(scale > 0)) {
+      delete mtdDraft[pkey];
       inp.setCustomValidity("Вне диапазона регистра (0…65535)");
       inp.reportValidity();
       return;
     }
     const word = Math.round(n / scale);
     if (word < 0 || word > 65535) {
+      delete mtdDraft[pkey];
       inp.setCustomValidity("Вне диапазона регистра (0…65535)");
       inp.reportValidity();
       return;
     }
     inp.setCustomValidity("");
-    const ctrl = inp.dataset.ctrl;
-    const pkey = mtdPendingKey(deviceId, ctrl);
+    const digits = mtdControlDigits(inp.dataset.scale);
+    const f = Math.pow(10, digits > 0 ? digits : 0);
+    const same = function (a, b) {
+      return Math.round(Number(a) * f) === Math.round(Number(b) * f);
+    };
+    const prev = mtdPending[pkey];
+    if (prev && same(prev.value, n) && Date.now() <= prev.until) {
+      delete mtdDraft[pkey];
+      return;
+    }
+    const server = mtdServerNumber(deviceId, ctrl);
+    if (server != null && same(server, n)) {
+      delete mtdDraft[pkey];
+      return;
+    }
     mtdPending[pkey] = { value: n, until: Date.now() + MTD_PENDING_MS };
+    delete mtdDraft[pkey];
+    const shown = Number(n).toFixed(digits > 0 ? digits : 0);
+    if (String(inp.value) !== shown) inp.value = shown;
     fetch("cgi-bin/mqtt_set.cgi", {
       method: "POST",
       headers: withCsrfHeaders({
@@ -457,10 +537,7 @@ import { aiSensorLabel, aiUnitPrecision } from "./ai-sensors.js?v=1.0.7.0";
     })
       .then((r) => r.json())
       .then((j) => {
-        if (j && j.ok) {
-          if (typeof inp.blur === "function") inp.blur();
-          return;
-        }
+        if (j && j.ok) return;
         delete mtdPending[pkey];
         inp.setCustomValidity((j && j.error) || "Нет связи с сервером");
         inp.reportValidity();
@@ -470,6 +547,30 @@ import { aiSensorLabel, aiUnitPrecision } from "./ai-sensors.js?v=1.0.7.0";
         inp.setCustomValidity("Нет связи с сервером");
         inp.reportValidity();
       });
+  }
+
+  /* change = blur after an edit, spinner release, and Enter (the number
+     field commits first, then fires change). input remembers the text so a
+     poll cannot put the register back while that edit is still open.
+     Enter is not preventDefault'd — that revert is what snapped the field. */
+  function wireMtdSettings(el, id) {
+    el.setAttribute("aria-expanded", "false");
+    el.addEventListener("click", (e) => {
+      if (e.target.closest("input, button, a")) return;
+      const open = el.classList.toggle("is-open");
+      el.setAttribute("aria-expanded", open ? "true" : "false");
+    });
+    el.querySelectorAll("input.dev-mtd-set").forEach((inp) => {
+      inp.addEventListener("input", () => {
+        mtdDraft[mtdPendingKey(id, inp.dataset.ctrl)] = String(inp.value == null ? "" : inp.value);
+      });
+      inp.addEventListener("change", () => {
+        commitMtdSetting(id, inp);
+      });
+      inp.addEventListener("blur", () => {
+        commitMtdSetting(id, inp);
+      });
+    });
   }
 
   function buildCeMetricsHtml() {
@@ -1174,21 +1275,7 @@ import { aiSensorLabel, aiUnitPrecision } from "./ai-sensors.js?v=1.0.7.0";
     } else {
       wireChartButton(el, kind, id);
       if (isCarel) wireCarelControls(el, id);
-      if (isMtd) {
-        el.setAttribute("aria-expanded", "false");
-        el.addEventListener("click", (e) => {
-          if (e.target.closest("input, button, a")) return;
-          const open = el.classList.toggle("is-open");
-          el.setAttribute("aria-expanded", open ? "true" : "false");
-        });
-        el.addEventListener("keydown", (e) => {
-          const inp = e.target.closest && e.target.closest("input.dev-mtd-set");
-          if (!inp || e.key !== "Enter") return;
-          e.preventDefault();
-          e.stopPropagation();
-          commitMtdSetting(id, inp);
-        });
-      }
+      if (isMtd) wireMtdSettings(el, id);
     }
     const renameBtn = el.querySelector('[data-role="rename"]');
     if (renameBtn) {
@@ -1402,15 +1489,17 @@ import { aiSensorLabel, aiUnitPrecision } from "./ai-sensors.js?v=1.0.7.0";
         const pending = mtdPending[pkey];
         if (pending && mtdDropPending(pending, val, digits, now)) delete mtdPending[pkey];
         const focused = document.activeElement === inp;
-        const next = mtdSettingDisplay(
+        const draft = Object.prototype.hasOwnProperty.call(mtdDraft, pkey) ? mtdDraft[pkey] : null;
+        const assign = mtdPollAssignment(
           val,
           mtdPending[pkey] || null,
           digits,
           now,
           focused,
-          inp.value
+          inp.value,
+          draft
         );
-        if (!focused && inp.value !== next) inp.value = next;
+        if (assign != null) inp.value = assign;
       });
       const chart = card.querySelector('[data-role="chart"]');
       if (chart) {

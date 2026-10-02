@@ -931,6 +931,8 @@
     'Закрыть': 'Close',
     'MQTT': 'MQTT',
     'MQTT мост': 'MQTT bridge',
+    'Стенд API': 'Stand API',
+    'Логгер устройств': 'Device logger',
     'MQTT телеметрия': 'MQTT telemetry',
     'Конфигурация Modbus→MQTT моста и мониторинг топиков': 'Modbus-to-MQTT bridge configuration and topic monitoring',
     '1883 (локал.) · 1884 (внешний)': '1883 (local) · 1884 (external)',

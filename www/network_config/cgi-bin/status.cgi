@@ -77,6 +77,7 @@ if [[ "${QUERY_STRING:-}" == *part=rs485* ]] && [[ "${QUERY_STRING:-}" == *no_ca
     rm -f "${CACHE_DIR}/rs485.json" "${CACHE_DIR}/rs485.json.lock" 2>/dev/null || true
 fi
 OPTIONAL_SVCS_JSON="[]"
+DASH_SVCS_JSON="[]"
 SVC_CODESYS_UPTIME_S=0
 SVC_CODESYS_UNIT=""
 SVC_FCGIWRAP_UPTIME_S=0
@@ -383,6 +384,41 @@ fast_service_state() {
                 echo inactive
             fi
             ;;
+        sa02m-alice-client|sa02m-alice-client.service)
+            if _proc_cmd_matches 'sa02m_alice\.client\.main'; then
+                echo active
+            else
+                echo inactive
+            fi
+            ;;
+        sa02m-stand-api|sa02m-stand-api.service)
+            if _proc_cmd_matches 'stand_web_api:app'; then
+                echo active
+            else
+                echo inactive
+            fi
+            ;;
+        sa02m-devices-logger|sa02m-devices-logger.service)
+            if _proc_cmd_matches 'sa02m_devices_logger\.py'; then
+                echo active
+            else
+                echo inactive
+            fi
+            ;;
+        sa02m-cloud-agent|sa02m-cloud-agent.service)
+            if _proc_cmd_matches 'sa02m-cloud-agent\.py'; then
+                echo active
+            else
+                echo inactive
+            fi
+            ;;
+        sa02m-telemetry|sa02m-telemetry.service)
+            if _proc_cmd_matches 'sa02m_telemetry\.py'; then
+                echo active
+            else
+                echo inactive
+            fi
+            ;;
         docker|docker.service)
             if proc_is_running dockerd || [ -S /run/docker.sock ]; then
                 echo active
@@ -438,6 +474,21 @@ fast_service_uptime() {
             u2=$(proc_uptime_seconds_by_pgrep_f '[s]a02m-modbus-mqtt')
             (( u2 > up )) && up=$u2
             echo "$up"
+            ;;
+        sa02m-alice-client|sa02m-alice-client.service)
+            proc_uptime_seconds_by_pgrep_f 'sa02m_alice\.client\.main'
+            ;;
+        sa02m-stand-api|sa02m-stand-api.service)
+            proc_uptime_seconds_by_pgrep_f 'stand_web_api:app'
+            ;;
+        sa02m-devices-logger|sa02m-devices-logger.service)
+            proc_uptime_seconds_by_pgrep_f 'sa02m_devices_logger\.py'
+            ;;
+        sa02m-cloud-agent|sa02m-cloud-agent.service)
+            proc_uptime_seconds_by_pgrep_f 'sa02m-cloud-agent\.py'
+            ;;
+        sa02m-telemetry|sa02m-telemetry.service)
+            proc_uptime_seconds_by_pgrep_f 'sa02m_telemetry\.py'
             ;;
         docker|docker.service) proc_uptime_seconds_by_name dockerd ;;
         codesyscontrol|codesyscontrol.service|codesys.service|codesys3.service|CODESYSControl.service|CODESYSControlRuntime.service)
@@ -1611,9 +1662,65 @@ gather_system_metrics() {
     CPU_FREQ_MHZ=$(( _cpu_freq_khz / 1000 ))
 }
 
+# Up to six active product services for the «Сведения» widget.
+# A slot is taken only when the process probe says active/running/activating.
+# UnitFileState=disabled does not hide a running service. No blank row.
+_dash_svc_add() {
+    [ "${DASH_N:-0}" -ge 6 ] && return 0
+    local id=$1 label=$2 st=$3 up=${4:-0}
+    case "$st" in
+        active|running|activating) ;;
+        *) return 0 ;;
+    esac
+    case "$up" in
+        ''|*[!0-9]*) up=0 ;;
+    esac
+    local id_esc label_esc st_esc
+    id_esc=$(json_escape "$id")
+    label_esc=$(json_escape "$label")
+    st_esc=$(json_escape "$st")
+    DASH_PARTS="${DASH_PARTS}${DASH_SEP}{\"id\":\"${id_esc}\",\"label\":\"${label_esc}\",\"status\":\"${st_esc}\",\"uptime_s\":${up}}"
+    DASH_SEP=,
+    DASH_N=$((DASH_N + 1))
+}
+
+_dash_probe_add() {
+    [ "${DASH_N:-0}" -ge 6 ] && return 0
+    local id=$1 label=$2 unit=$3
+    local st up
+    st=$(fast_service_state "$unit")
+    up=$(fast_service_uptime "$unit")
+    [ "$st" = "disabled" ] && up=0
+    _dash_svc_add "$id" "$label" "$st" "$up"
+}
+
+build_dash_services_json() {
+    DASH_PARTS=""
+    DASH_SEP=""
+    DASH_N=0
+    _dash_svc_add mosquitto "mosquitto" "${DASH_MOSQUITTO:-}" "${DASH_MOSQUITTO_UP:-0}"
+    _dash_svc_add mqtt-bridge "MQTT мост" "${DASH_BRIDGE:-}" "${DASH_BRIDGE_UP:-0}"
+    _dash_svc_add mplc4 "MPLC4" "${DASH_MPLC:-}" "${DASH_MPLC_UP:-0}"
+    _dash_probe_add alice "Яндекс Алиса" sa02m-alice-client
+    _dash_probe_add stand-api "Стенд API" sa02m-stand-api
+    _dash_probe_add devices-logger "Логгер устройств" sa02m-devices-logger
+    _dash_probe_add cloud-agent "Облако" sa02m-cloud-agent
+    _dash_probe_add mqtt-telemetry "MQTT телеметрия" sa02m-telemetry
+    _dash_svc_add codesys "CODESYS" "${DASH_CODESYS:-}" "${DASH_CODESYS_UP:-0}"
+    if systemd_unit_file_installed klogicd.service || systemd_unit_file_installed klogic.service; then
+        _dash_probe_add klogic "KLogic" klogicd
+    fi
+    if [ -n "$DASH_PARTS" ]; then
+        DASH_SVCS_JSON="[${DASH_PARTS}]"
+    else
+        DASH_SVCS_JSON="[]"
+    fi
+}
+
 gather_services_metrics() {
     if ! status_block_enabled services; then
         OPTIONAL_SVCS_JSON="[]"
+        DASH_SVCS_JSON="[]"
         MPLC_STATUS="unknown"
         MPLC_UPTIME_S=0
         MPLC_UNIT_RAW=""
@@ -1657,6 +1764,12 @@ gather_services_metrics() {
     # Fast path (fast=1): skip the ~3.5 s `sudo CTL list`; mark the services it
     # would refine as "unknown" so the UI shows a loading badge, never a wrong one.
     [ "${STATUS_SERVICES_FAST:-0}" = "1" ] || load_svc_ctl_states
+    # Dashboard rows follow the process probe, not the autostart flag:
+    # a running broker with UnitFileState=disabled is still active.
+    # Captured before CTL override and before fast=1 blanks the variables.
+    DASH_CODESYS=$SVC_CODESYS
+    DASH_MOSQUITTO=$SVC_MOSQUITTO
+    DASH_BRIDGE=$SVC_BRIDGE
     svc_ctl_override codesys SVC_CODESYS
     svc_ctl_override mosquitto SVC_MOSQUITTO
     svc_ctl_override mqtt-bridge SVC_BRIDGE
@@ -1780,6 +1893,10 @@ gather_services_metrics() {
         done
     fi
 
+    DASH_MOSQUITTO_UP=${SVC_MOSQUITTO_UPTIME_S:-0}
+    DASH_BRIDGE_UP=${SVC_BRIDGE_UPTIME_S:-0}
+    DASH_CODESYS_UP=${SVC_CODESYS_UPTIME_S:-0}
+    DASH_MPLC_UP=${MPLC_UPTIME_S:-0}
     if [ "$MPLC_STATUS" = "disabled" ]; then
         MPLC_UPTIME_S=0
     fi
@@ -1793,6 +1910,7 @@ gather_services_metrics() {
         SVC_BRIDGE_UPTIME_S=0
     fi
 
+    DASH_MPLC=$MPLC_STATUS
     svc_ctl_override mplc4 MPLC_STATUS
     svc_fast_unknown MPLC_STATUS
     [ "$MPLC_STATUS" = "disabled" ] && MPLC_UPTIME_S=0
@@ -1801,6 +1919,7 @@ gather_services_metrics() {
     # KLogic / Node-RED в optional_services только при установленном unit-файле;
     # активность — fast_service_state (без systemctl show, чтобы не зависать на dbus).
     gather_important_optional_services_json
+    build_dash_services_json
 
     SVC_CODESYS_INSTALLED=0
     if resolve_codesys_unit >/dev/null 2>&1 || [ -x /etc/init.d/codesyscontrol ]; then
@@ -2061,7 +2180,8 @@ print_services_json() {
   "mplc_unit": "${MPLC_UNIT}",
   "mplc_uptime_s": ${MPLC_UPTIME_S},
   "mplc_installed": ${MPLC_INSTALLED},
-  "optional_services": ${OPTIONAL_SVCS_JSON:-[]}
+  "optional_services": ${OPTIONAL_SVCS_JSON:-[]},
+  "dash_services": ${DASH_SVCS_JSON:-[]}
 }
 JSON
 }

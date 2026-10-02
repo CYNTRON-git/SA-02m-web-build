@@ -656,11 +656,61 @@ function svcIsInstalledFlag(v) {
   return v === true || v === 1;
 }
 
-/** Виджет «Службы»: собирает строки из status.cgi, сортировка по имени A→Z (≤ 6). Без пустых строк. */
+/** Виджет «Службы»: до 6 активных служб из dash_services, сортировка A→Z. Без пустых строк. */
+function paintSvcRows(host, rows) {
+  rows.sort(function (a, b) {
+    return compareSvcDisplayName(a.label, b.label);
+  });
+  rows.forEach(function (row, i) {
+    const r = document.createElement('div');
+    r.className = 'svc-row' + (row.tight ? ' svc-row-tight' : '');
+    const name = document.createElement('span');
+    name.className = 'name' + (row.mono ? ' mono' : '');
+    name.textContent = uiT(row.label);
+    if (row.title) name.title = uiT(row.title);
+    const up = document.createElement('span');
+    up.className = 'svc-uptime mono';
+    const on = svcStateIsActive(row.state);
+    setSvcRowUptime(up, row.uptimeS, on);
+    const badge = document.createElement('span');
+    badge.className = 'badge badge-unk';
+    const bid = 'svc-dyn-' + i;
+    badge.id = bid;
+    r.appendChild(name);
+    r.appendChild(up);
+    r.appendChild(badge);
+    host.appendChild(r);
+    svcBadge(bid, row.state);
+  });
+}
+
 function renderServicesDynamic(d) {
   const host = document.getElementById('svc-dynamic-list');
   if (!host) return;
   host.innerHTML = '';
+
+  if (d && Array.isArray(d.dash_services)) {
+    const rows = [];
+    const seen = new Set();
+    d.dash_services.forEach(function (s) {
+      if (!s || rows.length >= SVC_WIDGET_MAX_ROWS) return;
+      if (!svcStateIsActive(s.status)) return;
+      const lab = String(s.label || '').trim();
+      if (!lab) return;
+      const key = lab.toLowerCase();
+      if (seen.has(key)) return;
+      seen.add(key);
+      rows.push({
+        label: lab,
+        uptimeS: s.uptime_s,
+        state: s.status,
+        mono: true,
+        title: ''
+      });
+    });
+    paintSvcRows(host, rows);
+    return;
+  }
 
   const rows = [];
   const seen = new Set();
@@ -737,30 +787,6 @@ function renderServicesDynamic(d) {
     }
   }
 
-  rows.sort(function (a, b) {
-    return compareSvcDisplayName(a.label, b.label);
-  });
-
-  rows.forEach(function (row, i) {
-    const r = document.createElement('div');
-    r.className = 'svc-row' + (row.tight ? ' svc-row-tight' : '');
-    const name = document.createElement('span');
-    name.className = 'name' + (row.mono ? ' mono' : '');
-    name.textContent = row.label;
-    if (row.title) name.title = uiT(row.title);
-    const up = document.createElement('span');
-    up.className = 'svc-uptime mono';
-    const on = svcStateIsActive(row.state);
-    setSvcRowUptime(up, row.uptimeS, on);
-    const badge = document.createElement('span');
-    badge.className = 'badge badge-unk';
-    const bid = 'svc-dyn-' + i;
-    badge.id = bid;
-    r.appendChild(name);
-    r.appendChild(up);
-    r.appendChild(badge);
-    host.appendChild(r);
-    svcBadge(bid, row.state);
-  });
+  paintSvcRows(host, rows);
 }
 

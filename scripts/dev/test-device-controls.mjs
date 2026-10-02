@@ -147,6 +147,59 @@ console.log('# MTD stale refresh must not replace a just-written value');
   check(mtdDropPending(pending, 8, 2, 1000) === true, 'confirmed write drops the guard');
 }
 
+console.log('# MTD poll must not paint a stale register over a submitted field');
+{
+  const mtdParseSetting = load('mtdParseSetting');
+  const mtdCommitText = load('mtdCommitText');
+  const mtdDropPending = load('mtdDropPending');
+  const mtdSettingDisplay = new Function(
+    'mtdDropPending',
+    extractFn(SRC, 'mtdSettingDisplay') + '\nreturn mtdSettingDisplay;'
+  )(mtdDropPending);
+  const mtdPollAssignment = new Function(
+    'mtdDropPending',
+    'mtdSettingDisplay',
+    extractFn(SRC, 'mtdPollAssignment') + '\nreturn mtdPollAssignment;'
+  )(mtdDropPending, mtdSettingDisplay);
+  const submitted = { value: 45, until: 5000 };
+  eq(
+    mtdPollAssignment(30, submitted, 0, 1000, false, '45', null),
+    null,
+    'a poll that still says 30 does not overwrite a field just submitted as 45'
+  );
+  eq(
+    mtdPollAssignment(30, submitted, 0, 1000, false, '30', null),
+    '45',
+    'if the number field snapped to 30, the poll puts the submitted 45 back'
+  );
+  eq(
+    mtdPollAssignment(30, null, 0, 1000, false, '28', '28'),
+    null,
+    'an in-progress edit is not replaced by the stale 30'
+  );
+  eq(
+    mtdPollAssignment(30, null, 0, 1000, true, '2', null),
+    null,
+    'a focused field is left to the operator'
+  );
+  eq(
+    mtdPollAssignment(30, null, 0, 1000, false, '', null),
+    '30',
+    'an idle field still takes the register'
+  );
+  eq(mtdCommitText('30', '45'), '45', 'a reverted number field still submits the typed 45');
+  eq(mtdCommitText('28', null), '28', 'without a draft the live field text is submitted');
+  eq(mtdParseSetting('6,00'), 6, 'comma decimal 6,00 is 6 m');
+  eq(mtdParseSetting('0,60'), 0.6, 'comma decimal 0,60 is 0.6 m');
+  eq(mtdParseSetting('0,10'), 0.1, 'comma decimal 0,10 is 0.1 s');
+  eq(mtdParseSetting('30'), 30, 'off-delay 30 parses');
+  const wire = extractFn(SRC, 'wireMtdSettings');
+  check(wire.indexOf('"change"') >= 0, 'the field commits on change, not only on Enter');
+  check(wire.indexOf('preventDefault') < 0, 'Enter does not cancel the number-field commit');
+  check(wire.indexOf('"input"') >= 0, 'typing is remembered before the next poll');
+  check(wire.indexOf('commitMtdSetting') >= 0, 'change publishes through the same commit path');
+}
+
 if (failures) {
   console.error('test-device-controls: ' + failures + ' FAILURE(S)');
   process.exit(1);

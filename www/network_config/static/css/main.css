@@ -3037,10 +3037,15 @@ html[data-theme="light"] .homeconnect-verify-link { color: var(--cyan-hover); }
 .login-card .field label:not(.toggle-inline) {
   font-size: .95rem;
   margin-bottom: 8px;
+  text-align: center;
 }
 .login-card .field input:not(.toggle) {
   font-size: 1.05rem;
   padding: 13px 16px;
+  text-align: center;
+}
+.login-card .field input:not(.toggle)::placeholder {
+  text-align: center;
 }
 .login-error {
   background: #2a0f0f; border: 1px solid #4a1e1e; color: var(--red);
