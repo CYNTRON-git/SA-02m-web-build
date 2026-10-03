@@ -299,6 +299,7 @@ chmod +x install.sh scripts/*.sh etc/*.sh
 | `06-gateway.sh` | RS-485→Ethernet шлюз, gateway CGI, systemd unit | `SA02M_SKIP_GATEWAY=1` |
 | `06-alice.sh` | Яндекс Алиса: `opt/sa02m-alice`, обе службы **выключены** по умолчанию | `SA02M_SKIP_ALICE=1` |
 | `06b-rules.sh` | Сценарии на плате: `opt/sa02m-rules`, `sa02m-rules.service` | `SA02M_SKIP_RULES=1` |
+| `13-agent-api.sh` | API для ИИ-агентов: `opt/sa02m-agent-api`, служба **выключена** | `SA02M_SKIP_AGENT_API=1` |
 | `06c-homekit.sh` | Мост Apple HomeKit: `opt/sa02m-homekit` + venv, служба **выключена**; ставится **только** с `--with-homekit` / `SA02M_WITH_HOMEKIT=1` (уже установленный — обновляется) | `SA02M_SKIP_HOMEKIT=1` |
 | `06d-homeconnect.sh` | Клиент BSH Home Connect (только чтение): `opt/sa02m-homeconnect`, без pip, служба **выключена**; ставится **только** с `--with-homeconnect` / `SA02M_WITH_HOMECONNECT=1` (уже установленный — обновляется) | `SA02M_SKIP_HOMECONNECT=1` |
 | `07-nodered.sh` | Node.js LTS + Node-RED, `nodered.service`, UI на порту 1880 | `SA02M_SKIP_NODERED=1` |
@@ -1477,6 +1478,10 @@ hwclock -r   # прочитать время из PCF8563
 ## CGI API
 
 Все CGI-скрипты возвращают **JSON** (без HTML). Аутентификация через cookie `session_token`.
+
+Машинный API для внешнего ИИ — не CGI: `sa02m-agent-api` (`/api/v1`, MCP `/mcp`).
+Служба выключена, пока её не включат на карточке. Руководство:
+`docs/AI_AGENT_INTEGRATION.md`. Контракт: `docs/contracts/agent-api.md`.
 
 Ниже разобраны **основные** эндпоинты. Полный перечень — это само дерево:
 `ls www/network_config/cgi-bin/*.cgi`. Семейства, чтобы найти нужный:

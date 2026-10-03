@@ -94,6 +94,17 @@ wipe_homekit_identity() {
     fi
 }
 
+wipe_agent_api_identity() {
+    local root="${1:-}"
+    rm -f "$root/etc/sa02m-agent-api/tokens.json"
+    if [ -L "$root/etc/sa02m-agent-api/root-cap" ]; then
+        rm -f "$root/etc/sa02m-agent-api/root-cap"
+    else
+        rm -f "$root/etc/sa02m-agent-api/root-cap"/*
+    fi
+    rm -f "$root/etc/systemd/system/multi-user.target.wants/sa02m-agent-api.service"
+}
+
 wipe_homeconnect_identity() {
     # Home Connect sign-in (docs/contracts/image-identity-reset.md §8): the
     # state dir holds the OAuth refresh token of the owner's BSH account, so a
@@ -134,6 +145,7 @@ wipe_homeconnect_identity() {
 wipe_alice_enrollment
 wipe_homekit_identity
 wipe_homeconnect_identity
+wipe_agent_api_identity
 
 echo "=== VERIFY ==="
 ls -la /var/lib/sa02m-alice 2>/dev/null || echo "var dir absent (never linked)"

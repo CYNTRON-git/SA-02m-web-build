@@ -1,0 +1,18 @@
+# SA-02m
+
+This board is an SA-02m automation server. Its machine API is off until an
+operator enables it on the panel card «API для ИИ-агентов».
+
+- REST: /api/v1/ (header X-SA02M-Token, or Authorization: Bearer)
+- OpenAPI: /api/v1/openapi.json
+- MCP Streamable HTTP: /mcp
+- Human guide: docs/AI_AGENT_INTEGRATION.md (connect, scopes, jobs, recipes)
+- Contract: docs/contracts/agent-api.md
+- On-board text: MCP resource sa02m://guide
+
+Scopes: read, control, config, admin. Root commands need the token flag
+root_capable. A token cannot mint another token. Irreversible operations
+need confirm equal to the operation name. Start with dry_run.
+
+GitHub OTA does not install the nginx locations. If /api/v1 answers 404,
+refresh the site file (offline package or install.sh --refresh).

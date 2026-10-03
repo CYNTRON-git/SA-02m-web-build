@@ -11,7 +11,7 @@
 | Ошибка чтения | `/controls/{name}/meta/error` = `"r"` |
 | Ошибка записи | `/controls/{name}/meta/error` = `"w"` |
 | Восстановление | `/controls/{name}/meta/error` = `""` (cleared) |
-| Запись значения | `/controls/{name}/on` ← write `0` / `1` / float; публикуют внешние клиенты **и веб-интерфейс** (`mqtt_set.cgi`, без retain — контракт `docs/contracts/mqtt-set-endpoint.md`) |
+| Запись значения | `/controls/{name}/on` ← write `0` / `1` / float; публикуют внешние клиенты **и веб-интерфейс** (`mqtt_set.cgi`, без retain — контракт `docs/contracts/mqtt-set-endpoint.md`). Тот же путь у агента: операция `mqtt.publish` (`docs/contracts/agent-api.md`) |
 | Публикация meta | Один раз при старте (retained) — И отдельные субтопики `/meta/<key>`, И сводный `/meta` JSON-блоб (см. ниже) |
 | **Устройство offline** | `/devices/{id}/meta/error` = `"r"` (device-level, retained) |
 | **Устройство online** | `/devices/{id}/meta/error` = `""` (cleared) |

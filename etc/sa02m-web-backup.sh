@@ -38,7 +38,8 @@ collect_paths() {
     /etc/sa02m-alice-client.conf \
     /etc/sa02m-alice-devices.conf \
     /etc/sa02m-homeconnect/sa02m-homeconnect.conf \
-    /etc/sa02m-homekit/sa02m-homekit.conf
+    /etc/sa02m-homekit/sa02m-homekit.conf \
+    /etc/sa02m-agent-api/tokens.json
   do
     [ -e "$p" ] && printf '%s\n' "$p"
   done

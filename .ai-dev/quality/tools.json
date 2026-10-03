@@ -693,7 +693,7 @@
       "config": null,
       "run": "bash .ai-dev/quality/checks/websession-parity.sh",
       "beat": "build",
-      "covers": ["opt/sa02m-flasher/sa02m_flasher/websession.py", "opt/sa02m-devices/sa02m_devices/websession.py", ".ai-dev/quality/checks/websession-parity.sh"],
+      "covers": ["opt/sa02m-flasher/sa02m_flasher/websession.py", "opt/sa02m-devices/sa02m_devices/websession.py", "opt/sa02m-agent-api/sa02m_agent_api/websession.py", ".ai-dev/quality/checks/websession-parity.sh"],
       "init": "bash + coreutils (cmp, diff) — run on demand: bash .ai-dev/quality/checks/websession-parity.sh"
     },
     {
@@ -1325,6 +1325,43 @@
         "opt/sa02m-homeconnect/sa02m_homeconnect/"
       ],
       "init": "python3 + bash (stdlib only; root or not — A3 SKIPs non-root) — run on demand: python3 scripts/dev/test-factory-reset-runner.py; FACTORY_SRC=<file> runs another runner copy (the RED recipe)."
+    },
+    {
+      "id": "py-unit-agent-api",
+      "mutationExempt": "stdlib unittest discover over the agent API package's own test suite — a test RUNNER, not a needle pin: it holds no source line a # could satisfy, and commenting a line out of the package changes the behaviour the tests assert.",
+      "checks": "Agent API unit tests (opt/sa02m-agent-api/tests): tokens, path fence, router CSRF, CGI split, MCP handshake, OpenAPI 3.1, and the scope matrix. Uses -t opt/sa02m-agent-api so the package imports from any cwd.",
+      "config": null,
+      "run": "bash -c 'for p in python3 python py; do if \"$p\" -c \"import sys\"; then exec \"$p\" -m unittest discover -s opt/sa02m-agent-api/tests -t opt/sa02m-agent-api -q; fi; done; echo py-unit-agent-api: no working python interpreter; exit 1'",
+      "beat": "build",
+      "covers": ["opt/sa02m-agent-api/", "docs/contracts/agent-api.md"],
+      "init": "Python 3.10+ (stdlib unittest, no extra deps) — same interpreter picker as py-unit-flasher"
+    },
+    {
+      "id": "agent-api-scope-matrix",
+      "checks": "Each registered operation has a scope. A token that lacks that scope is refused with 403 before ctx.side (the sink stays empty). The same call with an admin root_capable token reaches the side. confirm and dry_run also return before the side. files.read and files.write refuse without root_capable before the side. RED: the scope check in App.invoke commented out — the short-scope cases return 200 and the sink records a side.",
+      "config": null,
+      "run": "bash .ai-dev/quality/checks/agent-api-scope-matrix.sh",
+      "beat": "build",
+      "covers": ["opt/sa02m-agent-api/", ".ai-dev/quality/checks/agent-api-scope-matrix.sh"],
+      "init": "Python 3.10+ — run on demand: bash .ai-dev/quality/checks/agent-api-scope-matrix.sh"
+    },
+    {
+      "id": "mcp-conformance",
+      "checks": "MCP Streamable HTTP in-process: initialize (protocol 2025-03-26), tools/list hides tools outside the token scope, tools/call runs one read tool, resources/read returns sa02m://guide, a notification without id is HTTP 202 with an empty body.",
+      "config": null,
+      "run": "bash .ai-dev/quality/checks/mcp-conformance.sh",
+      "beat": "build",
+      "covers": ["opt/sa02m-agent-api/sa02m_agent_api/mcp.py", "opt/sa02m-agent-api/tests/test_mcp.py", ".ai-dev/quality/checks/mcp-conformance.sh"],
+      "init": "Python 3.10+ — run on demand: bash .ai-dev/quality/checks/mcp-conformance.sh"
+    },
+    {
+      "id": "openapi-valid",
+      "checks": "The registry builds one OpenAPI 3.1 document. Every operation has a path, operationId, scope and a 200 response. /health is present and has empty security. No second route list.",
+      "config": null,
+      "run": "bash .ai-dev/quality/checks/openapi-valid.sh",
+      "beat": "build",
+      "covers": ["opt/sa02m-agent-api/sa02m_agent_api/openapi.py", "opt/sa02m-agent-api/tests/test_openapi.py", ".ai-dev/quality/checks/openapi-valid.sh"],
+      "init": "Python 3.10+ — run on demand: bash .ai-dev/quality/checks/openapi-valid.sh"
     }
   ]
 }

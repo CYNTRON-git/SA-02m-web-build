@@ -1,0 +1,16 @@
+# SA-02m agent API — www-data may run only these helpers, and only these verbs.
+# The helpers check argv again (docs/contracts/agent-api.md). A star is not a
+# blank cheque: each helper refuses a path that is not its own mktemp name.
+
+www-data ALL=(root) NOPASSWD: /usr/local/sbin/sa02m-agent-api-ctl.sh enable, \
+    /usr/local/sbin/sa02m-agent-api-ctl.sh disable, \
+    /usr/local/sbin/sa02m-agent-api-ctl.sh restart, \
+    /usr/local/sbin/sa02m-agent-api-ctl.sh status, \
+    /usr/local/sbin/sa02m-agent-token-store.sh put *, \
+    /usr/local/sbin/sa02m-agent-token-store.sh delete *, \
+    /usr/local/sbin/sa02m-agent-root-cap.sh grant *, \
+    /usr/local/sbin/sa02m-agent-root-cap.sh revoke *, \
+    /usr/local/sbin/sa02m-agent-root-exec.sh *, \
+    /usr/local/sbin/sa02m-rules-store-apply.sh *, \
+    /usr/local/sbin/sa02m-user-unit.sh *, \
+    /usr/local/sbin/sa02m-agent-journal.sh *

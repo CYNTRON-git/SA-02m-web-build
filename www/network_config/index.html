@@ -617,6 +617,39 @@
                 <pre class="log-box system-command-output" id="cmd-output"></pre>
               </div>
             </div>
+            <div class="ctrl-card system-manage-tile" id="agentapi-card">
+              <div class="ctrl-card-main">
+                <h3 class="system-manage-tile-title">API для ИИ-агентов</h3>
+                <p class="field-hint text-sm" id="agentapi-state"></p>
+                <div class="btn-group">
+                  <button type="button" class="btn btn-sm btn-primary" id="agentapi-toggle">Включить</button>
+                </div>
+                <div id="agentapi-rows"></div>
+                <div class="field">
+                  <label for="agentapi-name">Имя токена</label>
+                  <input type="text" id="agentapi-name" maxlength="64" autocomplete="off">
+                </div>
+                <div class="field">
+                  <label for="agentapi-days">Срок, дней</label>
+                  <input type="number" id="agentapi-days" min="0" max="3650" value="30">
+                </div>
+                <label><input type="checkbox" id="agentapi-scope-read" checked> Чтение</label>
+                <label><input type="checkbox" id="agentapi-scope-control"> Управление выходами</label>
+                <label><input type="checkbox" id="agentapi-scope-config"> Настройка служб</label>
+                <label><input type="checkbox" id="agentapi-scope-admin"> Администрирование</label>
+                <label><input type="checkbox" id="agentapi-root"> Root-команды</label>
+                <div class="field" id="agentapi-pass-wrap" hidden>
+                  <label for="agentapi-pass">Пароль root</label>
+                  <input type="password" id="agentapi-pass" autocomplete="current-password" placeholder="Пароль root">
+                </div>
+                <div class="btn-group">
+                  <button type="button" class="btn btn-sm" id="agentapi-create">Создать токен</button>
+                  <button type="button" class="btn btn-sm" id="agentapi-copy" disabled>Скопировать конфиг MCP</button>
+                </div>
+                <p class="field-hint text-sm" id="agentapi-secret" hidden></p>
+                <p class="field-hint text-sm" id="agentapi-msg" role="status"></p>
+              </div>
+            </div>
             <div class="system-manage-tile system-manage-log-panel dash-span-top4">
               <h3 class="system-manage-tile-title system-manage-log-title">Журнал событий</h3>
               <div class="btn-group system-manage-log-actions">
@@ -1622,8 +1655,8 @@
   </div>
 </div>
 
-<script src="static/js/i18n.js?v=1.0.7.1&r=fwhint1"></script>
-<script src="static/js/app.js?v=1.0.7.1&r=syssub1"></script>
+<script src="static/js/i18n.js?v=1.0.7.1&r=agentapi2"></script>
+<script src="static/js/app.js?v=1.0.7.1&r=agentapi2"></script>
 <script src="static/js/app/status.js?v=1.0.7.1&r=xhrcsrf1"></script>
 <script src="static/js/app/hw.js?v=1.0.7.1&r=devhist1"></script>
 <script src="static/js/app/rs485.js?v=1.0.7.1&r=audit39a"></script>
@@ -1642,6 +1675,7 @@
 <script src="static/js/app/smarthome.js?v=1.0.7.1&r=lamp1"></script>
 <script src="static/js/app/homekit.js?v=1.0.7.1&r=syssub1"></script>
 <script src="static/js/app/homeconnect.js?v=1.0.7.1&r=syssub1"></script>
+<script src="static/js/app/agentapi.js?v=1.0.7.1&r=agentapi2"></script>
 
 <div id="dev-modal" class="dev-modal" hidden>
   <div class="dev-modal-backdrop" id="dev-modal-backdrop"></div>

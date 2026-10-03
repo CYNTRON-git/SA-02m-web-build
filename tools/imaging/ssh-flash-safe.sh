@@ -201,6 +201,17 @@ wipe_homekit_identity() {
 # refresh token. Contents go, the dirs stay. A symlinked conf is dropped, never
 # read through (sed -i would copy its target into the image); an absent conf
 # reads as disabled.
+wipe_agent_api_identity() {
+    local root="${1:-}"
+    rm -f "$root/etc/sa02m-agent-api/tokens.json"
+    if [ -L "$root/etc/sa02m-agent-api/root-cap" ]; then
+        rm -f "$root/etc/sa02m-agent-api/root-cap"
+    else
+        rm -f "$root/etc/sa02m-agent-api/root-cap"/*
+    fi
+    rm -f "$root/etc/systemd/system/multi-user.target.wants/sa02m-agent-api.service"
+}
+
 wipe_homeconnect_identity() {
     local root=$1
     # `.hc-*` is the atomic-write sidecar shape (fsutil.atomic_write): a torn
@@ -285,6 +296,7 @@ wipe_cloud_enrollment "$MNT"
 wipe_alice_enrollment "$MNT"
 wipe_homekit_identity "$MNT"
 wipe_homeconnect_identity "$MNT"
+wipe_agent_api_identity "$MNT"
 
 sync
 umount "$MNT"

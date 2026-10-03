@@ -475,7 +475,14 @@ done
 # path — this one included — can copy them 1:1 with no rename table.
 for src in usr/local/sbin/sa02m-gateway-config-apply.sh \
            usr/local/sbin/sa02m-mqtt-config-apply.sh \
-           usr/local/sbin/sa02m-cloud-web-trigger.sh; do
+           usr/local/sbin/sa02m-cloud-web-trigger.sh \
+           usr/local/sbin/sa02m-agent-api-ctl.sh \
+           usr/local/sbin/sa02m-agent-token-store.sh \
+           usr/local/sbin/sa02m-agent-root-cap.sh \
+           usr/local/sbin/sa02m-agent-root-exec.sh \
+           usr/local/sbin/sa02m-rules-store-apply.sh \
+           usr/local/sbin/sa02m-user-unit.sh \
+           usr/local/sbin/sa02m-agent-journal.sh; do
     if [ -f "$TMPDIR/repo/$src" ]; then
         tgt="/usr/local/sbin/$(basename "$src")"
         atomic_install_script -m 755 "$TMPDIR/repo/$src" "$tgt"

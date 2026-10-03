@@ -147,6 +147,16 @@ import sys
 import tempfile
 from pathlib import Path
 
+try:
+    sys.stdout.reconfigure(encoding="utf-8", errors="replace")
+    sys.stderr.reconfigure(encoding="utf-8", errors="replace")
+except (AttributeError, OSError):
+    pass
+
+if os.name == "nt":
+    print("SKIP  alice-conf-homes retargets Linux paths and needs a symlink-capable host")
+    raise SystemExit(77)
+
 ROOT = Path(__file__).resolve().parents[2]
 RUNNER = ROOT / "etc/sa02m-update-runner.sh"
 VALIDATOR_DIR = ROOT / "opt/sa02m-update"

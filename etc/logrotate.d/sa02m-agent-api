@@ -1,0 +1,12 @@
+/var/log/sa02m-agent-api/*.jsonl {
+    weekly
+    rotate 8
+    size 5M
+    missingok
+    notifempty
+    compress
+    delaycompress
+    copytruncate
+    su www-data adm
+    create 0640 www-data adm
+}

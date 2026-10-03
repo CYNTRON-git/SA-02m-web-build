@@ -436,33 +436,6 @@ def _scan_row(ser, addr, *, baudrate, stopbits):
     return row
 
 
-def _mtd_stop2_pass(port, baud, max_addr, already):
-    """Addresses silent on the 8N1 sweep that answer as an MTDX62-MB at 8N2.
-
-    A hit is kept only when detect_type says template. `already` is updated
-    so a later pass at another baud does not report the same slave twice.
-    """
-    found = []
-    try:
-        ser = serial.Serial(
-            port, baud, bytesize=8, parity="N", stopbits=2, timeout=0.1)
-    except Exception:
-        return found
-    try:
-        time.sleep(0.05)
-        for addr in sorted(std_scan(ser, max_addr)):
-            if addr in already:
-                continue
-            row = _scan_row(ser, addr, baudrate=baud, stopbits=2)
-            if row["type"] != "template":
-                continue
-            found.append(row)
-            already.add(addr)
-    finally:
-        ser.close()
-    return found
-
-
 def main() -> None:
     params_path = Path(sys.argv[1]) if len(sys.argv) > 1 else None
     if params_path is not None and not params_path_ok(params_path):
@@ -546,6 +519,33 @@ def main() -> None:
         print(json.dumps({"ok": False, "error": f"Нет доступа к порту: {e}", "devices": []}))
     except Exception as e:
         print(json.dumps({"ok": False, "error": str(e), "devices": []}))
+
+
+def _mtd_stop2_pass(port, baud, max_addr, already):
+    """Addresses silent on the 8N1 sweep that answer as an MTDX62-MB at 8N2.
+
+    A hit is kept only when detect_type says template. `already` is updated
+    so a later pass at another baud does not report the same slave twice.
+    """
+    found = []
+    try:
+        ser = serial.Serial(
+            port, baud, bytesize=8, parity="N", stopbits=2, timeout=0.1)
+    except Exception:
+        return found
+    try:
+        time.sleep(0.05)
+        for addr in sorted(std_scan(ser, max_addr)):
+            if addr in already:
+                continue
+            row = _scan_row(ser, addr, baudrate=baud, stopbits=2)
+            if row["type"] != "template":
+                continue
+            found.append(row)
+            already.add(addr)
+    finally:
+        ser.close()
+    return found
 
 
 if __name__ == "__main__":

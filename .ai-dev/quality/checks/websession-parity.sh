@@ -1,8 +1,9 @@
 #!/usr/bin/env bash
-# websession-parity — the panel session/CSRF rule the two HTTP daemons read is ONE
-# module shipped as TWO BYTE-IDENTICAL copies:
+# websession-parity — the panel session/CSRF rule the HTTP daemons read is ONE
+# module shipped as THREE BYTE-IDENTICAL copies:
 #     opt/sa02m-flasher/sa02m_flasher/websession.py
 #     opt/sa02m-devices/sa02m_devices/websession.py
+#     opt/sa02m-agent-api/sa02m_agent_api/websession.py
 # and this row is what makes "byte-identical" a fact rather than a habit.
 #
 # WHY COPIES. The rule («sha256(token) file in the session dir, expiry in field 1,
@@ -33,23 +34,25 @@ cd "$(dirname "${BASH_SOURCE[0]}")/../../.." || exit 1
 
 A=opt/sa02m-flasher/sa02m_flasher/websession.py
 B=opt/sa02m-devices/sa02m_devices/websession.py
+C=opt/sa02m-agent-api/sa02m_agent_api/websession.py
 LINE_FLOOR=80
 fails=0
 ok()  { printf 'websession-parity: ok    %s\n' "$*"; }
 bad() { printf 'websession-parity: FAIL  %s\n' "$*"; fails=$((fails + 1)); }
 
-for f in "$A" "$B"; do
+for f in "$A" "$B" "$C"; do
     if [ -f "$f" ]; then ok "present: $f"
     else bad "missing: $f — the rule has one consumer without its copy (cp the other over it)"; fi
 done
 if [ "$fails" -eq 0 ]; then
-    if cmp -s "$A" "$B"; then
-        ok "byte-identical: $A == $B"
+    if cmp -s "$A" "$B" && cmp -s "$A" "$C"; then
+        ok "byte-identical: $A == $B == $C"
     else
-        bad "the two copies differ — edit ONE, then cp it over the other:"
-        diff -u "$A" "$B" | head -n 20 | sed 's/^/websession-parity:        /'
+        bad "the copies differ — edit ONE, then cp it over the other two:"
+        diff -u "$A" "$B" | head -n 12 | sed 's/^/websession-parity:        /'
+        diff -u "$A" "$C" | head -n 12 | sed 's/^/websession-parity:        /'
     fi
-    for f in "$A" "$B"; do
+    for f in "$A" "$B" "$C"; do
         n=$(grep -c . "$f")
         if [ "$n" -ge "$LINE_FLOOR" ]; then ok "$f: $n non-empty lines (floor $LINE_FLOOR)"
         else bad "$f: only $n non-empty lines (floor $LINE_FLOOR) — the module was gutted, not just changed"; fi
@@ -62,7 +65,7 @@ fi
 
 echo
 if [ "$fails" -eq 0 ]; then
-    echo "websession-parity: ALL OK — the two websession.py copies are byte-identical and whole"
+    echo "websession-parity: ALL OK — the three websession.py copies are byte-identical and whole"
     exit 0
 fi
 echo "websession-parity: $fails FAILURE(S)"

@@ -544,6 +544,20 @@ LEDGER = {
         "/usr/local/sbin/sa02m-homeconnect-web-trigger.sh restart",
         "/usr/local/sbin/sa02m-homeconnect-web-trigger.sh unlink",
     ],
+    "etc/sudoers.d/sa02m-agent-api": [
+        "/usr/local/sbin/sa02m-agent-api-ctl.sh enable",
+        "/usr/local/sbin/sa02m-agent-api-ctl.sh disable",
+        "/usr/local/sbin/sa02m-agent-api-ctl.sh restart",
+        "/usr/local/sbin/sa02m-agent-api-ctl.sh status",
+        "/usr/local/sbin/sa02m-agent-token-store.sh put *",
+        "/usr/local/sbin/sa02m-agent-token-store.sh delete *",
+        "/usr/local/sbin/sa02m-agent-root-cap.sh grant *",
+        "/usr/local/sbin/sa02m-agent-root-cap.sh revoke *",
+        "/usr/local/sbin/sa02m-agent-root-exec.sh *",
+        "/usr/local/sbin/sa02m-rules-store-apply.sh *",
+        "/usr/local/sbin/sa02m-user-unit.sh *",
+        "/usr/local/sbin/sa02m-agent-journal.sh *",
+    ],
 }
 
 # Open world: every committed drop-in that grants www-data anything is a
@@ -949,6 +963,56 @@ HELPER_GUARDS = [
         ("params_path_ok", [r"serial\.Serial\("],
          "opens the caller-named serial port as root"),
     ]),
+    ("usr/local/sbin/sa02m-agent-api-ctl.sh", [
+        ("A-Za-z", "carries an explicit verb character allow-list"),
+        ("enable|disable|restart", "pins the unit verbs"),
+    ], [
+        ("verb_ok", [r"\bsystemctl\b"], "changes the agent API unit"),
+    ]),
+    ("usr/local/sbin/sa02m-agent-token-store.sh", [
+        ("/tmp/", "restricts the caller-supplied path to /tmp"),
+        ("sa02m-agent-tok", "pins the caller's mktemp basename"),
+        ("-L ", "refuses a symlink"),
+    ], [
+        ("src_path_ok", [r"\bpython3\b"], "writes the root token store"),
+        ("id_ok", [r"\bpython3\b"], "deletes a token record"),
+    ]),
+    ("usr/local/sbin/sa02m-agent-root-cap.sh", [
+        ("/tmp/", "restricts the password file to /tmp"),
+        ("sa02m-agent-pass", "pins the password mktemp basename"),
+        ("-L ", "refuses a symlink"),
+    ], [
+        ("id_ok", [r"\bpython3\b"], "writes or removes a root cap file"),
+        ("src_path_ok", [r"\bpython3\b"], "reads the caller's password file as root"),
+    ]),
+    ("usr/local/sbin/sa02m-agent-root-exec.sh", [
+        ("/tmp/", "restricts the command file to /tmp"),
+        ("sa02m-agent-cmd", "pins the command mktemp basename"),
+        ("-L ", "refuses a symlink"),
+    ], [
+        ("id_ok", [r"/bin/bash"], "runs a script as root"),
+        ("src_path_ok", [r"/bin/bash"], "opens the caller's script as root"),
+    ]),
+    ("usr/local/sbin/sa02m-rules-store-apply.sh", [
+        ("/tmp/", "restricts the command file to /tmp"),
+        ("sa02m-rules-cmd", "pins the command mktemp basename"),
+        ("-L ", "refuses a symlink"),
+    ], [
+        ("src_path_ok", [r"\bpython3\b"], "applies a scenario command as root"),
+    ]),
+    ("usr/local/sbin/sa02m-user-unit.sh", [
+        ("install|start|stop", "pins the unit verbs"),
+        ("a-z0-9", "pins the unit name alphabet"),
+    ], [
+        ("verb_ok", [r"\bsystemctl\b"], "changes a user unit"),
+        ("name_ok", [r"\bsystemctl\b"], "accepts the unit name"),
+    ]),
+    ("usr/local/sbin/sa02m-agent-journal.sh", [
+        ("sa02m-agent-api", "names the allow-listed units"),
+        ("a-z0-9", "pins the user-unit instance alphabet"),
+    ], [
+        ("unit_ok", [r"\bjournalctl\b"], "reads the journal as root"),
+    ]),
 ]
 
 # The function's own body, so a call INSIDE it is not mistaken for a call site.
@@ -1076,7 +1140,7 @@ for rel in PIN_CARRIERS:
 installer_siblings = "".join(
     "\n".join(re.sub(r"^\s*#.*$", "", ln) for ln in (read(rel) or "").splitlines()) + "\n"
     for rel in tree_files
-    if re.match(r"^scripts/0\d+-.*\.sh$", rel) or rel == "install.sh"
+    if re.match(r"^scripts/0\d+-.*\.sh$", rel) or rel in ("install.sh", "scripts/13-agent-api.sh")
 )
 carrier_text["scripts/03-webserver.sh"] = installer_siblings
 

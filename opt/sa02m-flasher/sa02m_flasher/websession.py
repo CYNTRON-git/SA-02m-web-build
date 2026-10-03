@@ -11,16 +11,17 @@ store read-only and MUST agree with the bash library byte for byte:
     bash:   printf '%s' "$tok" | sha256sum        python: hashlib.sha256(tok.encode()).hexdigest()
     bash:   web_csrf_validate (reason enum)        python: check_csrf() (same enum)
 
-ONE RULE, TWO BYTE-IDENTICAL COPIES — this file lives in BOTH daemon packages:
+ONE RULE, THREE BYTE-IDENTICAL COPIES — this file lives in EACH daemon package:
     opt/sa02m-flasher/sa02m_flasher/websession.py
     opt/sa02m-devices/sa02m_devices/websession.py
+    opt/sa02m-agent-api/sa02m_agent_api/websession.py
 pinned identical by the quality row ``websession-parity``. Why copies and not a
 shared package (``opt/sa02m-websession``) or a cross-tree import: the trees are
 deployed and refreshed INDEPENDENTLY (``update-www-only.sh``, the OTA map), and
 the carel/led shared-home gates exist because exactly that class broke; ~100
 lines of leaf code with no imports from either package is cheaper as a pinned
 copy than as a third deploy path (docs/decisions/selective-csrf-policy.md
-«Демоны»). Edit ONE copy, then ``cp`` it over the other — the row fails otherwise.
+«Демоны»). Edit ONE copy, then ``cp`` it over the other two — the row fails otherwise.
 
 Never log a header value, a cookie token or a token-file content from here.
 """

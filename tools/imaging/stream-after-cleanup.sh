@@ -184,6 +184,17 @@ wipe_homekit_identity() {
     fi
 }
 
+wipe_agent_api_identity() {
+    local root="${1:-}"
+    rm -f "$root/etc/sa02m-agent-api/tokens.json"
+    if [ -L "$root/etc/sa02m-agent-api/root-cap" ]; then
+        rm -f "$root/etc/sa02m-agent-api/root-cap"
+    else
+        rm -f "$root/etc/sa02m-agent-api/root-cap"/*
+    fi
+    rm -f "$root/etc/systemd/system/multi-user.target.wants/sa02m-agent-api.service"
+}
+
 wipe_homeconnect_identity() {
     log "сброс Home Connect (вход в аккаунт BSH, клиент выключен)"
     # Home Connect sign-in (docs/contracts/image-identity-reset.md §8): the
@@ -232,6 +243,7 @@ prepare_clone_ids() {
     wipe_alice_enrollment
     wipe_homekit_identity
     wipe_homeconnect_identity
+    wipe_agent_api_identity
     prepare_firstboot_resize
     touch /root/.not_logged_in_yet
     sync

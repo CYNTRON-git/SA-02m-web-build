@@ -1385,7 +1385,7 @@ cleanup_b1_deploy_artifacts() {
     done
     # OTA may land sa02m-* sudoers as 0644 (source tree mode); visudo -c then
     # WARN-fails even when syntax is OK. Harden known drop-ins we ship.
-    for _name in sa02m-www sa02m-cloud sa02m-flasher sa02m-mqtt sa02m-gateway sa02m-alice sa02m-homekit sa02m-homeconnect; do
+    for _name in sa02m-www sa02m-cloud sa02m-flasher sa02m-mqtt sa02m-gateway sa02m-alice sa02m-homekit sa02m-homeconnect sa02m-agent-api; do
         _path="/etc/sudoers.d/$_name"
         if [ -f "$_path" ]; then
             chmod 0440 "$_path" 2>/dev/null || true
@@ -2082,7 +2082,7 @@ for u in json.load(open(sys.argv[1],encoding="utf-8")).get("services",{}).get("e
     # 1.0.6.24, F1). Named list, not a glob: /etc/tmpfiles.d/ also holds distro
     # files this runner has no business re-applying mid-update.
     if command -v systemd-tmpfiles >/dev/null 2>&1; then
-        for _tf in sa02m-alice.conf sa02m-web-login.conf sa02m-i2c-lock.conf; do
+        for _tf in sa02m-alice.conf sa02m-web-login.conf sa02m-i2c-lock.conf sa02m-agent-api.conf; do
             [ -f "/etc/tmpfiles.d/$_tf" ] || continue
             timeout 30 systemd-tmpfiles --create "/etc/tmpfiles.d/$_tf" 2>/dev/null || true
         done

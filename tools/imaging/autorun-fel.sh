@@ -144,6 +144,17 @@ wipe_homekit_identity() {
 # state dir holds the OAuth refresh token of the donor's BSH account: a clone
 # carrying it reads the donor household's appliances. Contents go, the dirs
 # stay (tmpfiles.d owns them); the Client ID and the installed software stay.
+wipe_agent_api_identity() {
+    local root="${1:-}"
+    rm -f "$root/etc/sa02m-agent-api/tokens.json"
+    if [ -L "$root/etc/sa02m-agent-api/root-cap" ]; then
+        rm -f "$root/etc/sa02m-agent-api/root-cap"
+    else
+        rm -f "$root/etc/sa02m-agent-api/root-cap"/*
+    fi
+    rm -f "$root/etc/systemd/system/multi-user.target.wants/sa02m-agent-api.service"
+}
+
 wipe_homeconnect_identity() {
     local root=$1
     # `.hc-*` is the atomic-write sidecar shape (fsutil.atomic_write): a torn
@@ -239,6 +250,7 @@ apply_firstboot_wiring() {
     wipe_homekit_identity "$root"
     log "image identity: homekit pairing store cleared on new rootfs"
     wipe_homeconnect_identity "$root"
+    wipe_agent_api_identity "$root"
     log "image identity: home connect sign-in cleared on new rootfs"
 }
 

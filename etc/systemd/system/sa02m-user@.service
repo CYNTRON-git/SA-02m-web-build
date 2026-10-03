@@ -1,0 +1,21 @@
+[Unit]
+Description=SA-02m user program %i
+
+[Service]
+Type=simple
+User=sa02m-user
+Group=sa02m-user
+WorkingDirectory=/opt/sa02m-user/%i
+ExecStart=/opt/sa02m-user/%i/start.sh
+Restart=on-failure
+RestartSec=2
+NoNewPrivileges=yes
+ProtectSystem=strict
+ProtectHome=yes
+PrivateTmp=yes
+ReadWritePaths=/opt/sa02m-user/%i
+MemoryMax=64M
+CPUQuota=30%
+
+[Install]
+WantedBy=multi-user.target

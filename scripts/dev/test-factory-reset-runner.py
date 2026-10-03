@@ -130,7 +130,11 @@ DEFAULTS = ROOT / "etc/sa02m-factory-defaults"
 HK_PKG = ROOT / "opt/sa02m-homekit/sa02m_homekit"
 HK_SEED = ROOT / "etc/sa02m-homekit/sa02m-homekit.conf"
 HC_PKG = ROOT / "opt/sa02m-homeconnect/sa02m_homeconnect"
-IS_ROOT = os.geteuid() == 0
+if os.name == "nt":
+    print("SKIP  factory-reset-runner needs a POSIX host (grp, euid, the retargeted runner)")
+    raise SystemExit(77)
+
+IS_ROOT = getattr(os, "geteuid", lambda: 1)() == 0
 
 fails = 0
 

@@ -1258,6 +1258,18 @@ wipe_homeconnect_signin() {
   log "homeconnect: sign-in erased, client off (docs/contracts/home-connect.md §12)"
 }
 
+wipe_agent_api_identity() {
+  local out
+  if [ -e /etc/sa02m-agent-api/tokens.json ] || [ -L /etc/sa02m-agent-api/tokens.json ]; then
+    out=$(fr_safe remove-name /etc/sa02m-agent-api tokens.json 2>&1) || fail E_APPLY "agent API tokens not erased: $out"
+    [ -z "$out" ] || log "agent-api: $out"
+  fi
+  if [ -d /etc/sa02m-agent-api/root-cap ] || [ -L /etc/sa02m-agent-api/root-cap ]; then
+    out=$(fr_safe wipe-dir /etc/sa02m-agent-api/root-cap 2>&1) || fail E_APPLY "agent API root caps not erased: $out"
+    [ -z "$out" ] || log "agent-api: $out"
+  fi
+}
+
 # Every stop is verified inside its quiesce_* (fail exits), so reaching the
 # erase calls means every installed unit whose state goes is down. HomeKit is
 # quiesced first so a bridge that will not stop leaves Home Connect running.
@@ -1273,6 +1285,7 @@ erase_owner_state() {
   if [ "$hc" = 1 ]; then
     wipe_homeconnect_signin
   fi
+  wipe_agent_api_identity
 }
 
 verify_reset() {

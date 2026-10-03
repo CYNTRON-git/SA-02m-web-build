@@ -5,6 +5,70 @@
 
 ---
 
+## [2026-10-03 13:52] branch: 1.0.7.1
+
+**Файл(ы):** `opt/sa02m-agent-api/sa02m_agent_api/ops.py`, `service.py`
+**Тип:** Логическая ошибка
+**Описание:** `rules.run`, `rules.delete`, `rules.replace`, `rules.library`, `rules.upsert` через Agent API возвращали `ok:true`, но сценарий не запускался и не удалялся.
+**Причина:** Хелпер `sa02m-rules-store-apply.sh` вызывает `sa02m_rules.store.apply_command`, который читает глагол из флага (`run_now`, `delete`, `replace`, `upsert`, `library`), а демон слал `{"verb": "..."}`; тело проваливалось в ветку частичного upsert и ничего не меняло. Ответ store тоже не разбирался.
+**Исправление:** Каждая операция строит тело store своей формы; `Ctx.rules_apply` разбирает JSON хелпера и удаляет временный файл команды. Юнит-тест `test_rules_ops_build_the_store_body`; проверено на 192.168.1.135 (upsert → get → run → delete).
+
+## [2026-10-03 13:52] branch: 1.0.7.1
+
+**Файл(ы):** `opt/sa02m-agent-api/sa02m_agent_api/ops.py` (`mqtt.scan`, `web_update.apply`, `gateway.ctrl`)
+**Тип:** Логическая ошибка
+**Описание:** `mqtt.scan` всегда отвечал ошибкой CGI, `web_update.apply` не мог запустить файловый пакет, `gateway.ctrl` пропускал любое тело.
+**Причина:** `mqtt_scan.cgi` требует `port` (`/dev/…`), а демон слал `{}`; `web_update_apply.cgi` различает режим по `confirm_version`, которое не передавалось; `gateway_ctrl.cgi` принимает только `action` ∈ start/stop/restart/reload.
+**Исправление:** `mqtt.scan` требует и валидирует `port`, передаёт `baudrate`/`max_addr`; `web_update.apply` передаёт `confirm_version` после проверки формата; `gateway.ctrl` проверяет `action` до вызова CGI. Служебные ключи `confirm`/`dry_run`/`wait` в CGI больше не утекают (`_payload`).
+
+## [2026-10-03 13:52] branch: 1.0.7.1
+
+**Файл(ы):** `opt/sa02m-agent-api/sa02m_agent_api/service.py`, `ops.py`, `cgi_adapter.py`
+**Тип:** Некорректное поведение
+**Описание:** `flasher.ports`, `flasher.firmware`, `flasher.jobs`, `devices.history` отвечали `unauthorized`; `backup.download` отдавал обрезанный мусор вместо архива; GET читающих операций игнорировал аргументы (`rules.get?id=…` → 400); результата задания нельзя было получить без SSE.
+**Причина:** `Ctx.unix_request` слал cookie только если служебная сессия уже была создана другим вызовом; `web_backup.cgi` стримит gzip, а адаптер декодировал его как текст; `_args` для GET возвращал `{}`; маршрута `GET /api/v1/jobs/<id>` не было.
+**Исправление:** `unix_request` вызывает `session.ensure()`; `run_cgi(..., binary=True)` и `split_cgi_binary` → `body_b64`; GET разбирает query string (демон получает её через `x-sa02m-query`); добавлены `GET /api/v1/jobs/<id>`, `"wait": true`, синхронный ответ долгих инструментов в MCP, нормализация результата задания. Проверено на 192.168.1.135.
+
+## [2026-10-03 13:52] branch: 1.0.7.1
+
+**Файл(ы):** `usr/local/sbin/sa02m-agent-root-cap.sh`
+**Тип:** Другое
+**Описание:** Проверка пароля root для `root_capable` опиралась на модули `crypt` и `spwd`, deprecated в Python 3.12 (на плате) и удалённые в 3.13; хеш root на плате — yescrypt `$y$`.
+**Причина:** Зависимость от stdlib-модулей, которых скоро не будет.
+**Исправление:** Чтение `/etc/shadow` напрямую (хелпер — root) и `crypt(3)` из `libcrypt.so.1` через `ctypes`, сравнение `hmac.compare_digest`. Проверено на 192.168.1.135: неверный пароль → `root_auth`, верный → cap-файл `0600`.
+
+## [2026-10-03 13:52] branch: 1.0.7.1
+
+**Файл(ы):** `usr/local/sbin/sa02m-user-unit.sh`, `usr/local/sbin/sa02m-agent-api-ctl.sh`, `scripts/13-agent-api.sh`, `opt/sa02m-agent-api/sa02m_agent_api/fence.py`
+**Тип:** Некорректное поведение
+**Описание:** Юнит `sa02m-user@<name>` падал с `203/EXEC`: `start.sh`, записанный через API, был `0660 www-data:sa02m-user` без `+x`. Запись в путь-каталог давала `500 internal` и оставляла `.tmp`. На плате, обновлённой только по сети, нет пользователя `sa02m-user`. `/opt/sa02m-agent-api` после rsync мог остаться с правами источника (на стенде — `0777`), а из него импортируют root-хелперы.
+**Причина:** Хелпер `install` только включал юнит; `write_text` не ловил `OSError`; создание пользователя было только в модуле установщика; установщик не нормализовал права пакета.
+**Исправление:** `install` отдаёт каталог группе `sa02m-user`, ставит `g+rX` и `ug+x start.sh`, требует наличия пользователя; `_fenced` переводит `OSError` в 400 `io_error`, `write_text` убирает `.tmp` и отклоняет каталог; `sa02m-agent-api-ctl.sh enable` создаёт пользователя, применяет tmpfiles и seed; `13-agent-api.sh` делает `chown root:root` + `0755/0644`. Проверено на 192.168.1.135: `sa02m-user@demo` активен, `NRestarts=0`.
+
+## [2026-10-03 13:52] branch: 1.0.7.1
+
+**Файл(ы):** `opt/sa02m-modbus-mqtt/mqtt_bus_scan.py`
+**Тип:** Другое
+**Описание:** Гейт `sudoers-pin-contract` падал: `params_path_ok()` вызывался после первого `serial.Serial(` в файле.
+**Причина:** Вспомогательная функция `_mtd_stop2_pass` с открытием порта была определена выше `main()`, где стоит проверка пути параметров; гейт сравнивает номера строк.
+**Исправление:** Функция перенесена ниже `main()` без изменения тела.
+
+## [2026-10-03 13:52] branch: 1.0.7.1
+
+**Файл(ы):** `scripts/dev/test-alice-conf-homes.py`, `scripts/dev/test-factory-reset-runner.py`
+**Тип:** Другое
+**Описание:** Оба харнеса падали на Windows (`UnicodeEncodeError` в cp1251, `WinError 1314` на симлинке, отсутствие `os.geteuid`/`grp`).
+**Причина:** Харнесы предполагают POSIX; проверяемый код — Linux-only.
+**Исправление:** На `os.name == "nt"` харнесы печатают `SKIP` и выходят с кодом 77 (`run.mjs` считает это пропуском), stdout переключается на utf-8.
+
+## [2026-10-03 10:13] branch: 1.0.7.1
+
+**Файл(ы):** `opt/sa02m-alice/sa02m_alice/client/device_registry.py`, `/etc/sa02m-alice/sa02m-alice-devices.conf` на 192.168.1.135 (`bench-lamp`)
+**Тип:** Некорректное поведение
+**Описание:** В Алисе «Сирена стенд» была недоступна, хотя это пищалка самой платы 192.168.1.135, а не отдельный прибор стенда.
+**Причина:** Топик уже был `/devices/SA-02m/controls/beeper`. Это не Modbus-ведомый: живое сообщение запускало старение 90 с, и при паузе телеметрии query отвечал `DEVICE_UNREACHABLE`. Тип был `devices.types.other`, не выключатель.
+**Исправление:** Каналы самого контроллера не стареют; недоступность только по `/devices/SA-02m/meta/error`. На 1.135 тип карточки — `devices.types.switch`. Имя «Сирена стенд» и привязка к `beeper` не менялись.
+
 ## [2026-10-03 09:53] branch: 1.0.7.1
 
 **Файл(ы):** `opt/sa02m-alice/sa02m_alice/client/device_registry.py`, `opt/sa02m-alice/sa02m_alice/client/converters.py`, `opt/sa02m-modbus-mqtt/bridge_led.py`, `opt/sa02m-led/sa02m_led/led_mb2ws.py`, `opt/sa02m-led/sa02m_led/controls.py`

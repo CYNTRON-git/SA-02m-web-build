@@ -353,7 +353,10 @@ fi
 # reports the new version while still running the OLD trust-the-caller helper —
 # the in-helper argv validation IS the H1/H2 fix, the pin is only defence in
 # depth (security review 1.0.6.24, F4). Deliver the two together, always.
-for _h in sa02m-gateway-config-apply.sh sa02m-mqtt-config-apply.sh; do
+for _h in sa02m-gateway-config-apply.sh sa02m-mqtt-config-apply.sh \
+         sa02m-agent-api-ctl.sh sa02m-agent-token-store.sh sa02m-agent-root-cap.sh \
+         sa02m-agent-root-exec.sh sa02m-rules-store-apply.sh sa02m-user-unit.sh \
+         sa02m-agent-journal.sh; do
     if [ -f "$REPO_SBIN/$_h" ]; then
         sa02m_atomic_install -m 755 -o root -g root "$REPO_SBIN/$_h" "/usr/local/sbin/$_h"
         sed -i 's/\r$//' "/usr/local/sbin/$_h"
@@ -369,7 +372,7 @@ done
 # them too. Safe on a board whose helpers are older — the pins name the exact
 # argument vectors the shipped CGIs already send, so no order of arrival breaks
 # gateway config save or the Alice enable/disable/restart buttons.
-for _sud in sa02m-cloud sa02m-flasher sa02m-mqtt sa02m-gateway sa02m-alice; do
+for _sud in sa02m-cloud sa02m-flasher sa02m-mqtt sa02m-gateway sa02m-alice sa02m-agent-api; do
     if [ -f "$REPO_ETC/sudoers.d/$_sud" ]; then
         install -m 0440 -o root -g root "$REPO_ETC/sudoers.d/$_sud" "/etc/sudoers.d/$_sud"
         sed -i 's/\r$//' "/etc/sudoers.d/$_sud"

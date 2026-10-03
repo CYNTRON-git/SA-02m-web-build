@@ -1,0 +1,26 @@
+[Unit]
+Description=SA-02m agent API (REST and MCP)
+After=network.target nginx.service
+
+[Service]
+Type=simple
+User=www-data
+Group=www-data
+WorkingDirectory=/opt/sa02m-agent-api
+Environment=PYTHONPATH=/opt/sa02m-agent-api
+Environment=PYTHONUNBUFFERED=1
+ExecStart=/usr/bin/python3 -m sa02m_agent_api
+RuntimeDirectory=sa02m-agent-api
+RuntimeDirectoryMode=0750
+UMask=0027
+NoNewPrivileges=no
+PrivateTmp=yes
+ProtectHome=yes
+# ProtectSystem=strict is omitted on purpose. sudo children inherit this
+# mount namespace, and a strict /etc is read-only, so the token and rules
+# helpers could not write. See docs/contracts/agent-api.md.
+Restart=on-failure
+RestartSec=2
+
+[Install]
+WantedBy=multi-user.target

@@ -53,7 +53,7 @@
 # sa02m_hw_i2c_write_channel_web / sa02m_hw_gpio_write_channel — must be in
 # MUTATING, READ_ONLY_SUDO or EXCEPTIONS; a hit outside the ledger FAILS
 # («new mutating CGI <x> is not in the CSRF ledger»).
-# NON-VACUITY: a ledger row naming an absent file FAILS; MUTATING floor 25,
+# NON-VACUITY: a ledger row naming an absent file FAILS; MUTATING floor 28,
 # READ_ONLY_SUDO floor 3; an empty *.cgi sweep FAILS; lib_check.sh absent FAILS.
 #
 # WHAT IT DOES NOT PROVE: that the POST branch is the ONLY branch reaching the
@@ -124,6 +124,7 @@ web_update_apply.cgi|nohup sudo -n /usr/local/sbin/sa02m-web-update-apply
 web_update_cancel.cgi|["sudo", "-n", "/usr/bin/systemctl", "stop", "sa02m-update.service"]
 web_update_check.cgi|sudo -n /usr/local/sbin/sa02m-web-update-check --manual
 web_update_upload.cgi|UPLOAD_JSON=$(
+sa02m_agent_api.cgi|timeout 15 sudo -n /usr/local/sbin/sa02m-agent-api-ctl.sh enable
 '
 # Notes on three anchors: services_ctrl.cgi runs `sudo CTL list` (a read) on
 # GET at :58 BEFORE the token at :71 — the anchor is the ACTION launch, not the
@@ -153,10 +154,11 @@ index.cgi|302 redirect, no work
 DAEMON_MUTATING='
 opt/sa02m-flasher/sa02m_flasher/service.py|def _dispatch(|method == "POST" and (p|m)([^A-Za-z0-9_]|$)|return self\._handle_|_read_json_body\(|_extract_multipart\(
 opt/sa02m-devices/sa02m_devices/api.py|def do_POST(|path (==|in|!=)[[:space:]]|path\.startswith|handle_[a-z_]+\(|_read_json\(|_handle_export\(
+opt/sa02m-agent-api/sa02m_agent_api/service.py|def dispatch(|self\._route\(
 '
-MUTATING_FLOOR=25
+MUTATING_FLOOR=28
 READ_ONLY_FLOOR=3
-DAEMON_FLOOR=2
+DAEMON_FLOOR=3
 
 # Trigger tokens (ERE on a comment-stripped line). The sudo form also catches
 # the python-list spelling ["sudo", …] that a `sudo ` (trailing space) grep misses.

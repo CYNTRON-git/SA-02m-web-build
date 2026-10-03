@@ -265,6 +265,10 @@ if [ "${SA02M_SKIP_RULES:-0}" != "1" ] && [ -f "$SCRIPT_DIR/scripts/06b-rules.sh
     log INFO "──── Опциональный стек: сценарии (sa02m-rules) ────"
     sa02m_run_module 06b-rules.sh || log WARN "06b-rules.sh завершился с ошибкой"
 fi
+if [ "${SA02M_SKIP_AGENT_API:-0}" != "1" ] && [ -f "$SCRIPT_DIR/scripts/13-agent-api.sh" ]; then
+    log INFO "──── API для ИИ-агентов (sa02m-agent-api, служба выключена) ────"
+    sa02m_run_module 13-agent-api.sh || log WARN "13-agent-api.sh завершился с ошибкой"
+fi
 # Apple HomeKit bridge — OPT-IN (Operator decision Q-A: an optional install,
 # never in the factory image). Runs when asked for, or when the bridge is
 # already installed, so `install.sh --refresh` keeps an installed bridge

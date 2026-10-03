@@ -353,6 +353,7 @@ function systemStopIntegrations() {
   if (window.cloudTabDestroy) window.cloudTabDestroy();
   if (window.homekitTabDestroy) window.homekitTabDestroy();
   if (window.homeconnectTabDestroy) window.homeconnectTabDestroy();
+  if (window.agentApiTabDestroy) window.agentApiTabDestroy();
   if (window.aliceTabDestroy) window.aliceTabDestroy();
 }
 
@@ -375,6 +376,7 @@ function systemLoadSub(key) {
     if (typeof loadVariant === 'function') loadVariant();
     if (typeof loadKernelControl === 'function') loadKernelControl(false);
     if (typeof fetchSystemWidget === 'function') fetchSystemWidget();
+    if (window.agentApiTabInit) window.agentApiTabInit();
     setTimeout(function () {
       if (gen !== _systemLoadGen) return;
       if (typeof loadLog === 'function') loadLog();

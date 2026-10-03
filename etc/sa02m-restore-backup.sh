@@ -76,6 +76,8 @@ ALLOW = [
     re.compile(r"^/etc/sa02m-homekit/sa02m-homekit\.conf$"),
     # Home Connect: the conf only — the OAuth tokens are never in a backup (P4).
     re.compile(r"^/etc/sa02m-homeconnect/sa02m-homeconnect\.conf$"),
+    # Agent API: token hashes only. root-cap files are not restorable.
+    re.compile(r"^/etc/sa02m-agent-api/tokens\.json$"),
     re.compile(r"^/etc/sa02m[^/]*\.conf$"),
     re.compile(r"^/etc/sa02m_[^/]*\.conf$"),
     re.compile(r"^/etc/sa02m-device-templates/"),
