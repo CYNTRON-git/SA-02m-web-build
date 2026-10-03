@@ -523,8 +523,12 @@ commit's diff of this file).
   by the CGI), `/etc/sa02m-alice` 0770 group-write, the argument-unrestricted sudoers
   trigger with enable/disable/restart verbs, the CGI nudges — is homed only in review
   stamps that ship-beat deletion removes. Give it a durable home.
-- [OPEN] 2026-09-24 **[MED, Operator decision] The GitHub-OTA runner never deploys the nginx site
-  config.** `etc/sa02m-update-runner.sh` `prepare_github_overlay` → `map_dst` has no branch for
+- [RESOLVED 1.0.7.1] 2026-09-24 **[MED, Operator decision] The GitHub-OTA runner never deploys the nginx site
+  config.** Operator chose (a) on 2026-10-03: `map_dst` ships `etc/nginx/network_config.conf` to
+  `sites-available` after `render_nginx_template()` fills `__PORT__` / `__WEB_ROOT__` from the live
+  site (else 9999 and `/var/www/network_config`). Honest limit stays: the on-board runner builds the
+  manifest, so the site arrives on the update after the one that delivers this runner.
+  Original note: `etc/sa02m-update-runner.sh` `prepare_github_overlay` → `map_dst` has no branch for
   `etc/nginx/` (`DST_RE` admits the destination, the filter is map_dst AND DST_RE). The site file
   reaches a board by every OTHER lane — the one-home list is `docs/deployment.md` «Чего
   OTA/офлайн-пакет не делает никогда» (full install/refresh via `03-webserver.sh`; www-only from a

@@ -2,6 +2,8 @@
 Description=SA-02m Alice config API (root-only AF_UNIX socket /run/sa02m-alice/config.sock)
 Documentation=file:///opt/sa02m-alice/THIRD_PARTY.md
 After=network.target
+# Same guard as the two client units: no /opt/sa02m-alice → skip, do not loop.
+ConditionPathExists=/opt/sa02m-alice
 
 [Service]
 Type=simple

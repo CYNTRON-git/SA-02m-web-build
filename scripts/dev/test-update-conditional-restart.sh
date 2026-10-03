@@ -695,7 +695,7 @@ PY
     else
         bad "run8: online and offline restart_if_active differ — the two updates disagree about which opt-in units are bounced (online: $on_ria | offline: $off_ria)"
     fi
-    for u8 in sa02m-homekit sa02m-homeconnect; do
+    for u8 in sa02m-homekit sa02m-homeconnect sa02m-agent-api; do
         case " $on_ria " in
             *" $u8 "*) ok "run8: $u8 is in the generated restart_if_active" ;;
             *) bad "run8: $u8 is NOT in the generated restart_if_active — an OTA leaves the running daemon on stale code" ;;
@@ -714,7 +714,7 @@ PY
               "health": {"http_url": "", "units_active": [], "version_file": "$TW/VERSION"}}}
 JSON
     : > "$STAGE/journal.jsonl"
-    for u8 in sa02m-homekit sa02m-homeconnect; do
+    for u8 in sa02m-homekit sa02m-homeconnect sa02m-agent-api; do
         printf '%s\n' "$u8" > "$ACTIVE_FILE"
         run_health
         if [ "$run_rc" -eq 0 ] && called "restart $u8"; then

@@ -5,6 +5,30 @@
 
 ---
 
+## [2026-10-03 15:30] branch: 1.0.7.1
+
+**Файл(ы):** `www/network_config/cgi-bin/lib_rtc.sh` (копия `/usr/local/lib/sa02m-lib-rtc.sh`)
+**Тип:** Некорректное поведение
+**Описание:** Каждый вызов `config.cgi` / чтения RTC писал в журнал `postfix/sendmail fatal`.
+**Причина:** `sa02m_rtc_i2c_read_reg` и `sa02m_rtc_i2c_write_reg` сначала звали `sudo -n i2cget`/`i2cset`. Грант на эти команды снят (www-data в группе `i2c`), sudo отказывал, а `Defaults mail_badpass` слал почту. Прямой вызов после этого обычно успевал.
+**Исправление:** Сначала прямой `i2cget`/`i2cset`, `sudo -n` только если он не удался. На 192.168.1.135 `read_rtc_datetime` от www-data вернул время, `sendmail` за ту же секунду — 0.
+
+## [2026-10-03 15:30] branch: 1.0.7.1
+
+**Файл(ы):** `etc/systemd/system/sa02m-cloud-control.service`, `sa02m-alice-client.service`, `sa02m-alice-config.service`; на 192.168.1.135 — `/etc/systemd/system/sa02m-cloud-control.service.d/90-bench-1.0.6.66.conf`
+**Тип:** Краш
+**Описание:** `sa02m-cloud-control` крутился в рестарте (счётчик >7000), статус `200/CHDIR`.
+**Причина:** На плате drop-in стенда `90-bench-1.0.6.66.conf` подменял `WorkingDirectory` и `PYTHONPATH` на `/opt/sa02m-alice66`, каталога нет. Сам пакет лежит в `/opt/sa02m-alice`. У юнита не было условия «каталога нет — не запускать», поэтому отсутствующий каталог тоже давал бы тот же цикл.
+**Исправление:** Drop-in снят (копия в `/root/bench-backup`), такой же выключенный drop-in клиента Алисы убран туда же. В трёх юнитах `ConditionPathExists=/opt/sa02m-alice`: нет дерева — пропуск, не рестарт. После снятия drop-in служба `active`, `NRestarts=0`.
+
+## [2026-10-03 15:30] branch: 1.0.7.1
+
+**Файл(ы):** `etc/sa02m-update-runner.sh`, `scripts/pack-offline-update.py`
+**Тип:** Логическая ошибка
+**Описание:** Плата, обновлённая только из панели, оставалась со старым site-файлом nginx: новые `location` (в том числе `/api/v1` и `/mcp`) до неё не доезжали.
+**Причина:** `DST_RE` назначение `/etc/nginx/` разрешал, а `map_dst` ветки не имел. Голая копия всё равно сломала бы nginx: файл в репо — шаблон с `__PORT__` и `__WEB_ROOT__`.
+**Исправление:** `map_dst` кладёт шаблон в `/etc/nginx/sites-available/network_config`. Перед упаковкой `render_nginx_template()` подставляет порт и корень из уже стоящего site-файла (иначе 9999 и `/var/www/network_config`; `..` в корне отбрасывается). `sa02m-agent-api` добавлен в `restart_if_active` обоих генераторов манифеста: выключенную службу OTA не включает. Манифест собирает раннер, уже лежащий на плате, поэтому site-файл приезжает следующим обновлением. На 192.168.1.135 новый раннер установлен в `/usr/local/libexec/sa02m-update-runner`, `bash -n` чистый, живой site уже содержит сокет API, `nginx -t` успешен.
+
 ## [2026-10-03 13:52] branch: 1.0.7.1
 
 **Файл(ы):** `opt/sa02m-agent-api/sa02m_agent_api/ops.py`, `service.py`

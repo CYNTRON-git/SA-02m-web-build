@@ -14,5 +14,7 @@ Scopes: read, control, config, admin. Root commands need the token flag
 root_capable. A token cannot mint another token. Irreversible operations
 need confirm equal to the operation name. Start with dry_run.
 
-GitHub OTA does not install the nginx locations. If /api/v1 answers 404,
-refresh the site file (offline package or install.sh --refresh).
+GitHub OTA renders the nginx site (port and root taken from the live file).
+The runner already on the board builds that manifest, so /api/v1 stays a 404
+until the update after the one that delivered this runner. Until then, refresh
+the site file (offline package or install.sh --refresh).

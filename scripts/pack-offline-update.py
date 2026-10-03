@@ -606,6 +606,9 @@ def build_services_block(min_updater: str = MIN_UPDATER) -> dict[str, Any]:
         # (06d-homeconnect.sh `app off`), same rule. Must stay in step with
         # etc/sa02m-update-runner.sh.
         "sa02m-homeconnect",
+        # Must stay in step with etc/sa02m-update-runner.sh. Off until the
+        # panel enables it; restarting an inactive unit would turn it on.
+        "sa02m-agent-api",
     ]
     services["restart_if_changed"] = {
         "sa02m-modbus-mqtt": "/opt/sa02m-modbus-mqtt/",

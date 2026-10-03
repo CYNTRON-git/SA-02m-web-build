@@ -26,10 +26,12 @@
 | `POST /mcp` | MCP Streamable HTTP, тело JSON-RPC |
 | `GET /llms.txt` | статический файл панели |
 
-`location /api/v1/` и `location = /mcp` живут в site-файле nginx. GitHub-OTA его
-**не** привозит (`docs/deployment.md`). Пока файл не доехал (`install.sh --refresh`,
-офлайн-пакет или новый образ), эти пути попадают в SPA и отдают `index.html`.
-Карточка так и пишет.
+`location /api/v1/` и `location = /mcp` живут в site-файле nginx. GitHub-OTA
+рендерит шаблон и кладёт его в `sites-available` (`docs/deployment.md`): порт и
+корень берутся из уже стоящего файла. Раннер на плате собирает манифест сам,
+поэтому site-файл приезжает следующим обновлением после раннера, который это
+умеет. Пока маршрута нет, `/api/v1` и `/mcp` отдают `index.html`, и карточка
+пишет `nginx_routed: false`.
 
 `ProtectSystem=strict` у этого юнита **нет**. Дочерний `sudo` наследует пространство
 имён службы; со `strict` запись хелперов в `/etc` не проходит. `NoNewPrivileges=no`

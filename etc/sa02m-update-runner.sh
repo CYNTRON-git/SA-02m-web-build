@@ -739,7 +739,42 @@ def map_dst(rel: str):
     # eth1 DHCP default-route exit-hook (panel/installer parity on OTA boards)
     if rel == "etc/dhcp/dhclient-exit-hooks.d/eth1-default-route":
         return "/etc/dhcp/dhclient-exit-hooks.d/eth1-default-route"
+    # Template, not a live site. render_nginx_template() substitutes __PORT__
+    # and __WEB_ROOT__ in the staged copy before this path is packed.
+    if rel == "etc/nginx/network_config.conf":
+        return "/etc/nginx/sites-available/network_config"
     return None
+
+def render_nginx_template(overlay: Path) -> None:
+    """Substitute the nginx template in the staged overlay.
+
+    The repo file is a template. A raw copy would put __PORT__ into the live
+    site and nginx -t would reject it. Port and root come from the site already
+    on the board; a board with no site yet gets the installer defaults.
+    """
+    src = overlay / "etc/nginx/network_config.conf"
+    if not src.is_file():
+        return
+    text = src.read_text(encoding="utf-8")
+    if "__PORT__" not in text and "__WEB_ROOT__" not in text:
+        return
+    port, web_root = "9999", "/var/www/network_config"
+    live = os.environ.get("SA02M_NGINX_SITE") or "/etc/nginx/sites-available/network_config"
+    try:
+        live_text = Path(live).read_text(encoding="utf-8", errors="replace")
+    except OSError:
+        live_text = ""
+    found = re.search(r"(?m)^\s*listen\s+(\d{2,5})\s+default_server\s*;", live_text)
+    if found:
+        n = int(found.group(1))
+        if 1 <= n <= 65535:
+            port = found.group(1)
+    found = re.search(r"(?m)^\s*root\s+(/[A-Za-z0-9_./-]*)\s*;", live_text)
+    if found and ".." not in found.group(1).split("/"):
+        web_root = found.group(1).rstrip("/") or found.group(1)
+    src.write_text(
+        text.replace("__PORT__", port).replace("__WEB_ROOT__", web_root),
+        encoding="utf-8", newline="\n")
 
 def deploy_mode(rel: str, dst: str) -> str:
     # Mode follows DESTINATION role, not source extension. Extension-less helpers
@@ -758,6 +793,9 @@ def deploy_mode(rel: str, dst: str) -> str:
     return "0644"
 
 deploy = []
+# After `deploy = []`: ota-deploy-mode-contract extracts deploy_mode up to that
+# line and execs the slice. A call above it runs during the extract.
+render_nginx_template(overlay)
 for p in overlay.rglob("*"):
     if not p.is_file():
         continue
@@ -866,6 +904,10 @@ manifest = {
             # (scripts/06d-homeconnect.sh `app off`); it holds
             # /opt/sa02m-homeconnect in memory.
             "sa02m-homeconnect",
+            # Agent API is off until the panel card enables it (13-agent-api.sh
+            # `app off`). Bounce only a running daemon so new /opt code is not
+            # left in memory, and never start one the operator left off.
+            "sa02m-agent-api",
         ],
         # Change-gated conditional restart: unit -> /opt prefix watched in the
         # apply journal. sa02m-modbus-mqtt owns the RS-485 port lease: restart

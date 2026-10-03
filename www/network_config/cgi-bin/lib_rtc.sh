@@ -71,8 +71,10 @@ sa02m_rtc_int_to_bcd_hex() {
 sa02m_rtc_i2c_write_reg() {
     local bus=$1 addr=$2 reg=$3 val=$4 tool
     tool=$(sa02m_rtc_i2c_write_tool) || return 1
-    sa02m_rtc_timeout_run 2 sudo -n "$tool" -y "$bus" "$addr" "$reg" "$val" 2>/dev/null \
-        || sa02m_rtc_timeout_run 2 "$tool" -y "$bus" "$addr" "$reg" "$val" 2>/dev/null \
+    # Direct first: www-data is in group i2c, and the sudoers grant for i2cset
+    # was dropped. sudo -n on a miss mails via Defaults mail_badpass.
+    sa02m_rtc_timeout_run 2 "$tool" -y "$bus" "$addr" "$reg" "$val" 2>/dev/null \
+        || sa02m_rtc_timeout_run 2 sudo -n "$tool" -y "$bus" "$addr" "$reg" "$val" 2>/dev/null \
         || return 1
     return 0
 }
@@ -80,8 +82,10 @@ sa02m_rtc_i2c_write_reg() {
 sa02m_rtc_i2c_read_reg() {
     local bus=$1 addr=$2 reg=$3 tool raw
     tool=$(sa02m_rtc_i2c_tool) || return 1
-    raw=$(sa02m_rtc_timeout_run 2 sudo -n "$tool" -y "$bus" "$addr" "$reg" 2>/dev/null) \
-        || raw=$(sa02m_rtc_timeout_run 2 "$tool" -y "$bus" "$addr" "$reg" 2>/dev/null) \
+    # Direct first: www-data is in group i2c, and the sudoers grant for i2cget
+    # was dropped. sudo -n on a miss mails via Defaults mail_badpass.
+    raw=$(sa02m_rtc_timeout_run 2 "$tool" -y "$bus" "$addr" "$reg" 2>/dev/null) \
+        || raw=$(sa02m_rtc_timeout_run 2 sudo -n "$tool" -y "$bus" "$addr" "$reg" 2>/dev/null) \
         || return 1
     case "$raw" in
         0x[0-9a-fA-F][0-9a-fA-F]) printf '%s' "$raw"; return 0 ;;
