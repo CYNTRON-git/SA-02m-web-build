@@ -250,6 +250,7 @@ daemon-least-privilege|usr/local/sbin/sa02m-daemon-access.sh|DENY_READ="/etc/sa0
 daemon-access-effect|usr/local/sbin/sa02m-daemon-access.sh|probe yes "$DAEMON" r "$CONF"
 daemon-access-effect|usr/local/sbin/sa02m-daemon-access.sh|ops+=("f:$CONF:0640:$WEB_UID:$DAEMON_GID:${WEB_GID:-x},$DAEMON_GID")
 daemon-access-effect|usr/local/sbin/sa02m-daemon-access.sh|os.fchown(fd, uid, gid)
+spodes-no-gpl|opt/sa02m-modbus-mqtt/bridge_bus.py|"mixed_framing"
 '
 
 command -v git >/dev/null 2>&1 || { echo "comment-mutation-proof: FAIL — git is required to build the pristine copy"; exit 1; }
