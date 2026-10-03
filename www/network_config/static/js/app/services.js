@@ -32,6 +32,142 @@ function svcCtlWantsStart(svc) {
 }
 
 let _lastSvcCtlData = null;
+let _svcCtlLoadGen = 0;
+
+/* Same ids as SERVICE_DEFS in etc/sa02m-web-service-ctl.sh. Painted at once
+   on the Services sub-tab; the CGI then fills each row in place. A service
+   the board does not manage is dropped only after a successful list. */
+const SVC_CTL_CATALOG = [
+  { id: 'alice', label: 'Яндекс Алиса' },
+  { id: 'homekit', label: 'Apple HomeKit' },
+  { id: 'homeconnect', label: 'Home Connect' },
+  { id: 'docker', label: 'Docker' },
+  { id: 'codesys', label: 'CODESYS' },
+  { id: 'mplc4', label: 'MPLC4' },
+  { id: 'mosquitto', label: 'Mosquitto' },
+  { id: 'mqtt-bridge', label: 'MQTT мост' },
+  { id: 'mqtt-telemetry', label: 'MQTT телеметрия' },
+  { id: 'node-red', label: 'Node-RED' },
+  { id: 'klogic', label: 'KLogic' },
+];
+
+function svcCtlT(s) {
+  return window.sa02mI18n ? window.sa02mI18n.t(s) : s;
+}
+
+function servicesSubOpen() {
+  const pane = document.getElementById('sys-pane-services');
+  const tab = document.getElementById('tab-system');
+  return !!(pane && !pane.hidden && tab && tab.classList.contains('active'));
+}
+
+function svcCtlFindRow(host, id) {
+  const safe = String(id || '');
+  if (!/^[A-Za-z0-9_-]+$/.test(safe)) return null;
+  return host.querySelector('.svc-ctl-row[data-svc-id="' + safe + '"]');
+}
+
+function svcCtlEnsureRow(host, svc) {
+  let row = svcCtlFindRow(host, svc.id);
+  if (row) return row;
+  row = document.createElement('div');
+  row.className = 'svc-row svc-ctl-row';
+  row.setAttribute('role', 'listitem');
+  row.dataset.svcId = svc.id;
+  const name = document.createElement('span');
+  name.className = 'name mono';
+  const toggle = document.createElement('span');
+  toggle.className = 'svc-ctl-cell svc-ctl-toggle';
+  const manage = document.createElement('span');
+  manage.className = 'svc-ctl-cell svc-ctl-manage';
+  const badge = document.createElement('span');
+  badge.className = 'badge badge-unk';
+  badge.id = 'svc-ctl-badge-' + svc.id;
+  badge.textContent = '…';
+  row.appendChild(name);
+  row.appendChild(toggle);
+  row.appendChild(manage);
+  row.appendChild(badge);
+  host.appendChild(row);
+  return row;
+}
+
+function svcCtlSyncButton(cell, svc, action, flasherBusy) {
+  if (!cell) return;
+  const cur = cell.querySelector('button');
+  if (!action) {
+    if (cur) cell.textContent = '';
+    return;
+  }
+  const blocked = action === 'start' && flasherBusy && (svc.id === 'mplc4' || svc.id === 'mqtt-bridge');
+  if (cur && cur.dataset.svcId === svc.id && cur.dataset.svcAction === action) {
+    cur.disabled = !!blocked;
+    return;
+  }
+  cell.textContent = '';
+  cell.appendChild(makeSvcCtlButton(svc, action, flasherBusy));
+}
+
+function svcCtlSyncRow(row, svc, flasherBusy, pending) {
+  const name = row.querySelector('.name');
+  if (name) name.textContent = svcCtlDisplayLabel(svc);
+  const toggle = row.querySelector('.svc-ctl-toggle');
+  const manage = row.querySelector('.svc-ctl-manage');
+  const badge = row.querySelector('.badge');
+  if (pending) {
+    if (toggle) toggle.textContent = '';
+    if (manage) manage.textContent = '';
+    if (badge) {
+      badge.textContent = '…';
+      badge.className = 'badge badge-unk';
+    }
+    return;
+  }
+  const installed = svcIsInstalledFlag(svc.installed);
+  if (!installed) {
+    svcCtlSyncButton(toggle, svc, null, flasherBusy);
+    svcCtlSyncButton(manage, svc, 'install', flasherBusy);
+  } else {
+    svcCtlSyncButton(toggle, svc, svcCtlWantsStart(svc) ? 'start' : 'stop', flasherBusy);
+    svcCtlSyncButton(manage, svc, 'uninstall', flasherBusy);
+  }
+  if (!badge) return;
+  if (!badge.id) badge.id = 'svc-ctl-badge-' + svc.id;
+  if (installed) svcBadge(badge.id, svcCtlRowState(svc));
+  else {
+    badge.textContent = svcCtlT('Не установлен');
+    badge.className = 'badge badge-unk';
+  }
+}
+
+/** Rows already on screen keep their last badge. Only a still-empty «…» becomes «не отвечает». */
+function markServicesControlNoAnswer() {
+  const host = document.getElementById('svc-ctl-list');
+  if (!host) return;
+  const label = svcCtlT('не отвечает');
+  host.querySelectorAll('.svc-ctl-row .badge').forEach(function (badge) {
+    if (badge.textContent.trim() === '…') {
+      badge.textContent = label;
+      badge.className = 'badge badge-unk';
+    }
+  });
+}
+
+function showServicesControlNow() {
+  const host = document.getElementById('svc-ctl-list');
+  if (!host) return;
+  if (host.querySelector('.svc-ctl-row')) return;
+  if (_lastSvcCtlData && _lastSvcCtlData.services && _lastSvcCtlData.services.length) {
+    renderServicesControl(_lastSvcCtlData);
+    return;
+  }
+  renderServicesControl({
+    placeholder: true,
+    services: SVC_CTL_CATALOG.map(function (s) {
+      return { id: s.id, label: s.label, statePending: true };
+    }),
+  });
+}
 
 /** RU label + CSS class per control action (install/start/stop/uninstall). */
 function svcCtlBtnMeta(action) {
@@ -64,64 +200,46 @@ function makeSvcCtlButton(svc, action, flasherBusy) {
 }
 
 function renderServicesControl(data) {
-  _lastSvcCtlData = data;
+  const pending = !!(data && data.placeholder);
+  if (!pending) _lastSvcCtlData = data;
   const host = document.getElementById('svc-ctl-list');
   if (!host) return;
+  let child = host.firstElementChild;
+  while (child) {
+    const next = child.nextElementSibling;
+    if (child.classList.contains('field-hint')) child.remove();
+    child = next;
+  }
   const flasherBusy = !!(data && data.flasher_busy);
   const list = ((data && data.services) || []).slice();
   if (!list.length) {
-    host.innerHTML = '<p class="field-hint">' + (window.sa02mI18n ? window.sa02mI18n.t('Нет управляемых служб') : 'Нет управляемых служб') + '</p>';
+    if (!pending) {
+      host.querySelectorAll('.svc-ctl-row').forEach(function (row) { row.remove(); });
+      const p = document.createElement('p');
+      p.className = 'field-hint';
+      p.textContent = svcCtlT('Нет управляемых служб');
+      host.appendChild(p);
+      applyManagedServiceCardVisibility(list);
+    }
     return;
   }
   const sorted = list.slice().sort(function (a, b) {
     return compareSvcDisplayName(svcCtlDisplayLabel(a), svcCtlDisplayLabel(b));
   });
-  host.innerHTML = '';
-  sorted.forEach(function (svc, i) {
-    const installed = svcIsInstalledFlag(svc.installed);
-
-    const r = document.createElement('div');
-    r.className = 'svc-row svc-ctl-row';
-    r.setAttribute('role', 'listitem');
-
-    const name = document.createElement('span');
-    name.className = 'name mono';
-    name.textContent = svcCtlDisplayLabel(svc);
-
-    // Fixed columns (grid): [name] [toggle slot] [manage slot] [badge]. The
-    // toggle cell is ALWAYS present (empty-but-reserved for a not-installed
-    // service) so [Установить] column-aligns with [Удалить] and no row drifts.
-    const toggle = document.createElement('span');
-    toggle.className = 'svc-ctl-cell svc-ctl-toggle';
-    const manage = document.createElement('span');
-    manage.className = 'svc-ctl-cell svc-ctl-manage';
-    // Matrix: not installed → toggle empty, manage=[Установить];
-    // installed+running → [Стоп][Удалить]; installed+stopped → [Пуск][Удалить].
-    if (!installed) {
-      manage.appendChild(makeSvcCtlButton(svc, 'install', flasherBusy));
-    } else {
-      toggle.appendChild(makeSvcCtlButton(svc, svcCtlWantsStart(svc) ? 'start' : 'stop', flasherBusy));
-      manage.appendChild(makeSvcCtlButton(svc, 'uninstall', flasherBusy));
-    }
-
-    const badge = document.createElement('span');
-    badge.className = 'badge badge-unk';
-    const bid = 'svc-ctl-badge-' + i;
-    badge.id = bid;
-
-    r.appendChild(name);
-    r.appendChild(toggle);
-    r.appendChild(manage);
-    r.appendChild(badge);
-    host.appendChild(r);
-    if (installed) {
-      svcBadge(bid, svcCtlRowState(svc));
-    } else {
-      badge.textContent = window.sa02mI18n ? window.sa02mI18n.t('Не установлен') : 'Не установлен';
-      badge.className = 'badge badge-unk';
-    }
+  const keep = {};
+  sorted.forEach(function (svc) {
+    if (!svc || !svc.id) return;
+    keep[svc.id] = true;
+    const row = svcCtlEnsureRow(host, svc);
+    svcCtlSyncRow(row, svc, flasherBusy, pending || !!svc.statePending);
+    host.appendChild(row);
   });
-  applyManagedServiceCardVisibility(list);
+  if (!pending) {
+    host.querySelectorAll('.svc-ctl-row').forEach(function (row) {
+      if (!keep[row.dataset.svcId]) row.remove();
+    });
+    applyManagedServiceCardVisibility(list);
+  }
 }
 
 /** Управление-tab tiles whose visibility follows a managed service's run state:
@@ -407,28 +525,36 @@ function loadServicesControl(forceToast) {
   const host = document.getElementById('svc-ctl-list');
   const btn = document.getElementById('svc-ctl-refresh-btn');
   if (!host) return;
+  showServicesControlNow();
   if (btn) btn.disabled = true;
-  if (!host.querySelector('.svc-row')) {
-    host.innerHTML = '<p class="field-hint">Загрузка</p>';
-  }
+  const gen = ++_svcCtlLoadGen;
   fetch('cgi-bin/services_ctrl.cgi', { credentials: 'same-origin', cache: 'no-store' })
     .then(async (r) => {
       const j = await r.json().catch(() => ({}));
       if (!r.ok || j.error === 'unauthorized') throw new Error('нет доступа');
       if (j.error === 'ctl_missing') throw new Error('скрипт управления не установлен на устройстве');
       if (!j.ok && j.error) throw new Error(j.error);
+      return j;
+    })
+    .then(function (j) {
+      if (gen !== _svcCtlLoadGen) return;
       renderServicesControl(j);
+      if (!servicesSubOpen()) return;
       if (forceToast) toast('Список служб обновлён', 'success');
       setTimeout(function () {
+        if (gen !== _svcCtlLoadGen || !servicesSubOpen()) return;
         fetchBackgroundPart('services', applyServicesStatus, true);
         fetchPriorityPart('priority');
       }, 1500);
     })
     .catch((e) => {
-      host.innerHTML = '<p class="field-hint log-err">' + escHtml(e && e.message ? e.message : String(e)) + '</p>';
-      if (forceToast) toast('Службы: ' + (e && e.message ? e.message : String(e)), 'error');
+      if (gen !== _svcCtlLoadGen) return;
+      markServicesControlNoAnswer();
+      if (forceToast && servicesSubOpen()) toast('Службы: ' + (e && e.message ? e.message : String(e)), 'error');
     })
-    .finally(() => { if (btn) btn.disabled = false; });
+    .finally(function () {
+      if (gen === _svcCtlLoadGen && btn) btn.disabled = false;
+    });
 }
 
 function svcCtlErrorMessage(code) {

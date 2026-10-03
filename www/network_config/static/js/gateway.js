@@ -10,7 +10,6 @@
 // ── Constants ─────────────────────────────────────────────────────────────────
 const PORTS   = ['COM1', 'COM2', 'COM3', 'COM4', 'COM5'];
 const MODES   = [
-  { value: 'disabled',     label: 'Отключён' },
   { value: 'modbus_tcp',   label: 'Modbus TCP' },
   { value: 'rtu_over_tcp', label: 'RTU over TCP' },
   { value: 'transparent',  label: 'Прозрачный' },
@@ -23,7 +22,33 @@ const PARITIES  = [
 ];
 const STOPBITS  = [{ value: 1, label: '1' }, { value: 2, label: '2' }];
 const DATABITS  = [7, 8];
-const DEFAULT_TCP_PORTS = { COM1: 502, COM2: 503, COM3: 504, COM4: 505, COM5: 506 };
+
+// COM1..COM5 → N = 1..5. The field is overwritten only when the operator
+// changes the mode select; a stored tcp_port stays until that change.
+function _comNumber(port) {
+  const idx = PORTS.indexOf(port);
+  return idx >= 0 ? idx + 1 : 0;
+}
+
+function _defaultTcpPort(port, mode) {
+  const n = _comNumber(port);
+  if (n < 1) return 502;
+  if (mode === 'transparent' || mode === 'rtu_over_tcp') return 4000 + n;
+  return 501 + n;
+}
+
+function _shownMode(mode) {
+  if (mode === 'modbus_tcp' || mode === 'rtu_over_tcp' || mode === 'transparent') return mode;
+  return 'modbus_tcp';
+}
+
+// Stored mode "disabled" is no longer in the selector. The enable toggle
+// stays off; the dropdown may show Modbus TCP. Nothing is written until Save.
+function _portToggleOn(cfg) {
+  if (!cfg || !cfg.enabled) return false;
+  const mode = cfg.mode;
+  return mode === 'modbus_tcp' || mode === 'rtu_over_tcp' || mode === 'transparent';
+}
 
 // ── State ─────────────────────────────────────────────────────────────────────
 let _config      = {};
@@ -154,7 +179,7 @@ function _renderDevicePanel(area) {
   const svcClass = active ? 'badge badge-ok' : 'badge badge-err';
   const svcText  = uiT(active ? 'Активен' : 'Остановлен');
 
-  const activePorts = PORTS.filter(p => (_config[p] || {}).enabled);
+  const activePorts = PORTS.filter(p => _portToggleOn(_config[p]));
   const runningPorts = PORTS.filter(p => {
     const st = (_status.ports || {})[p];
     return st && st.running;
@@ -194,16 +219,18 @@ function _renderDevicePanel(area) {
           ${PORTS.map(p => {
             const cfg = _config[p] || {};
             const st  = (_status.ports || {})[p] || {};
-            const modeLabel = MODES.find(m => m.value === (cfg.mode || 'disabled'))?.label || '—';
+            const on = _portToggleOn(cfg);
+            const shown = _shownMode(cfg.mode);
+            const modeLabel = MODES.find(m => m.value === shown)?.label || '—';
             const running = st.running;
-            const dot = cfg.enabled
+            const dot = on
               ? (running ? '<span style="color:var(--green)">●</span>' : '<span style="color:var(--red)">●</span>')
               : '<span style="color:var(--text-dim)">○</span>';
             return `<tr>
               <td><a href="#" class="gw-port-link" data-port="${p}">${p}</a></td>
-              <td class="gw-ports-muted">${cfg.enabled ? modeLabel : '—'}</td>
-              <td class="gw-ports-muted">${cfg.enabled && cfg.mode !== 'disabled' ? (cfg.tcp_port || DEFAULT_TCP_PORTS[p]) : '—'}</td>
-              <td class="gw-ports-muted">${cfg.enabled ? (cfg.baudrate || 9600) : '—'}</td>
+              <td class="gw-ports-muted">${on ? modeLabel : '—'}</td>
+              <td class="gw-ports-muted">${on ? (cfg.tcp_port || _defaultTcpPort(p, shown)) : '—'}</td>
+              <td class="gw-ports-muted">${on ? (cfg.baudrate || 9600) : '—'}</td>
               <td>${dot}</td>
             </tr>`;
           }).join('')}
@@ -226,7 +253,8 @@ function _renderDevicePanel(area) {
 function _renderPortPanel(area, port) {
   const cfg  = _config[port] || _defaultPortCfg(port);
   const st   = (_status.ports || {})[port] || {};
-  const mode = cfg.mode || 'disabled';
+  const mode = _shownMode(cfg.mode);
+  const toggleOn = _portToggleOn(cfg);
 
   area.innerHTML = `
     <div class="widget gw-port-panel">
@@ -245,7 +273,7 @@ function _renderPortPanel(area, port) {
             <span class="toggle-field-label">Включить порт</span>
             <label class="toggle-inline">
               <input type="checkbox" class="toggle toggle-wide" id="gw-en-${port}"
-                     ${cfg.enabled ? 'checked' : ''}>
+                     ${toggleOn ? 'checked' : ''}>
             </label>
           </div>
 
@@ -258,11 +286,11 @@ function _renderPortPanel(area, port) {
             </select>
           </div>
 
-          <div id="gw-tcp-fields-${port}" class="gw-cond-block gw-block-tcp${mode === 'disabled' ? ' gw-block-collapsed' : ''}">
+          <div id="gw-tcp-fields-${port}" class="gw-cond-block gw-block-tcp">
             <div class="field gw-field-row">
               <label class="gw-field-label">TCP-порт</label>
               <input type="number" id="gw-tcpport-${port}" class="gw-field-control"
-                     value="${cfg.tcp_port || DEFAULT_TCP_PORTS[port]}" min="1" max="65535">
+                     value="${cfg.tcp_port || _defaultTcpPort(port, mode)}" min="1" max="65535">
             </div>
           </div>
 
@@ -440,11 +468,13 @@ function _parseAllowInput(raw) {
 function _onModeChange(port) {
   const area = document.getElementById('gw-content');
   if (!area) return;
-  const mode = area.querySelector(`#gw-mode-${port}`)?.value || 'disabled';
+  const mode = area.querySelector(`#gw-mode-${port}`)?.value || 'modbus_tcp';
   const tcpDiv = area.querySelector(`#gw-tcp-fields-${port}`);
   const fmbDiv = area.querySelector(`#gw-fmb-field-${port}`);
-  if (tcpDiv) tcpDiv.classList.toggle('gw-block-collapsed', mode === 'disabled');
+  if (tcpDiv) tcpDiv.classList.remove('gw-block-collapsed');
   if (fmbDiv) fmbDiv.classList.toggle('gw-block-collapsed', mode !== 'modbus_tcp');
+  const portEl = area.querySelector(`#gw-tcpport-${port}`);
+  if (portEl) portEl.value = String(_defaultTcpPort(port, mode));
   _updateAccessWarn(port);
   _dirty[port] = true;
 }
@@ -482,11 +512,11 @@ function _readFormCfg(port) {
   const getVal = id => document.getElementById(id)?.value;
   const getChk = id => document.getElementById(id)?.checked ?? false;
   const defs = _defaultPortCfg(port);
-  const mode = getVal(`gw-mode-${port}`) || 'disabled';
+  const mode = getVal(`gw-mode-${port}`) || 'modbus_tcp';
   return {
     enabled:           getChk(`gw-en-${port}`),
     mode,
-    tcp_port:          parseInt(getVal(`gw-tcpport-${port}`)) || DEFAULT_TCP_PORTS[port],
+    tcp_port:          parseInt(getVal(`gw-tcpport-${port}`)) || _defaultTcpPort(port, mode),
     baudrate:          parseInt(getVal(`gw-baud-${port}`)) || defs.baudrate,
     parity:            getVal(`gw-parity-${port}`) || 'none',
     stopbits:          parseInt(getVal(`gw-stop-${port}`)) || defs.stopbits,
@@ -579,7 +609,7 @@ function _updateSubNavDots() {
     if (!dot) continue;
     const st  = portStatus[port];
     const cfg = _config[port];
-    if (!cfg || !cfg.enabled) {
+    if (!_portToggleOn(cfg)) {
       dot.textContent = '';
       dot.className = 'gw-sub-dot';
     } else if (st && st.running) {
@@ -594,7 +624,7 @@ function _updateSubNavDots() {
 
 // ── Status helpers ────────────────────────────────────────────────────────────
 function _statusBadgeHtml(st, cfg) {
-  if (!cfg || !cfg.enabled) {
+  if (!_portToggleOn(cfg)) {
     return '<span class="badge badge-unk">Отключён</span>';
   }
   if (st && st.running) {
@@ -626,12 +656,11 @@ function _countersHtml(st) {
 
 // ── Defaults ──────────────────────────────────────────────────────────────────
 function _defaultPortCfg(port) {
-  const idx = PORTS.indexOf(port);
   const highSpeed = port === 'COM4' || port === 'COM5';
   return {
     enabled: false,
     mode: 'modbus_tcp',
-    tcp_port: 502 + idx,
+    tcp_port: _defaultTcpPort(port, 'modbus_tcp'),
     baudrate: highSpeed ? 115200 : 19200,
     parity: 'none',
     stopbits: 1,

@@ -308,6 +308,130 @@ function sa02mInstallFetchGuard() {
 })();
 
 /* ── Navigation ──────────────────────────────────────────────────────────── */
+/* «Управление» sub-tabs (same sidebar pattern as the RS-485 gateway).
+   Heavy polls start only for the pane that is open, so a HomeKit / Home
+   Connect / update / services CGI cannot sit in front of time, Ethernet
+   or the system pane. */
+const SYSTEM_SUBS = ['system', 'cloud', 'home', 'services', 'update'];
+let _systemSub = 'system';
+let _systemLoadGen = 0;
+let _systemSubBound = false;
+
+function systemOpenSubNav() {
+  const sub = document.getElementById('nav-system-sub');
+  const item = document.getElementById('nav-system');
+  if (sub) sub.classList.add('open');
+  if (item) item.classList.add('expanded');
+}
+
+function systemCloseSubNav() {
+  const sub = document.getElementById('nav-system-sub');
+  const item = document.getElementById('nav-system');
+  if (sub) sub.classList.remove('open');
+  if (item) item.classList.remove('expanded');
+}
+
+function systemSubNavOpen() {
+  const sub = document.getElementById('nav-system-sub');
+  return !!(sub && sub.classList.contains('open'));
+}
+
+function systemTabActive() {
+  const pane = document.getElementById('tab-system');
+  return !!(pane && pane.classList.contains('active'));
+}
+
+window.systemNavClick = function () {
+  if (systemTabActive() && systemSubNavOpen()) {
+    systemCloseSubNav();
+    return true;
+  }
+  return false;
+};
+
+function systemStopIntegrations() {
+  if (window.cloudTabDestroy) window.cloudTabDestroy();
+  if (window.homekitTabDestroy) window.homekitTabDestroy();
+  if (window.homeconnectTabDestroy) window.homeconnectTabDestroy();
+  if (window.aliceTabDestroy) window.aliceTabDestroy();
+}
+
+function systemShowSub(key) {
+  if (SYSTEM_SUBS.indexOf(key) < 0) key = 'system';
+  _systemSub = key;
+  SYSTEM_SUBS.forEach(function (k) {
+    const pane = document.getElementById('sys-pane-' + k);
+    if (pane) pane.hidden = k !== key;
+  });
+  document.querySelectorAll('#nav-system-sub [data-system-sub]').forEach(function (el) {
+    el.classList.toggle('active', el.getAttribute('data-system-sub') === key);
+  });
+}
+
+function systemLoadSub(key) {
+  const gen = ++_systemLoadGen;
+  systemStopIntegrations();
+  if (key === 'system') {
+    if (typeof loadVariant === 'function') loadVariant();
+    if (typeof loadKernelControl === 'function') loadKernelControl(false);
+    if (typeof fetchSystemWidget === 'function') fetchSystemWidget();
+    setTimeout(function () {
+      if (gen !== _systemLoadGen) return;
+      if (typeof loadLog === 'function') loadLog();
+    }, 350);
+    return;
+  }
+  if (key === 'cloud') {
+    if (window.cloudTabInit) window.cloudTabInit();
+    setTimeout(function () {
+      if (gen !== _systemLoadGen) return;
+      if (window.aliceTabInit) window.aliceTabInit();
+    }, 450);
+    return;
+  }
+  if (key === 'home') {
+    if (window.aliceTabInit) window.aliceTabInit();
+    setTimeout(function () {
+      if (gen !== _systemLoadGen) return;
+      if (window.homekitTabInit) window.homekitTabInit();
+    }, 500);
+    setTimeout(function () {
+      if (gen !== _systemLoadGen) return;
+      if (window.homeconnectTabInit) window.homeconnectTabInit();
+    }, 1200);
+    return;
+  }
+  if (key === 'services') {
+    if (typeof loadServicesControl === 'function') loadServicesControl(false);
+    return;
+  }
+  if (key === 'update') {
+    if (typeof loadWebUpdateStatus === 'function') loadWebUpdateStatus();
+    if (typeof probeOfflineUpdateCapability === 'function') probeOfflineUpdateCapability();
+    if (typeof loadMplcProjectMeta === 'function') loadMplcProjectMeta();
+  }
+}
+
+function systemSelectSub(key) {
+  systemShowSub(key);
+  if (!systemTabActive()) switchTab('system');
+  else systemLoadSub(key);
+}
+window.systemSelectSub = systemSelectSub;
+
+function systemBindSubNav() {
+  if (_systemSubBound) return;
+  const sub = document.getElementById('nav-system-sub');
+  if (!sub) return;
+  _systemSubBound = true;
+  sub.querySelectorAll('[data-system-sub]').forEach(function (el) {
+    el.addEventListener('click', function (ev) {
+      ev.stopPropagation();
+      systemSelectSub(el.getAttribute('data-system-sub'));
+    });
+  });
+}
+
 function switchTab(tab) {
   const navEl = document.querySelector('.nav-item[data-tab="' + tab + '"]');
   document.querySelectorAll('.nav-item').forEach(n => n.classList.remove('active'));
@@ -316,21 +440,16 @@ function switchTab(tab) {
   const pane = document.getElementById('tab-' + tab);
   if (pane) pane.classList.add('active');
   if (tab === 'system') {
-    loadLog();
-    fetchSystemWidget();
-    loadWebUpdateStatus();
-    probeOfflineUpdateCapability();
-    loadServicesControl(false);
-    loadMplcProjectMeta();
-    loadKernelControl(false);
-    loadVariant();
-    if (window.cloudTabInit) window.cloudTabInit();
-    if (window.homekitTabInit) window.homekitTabInit();
-    if (window.homeconnectTabInit) window.homeconnectTabInit();
+    systemBindSubNav();
+    systemOpenSubNav();
+    systemShowSub(_systemSub);
+    systemLoadSub(_systemSub);
   }
-  if (tab !== 'system' && window.cloudTabDestroy) window.cloudTabDestroy();
-  if (tab !== 'system' && window.homekitTabDestroy) window.homekitTabDestroy();
-  if (tab !== 'system' && window.homeconnectTabDestroy) window.homeconnectTabDestroy();
+  if (tab !== 'system') {
+    systemCloseSubNav();
+    _systemLoadGen += 1;
+    systemStopIntegrations();
+  }
   if (tab === 'network') {
     applyVariantVisibility(_boardVariant);
     loadConfig();
@@ -360,7 +479,7 @@ function applyDeepLinkTab() {
     if (m) { try { tab = decodeURIComponent(m[1]); } catch (e) { tab = m[1]; } }
   }
   if (tab === 'cloud') {
-    switchTab('system');
+    systemSelectSub('cloud');
     if (window.cloudScrollIntoView) {
       setTimeout(window.cloudScrollIntoView, 120);
     }
@@ -373,9 +492,13 @@ function applyDeepLinkTab() {
 }
 
 function initNav() {
+  systemBindSubNav();
   document.querySelectorAll('.nav-item[data-tab]').forEach(el => {
     el.addEventListener('click', () => {
       if (el.dataset.tab === 'gateway' && window.gatewayNavClick && window.gatewayNavClick()) {
+        return;
+      }
+      if (el.dataset.tab === 'system' && window.systemNavClick && window.systemNavClick()) {
         return;
       }
       switchTab(el.dataset.tab);

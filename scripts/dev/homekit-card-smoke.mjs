@@ -217,7 +217,9 @@ const CASES = [
   { name: 'port_in_use', p: P.port_in_use, badge: 'порт занят', line: 'Выберите другой порт', btn: 'Выключить', setup: false },
   { name: 'error', p: P.error, badge: 'ошибка', line: 'Журнал: sa02m-homekit', btn: 'Выключить', setup: false },
   { name: 'error-status_stale', p: P.stale, badge: 'не отвечает', line: 'Статус устарел', btn: 'Выключить', setup: false },
-  { name: 'no-answer', p: null, noanswer: true, badge: 'н/д', line: 'Нет ответа от платы', btn: null, setup: false, allDisabled: true },
+  // Follows error-status_stale. A missed probe keeps that status: the card
+  // must not flip to «Нет ответа от платы».
+  { name: 'no-answer', p: null, noanswer: true, badge: 'не отвечает', line: 'Статус устарел', btn: 'Выключить', setup: false },
 ];
 
 // Non-vacuous both ways: the contract states and the fixture states are one set.

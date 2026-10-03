@@ -141,7 +141,11 @@ cat > "$T/warn.mjs" <<'NODEEOF'
 import { readFileSync, writeFileSync } from 'node:fs';
 import vm from 'node:vm';
 
-const src = readFileSync(process.env.GW_JS_PATH, 'utf8');
+// Argv first: a Windows node launched from WSL does not receive custom
+// environment variables, so GW_JS_PATH / WARN_RC alone never arrive.
+const gwPath = process.argv[2] || process.env.GW_JS_PATH;
+const rcPath = process.argv[3] || process.env.WARN_RC;
+const src = readFileSync(gwPath, 'utf8');
 const grab = (name) => {
   const start = src.indexOf(`function ${name}(`);
   if (start < 0) return null;
@@ -217,7 +221,7 @@ if (missing.length) {
   }
   if (JSON.stringify(P('')) !== '[]') bad('21b an empty field must parse to []');
 }
-writeFileSync(process.env.WARN_RC, fails === 0 ? '0' : String(fails));
+writeFileSync(rcPath, fails === 0 ? '0' : String(fails));
 NODEEOF
 
 PATH="$BIN:$PATH"; export PATH
@@ -390,7 +394,34 @@ if [ ! -f "$GW_JS" ]; then
 elif ! command -v node >/dev/null 2>&1; then
     bad "16 node is required to run the shipped warning logic"
 else
-    GW_JS_PATH="$GW_JS" WARN_RC="$T/warn.rc" node "$T/warn.mjs" 2>&1 | while IFS= read -r line; do
+    # Windows node started from WSL or Git Bash rewrites a /tmp argument to
+    # C:\tmp, which is not this shell's temp dir. The harness then never
+    # starts and warn.rc is missing — fail-closed, but for the wrong reason.
+    # cygpath (Git Bash) and wslpath (WSL) name the file that process can
+    # open. A native Linux node keeps the POSIX path.
+    to_node_path() {
+        local p="$1"
+        if command -v cygpath >/dev/null 2>&1; then
+            cygpath -m "$p"
+            return
+        fi
+        if [ "${NODE_IS_WIN32:-0}" = 1 ] && command -v wslpath >/dev/null 2>&1; then
+            wslpath -w "$p"
+            return
+        fi
+        printf '%s\n' "$p"
+    }
+    NODE_IS_WIN32=0
+    case "$(node -p process.platform 2>/dev/null || true)" in
+        win32) NODE_IS_WIN32=1 ;;
+    esac
+    case "$GW_JS" in
+        /*|[A-Za-z]:*) NODE_JS=$(to_node_path "$GW_JS") ;;
+        *) NODE_JS=$(to_node_path "$PWD/$GW_JS") ;;
+    esac
+    NODE_WARN=$(to_node_path "$T/warn.mjs")
+    NODE_RC=$(to_node_path "$T/warn.rc")
+    GW_JS_PATH="$NODE_JS" WARN_RC="$NODE_RC" node "$NODE_WARN" "$NODE_JS" "$NODE_RC" 2>&1 | while IFS= read -r line; do
         printf '%s\n' "$line"
     done
     # The node script writes its FAILURE COUNT to a verdict file the shell can

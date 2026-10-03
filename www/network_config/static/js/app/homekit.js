@@ -1,6 +1,6 @@
 /* SA-02m — Apple HomeKit bridge card (вкладка «Управление»). Talks only to
    cgi-bin/sa02m_homekit_api.cgi (JSON per action: docs/contracts/homekit-bridge.md).
-   Polls every 10 s ONLY while «Управление» is the active tab and the page is
+   Polls every 10 s ONLY while the «Умный дом» sub-tab is open and the page is
    visible (window.homekitTabInit/Destroy from app.js switchTab), plus a short
    fast-poll window after an action. The setup code and its QR are fetched only
    on an explicit «Показать код» and live in the DOM only while the bridge is
@@ -360,27 +360,22 @@ function hkStateLine(d) {
   return null;
 }
 
-// No usable answer (timeout, 5xx, a non-status body): every value «н/д» and
-// ONE standing line — never a toast per poll.
+// No usable answer (timeout, 5xx, a non-status body). A missed probe must not
+// wipe a status the board already gave, and must not read as if the whole
+// board were down. With no status yet, only this service is «не отвечает».
 function hkRenderUnavailable() {
+  if (_hkLast && _hkLast.ok === true && typeof _hkLast.state === 'string') return;
   _hkLastFailed = true;
-  hkSetBadge('н/д', 'unk');
+  hkSetBadge('не отвечает', 'err');
   hkSetText('homekit-paired', uiT('н/д'));
   hkSetText('homekit-acc', '—');
   hkSetText('homekit-iface', '—');
   hkSetText('homekit-addr', '—');
   _hkSkipOpen = false;
   hkRenderSkipped(null);
-  hkSetCardMsg(uiT('Нет ответа от платы'), false);
-  if (_hkLast) {
-    // Keep the last known layout; hkSetButtonsDisabled refuses every action.
-    const setup = $('homekit-setup');
-    if (setup) setup.hidden = true;
-    hkClearCode();
-  } else {
-    const en = $('homekit-btn-enable');
-    if (en) { en.textContent = uiT('Включить'); en.className = 'btn btn-sm btn-primary'; }
-  }
+  hkSetCardMsg('', true);
+  const en = $('homekit-btn-enable');
+  if (en) { en.textContent = uiT('Включить'); en.className = 'btn btn-sm btn-primary'; }
   hkSetButtonsDisabled();
 }
 
@@ -808,9 +803,10 @@ function hkInit() {
   const sum = det ? det.querySelector('summary') : null;
   if (sum) sum.addEventListener('click', function () { _hkDevsTouched = true; });
   if (typeof window.sa02mAliceOnData === 'function') window.sa02mAliceOnData(hkOnAliceData);
-  // A deep link straight to #system switched tabs before this file's init ran.
-  const pane = $('tab-system');
-  if (pane && pane.classList.contains('active')) homekitTabInit();
+  // A deep link that already opened «Умный дом» before this file's init ran.
+  const pane = $('sys-pane-home');
+  const tab = $('tab-system');
+  if (pane && !pane.hidden && tab && tab.classList.contains('active')) homekitTabInit();
 }
 
 // Only HTML onclick handlers, app.js / i18n.js hooks and smarthome.js need a

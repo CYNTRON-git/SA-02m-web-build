@@ -39,6 +39,8 @@ import { aiSensorLabel, aiUnitPrecision } from "./ai-sensors.js?v=1.0.7.0";
   /** Rows in the last rendered journal — the «Очистить» button is disabled at 0. */
   let eventsCount = 0;
   let eventsClearPending = false;
+  /** Hide timer for the inline clear result (same row as «Очистить»). */
+  let eventsClearNoteTimer = 0;
   /** Bumped on every clear: a poll that started before it renders nothing. */
   let eventsGen = 0;
   const EVENTS_CLEAR_TIMEOUT_MS = 20000;
@@ -596,64 +598,43 @@ import { aiSensorLabel, aiUnitPrecision } from "./ai-sensors.js?v=1.0.7.0";
       .join("");
   }
 
-  /* Stroke icons. They only label the setpoint rows: no color, no click.
-     «Сезон» is the words ЗИМА / ЛЕТО, not these icons. */
-  function carelSeasonIcon(which) {
-    const common =
-      'class="dev-season-ico" viewBox="0 0 24 24" aria-hidden="true" focusable="false"';
-    if (which === "winter") {
-      return (
-        '<svg ' + common + '>' +
-        `<g fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round">` +
-        `<path d="M12 2.5v19M4.6 6.8l14.8 10.4M19.4 6.8L4.6 17.2"/>` +
-        `<path d="M12 6.2 10.2 4.4M12 6.2l1.8-1.8M12 17.8 10.2 19.6M12 17.8l1.8 1.8"/>` +
-        `<path d="M7.2 9.1 5.1 8.4M7.2 9.1 7.6 6.9M16.8 14.9l2.1.7M16.8 14.9l-.4 2.2"/>` +
-        `<path d="M16.8 9.1l2.1-.7M16.8 9.1l-.4-2.2M7.2 14.9 5.1 15.6M7.2 14.9l.4 2.2"/>` +
-        `</g></svg>`
-      );
-    }
+  /* One stepper for the active season. Winter writes `setpoint`, summer
+     writes `setpoint_summer` — the same names on c.pCO and uAria. The other
+     row stays in the card (so a season change does not rebuild it) but is
+     not shown. No snowflake or sun next to the number. */
+  function carelSetpointRowHtml(field, decRole, incRole, decLabel, incLabel) {
     return (
-      '<svg ' + common + '>' +
-      `<g fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round">` +
-      `<circle cx="12" cy="12" r="3.3"/>` +
-      `<path d="M12 3.2v2.4M12 18.4v2.4M3.2 12h2.4M18.4 12h2.4M5.8 5.8l1.7 1.7M16.5 16.5l1.7 1.7M18.2 5.8l-1.7 1.7M7.5 16.5l-1.7 1.7"/>` +
-      `</g></svg>`
+      `<div class="dev-step-row" data-role="sp-row" data-field="${field}" hidden>` +
+      `<button type="button" class="dev-step-btn" data-role="${decRole}" aria-label="` +
+      decLabel +
+      `"><span class="dev-step-glyph">−</span></button>` +
+      `<span class="dev-step-val"><span data-f="${field}">—</span>` +
+      `<span class="dev-step-unit">°C</span></span>` +
+      `<button type="button" class="dev-step-btn" data-role="${incRole}" aria-label="` +
+      incLabel +
+      `"><span class="dev-step-glyph">+</span></button>` +
+      `</div>`
     );
   }
 
   function carelSetpointTileHtml() {
     return (
       `<div class="dev-kpi dev-kpi--sp">` +
-      `<div class="dev-step-row">` +
-      `<span class="dev-season-mark" data-role="season" data-season="winter" role="img" aria-label="` +
-      uiT("Зима") +
-      `">` +
-      carelSeasonIcon("winter") +
-      `</span>` +
-      `<button type="button" class="dev-step-btn" data-role="sp-dec" aria-label="` +
-      uiT("Уменьшить уставку") +
-      `">−</button>` +
-      `<span class="dev-step-val"><span data-f="setpoint">—</span>` +
-      `<span class="dev-step-unit">°C</span></span>` +
-      `<button type="button" class="dev-step-btn" data-role="sp-inc" aria-label="` +
-      uiT("Увеличить уставку") +
-      `">+</button>` +
-      `</div>` +
-      `<div class="dev-step-row">` +
-      `<span class="dev-season-mark" data-role="season" data-season="summer" role="img" aria-label="` +
-      uiT("Лето") +
-      `">` +
-      carelSeasonIcon("summer") +
-      `</span>` +
-      `<button type="button" class="dev-step-btn" data-role="su-dec" aria-label="` +
-      uiT("Уменьшить летнюю уставку") +
-      `">−</button>` +
-      `<span class="dev-step-val"><span data-f="setpoint_summer">—</span>` +
-      `<span class="dev-step-unit">°C</span></span>` +
-      `<button type="button" class="dev-step-btn" data-role="su-inc" aria-label="` +
-      uiT("Увеличить летнюю уставку") +
-      `">+</button>` +
-      `</div>` +
+      `<span class="dev-step-empty" data-role="sp-empty">—</span>` +
+      carelSetpointRowHtml(
+        "setpoint",
+        "sp-dec",
+        "sp-inc",
+        uiT("Уменьшить уставку"),
+        uiT("Увеличить уставку")
+      ) +
+      carelSetpointRowHtml(
+        "setpoint_summer",
+        "su-dec",
+        "su-inc",
+        uiT("Уменьшить летнюю уставку"),
+        uiT("Увеличить летнюю уставку")
+      ) +
       `</div>`
     );
   }
@@ -1044,11 +1025,6 @@ import { aiSensorLabel, aiUnitPrecision } from "./ai-sensors.js?v=1.0.7.0";
       if (power.textContent !== lab) power.textContent = lab;
       power.disabled = dead || on == null;
     }
-    card.querySelectorAll('[data-role="season"]').forEach((el) => {
-      const key = el.dataset.season === "summer" ? "Лето" : "Зима";
-      const lab = uiT(key);
-      if (el.getAttribute("aria-label") !== lab) el.setAttribute("aria-label", lab);
-    });
     const rows = [
       ["setpoint", "setpoint", "sp-dec", "sp-inc"],
       ["setpoint_summer", "setpoint_summer", "su-dec", "su-inc"],
@@ -1089,18 +1065,34 @@ import { aiSensorLabel, aiUnitPrecision } from "./ai-sensors.js?v=1.0.7.0";
     return n >= 1 ? "summer" : "winter";
   }
 
+  /* The number the stepper may show. Winter is `setpoint` on both families
+     (c.pCO HR51, uAria HR30). Summer is `setpoint_summer` (HR52 / HR32).
+     No reading → neither row. */
+  function carelActiveSetpoint(season) {
+    if (season === "summer") return "setpoint_summer";
+    if (season === "winter") return "setpoint";
+    return "";
+  }
+
   function paintCarelSeason(card, d) {
     const el = card.querySelector('[data-role="season-val"]');
-    if (!el) return;
     const season = carelSeasonNow(d);
-    if (season !== "winter" && season !== "summer") {
-      if (el.textContent !== "—") el.textContent = "—";
-      el.removeAttribute("data-season");
-      return;
+    if (el) {
+      if (season !== "winter" && season !== "summer") {
+        if (el.textContent !== "—") el.textContent = "—";
+        el.removeAttribute("data-season");
+      } else {
+        el.dataset.season = season;
+        const label = uiT(season === "summer" ? "ЛЕТО" : "ЗИМА");
+        if (el.textContent !== label) el.textContent = label;
+      }
     }
-    el.dataset.season = season;
-    const label = uiT(season === "summer" ? "ЛЕТО" : "ЗИМА");
-    if (el.textContent !== label) el.textContent = label;
+    const field = carelActiveSetpoint(season);
+    card.querySelectorAll('[data-role="sp-row"]').forEach((row) => {
+      row.hidden = row.dataset.field !== field;
+    });
+    const empty = card.querySelector('[data-role="sp-empty"]');
+    if (empty) empty.hidden = field !== "";
   }
 
   function nudgeCarel(card, id, specId, dir) {
@@ -1713,8 +1705,29 @@ import { aiSensorLabel, aiUnitPrecision } from "./ai-sensors.js?v=1.0.7.0";
     return tl("Журнал не очищен: ошибка сервера") + " (HTTP " + status + ")";
   }
 
+  /** Clear result sits on the journal header row, in the gap left of «Очистить».
+   *  Other toasts stay on the global top-right stack. */
   function eventsClearToast(msg, type) {
-    if (typeof window.toast === "function") window.toast(msg, type, 6000);
+    const note = $("dev-events-clear-note");
+    const head = note ? note.closest(".dev-events-head") : null;
+    if (!note || !head) {
+      if (typeof window.toast === "function") window.toast(msg, type, 6000);
+      return;
+    }
+    note.textContent = msg;
+    note.title = msg;
+    note.classList.remove("dev-events-clear-note--success", "dev-events-clear-note--error");
+    note.classList.add(type === "error" ? "dev-events-clear-note--error" : "dev-events-clear-note--success");
+    note.hidden = false;
+    head.classList.add("dev-events-head--note");
+    if (eventsClearNoteTimer) clearTimeout(eventsClearNoteTimer);
+    eventsClearNoteTimer = setTimeout(() => {
+      eventsClearNoteTimer = 0;
+      note.hidden = true;
+      note.textContent = "";
+      note.removeAttribute("title");
+      head.classList.remove("dev-events-head--note");
+    }, 6000);
   }
 
   /** «Очистить» — deletes the WHOLE journal (every device) on the daemon. The

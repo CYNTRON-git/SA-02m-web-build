@@ -1060,7 +1060,6 @@
     '(В снимке задачи нет сохранённых строк журнала)': '(The job snapshot contains no saved log lines)',
     'Выберите устройство': 'Select a device',
     'Нельзя прошивать вместе модули MR/MP и сторонние (.wbfw). Выберите устройства одного типа.': 'MR/MP modules and third-party (.wbfw) devices cannot be flashed together. Select devices of one type.',
-    'Выберите файл прошивки из списка или загрузите .fw вручную.': 'Select firmware from the list or upload a .fw file manually.',
     'Выбранный образ не скачан в кеш шлюза. Нажмите «Скачать» или «Выбрать».': 'The selected image is not downloaded to the gateway cache. Click Download or Select.',
     'Удалить все скачанные прошивки из кеша шлюза?\nСписок в манифесте сохранится; файлы нужно будет скачать или загрузить заново.': 'Delete all downloaded firmware from the gateway cache?\nThe manifest list will be kept; you will need to download or upload files again.',
     'Очищено файлов: ': 'Files cleared: ',

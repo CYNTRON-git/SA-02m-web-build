@@ -8,7 +8,7 @@
   <meta name="theme-color" content="#161618" id="theme-color-meta">
   <title>СА-02м — Панель управления</title>
   <link rel="icon" type="image/svg+xml" href="static/favicon_cyntron.svg?v=1.0.7.0&r=devhist1">
-  <link rel="stylesheet" href="static/css/main.css?v=1.0.7.0&r=loginctr1">
+  <link rel="stylesheet" href="static/css/main.css?v=1.0.7.0&r=syssub1">
   <script>try{var _lt=localStorage.getItem('sa02m-theme')==='light';if(_lt)document.documentElement.setAttribute('data-theme','light');var _m=document.getElementById('theme-color-meta');if(_m)_m.setAttribute('content',_lt?'#ececf3':'#161618');}catch(e){}</script>
 </head>
 <body>
@@ -107,9 +107,17 @@
         <div class="nav-sub-item" data-gateway-sub="COM5">COM5 <span class="gw-sub-dot" id="gwdot-COM5"></span></div>
       </div>
 
-      <div class="nav-item" data-tab="system">
+      <div class="nav-item nav-parent" id="nav-system" data-tab="system">
         <svg viewBox="0 0 24 24"><rect x="2" y="3" width="20" height="14" rx="2"/><path d="M8 21h8M12 17v4"/></svg>
         <span class="nav-label" data-i18n="Управление">Управление</span>
+        <svg class="nav-arrow" viewBox="0 0 8 12" width="8" height="12" aria-hidden="true"><path d="M2 2l4 4-4 4" stroke="currentColor" stroke-width="1.5" fill="none" stroke-linecap="round" stroke-linejoin="round"/></svg>
+      </div>
+      <div class="nav-sub-list" id="nav-system-sub">
+        <div class="nav-sub-item active" data-system-sub="system" data-i18n="Система">Система</div>
+        <div class="nav-sub-item" data-system-sub="cloud" data-i18n="Облако">Облако</div>
+        <div class="nav-sub-item" data-system-sub="home" data-i18n="Умный дом">Умный дом</div>
+        <div class="nav-sub-item" data-system-sub="services" data-i18n="Службы">Службы</div>
+        <div class="nav-sub-item" data-system-sub="update" data-i18n="Обновление">Обновление</div>
       </div>
     </nav>
 
@@ -482,7 +490,11 @@
 
       <!-- ═══════════════════════════════ SYSTEM ════════════════════════ -->
       <div id="tab-system" class="tab-pane">
+        <div class="page-header">
+          <h2 data-i18n="Управление системой">Управление системой</h2>
+        </div>
 
+        <div id="sys-pane-system" class="sys-sub-pane" data-system-pane="system">
         <!-- ── HW variant selector ──────────────────────────────────────── -->
         <div class="widget" id="hw-variant-section">
           <div class="widget-title">Аппаратный вариант</div>
@@ -497,11 +509,6 @@
             </div>
             <span id="variant-status" class="hw-variant-status"></span>
           </div>
-        </div>
-
-        <div class="page-header">
-          <h2>Управление системой</h2>
-          <p>Службы, облако, перезагрузка и журнал событий</p>
         </div>
 
         <div class="dash-grid system-manage-grid">
@@ -556,6 +563,151 @@
                 </div>
               </div>
             </div>
+            <div class="ctrl-card system-manage-tile system-manage-kernel-card" id="kernel-switch-tile">
+              <div class="ctrl-card-main">
+                <h3 class="system-manage-tile-title">Ядро и частота CPU</h3>
+                <dl class="web-upd-meta kernel-meta">
+                  <div><dt>Загружено</dt><dd id="kernel-run-label">—</dd></div>
+                </dl>
+                <p id="kernel-pending-hint" class="field-hint" style="display:none" role="status"></p>
+                <div class="field kernel-profile-field">
+                  <select id="kernel-profile-select" aria-label="Профиль ядра">
+                    <option value="smp">SMP (без Real Time)</option>
+                    <option value="rt">RT (Real Time)</option>
+                  </select>
+                  <button type="button" class="btn btn-primary kernel-apply-inline" id="kernel-apply-btn" onclick="applyKernelProfile()">Применить и перезагрузить</button>
+                  <button type="button" class="btn kernel-refresh-inline" id="kernel-refresh-btn" onclick="refreshKernelBoot()" title="Переустановить текущее ядро на загрузочный раздел">Обновить загрузочное ядро</button>
+                </div>
+                <section id="cpu-profile-section" class="cpu-profile-section" style="display:none">
+                  <h4 class="cpu-profile-section-title">Частота CPU</h4>
+                  <dl class="web-upd-meta cpu-profile-meta">
+                    <div><dt>Частота</dt><dd id="cpu-profile-freq-label">—</dd></div>
+                  </dl>
+                  <div class="field cpu-profile-field">
+                    <select id="cpu-profile-select" aria-label="Профиль частоты CPU">
+                      <option value="adaptive">Авто (адаптивная)</option>
+                      <option value="low">Минимальная</option>
+                      <option value="medium">Средняя</option>
+                      <option value="high">Высокая (адапт.)</option>
+                      <option value="performance">Максимальная</option>
+                    </select>
+                    <button type="button" class="btn btn-primary cpu-profile-apply-inline" id="cpu-profile-apply-btn" onclick="applyCpuProfile()">Применить</button>
+                  </div>
+                </section>
+              </div>
+            </div>
+            <div class="system-manage-tile system-manage-command-panel dash-span-top4">
+              <h3 class="system-manage-tile-title system-manage-log-title">Командная строка</h3>
+              <div class="system-command-auth" id="cmd-root-pass-wrap" hidden>
+                <label class="field system-command-root-pass">
+                  <span>Пароль root</span>
+                  <input id="cmd-root-password" type="password" autocomplete="current-password" placeholder="Пароль root">
+                </label>
+              </div>
+              <textarea id="cmd-input" class="system-command-input" rows="3" spellcheck="false" autocomplete="off" placeholder="Например: systemctl is-active mplc4"></textarea>
+              <div class="btn-group system-command-actions">
+                <button class="btn btn-sm" type="button" onclick="clearCommandLine()">
+                  Очистить
+                </button>
+                <button class="btn btn-sm btn-primary" type="button" onclick="runCommandLine()">
+                  Выполнить
+                </button>
+              </div>
+              <div class="system-manage-log-output">
+                <pre class="log-box system-command-output" id="cmd-output"></pre>
+              </div>
+            </div>
+            <div class="system-manage-tile system-manage-log-panel dash-span-top4">
+              <h3 class="system-manage-tile-title system-manage-log-title">Журнал событий</h3>
+              <div class="btn-group system-manage-log-actions">
+                <button class="btn btn-sm" onclick="loadLog()">
+                  Обновить
+                </button>
+                <button class="btn btn-sm" type="button" onclick="loadSshDebug()">SSH-отладка</button>
+                <button class="btn btn-sm" type="button" onclick="exportInstallLog()">Экспорт журнала</button>
+              </div>
+              <div class="system-manage-log-output">
+                <div class="log-box" id="log-box">Нажмите «Обновить» для загрузки журнала или «SSH-отладка» для диагностики доступа по SSH</div>
+              </div>
+            </div>
+        </div>
+        </div>
+
+        <div id="sys-pane-cloud" class="sys-sub-pane" data-system-pane="cloud" hidden>
+        <div class="dash-grid system-manage-grid">
+            <div class="ctrl-card system-manage-tile system-manage-cloud-card" id="cloud-card">
+              <div class="ctrl-card-main">
+                <h3 class="system-manage-tile-title" data-i18n="Облако">Облако</h3>
+                <dl class="cloud-meta web-upd-meta">
+                  <div><dt data-i18n="Агент">Агент</dt><dd id="cloud-svc-state"><span class="badge badge-unk">…</span></dd></div>
+                  <div><dt data-i18n="Соединение">Соединение</dt><dd id="cloud-conn-state"><span class="badge badge-unk">…</span></dd></div>
+                  <div id="cloud-row-tunnel" hidden><dt data-i18n="Туннель">Туннель</dt><dd id="cloud-tunnel-state"><span class="badge badge-unk">…</span></dd></div>
+                  <div id="cloud-row-serial" hidden><dt data-i18n="Серийный №">Серийный №</dt><dd id="cloud-dev-serial" class="mono text-sm">—</dd></div>
+                  <div id="cloud-row-ts" hidden><dt data-i18n="Последний отчёт">Последний отчёт</dt><dd id="cloud-last-ts" class="text-sm">—</dd></div>
+                </dl>
+                <p id="cloud-unlink-info" class="field-hint text-sm" role="status" hidden></p>
+                <div id="cloud-pair-idle">
+                  <p class="field-hint cloud-pair-hint" data-i18n="Нажмите кнопку — устройство получит код сопряжения. Затем войдите в личный кабинет на cloud.cyntron.ru и введите этот код.">
+                    Нажмите кнопку — устройство получит код сопряжения. Затем войдите в
+                    личный кабинет на <b>cloud.cyntron.ru</b> и введите этот код.
+                  </p>
+                  <button type="button" class="btn btn-primary" id="cloud-btn-pair" onclick="cloudStartPairing()">Подключить к облаку</button>
+                  <div id="cloud-offline" class="conn-offline-note" role="status" hidden>
+                    <span data-i18n="нет интернета">нет интернета</span>
+                    <button type="button" class="btn btn-sm conn-recheck-btn" id="cloud-recheck" onclick="cloudRecheck()" data-i18n="Проверить снова">Проверить снова</button>
+                  </div>
+                </div>
+                <div id="cloud-pair-active" hidden>
+                  <p class="field-hint cloud-pair-hint" data-i18n="Введите этот код в личном кабинете на cloud.cyntron.ru:">
+                    Введите этот код в личном кабинете на <b>cloud.cyntron.ru</b>:
+                  </p>
+                  <div class="cloud-pair-code" id="cloud-pair-code" title="Нажмите, чтобы скопировать" onclick="cloudCopyPairCode()">
+                    <span class="cloud-copy-toast" id="cloud-copy-toast" data-i18n="Скопирован">Скопирован</span>
+                    <span id="cloud-pair-code-text">····-····</span>
+                  </div>
+                  <p class="field-hint cloud-pair-timer-line">
+                    <span data-i18n="Код действует ещё">Код действует ещё</span>
+                    <span id="cloud-pair-timer">—</span>
+                  </p>
+                  <button type="button" class="btn btn-sm" id="cloud-btn-cancel" onclick="cloudCancelPairing()">Отменить</button>
+                </div>
+                <details class="cloud-token-fallback" id="cloud-token-fallback">
+                  <summary data-i18n="Подключение по токену (для наладчиков)">Подключение по токену (для наладчиков)</summary>
+                  <div class="field">
+                    <label for="cloud-token" data-i18n="Токен активации">Токен активации</label>
+                    <input type="password" id="cloud-token" placeholder="Вставьте токен" autocomplete="off">
+                  </div>
+                  <div class="field">
+                    <label for="cloud-server" data-i18n="Облачный сервер">Облачный сервер</label>
+                    <input type="text" id="cloud-server" value="cloud.cyntron.ru">
+                  </div>
+                  <button type="button" class="btn btn-sm" id="cloud-btn-activate" onclick="cloudActivate()">Подключить по токену</button>
+                  <p id="cloud-token-offline" class="field-hint conn-offline-hint" data-i18n="нет интернета" hidden>нет интернета</p>
+                </details>
+                <div id="cloud-msg" class="cloud-msg" role="status" hidden></div>
+                <!-- «Управление из облака» (the sa02m-cloud-control unit) — moved off
+                     the «Умный дом» card in 1.0.6.29: the cloud binding, its state and
+                     its actions belong together. Its data rides the Alice-API poll (the
+                     `cloud_control` block, which cloud.cgi does not carry) — cloud.js
+                     cloudRenderControl, no second CGI poll. -->
+                <div class="cloud-ctrl-block">
+                  <div class="cloud-ctrl-row">
+                    <span class="cloud-ctrl-label" data-i18n="Управление из облака">Управление из облака</span>
+                    <span id="cloud-ctrl-state"><span class="badge badge-unk">…</span></span>
+                  </div>
+                  <button type="button" class="btn btn-sm btn-primary" id="cloud-btn-ctrl" onclick="cloudToggleControl()" disabled>…</button>
+                  <div id="cloud-ctrl-msg" class="cloud-msg" role="status" hidden></div>
+                </div>
+              </div>
+              <div class="cloud-agent-ctrl system-manage-tile-foot">
+                <button type="button" class="btn btn-sm btn-danger" id="cloud-btn-agent" onclick="cloudToggleAgent()" disabled>…</button>
+              </div>
+            </div>
+        </div>
+        </div>
+
+        <div id="sys-pane-home" class="sys-sub-pane" data-system-pane="home" hidden>
+        <div class="dash-grid system-manage-grid">
             <div class="ctrl-card system-manage-tile system-manage-alice-card" id="sh-card">
               <div class="ctrl-card-main">
                 <h3 class="system-manage-tile-title" data-i18n="Умный дом">Умный дом</h3>
@@ -684,74 +836,25 @@
                 <button type="button" class="btn btn-sm btn-primary" id="homeconnect-btn-enable" onclick="homeconnectToggle()" disabled>…</button>
               </div>
             </div>
-            <div class="ctrl-card system-manage-tile system-manage-cloud-card" id="cloud-card">
+        </div>
+        </div>
+
+        <div id="sys-pane-services" class="sys-sub-pane" data-system-pane="services" hidden>
+        <div class="dash-grid system-manage-grid">
+            <div class="ctrl-card system-manage-tile system-manage-services-card widget-svc">
               <div class="ctrl-card-main">
-                <h3 class="system-manage-tile-title" data-i18n="Облако">Облако</h3>
-                <dl class="cloud-meta web-upd-meta">
-                  <div><dt data-i18n="Агент">Агент</dt><dd id="cloud-svc-state"><span class="badge badge-unk">…</span></dd></div>
-                  <div><dt data-i18n="Соединение">Соединение</dt><dd id="cloud-conn-state"><span class="badge badge-unk">…</span></dd></div>
-                  <div id="cloud-row-tunnel" hidden><dt data-i18n="Туннель">Туннель</dt><dd id="cloud-tunnel-state"><span class="badge badge-unk">…</span></dd></div>
-                  <div id="cloud-row-serial" hidden><dt data-i18n="Серийный №">Серийный №</dt><dd id="cloud-dev-serial" class="mono text-sm">—</dd></div>
-                  <div id="cloud-row-ts" hidden><dt data-i18n="Последний отчёт">Последний отчёт</dt><dd id="cloud-last-ts" class="text-sm">—</dd></div>
-                </dl>
-                <p id="cloud-unlink-info" class="field-hint text-sm" role="status" hidden></p>
-                <div id="cloud-pair-idle">
-                  <p class="field-hint cloud-pair-hint" data-i18n="Нажмите кнопку — устройство получит код сопряжения. Затем войдите в личный кабинет на cloud.cyntron.ru и введите этот код.">
-                    Нажмите кнопку — устройство получит код сопряжения. Затем войдите в
-                    личный кабинет на <b>cloud.cyntron.ru</b> и введите этот код.
-                  </p>
-                  <button type="button" class="btn btn-primary" id="cloud-btn-pair" onclick="cloudStartPairing()">Подключить к облаку</button>
-                  <div id="cloud-offline" class="conn-offline-note" role="status" hidden>
-                    <span data-i18n="нет интернета">нет интернета</span>
-                    <button type="button" class="btn btn-sm conn-recheck-btn" id="cloud-recheck" onclick="cloudRecheck()" data-i18n="Проверить снова">Проверить снова</button>
-                  </div>
-                </div>
-                <div id="cloud-pair-active" hidden>
-                  <p class="field-hint cloud-pair-hint" data-i18n="Введите этот код в личном кабинете на cloud.cyntron.ru:">
-                    Введите этот код в личном кабинете на <b>cloud.cyntron.ru</b>:
-                  </p>
-                  <div class="cloud-pair-code" id="cloud-pair-code" title="Нажмите, чтобы скопировать" onclick="cloudCopyPairCode()">
-                    <span class="cloud-copy-toast" id="cloud-copy-toast" data-i18n="Скопирован">Скопирован</span>
-                    <span id="cloud-pair-code-text">····-····</span>
-                  </div>
-                  <p class="field-hint cloud-pair-timer-line">
-                    <span data-i18n="Код действует ещё">Код действует ещё</span>
-                    <span id="cloud-pair-timer">—</span>
-                  </p>
-                  <button type="button" class="btn btn-sm" id="cloud-btn-cancel" onclick="cloudCancelPairing()">Отменить</button>
-                </div>
-                <details class="cloud-token-fallback" id="cloud-token-fallback">
-                  <summary data-i18n="Подключение по токену (для наладчиков)">Подключение по токену (для наладчиков)</summary>
-                  <div class="field">
-                    <label for="cloud-token" data-i18n="Токен активации">Токен активации</label>
-                    <input type="password" id="cloud-token" placeholder="Вставьте токен" autocomplete="off">
-                  </div>
-                  <div class="field">
-                    <label for="cloud-server" data-i18n="Облачный сервер">Облачный сервер</label>
-                    <input type="text" id="cloud-server" value="cloud.cyntron.ru">
-                  </div>
-                  <button type="button" class="btn btn-sm" id="cloud-btn-activate" onclick="cloudActivate()">Подключить по токену</button>
-                  <p id="cloud-token-offline" class="field-hint conn-offline-hint" data-i18n="нет интернета" hidden>нет интернета</p>
-                </details>
-                <div id="cloud-msg" class="cloud-msg" role="status" hidden></div>
-                <!-- «Управление из облака» (the sa02m-cloud-control unit) — moved off
-                     the «Умный дом» card in 1.0.6.29: the cloud binding, its state and
-                     its actions belong together. Its data rides the Alice-API poll (the
-                     `cloud_control` block, which cloud.cgi does not carry) — cloud.js
-                     cloudRenderControl, no second CGI poll. -->
-                <div class="cloud-ctrl-block">
-                  <div class="cloud-ctrl-row">
-                    <span class="cloud-ctrl-label" data-i18n="Управление из облака">Управление из облака</span>
-                    <span id="cloud-ctrl-state"><span class="badge badge-unk">…</span></span>
-                  </div>
-                  <button type="button" class="btn btn-sm btn-primary" id="cloud-btn-ctrl" onclick="cloudToggleControl()" disabled>…</button>
-                  <div id="cloud-ctrl-msg" class="cloud-msg" role="status" hidden></div>
-                </div>
+                <h3 class="system-manage-tile-title">Службы</h3>
+                <div id="svc-ctl-list" class="svc-list" role="list" aria-live="polite"></div>
               </div>
-              <div class="cloud-agent-ctrl system-manage-tile-foot">
-                <button type="button" class="btn btn-sm btn-danger" id="cloud-btn-agent" onclick="cloudToggleAgent()" disabled>…</button>
+              <div class="btn-group system-manage-tile-foot">
+                <button type="button" class="btn btn-sm" id="svc-ctl-refresh-btn" onclick="loadServicesControl(true)">Обновить список</button>
               </div>
             </div>
+        </div>
+        </div>
+
+        <div id="sys-pane-update" class="sys-sub-pane" data-system-pane="update" hidden>
+        <div class="dash-grid system-manage-grid">
             <div class="ctrl-card system-manage-tile system-manage-mplc-proj-card" id="mplc-proj-card">
               <div class="ctrl-card-main">
                 <h3 class="system-manage-tile-title" data-i18n="Обновление проекта MPLC">Обновление проекта MPLC</h3>
@@ -782,50 +885,6 @@
                     <button type="button" class="btn btn-sm" id="mplc-proj-cancel-btn" onclick="cancelMplcProjectPick()" data-i18n="Отменить">Отменить</button>
                   </div>
                 </div>
-              </div>
-            </div>
-            <div class="ctrl-card system-manage-tile system-manage-kernel-card" id="kernel-switch-tile">
-              <div class="ctrl-card-main">
-                <h3 class="system-manage-tile-title">Ядро и частота CPU</h3>
-                <dl class="web-upd-meta kernel-meta">
-                  <div><dt>Загружено</dt><dd id="kernel-run-label">—</dd></div>
-                </dl>
-                <p id="kernel-pending-hint" class="field-hint" style="display:none" role="status"></p>
-                <div class="field kernel-profile-field">
-                  <select id="kernel-profile-select" aria-label="Профиль ядра">
-                    <option value="smp">SMP (без Real Time)</option>
-                    <option value="rt">RT (Real Time)</option>
-                  </select>
-                  <button type="button" class="btn btn-primary kernel-apply-inline" id="kernel-apply-btn" onclick="applyKernelProfile()">Применить и перезагрузить</button>
-                  <button type="button" class="btn kernel-refresh-inline" id="kernel-refresh-btn" onclick="refreshKernelBoot()" title="Переустановить текущее ядро на загрузочный раздел">Обновить загрузочное ядро</button>
-                </div>
-                <section id="cpu-profile-section" class="cpu-profile-section" style="display:none">
-                  <h4 class="cpu-profile-section-title">Частота CPU</h4>
-                  <dl class="web-upd-meta cpu-profile-meta">
-                    <div><dt>Частота</dt><dd id="cpu-profile-freq-label">—</dd></div>
-                  </dl>
-                  <div class="field cpu-profile-field">
-                    <select id="cpu-profile-select" aria-label="Профиль частоты CPU">
-                      <option value="adaptive">Авто (адаптивная)</option>
-                      <option value="low">Минимальная</option>
-                      <option value="medium">Средняя</option>
-                      <option value="high">Высокая (адапт.)</option>
-                      <option value="performance">Максимальная</option>
-                    </select>
-                    <button type="button" class="btn btn-primary cpu-profile-apply-inline" id="cpu-profile-apply-btn" onclick="applyCpuProfile()">Применить</button>
-                  </div>
-                </section>
-              </div>
-            </div>
-            <div class="ctrl-card system-manage-tile system-manage-services-card widget-svc">
-              <div class="ctrl-card-main">
-                <h3 class="system-manage-tile-title">Службы</h3>
-                <div id="svc-ctl-list" class="svc-list" role="list" aria-live="polite">
-                  <p class="field-hint">Загрузка</p>
-                </div>
-              </div>
-              <div class="btn-group system-manage-tile-foot">
-                <button type="button" class="btn btn-sm" id="svc-ctl-refresh-btn" onclick="loadServicesControl(true)">Обновить список</button>
               </div>
             </div>
             <div class="ctrl-card system-manage-tile system-manage-web-update-card" id="web-upd-card">
@@ -896,42 +955,7 @@
                 </section>
               </div>
             </div>
-
-            <div class="system-manage-tile system-manage-command-panel dash-span-top4">
-              <h3 class="system-manage-tile-title system-manage-log-title">Командная строка</h3>
-              <div class="system-command-auth" id="cmd-root-pass-wrap" hidden>
-                <label class="field system-command-root-pass">
-                  <span>Пароль root</span>
-                  <input id="cmd-root-password" type="password" autocomplete="current-password" placeholder="Пароль root">
-                </label>
-              </div>
-              <textarea id="cmd-input" class="system-command-input" rows="3" spellcheck="false" autocomplete="off" placeholder="Например: systemctl is-active mplc4"></textarea>
-              <div class="btn-group system-command-actions">
-                <button class="btn btn-sm" type="button" onclick="clearCommandLine()">
-                  Очистить
-                </button>
-                <button class="btn btn-sm btn-primary" type="button" onclick="runCommandLine()">
-                  Выполнить
-                </button>
-              </div>
-              <div class="system-manage-log-output">
-                <pre class="log-box system-command-output" id="cmd-output"></pre>
-              </div>
-            </div>
-
-            <div class="system-manage-tile system-manage-log-panel dash-span-top4">
-              <h3 class="system-manage-tile-title system-manage-log-title">Журнал событий</h3>
-              <div class="btn-group system-manage-log-actions">
-                <button class="btn btn-sm" onclick="loadLog()">
-                  Обновить
-                </button>
-                <button class="btn btn-sm" type="button" onclick="loadSshDebug()">SSH-отладка</button>
-                <button class="btn btn-sm" type="button" onclick="exportInstallLog()">Экспорт журнала</button>
-              </div>
-              <div class="system-manage-log-output">
-                <div class="log-box" id="log-box">Нажмите «Обновить» для загрузки журнала или «SSH-отладка» для диагностики доступа по SSH</div>
-              </div>
-            </div>
+        </div>
         </div>
       </div><!-- /tab-system -->
 
@@ -1100,9 +1124,9 @@
         <div class="page-header page-header--devices">
           <div class="dev-page-title-row">
             <h2 data-i18n="Устройства">Устройства</h2>
+            <p class="page-desc muted" id="dev-history-backend">Архив: …</p>
             <button type="button" class="btn btn-primary dev-widget-add-btn" id="dev-widget-add-btn" title="Добавить ранее удалённый виджет" data-i18n="Добавить виджет">Добавить виджет</button>
           </div>
-          <p class="page-desc muted" id="dev-history-backend">Архив: …</p>
         </div>
         <div class="dev-grid" id="dev-grid">
           <p class="dev-empty muted" id="dev-empty" data-i18n="Нет устройств ДТВ / СЭ-02м-3 / Carel / MR-02m в MQTT. Добавьте их на вкладке MQTT — виджеты появятся здесь автоматически.">Нет устройств ДТВ / СЭ-02м-3 / Carel / MR-02m в MQTT. Добавьте их на вкладке MQTT — виджеты появятся здесь автоматически.</p>
@@ -1111,6 +1135,7 @@
           <div class="dev-events-head">
             <h3 id="dev-events-title" data-i18n="Журнал событий">Журнал событий</h3>
             <div class="dev-events-tools">
+              <span id="dev-events-clear-note" class="dev-events-clear-note" role="status" hidden></span>
               <span class="muted" id="dev-events-meta" data-i18n="Пиковые нагрузки СЭ · U/I">Пиковые нагрузки СЭ · U/I</span>
               <button type="button" class="btn btn-sm btn-danger dev-events-clear-btn" id="dev-events-clear-btn" title="Удалить все события журнала" data-i18n="Очистить" disabled>Очистить</button>
             </div>
@@ -1597,26 +1622,26 @@
   </div>
 </div>
 
-<script src="static/js/i18n.js?v=1.0.7.0&r=dashsvc1"></script>
-<script src="static/js/app.js?v=1.0.7.0&r=dashsvc1"></script>
+<script src="static/js/i18n.js?v=1.0.7.0&r=fwhint1"></script>
+<script src="static/js/app.js?v=1.0.7.0&r=syssub1"></script>
 <script src="static/js/app/status.js?v=1.0.7.0&r=xhrcsrf1"></script>
 <script src="static/js/app/hw.js?v=1.0.7.0&r=devhist1"></script>
 <script src="static/js/app/rs485.js?v=1.0.7.0&r=audit39a"></script>
 <script src="static/js/app/forms.js?v=1.0.7.0&r=devhist1"></script>
-<script src="static/js/app/services.js?v=1.0.7.0&r=ota52a"></script>
+<script src="static/js/app/services.js?v=1.0.7.0&r=svcfast1"></script>
 <script src="static/js/app/misc.js?v=1.0.7.0&r=hwname1"></script>
 <script src="static/js/app/init.js?v=1.0.7.0&r=cloud53a"></script>
 <script src="static/js/app/nav.js?v=1.0.7.0&r=mtdui1"></script>
 <script src="static/js/flasher/led.js?v=1.0.7.0&r=led1"></script>
-<script src="static/js/flasher.js?v=1.0.7.0&r=csrf65a"></script>
+<script src="static/js/flasher.js?v=1.0.7.0&r=fwhint1"></script>
 <script type="module" src="static/js/mqtt.js?v=1.0.7.0&r=seasonua1"></script>
-<script src="static/js/gateway.js?v=1.0.7.0&r=audit39a"></script>
-<script type="module" src="static/js/devices.js?v=1.0.7.0&r=mtdsnap1"></script>
+<script src="static/js/gateway.js?v=1.0.7.0&r=gwport1"></script>
+<script type="module" src="static/js/devices.js?v=1.0.7.0&r=evtclr1"></script>
 <script src="static/js/cloud.js?v=1.0.7.0&r=audit39a"></script>
-<script src="static/js/app/alice.js?v=1.0.7.0&r=alicegw58"></script>
+<script src="static/js/app/alice.js?v=1.0.7.0&r=syssub1"></script>
 <script src="static/js/app/smarthome.js?v=1.0.7.0&r=lamp1"></script>
-<script src="static/js/app/homekit.js?v=1.0.7.0&r=hk1"></script>
-<script src="static/js/app/homeconnect.js?v=1.0.7.0&r=hk1"></script>
+<script src="static/js/app/homekit.js?v=1.0.7.0&r=syssub1"></script>
+<script src="static/js/app/homeconnect.js?v=1.0.7.0&r=syssub1"></script>
 
 <div id="dev-modal" class="dev-modal" hidden>
   <div class="dev-modal-backdrop" id="dev-modal-backdrop"></div>

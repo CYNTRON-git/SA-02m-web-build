@@ -2,7 +2,7 @@
    cgi-bin/sa02m_homeconnect_api.cgi (JSON per action:
    docs/contracts/home-connect.md §9). READ-ONLY integration: the card links
    an account, shows its appliances and the API budget; it sends nothing to an
-   appliance. Polls every 10 s ONLY while «Управление» is the active tab and
+   appliance. Polls every 10 s ONLY while the «Умный дом» sub-tab is open and
    the page is visible (window.homeconnectTabInit/Destroy from app.js
    switchTab), plus a short chained fast-poll after an action. The sign-in
    code, its link and QR exist in the DOM only while the status says
@@ -625,20 +625,19 @@ function hcStateLine(d) {
   return null;
 }
 
-// No usable answer (timeout, 5xx, a non-status body): values «н/д», ONE
-// standing line, no sign-in code, every action refused.
+// No usable answer (timeout, 5xx, a non-status body). A missed probe keeps the
+// last real status. With none yet, this service is «не отвечает» — not the board.
 function hcRenderUnavailable() {
+  if (_hcLast && _hcLast.ok === true && typeof _hcLast.state === 'string') return;
   _hcLastFailed = true;
-  hcSetBadge(uiT('н/д'), 'unk');
+  hcSetBadge(uiT('не отвечает'), 'err');
   hcSetText('homeconnect-apps', '—');
   hcSetText('homeconnect-budget', '—');
   hcSetText('homeconnect-stream', '—');
   hcClearCode();
-  hcSetCardMsg(uiT('Нет ответа от платы'), false);
-  if (!_hcLast) {
-    const en = $('homeconnect-btn-enable');
-    if (en) { en.textContent = uiT('Включить'); en.className = 'btn btn-sm btn-primary'; }
-  }
+  hcSetCardMsg('', true);
+  const en = $('homeconnect-btn-enable');
+  if (en) { en.textContent = uiT('Включить'); en.className = 'btn btn-sm btn-primary'; }
   hcSetButtonsDisabled();
 }
 
@@ -875,9 +874,10 @@ function refreshHomeconnectI18n() {
 function hcInit() {
   if (!$('homeconnect-card')) return;
   document.addEventListener('visibilitychange', hcVisibilityChanged);
-  // A deep link straight to #system switched tabs before this file's init ran.
-  const pane = $('tab-system');
-  if (pane && pane.classList.contains('active')) homeconnectTabInit();
+  // A deep link that already opened «Умный дом» before this file's init ran.
+  const pane = $('sys-pane-home');
+  const tab = $('tab-system');
+  if (pane && !pane.hidden && tab && tab.classList.contains('active')) homeconnectTabInit();
 }
 
 // Only HTML onclick handlers and app.js / i18n.js hooks need a global handle;

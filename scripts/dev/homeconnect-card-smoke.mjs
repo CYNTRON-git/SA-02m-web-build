@@ -200,7 +200,9 @@ const CASES = [
   { name: 'offline-unlinked', p: P.offline_unlinked, badge: 'нет связи с облаком', line: 'BSH недоступно из этой сети', oneLine: true, btn: 'Выключить', link: true, unlink: false },
   { name: 'token_revoked', p: P.token_revoked, badge: 'доступ отозван', line: 'Подключите аккаунт заново', btn: 'Выключить', link: true, unlink: true },
   { name: 'error', p: P.error, badge: 'ошибка', line: 'Журнал: sa02m-homeconnect', btn: 'Выключить', link: false, unlink: false },
-  { name: 'no-answer', p: null, noanswer: true, badge: 'н/д', line: 'Нет ответа от платы', btn: null, link: false, allDisabled: true },
+  // Follows error. A missed probe keeps that status: the card must not flip
+  // to «Нет ответа от платы».
+  { name: 'no-answer', p: null, noanswer: true, badge: 'ошибка', line: 'Журнал: sa02m-homeconnect', btn: 'Выключить', link: false },
 ];
 
 /* Every contract reason, in a state that carries it, with its expected line

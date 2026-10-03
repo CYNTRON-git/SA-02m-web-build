@@ -482,6 +482,7 @@ async function aliceLinkAction() {
 let _alicePoll = null;
 let _aliceFastPoll = null;
 let _aliceFastPollGen = 0;
+let _aliceTabActive = false;
 
 // After an action that changes state on the device (cert issued → client
 // restart, enable/disable), the 5 s cadence makes the card look stuck for
@@ -519,7 +520,7 @@ function aliceFastPoll() {
   }
   const stop = function () {
     _aliceFastPoll = null;
-    if (!_alicePoll) _alicePoll = setInterval(aliceRefresh, ALICE_POLL_MS);
+    if (_aliceTabActive && !_alicePoll) _alicePoll = setInterval(aliceRefresh, ALICE_POLL_MS);
   };
   const tick = async function () {
     _aliceFastPoll = null;
@@ -541,12 +542,22 @@ function aliceFastPoll() {
   _aliceFastPoll = setTimeout(tick, 700);
 }
 
-function aliceInit() {
+// The 5 s poll runs only while «Облако» or «Умный дом» is the open sub-tab.
+// Starting it with the page held an fcgiwrap worker on every other tab.
+window.aliceTabInit = function () {
   if (!$('alice-card')) return;
+  _aliceTabActive = true;
+  if (_alicePoll || _aliceFastPoll) return;
   aliceRefresh();
-  if (_alicePoll) clearInterval(_alicePoll);
   _alicePoll = setInterval(aliceRefresh, ALICE_POLL_MS);
-}
+};
+
+window.aliceTabDestroy = function () {
+  _aliceTabActive = false;
+  if (_alicePoll) { clearInterval(_alicePoll); _alicePoll = null; }
+  if (_aliceFastPoll) { clearTimeout(_aliceFastPoll); _aliceFastPoll = null; }
+  _aliceFastPollGen += 1;
+};
 
 // Only functions invoked from HTML onclick handlers need a global handle;
 // aliceStartLink/CompleteLink/Unlink are called internally (via
@@ -558,11 +569,5 @@ window.aliceLinkAction = aliceLinkAction;
 window.sa02mAliceApi = aliceApi;
 window.sa02mAliceRefresh = aliceRefresh;
 window.sa02mAliceOnData = aliceOnData;
-
-if (document.readyState === 'loading') {
-  document.addEventListener('DOMContentLoaded', aliceInit);
-} else {
-  aliceInit();
-}
 
 })();

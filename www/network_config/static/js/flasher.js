@@ -975,9 +975,7 @@
 
     const fwHint = $('flasher-fw-hint');
     if (fwHint) {
-      if (!hasFw) {
-        fwHint.textContent = 'Выберите файл прошивки из списка или загрузите .fw вручную.';
-      } else if (!fwReady) {
+      if (hasFw && !fwReady) {
         fwHint.textContent = 'Выбранный образ не скачан в кеш шлюза. Нажмите «Скачать» или «Выбрать».';
       } else {
         fwHint.textContent = '';

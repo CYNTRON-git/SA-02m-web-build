@@ -496,6 +496,7 @@ html[data-theme="light"] .nav-item.active { color: var(--btn-primary-hover); }
 }
 .nav-sub-item:hover { background: var(--bg-hover); color: var(--text); }
 .nav-sub-item.active { color: var(--cyan); background: var(--cyan-dim, rgba(34,211,238,.08)); }
+.sys-sub-pane[hidden] { display: none !important; }
 .gw-sub-dot { margin-left: auto; font-size: .7rem; }
 .gw-sub-dot-ok  { color: var(--green); }
 .gw-sub-dot-err { color: var(--red); }
@@ -1530,6 +1531,28 @@ html[data-theme="light"] .nav-item.active { color: var(--btn-primary-hover); }
 .time-cards .btn-group {
   margin-top: 4px;
   flex-wrap: wrap;
+}
+
+/* Значения полей настроек — по центру поля. Кнопки и подписи не трогаем. */
+#tab-network .network-eth-fields input[type="text"],
+#tab-time #time-form select,
+#tab-time #time-form input[type="text"],
+#tab-system .field input:not([type="checkbox"]):not([type="file"]):not([type="hidden"]),
+#tab-system .field select,
+#tab-gateway .gw-field-control,
+#tab-flasher .flasher-field select,
+#tab-flasher .flasher-range input[type="number"] {
+  text-align: center;
+  text-align-last: center;
+}
+#tab-network .network-eth-fields input[type="text"]::placeholder,
+#tab-time #time-form input[type="text"]::placeholder,
+#tab-system .field input::placeholder,
+#tab-gateway .gw-field-control::placeholder {
+  text-align: center;
+}
+#tab-time #time-form .field-hint {
+  text-align: center;
 }
 
 #hw-variant-section {
@@ -5195,44 +5218,54 @@ html[data-theme="light"] .mqtt-ch-live-ok { color: var(--cyan-hover); }
   max-width: none;
 }
 #tab-gateway #gw-content > .widget.gw-port-panel {
-  width: max-content;
-  min-width: 680px;
+  /* Definite width, not max-content: auto-fit inside a shrink-wrapped card
+     collapsed to two tracks and dropped «Доступ по сети» onto the next row,
+     leaving a band under the short mode column. Three tracks share the card. */
+  width: 100%;
   max-width: 100%;
-  min-height: 420px;
+  min-width: 0;
   box-sizing: border-box;
 }
 #tab-gateway #gw-content > .widget.gw-port-panel .gw-form-grid {
-  /* auto-fit, not a fixed 2: the port panel gained a third settings column
-     («Доступ по сети», 1.0.6.24). Columns still never go below 280px, so a
-     narrow viewport drops to two and then to one instead of overflowing. */
-  grid-template-columns: repeat(auto-fit, minmax(280px, 1fr));
+  grid-template-columns: repeat(3, minmax(0, 1fr));
   width: 100%;
-  align-items: stretch;
+  align-items: start;
+  gap: 8px 20px;
 }
 #tab-gateway #gw-content .gw-port-col {
   display: flex;
   flex-direction: column;
-  min-height: 300px;
+  min-width: 0;
 }
 #tab-gateway #gw-content .gw-col-label {
-  margin: 0 0 6px;
+  margin: 0 0 4px;
   font-size: .78rem;
   color: var(--text-sec);
   text-transform: uppercase;
   letter-spacing: .04em;
 }
 #tab-gateway #gw-content .gw-field-row {
-  margin-bottom: 10px;
+  margin-bottom: 8px;
+}
+#tab-gateway #gw-content .gw-port-col > .gw-field-row:last-child {
+  margin-bottom: 0;
 }
 #tab-gateway #gw-content .gw-field-label {
   display: block;
   font-size: .82rem;
   color: var(--text-sec);
+  margin-bottom: 2px;
 }
 #tab-gateway #gw-content .gw-field-control {
   display: block;
   width: 100%;
-  margin-top: 4px;
+  margin-top: 0;
+  padding-top: 6px;
+  padding-bottom: 6px;
+}
+#tab-gateway #gw-content .gw-field-row > .field-hint {
+  margin-top: 2px;
+  margin-bottom: 0;
 }
 #tab-gateway #gw-content .gw-svc-summary {
   display: flex;
@@ -5260,38 +5293,38 @@ html[data-theme="light"] .mqtt-ch-live-ok { color: var(--cyan-hover); }
   color: var(--text-sec);
   text-align: center;
 }
-#tab-gateway #gw-content .gw-block-tcp {
-  min-height: 58px;
-}
-#tab-gateway #gw-content .gw-block-fmb {
-  min-height: 76px;
+#tab-gateway #gw-content .gw-block-fmb .gw-field-row {
+  margin-bottom: 0;
 }
 #tab-gateway #gw-content .gw-fmb-hint {
   font-size: .77rem;
   color: var(--text-sec);
-  margin: 0 0 10px;
+  margin: 2px 0 0;
 }
+/* Conditional rows (TCP port, Fast Modbus, open-access warning) share
+   .gw-block-collapsed. display:none — not visibility — so a hidden row keeps
+   neither its height nor its margin. The same class is toggled for every
+   COM1–COM5 panel; fields come back when the mode or allow-list needs them. */
 #tab-gateway #gw-content .gw-block-collapsed {
-  visibility: hidden;
-  pointer-events: none;
+  display: none;
 }
 /* The "this port is open to everyone" warning. Slightly larger than a plain
    field hint (it is a security statement, not a caption) and with its own
    bottom margin; it keeps `.field-hint.warn`'s themed colour, measured at
    10.98:1 dark / 5.02:1 light against the card — both above the AA 4.5:1 floor.
-   Hidden via gw-block-collapsed (visibility, not display), so switching the
-   allow-list on and off never reflows the panel. */
+   When the warning is not needed it carries .gw-block-collapsed and leaves
+   the flow, so it does not sit as an empty band above the listen address. */
 #tab-gateway #gw-content .gw-access-warn {
   font-size: .78rem;
   line-height: 1.35;
-  margin: 0 0 12px;
+  margin: 0 0 8px;
 }
 #tab-gateway #gw-content .gw-save-row {
   display: flex;
   align-items: center;
   justify-content: space-between;
   gap: 10px;
-  margin-top: 16px;
+  margin-top: 8px;
   flex-wrap: wrap;
 }
 #tab-gateway #gw-content .gw-save-status {
@@ -5345,8 +5378,8 @@ html[data-theme="light"] .mqtt-ch-live-ok { color: var(--cyan-hover); }
   align-items: flex-start;
   justify-content: space-between;
   flex-wrap: wrap;
-  gap: 10px;
-  margin-bottom: 16px;
+  gap: 8px;
+  margin-bottom: 8px;
 }
 .gw-counters {
   display: flex;
@@ -5477,6 +5510,9 @@ html[data-theme="light"] .mqtt-ch-live-ok { color: var(--cyan-hover); }
   #tab-gateway #gw-content > .widget.gw-port-panel {
     min-width: 0;
     width: 100%;
+  }
+  #tab-gateway #gw-content > .widget.gw-port-panel .gw-form-grid {
+    grid-template-columns: 1fr;
   }
   /* MQTT channel-type grid: 440px min-track can't fit — collapse to 1 column */
   .mqtt-accordion-body .mqtt-ch-widgets.dash-grid {
@@ -6087,27 +6123,34 @@ html[data-theme="light"] .mqtt-ch-live-ok { color: var(--cyan-hover); }
   width: auto; flex: 0 0 auto; padding: 0 0.7rem;
 }
 #tab-devices .dev-card--carel .dev-kpi--sp .dev-step-row {
-  width: 100%; justify-content: center; flex-wrap: wrap; gap: 2px;
+  width: 100%; justify-content: center; flex-wrap: wrap; gap: 4px;
 }
+#tab-devices .dev-card--carel .dev-kpi--sp .dev-step-row[hidden],
+#tab-devices .dev-card--carel .dev-kpi--sp .dev-step-empty[hidden] {
+  display: none !important;
+}
+/* Equal box, 50% radius: a circle. flex-shrink 0 keeps width equal to height
+   when the sixth cell is narrow (a shrinking flex item becomes an oval). */
 #tab-devices .dev-card--carel .dev-kpi--sp .dev-step-btn {
-  width: 1.5rem; height: 1.5rem; font-size: 1rem;
+  box-sizing: border-box;
+  width: 1.75rem; height: 1.75rem;
+  min-width: 1.75rem; min-height: 1.75rem; max-width: 1.75rem;
+  flex: 0 0 1.75rem;
+  aspect-ratio: 1 / 1;
+  padding: 0; margin: 0;
+  border-radius: 50%;
+  display: inline-grid; place-items: center;
+  line-height: 0; font-size: 1.05rem; text-align: center;
+}
+#tab-devices .dev-card--carel .dev-kpi--sp .dev-step-glyph {
+  display: block; line-height: 1; text-align: center;
 }
 #tab-devices .dev-card--carel .dev-kpi--sp .dev-step-val {
-  min-width: 0; font-size: 0.95rem;
+  min-width: 0; font-size: 1.7rem;
 }
-/* Setpoint snowflake and sun are uncolored labels, not controls. */
-#tab-devices .dev-season-mark {
-  width: 1.5rem; height: 1.5rem; padding: 1px;
-  display: inline-flex; align-items: center; justify-content: center;
-  flex: 0 0 auto;
-  background: transparent;
-  border: 1px solid var(--border-md);
-  border-radius: var(--radius-sm);
-  color: var(--text);
-  cursor: default;
-  pointer-events: none;
+#tab-devices .dev-card--carel .dev-step-empty {
+  font-size: 1.7rem; font-weight: 700; line-height: 1.15; color: var(--text);
 }
-#tab-devices .dev-season-ico { width: 1.05rem; height: 1.05rem; display: block; }
 /* «Сезон» is the words ЗИМА / ЛЕТО. Color is the text, not an icon box.
    Without a reading the cell is a plain «—», like «Приток». */
 #tab-devices .dev-card--carel .dev-season-val {
@@ -6170,6 +6213,7 @@ html[data-theme="light"] .mqtt-ch-live-ok { color: var(--cyan-hover); }
   #tab-devices .dev-card--carel .dev-metrics { min-height: 0; }
   #tab-devices .dev-card--carel .dev-kpi { min-height: 4.35rem; }
   #tab-devices .dev-card--carel .dev-kpi-val { font-size: 1.45rem; }
+  #tab-devices .dev-card--carel .dev-kpi--sp .dev-step-val { font-size: 1.45rem; }
   #tab-devices .dev-card--carel .dev-kpi-unit { font-size: 0.8rem; }
   /* MR: 12AI 4-col → 3-col on narrow; un-stretch the 6AI cells (as ДТВ). */
   #tab-devices .dev-metrics.dev-metrics--mr4 { grid-template-columns: repeat(3, minmax(0, 1fr)); }
@@ -6183,7 +6227,12 @@ html[data-theme="light"] .mqtt-ch-live-ok { color: var(--cyan-hover); }
   #tab-devices .dev-fan-btn,
   #tab-devices .dev-chart-btn { min-height: 44px; }
   #tab-devices .dev-step-btn { width: 44px; height: 44px; }
-  #tab-devices .dev-card--carel .dev-kpi--sp .dev-step-btn { width: 44px; height: 44px; }
+  #tab-devices .dev-card--carel .dev-kpi--sp .dev-step-btn {
+    width: 44px; height: 44px;
+    min-width: 44px; min-height: 44px; max-width: 44px;
+    flex: 0 0 44px;
+    border-radius: 50%;
+  }
   #tab-devices .dev-card--carel .dev-kpi--sp { min-height: 8.5rem; height: auto; }
   #tab-devices .dev-fan { flex-wrap: wrap; }
   #tab-devices .dev-fan-steps { flex-basis: 100%; }
@@ -6210,7 +6259,7 @@ html[data-theme="light"] .mqtt-ch-live-ok { color: var(--cyan-hover); }
   line-height: 1.2;
 }
 #tab-devices .dev-widget-add-btn:disabled { opacity: 0.45; cursor: not-allowed; }
-#tab-devices .page-header--devices .page-desc { margin-top: 4px; }
+#tab-devices .page-header--devices .page-desc { margin: 0; white-space: nowrap; }
 #tab-devices .dev-events {
   margin-top: 18px; padding: 14px 16px;
 }
@@ -6221,14 +6270,30 @@ html[data-theme="light"] .mqtt-ch-live-ok { color: var(--cyan-hover); }
 #tab-devices .dev-events-head h3 {
   margin: 0; font-size: 1rem; font-weight: 700; color: var(--text);
 }
-/* Meta + «Очистить» share the right side; the button keeps one line. */
+/* Meta + «Очистить» share the right side; the button keeps one line.
+   A clear result uses the free gap on that same row, left of the button. */
 #tab-devices .dev-events-tools {
   display: flex; flex-wrap: wrap; align-items: center; justify-content: flex-end;
   gap: 8px 12px; margin-left: auto;
 }
 #tab-devices .dev-events-clear-btn { flex: 0 0 auto; }
+#tab-devices .dev-events-clear-note {
+  flex: 1 1 auto; min-width: 0; margin: 0;
+  text-align: right; font-size: 0.84rem; font-weight: 500; line-height: 1.3;
+  white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+}
+#tab-devices .dev-events-clear-note[hidden] { display: none; }
+/* --badge-ok-fg on --bg-card: dark #32d74b/#242426 ≈ 8.3:1; light #177a33/#ffffff ≈ 5.3:1.
+   --red on --bg-card: dark #ff453a/#242426 ≈ 4.7:1; light #c41e3a/#ffffff ≈ 5.8:1. */
+#tab-devices .dev-events-clear-note--success { color: var(--badge-ok-fg); }
+#tab-devices .dev-events-clear-note--error { color: var(--red); }
+#tab-devices .dev-events-head--note .dev-events-tools {
+  margin-left: 12px; flex-grow: 1; flex-shrink: 1; min-width: 0; flex-wrap: nowrap;
+}
+#tab-devices .dev-events-head--note h3 { flex: 0 0 auto; }
 @media (max-width: 560px) {
   #tab-devices .dev-events-tools { flex-basis: 100%; justify-content: space-between; }
+  #tab-devices .dev-events-head--note .dev-events-tools { flex-basis: 100%; margin-left: 0; }
 }
 #tab-devices .dev-events-table-wrap {
   overflow: auto; max-height: min(42vh, 360px);
