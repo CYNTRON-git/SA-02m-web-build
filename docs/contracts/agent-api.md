@@ -134,7 +134,9 @@ CSRF. POST с **cookie-сессией** на `/api/v1/admin/*` без верно
 
 Долгое (`shell.exec`, прошивка, обновление, ядро, перезагрузка, factory reset,
 деплой MPLC, `user.pip`, установка узла Node-RED, `backup.download`, `mqtt.scan`)
-отвечает сразу `{"ok":true,"job_id":"..."}`. Результат — `GET /api/v1/jobs/<id>`
+отвечает сразу `{"ok":true,"job_id":"..."}`. Неверные аргументы (нет `port` у
+`mqtt.scan`, пустая команда у `shell.exec`) отвечают сразу кодом ошибки, без
+задания. Результат — `GET /api/v1/jobs/<id>`
 (`job.result` — тот же объект, что вернул бы прямой вызов; при ошибке в нём есть
 `status`), события — `GET /api/v1/jobs/<id>/events` (`text/event-stream`). Чужой
 `job_id` — 404. `"wait": true` в теле — ответ синхронно, без задания (nginx держит

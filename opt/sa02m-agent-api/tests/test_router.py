@@ -165,6 +165,18 @@ class Router(unittest.TestCase):
         self.assertEqual(status, 200)
         self.assertNotIn("job_id", body)
 
+    def test_long_op_rejects_bad_args_before_a_job(self):
+        self.app.sink = None
+        self.app.inline_jobs = False
+        _row, cfg = self.app.store.issue("c", ["config"], 1, False)
+        status, body = self.app.handle(
+            "POST", "/api/v1/mqtt/scan", {"X-SA02M-Token": cfg}, b"{}")
+        self.assertEqual(status, 400, body)
+        self.assertEqual(body.get("error"), "bad_request")
+        self.assertEqual(body.get("reason"), "port")
+        self.assertNotIn("job_id", body)
+        self.assertEqual(self.app.jobs._jobs, {})
+
     def test_rules_ops_build_the_store_body(self):
         from sa02m_agent_api import ops as ops_mod
         from sa02m_agent_api.registry import get

@@ -8,8 +8,9 @@ GUIDE = """\
 
 Чтение — GET /api/v1/<домен>/<глагол>?ключ=значение или tools/call.
 Мутация — POST JSON. Долгое по REST сразу отдаёт job_id; результат —
-GET /api/v1/jobs/<id>. "wait": true отвечает синхронно. MCP долгий
-инструмент тоже отвечает синхронно.
+GET /api/v1/jobs/<id>. Неверные аргументы — ошибка сразу, без job_id.
+"wait": true отвечает синхронно. MCP долгий инструмент тоже отвечает
+синхронно.
 
 rules.run и rules.delete — {"id": "<id>"}. rules.upsert — {"scenarios": [строка]}.
 mqtt.scan требует port (/dev/…). mqtt.publish — device, control, value.

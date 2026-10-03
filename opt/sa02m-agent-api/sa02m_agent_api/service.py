@@ -125,11 +125,18 @@ class Ctx:
         self.session = app.session
         self.run = app.run
         self.sink = app.sink
+        # Long ops validate in the handler, then hand the slow call to side().
+        # defer keeps that call off the request thread without skipping the checks.
+        self.defer = False
+        self.deferred = None
 
     def side(self, name, fn):
         self.app.sides.append(name)
         if self.sink is not None:
             return self.sink(name)
+        if self.defer:
+            self.deferred = fn
+            return 200, {"ok": True}
         return fn()
 
     def rules_apply(self, body):
@@ -387,15 +394,34 @@ class App:
         def run():
             return op.handler(ctx, args)
 
-        def run_job():
+        def job_body(result):
             # The job record keeps the same shape a direct answer has: the
             # payload dict, with the HTTP status folded in when it is an error.
-            status, payload = _normalize(run())
-            if status >= 400:
+            status, payload = _normalize(result)
+            if status >= 400 and isinstance(payload, dict):
                 payload = dict(payload, status=status)
             return payload
 
         if op.long and not self.inline_jobs and args.get("wait") is not True:
+            if self.sink is None:
+                ctx.defer = True
+                try:
+                    result = run()
+                except Exception as exc:  # noqa: BLE001
+                    self._audit(principal, op.name, False, args, type(exc).__name__)
+                    return 500, {"ok": False, "error": "internal"}
+                if ctx.deferred is None:
+                    status, payload = _normalize(result)
+                    self._audit(principal, op.name, status < 400 and payload.get("ok") is not False,
+                                args, "" if status < 400 else str(payload.get("error") or ""))
+                    return status, payload
+                work = ctx.deferred
+            else:
+                work = run
+
+            def run_job():
+                return job_body(work())
+
             jid = self.jobs.start(principal.token_id, run_job)
             self._audit(principal, op.name, True, args, "job")
             return 200, {"ok": True, "job_id": jid}

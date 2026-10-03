@@ -152,6 +152,9 @@ curl -sS -H "X-SA02M-Token: $TOK" -H 'Content-Type: application/json' \
 {"ok": true, "job_id": "0123456789abcdef"}
 ```
 
+Неверное тело (нет `port` у `mqtt.scan`, пустая команда у `shell.exec`) — сразу
+ошибка, `job_id` нет. Задание не создаётся.
+
 Результат:
 
 ```bash
