@@ -211,6 +211,15 @@ MB2WS_CMD_CLEAR_POOL = 2
 MB2WS_CMD_SAVE_FLASH_DEPRECATED = 3
 MB2WS_CMD_LOAD_FLASH = 4
 
+# User colour 1 (firmware MB2WS_REG_USER_COLOR_BASE, svc_mb_mb2ws.h).
+# rgbw_sync_fx_from_mb2ws copies this RGB565 into FX color1 on every frame.
+# fx_run_static fills every pixel with color1; fx_set_px then scales by
+# FxParam 407. PWM holdings 33..35 are the power channels and do not paint
+# the addressable matrices. Value 0 is the unset sentinel and the engine
+# paints white, not black. The register sits outside 400..419 (not
+# lock-gated) and is not in the EEPROM persist list.
+MB2WS_USER_COLOR = 434
+
 RGBW_CMD_ALLOWED: Tuple[int, ...] = (
     MB2WS_CMD_NONE,
     MB2WS_CMD_REFRESH,
@@ -1130,6 +1139,30 @@ def rgbw_rgb565_to_rgb8(v: int) -> Tuple[int, int, int]:
     g = (x >> 5) & 0x3F
     b = x & 0x1F
     return (r * 255) // 31, (g * 255) // 63, (b * 255) // 31
+
+
+def rgbw_rgb8_to_user_color(r: int, g: int, b: int) -> int:
+    """8-bit RGB → holding 434.
+
+    A zero word is the firmware unset sentinel (the engine paints white), so
+    an explicit black, or a colour that quantises to 0, is stored as 1.
+    """
+    word = rgbw_rgb565_from_rgb8(r, g, b) & 0xFFFF
+    if word == 0:
+        return 1
+    return word
+
+
+def rgbw_user_color_to_hex(word: int) -> str:
+    """Holding 434 → '#RRGGBB'.
+
+    0 is the unset sentinel: the engine paints white, so the published form
+    is ``#FFFFFF`` rather than a black the panel is not showing.
+    """
+    w = int(word) & 0xFFFF
+    if w == 0:
+        return "#FFFFFF"
+    return rgbw_rgb565_to_hex(w)
 
 
 def rgbw_hex_to_rgb565(s: str) -> int:

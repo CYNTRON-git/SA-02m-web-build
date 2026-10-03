@@ -37,13 +37,13 @@ CONTROLS: Tuple[Tuple[str, str, str, bool, Optional[int]], ...] = (
     ("effect_group", "text",   "",  True,  None),
     ("speed",        "range",  "",  False, lm.MB2WS_FX_SPEED),
     ("scene_source", "value",  "",  False, lm.MB2WS_RENDER_SOURCE),
-    # --- power PWM channels (product low map, permille 0..1000) ---------------
-    # `color` carries the R/G/B triple of holdings 33..35 as `#RRGGBB`, the form
-    # the Alice bridge's mqtt_to_color_setting() already accepts
-    # (opt/sa02m-alice/.../converters.py). The W channel is NOT part of an RGB
-    # triple, so it keeps its own control rather than a fourth hex byte nothing
-    # downstream would parse.
-    ("color",        "rgb",    "",  False, lm.RGBW_PWM_HOLDING_BASE),
+    # --- addressable colour (holding 434) and power PWM ----------------------
+    # `color` is user-colour 1, RGB565. Static FX fills the matrices from it
+    # (fx_run_static → color1), scaled by brightness (FxParam 407). The form
+    # on the wire to MQTT is still `#RRGGBB`, which mqtt_to_color_setting
+    # already accepts. Holdings 33..35 are the power PWM channels and do not
+    # paint those pixels; the W channel stays its own control.
+    ("color",        "rgb",    "",  False, lm.MB2WS_USER_COLOR),
     ("white",        "range",  "",  False, lm.RGBW_PWM_HOLDING_BASE + 3),
     ("pwm_mode",     "value",  "",  True,  lm.RGBW_PWM_STRIP_MODE_HOLDING),
     # --- marquee text ---------------------------------------------------------

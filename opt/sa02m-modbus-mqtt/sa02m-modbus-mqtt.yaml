@@ -175,5 +175,6 @@ devices:
   #   # weather_lines побеждает text_lines (rgbw_text_lines_from_yaml).
   #   matrix_layout: 0x0408   # TileCount=4 + SWAP_XY 90° CW, MIRROR_X off
   #   text_lines: 1           # reg 494 = 1 (not two-line weather)
-  #   effect: 0               # STATIC — weather FX 64 is not restored
-  #   brightness: 255
+  #   effect: 0               # STATIC fill: color1 is holding 434, scaled by 407
+  #   brightness: 40          # never 255 together with led_count 1024
+  #   led_count: 1024         # 4×16×16; poller writes 407 before 400

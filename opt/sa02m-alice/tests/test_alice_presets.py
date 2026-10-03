@@ -96,15 +96,28 @@ class TestLampAndCurtainDocuments(unittest.TestCase):
     def test_lamp_discovery_is_power_brightness_and_rgb(self):
         reg = DeviceRegistry({"rooms": [], "devices": [_lamp()]})
         caps = reg.discovery_devices()[0]["capabilities"]
-        kinds = [(c["type"], (c.get("parameters") or {}).get("instance")) for c in caps]
+        kinds = [
+            (
+                c["type"],
+                (c.get("parameters") or {}).get("instance"),
+                (c.get("parameters") or {}).get("color_model"),
+            )
+            for c in caps
+        ]
         self.assertEqual(kinds, [
-            ("devices.capabilities.on_off", None),
-            ("devices.capabilities.range", "brightness"),
-            ("devices.capabilities.color_setting", "rgb"),
+            ("devices.capabilities.on_off", None, None),
+            ("devices.capabilities.range", "brightness", None),
+            ("devices.capabilities.color_setting", None, "rgb"),
         ])
         bright = caps[1]["parameters"]["range"]
         self.assertEqual((bright["min"], bright["max"], bright["precision"]), (0, 255, 1))
         self.assertNotIn("scale", caps[2]["parameters"])
+        self.assertNotIn("instance", caps[2]["parameters"])
+        cloud = DeviceRegistry(
+            {"rooms": [], "devices": [_lamp()]},
+        ).discovery_devices(C.PROFILE_CLOUD)[0]["capabilities"][2]
+        self.assertEqual(cloud["parameters"]["instance"], "rgb")
+        self.assertNotIn("color_model", cloud["parameters"])
         blob = str(caps)
         self.assertNotIn("white", blob)
         self.assertNotIn("temperature", blob)

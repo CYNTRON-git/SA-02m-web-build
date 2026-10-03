@@ -206,6 +206,11 @@ class LedPoller(DevicePoller):
         out: dict = {"base": [int(v) & 0xFFFF for v in base]}
         out["pwm"] = self._read_optional(
             "holding", lm.RGBW_PWM_HOLDING_BASE, lm.RGBW_PWM_CHANNELS)
+        # 434 is the FX color1 word. It is not inside 400..419 and not next
+        # to the PWM block, so it is its own read. A miss publishes no colour
+        # rather than the power-channel triple, which does not paint pixels.
+        user = self._read_optional("holding", lm.MB2WS_USER_COLOR, 1)
+        out["user_color"] = None if user is None else int(user[0]) & 0xFFFF
         # 33..36 and 49 are separated by addresses this product's low map does
         # not document as mapped, and one unmapped address fails a whole block.
         mode = self._read_optional(
@@ -243,6 +248,10 @@ class LedPoller(DevicePoller):
             "led_type": str(reg(lm.MB2WS_LED_TYPE)),
             "line_mode": str(reg(lm.MB2WS_LINE_MODE)),
         }
+        raw_color = snap.get("user_color")
+        out["color"] = (
+            None if raw_color is None else lm.rgbw_user_color_to_hex(raw_color)
+        )
         raw_lines = snap.get("text_lines")
         out["text_lines"] = (
             None if raw_lines is None
@@ -259,11 +268,9 @@ class LedPoller(DevicePoller):
         mode = snap.get("pwm_mode")
         out = {"pwm_mode": None if mode is None else str(mode)}
         if pwm is None or len(pwm) < lm.RGBW_PWM_CHANNELS:
-            out["color"] = None
             out["white"] = None
             return out
-        r, g, b, w = (int(v) & 0xFFFF for v in pwm[:lm.RGBW_PWM_CHANNELS])
-        out["color"] = lm.rgbw_pwm_permille_to_hex(r, g, b)
+        w = int(pwm[3]) & 0xFFFF
         out["white"] = str(w)
         return out
 
@@ -293,60 +300,82 @@ class LedPoller(DevicePoller):
     # is marked applied and the poller goes quiet instead of re-running the
     # lock-bracketed batch every poll_s on a COM shared with Carel and MPLC4.
     YAML_RESTORE_ATTEMPTS = 3
+    # FxParam 255 with a long strip lights every panel at full power. 40 is
+    # the modest level written BEFORE LedCount when the yaml would otherwise
+    # leave brightness at full scale. It is not a second config home: the
+    # yaml `brightness` key still wins when it is already below full scale.
+    _MODEST_FX_BRIGHTNESS = 40
+
+    def _base_reg(self, snap: dict, address: int) -> int:
+        return int(snap["base"][address - lm.MB2WS_LOCK_GATED_FIRST]) & 0xFFFF
+
+    def _set_base_reg(self, snap: dict, address: int, value: int) -> None:
+        snap["base"][address - lm.MB2WS_LOCK_GATED_FIRST] = int(value) & 0xFFFF
 
     def _apply_yaml_defaults(self, snap: dict) -> None:
-        """One-shot restore of the FOUR yaml-pinned registers, so a strip
-        restart (or a hand edit from the flasher window) cannot silently drift
-        from the yaml: 418 matrix layout (`matrix_layout` & co.), 494 text
-        lines (`weather_lines` / `text_lines`), the FX id (`effect`) and the FX
-        parameter, i.e. brightness (`brightness`). The last two DO override a
-        live effect/brightness a user set from the flasher window — a yaml that
-        pins them is the declared source of truth for them.
+        """One-shot restore of the yaml-pinned registers.
 
-        418 and the FX pair are lock-gated; 494 is not. Live values that already
-        match are left alone — this is a restore path, not a rewrite every poll.
-        Bounded: a failing write is retried on the next poll at most
-        YAML_RESTORE_ATTEMPTS times, then given up (logged) — never a batch
-        re-issued on every poll for the life of the process.
+        Layout 418, text lines 494, FX id (`effect`) and FX brightness
+        (`brightness`) are the original four. `led_count` (holding 400) is
+        restored the same way so a restart does not collapse the 4×16×16
+        chain back to one pixel. Static FX id 0 is the brightness-and-colour
+        fill (color1 is holding 434, scaled by 407), not an animation.
+
+        LedCount is its own lock bracket and is never in the same batch as
+        brightness: the map orders 400 before 407, which would grow the strip
+        while it is still at full brightness. A pinned count above 1 refuses
+        a full-scale brightness (255) and writes the modest level first.
+        400 does not fit the pixel format → the count is not written.
+        494 is not lock-gated. Live values that already match are left alone.
+        A failing write is retried on the next poll at most
+        YAML_RESTORE_ATTEMPTS times, then given up.
         """
         if self._yaml_applied:
             return
         self._yaml_attempts += 1
-        settings: dict = {}
+        full = lc.RANGE_LIMITS["brightness"][1]
         layout = lm.rgbw_layout_from_yaml(self.cfg)
-        if layout is not None:
-            live = snap["base"][lm.MB2WS_MATRIX_LAYOUT - lm.MB2WS_LOCK_GATED_FIRST]
-            if int(live) != int(layout):
-                settings[lm.MB2WS_MATRIX_LAYOUT] = int(layout)
-        fx = self.cfg.get("effect")
-        if fx is not None:
-            live_fx = lm.rgbw_resolve_fx_id(
-                snap["base"][lm.MB2WS_FX_ID - lm.MB2WS_LOCK_GATED_FIRST]
-            )
-            if live_fx != int(fx):
-                settings[lm.MB2WS_FX_ID] = int(fx)
-        br = self.cfg.get("brightness")
-        if br is not None:
-            live_br = snap["base"][lm.MB2WS_FX_PARAM - lm.MB2WS_LOCK_GATED_FIRST]
-            want_br = _clamp(int(br), *lc.RANGE_LIMITS["brightness"])
-            if int(live_br) != want_br:
-                settings[lm.MB2WS_FX_PARAM] = want_br
         lines = lm.rgbw_text_lines_from_yaml(self.cfg)
+        pinned_count = _yaml_led_count(self.cfg)
+        want_br = None
+        if self.cfg.get("brightness") is not None:
+            want_br = _clamp(int(self.cfg.get("brightness")), *lc.RANGE_LIMITS["brightness"])
+        if pinned_count is not None and pinned_count > 1 and (
+            want_br is None or want_br >= full
+        ):
+            want_br = self._MODEST_FX_BRIGHTNESS
         try:
+            live_br = self._base_reg(snap, lm.MB2WS_FX_PARAM)
+            if want_br is not None and live_br != want_br:
+                self._write_settings({lm.MB2WS_FX_PARAM: want_br})
+                self._set_base_reg(snap, lm.MB2WS_FX_PARAM, want_br)
+                live_br = want_br
+            settings: dict = {}
+            if layout is not None and self._base_reg(snap, lm.MB2WS_MATRIX_LAYOUT) != int(layout):
+                settings[lm.MB2WS_MATRIX_LAYOUT] = int(layout)
+            fx = self.cfg.get("effect")
+            if fx is not None:
+                live_fx = lm.rgbw_resolve_fx_id(self._base_reg(snap, lm.MB2WS_FX_ID))
+                if live_fx != int(fx):
+                    settings[lm.MB2WS_FX_ID] = int(fx)
             if settings:
                 self._write_settings(settings)
                 if lm.MB2WS_MATRIX_LAYOUT in settings:
-                    snap["base"][lm.MB2WS_MATRIX_LAYOUT - lm.MB2WS_LOCK_GATED_FIRST] = (
-                        settings[lm.MB2WS_MATRIX_LAYOUT]
-                    )
+                    self._set_base_reg(snap, lm.MB2WS_MATRIX_LAYOUT, settings[lm.MB2WS_MATRIX_LAYOUT])
                 if lm.MB2WS_FX_ID in settings:
-                    snap["base"][lm.MB2WS_FX_ID - lm.MB2WS_LOCK_GATED_FIRST] = (
-                        settings[lm.MB2WS_FX_ID]
-                    )
-                if lm.MB2WS_FX_PARAM in settings:
-                    snap["base"][lm.MB2WS_FX_PARAM - lm.MB2WS_LOCK_GATED_FIRST] = (
-                        settings[lm.MB2WS_FX_PARAM]
-                    )
+                    self._set_base_reg(snap, lm.MB2WS_FX_ID, settings[lm.MB2WS_FX_ID])
+            if pinned_count is not None and self._base_reg(snap, lm.MB2WS_LED_COUNT0) != pinned_count:
+                if live_br >= full:
+                    self.log.warning(
+                        "led yaml: refused LedCount %s while brightness is %s",
+                        pinned_count, live_br)
+                elif not _led_count_fits(snap, pinned_count):
+                    self.log.warning(
+                        "led yaml: refused LedCount %s — it does not fit the pixel format",
+                        pinned_count)
+                else:
+                    self._write_settings({lm.MB2WS_LED_COUNT0: pinned_count})
+                    self._set_base_reg(snap, lm.MB2WS_LED_COUNT0, pinned_count)
             if lines is not None and snap.get("text_lines") != lines:
                 self._wb_write_retry(
                     lambda: self.write_register(
@@ -439,7 +468,9 @@ class LedPoller(DevicePoller):
         """Alice/cloud on_off → light or black, never weather FX 64.
 
         ON writes STATIC (or yaml `effect`) + RenderSource=FX + Play, in one
-        lock bracket. STOP alone leaves the last meteo frame on the LEDs;
+        lock bracket. Static is the solid fill: color1 (holding 434) scaled
+        by FxParam 407, not an animation and not the power-PWM triple.
+        STOP alone leaves the last meteo frame on the LEDs;
         OFF walks `rgbw_stop_blank_writes` in that list's order (402 before
         416 would be the map's address sort — the plan order is load-bearing).
         """
@@ -514,16 +545,19 @@ class LedPoller(DevicePoller):
         self._wb_done("white", str(value))
 
     def _wb_color(self, payload: str) -> None:
-        """The R/G/B triple 33..35 in ONE FC16.
+        """Holding 434, the RGB565 word FX color1 is filled from.
 
-        Three FC06 writes would put a wrong colour on the LEDs between frames;
-        one transaction cannot.
+        Static mode paints every pixel from that word, then brightness
+        (FxParam 407) scales it. The power-PWM triple 33..35 does not.
+        One FC06: the register is a single word, and it is not lock-gated.
         """
-        triple = _parse_color(payload)
-        if triple is None:
+        rgb = _parse_color(payload)
+        if rgb is None:
             raise ValueError("unparseable colour payload %r" % (payload,))
-        self._write_block(lm.RGBW_PWM_HOLDING_BASE, triple)
-        self._wb_done("color", lm.rgbw_pwm_permille_to_hex(*triple))
+        word = lm.rgbw_rgb8_to_user_color(*rgb)
+        self._wb_write_retry(
+            lambda: self.write_register(self.address, lm.MB2WS_USER_COLOR, word))
+        self._wb_done("color", lm.rgbw_user_color_to_hex(word))
 
     def _wb_text(self, payload: str) -> None:
         """The marquee window — always the full 64 registers at the CURRENT base.
@@ -562,23 +596,43 @@ def _bool_payload(payload: str) -> bool:
     raise ValueError("unrecognised switch payload %r" % (payload,))
 
 
+def _yaml_led_count(cfg: dict):
+    """Yaml `led_count` → holding 400, or None when the key is absent or absurd."""
+    raw = cfg.get("led_count")
+    if raw is None:
+        return None
+    try:
+        n = int(raw)
+    except (TypeError, ValueError):
+        return None
+    if n < 1 or n > lm.MB2WS_MAX_PX0_RGB:
+        return None
+    return n
+
+
+def _led_count_fits(snap: dict, count: int) -> bool:
+    """True when `count` survives the map's pool clamp for this snapshot."""
+    base = snap["base"]
+    origin = lm.MB2WS_LOCK_GATED_FIRST
+    pf = int(base[lm.MB2WS_PIXEL_FORMAT - origin]) & 0xFFFF
+    n1 = int(base[lm.MB2WS_LED_COUNT1 - origin]) & 0xFFFF
+    return lm.rgbw_matrix_fits_pool(count, pixel_format=pf, led_count1=n1)
+
+
 def _parse_color(payload: str):
-    """Colour payload → the PWM permille triple, or None when unparseable.
+    """Colour payload → an 8-bit RGB triple, or None when unparseable.
 
-    THREE forms are accepted and the choice is not cosmetic — see
-    docs/MQTT_TOPICS.md «Формат `color`»:
+    THREE forms are accepted:
 
-      * `#RRGGBB` — the form this poller PUBLISHES, and the one the Alice bridge
-        already reads (sa02m_alice.client.converters.mqtt_to_color_setting);
-      * a decimal 24-bit integer — what that same Alice bridge WRITES BACK
-        (yandex_to_color_setting emits `str(int(value))`). Refusing it would
-        break the round trip in the one consumer this control has;
-      * `R;G;B` 0..255 — the Wiren Board convention for a control of type `rgb`,
-        so a wb-rules script or a WB-aware client is not silently misread.
+      * `#RRGGBB` — the form this poller PUBLISHES, and the one the Alice
+        bridge writes (`yandex_to_color_setting`);
+      * a decimal 24-bit integer — the older Alice write form, still accepted
+        so a retained command is not dropped;
+      * `R;G;B` 0..255 — the Wiren Board convention for a control of type `rgb`.
 
-    Bare `RRGGBB` without the `#` is NOT hex here: it is ambiguous with the
-    decimal form (`255000` is a valid value in both) and the Alice reader draws
-    the same line, requiring the `#`.
+    Bare `RRGGBB` without the `#` is NOT hex: it is ambiguous with the decimal
+    form. The register itself is RGB565 (holding 434); quantising is the
+    writer's job, not this parser's.
     """
     t = str(payload or "").strip()
     if not t:
@@ -593,13 +647,23 @@ def _parse_color(payload: str):
             return None
         if any(v < 0 or v > 255 for v in rgb):
             return None
-        return tuple(lm.rgbw_rgb8_to_permille(v) for v in rgb)
+        return tuple(rgb)
     if t.startswith("#"):
-        return lm.rgbw_hex_to_pwm_permille(t)
+        return _hex_rgb8(t)
     try:
         packed = int(float(t))
     except ValueError:
         return None
     if packed < 0 or packed > 0xFFFFFF:
         return None
-    return lm.rgbw_hex_to_pwm_permille("#%06X" % packed)
+    return _hex_rgb8("#%06X" % packed)
+
+
+def _hex_rgb8(s: str):
+    t = str(s or "").strip().lstrip("#")
+    if len(t) != 6:
+        return None
+    try:
+        return (int(t[0:2], 16), int(t[2:4], 16), int(t[4:6], 16))
+    except ValueError:
+        return None

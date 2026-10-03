@@ -130,6 +130,7 @@ def led_bank():
     for i, v in enumerate((r, g, b, 250)):
         regs[("h", lm.RGBW_PWM_HOLDING_BASE + i)] = v
     regs[("h", lm.RGBW_PWM_STRIP_MODE_HOLDING)] = 0
+    regs[("h", lm.MB2WS_USER_COLOR)] = lm.rgbw_rgb8_to_user_color(0xFF, 0x80, 0x00)
     # Live analog inputs and the family DI block.
     regs[("i", lm.RGBW_IREG_NTC)] = 315
     regs[("i", lm.RGBW_IREG_VLED)] = 1198
@@ -205,8 +206,9 @@ class TestPoll(unittest.TestCase):
         p.poll_io()
         self.assertEqual(_published(pub)["effect"], "62")
 
-    def test_colour_is_published_as_hex_from_the_pwm_triple(self):
-        self.assertEqual(self.values["color"], BANK_COLOR_HEX)
+    def test_colour_is_published_as_hex_from_user_color(self):
+        word = lm.rgbw_rgb8_to_user_color(0xFF, 0x80, 0x00)
+        self.assertEqual(self.values["color"], lm.rgbw_user_color_to_hex(word))
         self.assertEqual(self.values["white"], "250")
 
     def test_the_analog_inputs_carry_their_scale(self):
@@ -264,7 +266,8 @@ class TestOptionalBlocks(unittest.TestCase):
         p, pub, _s = _poller(blind=[("i", lm.RGBW_DI_INPUT_BASE),
                                     ("i", lm.RGBW_IREG_NTC),
                                     ("h", lm.RGBW_PWM_HOLDING_BASE),
-                                    ("h", lm.RGBW_PWM_STRIP_MODE_HOLDING)])
+                                    ("h", lm.RGBW_PWM_STRIP_MODE_HOLDING),
+                                    ("h", lm.MB2WS_USER_COLOR)])
         p.poll_io()
         self.assertTrue(p._online)
         self.assertEqual(p._fail_count, 0)
@@ -480,6 +483,22 @@ class TestYamlDefaults(unittest.TestCase):
         self.assertEqual(_published(pub)["text_lines"], "1")
         self.assertEqual(_published(pub)["effect"], "0")
 
+    def test_length_is_written_only_after_brightness_drops_below_full(self):
+        """LedCount 1024 at FxParam 255 would light every panel at full power."""
+        regs = led_bank()
+        regs[("h", lm.MB2WS_FX_PARAM)] = 255
+        regs[("h", lm.MB2WS_LED_COUNT0)] = 1
+        p, _pub, ser = _poller(
+            regs, matrix_layout=0x0408, effect=0, brightness=255, led_count=1024,
+        )
+        p.poll_io()
+        bright = [w for w in ser.writes if w[0] == "reg" and w[1] == lm.MB2WS_FX_PARAM]
+        count = [w for w in ser.writes if w[0] == "reg" and w[1] == lm.MB2WS_LED_COUNT0]
+        self.assertEqual(len(count), 1)
+        self.assertEqual(count[0][2], 1024)
+        self.assertTrue(bright)
+        self.assertLess(bright[0][2], 255)
+        self.assertLess(ser.writes.index(bright[0]), ser.writes.index(count[0]))
 
     def test_a_failing_restore_is_bounded_not_retried_every_poll(self):
         """E11: a persistent write failure must not re-run the lock-bracketed
@@ -522,31 +541,33 @@ class TestColourForm(unittest.TestCase):
         p.poll_io()
         published = _published(pub)["color"]
         block = alice_cv.mqtt_to_color_setting(published, {"instance": "rgb"})
-        self.assertEqual(block["state"]["value"], 0xFF8000)
+        self.assertEqual(block["state"]["value"], int(published[1:], 16))
+        self.assertEqual(
+            published,
+            lm.rgbw_user_color_to_hex(lm.rgbw_rgb8_to_user_color(0xFF, 0x80, 0x00)),
+        )
 
     def test_what_the_alice_bridge_writes_back_is_accepted(self):
-        """`yandex_to_color_setting` emits a DECIMAL int, not the hex it reads.
+        """Alice writes `#RRGGBB`. The poller stores it as RGB565 in holding 434.
 
-        Accepting only `#RRGGBB` would break the round trip in the one consumer
-        this control has, and the failure would be silent: the writeback would
-        raise inside the worker and the strip would simply not change colour.
+        The power-PWM triple is not the pixel colour. A zero word is the
+        firmware white sentinel, so black is stored as 1.
         """
         payload, err = alice_cv.yandex_to_color_setting(
             {"instance": "rgb", "value": 0xFF8000})
         self.assertIsNone(err)
         p, pub, ser = _poller()
         p._writeback("color", payload)
-        self.assertEqual(ser.writes,
-                         [("regs", lm.RGBW_PWM_HOLDING_BASE,
-                           list(lm.rgbw_hex_to_pwm_permille(BANK_COLOR_HEX)))])
-        self.assertEqual(_published(pub)["color"], BANK_COLOR_HEX)
+        word = lm.rgbw_rgb8_to_user_color(0xFF, 0x80, 0x00)
+        self.assertEqual(ser.writes, [("reg", lm.MB2WS_USER_COLOR, word)])
+        self.assertNotEqual(ser.writes[0][1], lm.RGBW_PWM_HOLDING_BASE)
+        self.assertEqual(_published(pub)["color"], lm.rgbw_user_color_to_hex(word))
 
     def test_the_wiren_board_triple_form_is_accepted(self):
         p, _pub, ser = _poller()
         p._writeback("color", "255;128;0")
-        self.assertEqual(ser.writes,
-                         [("regs", lm.RGBW_PWM_HOLDING_BASE,
-                           list(lm.rgbw_hex_to_pwm_permille(BANK_COLOR_HEX)))])
+        word = lm.rgbw_rgb8_to_user_color(255, 128, 0)
+        self.assertEqual(ser.writes, [("reg", lm.MB2WS_USER_COLOR, word)])
 
     def test_a_bare_six_digit_payload_is_decimal_not_hex(self):
         """`255000` is valid in both forms; the `#` is what disambiguates.
@@ -556,27 +577,31 @@ class TestColourForm(unittest.TestCase):
         """
         p, _pub, ser = _poller()
         p._writeback("color", "255000")
-        expected = lm.rgbw_hex_to_pwm_permille("#%06X" % 255000)
-        self.assertEqual(ser.writes,
-                         [("regs", lm.RGBW_PWM_HOLDING_BASE, list(expected))])
+        rgb = ((255000 >> 16) & 0xFF, (255000 >> 8) & 0xFF, 255000 & 0xFF)
+        word = lm.rgbw_rgb8_to_user_color(*rgb)
+        self.assertEqual(ser.writes, [("reg", lm.MB2WS_USER_COLOR, word)])
 
-    def test_the_colour_is_one_transaction(self):
-        """Three FC06 would put a wrong colour on the LEDs between frames."""
+    def test_the_colour_is_one_register(self):
+        """One FC06. The word is a single holding, not the PWM triple."""
         p, _pub, ser = _poller()
         p._writeback("color", "#102030")
         self.assertEqual(len(ser.writes), 1)
-        self.assertEqual(ser.writes[0][0], "regs")
+        self.assertEqual(ser.writes[0][0], "reg")
+        self.assertEqual(ser.writes[0][1], lm.MB2WS_USER_COLOR)
 
-    def test_an_eight_bit_colour_survives_the_round_trip(self):
-        """Written hex → permille → published hex must be the SAME hex.
+    def test_black_is_not_stored_as_the_white_sentinel(self):
+        p, pub, ser = _poller()
+        p._writeback("color", "#000000")
+        self.assertEqual(ser.writes, [("reg", lm.MB2WS_USER_COLOR, 1)])
+        self.assertNotEqual(_published(pub)["color"], "#FFFFFF")
 
-        Otherwise every poll after a write would contradict the echo and the
-        writeback-protection window would just be hiding a drift.
-        """
-        for hexs in ("#000000", "#FFFFFF", "#FF8000", "#123456", "#010203"):
-            p, pub, _s = _poller()
+    def test_an_eight_bit_colour_round_trips_through_rgb565(self):
+        """The echo is the colour the register holds, not a second quantiser."""
+        for hexs in ("#FFFFFF", "#FF8000", "#123456", "#010203"):
+            p, pub, ser = _poller()
             p._writeback("color", hexs)
-            self.assertEqual(_published(pub)["color"], hexs)
+            word = ser.writes[-1][2]
+            self.assertEqual(_published(pub)["color"], lm.rgbw_user_color_to_hex(word))
 
     def test_a_malformed_colour_reaches_no_write(self):
         for bad in ("", "nope", "#12345", "300;0;0", "1;2", "#GGGGGG",

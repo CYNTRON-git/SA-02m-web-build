@@ -159,8 +159,11 @@ RU-подпись; каждая видимая русская строка ок�
 
 Поллер `bridge_led.LedPoller`. Инвентарь контролов — `sa02m_led.controls`
 (один дом имён). `power` — это PlayCtrl 416, не реле питания; запись
-только через скобку 410. `color` — тройка ШИМ R/G/B permille в форме
-`#RRGGBB`, той же, что уже читает `sa02m_alice.client.converters`. Текст —
+только через скобку 410. `color` — регистр 434 (RGB565, цвет FX
+color1): режим «Статичный» (FxId 0) заливает им все пиксели, яркость —
+FxParam 407. В MQTT по-прежнему `#RRGGBB`. ШИМ 33–35 — силовые каналы,
+матрицы они не красят. 0 в регистре 434 — «цвет не задан», прошивка рисует
+белый. Текст —
 блочная запись cp1251 на 516. Опрос ~2 с, текст ~30 с.
 
 **Смешанный baud на одном COM не поддерживается.** Лента с завода 115200,
@@ -182,15 +185,17 @@ Fast Modbus ranges не заявляются: не измерены на мод�
 layout `0x0408` (TileCount=4 + 90° CW, MIRROR_X=0). Рецепт:
 `rgbw_matrix_layout_4tiles_90cw()`. Две строки метеостанции — **reg 494 = 2**
 (`MB2WS_TEXT_LINES_DOUBLE`; 0/1 = одна строка). На стенде 1.135 Алиса
-«LED лента» — это свет, не метеостанция: YAML `effect: 0` (STATIC),
-`weather_lines` / `text_lines` = 1 (поллер не восстанавливает FX 64 и не
-пинит 494=2). `power/on` 1 → RenderSource=FX + FxId 0 + Play; `power/on` 0
-→ `rgbw_stop_blank_writes` (STOP + pool + CLEAR_POOL + REFRESH). Layout
-`0x0408` остаётся. YAML `led-COM3-13`: `matrix_layout` / `rotate_90_cw` /
-`mirror_x` / `weather_lines` / `text_lines` / `effect` / `brightness` —
-поллер один раз восстанавливает четыре регистра (418, 494, FX id, FX param =
-яркость), если живые значения разошлись; `effect` / `brightness` из YAML при
-этом перекрывают выставленные из окна прошивальщика — YAML, который их
+«LED лента» — это свет, не метеостанция: YAML `effect: 0` (STATIC —
+заливка color1, не анимация), `weather_lines` / `text_lines` = 1 (поллер не
+восстанавливает FX 64 и не пинит 494=2). `power/on` 1 → RenderSource=FX +
+FxId 0 + Play; `power/on` 0 → `rgbw_stop_blank_writes` (STOP + pool +
+CLEAR_POOL + REFRESH). Layout `0x0408` остаётся. YAML `led-COM3-13`:
+`matrix_layout` / `rotate_90_cw` / `mirror_x` / `weather_lines` /
+`text_lines` / `effect` / `brightness` / `led_count` — поллер один раз
+восстанавливает их, если живые значения разошлись. `led_count` (400)
+пишется отдельной скобкой и только после яркости ниже 255: при длине
+больше 1 пикселя яркость 255 подменяется на 40. `effect` / `brightness` из
+YAML перекрывают выставленные из окна прошивальщика — YAML, который их
 задаёт, объявлен их источником. Один факт — одна форма: `matrix_layout`
 побеждает `tile_count` / `rotate_90_cw` / `mirror_x`, `weather_lines`
 побеждает `text_lines`; вторая форма молча игнорируется. Сбой записи

@@ -351,6 +351,11 @@ carry `instance` (the window writes `{"instance": "on"}`); the Yandex profile
 sends only a bool `split` and omits `parameters` when nothing is left, so
 `instance` never reaches Yandex (1.0.6.51); the cloud profile sends the stored
 `parameters` unchanged. Validating: `tests/test_discovery_on_off.py`.
+A `color_setting` stored as `{"instance": "rgb"}` is sent to Yandex as
+`{"color_model": "rgb"}` (no `instance`; `hsv` is not added). A stored
+`temperature_k` window is sent as `temperature_k` `{min, max}`. The cloud
+profile still sends the stored `parameters`. Validating:
+`tests/test_alice_presets.py`.
 
 ### Carel AHU rows at catalogue build (1.0.6.39)
 

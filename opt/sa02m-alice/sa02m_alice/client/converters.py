@@ -270,6 +270,38 @@ _KELVIN_MIN = 2700
 _KELVIN_MAX = 6500
 
 
+def yandex_color_setting_parameters(
+    parameters: Optional[Dict[str, Any]],
+) -> Optional[Dict[str, Any]]:
+    """Stored window parameters → the Yandex discovery object.
+
+    The window stores ``instance`` (``rgb`` or ``temperature_k``) because that
+    is what a color_setting *state* carries. Discovery has no instance: an
+    RGB lamp is ``color_model``, a kelvin lamp is ``temperature_k`` with the
+    same 2700…6500 window this module already enforces on commands. Nothing
+    else is added.
+    """
+    if not isinstance(parameters, dict):
+        return None
+    model = parameters.get("color_model")
+    if model in ("rgb", "hsv"):
+        return {"color_model": model}
+    instance = str(parameters.get("instance") or "")
+    if instance == "rgb":
+        return {"color_model": "rgb"}
+    if instance == "temperature_k":
+        window = parameters.get("temperature_k")
+        if isinstance(window, dict):
+            lo, hi = window.get("min"), window.get("max")
+            if (
+                isinstance(lo, (int, float)) and isinstance(hi, (int, float))
+                and not isinstance(lo, bool) and not isinstance(hi, bool)
+            ):
+                return {"temperature_k": {"min": int(lo), "max": int(hi)}}
+        return {"temperature_k": {"min": _KELVIN_MIN, "max": _KELVIN_MAX}}
+    return None
+
+
 def yandex_to_color_setting(state: Dict[str, Any]) -> Tuple[Optional[str], Optional[str]]:
     if not isinstance(state, dict):
         return None, C.ERR_INVALID_VALUE

@@ -587,6 +587,8 @@ class TestControls(unittest.TestCase):
 
     def test_registers_point_into_the_map(self):
         self.assertEqual(cc.register_for("brightness"), lm.MB2WS_FX_PARAM)
+        self.assertEqual(cc.register_for("color"), lm.MB2WS_USER_COLOR)
+        self.assertFalse(lm.rgbw_reg_is_lock_gated(lm.MB2WS_USER_COLOR))
         self.assertEqual(cc.register_for("effect"), lm.MB2WS_FX_ID)
         self.assertEqual(cc.register_for("speed"), lm.MB2WS_FX_SPEED)
         self.assertEqual(cc.register_for("power"), lm.MB2WS_PLAY_CTRL)

@@ -460,6 +460,13 @@ class DeviceRegistry:
                         # (docs/contracts/alice-mqtt-mapping.md, Discovery).
                         split = params.get("split") if isinstance(params, dict) else None
                         params = {"split": split} if isinstance(split, bool) else None
+                    elif (not cloud
+                          and item.get("type") == "devices.capabilities.color_setting"):
+                        # Yandex color_setting has no instance. The window
+                        # stores `instance: rgb`; discovery sends color_model.
+                        params = converters.yandex_color_setting_parameters(
+                            params if isinstance(params, dict) else None
+                        )
                     if params:
                         block["parameters"] = params
                     # Cloud catalogue only: Yandex has no `writable`. Absent
