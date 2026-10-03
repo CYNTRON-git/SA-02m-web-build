@@ -2,11 +2,13 @@
 
 `device_bus(cfg)` says how a device entry reaches its slave: the RS-485 serial
 path (no `transport`, or `transport: rtu` — today's defaults, byte-identical)
-or Modbus TCP (`transport: tcp`, `type: template | carel` only). An invalid TCP
-entry raises BusConfigError(reason); it is never downgraded to RTU and never
-connected. `validate_devices()` runs the same rules over a whole device list
-plus the endpoint cap, so the bridge loader and mqtt_config.cgi refuse the
-same entries with the same reason codes.
+or Modbus TCP (`transport: tcp`, `type: template | carel` only). A Mercury
+meter is neither: `type: spodes` is HDLC (`transport` absent, `rtu` or
+`hdlc`) or an IEC 62056-47 wrapper (`transport: wrapper`). `transport: tcp`
+on a SPODES entry is refused. An invalid entry raises BusConfigError(reason);
+it is never downgraded to RTU and never connected. `validate_devices()` runs
+the same rules over a whole device list plus the endpoint cap and refuses a
+COM port that mixes HDLC with Modbus.
 
 Why the loader, not only the CGI: /etc/sa02m-modbus-mqtt.yaml is
 0660 root:www-data, so anything running as www-data can write it and bypass a
@@ -27,6 +29,8 @@ import re
 
 TRANSPORT_RTU = "rtu"
 TRANSPORT_TCP = "tcp"
+TRANSPORT_HDLC = "hdlc"
+TRANSPORT_WRAPPER = "wrapper"
 
 TCP_CAPABLE_TYPES = ("template", "carel")
 # Literal copy of sa02m_carel.controls.BOTH (that package is not importable
@@ -34,6 +38,7 @@ TCP_CAPABLE_TYPES = ("template", "carel")
 CAREL_FAMILIES = ("crst", "uaria")
 TCP_ENDPOINT_MAX = 16
 TCP_DEFAULT_PORT = 502
+WRAPPER_DEFAULT_PORT = 4059
 TCP_TIMEOUT_DEFAULT_S = 1.0
 TCP_TIMEOUT_MIN_S = 0.2
 TCP_TIMEOUT_MAX_S = 5.0
@@ -53,6 +58,7 @@ REASONS = (
     "timeout_invalid",
     "serial_keys_on_tcp",
     "tcp_endpoint_limit",
+    "mixed_framing",
 )
 
 # Strict dotted-decimal: four 0..255 octets, no leading zeros, ASCII digits
@@ -186,8 +192,56 @@ def _tcp_bus(cfg: dict) -> BusSpec:
                    tcp_port=tcp_port, timeout_s=timeout_s)
 
 
+def _spodes_bus(cfg: dict) -> BusSpec:
+    """HDLC on a UART, or an IEC 62056-47 wrapper socket. Never Modbus TCP."""
+    t = cfg.get("transport")
+    addr = cfg.get("hdlc_address", cfg.get("address", 1))
+    if _int_in(addr, 1, 16383) is None:
+        raise BusConfigError("unit_invalid", repr(addr))
+    if t in (None, TRANSPORT_RTU, TRANSPORT_HDLC):
+        port = cfg.get("port", RTU_DEFAULT_PORT)
+        baud = int(cfg.get("baudrate", 9600))
+        return BusSpec(TRANSPORT_HDLC, f"{port}:{baud}",
+                       str(port).replace("/dev/", ""), port=port, baudrate=baud)
+    if t == TRANSPORT_WRAPPER:
+        if "port" in cfg or "baudrate" in cfg:
+            raise BusConfigError("serial_keys_on_tcp")
+        host = canonical_host(cfg.get("host"))
+        tcp_port = _int_in(cfg.get("tcp_port", WRAPPER_DEFAULT_PORT), 1, 65535)
+        if tcp_port is None:
+            raise BusConfigError("tcp_port_invalid", repr(cfg.get("tcp_port")))
+        timeout_s = _timeout(cfg.get("tcp_timeout_s"))
+        if timeout_s is None:
+            raise BusConfigError("timeout_invalid", repr(cfg.get("tcp_timeout_s")))
+        label = "%s:%d" % (host, tcp_port)
+        return BusSpec(TRANSPORT_WRAPPER, "wrapper:" + label, label, host=host,
+                       tcp_port=tcp_port, timeout_s=timeout_s)
+    if t == TRANSPORT_TCP:
+        raise BusConfigError("type_not_tcp_capable", "spodes")
+    raise BusConfigError("transport_unknown", repr(t))
+
+
+def _serial_framing(cfg: dict):
+    """'hdlc' or 'modbus' for a serial entry; None for a network entry."""
+    dev_type = str(cfg.get("type", "")).lower()
+    t = cfg.get("transport")
+    if dev_type == "spodes":
+        if t in (None, TRANSPORT_RTU, TRANSPORT_HDLC):
+            return "hdlc"
+        return None
+    if t in (None, TRANSPORT_RTU):
+        return "modbus"
+    return None
+
+
 def device_bus(cfg: dict) -> BusSpec:
-    """The bus of one device entry. RTU: today's defaults; TCP: validated."""
+    """The bus of one device entry. RTU: today's defaults; TCP: validated.
+
+    A SPODES entry is HDLC (default baud 9600) or a wrapper socket. It is
+    never folded into the Modbus RTU defaults.
+    """
+    if str(cfg.get("type", "")).lower() == "spodes":
+        return _spodes_bus(cfg)
     if _transport(cfg) == TRANSPORT_TCP:
         return _tcp_bus(cfg)
     port = cfg.get("port", RTU_DEFAULT_PORT)
@@ -199,14 +253,32 @@ def device_bus(cfg: dict) -> BusSpec:
 def validate_devices(devices) -> list:
     """[{"index", "id", "reason"}] for every entry the bridge would refuse.
 
-    Only entries that carry a non-RTU `transport` are judged: an RTU-only list
-    always validates clean, so no existing config gains a refusal. Endpoints
-    past TCP_ENDPOINT_MAX distinct host:port are refused in list order.
+    A Modbus-only list still validates clean. A SPODES entry is judged on
+    its own rules, and a COM port that carries both HDLC and Modbus refuses
+    every entry on that port (other ports are left alone). Wrapper sockets
+    share the TCP endpoint cap.
     """
     out = []
     endpoints: set = set()
+    refused: set = set()
     for index, cfg in enumerate(devices or []):
         if not isinstance(cfg, dict):
+            continue
+        if str(cfg.get("type", "")).lower() == "spodes":
+            try:
+                bus = _spodes_bus(cfg)
+            except BusConfigError as e:
+                out.append({"index": index, "id": cfg.get("id"), "reason": e.reason})
+                refused.add(index)
+                continue
+            if bus.transport != TRANSPORT_WRAPPER:
+                continue
+            if bus.key not in endpoints and len(endpoints) >= TCP_ENDPOINT_MAX:
+                out.append({"index": index, "id": cfg.get("id"),
+                            "reason": "tcp_endpoint_limit"})
+                refused.add(index)
+                continue
+            endpoints.add(bus.key)
             continue
         try:
             if _transport(cfg) != TRANSPORT_TCP:
@@ -220,6 +292,21 @@ def validate_devices(devices) -> list:
                         "reason": "tcp_endpoint_limit"})
             continue
         endpoints.add(bus.key)
+    ports: dict = {}
+    for index, cfg in enumerate(devices or []):
+        if index in refused or not isinstance(cfg, dict):
+            continue
+        framing = _serial_framing(cfg)
+        if framing is None:
+            continue
+        port = str(cfg.get("port", RTU_DEFAULT_PORT))
+        bucket = ports.setdefault(port, {"kinds": set(), "rows": []})
+        bucket["kinds"].add(framing)
+        bucket["rows"].append((index, cfg.get("id")))
+    for info in ports.values():
+        if "hdlc" in info["kinds"] and "modbus" in info["kinds"]:
+            for index, dev_id in info["rows"]:
+                out.append({"index": index, "id": dev_id, "reason": "mixed_framing"})
     return out
 
 

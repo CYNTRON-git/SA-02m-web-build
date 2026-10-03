@@ -174,6 +174,25 @@
       "init": "bash + python3 + pytest (pip install pytest) — installed in CI (web-quality.yml)"
     },
     {
+      "id": "py-unit-spodes",
+      "mutationExempt": "stdlib `unittest discover` over a shipped package's own test suite - a test RUNNER, not a needle pin: it holds no source line a `#` could satisfy, and commenting a line out of the package changes the behaviour the tests assert.",
+      "checks": "Clean-room SPODES client (opt/sa02m-spodes/tests, stdlib unittest). HDLC golden frame, A-XDR, public association and block GET, OBIS scaler (unit 30 is Wh), AES-GCM suite 0, load-profile budget of 2 s, IEC 62056-47 wrapper without SNRM. A regression here does not fail the Modbus bridge suite.",
+      "config": null,
+      "run": "bash -c 'for p in python3 python py; do if \"$p\" -c \"import sys\"; then exec \"$p\" -m unittest discover -s opt/sa02m-spodes/tests -t opt/sa02m-spodes -q; fi; done; echo py-unit-spodes: no working python interpreter; exit 1'",
+      "beat": "build",
+      "covers": ["opt/sa02m-spodes/", "docs/contracts/spodes-mercury.md"],
+      "init": "Python 3.10+ and the cryptography package for the AES-GCM cases"
+    },
+    {
+      "id": "spodes-no-gpl",
+      "checks": "The Mercury client does not import Gurux or spodes-rs (GPL). mixed_framing stays a bridge_bus reason. scripts/04-flasher.sh does not install the package. Proven RED by a live `import gurux` in opt/sa02m-spodes.",
+      "config": null,
+      "run": "bash .ai-dev/quality/checks/spodes-no-gpl.sh",
+      "beat": "build",
+      "covers": ["opt/sa02m-spodes/", "opt/sa02m-modbus-mqtt/bridge_spodes.py", "opt/sa02m-modbus-mqtt/bridge_bus.py", "scripts/04-flasher.sh", ".ai-dev/quality/checks/spodes-no-gpl.sh"],
+      "init": "bash + grep"
+    },
+    {
       "id": "py-unit-gateway",
       "checks": "Functional regression for the RS-485 serial gateway exchange() framing (fast-modbus 0xFF-strip regression from 1.0.5.86 BUG-A + echo/analog/discrete chunking + timeout paths) — pytest-style tests that `unittest discover` SILENTLY SKIPS (plain test_ functions, not unittest.TestCase), so before this row the merge gate never executed them (11 tests). Runs `pytest opt/sa02m-serial-gateway/tests` via the shared deps-guarded runner .ai-dev/quality/checks/pytest-suite.sh (skips cleanly when pytest or serial, yaml is absent — same skipped-locally/real-in-CI contract as shellcheck; CI installs the deps). Non-vacuous: a collection error or a failing test FAILS the run.",
       "config": null,

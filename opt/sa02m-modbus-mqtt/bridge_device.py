@@ -504,3 +504,49 @@ class PortCycleScheduler:
 
 # Backward-compatible alias (tests / imports).
 PortPollScheduler = PortCycleScheduler
+
+
+class HdlcPortScheduler:
+    """One thread for an HDLC UART or a wrapper socket.
+
+    No Fast Modbus and no ModbusSerial: the poller owns the link and
+    ``get_port`` is never called.
+    """
+
+    def __init__(self, label: str, pollers: list):
+        self._label = label
+        self._pollers = pollers
+        self._stop = threading.Event()
+        tag = str(label).replace("/dev/", "").replace(":", "_")
+        self._log = logging.getLogger("port.%s" % tag)
+
+    def stop(self) -> None:
+        self._stop.set()
+        for p in self._pollers:
+            p.stop()
+
+    def run(self) -> None:
+        for p in self._pollers:
+            if self._stop.is_set():
+                return
+            try:
+                p.setup()
+            except Exception as e:
+                self._log.error("setup %s: %s", p.device_id, e)
+        while not self._stop.is_set():
+            now = time.monotonic()
+            for p in self._pollers:
+                if self._stop.is_set():
+                    return
+                if p.in_backoff():
+                    continue
+                try:
+                    p.poll_io()
+                except Exception as e:
+                    self._log.debug("poll_io %s: %s", p.device_id, e)
+                try:
+                    p.poll_slow_if_due(now)
+                except Exception as e:
+                    self._log.debug("poll_slow %s: %s", p.device_id, e)
+            if self._stop.wait(0.2):
+                return

@@ -475,6 +475,34 @@ $//' "$dst/$(basename "$f")" 2>/dev/null || true
     return 0
 }
 
+# SPODES client for Mercury meters. The bridge imports it; the flasher does
+# not. Called from 05-mqtt.sh, 06-alice.sh and update-www-only.sh — never
+# from 04-flasher.sh. Idempotent. Contract: docs/contracts/spodes-mercury.md.
+sa02m_install_spodes_pkg() {
+    local repo_root=$1
+    if [ -z "$repo_root" ]; then
+        log WARN "sa02m_install_spodes_pkg вызван без корня репозитория — пропуск"
+        return 0
+    fi
+    local src="$repo_root/opt/sa02m-spodes/sa02m_spodes"
+    local dst=/opt/sa02m-spodes/sa02m_spodes
+    if [ ! -d "$src" ]; then
+        log WARN "пакет SPODES не найден в $src — пропуск"
+        return 0
+    fi
+    install -d -m 0755 -o root -g root /opt/sa02m-spodes
+    install -d -m 0755 -o root -g root "$dst"
+    local f
+    for f in "$src"/*.py; do
+        [ -f "$f" ] || continue
+        install -m 0644 -o root -g root "$f" "$dst/$(basename "$f")"
+        sed -i 's/\r$//' "$dst/$(basename "$f")" 2>/dev/null || true
+    done
+    rm -rf "$dst/__pycache__" 2>/dev/null || true
+    log OK "пакет SPODES /opt/sa02m-spodes OK"
+    return 0
+}
+
 # Install the shared LED (RGBW_WS2812 / MB2WS) register-map package (repo
 # opt/sa02m-led) to /opt/sa02m-led. Same reason as sa02m_install_carel_pkg: the
 # flasher daemon (sa02m-flasher, PYTHONPATH=/opt/sa02m-flasher) and the

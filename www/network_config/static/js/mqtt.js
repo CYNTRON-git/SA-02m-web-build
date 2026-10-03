@@ -6,7 +6,7 @@ import { AI_SENSOR_LABELS } from './ai-sensors.js?v=1.0.7.1';
 import {
   makeTcpDeviceId as tcpDeviceId, typeOptionAllowed, dialogRows, addrMax,
   buildTcpEntry, saveRefusalText, probeResultView,
-} from './mqtt/tcp-dialog.js?v=1.0.7.1';
+} from './mqtt/tcp-dialog.js?v=1.0.7.1&r=spodes1';
 
 function uiT(s) {
   return window.sa02mI18n ? window.sa02mI18n.t(String(s)) : String(s);
@@ -383,6 +383,7 @@ function makeDeviceId(type, port, addr) {
   else if (type === 'ce02m3') prefix = 'ce02m3';
   else if (type === 'led') prefix = 'led';
   else if (type === 'template') prefix = templateIdPrefix();
+  else if (type === 'spodes') prefix = 'spodes';
   else prefix = 'mr02m';
   return `${prefix}-${comName}-${addr}`;
 }
@@ -1851,7 +1852,7 @@ function onPollConfigChanged(devId) {
 }
 
 function deviceTypeBadge(type) {
-  const labels = {mr02m:'МР-02м', dtv:'ДТВ-RS-485', ce02m3:'СЭ-02м-3', led:'LED', template:'Шаблон', carel:'Carel'};
+  const labels = {mr02m:'МР-02м', dtv:'ДТВ-RS-485', ce02m3:'СЭ-02м-3', led:'LED', template:'Шаблон', carel:'Carel', spodes:'Меркурий (СПОДЭС)'};
   return h('span', {'class':'badge badge-info'}, labels[type] || type);
 }
 
@@ -2815,14 +2816,56 @@ function addTransportIsTcp() {
   return !!_tcpCaps && !!el && el.value === 'tcp';
 }
 
+function addTransportIsWrapper() {
+  const el = document.getElementById('mqtt-add-transport');
+  const typeEl = document.getElementById('mqtt-add-type');
+  return !!el && el.value === 'wrapper' && !!typeEl && typeEl.value === 'spodes';
+}
+
 function onAddTypeChange() {
   const typeEl = document.getElementById('mqtt-add-type');
   const type = typeEl ? typeEl.value : '';
+  const tr = document.getElementById('mqtt-add-transport');
+  if (type !== 'spodes' && tr && tr.value === 'wrapper') tr.value = 'rtu';
   const rows = dialogRows(addTransportIsTcp(), type, !!_tcpCaps);
   setRowShown('mqtt-add-template-row', rows.template);
   setRowShown('mqtt-add-carel-family-row', rows.carelFamily);
   if (rows.template) void loadTemplateCatalog(false);
+  applySpodesDialog(type);
   updateAddModalId();
+}
+
+/** SPODES rows stay out of dialogRows() — that object is pinned by equality. */
+function applySpodesDialog(type) {
+  const spodes = type === 'spodes';
+  const tr = document.getElementById('mqtt-add-transport');
+  const wrapOpt = tr ? tr.querySelector('option[value="wrapper"]') : null;
+  const tcpOpt = tr ? tr.querySelector('option[value="tcp"]') : null;
+  if (wrapOpt) {
+    wrapOpt.hidden = !spodes;
+    wrapOpt.disabled = !spodes;
+  }
+  if (tcpOpt) {
+    const showTcp = !spodes && !!_tcpCaps;
+    tcpOpt.hidden = !showTcp;
+    tcpOpt.disabled = !showTcp;
+  }
+  setRowShown('mqtt-add-transport-row', !!_tcpCaps || spodes);
+  setRowShown('mqtt-add-spodes-row', spodes);
+  const addrLabel = document.getElementById('mqtt-add-addr-label');
+  if (addrLabel) addrLabel.textContent = uiT(spodes ? 'Адрес HDLC' : 'Адрес Modbus');
+  const addrEl = document.getElementById('mqtt-add-addr');
+  if (addrEl) addrEl.max = spodes ? '16383' : String(addrMax(addTransportIsTcp()));
+  if (spodes && addTransportIsWrapper()) {
+    setRowShown('mqtt-add-port-row', false);
+    setRowShown('mqtt-add-host-row', true);
+    setRowShown('mqtt-add-tcp-port-row', true);
+    setRowShown('mqtt-add-probe-row', false);
+    const tcpPortEl = document.getElementById('mqtt-add-tcp-port');
+    if (tcpPortEl && (tcpPortEl.value === '' || tcpPortEl.value === '502')) {
+      tcpPortEl.value = '4059';
+    }
+  }
 }
 
 /** RS-485 ⇄ Ethernet: the type list narrows to what the bridge takes over TCP
@@ -2877,6 +2920,13 @@ function showAddModal() {
   if (tcpPortEl) tcpPortEl.value = String((_tcpCaps && _tcpCaps.tcp_default_port) || 502);
   const famEl = document.getElementById('mqtt-add-carel-family');
   if (famEl) famEl.value = 'crst';
+  const assocEl = document.getElementById('mqtt-add-assoc');
+  if (assocEl) assocEl.value = 'public';
+  for (const sid of ['mqtt-add-spodes-password', 'mqtt-add-spodes-key',
+                     'mqtt-add-spodes-auth', 'mqtt-add-spodes-title']) {
+    const secretEl = document.getElementById(sid);
+    if (secretEl) secretEl.value = '';
+  }
   onAddTransportChange();
 }
 
@@ -2894,7 +2944,7 @@ function updateAddModalId() {
   // here: a verdict must never sit under fields it was not measured for.
   clearTcpProbeResult();
   if (!typeEl || !portEl || !addrEl || !idEl) return;
-  if (addTransportIsTcp()) {
+  if (addTransportIsTcp() || addTransportIsWrapper()) {
     const hostEl = document.getElementById('mqtt-add-host');
     idEl.value = makeTcpDeviceId(typeEl.value, hostEl ? hostEl.value : '', addrEl.value);
     return;
@@ -2946,6 +2996,73 @@ function confirmAddTcpDevice(type, addr, name, idEl, templateName) {
   renderAccordion();
 }
 
+function _field(id) {
+  const el = document.getElementById(id);
+  return el ? String(el.value || '').trim() : '';
+}
+
+/** Public may omit the password. Reader and configurator need both keys. */
+function readSpodesSecrets() {
+  const role = _field('mqtt-add-assoc') || 'public';
+  const secrets = {
+    association: role,
+    password: _field('mqtt-add-spodes-password'),
+    encryption_key: _field('mqtt-add-spodes-key'),
+    authentication_key: _field('mqtt-add-spodes-auth'),
+    system_title: _field('mqtt-add-spodes-title'),
+  };
+  if (role !== 'public'
+      && (!secrets.encryption_key || !secrets.authentication_key || !secrets.system_title)) {
+    showToast(uiT('Для чтения и настройки укажите оба ключа и системный заголовок'), 'warn');
+    return null;
+  }
+  return secrets;
+}
+
+function pushNewDevice(dev) {
+  if (_config.devices.find(d => d.id === dev.id)) {
+    showToast(`Устройство ${dev.id} уже добавлено`, 'warn');
+    return;
+  }
+  _config.devices.push(dev);
+  markUnsaved();
+  hideAddModal();
+  renderDeviceList();
+  renderAccordion();
+}
+
+function confirmAddSpodesSerial(port, addr, name, idEl, secrets) {
+  const id = (idEl && idEl.value.trim()) || makeDeviceId('spodes', port, addr);
+  const dev = {
+    id, type: 'spodes', port, baudrate: 9600,
+    hdlc_address: addr, address: addr,
+    name: name || buildDeviceConfigName('Меркурий', port, addr),
+    poll_power_s: 5, poll_energy_s: 60, poll_profile_s: 900,
+  };
+  Object.assign(dev, secrets);
+  pushNewDevice(dev);
+}
+
+function confirmAddSpodesWrapper(addr, name, idEl) {
+  const host = _field('mqtt-add-host');
+  if (!host) {
+    showToast(uiT('Укажите IP-адрес устройства'), 'warn');
+    return;
+  }
+  const secrets = readSpodesSecrets();
+  if (!secrets) return;
+  const tcp_port = parseInt(_field('mqtt-add-tcp-port'), 10) || 4059;
+  const id = (idEl && idEl.value.trim()) || makeTcpDeviceId('spodes', host, addr);
+  const dev = {
+    id, type: 'spodes', transport: 'wrapper', host, tcp_port,
+    hdlc_address: addr, address: addr,
+    name: name || `Меркурий (${host}:${tcp_port} addr=${addr})`,
+    poll_power_s: 5, poll_energy_s: 60, poll_profile_s: 900,
+  };
+  Object.assign(dev, secrets);
+  pushNewDevice(dev);
+}
+
 function confirmAddDevice() {
   const typeEl = document.getElementById('mqtt-add-type');
   const portEl = document.getElementById('mqtt-add-port');
@@ -2970,8 +3087,18 @@ function confirmAddDevice() {
       return;
     }
   }
+  if (type === 'spodes' && addTransportIsWrapper()) {
+    confirmAddSpodesWrapper(addr, name, idEl);
+    return;
+  }
   if (addTransportIsTcp()) {
     confirmAddTcpDevice(type, addr, name, idEl, templateName);
+    return;
+  }
+  if (type === 'spodes') {
+    const secrets = readSpodesSecrets();
+    if (!secrets) return;
+    confirmAddSpodesSerial(port, addr, name, idEl, secrets);
     return;
   }
 

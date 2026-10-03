@@ -67,8 +67,8 @@ class TestRtuDefaultsAreToday(unittest.TestCase):
             bridge_bus.device_bus({"id": "x", "baudrate": "fast"})
 
     def test_rtu_entries_are_never_refused_by_the_validator(self):
-        # No existing config gets a new refusal: anything without a TCP
-        # transport is outside the validator, even odd-looking entries.
+        # A Modbus-only list still validates. HDLC mixed onto one of these
+        # ports is a separate reason (mixed_framing), not a blanket refusal.
         devs = [{"id": "a", "type": "mr02m", "port": "/dev/COM1"},
                 {"id": "b", "type": "led", "address": 0},
                 {"id": "c", "type": "carel", "port": "/dev/COM3"},
@@ -126,6 +126,7 @@ class TestTcpRefused(unittest.TestCase):
         ("type_not_tcp_capable", _tcp(type="dtv")),
         ("type_not_tcp_capable", _tcp(type="ce02m3")),
         ("type_not_tcp_capable", _tcp(type="led")),
+        ("type_not_tcp_capable", _tcp(type="spodes")),
         ("carel_family_required", _tcp(type="carel")),
         ("carel_family_required", _tcp(type="carel", family="auto")),
         ("carel_family_required", _tcp(type="carel", family="")),
@@ -172,7 +173,7 @@ class TestTcpRefused(unittest.TestCase):
                 self.assertEqual(_reason(entry), want)
 
     def test_every_reason_code_is_exercised(self):
-        seen = {w for w, _ in self.CASES} | {"tcp_endpoint_limit"}
+        seen = {w for w, _ in self.CASES} | {"tcp_endpoint_limit", "mixed_framing"}
         self.assertEqual(seen, set(bridge_bus.REASONS))
 
     def test_address_absent_is_unit_1(self):

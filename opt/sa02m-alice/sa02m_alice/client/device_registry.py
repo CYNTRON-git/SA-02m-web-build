@@ -10,7 +10,7 @@ from typing import Any, Callable, Dict, Iterable, List, Optional, Set, Tuple
 
 from ..common import constants as C
 from ..common.config_store import load_devices
-from ..config import ahu_status, scene_devices
+from ..config import ahu_status, scene_devices, topics
 from . import converters
 
 log = logging.getLogger("sa02m_alice.registry")
@@ -116,6 +116,18 @@ def _availability_topics_for(control_topic: str) -> Set[str]:
     return extra
 
 
+def _onboard_controller_topic(topic: str, controller_id: str) -> bool:
+    """True for the board's own telemetry (`/devices/<controller-id>/…`).
+
+    Not a Modbus slave: there is no poller `/meta/error` per coil. The
+    telemetry daemon's Last Will is the offline flag. A live republish must
+    not start the 90 s age-out — a quiet beeper would otherwise be announced
+    DEVICE_UNREACHABLE while the controller is still up.
+    """
+    mid = _mqtt_device_id(topic)
+    return bool(mid and controller_id and mid == controller_id)
+
+
 def _modbus_slave_topic(topic: str) -> bool:
     """True when the topic is a poller slave (`/devices/<driver>-COM<n>-<addr>/…`).
 
@@ -142,6 +154,9 @@ class DeviceRegistry:
         self._lock = threading.RLock()
         self._profile = profile
         self._clock = clock or time.monotonic
+        # Onboard telemetry id (beeper, do, alarm_led). Read once: the hot
+        # query path must not reopen /etc/sa02m_telemetry.conf per device.
+        self._controller_id = topics._controller_device_id()
         # Every catalogue build passes through ahu_status: a Carel binding
         # gains its cloud-only status rows and keeps only the LIVE optional
         # probes (bridge live cache) — in memory, the stored document is
@@ -304,9 +319,10 @@ class DeviceRegistry:
         is down (`/devices/<id>/meta/error`) or this control is dead
         (`<mqtt>/meta/error` with no live poll on that slave). The poller
         often skips republishing an unchanged coil, so a quiet cache is
-        not a dead slave. GPIO / board telemetry still ages a live entry
-        past `STATUS_STALE_S` and may answer from retained when
-        `age_retained` is false.
+        not a dead slave. The controller's own channels (beeper, DO, alarm
+        LED) are the same: the value stays until `/meta/error`. Any other
+        non-slave topic still ages a live entry past `STATUS_STALE_S` and
+        may answer from retained when `age_retained` is false.
         """
         if scene_devices.is_virtual_scene_topic(topic):
             # A scenario `run` topic is a COMMAND: no poller stands behind it
@@ -320,7 +336,9 @@ class DeviceRegistry:
         raw = self._mqtt_cache.get(topic)
         if raw is None:
             return None
-        if _modbus_slave_topic(topic):
+        if _modbus_slave_topic(topic) or _onboard_controller_topic(
+            topic, self._controller_id
+        ):
             return raw
         if self._mqtt_live.get(topic):
             ts = self._mqtt_ts.get(topic)

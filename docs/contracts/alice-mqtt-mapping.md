@@ -85,10 +85,10 @@ row `alice-topics-cgi`).
 Validating tests: `opt/sa02m-alice/tests/test_inventory.py`,
 `test_topics_inventory.py`, `scripts/dev/sh-modal-layout-smoke.mjs`.
 
-### Auto-provision (DTV / CE-02m-3)
+### Auto-provision (DTV / CE-02m-3 / Mercury SPODES)
 
 The Yandex-profile client watches `/devices/+/meta/name` and
-`/devices/+/meta/driver`. A new MQTT id whose prefix is `dtv-` or `ce02m3-`
+`/devices/+/meta/driver`. A new MQTT id whose prefix is `dtv-`, `ce02m3-` or `spodes-`
 and that **no existing binding already maps** is appended to the same
 document (`save_devices`, atomic, mode/owner preserved) **only when**
 the id is listed in `/etc/sa02m-modbus-mqtt.yaml` **or** at least one
@@ -101,6 +101,9 @@ Validating tests: `opt/sa02m-alice/tests/test_auto_provision.py`.
 - `dtv-` → one `devices.types.sensor.climate` (temperature, humidity,
   pressure, co2_level, tvoc, motion) using the first control that exists
   on that slave (BME680 then BME280 for T/RH/P, same set as live «ДТВ цех»).
+- `spodes-` → the same three electricity phases as `ce02m3-` (scale 0.001,
+  names «Меркурий …», ≤25 characters). `load_disconnect` is not a channel
+  and is not auto-provisioned.
 - `ce02m3-` → three `devices.types.smart_meter.electricity` (фаза A/B/C):
   voltage, amperage, power; `electricity_meter` from
   `energy_active_import_a|b|c` (`scale` 0.001 Wh→kWh) when those topics

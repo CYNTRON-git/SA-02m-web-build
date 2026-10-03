@@ -103,6 +103,8 @@ check(M.makeTcpDeviceId('template', 'mp02-ahu', '192.168.1.20', 1) === 'mp02-ahu
   'id: template → <template>-tcp-<a_b_c_d>-<addr>');
 check(M.makeTcpDeviceId('carel', 'mp02-ahu', '192.168.1.50', 7) === 'carel-tcp-192_168_1_50-7',
   'id: Carel → carel-tcp-… whatever template is picked (the «Устройства»/Alice prefix)');
+check(M.makeTcpDeviceId('spodes', 'mp02-ahu', '192.168.1.50', 1) === 'spodes-tcp-192_168_1_50-1',
+  'id: SPODES → spodes-tcp-… (not the picked template prefix)');
 check(M.makeTcpDeviceId('template', 'tmpl', '  10.0.0.5 ', 255) === 'tmpl-tcp-10_0_0_5-255',
   'id: host trimmed, every dot → underscore');
 check(M.makeTcpDeviceId('template', 'tmpl', '', 1) === 'tmpl-tcp--1',

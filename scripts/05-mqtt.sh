@@ -90,13 +90,13 @@ esac
 log INFO "Установка Python-зависимостей..."
 # 2.1. Приоритет: apt-пакеты (стабильнее pip на embedded)
 #       python3-paho-mqtt, python3-yaml, python3-serial есть в bullseye main.
-sa02m_pkg_install_tier optional python3 python3-pip python3-paho-mqtt python3-yaml python3-serial
+sa02m_pkg_install_tier optional python3 python3-pip python3-paho-mqtt python3-yaml python3-serial python3-cryptography
 
 # apt-get download + dpkg -i — единственный путь, работающий на плате со
 # сломанным/зафиксированным apt (класс 1.136): install отказывает целиком, а
 # download отдельных .deb проходит. Только при сети; bounded.
 _MQTT_APT_MISSING=""
-for _pkg in python3-paho-mqtt python3-yaml python3-serial; do
+for _pkg in python3-paho-mqtt python3-yaml python3-serial python3-cryptography; do
     if ! dpkg -l "$_pkg" 2>/dev/null | grep -q "^ii  $_pkg"; then
         _MQTT_APT_MISSING="$_MQTT_APT_MISSING $_pkg"
     fi
@@ -115,6 +115,9 @@ fi
 sa02m_pip_install paho.mqtt paho-mqtt
 sa02m_pip_install yaml pyyaml
 sa02m_pip_install serial pyserial
+# AES-GCM for a Mercury reader. Absent cryptography leaves the poller on the
+# public client (security_for returns None); the bridge still starts.
+python3 -c "import cryptography" 2>/dev/null || sa02m_pip_install cryptography cryptography
 
 # 2.3. Обязательная проверка импорта (fail-loud в полной установке; в refresh —
 # WARN + пропуск установки юнитов: свежие юниты без зависимостей ушли бы в
@@ -156,9 +159,11 @@ install -d -m 0755 -o root -g root "$BRIDGE_DIR"
 # came back with a 1.0.6.40 bridge_led.py (reads sa02m_led.MB2WS_TEXT_BASE at
 # import) over a torn /opt/sa02m-led — 119 restarts. Order pinned by
 # scripts/dev/test-installer-order.sh (docs/bugs/bench-136-reset.md, D5 B).
-# Carel: imported by bridge_carel.py and mqtt_bus_scan.py; LED: by bridge_led.py.
+# Carel: imported by bridge_carel.py and mqtt_bus_scan.py; LED: by bridge_led.py;
+# SPODES: by bridge_spodes.py. The flasher does not install this package.
 sa02m_install_carel_pkg "$BASE_DIR"
 sa02m_install_led_pkg "$BASE_DIR"
+sa02m_install_spodes_pkg "$BASE_DIR"
 
 # Копируем Python-скрипты
 # Bridge modules FIRST, the entry modbus_mqtt_bridge.py LAST: the entry imports
@@ -169,7 +174,7 @@ sa02m_install_led_pkg "$BASE_DIR"
 # tests/test_entry_surface.py EXPECTED_MODULES and scripts/update-www-only.sh.
 for f in bridge_serial.py bridge_bus.py bridge_probe.py bridge_tcp.py bridge_fmb.py bridge_meta.py \
          bridge_mqtt.py bridge_mr02m_map.py \
-         bridge_device.py bridge_mr02m.py bridge_dtv_ce.py bridge_template.py bridge_carel.py bridge_led.py; do
+         bridge_device.py bridge_mr02m.py bridge_dtv_ce.py bridge_template.py bridge_carel.py bridge_led.py bridge_spodes.py; do
     install -m 0755 -o root -g root "$OPT_DIR/$f" "$BRIDGE_DIR/$f"
 done
 

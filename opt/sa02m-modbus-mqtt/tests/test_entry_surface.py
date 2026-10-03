@@ -65,6 +65,7 @@ EXPECTED_MODULES = [
     "bridge_mr02m_map",
     "bridge_probe",
     "bridge_serial",
+    "bridge_spodes",
     "bridge_tcp",
     "bridge_template",
 ]

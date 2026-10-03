@@ -83,12 +83,13 @@ _DTV_EXT_BREAK_EPS = 0.5   # published temp is quantized to 0.1 °C; clamp is ex
 _DTV_EXT_MIN_C = -60.0     # sane external floor (below any table UNDER sentinel)
 _DTV_EXT_MAX_C = 130.0     # sane external ceil (above any table OVER sentinel)
 
-# RS-485: `<family>-COM<n>-<addr>`. Modbus TCP (1.0.6.56, Carel only):
-# `carel-tcp-<a_b_c_d>-<addr>` — the host with dots as underscores, no COM port
-# (docs/contracts/bridge-modbus-tcp.md).
+# RS-485: `<family>-COM<n>-<addr>`. Network forms: `carel-tcp-…` and
+# `spodes-tcp-…` — the host with dots as underscores, no COM port.
 _ID_RE = re.compile(
-    r"^(?:(?P<prefix>dtv|ce02m3|mr02m|carel|mtdx62-mb)-COM(?P<port>\d+)-(?P<addr>\d+)"
-    r"|carel-tcp-(?P<host>[0-9]{1,3}(?:_[0-9]{1,3}){3})-(?P<tcp_addr>[0-9]+))$",
+    r"^(?:(?P<prefix>dtv|ce02m3|mr02m|carel|mtdx62-mb|spodes)"
+    r"-COM(?P<port>\d+)-(?P<addr>\d+)"
+    r"|(?P<tcp_prefix>carel|spodes)-tcp-"
+    r"(?P<host>[0-9]{1,3}(?:_[0-9]{1,3}){3})-(?P<tcp_addr>[0-9]+))$",
     re.IGNORECASE,
 )
 
@@ -261,8 +262,9 @@ def parse_device_id(device_id: str) -> dict[str, Any]:
             "com": "",
         }
     if m.group("host"):
+        tcp_prefix = (m.group("tcp_prefix") or "").lower()
         return {
-            "kind": "carel",
+            "kind": "spodes" if tcp_prefix == "spodes" else "carel",
             "port_num": None,
             "addr": int(m.group("tcp_addr")),
             "com": "",
@@ -279,8 +281,13 @@ def parse_device_id(device_id: str) -> dict[str, Any]:
         kind = "carel"
     elif prefix == "mtdx62-mb":
         kind = "mtd"
-    else:
+    elif prefix == "spodes":
+        kind = "spodes"
+    elif prefix == "ce02m3":
         kind = "ce"
+    else:
+        # An unknown prefix is not a СЭ. The old else painted every miss as CE.
+        kind = ""
     return {
         "kind": kind,
         "port_num": port_num,
@@ -299,6 +306,8 @@ def device_label(kind: str, addr: int | None, port_num: int | None) -> str:
         sku = "MR-02m"
     elif kind == "mtd":
         sku = "MTD262-MB"
+    elif kind == "spodes":
+        sku = "Меркурий"
     else:
         sku = "СЭ-02м-3"
     a = "—" if addr is None else str(addr)
@@ -334,7 +343,10 @@ def _list_device_files(cache_dir: Path, prefix: str) -> list[Path]:
     return sorted(
         p
         for p in cache_dir.glob(f"{prefix}-*.json")
-        if p.is_file() and not p.name.startswith("_")
+        if p.is_file()
+        and not p.name.startswith("_")
+        and not p.name.endswith(".profile.json")
+        and not p.name.endswith(".events.json")
     )
 
 
@@ -510,6 +522,33 @@ def _build_ce(raw: dict[str, Any] | None, *, fallback_id: str = "") -> dict[str,
         ),
         "alerts": [],
     }
+
+
+def _build_spodes(raw: dict[str, Any] | None, *, fallback_id: str = "") -> dict[str, Any]:
+    """Same live fields as a СЭ card. Energy stays Wh/1000 → kWh. Own label."""
+    card = _build_ce(raw, fallback_id=fallback_id)
+    device_id = str(card.get("id") or fallback_id or "")
+    meta = parse_device_id(device_id)
+    if meta.get("host"):
+        addr = "—" if meta.get("addr") is None else str(meta.get("addr"))
+        label = f"Меркурий № {addr} · {meta['host']}"
+    else:
+        label = device_label("spodes", meta.get("addr"), meta.get("port_num"))
+    controls = {}
+    if isinstance(raw, dict) and isinstance(raw.get("controls"), dict):
+        controls = raw["controls"]
+    card.update({
+        "kind": "spodes",
+        "sku": "Меркурий",
+        "label": label,
+        "title": label,
+        "port_num": meta.get("port_num"),
+        "addr": meta.get("addr"),
+        "com": meta.get("com") or "",
+        "host": meta.get("host") or "",
+        "association": str(controls.get("association") or ""),
+    })
+    return card
 
 
 def _int(val: Any, default: int = 0) -> int:
@@ -767,6 +806,13 @@ def live_snapshot(cache_dir: Path | None = None) -> dict[str, Any]:
         built = _build_carel(raw, fallback_id=device_id)
         if built is not None:
             carel_list.append(built)
+    spodes_list: list[dict[str, Any]] = []
+    for path in _list_device_files(root, "spodes"):
+        raw = _load_cache(path)
+        device_id = path.stem
+        if raw is not None and not raw.get("device"):
+            raw = {**raw, "device": device_id}
+        spodes_list.append(_build_spodes(raw, fallback_id=device_id))
     mtd_list: list[dict[str, Any]] = []
     for path in _list_device_files(root, "mtdx62-mb"):
         raw = _load_cache(path)
@@ -786,11 +832,12 @@ def live_snapshot(cache_dir: Path | None = None) -> dict[str, Any]:
     ce_list.sort(key=_sort_key)
     mr_list.sort(key=_sort_key)
     carel_list.sort(key=_sort_key)
+    spodes_list.sort(key=_sort_key)
     mtd_list.sort(key=_sort_key)
     # AHU cards first — the ones the Operator looks at daily (decision F5,
     # 2026-09-03); the rest keep the additive dtv → ce → mr order.
     # MTD262-MB is last: a presence sensor, not an AHU.
-    devices = [*carel_list, *dtv_list, *ce_list, *mr_list, *mtd_list]
+    devices = [*carel_list, *dtv_list, *ce_list, *spodes_list, *mr_list, *mtd_list]
     return {
         "ok": True,
         "ts": time.time(),
@@ -798,6 +845,7 @@ def live_snapshot(cache_dir: Path | None = None) -> dict[str, Any]:
         "cache_dir": str(root),
         "dtv": dtv_list,
         "ce": ce_list,
+        "spodes": spodes_list,
         "mr": mr_list,
         "carel": carel_list,
         "mtd": mtd_list,

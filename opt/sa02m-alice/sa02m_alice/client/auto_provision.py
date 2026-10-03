@@ -36,10 +36,12 @@ WATCH_TOPICS = (
 _DEVICES_PREFIX = "/devices/"
 _META_RE = re.compile(r"^/devices/([^/]+)/meta/(name|driver)$")
 _CONTROL_RE = re.compile(r"^/devices/([^/]+)/controls/([^/]+)$")
-_ID_TAIL_RE = re.compile(r"^(?:dtv|ce02m3)-([A-Za-z0-9]+)-(\d+)$")
+_ID_TAIL_RE = re.compile(r"^(?:dtv|ce02m3|spodes)-([A-Za-z0-9]+)-(\d+)$")
+_SPODES_TCP_RE = re.compile(r"^spodes-tcp-(?:[0-9]+_){3}([0-9]+)-(\d+)$")
 
 DTV_PREFIX = "dtv-"
 CE_PREFIX = "ce02m3-"
+SPODES_PREFIX = "spodes-"
 
 # First existing control wins per instance — live «ДТВ цех» uses BME280
 # for T/RH/P and BME680 for eCO₂; a newer slave may publish BME680 for all.
@@ -98,6 +100,10 @@ def is_dtv_id(mqtt_id: str) -> bool:
 
 def is_ce_id(mqtt_id: str) -> bool:
     return bool(mqtt_id) and mqtt_id.startswith(CE_PREFIX)
+
+
+def is_spodes_id(mqtt_id: str) -> bool:
+    return bool(mqtt_id) and mqtt_id.startswith(SPODES_PREFIX)
 
 
 def mapped_mqtt_ids(doc: Dict[str, Any]) -> Set[str]:
@@ -272,6 +278,13 @@ def ce_name(mqtt_id: str, phase_letter: str) -> str:
     return "Анализатор %s %s" % (_id_label(mqtt_id), phase_letter)
 
 
+def spodes_name(mqtt_id: str, phase_letter: str) -> str:
+    """Yandex-web-safe (≤25): «Меркурий COM2 17 А»."""
+    tcp = _SPODES_TCP_RE.match(mqtt_id or "")
+    label = "%s %s" % (tcp.group(1), tcp.group(2)) if tcp else _id_label(mqtt_id)
+    return "Меркурий %s %s" % (label, phase_letter)
+
+
 def dtv_properties(mqtt_id: str, present: Optional[Iterable[str]] = None) -> List[Dict[str, Any]]:
     names = _present_names(mqtt_id, present)
     props: List[Dict[str, Any]] = []
@@ -287,7 +300,12 @@ def dtv_properties(mqtt_id: str, present: Optional[Iterable[str]] = None) -> Lis
     return props
 
 
-def ce_devices(mqtt_id: str, present: Optional[Iterable[str]] = None) -> List[Dict[str, Any]]:
+def ce_devices(
+    mqtt_id: str,
+    present: Optional[Iterable[str]] = None,
+    name_fn: Optional[Callable[[str, str], str]] = None,
+) -> List[Dict[str, Any]]:
+    namer = name_fn or ce_name
     names = _present_names(mqtt_id, present)
     per_phase = all(_has(names, "energy_active_import_%s" % ph) for ph, _letter in _CE_PHASES)
     total = _has(names, "energy_active_import")
@@ -322,13 +340,18 @@ def ce_devices(mqtt_id: str, present: Optional[Iterable[str]] = None) -> List[Di
         out.append(
             {
                 "id": models.new_id(),
-                "name": ce_name(mqtt_id, letter),
+                "name": namer(mqtt_id, letter),
                 "type": "devices.types.smart_meter.electricity",
                 "capabilities": [],
                 "properties": props,
             }
         )
     return out
+
+
+def spodes_devices(mqtt_id: str, present: Optional[Iterable[str]] = None) -> List[Dict[str, Any]]:
+    """Three electricity phases, same controls as a СЭ. No load disconnect."""
+    return ce_devices(mqtt_id, present, name_fn=spodes_name)
 
 
 def build_dtv(mqtt_id: str, present: Optional[Iterable[str]] = None) -> Optional[Dict[str, Any]]:
@@ -374,6 +397,8 @@ def provision(
             added.append(dev)
     elif is_ce_id(mqtt_id):
         added.extend(ce_devices(mqtt_id, present))
+    elif is_spodes_id(mqtt_id):
+        added.extend(spodes_devices(mqtt_id, present))
     if not added:
         return doc, []
     cleaned: List[Dict[str, Any]] = []

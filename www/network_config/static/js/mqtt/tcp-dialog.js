@@ -18,7 +18,7 @@
  *  A Carel id MUST start with `carel-` (the «Устройства» glob, the Alice prefix). */
 export function makeTcpDeviceId(type, templatePrefix, host, addr) {
   const host_ = String(host || '').trim().replace(/\./g, '_');
-  const prefix = type === 'carel' ? 'carel' : templatePrefix;
+  const prefix = type === 'carel' ? 'carel' : type === 'spodes' ? 'spodes' : templatePrefix;
   return `${prefix}-tcp-${host_}-${addr}`;
 }
 
@@ -85,6 +85,7 @@ export const TCP_REFUSAL_TEXT = {
   timeout_invalid: uiT => uiT('Таймаут Modbus TCP должен быть от 0,2 до 5 с'),
   serial_keys_on_tcp: uiT => uiT('У сетевого устройства не указывают COM-порт и скорость'),
   tcp_endpoint_limit: uiT => uiT('Слишком много сетевых устройств: не больше 16 разных адресов'),
+  mixed_framing: uiT => uiT('На одном COM-порту нельзя совмещать Меркурий (СПОДЭС) и Modbus'),
 };
 
 /** A refused save/probe → its wording, or '' when the reply is not a TCP-entry

@@ -38,6 +38,7 @@ sa02m_pip_install socketio "python-socketio[client]"
 # withholds the fan-speed control and keeps running. Pinned by the quality row
 # `carel-shared-home` (case 3).
 sa02m_install_carel_pkg "$BASE_DIR"
+sa02m_install_spodes_pkg "$BASE_DIR"
 
 # ── Package tree ───────────────────────────────────────────────────────────
 install -d -m 0755 -o root -g root "$INSTALL_DIR"

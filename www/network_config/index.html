@@ -1369,6 +1369,7 @@
         <select id="mqtt-add-transport" onchange="mqttOnAddTransportChange()">
           <option value="rtu">RS-485</option>
           <option value="tcp">Ethernet (Modbus TCP)</option>
+          <option value="wrapper" hidden disabled>Ethernet (СПОДЭС)</option>
         </select>
       </div>
       <div class="form-row">
@@ -1380,6 +1381,7 @@
           <option value="led">LED</option>
           <option value="template">Шаблон устройства</option>
           <option value="carel" hidden disabled>Carel</option>
+          <option value="spodes">Меркурий (СПОДЭС)</option>
         </select>
       </div>
       <div class="form-row" id="mqtt-add-template-row" hidden>
@@ -1412,12 +1414,38 @@
         </select>
       </div>
       <div class="form-row">
-        <label>Адрес Modbus</label>
+        <label id="mqtt-add-addr-label">Адрес Modbus</label>
         <input type="number" id="mqtt-add-addr" value="1" min="1" max="247" oninput="mqttUpdateId()">
       </div>
       <div class="form-row" id="mqtt-add-probe-row" hidden>
         <div><button type="button" class="btn btn-sm" id="mqtt-add-probe-btn" onclick="mqttProbeTcp()" title="Один запрос чтения: отвечает ли устройство по этому адресу. Шаблон и карту регистров не проверяет">Проверить связь</button></div>
         <div class="field-hint" id="mqtt-add-probe-result" aria-live="polite">&nbsp;</div>
+      </div>
+      <div id="mqtt-add-spodes-row" hidden>
+        <div class="form-row">
+          <label>Уровень доступа</label>
+          <select id="mqtt-add-assoc">
+            <option value="public">Публичный</option>
+            <option value="reader">Чтение</option>
+            <option value="configurator">Конфигуратор</option>
+          </select>
+        </div>
+        <div class="form-row">
+          <label>Пароль</label>
+          <input type="password" id="mqtt-add-spodes-password" autocomplete="off" spellcheck="false">
+        </div>
+        <div class="form-row">
+          <label>Ключ шифрования</label>
+          <input type="password" id="mqtt-add-spodes-key" autocomplete="off" spellcheck="false">
+        </div>
+        <div class="form-row">
+          <label>Ключ аутентификации</label>
+          <input type="password" id="mqtt-add-spodes-auth" autocomplete="off" spellcheck="false">
+        </div>
+        <div class="form-row">
+          <label>Системный заголовок</label>
+          <input type="password" id="mqtt-add-spodes-title" autocomplete="off" spellcheck="false">
+        </div>
       </div>
       <div class="form-row">
         <label>Имя устройства</label>
@@ -1655,7 +1683,7 @@
   </div>
 </div>
 
-<script src="static/js/i18n.js?v=1.0.7.1&r=agentapi2"></script>
+<script src="static/js/i18n.js?v=1.0.7.1&r=spodes1"></script>
 <script src="static/js/app.js?v=1.0.7.1&r=agentapi2"></script>
 <script src="static/js/app/status.js?v=1.0.7.1&r=xhrcsrf1"></script>
 <script src="static/js/app/hw.js?v=1.0.7.1&r=devhist1"></script>
@@ -1667,9 +1695,9 @@
 <script src="static/js/app/nav.js?v=1.0.7.1&r=mtdui1"></script>
 <script src="static/js/flasher/led.js?v=1.0.7.1&r=led1"></script>
 <script src="static/js/flasher.js?v=1.0.7.1&r=fwhint1"></script>
-<script type="module" src="static/js/mqtt.js?v=1.0.7.1&r=seasonua1"></script>
+<script type="module" src="static/js/mqtt.js?v=1.0.7.1&r=spodes1"></script>
 <script src="static/js/gateway.js?v=1.0.7.1&r=gwport1"></script>
-<script type="module" src="static/js/devices.js?v=1.0.7.1&r=evtclr1"></script>
+<script type="module" src="static/js/devices.js?v=1.0.7.1&r=spodes1"></script>
 <script src="static/js/cloud.js?v=1.0.7.1&r=audit39a"></script>
 <script src="static/js/app/alice.js?v=1.0.7.1&r=syssub1"></script>
 <script src="static/js/app/smarthome.js?v=1.0.7.1&r=lamp1"></script>

@@ -48,6 +48,7 @@ import sqlite3
 import stat
 import sys
 import threading
+from pathlib import Path
 from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from typing import Any
@@ -59,7 +60,7 @@ except ImportError:  # pragma: no cover
     grp = None  # type: ignore[assignment]
 
 from sa02m_devices import __version__, device_events, device_history_db, devices_widgets
-from sa02m_devices.stand_devices import live_snapshot
+from sa02m_devices.stand_devices import DEFAULT_CACHE_DIR, live_snapshot
 from sa02m_devices.websession import (
     CSRF_HEADER,
     DEFAULT_SESSION_DIR,
@@ -317,6 +318,32 @@ def handle_devices_live() -> tuple[Any, int]:
     return payload, 200
 
 
+_PROFILE_ID_RE = re.compile(r"spodes-[A-Za-z0-9._-]{1,48}\Z")
+
+
+def handle_profile(qs: dict[str, list[str]], root=None) -> tuple[Any, int]:
+    """Slow-path profile or event file. Auth is the caller's (do_GET)."""
+    raw = str((qs.get("device_id") or [""])[0])
+    if not _PROFILE_ID_RE.fullmatch(raw):
+        return {"ok": False, "error": "bad_device"}, 400
+    kind = str((qs.get("kind") or ["profile"])[0])
+    if kind not in ("profile", "events"):
+        kind = "profile"
+    base = Path(root) if root is not None else DEFAULT_CACHE_DIR
+    path = (base / ("%s.%s.json" % (raw, kind))).resolve()
+    if path.parent != base.resolve():
+        return {"ok": False, "error": "bad_device"}, 400
+    if not path.is_file():
+        return {"ok": True, "device": raw, "kind": kind, "rows": []}, 200
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return {"ok": False, "error": "unreadable"}, 500
+    if not isinstance(data, dict):
+        return {"ok": False, "error": "unreadable"}, 500
+    return {"ok": True, **data}, 200
+
+
 def handle_widgets_get() -> tuple[Any, int]:
     cfg = devices_widgets.load()
     return {"ok": True, **cfg, "config_path": str(devices_widgets.config_path())}, 200
@@ -547,6 +574,10 @@ class DevicesAPIHandler(BaseHTTPRequestHandler):
 
         if path == "/api/devices/history/export":
             return self._handle_export(qs)
+
+        if path == "/api/devices/profile":
+            data, status = handle_profile(qs)
+            return _send_json(self, data, status)
 
         return _send_json(self, {"ok": False, "error": "not found"}, 404)
 

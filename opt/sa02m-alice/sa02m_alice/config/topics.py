@@ -84,6 +84,36 @@ CAREL_CONTROLS = (
 # 1.135 has temperature probes on ai_7..ai_12.
 MR02M_CHANNEL_KINDS = ("ai", "ao", "di", "do")
 MR02M_DIAG_CONTROLS = ("mcu_temp",)
+# Same live names as a СЭ, without asic_temp / current_n (Mercury does not
+# publish them) and without load_disconnect (Alice must not offer it).
+SPODES_CONTROLS = (
+    "voltage_a",
+    "voltage_b",
+    "voltage_c",
+    "voltage_ab",
+    "voltage_bc",
+    "voltage_ca",
+    "current_a",
+    "current_b",
+    "current_c",
+    "power_a",
+    "power_b",
+    "power_c",
+    "power_total",
+    "reactive_a",
+    "reactive_b",
+    "reactive_c",
+    "reactive_total",
+    "apparent_a",
+    "apparent_b",
+    "apparent_c",
+    "apparent_total",
+    "frequency",
+    "pf_a",
+    "pf_b",
+    "pf_c",
+    "pf_total",
+)
 CE02M3_CONTROLS = (
     "voltage_a",
     "voltage_b",
@@ -220,6 +250,9 @@ def _topics_from_yaml(doc: Any) -> List[str]:
                 out.add("/devices/%s/controls/%s" % (did, cname))
         elif dtype == "ce02m3":
             for cname in CE02M3_CONTROLS:
+                out.add("/devices/%s/controls/%s" % (did, cname))
+        elif dtype == "spodes":
+            for cname in SPODES_CONTROLS:
                 out.add("/devices/%s/controls/%s" % (did, cname))
         elif dtype == "carel" and not controls:
             # A Carel entry carries no `controls` list either — the poller

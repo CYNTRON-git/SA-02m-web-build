@@ -95,12 +95,16 @@ HA-автодискавери через WB). Это **аддитивно**: в�
 | MR-02м модуль | `mr02m-{port}-{addr}` | `mr02m-COM1-5` |
 | cyntron-dtv | `dtv-{port}-{addr}` | `dtv-COM3-1` |
 | CE-02m-3 счётчик | `ce02m3-{port}-{addr}` | `ce02m3-COM2-14` |
+| Меркурий (СПОДЭС) | `spodes-COM{n}-{addr}` или `spodes-tcp-{a_b_c_d}-{addr}` | `spodes-COM2-17` |
 | Carel AHU | `carel-{port}-{addr}` | `carel-COM3-1` |
 | LED type 120 | `led-{port}-{addr}` | `led-COM3-13` |
 | Сценарий (виртуальный) | `sa02m-rules-{id}` | `sa02m-rules-s1` |
 | Прибор Home Connect (облако BSH) | `hc-{haId}` | `hc-siemens-sn53es02ce-68a40e2c5a2e` |
 
 Карты Carel / LED — `docs/contracts/carel-ahu.md`, `docs/contracts/led-mb2ws.md`.
+Счётчик Меркурий (не Modbus) — `docs/contracts/spodes-mercury.md`. Имена
+живых контролов те же, что у СЭ (`voltage_a`, `power_total`,
+`energy_active_import` в Вт·ч), `meta/driver` = `spodes`.
 
 Виртуальное устройство сценария `sa02m-rules-{id}` — не опрашиваемый прибор,
 а зеркало движка `sa02m-rules`: под ним живут retained-контролы состояния

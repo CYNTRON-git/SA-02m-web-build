@@ -1,10 +1,13 @@
 #!/usr/bin/env python3
 """SA-02m Modbus→MQTT bridge v2.
 
-Devices:  mr02m (all 13 types), dtv (RTU-Sensor), ce02m3, led, template, carel
+Devices:  mr02m (all 13 types), dtv (RTU-Sensor), ce02m3, led, template, carel,
+          spodes (Mercury HDLC / IEC 62056-47, not Modbus)
 Protocol: standard Modbus RTU (FC01-06) + Wiren Board Fast Modbus
           (FC 0x46: scanner + event polling); Modbus TCP for template/carel
-          (`transport: tcp`, docs/contracts/bridge-modbus-tcp.md).
+          (`transport: tcp`, docs/contracts/bridge-modbus-tcp.md);
+          SPODES on its own UART or wrapper socket
+          (docs/contracts/spodes-mercury.md).
 Topics:   Wiren Board MQTT convention (/devices/…/controls/…)
 Config:   /etc/sa02m-modbus-mqtt.yaml  (env SA02M_MQTT_CONFIG to override)
 Systemd:  sd_notify READY=1 / WATCHDOG=1
@@ -91,13 +94,14 @@ from bridge_mr02m_map import (  # noqa: F401
     AI_SENSOR_TYPES, _TEMP,
 )
 from bridge_device import (  # noqa: F401
-    DevicePoller, PortCycleScheduler, PortPollScheduler,
+    DevicePoller, HdlcPortScheduler, PortCycleScheduler, PortPollScheduler,
 )
 from bridge_mr02m import MR02mPoller  # noqa: F401
 from bridge_dtv_ce import DTVPoller, CE02M3Poller  # noqa: F401
 from bridge_carel import CarelPoller
 from bridge_led import LedPoller
 from bridge_template import TemplatePoller  # noqa: F401
+from bridge_spodes import SpodesPoller
 import bridge_bus
 
 
@@ -127,6 +131,7 @@ POLLER_CLASSES: dict[str, type] = {
     "template": TemplatePoller,
     "carel":    CarelPoller,
     "led":      LedPoller,
+    "spodes":   SpodesPoller,
 }
 _pollers:  list[DevicePoller] = []
 _port_schedulers: list[PortCycleScheduler] = []
@@ -220,6 +225,9 @@ def write_bridge_roster(devices_cfg: list, pub: MQTTPublisher,
     online = pub.device_online_snapshot()
     rows = []
     for dev_cfg in devices_cfg or []:
+        if str(dev_cfg.get("type", "")).lower() == "spodes":
+            # HDLC is not a Modbus slave; a roster row would look like one.
+            continue
         if dev_cfg.get("transport") not in (None, bridge_bus.TRANSPORT_RTU):
             # A Modbus TCP device is not on an RS-485 line: no roster row
             # (docs/contracts/rs485-roster.md), and never a "" ghost port.
@@ -281,9 +289,9 @@ def compose_pollers(devices_cfg: list, pub: MQTTPublisher):
         by_port.setdefault(port_key, []).append(poller)
         log.info("Registered %s poller %s on %s", dev_type, dev_cfg["id"], port_key)
 
-        if poller.bus.transport == bridge_bus.TRANSPORT_TCP:
-            # Fast Modbus is an RS-485 broadcast protocol: never armed on a
-            # TCP bus, whatever `fast_modbus` says.
+        if poller.bus.transport != bridge_bus.TRANSPORT_RTU:
+            # Fast Modbus is an RS-485 broadcast protocol. Never on TCP,
+            # and never on HDLC or a SPODES wrapper socket.
             continue
         # Default ON for MR/DTV. CE: explicit fast_modbus:true only (opt-in);
         # whether a CE then gets any 0x18, and which form, is decided by its
@@ -306,7 +314,8 @@ def compose_pollers(devices_cfg: list, pub: MQTTPublisher):
     # Physical lines only: `tcp:H:502` + `tcp:H:503` are two endpoints, not
     # one port at two bauds.
     rtu_keys = [k for k, ps in by_port.items()
-                if ps[0].bus.transport == bridge_bus.TRANSPORT_RTU]
+                if ps[0].bus.transport in (
+                    bridge_bus.TRANSPORT_RTU, bridge_bus.TRANSPORT_HDLC)]
     for path, bauds in mixed_baud_port_conflicts(rtu_keys).items():
         log.error("%s is configured at several baud rates (%s) — one physical "
                   "line cannot serve them: the handles are exclusive per "
@@ -341,6 +350,8 @@ def make_port_scheduler(port_key: str, pollers: list, fmb_ports: dict):
     the client's TcpLineStats as the stats-line source (no /proc/tty line).
     """
     bus = pollers[0].bus
+    if bus.transport in (bridge_bus.TRANSPORT_HDLC, bridge_bus.TRANSPORT_WRAPPER):
+        return HdlcPortScheduler(bus.label, pollers), bus.label
     if bus.transport == bridge_bus.TRANSPORT_TCP:
         return PortCycleScheduler(
             bus.label, 0, pollers,

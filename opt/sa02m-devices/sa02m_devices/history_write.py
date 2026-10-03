@@ -142,7 +142,9 @@ def insert_sample(snapshot: dict[str, Any], path: Path | None = None) -> None:
         for dtv in dtv_list:
             _insert_dtv(conn, ts, dtv)
         rolled: list[tuple[Any, ...]] = []
-        for ce in ce_list:
+        # Mercury uses the same columns. The row is keyed by its own device_id,
+        # so a СЭ chart that passes its id never sees these samples.
+        for ce in ce_list + _as_device_list(snapshot.get("spodes")):
             if _insert_ce(conn, ts, ce):
                 rolled.append(_ce_roll_tuple(ts, ce))
         note_ce_rows(conn, rolled, chunk=LOGGER_CHUNK)

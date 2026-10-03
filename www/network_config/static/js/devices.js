@@ -863,7 +863,7 @@ import { aiSensorLabel, aiUnitPrecision } from "./ai-sensors.js?v=1.0.7.1";
 
   function cardKind(d) {
     const k = d && d.kind;
-    if (k === "ce" || k === "mr" || k === "carel" || k === "dtv" || k === "mtd") return k;
+    if (k === "ce" || k === "spodes" || k === "mr" || k === "carel" || k === "dtv" || k === "mtd") return k;
     return "dtv";
   }
 
@@ -910,6 +910,45 @@ import { aiSensorLabel, aiUnitPrecision } from "./ai-sensors.js?v=1.0.7.1";
     if (pending != null && Number.isFinite(Number(pending))) return Number(pending);
     const n = Number(d && d[field]);
     return Number.isFinite(n) ? n : null;
+  }
+
+  const spodesLoadPending = {};
+
+  function wireSpodesLoad(el, id) {
+    const btn = el.querySelector('[data-role="load-off"]');
+    if (!btn) return;
+    if (spodesLoadPending[id]) btn.disabled = true;
+    btn.addEventListener("click", (e) => {
+      e.preventDefault();
+      e.stopPropagation();
+      if (btn.disabled) return;
+      const ask = uiT("Отключить нагрузку счётчика? Питание потребителя пропадёт.");
+      if (typeof window.confirm === "function" && !window.confirm(ask)) return;
+      btn.disabled = true;
+      spodesLoadPending[id] = true;
+      setCtrlErr(el, "");
+      fetch("cgi-bin/mqtt_set.cgi", {
+        method: "POST",
+        headers: typeof withCsrfHeaders === "function"
+          ? withCsrfHeaders({ "Content-Type": "application/x-www-form-urlencoded" })
+          : { "Content-Type": "application/x-www-form-urlencoded" },
+        body: "device=" + encodeURIComponent(id) + "&control=load_disconnect&value=1",
+        credentials: "same-origin",
+      })
+        .then((r) => r.json())
+        .then((res) => {
+          if (!res || res.ok !== true) {
+            setCtrlErr(el, uiT("Команда отключения не выполнена"));
+          }
+        })
+        .catch(() => {
+          setCtrlErr(el, uiT("Команда отключения не выполнена"));
+        })
+        .finally(() => {
+          delete spodesLoadPending[id];
+          btn.disabled = false;
+        });
+    });
   }
 
   function setCtrlErr(card, text) {
@@ -1242,7 +1281,11 @@ import { aiSensorLabel, aiUnitPrecision } from "./ai-sensors.js?v=1.0.7.1";
       metricsHtml +
       `</div>` +
       (isCarel ? buildCarelControlsHtml(d.family) : isMtd ? chartButtonHtml() : "") +
+      (kind === "spodes" && d.association === "configurator"
+        ? `<div class="dev-spodes-load"><button type="button" class="btn btn-sm" data-role="load-off">${uiT("Отключить нагрузку")}</button><span data-role="ctrl-err" class="dev-ctrl-err" hidden></span></div>`
+        : "") +
       `</div>`;
+    wireSpodesLoad(el, id);
     if (!controllable) {
       el.addEventListener("click", (e) => {
         if (e.target.closest('[data-role="remove"], [data-role="rename"], input, button')) return;
@@ -1351,6 +1394,8 @@ import { aiSensorLabel, aiUnitPrecision } from "./ai-sensors.js?v=1.0.7.1";
         `<span class="dev-add-item-meta muted">${escapeHtml(
           (d.kind === "ce"
             ? "СЭ-02м-3"
+            : d.kind === "spodes"
+            ? "Меркурий"
             : d.kind === "carel"
             ? "Carel"
             : d.kind === "mr"
@@ -1500,7 +1545,8 @@ import { aiSensorLabel, aiUnitPrecision } from "./ai-sensors.js?v=1.0.7.1";
       }
       return;
     }
-    if (d.kind === "ce" || card.dataset.kind === "ce") {
+    if (d.kind === "ce" || d.kind === "spodes"
+        || card.dataset.kind === "ce" || card.dataset.kind === "spodes") {
       const u = d.voltage || {};
       const i = d.current || {};
       const p = d.power_w || {};
@@ -1565,12 +1611,12 @@ import { aiSensorLabel, aiUnitPrecision } from "./ai-sensors.js?v=1.0.7.1";
     if (columns < 2) return items;
     const kindOf = function (d) {
       const k = d && d.kind;
-      if (k === "ce" || k === "mr" || k === "carel" || k === "dtv" || k === "mtd") return k;
+      if (k === "ce" || k === "spodes" || k === "mr" || k === "carel" || k === "dtv" || k === "mtd") return k;
       return "dtv";
     };
     const paramsOf = function (d) {
       const k = kindOf(d);
-      if (k === "ce") return 9;
+      if (k === "ce" || k === "spodes") return 9;
       if (k === "mr") {
         const n = Number(d && d.ai_count);
         if (Number.isFinite(n) && n > 0) return n;
@@ -1585,7 +1631,7 @@ import { aiSensorLabel, aiUnitPrecision } from "./ai-sensors.js?v=1.0.7.1";
     items.forEach((d) => {
       const k = kindOf(d);
       if (k === "carel") carel.push(d);
-      else if (k === "ce") ce.push(d);
+      else if (k === "ce" || k === "spodes") ce.push(d);
       else rest.push(d);
     });
     if (!carel.length) return items;
@@ -3576,7 +3622,7 @@ import { aiSensorLabel, aiUnitPrecision } from "./ai-sensors.js?v=1.0.7.1";
 
   function openModal(kind, deviceId, label, metricId) {
     activeDevice =
-      kind === "ce"
+      kind === "ce" || kind === "spodes"
         ? "ce"
         : kind === "mr"
         ? "mr"

@@ -461,6 +461,12 @@ def _device_entry(dev: Dict[str, Any]) -> Optional[Dict[str, Any]]:
         entry["channels"] = _named_channels(
             device_id, list(topics.CE02M3_CONTROLS), frozenset())
         return entry
+    if dtype == "spodes":
+        from . import topics
+        entry["model"] = "Меркурий"
+        entry["channels"] = _named_channels(
+            device_id, list(topics.SPODES_CONTROLS), frozenset())
+        return entry
     if dtype == "carel":
         from . import topics
         entry["model"] = "Carel"

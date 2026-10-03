@@ -284,6 +284,44 @@ class TestDeviceRegistry(unittest.TestCase):
         self.assertEqual(out[0].get("error_code"), C.ERR_DEVICE_UNREACHABLE)
         self.assertEqual(out[0].get("capabilities"), [])
 
+    def test_onboard_siren_stays_reachable_when_the_live_echo_goes_quiet(self):
+        """The controller's own beeper is not a Modbus slave.
+
+        Telemetry republishes it, so the cache is marked live. A gap longer
+        than STATUS_STALE_S must not become DEVICE_UNREACHABLE: the value is
+        still the last reading, and the controller is down only when its
+        `/meta/error` Last Will is set.
+        """
+        topic = "/devices/SA-02m/controls/beeper"
+        doc = {
+            "rooms": [],
+            "devices": [{
+                "id": "bench-lamp",
+                "name": "Сирена стенд",
+                "type": "devices.types.switch",
+                "capabilities": [{
+                    "type": "devices.capabilities.on_off",
+                    "mqtt": topic,
+                    "parameters": {"instance": "on"},
+                }],
+                "properties": [],
+            }],
+        }
+        os.environ["SA02M_TELEMETRY_DEVICE_ID"] = "SA-02m"
+        try:
+            clock = {"t": 0.0}
+            reg = DeviceRegistry(doc, clock=lambda: clock["t"])
+            reg.note_mqtt(topic, "0")
+            clock["t"] = C.STATUS_STALE_S + 50.0
+            out = reg.query_devices(["bench-lamp"])
+            self.assertNotIn("error_code", out[0])
+            self.assertIs(out[0]["capabilities"][0]["state"]["value"], False)
+            reg.note_mqtt("/devices/SA-02m/meta/error", "r")
+            down = reg.query_devices(["bench-lamp"])
+            self.assertEqual(down[0].get("error_code"), C.ERR_DEVICE_UNREACHABLE)
+        finally:
+            os.environ.pop("SA02M_TELEMETRY_DEVICE_ID", None)
+
     def test_query_fresh_poll_returns_on_off(self):
         clock = {"t": 0.0}
         reg = DeviceRegistry(DOC, clock=lambda: clock["t"])

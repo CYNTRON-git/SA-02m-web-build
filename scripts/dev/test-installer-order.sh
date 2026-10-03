@@ -73,6 +73,7 @@ order_pin() {
 echo "── 1. 05-mqtt.sh: shared packages land before the bridge modules ──"
 order_pin scripts/05-mqtt.sh "1a LED pkg → bridge copy"   '^[[:space:]]*sa02m_install_led_pkg '   'install -m [0-9]+ .*"\$BRIDGE_DIR/'
 order_pin scripts/05-mqtt.sh "1b Carel pkg → bridge copy" '^[[:space:]]*sa02m_install_carel_pkg ' 'install -m [0-9]+ .*"\$BRIDGE_DIR/'
+order_pin scripts/05-mqtt.sh "1d SPODES pkg → bridge copy" '^[[:space:]]*sa02m_install_spodes_pkg ' 'install -m [0-9]+ .*"\$BRIDGE_DIR/'
 # The retired claim: the old comment said the entry is self-contained, which
 # stopped being true in 1.0.6.33 (modbus_mqtt_bridge.py imports bridge_led).
 if grep -qi 'self-contained' scripts/05-mqtt.sh; then
@@ -92,6 +93,7 @@ echo "── 3. 06-alice.sh: the Carel package lands before the tree that import
 # crash-loops — but the ORDER is the same floor as the other two, and until
 # this pin it was guarded only by the comment at the call site.
 order_pin scripts/06-alice.sh "3a Carel pkg → alice rsync" '^[[:space:]]*sa02m_install_carel_pkg ' '^[[:space:]]*rsync '
+order_pin scripts/06-alice.sh "3b SPODES pkg → alice rsync" '^[[:space:]]*sa02m_install_spodes_pkg ' '^[[:space:]]*rsync '
 
 echo "── 4. install.sh: every module runs through sa02m_run_module, which syncs ──"
 raw_bash=$(stripped_count install.sh '^[[:space:]]*bash "\$SCRIPT_DIR/scripts/')
@@ -135,6 +137,16 @@ order_pin scripts/06d-homeconnect.sh "6b package rsync → conf seed" \
     '^[[:space:]]*rsync ' '^python3 -I -B - "\$INSTALL_DIR"'
 order_pin scripts/06d-homeconnect.sh "6c trigger + sudoers → CGI" \
     '^[[:space:]]*sa02m_install_sudoers ' '"\$WEB_CGI/sa02m_homeconnect_api\.cgi"'
+
+echo "── 7. SPODES package is on the bridge paths and not in the flasher ──"
+order_pin scripts/update-www-only.sh "7a SPODES pkg → bridge entry" \
+    '^[[:space:]]*sa02m_install_spodes_pkg ' \
+    '"\$MQTT_OPT/modbus_mqtt_bridge\.py" "\$BRIDGE_DIR/modbus_mqtt_bridge\.py"'
+if [ -n "$(stripped_first_line scripts/04-flasher.sh 'sa02m_install_spodes_pkg')" ]; then
+    bad "7b 04-flasher.sh installs the SPODES package — the flasher must not import it"
+else
+    ok "7b 04-flasher.sh does not install the SPODES package"
+fi
 
 echo ""
 if [ "$fails" -eq 0 ]; then

@@ -116,6 +116,24 @@ devices:
   #     frequency: true
   #     energy: true
 
+  # ── Пример: Меркурий (СПОДЭС), свой COM, не вместе с Modbus ─────────────
+  # Пароль и ключи здесь пустые: публичный клиент их не шлёт. Не вписывать
+  # настоящий пароль LLS и ключи GUEK/GAK в пример — они попадут в журнал.
+  # - id: spodes-COM2-17
+  #   type: spodes
+  #   port: /dev/COM2
+  #   baudrate: 9600
+  #   hdlc_address: 17
+  #   name: "Меркурий (COM2 addr=17)"
+  #   association: public
+  #   password: ""
+  #   encryption_key: ""
+  #   authentication_key: ""
+  #   system_title: ""
+  #   poll_power_s: 5
+  #   poll_energy_s: 60
+  #   poll_profile_s: 900
+
   # ── Пример: MR-02m 6AI6AO COM4 addr=6 ───────────────────────────────────
   # ai_sensor_schema: 2 — Modbus selection codes 0..42 (MR-02m ≥1.0.9.1).
   # Без schema или schema: 1 — legacy ai_sensor_t enum 0x00..0x26 (авто-миграция).

@@ -105,9 +105,11 @@ def removed_set(path: Path | None = None) -> set[str]:
 
 def _kind_name(device: dict[str, Any] | None, device_id: str = "") -> str:
     kind = str((device or {}).get("kind") or "")
-    if kind in ("ce", "mr", "carel", "dtv", "mtd"):
+    if kind in ("ce", "mr", "carel", "dtv", "mtd", "spodes"):
         return kind
     did = str((device or {}).get("id") or device_id or "")
+    if did.startswith("spodes"):
+        return "spodes"
     if did.startswith("ce"):
         return "ce"
     if did.startswith("mtdx62"):
@@ -215,14 +217,16 @@ def apply_widgets_view(
 
     dtv_all = [d for d in (out.get("dtv") or []) if isinstance(d, dict)]
     ce_all = [d for d in (out.get("ce") or []) if isinstance(d, dict)]
+    spodes_all = [d for d in (out.get("spodes") or []) if isinstance(d, dict)]
     live_by_id = {
         str(d.get("id") or ""): d
-        for d in dtv_all + ce_all
+        for d in dtv_all + ce_all + spodes_all
         if str(d.get("id") or "")
     }
 
     out["dtv"] = [d for d in dtv_all if str(d.get("id") or "") not in removed]
     out["ce"] = [d for d in ce_all if str(d.get("id") or "") not in removed]
+    out["spodes"] = [d for d in spodes_all if str(d.get("id") or "") not in removed]
     # MR-02m and Carel cards are display-only (not removable), so they pass
     # through unfiltered — and must stay in the rebuilt flat devices[] to match
     # live[mr] / live[carel]. AHU cards go FIRST (Operator decision F5).
@@ -234,6 +238,7 @@ def apply_widgets_view(
         list(out["carel"])
         + list(out["dtv"])
         + list(out["ce"])
+        + list(out["spodes"])
         + list(out["mr"])
         + list(out["mtd"])
     )
@@ -289,7 +294,15 @@ def filter_for_archive(
         for d in (out.get("ce") or [])
         if isinstance(d, dict) and str(d.get("id") or "") not in removed
     ]
+    out["spodes"] = [
+        d
+        for d in (out.get("spodes") or [])
+        if isinstance(d, dict) and str(d.get("id") or "") not in removed
+    ]
     # Carel (and MR) never leave the archive — a removed id is ignored here.
     out["carel"] = [d for d in (out.get("carel") or []) if isinstance(d, dict)]
-    out["devices"] = list(out["carel"]) + list(out["dtv"]) + list(out["ce"])
+    out["devices"] = (
+        list(out["carel"]) + list(out["dtv"]) + list(out["ce"])
+        + list(out.get("spodes") or [])
+    )
     return out
