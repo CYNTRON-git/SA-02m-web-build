@@ -63,6 +63,46 @@ _MR02M_LEGACY_NAME_TOKENS = (
 )
 
 
+def _devices_aliases() -> dict:
+    """ALIASES from the generated devices_tables.py when scripts/14-cyntron-devices.sh
+    copied it beside this module (https://github.com/CYNTRON-git/devices.git);
+    {} otherwise, so a missing table changes nothing. Never cross-imports another
+    opt/ package — only the sibling copy."""
+    try:
+        import devices_tables
+    except ImportError:
+        return {}
+    aliases = getattr(devices_tables, "ALIASES", None)
+    return aliases if isinstance(aliases, dict) else {}
+
+
+def _compact_token(name: str) -> str:
+    return str(name).upper().replace(" ", "").replace("-", "").replace("_", "")
+
+
+def _legacy_name_tokens() -> tuple:
+    """Spellings that force the default device name: the built-in letter-first
+    list plus every devices_tables alias whose key differs from its value and
+    whose value is one of OUR module signatures (AO6AI6 → 6AI6AO, …).
+
+    The canonical names themselves are never rewritten here: `type_name` comes
+    from MR02M_TYPE_NAMES, which stays the authority for what the bridge
+    publishes (`module_type`, the roster model, the default meta/name). A table
+    that mapped a canonical name elsewhere would therefore not change MQTT.
+    """
+    canonical = set(MR02M_TYPE_NAMES.values())
+    extra = []
+    for key, val in _devices_aliases().items():
+        if not (isinstance(key, str) and isinstance(val, str)):
+            continue
+        if key == val or val not in canonical or key in canonical:
+            continue
+        tok = _compact_token(key)
+        if tok and tok not in _MR02M_LEGACY_NAME_TOKENS and tok not in extra:
+            extra.append(tok)
+    return _MR02M_LEGACY_NAME_TOKENS + tuple(extra)
+
+
 def _canonical_mr02m_device_name(cfg: dict, type_name: str) -> str:
     """Rewrite letter-first YAML names (AO6AI6…); leave RU/custom names intact."""
     port = str(cfg.get("port", "")).replace("/dev/", "")
@@ -71,8 +111,8 @@ def _canonical_mr02m_device_name(cfg: dict, type_name: str) -> str:
     name = str(cfg.get("name") or "").strip()
     if not name:
         return default
-    upper = name.upper().replace(" ", "").replace("-", "").replace("_", "")
-    if any(tok in upper for tok in _MR02M_LEGACY_NAME_TOKENS):
+    upper = _compact_token(name)
+    if any(tok in upper for tok in _legacy_name_tokens()):
         return default
     return name
 

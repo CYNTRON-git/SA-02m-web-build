@@ -17,6 +17,8 @@ import json
 import os
 import time
 
+from model_alias import canonical_model
+
 # Default source paths (overridable via env for tests / non-standard installs).
 BRIDGE_ROSTER_PATH = os.environ.get(
     "SA02M_MQTT_ROSTER", "/run/sa02m-modbus-mqtt/_roster.json")
@@ -40,7 +42,7 @@ def _entry(port, addr, model, ours, online, source, ts):
     return {
         "port": str(port),
         "addr": int(addr),
-        "model": str(model or ""),
+        "model": canonical_model(str(model or "")),
         "ours": bool(ours),
         "online": online,
         "source": source,

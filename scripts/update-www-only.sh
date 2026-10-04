@@ -405,6 +405,12 @@ if [ -d "$BRIDGE_DIR" ] && [ -f "$MQTT_OPT/modbus_mqtt_bridge.py" ]; then
     # bridge — only the final copy switches the composition. CRLF strip per
     # file (sources may transit with CRLF). Keep the list in sync with
     # tests/test_entry_surface.py EXPECTED_MODULES and scripts/05-mqtt.sh.
+    # Generated device-library table first (bridge_mr02m_map reads it lazily;
+    # optional — identity without it), same as 05-mqtt.sh.
+    if [ -f "$MQTT_OPT/devices_tables.py" ]; then
+        install -m 0644 -o root -g root "$MQTT_OPT/devices_tables.py" "$BRIDGE_DIR/devices_tables.py"
+        sed -i 's/\r$//' "$BRIDGE_DIR/devices_tables.py" 2>/dev/null || true
+    fi
     for f in bridge_serial.py bridge_bus.py bridge_probe.py bridge_tcp.py bridge_fmb.py bridge_meta.py \
              bridge_mqtt.py bridge_mr02m_map.py \
              bridge_device.py bridge_mr02m.py bridge_dtv_ce.py bridge_template.py bridge_carel.py bridge_led.py bridge_spodes.py; do

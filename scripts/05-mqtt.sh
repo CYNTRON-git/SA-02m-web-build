@@ -166,6 +166,15 @@ sa02m_install_led_pkg "$BASE_DIR"
 sa02m_install_spodes_pkg "$BASE_DIR"
 
 # Копируем Python-скрипты
+# Generated device-library table (scripts/14-cyntron-devices.sh copy of
+# CYNTRON-git/devices generated/devices_tables.py): read lazily by
+# bridge_mr02m_map for name aliases, identity without it — a dependency, so it
+# lands BEFORE its consumer; optional, so an absent copy is a logged skip.
+if [ -f "$OPT_DIR/devices_tables.py" ]; then
+    install -m 0644 -o root -g root "$OPT_DIR/devices_tables.py" "$BRIDGE_DIR/devices_tables.py"
+else
+    log INFO "devices_tables.py отсутствует в $OPT_DIR — алиасы имён модулей не ставятся"
+fi
 # Bridge modules FIRST, the entry modbus_mqtt_bridge.py LAST: the entry imports
 # every bridge_* module (bridge_led since 1.0.6.33), so a NEW entry over OLD
 # modules would fail at import, while the OLD entry over new modules keeps
