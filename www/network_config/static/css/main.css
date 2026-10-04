@@ -1551,6 +1551,13 @@ html[data-theme="light"] .nav-item.active { color: var(--btn-primary-hover); }
 #tab-gateway .gw-field-control::placeholder {
   text-align: center;
 }
+#tab-gateway .gw-field--bind .gw-field-control,
+#tab-gateway .gw-field--allow .gw-field-control,
+#tab-gateway .gw-field--bind .gw-field-control::placeholder,
+#tab-gateway .gw-field--allow .gw-field-control::placeholder {
+  text-align: left;
+  text-align-last: left;
+}
 #tab-time #time-form .field-hint {
   text-align: center;
 }
@@ -5124,9 +5131,77 @@ html[data-theme="light"] .mqtt-ch-live-ok { color: var(--cyan-hover); }
   flex: 0 0 auto;
 }
 
-.mqtt-modal-dialog.mqtt-modal-wide { width: 600px; }
-.mqtt-scan-params { display: flex; gap: 10px; align-items: flex-end; flex-wrap: wrap; }
-.mqtt-scan-params .form-row { flex: 1; min-width: 120px; margin: 0; }
+.mqtt-modal-dialog.mqtt-modal-wide {
+  width: max-content;
+  min-width: min(36rem, 96vw);
+  max-width: min(52rem, 96vw);
+}
+/* Scan dialog: one width for COM and gateway. max-content followed the
+   visible fields, so the box jumped when the mode swapped. */
+#mqtt-scan-modal .mqtt-modal-dialog.mqtt-modal-wide {
+  width: min(50rem, 96vw);
+  min-width: min(50rem, 96vw);
+  max-width: min(50rem, 96vw);
+}
+.mqtt-scan-params { max-width: 100%; }
+#mqtt-scan-modal .mqtt-scan-params.gw-form-rows {
+  margin-bottom: 0;
+  width: 100%;
+  max-width: 100%;
+}
+#mqtt-scan-modal .gw-form-row {
+  flex-wrap: nowrap;
+  width: 100%;
+}
+/* COM and gateway share one column grid: mode | port/IP | baud/TCP | addresses | button.
+   Host matches port, TCP port matches baud, so the row does not shift when the mode swaps. */
+#mqtt-scan-modal .gw-field--scan-via { flex: 0 0 9.5rem; width: 9.5rem; max-width: 9.5rem; min-width: 0; }
+#mqtt-scan-modal .gw-field--scan-port,
+#mqtt-scan-modal .gw-field--scan-host { flex: 0 0 8.5rem; width: 8.5rem; max-width: 8.5rem; min-width: 0; }
+#mqtt-scan-modal .gw-field--scan-baud,
+#mqtt-scan-modal .gw-field--scan-tcp { flex: 0 0 6.5rem; width: 6.5rem; max-width: 6.5rem; min-width: 0; }
+#mqtt-scan-modal .gw-field--scan-range { flex: 0 0 7rem; width: 7rem; max-width: 7rem; min-width: 0; }
+#mqtt-scan-modal .gw-field--scan-go { flex: 0 0 auto; margin-left: auto; }
+/* Scan progress lives in the footer, left of «Закрыть». The strip is always
+   the same height (idle = empty track, label column kept) so the button and
+   the dialog do not jump when a scan starts or ends. */
+#mqtt-scan-modal .mqtt-modal-foot { align-items: center; gap: 12px; }
+#mqtt-scan-modal .mqtt-scan-progress {
+  flex: 1 1 auto;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  min-width: 0;
+  min-height: 38px;
+}
+#mqtt-scan-modal .mqtt-scan-progress-track {
+  flex: 1 1 auto;
+  min-width: 0;
+  height: 8px;
+  background: var(--bg-panel);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-pill);
+  overflow: hidden;
+}
+#mqtt-scan-modal .mqtt-scan-progress-fill {
+  display: block;
+  height: 100%;
+  width: 0;
+  background: var(--cyan);
+  border-radius: var(--radius-pill);
+  transition: width .15s linear;
+}
+#mqtt-scan-modal .mqtt-scan-progress-label {
+  flex: 0 0 4.25rem;
+  width: 4.25rem;
+  font-size: .85rem;
+  font-weight: 600;
+  line-height: 1;
+  color: var(--text);
+  text-align: right;
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
 .mqtt-scan-status { margin: 10px 0 6px; font-size: .85rem; color: var(--text-sec); min-height: 1.2em; }
 .mqtt-scan-sig {
   font-size: .82rem;
@@ -5157,7 +5232,21 @@ html[data-theme="light"] .mqtt-ch-live-ok { color: var(--cyan-hover); }
 @keyframes spin { to { transform: rotate(360deg); } }
 .mqtt-scan-results { max-height: 280px; overflow-y: auto; margin-top: 4px; }
 .mqtt-scan-results table { width: 100%; }
-.mqtt-scan-results td input[type=text] { width: 100%; max-width: 170px; min-width: 0; }
+.mqtt-scan-results .mqtt-scan-table th,
+.mqtt-scan-results .mqtt-scan-table td { text-align: center; }
+.mqtt-scan-results .mqtt-scan-table th {
+  font-weight: 500;
+  font-size: 0.72rem;
+  letter-spacing: 0.04em;
+}
+.mqtt-scan-results .mqtt-scan-table tbody tr:nth-child(even) {
+  background: var(--bg-panel);
+}
+.mqtt-scan-results .mqtt-scan-table tbody tr:nth-child(even):hover,
+.mqtt-scan-results .mqtt-scan-table tbody tr:hover {
+  background: var(--bg-hover);
+}
+.mqtt-scan-results td input[type=text] { width: 100%; max-width: 170px; min-width: 0; text-align: left; }
 
 /* Toast — upper-right, aligned with global .toast-area */
 .mqtt-toast {
@@ -5218,54 +5307,18 @@ html[data-theme="light"] .mqtt-ch-live-ok { color: var(--cyan-hover); }
   max-width: none;
 }
 #tab-gateway #gw-content > .widget.gw-port-panel {
-  /* Definite width, not max-content: auto-fit inside a shrink-wrapped card
-     collapsed to two tracks and dropped «Доступ по сети» onto the next row,
-     leaving a band under the short mode column. Three tracks share the card. */
-  width: 100%;
+  width: fit-content;
   max-width: 100%;
   min-width: 0;
   box-sizing: border-box;
 }
-#tab-gateway #gw-content > .widget.gw-port-panel .gw-form-grid {
-  grid-template-columns: repeat(3, minmax(0, 1fr));
-  width: 100%;
-  align-items: start;
-  gap: 8px 20px;
-}
-#tab-gateway #gw-content .gw-port-col {
-  display: flex;
-  flex-direction: column;
-  min-width: 0;
-}
-#tab-gateway #gw-content .gw-col-label {
-  margin: 0 0 4px;
-  font-size: .78rem;
-  color: var(--text-sec);
-  text-transform: uppercase;
-  letter-spacing: .04em;
-}
-#tab-gateway #gw-content .gw-field-row {
-  margin-bottom: 8px;
-}
-#tab-gateway #gw-content .gw-port-col > .gw-field-row:last-child {
-  margin-bottom: 0;
-}
-#tab-gateway #gw-content .gw-field-label {
-  display: block;
-  font-size: .82rem;
-  color: var(--text-sec);
-  margin-bottom: 2px;
-}
-#tab-gateway #gw-content .gw-field-control {
-  display: block;
-  width: 100%;
-  margin-top: 0;
-  padding-top: 6px;
-  padding-bottom: 6px;
-}
-#tab-gateway #gw-content .gw-field-row > .field-hint {
-  margin-top: 2px;
-  margin-bottom: 0;
+#tab-gateway #gw-content > .widget.gw-port-panel > .widget-title {
+  font-size: 1.05rem;
+  font-weight: 600;
+  text-transform: none;
+  letter-spacing: 0;
+  color: var(--text);
+  margin: 0 0 0.75rem;
 }
 #tab-gateway #gw-content .gw-svc-summary {
   display: flex;
@@ -5293,16 +5346,8 @@ html[data-theme="light"] .mqtt-ch-live-ok { color: var(--cyan-hover); }
   color: var(--text-sec);
   text-align: center;
 }
-#tab-gateway #gw-content .gw-block-fmb .gw-field-row {
-  margin-bottom: 0;
-}
-#tab-gateway #gw-content .gw-fmb-hint {
-  font-size: .77rem;
-  color: var(--text-sec);
-  margin: 2px 0 0;
-}
-/* Conditional rows (TCP port, Fast Modbus, open-access warning) share
-   .gw-block-collapsed. display:none — not visibility — so a hidden row keeps
+/* Conditional fields (TCP port, Fast Modbus, open-access warning) share
+   .gw-block-collapsed. display:none — not visibility — so a hidden field keeps
    neither its height nor its margin. The same class is toggled for every
    COM1–COM5 panel; fields come back when the mode or allow-list needs them. */
 #tab-gateway #gw-content .gw-block-collapsed {
@@ -5322,14 +5367,16 @@ html[data-theme="light"] .mqtt-ch-live-ok { color: var(--cyan-hover); }
 #tab-gateway #gw-content .gw-save-row {
   display: flex;
   align-items: center;
-  justify-content: space-between;
+  justify-content: flex-end;
   gap: 10px;
-  margin-top: 8px;
+  margin-top: 0.25rem;
+  padding-top: 0.75rem;
+  border-top: 1px solid var(--border);
   flex-wrap: wrap;
 }
 #tab-gateway #gw-content .gw-save-status {
-  flex: 1 1 auto;
-  text-align: center;
+  margin-right: auto;
+  text-align: left;
   font-size: .82rem;
   min-height: 1.4em;
   color: var(--text-sec);
@@ -5389,13 +5436,108 @@ html[data-theme="light"] .mqtt-ch-live-ok { color: var(--cyan-hover); }
   color: var(--text-sec);
 }
 .gw-counter-err { color: var(--red); }
-.gw-form-grid {
-  display: grid;
-  grid-template-columns: repeat(2, minmax(260px, max-content));
-  gap: 10px 24px;
-  width: fit-content;
+/* Horizontal settings rows (gateway COM pane and the MQTT scan dialog):
+   caption above the control, sized to the value, row wraps on a narrow pane. */
+.gw-form-rows {
+  display: flex;
+  flex-direction: column;
+  gap: 0.65rem;
+  margin-bottom: 0.75rem;
+  width: max-content;
   max-width: 100%;
 }
+.gw-form-rows > .field-hint { width: 100%; max-width: 100%; }
+.gw-form-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.65rem 1rem;
+  align-items: flex-end;
+  max-width: 100%;
+}
+.gw-field {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 0.25rem;
+  flex: 0 0 auto;
+  max-width: 100%;
+  min-width: 4.5rem;
+}
+.gw-field-label {
+  display: block;
+  width: 100%;
+  font-size: 0.72rem;
+  font-weight: 500;
+  color: var(--text-sec);
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  text-align: center;
+  white-space: nowrap;
+  line-height: 1.2;
+}
+.gw-field-control {
+  display: block;
+  width: 100%;
+  box-sizing: border-box;
+  margin: 0;
+  min-height: 36px;
+  padding: 6px 8px;
+  background: var(--bg-input);
+  border: 1px solid var(--border-md);
+  border-radius: var(--radius-sm);
+  color: var(--text);
+  font-size: .88rem;
+  text-align: center;
+  text-align-last: center;
+  box-shadow: var(--shadow-sm);
+  outline: none;
+}
+.gw-field-control:focus {
+  border-color: var(--cyan-btn);
+  box-shadow: var(--shadow-glow), var(--shadow-sm);
+}
+.gw-field-control::placeholder {
+  text-align: center;
+  color: var(--text-dim);
+}
+.gw-field .toggle-inline {
+  width: 100%;
+  padding: 0;
+  min-height: 36px;
+}
+.gw-field--en { min-width: 8.5rem; }
+.gw-field--mode { min-width: 11rem; }
+.gw-field--tcp { min-width: 6.25rem; }
+.gw-field--fmb { min-width: 11rem; }
+.gw-field--baud { min-width: 7.5rem; }
+.gw-field--data { min-width: 5.5rem; }
+.gw-field--parity { min-width: 10.5rem; }
+.gw-field--stop { min-width: 5rem; }
+.gw-field--bind { min-width: 11.5rem; }
+.gw-field--allow { min-width: min(18rem, 100%); }
+.gw-field--bind .gw-field-control,
+.gw-field--allow .gw-field-control,
+.gw-field--scan-host .gw-field-control {
+  text-align: left;
+  text-align-last: left;
+}
+.gw-field--bind .gw-field-control::placeholder,
+.gw-field--allow .gw-field-control::placeholder,
+.gw-field--scan-host .gw-field-control::placeholder {
+  text-align: left;
+}
+.gw-field--scan-via { min-width: 9.5rem; }
+.gw-field--scan-port,
+.gw-field--scan-host { min-width: 8.5rem; }
+.gw-field--scan-baud,
+.gw-field--scan-tcp { min-width: 6.5rem; }
+.gw-field--scan-range { min-width: 7rem; }
+.gw-cond-block {
+  display: flex;
+  flex: 0 0 auto;
+  max-width: 100%;
+}
+.gw-form-rows > .field-hint { margin: 0; }
 .gw-section h4 {
   font-size: .85rem;
   font-weight: 600;
@@ -5509,10 +5651,8 @@ html[data-theme="light"] .mqtt-ch-live-ok { color: var(--cyan-hover); }
   /* gateway port panel: drop the hard 680px floor, let it fill the column */
   #tab-gateway #gw-content > .widget.gw-port-panel {
     min-width: 0;
-    width: 100%;
-  }
-  #tab-gateway #gw-content > .widget.gw-port-panel .gw-form-grid {
-    grid-template-columns: 1fr;
+    width: fit-content;
+    max-width: 100%;
   }
   /* MQTT channel-type grid: 440px min-track can't fit — collapse to 1 column */
   .mqtt-accordion-body .mqtt-ch-widgets.dash-grid {

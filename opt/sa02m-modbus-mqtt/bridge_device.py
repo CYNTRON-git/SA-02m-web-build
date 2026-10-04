@@ -30,6 +30,7 @@ import threading
 import logging
 
 import bridge_bus
+import bridge_rtu_tcp
 import bridge_serial
 import bridge_tcp
 from bridge_serial import ModbusSerial, WRITEBACK_POLL_GRACE_S
@@ -123,6 +124,9 @@ class DevicePoller:
     def get_port(self) -> ModbusSerial:
         if self.bus.transport == bridge_bus.TRANSPORT_TCP:
             return bridge_tcp.get_tcp_client(
+                self.bus.host, self.bus.tcp_port, self.bus.timeout_s)
+        if self.bus.transport == bridge_bus.TRANSPORT_RTU_TCP:
+            return bridge_rtu_tcp.get_client(
                 self.bus.host, self.bus.tcp_port, self.bus.timeout_s)
         return bridge_serial.get_port(
             self.port_path, self.baudrate, self.stopbits)
@@ -230,7 +234,8 @@ class DevicePoller:
         """TCP only: name the endpoint and unit id — a device that answers
         another unit id (a Carel on 255) is otherwise offline with no clue.
         Empty on RS-485, so the serial journal line is unchanged."""
-        if self.bus.transport != bridge_bus.TRANSPORT_TCP:
+        if self.bus.transport not in (
+                bridge_bus.TRANSPORT_TCP, bridge_bus.TRANSPORT_RTU_TCP):
             return ""
         return " (%s unit %d)" % (self.bus.label, self.address)
 
@@ -319,6 +324,7 @@ class PortCycleScheduler:
         self._fmb = fmb
         self._line_stats = line_stats
         self._stop = threading.Event()
+        self._scan_hold = threading.Event()
         self._poll_idx = 0
         tag = port_path.replace("/dev/", "")
         self._log = logging.getLogger(f"port.{tag}")
@@ -414,6 +420,10 @@ class PortCycleScheduler:
             bridge_serial.UartCounterDelta(self._port_path, logger=self._log)
 
         while not self._stop.is_set():
+            if self._scan_hold.is_set():
+                if self._stop.wait(0.05):
+                    break
+                continue
             now = time.monotonic()
             has_fmb = self._fmb is not None and self._fmb.has_configured()
             # Offline at first configure_all → quiet retry until device answers.
@@ -440,6 +450,8 @@ class PortCycleScheduler:
                 high_time_accum += wait
             if self._stop.wait(wait):
                 break
+            if self._scan_hold.is_set():
+                continue
 
             now = time.monotonic()
             force_poll = high_time_accum >= FMB_BALANCING_THRESHOLD_S
@@ -507,7 +519,7 @@ PortPollScheduler = PortCycleScheduler
 
 
 class HdlcPortScheduler:
-    """One thread for an HDLC UART or a wrapper socket.
+    """One thread for an HDLC UART, a transparent gateway or a wrapper socket.
 
     No Fast Modbus and no ModbusSerial: the poller owns the link and
     ``get_port`` is never called.
@@ -517,6 +529,7 @@ class HdlcPortScheduler:
         self._label = label
         self._pollers = pollers
         self._stop = threading.Event()
+        self._scan_hold = threading.Event()
         tag = str(label).replace("/dev/", "").replace(":", "_")
         self._log = logging.getLogger("port.%s" % tag)
 
@@ -534,6 +547,10 @@ class HdlcPortScheduler:
             except Exception as e:
                 self._log.error("setup %s: %s", p.device_id, e)
         while not self._stop.is_set():
+            if self._scan_hold.is_set():
+                if self._stop.wait(0.05):
+                    return
+                continue
             now = time.monotonic()
             for p in self._pollers:
                 if self._stop.is_set():

@@ -206,6 +206,24 @@ class TestPortScheduler(_Isolated):
         self.assertIs(sched._fmb, fmb[key])
         self.assertIsNone(sched._line_stats)
 
+    def test_rtu_tcp_mr_is_a_gateway_bus_without_fmb_or_a_com_port(self):
+        cfg = {"id": "mr02m-rtu-192_168_1_10-4004-15", "type": "mr02m",
+               "transport": "rtu_tcp", "host": "192.168.1.10", "tcp_port": 4004,
+               "address": 15, "module_type": 15, "fast_modbus": True}
+        by_bus, fmb, refused = self._compose([cfg])
+        self.assertEqual(refused, [])
+        key = "rtu_tcp:192.168.1.10:4004"
+        self.assertEqual(list(by_bus), [key])
+        poller = by_bus[key][0]
+        self.assertIsNone(poller.port_path)
+        self.assertEqual(poller.bus.transport, "rtu_tcp")
+        self.assertEqual(fmb, {})
+        sched, name = bridge.make_port_scheduler(key, by_bus[key], fmb)
+        self.assertEqual(name, "192.168.1.10:4004")
+        self.assertEqual(sched._baudrate, 0)
+        self.assertIsNone(sched._fmb)
+        self.assertIsNotNone(sched._line_stats)
+
     def test_tcp_bus_gets_its_endpoint_name_no_fmb_and_the_client_stats(self):
         by_bus, fmb, _r = self._compose([_tcp_template(fast_modbus=True)])
         key = "tcp:192.0.2.10:502"

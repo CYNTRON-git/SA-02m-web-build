@@ -2,8 +2,9 @@
 # shellcheck disable=SC1091
 . "$(dirname "$0")/lib_web_auth.sh"
 # mqtt_scan.cgi — Modbus bus scanner for MQTT device discovery
-echo "Content-Type: application/json"
+echo "Content-Type: application/x-ndjson; charset=utf-8"
 echo "Cache-Control: no-cache"
+echo "X-Accel-Buffering: no"
 echo ""
 
 check_auth() {
@@ -37,20 +38,45 @@ fi
 
 dd bs=1 count="${CONTENT_LENGTH:-0}" 2>/dev/null > "$TMP"
 
-# Validate the scan params BEFORE handing the file to the root scanner:
-# port must be a /dev serial path, baudrate/max_addr bounded integers. The
-# params are attacker-supplied and the scanner runs as root.
+# Validate the scan params BEFORE handing the file to the root scanner.
+# COM: port must be a /dev serial path. Gateway: strict IPv4 + TCP port, the
+# same nets mqtt_bus_scan.gateway_endpoint refuses (loopback is not a gateway).
+# baudrate/max_addr are bounded integers. The params are attacker-supplied and
+# the scanner runs as root.
 if ! python3 - "$TMP" <<'PYEOF'
-import json, re, sys
+import ipaddress, json, re, sys
 try:
     with open(sys.argv[1], encoding="utf-8") as f:
         p = json.load(f)
 except Exception:
     sys.exit(1)
-port = str(p.get("port", ""))
-if not re.fullmatch(r"/dev/[A-Za-z0-9_-]+", port):
+via = str(p.get("via") or "com").strip().lower()
+if via == "com":
+    port = str(p.get("port", ""))
+    if not re.fullmatch(r"/dev/COM[1-5]", port):
+        sys.exit(1)
+elif via == "gateway":
+    octet = r"(?:25[0-5]|2[0-4][0-9]|1[0-9][0-9]|[1-9]?[0-9])"
+    host = str(p.get("host") or "").strip()
+    if not re.fullmatch(octet + "(?:\\." + octet + "){3}", host):
+        sys.exit(1)
+    ip = ipaddress.IPv4Address(host)
+    forbidden = tuple(ipaddress.IPv4Network(n) for n in (
+        "127.0.0.0/8", "0.0.0.0/32", "224.0.0.0/4", "240.0.0.0/4"))
+    if any(ip in net for net in forbidden):
+        sys.exit(1)
+    try:
+        tcp_port = int(p.get("tcp_port"))
+    except (TypeError, ValueError):
+        sys.exit(1)
+    if not 1 <= tcp_port <= 65535:
+        sys.exit(1)
+else:
     sys.exit(1)
-for key, lo, hi in (("baudrate", 300, 4000000), ("max_addr", 1, 247)):
+bounds = (("max_addr", 1, 247),)
+if via == "com":
+    bounds = (("baudrate", 300, 4000000), ("max_addr", 1, 247))
+for key, lo, hi in bounds:
     if key in p and p[key] not in ("", None):
         try:
             v = int(p[key])
@@ -58,6 +84,37 @@ for key, lo, hi in (("baudrate", 300, 4000000), ("max_addr", 1, 247)):
             sys.exit(1)
         if not (lo <= v <= hi):
             sys.exit(1)
+if via == "gateway" and "baudrate" in p and p.get("baudrate") not in ("", None):
+    try:
+        baud = int(p.get("baudrate"))
+    except (TypeError, ValueError):
+        sys.exit(1)
+    if not 300 <= baud <= 4000000:
+        sys.exit(1)
+# phase is optional. Absent runs fast then the address sweep in one process.
+# A present value is only the whitelist — anything else fails closed before sudo.
+if "phase" in p and p.get("phase") not in ("", None):
+    phase = p.get("phase")
+    if not isinstance(phase, str) or phase.strip().lower() not in ("fast", "standard"):
+        sys.exit(1)
+if "known_addrs" in p and p.get("known_addrs") not in ("", None):
+    known = p.get("known_addrs")
+    if not isinstance(known, list) or len(known) > 247:
+        sys.exit(1)
+    for item in known:
+        if isinstance(item, bool) or not isinstance(item, int) or not 1 <= item <= 247:
+            sys.exit(1)
+if "addr_from" in p and p.get("addr_from") not in ("", None):
+    raw = p.get("addr_from")
+    if isinstance(raw, bool):
+        sys.exit(1)
+    try:
+        lo = int(raw)
+        hi = int(p.get("max_addr", 32))
+    except (TypeError, ValueError):
+        sys.exit(1)
+    if not 1 <= lo <= hi <= 247:
+        sys.exit(1)
 sys.exit(0)
 PYEOF
 then

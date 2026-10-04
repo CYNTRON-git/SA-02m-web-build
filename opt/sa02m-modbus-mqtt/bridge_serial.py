@@ -309,6 +309,7 @@ class ModbusSerial:
         self._inter_frame_delay_s = max(0.0, float(inter_frame_delay_s))
         self._ser: serial.Serial | None = None
         self._lock = threading.Lock()
+        self._scan_hold = threading.Event()
         # Timing of the last frame read (_read_rtu_response): ms from the
         # reader's start (right after write+flush) to the first and the last
         # byte, the largest gap between two arrivals, and the raw byte count.
@@ -403,7 +404,23 @@ class ModbusSerial:
             ms("first_ms"), ms("last_ms"), ms("gap_ms"),
             bytes(resp[:8]).hex(), bytes(resp[-8:]).hex() if resp else "")
 
+    def hold_scan(self) -> None:
+        """Block new transactions and close the fd. Waits out one in flight."""
+        self._scan_hold.set()
+        self.close()
+
+    def release_scan(self) -> None:
+        self._scan_hold.clear()
+
     def _ensure_open(self) -> serial.Serial:
+        if self._scan_hold.is_set():
+            if self._ser is not None and getattr(self._ser, "is_open", False):
+                try:
+                    self._ser.close()
+                except Exception:
+                    pass
+                self._ser = None
+            raise ScanHold()
         if self._ser is None or not self._ser.is_open:
             open_kwargs: dict = dict(
                 port=self._port,
@@ -567,9 +584,50 @@ class ModbusSerial:
                 self._bus_gap()
 
 
+class ScanHold(Exception):
+    """This line is leased to a bus scan. Do not open it and do not transmit."""
+
+
 # ── Port pool (shared serial per port:baud) ────────────────────────────────────
 _port_pool: dict[str, ModbusSerial] = {}
 _port_pool_lock = threading.Lock()
+_held_ports: set[str] = set()
+_held_lock = threading.Lock()
+_COM_HOLD_RE = re.compile(r"/dev/COM[1-5]\Z")
+
+
+def com_held(port_path: str) -> bool:
+    with _held_lock:
+        return str(port_path) in _held_ports
+
+
+def hold_com(port_path: str) -> bool:
+    """Stop every handle on this UART and close it. True if the pool had one.
+
+    Only `/dev/COM1` … `/dev/COM5`. The caller (the scan lease) must release
+    the same path. A path with no pooled handle is still marked held so a
+    poller that reaches `get_port` during the scan cannot open it.
+    """
+    port_path = str(port_path)
+    if not _COM_HOLD_RE.fullmatch(port_path):
+        raise ValueError("port")
+    with _held_lock:
+        _held_ports.add(port_path)
+    with _port_pool_lock:
+        handles = [p for k, p in _port_pool.items() if k.startswith(port_path + ":")]
+    for handle in handles:
+        handle.hold_scan()
+    return bool(handles)
+
+
+def release_com(port_path: str) -> None:
+    port_path = str(port_path)
+    with _held_lock:
+        _held_ports.discard(port_path)
+    with _port_pool_lock:
+        handles = [p for k, p in _port_pool.items() if k.startswith(port_path + ":")]
+    for handle in handles:
+        handle.release_scan()
 
 
 def get_port(port_path: str, baudrate: int, stopbits: int = 1) -> ModbusSerial:
@@ -584,7 +642,10 @@ def get_port(port_path: str, baudrate: int, stopbits: int = 1) -> ModbusSerial:
     with _port_pool_lock:
         if key not in _port_pool:
             _port_pool[key] = ModbusSerial(port_path, baudrate, stopbits=stopbits)
-        return _port_pool[key]
+        obj = _port_pool[key]
+    if com_held(port_path):
+        obj._scan_hold.set()
+    return obj
 
 
 # ── Writeback queue + worker ───────────────────────────────────────────────────

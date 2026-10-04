@@ -1,11 +1,15 @@
 """Transport choice and validation for a bridge device — the ONE home.
 
 `device_bus(cfg)` says how a device entry reaches its slave: the RS-485 serial
-path (no `transport`, or `transport: rtu` — today's defaults, byte-identical)
-or Modbus TCP (`transport: tcp`, `type: template | carel` only). A Mercury
-meter is neither: `type: spodes` is HDLC (`transport` absent, `rtu` or
-`hdlc`) or an IEC 62056-47 wrapper (`transport: wrapper`). `transport: tcp`
-on a SPODES entry is refused. An invalid entry raises BusConfigError(reason);
+path (no `transport`, or `transport: rtu` — today's defaults, byte-identical),
+Modbus TCP (`transport: tcp`, `type: template | carel` only), or raw Modbus
+RTU over a transparent gateway socket (`transport: rtu_tcp` — the flasher's
+`tcp_rtu` mode: host + tcp_port, no local COM, baud stays on the gateway).
+A Mercury meter is none of those Modbus paths: `type: spodes` is HDLC on its
+own UART (`transport` absent, `rtu` or `hdlc`), HDLC through a transparent
+serial gateway (`transport: transparent`), or an IEC 62056-47 wrapper
+(`transport: wrapper`). `transport: tcp` on a SPODES entry is refused, and
+`transport: rtu_tcp` is not an HDLC path. An invalid entry raises BusConfigError(reason);
 it is never downgraded to RTU and never connected. `validate_devices()` runs
 the same rules over a whole device list plus the endpoint cap and refuses a
 COM port that mixes HDLC with Modbus.
@@ -31,14 +35,27 @@ TRANSPORT_RTU = "rtu"
 TRANSPORT_TCP = "tcp"
 TRANSPORT_HDLC = "hdlc"
 TRANSPORT_WRAPPER = "wrapper"
+TRANSPORT_TRANSPARENT = "transparent"
+# Flasher transport_var "tcp_rtu" / endpoint mode "rtu_tcp": the RTU frame,
+# CRC included, on a TCP socket. Not MBAP (`transport: tcp`).
+TRANSPORT_RTU_TCP = "rtu_tcp"
 
 TCP_CAPABLE_TYPES = ("template", "carel")
+# What «Поиск устройств» may add from a gateway hit. Carel stays MBAP-only;
+# SPODES stays on its HDLC / transparent / wrapper paths.
+RTU_TCP_TYPES = ("mr02m", "dtv", "ce02m3", "led", "template")
 # Literal copy of sa02m_carel.controls.BOTH (that package is not importable
 # from the CGI); pinned equal by tests/test_bridge_bus.py.
 CAREL_FAMILIES = ("crst", "uaria")
 TCP_ENDPOINT_MAX = 16
 TCP_DEFAULT_PORT = 502
 WRAPPER_DEFAULT_PORT = 4059
+# The panel writes 4001..4005 when a COM is switched to transparent mode.
+# The daemon's own default, if the file never went through that select, is
+# 9502..9506. Loopback is allowed only on these ports: any other local port
+# would let a device entry open the board's own services.
+TRANSPARENT_DEFAULT_PORT = 4001
+LOCAL_GATEWAY_PORTS = frozenset(range(4001, 4006)) | frozenset(range(9502, 9507))
 TCP_TIMEOUT_DEFAULT_S = 1.0
 TCP_TIMEOUT_MIN_S = 0.2
 TCP_TIMEOUT_MAX_S = 5.0
@@ -192,8 +209,47 @@ def _tcp_bus(cfg: dict) -> BusSpec:
                    tcp_port=tcp_port, timeout_s=timeout_s)
 
 
+def _rtu_tcp_bus(cfg: dict) -> BusSpec:
+    """Raw Modbus RTU to a transparent gateway. The gateway owns the UART.
+
+    No local COM and no baud: those keys would make other YAML readers
+    (the Alice inventory) attribute the device to a serial port. Loopback
+    is refused — this is a remote gateway, not the board's own COM bridge.
+    Station ids are the flasher's scan range, 1..247.
+    """
+    dev_type = str(cfg.get("type", "")).lower()
+    if dev_type not in RTU_TCP_TYPES:
+        raise BusConfigError("type_not_tcp_capable", dev_type)
+    if "port" in cfg or "baudrate" in cfg:
+        raise BusConfigError("serial_keys_on_tcp")
+    tcp_port = _int_in(cfg.get("tcp_port", TRANSPARENT_DEFAULT_PORT), 1, 65535)
+    if tcp_port is None:
+        raise BusConfigError("tcp_port_invalid", repr(cfg.get("tcp_port")))
+    host = canonical_host(cfg.get("host"))
+    if _int_in(cfg.get("address", 1), 1, 247) is None:
+        raise BusConfigError("unit_invalid", repr(cfg.get("address")))
+    timeout_s = _timeout(cfg.get("tcp_timeout_s"))
+    if timeout_s is None:
+        raise BusConfigError("timeout_invalid", repr(cfg.get("tcp_timeout_s")))
+    label = "%s:%d" % (host, tcp_port)
+    return BusSpec(TRANSPORT_RTU_TCP, "rtu_tcp:" + label, label, host=host,
+                   tcp_port=tcp_port, timeout_s=timeout_s)
+
+
+def _network_host(host, tcp_port: int, *, local_gateway: bool) -> str:
+    """canonical_host, plus 127.0.0.1 when it is this board's own gateway."""
+    if (local_gateway and host == "127.0.0.1"
+            and tcp_port in LOCAL_GATEWAY_PORTS):
+        return "127.0.0.1"
+    return canonical_host(host)
+
+
 def _spodes_bus(cfg: dict) -> BusSpec:
-    """HDLC on a UART, or an IEC 62056-47 wrapper socket. Never Modbus TCP."""
+    """HDLC on a UART, HDLC via a transparent gateway, or an IEC wrapper.
+
+    Never Modbus TCP. The gateway path does not take a local COM: the
+    gateway process already owns that UART.
+    """
     t = cfg.get("transport")
     addr = cfg.get("hdlc_address", cfg.get("address", 1))
     if _int_in(addr, 1, 16383) is None:
@@ -203,6 +259,19 @@ def _spodes_bus(cfg: dict) -> BusSpec:
         baud = int(cfg.get("baudrate", 9600))
         return BusSpec(TRANSPORT_HDLC, f"{port}:{baud}",
                        str(port).replace("/dev/", ""), port=port, baudrate=baud)
+    if t == TRANSPORT_TRANSPARENT:
+        if "port" in cfg or "baudrate" in cfg:
+            raise BusConfigError("serial_keys_on_tcp")
+        tcp_port = _int_in(cfg.get("tcp_port", TRANSPARENT_DEFAULT_PORT), 1, 65535)
+        if tcp_port is None:
+            raise BusConfigError("tcp_port_invalid", repr(cfg.get("tcp_port")))
+        host = _network_host(cfg.get("host"), tcp_port, local_gateway=True)
+        timeout_s = _timeout(cfg.get("tcp_timeout_s"))
+        if timeout_s is None:
+            raise BusConfigError("timeout_invalid", repr(cfg.get("tcp_timeout_s")))
+        label = "%s:%d" % (host, tcp_port)
+        return BusSpec(TRANSPORT_TRANSPARENT, "transparent:" + label, label,
+                       host=host, tcp_port=tcp_port, timeout_s=timeout_s)
     if t == TRANSPORT_WRAPPER:
         if "port" in cfg or "baudrate" in cfg:
             raise BusConfigError("serial_keys_on_tcp")
@@ -237,11 +306,13 @@ def _serial_framing(cfg: dict):
 def device_bus(cfg: dict) -> BusSpec:
     """The bus of one device entry. RTU: today's defaults; TCP: validated.
 
-    A SPODES entry is HDLC (default baud 9600) or a wrapper socket. It is
-    never folded into the Modbus RTU defaults.
+    A SPODES entry is HDLC (default baud 9600), a transparent gateway, or a
+    wrapper socket. It is never folded into the Modbus RTU defaults.
     """
     if str(cfg.get("type", "")).lower() == "spodes":
         return _spodes_bus(cfg)
+    if cfg.get("transport") == TRANSPORT_RTU_TCP:
+        return _rtu_tcp_bus(cfg)
     if _transport(cfg) == TRANSPORT_TCP:
         return _tcp_bus(cfg)
     port = cfg.get("port", RTU_DEFAULT_PORT)
@@ -255,8 +326,9 @@ def validate_devices(devices) -> list:
 
     A Modbus-only list still validates clean. A SPODES entry is judged on
     its own rules, and a COM port that carries both HDLC and Modbus refuses
-    every entry on that port (other ports are left alone). Wrapper sockets
-    share the TCP endpoint cap.
+    every entry on that port (other ports are left alone). Wrapper sockets,
+    transparent HDLC gateways, Modbus TCP and raw RTU-over-TCP share the
+    TCP endpoint cap.
     """
     out = []
     endpoints: set = set()
@@ -271,7 +343,7 @@ def validate_devices(devices) -> list:
                 out.append({"index": index, "id": cfg.get("id"), "reason": e.reason})
                 refused.add(index)
                 continue
-            if bus.transport != TRANSPORT_WRAPPER:
+            if bus.transport not in (TRANSPORT_WRAPPER, TRANSPORT_TRANSPARENT):
                 continue
             if bus.key not in endpoints and len(endpoints) >= TCP_ENDPOINT_MAX:
                 out.append({"index": index, "id": cfg.get("id"),
@@ -281,9 +353,13 @@ def validate_devices(devices) -> list:
             endpoints.add(bus.key)
             continue
         try:
-            if _transport(cfg) != TRANSPORT_TCP:
+            kind = cfg.get("transport")
+            if kind == TRANSPORT_RTU_TCP:
+                bus = _rtu_tcp_bus(cfg)
+            elif _transport(cfg) != TRANSPORT_TCP:
                 continue
-            bus = _tcp_bus(cfg)
+            else:
+                bus = _tcp_bus(cfg)
         except BusConfigError as e:
             out.append({"index": index, "id": cfg.get("id"), "reason": e.reason})
             continue

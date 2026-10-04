@@ -54,16 +54,18 @@ function mr02mTypeLabelRu(mtCode) {
   return mt ? mt.name : String(mtCode);
 }
 
-/** `host:tcp_port` of a Modbus TCP device (docs/contracts/bridge-modbus-tcp.md). */
+/** `host:tcp_port` of a network device. Modbus TCP defaults to 502; a
+ *  transparent gateway (`rtu_tcp`) defaults to 4001, the flasher's RTU/TCP port. */
 function deviceEndpointLabel(dev) {
-  return `${dev.host || '—'}:${dev.tcp_port || 502}`;
+  const fallback = dev && dev.transport === 'rtu_tcp' ? 4001 : 502;
+  return `${(dev && dev.host) || '—'}:${(dev && dev.tcp_port) || fallback}`;
 }
 
 function formatDeviceDisplayName(dev) {
   const comName = (dev.port || '').replace('/dev/', '');
   const addr = dev.address != null ? dev.address : (dev.addr != null ? dev.addr : '—');
   const stored = (dev.name && String(dev.name).trim()) ? String(dev.name).trim() : '';
-  if (dev.transport === 'tcp') {
+  if (dev.transport === 'tcp' || dev.transport === 'rtu_tcp') {
     if (stored && /\([^)]*addr=\d+/i.test(stored)) return stored;
     return `${stored || dev.id} (${deviceEndpointLabel(dev)} addr=${addr})`;
   }
@@ -138,6 +140,9 @@ function scanShortName(scanDev, type) {
   if (type === 'ce02m3') return 'СЭ-02м-3';
   if (type === 'led') return 'LED';
   if (type === 'template') return 'MTD262-MB';
+  if (type === 'carel') {
+    return scanDev.family === 'uaria' ? 'Carel uAria' : 'Carel c.pCOmini';
+  }
   if (scanDev.signature) return String(scanDev.signature).trim();
   return `Устройство ${addr}`;
 }
@@ -151,6 +156,17 @@ function findListedDevice(port, addr) {
   return (_config.devices || []).find((d) => {
     const da = Number(d.address != null ? d.address : d.addr);
     return d.port === port && da === a;
+  }) || null;
+}
+
+function findListedGatewayDevice(host, tcp, addr) {
+  const a = Number(addr);
+  const h = String(host || '').trim();
+  const p = Number(tcp);
+  return (_config.devices || []).find((d) => {
+    if (d.transport !== 'rtu_tcp') return false;
+    const da = Number(d.address != null ? d.address : d.addr);
+    return String(d.host || '').trim() === h && Number(d.tcp_port) === p && da === a;
   }) || null;
 }
 
@@ -305,6 +321,12 @@ const CE02M3_CHANNELS = [
 
 // ── State ─────────────────────────────────────────────────────────────────────
 let _config = {mqtt:{broker:'127.0.0.1',port:1883,qos:1,retain:true}, devices:[]};
+// True after a successful mqtt_config.cgi GET. Re-entering the tab paints the
+// bus list from this object before any network wait.
+let _mqttConfigLoaded = false;
+// Bumped on tab enter and leave so a late config GET cannot start the broker
+// status poll after the operator has left the tab.
+let _mqttTabSeq = 0;
 // mqtt_config.cgi GET `capabilities` (Modbus TCP types, Carel families, default
 // port) — null until loaded, or when the board cannot validate TCP entries.
 let _tcpCaps = null;
@@ -376,6 +398,18 @@ function templateIdPrefix() {
   return tName.replace(/[^A-Za-z0-9._-]/g, '') || 'tmpl';
 }
 
+function makeRtuTcpDeviceId(type, host, tcp, addr, templateStem) {
+  const host_ = String(host || '').trim().replace(/\./g, '_');
+  let prefix = 'mr02m';
+  if (type === 'dtv') prefix = 'dtv';
+  else if (type === 'ce02m3') prefix = 'ce02m3';
+  else if (type === 'led') prefix = 'led';
+  else if (type === 'template') {
+    prefix = String(templateStem || 'mtdx62-mb').replace(/[^A-Za-z0-9._-]/g, '') || 'mtdx62-mb';
+  }
+  return prefix + '-rtu-' + host_ + '-' + tcp + '-' + addr;
+}
+
 function makeDeviceId(type, port, addr) {
   const comName = port.replace('/dev/', '');
   let prefix;
@@ -384,6 +418,7 @@ function makeDeviceId(type, port, addr) {
   else if (type === 'led') prefix = 'led';
   else if (type === 'template') prefix = templateIdPrefix();
   else if (type === 'spodes') prefix = 'spodes';
+  else if (type === 'carel') prefix = 'carel';
   else prefix = 'mr02m';
   return `${prefix}-${comName}-${addr}`;
 }
@@ -1756,7 +1791,28 @@ window.mqttRefreshI18n = function () {
 };
 
 // ── Load config ───────────────────────────────────────────────────────────────
+function paintMqttDevices() {
+  renderDeviceList();
+  renderAccordion();
+}
+
+// Template I/O counts need the catalog. Channel bodies are built on open;
+// drop one that was built while the catalog was still missing.
+function refreshTemplateBodiesAfterCatalog() {
+  renderDeviceList();
+  for (const dev of _config.devices || []) {
+    if (!dev || dev.type !== 'template' || !_accordionBuilt.has(dev.id)) continue;
+    _accordionBuilt.delete(dev.id);
+    const body = document.getElementById('acc-body-' + dev.id);
+    if (!body) continue;
+    const wasOpen = !body.hasAttribute('hidden');
+    body.innerHTML = '';
+    if (wasOpen) ensureAccordionBody(dev);
+  }
+}
+
 async function loadConfig() {
+  const seq = _mqttTabSeq;
   const data = await apiGet('cgi-bin/mqtt_config.cgi').catch(() => null);
   if (data && !data.error) {
     // What the add-device modal may offer over Modbus TCP — server-owned, never
@@ -1770,9 +1826,19 @@ async function loadConfig() {
       migrateDeviceLegacyAiSensorTypes(dev);
       normalizeMr02mAiPairsAll(dev);
     }
-    await fetchTemplateCatalog(false);
-    renderDeviceList();
-    renderAccordion();
+    _mqttConfigLoaded = true;
+    // Bus list before the template-catalog CGI. That catalog only fills
+    // template I/O counts; it must not hold the table or the accordion.
+    paintMqttDevices();
+    if (seq !== _mqttTabSeq) return;
+    const needsCatalog = (_config.devices || []).some(d => d && d.type === 'template')
+      && !Array.isArray(_templateCatalog);
+    if (needsCatalog) {
+      void fetchTemplateCatalog(false).then(() => {
+        if (seq !== _mqttTabSeq) return;
+        refreshTemplateBodiesAfterCatalog();
+      });
+    }
     return;
   }
   const msg = (data && data.error) ? data.error : 'не удалось загрузить конфигурацию (CGI недоступен)';
@@ -1802,7 +1868,7 @@ function renderDeviceList() {
     const ioEnabled = countChannelsEnabled(dev);
     const ioTotal = countChannelsTotal(dev);
     const pollCount = countPollEnabled(dev);
-    const comName = dev.transport === 'tcp'
+    const comName = (dev.transport === 'tcp' || dev.transport === 'rtu_tcp')
       ? deviceEndpointLabel(dev)
       : (dev.port || '').replace('/dev/', '');
     const topic = deviceTopicFilter(dev.id);
@@ -2579,134 +2645,507 @@ function showScanModal() {
   if (statusEl) statusEl.textContent = '';
   const btn = document.getElementById('mqtt-scan-btn');
   if (btn) { btn.disabled = false; btn.textContent = 'Сканировать'; }
+  setScanProgress(0, false);
+  const hostEl = document.getElementById('mqtt-scan-host');
+  const tcpEl = document.getElementById('mqtt-scan-tcp');
+  if (hostEl && !String(hostEl.value || '').trim()) hostEl.value = '192.168.1.10';
+  if (tcpEl && String(tcpEl.value == null ? '' : tcpEl.value).trim() === '') tcpEl.value = '4001';
+  applyScanVia();
 }
 
+function setScanRowShown(id, shown) {
+  const row = document.getElementById(id);
+  if (!row) return;
+  // .gw-field is display:flex, which outranks the hidden attribute.
+  row.style.display = shown ? '' : 'none';
+}
+
+function applyScanVia() {
+  const viaEl = document.getElementById('mqtt-scan-via');
+  const gw = !!viaEl && viaEl.value === 'gateway';
+  const params = document.querySelector('#mqtt-scan-modal .mqtt-scan-params');
+  if (params) params.classList.toggle('is-scan-gw', gw);
+  setScanRowShown('mqtt-scan-port-row', !gw);
+  setScanRowShown('mqtt-scan-baud-row', !gw);
+  setScanRowShown('mqtt-scan-host-row', gw);
+  setScanRowShown('mqtt-scan-tcp-row', gw);
+}
+
+function scanHostOk(host) {
+  const m = /^(\d{1,3})\.(\d{1,3})\.(\d{1,3})\.(\d{1,3})$/.exec(String(host || '').trim());
+  if (!m) return false;
+  if ([m[1], m[2], m[3], m[4]].some((s) => s.length > 1 && s.charAt(0) === '0')) return false;
+  const oct = [m[1], m[2], m[3], m[4]].map(Number);
+  if (oct.some((n) => n > 255)) return false;
+  if (oct[0] === 0 || oct[0] === 127 || oct[0] >= 224) return false;
+  return true;
+}
+
+let _scanAbort = null;
+let _scanGen = 0;
+let _scanView = null;
+let _scanPct = -1;
+let _scanStdProgress = false;
+let _scanWindow = null;
+const SCAN_FAST_PCT = 18;
+const SCAN_CHUNK = 4;
+
 function hideScanModal() {
+  _scanGen += 1;
+  _scanStdProgress = false;
+  _scanWindow = null;
+  if (_scanAbort) {
+    _scanAbort.abort();
+    _scanAbort = null;
+  }
+  setScanProgress(0, false);
   const m = document.getElementById('mqtt-scan-modal');
   if (m) m.setAttribute('hidden', '');
 }
 
+function setScanProgress(pct, active) {
+  const root = document.getElementById('mqtt-scan-progress');
+  const fill = document.getElementById('mqtt-scan-progress-fill');
+  const label = document.getElementById('mqtt-scan-progress-label');
+  const track = document.getElementById('mqtt-scan-progress-track');
+  if (!root || !fill || !label || !track) return;
+  if (!active) {
+    _scanPct = -1;
+    root.classList.add('is-idle');
+    fill.style.transition = 'none';
+    fill.style.width = '0%';
+    label.textContent = '';
+    track.setAttribute('aria-valuenow', '0');
+    return;
+  }
+  let n = Number(pct);
+  if (!Number.isFinite(n)) n = 0;
+  if (n < 0) n = 0;
+  if (n > 100) n = 100;
+  if (_scanPct >= 0 && n < _scanPct) n = _scanPct;
+  const fromIdle = _scanPct < 0;
+  root.classList.remove('is-idle');
+  if (fromIdle) {
+    fill.style.transition = 'none';
+    fill.style.width = '0%';
+    void fill.offsetWidth;
+  }
+  fill.style.transition = '';
+  _scanPct = n;
+  fill.style.width = n.toFixed(2) + '%';
+  label.textContent = Math.round(n) + ' %';
+  track.setAttribute('aria-valuenow', String(Math.round(n)));
+}
+
+function scanAddrWindows(maxAddr) {
+  const out = [];
+  let lo = 1;
+  while (lo <= maxAddr) {
+    const hi = Math.min(maxAddr, lo + SCAN_CHUNK - 1);
+    out.push({lo: lo, hi: hi});
+    lo = hi + 1;
+  }
+  return out;
+}
+
+function scanStandardPct(ev) {
+  const done = Number(ev && ev.done);
+  const total = Number(ev && ev.total);
+  if (!Number.isFinite(done) || !Number.isFinite(total) || total <= 0) return null;
+  const ratio = done / total;
+  const clamped = ratio < 0 ? 0 : (ratio > 1 ? 1 : ratio);
+  const win = _scanWindow;
+  if (!win || !win.max) {
+    return SCAN_FAST_PCT + (100 - SCAN_FAST_PCT) * clamped;
+  }
+  const base = (win.lo - 1) / win.max;
+  const span = (win.hi - win.lo + 1) / win.max;
+  return SCAN_FAST_PCT + (100 - SCAN_FAST_PCT) * (base + span * clamped);
+}
+
+function setScanStatus(text, busy) {
+  const statusEl = document.getElementById('mqtt-scan-status');
+  if (!statusEl) return;
+  statusEl.textContent = '';
+  if (busy) statusEl.appendChild(h('span', {'class': 'mqtt-scan-spinner'}));
+  statusEl.appendChild(document.createTextNode(text));
+}
+
+function scanListedAlready(target, dev) {
+  if (!target || !dev) return false;
+  if (target.via === 'gateway') {
+    return !!findListedGatewayDevice(target.host, target.tcpPort, dev.addr);
+  }
+  return scanDeviceAlreadyListed(target.port, dev.addr);
+}
+
+function refreshScanAddAll() {
+  const view = _scanView;
+  if (!view) return;
+  const already = (d) => scanListedAlready(view.target, d);
+  const newCount = view.devices.filter((d) => !already(d)).length;
+  if (newCount <= 0) {
+    if (view.addAllBtn) view.addAllBtn.remove();
+    view.addAllBtn = null;
+    return;
+  }
+  const label = '+ Добавить все (' + newCount + ')';
+  if (!view.addAllBtn) {
+    const addAllBtn = h('button', {'class': 'btn btn-sm', 'style': 'margin-top:8px'}, label);
+    addAllBtn.onclick = () => {
+      const rows = view.tbody.querySelectorAll('tr');
+      view.devices.forEach((d, i) => {
+        if (already(d)) return;
+        const tr = rows[i];
+        if (!tr) return;
+        const sel = tr.querySelector('select');
+        const inp = tr.querySelector('input');
+        const btn = tr.querySelector('button');
+        if (!sel || !inp || !btn) return;
+        addDeviceFromScan(
+          d, sel.value, inp.value, view.target.port, view.target.baud,
+          view.target.via === 'gateway' ? view.target : null);
+        btn.replaceWith(scanListedCheck());
+      });
+      refreshScanAddAll();
+    };
+    view.addAllBtn = addAllBtn;
+    view.el.appendChild(addAllBtn);
+  } else {
+    view.addAllBtn.textContent = label;
+  }
+}
+
+function beginScanResults(target) {
+  const el = document.getElementById('mqtt-scan-results');
+  if (!el) return null;
+  el.innerHTML = '';
+  const table = h('table', {'class': 'mqtt-device-table mqtt-scan-table'});
+  table.appendChild(h('thead', {}, h('tr', {},
+    h('th', {}, 'Адрес'), h('th', {'class': 'mqtt-scan-sig'}, 'Сигнатура'),
+    h('th', {}, 'Тип'), h('th', {}, 'Имя'), h('th', {})
+  )));
+  const tbody = h('tbody');
+  table.appendChild(tbody);
+  el.appendChild(table);
+  _scanView = {
+    el, tbody, target, seen: new Set(), devices: [], addAllBtn: null,
+  };
+  return _scanView;
+}
+
+function appendScanDevice(dev) {
+  const view = _scanView;
+  if (!view || !dev) return;
+  const addr = Number(dev.addr);
+  if (!Number.isInteger(addr) || view.seen.has(addr)) return;
+  view.seen.add(addr);
+  view.devices.push(dev);
+  const target = view.target;
+  const gateway = target.via === 'gateway';
+  const port = target.port;
+  const baud = target.baud;
+  const devType = (dev.type === 'unknown') ? 'mr02m' : (dev.type || 'mr02m');
+  const typeSelect = h('select', {'class': 'mqtt-select-small'});
+  for (const [val, lbl] of [['mr02m','МР-02м'], ['dtv','ДТВ-RS-485'], ['ce02m3','СЭ-02м-3'], ['led','LED'], ['template','MTD262-MB'], ['carel','Carel']]) {
+    const opt = h('option', {value: val}, lbl);
+    if (val === devType) opt.selected = true;
+    typeSelect.appendChild(opt);
+  }
+  const listedDev = gateway
+    ? findListedGatewayDevice(target.host, target.tcpPort, dev.addr)
+    : findListedDevice(port, dev.addr);
+  const nameValue = listedDev
+    ? (stripComAddrSuffix(listedDev.name) || scanShortName(dev, devType))
+    : scanShortName(dev, devType);
+  const nameInput = h('input', {
+    'type': 'text', 'class': 'mqtt-ch-label-input',
+    'placeholder': 'Сигнатура / имя',
+    'value': nameValue,
+  });
+  typeSelect.addEventListener('change', () => {
+    const d = {...dev, type: typeSelect.value};
+    delete d.name;
+    nameInput.value = scanShortName(d, typeSelect.value);
+  });
+  const listed = !!listedDev;
+  const actionCell = h('td', {'class': 'mqtt-scan-action'}, listed
+    ? scanListedCheck()
+    : (() => {
+        const addBtn = h('button', {'class': 'btn btn-primary btn-sm'}, '+ Добавить');
+        addBtn.onclick = () => {
+          addDeviceFromScan(dev, typeSelect.value, nameInput.value, port, baud, gateway ? target : null);
+          addBtn.replaceWith(scanListedCheck());
+          refreshScanAddAll();
+        };
+        return addBtn;
+      })());
+  view.tbody.appendChild(h('tr', {},
+    h('td', {'class': 'mono'}, String(dev.addr)),
+    h('td', {'class': 'mqtt-scan-sig'}, scanTypeHint(dev)),
+    h('td', {}, typeSelect),
+    h('td', {}, nameInput),
+    actionCell
+  ));
+  refreshScanAddAll();
+}
+
+function takeScanLine(line, onDevice, onProgress) {
+  const text = String(line || '').replace(/\r$/, '').trim();
+  if (!text) return {empty: true};
+  let obj;
+  try { obj = JSON.parse(text); }
+  catch (_) { return {error: {ok: false, error: 'invalid_response'}}; }
+  if (obj && obj.event === 'progress') {
+    if (onProgress) onProgress(obj);
+    return {saw: true};
+  }
+  if (obj && obj.event === 'device' && obj.device) {
+    onDevice(obj.device);
+    return {saw: true};
+  }
+  if (obj && obj.ok === false) return {error: obj, saw: true};
+  if (obj && obj.event === 'done') {
+    if (Array.isArray(obj.devices)) obj.devices.forEach(onDevice);
+    return {done: obj, saw: true};
+  }
+  if (obj && obj.ok === true && Array.isArray(obj.devices)) {
+    obj.devices.forEach(onDevice);
+    return {done: obj, saw: true};
+  }
+  return {saw: true};
+}
+
+async function postScanPhase(body, signal, onDevice, onProgress) {
+  const r = await fetch('cgi-bin/mqtt_scan.cgi', {
+    method: 'POST',
+    credentials: 'include',
+    headers: withCsrfHeaders({'Content-Type': 'application/json'}),
+    body: JSON.stringify(body),
+    signal,
+  });
+  if (!r.ok) {
+    const text = await r.text();
+    let parsed = null;
+    try { parsed = JSON.parse(text); } catch (_) { /* nginx error page */ }
+    const err = (parsed && parsed.error) ? parsed.error : ('HTTP ' + r.status);
+    return {error: {ok: false, error: err}};
+  }
+  const apply = (chunk, acc) => {
+    const got = takeScanLine(chunk, onDevice, onProgress);
+    if (got.saw) acc.saw = true;
+    if (got.error) acc.error = got.error;
+    if (got.done) acc.done = got.done;
+  };
+  const acc = {saw: false, error: null, done: null};
+  if (!r.body || typeof r.body.getReader !== 'function') {
+    const text = await r.text();
+    text.split('\n').forEach((line) => apply(line, acc));
+  } else {
+    const reader = r.body.getReader();
+    const dec = new TextDecoder();
+    let buf = '';
+    while (true) {
+      const chunk = await reader.read();
+      if (chunk.done) break;
+      buf += dec.decode(chunk.value, {stream: true});
+      let nl = buf.indexOf('\n');
+      while (nl >= 0) {
+        apply(buf.slice(0, nl), acc);
+        buf = buf.slice(nl + 1);
+        nl = buf.indexOf('\n');
+      }
+    }
+    buf += dec.decode();
+    if (buf.trim()) apply(buf, acc);
+  }
+  if (!acc.saw) return {error: {ok: false, error: 'invalid_response'}};
+  return {error: acc.error, done: acc.done};
+}
+
 async function runScan() {
+  const viaEl = document.getElementById('mqtt-scan-via');
   const portEl  = document.getElementById('mqtt-scan-port');
   const baudEl  = document.getElementById('mqtt-scan-baud');
   const rangeEl = document.getElementById('mqtt-scan-range');
+  const hostEl = document.getElementById('mqtt-scan-host');
+  const tcpEl = document.getElementById('mqtt-scan-tcp');
   const btn   = document.getElementById('mqtt-scan-btn');
   const statusEl  = document.getElementById('mqtt-scan-status');
   const resultsEl = document.getElementById('mqtt-scan-results');
   if (!portEl || !baudEl || !rangeEl || !btn || !statusEl || !resultsEl) return;
+  const via = viaEl && viaEl.value === 'gateway' ? 'gateway' : 'com';
   const port  = portEl.value;
   const baud  = Number(baudEl.value);
   const range = Number(rangeEl.value);
+  const host = hostEl ? hostEl.value.trim() : '';
+  const tcp = tcpEl ? Number(tcpEl.value) : 0;
+
+  if (via === 'gateway' && (!scanHostOk(host) || !Number.isInteger(tcp) || tcp < 1 || tcp > 65535)) {
+    statusEl.textContent = uiT('Укажите IP шлюза и TCP-порт');
+    return;
+  }
+
+  _scanGen += 1;
+  const gen = _scanGen;
+  if (_scanAbort) _scanAbort.abort();
+  const ac = new AbortController();
+  _scanAbort = ac;
+  const alive = () => gen === _scanGen && !ac.signal.aborted;
 
   btn.disabled = true;
   btn.textContent = 'Сканирование';
-  statusEl.innerHTML = '<span class="mqtt-scan-spinner"></span>Поиск устройств на ' + port + ' (' + baud + ' бод)…';
-  resultsEl.innerHTML = '';
+  const target = via === 'gateway'
+    ? {via: 'gateway', host, tcpPort: tcp}
+    : {via: 'com', port, baud};
+  beginScanResults(target);
+  _scanStdProgress = false;
+  _scanWindow = null;
+  setScanProgress(0, false);
+  setScanProgress(0, true);
+  setScanStatus(uiT('Быстрый поиск…'), true);
 
-  const data = await apiPost('cgi-bin/mqtt_scan.cgi', {port, baudrate: baud, max_addr: range})
-    .catch(e => ({ok: false, error: String(e), devices: []}));
+  const base = via === 'gateway'
+    ? {via: 'gateway', host, tcp_port: tcp, max_addr: range}
+    : {via: 'com', port, baudrate: baud, max_addr: range};
+  const onDevice = (dev) => { if (alive()) appendScanDevice(dev); };
+  const onProgress = (ev) => {
+    if (!alive() || !_scanStdProgress) return;
+    const pct = scanStandardPct(ev);
+    if (pct == null) return;
+    setScanProgress(pct, true);
+  };
+  const showError = (data) => {
+    const err = data && data.error ? uiT(String(data.error)) : 'неизвестная';
+    setScanStatus(uiT('Ошибка') + ': ' + err, false);
+  };
+  const finishBar = () => { if (alive()) setScanProgress(100, true); };
 
-  btn.disabled = false;
-  btn.textContent = 'Сканировать';
-
-  if (!data.ok) {
-    statusEl.textContent = 'Ошибка: ' + (data.error || 'неизвестная');
-    return;
-  }
-
-  const devices = data.devices || [];
-  if (devices.length === 0) {
-    statusEl.textContent = 'Устройства не найдены. Проверьте порт, скорость и подключение.';
-    return;
-  }
-
-  const method = data.scan_method === 'fast'
-    ? 'быстрый Modbus'
-    : (data.scan_method === 'standard' ? 'опрос адресов' : 'сканирование');
-  statusEl.textContent = `Найдено: ${devices.length} (${method}). Проверьте имя и добавьте нужные.`;
-  renderScanResults(port, baud, devices);
-}
-
-function renderScanResults(port, baud, devices) {
-  const el = document.getElementById('mqtt-scan-results');
-  el.innerHTML = '';
-
-  const table = h('table', {'class': 'mqtt-device-table'});
-  table.appendChild(h('thead', {}, h('tr', {},
-    h('th', {}, 'Адрес'), h('th', {'class': 'mqtt-scan-sig'}, 'Сигнатура'), h('th', {}, 'Тип'), h('th', {}, 'Имя'), h('th', {})
-  )));
-  const tbody = h('tbody');
-
-  for (const dev of devices) {
-    const devType = (dev.type === 'unknown') ? 'mr02m' : (dev.type || 'mr02m');
-    const typeSelect = h('select', {'class': 'mqtt-select-small'});
-    for (const [val, lbl] of [['mr02m','МР-02м'], ['dtv','ДТВ-RS-485'], ['ce02m3','СЭ-02м-3'], ['led','LED'], ['template','MTD262-MB']]) {
-      const opt = h('option', {value: val}, lbl);
-      if (val === devType) opt.selected = true;
-      typeSelect.appendChild(opt);
+  try {
+    const fast = await postScanPhase(
+      Object.assign({}, base, {phase: 'fast'}), ac.signal, onDevice, onProgress);
+    if (!alive()) return;
+    if (fast.error) {
+      showError(fast.error);
+      finishBar();
+      return;
     }
-    typeSelect.addEventListener('change', () => {
-      const d = {...dev, type: typeSelect.value};
-      delete d.name;
-      nameInput.value = scanShortName(d, typeSelect.value);
-    });
-
-    const listedDev = findListedDevice(port, dev.addr);
-    const nameValue = listedDev
-      ? (stripComAddrSuffix(listedDev.name) || scanShortName(dev, devType))
-      : scanShortName(dev, devType);
-
-    const nameInput = h('input', {
-      'type': 'text', 'class': 'mqtt-ch-label-input',
-      'placeholder': 'Сигнатура / имя',
-      'value': nameValue,
-    });
-
-    const listed = !!listedDev;
-    const actionCell = listed
-      ? h('td', {'class': 'mqtt-scan-action'}, scanListedCheck())
-      : h('td', {'class': 'mqtt-scan-action'}, (() => {
-          const addBtn = h('button', {'class': 'btn btn-primary btn-sm'}, '+ Добавить');
-          addBtn.onclick = () => {
-            addDeviceFromScan(dev, typeSelect.value, nameInput.value, port, baud);
-            addBtn.replaceWith(scanListedCheck());
-          };
-          return addBtn;
-        })());
-
-    tbody.appendChild(h('tr', {},
-      h('td', {'class': 'mono'}, String(dev.addr)),
-      h('td', {'class': 'mqtt-scan-sig'}, scanTypeHint(dev)),
-      h('td', {}, typeSelect),
-      h('td', {}, nameInput),
-      actionCell
-    ));
-  }
-
-  table.appendChild(tbody);
-
-  const newCount = devices.filter((d) => !scanDeviceAlreadyListed(port, d.addr)).length;
-  el.appendChild(table);
-  if (newCount > 0) {
-    const addAllBtn = h('button', {'class': 'btn btn-sm', 'style': 'margin-top:8px'},
-      '+ Добавить все (' + newCount + ')');
-    addAllBtn.onclick = () => {
-      tbody.querySelectorAll('tr').forEach((tr, i) => {
-        const d = devices[i];
-        if (scanDeviceAlreadyListed(port, d.addr)) return;
-        const sel = tr.querySelector('select');
-        const inp = tr.querySelector('input');
-        const btn = tr.querySelector('button');
-        if (!btn) return;
-        addDeviceFromScan(d, sel.value, inp.value, port, baud);
-        btn.replaceWith(scanListedCheck());
-      });
-    };
-    el.appendChild(addAllBtn);
+    setScanProgress(SCAN_FAST_PCT, true);
+    _scanStdProgress = true;
+    setScanStatus(uiT('Обычный опрос…'), true);
+    const known = _scanView ? Array.from(_scanView.seen) : [];
+    const windows = scanAddrWindows(range);
+    for (let wi = 0; wi < windows.length; wi++) {
+      const win = windows[wi];
+      _scanWindow = {lo: win.lo, hi: win.hi, max: range};
+      const std = await postScanPhase(
+        Object.assign({}, base, {
+          phase: 'standard',
+          max_addr: win.hi,
+          addr_from: win.lo,
+          known_addrs: known,
+        }),
+        ac.signal, onDevice, onProgress);
+      if (!alive()) return;
+      if (std.error) {
+        showError(std.error);
+        finishBar();
+        return;
+      }
+      if (_scanView) {
+        _scanView.seen.forEach((addr) => {
+          if (known.indexOf(addr) < 0) known.push(addr);
+        });
+      }
+      setScanProgress(
+        SCAN_FAST_PCT + (100 - SCAN_FAST_PCT) * (win.hi / range), true);
+    }
+    _scanWindow = null;
+    finishBar();
+    const n = _scanView ? _scanView.devices.length : 0;
+    if (n === 0) {
+      setScanStatus(via === 'gateway'
+        ? uiT('Устройства не найдены. Проверьте IP шлюза, TCP-порт и линию RS-485.')
+        : 'Устройства не найдены. Проверьте порт, скорость и подключение.', false);
+      return;
+    }
+    if (via === 'gateway') {
+      setScanStatus(
+        uiT('Найдено устройств через шлюз') + ': ' + n + ' (' + host + ':' + tcp + ')',
+        false);
+      return;
+    }
+    setScanStatus('Найдено: ' + n + '. Проверьте имя и добавьте нужные.', false);
+  } catch (e) {
+    if (!alive() || (e && e.name === 'AbortError')) return;
+    showError({error: String(e)});
+    finishBar();
+  } finally {
+    if (gen === _scanGen) {
+      _scanStdProgress = false;
+      btn.disabled = false;
+      btn.textContent = 'Сканировать';
+      if (_scanAbort === ac) _scanAbort = null;
+    }
   }
 }
 
-function addDeviceFromScan(scanDev, type, name, port, baud) {
+function buildGatewayConfigName(shortName, host, tcp, addr) {
+  const where = String(host || '').trim() + ':' + tcp;
+  const base = (shortName || '').trim();
+  if (!base) return 'Устройство (' + where + ' addr=' + addr + ')';
+  return base + ' (' + where + ' addr=' + addr + ')';
+}
+
+function addGatewayDeviceFromScan(scanDev, type, name, gateway) {
+  const addr = scanDev.addr;
+  const host = String(gateway.host || '').trim();
+  const tcp = Number(gateway.tcpPort);
+  const stem = String(scanDev.template || 'mtdx62-mb');
+  const id = makeRtuTcpDeviceId(type, host, tcp, addr, stem);
+  if (_config.devices.find(d => d.id === id)) {
+    showToast('Устройство ' + id + ' уже добавлено', 'warn');
+    return;
+  }
+  const shortName = (name || '').trim() || scanShortName(scanDev, type);
+  const dev = {
+    id, type, transport: 'rtu_tcp', host, tcp_port: tcp, address: addr,
+    name: buildGatewayConfigName(shortName, host, tcp, addr),
+  };
+  if (type === 'mr02m') {
+    const mt = Number(scanDev.module_type);
+    dev.module_type = (mt && MR02M_TYPES[mt]) ? mt : 1;
+    // Fast Modbus is an RS-485 broadcast. The gateway socket is one RTU pipe.
+    dev.fast_modbus = false;
+    dev.poll_s = 1; dev.poll_do_di_s = 1; dev.poll_ai_ao_s = 1; dev.poll_diag_s = 60;
+    dev.channels = {};
+  } else if (type === 'dtv') {
+    dev.fast_modbus = false;
+    dev.poll_sensors_s = 1; dev.poll_presence_s = 1; dev.poll_diag_s = 60;
+    dev.sensors_present = DTV_SENSORS.map(s => s.key);
+  } else if (type === 'ce02m3') {
+    dev.fast_modbus = false;
+    dev.poll_power_s = 1; dev.poll_energy_s = 60; dev.poll_diag_s = 120;
+    dev.ct_ratio = 4000; dev.phases = ['A','B','C']; dev.channels_enabled = {};
+  } else if (type === 'led') {
+    dev.poll_s = 2;
+    dev.poll_text_s = 30;
+  } else if (type === 'template') {
+    dev.template = scanDev.template || 'mtdx62-mb';
+    dev.poll_s = 2;
+  }
+  _config.devices.push(dev);
+  markUnsaved();
+  renderDeviceList();
+  renderAccordion();
+  showToast((name || id) + ' добавлено');
+}
+
+function addDeviceFromScan(scanDev, type, name, port, baud, gateway) {
+  if (gateway && gateway.via === 'gateway') {
+    addGatewayDeviceFromScan(scanDev, type, name, gateway);
+    return;
+  }
   const addr = scanDev.addr;
   let id = makeDeviceId(type, port, addr);
   if (type === 'template') {
@@ -2744,6 +3183,9 @@ function addDeviceFromScan(scanDev, type, name, port, baud) {
     // other devices — mixed baud on one port is unsupported.
     dev.poll_s = 2;
     dev.poll_text_s = 30;
+  } else if (type === 'carel') {
+    dev.family = scanDev.family === 'uaria' ? 'uaria' : 'crst';
+    dev.poll_s = 2;
   } else if (type === 'template') {
     dev.template = scanDev.template || 'mtdx62-mb';
     dev.poll_s = 2;
@@ -2822,11 +3264,19 @@ function addTransportIsWrapper() {
   return !!el && el.value === 'wrapper' && !!typeEl && typeEl.value === 'spodes';
 }
 
+function addTransportIsTransparent() {
+  const el = document.getElementById('mqtt-add-transport');
+  const typeEl = document.getElementById('mqtt-add-type');
+  return !!el && el.value === 'transparent' && !!typeEl && typeEl.value === 'spodes';
+}
+
 function onAddTypeChange() {
   const typeEl = document.getElementById('mqtt-add-type');
   const type = typeEl ? typeEl.value : '';
   const tr = document.getElementById('mqtt-add-transport');
-  if (type !== 'spodes' && tr && tr.value === 'wrapper') tr.value = 'rtu';
+  if (type !== 'spodes' && tr && (tr.value === 'wrapper' || tr.value === 'transparent')) {
+    tr.value = 'rtu';
+  }
   const rows = dialogRows(addTransportIsTcp(), type, !!_tcpCaps);
   setRowShown('mqtt-add-template-row', rows.template);
   setRowShown('mqtt-add-carel-family-row', rows.carelFamily);
@@ -2840,10 +3290,15 @@ function applySpodesDialog(type) {
   const spodes = type === 'spodes';
   const tr = document.getElementById('mqtt-add-transport');
   const wrapOpt = tr ? tr.querySelector('option[value="wrapper"]') : null;
+  const gwOpt = tr ? tr.querySelector('option[value="transparent"]') : null;
   const tcpOpt = tr ? tr.querySelector('option[value="tcp"]') : null;
   if (wrapOpt) {
     wrapOpt.hidden = !spodes;
     wrapOpt.disabled = !spodes;
+  }
+  if (gwOpt) {
+    gwOpt.hidden = !spodes;
+    gwOpt.disabled = !spodes;
   }
   if (tcpOpt) {
     const showTcp = !spodes && !!_tcpCaps;
@@ -2856,14 +3311,17 @@ function applySpodesDialog(type) {
   if (addrLabel) addrLabel.textContent = uiT(spodes ? 'Адрес HDLC' : 'Адрес Modbus');
   const addrEl = document.getElementById('mqtt-add-addr');
   if (addrEl) addrEl.max = spodes ? '16383' : String(addrMax(addTransportIsTcp()));
-  if (spodes && addTransportIsWrapper()) {
+  const viaGateway = spodes && addTransportIsTransparent();
+  const viaWrapper = spodes && addTransportIsWrapper();
+  if (viaGateway || viaWrapper) {
     setRowShown('mqtt-add-port-row', false);
     setRowShown('mqtt-add-host-row', true);
     setRowShown('mqtt-add-tcp-port-row', true);
     setRowShown('mqtt-add-probe-row', false);
     const tcpPortEl = document.getElementById('mqtt-add-tcp-port');
-    if (tcpPortEl && (tcpPortEl.value === '' || tcpPortEl.value === '502')) {
-      tcpPortEl.value = '4059';
+    const cur = tcpPortEl ? tcpPortEl.value : '';
+    if (tcpPortEl && (cur === '' || cur === '502' || cur === (viaGateway ? '4059' : '4001'))) {
+      tcpPortEl.value = viaGateway ? '4001' : '4059';
     }
   }
 }
@@ -2944,7 +3402,7 @@ function updateAddModalId() {
   // here: a verdict must never sit under fields it was not measured for.
   clearTcpProbeResult();
   if (!typeEl || !portEl || !addrEl || !idEl) return;
-  if (addTransportIsTcp() || addTransportIsWrapper()) {
+  if (addTransportIsTcp() || addTransportIsWrapper() || addTransportIsTransparent()) {
     const hostEl = document.getElementById('mqtt-add-host');
     idEl.value = makeTcpDeviceId(typeEl.value, hostEl ? hostEl.value : '', addrEl.value);
     return;
@@ -3043,6 +3501,26 @@ function confirmAddSpodesSerial(port, addr, name, idEl, secrets) {
   pushNewDevice(dev);
 }
 
+function confirmAddSpodesTransparent(addr, name, idEl) {
+  const host = _field('mqtt-add-host');
+  if (!host) {
+    showToast(uiT('Укажите IP-адрес устройства'), 'warn');
+    return;
+  }
+  const secrets = readSpodesSecrets();
+  if (!secrets) return;
+  const tcp_port = parseInt(_field('mqtt-add-tcp-port'), 10) || 4001;
+  const id = (idEl && idEl.value.trim()) || makeTcpDeviceId('spodes', host, addr);
+  const dev = {
+    id, type: 'spodes', transport: 'transparent', host, tcp_port,
+    hdlc_address: addr, address: addr,
+    name: name || `Меркурий (${host}:${tcp_port} addr=${addr})`,
+    poll_power_s: 5, poll_energy_s: 60, poll_profile_s: 900,
+  };
+  Object.assign(dev, secrets);
+  pushNewDevice(dev);
+}
+
 function confirmAddSpodesWrapper(addr, name, idEl) {
   const host = _field('mqtt-add-host');
   if (!host) {
@@ -3086,6 +3564,10 @@ function confirmAddDevice() {
       showToast('Выберите шаблон устройства', 'warn');
       return;
     }
+  }
+  if (type === 'spodes' && addTransportIsTransparent()) {
+    confirmAddSpodesTransparent(addr, name, idEl);
+    return;
   }
   if (type === 'spodes' && addTransportIsWrapper()) {
     confirmAddSpodesWrapper(addr, name, idEl);
@@ -3357,12 +3839,22 @@ window.mqttTabInit = function() {
     clearInterval(window._mqttStatusTimer);
     window._mqttStatusTimer = null;
   }
-  void refreshBrokerStatus();
-  void loadConfig();
-  window._mqttStatusTimer = setInterval(refreshBrokerStatus, 10000);
+  const seq = ++_mqttTabSeq;
+  // Cached bus config paints before any fetch. Broker status (mqtt_status.cgi,
+  // systemctl) starts only after the config GET has painted, so it cannot
+  // occupy the fcgiwrap worker ahead of the device list.
+  if (_mqttConfigLoaded) paintMqttDevices();
+  void (async () => {
+    await loadConfig();
+    if (seq !== _mqttTabSeq) return;
+    void refreshBrokerStatus();
+    if (seq !== _mqttTabSeq) return;
+    window._mqttStatusTimer = setInterval(refreshBrokerStatus, 10000);
+  })();
 };
 
 window.mqttTabDestroy = function() {
+  _mqttTabSeq += 1;
   stopMonitor();
   stopChannelPoll();
   // The two dialogs live at the document root (they must be positioned
@@ -3388,6 +3880,7 @@ window.mqttProbeTcp      = probeTcpDevice;
 window.mqttClearProbe    = clearTcpProbeResult;
 window.mqttShowScanModal = showScanModal;
 window.mqttHideScanModal = hideScanModal;
+window.mqttScanViaChange = applyScanVia;
 window.mqttRunScan       = runScan;
 window.mqttStartMonitor  = startMonitor;
 window.mqttStopMonitor   = stopMonitor;

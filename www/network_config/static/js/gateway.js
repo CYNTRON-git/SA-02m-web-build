@@ -256,6 +256,7 @@ function _renderPortPanel(area, port) {
   const mode = _shownMode(cfg.mode);
   const toggleOn = _portToggleOn(cfg);
 
+  const fmbHint = escAttr(uiT('Отвечать локально на WB Fast Modbus probe'));
   area.innerHTML = `
     <div class="widget gw-port-panel">
       <div class="widget-title">${port}</div>
@@ -264,116 +265,112 @@ function _renderPortPanel(area, port) {
         <div id="gw-counters-${port}" class="gw-counters">${_countersHtml(st)}</div>
       </div>
 
-      <div class="gw-form-grid">
+      <div class="gw-form-rows">
 
-        <div class="gw-port-col">
-          <p class="field-label gw-col-label">Режим и TCP</p>
-
-          <div class="field toggle-field-row gw-field-row">
-            <span class="toggle-field-label">Включить порт</span>
+        <div class="gw-form-row">
+          <div class="gw-field gw-field--en">
+            <label class="gw-field-label" for="gw-en-${port}">Включить порт</label>
             <label class="toggle-inline">
               <input type="checkbox" class="toggle toggle-wide" id="gw-en-${port}"
                      ${toggleOn ? 'checked' : ''}>
             </label>
           </div>
 
-          <div class="field gw-field-row">
-            <label class="gw-field-label">Режим работы</label>
+          <label class="gw-field gw-field--mode">
+            <span class="gw-field-label">Режим работы</span>
             <select id="gw-mode-${port}" class="gw-field-control">
               ${MODES.map(m =>
                 `<option value="${m.value}"${mode === m.value ? ' selected' : ''}>${m.label}</option>`
               ).join('')}
             </select>
-          </div>
+          </label>
 
-          <div id="gw-tcp-fields-${port}" class="gw-cond-block gw-block-tcp">
-            <div class="field gw-field-row">
-              <label class="gw-field-label">TCP-порт</label>
+          <div id="gw-tcp-fields-${port}" class="gw-cond-block">
+            <label class="gw-field gw-field--tcp">
+              <span class="gw-field-label">TCP-порт</span>
               <input type="number" id="gw-tcpport-${port}" class="gw-field-control"
                      value="${cfg.tcp_port || _defaultTcpPort(port, mode)}" min="1" max="65535">
-            </div>
+            </label>
           </div>
 
-          <div id="gw-fmb-field-${port}" class="gw-cond-block gw-block-fmb${mode === 'modbus_tcp' ? '' : ' gw-block-collapsed'}">
-            <div class="field toggle-field-row gw-field-row">
-              <span class="toggle-field-label gw-field-label">Fast Modbus probe (FC&nbsp;0x47)</span>
+          <div id="gw-fmb-field-${port}" class="gw-cond-block${mode === 'modbus_tcp' ? '' : ' gw-block-collapsed'}">
+            <div class="gw-field gw-field--fmb">
+              <label class="gw-field-label" for="gw-fmb-${port}" title="${fmbHint}">Fast Modbus probe (FC&nbsp;0x47)</label>
               <label class="toggle-inline">
                 <input type="checkbox" class="toggle toggle-wide" id="gw-fmb-${port}"
                        ${cfg.fast_modbus_probe !== false ? 'checked' : ''}>
               </label>
             </div>
-            <p class="field-hint gw-fmb-hint">Отвечать локально на WB Fast Modbus probe</p>
           </div>
         </div>
 
-        <div class="gw-port-col">
-          <p class="field-label gw-col-label">Параметры RS-485</p>
-
-          <div class="field gw-field-row">
-            <label class="gw-field-label">Скорость (бод)</label>
+        <div class="gw-form-row">
+          <label class="gw-field gw-field--baud">
+            <span class="gw-field-label">Скорость (бод)</span>
             <select id="gw-baud-${port}" class="gw-field-control">
               ${BAUDS.map(b =>
                 `<option value="${b}"${parseInt(cfg.baudrate) === b ? ' selected' : ''}>${b}</option>`
               ).join('')}
             </select>
-          </div>
+          </label>
 
-          <div class="field gw-field-row">
-            <label class="gw-field-label">Чётность</label>
-            <select id="gw-parity-${port}" class="gw-field-control">
-              ${PARITIES.map(p =>
-                `<option value="${p.value}"${cfg.parity === p.value ? ' selected' : ''}>${p.label}</option>`
-              ).join('')}
-            </select>
-          </div>
-
-          <div class="field gw-field-row">
-            <label class="gw-field-label">Стоп-биты</label>
-            <select id="gw-stop-${port}" class="gw-field-control">
-              ${STOPBITS.map(s =>
-                `<option value="${s.value}"${parseInt(cfg.stopbits) === s.value ? ' selected' : ''}>${s.label}</option>`
-              ).join('')}
-            </select>
-          </div>
-
-          <div class="field gw-field-row">
-            <label class="gw-field-label">Биты данных</label>
+          <label class="gw-field gw-field--data">
+            <span class="gw-field-label">Биты данных</span>
             <select id="gw-data-${port}" class="gw-field-control">
               ${DATABITS.map(d =>
                 `<option value="${d}"${parseInt(cfg.databits) === d ? ' selected' : ''}>${d}</option>`
               ).join('')}
             </select>
-          </div>
+          </label>
+
+          <label class="gw-field gw-field--parity">
+            <span class="gw-field-label">Чётность</span>
+            <select id="gw-parity-${port}" class="gw-field-control">
+              ${PARITIES.map(p =>
+                `<option value="${p.value}"${cfg.parity === p.value ? ' selected' : ''}>${p.label}</option>`
+              ).join('')}
+            </select>
+          </label>
+
+          <label class="gw-field gw-field--stop">
+            <span class="gw-field-label">Стоп-биты</span>
+            <select id="gw-stop-${port}" class="gw-field-control">
+              ${STOPBITS.map(s =>
+                `<option value="${s.value}"${parseInt(cfg.stopbits) === s.value ? ' selected' : ''}>${s.label}</option>`
+              ).join('')}
+            </select>
+          </label>
         </div>
 
-        <div class="gw-port-col">
-          <p class="field-label gw-col-label">${uiT('Доступ по сети')}</p>
+        <div id="gw-access-warn-${port}" class="field-hint warn gw-access-warn${_accessWarnNeeded(cfg) ? '' : ' gw-block-collapsed'}">
+          ${uiT('Внимание: включённый порт принимает подключения с любого компьютера в сети — без пароля. Ограничьте доступ полем «Разрешённые адреса» ниже.')}
+        </div>
 
-          <div id="gw-access-warn-${port}" class="field-hint warn gw-access-warn${_accessWarnNeeded(cfg) ? '' : ' gw-block-collapsed'}">
-            ${uiT('Внимание: включённый порт принимает подключения с любого компьютера в сети — без пароля. Ограничьте доступ полем «Разрешённые адреса» ниже.')}
-          </div>
-
-          <div class="field gw-field-row">
-            <label class="gw-field-label">${uiT('Адрес прослушивания')}</label>
+        <div class="gw-form-row">
+          <label class="gw-field gw-field--bind">
+            <span class="gw-field-label">${uiT('Адрес прослушивания')}</span>
             <input type="text" id="gw-bind-${port}" class="gw-field-control"
-                   value="${escAttr(cfg.bind || '0.0.0.0')}" placeholder="0.0.0.0">
-            <p class="field-hint">${uiT('0.0.0.0 — все сетевые интерфейсы платы')}</p>
-          </div>
+                   value="${escAttr(cfg.bind || '0.0.0.0')}" placeholder="0.0.0.0"
+                   title="${escAttr(uiT('0.0.0.0 — все сетевые интерфейсы платы'))}">
+          </label>
 
-          <div class="field gw-field-row">
-            <label class="gw-field-label">${uiT('Разрешённые адреса')}</label>
+          <label class="gw-field gw-field--allow">
+            <span class="gw-field-label">${uiT('Разрешённые адреса')}</span>
             <input type="text" id="gw-allow-${port}" class="gw-field-control"
                    value="${escAttr((cfg.allow_from || []).join(', '))}"
-                   placeholder="192.168.1.10, 192.168.2.0/24">
-            <p class="field-hint">${uiT('Пусто — подключаться может любой. Через запятую: адреса и диапазоны, которым разрешено подключаться к этому порту.')}</p>
-          </div>
+                   placeholder="192.168.1.10, 192.168.2.0/24"
+                   title="${escAttr(uiT('Пусто — подключаться может любой. Через запятую: адреса и диапазоны, которым разрешено подключаться к этому порту.'))}">
+          </label>
         </div>
+
+        <p class="field-hint">${uiT('0.0.0.0 — все сетевые интерфейсы платы')}</p>
+        <p class="field-hint">${uiT('Пусто — подключаться может любой. Через запятую: адреса и диапазоны, которым разрешено подключаться к этому порту.')}</p>
 
       </div>
 
       <div class="gw-save-row">
-        <button class="btn btn-sm" id="gw-reset-btn-${port}">Сбросить</button>
         <span id="gw-save-status-${port}" class="gw-save-status"></span>
+        <button class="btn btn-sm" id="gw-reset-btn-${port}">Сбросить</button>
         <button class="btn btn-primary" id="gw-save-btn-${port}">Сохранить</button>
       </div>
     </div>`;

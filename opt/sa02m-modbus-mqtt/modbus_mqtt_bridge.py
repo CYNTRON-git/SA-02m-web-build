@@ -6,6 +6,7 @@ Devices:  mr02m (all 13 types), dtv (RTU-Sensor), ce02m3, led, template, carel,
 Protocol: standard Modbus RTU (FC01-06) + Wiren Board Fast Modbus
           (FC 0x46: scanner + event polling); Modbus TCP for template/carel
           (`transport: tcp`, docs/contracts/bridge-modbus-tcp.md);
+          raw RTU over a transparent gateway (`transport: rtu_tcp`);
           SPODES on its own UART or wrapper socket
           (docs/contracts/spodes-mercury.md).
 Topics:   Wiren Board MQTT convention (/devices/…/controls/…)
@@ -291,7 +292,7 @@ def compose_pollers(devices_cfg: list, pub: MQTTPublisher):
 
         if poller.bus.transport != bridge_bus.TRANSPORT_RTU:
             # Fast Modbus is an RS-485 broadcast protocol. Never on TCP,
-            # and never on HDLC or a SPODES wrapper socket.
+            # and never on HDLC, a transparent gateway or a SPODES wrapper.
             continue
         # Default ON for MR/DTV. CE: explicit fast_modbus:true only (opt-in);
         # whether a CE then gets any 0x18, and which form, is decided by its
@@ -350,9 +351,10 @@ def make_port_scheduler(port_key: str, pollers: list, fmb_ports: dict):
     the client's TcpLineStats as the stats-line source (no /proc/tty line).
     """
     bus = pollers[0].bus
-    if bus.transport in (bridge_bus.TRANSPORT_HDLC, bridge_bus.TRANSPORT_WRAPPER):
+    if bus.transport in (bridge_bus.TRANSPORT_HDLC, bridge_bus.TRANSPORT_WRAPPER,
+                         bridge_bus.TRANSPORT_TRANSPARENT):
         return HdlcPortScheduler(bus.label, pollers), bus.label
-    if bus.transport == bridge_bus.TRANSPORT_TCP:
+    if bus.transport in (bridge_bus.TRANSPORT_TCP, bridge_bus.TRANSPORT_RTU_TCP):
         return PortCycleScheduler(
             bus.label, 0, pollers,
             line_stats=pollers[0].get_port().stats), bus.label
@@ -395,6 +397,15 @@ def main() -> None:
         fmb_on = "fmb" if port_key in fmb_ports else "classic"
         log.info("Started wb-style port cycle %s [%s] — addr [%s]",
                  port_key, fmb_on, addrs)
+
+    # One line at a time, for the MQTT bus scan. A missing socket must not
+    # take the pollers down: the scanner then fails closed while this unit
+    # is active, and scans normally when it is not.
+    try:
+        import bridge_scan_lease
+        bridge_scan_lease.serve()
+    except Exception:
+        log.exception("scan lease server did not start")
 
     if not _pollers:
         log.warning("No devices configured — bridge idle")

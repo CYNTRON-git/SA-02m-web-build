@@ -411,7 +411,7 @@ if [ -d "$BRIDGE_DIR" ] && [ -f "$MQTT_OPT/modbus_mqtt_bridge.py" ]; then
         install -m 0644 -o root -g root "$MQTT_OPT/devices_tables.py" "$BRIDGE_DIR/devices_tables.py"
         sed -i 's/\r$//' "$BRIDGE_DIR/devices_tables.py" 2>/dev/null || true
     fi
-    for f in bridge_serial.py bridge_bus.py bridge_probe.py bridge_tcp.py bridge_fmb.py bridge_meta.py \
+    for f in bridge_serial.py bridge_bus.py bridge_probe.py bridge_tcp.py bridge_rtu_tcp.py bridge_scan_lease.py bridge_fmb.py bridge_meta.py \
              bridge_mqtt.py bridge_mr02m_map.py \
              bridge_device.py bridge_mr02m.py bridge_dtv_ce.py bridge_template.py bridge_carel.py bridge_led.py bridge_spodes.py; do
         if [ -f "$MQTT_OPT/$f" ]; then

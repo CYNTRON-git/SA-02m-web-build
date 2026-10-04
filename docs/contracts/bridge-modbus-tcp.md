@@ -89,8 +89,8 @@ already opened with … (first entry wins)») и оставляет первый
 
 | Код | Когда |
 |---|---|
-| `transport_unknown` | `transport` есть, но это не `rtu` и не `tcp` |
-| `type_not_tcp_capable` | тип устройства не `template` и не `carel` |
+| `transport_unknown` | `transport` есть, но это не `rtu`, не `tcp` и не `rtu_tcp` (у SPODES свой набор) |
+| `type_not_tcp_capable` | для `transport: tcp` — тип не `template` и не `carel`; для `transport: rtu_tcp` — тип не из §11 |
 | `carel_family_required` | Carel по TCP без `family` из `crst`/`uaria` |
 | `host_missing` | у TCP-записи нет `host` |
 | `host_not_ipv4_literal` | `host` — не строгий IPv4 (имя, ведущий ноль, `0177.0.0.1`, IPv6, лишние пробелы) |
@@ -173,8 +173,8 @@ link-local (`169.254/16`).
 - Если устройство сменило адрес (DHCP), оно остаётся «нет связи», пока не
   исправлен `host`.
 - На СА-02м-2 (2×Ethernet) мост может связать два сегмента сети.
-- Не поддерживаются: IPv6, имена хостов, RTU-over-TCP и прозрачный режим как
-  клиент, Fast Modbus по TCP, окно настроек Carel во флешере по TCP.
+- Не поддерживаются: IPv6, имена хостов, Fast Modbus по TCP, окно настроек
+  Carel во флешере по TCP. Сырой Modbus RTU по TCP (шлюз, не MBAP) — §11.
 
 ## 8. Потребители
 
@@ -280,6 +280,34 @@ link-local (`169.254/16`).
 сеанс уже имеет `cmd_exec.cgi` — проверка уже, медленнее и не даёт новой
 возможности (`docs/threat-model.md` §4).
 
+## 11. RTU поверх TCP (`transport: rtu_tcp`)
+
+Флешер MR-02m (`flasher_windows/gui_flasher_port_mixin.py` `_tcp_endpoint_from_ui`,
+режим `tcp_rtu`) ищет модуль так: хост и TCP-порт, кадр Modbus RTU с CRC без
+MBAP, скорость линии задаёт UART шлюза. Найденная строка — адрес и тип;
+хост и порт остаются точкой подключения, а не полем COM. В YAML моста это
+одна запись, которую `validate_devices` принимает целиком (одна плохая
+запись отклоняет всё сохранение):
+
+```yaml
+- id: mr02m-rtu-192_168_1_10-4004-15
+  type: mr02m                 # также dtv, ce02m3, led, template
+  module_type: 15
+  transport: rtu_tcp
+  host: 192.168.1.10          # строгий IPv4, как §5; 127.0.0.1 запрещён
+  tcp_port: 4004              # 1..65535, по умолчанию 4001
+  address: 15                 # станция 1..247
+  fast_modbus: false          # широковещание RS-485 на этом сокете не включается
+```
+
+`port` и `baudrate` запрещены (`serial_keys_on_tcp`): устройство не сажается
+на `/dev/COMx`. Carel остаётся на `transport: tcp` (MBAP). SPODES с
+`transport: rtu_tcp` — `transport_unknown` (ему по-прежнему `transparent` /
+`wrapper` / HDLC). `transport: tcp` у `mr02m` по-прежнему
+`type_not_tcp_capable`. Один сокет на `host:tcp_port`, методы те же, что у
+опроса RS-485. Несколько адресов за одним портом шлюза делят его и считаются
+одним концом в пределе 16.
+
 ## Проверка контракта
 
 - `opt/sa02m-modbus-mqtt/tests/test_bridge_bus.py` — каждый код отказа,
@@ -291,7 +319,12 @@ link-local (`169.254/16`).
   в полёте, приоритет записи.
 - `tests/test_bridge_tcp_composition.py` — сборка парка: свой «порт» у TCP,
   без Fast Modbus, без ростера, отклонённая запись не мешает RS-485, одинаковые
-  публикации шаблона на RS-485 и TCP.
+  публикации шаблона на RS-485 и TCP; `rtu_tcp` — свой ключ шины, без COM и
+  без Fast Modbus.
+- `tests/test_rtu_tcp.py` — запись шлюза проходит `validate_devices`, петля и
+  COM-ключи отвергаются, клиент читает FC03 и пишет FC06 в сокет теста.
+- `tests/test_mqtt_bus_scan_gateway.py` — поиск через шлюз, в том числе модуль,
+  который молчит на FC03 и отвечает типом в Input 0.
 - `tests/test_carel_tcp.py` — Carel за поддельным сервером на стендовых банках.
 - `opt/sa02m-devices/tests/test_carel_tcp_id.py`, `opt/sa02m-alice/tests/test_carel_tcp_binding.py` —
   потребители.

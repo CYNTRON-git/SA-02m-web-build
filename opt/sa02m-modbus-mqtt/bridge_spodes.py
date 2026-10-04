@@ -1,6 +1,7 @@
 """SPODES poller (`type: spodes`) for a Mercury meter.
 
-HDLC on its own UART, or an IEC 62056-47 wrapper socket. Never
+HDLC on its own UART, HDLC through a transparent gateway, or an
+IEC 62056-47 wrapper socket. Never
 ModbusSerial and never Fast Modbus. A reader without keys stays on the
 public client. Load disconnect is an ACTION only for a configurator;
 any other role answers the MQTT write and does not touch the wire.
@@ -41,7 +42,59 @@ def _import_spodes():
     return mercury, obis_spodes, profiles, ClientSession
 
 
-mercury, obis, profiles, ClientSession = _import_spodes()
+# Bound on the first SpodesPoller, not at import. A board without the
+# package (no Mercury meter) must still start the Modbus pollers.
+mercury = obis = profiles = ClientSession = None
+
+
+def _bind_spodes() -> None:
+    global mercury, obis, profiles, ClientSession
+    if mercury is None:
+        mercury, obis, profiles, ClientSession = _import_spodes()
+
+# One TCP client per gateway port. Two meters on that port share it; a
+# second socket would hear the first meter's answer (the gateway copies
+# every received byte to every client).
+_GATEWAY_LINKS: dict = {}
+
+
+def hold_gateway(host: str, port: int) -> bool:
+    """Close the shared transparent socket for this host:port, if any.
+
+    True when a link was open. Does not touch other gateways or a COM port.
+    """
+    key = (str(host), int(port))
+    link = _GATEWAY_LINKS.pop(key, None)
+    if link is None:
+        return False
+    try:
+        link.close()
+    except Exception:
+        pass
+    return True
+
+
+def _shared_gateway_link(host: str, port: int, timeout_s: float):
+    import bridge_rtu_tcp
+    import bridge_serial
+    key = (host, int(port))
+    if bridge_rtu_tcp.endpoint_held(host, port):
+        link = _GATEWAY_LINKS.pop(key, None)
+        if link is not None:
+            try:
+                link.close()
+            except Exception:
+                pass
+        raise bridge_serial.ScanHold()
+    from sa02m_spodes.link import TransparentLink
+    link = _GATEWAY_LINKS.get(key)
+    if link is not None and not link.dead:
+        return link
+    if link is not None:
+        link.close()
+    link = TransparentLink(host, int(port), timeout_s)
+    _GATEWAY_LINKS[key] = link
+    return link
 
 _UNITS = {
     "voltage_a": "V", "voltage_b": "V", "voltage_c": "V",
@@ -63,6 +116,7 @@ class SpodesPoller(DevicePoller):
     """One Mercury meter. ``get_port`` raises: this is not a Modbus slave."""
 
     def __init__(self, cfg: dict, pub):
+        _bind_spodes()
         super().__init__(cfg, pub)
         # Role and keys are taken from the caller's dict, then sealed so a
         # log of self.cfg cannot print them. The caller's dict is not mutated.
@@ -221,10 +275,24 @@ class SpodesPoller(DevicePoller):
             except Exception:
                 pass
 
+    def release_line(self) -> None:
+        """Drop the session and the UART or gateway socket a scan must own."""
+        self._drop()
+        link = self._transport
+        self._transport = None
+        if link is not None and hasattr(link, "close"):
+            try:
+                link.close()
+            except Exception:
+                pass
+
     def _connect(self):
         from sa02m_spodes.link import HdlcLink, WrapperLink
         if self.bus.transport == bridge_bus.TRANSPORT_WRAPPER:
             return WrapperLink(self.bus.host, self.bus.tcp_port, self.bus.timeout_s)
+        if self.bus.transport == bridge_bus.TRANSPORT_TRANSPARENT:
+            return _shared_gateway_link(
+                self.bus.host, self.bus.tcp_port, self.bus.timeout_s)
         return HdlcLink(self.port_path, self.baudrate or 9600)
 
     def _on_load_mqtt(self, client, userdata, msg) -> None:
