@@ -119,7 +119,6 @@ const DICT_WHITELIST = [
   { s: 'и введите этот код.', reason: 'tail of the cloud pairing sentence above' },
   { s: 'Введите этот код в личном кабинете на', reason: 'cloud pairing copy, split across an <a>' },
   { s: 'Перейти к настройкам облака', reason: 'cloud.html standalone page link' },
-  { s: 'Сервер автоматизации ЦИНТРОН', reason: 'login.html tagline' },
   { s: 'Неверный логин или пароль', reason: 'login.html error line; login.html does not load i18n.js' },
   { s: 'Войти', reason: 'login.html submit button; see above' },
 

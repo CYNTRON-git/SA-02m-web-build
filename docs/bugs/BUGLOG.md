@@ -5,6 +5,26 @@
 
 ---
 
+## [2026-10-05 21:30] branch: 1.0.7.1
+
+**Файл(ы):** `www/network_config/login.html`, `www/network_config/static/css/main.css`, `www/network_config/index.html`
+**Тип:** Некорректное поведение
+**Описание:** Окно входа не совпадало с формой облака: стеклянная карточка, чип вместо цельного знака, поля цвета панели, одинаковый зазор до кнопки.
+**Причина:** Карточка брала стекло и `--shadow-lg`, логотип — favicon 56px в ряд с «СА-02м», поля — `--bg-panel`, кнопка — `--btn-primary-bg`.
+**Исправление:** Токены login-* как у cloud `_TOKENS`: сплошная карточка, поле `#202022` / `#f2f2f7`, кнопка `#22d3ee`/`#00232b` и в светлой теме `#0e7490`/`#fff`, знак `logo-vector_cyntron.svg` 44px по центру. Зазор между полями 12px, перед кнопкой 24px.
+
+---
+
+## [2026-10-05 21:25] branch: 1.0.7.1
+
+**Файл(ы):** `www/network_config/static/css/main.css`, `www/network_config/login.html`, `www/network_config/index.html`
+**Тип:** Некорректное поведение
+**Описание:** Блок входа, поля и кнопка «Войти» были крупнее формы авторизации облака.
+**Причина:** Карточка осталась 420×44px padding и радиус 22px; у полей и кнопки были padding 0 16px, шрифт 1.05rem и радиус 10px.
+**Исправление:** Как у cloud `_AUTH_CSS` / `form > button`: карточка 320px, padding 28px, радиус 20px; поле и кнопка 44px, padding 10px 14px, радиус 8px, шрифт 16px, зазор 12px.
+
+---
+
 ## [2026-10-05 21:06] branch: 1.0.7.1
 
 **Файл(ы):** `www/network_config/login.html`, `www/network_config/static/css/main.css`, `www/network_config/index.html`

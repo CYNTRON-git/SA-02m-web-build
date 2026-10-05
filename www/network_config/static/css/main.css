@@ -152,6 +152,19 @@
      on many of them. #000000 on #ffffff = 21:1. */
   --qr-fg:            #000000;
   --qr-bg:            #ffffff;
+  /* Login card — cloud auth form (_AUTH_CSS / _TOKENS), both themes.
+     Dark: button #00232b on #22d3ee = 9.11:1; field #f2f2f7 on #202022 = 14.58:1;
+     caption/placeholder #a5a5ac on card #2c2c2e = 5.69:1, on field = 6.64:1. */
+  --login-card:    #2c2c2e;
+  --login-field:   #202022;
+  --login-border:  #38383a;
+  --login-btn-bg:  #22d3ee;
+  --login-btn-fg:  #00232b;
+  --login-sub:     #a5a5ac;
+  --login-shadow:  0 1px 2px #0000003d, 0 8px 24px #0000004d;
+  --login-btn-shadow: 0 1px 2px #00000047;
+  --login-bgi: radial-gradient(1100px 700px at 85% -10%, #1d2440 0%, #161618 60%),
+               radial-gradient(900px 600px at -10% 110%, #10222a 0%, #161618 55%);
   /* NEW/changed colour-pair AA ratios (WCAG 2.1, web-diagnostic-tools ## Contrast):
        --status-blue #4da2ff  on --bg #161618       6.82:1  PASS (normal ≥4.5)
                               on --bg-card #242426   5.85:1  PASS
@@ -255,6 +268,19 @@ html[data-theme="light"] {
   --status-blue:      #0064e0;   /* NEW */
   --qr-fg:            #000000;   /* same as dark, on purpose (scanner contrast) */
   --qr-bg:            #ffffff;
+  /* Login card, light. Button #fff on #0e7490 = 5.36:1. Caption #5c5c64 on
+     #ffffff = 6.62:1, on field #f2f2f7 = 5.94:1. Field text #1c1c1e on
+     #f2f2f7 = 15.25:1. */
+  --login-card:    #ffffff;
+  --login-field:   #f2f2f7;
+  --login-border:  #d8d8dd;
+  --login-btn-bg:  #0e7490;
+  --login-btn-fg:  #ffffff;
+  --login-sub:     #5c5c64;
+  --login-shadow:  0 1px 2px #1c274714, 0 8px 24px #3c67d71f;
+  --login-btn-shadow: 0 1px 2px #1c274733;
+  --login-bgi: radial-gradient(1100px 700px at 85% -10%, #c9d4f2 0%, #ececf3 60%),
+               radial-gradient(900px 600px at -10% 110%, #cfe8ee 0%, #ececf3 55%);
 }
 
 html[data-theme="light"] .log-box {
@@ -3050,33 +3076,41 @@ html[data-theme="light"] .homeconnect-verify-link { color: var(--cyan-hover); }
   min-height: 100dvh;
   display: flex; align-items: center; justify-content: center;
   background: var(--bg);
+  background-image: var(--login-bgi);
+  background-attachment: fixed;
 }
 .login-card {
-  background: rgba(36,36,38,.9); border: 1px solid var(--border-md);
-  border-radius: var(--radius-xl); padding: 40px 44px;
-  width: min(420px, calc(100vw - 32px)); box-shadow: var(--shadow-lg);
-  backdrop-filter: blur(24px) saturate(1.4);
-  -webkit-backdrop-filter: blur(24px) saturate(1.4);
-  font-size: 16px;
+  background: var(--login-card);
+  border: 1px solid var(--login-border);
+  /* Cloud auth form: 320×padding 28, radius 20px (--r-card). Solid, not glass. */
+  border-radius: 20px; padding: 28px;
+  width: min(320px, calc(100vw - 24px));
+  box-shadow: var(--login-shadow);
 }
-.login-logo { display: flex; align-items: center; gap: 12px; margin-bottom: 28px; }
-.login-logo svg { width: 32px; height: 32px; }
-.login-logo-img { width: 56px; height: 56px; object-fit: contain; flex-shrink: 0; border-radius: 12px; }
-.login-logo-title {
-  font-size: 1.28rem;
-  font-weight: 700;
-  color: var(--text);
-  line-height: 1.2;
-  letter-spacing: -0.02em;
+.login-logo {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 6px;
+  margin-bottom: var(--sp-4);
+}
+.login-logo-img {
+  height: 44px;
+  width: auto;
+  display: block;
 }
 .login-logo-sub {
-  font-size: .9rem;
-  color: var(--text-sec);
-  margin-top: 4px;
+  margin: 0;
+  color: var(--login-sub);
+  font-size: 13px;
+  font-weight: 400;
+  letter-spacing: .5px;
   line-height: 1.35;
+  text-align: center;
 }
-/* Same stack as the cloud auth form: no captions, one gap (--sp-3) between
-   the login field, the password field and the button, button box = input box. */
+/* Cloud login stack: 12px between the fields. The button adds one more
+   --sp-3 so the gap above it is double (24px). Boxes: 44px, padding
+   10px 14px, 8px radius, 16px type. */
 #login-form {
   display: flex;
   flex-direction: column;
@@ -3085,17 +3119,26 @@ html[data-theme="light"] .homeconnect-verify-link { color: var(--cyan-hover); }
 }
 .login-card .field { margin: 0; }
 .login-card .field input:not(.toggle) {
-  font-size: 1.05rem;
-  padding: 0 16px;
-  line-height: calc(var(--tap) - 2px);
+  background: var(--login-field);
+  border: 1px solid var(--login-border);
+  color: var(--text);
+  box-shadow: none;
+  font-size: 16px;
+  padding: 10px 14px;
+  line-height: normal;
   text-align: center;
   width: 100%;
   height: var(--tap);
   min-height: var(--tap);
+  border-radius: var(--radius-xs);
+}
+.login-card .field input:not(.toggle):focus {
+  border-color: var(--login-btn-bg);
+  box-shadow: none;
 }
 .login-card .field input:not(.toggle)::placeholder {
   text-align: center;
-  color: var(--text-sec);
+  color: var(--login-sub);
   opacity: 1;
 }
 .login-error {
@@ -3108,11 +3151,22 @@ html[data-theme="light"] .homeconnect-verify-link { color: var(--cyan-hover); }
   width: 100%;
   height: var(--tap);
   min-height: var(--tap);
-  margin: 0;
-  padding: 0 16px;
-  font-size: 1.05rem;
-  font-weight: 700;
-  border-radius: var(--radius-sm);
+  margin: var(--sp-3) 0 0;
+  padding: 10px 14px;
+  font-size: 16px;
+  font-weight: 600;
+  border-radius: var(--radius-xs);
+  background: var(--login-btn-bg);
+  border: 1px solid var(--login-btn-bg);
+  color: var(--login-btn-fg);
+  box-shadow: var(--login-btn-shadow);
+}
+#login-form .login-btn:hover:not(:disabled),
+#login-form .login-btn:active:not(:disabled) {
+  background: var(--login-btn-bg);
+  border-color: var(--login-btn-bg);
+  color: var(--login-btn-fg);
+  box-shadow: var(--login-btn-shadow);
 }
 
 /* ── Misc ────────────────────────────────────────────────────────────────── */
