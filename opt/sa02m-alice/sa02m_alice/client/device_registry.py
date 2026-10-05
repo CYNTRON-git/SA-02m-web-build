@@ -479,6 +479,11 @@ class DeviceRegistry:
                         split = params.get("split") if isinstance(params, dict) else None
                         params = {"split": split} if isinstance(split, bool) else None
                     elif (not cloud
+                          and item.get("type") == "devices.capabilities.range"):
+                        params = converters.yandex_range_parameters(
+                            params if isinstance(params, dict) else None
+                        )
+                    elif (not cloud
                           and item.get("type") == "devices.capabilities.color_setting"):
                         # Yandex color_setting has no instance. The window
                         # stores `instance: rgb`; discovery sends color_model.
@@ -577,6 +582,7 @@ class DeviceRegistry:
                         str(item.get("type") or ""), raw, item.get("parameters"),
                         _item_inverted(item),
                         family=_item_carel_family(item),
+                        yandex=self._profile == C.PROFILE_YANDEX,
                     )
                     if block:
                         caps.append(block)
@@ -760,6 +766,7 @@ class DeviceRegistry:
                         parameters=local.get("parameters"),
                         inverted=_item_inverted(local),
                         family=_item_carel_family(local),
+                        yandex=self._profile == C.PROFILE_YANDEX,
                     )
                     if err or payload is None:
                         cap_results.append(
@@ -809,6 +816,7 @@ class DeviceRegistry:
                         str(item.get("type") or ""), raw, item.get("parameters"),
                         _item_inverted(item),
                         family=_item_carel_family(item),
+                        yandex=self._profile == C.PROFILE_YANDEX,
                     )
                     if block:
                         out.append({"id": did, "capabilities": [block], "properties": []})

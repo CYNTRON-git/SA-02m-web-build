@@ -39,6 +39,23 @@ Update = Tuple[str, List[Value], bool]
 # (device id, service index, characteristic name, HAP value) — a press event.
 Event = Tuple[str, int, str, Any]
 
+
+def _color_rgb(entries: List[Mapping[str, Any]]) -> Optional[int]:
+    """The cached RGB word of the first colour capability, or None."""
+    for entry in entries:
+        for block in entry.get("capabilities") or []:
+            if not isinstance(block, dict) or block.get("type") != P.CAP_COLOR:
+                continue
+            state = block.get("state")
+            if not isinstance(state, dict):
+                continue
+            value = state.get("value")
+            if isinstance(value, bool) or not isinstance(value, int):
+                continue
+            if 0 <= value <= 0xFFFFFF:
+                return value
+    return None
+
 _DEVICES_PREFIX = "/devices/"
 _META_ERROR = "/meta/error"
 
@@ -330,7 +347,10 @@ class Engine:
             # engine's off verb — that switches off every output the scene set.
             return
         try:
-            cap = P.yandex_capability(binding, value)
+            current_rgb = None
+            if binding.rule in (P.RULE_HUE, P.RULE_SATURATION):
+                current_rgb = _color_rgb(self.registry.query_devices([device_id]))
+            cap = P.yandex_capability(binding, value, current_rgb=current_rgb)
             if cap is None:
                 raise WriteRefused("%s: characteristic %s is not writable with %r"
                                    % (device_id, binding.char, value))

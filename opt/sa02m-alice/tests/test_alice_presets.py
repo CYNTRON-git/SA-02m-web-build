@@ -109,8 +109,17 @@ class TestLampAndCurtainDocuments(unittest.TestCase):
             ("devices.capabilities.range", "brightness", None),
             ("devices.capabilities.color_setting", None, "rgb"),
         ])
-        bright = caps[1]["parameters"]["range"]
-        self.assertEqual((bright["min"], bright["max"], bright["precision"]), (0, 255, 1))
+        bright = caps[1]["parameters"]
+        self.assertEqual(bright["unit"], "unit.percent")
+        self.assertEqual(
+            (bright["range"]["min"], bright["range"]["max"], bright["range"]["precision"]),
+            (0, 100, 1),
+        )
+        cloud_bright = DeviceRegistry(
+            {"rooms": [], "devices": [_lamp()]},
+        ).discovery_devices(C.PROFILE_CLOUD)[0]["capabilities"][1]["parameters"]
+        self.assertNotIn("unit", cloud_bright)
+        self.assertEqual(cloud_bright["range"]["max"], 255)
         self.assertNotIn("scale", caps[2]["parameters"])
         self.assertNotIn("instance", caps[2]["parameters"])
         cloud = DeviceRegistry(
@@ -145,6 +154,79 @@ class TestLampAndCurtainDocuments(unittest.TestCase):
         self.assertIsNone(err)
         self.assertEqual(len(dev["capabilities"]), 1)
         self.assertEqual(dev["capabilities"][0]["parameters"]["instance"], "open")
+
+    def test_a_255_brightness_is_advertised_as_percent(self):
+        # The skill accepts brightness only as unit.percent with max 100.
+        # Both shapes the board has sent — unit.percent/max 255, and the same
+        # range with the unit stripped — are refused, so a refresh never adds
+        # the strip. Discovery must send 0…100 percent; the 0…255 register
+        # stays on the bus.
+        for unit in ("unit.percent", None):
+            bright = _range(BRIGHT, "brightness", 0, 255)
+            if unit:
+                bright["parameters"]["unit"] = unit
+            dev, err = validate_device({
+                "id": "lamp3",
+                "name": "Лента",
+                "type": "devices.types.light",
+                "capabilities": [_on_off(POWER), bright, _rgb(COLOR)],
+                "properties": [],
+            })
+            self.assertIsNone(err)
+            reg = DeviceRegistry({"rooms": [], "devices": [dev]})
+            yandex = reg.discovery_devices()
+            params = yandex[0]["capabilities"][1]["parameters"]
+            self.assertEqual(params["unit"], "unit.percent")
+            self.assertEqual(params["range"], {"min": 0, "max": 100, "precision": 1})
+            self.assertEqual(
+                yandex[0]["capabilities"][2]["parameters"]["color_model"], "rgb"
+            )
+            cloud = DeviceRegistry(
+                {"rooms": [], "devices": [dev]}, profile=C.PROFILE_CLOUD
+            ).discovery_devices(C.PROFILE_CLOUD)[0]["capabilities"][1]["parameters"]
+            self.assertEqual(cloud["range"]["max"], 255)
+            reg.note_mqtt(BRIGHT, "255")
+            queried = reg.query_devices(["lamp3"])[0]["capabilities"]
+            bright_state = next(
+                c for c in queried if c["type"] == "devices.capabilities.range"
+            )
+            self.assertEqual(bright_state["state"]["value"], 100)
+            _results, pubs = reg.apply_actions([{
+                "id": "lamp3",
+                "capabilities": [{
+                    "type": "devices.capabilities.range",
+                    "state": {"instance": "brightness", "value": 100},
+                }],
+            }])
+            self.assertEqual(pubs, [(BRIGHT + "/on", "255")])
+            cloud_reg = DeviceRegistry(
+                {"rooms": [], "devices": [dev]}, profile=C.PROFILE_CLOUD
+            )
+            _results, cloud_pubs = cloud_reg.apply_actions([{
+                "id": "lamp3",
+                "capabilities": [{
+                    "type": "devices.capabilities.range",
+                    "state": {"instance": "brightness", "value": 100},
+                }],
+            }])
+            self.assertEqual(cloud_pubs, [(BRIGHT + "/on", "100")])
+
+    def test_a_real_percent_brightness_keeps_its_unit(self):
+        item = _range(BRIGHT, "brightness", 0, 100)
+        item["parameters"]["unit"] = "unit.percent"
+        dev, err = validate_device({
+            "id": "lamp4",
+            "name": "Лампа",
+            "type": "devices.types.light",
+            "capabilities": [item],
+            "properties": [],
+        })
+        self.assertIsNone(err)
+        params = DeviceRegistry(
+            {"rooms": [], "devices": [dev]}
+        ).discovery_devices()[0]["capabilities"][0]["parameters"]
+        self.assertEqual(params["unit"], "unit.percent")
+        self.assertEqual(params["range"]["max"], 100)
 
     def test_color_setting_rejects_a_foreign_instance(self):
         _dev, err = validate_device({

@@ -73,7 +73,7 @@ _CHAR_PROPERTIES = {
 }
 # Characteristics a service does not carry by default (pyhap services.json
 # "OptionalCharacteristics") that a mapping row binds: preloaded explicitly.
-_OPTIONAL_CHARS = frozenset(("Brightness", "CarbonDioxideLevel"))
+_OPTIONAL_CHARS = frozenset(("Brightness", "Hue", "Saturation", "CarbonDioxideLevel"))
 # HAP value → ValidValues name, for the enum characteristics a row restricts
 # (`CharBinding.valid`): pyhap takes the restriction as {name: value}.
 _VALID_NAMES = {

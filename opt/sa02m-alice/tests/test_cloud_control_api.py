@@ -439,6 +439,27 @@ class TestUpsertDeviceRooms(_CloudApiBase):
         self.assertTrue(api.delete_device("lamp")["ok"])
         self.assertEqual(self._members()[self.kitchen], [])
 
+    def test_delete_device_does_not_touch_the_bridge_yaml(self):
+        # Unbinding Alice removes the catalogue row only. The Modbus poll
+        # entry (the strip on COM3) stays byte for byte.
+        from sa02m_alice.config import topics
+        yaml_path = os.path.join(self.tmp.name, "sa02m-modbus-mqtt.yaml")
+        body = (
+            "devices:\n"
+            "- id: led-COM3-13\n"
+            "  type: led\n"
+            "  port: /dev/COM3\n"
+            "  address: 13\n"
+            "  name: LED (COM3 addr=13)\n"
+        )
+        with open(yaml_path, "w", encoding="utf-8") as fh:
+            fh.write(body)
+        with mock.patch.object(topics, "YAML_CANDIDATES", (yaml_path,)):
+            self.assertTrue(api.delete_device("lamp")["ok"])
+        with open(yaml_path, encoding="utf-8") as fh:
+            self.assertEqual(fh.read(), body)
+        self.assertEqual(load_devices()["devices"], [])
+
     def test_room_without_a_devices_key_keeps_its_shape(self):
         # A document written before the list existed carries rooms with no
         # `devices` key: joining one creates the list, a room nobody joined

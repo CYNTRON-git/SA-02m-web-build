@@ -169,7 +169,11 @@ def signal_handler(sig, frame) -> None:
 # ── Main ───────────────────────────────────────────────────────────────────────
 # ── RS-485 roster export (Provider A source for the bus-free aggregator) ────────
 ROSTER_PATH = LIVE_CACHE_DIR / "_roster.json"
-_OUR_DEVICE_TYPES = ("mr02m", "dtv", "ce02m3")
+# `led` is a strip this bridge polls (`type: led`). Leaving it out marked the
+# live COM3 addr 13 row `ours: false`, so the status chips counted it as a
+# third-party module and drew no chip — the strip looked gone from the list
+# while the yaml entry and the bus answer were both present.
+_OUR_DEVICE_TYPES = ("mr02m", "dtv", "ce02m3", "led")
 
 
 def _roster_model_name(dev_type: str, module_type: int) -> str:
@@ -180,6 +184,8 @@ def _roster_model_name(dev_type: str, module_type: int) -> str:
         return "DTV-RS-45"
     if dev_type == "ce02m3":
         return "CE-02m-3"
+    if dev_type == "led":
+        return "LED"
     return ""
 
 

@@ -74,6 +74,43 @@ class MixedFramingTest(unittest.TestCase):
         }])
         self.assertEqual(rows[0]["reason"], "serial_keys_on_tcp")
 
+    def test_transparent_gateway_is_hdlc_over_tcp_and_frees_the_com(self):
+        local = {
+            "id": "spodes-tcp-127_0_0_1-17", "type": "spodes",
+            "transport": "transparent", "host": "127.0.0.1", "hdlc_address": 17,
+        }
+        bus = bridge_bus.device_bus(local)
+        self.assertEqual(bus.transport, "transparent")
+        self.assertEqual((bus.host, bus.tcp_port), ("127.0.0.1", 4001))
+        self.assertEqual(bus.key, "transparent:127.0.0.1:4001")
+        devs = [local, {"id": "ce02m3-COM1-14", "type": "ce02m3", "address": 14}]
+        self.assertEqual(bridge_bus.validate_devices(devs), [])
+
+    def test_loopback_is_only_the_local_gateway_ports(self):
+        def reason(port, host="127.0.0.1"):
+            rows = bridge_bus.validate_devices([{
+                "id": "spodes-gw", "type": "spodes", "transport": "transparent",
+                "host": host, "tcp_port": port, "hdlc_address": 1,
+            }])
+            return rows[0]["reason"] if rows else ""
+
+        self.assertEqual(reason(4001), "")
+        self.assertEqual(reason(9502), "")
+        self.assertEqual(reason(1883), "host_forbidden")
+        self.assertEqual(reason(4001, "127.0.0.2"), "host_forbidden")
+        remote = bridge_bus.device_bus({
+            "id": "spodes-tcp-192_168_1_50-1", "type": "spodes",
+            "transport": "transparent", "host": "192.168.1.50",
+            "tcp_port": 9503, "hdlc_address": 1,
+        })
+        self.assertEqual(remote.key, "transparent:192.168.1.50:9503")
+        rows = bridge_bus.validate_devices([{
+            "id": "spodes-serial-keys", "type": "spodes",
+            "transport": "transparent", "host": "192.168.1.50",
+            "port": "/dev/COM2", "hdlc_address": 1,
+        }])
+        self.assertEqual(rows[0]["reason"], "serial_keys_on_tcp")
+
 
 if __name__ == "__main__":
     unittest.main()

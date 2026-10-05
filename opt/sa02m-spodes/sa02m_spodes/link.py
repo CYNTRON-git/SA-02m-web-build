@@ -1,7 +1,9 @@
-"""Serial HDLC and IEC 62056-47 sockets. Opened only by the SPODES poller.
+"""Serial HDLC, a transparent gateway socket, and IEC 62056-47.
 
-Not a Modbus port: the caller gets a link whose ``exchange`` returns one
-frame, and the port stays exclusively owned by that poller thread.
+Opened only by the SPODES poller. Not a Modbus port: ``exchange`` returns
+one frame. The UART path owns the port. The transparent path is a TCP
+client of a gateway that already owns the UART and copies bytes both ways;
+the frames on that socket are HDLC, not the IEC wrapper.
 """
 
 from __future__ import annotations
@@ -9,7 +11,7 @@ from __future__ import annotations
 import socket
 import time
 
-from sa02m_spodes.hdlc import HdlcError, IncompleteFrame, parse_hdlc
+from sa02m_spodes.hdlc import HdlcError, IncompleteFrame, parse_frame
 
 
 class HdlcLink:
@@ -50,13 +52,75 @@ def _take_hdlc(buf: bytes) -> bytes | None:
     if start < 0:
         return None
     try:
-        _info, rest = parse_hdlc(buf[start:])
+        _info, rest = parse_frame(buf[start:])
     except IncompleteFrame:
         return None
     except HdlcError:
         return None
     consumed = len(buf) - start - len(rest)
     return buf[start:start + consumed]
+
+
+class TransparentLink:
+    """HDLC over the TCP port of a gateway in transparent mode.
+
+    One socket may be shared by several meters on that port: the scheduler
+    talks to them one at a time, and a leftover byte is discarded before
+    the next frame so it cannot be read as the next answer.
+    """
+
+    def __init__(self, host: str, port: int, timeout_s: float = 3.0):
+        self.dead = False
+        self._buf = b""
+        self._sock = socket.create_connection((host, int(port)), timeout=float(timeout_s))
+
+    def exchange(self, frame: bytes, timeout_s: float) -> bytes:
+        if self.dead:
+            raise OSError("transparent link closed")
+        self._discard_pending()
+        try:
+            self._sock.settimeout(max(float(timeout_s), 0.05))
+            self._sock.sendall(frame)
+            deadline = time.monotonic() + float(timeout_s)
+            while time.monotonic() < deadline:
+                self._sock.settimeout(max(deadline - time.monotonic(), 0.05))
+                try:
+                    chunk = self._sock.recv(4096)
+                except socket.timeout:
+                    break
+                if not chunk:
+                    self.dead = True
+                    break
+                self._buf += chunk
+                got = _take_hdlc(self._buf)
+                if got is not None:
+                    self._buf = self._buf[self._buf.find(b"\x7e") + len(got):]
+                    return got
+        except OSError:
+            self.dead = True
+            raise
+        raise TimeoutError("transparent")
+
+    def _discard_pending(self) -> None:
+        self._buf = b""
+        self._sock.setblocking(False)
+        try:
+            while True:
+                chunk = self._sock.recv(4096)
+                if not chunk:
+                    self.dead = True
+                    return
+        except (BlockingIOError, socket.timeout):
+            return
+        finally:
+            self._sock.setblocking(True)
+
+    def close(self) -> None:
+        self.dead = True
+        try:
+            self._sock.close()
+        except Exception:
+            pass
 
 
 class WrapperLink:

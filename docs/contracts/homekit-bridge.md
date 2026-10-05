@@ -144,12 +144,15 @@ HAP) — на английском (`PROTOCOL.md` invariant 5); пояснени
 документа, сервисы строк `M15`–`M18` (добавлены после v1) — **после них**, тоже
 в порядке документа (`projection.LATE_ROWS`). Так новый сопоставленный элемент
 (CO₂, кнопка) не сдвигает внутренние номера характеристик уже сопряжённого
-аксессуара (§5).
+аксессуара (§5). Строка `M19` — не новый сервис: `Hue` и `Saturation`
+дописываются на ту же `Lightbulb`, после `On` и `Brightness`, поэтому номера
+уже сопряжённой лампы не сдвигаются.
 
 | Строка | Источник | Условие | HAP-сервис | Характеристики | Правило значения |
 |---|---|---|---|---|---|
 | `M01` | `capabilities.on_off` | `type=devices.types.light*` | `Lightbulb` | `On` | bool, запись разрешена |
 | `M02` | `capabilities.range:brightness` | `with=M01` | `Lightbulb` | `Brightness` | линейно `parameters.range.min..max` → 0..100 (целое, с ограничением); обратно тем же отображением, с округлением до шага `precision` и ограничением диапазоном. Без лампы у того же устройства или без корректного `range` — `range_unsupported` |
+| `M19` | `capabilities.color_setting:rgb` | `with=M01` | `Lightbulb` | `Hue`, `Saturation` | Цвет ленты: слово `rgb` `0xRRGGBB` → `Hue` 0…360° и `Saturation` 0…100. Яркость остаётся `M02` (V преобразования = 1). Запись `Hue` или `Saturation` собирает слово заново из кэшированного цвета и второго компонента и публикует `#RRGGBB` через `color_setting`. `hsv` — та же пара. `temperature_k` и цвет без лампы — `capability_unsupported`. |
 | `M03` | `capabilities.on_off` | `type=devices.types.socket` | `Outlet` | `On`, `OutletInUse` | `On` — bool, запись разрешена; **`OutletInUse` — ПРОИЗВОДНОЕ: повторяет `On`** (нагрузка розетки неизвестна) |
 | `M04` | `capabilities.on_off` | `type=devices.types.openable.valve` | `Valve` | `Active`, `InUse`, `ValveType` | `Active` — 0/1, запись разрешена; **`InUse` — ПРОИЗВОДНОЕ: повторяет `Active`**; `ValveType` — константа `0` |
 | `M05` | `capabilities.on_off` | `type=devices.types.ventilation.fan` | `Fanv2` | `Active` | 0/1, запись разрешена |
@@ -188,7 +191,7 @@ Model = `type` устройства, SerialNumber = `device_id`, FirmwareRevisio
 | Причина | Когда |
 |---|---|
 | `range_unsupported` | `range`, кроме яркости лампы и уставки композиции `Thermostat` (`M17`); яркость без лампы или без корректного `range` |
-| `capability_unsupported` | `mode`, `color_setting` и прочие умения, кроме `on_off`/`range` |
+| `capability_unsupported` | `mode`, `color_setting` кроме `rgb`/`hsv` на лампе (`M19`), и прочие умения, кроме `on_off`/`range` |
 | `no_homekit_type` | float `voltage`, `amperage`, `power`, `electricity_meter`, `pressure`, `tvoc`, `battery_level`, `water_level`; event `gas`, `vibration`, `battery_level`, `food_level`, `water_level`; свойство неизвестного типа |
 | `scene_disabled` | сцена отмечена для HomeKit (`homekit_scenes`), но выключена в хранилище сценариев (§2) |
 | `button_source_unsupported` | event `button`, привязанный не к `/devices/<mid>/controls/di_N` (нажатия считает только вход МР-02м в режиме «Кнопка») или без единого из `click`/`double_click`/`long_press` |

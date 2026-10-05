@@ -27,6 +27,7 @@ from . import constants as C
 
 CAP_ON_OFF = "devices.capabilities.on_off"
 CAP_RANGE = "devices.capabilities.range"
+CAP_COLOR = "devices.capabilities.color_setting"
 PROP_FLOAT = "devices.properties.float"
 PROP_EVENT = "devices.properties.event"
 
@@ -48,6 +49,11 @@ class MappingRow:
 MAPPING: Tuple[MappingRow, ...] = (
     MappingRow("M01", "capabilities.on_off", "type=devices.types.light*", "Lightbulb", ("On",)),
     MappingRow("M02", "capabilities.range:brightness", "with=M01", "Lightbulb", ("Brightness",)),
+    # Joined onto the same Lightbulb as M01/M02 (not a LATE_ROWS service): Hue
+    # and Saturation are appended after On and Brightness, so a paired
+    # accessory keeps the IIDs it already has. `temperature_k` stays unmapped.
+    MappingRow("M19", "capabilities.color_setting:rgb", "with=M01", "Lightbulb",
+               ("Hue", "Saturation")),
     MappingRow("M03", "capabilities.on_off", "type=devices.types.socket", "Outlet", ("On", "OutletInUse")),
     MappingRow("M04", "capabilities.on_off", "type=devices.types.openable.valve", "Valve",
                ("Active", "InUse", "ValveType")),
@@ -126,6 +132,10 @@ RULE_ACTIVE_DERIVED = "active_derived"
 RULE_CONST_ZERO = "const_zero"
 RULE_CONTACT_FROM_ON_OFF = "contact_from_on_off"
 RULE_BRIGHTNESS = "brightness"
+# LED colour is one RGB word. Hue and Saturation are the chromaticity; the
+# strip's brightness register stays M02. Value (V) of the conversion is 1.
+RULE_HUE = "hue"
+RULE_SATURATION = "saturation"
 RULE_TEMPERATURE = "temperature"
 RULE_HUMIDITY = "humidity"
 RULE_ILLUMINATION = "illumination"
@@ -455,6 +465,83 @@ def _thermostat_service(setpoint: Mapping[str, Any], measured: Mapping[str, Any]
     ))
 
 
+def _is_rgb_color(item: Mapping[str, Any]) -> bool:
+    """True for the window's RGB lamp (`instance`/`color_model` rgb).
+
+    `hsv` is the same chromaticity HomeKit already speaks (Hue + Saturation).
+    A kelvin window is not a colour of the strip and stays unmapped.
+    """
+    params = _params(item)
+    model = params.get("color_model")
+    instance = str(params.get("instance") or "")
+    if model == "hsv" or instance == "hsv":
+        return True
+    if model == "rgb" or instance == "rgb":
+        return True
+    if instance == "temperature_k" or isinstance(params.get("temperature_k"), dict):
+        return False
+    # A bare color_setting is the rgb lamp the form writes before discovery
+    # rewrites the parameters. Anything else is not a colour we can show.
+    return model in (None, "") and instance in ("",)
+
+
+def _rgb_byte(value: Any) -> Optional[int]:
+    if isinstance(value, bool) or not isinstance(value, int):
+        return None
+    if value < 0 or value > 0xFFFFFF:
+        return None
+    return value
+
+
+def rgb_to_hs(rgb: int) -> Tuple[float, float]:
+    """0xRRGGBB → (hue degrees 0..360, saturation percent 0..100). V is dropped:
+    the strip's brightness is a separate register."""
+    r = ((rgb >> 16) & 255) / 255.0
+    g = ((rgb >> 8) & 255) / 255.0
+    b = (rgb & 255) / 255.0
+    mx = max(r, g, b)
+    mn = min(r, g, b)
+    span = mx - mn
+    if span == 0:
+        hue = 0.0
+    elif mx == r:
+        hue = (60.0 * ((g - b) / span) + 360.0) % 360.0
+    elif mx == g:
+        hue = (60.0 * ((b - r) / span) + 120.0) % 360.0
+    else:
+        hue = (60.0 * ((r - g) / span) + 240.0) % 360.0
+    sat = 0.0 if mx == 0 else (span / mx) * 100.0
+    return hue, sat
+
+
+def hs_to_rgb(hue: float, saturation: float) -> int:
+    """Hue degrees + saturation percent → 0xRRGGBB at full value."""
+    sat = min(100.0, max(0.0, float(saturation))) / 100.0
+    hue = float(hue) % 360.0
+    sector = hue / 60.0
+    chroma = sat
+    mid = chroma * (1.0 - abs(sector % 2.0 - 1.0))
+    base = 1.0 - chroma
+    idx = int(sector)
+    if idx == 0:
+        rp, gp, bp = chroma, mid, 0.0
+    elif idx == 1:
+        rp, gp, bp = mid, chroma, 0.0
+    elif idx == 2:
+        rp, gp, bp = 0.0, chroma, mid
+    elif idx == 3:
+        rp, gp, bp = 0.0, mid, chroma
+    elif idx == 4:
+        rp, gp, bp = mid, 0.0, chroma
+    else:
+        rp, gp, bp = chroma, 0.0, mid
+
+    def channel(part: float) -> int:
+        return min(255, max(0, int(round((part + base) * 255.0))))
+
+    return (channel(rp) << 16) | (channel(gp) << 8) | channel(bp)
+
+
 def device_services(
     device: Mapping[str, Any],
     caps: Sequence[Mapping[str, Any]],
@@ -466,6 +553,7 @@ def device_services(
     skipped: List[Tuple[str, str]] = []
     bulb_index: Optional[int] = None
     brightness: List[Mapping[str, Any]] = []
+    colors: List[Mapping[str, Any]] = []
     if isinstance(device.get("scene_id"), str) and device.get("scene_id"):
         # A scene row (config/scene_devices.py homekit_scene_projection): one
         # on_off on the engine's run topic → M18, nothing else is read.
@@ -495,6 +583,11 @@ def device_services(
                 brightness.append(item)
             else:
                 skipped.append((_item_label(item), SKIP_RANGE_UNSUPPORTED))
+        elif ctype == CAP_COLOR:
+            if _is_rgb_color(item):
+                colors.append(item)
+            else:
+                skipped.append((_item_label(item), SKIP_CAPABILITY_UNSUPPORTED))
         else:
             skipped.append((_item_label(item), SKIP_CAPABILITY_UNSUPPORTED))
     for item in brightness:
@@ -508,6 +601,19 @@ def device_services(
             bulb.service,
             bulb.bindings + (CharBinding("Brightness", RULE_BRIGHTNESS, CAP_RANGE, "brightness",
                                          writable=True, bounds=bounds),),
+        )
+    for item in colors:
+        if bulb_index is None:
+            skipped.append((_item_label(item), SKIP_CAPABILITY_UNSUPPORTED))
+            continue
+        bulb = services[bulb_index]
+        services[bulb_index] = ServiceSpec(
+            bulb.row_ids + ("M19",),
+            bulb.service,
+            bulb.bindings + (
+                CharBinding("Hue", RULE_HUE, CAP_COLOR, "rgb", writable=True),
+                CharBinding("Saturation", RULE_SATURATION, CAP_COLOR, "rgb", writable=True),
+            ),
         )
     for item in props:
         if id(item) in consumed:
@@ -626,6 +732,14 @@ def hap_value(binding: CharBinding, value: Any) -> Any:
         lo, hi = binding.bounds[0], binding.bounds[1]
         pct = (float(value) - lo) * 100.0 / (hi - lo)
         return int(round(min(100.0, max(0.0, pct))))
+    if rule in (RULE_HUE, RULE_SATURATION):
+        rgb = _rgb_byte(value)
+        if rgb is None:
+            return None
+        hue, sat = rgb_to_hs(rgb)
+        if rule == RULE_HUE:
+            return round(hue, 1)
+        return round(sat, 1)
     if rule == RULE_TARGET_TEMPERATURE:
         # A setpoint outside the item's range is not shown — never clamped
         # into a reading the device does not hold.
@@ -660,7 +774,8 @@ def hap_value(binding: CharBinding, value: Any) -> Any:
     return None
 
 
-def yandex_capability(binding: CharBinding, value: Any) -> Optional[Dict[str, Any]]:
+def yandex_capability(binding: CharBinding, value: Any,
+                      current_rgb: Optional[int] = None) -> Optional[Dict[str, Any]]:
     """HAP write → one Yandex capability for DeviceRegistry.apply_actions,
     or None when the characteristic is not writable / the value is unusable."""
     if not binding.writable:
@@ -699,6 +814,19 @@ def yandex_capability(binding: CharBinding, value: Any) -> Optional[Dict[str, An
         if abs(num - round(num)) < 1e-9:
             num = int(round(num))
         return {"type": CAP_RANGE, "state": {"instance": binding.instance, "value": num}}
+    if binding.rule in (RULE_HUE, RULE_SATURATION):
+        if isinstance(value, bool) or not isinstance(value, (int, float)) or not math.isfinite(value):
+            return None
+        known = _rgb_byte(current_rgb)
+        if known is None:
+            hue, sat = (float(value), 100.0) if binding.rule == RULE_HUE else (0.0, float(value))
+        else:
+            hue, sat = rgb_to_hs(known)
+            if binding.rule == RULE_HUE:
+                hue = float(value)
+            else:
+                sat = float(value)
+        return {"type": CAP_COLOR, "state": {"instance": "rgb", "value": hs_to_rgb(hue, sat)}}
     return None
 
 

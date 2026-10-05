@@ -95,7 +95,10 @@ def yandex_to_on_off(
 
 
 def mqtt_to_range(
-    raw: str, parameters: Optional[Dict[str, Any]] = None
+    raw: str,
+    parameters: Optional[Dict[str, Any]] = None,
+    *,
+    yandex: bool = False,
 ) -> Optional[Dict[str, Any]]:
     params = parameters or {}
     instance = params.get("instance", "brightness")
@@ -105,6 +108,10 @@ def mqtt_to_range(
         # Same "omit rather than fabricate" rule as the float property: a
         # garbled setpoint/brightness shown as 0 would read as a real value.
         return None
+    if yandex:
+        span = yandex_brightness_span(params)
+        if span is not None:
+            value = _stored_to_percent(value, span[0], span[1])
     return {
         "type": "devices.capabilities.range",
         "state": {"instance": instance, "value": value},
@@ -115,6 +122,8 @@ def yandex_to_range(
     state: Dict[str, Any],
     current_raw: Optional[str] = None,
     parameters: Optional[Dict[str, Any]] = None,
+    *,
+    yandex: bool = False,
 ) -> Tuple[Optional[str], Optional[str]]:
     """Absolute or relative range → MQTT string."""
     if not isinstance(state, dict):
@@ -129,7 +138,17 @@ def yandex_to_range(
         num = float(value)
     except (TypeError, ValueError):
         return None, C.ERR_INVALID_VALUE
-    if relative:
+    span = yandex_brightness_span(params) if yandex else None
+    if span is not None:
+        lo_s, hi_s = span
+        if relative:
+            try:
+                base_raw = float(str(current_raw).strip()) if current_raw is not None else lo_s
+            except (TypeError, ValueError):
+                base_raw = lo_s
+            num = _stored_to_percent(base_raw, lo_s, hi_s) + num
+        num = _percent_to_stored(num, lo_s, hi_s)
+    elif relative:
         try:
             base = float(str(current_raw).strip()) if current_raw is not None else 0.0
         except (TypeError, ValueError):
@@ -270,6 +289,77 @@ _KELVIN_MIN = 2700
 _KELVIN_MAX = 6500
 
 
+def yandex_brightness_span(
+    parameters: Optional[Dict[str, Any]],
+) -> Optional[Tuple[float, float]]:
+    """Stored brightness ``(min, max)`` that Yandex will not accept as-is.
+
+    The skill's brightness function is ``unit.percent`` with max 100. A 0…255
+    channel — with that unit or without it — is dropped, and a dropped device
+    never comes back on «Обновить список устройств». A range that is already
+    0…100 percent returns None (no scale). The stored document is not rewritten.
+    """
+    if not isinstance(parameters, dict):
+        return None
+    if str(parameters.get("instance") or "") != "brightness":
+        return None
+    rng = parameters.get("range")
+    if not isinstance(rng, dict):
+        return None
+    if isinstance(rng.get("min"), bool) or isinstance(rng.get("max"), bool):
+        return None
+    try:
+        lo = float(rng["min"])
+        hi = float(rng["max"])
+    except (KeyError, TypeError, ValueError):
+        return None
+    if not hi > lo:
+        return None
+    if parameters.get("unit") == "unit.percent" and lo >= 0 and hi <= 100:
+        return None
+    if hi > 100:
+        return (lo, hi)
+    return None
+
+
+def _stored_to_percent(raw: float, lo: float, hi: float) -> int:
+    pct = (float(raw) - lo) * 100.0 / (hi - lo)
+    if pct < 0:
+        pct = 0.0
+    elif pct > 100:
+        pct = 100.0
+    return int(round(pct))
+
+
+def _percent_to_stored(pct: float, lo: float, hi: float) -> float:
+    if pct < 0:
+        pct = 0.0
+    elif pct > 100:
+        pct = 100.0
+    return lo + pct * (hi - lo) / 100.0
+
+
+def yandex_range_parameters(
+    parameters: Optional[Dict[str, Any]],
+) -> Optional[Dict[str, Any]]:
+    """Stored range parameters → the Yandex discovery object.
+
+    Brightness whose max is above 100 is advertised as ``unit.percent`` 0…100.
+    Stripping the unit and leaving max 255 is still refused: the function's
+    only legal unit is percent and its max is 100. A genuine 0…100 percent
+    range is copied unchanged. The cloud profile does not call this.
+    """
+    if not isinstance(parameters, dict):
+        return None
+    span = yandex_brightness_span(parameters)
+    if span is None:
+        return parameters
+    out = dict(parameters)
+    out["unit"] = "unit.percent"
+    out["range"] = {"min": 0, "max": 100, "precision": 1}
+    return out
+
+
 def yandex_color_setting_parameters(
     parameters: Optional[Dict[str, Any]],
 ) -> Optional[Dict[str, Any]]:
@@ -394,13 +484,14 @@ def capability_mqtt_to_yandex(
     inverted: bool = False,
     *,
     family: Optional[str] = None,
+    yandex: bool = False,
 ) -> Optional[Dict[str, Any]]:
     """`family` is KEYWORD-ONLY on purpose: `inverted` is passed positionally
     at every existing call site, and a positional family would bind to it."""
     if cap_type.endswith("on_off") or cap_type == "devices.capabilities.on_off":
         return mqtt_to_on_off(raw, parameters, inverted=inverted)
     if cap_type.endswith("range") or cap_type == "devices.capabilities.range":
-        return mqtt_to_range(raw, parameters)
+        return mqtt_to_range(raw, parameters, yandex=yandex)
     if cap_type.endswith("mode") or cap_type == "devices.capabilities.mode":
         return mqtt_to_mode(raw, parameters, family=family)
     if cap_type.endswith("color_setting") or cap_type == "devices.capabilities.color_setting":
@@ -426,11 +517,14 @@ def capability_yandex_to_mqtt(
     parameters: Optional[Dict[str, Any]] = None,
     inverted: bool = False,
     family: Optional[str] = None,
+    yandex: bool = False,
 ) -> Tuple[Optional[str], Optional[str]]:
     if cap_type.endswith("on_off") or cap_type == "devices.capabilities.on_off":
         return yandex_to_on_off(state, inverted=inverted)
     if cap_type.endswith("range") or cap_type == "devices.capabilities.range":
-        return yandex_to_range(state, current_raw=current_raw, parameters=parameters)
+        return yandex_to_range(
+            state, current_raw=current_raw, parameters=parameters, yandex=yandex
+        )
     if cap_type.endswith("mode") or cap_type == "devices.capabilities.mode":
         return yandex_to_mode(state, parameters=parameters, family=family)
     if cap_type.endswith("color_setting") or cap_type == "devices.capabilities.color_setting":

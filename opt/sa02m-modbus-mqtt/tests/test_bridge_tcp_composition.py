@@ -297,6 +297,26 @@ class TestRoster(_Isolated):
         self.assertEqual([(r["port"], r["addr"], r["type"]) for r in rows],
                          [("COM1", 5, "mr02m"), ("COM3", 1, "carel")])
 
+    def test_led_on_the_bus_is_ours(self):
+        # A configured LED strip is polled by this bridge. The status chips
+        # show only `ours`; `ours: false` hid addr 13 as a third-party count
+        # even while the yaml entry and the bus answer were both present.
+        devices = [
+            {"id": "led-COM3-13", "type": "led", "port": "/dev/COM3",
+             "address": 13, "name": "LED (COM3 addr=13)"},
+        ]
+        self.pub.device_online_snapshot.return_value = {"led-COM3-13": True}
+        with tempfile.TemporaryDirectory() as d:
+            path = Path(d) / "_roster.json"
+            with mock.patch.object(bridge, "LIVE_CACHE_DIR", Path(d)):
+                bridge.write_bridge_roster(devices, self.pub, path=path)
+            rows = json.loads(path.read_text(encoding="utf-8"))["devices"]
+        self.assertEqual(len(rows), 1)
+        self.assertEqual(rows[0]["type"], "led")
+        self.assertTrue(rows[0]["ours"])
+        self.assertEqual(rows[0]["model"], "LED")
+        self.assertTrue(rows[0]["online"])
+
 
 class _Rtu:
     """FakeSerial over the same Bank the MBAP server uses; `down` = no answer."""

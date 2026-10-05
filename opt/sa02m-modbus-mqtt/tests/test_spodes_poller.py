@@ -5,6 +5,7 @@ import sys
 import tempfile
 import unittest
 from pathlib import Path
+from unittest.mock import patch
 
 BRIDGE_DIR = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(BRIDGE_DIR))
@@ -14,6 +15,7 @@ from sa02m_spodes.axdr import i8, structure, u32, u8, array  # noqa: E402
 from sa02m_spodes.xdlms import CosemAccessError  # noqa: E402
 
 import bridge_spodes  # noqa: E402
+import sa02m_spodes.link as spodes_link  # noqa: E402
 from bridge_device import HdlcPortScheduler  # noqa: E402
 from bridge_spodes import SpodesPoller  # noqa: E402
 from modbus_mqtt_bridge import make_port_scheduler  # noqa: E402
@@ -200,6 +202,37 @@ class PollerTest(unittest.TestCase):
             self.assertTrue(all(b is not None and b <= 2.0 for b in budgets))
             self.assertTrue((Path(tmp) / "spodes-COM2-17.profile.json").is_file())
             self.assertFalse(any(name.startswith("profile") for _id, name in pub.controls))
+
+    def test_transparent_shares_one_socket_and_stays_hdlc(self):
+        cfg = {
+            "id": "spodes-tcp-192_168_1_50-17", "type": "spodes",
+            "transport": "transparent", "host": "192.168.1.50",
+            "tcp_port": 4002, "hdlc_address": 17, "association": "public",
+        }
+        first = SpodesPoller(cfg, Pub())
+        second = SpodesPoller(
+            dict(cfg, id="spodes-tcp-192_168_1_50-18", hdlc_address=18), Pub())
+        created = []
+
+        class _FakeLink:
+            dead = False
+
+            def __init__(self, host, port, timeout_s=3.0):
+                created.append((host, int(port)))
+
+        bridge_spodes._GATEWAY_LINKS.clear()
+        try:
+            with patch.object(spodes_link, "TransparentLink", _FakeLink):
+                self.assertIs(first._connect(), second._connect())
+            self.assertEqual(created, [("192.168.1.50", 4002)])
+            sched, _name = make_port_scheduler(first.bus.key, [first, second], {})
+            self.assertIsInstance(sched, HdlcPortScheduler)
+            with patch.object(bridge_spodes, "ClientSession") as sess:
+                sess.return_value.associated = True
+                first._open()
+            self.assertEqual(sess.call_args.kwargs["mode"], "hdlc")
+        finally:
+            bridge_spodes._GATEWAY_LINKS.clear()
 
 
 if __name__ == "__main__":

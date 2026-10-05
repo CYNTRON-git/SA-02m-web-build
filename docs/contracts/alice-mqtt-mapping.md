@@ -356,9 +356,15 @@ sends only a bool `split` and omits `parameters` when nothing is left, so
 `parameters` unchanged. Validating: `tests/test_discovery_on_off.py`.
 A `color_setting` stored as `{"instance": "rgb"}` is sent to Yandex as
 `{"color_model": "rgb"}` (no `instance`; `hsv` is not added). A stored
-`temperature_k` window is sent as `temperature_k` `{min, max}`. The cloud
-profile still sends the stored `parameters`. Validating:
-`tests/test_alice_presets.py`.
+`temperature_k` window is sent as `temperature_k` `{min, max}`. A brightness
+range whose `max` is above 100 (the LED channel is 0…255, stored either with
+`unit.percent` or with no unit) is sent as `unit.percent` with `range`
+`{min: 0, max: 100, precision: 1}`. Yandex accepts brightness only in that
+window: a percent range above 100 and a 0…255 range with the unit omitted are
+both dropped, so a refresh after the user deletes the strip does not bring it
+back. Query, state and action on the Yandex profile scale that 0…100 onto the
+stored register; a 0…100 percent range is unchanged. The cloud profile still
+sends and writes the stored `parameters`. Validating: `tests/test_alice_presets.py`.
 
 ### Carel AHU rows at catalogue build (1.0.6.39)
 

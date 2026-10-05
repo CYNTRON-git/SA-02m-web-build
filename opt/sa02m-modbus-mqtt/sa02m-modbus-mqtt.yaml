@@ -134,6 +134,27 @@ devices:
   #   poll_energy_s: 60
   #   poll_profile_s: 900
 
+  # ── Пример: счётчик на RS-485 шлюза, опрос с другой платы ──────────────
+  # Меркурий сидит на COM шлюза 192.168.1.10 (режим transparent, 9600 8N1).
+  # Плата 192.168.1.135 COM не открывает: кадры HDLC идут в TCP-порт шлюза.
+  # tcp_port — тот, что записан на шлюзе (в панели 4001…4005). Пароль и
+  # ключи в пример не писать.
+  # - id: spodes-tcp-192_168_1_10-17
+  #   type: spodes
+  #   transport: transparent
+  #   host: 192.168.1.10
+  #   tcp_port: 4001
+  #   hdlc_address: 17
+  #   name: "Меркурий (шлюз 1.10 addr=17)"
+  #   association: public
+  #   password: ""
+  #   encryption_key: ""
+  #   authentication_key: ""
+  #   system_title: ""
+  #   poll_power_s: 5
+  #   poll_energy_s: 60
+  #   poll_profile_s: 900
+
   # ── Пример: MR-02m 6AI6AO COM4 addr=6 ───────────────────────────────────
   # ai_sensor_schema: 2 — Modbus selection codes 0..42 (MR-02m ≥1.0.9.1).
   # Без schema или schema: 1 — legacy ai_sensor_t enum 0x00..0x26 (авто-миграция).

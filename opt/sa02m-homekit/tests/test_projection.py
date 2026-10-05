@@ -130,7 +130,9 @@ class MappingRowTests(unittest.TestCase):
     def test_every_mapping_row_is_produced_by_some_fixture(self):
         produced = set()
         fixtures = [
-            (dev("a", "devices.types.light"), [on_off(), brightness()], []),
+            (dev("a", "devices.types.light"), [on_off(), brightness(),
+             {"type": "devices.capabilities.color_setting", "mqtt": "/c",
+              "parameters": {"instance": "rgb"}}], []),
             (dev("b", "devices.types.socket"), [on_off()], []),
             (dev("c", "devices.types.openable.valve"), [on_off()], []),
             (dev("d", "devices.types.ventilation.fan"), [on_off()], []),
@@ -150,7 +152,7 @@ class MappingRowTests(unittest.TestCase):
             for svc in services:
                 produced.update(svc.row_ids)
         self.assertEqual(produced, {row.row_id for row in P.MAPPING})
-        self.assertEqual(len(P.MAPPING), 18)
+        self.assertEqual(len(P.MAPPING), 19)
 
 
 class SkipReasonTests(unittest.TestCase):
@@ -329,6 +331,47 @@ class ValueTests(unittest.TestCase):
     def test_smoke_high_is_detected(self):
         b = _binding("SmokeDetected", P.RULE_EVENT_INT, source=EVENT, instance="smoke")
         self.assertEqual(P.hap_value(b, "high"), 1)
+
+    def test_rgb_color_joins_the_lightbulb_after_on_and_brightness(self):
+        color = {"type": "devices.capabilities.color_setting", "mqtt": "/c",
+                 "parameters": {"instance": "rgb", "color_model": "rgb"}}
+        svcs, skipped = services_of(
+            dev("l", "devices.types.light"), [on_off(), brightness(), color])
+        self.assertEqual(skipped, [])
+        self.assertEqual(svcs, [(
+            ("M01", "M02", "M19"), "Lightbulb", ("On", "Brightness", "Hue", "Saturation"))])
+
+    def test_kelvin_color_stays_unmapped(self):
+        color = {"type": "devices.capabilities.color_setting", "mqtt": "/c",
+                 "parameters": {"instance": "temperature_k"}}
+        svcs, skipped = services_of(dev("l", "devices.types.light"), [on_off(), color])
+        self.assertEqual(svcs, [(("M01",), "Lightbulb", ("On",))])
+        self.assertEqual(skipped, [("capabilities.color_setting:temperature_k",
+                                    P.SKIP_CAPABILITY_UNSUPPORTED)])
+
+    def test_color_without_a_lightbulb_is_skipped(self):
+        color = {"type": "devices.capabilities.color_setting", "mqtt": "/c",
+                 "parameters": {"instance": "rgb"}}
+        svcs, skipped = services_of(dev("s", "devices.types.switch"), [on_off(), color])
+        self.assertEqual([s[1] for s in svcs], ["Switch"])
+        self.assertEqual(skipped, [("capabilities.color_setting:rgb",
+                                    P.SKIP_CAPABILITY_UNSUPPORTED)])
+
+    def test_hue_and_saturation_round_trip_the_rgb_word(self):
+        hue = _binding("Hue", P.RULE_HUE, source="devices.capabilities.color_setting",
+                       instance="rgb", writable=True)
+        sat = _binding("Saturation", P.RULE_SATURATION,
+                       source="devices.capabilities.color_setting",
+                       instance="rgb", writable=True)
+        red = 0xFF0000
+        self.assertEqual(P.hap_value(hue, red), 0.0)
+        self.assertEqual(P.hap_value(sat, red), 100.0)
+        self.assertEqual(P.yandex_capability(hue, 120, current_rgb=red),
+                         {"type": "devices.capabilities.color_setting",
+                          "state": {"instance": "rgb", "value": 0x00FF00}})
+        self.assertEqual(P.yandex_capability(sat, 0, current_rgb=red),
+                         {"type": "devices.capabilities.color_setting",
+                          "state": {"instance": "rgb", "value": 0xFFFFFF}})
 
     def test_brightness_round_trip(self):
         b = _binding("Brightness", P.RULE_BRIGHTNESS, source=RANGE, instance="brightness",
