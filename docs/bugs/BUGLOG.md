@@ -5,6 +5,16 @@
 
 ---
 
+## [2026-10-05 21:06] branch: 1.0.7.1
+
+**Файл(ы):** `www/network_config/login.html`, `www/network_config/static/css/main.css`, `www/network_config/index.html`
+**Тип:** Некорректное поведение
+**Описание:** На окне входа подписи стояли над полями, зазор до кнопки «Войти» был больше зазора между полями, а сама кнопка была ниже полей.
+**Причина:** У полей были label и `margin-bottom: 16px`, у `.login-btn` ещё `margin-top: 12px` (у inline-flex не схлопывается). Высоту кнопки фиксировал общий `.btn` (38px), поля были выше из-за своего padding.
+**Исправление:** Подписи убраны, пустые поля показывают серый placeholder «Логин» / «Пароль» (как в cloud). Форма — колонка с одним `gap: 12px`. Кнопка и поля одной ширины и высоты `--tap` (44px).
+
+---
+
 ## [2026-10-05 14:13] branch: 1.0.7.1
 
 **Файл(ы):** `www/network_config/static/css/main.css`, `www/network_config/index.html`, `www/network_config/login.html`

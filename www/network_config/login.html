@@ -5,7 +5,7 @@
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>СА-02м — Вход</title>
   <link rel="icon" type="image/svg+xml" href="static/favicon_cyntron.svg?v=1.0.7.1">
-  <link rel="stylesheet" href="static/css/main.css?v=1.0.7.1&r=svcname1">
+  <link rel="stylesheet" href="static/css/main.css?v=1.0.7.1&r=loginph1">
   <script>try{if(localStorage.getItem('sa02m-theme')==='light')document.documentElement.setAttribute('data-theme','light');}catch(e){}</script>
 </head>
 <body>
@@ -27,14 +27,12 @@
 
     <form id="login-form" method="POST" action="cgi-bin/login.cgi">
       <div class="field">
-        <label for="username">Логин</label>
         <input id="username" name="username" type="text" autocomplete="username"
-               placeholder="admin" required>
+               placeholder="Логин" required>
       </div>
       <div class="field">
-        <label for="password">Пароль</label>
         <input id="password" name="password" type="password" autocomplete="current-password"
-               placeholder="••••••••" required>
+               placeholder="Пароль" required>
       </div>
       <button type="submit" class="btn btn-primary login-btn">Войти</button>
     </form>
