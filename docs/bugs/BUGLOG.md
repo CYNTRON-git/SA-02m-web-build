@@ -5,6 +5,16 @@
 
 ---
 
+## [2026-10-05 14:13] branch: 1.0.7.1
+
+**Файл(ы):** `www/network_config/static/css/main.css`, `www/network_config/index.html`, `www/network_config/login.html`
+**Тип:** Некорректное поведение
+**Описание:** На вкладке Управление → Службы подпись обрезалась до «MQTT телеметрия...».
+**Причина:** Правило дашборда `.widget-svc .svc-row .name { max-width: 42% }` попадало и в строки управления: колонка имени ~200px, а само поле сжималось до 42% (~84px) при ширине текста 108px.
+**Исправление:** У строк `.svc-ctl-row` снят предел 42%, подпись занимает всю колонку имени. Кнопки и бейдж не сдвигались. vPLC на 1.135 уже был в том же списке (`vplc.service`).
+
+---
+
 ## [2026-10-05 11:43] branch: 1.0.7.1
 
 **Файл(ы):** `opt/sa02m-alice/sa02m_alice/client/converters.py`, `opt/sa02m-alice/sa02m_alice/client/device_registry.py`, `docs/contracts/alice-mqtt-mapping.md`

@@ -274,6 +274,28 @@ else
     bad "control: the planted sa02m_homeconnect is not importable at all — its case above proves nothing"
 fi
 
+echo "── vplc in Управление → Службы ──"
+if printf '%s\n' "$SERVICE_DEFS" | grep -qx 'vplc|vPLC|vplc.service'; then
+    ok "SERVICE_DEFS lists vplc"
+else
+    bad "SERVICE_DEFS missing vplc|vPLC|vplc.service"
+fi
+if svc_is_installable vplc; then
+    bad "vplc must stay install-time-only (Пуск/Стоп, no Установить/Удалить)"
+else
+    ok "vplc is not installable"
+fi
+if declare -f cmd_stop | grep -q 'http://127.0.0.1:1234/api/stop'; then
+    ok "cmd_stop asks vPLC to stop the scan before systemctl"
+else
+    bad "cmd_stop is missing POST /api/stop"
+fi
+if declare -f vplc_uses_rtu | grep -q '/etc/vplc.d/rtu-ports'; then
+    ok "vplc start is flasher-gated only when RTU ports are listed"
+else
+    bad "vplc_uses_rtu lost its /etc/vplc.d/rtu-ports marker"
+fi
+
 echo ""
 if [ "$fails" -eq 0 ]; then
     echo "service-ctl-policy-write: ALL OK"

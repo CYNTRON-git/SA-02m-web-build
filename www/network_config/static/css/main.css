@@ -2962,6 +2962,17 @@ html[data-theme="light"] .homeconnect-verify-link { color: var(--cyan-hover); }
   align-items: center;
   column-gap: 6px;
 }
+/* Dashboard `.widget-svc .svc-row .name` caps the label at 42% so uptime can
+   share that flex row. The same cap matches these control rows and shrinks
+   the name to 42% of an already-wide track («MQTT телеметрия» is ~108px and
+   was ellipsized inside an ~200px column). The track is the label — use it. */
+.system-manage-services-card.widget-svc .svc-ctl-row .name {
+  max-width: none;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
 .system-manage-services-card.widget-svc .svc-ctl-row .svc-ctl-cell {
   display: block;
   min-width: 0;

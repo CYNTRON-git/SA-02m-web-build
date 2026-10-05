@@ -1701,6 +1701,7 @@ build_dash_services_json() {
     _dash_svc_add mosquitto "mosquitto" "${DASH_MOSQUITTO:-}" "${DASH_MOSQUITTO_UP:-0}"
     _dash_svc_add mqtt-bridge "MQTT мост" "${DASH_BRIDGE:-}" "${DASH_BRIDGE_UP:-0}"
     _dash_svc_add mplc4 "MPLC4" "${DASH_MPLC:-}" "${DASH_MPLC_UP:-0}"
+    _dash_probe_add vplc "vPLC" vplc
     _dash_probe_add alice "Яндекс Алиса" sa02m-alice-client
     _dash_probe_add stand-api "Стенд API" sa02m-stand-api
     _dash_probe_add devices-logger "Логгер устройств" sa02m-devices-logger

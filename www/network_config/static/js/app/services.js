@@ -15,6 +15,7 @@ function svcCtlDisplayLabel(svc) {
   if (id === 'mqtt-telemetry') return 'MQTT телеметрия';
   if (id === 'docker' || lab.toLowerCase() === 'docker') return 'Docker';
   if (id === 'mplc4' || lab.toLowerCase() === 'mplc4') return 'MPLC4';
+  if (id === 'vplc') return 'vPLC';
   if (lab) return lab;
   return unitUiLabel(id);
 }
@@ -44,6 +45,7 @@ const SVC_CTL_CATALOG = [
   { id: 'docker', label: 'Docker' },
   { id: 'codesys', label: 'CODESYS' },
   { id: 'mplc4', label: 'MPLC4' },
+  { id: 'vplc', label: 'vPLC' },
   { id: 'mosquitto', label: 'Mosquitto' },
   { id: 'mqtt-bridge', label: 'MQTT мост' },
   { id: 'mqtt-telemetry', label: 'MQTT телеметрия' },

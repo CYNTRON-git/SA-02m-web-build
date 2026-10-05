@@ -931,6 +931,7 @@
     'Закрыть': 'Close',
     'MQTT': 'MQTT',
     'MQTT мост': 'MQTT bridge',
+    'vPLC': 'vPLC',
     'Стенд API': 'Stand API',
     'Логгер устройств': 'Device logger',
     'MQTT телеметрия': 'MQTT telemetry',

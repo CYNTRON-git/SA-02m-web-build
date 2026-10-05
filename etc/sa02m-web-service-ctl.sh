@@ -156,6 +156,13 @@ flasher_blocks_com_pollers() {
     flasher_poll_lock_held
 }
 
+# vPLC держит COM только в режиме RTU. Признак пишет интегратор, когда в
+# проекте есть modbus_devices mode=rtu. В режиме MQTT пуск не блокируется
+# прошивкой: шину занимает мост, не vPLC.
+vplc_uses_rtu() {
+    [ -s /etc/vplc.d/rtu-ports ]
+}
+
 unit_can_mask() {
     _u=$1
     _path=$(sc_run show -p FragmentPath --value "$_u" 2>/dev/null | head -n1 | tr -d '\r')
@@ -222,6 +229,12 @@ service_present() {
             ;;
         mqtt-bridge)
             [ -x /opt/sa02m-modbus-mqtt/modbus_mqtt_bridge.py ] && return 0
+            ;;
+        vplc)
+            # Пакет, не OTA-оверлей: без бинарника строка не нужна (иначе мёртвый Пуск).
+            [ -x /usr/bin/vplc ] && return 0
+            dpkg -s vplc >/dev/null 2>&1 && return 0
+            return 1
             ;;
         mqtt-telemetry)
             [ -x /opt/sa02m-modbus-mqtt/sa02m_telemetry.py ] && return 0
@@ -458,6 +471,7 @@ homeconnect|Home Connect|sa02m-homeconnect.service
 docker|Docker|docker.service
 codesys|CODESYS|codesyscontrol.service,codesys.service,CODESYSControl.service,CODESYSControlRuntime.service
 mplc4|MPLC4|mplc4.service
+vplc|vPLC|vplc.service
 mosquitto|Mosquitto|mosquitto.service
 mqtt-bridge|MQTT мост|sa02m-modbus-mqtt.service
 mqtt-telemetry|MQTT телеметрия|sa02m-telemetry.service
@@ -793,6 +807,9 @@ cmd_stop() {
     if [ "$_id" = "homeconnect" ]; then
         homeconnect_sync_enabled false
     fi
+    if [ "$_id" = "vplc" ]; then
+        curl -fsS --max-time 5 -X POST http://127.0.0.1:1234/api/stop >>"$LOG" 2>&1 || true
+    fi
     if [ -n "$_u" ]; then
         sc_run_slow stop "$_u" >>"$LOG" 2>&1 || true
         sc_run_slow disable "$_u" >>"$LOG" 2>&1 || true
@@ -840,6 +857,12 @@ cmd_start() {
     case "$_id" in
         mplc4|mqtt-bridge)
             if flasher_blocks_com_pollers; then
+                emit_result '{"ok":false,"error":"flasher_busy"}'
+                return 1
+            fi
+            ;;
+        vplc)
+            if vplc_uses_rtu && flasher_blocks_com_pollers; then
                 emit_result '{"ok":false,"error":"flasher_busy"}'
                 return 1
             fi
