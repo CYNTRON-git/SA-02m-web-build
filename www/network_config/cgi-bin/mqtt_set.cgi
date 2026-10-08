@@ -61,7 +61,7 @@ fi
 # control: closed enum — MR-02m DO coils do_1..do_16, AO setpoints ao_1..ao_12,
 # AI sensor type ai_type_1..ai_type_12, DTV writable coils, Carel commands the
 # bridge already subscribes (unit_on / setpoint / setpoint_summer / fan_supply /
-# fan_step), and the seven MTD262-MB writable holdings.
+# fan_step / alarm_reset), and the seven MTD262-MB writable holdings.
 # (ao_N = live analog setpoint, holding reg 33+ch-1.
 #  ai_type_N = AI sensor code 0..42, holding 400+7*(N-1).
 #  Carel setpoint is °C 0..99 with one decimal; the bridge clamps per family.
@@ -69,7 +69,7 @@ fi
 #  MTD values are the physical number the template poller inverts by scale.
 #  load_disconnect is 0/1 for a Mercury configurator; the bridge drops it
 #  unless that role is active, and the value is not a secret.)
-if ! [[ "$CONTROL" =~ ^(do_([1-9]|1[0-6])|ao_([1-9]|1[0-2])|ai_type_([1-9]|1[0-2])|buzzer|leds|unit_on|setpoint|setpoint_summer|fan_supply|fan_step|detection_distance|detection_shielding_distance|admission_confirmation_delay|departure_disappearance_delay|trigger_sensitivity|maintain_sensitivity|entrance_distance_reduction|load_disconnect)$ ]]; then
+if ! [[ "$CONTROL" =~ ^(do_([1-9]|1[0-6])|ao_([1-9]|1[0-2])|ai_type_([1-9]|1[0-2])|buzzer|leds|unit_on|setpoint|setpoint_summer|fan_supply|fan_step|alarm_reset|detection_distance|detection_shielding_distance|admission_confirmation_delay|departure_disappearance_delay|trigger_sensitivity|maintain_sensitivity|entrance_distance_reduction|load_disconnect)$ ]]; then
     echo '{"ok":false,"error":"bad_control"}'
     exit 0
 fi
@@ -96,6 +96,13 @@ case "$CONTROL" in
         ;;
     unit_on)
         if [ "$VAL" != "0" ] && [ "$VAL" != "1" ]; then
+            echo '{"ok":false,"error":"bad_value"}'
+            exit 0
+        fi
+        ;;
+    alarm_reset)
+        # A press only: the bridge pulses the reset coil itself.
+        if [ "$VAL" != "1" ]; then
             echo '{"ok":false,"error":"bad_value"}'
             exit 0
         fi

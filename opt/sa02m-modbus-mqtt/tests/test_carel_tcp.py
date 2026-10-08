@@ -45,6 +45,18 @@ def _fc17(name: str) -> bytes:
 FC17_CRST = _fc17("fc17_probe2.hex")      # CRSTDrAHAQ 2.03.00.46
 FC17_UARIA = _fc17("fc17_crstdm.hex")     # CRSTDm_AHU
 
+# The roster tests below press `alarm_reset` too; its release timer must not
+# outlive a test (rtu.pulse_timer_guard says why).
+_TIMERS = rtu.pulse_timer_guard()
+
+
+def setUpModule():
+    _TIMERS.start()
+
+
+def tearDownModule():
+    _TIMERS.stop()
+
 
 class _TcpCase(unittest.TestCase):
     def setUp(self):
@@ -227,6 +239,24 @@ class TestWritePlans(_TcpCase):
         writes = self.srv.writes()
         self.assertTrue(writes)
         self.assertEqual([w for w in writes if w[0] == "coil" and w[1] == 30], [])
+
+
+class TestAlarmResetOverTcp(_TcpCase):
+    def test_the_pulse_is_the_same_over_tcp(self):
+        for family, address, bank, coil in (
+                ("crst", 1, rtu.crst_bank(), ca.COIL_ALARM_RESET),
+                ("uaria", 2, rtu.uaria_bank(), ca.COIL_UARIA_ALARM_RESET)):
+            with self.subTest(family=family):
+                p = self.poller(family, bank, address=address)
+                rtu._inline_submit(p)
+                with mock.patch.object(bridge_carel.time, "sleep") as slept:
+                    p._writeback("alarm_reset", "1")
+                    self.assertEqual(self.srv.writes(), [("coil", coil, True)])
+                    p._pulse_timer.fire()
+                self.assertEqual(slept.call_args_list, [])
+                self.assertEqual(self.srv.writes(),
+                                 [("coil", coil, True), ("coil", coil, False)])
+                self.assertEqual(self.bank.coils[coil], 0)
 
 
 class TestOfflineEqualsRtu(_TcpCase):

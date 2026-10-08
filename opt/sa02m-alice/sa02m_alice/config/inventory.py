@@ -109,7 +109,7 @@ CONTROLLER_TITLES = {
 
 CAREL_WRITABLE = frozenset({
     "unit_on", "setpoint", "setpoint_summer", "net_enable", "sys_mode",
-    "fan_supply", "fan_exhaust", "fan_step",
+    "fan_supply", "fan_exhaust", "fan_step", "alarm_reset",
 })
 DTV_WRITABLE = frozenset({"buzzer", "leds"})
 CONTROLLER_WRITABLE = frozenset({"do", "beeper", "alarm_led"})

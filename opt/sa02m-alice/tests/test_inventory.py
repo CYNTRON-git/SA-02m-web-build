@@ -369,6 +369,16 @@ class TestOtherFamilies(Inv):
         self.assertEqual(chans["setpoint"]["rw"], "rw")
         self.assertEqual(chans["supply_temp"]["rw"], "r")
 
+    def test_the_carel_alarm_reset_button_is_not_offered_as_a_reading(self):
+        # A pushbutton publishes no value: marked read-only, the picker would
+        # offer it as a sensor tile that never reports.
+        self.write_yaml({"devices": [{
+            "id": "carel-COM4-1", "type": "carel", "port": "COM4", "address": 1,
+        }]})
+        dev = self.only(inventory.build_mqtt_inventory(), "carel-COM4-1")
+        chans = dict((ch["tag"], ch) for ch in dev["channels"]["other"])
+        self.assertEqual(chans["alarm_reset"]["rw"], "rw")
+
     def test_dtv_falls_back_to_the_default_sensor_set(self):
         self.write_yaml({"devices": [
             {"id": "dtv-a", "type": "dtv", "port": "COM1", "address": 20},

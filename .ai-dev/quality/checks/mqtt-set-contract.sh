@@ -239,6 +239,16 @@ expect_publish "25j Carel on"                   "carel-COM3-1" unit_on 1 1
 expect_publish "25k Carel setpoint"             "carel-COM3-1" setpoint 23.5 23.5
 expect_publish "25l Carel fan percent"          "carel-COM3-1" fan_supply 70 70
 expect_publish "25m Carel fan step"             "carel-COM3-2" fan_step 7 7
+# Carel alarm reset is a pushbutton: only a press (exactly 1) is a command; the
+# bridge makes the pulse itself (carel-ahu.md §4). A 0 is not a "release" here.
+expect_publish "25o Carel alarm reset press"    "carel-COM3-1" alarm_reset 1 1
+expect_error "25p alarm_reset value=0"          bad_value POST "$GOOD_COOKIE" "$CSRF" "device=carel-COM3-1&control=alarm_reset&value=0"
+expect_error "25q alarm_reset value=true"       bad_value POST "$GOOD_COOKIE" "$CSRF" "device=carel-COM3-1&control=alarm_reset&value=true"
+expect_error "25r alarm_reset value=01"         bad_value POST "$GOOD_COOKIE" "$CSRF" "device=carel-COM3-1&control=alarm_reset&value=01"
+# load_disconnect (Mercury load relay) shares the strict 0/1 grammar.
+expect_publish "25s Mercury load disconnect"    "spodes-COM2-1" load_disconnect 1 1
+expect_error "25t load_disconnect value=2"      bad_value POST "$GOOD_COOKIE" "$CSRF" "device=spodes-COM2-1&control=load_disconnect&value=2"
+# 25n stays the LAST call: cases 26-28 read the argv of the final publish.
 expect_publish "25n MTD distance"               "mtdx62-mb-COM3-20" detection_distance 12.5 12.5
 
 # 26: the retain flag must not appear in ANY accepted publish's argv, and the

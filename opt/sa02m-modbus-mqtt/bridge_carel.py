@@ -25,6 +25,7 @@ from __future__ import annotations
 
 import os
 import sys
+import threading
 import time
 
 import bridge_bus
@@ -61,6 +62,16 @@ ca, cc = _import_carel()
 # rather than publishing a fabricated value.
 DEFAULT_POLL_S = 2.0
 
+# The timer that releases an alarm-reset pulse. A module name, not a bare
+# `threading.Timer`, so a test substitutes it and no real timer outlives the
+# test that armed it.
+PulseTimer = threading.Timer
+
+# Writeback-queue name of the release. NOT "alarm_reset": the queue coalesces
+# per (device, control), and a press arriving before the worker ran a release
+# queued under the same name would replace it — the coil would stay latched.
+ALARM_RESET_RELEASE = "alarm_reset.release"
+
 
 class CarelPoller(DevicePoller):
     """Poll a Carel AHU and publish the controls named in sa02m_carel.controls."""
@@ -75,6 +86,11 @@ class CarelPoller(DevicePoller):
         if ver:
             self._version = _parse_version(ver)
         self._names = set(cc.control_names(self.family))
+        # The alarm-reset pulse in flight: (timer, coil) or None. Read by the
+        # worker (press, release) and by stop() on the caller's thread.
+        self._pulse_lock = threading.Lock()
+        self._pulse_timer = None
+        self._pulse_coil = None
 
     # --- identity -------------------------------------------------------------
 
@@ -252,7 +268,8 @@ class CarelPoller(DevicePoller):
         out["sp_s"] = ca.be_float32(hr[2], hr[3])
         out["season_code"] = int(hr[4])
         fan = self.read_holding_registers(a, ca.HR_UARIA_FAN_MIN, 3)  # 195..197
-        out["fan_step"] = int(fan[2])
+        # USINT: only the low byte is the step (the window masks it the same way).
+        out["fan_step"] = int(fan[2]) & 0xFF
         out["uaria_run"] = bool(self.read_coils(a, ca.COIL_UARIA_NET_ON_OFF, 1)[0])
         out["gs04"] = bool(self.read_coils(a, ca.COIL_UARIA_NET_ENABLE, 1)[0])
         # NO3 «Нагрев/охлаждение». 0 нагрев, 1 охлаждение. Not a new address.
@@ -268,6 +285,8 @@ class CarelPoller(DevicePoller):
     # --- snapshot -> controls -------------------------------------------------
 
     def _controls_from_snapshot(self, snap: dict) -> dict:
+        # `alarm_reset` is deliberately absent: a pushbutton has no state, so
+        # the poll neither publishes a value for it nor flags it `r`.
         alarms = snap.get("alarms") or []
         state = ca.plant_run_state(snap, self.family, version=self._version)
         running = bool(snap.get("uaria_run") if self.family == cc.FAMILY_UARIA
@@ -358,6 +377,10 @@ class CarelPoller(DevicePoller):
         return cb
 
     def _writeback(self, name: str, payload: str) -> None:
+        if name == "alarm_reset" and not _is_press(payload):
+            # A button release asks for nothing, so an offline device has
+            # nothing to refuse: no `w` flag for it.
+            return
         if self._wb_offline_skip(name):
             return
         try:
@@ -415,14 +438,15 @@ class CarelPoller(DevicePoller):
 
         The c.pCOmini latches Ma18 asynchronously: coil 65 written immediately
         after coil 130 is evaluated against the old permission and the unit
-        stays off while the command reads as accepted.
+        stays off while the command reads as accepted. The uAria plan (Gs04,
+        then coil 0) has no settle — contract §4, as the window runs it.
         """
         for w in writes:
             if w.kind == ca.KIND_COIL:
                 self._wb_write_retry(
                     lambda w=w: self.get_port().write_coil(
                         self.address, w.address, bool(w.value)))
-                if w.address in (ca.COIL_MA18, ca.COIL_UARIA_NET_ENABLE) and w.value:
+                if w.address == ca.COIL_MA18 and w.value:
                     time.sleep(ca.START_MA18_SETTLE_S)
             else:
                 self._wb_write_retry(
@@ -491,6 +515,80 @@ class CarelPoller(DevicePoller):
                        "register %d" % ca.HR_UARIA_FAN_SP)
         self._wb_done("fan_step", str(step))
 
+    # --- alarm reset (pushbutton) --------------------------------------------
+
+    def _wb_alarm_reset(self, payload: str) -> None:
+        """A press pulses the family's reset coil: 1 now, 0 after the pulse.
+
+        `_writeback` hands this only a press (`_is_press`); the release a
+        button client may publish never gets here. The 0 is NOT written by
+        sleeping here: this runs on the port's writeback worker, and holding
+        it for the pulse would stall every other write on a line several
+        devices share. A timer re-submits the release through the same
+        queue, so the port is not held between the two writes. A press during
+        a pulse is not a second pulse.
+        """
+        coil = ca.alarm_reset_coil(self.family)
+        with self._pulse_lock:
+            if self._pulse_timer is not None:
+                self.log.info("writeback alarm_reset: pulse on coil %d in "
+                              "progress, press ignored", coil)
+                return
+            # Armed BEFORE the write: a write that failed on our side may
+            # still have latched the coil, and the release must follow anyway.
+            timer = PulseTimer(ca.ALARM_RESET_PULSE_S,
+                               self._alarm_reset_due, args=(coil,))
+            timer.daemon = True
+            self._pulse_timer, self._pulse_coil = timer, coil
+        timer.start()
+        self._wb_write_retry(
+            lambda: self.get_port().write_coil(self.address, coil, True))
+        self._wb_audit("alarm_reset", payload, None,
+                       "coil %d (pulse %g s)" % (coil, ca.ALARM_RESET_PULSE_S))
+        # No echo (a pushbutton has no value); clear a previous refusal.
+        self.pub.pub_error(self.device_id, "alarm_reset", "")
+
+    def _alarm_reset_due(self, coil: int) -> None:
+        """Timer thread: queue the release; the worker does the bus write."""
+        self._wb_submit(ALARM_RESET_RELEASE,
+                        lambda: self._alarm_reset_release(coil))
+
+    def _alarm_reset_release(self, coil: int) -> None:
+        """Write the reset coil back to 0.
+
+        Not routed through `_writeback`, so the offline skip does not apply:
+        a line that dropped mid-pulse must still get the 0 when it answers,
+        or the coil stays latched.
+        """
+        try:
+            self._wb_write_retry(
+                lambda: self.get_port().write_coil(self.address, coil, False))
+        except Exception as e:
+            self.log.warning("carel alarm_reset: release of coil %d failed: %s",
+                             coil, _audit_text(e))
+            self.pub.pub_error(self.device_id, "alarm_reset", "w")
+        else:
+            self.log.info("writeback alarm_reset: released coil %d", coil)
+        finally:
+            with self._pulse_lock:
+                self._pulse_timer = self._pulse_coil = None
+
+    def stop(self) -> None:
+        """Cancel a pending release timer and queue the release now.
+
+        Best effort: nothing waits for the queue on exit, so on a fast
+        shutdown (or a crash) the 0 may never reach the bus and the coil stays
+        at 1 — contract carel-ahu.md §4 names that residual. Queuing it beats
+        dropping it; releasing early only shortens the last pulse.
+        """
+        super().stop()
+        with self._pulse_lock:
+            timer, coil = self._pulse_timer, self._pulse_coil
+        if timer is None:
+            return
+        timer.cancel()
+        self._alarm_reset_due(coil)
+
 
 # --- small helpers -----------------------------------------------------------
 
@@ -527,6 +625,11 @@ def _audit_text(reason) -> str:
     Longer limit because an error message is the thing being read.
     """
     return _audit_clip(reason, AUDIT_REASON_MAX)
+
+
+def _is_press(payload) -> bool:
+    """A pushbutton press: "1" or "true". Anything else is a release."""
+    return payload in ("1", "true")
 
 
 def _same_value(requested, applied) -> bool:
