@@ -116,6 +116,7 @@
 | 404 | `not_found` | нет такой операции |
 | 409 | `confirm_required` | необратимое без `confirm` |
 | 429 | `rate_limited` | лимит частоты |
+| 502 | `response_too_large` | ответ демона на сокете длиннее предела чтения (`limit_bytes`); ниже, «Архив устройств» |
 | 503 | `busy` | заняты все слоты запросов |
 
 CSRF. POST с **cookie-сессией** на `/api/v1/admin/*` без верного `X-SA02M-CSRF`
@@ -169,7 +170,8 @@ CSRF. POST с **cookie-сессией** на `/api/v1/admin/*` без верно
 | `gateway.config.get` | read | `gateway_config.cgi` |
 | `gateway.status` | read | `gateway_status.cgi` |
 | `rules.list` `rules.get` `rules.runs` | read | `/etc/sa02m-rules/scenarios.json`, `runs.json` |
-| `devices.history` | read | сокет `sa02m-devices-api`, `GET /api/devices/history` |
+| `devices.history` | read | сокет `sa02m-devices-api`, `GET /api/devices/history` (аргументы — ниже) |
+| `devices.summary` | read | тот же сокет, `GET /api/devices/history/summary` (`range`, `device_id`, `kwh_rub`) |
 | `logs.journal` | read | `sa02m-agent-journal.sh` (allow-list юнитов) |
 | `logs.install` | read | `log.cgi` |
 | `user.files.list` `user.files.read` | read | только под `/opt/sa02m-user` |
@@ -201,6 +203,36 @@ CSRF. POST с **cookie-сессией** на `/api/v1/admin/*` без верно
 | `backup.download` | admin | `web_backup.cgi` (поток gzip): задание; результат `{"ok","content_type","filename","size","body_b64"}` |
 | `factory_reset` | admin | `web_factory_reset.cgi`, нужен `confirm` |
 | `flasher.flash` `flasher.scan` | admin | сокет flasher; `flash` с `confirm` |
+
+**Архив устройств.** `devices.history` и `devices.summary` передают демону
+`sa02m-devices-api` его собственную грамматику запроса; что значит каждый ключ,
+решает демон (`handle_history` / `handle_summary` в
+`opt/sa02m-devices/sa02m_devices/api.py`; маршруты, группы, `kind=carel`,
+сводка и ответы — `docs/contracts/devices-history-api.md`, `kind=mr` —
+`docs/contracts/devices-mr-history.md`).
+`devices.history` принимает `device_id`, `kind`, `metric`, `group`, `range`,
+`window_s`, `channel`; `device` — устаревший синоним `device_id`. В запрос
+уходят только присутствующие непустые ключи. `range` и `group` проверяются по
+перечням демона (`RANGES`, `HISTORY_GROUPS`; копии в `ops.py` закреплены
+тестом `test_devices_ops`), остальные — по форме; отказ — 400 `bad_request` с
+`reason` = имя ключа, до обращения к сокету. Ответ — `{"ok", "body"}`, где
+`body` — ответ демона **целиком** строкой JSON; код HTTP демона передаётся как
+есть.
+
+Предел чтения из сокета демона — 1 МиБ (`UNIX_READ_LIMIT` в `service.py`).
+Ответ длиннее не обрезается, а отклоняется целиком: 502
+`{"ok":false,"error":"response_too_large","limit_bytes":1048576,"hint":…}` —
+сузьте `range` или задайте `window_s`. Замер на синтетическом архиве
+(2026-10-07; СЭ и Carel, отсчёт каждые 10 с, 31 сутки, сериализация демона):
+`group=energy` (12 рядов) — 7d 270 КБ (наибольший: 1008 корзин по 600 с),
+24h и 30d по 194 КБ, 1h 97 КБ, `month` 8 КБ; `kind=carel` без журнала — 7d
+277 КБ, 30d 199 КБ. Журнал событий Carel добавляет не больше 500 строк по
+~270 байт (≈135 КБ, оценка по одной измеренной строке). Наибольший ответ —
+около 0,4 МиБ, в пределе с запасом.
+
+Демон устройств с 1.0.6.65 требует живую сессию панели на любом слушателе.
+`sa02m-agent-api` идёт в его сокет с той же служебной сессией, что и в CGI (cookie `session_token`
+и `X-SA02M-CSRF`, `Ctx.unix_request`); нет сессии — ответ демона 401.
 
 Служба `sa02m-agent-api` в allow-list `sa02m-web-service-ctl.sh` **не** входит.
 Её включают карточка и `sa02m-agent-api-ctl.sh`.
