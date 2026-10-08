@@ -201,7 +201,15 @@ class TestContractTablesMatchCode(unittest.TestCase):
         self.assertEqual(doc, HISTORY_GROUPS)
 
     def test_error_text_of_the_400_names_exactly_the_contracted_groups(self) -> None:
-        data, status = api.handle_history({})
+        # The 400 body carries storage_status(): without the forced temp archive
+        # it resolves the board's real dir (/var/lib/sa02m-stand) — unwritable
+        # in CI (PermissionError), silently created on a dev host.
+        from unittest import mock
+
+        with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as tmp, mock.patch.dict(
+            os.environ, {"STAND_DEVICES_HISTORY_DB": str(Path(tmp) / "devices_history.db")}
+        ):
+            data, status = api.handle_history({})
         self.assertEqual(status, 400)
         named = re.search(r"group=([a-z|]+)", data["error"]).group(1).split("|")
         self.assertEqual(named, list(HISTORY_GROUPS))
