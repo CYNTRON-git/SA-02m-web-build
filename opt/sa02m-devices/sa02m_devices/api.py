@@ -60,6 +60,7 @@ except ImportError:  # pragma: no cover
     grp = None  # type: ignore[assignment]
 
 from sa02m_devices import __version__, device_events, device_history_db, devices_widgets
+from sa02m_devices.history_metrics import parse_kwh_rub
 from sa02m_devices.stand_devices import DEFAULT_CACHE_DIR, live_snapshot
 from sa02m_devices.websession import (
     CSRF_HEADER,
@@ -493,11 +494,17 @@ def handle_history(qs: dict[str, list[str]]) -> tuple[Any, int]:
         ), 200
     if metric:
         return device_history_db.history(metric, range_key, device_id=device_id), 200
+    return _no_metric_body(), 400
+
+
+def _no_metric_body() -> dict[str, Any]:
+    """The 400 body of /history and /history/export when the request names no
+    metric / group (outside kind=mr|carel) — one text for both routes."""
     return {
         "ok": False,
         "error": "укажите metric=… или group=climate|energy|ahu|mtd",
         **device_history_db.storage_status(),
-    }, 400
+    }
 
 
 def handle_summary(qs: dict[str, list[str]]) -> tuple[Any, int]:
@@ -506,10 +513,10 @@ def handle_summary(qs: dict[str, list[str]]) -> tuple[Any, int]:
     kwh_raw = _q1(qs, "kwh_rub")
     kwh_rub = None
     if kwh_raw:
-        try:
-            kwh_rub = float(kwh_raw.replace(",", "."))
-        except ValueError:
-            return {"ok": False, "error": "kwh_rub: число"}, 400
+        # One rule for the request, the env default and the summary (0…KWH_RUB_MAX).
+        kwh_rub = parse_kwh_rub(kwh_raw)
+        if kwh_rub is None:
+            return {"ok": False, "error": "kwh_rub: число 0…1000000"}, 400
     return device_history_db.period_summary_ce(
         range_key, device_id=device_id, kwh_rub=kwh_rub
     ), 200
@@ -621,10 +628,13 @@ class DevicesAPIHandler(BaseHTTPRequestHandler):
         fmt = (_q1(qs, "format", "xlsx") or "xlsx").lower()
 
         if fmt in ("txt", "tsv", "text"):
-            body, filename = device_history_db.export_text(
-                range_key, metric_id=metric, group=group,
-                device_id=device_id, kind=kind
-            )
+            try:
+                body, filename = device_history_db.export_text(
+                    range_key, metric_id=metric, group=group,
+                    device_id=device_id, kind=kind
+                )
+            except device_history_db.ExportRequestError:
+                return _send_json(self, _no_metric_body(), 400)
             return _send_bytes(
                 self,
                 body.encode("utf-8"),
@@ -636,6 +646,8 @@ class DevicesAPIHandler(BaseHTTPRequestHandler):
                 range_key, metric_id=metric, group=group,
                 device_id=device_id, kind=kind
             )
+        except device_history_db.ExportRequestError:
+            return _send_json(self, _no_metric_body(), 400)
         except RuntimeError as exc:
             return _send_json(self, {"ok": False, "error": str(exc)}, 503)
         except Exception as exc:  # noqa: BLE001

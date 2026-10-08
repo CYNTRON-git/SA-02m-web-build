@@ -8,6 +8,7 @@
 from __future__ import annotations
 
 import json
+import math
 import os
 import re
 import time
@@ -105,12 +106,16 @@ _MR_AI_COUNT_BY_TYPE = {
 
 
 def _f(val: Any) -> float | None:
+    """A control as a finite float, else None. float() alone accepts "nan" /
+    "inf", which json.dumps writes as NaN / Infinity — tokens JSON.parse
+    rejects, so one bad control would blank the whole Devices tab."""
     if val is None or val == "":
         return None
     try:
-        return float(val)
+        out = float(val)
     except (TypeError, ValueError):
         return None
+    return out if math.isfinite(out) else None
 
 
 def _int_or_none(val: Any) -> int | None:
@@ -118,12 +123,8 @@ def _int_or_none(val: Any) -> int | None:
 
     Distinct from `_int` (which defaults to 0 = «Off») — an unpublished
     `ext_temp_mode` must read «unknown» (hide the entry), never «Off»."""
-    if val is None or val == "":
-        return None
-    try:
-        return int(float(val))
-    except (TypeError, ValueError):
-        return None
+    v = _f(val)
+    return None if v is None else int(v)
 
 
 def _dtv_ext_entry(controls: dict[str, Any]) -> dict[str, Any] | None:
@@ -475,6 +476,23 @@ def _build_dtv(raw: dict[str, Any] | None, *, fallback_id: str = "") -> dict[str
     }
 
 
+# Three decimals = one Wh of the register. The archive (`ce_samples`) and the
+# hourly ΔE bars read this value as stored, so a coarser rounding here zeroes
+# every hour of a small load (≈32 W ≈ 0.03 kWh/h read as 0 at one decimal).
+# Mercury (СПОДЭС) cards reuse `_build_ce`, so they share it.
+CE_ENERGY_DECIMALS = 3
+
+
+def _energy_kwh(e_wh: float | None, decimals: int) -> float | None:
+    """`energy_active_import` / 1000, rounded to `decimals`.
+
+    The value is the Wh the bridge publishes (unit and conversion: one home,
+    docs/contracts/ce-energy-mqtt.md); the daemon stores it as is, at Wh
+    resolution (three decimals of kWh).
+    """
+    return None if e_wh is None else round(e_wh / 1000.0, decimals)
+
+
 def _build_ce(raw: dict[str, Any] | None, *, fallback_id: str = "") -> dict[str, Any]:
     if not raw:
         return _empty_ce(fallback_id)
@@ -517,9 +535,7 @@ def _build_ce(raw: dict[str, Any] | None, *, fallback_id: str = "") -> dict[str,
             "total": _f(controls.get("power_total")),
         },
         "frequency_hz": _f(controls.get("frequency")),
-        "energy_kwh_import": (
-            None if e_wh is None else round(e_wh / 1000.0, 1)
-        ),
+        "energy_kwh_import": _energy_kwh(e_wh, CE_ENERGY_DECIMALS),
         "alerts": [],
     }
 

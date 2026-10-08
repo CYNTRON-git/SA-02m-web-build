@@ -126,6 +126,7 @@ from sa02m_devices.history_mr import (  # noqa: F401
     collect_export_table_mr,
 )
 from sa02m_devices.history_export import (  # noqa: F401
+    ExportRequestError,
     _fmt_export_ts,
     _export_bucket_label,
     _export_col_title,

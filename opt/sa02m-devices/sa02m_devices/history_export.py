@@ -39,7 +39,42 @@ def _export_bucket_label(bucket_s: float) -> str:
 
 
 # Title of a multi-metric export by group; a single metric is titled by its label.
-_GROUP_TITLES: dict[str, str] = {"climate": "Климат", "energy": "Энергия", "ahu": "Carel AHU"}
+_GROUP_TITLES: dict[str, str] = {
+    "climate": "Климат",
+    "energy": "Энергия",
+    "ahu": "Carel AHU",
+    "mtd": "MTD262-MB",
+}
+
+
+class ExportRequestError(ValueError):
+    """The request names no exportable set (no metric / group, or an unknown
+    one, outside kind=mr|carel). The API answers it with a 400, never a file."""
+
+
+def _export_table(
+    range_key: str,
+    *,
+    metric_id: str | None,
+    group: str | None,
+    device_id: str | None,
+    kind: str | None,
+    path: Path | None,
+) -> dict[str, Any]:
+    """The one kind dispatch both export formats share; raises
+    ExportRequestError instead of handing a failed table to a file writer."""
+    from sa02m_devices.history_mr import collect_export_table_mr
+
+    if kind == "mr":
+        return collect_export_table_mr(range_key, device_id=device_id, path=path)
+    if kind == "carel":
+        return collect_export_table_carel(range_key, device_id=device_id, path=path)
+    table = collect_export_table(
+        range_key, metric_id=metric_id, group=group, device_id=device_id, path=path
+    )
+    if not table.get("ok"):
+        raise ExportRequestError(str(table.get("error") or "export request"))
+    return table
 
 
 def _export_col_title(metric_id: str, field: str) -> str:
@@ -332,18 +367,15 @@ def export_xlsx(
     kind: str | None = None,
     path: Path | None = None,
 ) -> tuple[bytes, str]:
-    """Выгрузка в Excel (.xlsx) с таблицей. Возвращает (bytes, filename)."""
-    from sa02m_devices.history_mr import collect_export_table_mr
+    """Выгрузка в Excel (.xlsx) с таблицей. Возвращает (bytes, filename).
+
+    Raises ExportRequestError when the request names no exportable set."""
     from io import BytesIO
 
-    if kind == "mr":
-        table = collect_export_table_mr(range_key, device_id=device_id, path=path)
-    elif kind == "carel":
-        table = collect_export_table_carel(range_key, device_id=device_id, path=path)
-    else:
-        table = collect_export_table(
-            range_key, metric_id=metric_id, group=group, device_id=device_id, path=path
-        )
+    table = _export_table(
+        range_key, metric_id=metric_id, group=group,
+        device_id=device_id, kind=kind, path=path,
+    )
     stamp = _now_local().strftime("%Y%m%d_%H%M%S")
     mid_part = metric_id or group or (
         "ai" if kind == "mr" else "ahu" if kind == "carel" else "data"
@@ -438,18 +470,13 @@ def export_text(
     kind: str | None = None,
     path: Path | None = None,
 ) -> tuple[str, str]:
-    """Текстовая выгрузка (TSV) — совместимость; основной формат: export_xlsx."""
-    from sa02m_devices.history_mr import collect_export_table_mr
-    if kind == "mr":
-        table = collect_export_table_mr(range_key, device_id=device_id, path=path)
-    elif kind == "carel":
-        table = collect_export_table_carel(range_key, device_id=device_id, path=path)
-    else:
-        table = collect_export_table(
-            range_key, metric_id=metric_id, group=group, device_id=device_id, path=path
-        )
-    if not table.get("ok"):
-        return f"# error: {table.get('error')}\n", "export_error.txt"
+    """Текстовая выгрузка (TSV) — совместимость; основной формат: export_xlsx.
+
+    Raises ExportRequestError when the request names no exportable set."""
+    table = _export_table(
+        range_key, metric_id=metric_id, group=group,
+        device_id=device_id, kind=kind, path=path,
+    )
     headers = table["headers"]
     lines = [
         f"# устройство: {table.get('device_id') or '—'}",
