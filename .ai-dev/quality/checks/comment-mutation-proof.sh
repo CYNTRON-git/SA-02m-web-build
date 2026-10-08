@@ -123,6 +123,11 @@ carel-shared-home|scripts/06-alice.sh|sa02m_install_carel_pkg "$BASE_DIR"
 carel-shared-home|scripts/04-flasher.sh|sa02m_install_carel_pkg "$BASE_DIR"
 carel-shared-home|scripts/update-www-only.sh|sa02m_install_carel_pkg "$REPO_ROOT"
 carel-shared-home|opt/sa02m-carel/sa02m_carel/carel_ahu.py|FAN_PCT_MIN = 20.0
+js-unit-carel-card-ladder|opt/sa02m-carel/sa02m_carel/carel_fan.py|_STEP_RUNGS: Tuple[int, ...] = (2, 4, 7, 10)
+js-unit-carel-card-ladder|opt/sa02m-carel/sa02m_carel/controls.py|FAMILY_UARIA: (0.0, 50.0),
+js-unit-carel-card-ladder|opt/sa02m-carel/sa02m_carel/carel_ahu.py|FAN_PCT_MIN = 20.0
+js-unit-carel-card-ladder|www/network_config/static/js/devices.js|{ id: "turbo", value: 10 },
+js-unit-carel-card-ladder|www/network_config/static/js/mqtt.js|const CAREL_FAN_PCT_MIN = 20;
 led-shared-home|scripts/05-mqtt.sh|sa02m_install_led_pkg "$BASE_DIR"
 led-shared-home|scripts/update-www-only.sh|sa02m_install_led_pkg "$REPO_ROOT"
 gateway-acl-contract|www/network_config/cgi-bin/gateway_config.cgi|norm_allow_from(name, pcfg, all_errors)
@@ -184,6 +189,19 @@ update-recover-boot|scripts/pack-offline-update.py|"sa02m-update-verify.service"
 update-recover-boot|etc/sa02m-update-runner.sh|trap '"'"'exit 143'"'"' INT TERM
 no-absolute-api-paths|www/network_config/static/js/devices.js|"api/devices
 flasher-auth-header-strip|etc/nginx/network_config.conf|X-SA02M-Auth  "";
+vplc-route-contract|etc/nginx/network_config.conf|location ^~ /vplc/ {
+vplc-route-contract|etc/nginx/network_config.conf|auth_request /_auth_check;
+vplc-route-contract|etc/nginx/network_config.conf|proxy_set_header Cookie "";
+vplc-route-contract|etc/nginx/network_config.conf|proxy_hide_header Set-Cookie;
+vplc-route-contract|etc/nginx/network_config.conf|proxy_set_header X-Forwarded-Prefix /vplc;
+vplc-route-contract|etc/nginx/network_config.conf|proxy_pass http://unix:/run/vplc-plant-ui/ui.sock:/;
+vplc-route-contract|etc/nginx/network_config.conf|if ($vplc_csrf_bad) {
+vplc-route-contract|etc/nginx/network_config.conf|return 403;
+vplc-route-contract|etc/nginx/network_config.conf|map "$request_method:$http_x_sa02m_csrf" $vplc_csrf_bad {
+vplc-route-contract|etc/nginx/network_config.conf|"~^(GET|HEAD):"  0;
+vplc-route-contract|etc/nginx/network_config.conf|"~^[^:]+:$"      1;
+vplc-route-contract|etc/nginx/network_config.conf|location = /vplc {
+vplc-route-contract|etc/nginx/network_config.conf|return 301 vplc/;
 ota-dst-allowlist-parity|opt/sa02m-update/lib/validate_package.py|re.compile(r"^/etc/nginx/"),
 ota-dst-allowlist-parity|scripts/pack-offline-update.py|r"etc/systemd/system/sa02m-|"
 ota-dst-allowlist-parity|etc/sa02m-update-runner.sh|r"etc/systemd/system/sa02m-|"
