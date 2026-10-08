@@ -148,7 +148,10 @@ def _read_uaria(
         if len(hr) >= 4:
             out["sp_s"] = ca.be_float32(hr[2], hr[3])
         if len(hr) >= 5:
+            # HR34 is the season-change MODE (none / manual / auto by outdoor
+            # temperature), not the season itself — that is coil 17 below.
             out["season_code"] = int(hr[4]) & 0xFFFF
+            out["season_mode_text"] = ca.uaria_season_label(out["season_code"])
 
     payload, err = read_holding(send, slave, ca.HR_UARIA_FAN_MIN, 3, 800)
     if not err and payload:
@@ -164,6 +167,10 @@ def _read_uaria(
         ("uaria_run", ca.COIL_UARIA_NET_ON_OFF),
         ("gs04", ca.COIL_UARIA_NET_ENABLE),
         ("uaria_local", ca.COIL_UARIA_LOCAL),
+        # NO3 «Нагрев/охлаждение»: 0 heating = winter, 1 cooling = summer — the
+        # season the bridge publishes and the devices card shows (bridge_carel.py
+        # _season_payload), so the window says the same ЗИМА/ЛЕТО.
+        ("heat_cool", ca.COIL_UARIA_HEAT_COOL),
     ):
         bits = _coil_bits(send, slave, coil, 1, 700)
         if bits:

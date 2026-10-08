@@ -435,6 +435,41 @@ class TestUariaSnapshotDecodesBenchValues(unittest.TestCase):
         self.assertEqual(self.plc.writes, [])
 
 
+class TestUariaSeasonIsCoil17(unittest.TestCase):
+    """carel-audit #35: the window showed HR34 (the season-change MODE) as
+    «Сезон» while the bridge and the devices card show coil 17 (NO3 heat/cool).
+    The poll now reads coil 17 as `heat_cool` and labels HR34 from the one home
+    (sa02m_carel.UARIA_SEASON)."""
+
+    def _snap(self, coil17):
+        plc = uaria_plc()
+        if coil17 is not None:
+            plc.coils[ca.COIL_UARIA_HEAT_COOL] = coil17
+        return plc, _snapshot(plc, UARIA_DEVICE)["carel"]
+
+    def test_cooling_coil_reads_as_summer(self) -> None:
+        plc, snap = self._snap(True)
+        self.assertIs(snap["heat_cool"], True)
+        self.assertIn((0x01, ca.COIL_UARIA_HEAT_COOL, 1), plc.reads)
+
+    def test_heating_coil_reads_as_winter(self) -> None:
+        _plc, snap = self._snap(False)
+        self.assertIs(snap["heat_cool"], False)
+
+    def test_silent_coil_leaves_season_unknown(self) -> None:
+        _plc, snap = self._snap(None)
+        self.assertNotIn("heat_cool", snap)
+
+    def test_hr34_is_labelled_as_the_season_mode(self) -> None:
+        _plc, snap = self._snap(False)
+        self.assertEqual(snap["season_code"], 2)
+        self.assertEqual(snap["season_mode_text"], ca.UARIA_SEASON[2])
+
+    def test_season_read_writes_nothing(self) -> None:
+        plc, _snap = self._snap(True)
+        self.assertEqual(plc.writes, [])
+
+
 class TestCrstCommands(unittest.TestCase):
     def test_start_enables_the_network_settles_then_runs(self) -> None:
         plc = crst_plc()

@@ -54,6 +54,10 @@
   const CONFIG_API_TIMEOUT_MS = 120000;
   const CONFIG_BG_POLL_WAIT_MS = 120000;
   const CONFIG_POLL_INTERVAL_MS = 1000;
+  /** CE-02m-3 factory CT ratio, K×1000 (device_config.CE_CT_RATIO_DEFAULT; the meter stores a written 0 as this). */
+  const CE_CT_RATIO_DEFAULT = 4000;
+  /** Daemon refusal of a CT-ratio write to firmware that resets on it (device_config.E_CE_FW_TOO_OLD_FOR_CT_WRITE). */
+  const E_CE_FW_TOO_OLD_FOR_CT_WRITE = 'ce_fw_too_old_for_ct_write';
   /** AI sensor select под сохранением/редактированием — не перерисовывать вкладку. */
   const _aiSensorEditGuard = new Set();
   const _aiSensorEditGuardTimers = Object.create(null);
@@ -125,6 +129,8 @@
   function t(msg) {
     return window.sa02mI18n ? window.sa02mI18n.t(String(msg)) : String(msg);
   }
+  // The name the i18n-dict-contract gate sweeps for literal strings.
+  const uiT = t;
 
   function toast(msg, type) {
     const text = t(msg);
@@ -1933,8 +1939,12 @@
       }
       if (!res.ok) {
         let msg = `HTTP ${res.status}`;
-        try { const data = await res.json(); if (data && data.error) msg = data.error; } catch (_) {}
-        throw new Error(msg);
+        let data = null;
+        try { data = await res.json(); if (data && data.error) msg = data.error; } catch (_) {}
+        const err = new Error(msg);
+        if (data && data.error_code) err.code = String(data.error_code);
+        if (data && data.fw_version) err.fwVersion = String(data.fw_version);
+        throw err;
       }
       return res.json();
     };
@@ -3292,8 +3302,19 @@
     `;
   }
 
+  function ceCtFwTooOldText(fwVersion) {
+    return uiT('Прошивка CE-02м-3 ниже 1.0.7.5: запись коэффициентов ТТ отключена — на старых версиях она перезагружает устройство. Обновите прошивку.')
+      + ' (' + (fwVersion || '—') + ')';
+  }
+
   function renderCeSettingsTab(snap) {
     const cfg = (snap.ce && snap.ce.config) || {};
+    // A hint from the snapshot; the daemon re-reads the version before a CT write.
+    const ctLocked = !!(snap.ce && snap.ce.ct_write && snap.ce.ct_write.supported === false);
+    const ctAttr = ctLocked ? ' disabled' : '';
+    const ctNote = ctLocked
+      ? `<div class="flasher-config-note" id="cfg-ce-ct-fw-note">${escapeHtml(ceCtFwTooOldText(snap.info && snap.info.app_version))}</div>`
+      : '';
     return `
       <div class="flasher-config-grid">
         <section class="flasher-config-card">
@@ -3312,14 +3333,15 @@
             <select id="cfg-ce-inv-c"><option value="0" ${Number(cfg.inv_c) === 0 ? 'selected' : ''}>0</option><option value="1" ${Number(cfg.inv_c) === 1 ? 'selected' : ''}>1</option></select>
 
             <label for="cfg-ce-kt-a">Коэффициент ТТ A (K×1000)</label>
-            <input id="cfg-ce-kt-a" type="number" min="1" max="20000" value="${escapeHtml(String(cfg.kt_a ?? 1000))}" />
+            <input id="cfg-ce-kt-a" type="number" min="1" max="20000" value="${escapeHtml(String(cfg.kt_a ?? CE_CT_RATIO_DEFAULT))}"${ctAttr} />
 
             <label for="cfg-ce-kt-b">Коэффициент ТТ B (K×1000)</label>
-            <input id="cfg-ce-kt-b" type="number" min="1" max="20000" value="${escapeHtml(String(cfg.kt_b ?? 1000))}" />
+            <input id="cfg-ce-kt-b" type="number" min="1" max="20000" value="${escapeHtml(String(cfg.kt_b ?? CE_CT_RATIO_DEFAULT))}"${ctAttr} />
 
             <label for="cfg-ce-kt-c">Коэффициент ТТ C (K×1000)</label>
-            <input id="cfg-ce-kt-c" type="number" min="1" max="20000" value="${escapeHtml(String(cfg.kt_c ?? 1000))}" />
+            <input id="cfg-ce-kt-c" type="number" min="1" max="20000" value="${escapeHtml(String(cfg.kt_c ?? CE_CT_RATIO_DEFAULT))}"${ctAttr} />
           </div>
+          ${ctNote}
           <div class="flasher-config-actions">
             <button class="btn btn-primary" type="button" id="cfg-ce-save-btn">Сохранить</button>
           </div>
@@ -3542,6 +3564,21 @@
     return value ? 'Вкл' : 'Выкл';
   }
 
+  /* uAria season = coil 17 (heat_cool: 0 heating = ЗИМА, 1 cooling = ЛЕТО), the
+     value MQTT and the devices card show. HR34 (season_code) is only the
+     season-change mode; its label comes from sa02m_carel.UARIA_SEASON via the
+     daemon (season_mode_text), the code is the fallback for an older daemon. */
+  function carelUariaSeasonText(c) {
+    if (!c || c.heat_cool == null) return '—';
+    return c.heat_cool ? 'ЛЕТО' : 'ЗИМА';
+  }
+
+  function carelUariaSeasonModeText(c) {
+    if (!c) return '—';
+    if (c.season_mode_text) return String(c.season_mode_text);
+    return c.season_code == null ? '—' : String(c.season_code);
+  }
+
   function carelPlantStateView(carel) {
     const c = carel || {};
     // Молчащий ПЛК — это не «остановлена»: отсутствие ответа нельзя показывать состоянием.
@@ -3762,7 +3799,8 @@
           <div><dt>Расчётный выход</dt><dd id="cfg-carel-fan-calc">${escapeHtml(carelValueText(c.fan_calc, 1, '%'))}</dd></div>
           <div><dt>Фактический AO</dt><dd id="cfg-carel-fan-act">${escapeHtml(carelValueText(c.fan, 1, '%'))}</dd></div>
           <div><dt>Локальный терминал (только чтение)</dt><dd id="cfg-carel-local">${escapeHtml(carelOnOffText(c.uaria_local))}</dd></div>
-          <div><dt>Сезон</dt><dd id="cfg-carel-season">${escapeHtml(c.season_code == null ? '—' : String(c.season_code))}</dd></div>
+          <div><dt>Сезон</dt><dd id="cfg-carel-season">${escapeHtml(carelUariaSeasonText(c))}</dd></div>
+          <div><dt>Режим сезона</dt><dd id="cfg-carel-season-mode">${escapeHtml(carelUariaSeasonModeText(c))}</dd></div>
         </dl>
         <div class="flasher-config-actions">
           <button class="btn btn-primary" type="button" id="cfg-carel-apply-btn">Применить уставки</button>
@@ -3919,7 +3957,8 @@
       carelSetText('cfg-carel-fan-calc', carelValueText(c.fan_calc, 1, '%'));
       carelSetText('cfg-carel-fan-act', carelValueText(c.fan, 1, '%'));
       carelSetText('cfg-carel-local', carelOnOffText(c.uaria_local));
-      carelSetText('cfg-carel-season', c.season_code == null ? '—' : String(c.season_code));
+      carelSetText('cfg-carel-season', carelUariaSeasonText(c));
+      carelSetText('cfg-carel-season-mode', carelUariaSeasonModeText(c));
       carelSetField('cfg-carel-fan-step', c.fan_sp == null ? '' : String(c.fan_sp), activeEl);
       carelSetField('cfg-carel-gs04', !!c.gs04, activeEl);
     } else {
@@ -4454,22 +4493,52 @@
   }
 
   async function saveCeSettings() {
+    const snap = state.configSnapshot || {};
+    const ctLocked = !!(snap.ce && snap.ce.ct_write && snap.ce.ct_write.supported === false);
     const items = [
       { reg: 553, value: parseInt(configModalEl('cfg-ce-ph-loss').value, 10) || 0 },
       { reg: 554, value: parseInt(configModalEl('cfg-ce-inv-a').value, 10) || 0 },
       { reg: 555, value: parseInt(configModalEl('cfg-ce-inv-b').value, 10) || 0 },
       { reg: 556, value: parseInt(configModalEl('cfg-ce-inv-c').value, 10) || 0 },
-      { reg: 557, value: parseInt(configModalEl('cfg-ce-kt-a').value, 10) || 1 },
-      { reg: 558, value: parseInt(configModalEl('cfg-ce-kt-b').value, 10) || 1 },
-      { reg: 559, value: parseInt(configModalEl('cfg-ce-kt-c').value, 10) || 1 },
+    ];
+    // 557-559 go last: a refusal or a failed persist then leaves phase loss and
+    // inversion already saved, and the message says only the CT part is open.
+    const ctItems = [
+      { reg: 557, value: parseInt(configModalEl('cfg-ce-kt-a').value, 10) || CE_CT_RATIO_DEFAULT },
+      { reg: 558, value: parseInt(configModalEl('cfg-ce-kt-b').value, 10) || CE_CT_RATIO_DEFAULT },
+      { reg: 559, value: parseInt(configModalEl('cfg-ce-kt-c').value, 10) || CE_CT_RATIO_DEFAULT },
     ];
     setConfigBusy(true);
     try {
       for (const item of items) await writeConfigHolding(item.reg, item.value, '');
-      toast('Настройки CE-02м-3 сохранены', 'success');
+      if (ctLocked) {
+        setConfigBanner(ceCtFwTooOldText(snap.info && snap.info.app_version), 'warn');
+        toast(uiT('Настройки CE-02м-3 сохранены, кроме коэффициентов ТТ'), 'warn');
+        return;
+      }
+      // Each CT write answers with the meter's Input 65519 verdict, read ~2 s after it.
+      const verdicts = [];
+      for (const item of ctItems) {
+        const res = await writeConfigHolding(item.reg, item.value, '');
+        verdicts.push((res && res.ce_persist && res.ce_persist.status) || 'unknown');
+      }
+      if (verdicts.includes('not_persisted')) {
+        setConfigBanner(uiT('Коэффициенты ТТ записаны, но устройство сообщило об ошибке сохранения в EEPROM (рег. 65519) — после отключения питания вернутся прежние значения.'), 'error');
+        toast(uiT('CE-02м-3: коэффициенты ТТ не сохранены в EEPROM'), 'error');
+      } else if (verdicts.includes('unknown')) {
+        setConfigBanner(uiT('Коэффициенты ТТ записаны, сохранение в EEPROM не подтверждено (рег. 65519) — проверьте значения после перезапуска устройства.'), 'warn');
+        toast(uiT('Настройки CE-02м-3 сохранены, сохранение ТТ не подтверждено'), 'warn');
+      } else {
+        toast('Настройки CE-02м-3 сохранены', 'success');
+      }
     } catch (err) {
-      setConfigBanner('Запись настроек CE-02м-3: ' + err.message, 'error');
-      toast('CE-02м-3: ' + err.message, 'error');
+      if (err && err.code === E_CE_FW_TOO_OLD_FOR_CT_WRITE) {
+        setConfigBanner(ceCtFwTooOldText(err.fwVersion), 'error');
+        toast(uiT('Настройки CE-02м-3 сохранены, кроме коэффициентов ТТ'), 'warn');
+      } else {
+        setConfigBanner('Запись настроек CE-02м-3: ' + err.message, 'error');
+        toast('CE-02м-3: ' + err.message, 'error');
+      }
     } finally {
       setConfigBusy(false);
     }
