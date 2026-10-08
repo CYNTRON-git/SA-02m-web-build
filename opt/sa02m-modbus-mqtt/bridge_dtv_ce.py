@@ -19,6 +19,42 @@ from bridge_serial import (
 )
 
 
+# CE-02m-3 energy counters (Input 580-611). The unit is the firmware's
+# (CE-02m-3 docs/contracts/en-meter-measurement-map.md «Единица 580–647»,
+# Core/Inc/en_meter_energy_scale.h): integer Wh of the PRIMARY circuit from
+# CE_ENERGY_WH_FW; before it, counts of 1/320 Wh (K cancels out from
+# CE_ENERGY_PRIMARY_FW; older firmware is secondary and needs x K/1000).
+# What the bridge promises on MQTT: docs/contracts/ce-energy-mqtt.md.
+CE_ENERGY_UNITS_PER_WH = 320
+CE_ENERGY_PRIMARY_FW = (1, 0, 7, 4)
+CE_ENERGY_WH_FW = (1, 0, 7, 11)
+# Input 514-517 (A x10) stop saturating with 510-513 from this version on.
+CE_CURRENT_FULL_RANGE_FW = (1, 0, 7, 5)
+CE_CURRENT_CEILING_MA = 65534
+# Holding 557-559 — CT ratio K x1000 per phase, legal range per the firmware.
+CE_CT_RATIO_REG = 557
+CE_CT_RATIO_MIN_X1000 = 1
+CE_CT_RATIO_MAX_X1000 = 20000
+# Lost link to the measuring chip (ATM90E32): the firmware answers 0 for every
+# register of 500-679 while the meter itself still answers; Input 686 (the
+# publish-cycle counter, from fw 1.0.7.6) is served even then and stops moving.
+# Firmware home: MODBUS_VARIABLES.txt 680-686; bridge rule:
+# docs/contracts/ce-energy-mqtt.md «Потеря связи с измерительным чипом».
+CE_PQS_CYCLES_REG = 686
+CE_PQS_OBS_FW = (1, 0, 7, 6)
+CE_CACHE_PROBE_REG = 542        # 542-547: frequency, PF x4, ASIC temperature
+CE_CACHE_PROBE_COUNT = 6
+
+
+def _energy_wh(raw: int, k_x1000: float,
+               units_per_wh: int = CE_ENERGY_UNITS_PER_WH) -> float:
+    """Counter counts → Wh (varh, VAh) of the primary circuit. `k_x1000` is
+    1000 on firmware that already accumulates primary energy, the CT ratio
+    K x1000 on older firmware whose counters are secondary; `units_per_wh`
+    is 1 on firmware that publishes Wh itself."""
+    return raw * k_x1000 / (units_per_wh * 1000)
+
+
 # ── cyntron-dtv (RTU-Sensor) poller ───────────────────────────────────────────
 class DTVPoller(DevicePoller):
     # All input registers 1-30 plus MCU diagnostics 123-124
@@ -347,6 +383,19 @@ class CE02M3Poller(DevicePoller):
         self._en_freq  = ch.get("frequency", True)
         self._en_ener  = ch.get("energy", True)
         self._fw_version: tuple[int, int, int, int] | None = None
+        self._fw_read_warned = False
+        # Device CT ratios (Ka, Kb, Kc) x1000 — read only for firmware whose
+        # energy counters are secondary; dropped with the version on a reboot.
+        self._ct_k_x1000: tuple[int, int, int] | None = None
+        self._energy_skip_reason: str | None = None
+        self._uptime_last: int | None = None
+        self._i_ceiling_warned = False
+        # Energy batches converted at least once by THIS process; the unit
+        # marker waits for all enabled ones (docs/contracts/ce-energy-mqtt.md).
+        self._energy_converted: set[str] = set()
+        self._energy_unit_announced = False
+        self._meter_link_lost = False
+        self._cycles_sample: int | None = None
 
     @staticmethod
     def _s16(v: int) -> int:
@@ -363,38 +412,119 @@ class CE02M3Poller(DevicePoller):
         """Assemble uint64 from 4 regs: r0=word0 (LSW), r3=word3 (MSB)."""
         return r0 | (r1 << 16) | (r2 << 32) | (r3 << 48)
 
+    def _power_controls(self) -> list[tuple[str, str]]:
+        """(name, units) of every control _poll_power publishes under this
+        config — the one list the meta and the meter-link error go over, so a
+        disabled channel or an excluded phase gets neither."""
+        ph3 = ("a", "b", "c")
+        on = [ph for ph in ph3 if ph.upper() in self._phases]
+        out: list[tuple[str, str]] = []
+        if self._en_volt:
+            out += [(f"voltage_{ph}", "V") for ph in on]
+        if self._en_lvolt:
+            out += [(f"voltage_{ln}", "V") for ln in ("ab", "bc", "ca")]
+        if self._en_curr:
+            out += [(f"current_{x}", "A") for x in (*ph3, "n")]
+        if self._en_pact:
+            out += [(f"power_{ph}", "W") for ph in on]
+            out.append(("power_total", "W"))
+        if self._en_preac:
+            out += [(f"reactive_{x}", "var") for x in (*ph3, "total")]
+        if self._en_papp:
+            out += [(f"apparent_{x}", "VA") for x in (*ph3, "total")]
+        if self._en_freq:
+            out.append(("frequency", "Hz"))
+        if self._en_pf:
+            # cos φ is a ratio: no unit (firmware 543-546 «×0.001»).
+            out += [(f"pf_{x}", "") for x in (*ph3, "total")]
+        out.append(("asic_temp", "°C"))
+        return out
+
+    def _energy_controls(self) -> list[tuple[str, str]]:
+        """(name, units) of every control _poll_energy publishes."""
+        if not self._en_ener:
+            return []
+        out = [("energy_active_import", "Wh"), ("energy_active_export", "Wh"),
+               ("energy_reactive_import", "varh"),
+               ("energy_reactive_export", "varh"), ("energy_apparent", "VAh")]
+        if self._per_phase_energy:
+            out += [(f"energy_active_import_{ph}", "Wh") for ph in ("a", "b", "c")]
+        return out
+
     def _publish_meta(self) -> None:
         name = self.cfg.get(
             "name",
             f"CE-02m-3 ({self.port_path.replace('/dev/','')} addr={self.address})"
         )
         self.publish_device_meta(name)
-        for ph in ["a", "b", "c"]:
-            for pfx, unit in [("voltage", "V"), ("current", "A"),
-                               ("power", "W"), ("reactive", "var"),
-                               ("apparent", "VA"), ("pf", "")]:
-                n = f"{pfx}_{ph}"
-                self.pub.pub_control_meta(self.device_id, n, "readonly", "1")
-                self.pub.pub_control_units(self.device_id, n, unit)
-        for sfx, unit in [("total", "W"), ("reactive_total", "var"),
-                          ("apparent_total", "VA"), ("pf_total", "")]:
-            self.pub.pub_control_meta(self.device_id, sfx, "readonly", "1")
-            self.pub.pub_control_units(self.device_id, sfx, unit)
-        self.pub.pub_control_units(self.device_id, "frequency", "Hz")
-        self.pub.pub_control_units(self.device_id, "asic_temp", "°C")
-        self.pub.pub_control_units(self.device_id, "mcu_temp", "°C")
-        self.pub.pub_control_units(self.device_id, "mcu_vdd", "V")
+        # Every control is a measurement: readonly. Meta only for a control the
+        # polls publish (tests/test_ce02m3_meta.py — no orphan meta).
+        diag = [("uptime_s", "s"), ("mcu_vdd", "V"), ("mcu_temp", "°C")]
+        for n, unit in self._power_controls() + self._energy_controls() + diag:
+            self.pub.pub_control_meta(self.device_id, n, "readonly", "1")
+            self.pub.pub_control_units(self.device_id, n, unit)
         # Device CT K×1000 (holding 557..559); not applied to MQTT currents
         self.pub.pub_control_meta(self.device_id, "ct_ratio_x1000", "readonly", "1")
         self.pub.pub_control(self.device_id, "ct_ratio_x1000", str(self._ct_ratio_x1000))
-        for ename, eunit in (
-            ("energy_active_import", "Wh"),
-            ("energy_active_export", "Wh"),
-            ("energy_reactive_import", "varh"),
-            ("energy_reactive_export", "varh"),
-            ("energy_apparent", "VAh"),
-        ):
-            self.pub.pub_control_units(self.device_id, ename, eunit)
+        # The energy_unit marker is NOT published here: see _energy_batch_done.
+
+    def _meter_link_check(self, cache_zeroed: bool) -> bool:
+        """True = the link to the measuring chip is lost. `cache_zeroed`: every
+        register just read from 500-679 is 0 — the firmware's lost-link answer.
+        From fw 1.0.7.6 a zeroed read is confirmed against Input 686: a counter
+        that moved since the previous zeroed read is a live chip measuring 0.
+        Read only on a zeroed read, so a healthy poll costs no extra frame."""
+        if not cache_zeroed:
+            self._cycles_sample = None
+            return False
+        fw = self._fw_version
+        if fw is None or fw < CE_PQS_OBS_FW:
+            return True
+        try:
+            cycles = int(self.read_input_registers(
+                self.address, CE_PQS_CYCLES_REG, 1)[0]) & 0xFFFF
+        except Exception as e:
+            self.log.debug("cycle counter read (IR%d): %s", CE_PQS_CYCLES_REG, e)
+            return True     # fail closed: the zeros stay unpublished
+        prev, self._cycles_sample = self._cycles_sample, cycles
+        return prev is None or prev == cycles
+
+    def _set_meter_link(self, lost: bool) -> None:
+        """meta/error "r" on every measurement control while the chip link is
+        lost, "" on recovery. Not the device-level error: the meter answers."""
+        if lost == self._meter_link_lost:
+            return
+        self._meter_link_lost = lost
+        if lost:
+            self.log.warning("measuring chip link lost: Input 500-679 read 0;"
+                             " measurements flagged meta/error=r, not published")
+        else:
+            self.log.info("measuring chip link restored")
+        err = "r" if lost else ""
+        for name, _units in self._power_controls() + self._energy_controls():
+            self.pub.pub_error(self.device_id, name, err)
+
+    def _current_amps(self, raw_ma: int, raw_x10: int | None) -> str | None:
+        """Input 510-513 is uint16 mA that saturates at 65534 (65535 is the
+        firmware's SPI-failure sentinel). Past the ceiling only the x10 twin
+        514-517 knows the current, and only from fw 1.0.7.5 (before, it was
+        derived from the clamped value). None = an event at the ceiling: it
+        carries no twin, so the value is left to the poll."""
+        raw_ma &= 0xFFFF
+        if raw_ma == CE_CURRENT_CEILING_MA:
+            fw = self._fw_version
+            if fw is not None and fw >= CE_CURRENT_FULL_RANGE_FW:
+                if raw_x10 is None:
+                    return None
+                return str(round((raw_x10 & 0xFFFF) / 10, 3))
+            if not self._i_ceiling_warned:
+                self._i_ceiling_warned = True
+                self.log.warning(
+                    "current at the 65.534 A register ceiling on firmware %s:"
+                    " the real value is higher and readable only from 1.0.7.5"
+                    " (Input 514-517)",
+                    ".".join(str(v) for v in fw) if fw else "unknown")
+        return str(round(raw_ma * 0.001, 3))
 
     def _read_power_input_block(self) -> list[int]:
         """Regs 500-547 (48). One FC04 of 101 B often truncates on COM2 (OE/short).
@@ -438,6 +568,10 @@ class CE02M3Poller(DevicePoller):
         except Exception as e:
             self.log.warning("power poll: %s", e)
             return
+        lost = self._meter_link_check(not any(regs))
+        self._set_meter_link(lost)
+        if lost:
+            return
 
         ph3 = ["a", "b", "c"]
 
@@ -454,15 +588,13 @@ class CE02M3Poller(DevicePoller):
                                      str(round(regs[6 + i] * 0.1, 1)))
 
         if self._en_curr:
-            # 510-512: I A,B,C already primary (A×1000); no bridge CT multiply
-            for i, ph in enumerate(ph3):
-                raw = self._s16(regs[10 + i])
-                self.pub.pub_control(self.device_id, f"current_{ph}",
-                                     str(round(raw * 0.001, 3)))
-            # 513: I neutral ×0.001 A (primary)
-            raw_n = self._s16(regs[13])
-            self.pub.pub_control(self.device_id, "current_n",
-                                 str(round(raw_n * 0.001, 3)))
+            # 510-513: I A,B,C,N already primary (uint16 mA); no bridge CT
+            # multiply. At the ceiling the x10 twin 514-517 carries the value.
+            for i, name in enumerate(("current_a", "current_b", "current_c",
+                                      "current_n")):
+                amps = self._current_amps(regs[10 + i], regs[14 + i])
+                if amps is not None:
+                    self.pub.pub_control(self.device_id, name, amps)
 
         if self._en_pact:
             # 518-525: P A,B,C,total — int32 (LSW,MSW), W
@@ -536,48 +668,141 @@ class CE02M3Poller(DevicePoller):
         if self.CE_FMB_I_START <= reg < self.CE_FMB_I_START + self.CE_FMB_I_COUNT:
             if not self._en_curr:
                 return
-            # Primary A×1000 from CE FW — do not apply ct_ratio again
-            amps = round(self._s16(val) * 0.001, 3)
+            # Primary uint16 mA from CE FW — do not apply ct_ratio again
+            amps = self._current_amps(val, None)
+            if amps is None:
+                return
             idx = reg - self.CE_FMB_I_START
             if idx < 3:
                 self.pub.pub_control(self.device_id, f"current_{ph3[idx]}",
-                                     str(amps))
+                                     amps)
             else:
-                self.pub.pub_control(self.device_id, "current_n", str(amps))
+                self.pub.pub_control(self.device_id, "current_n", amps)
             return
         self.log.debug("FMB event ignored type=%02X reg=%d", evt_type, reg)
+
+    def _read_ct_ratios(self) -> None:
+        """Holding 557-559 → (Ka, Kb, Kc) x1000; any value outside the legal
+        range leaves the ratios unknown (a 0 would publish a zero counter)."""
+        try:
+            r = self.read_holding_registers(self.address, CE_CT_RATIO_REG, 3)
+            if len(r) < 3:
+                raise IOError("short reply: %d of 3 registers" % len(r))
+            k = tuple(int(v) & 0xFFFF for v in r[:3])
+            if not all(CE_CT_RATIO_MIN_X1000 <= v <= CE_CT_RATIO_MAX_X1000
+                       for v in k):
+                raise ValueError("CT ratio out of range: %s" % (k,))
+            self._ct_k_x1000 = k
+        except Exception as e:
+            self._ct_k_x1000 = None
+            self.log.debug("CT ratio read (HR%d x3): %s", CE_CT_RATIO_REG, e)
+
+    def _energy_factors(self) -> tuple[int, tuple[float, ...]] | None:
+        """(counts per Wh, K x1000 for phase A, B, C, totals) to convert
+        the counters to primary Wh, or None when the unit cannot be known this
+        cycle (fail-closed: a skipped sample beats a wrong one —
+        docs/contracts/ce-energy-mqtt.md)."""
+        fw = self.fmb_firmware_version()
+        if fw is None:
+            self._energy_skip("firmware version unknown")
+            return None
+        if fw >= CE_ENERGY_WH_FW:
+            return (1, (1000, 1000, 1000, 1000))
+        if fw >= CE_ENERGY_PRIMARY_FW:
+            return (CE_ENERGY_UNITS_PER_WH, (1000, 1000, 1000, 1000))
+        if self._ct_k_x1000 is None:
+            self._read_ct_ratios()
+        if self._ct_k_x1000 is None:
+            self._energy_skip("firmware %s counts secondary energy and the CT"
+                              " ratio (HR557-559) is unread"
+                              % ".".join(str(v) for v in fw))
+            return None
+        ka, kb, kc = self._ct_k_x1000
+        return (CE_ENERGY_UNITS_PER_WH, (ka, kb, kc, (ka + kb + kc) / 3))
+
+    def _energy_skip(self, reason: str) -> None:
+        # One warning per episode; the poll repeats every poll_energy_s.
+        if reason != self._energy_skip_reason:
+            self._energy_skip_reason = reason
+            self.log.warning("energy not published: %s", reason)
+        else:
+            self.log.debug("energy not published: %s", reason)
 
     def _poll_energy(self) -> None:
         if not self._en_ener:
             return
+        if self._meter_link_lost:
+            self.log.debug("energy not published: measuring chip link lost")
+            return
+        factors = self._energy_factors()
+        if factors is None:
+            return
+        units, k = factors
+        self._energy_skip_reason = None
         try:
-            # 580-599: 5 × uint64 (total AP, AN, RP, RN, S)
+            # 580-599: 5 × uint64 (total AP, AN, RP, RN, S); totals carry K̄
             regs = self.read_input_registers(self.address, 580, 20)
+            if not any(regs):
+                # A fresh meter or a lost chip link: 542-547 tell them apart
+                # (a live chip reports at least its own temperature).
+                probe = self.read_input_registers(
+                    self.address, CE_CACHE_PROBE_REG, CE_CACHE_PROBE_COUNT)
+                lost = self._meter_link_check(not any(probe))
+                self._set_meter_link(lost)
+                if lost:
+                    return
             names = ["energy_active_import", "energy_active_export",
                      "energy_reactive_import", "energy_reactive_export",
                      "energy_apparent"]
             for i, name in enumerate(names):
                 val = self._uint64(regs[i*4], regs[i*4+1], regs[i*4+2], regs[i*4+3])
-                self.pub.pub_control(self.device_id, name, str(val))
+                self.pub.pub_control(self.device_id, name,
+                                     f"{_energy_wh(val, k[3], units):.3f}")
+            self._energy_batch_done("totals")
         except Exception as e:
             self.log.debug("energy poll: %s", e)
 
         if self._per_phase_energy:
             try:
-                # 600-611: per-phase active import A,B,C
+                # 600-611: per-phase active import A,B,C, each with its own K
                 regs = self.read_input_registers(self.address, 600, 12)
                 for i, ph in enumerate(["a", "b", "c"]):
                     val = self._uint64(regs[i*4], regs[i*4+1], regs[i*4+2], regs[i*4+3])
-                    self.pub.pub_control(self.device_id, f"energy_active_import_{ph}", str(val))
-            except Exception:
-                pass
+                    self.pub.pub_control(self.device_id, f"energy_active_import_{ph}",
+                                         f"{_energy_wh(val, k[i], units):.3f}")
+                self._energy_batch_done("phases")
+            except Exception as e:
+                self.log.debug("per-phase energy poll: %s", e)
+
+    def _energy_batch_done(self, batch: str) -> None:
+        """Retained meta/energy_unit=Wh goes out once per process, right
+        after every enabled energy batch has been published converted — never
+        at setup or while fail-closed, where a raw value retained by an old
+        bridge would still sit under the marker."""
+        self._energy_converted.add(batch)
+        if self._energy_unit_announced:
+            return
+        need = {"totals", "phases"} if self._per_phase_energy else {"totals"}
+        if need <= self._energy_converted:
+            self.pub.pub_meta(self.device_id, "energy_unit", "Wh")
+            self._energy_unit_announced = True
 
     def _poll_uptime(self) -> None:
         try:
             r = self.read_input_registers(self.address, 105, 2)
-            self.pub.pub_control(self.device_id, "uptime_s", str(r[0] | (r[1] << 16)))
-        except Exception:
-            pass
+            uptime = (int(r[0]) & 0xFFFF) | ((int(r[1]) & 0xFFFF) << 16)
+        except Exception as e:
+            self.log.debug("uptime poll: %s", e)
+            return
+        # Uptime going backwards = the meter rebooted, possibly into a new
+        # firmware: the classic-poll twin of the FMB reboot event. Outside the
+        # read's except on purpose — nothing here may be skipped silently.
+        if self._uptime_last is not None and uptime < self._uptime_last:
+            self.log.info("uptime %d → %d s: device rebooted",
+                          self._uptime_last, uptime)
+            self.fmb_firmware_invalidate()
+        self._uptime_last = uptime
+        self.pub.pub_control(self.device_id, "uptime_s", str(uptime))
 
     def _poll_diag(self) -> None:
         try:
@@ -603,12 +828,17 @@ class CE02M3Poller(DevicePoller):
             if len(r) < 4:
                 raise IOError("short reply: %d of 4 registers" % len(r))
             self._fw_version = tuple(int(v) & 0xFFFF for v in r[:4])
+            self._fw_read_warned = False
             self.log.info("firmware %s",
                           ".".join(str(v) for v in self._fw_version))
         except Exception as e:
             self._fw_version = None
-            self.log.warning("firmware version read (HR%d x4): %s",
-                             self.CE_FW_VERSION_REG, e)
+            # The energy poll retries this every cycle while it is unknown:
+            # warn once per failure streak, not once a minute.
+            log = self.log.debug if self._fw_read_warned else self.log.warning
+            self._fw_read_warned = True
+            log("firmware version read (HR%d x4): %s",
+                self.CE_FW_VERSION_REG, e)
 
     def fmb_firmware_version(self):
         """Cached version; re-read on demand while unknown. Called on the
@@ -618,12 +848,18 @@ class CE02M3Poller(DevicePoller):
         return self._fw_version
 
     def fmb_firmware_invalidate(self) -> None:
-        """A reboot event may follow a reflash — forget the cached version."""
+        """A reboot event may follow a reflash — forget the cached version,
+        and the CT ratios whose use depends on it."""
         self._fw_version = None
+        self._ct_k_x1000 = None
 
     def setup(self) -> None:
         self._publish_meta()
         self._read_fw_version()
+        # Secondary-energy firmware: read K once here, not per energy cycle.
+        if (self._en_ener and self._fw_version is not None
+                and self._fw_version < CE_ENERGY_PRIMARY_FW):
+            self._read_ct_ratios()
 
     def poll_io(self) -> None:
         # Honor poll_power_s — continuous scheduler used to hammer FC04×48

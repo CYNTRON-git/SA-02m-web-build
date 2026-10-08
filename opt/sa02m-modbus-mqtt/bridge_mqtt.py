@@ -367,6 +367,27 @@ class MQTTPublisher:
                  err, retain=True)
         DeviceLiveCache.set_error(device_id, name, err)
 
+    def control_names(self, device_id: str) -> list[str]:
+        """Controls this process has published meta for on `device_id`."""
+        with self._lock:
+            return sorted(n for d, n in self._ctrl_meta if d == device_id)
+
+    def clear_control_errors(self, device_id: str, names) -> None:
+        """Publish retained meta/error="" once per control, so a flag an
+        earlier bridge process left on the broker is taken back. pub_error()
+        cannot do it: it skips a "" for a control this process never flagged
+        (every healthy poll calls it). Called once per poller after setup();
+        a control this process already flagged keeps its error."""
+        for name in names:
+            key = (device_id, name)
+            with self._lock:
+                if key in self._ctrl_errors:
+                    continue
+                self._ctrl_errors[key] = ""
+            self.pub(f"{DEVICE_BASE}/{device_id}/controls/{name}/meta/error",
+                     "", retain=True)
+            DeviceLiveCache.set_error(device_id, name, "")
+
     def pub_device_error(self, device_id: str, error: str) -> None:
         """Device-level error flag (wb-mqtt-serial: whole device offline = "r")."""
         self.pub(f"{DEVICE_BASE}/{device_id}/meta/error", error, retain=True)

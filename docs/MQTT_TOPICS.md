@@ -10,7 +10,7 @@
 | retain | true для всех `/controls/*` и `/meta/*` |
 | Ошибка чтения | `/controls/{name}/meta/error` = `"r"` |
 | Ошибка записи | `/controls/{name}/meta/error` = `"w"` |
-| Восстановление | `/controls/{name}/meta/error` = `""` (cleared) |
+| Восстановление | `/controls/{name}/meta/error` = `""` (cleared). При старте моста каждый опросчик после настройки один раз публикует `""` для всех своих контролов (тех, у кого есть meta), снимая `"r"`/`"w"`, оставленные прошлым процессом; контрол, который по-прежнему в ошибке, получает `"r"` снова первым же опросом |
 | Запись значения | `/controls/{name}/on` ← write `0` / `1` / float; публикуют внешние клиенты **и веб-интерфейс** (`mqtt_set.cgi`, без retain — контракт `docs/contracts/mqtt-set-endpoint.md`). Тот же путь у агента: операция `mqtt.publish` (`docs/contracts/agent-api.md`) |
 | Публикация meta | Один раз при старте (retained) — И отдельные субтопики `/meta/<key>`, И сводный `/meta` JSON-блоб (см. ниже) |
 | **Устройство offline** | `/devices/{id}/meta/error` = `"r"` (device-level, retained) |
@@ -96,7 +96,7 @@ HA-автодискавери через WB). Это **аддитивно**: в�
 | cyntron-dtv | `dtv-{port}-{addr}` | `dtv-COM3-1` |
 | CE-02m-3 счётчик | `ce02m3-{port}-{addr}` | `ce02m3-COM2-14` |
 | Меркурий (СПОДЭС) | `spodes-COM{n}-{addr}` или `spodes-tcp-{a_b_c_d}-{addr}` | `spodes-COM2-17` |
-| Carel AHU | `carel-{port}-{addr}` | `carel-COM3-1` |
+| Carel AHU | `carel-{port}-{addr}` или `carel-tcp-{a_b_c_d}-{addr}` (Modbus TCP) | `carel-COM3-1`, `carel-tcp-192_168_1_50-1` |
 | LED type 120 | `led-{port}-{addr}` | `led-COM3-13` |
 | Сценарий (виртуальный) | `sa02m-rules-{id}` | `sa02m-rules-s1` |
 | Прибор Home Connect (облако BSH) | `hc-{haId}` | `hc-siemens-sn53es02ce-68a40e2c5a2e` |
@@ -514,82 +514,123 @@ Baudrate: 115200. Адрес: 14 (по умолчанию).
 
 ### Адресная карта
 
+Все регистры — Input (FC04), кроме 557–559 (Holding). `int32` и `uint64` —
+младшее слово по меньшему адресу. Токи и мощности прошивка уже отдаёт в
+**первичной** цепи (с учётом коэффициентов ТТ счётчика), мост их повторно не
+масштабирует.
+
 | Регистры | Данные | Формат | Масштаб |
 |----------|--------|--------|---------|
 | 500–502 | Напряжения фазные A/B/C | uint16 | ×0.1 В |
 | 506–508 | Напряжения линейные AB/BC/CA | uint16 | ×0.1 В |
-| 510–513 | Токи A/B/C/N | uint16 | ×0.001 А |
-| 518–525 | Мощность активная A/B/C/Total | int32×4 | ×0.1 Вт |
-| 526–533 | Мощность реактивная A/B/C/Total | int32×4 | ×0.1 вар |
-| 534–541 | Мощность полная A/B/C/Total | int32×4 | ×0.1 ВА |
+| 510–513 | Токи A/B/C/N | uint16 (без знака) | ×0.001 А; потолок 65534 = 65.534 А |
+| 514–517 | Токи A/B/C/N | uint16 | ×0.1 А; мост берёт их, когда 510–513 стоит на потолке (без потолка — с прошивки 1.0.7.5) |
+| 518–525 | Мощность активная A/B/C/Total | int32×4 | ×1 Вт |
+| 526–533 | Мощность реактивная A/B/C/Total | int32×4 | ×1 вар |
+| 534–541 | Мощность полная A/B/C/Total | int32×4 | ×1 ВА |
 | 542 | Частота | uint16 | ×0.01 Гц |
 | 543–546 | cos φ A/B/C/Total | int16×4 | ×0.001 |
 | 547 | Температура ASIC | int16 | ×1 °C |
-| 580–599 | Счётчики энергии (5×uint64) | uint64×5 | Вт·ч / вар·ч / ВА·ч |
-| 600–611 | Счётчики по фазам (А×uint64) | uint64×3 | Вт·ч |
+| 557–559 | Коэффициенты ТТ A/B/C (Holding) | uint16 | K×1000, заводское 4000 (ТТ на 80 А); мост в них не пишет |
+| 580–599 | Энергия итого: активная импорт/экспорт, реактивная импорт/экспорт, полная | uint64×5 | целые Вт·ч (вар·ч, ВА·ч) на прошивке ≥ 1.0.7.11; на 1.0.7.4…1.0.7.10 — единица счётчика 1/320 Вт·ч; в MQTT мост публикует Вт·ч на любой прошивке (см. «Энергия» ниже) |
+| 600–611 | Активная энергия импорт по фазам A/B/C | uint64×3 | как 580–599 |
 
 ### Топики
 
+`meta/type` у контролов СЭ мост **не публикует**. У каждого контрола ниже есть
+`meta/readonly = 1` и `meta/units` (с вычисляемым по нему `meta/precision`), кроме
+безразмерных `pf_*` и `ct_ratio_x1000` — у них `meta/units` нет. Meta публикуется
+только для контрола, который получает значение при этом конфиге: выключенный в
+`channels_enabled` канал и фаза вне `phases` (`voltage_*` и `power_*`) не имеют ни
+значения, ни meta.
+
+При потере связи прибора с измерительным чипом (500–679 отдают 0) мост нули не
+публикует, а ставит `meta/error = "r"` у всех контролов измерений (блок мощности и
+`energy_*`) и снимает при восстановлении; правило — `docs/contracts/ce-energy-mqtt.md`
+«Потеря связи с измерительным чипом».
+
 ```
-/devices/ce02m3-COM2-14/meta/name       "CE-02m-3 (COM2 addr=14)"
-/devices/ce02m3-COM2-14/meta/driver     "modbus-rtu"
-/devices/ce02m3-COM2-14/controls/uptime_s     type=value  (д/ч/м, без ед.)
+/devices/ce02m3-COM2-14/meta/name         "CE-02m-3 (COM2 addr=14)"
+/devices/ce02m3-COM2-14/meta/driver       "modbus-rtu"
+/devices/ce02m3-COM2-14/meta/energy_unit  "Wh"   (энергия уже пересчитана мостом в Вт·ч)
+/devices/ce02m3-COM2-14/controls/uptime_s     units=s  (Input 105–106)
 
 # Напряжения (В)
-/devices/ce02m3-COM2-14/controls/voltage_a    type=voltage  units=V
-/devices/ce02m3-COM2-14/controls/voltage_b    type=voltage  units=V
-/devices/ce02m3-COM2-14/controls/voltage_c    type=voltage  units=V
-/devices/ce02m3-COM2-14/controls/voltage_ab   type=voltage  units=V
-/devices/ce02m3-COM2-14/controls/voltage_bc   type=voltage  units=V
-/devices/ce02m3-COM2-14/controls/voltage_ca   type=voltage  units=V
+/devices/ce02m3-COM2-14/controls/voltage_a    units=V
+/devices/ce02m3-COM2-14/controls/voltage_b    units=V
+/devices/ce02m3-COM2-14/controls/voltage_c    units=V
+/devices/ce02m3-COM2-14/controls/voltage_ab   units=V
+/devices/ce02m3-COM2-14/controls/voltage_bc   units=V
+/devices/ce02m3-COM2-14/controls/voltage_ca   units=V
 
-# Токи (А)
-/devices/ce02m3-COM2-14/controls/current_a    type=current  units=A
-/devices/ce02m3-COM2-14/controls/current_b    type=current  units=A
-/devices/ce02m3-COM2-14/controls/current_c    type=current  units=A
-/devices/ce02m3-COM2-14/controls/current_n    type=current  units=A
+# Токи (А) — без знака; выше 65.534 А мост берёт 514–517 (шаг 0.1 А)
+/devices/ce02m3-COM2-14/controls/current_a    units=A
+/devices/ce02m3-COM2-14/controls/current_b    units=A
+/devices/ce02m3-COM2-14/controls/current_c    units=A
+/devices/ce02m3-COM2-14/controls/current_n    units=A
 
-# Активная мощность (Вт)
-/devices/ce02m3-COM2-14/controls/power_a      type=power  units=W
-/devices/ce02m3-COM2-14/controls/power_b      type=power  units=W
-/devices/ce02m3-COM2-14/controls/power_c      type=power  units=W
-/devices/ce02m3-COM2-14/controls/power_total  type=power  units=W
+# Активная мощность (целые Вт)
+/devices/ce02m3-COM2-14/controls/power_a      units=W
+/devices/ce02m3-COM2-14/controls/power_b      units=W
+/devices/ce02m3-COM2-14/controls/power_c      units=W
+/devices/ce02m3-COM2-14/controls/power_total  units=W
 
-# Реактивная мощность (вар)
-/devices/ce02m3-COM2-14/controls/reactive_a      type=value  units=var
-/devices/ce02m3-COM2-14/controls/reactive_b      type=value  units=var
-/devices/ce02m3-COM2-14/controls/reactive_c      type=value  units=var
-/devices/ce02m3-COM2-14/controls/reactive_total  type=value  units=var
+# Реактивная мощность (целые вар)
+/devices/ce02m3-COM2-14/controls/reactive_a      units=var
+/devices/ce02m3-COM2-14/controls/reactive_b      units=var
+/devices/ce02m3-COM2-14/controls/reactive_c      units=var
+/devices/ce02m3-COM2-14/controls/reactive_total  units=var
 
-# Полная мощность (ВА) — опционально
-/devices/ce02m3-COM2-14/controls/apparent_a      type=value  units=VA
-/devices/ce02m3-COM2-14/controls/apparent_total  type=value  units=VA
+# Полная мощность (целые ВА) — значения и meta только при
+# channels_enabled.power_apparent: true (по умолчанию выключено)
+/devices/ce02m3-COM2-14/controls/apparent_a      units=VA
+# ... apparent_b, apparent_c
+/devices/ce02m3-COM2-14/controls/apparent_total  units=VA
 
-# cos φ
-/devices/ce02m3-COM2-14/controls/pf_a            type=value  units=cosφ
-/devices/ce02m3-COM2-14/controls/pf_b            type=value  units=cosφ
-/devices/ce02m3-COM2-14/controls/pf_c            type=value  units=cosφ
-/devices/ce02m3-COM2-14/controls/pf_total        type=value  units=cosφ
+# cos φ (безразмерный, −1…1) — readonly, meta/units нет
+/devices/ce02m3-COM2-14/controls/pf_a
+/devices/ce02m3-COM2-14/controls/pf_b
+/devices/ce02m3-COM2-14/controls/pf_c
+/devices/ce02m3-COM2-14/controls/pf_total
 
 # Частота, температура
-/devices/ce02m3-COM2-14/controls/frequency       type=value  units=Hz
-/devices/ce02m3-COM2-14/controls/asic_temp       type=temperature units=°C
+/devices/ce02m3-COM2-14/controls/frequency       units=Hz
+/devices/ce02m3-COM2-14/controls/asic_temp       units=°C
 # Диагностика МК (Input 123–124, как у MR/ДТВ): VDD ×0.01 В, temp ×0.1 °C
-/devices/ce02m3-COM2-14/controls/mcu_vdd         type=voltage      units=V
-/devices/ce02m3-COM2-14/controls/mcu_temp        type=temperature  units=°C
+/devices/ce02m3-COM2-14/controls/mcu_vdd         units=V
+/devices/ce02m3-COM2-14/controls/mcu_temp        units=°C
 
-# Счётчики энергии (Вт·ч)
-/devices/ce02m3-COM2-14/controls/energy_active_import    type=value  units=Wh
-/devices/ce02m3-COM2-14/controls/energy_active_export    type=value  units=Wh
-/devices/ce02m3-COM2-14/controls/energy_reactive_import  type=value  units=varh
-/devices/ce02m3-COM2-14/controls/energy_reactive_export  type=value  units=varh
-/devices/ce02m3-COM2-14/controls/energy_apparent         type=value  units=VAh
+# Коэффициент ТТ из конфига моста — только для сведения (см. ниже)
+/devices/ce02m3-COM2-14/controls/ct_ratio_x1000  readonly  (ключ ct_ratio, по умолчанию 4000)
+
+# Счётчики энергии — Вт·ч / вар·ч / ВА·ч первичной цепи после пересчёта мостом
+/devices/ce02m3-COM2-14/controls/energy_active_import    units=Wh
+/devices/ce02m3-COM2-14/controls/energy_active_export    units=Wh
+/devices/ce02m3-COM2-14/controls/energy_reactive_import  units=varh
+/devices/ce02m3-COM2-14/controls/energy_reactive_export  units=varh
+/devices/ce02m3-COM2-14/controls/energy_apparent         units=VAh
 
 # По фазам (опционально, publish_per_phase_energy: true)
-/devices/ce02m3-COM2-14/controls/energy_active_import_a  type=value  units=Wh
-/devices/ce02m3-COM2-14/controls/energy_active_import_b  type=value  units=Wh
-/devices/ce02m3-COM2-14/controls/energy_active_import_c  type=value  units=Wh
+/devices/ce02m3-COM2-14/controls/energy_active_import_a  units=Wh
+/devices/ce02m3-COM2-14/controls/energy_active_import_b  units=Wh
+/devices/ce02m3-COM2-14/controls/energy_active_import_c  units=Wh
 ```
+
+**Энергия.** Значения `energy_*` — Вт·ч (вар·ч, ВА·ч) первичной цепи после
+пересчёта мостом; маркер — retained `/devices/<id>/meta/energy_unit = Wh`. Правило
+пересчёта по версиям прошивки и поведение при неизвестной версии — контракт
+`docs/contracts/ce-energy-mqtt.md`. На мосте до этого релиза (маркера
+`meta/energy_unit` нет) в тех же топиках под `units=Wh` шли единицы счётчика —
+1/320 Вт·ч на прошивке 1.0.7.4…1.0.7.10, то есть в 320 раз больше настоящих Вт·ч
+(с прошивки 1.0.7.11 прибор сам публикует целые Вт·ч).
+
+**`ct_ratio_x1000`** — эхо ключа `ct_ratio` из конфига устройства в
+`/etc/sa02m-modbus-mqtt.yaml`, только для сведения. Мост его в счётчик не пишет, из
+счётчика не читает и к токам и мощностям не применяет — их прошивка уже отдаёт в
+первичной цепи. Действующие коэффициенты счётчик хранит сам, по одному на фазу
+(Holding 557–559, K×1000; заводское 4000 соответствует ТТ на 80 А), поэтому значение
+`ct_ratio_x1000` может с ними не совпадать. Меняются коэффициенты в окне прибора (раздел
+«ТТ и фазы») на вкладке «Устройства RS-485» — запись принимает прошивка СЭ-02м-3 не ниже 1.0.7.5.
 
 ---
 
@@ -673,10 +714,10 @@ mosquitto_sub -h 127.0.0.1 -v -t '/devices/hc-+/controls/#'
 | MR-02m диагностика | 60 с |
 | DTV | Датчики + присутствие | каждый проход устройства |
 | DTV | Диагностика | 60 с |
-| CE-02m-3 | Мощность/Напряжения/Токи | каждый проход устройства |
-| CE-02m-3 | Счётчики энергии | 60 с |
-| CE-02m-3 | Диагностика | 120 с |
-| Carel AHU | пробы с ошибкой «r» на карточку не идут | 10 с (как MR) |
+| CE-02m-3 | Мощность/Напряжения/Токи | `poll_power_s` из конфига устройства; по умолчанию 5 с (мост и шаблон `ce02m3.json`), вкладка MQTT записывает своё значение при добавлении счётчика |
+| CE-02m-3 | Счётчики энергии | `poll_energy_s`, по умолчанию 60 с |
+| CE-02m-3 | Диагностика | `poll_diag_s`, по умолчанию 120 с |
+| Carel AHU | опрос (пробы с ошибкой «r» на карточку не идут) | `poll_s`, по умолчанию 2 с; 10 с — такт архива «Устройств», не опроса |
 | LED type 120 | PlayCtrl / цвет / эффект | 2 с |
 | СА-02м | Системная телеметрия | 30 с |
 
