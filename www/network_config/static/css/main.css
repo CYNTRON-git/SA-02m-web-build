@@ -508,6 +508,9 @@ html:not([data-theme="light"]) .topbar {
 html[data-theme="light"] .nav-item.active { color: var(--btn-primary-hover); }
 .nav-item svg { width: 17px; height: 17px; flex-shrink: 0; opacity: .7; }
 .nav-item.active svg { opacity: 1; }
+/* display:flex above outranks the UA [hidden] rule — the #nav-vplc link stays
+   hidden until applyVplcNavLink sees the vPLC runtime. */
+.nav-item[hidden] { display: none !important; }
 .nav-parent { justify-content: flex-start; }
 .nav-parent > span { flex: 1; }
 .nav-arrow { width: 8px !important; height: 12px !important; margin-left: auto; opacity: .5; transition: transform var(--transition); color: currentColor; }
@@ -522,6 +525,9 @@ html[data-theme="light"] .nav-item.active { color: var(--btn-primary-hover); }
 }
 .nav-sub-item:hover { background: var(--bg-hover); color: var(--text); }
 .nav-sub-item.active { color: var(--cyan); background: var(--cyan-dim, rgba(34,211,238,.08)); }
+/* Light theme: the same 2.90:1 as .nav-item.active above (--cyan #0891b2 on the
+   #cee9f0 tint) — the same fix: 5.68:1. Dark keeps --cyan (7.37:1 on #18333c). */
+html[data-theme="light"] .nav-sub-item.active { color: var(--btn-primary-hover); }
 .sys-sub-pane[hidden] { display: none !important; }
 .gw-sub-dot { margin-left: auto; font-size: .7rem; }
 .gw-sub-dot-ok  { color: var(--green); }
@@ -2447,7 +2453,10 @@ html[data-theme="light"] .homeconnect-verify-link { color: var(--cyan-hover); }
    pane unscrolled at 1280×720, the smallest desktop the dashboard targets.
    Measured there in the on/off editing state — the tallest one, icon picker
    and «Инвертировать» both showing: 651 px of content in a 524 px pane at one
-   field per row, 500 px paired (1.0.6.29). */
+   field per row, 500 px paired (1.0.6.29). The «Светильник»/«Штора» preset
+   row then took it to 510.5 px in a 518 px pane — 7.5 px of headroom against
+   sh-modal-layout-smoke's 24 px floor — so the field gap is 8 px, not 12:
+   five field rows × 4 px = 20 px back, 490.5 used / 27.5 px headroom (1.0.7.1). */
 .sh-col-actions {
   display: grid;
   grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
@@ -2456,7 +2465,7 @@ html[data-theme="light"] .homeconnect-verify-link { color: var(--cyan-hover); }
 }
 .sh-col-actions > * { grid-column: 1 / -1; }
 .sh-col-actions > .sh-field-half { grid-column: span 1; }
-.sh-col-actions > .field { margin-bottom: 12px; }
+.sh-col-actions > .field { margin-bottom: 8px; }
 /* The standing Alice note belongs to the dialog, not to the actions pane —
    left of the Закрыть button, wrapping onto its own line when the foot is
    narrow. */
@@ -3913,7 +3922,11 @@ html[data-theme="light"] .homeconnect-verify-link { color: var(--cyan-hover); }
   gap: 8px;
   width: 100%;
 }
+/* The form's `input { width: 100% }` above reaches the checkbox too: without the
+   reset it takes the whole row and pushes its label past the card edge. */
 .flasher-config-form .checkbox-line input[type="checkbox"] {
+  width: auto;
+  padding: 0;
   flex-shrink: 0;
   margin-top: 2px;
 }

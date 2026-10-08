@@ -171,7 +171,7 @@ const HCLIP_EPS = 2;    // px of HORIZONTAL surplus an overflow-x:hidden box may
 // (0 failures) once main.css took `grid-template-columns: minmax(0, 1fr)` +
 // Службы `1 / -1` at ≤560.
 const MANAGE_ONE_COL_MAX_W = 560;
-const MANAGE_TILE_MIN = 5;  // non-vacuity floor for (i): index.html carries 11 tiles in the grid.
+const MANAGE_TILE_MIN = 5;  // non-vacuity floor for (i) on the «Система» pane (6 tiles); the other panes set their own `tileMin` in SURFACES.
 const FONT_MIN = 11;    // HIG minimum readable text size, CSS px. 11 is a FLOOR,
                         // not a target — text AT 11px passes (< FONT_MIN fails).
 const CONTRAST_MIN = 4.5;  // WCAG 2.1 AA for normal-size text.
@@ -275,6 +275,8 @@ const CONTRAST_WHITELIST = [
     reason: 'Kernel «Обновить загрузочное ядро» (added 1.0.5.59) when the running kernel artifact is not valid: renderKernelControl (app/services.js) sets btn.disabled=true → .btn:disabled opacity .4 (main.css). Same disabled-control case as the sibling .kernel-apply-inline above (WCAG 1.4.3 exemption); the ENABLED button is --text on --bg-panel ≈ 12:1. floor 2.0 ratchets the measured worst (2.46 light / 3.40 dark).' },
   { match: '#web-upd-apply-btn', floor: 1.7,
     reason: '«Обновление веб» → «Применить» while the last check found nothing to apply: since 1.0.6.37 (a7183c1) the button is rendered DISABLED instead of hidden — webUpdSetOnlineApplyEnabled (app/status.js) sets btn.disabled=true whenever webUpdResolveAvailable(_webUpdLastCheck) !== true, which is every render in this harness (the CGI stub carries no check payload) → .btn:disabled opacity .4 (main.css) — WCAG 1.4.3 disabled-control exemption, the .kernel-apply-inline case. The ENABLED pair is AA in both themes (#ffd60a on --warn-btn-bg #2a1e00 = 11.58:1 dark; #b45309 on #fff8e6 = 4.74:1 light). floor 1.7 ratchets the measured worst (1.78 light / 2.98 dark, audit 2026-09-08 C3).' },
+  { match: '#agentapi-copy', floor: 2.0,
+    reason: '«API для ИИ-агентов» card «Скопировать конфиг MCP» (added 1.0.7.1) before a token exists: the markup ships it disabled and app/agentapi.js enables it only after «Создать токен» returns a secret, which the {} stub never does → .btn:disabled opacity .4 (main.css) — WCAG 1.4.3 disabled-control exemption, the .kernel-refresh-inline case (same plain .btn). The ENABLED pair is AA in both themes (#f2f2f7 on #2c2c2e = 12.49:1 dark; #1c1c1e on #f2f2f7 = 15.25:1 light, measured 2026-10-07). floor 2.0 ratchets the measured worst (2.46 light / 3.40 dark).' },
   // NOTE: no #cloud-btn-activate entry — it lives inside a collapsed
   // <details id="cloud-token-fallback"> (installer-only token fallback) that
   // the harness never opens, so its disabled low-contrast run is never
@@ -382,14 +384,25 @@ const MANAGEMENT_SERVICES = {
   ],
 };
 
+// «Управление» is five sub-panes since the sub-nav split (Система / Облако /
+// Умный дом / Службы / Обновление) and only the selected one is rendered, so
+// each pane is its own surface. Measuring only the default «Система» pane left
+// the other four under no test while the ledgers still excused their buttons
+// (stale entries), and the services column check read the hidden rows of
+// #svc-ctl-list — all at x=0, a vacuous pass. `tileMin` is the per-pane
+// non-vacuity floor for the one-column check (i).
 const SURFACES = [
-  { id: 'dashboard', assertCards: true, assertColumns: false },
-  { id: 'management', assertCards: false, assertColumns: true },
+  { id: 'dashboard', kind: 'dashboard', assertCards: true, assertColumns: false },
+  { id: 'management', kind: 'management', sub: 'system', tileMin: 5, assertCards: false, assertColumns: false },
+  { id: 'management-cloud', kind: 'management', sub: 'cloud', tileMin: 1, assertCards: false, assertColumns: false },
+  { id: 'management-home', kind: 'management', sub: 'home', tileMin: 1, assertCards: false, assertColumns: false },
+  { id: 'management-services', kind: 'management', sub: 'services', tileMin: 1, assertCards: false, assertColumns: true },
+  { id: 'management-update', kind: 'management', sub: 'update', tileMin: 1, assertCards: false, assertColumns: false },
 ];
 
 // ── In-page setup (runs in the browser) ─────────────────────────────────────
 function pageSetup(arg) {
-  const { surface, theme, variant, states } = arg;
+  const { surface, sub, theme, variant, states } = arg;
   document.documentElement.setAttribute('data-theme', theme);
   if (window.applyVariantVisibility) window.applyVariantVisibility(variant);
   if (surface === 'dashboard') {
@@ -399,13 +412,14 @@ function pageSetup(arg) {
     if (window.applyServicesStatus) window.applyServicesStatus(states.services);
   } else if (surface === 'management') {
     if (window.switchTab) window.switchTab('system');
+    if (sub && sub !== 'system' && window.systemSelectSub) window.systemSelectSub(sub);
     if (window.renderServicesControl) window.renderServicesControl(states.management);
   }
 }
 
 // ── In-page measurement (runs in the browser) ───────────────────────────────
 function pageMeasure(arg) {
-  const { surface, TOUCH_MIN, EPS, CLIP_EPS, HCLIP_EPS, CENTRE_EPS, FONT_MIN,
+  const { surface, sub, TOUCH_MIN, EPS, CLIP_EPS, HCLIP_EPS, CENTRE_EPS, FONT_MIN,
           KPI_CENTRE_MAX_W, KPI_TILE_VAL_SEL, MANAGE_ONE_COL_MAX_W,
           wlSelectors, wlFont } = arg;
   const vw = window.innerWidth;
@@ -520,7 +534,7 @@ function pageMeasure(arg) {
   let manageTiles = null;
   if (surface === 'management' && vw <= MANAGE_ONE_COL_MAX_W) {
     manageTiles = [];
-    const grid = document.querySelector('.system-manage-grid');
+    const grid = document.querySelector('#sys-pane-' + (sub || 'system') + ' .system-manage-grid');
     if (grid) {
       const gr = grid.getBoundingClientRect();
       const gcs = getComputedStyle(grid);
@@ -590,7 +604,10 @@ function pageMeasure(arg) {
   // (c) services-control column alignment (management surface)
   let svcColumns = null;
   if (surface === 'management') {
-    const rows = [...document.querySelectorAll('.svc-ctl-row')];
+    // Visible rows only: a hidden pane's rows all report left=0 and would align
+    // trivially (the vacuous pass this check used to give).
+    const rows = [...document.querySelectorAll('.svc-ctl-row')]
+      .filter((r) => visible(r, r.getBoundingClientRect()));
     if (rows.length) {
       const col = (r, pick) => { const el = pick(r); return el ? Math.round(el.getBoundingClientRect().left * 100) / 100 : null; };
       svcColumns = {
@@ -841,7 +858,7 @@ async function run() {
           await page.setViewportSize({ width: vp.width, height: vp.height });
           await page.goto(`${BASE}/index.html`, { waitUntil: 'domcontentloaded' });
           await page.evaluate(pageSetup, {
-            surface: surface.id, theme, variant,
+            surface: surface.kind, sub: surface.sub, theme, variant,
             states: {
               priority: DASHBOARD_PRIORITY, network: DASHBOARD_NETWORK,
               services: DASHBOARD_SERVICES, management: MANAGEMENT_SERVICES,
@@ -866,7 +883,7 @@ async function run() {
           shots.push(shotPath);
 
           const m = await page.evaluate(pageMeasure, {
-            surface: surface.id, TOUCH_MIN, EPS, CLIP_EPS, HCLIP_EPS, CENTRE_EPS, FONT_MIN,
+            surface: surface.kind, sub: surface.sub, TOUCH_MIN, EPS, CLIP_EPS, HCLIP_EPS, CENTRE_EPS, FONT_MIN,
             KPI_CENTRE_MAX_W, KPI_TILE_VAL_SEL, MANAGE_ONE_COL_MAX_W, wlSelectors, wlFont,
           });
 
@@ -951,7 +968,7 @@ async function run() {
           // like its (a)/(e) siblings. Non-empty guard GATES everywhere: a cell
           // measuring no overflow-x:hidden|clip box at all is a rotted selector or
           // an unrendered surface, never a pass.
-          const hclipGate = vp.overflowGate || surface.id === 'management';
+          const hclipGate = vp.overflowGate || surface.kind === 'management';
           if (m.hclipBoxCount === 0) {
             failures.push(`[${cellName}] no overflow-x:hidden|clip boxes measured for the intra-box clipping check — selector rotted or the surface did not render`);
           }
@@ -969,8 +986,9 @@ async function run() {
           // guard: fewer than MANAGE_TILE_MIN tiles means the grid or its tile
           // class rotted, not a one-column layout.
           if (m.manageTiles) {
-            if (m.manageTiles.length < MANAGE_TILE_MIN) {
-              failures.push(`[${cellName}] management one-column: only ${m.manageTiles.length} .system-manage-grid > .system-manage-tile tiles measured (floor ${MANAGE_TILE_MIN}) — the grid or its tile class rotted`);
+            const tileMin = surface.tileMin || MANAGE_TILE_MIN;
+            if (m.manageTiles.length < tileMin) {
+              failures.push(`[${cellName}] management one-column: only ${m.manageTiles.length} .system-manage-grid > .system-manage-tile tiles measured (floor ${tileMin}) — the grid or its tile class rotted`);
             } else {
               for (const t of m.manageTiles) {
                 if (Math.abs(t.off) > EPS) {
@@ -1031,7 +1049,7 @@ async function run() {
         await page.setViewportSize({ width: 1440, height: 900 });
         await page.goto(`${BASE}/index.html`, { waitUntil: 'domcontentloaded' });
         await page.evaluate(pageSetup, {
-          surface: surface.id, theme, variant: 'sa02m-2eth',
+          surface: surface.kind, sub: surface.sub, theme, variant: 'sa02m-2eth',
           states: {
             priority: DASHBOARD_PRIORITY, network: DASHBOARD_NETWORK,
             services: DASHBOARD_SERVICES, management: MANAGEMENT_SERVICES,

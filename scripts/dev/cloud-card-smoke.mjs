@@ -283,7 +283,11 @@ async function runControlPlacement(browser, base) {
     await page.evaluate(() => {
       document.querySelectorAll('.tab-pane').forEach((p) => p.classList.remove('active'));
       document.getElementById('tab-system').classList.add('active');
-      window.cloudTabInit();
+      // «Управление» renders only its selected sub-pane (1.0.7.0). Select
+      // «Облако» the way the sub-nav does: it shows the pane and starts both
+      // cloud.js and the Alice poll — the control's data rides that poll
+      // (sa02mAliceOnData), which nothing else starts since the split.
+      window.systemSelectSub('cloud');
     });
     console.log(`\n[${theme}] «Управление из облака» placement`);
     for (const c of CTRL_CASES) {
@@ -428,6 +432,9 @@ async function runAliceStandDown(browser, base) {
     await page.evaluate(() => {
       document.querySelectorAll('.tab-pane').forEach((p) => p.classList.remove('active'));
       document.getElementById('tab-system').classList.add('active');
+      // The «Яндекс Алиса» card lives in the «Умный дом» sub-pane (1.0.7.0);
+      // selecting it (as the sub-nav does) also starts the Alice poll.
+      window.systemSelectSub('home');
     });
     // Reached state, never a bare timeout: the card is rendered from its poll.
     await page.waitForFunction(() => document.getElementById('alice-conn-state').textContent.trim() === 'Подключено', null, { timeout: 12000 });
@@ -510,6 +517,9 @@ async function run() {
         await page.evaluate(() => {
           document.querySelectorAll('.tab-pane').forEach((p) => p.classList.remove('active'));
           document.getElementById('tab-system').classList.add('active');
+          // «Управление» renders only its selected sub-pane (1.0.7.0); the card
+          // lives in «Облако», hidden under the default «Система».
+          window.systemShowSub('cloud');
           window.cloudTabInit();
         });
         await page.waitForFunction(() => document.getElementById('cloud-conn-state').textContent.trim() === 'Подключено', null, { timeout: 8000 });

@@ -341,7 +341,8 @@ async function openPage(browser, base, { width = 1280, theme = 'dark' } = {}) {
     if (t === 'light') document.documentElement.setAttribute('data-theme', 'light');
     else document.documentElement.removeAttribute('data-theme');
   }, theme);
-  await page.evaluate(() => window.switchTab('system'));
+  // «Управление» renders only its selected sub-pane (1.0.7.0): the card lives in «Умный дом».
+  await page.evaluate(() => { window.switchTab('system'); window.systemSelectSub('home'); });
   return { ctx, page, S };
 }
 
@@ -503,7 +504,8 @@ async function runStateMatrix(browser, base, theme) {
     await page.evaluate(() => window.switchTab('dashboard'));
     s = await readCard(page);
     check(!s.codeInDom && s.qrRects === 0, `${theme}/code: removed from the DOM on tab leave (inDom=${s.codeInDom})`);
-    await page.evaluate(() => window.switchTab('system'));
+    // «Управление» renders only its selected sub-pane (1.0.7.0): the card lives in «Умный дом».
+  await page.evaluate(() => { window.switchTab('system'); window.systemSelectSub('home'); });
   }
   check(S.errors.length === 0, `${theme}: no page errors (${S.errors.join(' | ')})`);
   await ctx.close();
