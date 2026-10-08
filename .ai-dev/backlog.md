@@ -1222,3 +1222,19 @@ commit's diff of this file).
 - [OPEN] 2026-10-07 **[LOW] CE-02m-3 firmware docs** (not ours; relay to the CE-02m-3 session): README reg 122 says classic/Fast only vs 3-state in MODBUS_VARIABLES; README 560–571 «raw» vs 563–565 primary; hours snapshot «every 6 h» (README) vs hourly (MODBUS_VARIABLES); MCU temp 124 doc lacks «0.1 °C». Plus the inactive-energy truncation (648–679) found by the energy planner (`.ai-dev/plans/ce-energy-unit.md` §1 «Попутный дефект»).
 
 - [OPEN] 2026-10-07 **[LOW] vPLC asks for a bridge device type for Wilo SK712 drainage cabinets (Modbus RTU).** Their adapter is written against a proposed control set (vPLC `vplc/docs/UNITS_API.md` §5.4: `tank_level`, `pump1_run/pump2_run/pump1_alarm/pump2_alarm`, `overflow`, `manual`, frequency/hours, `ack`). SA-02m has no SK712 type; the cheapest path is a `type: template` descriptor in the shared devices catalogue (`CYNTRON-git/devices`, `docs/contracts/template-device.md`) — control names are then the descriptor's channel names, so agree the names in the descriptor, not in the bridge. Needs the SK712 Modbus map (not in any declared sibling). Nothing built; recorded from the vPLC session's message.
+
+- [open, 2026-10-08, flasher UX, low] A CE-02m-3 wired to the panel through its EXTERNAL (top) RS-485 connector
+  cannot be flashed from the panel: that connector is the meter's AUX port (USART1) and the shared bootloader
+  listens on USART2 (end-face bus) only; CE app ≤ 1.0.7.10 even ACKs reg 129 on AUX without resetting (fixed on
+  the app side in CE 1.0.7.11). Today the panel's flasher fails honestly (by-serial info block → Modbus exc 2)
+  but with no hint. Surface «СЭ подключён внешним разъёмом — прошивка только по торцевой шине» when the scan sees
+  a CE whose BL never answers at 247 after reg 129. Bench record: CE repo BUGLOG 2026-10-08, runbook
+  `scripts/hw/RUNBOOK_gateway_flash_1.0.7.11.md`.
+
+- [open, 2026-10-08, from vPLC, Operator decision, contract change] `devices.summary` across the Wh unit change:
+  a window that contains the 2026-10-08 transition returns a meaningless `delta` (rows before it are in the
+  old 1/320 unit, so the §6 non-negative-step sum adds old-unit steps — bench .135: 238 kWh for 24 h at 32 W).
+  Accepted on 2026-10-07 («archives stay, counter break accepted»); vPLC asks for a break signal so clients stop
+  summing across it: either `break: true` / `unit_changed` on the summary object when the window straddles a
+  unit change, or a new series started at the change. Needs the Operator's word (contract `devices-history-api.md`
+  §6 + test `test_ce_energy_summary_break.py`); until then clients treat straddling windows as unreliable.
