@@ -25,6 +25,7 @@ from . import bus_mode
 from . import carel_poll
 from . import dtv_registers
 from . import led_poll
+from .firmware_repo import version_tuple
 from .flash_protocol import FlasherProtocol
 from .modbus_io import (
     coil_bits_from_payload,
@@ -75,6 +76,81 @@ CE_INPUT_START = 500
 CE_INPUT_COUNT = 48
 CE_CFG_START = 553
 CE_CFG_COUNT = 7
+
+# CT-ratio block, Holding 557-559 (K×1000). Firmware <= 1.0.7.4 persisted it to
+# the EEPROM inline from the Modbus handler, which runs in interrupt context with
+# the tick frozen: one FC06 hung the meter until the WWDG reset it (CE-02m-3
+# CHANGELOG 1.0.7.5). 553-556 went through the deferred main-loop write on those
+# versions too, so only this block is gated. From 1.0.7.5 the FC06 is ACKed
+# before the EEPROM write, and a failed persist shows only on Input 65519.
+CE_CT_RATIO_REGS = frozenset((557, 558, 559))
+CE_CT_WRITE_MIN_FW = (1, 0, 7, 5)
+CE_CT_WRITE_MIN_FW_TEXT = "1.0.7.5"
+CE_CT_RATIO_DEFAULT = 4000  # factory K×1000; the meter stores a written 0 as 4000
+E_CE_FW_TOO_OLD_FOR_CT_WRITE = "ce_fw_too_old_for_ct_write"
+INP_EEPROM_HEALTH = 65519  # family EEPROM-health word, read-only, sticky until reset
+EEP_HEALTH_STREAK_MASK = 0xF000  # consecutive failed EEPROM ops; 0 after a success
+# The firmware's own durability procedure is «write, wait ~2 s, read 65519» and
+# the deferred persist lands «до ~1–2 с» — the margin keeps the read past it.
+CE_PERSIST_SETTLE_S = 2.5
+
+# Input 510-513 (A x1000, uint16) saturate at 65534 = 65.534 A (65535 is the
+# firmware's SPI-failure sentinel). Past it only the x10 twin 514-517 holds the
+# current, and only from 1.0.7.5 — before, the twin was derived from the clamped
+# value and saturated with it, so older firmware shows 65.534 A at the ceiling.
+# Same rule as bridge_dtv_ce._current_amps.
+CE_CURRENT_CEILING_MA = 65534
+CE_CURRENT_FULL_RANGE_FW = (1, 0, 7, 5)
+
+
+class CeFirmwareTooOldForCtWrite(ValueError):
+    """Refusal of a CT-ratio write: the meter's firmware would reset on it.
+
+    A ValueError, so the generic route answer stays 400; the holding route adds
+    `error_code` / `fw_version` so the window can tell this refusal apart."""
+
+    error_code = E_CE_FW_TOO_OLD_FOR_CT_WRITE
+
+    def __init__(self, fw_version: str) -> None:
+        self.fw_version = fw_version
+        super().__init__(
+            f"Прошивка CE-02м-3 {fw_version}: запись коэффициентов ТТ отклонена — "
+            f"до версии {CE_CT_WRITE_MIN_FW_TEXT} она перезагружает устройство. Обновите прошивку."
+        )
+
+
+def _ce_ct_write_supported(app_version: Optional[str]) -> bool:
+    vt = version_tuple(str(app_version or ""))
+    return vt is not None and vt >= CE_CT_WRITE_MIN_FW
+
+
+def _ce_require_ct_write_firmware(send, slave: int) -> None:
+    """Read 320-323 live and refuse before any CT-ratio write reaches older firmware.
+
+    Live, not the identity fallback: a scan row may predate a re-flash, and an
+    unreadable version is refused too — the cost of a wrong guess is a reset."""
+    payload, err = read_holding(send, slave, REG_APP_VERSION, REG_APP_VERSION_COUNT, 900)
+    version = "—" if err or not payload else FlasherProtocol.parse_app_version_from_holding_payload(payload)
+    if not _ce_ct_write_supported(version):
+        raise CeFirmwareTooOldForCtWrite(version)
+
+
+def _ce_ct_persist_check(send, slave: int, reg: int) -> Dict[str, Any]:
+    """Wait out the deferred persist, then read Input 65519 once.
+
+    Only a zero word confirms the write landed. A non-zero streak means the most
+    recent EEPROM operation failed. Sticky bits with a zero streak are a failure
+    seen earlier since power-on — the word cannot say whether THIS write landed."""
+    time.sleep(CE_PERSIST_SETTLE_S)
+    regs = _read_regs(send, slave, INP_EEPROM_HEALTH, 1, input_regs=True, timeout_ms=800)
+    if not regs:
+        return {"reg": reg, "status": "unknown", "reason": "read_failed", "health_word": None}
+    word = int(regs[0]) & 0xFFFF
+    if word == 0:
+        return {"reg": reg, "status": "persisted", "health_word": 0}
+    if word & EEP_HEALTH_STREAK_MASK:
+        return {"reg": reg, "status": "not_persisted", "health_word": word}
+    return {"reg": reg, "status": "unknown", "reason": "prior_failure", "health_word": word}
 
 DO_COIL_START = 1
 INP_DO_FIRST = 1
@@ -782,10 +858,19 @@ def _read_network(send, slave: int, fallback_device: Dict[str, Any]) -> Dict[str
     }
 
 
-def _read_ce_snapshot(send, slave: int) -> Dict[str, Any]:
+def _read_ce_snapshot(send, slave: int, app_version: Optional[str] = None) -> Dict[str, Any]:
     regs = _read_regs(send, slave, CE_INPUT_START, CE_INPUT_COUNT, input_regs=True, timeout_ms=1100)
     if len(regs) < CE_INPUT_COUNT:
         regs = list(regs) + [0] * (CE_INPUT_COUNT - len(regs))
+    vt = version_tuple(str(app_version or ""))
+    full_range = vt is not None and vt >= CE_CURRENT_FULL_RANGE_FW
+
+    def _current_a(idx: int) -> float:
+        # regs[10..13] = Input 510-513; their x10 twins 514-517 sit 4 words on.
+        raw_ma = int(regs[idx]) & 0xFFFF
+        if raw_ma == CE_CURRENT_CEILING_MA and full_range:
+            return (int(regs[idx + 4]) & 0xFFFF) / 10.0
+        return raw_ma / 1000.0
 
     def _s16(v: int) -> int:
         return v - 0x10000 if v >= 0x8000 else v
@@ -806,10 +891,10 @@ def _read_ce_snapshot(send, slave: int) -> Dict[str, Any]:
             "uab": regs[6] / 10.0,
             "ubc": regs[7] / 10.0,
             "uca": regs[8] / 10.0,
-            "ia": regs[10] / 1000.0,
-            "ib": regs[11] / 1000.0,
-            "ic": regs[12] / 1000.0,
-            "in": regs[13] / 1000.0,
+            "ia": _current_a(10),
+            "ib": _current_a(11),
+            "ic": _current_a(12),
+            "in": _current_a(13),
             "pa": _i32(regs[18], regs[19]),
             "pb": _i32(regs[20], regs[21]),
             "pc": _i32(regs[22], regs[23]),
@@ -837,6 +922,12 @@ def _read_ce_snapshot(send, slave: int) -> Dict[str, Any]:
             "kt_a": int(cfg[4]) & 0xFFFF,
             "kt_b": int(cfg[5]) & 0xFFFF,
             "kt_c": int(cfg[6]) & 0xFFFF,
+        },
+        # A hint for the window only; write_allowed_holding re-reads the version
+        # live before the write, and that check is the one that holds.
+        "ct_write": {
+            "supported": _ce_ct_write_supported(app_version),
+            "min_fw": CE_CT_WRITE_MIN_FW_TEXT,
         },
     }
 
@@ -1884,7 +1975,7 @@ def snapshot_for_device(
         }
         detail_out = detail
         if kind == "ce":
-            payload["ce"] = _read_ce_snapshot(send, slave)
+            payload["ce"] = _read_ce_snapshot(send, slave, app_version=identity["app_version"])
             detail_out = "full"
         elif kind == "dtv":
             payload["dtv"] = _read_dtv_snapshot(send, slave)
@@ -2021,13 +2112,20 @@ def write_allowed_holding(
             )
         if reg not in allowed_regs:
             raise ValueError("Запись этого регистра через веб-окно не разрешена")
+        ce_ct_write = kind == "ce" and reg in CE_CT_RATIO_REGS
+        if ce_ct_write:
+            _ce_require_ct_write_firmware(send, slave)
         target_val = int(value) & 0xFFFF
         err = write_single(send, slave, reg, target_val, 700)
         if err:
             raise RuntimeError(f"Запись рег. {reg}: {err}")
+        persist = _ce_ct_persist_check(send, slave, reg) if ce_ct_write else None
     finally:
         close_transport()
-    return snapshot_for_device(device_path, device, snapshot_detail="full")
+    snapshot = snapshot_for_device(device_path, device, snapshot_detail="full")
+    if persist is not None:
+        snapshot["ce_persist"] = persist
+    return snapshot
 
 
 def write_bus_mode(

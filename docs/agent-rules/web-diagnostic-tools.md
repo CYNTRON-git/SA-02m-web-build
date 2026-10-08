@@ -47,7 +47,7 @@ To ASSERT layout (not just eyeball it) and to get full-page screenshots per
 viewport for a human to review the вёрстка, use the geometry driver
 `.ai-dev/quality/checks/ui-layout.mjs` (quality row `ui-layout`, review beat):
 `npm run ui-layout:install` once, then `npm run ui-layout`. It renders the
-dashboard + Управление services block across phone/tablet/desktop × both themes
+dashboard + every «Управление» sub-pane (one surface each) across phone/tablet/desktop × both themes
 × both HW variants and measures real `getBoundingClientRect` / Range geometry.
 
 GATED checks (a real violation exits non-zero, gated at the supported widths):

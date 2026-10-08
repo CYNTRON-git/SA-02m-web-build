@@ -14,6 +14,9 @@ GET /api/v1/jobs/<id>. Неверные аргументы — ошибка ср
 
 rules.run и rules.delete — {"id": "<id>"}. rules.upsert — {"scenarios": [строка]}.
 mqtt.scan требует port (/dev/…). mqtt.publish — device, control, value.
+devices.history — device_id и group (energy, climate, ahu, mtd) или kind
+(carel, mr; к нему metric, channel), окно — range или window_s.
+devices.summary — range, device_id, kwh_rub. Ответ демона — строка JSON в body.
 
 Топики MQTT — Wiren Board: /devices/<id>/controls/<name>. Запись значения —
 публикация в .../on без retain (mqtt.publish). Локальный брокер 127.0.0.1:1883

@@ -225,6 +225,7 @@ class TestControlsInventory(unittest.TestCase):
                 "sys_mode",
                 "fan_supply",
                 "fan_exhaust",
+                "alarm_reset",
             },
         )
 

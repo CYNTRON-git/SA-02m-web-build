@@ -283,7 +283,8 @@ const CE02M3_UNITS = {
   power_a: 'W', power_b: 'W', power_c: 'W', power_total: 'W',
   reactive_a: 'var', reactive_b: 'var', reactive_c: 'var', reactive_total: 'var',
   pf_a: '', pf_b: '', pf_c: '', pf_total: '', frequency: 'Hz',
-  // Bridge publishes raw Wh / varh / VAh (docs/MQTT_TOPICS.md §CE-02m-3).
+  // Bridge publishes primary-circuit Wh / varh / VAh, converted from the meter's
+  // counter units (docs/contracts/ce-energy-mqtt.md).
   energy_active_import: 'Wh', energy_active_export: 'Wh',
   energy_reactive_import: 'varh', energy_reactive_export: 'varh',
   energy_apparent: 'VAh',
@@ -293,9 +294,11 @@ const CE02M3_CHANNELS = [
   {key:'voltage_a',   label:'Ua', group:'voltages'},
   {key:'voltage_b',   label:'Ub', group:'voltages'},
   {key:'voltage_c',   label:'Uc', group:'voltages'},
-  {key:'voltage_ab',  label:'Uab',group:'voltages'},
-  {key:'voltage_bc',  label:'Ubc',group:'voltages'},
-  {key:'voltage_ca',  label:'Uca',group:'voltages'},
+  // Line voltages have their own bridge switch (channels_enabled.line_voltages,
+  // bridge_dtv_ce.py) — under `voltages` an unticked Uab stopped Ua/Ub/Uc.
+  {key:'voltage_ab',  label:'Uab',group:'voltages', en:'line_voltages'},
+  {key:'voltage_bc',  label:'Ubc',group:'voltages', en:'line_voltages'},
+  {key:'voltage_ca',  label:'Uca',group:'voltages', en:'line_voltages'},
   {key:'current_a',   label:'Ia', group:'currents'},
   {key:'current_b',   label:'Ib', group:'currents'},
   {key:'current_c',   label:'Ic', group:'currents'},
@@ -1960,6 +1963,7 @@ const CAREL_CONTROLS = [
   {name:'alarm',             label:'Тревога',                    units:'',   write:'',       fam:'both'},
   {name:'alarm_count',       label:'Число тревог',               units:'',   write:'',       fam:'both'},
   {name:'alarm_text',        label:'Текст тревоги',              units:'',   write:'',       fam:'both'},
+  {name:'alarm_reset',       label:'Сброс тревог',               units:'',   write:'',       fam:'both'},
 ];
 
 function carelFamilyOf(dev) {
@@ -1996,7 +2000,8 @@ function countChannelsEnabled(dev) {
   if (dev.type === 'ce02m3') {
     const en = dev.channels_enabled || {};
     let n = 0;
-    if (en.voltages !== false) n += 6;
+    if (en.voltages !== false) n += 3;
+    if (en.line_voltages !== false) n += 3;
     if (en.currents !== false) n += 4;
     if (en.power_active !== false) n += 4;
     if (en.power_reactive !== false) n += 4;
@@ -2089,6 +2094,11 @@ function writeTemplateControl(dev, ctrl, raw) {
     .catch(() => showToast('Нет связи с сервером', 'err'));
 }
 
+/* The bridge clamps a fan_supply write up to this floor (bridge_carel.py
+   _wb_fan), so below it the box would write a value the user did not type.
+   Copy of sa02m_carel.carel_ahu.FAN_PCT_MIN, pinned by js-unit-carel-card-ladder. */
+const CAREL_FAN_PCT_MIN = 20;
+
 /** Payload for mqtt_set.cgi. '' = empty field (no write). null = refuse. */
 function carelWritePayload(dev, ch, raw) {
   const text = String(raw == null ? '' : raw).trim().replace(',', '.');
@@ -2104,7 +2114,7 @@ function carelWritePayload(dev, ch, raw) {
   }
   if (ch.write === 'pct') {
     const v = Math.round(n);
-    if (v < 0 || v > 100) return null;
+    if (v < CAREL_FAN_PCT_MIN || v > 100) return null;
     return String(v);
   }
   if (ch.write === 'step') {
@@ -2119,7 +2129,7 @@ function carelNumberInput(dev, ch) {
   const limits = ch.write === 'temp'
     ? {min: '0', max: carelFamilyOf(dev) === 'uaria' ? '50' : '99', step: '0.5'}
     : ch.write === 'pct'
-      ? {min: '0', max: '100', step: '1'}
+      ? {min: String(CAREL_FAN_PCT_MIN), max: '100', step: '1'}
       : {min: '1', max: '10', step: '1'};
   return h('input', {
     'type': 'number',
@@ -2532,8 +2542,13 @@ function buildCE02M3Channels(dev, container) {
     h('input', {'type': 'number', 'class': 'mqtt-input-small', 'value': dev.ct_ratio || 4000,
       'oninput': e => { dev.ct_ratio = Number(e.target.value); markUnsaved(); }}),
   ));
-  ctPack.body.appendChild(h('div', {'class': 'mqtt-ct-hint'},
-    '(4000 = CT 4А, 1000 = 1А)'));
+  // CE-02m-3 MODBUS_VARIABLES.txt (Holding 557-559): I_primary = I_chip × K/1000,
+  // factory K=4000 = an 80 A CT, 1000 = no scaling. The device already scales to
+  // primary; this value is only published as ct_ratio_x1000 (bridge_dtv_ce.py) —
+  // the device's own per-phase ratios are written in the flasher window.
+  ctPack.body.appendChild(h('div', {'class': 'mqtt-ct-hint',
+    'title': 'Только для справки в MQTT: счётчик сам пересчитывает токи в первичную цепь. Коэффициенты счётчика по фазам задаются в окне настройки «Устройства RS-485».'},
+    '4000 = ТТ 80 А (заводской), 1000 = ×1 · справочно'));
   row.appendChild(ctPack.widget);
 
   const groupMeta = {
@@ -2548,7 +2563,7 @@ function buildCE02M3Channels(dev, container) {
   // Poll intervals row
   const intervals = h('div', {'class':'mqtt-form-row'},
     h('label', {}, 'Опрос мощности:'),
-    h('input', {'type':'number','class':'mqtt-input-small','value': dev.poll_power_s || 1,
+    h('input', {'type':'number','class':'mqtt-input-small','value': dev.poll_power_s || 5,
       'oninput': e => { dev.poll_power_s = Number(e.target.value); markUnsaved(); }}),
     h('span', {}, 'с'),
     h('label', {'style':'margin-left:12px'}, 'Счётчики:'),
@@ -2569,7 +2584,8 @@ function buildCE02M3Channels(dev, container) {
     const gk = ch.group;
     const topic = topicPath(dev.id, ch.key);
     // Map channel to channels_enabled key
-    const enKey = gk === 'voltages' ? 'voltages'
+    const enKey = ch.en ? ch.en
+      : gk === 'voltages' ? 'voltages'
       : gk === 'currents' ? 'currents'
       : gk === 'power' ? 'power_active'
       : gk === 'reactive' ? 'power_reactive'
@@ -3125,7 +3141,7 @@ function addGatewayDeviceFromScan(scanDev, type, name, gateway) {
     dev.sensors_present = DTV_SENSORS.map(s => s.key);
   } else if (type === 'ce02m3') {
     dev.fast_modbus = false;
-    dev.poll_power_s = 1; dev.poll_energy_s = 60; dev.poll_diag_s = 120;
+    dev.poll_power_s = 5; dev.poll_energy_s = 60; dev.poll_diag_s = 120;
     dev.ct_ratio = 4000; dev.phases = ['A','B','C']; dev.channels_enabled = {};
   } else if (type === 'led') {
     dev.poll_s = 2;
@@ -3176,7 +3192,7 @@ function addDeviceFromScan(scanDev, type, name, port, baud, gateway) {
   } else if (type === 'ce02m3') {
     // CE: classic first; FMB only with explicit fast_modbus:true after stable poll.
     dev.fast_modbus = false;
-    dev.poll_power_s = 1; dev.poll_energy_s = 60; dev.poll_diag_s = 120;
+    dev.poll_power_s = 5; dev.poll_energy_s = 60; dev.poll_diag_s = 120;
     dev.ct_ratio = 4000; dev.phases = ['A','B','C']; dev.channels_enabled = {};
   } else if (type === 'led') {
     // PlayCtrl 416 + colour; text block is slower. Same baud as the COM's
@@ -3625,7 +3641,7 @@ function confirmAddDevice() {
     dev.sensors_present = DTV_SENSORS.map(s => s.key);
   } else if (type === 'ce02m3') {
     dev.fast_modbus = false;
-    dev.poll_power_s = 1;
+    dev.poll_power_s = 5;
     dev.poll_energy_s = 60;
     dev.poll_diag_s = 120;
     dev.ct_ratio = 4000;

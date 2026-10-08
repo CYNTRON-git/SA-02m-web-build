@@ -230,6 +230,27 @@ def energy_deltas(
     return acc
 
 
+def energy_total(values: list[float] | Any) -> float:
+    """ΔE over a whole window: the sum of non-negative steps of the register,
+    under the same `_counter_step` rule as the bars (a drop rebases, a one-sample
+    dip is a glitch). No bucket adjacency — the window is one span. `values`
+    are cumulative kWh in time order."""
+    total = 0.0
+    ref: float | None = None
+    low = 0.0
+    dropped = False
+    for value in values:
+        number = _finite(value)
+        if number is None:
+            continue
+        if ref is None:
+            ref = number
+            continue
+        ref, low, dropped, inc = _counter_step(ref, low, dropped, number)
+        total += inc
+    return total
+
+
 def ensure_ce_roll(conn: sqlite3.Connection) -> None:
     conn.executescript(_CREATE)
 

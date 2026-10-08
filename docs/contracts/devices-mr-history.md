@@ -78,7 +78,7 @@ CREATE INDEX IF NOT EXISTS idx_mr_device_ch_ts ON mr_samples(device_id, ch, ts);
 Обзор (`ok:true`): `range`, `group:"all"`, `device:"mr"`, `device_id`,
 `metrics:[…]` — каждый элемент как «один канал» выше со своей `series`.
 
-Экспорт: `GET /api/devices/history/export?kind=mr&device_id=…&range=…&fmt=…` —
+Экспорт: `GET /api/devices/history/export?kind=mr&device_id=…&range=…&format=…` (`xlsx` по умолчанию | `txt` | `tsv` | `text`) —
 тот же общий экспортёр (`export_text` / `export_xlsx`), колонки = включённые
 каналы (`AI <N>, <unit>`), новых форматов нет.
 

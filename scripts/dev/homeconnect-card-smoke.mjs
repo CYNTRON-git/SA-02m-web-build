@@ -307,7 +307,8 @@ async function openPage(browser, base, { width = 1280, theme = 'dark' } = {}) {
     if (t === 'light') document.documentElement.setAttribute('data-theme', 'light');
     else document.documentElement.removeAttribute('data-theme');
   }, theme);
-  await page.evaluate(() => window.switchTab('system'));
+  // «Управление» renders only its selected sub-pane (1.0.7.0): the card lives in «Умный дом».
+  await page.evaluate(() => { window.switchTab('system'); window.systemSelectSub('home'); });
   return { ctx, page, S };
 }
 
@@ -528,7 +529,8 @@ async function runCode(browser, base, theme) {
     await page.evaluate(() => window.switchTab('dashboard'));
     t = await readCard(page);
     check(!t.codeInDom && t.qrRects === 0 && !t.href, `${theme}/code: removed from the DOM on tab leave (inDom=${t.codeInDom})`);
-    await page.evaluate(() => window.switchTab('system'));
+    // «Управление» renders only its selected sub-pane (1.0.7.0): the card lives in «Умный дом».
+  await page.evaluate(() => { window.switchTab('system'); window.systemSelectSub('home'); });
 
     // Hostile or dead links are never drawn.
     const bad = [
@@ -691,7 +693,8 @@ async function runInteractions(browser, base) {
   const g1 = S.gets;
   await page.waitForTimeout(10600);
   check(S.gets === g1, `poll: no status GET in 10.6 s after leaving «Управление» (${S.gets - g1})`);
-  await page.evaluate(() => window.switchTab('system'));
+  // «Управление» renders only its selected sub-pane (1.0.7.0): the card lives in «Умный дом».
+  await page.evaluate(() => { window.switchTab('system'); window.systemSelectSub('home'); });
 
   check(S.errors.length === 0, `interactions: no page errors (${S.errors.join(' | ')})`);
   await ctx.close();

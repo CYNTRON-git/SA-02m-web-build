@@ -54,6 +54,25 @@ class TestControlsPin(unittest.TestCase):
             self.assertRegex(row.group(0), r"write:\s*''")
 
 
+class TestAlarmResetButton(unittest.TestCase):
+    """`alarm_reset` is the one pushbutton: writable on both families, no
+    units, and its coil is never the uAria local-terminal coil."""
+
+    def test_a_writable_pushbutton_on_both_families(self):
+        rows = {row[0]: row for row in cc.CONTROLS}
+        self.assertIn("alarm_reset", rows)
+        _name, wb_type, units, readonly, _fams = rows["alarm_reset"]
+        self.assertEqual(wb_type, "pushbutton")
+        self.assertEqual(units, "")
+        self.assertFalse(readonly)
+        for family in cc.BOTH:
+            self.assertIn("alarm_reset", cc.writable_names(family))
+
+    def test_the_coil_it_pulses_is_never_the_local_terminal(self):
+        for family in cc.BOTH:
+            self.assertNotEqual(ca.alarm_reset_coil(family), ca.COIL_UARIA_LOCAL)
+
+
 class TestPlantStateWords(unittest.TestCase):
     """The words the bridge publishes are the words a binding may declare.
 

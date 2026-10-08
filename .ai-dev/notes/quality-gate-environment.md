@@ -20,6 +20,7 @@ assert inside a row that otherwise ran) still prints PASS for the row:
 |---|---|---|
 | `shellcheck` | `shellcheck` not on `PATH` (whole row SKIP) | Linux CI |
 | `py-unit-*` (pytest-suite.sh), `sh-model-schema` | pytest / a listed dep / `jsonschema` not importable by the first working `python3`/`python`/`py` (whole row SKIP) | Linux CI (`web-quality.yml` installs them) |
+| `py-unit-agent-api` | `test_devices_ops.DevicesSocket` (the fake devices daemon on AF_UNIX that checks the agent's panel-session cookie): Windows CPython has no `socket.AF_UNIX` — partial skip, the row still prints PASS | WSL / Linux CI |
 | `update-deploy-skip` | the mode probe: git-bash cannot represent POSIX modes (whole row SKIP — the live one on a Windows box); also no `python3` | WSL / Linux CI |
 | `update-conditional-restart`, `update-recover-boot`, `web-update-launcher-guard` | no `python3` (whole row SKIP) | Linux CI |
 | `cache-bust-r` | no reference state reachable (no `origin/<ver>`, `origin/<ver-1>`, `origin/main`; whole row SKIP) | the local build beat (CI's clean checkout is toothless by design — the row's own header) |
@@ -35,6 +36,31 @@ assert inside a row that otherwise ran) still prints PASS for the row:
 
 When reporting results, say "skipped", never "passed". A reviewer that reports a
 skipped row as a pass is making a false claim about verification.
+
+## Rows that FAIL (not skip) on a Windows dev box — environment, CI is the authority
+
+Observed 2026-10-07 on git-bash (MINGW64), each row run by hand. They do not
+exit 77, so `run.mjs` and `comment-mutation-proof` count them as RED, and
+every `comment-mutation-proof` case of theirs reports «not green on an
+unmutated tree». Not evidence of a defect, not evidence of health either:
+
+| Row | Exact failure here | Cause |
+|---|---|---|
+| `homekit-trigger`, `homeconnect-trigger` | `FAIL — flock not found (util-linux)` (first line, exit 1) | git-bash ships no `flock` |
+| `homekit-cgi`, `homeconnect-cgi` | `FAIL 5a GET → the dispatch answer, verbatim …` — the CGI answers `{"ok":false,"error":"homekit_api_failed","message":"python dispatch failed or timed out"}` (and the `homeconnect_api_failed` twin) | NOT `flock`: the CGI's python dispatch fails on this box; cause not traced (Windows python under the stubbed CGI is the suspect) |
+
+## `nginx -t` runs only on the board
+
+No dev box here has nginx (git-bash none; WSL Ubuntu-24.04 none, its docker
+daemon not running), and CI does not run it. The site file
+`etc/nginx/network_config.conf` is syntax-checked for the first time on the
+board, at install: `scripts/03-webserver.sh:134`
+(`nginx -t >> "$LOG_FILE" 2>&1 && log OK "nginx config OK"`), and again in
+`scripts/11-devices.sh:72` and the OTA apply/rollback in
+`etc/sa02m-update-runner.sh`. The static gates that read the site file
+(`devices-api-upstream`, `flasher-auth-header-strip`, `vplc-route-contract`)
+pin intent, not syntax — a green beat says nothing about whether nginx accepts
+the file.
 
 ## shellcheck — version skew is real and it has already cost a CI failure
 
@@ -153,6 +179,21 @@ stops the conversion python needs for real files — every sandbox path python
 opens is handed over in mixed form (`cygpath -m`), while `PATH` keeps the MSYS
 form (a `C:/` PATH entry is not searched). Any harness that passes a literal
 absolute POSIX prefix to a shipped python snippet is exposed to this class.
+
+## Red everywhere, not an environment cause — do not file these as «CI is the authority»
+
+A row that is red on every host is a defect to fix, never an entry here. The
+1.0.7.1 review beat met four such rows at once; all four are fixed:
+
+- `cloud-card-smoke`, `homekit-card-smoke`, `homeconnect-card-smoke` — since
+  1.0.7.0 (`a9c5dd4c`) «Управление» renders only the selected sub-pane, and the
+  harnesses opened the tab without selecting «Облако» / «Умный дом», so the
+  cards were measured hidden (`visible=false`, then a screenshot timeout).
+  Fixed in the harnesses (`systemSelectSub`).
+- `sh-modal-layout-smoke` — `the fit has a real margin, not a pixel: 7.5 px
+  headroom (floor 24)` at 1280×720: the «Умный дом» form's preset row had
+  grown the actions pane to 510.5 of 518 px. Fixed in the form (field gap
+  12 → 8 px, main.css), not in the floor.
 
 ## The general rule
 

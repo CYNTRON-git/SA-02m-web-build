@@ -30,6 +30,12 @@ JOURNAL_UNITS = (
     "sa02m-devices-api", "sa02m-devices-logger", "sa02m-telemetry",
     "sa02m-serial-gateway", "nginx", "fcgiwrap",
 )
+# Copies of the devices daemon's RANGES (history_ranges.py) and HISTORY_GROUPS
+# (history_metrics.py) keys: separate trees and deploys, so no import. The daemon
+# turns an unknown range into 1h silently; refusing it here keeps the schema
+# honest. tests/test_devices_ops.py pins both tuples to their homes.
+HISTORY_RANGES = ("1h", "6h", "24h", "7d", "30d", "mtd", "month")
+HISTORY_GROUPS = ("climate", "energy", "ahu", "mtd")
 
 
 def _err(status, error, **extra):
@@ -145,6 +151,83 @@ def _unix(ctx, sock, method, path, body=b""):
     return ctx.unix_request(sock, method, path, body)
 
 
+# devices-api query grammar: key → (JSON schema, accepts(text)). The daemon's
+# handle_history / handle_summary (opt/sa02m-devices/sa02m_devices/api.py) is
+# the home of what each key means; this only shapes what may travel.
+_DEV_ID = re.compile(r"^[A-Za-z0-9_.:-]{1,64}$")
+_DEVICE_KEYS = {
+    "device_id": ({"type": "string", "description": "e.g. ce02m3-COM1-5, carel-COM3-2"},
+                  _DEV_ID.match),
+    "kind": ({"type": "string", "description": "carel | mr (own series paths); other kinds use metric/group"},
+             re.compile(r"^[a-z][a-z0-9_]{0,31}$").match),
+    "metric": ({"type": "string", "description": "one metric id (devices-mr-history.md)"},
+               re.compile(r"^[A-Za-z0-9_]{1,64}$").match),
+    "group": ({"type": "string", "enum": list(HISTORY_GROUPS)},
+              lambda v: v in HISTORY_GROUPS),
+    "range": ({"type": "string", "enum": list(HISTORY_RANGES)},
+              lambda v: v in HISTORY_RANGES),
+    "window_s": ({"type": "integer", "description": "seconds, overrides range; daemon clamps to 60..2592000"},
+                 re.compile(r"^[0-9]{1,8}$").match),
+    "channel": ({"type": "string", "description": "kind=mr: AI channel, 5 or ai_5"},
+                re.compile(r"^(ai_)?[0-9]{1,3}$").match),
+    "kwh_rub": ({"type": "number", "description": "tariff, RUB per kWh"},
+                re.compile(r"^[0-9]{1,6}([.,][0-9]{1,6})?$").match),
+}
+_HISTORY_KEYS = ("device_id", "kind", "metric", "group", "range", "window_s", "channel")
+_SUMMARY_KEYS = ("range", "device_id", "kwh_rub")
+
+
+def _devices_schema(keys, legacy_device=False):
+    props = {k: _DEVICE_KEYS[k][0] for k in keys}
+    if legacy_device:
+        props["device"] = {"type": "string", "deprecated": True,
+                           "description": "legacy alias of device_id"}
+    return {"type": "object", "properties": props}
+
+
+def _devices_query(args, keys):
+    """(query, None), or (None, key) for the first refused value. A key that is
+    absent, null or empty does not travel; `device` stands in for device_id."""
+    pairs = []
+    for key in keys:
+        val = args.get(key)
+        if key == "device_id" and val in (None, ""):
+            val = args.get("device")
+        if val is None or val == "":
+            continue
+        if isinstance(val, bool) or not isinstance(val, (str, int, float)):
+            return None, key
+        text = str(val)
+        if not _DEVICE_KEYS[key][1](text):
+            return None, key
+        pairs.append((key, text))
+    return urllib.parse.urlencode(pairs), None
+
+
+def _devices_get(ctx, name, path, args, keys):
+    query, bad = _devices_query(args, keys)
+    if bad:
+        return _err(400, "bad_request", reason=bad)
+
+    def work():
+        # unix_request carries the agent's own panel service session (Cookie),
+        # which the daemon checks on every listener since 1.0.6.65.
+        sock = os.environ.get("SA02M_DEVICES_SOCK") or "/run/sa02m-devices/api.sock"
+        status, raw = _unix(ctx, sock, "GET", path + ("?" + query if query else ""))
+        # The whole body or an explicit refusal, never a cut string: unix_request
+        # answers 502 response_too_large past its read limit (agent-api.md).
+        if status == 502 and isinstance(raw, str):
+            try:
+                body = json.loads(raw)
+            except ValueError:
+                body = None
+            if isinstance(body, dict) and body.get("error") == "response_too_large":
+                body["hint"] = "narrow range or window_s"
+                return status, body
+        return status, {"ok": status < 400, "body": raw}
+    return ctx.side(name, work)
+
+
 def register_all():
     if register_all.done:
         return
@@ -251,17 +334,20 @@ def _register():
     add(Op("rules.runs", "read", "Scenario run journal", rules_runs))
 
     def history(ctx, args):
-        q = urllib.parse.urlencode({
-            k: str(args[k]) for k in ("device", "t0", "t1", "kind") if args.get(k) is not None
-        })
+        return _devices_get(ctx, "devices.history", "/api/devices/history", args, _HISTORY_KEYS)
 
-        def work():
-            sock = os.environ.get("SA02M_DEVICES_SOCK") or "/run/sa02m-devices/api.sock"
-            status, raw = _unix(ctx, sock, "GET", "/api/devices/history" + ("?" + q if q else ""))
-            return status, {"ok": status < 400, "body": raw[:8000] if isinstance(raw, str) else raw}
-        return ctx.side("devices.history", work)
+    add(Op("devices.history", "read",
+           "Device archive series (sa02m-devices-api /api/devices/history; body = daemon JSON)",
+           history, _devices_schema(_HISTORY_KEYS, legacy_device=True)))
 
-    add(Op("devices.history", "read", "Proxy sa02m-devices-api history", history))
+    def summary(ctx, args):
+        return _devices_get(ctx, "devices.summary", "/api/devices/history/summary", args,
+                            _SUMMARY_KEYS)
+
+    add(Op("devices.summary", "read",
+           "CE-02m-3 period summary: mean phase power, energy delta, cost "
+           "(/api/devices/history/summary)",
+           summary, _devices_schema(_SUMMARY_KEYS)))
 
     def journal(ctx, args):
         unit = str(args.get("unit") or "")

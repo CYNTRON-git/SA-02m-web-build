@@ -76,6 +76,7 @@ CAREL_CONTROLS = (
     "alarm",
     "alarm_count",
     "alarm_text",
+    "alarm_reset",
 )
 
 # MR-02m channel kinds the bridge publishes as `<kind>_<ch>` controls, plus the

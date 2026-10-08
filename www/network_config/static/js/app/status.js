@@ -969,6 +969,22 @@ function applyCachedBackgroundPartsI18n() {
 function applyServicesStatus(d) {
   _lastServicesStatus = d;
   renderServicesDynamic(d);
+  applyVplcNavLink(d);
+}
+
+/* Sidebar «vPLC ↗» (index.html #nav-vplc, a static node outside every
+   renderer-owned container) follows svc_vplc_ui — status.cgi's probe of the
+   vPLC page server: the vplc-plant-ui unit active AND its unix socket
+   /run/vplc-plant-ui/ui.sock (the one nginx /vplc/ proxies to) present, so
+   neither a still-binding unit nor a leftover socket file shows the link.
+   Running → shown; stopped or absent →
+   hidden on the next services poll (the part is cached up to 45 s, so a
+   just-stopped page can still answer 502 until then). A payload without the field (an
+   older backend, the part disabled → "unknown") leaves the link as it is. */
+function applyVplcNavLink(d) {
+  const link = document.getElementById('nav-vplc');
+  if (!link || !d || typeof d.svc_vplc_ui !== 'string' || d.svc_vplc_ui === 'unknown') return;
+  link.hidden = !svcStateIsActive(d.svc_vplc_ui);
 }
 
 window.refreshMainStatusI18n = function () {

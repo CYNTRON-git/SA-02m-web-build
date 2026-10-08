@@ -25,6 +25,21 @@ register_all()
 JOB_EVENTS_RE = re.compile(r"^/api/v1/jobs/([0-9a-f]{16})/events$")
 JOB_RE = re.compile(r"^/api/v1/jobs/([0-9a-f]{16})$")
 MAX_BODY = 8 * 1024 * 1024
+# Most a daemon answer on a unix socket may carry. Anything longer is refused
+# whole: a cut JSON string would reach the caller as a broken document.
+UNIX_READ_LIMIT = 1 << 20
+
+
+def read_capped(resp, limit):
+    """(bytes, over): over is True when the body is longer than limit."""
+    data = resp.read(limit + 1)
+    if len(data) > limit:
+        return data[:limit], True
+    return data, False
+
+
+def too_large_body(limit):
+    return {"ok": False, "error": "response_too_large", "limit_bytes": limit}
 _ALPH = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789"
 
 
@@ -204,7 +219,9 @@ class Ctx:
         try:
             conn.request(method, path, body=raw, headers=headers)
             resp = conn.getresponse()
-            data = resp.read(1 << 20)
+            data, over = read_capped(resp, UNIX_READ_LIMIT)
+            if over:
+                return 502, json.dumps(too_large_body(UNIX_READ_LIMIT))
             return resp.status, data.decode("utf-8", "replace")
         except OSError as exc:
             return 200, json.dumps({"ok": False, "error": "socket", "detail": type(exc).__name__})

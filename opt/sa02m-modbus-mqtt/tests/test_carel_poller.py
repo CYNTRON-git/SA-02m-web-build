@@ -160,6 +160,63 @@ def _errors(pub):
     return {c.args[1]: c.args[2] for c in pub.pub_error.call_args_list}
 
 
+class FakeTimer:
+    """`threading.Timer` stand-in for the alarm-reset release: records what was
+    armed and fires only when a test calls `fire()` — no sleeping, no thread."""
+
+    def __init__(self, interval, function, args=None, kwargs=None):
+        self.interval = interval
+        self.function = function
+        self.args = tuple(args or ())
+        self.kwargs = dict(kwargs or {})
+        self.daemon = False
+        self.started = False
+        self.cancelled = False
+
+    def start(self):
+        self.started = True
+
+    def cancel(self):
+        self.cancelled = True
+
+    def fire(self):
+        self.function(*self.args, **self.kwargs)
+
+
+def pulse_timer_guard():
+    """Patcher replacing the bridge's pulse timer for a whole test module.
+
+    Every roster test that writes "1" to each writable control also presses
+    `alarm_reset`; with a real timer that press would leave a thread that wakes
+    five seconds later and writes to whatever port the pool then holds — over
+    TCP, a connect to the bench address. No real timer may outlive its test.
+    """
+    return mock.patch.object(bridge_carel, "PulseTimer", FakeTimer)
+
+
+_TIMERS = pulse_timer_guard()
+
+
+def setUpModule():
+    _TIMERS.start()
+
+
+def tearDownModule():
+    _TIMERS.stop()
+
+
+def _inline_submit(p):
+    """Run writeback jobs inline; return the queue keys they were submitted under."""
+    keys = []
+
+    def submit(name, job):
+        keys.append(name)
+        job()
+
+    p._wb_submit = submit
+    return keys
+
+
 class TestCrstPoll(unittest.TestCase):
     def setUp(self):
         self.p, self.pub, self.ser = _poller("crst", crst_bank())
@@ -306,6 +363,17 @@ class TestUariaPoll(unittest.TestCase):
         p.poll_io()
         self.assertEqual(_published(pub)["season"], "1")  # coil 17 on = охлаждение
 
+    def test_fan_step_reads_only_the_low_byte_of_hr197(self):
+        # HR197 is a USINT (Set/SF_1): the PLC owns the high byte. The window
+        # masks it (carel_poll), so the bridge must too — a non-zero high byte
+        # published as 263 is a step that does not exist.
+        regs, coils, discretes = uaria_bank()
+        regs[("h", ca.HR_UARIA_FAN_SP)] = 0x0107
+        p, pub, _ = _poller("uaria", (regs, coils, discretes), address=2,
+                            app_version="")
+        p.poll_io()
+        self.assertEqual(_published(pub)["fan_step"], "7")
+
     def test_running_from_the_network_coil(self):
         self.assertEqual(self.values["unit_on"], "1")
         self.assertEqual(self.values["net_enable"], "1")   # Gs04 coil 13
@@ -351,6 +419,18 @@ class TestWriteback(unittest.TestCase):
         with mock.patch.object(bridge_carel.time, "sleep"):
             p._writeback("unit_on", "1")
         self.assertEqual(ser.writes, [("coil", 13, True), ("coil", 0, True)])
+
+    def test_uaria_start_does_not_settle_after_gs04(self):
+        # The settle is the c.pCOmini Ma18 latch (contract §4). The uAria plan
+        # is Gs04 then coil 0 with no pause — as the window runs it, and as
+        # bench 1.135 started the unit on 2026-09-03 (§9).
+        regs, coils, discretes = uaria_bank()
+        coils[13] = 0
+        p, _pub, ser = _poller("uaria", (regs, coils, discretes), address=2)
+        with mock.patch.object(bridge_carel.time, "sleep") as slept:
+            p._writeback("unit_on", "1")
+        self.assertEqual(ser.writes, [("coil", 13, True), ("coil", 0, True)])
+        self.assertNotIn(mock.call(ca.START_MA18_SETTLE_S), slept.call_args_list)
 
     def test_no_writeback_path_ever_touches_the_local_terminal_coil(self):
         # uAria coil 30 is the keypad's own on/off — a BMS master writing it
@@ -546,6 +626,198 @@ class TestWritebackAuditTrail(unittest.TestCase):
             for line in self._logs(p, "fan_supply", evil, level="WARNING"):
                 self.assertNotIn("\n", line)
                 self.assertLess(len(line), 400, line)
+
+
+class TestAlarmReset(unittest.TestCase):
+    """`alarm_reset` is a pushbutton: one press = a pulse on the reset coil.
+
+    The bridge writes 1, and writes 0 again ALARM_RESET_PULSE_S later, the
+    way the flasher's window does — but never by sleeping: the writeback
+    worker serves the whole line (COM3 carries six devices), so the release
+    is armed on a timer that re-submits it through the same queue.
+    """
+
+    def press(self, family="crst", payload="1", **cfg):
+        bank = uaria_bank() if family == "uaria" else crst_bank()
+        p, pub, ser = _poller(family, bank, **cfg)
+        keys = _inline_submit(p)
+        with mock.patch.object(bridge_carel.time, "sleep") as slept:
+            p._writeback("alarm_reset", payload)
+        self.assertEqual(slept.call_args_list, [],
+                         "the pulse must not be held by sleeping on the worker")
+        return p, pub, ser, keys
+
+    def test_crst_press_writes_coil_66_then_the_timer_releases_it(self):
+        p, _pub, ser, keys = self.press("crst")
+        self.assertEqual(ser.writes, [("coil", ca.COIL_ALARM_RESET, True)])
+        timer = p._pulse_timer
+        self.assertIsInstance(timer, FakeTimer)
+        self.assertTrue(timer.started)
+        self.assertTrue(timer.daemon)
+        self.assertEqual(timer.interval, ca.ALARM_RESET_PULSE_S)
+        timer.fire()
+        self.assertEqual(ser.writes, [("coil", 66, True), ("coil", 66, False)])
+        self.assertIsNone(p._pulse_timer)
+
+    def test_uaria_pulses_coil_37(self):
+        p, _pub, ser, _keys = self.press("uaria", address=2)
+        p._pulse_timer.fire()
+        self.assertEqual(ser.writes, [("coil", ca.COIL_UARIA_ALARM_RESET, True),
+                                      ("coil", 37, False)])
+
+    def test_the_release_goes_back_through_the_queue_under_its_own_key(self):
+        """The release is a queued job, not a write from the timer thread.
+
+        Its own key matters: the queue coalesces per (device, control), so a
+        release queued under `alarm_reset` would be REPLACED by a press
+        arriving before the worker ran it — and the coil would stay latched.
+        """
+        p, _pub, _ser, keys = self.press("crst")
+        self.assertEqual(keys, [])          # the press ran on the worker already
+        p._pulse_timer.fire()
+        self.assertEqual(len(keys), 1, keys)
+        self.assertNotEqual(keys[0], "alarm_reset")
+
+    def test_a_release_payload_writes_nothing(self):
+        for payload in ("0", "false", ""):
+            with self.subTest(payload=payload):
+                p, _pub, ser, _keys = self.press("crst", payload=payload)
+                self.assertEqual(ser.writes, [])
+                self.assertIsNone(p._pulse_timer)
+
+    def test_true_is_a_press(self):
+        _p, _pub, ser, _keys = self.press("crst", payload="true")
+        self.assertEqual(ser.writes, [("coil", 66, True)])
+
+    def test_a_second_press_during_the_pulse_is_not_a_second_pulse(self):
+        p, _pub, ser, _keys = self.press("crst")
+        first = p._pulse_timer
+        with self.assertLogs(p.log.name, level="INFO") as caught:
+            p._writeback("alarm_reset", "1")
+        self.assertIs(p._pulse_timer, first)
+        self.assertEqual(ser.writes, [("coil", 66, True)])
+        self.assertEqual(len([ln for ln in caught.output if "in progress" in ln]), 1,
+                         caught.output)
+        first.fire()
+        # The pulse is over: the next press is a new pulse.
+        p._writeback("alarm_reset", "1")
+        self.assertEqual(ser.writes, [("coil", 66, True), ("coil", 66, False),
+                                      ("coil", 66, True)])
+        self.assertIsNot(p._pulse_timer, first)
+
+    def test_the_press_is_audited(self):
+        p, _pub, _ser = _poller("crst", crst_bank())
+        _inline_submit(p)
+        with self.assertLogs(p.log.name, level="INFO") as caught:
+            p._writeback("alarm_reset", "1")
+        lines = [ln for ln in caught.output if "requested" in ln]
+        self.assertEqual(len(lines), 1, caught.output)
+        self.assertIn("alarm_reset", lines[0])
+        self.assertIn("coil %d" % ca.COIL_ALARM_RESET, lines[0])
+
+    def test_offline_skips_the_press(self):
+        p, pub, ser = _poller("crst", crst_bank())
+        p._online = False
+        p._writeback("alarm_reset", "1")
+        self.assertEqual(ser.writes, [])
+        self.assertIsNone(p._pulse_timer)
+        self.assertEqual(_errors(pub).get("alarm_reset"), "w")
+
+    def test_a_release_payload_while_offline_raises_no_refusal(self):
+        # A "0" asks for nothing, so there is nothing to refuse: the offline
+        # skip must not flag `w` on the button for it.
+        p, pub, ser = _poller("crst", crst_bank())
+        p._online = False
+        p._writeback("alarm_reset", "0")
+        self.assertEqual(ser.writes, [])
+        self.assertNotIn("alarm_reset", _errors(pub))
+
+    def test_the_release_is_written_even_when_the_device_went_offline(self):
+        # The coil must not stay latched because the line dropped mid-pulse.
+        p, _pub, ser, _keys = self.press("crst")
+        p._online = False
+        p._pulse_timer.fire()
+        self.assertEqual(ser.writes, [("coil", 66, True), ("coil", 66, False)])
+
+    def test_a_failed_release_warns_and_flags_the_control(self):
+        p, pub, ser, _keys = self.press("crst")
+        timer = p._pulse_timer
+
+        def dead(*_a, **_k):
+            raise OSError("no response")
+
+        ser.write_coil = dead
+        with self.assertLogs(p.log.name, level="WARNING") as caught:
+            with mock.patch.object(bridge_carel.time, "sleep"):
+                timer.fire()
+        self.assertTrue(any("release" in ln and "66" in ln for ln in caught.output),
+                        caught.output)
+        self.assertEqual(_errors(pub).get("alarm_reset"), "w")
+        self.assertIsNone(p._pulse_timer)   # a later press may try again
+
+    def test_a_failed_press_still_releases(self):
+        """A press that timed out on our side may have latched the coil anyway."""
+        p, pub, ser = _poller("crst", crst_bank())
+        _inline_submit(p)
+        real = ser.write_coil
+
+        def dead(*_a, **_k):
+            raise OSError("no response")
+
+        ser.write_coil = dead
+        with mock.patch.object(bridge_carel.time, "sleep"):
+            p._writeback("alarm_reset", "1")
+        self.assertEqual(_errors(pub).get("alarm_reset"), "w")
+        # Started, not merely built: an armed-but-never-started timer would
+        # also hold the in-progress flag forever and swallow every later press.
+        self.assertTrue(p._pulse_timer.started)
+        ser.write_coil = real
+        p._pulse_timer.fire()
+        self.assertEqual(ser.writes, [("coil", 66, False)])
+
+    def test_stopping_the_poller_cancels_the_timer_and_releases_now(self):
+        p, _pub, ser, keys = self.press("crst")
+        timer = p._pulse_timer
+        p.stop()
+        self.assertTrue(timer.cancelled)
+        self.assertEqual(ser.writes, [("coil", 66, True), ("coil", 66, False)])
+        self.assertIsNone(p._pulse_timer)
+
+    def test_the_local_terminal_coil_is_never_pulsed(self):
+        p, _pub, ser, _keys = self.press("uaria", address=2)
+        p._pulse_timer.fire()
+        self.assertTrue(ser.writes)
+        self.assertEqual([w for w in ser.writes if w[1] == ca.COIL_UARIA_LOCAL], [])
+
+    def test_a_press_publishes_no_value(self):
+        # A pushbutton has no state: no echo, and a previous refusal is cleared.
+        p, pub, _ser, _keys = self.press("crst")
+        p._pulse_timer.fire()
+        self.assertNotIn("alarm_reset", _published(pub))
+        self.assertEqual(_errors(pub).get("alarm_reset"), "")
+
+    def test_the_poll_neither_publishes_nor_flags_the_button(self):
+        for family, bank, addr in (("crst", crst_bank(), 1),
+                                   ("uaria", uaria_bank(), 2)):
+            with self.subTest(family=family):
+                p, pub, _ser = _poller(family, bank, address=addr)
+                p.poll_io()
+                self.assertTrue(_published(pub))
+                self.assertNotIn("alarm_reset", _published(pub))
+                self.assertNotIn("alarm_reset", _errors(pub))
+
+    def test_setup_announces_a_writable_pushbutton(self):
+        for family, bank, addr in (("crst", crst_bank(), 1),
+                                   ("uaria", uaria_bank(), 2)):
+            with self.subTest(family=family):
+                p, pub, _ser = _poller(family, bank, address=addr)
+                p.setup()
+                meta = {(c.args[1], c.args[2]): c.args[3]
+                        for c in pub.pub_control_meta.call_args_list}
+                self.assertEqual(meta[("alarm_reset", "type")], "pushbutton")
+                self.assertEqual(meta[("alarm_reset", "readonly")], "0")
+                subscribed = [c.args[1] for c in pub.subscribe_writeback.call_args_list]
+                self.assertIn("alarm_reset", subscribed)
 
 
 class TestFamilyResolution(unittest.TestCase):

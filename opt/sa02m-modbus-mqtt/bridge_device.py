@@ -278,6 +278,14 @@ class DevicePoller:
     def setup(self) -> None:
         """Однократная инициализация (вызывается из потока порта)."""
 
+    def clear_stale_control_errors(self) -> None:
+        """Take back the meta/error flags an earlier bridge process left on
+        the controls setup() published meta for. Called by the port scheduler
+        right after setup(), before the first poll — a control still at fault
+        is flagged again by that poll (docs/MQTT_TOPICS.md, meta/error)."""
+        self.pub.clear_control_errors(self.device_id,
+                                      self.pub.control_names(self.device_id))
+
     def poll_io(self) -> None:
         """Один проход основных измерений (в общем цикле порта)."""
 
@@ -298,6 +306,14 @@ class DevicePoller:
 
     def run(self) -> None:
         raise NotImplementedError
+
+
+def _clear_stale_errors(p, log) -> None:
+    """After setup(), once per poller per process — never on the poll path."""
+    try:
+        p.clear_stale_control_errors()
+    except Exception as e:
+        log.debug("clear stale errors %s: %s", p.device_id, e)
 
 
 # ── Port cycle (wb-mqtt-serial TSerialClientRegisterAndEventsReader) ─────────
@@ -377,6 +393,7 @@ class PortCycleScheduler:
                 p.setup()
             except Exception as e:
                 self._log.error("setup %s: %s", p.device_id, e)
+            _clear_stale_errors(p, self._log)
 
         # Classic warmup before any FC46 0x18 — configure_events goes only to
         # a slave that already answers classic reads. Not the fix for the CE
@@ -546,6 +563,7 @@ class HdlcPortScheduler:
                 p.setup()
             except Exception as e:
                 self._log.error("setup %s: %s", p.device_id, e)
+            _clear_stale_errors(p, self._log)
         while not self._stop.is_set():
             if self._scan_hold.is_set():
                 if self._stop.wait(0.05):

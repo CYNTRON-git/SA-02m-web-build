@@ -43,7 +43,7 @@ def test_card_is_mercury_and_energy_is_kwh(tmp_path: Path):
     card = snap["spodes"][0]
     assert card["kind"] == "spodes" and card["sku"] == "Меркурий"
     assert card["label"].startswith("Меркурий")
-    assert card["energy_kwh_import"] == 12.3
+    assert card["energy_kwh_import"] == 12.346
     assert card["association"] == "public"
     assert snap["ce"][0]["kind"] == "ce"
     assert "spodes-COM2-17" in {d["id"] for d in snap["devices"]}

@@ -701,7 +701,22 @@ class Handler(BaseHTTPRequestHandler):
         def _work():
             return device_config.write_allowed_holding(device_path, device, reg, value)
 
-        snap = self._run_device_config_modbus(ctx, port, device_path, _work)
+        try:
+            snap = self._run_device_config_modbus(ctx, port, device_path, _work)
+        except device_config.CeFirmwareTooOldForCtWrite as exc:
+            # Still the 400 a ValueError gets; the code lets the window name the
+            # refusal instead of echoing the text.
+            return _send_json(
+                self,
+                {
+                    "ok": False,
+                    "error": str(exc),
+                    "error_code": exc.error_code,
+                    "fw_version": exc.fw_version,
+                    "min_fw": device_config.CE_CT_WRITE_MIN_FW_TEXT,
+                },
+                status=HTTPStatus.BAD_REQUEST,
+            )
         _send_json(self, {"ok": True, **snap})
 
     def _handle_device_config_coil(self, ctx: ServiceContext) -> None:

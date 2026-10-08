@@ -41,6 +41,9 @@ CONTROLS: Tuple[Tuple[str, str, str, bool, Tuple[str, ...]], ...] = (
     ("alarm",            "switch",      "",   True,  BOTH),
     ("alarm_count",      "value",       "",   True,  BOTH),
     ("alarm_text",       "text",        "",   True,  BOTH),
+    # Pushbutton: a press on <control>/on pulses the family's reset coil
+    # (carel_ahu.alarm_reset_coil). No state, so the bridge publishes no value.
+    ("alarm_reset",      "pushbutton",  "",   False, BOTH),
 )
 
 # Writable setpoint limits per family (°C) — the same clamps carel_ahu applies.

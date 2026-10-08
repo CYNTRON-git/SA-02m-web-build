@@ -192,6 +192,8 @@ const parts = [
   extractFn(src, 'carelValueText'),
   extractFn(src, 'carelInputValue'),
   extractFn(src, 'carelOnOffText'),
+  extractFn(src, 'carelUariaSeasonText'),
+  extractFn(src, 'carelUariaSeasonModeText'),
   extractFn(src, 'carelPlantStateView'),
   extractFn(src, 'carelAlarmLine'),
   extractFn(src, 'mergeCarelSnapshot'),
@@ -219,6 +221,7 @@ const parts = [
      CAREL_ACTIONS, CAREL_IO_TAB, CAREL_SYS_MODES,
      deviceConfigKindFromSignature, isDeviceConfigSupported, deviceConfigTitle,
      carelFamilyFromSignature, carelValueText, carelOnOffText, carelAlarmLine,
+     carelUariaSeasonText, carelUariaSeasonModeText,
      carelPlantStateView, mergeCarelSnapshot, carelSetpointPlan, carelInputValue,
      renderCarelInfoTab, renderCarelNetworkTab, renderCarelPlantTab,
      renderCarelIoTab, renderCarelAlarmsTab,
@@ -274,7 +277,8 @@ const UARIA_SNAP = {
     fam: 'uaria', answered: true, plant_state: 'run', unit_status_text: 'Vklyucheno',
     unit_status_algo: 'uaria', alarm_reset_coil: 37,
     oat: 0.0, sat: 27.22, rwt: 43.59, valve: 0.0, fan: 0.0, unit: 1,
-    sp_w: 22.0, sp_s: 22.0, season_code: 2, fan_min: 22.0, fan_sp: 7, fan_calc: 76.6,
+    sp_w: 22.0, sp_s: 22.0, season_code: 2, season_mode_text: 'авто по Тнар', heat_cool: true,
+    fan_min: 22.0, fan_sp: 7, fan_calc: 76.6,
     uaria_run: true, gs04: true, uaria_local: true, pump: true, alarms: [],
     io_u: [], io_no: [], io_di: [], io_ao: [],
   },
@@ -377,7 +381,7 @@ for (const id of ['cfg-carel-fan-sa', 'cfg-carel-fan-ea', 'cfg-carel-sys-mode', 
   check(!uariaIds.has(id), `uAria plant tab does NOT emit #${id} (crst-only control)`);
 }
 for (const id of ['cfg-carel-fan-step', 'cfg-carel-gs04', 'cfg-carel-fan-calc', 'cfg-carel-fan-act',
-  'cfg-carel-local', 'cfg-carel-season']) {
+  'cfg-carel-local', 'cfg-carel-season', 'cfg-carel-season-mode']) {
   check(uariaIds.has(id), `uAria plant tab emits #${id}`);
   check(!crstIds.has(id), `crst plant tab does NOT emit #${id} (uAria-only control)`);
 }
@@ -515,7 +519,7 @@ function mountUaria() {
   documentStub.activeElement = null;
   for (const id of ['cfg-carel-status', 'cfg-carel-sat', 'cfg-carel-rwt', 'cfg-carel-oat',
     'cfg-carel-valve', 'cfg-carel-pump', 'cfg-carel-run', 'cfg-carel-fan-calc',
-    'cfg-carel-fan-act', 'cfg-carel-local', 'cfg-carel-season']) {
+    'cfg-carel-fan-act', 'cfg-carel-local', 'cfg-carel-season', 'cfg-carel-season-mode']) {
     DOM.set(id, new El('dd', { textContent: 'stale' }));
   }
   DOM.set('cfg-carel-state-badge', new El('span', { textContent: 'stale', className: 'badge badge-unk' }));
@@ -532,6 +536,16 @@ eq(DOM.get('cfg-carel-fan-calc').textContent, '76.6 %', 'uAria calculated fan ou
 eq(DOM.get('cfg-carel-local').textContent, 'Вкл', 'uAria local-terminal state is shown read-only');
 eq(DOM.get('cfg-carel-gs04').checked, true, 'uAria Gs04 checkbox patched');
 eq(DOM.get('cfg-carel-run').textContent, 'Вкл', 'uAria network-run state patched');
+// Season = coil 17 (heat_cool), the value MQTT and the devices card show — not
+// HR34, which is only the season-change mode (carel-audit #35: the window said
+// «2» where the card said «ЛЕТО»).
+eq(DOM.get('cfg-carel-season').textContent, 'ЛЕТО', 'uAria season patched from coil 17 (1 = cooling = ЛЕТО)');
+eq(DOM.get('cfg-carel-season-mode').textContent, 'авто по Тнар', 'uAria HR34 shown as the season MODE, labelled by the daemon');
+check(/id="cfg-carel-season">ЛЕТО</.test(uariaPlantHtml), 'uAria plant tab renders the season from coil 17');
+eq(api.carelUariaSeasonText({ heat_cool: false }), 'ЗИМА', 'coil 17 = 0 (heating) → ЗИМА');
+eq(api.carelUariaSeasonText({ season_code: 1 }), '—', 'no coil 17 reading → a dash, never derived from HR34');
+eq(api.carelUariaSeasonModeText({ season_code: 1 }), '1', 'an older daemon without season_mode_text still shows the HR34 code');
+eq(api.carelUariaSeasonModeText({}), '—', 'no HR34 reading → a dash');
 
 mountCrst();
 const unreadSnap = clone(CRST_SNAP);

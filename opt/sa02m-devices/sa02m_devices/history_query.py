@@ -3,6 +3,7 @@ CE period summary."""
 
 from __future__ import annotations
 
+import math
 import sqlite3
 from pathlib import Path
 from typing import Any
@@ -13,9 +14,11 @@ from sa02m_devices.history_metrics import (
     DEFAULT_KWH_RUB,
     HISTORY_GROUPS,
     METRICS,
+    parse_kwh_rub,
 )
 from sa02m_devices.history_ce_roll import (
     ce_chart_bucket_s,
+    energy_total,
     load_ce_series,
     merge_ce_series,
 )
@@ -479,6 +482,33 @@ def _first_device_id(
     return str(row[0]) if row else None
 
 
+def _window_energy_values(
+    path: Path | None, device_id: str, t0: float, t1: float
+) -> list[float]:
+    """Every stored register value of one СЭ in the window, time order,
+    across the read paths (a ts present in two files counts once)."""
+    by_ts: dict[float, float] = {}
+    for dbfile in _read_paths(path):
+        if not dbfile.is_file():
+            continue
+        try:
+            conn = _connect(dbfile)
+        except sqlite3.Error:
+            continue
+        try:
+            for ts, value in conn.execute(
+                "SELECT ts, energy_kwh_import FROM ce_samples"
+                " WHERE ts >= ? AND ts <= ? AND device_id = ?"
+                " AND energy_kwh_import IS NOT NULL",
+                (t0, t1, device_id),
+            ):
+                if _number_is_finite(value):
+                    by_ts[float(ts)] = float(value)
+        finally:
+            conn.close()
+    return [by_ts[ts] for ts in sorted(by_ts)]
+
+
 def period_summary_ce(
     range_key: str = "1h",
     path: Path | None = None,
@@ -490,7 +520,13 @@ def period_summary_ce(
     range_key = _normalize_range(range_key)
     t0, t1, _bucket = resolve_time_range(range_key)
     did = (device_id or "").strip() or None
-    tariff = float(kwh_rub if kwh_rub is not None else DEFAULT_KWH_RUB)
+    # A direct caller's invalid tariff (the API already 400s it) applies the
+    # default, so the echoed `kwh_rub` is never non-finite on the wire.
+    tariff = DEFAULT_KWH_RUB
+    if kwh_rub is not None:
+        checked = parse_kwh_rub(kwh_rub)
+        if checked is not None:
+            tariff = checked
 
     sum_pa = sum_pb = sum_pc = sum_pt = 0.0
     n_pa = n_pb = n_pc = n_pt = 0
@@ -577,8 +613,22 @@ def period_summary_ce(
     # cost_rub = ΔE_kWh × ₽/кВт·ч. Мощность в ответе — справочно.
     energy_kwh = None
     if e_first is not None and e_last is not None:
-        energy_kwh = round(max(0.0, e_last - e_first), 4)
+        if e_last >= e_first or not did:
+            energy_kwh = round(max(0.0, e_last - e_first), 4)
+        else:
+            # The register fell inside the window (a meter reset, or the CE
+            # unit change on a deployed board, docs/contracts/ce-energy-mqtt.md
+            # «Разрыв ряда»): last − first would
+            # read 0 kWh / 0 ₽. Walk the window's rows under the bars' step
+            # rule instead — a row scan paid only when a drop is seen.
+            energy_kwh = round(
+                energy_total(_window_energy_values(path, did, t0, t1)), 4
+            )
     cost = None if energy_kwh is None else round(float(energy_kwh) * tariff, 2)
+    if cost is not None and not math.isfinite(cost):
+        # Never a NaN / Infinity on the wire (JSON.parse rejects both). Every
+        # tariff is capped (parse_kwh_rub); this catches a huge archive delta.
+        cost = None
 
     return {
         "ok": True,

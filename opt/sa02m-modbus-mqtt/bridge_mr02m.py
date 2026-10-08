@@ -991,6 +991,10 @@ class MR02mPoller(DevicePoller):
         if self._mod_type is None:
             if self._init_module():
                 self._setup_writeback()
+                # The channel meta exists only now, so the scheduler's
+                # after-setup clear named none of these controls. Once: from
+                # here on _mod_type is set and this branch is never taken.
+                self.clear_stale_control_errors()
         if now - self._t_uptime >= self._poll_uptime_s:
             self._poll_uptime()
             self._t_uptime = now

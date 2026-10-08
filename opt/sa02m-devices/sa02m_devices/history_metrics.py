@@ -3,8 +3,12 @@ HISTORY_GROUPS (DTV, CE), the Carel metric meta, DTV per-sensor columns."""
 
 from __future__ import annotations
 
+import logging
+import math
 import os
 from typing import Any
+
+log = logging.getLogger(__name__)
 
 
 # decimals = publish/display precision (Modbus scale / stand_devices round).
@@ -140,7 +144,10 @@ METRICS: dict[str, dict[str, Any]] = {
         "label": "Энергия (импорт)",
         "unit": "kWh",
         "device": "ce",
-        "decimals": 1,  # Wh/1000 → кВт·ч, UI 1 знак
+        # One Wh step of the stored register (stand_devices.CE_ENERGY_DECIMALS):
+        # a served ΔE rounded to 0.1 reads an hour of a small load as 0. The
+        # UI keeps its own display precision (devices.js tipDecimalsFor).
+        "decimals": 3,
     },
     # Carel AHU (`carel_samples`, one wide row per 10 s tick). The id carries an
     # `ahu_` prefix because the METRICS key space is GLOBAL and ДТВ already owns
@@ -326,8 +333,43 @@ HISTORY_GROUPS: dict[str, list[str]] = {
 }
 
 
+# Upper bound of an accepted tariff, ₽/kWh — the one home of the rule the API
+# (`kwh_rub=`), the env default and the summary share. Real tariffs are 1…20
+# (default 10.50); 1e6 leaves five orders of headroom for any currency/test
+# value and keeps delta × tariff finite for any archive delta below ~1e302 kWh,
+# while a finite-but-huge input (1e308) can no longer overflow the cost.
+KWH_RUB_MAX = 1_000_000.0
 # Ориентир для ЮЛ г. Москва (1 ц.к., с НДС) — пользователь правит в UI.
-DEFAULT_KWH_RUB = float(os.environ.get("STAND_DEVICES_KWH_RUB", "10.50"))
+KWH_RUB_FALLBACK = 10.50
+
+
+def parse_kwh_rub(raw: Any) -> float | None:
+    """A tariff as a finite float in 0…KWH_RUB_MAX (comma decimal accepted),
+    else None. float() alone takes nan / inf, which json.dumps writes as NaN /
+    Infinity and a browser's JSON.parse refuses."""
+    try:
+        value = float(str(raw).strip().replace(",", "."))
+    except (TypeError, ValueError):
+        return None
+    return value if math.isfinite(value) and 0 <= value <= KWH_RUB_MAX else None
+
+
+def kwh_rub_from_env(raw: str | None) -> float:
+    """`STAND_DEVICES_KWH_RUB` → the default tariff; unset / empty → 10.50, a
+    bad value → 10.50 with one warning (never a non-finite default on the wire)."""
+    if raw is None or not str(raw).strip():
+        return KWH_RUB_FALLBACK
+    value = parse_kwh_rub(raw)
+    if value is None:
+        log.warning(
+            "STAND_DEVICES_KWH_RUB=%r is not a number 0…%g; using %.2f",
+            raw, KWH_RUB_MAX, KWH_RUB_FALLBACK,
+        )
+        return KWH_RUB_FALLBACK
+    return value
+
+
+DEFAULT_KWH_RUB = kwh_rub_from_env(os.environ.get("STAND_DEVICES_KWH_RUB"))
 
 
 # The `ahu_` METRICS ids above are the ONE home of every Carel metric fact
