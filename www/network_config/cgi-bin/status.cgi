@@ -78,6 +78,7 @@ if [[ "${QUERY_STRING:-}" == *part=rs485* ]] && [[ "${QUERY_STRING:-}" == *no_ca
 fi
 OPTIONAL_SVCS_JSON="[]"
 DASH_SVCS_JSON="[]"
+SVC_VPLC_UI="unknown"
 SVC_CODESYS_UPTIME_S=0
 SVC_CODESYS_UNIT=""
 SVC_FCGIWRAP_UPTIME_S=0
@@ -417,6 +418,26 @@ fast_service_state() {
                 echo active
             else
                 echo inactive
+            fi
+            ;;
+        vplc-plant-ui|vplc-plant-ui.service)
+            # The vPLC page server (the vPLC team's unit, behind nginx /vplc/,
+            # which proxies to its unix socket /run/vplc-plant-ui/ui.sock).
+            # BOTH the unit active AND the socket present: an active unit may
+            # not have bound yet (nginx would answer 502), and a socket file
+            # alone may be a leftover of a stopped unit. The unit state comes
+            # from systemd, not a process name the vPLC side is free to
+            # change. No systemctl -> unknown (the link stays as is).
+            if ! command -v systemctl >/dev/null 2>&1; then
+                echo unknown
+            else
+                local _vui
+                _vui=$(status_timeout_run systemctl show -p ActiveState --value vplc-plant-ui.service 2>/dev/null | head -n1 | tr -d '\r')
+                if [ "$_vui" = "active" ] && [ -S /run/vplc-plant-ui/ui.sock ]; then
+                    echo active
+                else
+                    echo inactive
+                fi
             fi
             ;;
         docker|docker.service)
@@ -1921,6 +1942,11 @@ gather_services_metrics() {
     # активность — fast_service_state (без systemctl show, чтобы не зависать на dbus).
     gather_important_optional_services_json
     build_dash_services_json
+    # Not a dash_services row (it would take one of the widget's six slots):
+    # a bare state the sidebar «vPLC ↗» link follows (app/status.js
+    # applyVplcNavLink). Never svc_fast_unknown — one bounded systemctl show
+    # plus one socket test, and an "unknown" fast pass would blink the link.
+    SVC_VPLC_UI=$(fast_service_state vplc-plant-ui)
 
     SVC_CODESYS_INSTALLED=0
     if resolve_codesys_unit >/dev/null 2>&1 || [ -x /etc/init.d/codesyscontrol ]; then
@@ -2182,7 +2208,8 @@ print_services_json() {
   "mplc_uptime_s": ${MPLC_UPTIME_S},
   "mplc_installed": ${MPLC_INSTALLED},
   "optional_services": ${OPTIONAL_SVCS_JSON:-[]},
-  "dash_services": ${DASH_SVCS_JSON:-[]}
+  "dash_services": ${DASH_SVCS_JSON:-[]},
+  "svc_vplc_ui": "${SVC_VPLC_UI:-unknown}"
 }
 JSON
 }
