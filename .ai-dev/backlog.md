@@ -1255,3 +1255,18 @@ commit's diff of this file).
 - [OPEN] 2026-10-14 **[LOW] Hygiene sweep (audit 2026-10-14 C-6/C-7/C-8/C-9).** (a) this file carries 19 `- [RESOLVED…` entries against its own prune rule; (b) the main checkout holds 26 `.ai-dev/plans/*.md` and 9 `.ai-dev/reviews/*_review.md`, of which 11 plans + 3 stamps belong to branches already merged into `main` (`alice-followups`, `ce-energy-wh`, `devices-icons`, `devices-python-api-contract`, `dtv-ce-channel-flags`, `installer-port`, `quality-followups`, `sh-modal-fit`, `sweep-followups`, `telemetry-followups`, `verify-check9`; stamps `1.0.6.70`, `devices-icons`, `homekit-port`) — the ship-beat delete was skipped; (c) 15 of 30 `.claude/worktrees/*` sit on merged branches, 16 merged local branches, 181 refs (`gc`); 13 worktree branches still carry unmerged commits (e.g. `rules-store-hardening` 25, `1.0.6.69` 18, `rules-mqtt-overflow` 12) and need an Operator word each: merge or abandon; (d) `docs/deployment.md` has no lean/partial-install section — the `SA02M_SKIP_*` list lives only in `install.sh:236-243`, naming 6 of the 13 honoured flags.
 - [OPEN] 2026-10-14 **[LOW] Decompose worklist (audit 2026-10-14 C-5, files > 1500 lines, split by cohesion):** `flasher.js` 5939 · `devices.js` 4078 · `mqtt.js` 3955 · `etc/sa02m-update-runner.sh` 2818 · `status.cgi` 2686 (+29 this week) · `app/status.js` 2681 · `flash_protocol.py` 2517 · `app/smarthome.js` 2295 · `device_config.py` 2239 · `led_mb2ws.py` 1943 · `sa02m_telemetry.py` 1795 · `sa02m-web-service-ctl.sh` 1706 · `alice/config/api.py` 1705 · `flasher/runner.py` 1686 · `flasher/scanner.py` 1667. Priority: `status.cgi` (part gatherers → `lib_status_*.sh`), `flasher.js` (per-family modules).
 - [OPEN] 2026-10-14 **[LOW] `chore/backlog-2026-10-08` (`ad005cc6`: CE external-connector flashing note + vPLC `devices.summary` unit-break proposal) never reached `main`** — its CI passed 2026-10-08 but the PR was not merged; the two entries are absent from this file on `main`. Fix: merge that branch (one commit, backlog-only).
+- [open, 2026-10-08, flasher UX, low] A CE-02m-3 wired to the panel through its EXTERNAL (top) RS-485 connector
+  cannot be flashed from the panel: that connector is the meter's AUX port (USART1) and the shared bootloader
+  listens on USART2 (end-face bus) only; CE app ≤ 1.0.7.10 even ACKs reg 129 on AUX without resetting (fixed on
+  the app side in CE 1.0.7.11). Today the panel's flasher fails honestly (by-serial info block → Modbus exc 2)
+  but with no hint. Surface «СЭ подключён внешним разъёмом — прошивка только по торцевой шине» when the scan sees
+  a CE whose BL never answers at 247 after reg 129. Bench record: CE repo BUGLOG 2026-10-08, runbook
+  `scripts/hw/RUNBOOK_gateway_flash_1.0.7.11.md`.
+
+- [open, 2026-10-08, from vPLC, Operator decision, contract change] `devices.summary` across the Wh unit change:
+  a window that contains the 2026-10-08 transition returns a meaningless `delta` (rows before it are in the
+  old 1/320 unit, so the §6 non-negative-step sum adds old-unit steps — bench .135: 238 kWh for 24 h at 32 W).
+  Accepted on 2026-10-07 («archives stay, counter break accepted»); vPLC asks for a break signal so clients stop
+  summing across it: either `break: true` / `unit_changed` on the summary object when the window straddles a
+  unit change, or a new series started at the change. Needs the Operator's word (contract `devices-history-api.md`
+  §6 + test `test_ce_energy_summary_break.py`); until then clients treat straddling windows as unreliable.
