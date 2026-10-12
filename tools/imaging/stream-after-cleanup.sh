@@ -120,6 +120,8 @@ wipe_alice_enrollment() {
     rm -f /var/lib/sa02m-alice/device.crt.pem \
           /var/lib/sa02m-alice/device.key.pem \
           /var/lib/sa02m-alice/pending_claim.json \
+          /var/lib/sa02m-alice/gateway_probe.json \
+          /var/lib/sa02m-alice/gateway_probe.lock \
           /var/lib/sa02m-alice/*.tmp \
           /etc/sa02m-alice/.alice-* \
           /run/sa02m-alice/status.json \

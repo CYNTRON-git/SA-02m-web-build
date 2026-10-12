@@ -32,6 +32,8 @@ wipe_alice_enrollment() {
     rm -f /var/lib/sa02m-alice/device.crt.pem \
           /var/lib/sa02m-alice/device.key.pem \
           /var/lib/sa02m-alice/pending_claim.json \
+          /var/lib/sa02m-alice/gateway_probe.json \
+          /var/lib/sa02m-alice/gateway_probe.lock \
           /var/lib/sa02m-alice/*.tmp \
           /etc/sa02m-alice/.alice-* \
           /run/sa02m-alice/status.json \
@@ -149,7 +151,8 @@ wipe_agent_api_identity
 
 echo "=== VERIFY ==="
 ls -la /var/lib/sa02m-alice 2>/dev/null || echo "var dir absent (never linked)"
-for f in device.crt.pem device.key.pem pending_claim.json; do
+for f in device.crt.pem device.key.pem pending_claim.json \
+         gateway_probe.json gateway_probe.lock; do
     if [ -e "/var/lib/sa02m-alice/$f" ]; then
         echo "$f=STILL_PRESENT_FAIL"
     else

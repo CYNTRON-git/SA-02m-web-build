@@ -48,6 +48,9 @@
 #   delete the CALL at any site, leaving the body intact                  ... A1c
 #   drop a *.tmp / .alice-* sidecar row from a clear-list                 ... A2/B
 #   widen a sidecar glob to *.pem* or *                                   ... A3c/B
+#   drop the gateway_probe.json / gateway_probe.lock rows from one wipe   ... A2/B
+#     (the 2026-10-06 capture died on that cache; a path-set pin alone
+#      stays green if the fixture never writes the file)
 # Override any site with <NAME>_SRC=/path to re-run it against another revision.
 #
 # Part H — the HomeKit twin (contract §7, wipe_homekit_identity() at the same
@@ -162,7 +165,9 @@ ONDEVICE_SET="$(printf '%s\n' \
     '/var/lib/sa02m-alice/*.tmp' \
     '/var/lib/sa02m-alice/device.crt.pem' \
     '/var/lib/sa02m-alice/device.key.pem' \
-    '/var/lib/sa02m-alice/pending_claim.json' | sort -u)"
+    '/var/lib/sa02m-alice/pending_claim.json' \
+    '/var/lib/sa02m-alice/gateway_probe.json' \
+    '/var/lib/sa02m-alice/gateway_probe.lock' | sort -u)"
 
 OFFLINE_SET="$(printf '%s\n' \
     '/etc/sa02m-alice-client.conf' \
@@ -174,7 +179,9 @@ OFFLINE_SET="$(printf '%s\n' \
     '/var/lib/sa02m-alice/*.tmp' \
     '/var/lib/sa02m-alice/device.crt.pem' \
     '/var/lib/sa02m-alice/device.key.pem' \
-    '/var/lib/sa02m-alice/pending_claim.json' | sort -u)"
+    '/var/lib/sa02m-alice/pending_claim.json' \
+    '/var/lib/sa02m-alice/gateway_probe.json' \
+    '/var/lib/sa02m-alice/gateway_probe.lock' | sort -u)"
 
 echo "A. static pins"
 
@@ -454,6 +461,12 @@ seed_donor() { # <root> — a board LINKED to the gateway, with bench bindings
     printf 'DONOR-CERT-CN=sa02m-1135\n'   > "$r/var/lib/sa02m-alice/device.crt.pem"
     printf '%s\n' "$CA_BYTES"             > "$r/var/lib/sa02m-alice/ca.crt.pem"
     printf '{"claim_token":"donor-secret"}\n' > "$r/var/lib/sa02m-alice/pending_claim.json"
+    # The probe cache is not identity, but it lives in the identity dir, and
+    # the belt allows only ca.crt.pem there. A capture of 1.136 died on
+    # gateway_probe.json (2026-10-06). The lock is the same writer's sibling
+    # and does not match the *.tmp glob.
+    printf '{"ts":1,"probe":{"available":false}}\n' > "$r/var/lib/sa02m-alice/gateway_probe.json"
+    printf 'lock\n'                       > "$r/var/lib/sa02m-alice/gateway_probe.lock"
     printf '{"state":"connected"}\n'      > "$r/run/sa02m-alice/status.json"
     # Atomic-write sidecars, exactly as a crash / ENOSPC mid-link leaves them
     # (F1). device.key.pem.tmp is the private key itself under another name.
@@ -552,7 +565,8 @@ make_offline_probe() { # <src> <out>
 assert_wiped() { # <label> <root> <form: ondevice|offline>
     local lbl=$1 r=$2 form=$3 f
 
-    for f in device.crt.pem device.key.pem pending_claim.json; do
+    for f in device.crt.pem device.key.pem pending_claim.json \
+             gateway_probe.json gateway_probe.lock; do
         if [ -e "$r/var/lib/sa02m-alice/$f" ]; then
             bad "(B/$lbl) $f survived — the exposure is still in the artifact"
         else
@@ -739,6 +753,15 @@ if [ "$seeded" -eq 2 ]; then
 else
     bad "(B3) the donor fixture seeds the marker in only $seeded/2 client.conf layouts — the removal assertion would pass vacuously"
 fi
+probe_seeded=0
+for f in gateway_probe.json gateway_probe.lock; do
+    [ -f "$seedprobe/var/lib/sa02m-alice/$f" ] && probe_seeded=$((probe_seeded + 1))
+done
+if [ "$probe_seeded" -eq 2 ]; then
+    ok "(B3) the donor fixture carries gateway_probe.json and gateway_probe.lock"
+else
+    bad "(B3) the donor fixture seeds the probe cache in only $probe_seeded/2 files — the removal assertion would pass vacuously"
+fi
 
 run_site reset  "$RESET_SRC"       ondevice
 run_site stream "$STREAM_SRC"      ondevice
@@ -796,12 +819,14 @@ else
     fi
 
     # One dimension at a time, so a single over-broad check cannot fake a pass.
-    for one in key doc enabled unit sidecar confsidecar; do
+    for one in key doc enabled unit sidecar confsidecar probe; do
         d="$SANDBOX/dirty-$one"; rm -rf "$d"; mkdir -p "$d"; seed_donor "$d"
         # start from a clean state, then re-dirty exactly one dimension
         rm -f "$d/var/lib/sa02m-alice/device.crt.pem" \
               "$d/var/lib/sa02m-alice/device.key.pem" \
               "$d/var/lib/sa02m-alice/pending_claim.json" \
+              "$d/var/lib/sa02m-alice/gateway_probe.json" \
+              "$d/var/lib/sa02m-alice/gateway_probe.lock" \
               "$d/var/lib/sa02m-alice"/*.tmp \
               "$d/etc/sa02m-alice"/.alice-* \
               "$d/etc/systemd/system/multi-user.target.wants/sa02m-alice-client.service"
@@ -825,6 +850,10 @@ else
                        > "$d/var/lib/sa02m-alice/device.key.pem.tmp" ;;
           confsidecar) printf '{"devices": [{"id": "d1"}]}\n' \
                        > "$d/etc/sa02m-alice/.alice-Ab3xQ1" ;;
+          # The file that aborted the 1.136 capture. Allow-listing it in the
+          # belt (the old "a clone may carry a stale cache" note) must fail.
+          probe)   printf '{"ts":1,"probe":{"available":false}}\n' \
+                       > "$d/var/lib/sa02m-alice/gateway_probe.json" ;;
         esac
         if bash "$aprobe" "$d" >/dev/null 2>&1; then
             bad "(B2) the assertion missed a dirty '$one' — that dimension is unguarded"
