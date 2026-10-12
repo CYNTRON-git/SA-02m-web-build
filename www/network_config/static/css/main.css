@@ -1,6 +1,6 @@
 /* ═══════════════════════════════════════════════════════════════════════════
    СА-02м  Web Interface — Design System
-   Dark industrial theme  •  Apple-inspired rounded UI  •  System-UI stack
+   Dark industrial theme  •  Apple-inspired rounded UI  •  Segoe UI
    ═══════════════════════════════════════════════════════════════════════════ */
 
 /* ── Design tokens ───────────────────────────────────────────────────────── */
@@ -122,12 +122,9 @@
   --lh-snug:  1.3;    /* headline/subhead */
   --lh-body:  1.45;   /* body copy */
 
-  /* Monospace stack for values, topics and logs — the stack the `.mono` utility
-     and the RS-485 / topbar value cells already use inline, so the MQTT channel
-     rows, AO fields, topic preview and topic monitor read like the cells beside
-     them (theme-invariant, so declared once). The command console keeps its own
-     terminal stack (`ui-monospace, …`) on purpose. */
-  --font-mono: 'Courier New', monospace;
+  /* One face for values, topics, logs and the command console — same stack as
+     the rest of the UI (`.mono`, RS-485, topbar, MQTT rows). */
+  --font-mono: "Segoe UI", sans-serif;
 
   /* HIG 8-pt spacing scale (theme-invariant) */
   --sp-1: 4px;  --sp-2: 8px;  --sp-3: 12px; --sp-4: 16px;
@@ -178,6 +175,10 @@ html {
   /* Topbar height: single-row desktop (logo | title | controls). Everything keyed
      to the bar height reads this var (.toast-area / .mqtt-toast top offsets). */
   --topbar-h: 60px;
+  /* Drawer offset. nav.js overwrites this with the measured bar (the phone
+     topbar is two rows and taller than --topbar-h). The token is the fallback
+     before that measurement, same length in both themes. */
+  --drawer-top: var(--topbar-h);
 
   /* Подложка схем подключения: эталонные SVG нарисованы чёрным штрихом, поэтому
      диаграмма всегда на светлой «бумаге» (обе темы) — читаема и сохраняет
@@ -295,7 +296,9 @@ html[data-theme="light"] .log-box {
    sideways swipe on phones if any future child briefly exceeds the viewport
    width. The structural culprits (the ~28px topbar title width-floor, the
    text-labelled topbar buttons) are removed too — this is the belt, not a mask. */
-html, body { height: 100%; overflow-x: hidden; font-family: ui-sans-serif, system-ui, -apple-system, sans-serif; background: var(--bg); color: var(--text); font-size: 14px; line-height: 1.5; }
+html, body { height: 100%; overflow-x: hidden; font-family: "Segoe UI", sans-serif; background: var(--bg); color: var(--text); font-size: 14px; line-height: 1.5; }
+/* Form controls and pre/code do not inherit the body face from the UA sheet. */
+button, input, select, textarea, optgroup, pre, code, kbd, samp { font-family: "Segoe UI", sans-serif; }
 a { color: var(--cyan); text-decoration: none; }
 a:hover { color: var(--cyan-hover); }
 svg { fill: none; stroke: currentColor; stroke-width: 2; stroke-linecap: round; stroke-linejoin: round; }
@@ -450,7 +453,7 @@ html:not([data-theme="light"]) .topbar {
    the single-row look is unchanged; only a narrow tablet/landscape ellipsizes
    the title, which the mobile layout does anyway below 700px. */
 .topbar-right { display: flex; align-items: center; gap: 12px; min-width: 0; flex-shrink: 0; }
-.topbar-ip    { font-size: calc(.78rem * 1.5); color: var(--text-sec); font-family: 'Courier New', monospace; }
+.topbar-ip    { font-size: calc(.78rem * 1.5); color: var(--text-sec); font-family: "Segoe UI", sans-serif; }
 .topbar-user  { display: flex; align-items: center; gap: 8px; font-size: calc(.82rem * 1.5); color: var(--text-sec); }
 .topbar-user #logout-btn { margin-left: 4px; }
 
@@ -486,6 +489,14 @@ html:not([data-theme="light"]) .topbar {
   display: flex; flex-direction: column; padding: 16px 0;
   overflow-y: auto;
 }
+/* An open .nav-sub-list is overflow:hidden, so its automatic min-height is 0
+   and the default flex-shrink eats the expanded rows to fit the column.
+   The menu then has scrollHeight == clientHeight: it cannot scroll, and the
+   rows past the fold are clipped. Keep every direct child at its content
+   height so overflow-y:auto on .sidebar is the scrollport (desktop and the
+   mobile drawer). */
+.sidebar > .nav-item,
+.sidebar > .nav-sub-list { flex-shrink: 0; }
 .nav-item {
   display: flex; align-items: center; gap: 10px;
   padding: 10px 14px; margin: 2px 8px;
@@ -1220,6 +1231,7 @@ html[data-theme="light"] .nav-sub-item.active { color: var(--btn-primary-hover);
 /* ── RS-485 cards ────────────────────────────────────────────────────────── */
 /* RS-485 widget: parent + inner port cards — nested hover (как hw-block) */
 .widget-rs485 {
+  min-width: 0;
   transition: box-shadow var(--transition), border-color var(--transition);
 }
 #tab-dashboard .widget-rs485:hover,
@@ -1229,14 +1241,20 @@ html[data-theme="light"] .nav-sub-item.active { color: var(--btn-primary-hover);
 }
 .rs485-grid {
   display: grid;
-  grid-template-columns: repeat(5, 1fr);
+  /* minmax(0, 1fr) so a port's min-content (TX/RX pair, a nowrap chip) cannot
+     grow the track past the widget. At 701px the 3-column row left the column
+     (main scrollWidth 509 vs clientWidth 495, last card ~8px past the viewport).
+     Desktop stays five equal tracks; ≤900 / ≤700 keep three and two. */
+  grid-template-columns: repeat(5, minmax(0, 1fr));
   gap: 10px; margin-top: 12px;
+  min-width: 0;
 }
 .rs485-port {
   background: var(--bg-card); border: 1px solid var(--border);
   border-radius: var(--radius-lg); padding: 13px 12px;
   box-shadow: var(--shadow-sm);
   transition: box-shadow var(--transition), border-color var(--transition);
+  min-width: 0;
 }
 .widget-rs485:hover .rs485-port {
   border-color: var(--border-md);
@@ -1246,7 +1264,7 @@ html[data-theme="light"] .nav-sub-item.active { color: var(--btn-primary-hover);
   box-shadow: var(--shadow-glow), var(--shadow-sm);
 }
 .rs485-port.absent { opacity: .92; }
-.rs485-hdr { display: flex; align-items: center; justify-content: space-between; margin-bottom: 5px; }
+.rs485-hdr { display: flex; align-items: center; justify-content: space-between; margin-bottom: 5px; min-width: 0; }
 .rs485-dot { width: 9px; height: 9px; border-radius: 50%; flex-shrink: 0; transition: background .4s, box-shadow .4s; }
 /* опрос активен, ответы устройств в норме */
 .rs485-dot.on          { background: var(--green); box-shadow: 0 0 5px var(--green); }
@@ -1258,12 +1276,12 @@ html[data-theme="light"] .nav-sub-item.active { color: var(--btn-primary-hover);
 .rs485-dot.warn        { background: var(--orange); box-shadow: 0 0 6px var(--orange); }
 /* опрос активен, нет ответов устройств */
 .rs485-dot.noresponse  { background: var(--red); box-shadow: 0 0 6px var(--red); }
-.rs485-name { font-size: 15px; font-weight: 700; color: var(--text); }
-.rs485-dev  { font-size: 12px; color: var(--text-dim); margin-bottom: 7px; font-family: 'Courier New', monospace; min-height: 1.2em; }
+.rs485-name { font-size: 15px; font-weight: 700; color: var(--text); min-width: 0; overflow-wrap: break-word; }
+.rs485-dev  { font-size: 12px; color: var(--text-dim); margin-bottom: 7px; font-family: "Segoe UI", sans-serif; min-height: 1.2em; min-width: 0; overflow-wrap: anywhere; }
 .rs485-dev-reserved { visibility: hidden; }
-.rs485-row  { display: flex; justify-content: space-between; align-items: baseline; font-size: 13px; margin-top: 3px; }
+.rs485-row  { display: flex; justify-content: space-between; align-items: baseline; font-size: 13px; margin-top: 3px; min-width: 0; }
 .rs485-row .rl { color: var(--text-sec); }
-.rs485-row .rv { font-weight: 600; color: var(--text); font-family: 'Courier New', monospace; }
+.rs485-row .rv { font-weight: 600; color: var(--text); font-family: "Segoe UI", sans-serif; }
 .rs485-err  { font-size: 12px; color: var(--red); margin-top: 5px; }
 .rs485-err-reserved {
   visibility: hidden;
@@ -1278,9 +1296,11 @@ html[data-theme="light"] .nav-sub-item.active { color: var(--btn-primary-hover);
 .rs485-port-skeleton .rv {
   color: var(--text-dim);
 }
-/* TX and RX on one line: each label+value pair spread to the card edges. */
-.rs485-row.rs485-txrx { justify-content: space-between; }
-.rs485-txrx-item { display: inline-flex; align-items: baseline; gap: 6px; min-width: 0; }
+/* TX and RX on one line when the card is wide enough; a pair that does not
+   fit wraps to the next line instead of widening the port track. flex-shrink 0
+   keeps the counter intact. ≤700 still stacks them (flex-direction: column). */
+.rs485-row.rs485-txrx { justify-content: space-between; flex-wrap: wrap; row-gap: 2px; }
+.rs485-txrx-item { display: inline-flex; align-items: baseline; gap: 6px; min-width: 0; flex: 0 0 auto; }
 /* Module sub-block: our-model chips + third-party summary + last-scan note.
    min-height + a reserved skeleton slot keep the card height stable so the first
    roster snapshot does not reflow the grid (no-layout-jumps floor). */
@@ -1290,7 +1310,7 @@ html[data-theme="light"] .nav-sub-item.active { color: var(--btn-primary-hover);
 .rs485-chip {
   display: inline-block; font-size: 11px; font-weight: 600;
   line-height: 1.5; padding: 0 6px; border-radius: var(--radius-xs);
-  font-family: 'Courier New', monospace; white-space: nowrap;
+  font-family: "Segoe UI", sans-serif; white-space: nowrap;
 }
 /* Reused, pre-verified token pairs (as .w-ico-*): cyan=live-online, red=live-offline. */
 .rs485-chip.is-on   { background: var(--chip-cyan-bg); color: var(--chip-cyan-fg); }
@@ -1701,7 +1721,7 @@ html[data-theme="light"] .nav-sub-item.active { color: var(--btn-primary-hover);
   background: #0d0d0f; border: 1px solid var(--border);
   border-radius: var(--radius-lg); padding: 16px;
   max-height: 320px; overflow-y: auto;
-  font-family: 'Courier New', monospace; font-size: .76rem;
+  font-family: "Segoe UI", sans-serif; font-size: .76rem;
   color: var(--text-sec); line-height: 1.6; white-space: pre-wrap; word-break: break-all;
   box-shadow: inset 0 2px 8px #00000040;
 }
@@ -1999,7 +2019,7 @@ html[data-theme="light"] .nav-sub-item.active { color: var(--btn-primary-hover);
   min-height: 76px;
   box-sizing: border-box;
   resize: vertical;
-  font-family: ui-monospace, SFMono-Regular, Consolas, "Liberation Mono", monospace;
+  font-family: "Segoe UI", sans-serif;
   font-size: .84rem;
   line-height: 1.35;
   color: var(--text);
@@ -2040,7 +2060,7 @@ html[data-theme="light"] .nav-sub-item.active { color: var(--btn-primary-hover);
   max-height: 360px;
   white-space: pre-wrap;
   overflow: auto;
-  font-family: ui-monospace, SFMono-Regular, Consolas, "Liberation Mono", monospace;
+  font-family: "Segoe UI", sans-serif;
 }
 @media (max-width: 700px) {
   .system-manage-grid .system-manage-command-panel .system-command-actions .btn {
@@ -2118,7 +2138,7 @@ html[data-theme="light"] .nav-sub-item.active { color: var(--btn-primary-hover);
   line-height: 1.4;
 }
 .system-manage-cloud-card .cloud-pair-code {
-  font: 700 1.6rem/1.2 ui-monospace, "Cascadia Mono", monospace;
+  font: 700 1.6rem/1.2 "Segoe UI", sans-serif;
   letter-spacing: .1em;
   text-align: center;
   color: var(--text);
@@ -2136,7 +2156,7 @@ html[data-theme="light"] .nav-sub-item.active { color: var(--btn-primary-hover);
   transform: translateX(-50%);
   background: var(--badge-ok-bg);
   color: var(--green);
-  font: 600 .8rem/1 system-ui, sans-serif;
+  font: 600 .8rem/1 "Segoe UI", sans-serif;
   letter-spacing: normal;
   padding: 5px 12px;
   border-radius: var(--radius-pill);
@@ -2315,7 +2335,7 @@ html[data-theme="light"] .alice-reg-link { color: var(--cyan-hover); }
 .homekit-qr .homekit-qr-bg { fill: var(--qr-bg); stroke: none; }
 .homekit-qr .homekit-qr-m { fill: var(--qr-fg); stroke: none; }
 .homekit-code {
-  font: 700 1.4rem/1.2 var(--font-mono);
+  font: 700 1.4rem/1.2 "Segoe UI", sans-serif;
   letter-spacing: .08em;
   color: var(--text);
   user-select: all;
@@ -2402,7 +2422,7 @@ html[data-theme="light"] .alice-reg-link { color: var(--cyan-hover); }
   white-space: nowrap;
 }
 html[data-theme="light"] .homeconnect-verify-link { color: var(--cyan-hover); }
-.homeconnect-cid input { width: 100%; font-family: var(--font-mono); }
+.homeconnect-cid input { width: 100%; font-family: "Segoe UI", sans-serif; }
 
 /* In-card ephemeral banners moved to .toast-area (1.0.6.37). Keep the
    slots in the DOM for older scripts, but they must never grow .ctrl-card. */
@@ -2710,7 +2730,7 @@ html[data-theme="light"] .homeconnect-verify-link { color: var(--cyan-hover); }
 }
 .sh-pick-ch:hover,
 .sh-pick-hit:hover { background: var(--bg-hover); border-color: var(--border); }
-.sh-pick-ch-tag { font-weight: 600; min-width: 46px; font-family: 'Courier New', monospace; }
+.sh-pick-ch-tag { font-weight: 600; min-width: 46px; font-family: "Segoe UI", sans-serif; }
 .sh-pick-ch-title { flex: 1 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .sh-pick-ch-rw,
 .sh-pick-ch-off,
@@ -3183,7 +3203,7 @@ html[data-theme="light"] .homeconnect-verify-link { color: var(--cyan-hover); }
 .text-sec { color: var(--text-sec); }
 .text-sm  { font-size: .78rem; }
 .widget .text-sm { font-size: 13px; }
-.mono     { font-family: 'Courier New', monospace; }
+.mono     { font-family: "Segoe UI", sans-serif; }
 .nowrap   { white-space: nowrap; }
 .flex     { display: flex; }
 .items-center { align-items: center; }
@@ -3643,7 +3663,7 @@ html[data-theme="light"] .homeconnect-verify-link { color: var(--cyan-hover); }
 
 .flasher-log-box {
   max-height: 300px; overflow-y: auto;
-  font-family: 'Courier New', monospace; font-size: .78rem;
+  font-family: "Segoe UI", sans-serif; font-size: .78rem;
   background: var(--bg-panel); border: 1px solid var(--border);
   border-radius: var(--radius-sm); padding: 10px;
 }
@@ -4645,7 +4665,7 @@ html[data-theme="light"] .homeconnect-verify-link { color: var(--cyan-hover); }
   font-weight: 400;
   line-height: 1.25;
   color: var(--text-sec);
-  font-family: inherit;
+  font-family: "Segoe UI", sans-serif;
   margin: 0;
   display: inline-flex;
   align-items: center;
@@ -4808,7 +4828,7 @@ html[data-theme="light"] .homeconnect-verify-link { color: var(--cyan-hover); }
   padding-right: 2px;
 }
 /* «Системные»: the shared 4.5rem live track is narrower than «2д 3ч 10м» and a
-   9-digit serial in Courier New. overflow-y:auto computes overflow-x to auto,
+   9-digit serial. overflow-y:auto computes overflow-x to auto,
    so that ink opened a horizontal scrollbar. Size label, topic key and value
    to their text (no ellipsis); clip X only once they fit inside the card. */
 .mqtt-ch-widget-sys .mqtt-ch-widget-body {
@@ -4884,7 +4904,7 @@ html[data-theme="light"] .homeconnect-verify-link { color: var(--cyan-hover); }
   flex-shrink: 0;
 }
 .mqtt-ch-live {
-  font-family: var(--font-mono);
+  font-family: "Segoe UI", sans-serif;
   font-size: 13px;
   font-weight: 600;
   min-width: 4.5rem;
@@ -4946,7 +4966,7 @@ html[data-theme="light"] .homeconnect-verify-link { color: var(--cyan-hover); }
   border-radius: 4px;
   background: var(--bg-input, var(--bg-card));
   color: var(--text);
-  font-family: var(--font-mono);
+  font-family: "Segoe UI", sans-serif;
   font-size: 13px;
   font-weight: 600;
   text-align: center;
@@ -4968,7 +4988,7 @@ html[data-theme="light"] .homeconnect-verify-link { color: var(--cyan-hover); }
   border-radius: 4px;
   background: var(--bg-card);
   color: var(--text);
-  font-family: var(--font-mono);
+  font-family: "Segoe UI", sans-serif;
   font-size: 15px;
   font-weight: 700;
   line-height: 1;
@@ -5069,7 +5089,7 @@ html[data-theme="light"] .mqtt-ch-live-ok { color: var(--cyan-hover); }
 
 /* Topic preview */
 .topic-preview {
-  font-family: var(--font-mono);
+  font-family: "Segoe UI", sans-serif;
   font-size: 12px;
   color: var(--text-sec);
   overflow: hidden;
@@ -5123,7 +5143,7 @@ html[data-theme="light"] .mqtt-ch-live-ok { color: var(--cyan-hover); }
   border: 1px solid var(--border);
   border-radius: 6px;
   padding: 8px 10px;
-  font-family: var(--font-mono);
+  font-family: "Segoe UI", sans-serif;
   font-size: 13px;
   line-height: var(--lh-body);
 }
@@ -5721,7 +5741,7 @@ html[data-theme="light"] .mqtt-ch-live-ok { color: var(--cyan-hover); }
   }
   /* was @media ≤900 — dashboard + flasher grids (width unchanged) */
   .dash-span-top4 { grid-column: 1 / -1; }
-  .rs485-grid { grid-template-columns: repeat(3, 1fr); }
+  .rs485-grid { grid-template-columns: repeat(3, minmax(0, 1fr)); }
   .hw-grid    { grid-template-columns: 1fr 1fr; }
   .flasher-layout { grid-template-columns: 1fr; }
   .flasher-grid { grid-template-columns: 1fr; }
@@ -5794,11 +5814,17 @@ html[data-theme="light"] .mqtt-ch-live-ok { color: var(--cyan-hover); }
     position: fixed;
     /* Drawer sits UNDER the topbar (Operator 2026-07-19), height fits its content
        (not full screen), scrolls if taller than the viewport, with a rounded
-       bottom-right corner like the other cards. */
-    top: var(--topbar-h); left: 0; bottom: auto;
+       bottom-right corner like the other cards.
+       --drawer-top is the measured topbar (nav.js). The two-row phone bar is
+       taller than --topbar-h; subtracting only the token lets the scrollport
+       run past the viewport, so the expanded Control rows cannot be scrolled
+       into view. */
+    top: var(--drawer-top, var(--topbar-h)); left: 0; bottom: auto;
     width: 240px; max-width: 82vw;
-    max-height: calc(100dvh - var(--topbar-h));
+    max-height: calc(100dvh - var(--drawer-top, var(--topbar-h)));
     overflow-y: auto;
+    -webkit-overflow-scrolling: touch;
+    overscroll-behavior: contain;
     z-index: 100;
     transform: translateX(-100%);
     transition: transform .26s ease;
@@ -5807,7 +5833,7 @@ html[data-theme="light"] .mqtt-ch-live-ok { color: var(--cyan-hover); }
   }
   .app.nav-open .sidebar { transform: translateX(0); }
   /* Backdrop starts below the topbar so the hamburger stays tappable to toggle. */
-  .nav-backdrop { top: var(--topbar-h); }
+  .nav-backdrop { top: var(--drawer-top, var(--topbar-h)); }
   .app.nav-open .nav-backdrop { display: block; }
 
   /* Mobile topbar — ROW 1 = burger | logo | lang/theme; short title under logo
@@ -5877,7 +5903,7 @@ html[data-theme="light"] .mqtt-ch-live-ok { color: var(--cyan-hover); }
   .hw-title-full  { display: none; }
   .hw-title-short { display: inline; }
 
-  .rs485-grid { grid-template-columns: repeat(2, 1fr); }
+  .rs485-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
   /* RS-485 cards are narrow at 2-col — stack TX and RX on separate lines
      (each label left / value right) instead of side-by-side, and drop the empty
      reserved spacer rows (Operator 2026-07-19). */
@@ -5945,6 +5971,18 @@ html[data-theme="light"] .mqtt-ch-live-ok { color: var(--cyan-hover); }
      track. Gate: ui-layout (i) one column ≤560 + (h) no intra-card clipping. */
   .dash-grid.system-manage-grid { grid-template-columns: minmax(0, 1fr); }
   .system-manage-grid > .system-manage-services-card { grid-column: 1 / -1; }
+  /* Phone portrait: 56+80+118px controls leave the name ~16px («A…» / «M…»).
+     The name takes the full card width on its own row (ellipsis only if a
+     label is still longer than the card). The three controls share the next
+     row, so they stay tappable and do not overlap the name or each other.
+     Wider than 560px keeps the single 4-column row. */
+  .system-manage-services-card.widget-svc .svc-row.svc-ctl-row {
+    grid-template-columns: 64px minmax(0, 1fr) minmax(0, 1.45fr);
+    row-gap: 6px;
+  }
+  .system-manage-services-card.widget-svc .svc-ctl-row .name {
+    grid-column: 1 / -1;
+  }
   .dash-grid > .widget.widget-svc,
   .dash-grid > .widget.dash-eth {
     height: auto;
@@ -6060,10 +6098,12 @@ html[data-theme="light"] .mqtt-ch-live-ok { color: var(--cyan-hover); }
   .topbar-burger { display: flex; min-height: 44px; min-width: 44px; }
   .sidebar {
     position: fixed;
-    top: var(--topbar-h); left: 0; bottom: auto;
+    top: var(--drawer-top, var(--topbar-h)); left: 0; bottom: auto;
     width: 260px; max-width: 70vw;
-    max-height: calc(100dvh - var(--topbar-h));
+    max-height: calc(100dvh - var(--drawer-top, var(--topbar-h)));
     overflow-y: auto;
+    -webkit-overflow-scrolling: touch;
+    overscroll-behavior: contain;
     z-index: 100;
     transform: translateX(-100%);
     transition: transform .26s ease;
@@ -6071,7 +6111,7 @@ html[data-theme="light"] .mqtt-ch-live-ok { color: var(--cyan-hover); }
     border-bottom-right-radius: var(--radius-lg);
   }
   .app.nav-open .sidebar { transform: translateX(0); }
-  .nav-backdrop { top: var(--topbar-h); }
+  .nav-backdrop { top: var(--drawer-top, var(--topbar-h)); }
   .app.nav-open .nav-backdrop { display: block; }
 }
 

@@ -55,7 +55,7 @@ DEFAULT_USER = os.environ.get("SA02M_USER", _DEVICE_ENV.get("SA02M_USER", "root"
 DEFAULT_PASS = os.environ.get("SA02M_PASS", _DEVICE_ENV.get("SA02M_PASS", "cyntron"))
 DEFAULT_HOSTKEY = os.environ.get(
     "SA02M_HOSTKEY",
-    _DEVICE_ENV.get("SA02M_HOSTKEY", "SHA256:TMkrSFsuRUe0F1caCEcTNUli9gb7KaQYsPC7FELohKc"),
+    _DEVICE_ENV.get("SA02M_HOSTKEY", "SHA256:tPjiTu/m/9zWL5dgeiyXitL0Cc2mu5ZR8DTMxvP0QLQ"),
 )
 FW_CACHE = "/var/lib/sa02m-flasher/firmware"
 EVENTS_LOG = "/var/log/sa02m-flasher/events.log"

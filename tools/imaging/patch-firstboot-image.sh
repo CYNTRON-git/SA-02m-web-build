@@ -111,6 +111,8 @@ wipe_alice_enrollment() {
     rm -f "$root/var/lib/sa02m-alice/device.crt.pem" \
           "$root/var/lib/sa02m-alice/device.key.pem" \
           "$root/var/lib/sa02m-alice/pending_claim.json" \
+          "$root/var/lib/sa02m-alice/gateway_probe.json" \
+          "$root/var/lib/sa02m-alice/gateway_probe.lock" \
           "$root/var/lib/sa02m-alice"/*.tmp \
           "$root/etc/sa02m-alice"/.alice-*
     # Each file guarded — an absent one is a no-op, never an abort (a donor

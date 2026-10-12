@@ -58,7 +58,7 @@ py -3 tools/ssh/sa02m_remote.py upload-fw D:\path\MR-02m_1.0.9.0.fw
 ### Вариант B — PuTTY plink (одна команда)
 
 ```powershell
-$HostKey = "SHA256:TMkrSFsuRUe0F1caCEcTNUli9gb7KaQYsPC7FELohKc"
+$HostKey = "SHA256:tPjiTu/m/9zWL5dgeiyXitL0Cc2mu5ZR8DTMxvP0QLQ"
 & "C:\Program Files\PuTTY\plink.exe" -batch -ssh root@192.168.1.136 -pw cyntron -hostkey $HostKey "hostname"
 ```
 
@@ -81,7 +81,7 @@ ssh -i "$env:USERPROFILE\.ssh\sa02m_sa02" -o StrictHostKeyChecking=accept-new ro
 **Текущий fingerprint** (обновляйте после перепрошивки образа SA-02m):
 
 ```
-SHA256:TMkrSFsuRUe0F1caCEcTNUli9gb7KaQYsPC7FELohKc
+SHA256:tPjiTu/m/9zWL5dgeiyXitL0Cc2mu5ZR8DTMxvP0QLQ
 ```
 
 Получить заново с ПК:

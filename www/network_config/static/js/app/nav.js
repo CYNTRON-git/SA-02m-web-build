@@ -8,10 +8,12 @@
    backdrop are display:none and the sidebar is a normal column, so this JS is
    inert there (toggling .nav-open has no visual effect above the breakpoint).
 
-   This module ONLY toggles a wrapper class (.app.nav-open) and closes the
-   drawer on backdrop tap / Esc / nav selection. The existing .nav-item
-   data-tab click handlers (app.js initNav) are NOT touched -- the close is a
-   separate delegated listener on the sidebar. */
+   This module toggles a wrapper class (.app.nav-open), publishes the measured
+   topbar height as --drawer-top (the phone bar is taller than --topbar-h, and
+   the drawer max-height must use the same offset), and closes the drawer on
+   backdrop tap / Esc / nav selection. The existing .nav-item data-tab click
+   handlers (app.js initNav) are NOT touched -- the close is a separate
+   delegated listener on the sidebar. */
 'use strict';
 
 function initNavDrawer() {
@@ -22,16 +24,17 @@ function initNavDrawer() {
   if (!app || !burger) return;
 
   function isOpen() { return app.classList.contains('nav-open'); }
-  function openDrawer() {
-    // Pin the drawer (and backdrop) to the ACTUAL bottom of the topbar so the
-    // menu opens UNDER it (the mobile topbar height is dynamic, so --topbar-h is
-    // only a CSS fallback). Inline top is inert on desktop (sidebar is static).
+  // One measured offset for the drawer's top and its max-height. The mobile
+  // topbar is height:auto (two rows) and taller than --topbar-h; the CSS
+  // fallback alone lets the scrollport end below the viewport. The variable
+  // is only consumed by the drawer media queries, so it is inert on desktop.
+  function pinDrawerUnderTopbar() {
     var tb = document.querySelector('.topbar');
-    if (tb) {
-      var h = tb.offsetHeight + 'px';
-      if (sidebar) { sidebar.style.top = h; }
-      if (backdrop) { backdrop.style.top = h; }
-    }
+    if (!tb) return;
+    app.style.setProperty('--drawer-top', tb.offsetHeight + 'px');
+  }
+  function openDrawer() {
+    pinDrawerUnderTopbar();
     app.classList.add('nav-open');
   }
   function closeDrawer() { app.classList.remove('nav-open'); }
@@ -71,6 +74,8 @@ function initNavDrawer() {
   }
 
   window.closeNavDrawer = closeDrawer;
+  pinDrawerUnderTopbar();
+  window.addEventListener('resize', pinDrawerUnderTopbar);
 }
 
 window.initNavDrawer = initNavDrawer;

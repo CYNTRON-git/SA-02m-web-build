@@ -3059,7 +3059,7 @@ import { aiSensorLabel, aiUnitPrecision } from "./ai-sensors.js?v=1.0.7.1";
     const all = flattenPoints(drawSeries);
     if (!all.length) {
       ctx.fillStyle = th.text;
-      ctx.font = "13px ui-sans-serif, system-ui, sans-serif";
+      ctx.font = "13px \"Segoe UI\", sans-serif";
       ctx.fillText(opts.emptyText || "Нет данных", pad.l, h / 2);
       // Keep the legend clickable when only the SHOWN series are empty — the
       // Operator must be able to bring a hidden series with data back.
@@ -3119,7 +3119,7 @@ import { aiSensorLabel, aiUnitPrecision } from "./ai-sensors.js?v=1.0.7.1";
       minY = dom.minY;
       maxY = dom.maxY;
       yDecimals = yTickDecimals(minY, maxY, 4);
-      ctx.font = "11px ui-sans-serif, system-ui, sans-serif";
+      ctx.font = "11px \"Segoe UI\", sans-serif";
       const topLab = fmtYTick(maxY, yDecimals);
       pad.l = Math.min(72, Math.max(48, Math.ceil(ctx.measureText(topLab).width) + 12));
     } else if (bars) {
@@ -3127,7 +3127,7 @@ import { aiSensorLabel, aiUnitPrecision } from "./ai-sensors.js?v=1.0.7.1";
       minY = dom.minY;
       maxY = dom.maxY;
       yDecimals = yTickDecimals(minY, maxY, 4);
-      ctx.font = "11px ui-sans-serif, system-ui, sans-serif";
+      ctx.font = "11px \"Segoe UI\", sans-serif";
       const labW = Math.max(
         ctx.measureText(fmtYTick(maxY, yDecimals)).width,
         ctx.measureText(fmtYTick(minY, yDecimals)).width
@@ -3147,7 +3147,7 @@ import { aiSensorLabel, aiUnitPrecision } from "./ai-sensors.js?v=1.0.7.1";
 
     ctx.strokeStyle = th.grid;
     ctx.lineWidth = 1;
-    ctx.font = "11px ui-sans-serif, system-ui, sans-serif";
+    ctx.font = "11px \"Segoe UI\", sans-serif";
     ctx.fillStyle = th.text;
     ctx.textAlign = "left";
 

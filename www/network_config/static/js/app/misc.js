@@ -146,6 +146,16 @@ function syncTimeFromPC(applyNow) {
     credentials: 'same-origin'
   })
     .then((r) => {
+      // A real 302 is hidden by redirect:'manual' (status 0 / opaqueredirect).
+      // Before 0918f79a this callback ignored the response and reported success
+      // — the clock is already set when fetch resolves. status 0 is that case,
+      // not a failed exit code.
+      if (r.type === 'opaqueredirect' || r.status === 0) {
+        configLoaded = false;
+        toast('Время синхронизировано с этим ПК', 'success');
+        setTimeout(loadConfig, 400);
+        return;
+      }
       if (!r.ok && r.status !== 302 && r.status !== 301) {
         toast('Ошибка сервера: ' + r.status, 'error');
         return;

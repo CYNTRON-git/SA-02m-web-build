@@ -297,8 +297,10 @@ function submitForm(form, onSuccess) {
     credentials: 'same-origin'
   })
     .then((r) => {
-      // status 0 / opaqueredirect: connection gone after IP bounce — treat as applied
-      if (netApply && (r.status === 0 || r.type === 'opaqueredirect')) {
+      // status 0 / opaqueredirect: either the TCP session dropped after an IP
+      // change, or the browser hid a 302 (time sync). Both used to be success
+      // before 0918f79a started toasting «Ошибка сервера: 0».
+      if (r.status === 0 || r.type === 'opaqueredirect') {
         finishOk();
         return;
       }
