@@ -11,7 +11,7 @@ param(
     [string]$HostAddr = $(if ($env:SA02M_HOST) { $env:SA02M_HOST } else { "192.168.1.136" }),
     [string]$User = "root",
     [string]$Password = $(if ($env:SA02M_PASS) { $env:SA02M_PASS } else { "cyntron" }),
-    [string]$HostKey = $(if ($env:SA02M_HOSTKEY) { $env:SA02M_HOSTKEY } else { "SHA256:TMkrSFsuRUe0F1caCEcTNUli9gb7KaQYsPC7FELohKc" })
+    [string]$HostKey = $(if ($env:SA02M_HOSTKEY) { $env:SA02M_HOSTKEY } else { "SHA256:tPjiTu/m/9zWL5dgeiyXitL0Cc2mu5ZR8DTMxvP0QLQ" })
 )
 
 $ErrorActionPreference = "Stop"
