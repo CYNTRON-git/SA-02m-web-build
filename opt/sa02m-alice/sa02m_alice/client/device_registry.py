@@ -10,7 +10,7 @@ from typing import Any, Callable, Dict, Iterable, List, Optional, Set, Tuple
 
 from ..common import constants as C
 from ..common.config_store import load_devices
-from ..config import ahu_status, scene_devices, topics
+from ..config import ahu_status, device_types, scene_devices, topics
 from . import converters
 
 log = logging.getLogger("sa02m_alice.registry")
@@ -508,11 +508,18 @@ class DeviceRegistry:
                     if item.get("parameters"):
                         block["parameters"] = item["parameters"]
                     props.append(block)
+                stored_type = dev.get("type") or "devices.types.other"
+                # Cloud keeps the catalog id. Yandex discovery only documents
+                # the official set, so an extended type is sent as its mapped id.
+                wire_type = (
+                    stored_type if cloud
+                    else device_types.yandex_type_for(str(stored_type))
+                )
                 entry: Dict[str, Any] = {
                     "id": did,
                     "name": dev.get("name") or did,
                     "room": self.room_name(dev.get("room_id")),
-                    "type": dev.get("type") or "devices.types.other",
+                    "type": wire_type,
                     "capabilities": caps,
                     "properties": props,
                 }

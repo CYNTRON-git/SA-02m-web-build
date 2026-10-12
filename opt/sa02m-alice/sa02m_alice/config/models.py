@@ -7,7 +7,7 @@ import uuid
 from typing import Any, Dict, List, Optional, Tuple
 
 from ..common import constants as C
-from .device_types import OFFICIAL_DEVICE_TYPES
+from .device_types import CATALOG_DEVICE_TYPES
 
 # Tile icon allow-list (docs/contracts/alice-mqtt-mapping.md §Device document).
 DEVICE_ICONS = frozenset(C.DEVICE_ICONS)
@@ -540,7 +540,9 @@ def validate_device(dev: Dict[str, Any], *, partial: bool = False) -> Tuple[Opti
             dtype = "devices.types.ventilation"
         if _led_mqtt_bound(out) and dtype in ("devices.types.other", "devices.types.generic"):
             dtype = "devices.types.light"
-        if dtype not in OFFICIAL_DEVICE_TYPES:
+        # Whole catalog (Yandex set plus extended types). The Yandex wire id
+        # is chosen in discovery, not stored in place of the catalog id.
+        if dtype not in CATALOG_DEVICE_TYPES:
             return None, "invalid device type"
         out["type"] = dtype
     # `room_id` is checked for SHAPE only here: this validator is pure and

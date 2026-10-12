@@ -80,12 +80,12 @@ function shSetMsgOn(id, text, ok) {
 function shSetBindMsg(text, ok) { shSetMsgOn('sh-bind-msg', text, ok); }
 
 // ── Vocabulary ─────────────────────────────────────────────────────────────
-// Official Yandex Smart Home type enum (picker + labels). One home with
+// Device-type catalog (picker + labels). One home with
 // opt/sa02m-alice/sa02m_alice/config/device_types.py — the unit test
-// pins the key sets equal. Source:
-// https://yandex.ru/dev/dialogs/smart-home/doc/ru/concepts/device-types
-// (2026-09-04). RU string (translated by uiT / DICT), falling back to the
-// last dotted segment so a new type never renders its raw key.
+// pins the key sets equal. The first ids are the Yandex set; the rest are
+// extended types (capability tags and the Alice wire id live in that module).
+// RU string (translated by uiT / DICT), falling back to the last dotted
+// segment so a new type never renders its raw key.
 const SH_DEV_TYPES = {
   'devices.types.sensor': 'Датчик',
   'devices.types.sensor.button': 'Умная кнопка',
@@ -140,6 +140,42 @@ const SH_DEV_TYPES = {
   'devices.types.openable.valve': 'Шаровой кран',
   'devices.types.openable.door_lock': 'Замок',
   'devices.types.other': 'Другое',
+  'devices.types.sensor.air_quality': 'Датчик качества воздуха',
+  'devices.types.sensor.smoke_co': 'Датчик дыма и CO',
+  'devices.types.sensor.occupancy': 'Датчик присутствия',
+  'devices.types.sensor.rain': 'Датчик дождя',
+  'devices.types.sensor.freeze': 'Датчик замерзания',
+  'devices.types.sensor.soil': 'Датчик почвы',
+  'devices.types.sensor.flow': 'Датчик расхода',
+  'devices.types.sensor.window': 'Датчик окна',
+  'devices.types.sensor.carbon_monoxide': 'Датчик угарного газа',
+  'devices.types.sensor.pm25': 'Датчик PM2.5',
+  'devices.types.sensor.voc': 'Датчик ЛОВ',
+  'devices.types.weather': 'Погода',
+  'devices.types.media_device.speaker': 'Колонка',
+  'devices.types.remote': 'Пульт',
+  'devices.types.cooking.oven': 'Духовой шкаф',
+  'devices.types.cooking.microwave': 'Микроволновка',
+  'devices.types.cooking.hood': 'Кухонная вытяжка',
+  'devices.types.cooking.cooktop': 'Варочная панель',
+  'devices.types.refrigerator': 'Холодильник',
+  'devices.types.dryer': 'Сушильная машина',
+  'devices.types.water_heater': 'Водонагреватель',
+  'devices.types.heat_pump': 'Тепловой насос',
+  'devices.types.pump': 'Насос',
+  'devices.types.ev_charger': 'Зарядная станция',
+  'devices.types.openable.blind': 'Жалюзи',
+  'devices.types.openable.shutter': 'Рольставни',
+  'devices.types.openable.garage': 'Гаражные ворота',
+  'devices.types.openable.gate': 'Ворота',
+  'devices.types.openable.damper': 'Заслонка',
+  'devices.types.openable.door': 'Дверь',
+  'devices.types.openable.window': 'Окно',
+  'devices.types.openable.awning': 'Маркиза',
+  'devices.types.irrigation': 'Полив',
+  'devices.types.alarm_panel': 'Охранная панель',
+  'devices.types.siren': 'Сирена',
+  'devices.types.scene': 'Сцена',
 };
 
 // Official category groups for #sh-dev-type (same order as device_types.py).
@@ -150,6 +186,12 @@ const SH_DEV_TYPE_GROUPS = [
     'devices.types.sensor.illumination', 'devices.types.sensor.motion',
     'devices.types.sensor.open', 'devices.types.sensor.smoke',
     'devices.types.sensor.vibration', 'devices.types.sensor.water_leak',
+    'devices.types.sensor.air_quality', 'devices.types.sensor.smoke_co',
+    'devices.types.sensor.occupancy', 'devices.types.sensor.rain',
+    'devices.types.sensor.freeze', 'devices.types.sensor.soil',
+    'devices.types.sensor.flow', 'devices.types.sensor.window',
+    'devices.types.sensor.carbon_monoxide', 'devices.types.sensor.pm25',
+    'devices.types.sensor.voc', 'devices.types.weather',
   ]},
   {label: 'Счётчики', types: [
     'devices.types.smart_meter', 'devices.types.smart_meter.cold_water',
@@ -159,16 +201,20 @@ const SH_DEV_TYPE_GROUPS = [
   {label: 'Медиаустройства', types: [
     'devices.types.camera', 'devices.types.media_device',
     'devices.types.media_device.receiver', 'devices.types.media_device.tv',
-    'devices.types.media_device.tv_box',
+    'devices.types.media_device.tv_box', 'devices.types.media_device.speaker',
+    'devices.types.remote',
   ]},
   {label: 'Кухонная техника', types: [
     'devices.types.cooking', 'devices.types.cooking.coffee_maker',
     'devices.types.cooking.kettle', 'devices.types.cooking.multicooker',
-    'devices.types.dishwasher',
+    'devices.types.dishwasher', 'devices.types.cooking.oven',
+    'devices.types.cooking.microwave', 'devices.types.cooking.hood',
+    'devices.types.cooking.cooktop',
   ]},
   {label: 'Бытовая техника', types: [
     'devices.types.iron', 'devices.types.vacuum_cleaner',
-    'devices.types.washing_machine',
+    'devices.types.washing_machine', 'devices.types.refrigerator',
+    'devices.types.dryer',
   ]},
   {label: 'Устройства для животных', types: [
     'devices.types.pet_drinking_fountain', 'devices.types.pet_feeder',
@@ -177,6 +223,7 @@ const SH_DEV_TYPE_GROUPS = [
     'devices.types.humidifier', 'devices.types.purifier',
     'devices.types.thermostat', 'devices.types.thermostat.ac',
     'devices.types.ventilation', 'devices.types.ventilation.fan',
+    'devices.types.water_heater', 'devices.types.heat_pump',
   ]},
   {label: 'Электрооборудование', types: [
     'devices.types.light', 'devices.types.light.ceiling',
@@ -184,13 +231,24 @@ const SH_DEV_TYPE_GROUPS = [
     'devices.types.light.lamp', 'devices.types.light.sconce',
     'devices.types.light.strip', 'devices.types.light.torchere',
     'devices.types.socket', 'devices.types.switch',
-    'devices.types.switch.relay',
+    'devices.types.switch.relay', 'devices.types.pump',
+    'devices.types.ev_charger',
   ]},
   {label: 'Открытие/закрытие', types: [
     'devices.types.openable', 'devices.types.openable.curtain',
     'devices.types.openable.valve', 'devices.types.openable.door_lock',
+    'devices.types.openable.blind', 'devices.types.openable.shutter',
+    'devices.types.openable.garage', 'devices.types.openable.gate',
+    'devices.types.openable.damper', 'devices.types.openable.door',
+    'devices.types.openable.window', 'devices.types.openable.awning',
+    'devices.types.irrigation',
   ]},
-  {label: 'Остальные устройства', types: ['devices.types.other']},
+  {label: 'Охрана', types: [
+    'devices.types.alarm_panel', 'devices.types.siren',
+  ]},
+  {label: 'Остальные устройства', types: [
+    'devices.types.other', 'devices.types.scene',
+  ]},
 ];
 
 // The on/off device types — the «Включить/выключить» optgroup in #sh-dev-type.
@@ -203,6 +261,11 @@ const SH_ONOFF_TYPES = [
   'devices.types.ventilation.fan',
   'devices.types.switch',
   'devices.types.other',
+  'devices.types.pump',
+  'devices.types.ev_charger',
+  'devices.types.cooking.hood',
+  'devices.types.siren',
+  'devices.types.scene',
 ];
 // Default tile icon per on/off type (the cloud page draws it); the icon
 // select is preselected from this until the operator picks one by hand.
@@ -213,6 +276,11 @@ const SH_ICON_BY_TYPE = {
   'devices.types.switch': 'relay',
   'devices.types.other': 'generic',
   'devices.types.ventilation': 'fan',
+  'devices.types.pump': 'pump',
+  'devices.types.ev_charger': 'socket',
+  'devices.types.cooking.hood': 'fan',
+  'devices.types.siren': 'siren',
+  'devices.types.irrigation': 'valve',
 };
 const SH_ICONS = ['bulb', 'fan', 'socket', 'relay', 'pump', 'valve', 'siren', 'generic'];
 

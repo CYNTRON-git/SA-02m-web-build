@@ -267,12 +267,15 @@ the Yandex account as a switch. Projection home:
 
 ### Device type (`type`)
 
-`type` is a Yandex `devices.types.*` id. The official allow-list — picker
-(`#sh-dev-type` on `/network_config/`) + `validate_device` + discovery
-passthrough — is `sa02m_alice/config/device_types.py`, taken from
-https://yandex.ru/dev/dialogs/smart-home/doc/ru/concepts/device-types
-and not restated here. Unknown ids are rejected. A missing tile icon
-falls back to `generic` and does not block save.
+`type` is a catalog id from `sa02m_alice/config/device_types.py` (one home:
+the Yandex official set, plus extended types, Russian labels, capability
+tags, and the Yandex id each extended type maps to). The picker and
+`validate_device` accept the whole catalog. Unknown ids are rejected.
+Yandex discovery sends `yandex_type_for(type)` — the id itself for an
+official type — so an extended type still reaches Alice as a documented
+Yandex type. The cloud profile keeps the stored id. A missing tile icon
+falls back to `generic` and does not block save. Upstream licenses and
+URLs live in that module, not here.
 
 ### Room membership (`room_id`)
 
@@ -881,8 +884,12 @@ re-measured on this branch.
   `ts` не старше `STATUS_STALE_S` (или `ts` нет — клиент без heartbeat) ⇒
   `available: true`, `source: "client"`; проба не выполняется.
 - **Иначе — кеш пробы** `/var/lib/sa02m-alice/gateway_probe.json`
-  (`{ts, probe, ok_ts, fail_count}`; не идентичность платы, в образ уходить
-  может — на клоне он просто устаревает). Обновляется не чаще
+  (`{ts, probe, ok_ts, fail_count}`; не идентичность платы). На работающей
+  плате он лежит в каталоге идентичности, но в образ не уходит: белый список
+  площадки 3 пускает туда только `ca.crt.pem`, поэтому снятие образа стирает
+  и этот файл, и `gateway_probe.lock`
+  (`docs/contracts/image-identity-reset.md` §2). Клон без кеша отвечает
+  `checking`, а не чужим вердиктом донора. Обновляется не чаще
   `GATEWAY_PROBE_TTL_S` (60 с) после успеха и `GATEWAY_PROBE_RETRY_S` (15 с)
   после неудачи. Под CGI (`SA02M_ALICE_PROBE_REFRESH=spawn`) обновление идёт
   отсоединённым процессом, ответ опроса его не ждёт; вне CGI (служба
