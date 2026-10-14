@@ -144,7 +144,7 @@ function scanShortName(scanDev, type) {
     return scanDev.family === 'uaria' ? 'Carel uAria' : 'Carel c.pCOmini';
   }
   if (scanDev.signature) return String(scanDev.signature).trim();
-  return `Устройство ${addr}`;
+  return uiT('Устройство') + ' ' + addr;
 }
 
 function stripComAddrSuffix(name) {
@@ -2814,7 +2814,7 @@ function refreshScanAddAll() {
     view.addAllBtn = null;
     return;
   }
-  const label = '+ Добавить все (' + newCount + ')';
+  const label = uiT('+ Добавить все') + ' (' + newCount + ')';
   if (!view.addAllBtn) {
     const addAllBtn = h('button', {'class': 'btn btn-sm', 'style': 'margin-top:8px'}, label);
     addAllBtn.onclick = () => {
@@ -2874,7 +2874,7 @@ function appendScanDevice(dev) {
   const devType = scanPreselectType(dev);
   const typeSelect = h('select', {'class': 'mqtt-select-small'});
   if (!devType) {
-    const ph = h('option', {value: ''}, '— выберите тип —');
+    const ph = h('option', {value: ''}, uiT('— тип —'));
     ph.selected = true;
     typeSelect.appendChild(ph);
   }
@@ -2906,7 +2906,7 @@ function appendScanDevice(dev) {
   const actionCell = h('td', {'class': 'mqtt-scan-action'}, listed
     ? scanListedCheck()
     : (() => {
-        addBtn = h('button', {'class': 'btn btn-primary btn-sm'}, '+ Добавить');
+        addBtn = h('button', {'class': 'btn btn-primary btn-sm'}, uiT('+ Добавить'));
         addBtn.disabled = !typeSelect.value;
         addBtn.onclick = () => {
           if (!typeSelect.value) return;

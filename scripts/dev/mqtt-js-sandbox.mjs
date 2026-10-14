@@ -17,6 +17,7 @@ import vm from 'node:vm';
 const HERE = dirname(fileURLToPath(import.meta.url));
 export const ROOT = join(HERE, '..', '..');
 export const MQTT_JS = join(ROOT, 'www', 'network_config', 'static', 'js', 'mqtt.js');
+export const I18N_JS = join(ROOT, 'www', 'network_config', 'static', 'js', 'i18n.js');
 
 class Text {
   constructor(t) { this.nodeType = 3; this._t = String(t); this.parent = null; }
@@ -117,8 +118,11 @@ export class El {
   get selectedIndex() { return this.options.findIndex((o) => o.selected); }
 }
 
-/** A fresh sandbox with mqtt.js loaded. `ids` = {id: El} for getElementById. */
-export function loadMqttJs({ ids = {} } = {}) {
+/** A fresh sandbox with mqtt.js loaded. `ids` = {id: El} for getElementById.
+ *  `lang: 'en'` first loads the SHIPPED i18n.js and switches it to English, so
+ *  uiT() goes through the real DICT; the default leaves window.sa02mI18n null
+ *  (uiT returns the Russian source). */
+export function loadMqttJs({ ids = {}, lang = 'ru' } = {}) {
   let src = readFileSync(MQTT_JS, 'utf8');
   const importRe = /^import\s*\{([^}]*)\}\s*from\s*['"][^'"]+['"];?\s*$/gm;
   if (!importRe.test(src)) throw new Error('mqtt.js: expected an import line to stub');
@@ -129,7 +133,6 @@ export function loadMqttJs({ ids = {} } = {}) {
       .map((n) => `const ${n.split(/\s+as\s+/).pop()} = {};`).join(' ')
       + '\n'.repeat((m.match(/\n/g) || []).length));
   const registry = Object.assign({}, ids);
-  const toasts = [];
   const document = {
     createElement: (t) => new El(t),
     createTextNode: (t) => new Text(t),
@@ -137,6 +140,8 @@ export function loadMqttJs({ ids = {} } = {}) {
     querySelector: () => null,
     querySelectorAll: () => [],
     addEventListener() {},
+    // 'loading' keeps i18n.js from binding its DOM walker at load.
+    readyState: 'loading',
     body: new El('body'),
   };
   const window = { sa02mI18n: null, addEventListener() {}, location: { href: '' } };
@@ -145,17 +150,23 @@ export function loadMqttJs({ ids = {} } = {}) {
     localStorage: { getItem: () => null, setItem() {}, removeItem() {} },
     sessionStorage: { getItem: () => null, setItem() {}, removeItem() {} },
     setTimeout: () => 0, clearTimeout() {}, setInterval: () => 0, clearInterval() {},
+    requestAnimationFrame: () => 0,
     fetch: () => Promise.reject(new Error('no network in tests')),
     confirm: () => true, alert() {}, prompt: () => null,
     URLSearchParams, Promise, Math, JSON, Number, String, Object, Array, Set, Map,
   };
   vm.createContext(ctx);
+  if (lang === 'en') {
+    vm.runInContext(readFileSync(I18N_JS, 'utf8'), ctx, { filename: 'i18n.js' });
+    if (!window.sa02mI18n || typeof window.sa02mI18n.setLang !== 'function') {
+      throw new Error('i18n.js: window.sa02mI18n.setLang not defined');
+    }
+    window.sa02mI18n.setLang('en');
+  }
   vm.runInContext(src, ctx, { filename: 'mqtt.js' });
-  registry['mqtt-toast'] = registry['mqtt-toast'] || null;
   return {
     ctx,
     ids: registry,
-    toasts,
     run: (code) => vm.runInContext(code, ctx),
     el: (tag) => new El(tag),
   };
