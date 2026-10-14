@@ -263,7 +263,7 @@ class TestTemplateReadErrorMeetsClear(unittest.TestCase):
                 p = TemplatePoller({"id": TP, "type": "template",
                                     "template": "err", "port": "/dev/COMtest",
                                     "address": 30}, pub)
-        with mock.patch.object(p, "get_port", return_value=port),                 mock.patch.object(bridge_device.DeviceLiveCache, "flush_file"):
+        with mock.patch.object(p, "get_port", return_value=port), \n                mock.patch.object(bridge_device.DeviceLiveCache, "flush_file"):
             p._t_poll = -1e9
             _run_port_cycle(p)
             # setup clear for both, then the warmup poll re-flags the dead one
