@@ -20,7 +20,7 @@
 | ID | Гарантия |
 |---|---|
 | G-P1 | Модуль с `MODULE_<ID>=skip` не ставится, не обновляется и не доставляется заново ни одним путём доставки из §4. |
-| G-P2 | `install.sh` удаляет уже стоящий пропущенный модуль: код, юниты, грант sudoers, служебные файлы. Данные оператора остаются; `install.sh --keep-module <ID>` возвращает модуль, и он продолжает работать со старыми данными. |
+| G-P2 | `install.sh` удаляет уже стоящий пропущенный модуль: код, юниты, грант sudoers, служебные файлы. Данные оператора остаются; `install.sh --keep-module <ID>` возвращает модуль, и он продолжает работать со старыми данными. Что удаление выключило, возврат не включает: у `AGENT_API` программы агентов `sa02m-user@…` остаются выключенными, служба — выключенной до карточки. |
 | G-P3 | Профиль — файл root, который никогда не исполняется (`source`) и не перезаписывается OTA: подмена может только вернуть поведение «файла нет», но не расширить его. |
 
 ## 2. Модули
@@ -30,7 +30,7 @@
 
 | ID | Что не доставляется и удаляется | Что остаётся (данные) |
 |---|---|---|
-| `AGENT_API` | `/opt/sa02m-agent-api/`; хелперы `/usr/local/sbin/sa02m-agent-api-ctl.sh`, `sa02m-agent-token-store.sh`, `sa02m-agent-root-cap.sh`, `sa02m-agent-root-exec.sh`, `sa02m-rules-store-apply.sh`, `sa02m-user-unit.sh`, `sa02m-agent-journal.sh`; юниты `/etc/systemd/system/sa02m-agent-api.service`, `sa02m-user@.service`; `/etc/sudoers.d/sa02m-agent-api`; `/etc/tmpfiles.d/sa02m-agent-api.conf`; только установщик: `/etc/logrotate.d/sa02m-agent-api`. Запущенные программы агентов `sa02m-user@…` останавливаются и выключаются. | токены и записи root-доступа `/etc/sa02m-agent-api/`, программы агентов `/opt/sa02m-user/`, журналы `/var/log/sa02m-agent-api/`, учётная запись `sa02m-user` |
+| `AGENT_API` | `/opt/sa02m-agent-api/`; хелперы `/usr/local/sbin/sa02m-agent-api-ctl.sh`, `sa02m-agent-token-store.sh`, `sa02m-agent-root-cap.sh`, `sa02m-agent-root-exec.sh`, `sa02m-rules-store-apply.sh`, `sa02m-user-unit.sh`, `sa02m-agent-journal.sh`; юниты `/etc/systemd/system/sa02m-agent-api.service`, `sa02m-user@.service`; `/etc/sudoers.d/sa02m-agent-api`; `/etc/tmpfiles.d/sa02m-agent-api.conf`; только установщик: `/etc/logrotate.d/sa02m-agent-api`. Запущенные программы агентов `sa02m-user@…` останавливаются и выключаются (и после `--keep-module` остаются выключенными). | токены и записи root-доступа `/etc/sa02m-agent-api/`, программы агентов `/opt/sa02m-user/`, журналы `/var/log/sa02m-agent-api/`, учётная запись `sa02m-user` |
 
 Строка таблицы появляется только полной: каждый путь, который пишет модуль
 установщика (`scripts/13-agent-api.sh`), — либо доставляется OTA и стоит в
