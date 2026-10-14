@@ -10,7 +10,10 @@
   `docs/contracts/fmb-event-wire.md`), and the chunk size became the
   per-device key `ai_read_chunk_regs` instead of a global default change — so
   bench 136 is tuned in its own `/etc/sa02m-modbus-mqtt.yaml`
-  (`ai_read_chunk_regs: 21`), not in code.
+  (`ai_read_chunk_regs: 21`), not in code. Since 1.0.7.2, 21 is the default
+  ceiling on any fast built-in port (the host-FIFO read cap, home
+  `docs/MQTT_TOPICS.md` `ai_read_chunk_regs`), so that yaml line is redundant
+  on its built-in 115200 line.
 - The bench is a declared sibling component (`.ai-dev/components.json`,
   entry `hardpy_tests`) and reads its RS-485 verifiers on COM4 **through this
   bridge** — a deploy to 136 restarts the service and stalls the port, so it
