@@ -201,24 +201,29 @@ def _migrate_legacy_ai_sensor_code(code: int) -> int:
 
 
 def _ai_register_is_legacy_enum(code: int) -> bool:
+    """True when `code` differs from its legacy-enum migration.
+
+    Never apply this to the type REGISTER: the legacy enum (0x00..0x26) overlaps
+    the Modbus codes 0..42 the register holds (MR-02m MODBUS_VARIABLES.txt), so
+    32 valid non-zero codes (1-7, 9-15, 21-38) read as «legacy». Kept on the
+    frozen entry surface (tests/test_entry_surface.py).
+    """
     c = int(code) & 0xFFFF
     mapped = AI_SENSOR_LEGACY_ENUM_MIGRATION.get(c)
     return mapped is not None and mapped != c
 
 
 def _resolve_ai_sensor_type(bus_st: int, yaml_st: int | None) -> int:
-    """Pick effective type: YAML wins over legacy garbage in holding reg0."""
-    bus = int(bus_st) & 0xFFFF
-    yaml = int(yaml_st) if yaml_st is not None else None
-    if _ai_register_is_legacy_enum(bus):
-        if yaml is not None:
-            return yaml & 0xFFFF
-        return _migrate_legacy_ai_sensor_code(bus)
-    if bus != 0:
-        return bus
-    if yaml is not None:
-        return yaml & 0xFFFF
-    return 0
+    """The type the channel measures with: the register's code, always.
+
+    Init and the immediate write (/controls/ai_type_N/on) put the chosen type
+    into the register; a register that still disagrees with the YAML — 0
+    included — is what the module measures with, so labelling or scaling by
+    the YAML type would publish a wrong value. `yaml_st` stays in the
+    signature for the frozen entry surface.
+    """
+    del yaml_st
+    return int(bus_st) & 0xFFFF
 
 
 def _migrate_config_ai_sensor_types(cfg: dict) -> None:
