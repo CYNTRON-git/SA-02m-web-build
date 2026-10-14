@@ -384,13 +384,21 @@ seed_iface() {   # $1 iface, $2 carrier now ("" = unreadable/admin-down), $3 car
 timed() {  # prints elapsed seconds of "$@"
     local s e; s=$(date +%s); "$@" >/dev/null 2>&1; e=$(date +%s); echo $((e - s))
 }
+# «Returns without waiting» cases: the budget is FAST_BUDGET and the run must
+# finish within FAST_MAX. `date +%s` is whole seconds, so a sub-second run can
+# read 1 s across a tick, and a slow fork (git-bash, a loaded CI box) adds one
+# more — 3 s was observed on git-bash for a run that never waited, against the
+# old `-le 2` / 3 s budget (a 1 s margin). Three seconds of slack still proves
+# the point: a run that waits out the budget reads >= FAST_BUDGET = 6 s, twice
+# FAST_MAX, so a real wait cannot pass for a fast return.
+FAST_BUDGET=6; FAST_MAX=3
 
 reset
 seed_iface eth0 1
 conf_static eth0 "dns-nameservers 77.88.8.8"
-printf 'IFUP_CARRIER_WAIT_SECS=5\n' > "$NETCONF"
+printf 'IFUP_CARRIER_WAIT_SECS=%s\n' "$FAST_BUDGET" > "$NETCONF"   # FAST_* slack: see timed()
 el=$(timed "$WAIT" eth0)
-if [ "$el" -le 2 ] && grep -q 'carrier up for \[eth0\]' "$LOGGED"; then
+if [ "$el" -le "$FAST_MAX" ] && grep -q 'carrier up for \[eth0\]' "$LOGGED"; then
     ok "wait: returns immediately when carrier is already up (${el}s)"
 else
     bad "wait: carrier-up path took ${el}s / did not log"
@@ -435,10 +443,12 @@ seed_iface eth0 1; seed_iface eth1 0; seed_iface eth2 0
 conf_static eth0 "dns-nameservers 77.88.8.8"
 printf 'auto eth1\niface eth1 inet dhcp\n' > "$CD/eth1.conf"
 printf 'auto eth2\niface eth2 inet static\n    address 10.0.0.2\n    netmask 255.255.255.0\n' > "$CD/eth2.conf"
-printf 'IFUP_CARRIER_WAIT_SECS=3\n' > "$NETCONF"
+# A wrongly selected eth2 (static, no gateway, no carrier) would burn the whole
+# budget, so the time bound is what proves it was skipped — FAST_* slack: see timed().
+printf 'IFUP_CARRIER_WAIT_SECS=%s\n' "$FAST_BUDGET" > "$NETCONF"
 el=$(timed "$WAIT" --auto)
 line=$(grep 'carrier' "$LOGGED" | tail -n 1)
-if [ "$el" -le 2 ] && [ "${line#*eth0}" != "$line" ] \
+if [ "$el" -le "$FAST_MAX" ] && [ "${line#*eth0}" != "$line" ] \
    && [ "${line#*eth1}" = "$line" ] && [ "${line#*eth2}" = "$line" ]; then
     ok "wait: --auto selects only auto+static+gateway interfaces (dhcp and gateway-less skipped)"
 else
@@ -469,9 +479,9 @@ fi
 
 reset
 seed_iface eth0 0
-printf 'IFUP_CARRIER_WAIT_SECS=3\n' > "$NETCONF"
+printf 'IFUP_CARRIER_WAIT_SECS=%s\n' "$FAST_BUDGET" > "$NETCONF"   # FAST_* slack: see timed()
 el=$(timed "$WAIT" 'eth0;reboot')
-if [ "$el" -le 1 ] && grep -q 'malformed interface name' "$LOGGED" \
+if [ "$el" -le "$FAST_MAX" ] && grep -q 'malformed interface name' "$LOGGED" \
    && ! grep -q 'eth0;reboot' "$LOGGED"; then
     ok "wait: a malformed interface name is refused before it reaches a path or ip(8)"
 else
@@ -480,9 +490,9 @@ fi
 
 reset
 seed_iface lo 0
-printf 'IFUP_CARRIER_WAIT_SECS=5\n' > "$NETCONF"
+printf 'IFUP_CARRIER_WAIT_SECS=%s\n' "$FAST_BUDGET" > "$NETCONF"   # FAST_* slack: see timed()
 el=$(timed "$WAIT" lo)
-if [ "$el" -le 1 ]; then
+if [ "$el" -le "$FAST_MAX" ]; then
     ok "wait: lo is never waited on (ifup@lo pays nothing)"
 else
     bad "wait: lo waited ${el}s"
