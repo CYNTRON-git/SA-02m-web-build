@@ -2006,6 +2006,8 @@
     'Чётность: только N — мост опрашивает линию RS-485 без контроля чётности': 'Parity: N only — the bridge polls the RS-485 line without parity',
     'Недопустимый Modbus-адрес устройства': 'Invalid device Modbus address',
     'Устройство на этом адресе не опознано как датчик MTD — запись отменена': 'The device at this address is not recognised as an MTD sensor — nothing written',
+    'чтение после записи не удалось': 'the read-back after the write failed',
+    'Датчик на новом адресе, но запись MQTT не обновлена': 'The sensor is on its new address, but the MQTT entry was not updated',
   };
 
   const REGEX = [
@@ -2117,6 +2119,8 @@
     [/^Запись настройки: (.+)$/u, 'Writing a setting: $1'],
     [/^Настройка датчика: (.+)$/u, 'Sensor setting: $1'],
     [/^Запись MQTT перенесена: (.+)$/u, 'MQTT entry moved: $1'],
+    [/^Сейчас датчик отвечает на адресе (\d+), (\d+) бод \(запись MQTT — на этой линии\); после перезапуска питания он перейдёт на адрес (\d+), (\d+) бод — тогда исправьте запись на вкладке MQTT\.$/u, 'The sensor now answers at address $1, $2 baud (the MQTT entry is on this line); after a power cycle it moves to address $3, $4 baud — then fix the entry on the MQTT tab.'],
+    [/^Сейчас датчик отвечает на адресе (\d+), (\d+) бод; после перезапуска питания он перейдёт на адрес (\d+), (\d+) бод — тогда исправьте запись на вкладке MQTT\.$/u, 'The sensor now answers at address $1, $2 baud; after a power cycle it moves to address $3, $4 baud — then fix the entry on the MQTT tab.'],
     [/^В MQTT несколько записей с этим адресом — ни одна не изменена: (.+)$/u, 'Several MQTT entries have this address — none changed: $1'],
     [/^Датчик на адресе (\d+), а запись MQTT не обновлена: исправьте её на вкладке MQTT$/u, 'The sensor is at address $1, but the MQTT entry was not updated: fix it on the MQTT tab'],
     [/^На этом порту мост опрашивает устройства на (\d+) бод — датчик можно перевести только на эту скорость\.$/u, 'The bridge polls this port at $1 baud — the sensor can be moved to that baud only.'],

@@ -276,6 +276,24 @@ class TestFingerprintGuards(unittest.TestCase):
         self.assertEqual((dev.signature, dev.app_version, dev.in_bootloader),
                          ("MTDx62-MB", "—", False))
 
+    def test_an_unexpected_probe_error_is_logged_not_swallowed(self):
+        """Transport errors never reach here (_transact_raw returns (None,
+        None)); anything that does is a defect — the row goes on unchanged,
+        but the scan says why at WARNING."""
+        base = scanner.DeviceInfo(address=1, baudrate=9600, parity="N", stopbits=1,
+                                  signature="", app_version="—", bootloader_version="—",
+                                  serial=0, in_bootloader=True)
+
+        def boom(*_a, **_k):
+            raise RuntimeError("probe defect")
+
+        with mock.patch.object(scanner, "_read_regs", boom), \
+                self.assertLogs(scanner.log, level="WARNING") as cm:
+            dev = scanner._apply_mtd_fingerprint(base, "COM1", 1, 9600, "N", 1)
+        self.assertIs(dev, base)
+        self.assertIn("probe defect", "\n".join(cm.output))
+        self.assertIn("COM1", "\n".join(cm.output))
+
 
 if __name__ == "__main__":
     unittest.main()

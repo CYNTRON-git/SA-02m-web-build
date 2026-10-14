@@ -3,6 +3,7 @@
 Сканирование RS-485: сначала быстрый скан WB extended (0xFD 0x46 0x01) по всем выбранным скоростям, затем опрос диапазона адресов по всем скоростям. Порядок скоростей: 115200 → 38400 → 19200 → 9600.
 Через Modbus TCP (шлюз, MBAP) или RTU over TCP (сырой RTU по сокету) доступна только фаза 2 (стандартный Modbus); 0xFD по TCP обычно не поддерживается.
 """
+import logging
 import threading
 import time
 from enum import Enum
@@ -34,6 +35,8 @@ from .flash_protocol import FlasherProtocol
 from . import module_profiles
 from . import mtd_config, mtd_link
 from .serial_ranges import signature_from_serial
+
+log = logging.getLogger(__name__)
 
 BROADCAST_ADDR = modbus_rtu.BROADCAST_ADDR
 # Адреса для broadcast: 255 (MP-02m), 0xFD (быстрый Modbus / расширенный WB)
@@ -760,7 +763,10 @@ def _apply_mtd_fingerprint(
         if not mtd_link.inputs_match(presence, status):
             return dev
         ver = _words(_read_input_regs, mtd_config.IR_APP_VERSION, 2)
-    except Exception:
+    except Exception as exc:  # noqa: BLE001 — a scan row must survive, but never silently
+        # Transport errors are already (None, None) from _transact_raw; what
+        # reaches here is a defect, so it is named, and the row goes on as it was.
+        log.warning("MTD probe failed on %s addr %s @%s: %r", port, address, baud, exc)
         return dev
     return replace(
         dev,

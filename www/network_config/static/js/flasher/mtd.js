@@ -306,7 +306,11 @@
             { port: b.port, device: b.device, reg: Number(item.f.reg), value: item.raw });
           delete item.input.dataset.mtdDirty;
           const w = (last && last.write) || {};
-          if (w.applied === false) {
+          if (w.applied === false && (w.read_back === null || w.read_back === undefined)) {
+            // The write went out but the read-back did not come: what the
+            // sensor holds is unknown — say so, never «… — null».
+            host.toast(host.t(label(item.f)) + ': ' + host.t('чтение после записи не удалось'), 'warn');
+          } else if (w.applied === false) {
             host.toast(host.t(label(item.f)) + ': ' + host.t('датчик сохранил другое значение') +
               ' — ' + String(w.read_back), 'warn');
           }
@@ -404,9 +408,9 @@
       }
     }
 
-    async function relinkAfter(oldLine, reported) {
+    async function relinkAfter(port, oldLine, reported) {
       const res = await host.bridge.relink(
-        { port: host.currentPort(), address: oldLine.address },
+        { port: port, address: oldLine.address },
         { address: reported.address, baudrate: reported.baudrate },
         selfMatch());
       // The F2 rule of the NEW line, from the config the relink just read (or
@@ -417,7 +421,6 @@
         : null;
       applyBaudRule();
       if (res.status === 'moved') {
-        host.toast('Запись MQTT перенесена: ' + res.id, 'success');
         setNote('Запись MQTT перенесена: ' + res.id, 'info');
       } else if (res.status === 'none') {
         setNote('В MQTT датчик не настроен — запись не требуется', 'info');
@@ -430,6 +433,7 @@
         setNote('Датчик на адресе ' + Number(reported.address) +
           ', а запись MQTT не обновлена: исправьте её на вкладке MQTT', 'error');
       }
+      res.failed = res.status === 'error' || res.status === 'ambiguous';
       return res;
     }
 
@@ -485,20 +489,33 @@
         host.applyConfigSnapshot(next, false);
         const na = (next && next.network_apply) || {};
         const reported = na.device || {};
+        // The bridge follows the line the sensor answers on NOW (the daemon's
+        // report), on the port this call used — never the requested line and
+        // never a port picked while the call ran.
+        const moved = isNum(reported.address) &&
+          (Number(reported.address) !== oldLine.address || Number(reported.baudrate) !== oldLine.baudrate);
+        const relink = moved ? await relinkAfter(b.port, oldLine, reported) : null;
         if (na.error) {
           // Stopped half-way: the snapshot above was read where the sensor
-          // answers now; the bridge follows THAT line, never the requested one.
+          // answers now.
           host.setConfigBanner('Сеть применена не полностью: ' + host.t(String(na.error)), 'error');
           host.toast('Параметры связи записаны не полностью', 'error');
         } else if (na.applies_after_restart) {
-          host.setConfigBanner('Параметры записаны в датчик; он применит их после перезапуска питания. Окно работает на прежних параметрах, запись MQTT не изменена.', 'info');
-          host.toast('Параметры связи записаны — перезапустите питание датчика', 'info');
+          // Some registers wait for a power cycle; the bridge entry is on the
+          // line the sensor answers on now and must be fixed after it.
+          // On a failed relink the note says so; the banner then claims nothing
+          // about the entry.
+          const entry = relink && relink.failed ? '' : ' (запись MQTT — на этой линии)';
+          host.setConfigBanner('Сейчас датчик отвечает на адресе ' + Number(reported.address) + ', ' +
+            Number(reported.baudrate) + ' бод' + entry + '; после перезапуска питания он перейдёт на адрес ' +
+            network.address + ', ' + network.baudrate + ' бод — тогда исправьте запись на вкладке MQTT.', 'info');
+          if (relink && relink.failed) host.toast('Датчик на новом адресе, но запись MQTT не обновлена', 'error');
+          else host.toast('Параметры связи записаны — перезапустите питание датчика', 'info');
+        } else if (relink && relink.failed) {
+          host.toast('Датчик на новом адресе, но запись MQTT не обновлена', 'error');
         } else {
           host.toast('Параметры связи изменены. Проверьте программы MPLC4/CODESYS, которые опрашивают датчик.', 'success');
         }
-        const moved = isNum(reported.address) &&
-          (Number(reported.address) !== oldLine.address || Number(reported.baudrate) !== oldLine.baudrate);
-        if (moved) await relinkAfter(oldLine, reported);
       } finally {
         host.setConfigBusy(false);
         host.setLinkBusy(false);

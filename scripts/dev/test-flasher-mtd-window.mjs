@@ -203,6 +203,21 @@ check(/state\.scanJobId \|\| state\.flashJobId \|\| state\.configLinkBusy/.test(
     `the open stub keeps the scanned line (dev ${dev.address} @${dev.baudrate})`);
 }
 
+{
+  // A8: a dropped tag makes mtdWindow() throw on double-click — both modules
+  // load before flasher.js, each with a ?v= and an &r= cache-bust.
+  const html = readFileSync(join(ROOT, 'www', 'network_config', 'index.html'), 'utf8');
+  const at = (name) => {
+    const m = new RegExp('<script src="static/js/' + name.replace(/[./]/g, (c) => '\\' + c) + '\\?v=[0-9.]+&r=[A-Za-z0-9_-]+"></script>').exec(html);
+    return m ? m.index : -1;
+  };
+  const relinkAt = at('flasher/bridge-relink.js');
+  const mtdAt = at('flasher/mtd.js');
+  const flasherAt = at('flasher.js');
+  check(relinkAt >= 0 && mtdAt >= 0 && flasherAt >= 0, 'index.html loads bridge-relink.js, mtd.js and flasher.js with ?v=&r=');
+  check(relinkAt < flasherAt && mtdAt < flasherAt, 'both modules load before flasher.js');
+}
+
 console.log('B. names == their homes');
 check(!!MW && typeof MW.create === 'function' && !!BR && typeof BR.relink === 'function', 'both modules expose their globals');
 check(MW.MTD_MODEL === MODEL, 'the window names the daemon model');
@@ -292,7 +307,7 @@ function makeHost(snap, opts) {
   const devObj = { address: snap.info.address, baudrate: snap.info.line.baudrate, parity: 'N', stopbits: 1, signature: MODEL };
   let linkBusy = false;
   const h = {
-    dom: new Map(), active: null, reply: null, state, rec, devObj,
+    dom: new Map(), active: null, reply: null, state, rec, devObj, port: 'COM3',
     host: {
       escapeHtml,
       t: tr,
@@ -309,7 +324,7 @@ function makeHost(snap, opts) {
       setConfigBanner: (text, kind) => rec.banners.push([tr(text), kind]),
       setLinkBusy: (on) => { linkBusy = !!on; rec.link.push(linkBusy); },
       currentConfigDevice: () => devObj,
-      currentPort: () => 'COM3',
+      currentPort: () => h.port,
       invalidatePolls: () => {},
       activeElement: () => h.active,
       refreshSnapshot: () => {},
@@ -454,6 +469,16 @@ async function settingsWrites() {
     check(h.rec.toasts.some(([m, k]) => k === 'warn' && /сохранил другое значение — 5$/.test(m)), 'a differing read-back warns with the stored value');
   }
   {
+    // A6: a read-back that failed is not «a different value — null».
+    const h = makeHost(snapshot());
+    h.render('mtd_settings');
+    h.dom.get('cfg-mtd-f-4').value = '8'; h.dom.get('cfg-mtd-f-4').dataset.mtdDirty = '1';
+    h.reply = () => Object.assign(snapshot(), { write: { reg: 4, written: 8, read_back: null, applied: false } });
+    await h.win.applySettings();
+    check(h.rec.toasts.some(([m, k]) => k === 'warn' && /чтение после записи не удалось/.test(m)) &&
+      !h.rec.toasts.some(([m]) => /null/.test(m)), 'a failed read-back is named, never «— null»');
+  }
+  {
     const h = makeHost(snapshot());
     h.render('mtd_settings');
     await h.win.applySettings();
@@ -577,6 +602,44 @@ async function relinkCases() {
     check(log.posts.length === 0 && h.rec.banners.some(([m, k]) => k === 'info' && /после перезапуска питания/.test(m)),
       'deferred: banner says so, the bridge entry stays');
   }
+  {
+    // A1: the address applied at once, the baud waits for a power cycle — the
+    // relink follows the line the sensor answers on NOW, and the banner says
+    // what applied, what waits and that the MQTT entry must be fixed later.
+    const h = makeHost(snapshot());
+    const log = fakeBridge(bridgeConfig([MTD_ENTRY]));
+    h.reply = () => netReply({ address: 21, baudrate: 19200, parity: 'N', stopbits: 1 }, { applies_after_restart: true });
+    await linkChange(h, 21, 9600);
+    const moved = ((log.posts[0] || { body: { devices: [] } }).body.devices || []).find((d) => d.id === MTD_ENTRY.id) || {};
+    check(log.posts.length === 1 && moved.address === 21 && moved.baudrate === 19200,
+      'deferred + moved: the bridge entry follows the line the sensor answers on now (21 @19200)');
+    const banner = (h.rec.banners.find(([, k]) => k === 'info') || [''])[0];
+    check(/отвечает на адресе 21, 19200 бод/.test(banner) && /перейдёт на адрес 21, 9600 бод/.test(banner) &&
+      /вкладке MQTT/.test(banner) && !/запись MQTT не изменена/.test(banner),
+      `deferred + moved: the banner names now / after the power cycle / the MQTT fix (${banner})`);
+  }
+  {
+    // A3: the relink uses the port the daemon call used, even if the port
+    // select changed while the call ran.
+    const h = makeHost(snapshot());
+    const log = fakeBridge(bridgeConfig([MTD_ENTRY, Object.assign({}, MTD_ENTRY, { id: 'mtdx62-mb-COM1-20', port: '/dev/COM1' })]));
+    h.reply = () => { h.port = 'COM1'; return netReply({ address: 21, baudrate: 19200, parity: 'N', stopbits: 1 }); };
+    await linkChange(h, 21, 19200);
+    const devs = (log.posts[0] || { body: { devices: [] } }).body.devices || [];
+    const com3 = devs.find((d) => d.id === MTD_ENTRY.id) || {};
+    const com1 = devs.find((d) => d.id === 'mtdx62-mb-COM1-20') || {};
+    check(log.posts.length === 1 && com3.address === 21 && com1.address === 20,
+      'a port change mid-flight: the COM3 entry moves, the COM1 one does not');
+  }
+  {
+    // A4: a failed relink is an error toast, never a success one.
+    const h = makeHost(snapshot());
+    fakeBridge(bridgeConfig([MTD_ENTRY]), { postReply: { ok: false, error: 'config_apply_failed' } });
+    h.reply = () => netReply({ address: 21, baudrate: 19200, parity: 'N', stopbits: 1 });
+    await linkChange(h, 21, 19200);
+    check(h.rec.toasts.some(([, k]) => k === 'error') && !h.rec.toasts.some(([, k]) => k === 'success'),
+      'a failed relink: error toast, no success toast');
+  }
   // ── F2 ──
   const self = { address: 20, match: BR.templateMatch('mtdx62-mb') };
   const all = [1200, 2400, 4800, 9600, 19200, 38400, 57600];
@@ -697,6 +760,7 @@ console.log('G. i18n (the runtime composes it)');
     [null, { error: 'unauthorized' }, {}],
     [bridgeConfig([MTD_ENTRY]), null, { error: refusedFmt ? sample(refusedFmt[1]) : 'x' }],
     [bridgeConfig([MTD_ENTRY]), null, { applies_after_restart: true }],
+    [null, { error: 'unauthorized' }, { applies_after_restart: true }],
   ];
   for (const [cfg, getReply, extra] of scen) {
     const h = makeHost(snapshot(), { t });
@@ -720,6 +784,9 @@ console.log('G. i18n (the runtime composes it)');
     h.reply = () => Object.assign(snapshot(), { write: { reg: 4, written: 8, read_back: 5, applied: false } });
     await h.win.applySettings();
     h.dom.get('cfg-mtd-f-0').value = '99'; h.dom.get('cfg-mtd-f-0').dataset.mtdDirty = '1';
+    await h.win.applySettings();
+    h.dom.get('cfg-mtd-f-4').value = '6'; h.dom.get('cfg-mtd-f-4').dataset.mtdDirty = '1';
+    h.reply = () => Object.assign(snapshot(), { write: { reg: 4, written: 6, read_back: null, applied: false } });
     await h.win.applySettings();
     h.rec.toasts.forEach(([m]) => emitted.push(m));
   }
