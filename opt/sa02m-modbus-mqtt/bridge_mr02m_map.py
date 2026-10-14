@@ -37,10 +37,14 @@ MR02M_AI_CHANNEL_STRIDE = 7
 # Max regs per FC03 AI chunk (6 channels × 7) where the port sets no tighter
 # ceiling. Per-device override: yaml key `ai_read_chunk_regs` > env
 # SA02M_MR02M_AI_CHUNK_REGS > this default (resolve_ai_read_chunk_regs()).
-# A fast 8250 line caps every read to fit its RX FIFO (bridge_serial
+# A fast 8250 line caps every FC03/FC04 read to fit its RX FIFO (bridge_serial
 # fifo_safe_read_regs): there the AI block reads 21 regs (3 channels) whatever
 # this resolves to — a 42-reg reply (89 B) overruns the 64 B FIFO, which is
-# what truncated it on bench 136 (2026-07-24) and 1.135 (2026-09-30).
+# what truncated it on 1.135 (2026-09-30; bench 136, 2026-07-24, most likely
+# the same, no overrun counter was taken there). Price, measured on bench 136:
+# halving the chunk costs 26-73 % more time per AI block. For 1.135 COM4 the
+# added line time is put at ~+50 ms/s (~5 %) — an estimate, no recorded
+# measurement behind it.
 MR02M_AI_READ_CHUNK_REGS = 42
 MR02M_AI_CHUNK_ENV = "SA02M_MR02M_AI_CHUNK_REGS"
 MR02M_AI_READ_RETRIES = 3
