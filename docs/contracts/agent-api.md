@@ -9,6 +9,23 @@
 карточке «API для ИИ-агентов». Пока юнит выключен, `/api/v1` и `/mcp` не
 отвечают: сокета нет.
 
+## Плата без модуля
+
+Профиль установки может исключить модуль целиком: `install.sh --skip-module
+AGENT_API` (`docs/contracts/install-profile.md`) — на плате нет ни
+`/opt/sa02m-agent-api`, ни демона, ни хелперов, ни `/etc/sudoers.d/sa02m-agent-api`,
+и OTA их не возвращает; токены и `/opt/sa02m-user` остаются. CGI карточки
+(`sa02m_agent_api.cgi`, после проверки сессии) узнаёт это по отсутствию
+`sa02m_agent_api/panel.py` и ничего не запускает:
+
+- `GET` → `{"ok":true,"state":"not_installed","active":"inactive","tokens":[],"message":"Agent API module is not installed on this board (install profile)"}`;
+- `POST` (после проверки CSRF) → `{"ok":false,"error":"not_installed","state":"not_installed"}`.
+
+HTTP 200 в обоих случаях (идиом проекта). Карточка показывает «Не установлен на
+этой плате» и прячет форму; ответ `not_installed` на действие перечитывает
+состояние. Маршруты `/api/v1/`, `/health`, `/mcp` в site-файле остаются — без
+сокета nginx отвечает 502.
+
 ## Кто слушает
 
 Демон `sa02m-agent-api` (`opt/sa02m-agent-api`, Python 3.12, только stdlib) слушает

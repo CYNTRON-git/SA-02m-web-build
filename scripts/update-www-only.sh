@@ -239,6 +239,11 @@ if [ -f "$SCRIPT_DIR/../etc/sa02m-web-auth-lib.sh" ]; then
     sa02m_atomic_install -m 644 "$SCRIPT_DIR/../etc/sa02m-web-auth-lib.sh" /usr/local/lib/sa02m-web-auth-lib.sh
     sed -i 's/\r$//' /usr/local/lib/sa02m-web-auth-lib.sh
 fi
+# The install-profile reader the OTA runner needs (docs/contracts/install-profile.md).
+if [ -f "$SCRIPT_DIR/../etc/sa02m-install-profile-lib.sh" ]; then
+    sa02m_atomic_install -m 644 "$SCRIPT_DIR/../etc/sa02m-install-profile-lib.sh" /usr/local/lib/sa02m-install-profile-lib.sh
+    sed -i 's/\r$//' /usr/local/lib/sa02m-install-profile-lib.sh
+fi
 if [ -f "$SCRIPT_DIR/../etc/sa02m-repair-web-env.sh" ]; then
     sa02m_atomic_install -m 755 "$SCRIPT_DIR/../etc/sa02m-repair-web-env.sh" /usr/local/sbin/sa02m-repair-web-env
     sed -i 's/\r$//' /usr/local/sbin/sa02m-repair-web-env
@@ -357,6 +362,12 @@ for _h in sa02m-gateway-config-apply.sh sa02m-mqtt-config-apply.sh \
          sa02m-agent-api-ctl.sh sa02m-agent-token-store.sh sa02m-agent-root-cap.sh \
          sa02m-agent-root-exec.sh sa02m-rules-store-apply.sh sa02m-user-unit.sh \
          sa02m-agent-journal.sh; do
+    # A module the board's install profile skips gets none of its helpers
+    # (docs/contracts/install-profile.md §4).
+    if sa02m_profile_path_excluded "/usr/local/sbin/$_h"; then
+        log INFO "/usr/local/sbin/$_h: модуль пропущен профилем установки"
+        continue
+    fi
     if [ -f "$REPO_SBIN/$_h" ]; then
         sa02m_atomic_install -m 755 -o root -g root "$REPO_SBIN/$_h" "/usr/local/sbin/$_h"
         sed -i 's/\r$//' "/usr/local/sbin/$_h"
@@ -373,6 +384,10 @@ done
 # argument vectors the shipped CGIs already send, so no order of arrival breaks
 # gateway config save or the Alice enable/disable/restart buttons.
 for _sud in sa02m-cloud sa02m-flasher sa02m-mqtt sa02m-gateway sa02m-alice sa02m-agent-api; do
+    if sa02m_profile_path_excluded "/etc/sudoers.d/$_sud"; then
+        log INFO "/etc/sudoers.d/$_sud: модуль пропущен профилем установки"
+        continue
+    fi
     if [ -f "$REPO_ETC/sudoers.d/$_sud" ]; then
         install -m 0440 -o root -g root "$REPO_ETC/sudoers.d/$_sud" "/etc/sudoers.d/$_sud"
         sed -i 's/\r$//' "/etc/sudoers.d/$_sud"

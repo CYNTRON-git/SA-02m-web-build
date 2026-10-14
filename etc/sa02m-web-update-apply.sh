@@ -473,6 +473,16 @@ done
 # caller helper while the panel reports the new version (security review
 # 1.0.6.24, F4). They live under usr/local/sbin/ precisely so every delivery
 # path — this one included — can copy them 1:1 with no rename table.
+# A helper of a module the board's install profile skips is not delivered
+# (docs/contracts/install-profile.md §4). The reader comes from this clone and
+# runs in a subshell per check (it cannot shadow this script's functions); a
+# clone without it ⇒ unchanged behaviour, said in the log when a profile exists.
+PROFILE_LIB="$TMPDIR/repo/etc/sa02m-install-profile-lib.sh"
+if [ ! -f "$PROFILE_LIB" ]; then
+    PROFILE_LIB=""
+    [ -f /etc/sa02m_install_profile.conf ] \
+        && log "WARN: install profile present, this release ships no reader — helpers delivered unfiltered"
+fi
 for src in usr/local/sbin/sa02m-gateway-config-apply.sh \
            usr/local/sbin/sa02m-mqtt-config-apply.sh \
            usr/local/sbin/sa02m-cloud-web-trigger.sh \
@@ -483,8 +493,12 @@ for src in usr/local/sbin/sa02m-gateway-config-apply.sh \
            usr/local/sbin/sa02m-rules-store-apply.sh \
            usr/local/sbin/sa02m-user-unit.sh \
            usr/local/sbin/sa02m-agent-journal.sh; do
+    tgt="/usr/local/sbin/$(basename "$src")"
+    if [ -n "$PROFILE_LIB" ] && ( . "$PROFILE_LIB" && sa02m_profile_path_excluded "$tgt" ); then
+        log "$tgt: модуль пропущен профилем установки"
+        continue
+    fi
     if [ -f "$TMPDIR/repo/$src" ]; then
-        tgt="/usr/local/sbin/$(basename "$src")"
         atomic_install_script -m 755 "$TMPDIR/repo/$src" "$tgt"
         log "Обновлён $tgt"
     fi
