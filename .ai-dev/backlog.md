@@ -58,6 +58,26 @@ commit's diff of this file).
   резервную копию и установить» button text is clipped in the three-column layout. Evidence: session
   shots `A-proxy-toast-*.png`; `ui-layout` did not flag (2) — check why its intra-box clipping pass misses
   a button label before fixing. Queued behind the 1.0.6.60–.68 train.
+- [OPEN] 2026-09-29 **[MED] RTU Modbus exception replies are misreported as «Short response» — a live
+  device that answers «illegal address» is treated as silent and driven offline.**
+  `opt/sa02m-modbus-mqtt/bridge_serial.py:462-477` (`_transact`): `_modbus_read_frame_len` (`:144`)
+  sizes an exception frame at 5 bytes, `_read_rtu_response` returns those 5 bytes, and the length
+  check at `:462` raises `Short response: 5/N` before the exception branch at `:475` — which is
+  unreachable for reads. The TCP path decodes exceptions correctly. Found by the Pult audit plan
+  (2026-09-29); still present on `main` at 1.0.7.1. Pending: fix on its own branch from `main`.
+  Fix direction: CRC-check the short frame, then raise a typed exception error before the length
+  check; RED-first test with a 5-byte exception frame on a fake serial.
+- [OPEN] 2026-09-29 **[LOW] `docs/threat-model.md` row `A2/A3→S1` «Публикация из LAN в `1883` (без
+  auth) …» says the 1883 broker accepts LAN publishes without auth; the repo binds it to 127.0.0.1
+  only** (`etc/mosquitto/10listeners.conf:8`, LAN goes to 1884 with auth). Other rows cite the same
+  premise (grep `1883` in that file). Still worded so on `main` at 1.0.7.1. Pending: a docs fix
+  on its own branch.
+- [RESOLVED template-poller-pult] 2026-09-29 **[LOW] Template poller: a block split resets the pass
+  resume point to 0** (review A3). Closed by the stop rule of review B1: a pass stops early only
+  when nothing answered in it nor in the previous pass, and a split needs a channel that answered,
+  so a split pass always runs to the end and the next pass starts at the first unit
+  (`bridge_template.py` `poll_io`). Pinned by
+  `test_template_block_read.py::TestStallOnBlock::test_split_pass_with_a_failing_run_reads_to_the_end`.
 
 - [RESOLVED] 2026-09-28 **[MED] HomeKit conf `preserve` followed a planted symlink as root.**
   `opt/sa02m-homekit/sa02m_homekit/fsutil.py` `atomic_write(preserve=True)` read the old conf's

@@ -13,7 +13,9 @@ scheduler publishes "" once per control the poller published meta for
 """
 from __future__ import annotations
 
+import json
 import sys
+import tempfile
 import threading
 import types
 import unittest
@@ -52,10 +54,12 @@ import bridge_device  # noqa: E402
 import bridge_mqtt  # noqa: E402
 from bridge_dtv_ce import CE02M3Poller, DTVPoller  # noqa: E402
 from bridge_mr02m import MR02mPoller  # noqa: E402
+from bridge_template import TemplatePoller  # noqa: E402
 
 CE = "ce02m3-COMtest-14"
 DTV = "dtv-COMtest-3"
 MR = "mr02m-COMtest-6"
+TP = "tmpl-COMtest-30"
 
 
 def _err(dev, name):
@@ -222,6 +226,67 @@ class TestNoClearStorm(unittest.TestCase):
         self.assertEqual(broker.sent(_err(CE, "voltage_b")), [""])
         pub.clear_control_errors(CE, ["voltage_b"])     # once per process
         self.assertEqual(broker.sent(_err(CE, "voltage_b")), [""])
+
+
+class _TemplatePort(_HealthyPort):
+    """Template device whose holding register 1 (channel `a`) does not
+    answer while `a_dead`; register 2 (channel `b`) always reads 7."""
+
+    def __init__(self):
+        self.a_dead = True
+
+    def read_holding_registers(self, addr, start, count):
+        if self.a_dead and start <= 1 < start + count:
+            raise IOError("timeout reg=1")
+        return [7] * count
+
+
+class TestTemplateReadErrorMeetsClear(unittest.TestCase):
+    """The template poller flags a failed read through the SAME pub_error path
+    the other drivers use, so the one start-up clear and the read-error flag
+    compose: stale "r" taken back once, a live fault flagged again by the
+    first poll, a healthy channel adds no "" per poll — single reads and
+    block reads alike (docs/contracts/template-device.md section 5)."""
+
+    def _run(self, max_read):
+        broker = _Broker({_err(TP, "a"): "r", _err(TP, "b"): "r"})
+        pub = _publisher(broker)
+        port = _TemplatePort()
+        with tempfile.TemporaryDirectory() as d:
+            (Path(d) / "config-err.json").write_text(json.dumps({"device": {
+                "name": "err", "max_read_registers": max_read, "channels": [
+                    {"name": "a", "reg_type": "holding", "address": 1,
+                     "format": "u16"},
+                    {"name": "b", "reg_type": "holding", "address": 2,
+                     "format": "u16"}]}}), encoding="utf-8")
+            with mock.patch.dict("os.environ", {"SA02M_WB_TEMPLATES_DIR": d}):
+                p = TemplatePoller({"id": TP, "type": "template",
+                                    "template": "err", "port": "/dev/COMtest",
+                                    "address": 30}, pub)
+        with mock.patch.object(p, "get_port", return_value=port), \
+                mock.patch.object(bridge_device.DeviceLiveCache, "flush_file"):
+            p._t_poll = -1e9
+            _run_port_cycle(p)
+            # setup clear for both, then the warmup poll re-flags the dead one
+            self.assertEqual(broker.sent(_err(TP, "a")), ["", "r"])
+            self.assertEqual(broker.sent(_err(TP, "b")), [""])
+            before = len(broker.error_publishes())
+            for _ in range(3):
+                p._t_poll = -1e9
+                p.poll_io()
+            self.assertEqual(len(broker.error_publishes()), before)
+            port.a_dead = False
+            p._t_poll = -1e9
+            p.poll_io()
+        self.assertEqual(broker.sent(_err(TP, "a")), ["", "r", ""])
+        self.assertEqual(broker.retained[_err(TP, "a")], "")
+        self.assertEqual(broker.sent(_err(TP, "b")), [""])
+
+    def test_single_reads(self):
+        self._run(1)
+
+    def test_block_reads(self):
+        self._run(2)
 
 
 class _LateMr02m:
