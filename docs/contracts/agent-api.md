@@ -24,7 +24,8 @@ AGENT_API` (`docs/contracts/install-profile.md`) — на плате нет ни
 HTTP 200 в обоих случаях (идиом проекта). Карточка показывает «Не установлен на
 этой плате» и прячет форму; ответ `not_installed` на действие перечитывает
 состояние. Маршруты `/api/v1/`, `/health`, `/mcp` в site-файле остаются — без
-сокета nginx отвечает 502.
+сокета nginx отвечает 502. Проверки: CGI — `install-profile` P11, карточка —
+`js-unit-agentapi-card` (`scripts/dev/test-agentapi-card.mjs`).
 
 ## Кто слушает
 
