@@ -184,16 +184,43 @@ echo "── sa02m-conf-rm helper (plan §5: refusal surface, portably) ──"
 # /etc/network/interfaces.d and were exercised on the bench (2026-07-29);
 # portably we pin the REFUSAL surface (no side effects — validation precedes
 # any write) plus the structural invariants of the sudoers capability.
-HLP="etc/sa02m-conf-rm.sh"   # cwd = repo root (cd at the top of this harness)
-bash "$HLP" /etc/passwd                                   >/dev/null 2>&1; [ $? -eq 2 ] && ok "refuses non-allow-listed path" || bad "accepted /etc/passwd"
-bash "$HLP" '/etc/network/interfaces.d/../../passwd'      >/dev/null 2>&1; [ $? -eq 2 ] && ok "refuses traversal" || bad "accepted traversal"
-bash "$HLP" /etc/network/interfaces.d/eth2.conf           >/dev/null 2>&1; [ $? -eq 2 ] && ok "refuses eth2.conf (not in the 4-name list)" || bad "accepted eth2.conf"
-bash "$HLP" ''                                            >/dev/null 2>&1; [ $? -eq 2 ] && ok "refuses empty argument" || bad "accepted empty argument"
-if [ ! -e /etc/network/interfaces.d/eth1.conf ]; then
-    bash "$HLP" /etc/network/interfaces.d/eth1.conf       >/dev/null 2>&1; [ $? -eq 0 ] && ok "absent allow-listed conf: idempotent exit 0" || bad "absent conf not idempotent"
+# The helper logs EVERY verdict to /var/log/sa02m_install.log, and that append
+# is real wherever the host log is writable (a root shell: WSL, a container, the
+# CI runner's sudo) — on 2026-09-30 a root run wrote 5 lines into a WSL host's
+# log. So the cases drive a copy with the log path sed-retargeted into $T; a copy
+# that still names /var/log is not run (counted FAIL), and the sandbox log must
+# then hold exactly one line per case, which proves the retarget took.
+SRC_HLP="etc/sa02m-conf-rm.sh"   # cwd = repo root (cd at the top of this harness)
+HLP="$T/sa02m-conf-rm.sh"
+HLP_LOG="$T/conf-rm.log"
+HLP_RUN=1
+if [ -f "$SRC_HLP" ] && grep -q '/var/log/sa02m_install.log' "$SRC_HLP"; then
+    sed "s|/var/log/sa02m_install.log|$HLP_LOG|g" "$SRC_HLP" > "$HLP"
+    if grep -q '/var/log/' "$HLP"; then
+        bad "sa02m-conf-rm copy still names /var/log — refusing to run it against the host (helper cases not run)"; HLP_RUN=0
+    fi
 else
-    ok "absent-conf case skipped (real conf present on this host)"
+    bad "$SRC_HLP missing, or it no longer logs to /var/log/sa02m_install.log (retarget would be vacuous) — helper cases not run"; HLP_RUN=0
 fi
+if [ "$HLP_RUN" = 1 ]; then
+    bash "$HLP" /etc/passwd                                   >/dev/null 2>&1; [ $? -eq 2 ] && ok "refuses non-allow-listed path" || bad "accepted /etc/passwd"
+    bash "$HLP" '/etc/network/interfaces.d/../../passwd'      >/dev/null 2>&1; [ $? -eq 2 ] && ok "refuses traversal" || bad "accepted traversal"
+    bash "$HLP" /etc/network/interfaces.d/eth2.conf           >/dev/null 2>&1; [ $? -eq 2 ] && ok "refuses eth2.conf (not in the 4-name list)" || bad "accepted eth2.conf"
+    bash "$HLP" ''                                            >/dev/null 2>&1; [ $? -eq 2 ] && ok "refuses empty argument" || bad "accepted empty argument"
+    n_cases=4
+    if [ ! -e /etc/network/interfaces.d/eth1.conf ] && [ ! -L /etc/network/interfaces.d/eth1.conf ]; then
+        bash "$HLP" /etc/network/interfaces.d/eth1.conf       >/dev/null 2>&1; [ $? -eq 0 ] && ok "absent allow-listed conf: idempotent exit 0" || bad "absent conf not idempotent"
+        n_cases=5
+    else
+        echo "SKIP  absent-conf case (a real /etc/network/interfaces.d/eth1.conf exists on this host)"
+    fi
+    n_log=$({ wc -l < "$HLP_LOG"; } 2>/dev/null || echo 0)
+    [ "$n_log" -eq "$n_cases" ] && ok "every helper verdict landed in the sandbox log ($n_log/$n_cases lines)" \
+        || bad "sandbox log holds $n_log line(s) for $n_cases helper case(s) — the log retarget did not take"
+else
+    echo "SKIP  sa02m-conf-rm refusal cases not run — the helper copy failed its sandbox guard (counted FAIL above)"
+fi
+HLP="$SRC_HLP"   # the structural pins below read the SHIPPED helper
 grep -q 'case "\$conf" in' "$HLP" && ok "validation is a literal case (no regex/glob)" || bad "case validation missing"
 grep -q -- '-L "\$conf"' "$HLP" && ok "symlink refusal present before rm" || bad "symlink refusal missing"
 awk '/cp -f "\$conf"/{seen=1} /rm -f "\$conf"/{if(!seen){exit 1}}' "$HLP" && ok "backup precedes rm" || bad "rm without preceding backup"
