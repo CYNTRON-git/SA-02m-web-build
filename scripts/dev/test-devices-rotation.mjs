@@ -309,6 +309,85 @@ const B = { left: 0, top: 0, right: 100, bottom: 100 };
   eq(r.left, 80, 'candidate is clamped into bounds before overlap is measured');
 }
 
+// ── «Устройства» value fit: kpiFitScale() in devices-kpi-fit.js ──────────────
+// Pure plan for one value+unit run; its closure constants are read from the
+// shipped source and pinned here, so a retune shows up as a red line.
+{
+  const FIT_JS = join(HERE, '..', '..', 'www', 'network_config', 'static', 'js', 'devices-kpi-fit.js');
+  const FIT_SRC = readFileSync(FIT_JS, 'utf8');
+  const num = (name) => {
+    const m = new RegExp('const ' + name + ' = ([0-9.]+);').exec(FIT_SRC);
+    if (!m) throw new Error(name + ' not found in devices-kpi-fit.js');
+    return Number(m[1]);
+  };
+  const VAL_MIN_PX = num('VAL_MIN_PX');
+  const UNIT_MIN_PX = num('UNIT_MIN_PX');
+  const SAFETY = num('SAFETY');
+  eq(VAL_MIN_PX, 10, 'value floor is 10 px');
+  eq(UNIT_MIN_PX, 9, 'unit floor is 9 px');
+  eq(SAFETY, 0.97, 'width headroom is 3 %');
+  const kpiFitScale = new Function(
+    'VAL_MIN_PX', 'UNIT_MIN_PX', 'SAFETY',
+    extractFn(FIT_SRC, 'floor3') + '\n' + extractFn(FIT_SRC, 'kpiFitScale') + '\nreturn kpiFitScale;'
+  )(VAL_MIN_PX, UNIT_MIN_PX, SAFETY);
+  // Width the run occupies under a plan (one line: value + gap + unit; wrapped:
+  // the wider of the two lines).
+  const used = (p, gap, valW, unitW) => (p.wrap
+    ? Math.max(valW * p.val, unitW * p.unit)
+    : valW * p.val + (unitW > 0 ? gap + unitW * p.unit : 0));
+
+  // A run that fits is left alone.
+  let p = kpiFitScale(100, 4, 40, 20, 17.92, 10.08, 0, 11.6);
+  check(p.val === 1 && p.unit === 1 && !p.wrap && !p.truncated, 'a fitting run is not scaled');
+  // Degenerate geometry (a hidden tile) is left alone, never NaN.
+  p = kpiFitScale(0, 4, 40, 20, 17.92, 10.08, 0, 11.6);
+  check(p.val === 1 && !p.wrap, 'zero-width tile → no plan');
+
+  // MR «10.000 V» in a 59 px tile, no spare height: one line, scaled, fits.
+  p = kpiFitScale(59, 4, 53, 9, 17.92, 10.08, 0, 11.6);
+  check(!p.wrap && !p.truncated && p.val < 1, 'tight tile, no spare → one line, shrunk');
+  check(used(p, 4, 53, 9) <= 59, 'the one-line plan fits the tile (' + used(p, 4, 53, 9).toFixed(2) + ' <= 59)');
+  check(p.unit * 10.08 >= UNIT_MIN_PX - 0.02, 'the unit is held at its 9 px floor');
+
+  // ДТВ «780.5 mmHg» in a 62 px tile WITH a spare line: unit goes under the
+  // number and the number keeps its full size.
+  p = kpiFitScale(62, 4, 58, 40, 23.8, 12.32, 20, 14.2);
+  check(p.wrap && p.val === 1 && !p.truncated, 'spare height → unit wraps, value stays full size');
+  // Same run, no spare line: stays on one line, shrunk (the tile must not grow).
+  p = kpiFitScale(62, 4, 58, 40, 23.8, 12.32, 5, 14.2);
+  check(!p.wrap && p.val < 1, 'no spare height → one line even though a wrap would be larger');
+  check(used(p, 4, 58, 40) <= 62, 'the no-spare plan fits the tile');
+
+  // MR «1013.3 mbar» in a 44 px tile: one line would need the value under
+  // 10 px, so the unit wraps regardless and the number is fitted alone.
+  p = kpiFitScale(44, 4, 53, 24, 17.92, 10.08, 0, 11.6);
+  check(p.wrap && !p.truncated, 'past the value floor → forced wrap, not truncation');
+  check(used(p, 4, 53, 24) <= 44, 'the forced-wrap plan fits the tile');
+  check(p.val * 17.92 >= VAL_MIN_PX - 0.02, 'the forced-wrap value is at or above the floor');
+
+  // Carel «Остановлена» (no unit) in a 30 px tile: nothing fits at 10 px.
+  p = kpiFitScale(30, 4, 143, 0, 23.8, 16, 50, 0);
+  check(p.truncated && !p.wrap, 'a unitless run too wide at the floor is truncated, never wrapped');
+  check(Math.abs(p.val * 23.8 - VAL_MIN_PX) < 0.05, 'the truncated value sits at the floor');
+
+  // Sweep: whatever the input, scales never exceed 1, the value never drops
+  // below its floor, and a plan that claims no truncation fits the tile.
+  let bad = 0;
+  for (let avail = 30; avail <= 140; avail += 7) {
+    for (let valW = 20; valW <= 150; valW += 13) {
+      for (const unitW of [0, 8, 24, 40]) {
+        for (const spare of [0, 30]) {
+          const q = kpiFitScale(avail, 4, valW, unitW, 23.8, 12.32, spare, 14.2);
+          const over = q.val > 1 || q.unit > 1 || q.val * 23.8 < VAL_MIN_PX - 0.05 ||
+            (!q.truncated && used(q, 4, valW, unitW) > avail + 1e-9);
+          if (over) bad++;
+        }
+      }
+    }
+  }
+  eq(bad, 0, 'sweep: every plan within [floor, 1] and fitting unless truncated');
+}
+
 if (failures) {
   console.error('js-unit-devices: ' + failures + ' assertion(s) failed');
   process.exit(1);

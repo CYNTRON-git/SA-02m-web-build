@@ -56,6 +56,28 @@
        second column and every auto-placed tile flows into it — two ~60/35 %
        tiles per row on every phone (1.0.6.53). Non-vacuous floor: ≥ 5 tiles.
        RED/GREEN record: see the "RED, measured" note beside MANAGE_ONE_COL_MAX_W.
+     • (j) «Устройства» card VALUES fit their tiles — its own surface, the
+       devices tab rendered from a stubbed /api/devices (DEVICES_LIVE: every
+       card kind with its realistic worst-case values — «780.5 mmHg»,
+       «1234.5 кВт·ч», «1013.3 mbar», the Carel state «Остановлена») in RU AND
+       EN, at its own width list (DEVICES_VIEWPORTS — incl. 1280, the reported
+       width, and 1101, the tightest tile of the 3-card grid). Per value+unit
+       run: the value is not truncated (scrollWidth ≤ clientWidth + 1), the
+       row does not clip its content, and the value and unit boxes lie inside
+       the tile's content box. The defect: the centred, overflow-hidden row cut
+       «0.12 mg/m³» to «.12 mg/m» at 1280 px (1.0.6.64). Plus NO LAYOUT JUMP:
+       every card is as tall with the live values as with «—» placeholders
+       (fitting a value may shrink it or put its unit on the tile's spare line,
+       never grow the tile). Plus each card HEADER: title on one line (an
+       ellipsis is fine), rename pen on the title's line, no overlap among the
+       painted title text, pen, badges, status pill and remove button. Plus, in
+       EN cells, no tile label/value/unit/index/caption still Russian (the
+       i18n floor; device names are data). GATED at every devices width, together with (h);
+       (a)/(e) follow the viewport's overflowGate. Non-vacuous: every card kind
+       rendered, ≥ DEV_ROWS_MIN runs measured AND populated (a value still «—»
+       fits trivially), every card header measured, ≥ DEV_ROWS_MIN EN texts. The devices surface is geometry-only: touch, font and
+       contrast are NOT measured there (honest limit — its controls and
+       colours are outside this check).
      • every visible interactive control ≥ 44×44 CSS px, or a whitelisted
        deviation with a printed reason (ledger discipline)
      • services-control column alignment (the 1.0.5.19 column grid): manage,
@@ -206,6 +228,44 @@ const VIEWPORTS = [
 const THEMES = ['dark', 'light'];
 const VARIANTS = ['sa02m-1eth', 'sa02m-2eth'];
 
+// «Устройства» widths (j). The tile width is set by the card grid (3 cards per
+// row above 1100 px, 2 at 1025–1100, 1 below) and the metric grid inside a
+// card (3 columns, 2 at ≤400), so the tight cells are the narrow end of each
+// band: 1101 (3 cards) and 401 (3 metric columns on a phone). 1280 is the
+// reported width; 1240 is the narrowest 4-column 12AI card (below it the
+// @container rule in main.css drops it to 3 columns). The devices tab carries
+// no data-hide-for, so one variant.
+// RED, measured 2026-09-30 on a pristine copy of main 43be80d7: 680 failures,
+// all on this surface — (j) 216 (e.g. at 1280 «12.34 mg/m³» — row
+// scrollWidth 91 > clientWidth 82, value box starting 9 px left of the tile)
+// at 1440/1280/1240/1101 in both themes and locales and 401 in RU; (h) 176 at
+// the same cells; (e) 288: the overflow-hidden row also cut ~2 px of glyph ink
+// at every width ≥ 768. GREEN (0) after the fit. Mutations, each RED on the
+// fix: devices-kpi-fit.js not loaded → 120 (j) «value truncated» failures;
+// the @container 12AI rule disabled → 8 «layout jump» failures at 1240 (a
+// wrapped «1013.3 mbar» unit grows the MR card 267.4 → 302.1 px).
+// Header + EN checks — RED on 62f9352c: 56 failures. 20 headers: at 1101 the
+// rename pen of all four cards sits under the ONLINE pill (a stale
+// `padding-right: 2rem` later in main.css overrode the 92 px reserve) and the
+// СЭ pen drops to its own line; the same at 1240 for СЭ. 36 EN texts: «Энергия»
+// and «кВт·ч» at every width and theme. GREEN (0) after. Mutations, each RED on
+// the fix: title nowrap removed → «title wraps onto 2–3 lines» (28); title
+// max-width removed → «rename pen is not on the title's line» (28); the
+// 'Энергия' DICT entry removed → 18 «still Russian in EN».
+const DEVICES_VIEWPORTS = [
+  { name: 'desktop',        width: 1440, height: 900,  overflowGate: true },
+  { name: 'laptop',         width: 1280, height: 800,  overflowGate: true },
+  { name: 'mr12-4col-min',  width: 1240, height: 800,  overflowGate: true },
+  { name: 'three-card-min', width: 1101, height: 800,  overflowGate: true },
+  { name: 'tablet-land',    width: 1024, height: 768,  overflowGate: true },
+  { name: 'tablet',         width: 768,  height: 1024, overflowGate: true },
+  { name: 'phone-wide',     width: 500,  height: 900,  overflowGate: false },
+  { name: 'phone-3col-min', width: 401,  height: 900,  overflowGate: false },
+  { name: 'phone',          width: 375,  height: 812,  overflowGate: false },
+];
+const DEV_ROWS_MIN = 30;   // non-vacuity floor: DEVICES_LIVE renders 38 value runs (Carel 5, ДТВ 6, СЭ 9, MR 12 + 6).
+const DEV_KINDS = ['carel', 'dtv', 'ce', 'mr'];
+
 // TOUCH_WHITELIST — the ledger of interactive controls knowingly below 44×44.
 // Every entry is printed each run with its match count; an entry that excuses
 // NOTHING undersized this run FAILS (stale exemption), and an undersized
@@ -329,6 +389,11 @@ function cgiBody(url) {
   if (url.startsWith('/cgi-bin/services_ctrl.cgi')) {
     return JSON.stringify({ ok: true, ...MANAGEMENT_SERVICES });
   }
+  // The «Устройства» tab (devices.js) polls the devices API, not a CGI: feed it
+  // the worst-case card set (j), and an empty events journal.
+  const path = url.split('?')[0];
+  if (path === '/api/devices') return JSON.stringify(DEVICES_LIVE);
+  if (path === '/api/devices/events') return JSON.stringify({ ok: true, events: [] });
   return '{}';
 }
 
@@ -384,6 +449,44 @@ const MANAGEMENT_SERVICES = {
   ],
 };
 
+// «Устройства» live payload (j): one card of every kind, each value at the
+// longest a real device plausibly reports — sign, full precision, the longest
+// units (mg/m³, mmHg, кВт·ч, mbar, «%, RH») and the Carel text state. The
+// shape is the one devices.js reads (docs/contracts/devices-mr-history.md,
+// carel-ahu.md); precision comes from its fmt()/aiUnitPrecision(). Four MR
+// channels carry sensor codes whose card caption is Russian source text
+// (34/38/40/41), so the EN cells exercise their translation too. The Carel
+// record carries `season: 0` (winter — numeric per carel-ahu.md; a string reads
+// as no season and leaves «—»), so «Сезон» renders «ЗИМА» / «WINTER» and the
+// winter setpoint stepper row is shown. «Сезон» is a value run (fit, EN and
+// layout-jump checks); the stepper is not — the fit pass skips it and the
+// layout-jump pass leaves its number in place, so it is rendered, not measured.
+// The MTD presence card is NOT in the fixture: its settings tiles clip at the
+// 1101 px three-card width and its «да» has no EN entry — pre-existing defects
+// outside this check's fix, to be gated together with their fix.
+const DEVICES_LIVE = {
+  ok: true,
+  available: [],
+  carel: [{ id: 'carel-COM3-1', kind: 'carel', label: 'Carel c.pCOmini № 1', ok: true, age_s: 2,
+    plant_state_text: 'Остановлена', supply_temp: -12.3, return_water_temp: 34.2, setpoint: 21.5,
+    season: 0, heat_valve: 100, fan_supply: 100, alarm: 0 }],
+  dtv: [{ id: 'dtv-COM2-3', kind: 'dtv', label: 'ДТВ № 3 порт 2', ok: true, age_s: 1,
+    room_temp: -12.5, humidity: 100, eco2_ppm: 5000, tvoc_mg_m3: 12.34, pressure_mmhg: 780.5, light_pct: 100 }],
+  ce: [{ id: 'ce02m3-COM2-14', kind: 'ce', label: 'СЭ-02м-3 № 14 порт 2', ok: true, age_s: 1,
+    voltage: { a: 231.4, b: 229.8, c: 230.1 }, current: { a: 12.345, b: 10.2, c: 9.876 },
+    power_w: { total: 12345 }, frequency_hz: 50.0, energy_kwh_import: 1234.5 }],
+  mr: [
+    { id: 'mr02m-COM4-12', kind: 'mr', label: 'MR-02m 12AI № 12', module_type: '12AI', ai_count: 12, ok: true, age_s: 1,
+      channels: [
+        [-50.5, '°C', 3], [10, 'V', 34], [20, 'mA', 40], [336.45, 'kΩ', 6], [99.9, '%, RH', 5], [1013.3, 'mbar', 1],
+        [101.33, 'kPa', 1], [-40.1, '°F', 41], [2.345, 'kW', 1], [999.9, 'ppm', 1], [0.123, 'A', 38], [49.99, 'Hz', 1],
+      ].map(([value, unit, code], i) => ({ ch: i + 1, key: `ai_${i + 1}`, enabled: true, value, unit, sensor_code: code })) },
+    { id: 'mr02m-COM4-7', kind: 'mr', label: 'MR-02m 6AI6AO № 7', module_type: '6AI6AO', ai_count: 6, ok: true, age_s: 1,
+      channels: [[-50.5, '°C'], [10, 'V'], [20, 'mA'], [336.45, 'kΩ'], [1013.3, 'mbar'], [101.33, 'kPa']]
+        .map(([value, unit], i) => ({ ch: i + 1, key: `ai_${i + 1}`, enabled: true, value, unit, sensor_code: 1 })) },
+  ],
+};
+
 // «Управление» is five sub-panes since the sub-nav split (Система / Облако /
 // Умный дом / Службы / Обновление) and only the selected one is rendered, so
 // each pane is its own surface. Measuring only the default «Система» pane left
@@ -398,12 +501,21 @@ const SURFACES = [
   { id: 'management-home', kind: 'management', sub: 'home', tileMin: 1, assertCards: false, assertColumns: false },
   { id: 'management-services', kind: 'management', sub: 'services', tileMin: 1, assertCards: false, assertColumns: true },
   { id: 'management-update', kind: 'management', sub: 'update', tileMin: 1, assertCards: false, assertColumns: false },
+  // «Устройства» (j): geometry-only, its own width list, one variant (the tab
+  // carries no data-hide-for), RU and EN. `viewports` / `variants` / `langs`
+  // override the shared matrix; `geometryOnly` keeps a surface out of the
+  // touch, font and contrast passes.
+  { id: 'devices', kind: 'devices', assertCards: false, assertColumns: false, geometryOnly: true,
+    viewports: DEVICES_VIEWPORTS, variants: ['sa02m-2eth'], langs: ['ru', 'en'] },
 ];
 
 // ── In-page setup (runs in the browser) ─────────────────────────────────────
 function pageSetup(arg) {
-  const { surface, sub, theme, variant, states } = arg;
+  const { surface, sub, theme, variant, states, lang } = arg;
   document.documentElement.setAttribute('data-theme', theme);
+  // setLang persists to localStorage, so every cell names its language — an EN
+  // devices cell must not leak into the next RU cell of any surface.
+  if (window.sa02mI18n && window.sa02mI18n.lang !== lang) window.sa02mI18n.setLang(lang);
   if (window.applyVariantVisibility) window.applyVariantVisibility(variant);
   if (surface === 'dashboard') {
     if (window.switchTab) window.switchTab('dashboard');
@@ -414,14 +526,39 @@ function pageSetup(arg) {
     if (window.switchTab) window.switchTab('system');
     if (sub && sub !== 'system' && window.systemSelectSub) window.systemSelectSub(sub);
     if (window.renderServicesControl) window.renderServicesControl(states.management);
+  } else if (surface === 'devices') {
+    // devices.js fetches the stubbed /api/devices itself on tab init.
+    if (window.switchTab) window.switchTab('devices');
   }
 }
+
+// The shared-matrix axes a surface's cells take: variant × language.
+function cellAxes(surface) {
+  const out = [];
+  for (const variant of (surface.variants || VARIANTS)) {
+    for (const lang of (surface.langs || ['ru'])) out.push([variant, lang]);
+  }
+  return out;
+}
+
+// In-page: resolve after two animation frames — the devices value fit runs in
+// the frame after the last text write (devices-kpi-fit.js), so two frames see it applied.
+function settleFrames() {
+  return new Promise((ok) => requestAnimationFrame(() => requestAnimationFrame(ok)));
+}
+
+// In-page: every «Устройства» card's rendered height, in DOM order.
+function devCardHeights() {
+  return Array.from(document.querySelectorAll('#dev-grid .dev-card'))
+    .map((c) => ({ id: c.dataset.deviceId || '?', h: c.getBoundingClientRect().height }));
+}
+const rnd1 = (n) => Math.round(n * 10) / 10;
 
 // ── In-page measurement (runs in the browser) ───────────────────────────────
 function pageMeasure(arg) {
   const { surface, sub, TOUCH_MIN, EPS, CLIP_EPS, HCLIP_EPS, CENTRE_EPS, FONT_MIN,
           KPI_CENTRE_MAX_W, KPI_TILE_VAL_SEL, MANAGE_ONE_COL_MAX_W,
-          wlSelectors, wlFont } = arg;
+          wlSelectors, wlFont, lang } = arg;
   const vw = window.innerWidth;
 
   const describe = (el) => {
@@ -628,9 +765,132 @@ function pageMeasure(arg) {
       .map(({ el, r }) => ({ desc: describe(el), left: r.left, right: r.right, top: r.top, bottom: r.bottom }));
   }
 
+  // (j) «Устройства» value fit — every visible value+unit run of a device card:
+  // the value not truncated, the row not clipping, value and unit boxes inside
+  // the tile's CONTENT box. Measured on rendered boxes; `null` off the surface.
+  let devFit = null;
+  if (surface === 'devices') {
+    devFit = { rows: 0, populated: 0, kinds: [], bad: [] };
+    const kinds = new Set();
+    document.querySelectorAll('#dev-grid .dev-card .dev-kpi-row').forEach((row) => {
+      const rr = row.getBoundingClientRect();
+      if (!visible(row, rr)) return;
+      const val = row.querySelector('.dev-kpi-val');
+      const kpi = row.closest('.dev-kpi');
+      const card = row.closest('.dev-card');
+      if (!val || !kpi || !card) return;
+      devFit.rows++;
+      kinds.add(card.dataset.kind);
+      const v = (val.textContent || '').trim();
+      if (v && v !== '—') devFit.populated++;
+      const kr = kpi.getBoundingClientRect();
+      const kcs = getComputedStyle(kpi);
+      const cl = kr.left + parseFloat(kcs.borderLeftWidth) + parseFloat(kcs.paddingLeft);
+      const cr = kr.right - parseFloat(kcs.borderRightWidth) - parseFloat(kcs.paddingRight);
+      const why = [];
+      if (val.scrollWidth > val.clientWidth + 1) {
+        why.push(`value truncated (scrollWidth ${val.scrollWidth} > clientWidth ${val.clientWidth})`);
+      }
+      if (row.scrollWidth > row.clientWidth + 1) {
+        why.push(`row clips its content (scrollWidth ${row.scrollWidth} > clientWidth ${row.clientWidth})`);
+      }
+      for (const el of [val, row.querySelector('.dev-kpi-unit')]) {
+        if (!el) continue;
+        const r = el.getBoundingClientRect();
+        if (r.width <= 0) continue;
+        if (r.left < cl - EPS || r.right > cr + EPS) {
+          why.push(`.${el.className.split(' ')[0]} box ${rnd(r.left)}..${rnd(r.right)} outside the tile content ${rnd(cl)}..${rnd(cr)}`);
+        }
+      }
+      if (why.length) {
+        devFit.bad.push({ tile: `${card.dataset.kind}/${kpi.dataset.key || '?'}`,
+                          text: (row.textContent || '').replace(/\s+/g, ' ').trim(), why });
+      }
+    });
+    devFit.kinds = [...kinds];
+
+    // (j2) card HEADER: the title is one line (an ellipsis is fine), the rename
+    // pen sits on the title's line, and no two header pieces overlap — title
+    // TEXT (Range, what is painted), pen, presence/alert badges, status pill,
+    // remove button — nor leave the card's content box. The defect: at 1101 px
+    // the СЭ title wrapped and ran under the absolutely placed ONLINE pill,
+    // and the pen dropped to its own line (1.0.6.64).
+    devFit.heads = 0;
+    const lineTops = (rects) => [...new Set([...rects].filter((r) => r.width > 0.5)
+      .map((r) => Math.round(r.top)))];
+    document.querySelectorAll('#dev-grid .dev-card').forEach((card) => {
+      const title = card.querySelector('.dev-card-title');
+      const cr0 = card.getBoundingClientRect();
+      if (!title || !visible(card, cr0)) return;
+      devFit.heads++;
+      const why = [];
+      const rg = document.createRange();
+      rg.selectNodeContents(title);
+      const lines = lineTops(rg.getClientRects());
+      if (lines.length > 1) why.push(`title wraps onto ${lines.length} lines`);
+      // The painted text: the laid-out run, cut to the title's own box when the
+      // title clips it (an ellipsized name keeps its full run in the Range).
+      const tr0 = rg.getBoundingClientRect();
+      const tb = title.getBoundingClientRect();
+      const clips = /hidden|clip/.test(getComputedStyle(title).overflowX);
+      const tr = { top: tr0.top, bottom: tr0.bottom,
+                   left: clips ? Math.max(tr0.left, tb.left) : tr0.left,
+                   right: clips ? Math.min(tr0.right, tb.right) : tr0.right };
+      const parts = [['title text', tr]];
+      for (const [name, sel] of [['rename pen', '.dev-card-rename'], ['presence badge', '[data-role="presence"]'],
+        ['alert badge', '.dev-alert-badge'], ['status pill', '[data-role="status"]'], ['remove button', '.dev-card-remove']]) {
+        const el = card.querySelector(sel);
+        if (!el) continue;
+        const r = el.getBoundingClientRect();
+        if (visible(el, r)) parts.push([name, r]);
+      }
+      const pen = parts.find((p) => p[0] === 'rename pen');
+      if (pen && !(pen[1].top < tr.bottom && pen[1].bottom > tr.top)) {
+        why.push(`rename pen is not on the title's line (pen ${rnd(pen[1].top)}..${rnd(pen[1].bottom)}, title ${rnd(tr.top)}..${rnd(tr.bottom)})`);
+      }
+      for (let i = 0; i < parts.length; i++) {
+        for (let j = i + 1; j < parts.length; j++) {
+          const a = parts[i][1], b = parts[j][1];
+          const ix = Math.min(a.right, b.right) - Math.max(a.left, b.left);
+          const iy = Math.min(a.bottom, b.bottom) - Math.max(a.top, b.top);
+          if (ix > EPS && iy > EPS) why.push(`${parts[i][0]} overlaps ${parts[j][0]} by ${rnd(ix)}×${rnd(iy)}px`);
+        }
+      }
+      const ccs = getComputedStyle(card);
+      const cl = cr0.left + parseFloat(ccs.borderLeftWidth) + parseFloat(ccs.paddingLeft);
+      const crr = cr0.right - parseFloat(ccs.borderRightWidth) - parseFloat(ccs.paddingRight);
+      for (const [name, r] of parts) {
+        if (r.left < cl - EPS || r.right > crr + EPS) why.push(`${name} ${rnd(r.left)}..${rnd(r.right)} leaves the card content ${rnd(cl)}..${rnd(crr)}`);
+      }
+      if (why.length) {
+        devFit.bad.push({ check: 'header', tile: `${card.dataset.kind} header`,
+                          text: (title.textContent || '').trim(), why });
+      }
+    });
+
+    // (j3) EN cells: no Russian source text left in a tile's label, value, unit,
+    // index or caption — every one of them has its DICT entry (the i18n floor,
+    // web-code-rigor.md). Device NAMES are data and are not checked.
+    devFit.enRuns = 0;
+    if (lang === 'en') {
+      document.querySelectorAll('#dev-grid .dev-kpi').forEach((kpi) => {
+        const card = kpi.closest('.dev-card');
+        kpi.querySelectorAll('.dev-kpi-lbl, .dev-kpi-val, .dev-kpi-unit, .dev-kpi-idx, .dev-kpi-sub').forEach((el) => {
+          const t = (el.textContent || '').trim();
+          if (!t) return;
+          devFit.enRuns++;
+          if (/[А-Яа-яЁё]/.test(t)) {
+            devFit.bad.push({ check: 'i18n', tile: `${card ? card.dataset.kind : '?'}/${kpi.dataset.key || '?'}`, text: t,
+                              why: [`.${el.className.split(' ')[0]} still Russian in EN — no DICT translation`] });
+          }
+        });
+      });
+    }
+  }
+
   return { overflow, undersized, controlCount, svcColumns, cards,
            vclipHidden, vclipScroll, hclip, hclipBoxCount, manageTiles,
-           kpiCentres, fontUnder, textRunCount };
+           kpiCentres, fontUnder, textRunCount, devFit };
 }
 
 // ── Contrast: in-page text-run probe (runs in the browser) ──────────────────
@@ -847,18 +1107,18 @@ async function run() {
   const page = await context.newPage();
 
   for (const surface of SURFACES) {
-    for (const vp of VIEWPORTS) {
+    for (const vp of (surface.viewports || VIEWPORTS)) {
       await page.setViewportSize({ width: vp.width, height: vp.height });
       for (const theme of THEMES) {
-        for (const variant of VARIANTS) {
-          const cellName = `${surface.id}__${vp.name}__${theme}__${variant}`;
+        for (const [variant, lang] of cellAxes(surface)) {
+          const cellName = `${surface.id}__${vp.name}__${theme}__${variant}` + (surface.langs ? `__${lang}` : '');
           // Re-assert the cell's nominal viewport: the post-load doc-height
           // growth below persists across cells, and vh-dependent layout must
           // start from the same base every time.
           await page.setViewportSize({ width: vp.width, height: vp.height });
           await page.goto(`${BASE}/index.html`, { waitUntil: 'domcontentloaded' });
           await page.evaluate(pageSetup, {
-            surface: surface.kind, sub: surface.sub, theme, variant,
+            surface: surface.kind, sub: surface.sub, theme, variant, lang,
             states: {
               priority: DASHBOARD_PRIORITY, network: DASHBOARD_NETWORK,
               services: DASHBOARD_SERVICES, management: MANAGEMENT_SERVICES,
@@ -868,6 +1128,13 @@ async function run() {
           // (fed the mix by the stub) before we screenshot/measure, so the
           // captured state is the stable one, not a mid-flight frame.
           await page.waitForTimeout(300);
+          // «Устройства»: the cards arrive with the devices.js fetch; then let the
+          // value-fit pass (one rAF after the last text write) settle. A cell
+          // whose cards never render is caught by the (j) non-vacuity floor.
+          if (surface.id === 'devices') {
+            await page.waitForSelector('#dev-grid .dev-card[data-kind="mr"]', { timeout: 5000 }).catch(() => {});
+            await page.evaluate(settleFrames);
+          }
 
           // Grow the viewport to the full document height (capped) before the
           // shot: this Chromium's fullPage capture does not PAINT content below
@@ -876,7 +1143,10 @@ async function run() {
           // over a blank tail. Width (the media-query axis) is untouched.
           const docH = await page.evaluate(() => Math.min(5000,
             Math.max(document.documentElement.scrollHeight, document.body.scrollHeight)));
-          if (docH > vp.height) await page.setViewportSize({ width: vp.width, height: docH });
+          if (docH > vp.height) {
+            await page.setViewportSize({ width: vp.width, height: docH });
+            if (surface.id === 'devices') await page.evaluate(settleFrames);
+          }
 
           const shotPath = join(SHOTS_DIR, cellName + '.png');
           await page.screenshot({ path: shotPath, fullPage: true });
@@ -884,7 +1154,7 @@ async function run() {
 
           const m = await page.evaluate(pageMeasure, {
             surface: surface.kind, sub: surface.sub, TOUCH_MIN, EPS, CLIP_EPS, HCLIP_EPS, CENTRE_EPS, FONT_MIN,
-            KPI_CENTRE_MAX_W, KPI_TILE_VAL_SEL, MANAGE_ONE_COL_MAX_W, wlSelectors, wlFont,
+            KPI_CENTRE_MAX_W, KPI_TILE_VAL_SEL, MANAGE_ONE_COL_MAX_W, wlSelectors, wlFont, lang,
           });
 
           // (a) horizontal overflow — scroll (page moves) OR clipped (content
@@ -902,10 +1172,10 @@ async function run() {
           // (b) touch targets — accumulate ledger + unlisted. Non-empty guard:
           // the interactive-control selector matching NOTHING is a rotted
           // selector or an unrendered surface, not a pass.
-          if (m.controlCount === 0) {
+          if (!surface.geometryOnly && m.controlCount === 0) {
             failures.push(`[${cellName}] no interactive controls matched (button/a[href]/input/select/[onclick]) — selector rotted or the surface did not render`);
           }
-          for (const u of m.undersized) {
+          for (const u of (surface.geometryOnly ? [] : m.undersized)) {
             if (u.matched.length) { for (const i of u.matched) wlHits[i]++; }
             else {
               const key = u.desc;
@@ -968,7 +1238,7 @@ async function run() {
           // like its (a)/(e) siblings. Non-empty guard GATES everywhere: a cell
           // measuring no overflow-x:hidden|clip box at all is a rotted selector or
           // an unrendered surface, never a pass.
-          const hclipGate = vp.overflowGate || surface.kind === 'management';
+          const hclipGate = vp.overflowGate || surface.kind === 'management' || surface.kind === 'devices';
           if (m.hclipBoxCount === 0) {
             failures.push(`[${cellName}] no overflow-x:hidden|clip boxes measured for the intra-box clipping check — selector rotted or the surface did not render`);
           }
@@ -1018,14 +1288,55 @@ async function run() {
           // regression. The sub-floor runs themselves are accumulated and
           // printed, not failed — they are the project's deliberate compact
           // admin scale, a scope/product decision to gate.
-          if (m.textRunCount === 0) {
+          if (!surface.geometryOnly && m.textRunCount === 0) {
             failures.push(`[${cellName}] no text runs measured for the font floor — the surface rendered no visible text (selector rotted or unrendered)`);
           }
-          for (const f of m.fontUnder) {
+          for (const f of (surface.geometryOnly ? [] : m.fontUnder)) {
             if (f.matched.length) for (const i of f.matched) wlFontHits[i]++;
             const rec = subFont.get(f.desc) || { fontPx: f.fontPx, text: f.text, cells: [], known: f.matched.length > 0 };
             if (rec.cells.length < 3) rec.cells.push(cellName);
             subFont.set(f.desc, rec);
+          }
+          // (j) «Устройства» value fit + no layout jump — GATED at every devices
+          // width. Non-vacuity first: all four card kinds, and enough runs that
+          // are measured AND populated (a «—» placeholder fits trivially).
+          if (m.devFit) {
+            const df = m.devFit;
+            const missing = DEV_KINDS.filter((k) => !df.kinds.includes(k));
+            if (missing.length || df.rows < DEV_ROWS_MIN || df.populated < DEV_ROWS_MIN) {
+              failures.push(`[${cellName}] devices value fit: ${df.rows} value runs measured, ${df.populated} populated ` +
+                `(floor ${DEV_ROWS_MIN}), card kinds [${df.kinds.join(', ')}]${missing.length ? ` — missing ${missing.join(', ')}` : ''} ` +
+                `— the stubbed /api/devices did not render (selector rotted or fixture unread)`);
+            }
+            if (df.heads < DEV_KINDS.length) {
+              failures.push(`[${cellName}] devices header check: only ${df.heads} card headers measured — the cards did not render`);
+            }
+            if (lang === 'en' && df.enRuns < DEV_ROWS_MIN) {
+              failures.push(`[${cellName}] devices EN check: only ${df.enRuns} tile texts measured (floor ${DEV_ROWS_MIN}) — nothing to check`);
+            }
+            for (const b of df.bad) {
+              const what = b.check === 'header' ? 'device card header broken' : b.check === 'i18n' ? 'device tile text untranslated' : 'device value does not fit its tile';
+              failures.push(`[${cellName}] ${what}: ${b.tile} «${b.text}» — ${b.why.join('; ')}`);
+            }
+            // No layout jump: the same cards with «—» placeholders must be exactly
+            // as tall — the fit may shrink a value or use the tile's spare line,
+            // never grow a tile (a grown tile stretches its whole card row).
+            const live = await page.evaluate(devCardHeights);
+            await page.evaluate(() => {
+              document.querySelectorAll('#dev-grid .dev-kpi-val').forEach((v) => { v.textContent = '—'; });
+            });
+            await page.evaluate(settleFrames);
+            const idle = await page.evaluate(devCardHeights);
+            if (live.length !== idle.length || live.length === 0) {
+              failures.push(`[${cellName}] devices layout-jump check: ${live.length} cards live vs ${idle.length} with placeholders — nothing to compare`);
+            } else {
+              live.forEach((c, i) => {
+                if (Math.abs(c.h - idle[i].h) > EPS) {
+                  failures.push(`[${cellName}] devices layout jump: card ${c.id} is ${rnd1(c.h)}px tall with live values ` +
+                    `but ${rnd1(idle[i].h)}px with «—» placeholders — a value grew its tile`);
+                }
+              });
+            }
           }
         }
       }
@@ -1043,13 +1354,13 @@ async function run() {
   const allContrast = [];   // every measured pair, for the ledger pass at the end
   {
     await page.setViewportSize({ width: 1440, height: 900 });
-    for (const surface of SURFACES) {
+    for (const surface of SURFACES.filter((x) => !x.geometryOnly)) {
       for (const theme of THEMES) {
         const cellName = `contrast__${surface.id}__${theme}`;
         await page.setViewportSize({ width: 1440, height: 900 });
         await page.goto(`${BASE}/index.html`, { waitUntil: 'domcontentloaded' });
         await page.evaluate(pageSetup, {
-          surface: surface.kind, sub: surface.sub, theme, variant: 'sa02m-2eth',
+          surface: surface.kind, sub: surface.sub, theme, variant: 'sa02m-2eth', lang: 'ru',
           states: {
             priority: DASHBOARD_PRIORITY, network: DASHBOARD_NETWORK,
             services: DASHBOARD_SERVICES, management: MANAGEMENT_SERVICES,
@@ -1199,7 +1510,7 @@ async function run() {
   const cUnder = allContrast.filter((m) => m.ratio < CONTRAST_MIN - CONTRAST_EPS)
     .sort((a, b) => a.ratio - b.ratio);
   console.log('\ncontrast AA (CONTRAST_MIN=' + CONTRAST_MIN + ':1, backdrop SAMPLED from rendered pixels) — GATED:');
-  console.log('  ' + allContrast.length + ' text/background pairs measured across ' + SURFACES.length +
+  console.log('  ' + allContrast.length + ' text/background pairs measured across ' + SURFACES.filter((x) => !x.geometryOnly).length +
     ' surfaces × ' + THEMES.length + ' themes; ' + cUnder.length + ' below the AA floor ' +
     '(each must be fixed or whitelisted):');
   const cSeen = new Set();
@@ -1224,8 +1535,9 @@ async function run() {
     process.exit(1);
   }
   console.log('\nui-layout: PASS — no violations across ' +
-    `${SURFACES.length} surfaces × ${VIEWPORTS.length} viewports × ${THEMES.length} themes × ${VARIANTS.length} variants ` +
-    `(geometry + KPI centring + vertical clipping + intra-box horizontal clipping + management one column ≤${MANAGE_ONE_COL_MAX_W}px + ${FONT_MIN}px font floor + ${CONTRAST_MIN}:1 contrast in both themes).`);
+    `${shots.length} cells (dashboard + management: ${VIEWPORTS.length} viewports × ${THEMES.length} themes × ${VARIANTS.length} variants; ` +
+    `devices: ${DEVICES_VIEWPORTS.length} viewports × ${THEMES.length} themes × RU/EN) ` +
+    `(geometry + KPI centring + vertical clipping + intra-box horizontal clipping + management one column ≤${MANAGE_ONE_COL_MAX_W}px + devices value fit / no layout jump + ${FONT_MIN}px font floor + ${CONTRAST_MIN}:1 contrast in both themes).`);
   process.exit(0);
 }
 
