@@ -22,6 +22,11 @@
 #   в заводской образ, служба выключена до включения на карточке). Уже
 #   установленный клиент обновляется и без флага; SA02M_SKIP_HOMECONNECT=1 —
 #   не трогать его вовсе.
+#   --skip-module <ID> / --keep-module <ID> (повторяемые) — профиль установки
+#   платы /etc/sa02m_install_profile.conf: модуль с skip не ставится, не
+#   обновляется ни установщиком, ни OTA, а уже стоящий удаляется (данные
+#   остаются); keep возвращает его. ID: AGENT_API
+#   (docs/contracts/install-profile.md).
 # ═══════════════════════════════════════════════════════════════════════════
 set -euo pipefail
 
@@ -49,6 +54,9 @@ export SA02M_SKIP_GW_REPAIR="${SA02M_SKIP_GW_REPAIR:-0}"
 # IP_ADDRESS and GATEWAY are resolved after lib.sh is sourced (variant-aware defaults)
 _ARG_IP=""
 _ARG_GW=""
+# Install profile flags, validated after lib.sh is sourced (sa02m_profile_apply_cli).
+_PROFILE_SKIP=""
+_PROFILE_KEEP=""
 
 while [[ $# -gt 0 ]]; do
     case $1 in
@@ -65,6 +73,8 @@ while [[ $# -gt 0 ]]; do
         --with-optional) SA02M_WITH_OPTIONAL="1"; shift ;;
         --with-homekit) SA02M_WITH_HOMEKIT="1"; shift ;;
         --with-homeconnect) SA02M_WITH_HOMECONNECT="1"; shift ;;
+        --skip-module) _PROFILE_SKIP="$_PROFILE_SKIP ${2:--}"; shift $(( $# > 1 ? 2 : 1 )) ;;
+        --keep-module) _PROFILE_KEEP="$_PROFILE_KEEP ${2:--}"; shift $(( $# > 1 ? 2 : 1 )) ;;
         *)         shift ;;
     esac
 done
@@ -95,6 +105,12 @@ case "$SA02M_INSTALL_MODE" in
         exit 2
         ;;
 esac
+
+# Install profile (docs/contracts/install-profile.md): persist --skip-module /
+# --keep-module, then export SA02M_SKIP_<ID>=1 for every module the board does
+# not carry. An unknown ID writes nothing and stops the run. One home:
+# etc/sa02m-install-profile-lib.sh.
+sa02m_profile_apply_cli "$_PROFILE_SKIP" "$_PROFILE_KEEP" || exit 2
 
 # Migration: create /etc/sa02m_stacks.conf from live state ONLY if absent (an
 # operator decision is never overwritten; never under a rootfs build — the
@@ -135,6 +151,7 @@ if [ "$SA02M_INSTALL_MODE" = refresh ]; then
 else
     echo "  Режим : полная установка"
 fi
+echo "  Профиль: ${SA02M_PROFILE_SUMMARY:-все модули}"
 echo "  IP    : $IP_ADDRESS"
 echo "  Шлюз  : $GATEWAY"
 echo "  PORT  : $PORT"
@@ -269,6 +286,10 @@ if [ "${SA02M_SKIP_AGENT_API:-0}" != "1" ] && [ -f "$SCRIPT_DIR/scripts/13-agent
     log INFO "──── API для ИИ-агентов (sa02m-agent-api, служба выключена) ────"
     sa02m_run_module 13-agent-api.sh || log WARN "13-agent-api.sh завершился с ошибкой"
 fi
+# The board's install profile says skip ⇒ remove an installed module (code,
+# units, sudoers; data kept). A no-op otherwise and on a clean lean board.
+sa02m_profile_enforce AGENT_API || log WARN "Профиль установки: удаление AGENT_API не завершено — см. журнал выше; повторите install.sh --refresh"
+sync
 # Apple HomeKit bridge — OPT-IN (Operator decision Q-A: an optional install,
 # never in the factory image). Runs when asked for, or when the bridge is
 # already installed, so `install.sh --refresh` keeps an installed bridge
