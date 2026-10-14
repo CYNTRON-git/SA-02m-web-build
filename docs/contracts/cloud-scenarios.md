@@ -391,8 +391,10 @@ Triggers (`kind`): `state`, `time`, `sun`, `boot`, `every` `{minutes}`,
 `/etc/sa02m/location.json`, затем `SA02M_LAT`/`SA02M_LON`); `days` (0..6,
 пн = 0) ограничивает дни недели так же, как у `time`.
 
-State operators: level `== != > < >= <=` (a level holds on every value,
-including the first one observed after the engine starts); edge `changed` /
+State operators: level `== != > < >= <=` (a level is judged on each new
+value — a repeat of the current value is not re-judged, an unknown reading is
+not judged at all — including the first value observed after the engine starts
+or after an unknown reading); edge `changed` /
 `rises_above` / `drops_below` / `enters_range` / `leaves_range` (fire once
 per crossing). `changed`: the first value observed after an engine start (the
 retained MQTT snapshot) is the baseline and never fires — only values arriving
@@ -407,6 +409,41 @@ Version-scoped: boards below 1.0.6.54 evaluate `changed` as a level that
 always holds, so every engine start (service restart, update, reboot) fires
 every `changed` scenario once. Events `motion_detected` / `motion_cleared` /
 `opened` / `closed`.
+
+Неизвестное значение. Показание, которое разбирается как число, но не
+является конечным (значения из абзаца «Числа» §«Проверка при сохранении»,
+кроме логических), означает «значение неизвестно»: зеркало состояния получает
+`None`, и на этом переходе не срабатывает ни один триггер. Шаблоны
+`type=logic` пропускают такое значение как отсутствующий датчик. Так ведёт
+себя, например, неисправный датчик Carel, который публикует `"nan"`. Следующее
+настоящее показание — первое наблюдение, как после старта движка: уровни его
+оценивают, а `changed`, операторы фронта и удержание `for_s` берут его за
+базу. Условие состояния судит неизвестное значение так же, как ещё не
+увиденное после старта: `x != 5` при неизвестном `x` выполняется, `x > 5` —
+нет (удержание `for_s`, заведённое при перезагрузке документа, — так же). В
+журнал службы пишется не более одной строки на топик; память о топиках —
+256 штук и не сбрасывается, так что 257-й и следующие новые топики строки
+не получают. Тест:
+`opt/sa02m-rules/tests/test_message_numeric.py`.
+
+Отказ шага не останавливает службу. Исключение при разборе одного
+MQTT-сообщения, в шаге `tick()` (перечитывание документа, таймеры, опрос
+статуса шаблонов, запуск по `.run`) или в `on_boot()` записывается в журнал
+службы и не завершает процесс: при первом отказе — с трассировкой, дальше —
+выборочно. Строку сценария, которую нельзя взвести, движок выключает целиком
+до изменения этой строки в документе: её не запускают ни таймеры, ни триггеры
+состояния, `boot`, кнопок и присутствия, ни ручной запуск (`run_now`, команда
+сцены, вызов дочерним сценарием), а `last_error="not armed: …"` остаётся
+видимым. Остальные строки взводятся — и при горячей перезагрузке документа, и
+при старте. `SIGTERM` по-прежнему останавливает службу. Тест: `opt/sa02m-rules/tests/test_loop_guards.py`.
+
+**Пробел деградации, названный:** служба остаётся `active`, даже когда шаг
+отказывает постоянно (например, `engine.tick` на сохранённом триггере `sun` с
+нечисловым `offset`). Тогда таймеры и часовые триггеры стоят, буфер прогонов
+не сбрасывается в журнал, а снаружи отказ виден только в журнале службы.
+Сигнал наружу — retained-флаг здоровья / `meta/error` через уже существующий
+крючок (абзац «Availability gap, stated» в §MQTT mirror). Это отдельная
+доработка, в текущую версию она не входит.
 
 Button gestures: `single` / `long` / `double` from bridge counters
 `di_N_short` / `di_N_long` / `di_N_double` (`docs/MQTT_TOPICS.md`) — a
@@ -486,6 +523,14 @@ the whole object graph in 1.0.6.37–38; `%` formatting stays). Env:
 `Notify`, `Http` (policy above, `HTTP_PER_RUN_MAX` per run), `Vars`, `math`
 and a few builtins. Bound by the `RUN_S` deadline above. Empty
 `__builtins__`.
+
+`Vars` хранит только конечные числа. `Vars.set` со значением, в котором есть
+`NaN` или `±Infinity` (на любой глубине), отказывает исключением — не
+пойманное телом, оно становится ошибкой прогона — и ничего не сохраняет. Такое значение, попавшее в `Vars` изменением уже сохранённого
+объекта (например, `Vars.get('l').append(math.nan)`), хранится как `None`, а
+прогон завершается ошибкой; документ с `Vars` на диске остаётся строгим JSON,
+в том числе при сохранении посреди прогона (`Vars.home_mode`). Тест:
+`opt/sa02m-rules/tests/test_non_finite_consumers.py`.
 
 The shared `library` and the scenario body execute in **one** namespace, so
 a function defined in the library sees the env (`Hub`, `Notify`, …) and the

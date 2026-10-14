@@ -10,6 +10,7 @@ budget never counts scheduler waits.
 from __future__ import annotations
 
 import heapq
+import logging
 import math
 import time
 from collections import deque
@@ -21,6 +22,7 @@ from sa02m_rules.store import (
     CAP_RE, EDGE_OPS, EVENT_OPS, GESTURES, HOME_MODES, ID_RE, LEVEL_OPS,
     MAX_WRITES, Journal, charge_http, load, migrate_journal, save)
 
+LOG = logging.getLogger("sa02m-rules")
 Pub = Callable[[str, str, Any], None]
 MAX_DEPTH = 3
 # MAX_WRITES (direct writes per run) is the store's constant — validation
@@ -41,11 +43,16 @@ SNAPSHOT_MAX = 16
 _COUNTER_SUFFIX = {"short": "single", "long": "long", "double": "double"}
 
 
-def _as_num(v: Any) -> Optional[float]:
+def _raw_num(v: Any) -> Optional[float]:
+    """`v` as a float that may be nan/±inf, or None when it is not numeric."""
     if isinstance(v, bool):
         return 1.0 if v else 0.0
-    if isinstance(v, (int, float)) and not isinstance(v, bool):
-        return float(v)
+    if isinstance(v, (int, float)):
+        try:
+            return float(v)
+        except OverflowError:
+            # A 309+ digit MQTT payload is valid JSON: an int float() refuses.
+            return math.inf if v > 0 else -math.inf
     if isinstance(v, str):
         s = v.strip().lower()
         if s in ("1", "on", "true", "yes"):
@@ -57,6 +64,21 @@ def _as_num(v: Any) -> Optional[float]:
         except ValueError:
             return None
     return None
+
+
+def _as_num(v: Any) -> Optional[float]:
+    """Finite float or None — total, so no reading can raise out of a
+    comparison; a non-finite value is «not a number» and fires nothing."""
+    n = _raw_num(v)
+    return n if n is not None and math.isfinite(n) else None
+
+
+def non_finite(v: Any) -> bool:
+    """`v` reads as a number but not a finite one (nan, ±inf, an int past
+    float range) — the MQTT intake treats such a reading as an unknown
+    value (service.py, Engine.forget_state)."""
+    n = _raw_num(v)
+    return n is not None and not math.isfinite(n)
 
 
 def _truthy(v: Any) -> bool:
@@ -296,6 +318,8 @@ class Engine:
         self._alias_provider: Optional[Callable[[str, str], Tuple[str, str]]] = None
         self._target_check: Optional[Callable[[str, str, str], str]] = None
         self._fingerprint = ""
+        # Rows _adopt could not arm (per-row guard): treated as disabled.
+        self._unarmed: Set[Any] = set()
         self._adopt(self.doc, force=True)
 
     # ── external wiring ────────────────────────────────────────────────
@@ -354,10 +378,31 @@ class Engine:
     def _cancel(self, key: str) -> None:
         self._gen[key] = self._gen.get(key, 0) + 1
 
-    def _cancel_prefix(self, prefix: str) -> None:
-        for key in list(self._gen):
-            if key.startswith(prefix):
-                self._gen[key] += 1
+    @staticmethod
+    def _timer_owner(kind: str, payload: Any) -> Any:
+        """The scenario a timer belongs to, read from its payload — never
+        from its key: ids may contain `:` (store ID_RE), so `a:` also
+        prefixes `a:b:every:0`. Device-scoped timers (ramp, button) own
+        none. Keys stay unique per scenario while no logic template names a
+        timer `cont`, `end`, `every:N` or `logic:…`."""
+        try:
+            if kind in ("every", "logic"):
+                return payload[0]
+            if kind == "cont":
+                return payload[0].sid
+            if kind == "end":
+                return payload.get("sid")
+        except (TypeError, AttributeError, IndexError, KeyError):
+            pass
+        return None
+
+    def _cancel_scenario(self, sid: Any) -> None:
+        # Every live heap entry of this scenario, including one whose key was
+        # never cancelled before (no _gen entry) — skipping those left an
+        # edited `every` row running from two chains.
+        for _due, _seq, kind, key, _gen, payload in self._heap:
+            if self._timer_owner(kind, payload) == sid:
+                self._gen[key] = self._gen.get(key, 0) + 1
 
     # ── doc adoption (hot reload) ──────────────────────────────────────
     @staticmethod
@@ -393,19 +438,41 @@ class Engine:
             prev = old.get(sid)
             if prev is not None and self._same_runtime(prev, s):
                 continue  # keep timers/trackers/logic state
-            self._cancel_prefix(sid + ":")
+            self._cancel_scenario(sid)
             self._trig_prev = {k: v for k, v in self._trig_prev.items()
                                if k[0] != sid}
-            self._arm_scenario(s)
-            self._publish_tpl_state(sid, "rule_enabled",
-                                    1 if s.get("enabled") is not False else 0)
+            # Per row: `load()` does not validate, so one row that cannot be
+            # armed must not leave the rows after it unarmed — nor raise out
+            # of Engine.__init__ and crash-loop the unit on the same document.
+            # A row that fails is off WHOLE until the document changes: no
+            # trigger, no manual run, its «not armed» error left standing.
+            try:
+                self._arm_scenario(s)
+                self._publish_tpl_state(sid, "rule_enabled",
+                                        1 if s.get("enabled") is not False else 0)
+                self._unarmed.discard(sid)
+            except Exception as exc:
+                self._cancel_scenario(sid)
+                self._logic.pop(sid, None)
+                self._unarmed.add(sid)
+                LOG.exception("scenario %r not armed", sid)
+                self.journal.set_last(s, s.get("last_run"),
+                                      "not armed: %s" % type(exc).__name__)
         for sid in set(old) - new_ids:
-            self._cancel_prefix(sid + ":")
+            self._cancel_scenario(sid)
+            self._unarmed.discard(sid)
             self._logic.pop(sid, None)
             self._tpl_state.pop(sid, None)
             self._trig_prev = {k: v for k, v in self._trig_prev.items()
                                if k[0] != sid}
         self._rebuild_for_s_index()
+
+    def _inactive(self, s: Dict[str, Any]) -> bool:
+        """Disabled, or a row _adopt could not arm — never run either way."""
+        sid = s.get("id")
+        if s.get("enabled") is False:
+            return True
+        return isinstance(sid, str) and sid in self._unarmed
 
     @staticmethod
     def _same_runtime(a: Dict[str, Any], b: Dict[str, Any]) -> bool:
@@ -458,6 +525,11 @@ class Engine:
         if mode == old:
             return
         self.doc["vars"]["home_mode"] = mode
+        # The one engine-side document save: scenarios.json stays strict JSON
+        # whatever a sandbox run left in Vars (code_runner scrubs the same
+        # way at run end; this covers every other caller of the save).
+        from sa02m_rules.code_runner import non_finite_inside
+        non_finite_inside(self.doc["vars"], fix=True)
         save(self.doc, self.path)
         # leave: home/night → away/holiday; arrive: away/holiday → home.
         # night is «home, asleep» — entering it is not an arrival event.
@@ -540,9 +612,28 @@ class Engine:
     def on_boot(self) -> None:
         self._dispatch({"kind": "boot"})
 
+    def forget_state(self, device: str, cap: str) -> None:
+        """The value is UNKNOWN (a non-finite reading — service intake): the
+        mirror goes to None and nothing is dispatched, so no trigger fires on
+        the transition. The next real reading is a first sight, as after an
+        engine start: level operators judge it; `changed`, edge operators and
+        `for_s` hold clocks take it as their baseline."""
+        self.state.setdefault(device, {})[cap] = None
+        self._observed.discard((device, cap))
+        for sid, ci, _item in self._for_s_index.get((device, cap)) or []:
+            self._for_s.pop((sid, ci), None)
+        for s in self.doc.get("scenarios") or []:
+            if not isinstance(s, dict):
+                continue
+            for i, tr in enumerate(s.get("trigger") or []):
+                # The key _triggered matches on: `cap` narrowed by `instance`.
+                if isinstance(tr, dict) and tr.get("kind") == "state" \
+                        and tr.get("device") == device and _item_key(tr) == cap:
+                    self._trig_prev.pop((str(s.get("id")), i), None)
+
     def run_now(self, sid: str) -> Optional[Dict[str, Any]]:
         s = self._scenario(sid)
-        if s is None or s.get("enabled") is False:
+        if s is None or self._inactive(s):
             return None
         rec = self._run(s, "run_now", source="external")
         # The cloud channel reads the store right after its .run flag is
@@ -560,7 +651,7 @@ class Engine:
         """
         s = self._scenario(sid)
         if s is None or (s.get("type") or "block") != "scene" \
-                or s.get("enabled") is False:
+                or self._inactive(s):
             return None
         return s
 
@@ -638,7 +729,7 @@ class Engine:
 
     def _dispatch(self, event: Dict[str, Any]) -> None:
         for s in list(self.doc.get("scenarios") or []):
-            if not isinstance(s, dict) or s.get("enabled") is False:
+            if not isinstance(s, dict) or self._inactive(s):
                 continue
             if s.get("type") == "logic":
                 continue  # logic instances react via on_state/on_button/timers
@@ -778,6 +869,8 @@ class Engine:
             if not isinstance(s, dict) or not s.get("id"):
                 continue
             cond = s.get("condition") or {}
+            if not isinstance(cond, dict):
+                continue  # unvalidated row shape: no hold clocks to index
             items = cond.get("any") if isinstance(cond.get("any"), list) \
                 else cond.get("all")
             if not isinstance(items, list):
@@ -889,9 +982,9 @@ class Engine:
                 trigs = s.get("trigger") or []
                 if idx < len(trigs):
                     tr = trigs[idx]
-            if s is None or s.get("enabled") is False or not isinstance(tr, dict) \
+            if s is None or self._inactive(s) or not isinstance(tr, dict) \
                     or tr.get("kind") != "every":
-                return  # not re-armed: scenario gone or trigger changed
+                return  # not re-armed: scenario gone, off/unarmed, or trigger changed
             self._schedule(float(tr.get("minutes") or 1) * 60.0, "every", key,
                            payload)  # re-arm first: a run error must not kill it
             if self._conditions_ok(s):
@@ -923,7 +1016,7 @@ class Engine:
 
     def _scan_clock_triggers(self, now: float) -> None:
         for s in list(self.doc.get("scenarios") or []):
-            if not isinstance(s, dict) or s.get("enabled") is False:
+            if not isinstance(s, dict) or self._inactive(s):
                 continue
             if s.get("type") == "logic":
                 continue
@@ -1111,7 +1204,7 @@ class Engine:
             if (child.get("type") or "block") in ("logic", "code"):
                 run.error = "bad child"
                 return None
-            if child.get("enabled") is False:
+            if self._inactive(child):
                 return "ok"  # a disabled child is skipped, not an error
             run.chain = run.chain + (str(child.get("id")),)
             frames.append([child, list(child.get("action") or []), 0])

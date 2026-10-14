@@ -21,6 +21,16 @@ LOG = logging.getLogger("sa02m-rules")
 #: Inbound MQTT messages waiting for the next tick; a burst past this is
 #: dropped (counted in the log) rather than growing without bound.
 INBOX_MAX = 4096
+#: Topics remembered for once-per-topic warnings (a non-finite reading, a
+#: message that raised). Topics are LAN-controlled, so the memory is capped;
+#: past it a new topic is simply not warned about again.
+WARNED_TOPICS_MAX = 256
+
+
+def _sampled(n: int) -> bool:
+    """Repeat-failure log sampling: the 100th, 1000th, then every 10000th."""
+    return n in (100, 1000) or n % 10000 == 0
+
 
 # Package lives next to this file when installed to /opt/sa02m-rules.
 _HERE = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
@@ -30,7 +40,7 @@ if _HERE not in sys.path:
 # load_mqtt_index is re-exported: callers and tests read the index from here.
 from sa02m_rules.device_index import (  # noqa: F401
     DeviceIndex, cap_short, devices_path, load_index, load_mqtt_index, state_key)
-from sa02m_rules.engine import Engine
+from sa02m_rules.engine import Engine, non_finite
 from sa02m_rules.store import CAP_RE, DEFAULT_PATH, ID_RE, load
 
 MQTT_HOST = os.environ.get("SA02M_MQTT_HOST", "127.0.0.1")
@@ -83,6 +93,10 @@ class RulesApp:
         self._index = DeviceIndex()
         self._inbox: "queue.Queue[tuple]" = queue.Queue(maxsize=INBOX_MAX)
         self._dropped = 0
+        self._failed = 0
+        self._warned_non_finite: set = set()
+        self._warned_failed: set = set()
+        self._step_failures: Dict[str, int] = {}
         self.reload_index()
         # Pre-create the mirror: Engine.__init__ adopts the existing doc and
         # may publish template state (rule_enabled) via pub_state, which
@@ -210,8 +224,32 @@ class RulesApp:
             self._inbox.put_nowait((topic, raw))
         except queue.Full:
             self._dropped += 1
-            if self._dropped in (1, 100, 1000) or self._dropped % 10000 == 0:
+            if self._dropped == 1 or _sampled(self._dropped):
                 LOG.warning("inbox full: %d message(s) dropped", self._dropped)
+
+    def _step(self, name: str, fn: Any, *args: Any) -> None:
+        """Run one main-loop step so its exception cannot end the process:
+        main() has no handler but the stop one, and a persistent cause (a
+        stored scenario, a boot trigger) would crash-loop the unit. Logged
+        with a traceback the first time, then sampled; Exception only, so the
+        SIGTERM SystemExit and a KeyboardInterrupt still unwind."""
+        try:
+            fn(*args)
+        except Exception:
+            n = self._step_failures.get(name, 0) + 1
+            self._step_failures[name] = n
+            if n == 1:
+                LOG.exception("%s failed; continuing", name)
+            elif _sampled(n):
+                LOG.warning("%s failed %d times so far", name, n)
+
+    @staticmethod
+    def _first_time(seen: set, topic: str) -> bool:
+        """True once per topic, while the bounded memory has room."""
+        if topic in seen or len(seen) >= WARNED_TOPICS_MAX:
+            return False
+        seen.add(topic)
+        return True
 
     def _drain_inbox(self) -> None:
         while True:
@@ -219,7 +257,18 @@ class RulesApp:
                 topic, raw = self._inbox.get_nowait()
             except queue.Empty:
                 return
-            self._apply_message(topic, raw)
+            # One bad message must not end the loop: a RETAINED payload that
+            # raises would otherwise crash-loop the unit on every start.
+            # Exception only — the SIGTERM SystemExit must still unwind.
+            try:
+                self._apply_message(topic, raw)
+            except Exception:
+                self._failed += 1
+                if self._first_time(self._warned_failed, topic):
+                    LOG.exception("message on %r skipped", topic)
+                elif _sampled(self._failed):
+                    LOG.warning("%d message(s) skipped after an error, "
+                                "latest on %r", self._failed, topic)
 
     def _scene_command(self, parts: list, raw: str) -> None:
         """`devices/sa02m-rules-<sid>/controls/run/on` → run / run_off.
@@ -263,6 +312,18 @@ class RulesApp:
             value: Any = json.loads(raw)
         except ValueError:
             value = raw
+        if non_finite(value):
+            # nan / ±inf / a 309+ digit int is not a reading: the value is
+            # UNKNOWN (a faulted Carel probe publishes "nan") — the last good
+            # value must not live on, and nothing fires on the transition.
+            if self._first_time(self._warned_non_finite, state_topic):
+                LOG.warning("non-finite value on %r: value unknown", state_topic)
+            # Every key this topic feeds: the raw (device, control) name, and
+            # each (device, key) the document binds to it.
+            self.engine.forget_state(parts[1], parts[3])
+            for device, key in mapped or ():
+                self.engine.forget_state(device, key)
+            return
         self.reload()
         # The raw (MQTT device, control) path carries button counters, the
         # di_N edge classifier and raw-named state triggers: a topic the
@@ -289,10 +350,12 @@ class RulesApp:
             self.engine.adopt(load(self.path))
 
     def tick(self) -> None:
-        self.reload()
+        # reload() stamps the new mtime before adopting, so a document that
+        # fails to adopt is logged once and not re-read every second.
+        self._step("reload", self.reload)
         self._drain_inbox()
-        self.engine.tick()
-        self.engine.logic_status_poll()
+        self._step("engine.tick", self.engine.tick)
+        self._step("logic_status_poll", self.engine.logic_status_poll)
         run_flag = self.path + ".run"
         try:
             with open(run_flag, encoding="utf-8") as fh:
@@ -301,10 +364,11 @@ class RulesApp:
         except OSError:
             sid = ""
         if sid:
-            self.engine.run_now(sid)
+            # The flag is already unlinked: a run that raises is not retried.
+            self._step("run_now", self.engine.run_now, sid)
 
     def boot(self) -> None:
-        self.engine.on_boot()
+        self._step("on_boot", self.engine.on_boot)
 
     def stop(self) -> None:
         """Shutdown: the buffered run records reach the journal."""
