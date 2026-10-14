@@ -12,8 +12,9 @@
 # than GET/HEAD must carry X-SA02M-CSRF (docs/decisions/selective-csrf-policy.md
 # «Демоны»: SameSite=Lax does not stop a page on the board's own IP at another
 # port). Dropping any one line silently reopens a hole while the page keeps
-# working, and `nginx -t` (which runs only on the board, at install) would not
-# notice — it checks syntax, not intent.
+# working, and `nginx -t` (which runs only on the board — install and OTA) would
+# not notice — it checks syntax, not intent. Seam contract:
+# docs/contracts/vplc-page-seam.md §1.
 #
 # PINS, comment-stripped via lib_check.sh (whole-line and trailing ` #`
 # comments are blanked, so `#`-commenting a line neither satisfies a pin nor
@@ -42,10 +43,10 @@
 # added, with the socket swapped for that TCP address, and with the map's
 # catch-all moved ahead of the GET/HEAD entry.
 #
-# DOES NOT prove: that nginx accepts the file (`nginx -t` runs on the board,
-# scripts/03-webserver.sh), that the vPLC page really sends X-SA02M-CSRF (a
-# seam condition on the vPLC side), or the socket's owner/mode (the vPLC
-# team's unit, docs/plans/vplc-integration.md §9.6).
+# DOES NOT prove: that nginx accepts the file (`nginx -t` runs on the board —
+# install and OTA), that the vPLC page really sends X-SA02M-CSRF (a seam
+# condition on the vPLC side), or the socket's owner/mode (the vPLC team's
+# unit, docs/contracts/vplc-page-seam.md §3).
 #
 # Run: bash .ai-dev/quality/checks/vplc-route-contract.sh
 set -u
