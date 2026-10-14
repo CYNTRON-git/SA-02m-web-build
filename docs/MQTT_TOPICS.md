@@ -354,6 +354,8 @@ DO, и как AO.
 /devices/mr02m-COM1-5/controls/reset_reason  type=text  (Input 65508)
 /devices/mr02m-COM1-5/controls/fw_updates    type=value  (Input 65509–65510, uint32)
 ```
+`meta/title` системного показателя — подпись из группы «Системные» вкладки MQTT
+(`channels.sys[].label`); пустая подпись оставляет встроенное название.
 
 ### DO (дискретные выходы — coils 1..N, R/W)
 ```

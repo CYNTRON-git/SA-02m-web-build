@@ -374,9 +374,11 @@ class MR02mPoller(DevicePoller):
             self.pub.pub_control_meta(self.device_id, name, "readonly", "1")
             if units:
                 self.pub.pub_control_units(self.device_id, name, units)
+            # MQTT tab «Системные» label (yaml channels.sys[].label).
+            label = str(self._sys_ch_cfg(name).get("label") or "").strip()
             self.pub.pub_control_meta(
                 self.device_id, name, "title",
-                _make_title(title, ""),
+                _make_title(label or title, ""),
             )
 
     def _poll_do_di(self) -> None:
