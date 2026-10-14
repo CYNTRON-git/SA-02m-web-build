@@ -2,9 +2,7 @@
 
 Recorded findings and deferred work (`.ai-dev/procedures/backlog.md` owns the
 format). One status per finding: `- [OPEN|RESOLVED] <date> <item>`. Resolved
-entries are pruned (history lives in git); last prune 2026-09-24 (1.0.6.54 — audit 2026-09-24 M5:
-24 RESOLVED entries and one OPEN entry shipped in 1.0.6.51 removed; the removed text is that
-commit's diff of this file).
+entries are pruned (history lives in git); last prune 2026-10-14 (1.0.7.2 - audit 2026-10-14 C-6: 20 RESOLVED entries and nine 2026-10-14 entries fixed in that release removed; the removed text is that commit's diff of this file).
 
 ## Open
 
@@ -1041,3 +1039,6 @@ commit's diff of this file).
 - [OPEN] 2026-10-14 **[LOW] Fast Modbus `poll_events` (up to 128 data bytes, `bridge_fmb.py`) and FC17 replies are not capped on fast built-in ttyS lines** — the 1.0.7.2 FIFO cap covers FC03/FC04 register reads only (`docs/MQTT_TOPICS.md` says so). Measure on the bench whether these replies overrun before designing a cap. com-overrun review A1.
 - [OPEN] 2026-10-14 **[LOW] A retained value of a disabled channel is never cleared** — `di_N_count` after `counter: false` (mr-ai-type), `meta/error = r` of a channel removed from a template or set `enabled:false` (template-poller review Q4); the same class as other orphaned retained topics (CE `controls/total/meta/*`). One general «clear retained topics of a channel the bridge no longer publishes» fix, own branch.
 - [OPEN] 2026-10-14 **[LOW] MTD window (1.0.7.3) residuals:** a devices-card write (`mqtt_set.cgi`, QoS 0, bridge stopped under the flasher lease) during an open window is dropped, never replayed; a deferred register (applies after a power cycle) is not followed by the bridge entry — both stated in `docs/contracts/mtd-presence.md`. Bench walk on 1.135 (COM3 @19200, address 20) offered to the Operator, not run.
+- [OPEN] 2026-10-14 **[LOW] The `services` status part has no contract.** Its fields (`svc_*`, `optional_services`, `dash_services`, `svc_vplc_ui`) are read by `app/status.js`/`app/services.js` with no `docs/contracts/` entry; only `svc_vplc_ui` is contracted (`vplc-page-seam.md` §9). Pre-existing; the audit A-4 entry's second half. Fix: a `status-services-part.md` contract + a validating row.
+- [OPEN] 2026-10-14 **[LOW] ~35 `'<prefix>: ' + err.message` sites in `flasher.js` leave the daemon message Russian in EN mode** (the prefixes are translated by REGEX rows; the suffix is not). Audit A-3 reduced to its true residual. Fix: translate daemon refusal texts through standalone REGEX rows as the MTD window does (1.0.7.3 `i18n.js`), one family at a time.
+- [OPEN] 2026-10-14 **[LOW] `etc/sa02m-factory-reset-runner.sh:1334` opens the update lock with `>` (truncating) instead of `>>`** — the same pattern the 1.0.7.2 review caught in the profile lib (F1): it wipes the OTA runner's pid line the panel reads for the `stale` status. Own branch; the runner's own `8>>` idiom (`sa02m-update-runner.sh:165-168`) is the model.
