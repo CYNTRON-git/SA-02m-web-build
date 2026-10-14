@@ -197,5 +197,68 @@ class VarsStrictTests(unittest.TestCase):
         self.assertTrue(math.isfinite(bucket["c"][0]))
 
 
+class SandboxNamespaceTests(unittest.TestCase):
+    """`env` is the scenario's own namespace: run_code must never read a name
+    back from it after exec (review of the replay, F1). A body that rebinds
+    or deletes `Vars` raised out of run_code, skipped the run record and
+    aborted the dispatch loop, so sibling scenarios on the same event never
+    ran; the scrub flag was writable from the body."""
+
+    def setUp(self):
+        td = tempfile.TemporaryDirectory()
+        self.addCleanup(td.cleanup)
+        self.path = os.path.join(td.name, "scenarios.json")
+
+    def engine_with(self, code):
+        from sa02m_rules import engine, store
+        store.save({"scenarios": [
+            {"id": "c", "name": "c", "enabled": True, "type": "code",
+             "trigger": [{"kind": "boot"}], "condition": {}, "action": [],
+             "code": code},
+            {"id": "b", "name": "b", "enabled": True, "type": "block",
+             "trigger": [{"kind": "boot"}], "condition": {},
+             "action": [{"kind": "set", "device": "lamp", "cap": "on_off",
+                         "value": 1}]}],
+            "runs": [], "notify_queue": [], "library": "", "vars": {}},
+            self.path)
+        published = []
+        e = engine.Engine(lambda *a: published.append(a[:3]), self.path,
+                          now=lambda: 1000.0, pub_state=lambda *_a: None)
+        return e, published
+
+    def test_rebinding_or_deleting_vars_still_journals_the_run(self):
+        for body in ("Vars = 1", "del Vars"):
+            with self.subTest(body=body):
+                rec = code_runner.run_code(
+                    {"id": "c1", "name": "c", "code": body}, "", {},
+                    lambda *_a: None, 1.0, 55.0, 37.0,
+                    {"notify_queue": [], "runs": []}, self.path, {})
+                # RED before the fix: AttributeError / KeyError out of run_code
+                self.assertTrue(rec["ok"], rec.get("error"))
+
+    def test_a_sibling_scenario_on_the_same_event_still_runs(self):
+        for body in ("Vars = 1", "del Vars"):
+            with self.subTest(body=body):
+                e, published = self.engine_with(body)
+                e.on_boot()
+                # RED before the fix: the raise aborted _dispatch at row `c`
+                self.assertIn(("lamp", "on_off", 1), published)
+                self.assertEqual(e._scenario("c").get("last_error"), "")
+
+    def test_the_scrub_flag_cannot_be_cleared_from_the_body(self):
+        e, _published = self.engine_with(
+            "Vars.set('lst', [1])\n"
+            "Vars.get('lst').append(float('nan'))\n"
+            "Vars.home_mode = 'away'\n"   # mid-run save scrubs the NaN
+            "Vars.scrubbed = False\n")
+        rec = e.run_now("c")
+        # RED before the fix: the body reset the public flag, run «ok»
+        self.assertFalse(rec["ok"])
+        self.assertIn("finite", rec["error"])
+        # The real flag is `_`-prefixed: the AST walk refuses touching it.
+        self.assertEqual(code_runner._walk_ok(
+            code_runner.ast.parse("Vars._scrubbed = False")), "banned attr")
+
+
 if __name__ == "__main__":
     unittest.main()

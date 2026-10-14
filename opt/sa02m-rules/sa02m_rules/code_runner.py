@@ -290,7 +290,8 @@ class Vars:
         self._b = bucket
         self._on_home_mode = on_home_mode
         #: A NaN/Infinity was scrubbed to None (run_code journals it).
-        self.scrubbed = False
+        #: `_`-prefixed: the AST walk bans the body from touching it.
+        self._scrubbed = False
 
     def get(self, key: str, default: Any = None) -> Any:
         return self._b.get(str(key), default)
@@ -319,7 +320,7 @@ class Vars:
             # The engine SAVES the document here, mid-run: scrub first, so
             # a value slipped in by mutation never reaches scenarios.json.
             if non_finite_inside(self._b, fix=True):
-                self.scrubbed = True
+                self._scrubbed = True
             self._on_home_mode(mode)  # engine validates + fires presence
         else:
             self._b["home_mode"] = mode
@@ -361,12 +362,15 @@ def run_code(s: Dict[str, Any], library: str, state: Dict[str, Dict[str, Any]],
             err = _walk_ok(tree)
         if not err and tree is not None:
             writes, http_calls = [0], [0]
+            # Held here, never read back from `env`: the body owns that
+            # namespace and may rebind or delete `Vars`.
+            vars_api = Vars(vars_bucket, on_home_mode)
             env = {
                 "Hub": Hub(state, pub, writes),
                 "Cron": Cron(now, lat, lon),
                 "Notify": Notify(doc, path, notify_sink),
                 "Http": Http(http_calls),
-                "Vars": Vars(vars_bucket, on_home_mode),
+                "Vars": vars_api,
                 "math": math,
                 "True": True, "False": False, "None": None,
                 "abs": abs, "min": min, "max": max, "int": int, "float": float,
@@ -393,7 +397,7 @@ def run_code(s: Dict[str, Any], library: str, state: Dict[str, Dict[str, Any]],
             # NaN bypasses Vars.set. Scrubbed at the mid-run save
             # (Vars.home_mode) and here, before the engine keeps the bucket.
             scrubbed = non_finite_inside(vars_bucket, fix=True)
-            if (scrubbed or env["Vars"].scrubbed) and not err:
+            if (scrubbed or vars_api._scrubbed) and not err:
                 err = "Vars: NaN/Infinity is not a finite number (stored as None)"
     rec = {"ts": now, "id": s.get("id"), "name": s.get("name"), "error": err, "ok": not err}
     s["last_run"] = now

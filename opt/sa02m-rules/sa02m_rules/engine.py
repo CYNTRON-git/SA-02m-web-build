@@ -982,9 +982,9 @@ class Engine:
                 trigs = s.get("trigger") or []
                 if idx < len(trigs):
                     tr = trigs[idx]
-            if s is None or s.get("enabled") is False or not isinstance(tr, dict) \
+            if s is None or self._inactive(s) or not isinstance(tr, dict) \
                     or tr.get("kind") != "every":
-                return  # not re-armed: scenario gone or trigger changed
+                return  # not re-armed: scenario gone, off/unarmed, or trigger changed
             self._schedule(float(tr.get("minutes") or 1) * 60.0, "every", key,
                            payload)  # re-arm first: a run error must not kill it
             if self._conditions_ok(s):
