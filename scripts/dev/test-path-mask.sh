@@ -25,14 +25,22 @@
 #      same relative name must not be mirrored instead (bash's cd searches
 #      CDPATH before the cwd for a bare relative name, and prints the hit —
 #      so `>/dev/null` alone would still mirror the decoy).
+#   P8 a MASKDIR reused for a different CMD fails closed: the first call's
+#      mirror still links the second CMD and ln cannot replace an existing link,
+#      so reusing the slot left the host binary visible. The second call must
+#      refuse (non-zero, empty output) or return a PATH where that CMD is hidden.
 #
-# Comment-mutation: the lib's load-bearing lines (the mirror substitution and
-# the absolute-dir resolution) are cased in comment-mutation-proof under this
-# row's id, path-mask-lib — commenting either out turns P1 RED.
+# Comment-mutation: the lib's load-bearing lines (the mirror substitution, the
+# single-use slot creation and the absolute-dir resolution) are cased in
+# comment-mutation-proof under this row's id, path-mask-lib — commenting any of
+# them out turns P1 RED.
 # RED, observed 2026-09-30 against the pre-fix lib (43be80d7, PATH_MASK_LIB=<git
 # show copy>): P7 FAILs — under CDPATH the bare `cd` resolved the decoy and
 # printed it into the captured dir, so the mirror came out empty; with only
 # `>/dev/null` added P7 still FAILs, the mirror now built from the decoy.
+# RED, observed 2026-10-14 against the lib before the single-use slot (mkdir -p
+# on the mirror slot): P8 FAILs — the second call returned 0 and the CMD it was
+# asked to hide resolved through the first call's mirror.
 #
 # Run: bash scripts/dev/test-path-mask.sh   (bash + coreutils + findutils)
 set -u
@@ -52,6 +60,9 @@ REAL_PATH=$(printf '%s' "$PATH" | tr -s ':' | sed 's/^://; s/:$//')
 PATH="$REAL_PATH"
 
 fails=0
+skips=0; skipped=""
+skip() { printf 'SKIP  %s
+' "$1"; skips=$((skips + 1)); skipped="${skipped:+$skipped; }$1"; }
 ok()  { printf 'ok    %s\n' "$1"; }
 bad() { printf 'FAIL  %s\n' "$1"; fails=$((fails + 1)); }
 
@@ -120,7 +131,7 @@ if ln -s "$T/nonexistent-target" "$T/host5/$C1" 2>/dev/null && [ -L "$T/host5/$C
         bad "P5 dangling-symlink CMD left in place: '${o[0]}'"
     fi
 else
-    echo "SKIP  P5 this host cannot create a dangling symlink (git-bash without native symlinks)"
+    skip "P5 this host cannot create a dangling symlink (git-bash without native symlinks)"
 fi
 
 # ── P6 ──
@@ -150,6 +161,29 @@ got=$(runs "$OUT" "$SIB")
 if [ "$got" = real-sibling ] && ! resolves "$OUT" "$C1"; then ok "P7 CDPATH decoy not mirrored — the PATH entry's own dir is"
 else bad "P7 mirror built from the wrong dir under CDPATH (sibling ran '${got:-nothing}', want real-sibling)"; fi
 
+# ── P8 ──
+mkcmd "$T/host8" "$C1" host8-cmd1
+mkcmd "$T/host8" "$C2" host8-cmd2
+mkcmd "$T/host8" "$SIB" host8-sibling
+IN="$T/host8:$REAL_PATH"
+if resolves "$IN" "$C2"; then
+    (PATH="$IN"; path_without "$T/m8" "$C1") >/dev/null 2>&1
+    OUT=$(PATH="$IN"; path_without "$T/m8" "$C2" 2>/dev/null); rc=$?
+    if [ "$rc" != 0 ] && [ -z "$OUT" ]; then
+        ok "P8 a reused MASKDIR is refused (non-zero, empty output)"
+    elif [ "$rc" = 0 ] && ! resolves "$OUT" "$C2" && [ "$(runs "$OUT" "$SIB")" = host8-sibling ]; then
+        ok "P8 a reused MASKDIR still hides the second CMD"
+    else
+        bad "P8 reused MASKDIR failed open: rc=$rc, $C2 $(resolves "$OUT" "$C2" && echo "VISIBLE ($(PATH="$OUT"; command -v "$C2"))" || echo hidden), output '${OUT:0:80}'"
+    fi
+else
+    bad "P8 fixture CMD does not resolve on the UNMASKED path — the reuse case would be vacuous"
+fi
+
 echo "---"
-if [ "$fails" = 0 ]; then echo "path-mask-lib: all checks passed"; else echo "path-mask-lib: $fails check(s) FAILED"; fi
+# A skip is reported as a skip (quality-gate-rigor.md): never «all checks passed»
+# when a case did not run here.
+if [ "$fails" != 0 ]; then echo "path-mask-lib: $fails check(s) FAILED${skipped:+, $skips skipped ($skipped)}"
+elif [ "$skips" != 0 ]; then echo "path-mask-lib: no check failed, $skips skipped ($skipped)"
+else echo "path-mask-lib: all checks passed"; fi
 exit $(( fails > 0 ))  # never the count: 77 reads SKIP, 256 reads PASS (run.mjs SKIP_EXIT)
