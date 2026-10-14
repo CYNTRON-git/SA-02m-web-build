@@ -35,7 +35,12 @@
 #       grant before any systemctl call, every sa02m-user@ instance stopped and
 #       disabled, kept data and sentinel neighbours survive, a second run makes
 #       zero systemctl calls, a busy lock removes nothing, a `keep` profile or
-#       the one-shot env never removes, a relative root is refused
+#       the one-shot env never removes, a relative root is refused; P6k the
+#       OTA runner's pid line in update.lock survives the removal and the
+#       busy-lock path (the lock is opened for APPEND — review 1.0.7.2 F1,
+#       RED on the `8>` redirect: «truncated update.lock: []»); P6l with a REAL
+#       flock(1) holder the removal waits, then runs, the pid line intact
+#       (SKIP where flock(1) is missing — git-bash; WSL / Linux CI run it)
 #   P7  table completeness: every destination scripts/13-agent-api.sh writes
 #       is an OTA pattern, an install-only path or kept data (parsed allow-list
 #       style — an unrecognised absolute path FAILS; >= 14 parsed); validity —
@@ -106,7 +111,7 @@ CONF="$T/profile.conf"
 # seams; stdout is the function's, stderr goes to $T/lib.err.
 lib() {
     ( SA02M_PROFILE_CONF="$CONF" SA02M_PROFILE_ROOT="${PROOT:-}" \
-      SA02M_UPDATE_STATEDIR="$T/state" SA02M_PROFILE_LOCK_WAIT=1 \
+      SA02M_UPDATE_STATEDIR="$T/state" SA02M_PROFILE_LOCK_WAIT="${LOCK_WAIT:-1}" \
       SA02M_ROOTFS_BUILD="${ROOTFS:-}"
       export SA02M_PROFILE_CONF SA02M_PROFILE_ROOT SA02M_UPDATE_STATEDIR SA02M_PROFILE_LOCK_WAIT
       [ -n "$SA02M_ROOTFS_BUILD" ] && export SA02M_ROOTFS_BUILD || unset SA02M_ROOTFS_BUILD
@@ -222,8 +227,14 @@ nsys() { local n=0 l; while IFS= read -r l; do case "$l" in systemctl*) n=$((n +
 
 make_footprint
 printf 'MODULE_AGENT_API=skip\n' > "$CONF"
+# The OTA runner keeps its pid in update.lock (opened for APPEND, read by
+# lib_web_update.sh for `stale` and reboot.cgi): a removal waiting on the same
+# lock must never truncate it (review 1.0.7.2 F1).
+mkdir -p "$T/state"; printf '4242\n' > "$T/state/update.lock"
 run_enforce
 case "$ENF_OUT" in *rc=0) ok "P6a removal rc 0" ;; *) bad "P6a removal rc: $ENF_OUT; stderr: $ENF_ERR" ;; esac
+grep -qx 4242 "$T/state/update.lock" && ok "P6k the runner's pid line in update.lock survives a removal" \
+    || bad "P6k removal truncated update.lock: [$(tr '\n' ' ' < "$T/state/update.lock")]"
 gone=1
 for p in $(lib sa02m_profile_ota_patterns AGENT_API) $(lib sa02m_profile_install_only_paths AGENT_API); do
     [ -e "${p%/}" ] && { gone=0; bad "P6b still present after removal: ${p#"$R"}"; }
@@ -264,13 +275,43 @@ else
     bad "P6f second run: $ENF_OUT, $n systemctl call(s), stderr: $ENF_ERR"
 fi
 make_footprint; touch "$T/lock-busy"
+printf '4242\n' > "$T/state/update.lock"
 run_enforce
 rm -f "$T/lock-busy"
+grep -qx 4242 "$T/state/update.lock" && ok "P6k the runner's pid line survives a removal that gives up on a busy lock" \
+    || bad "P6k busy-lock path truncated update.lock: [$(tr '\n' ' ' < "$T/state/update.lock")]"
 if [ -f "$R/etc/sudoers.d/sa02m-agent-api" ] && [ -d "$R/opt/sa02m-agent-api" ] && [ "$(nsys)" = 0 ] \
    && text_has "$ENF_ERR" "отложено"; then
     case "$ENF_OUT" in *rc=0) bad "P6g a busy lock must return non-zero" ;; *) ok "P6g busy update.lock: nothing removed, WARN «отложено», rc != 0" ;; esac
 else
     bad "P6g busy lock: removal ran anyway or no WARN ($ENF_OUT; stderr: $ENF_ERR)"
+fi
+# P6l the reviewer's repro with a REAL flock(1): a holder (the OTA runner's
+# idiom: append + flock, pid written) keeps the lock 2 s; the removal waits,
+# then runs — and the pid line the holder wrote is still there afterwards.
+REALFLOCK=$(command -v flock 2>/dev/null || true)
+case "$REALFLOCK" in
+    "$BIN"/*|'') REALFLOCK="" ;;
+esac
+if [ -z "$REALFLOCK" ]; then
+    SKIPS="P6l"; printf 'SKIP  P6l real-flock wait: no flock(1) on this host (git-bash) — WSL / Linux CI run it\n'
+else
+    BIN2="$T/bin2"; mkdir -p "$BIN2"; cp "$BIN/systemctl" "$BIN/timeout" "$BIN2/"
+    make_footprint
+    printf 'MODULE_AGENT_API=skip\n' > "$CONF"
+    : > "$T/state/update.lock"
+    ( exec 9>>"$T/state/update.lock"; flock 9; printf '4242\n' >&9; sleep 2 ) &
+    holder=$!
+    sleep 0.5
+    : > "$CALLS"
+    l_out=$( ( LOCK_WAIT=10 PATH="$BIN2:$PATH" lib sa02m_profile_enforce AGENT_API ); echo "rc=$?")
+    mid=$(cat "$T/state/update.lock")
+    wait "$holder"
+    if [ "$mid" = 4242 ] && [ ! -e "$R/etc/sudoers.d/sa02m-agent-api" ]; then
+        ok "P6l real flock: the removal waited for the holder, then ran; the holder's pid line survived ($l_out)"
+    else
+        bad "P6l real flock: lock content '$mid', grant removed=$([ -e "$R/etc/sudoers.d/sa02m-agent-api" ] && echo no || echo yes), $l_out"
+    fi
 fi
 make_footprint
 printf 'MODULE_AGENT_API=keep\n' > "$CONF"
@@ -673,7 +714,7 @@ fi
 
 echo
 if [ "$fails" -eq 0 ]; then
-    echo "install-profile: ALL OK — $passes case(s) green"
+    echo "install-profile: ALL OK — $passes case(s) green${SKIPS:+, SKIPPED here: $SKIPS (not a pass)}"
     exit 0
 fi
 echo "install-profile: $fails FAIL(s)"

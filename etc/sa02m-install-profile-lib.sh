@@ -314,7 +314,9 @@ sa02m_profile_remove_module() {
         _sa02m_profile_log WARN "Профиль установки: нет каталога блокировки $_pr_state — удаление $1 отложено"
         return 1
     fi
-    # Subshell: the lock fd lives exactly as long as the removal.
+    # Subshell: the lock fd lives exactly as long as the removal. Opened for
+    # APPEND, as the runner does: its pid line in update.lock is how the panel
+    # tells a live runner from a dead one (lib_web_update.sh) — never truncate it.
     (
         if ! flock -w "$_pr_wait" 8; then
             _sa02m_profile_log WARN "Профиль установки: удаление $1 отложено — идёт обновление; повторите install.sh --refresh"
@@ -395,5 +397,5 @@ sa02m_profile_remove_module() {
         fi
         _sa02m_profile_log INFO "Профиль установки: модуль $1 удалён; данные сохранены: $(sa02m_profile_kept_data "$1" | tr '\n' ' ')— вернуть: install.sh --keep-module $1"
         exit "$_pr_rc"
-    ) 8>"$_pr_state/update.lock"
+    ) 8>>"$_pr_state/update.lock"
 }
