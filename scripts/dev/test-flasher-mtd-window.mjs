@@ -206,9 +206,9 @@ check(/state\.scanJobId \|\| state\.flashJobId \|\| state\.configLinkBusy/.test(
 {
   // A8: a dropped tag makes mtdWindow() throw on double-click — both modules
   // load before flasher.js, each with a ?v= and an &r= cache-bust.
-  // Comment-stripped first: a tag inside <!-- … --> loads nothing
+  // Comment-stripped first: a tag inside <!-- … --> loads nothing (a browser also ends a comment at --!> and at EOF)
   // (quality-gate-rigor.md shape (a)).
-  const html = readFileSync(join(ROOT, 'www', 'network_config', 'index.html'), 'utf8').replace(/<!--[\s\S]*?-->/g, '');
+  const html = readFileSync(join(ROOT, 'www', 'network_config', 'index.html'), 'utf8').replace(/<!--[\s\S]*?(?:--!?>|$)/g, '');
   const at = (name) => {
     const m = new RegExp('<script src="static/js/' + name.replace(/[./]/g, (c) => '\\' + c) + '\\?v=[0-9.]+&r=[A-Za-z0-9_-]+"></script>').exec(html);
     return m ? m.index : -1;
