@@ -2784,11 +2784,31 @@ function scanListedAlready(target, dev) {
   return scanDeviceAlreadyListed(target.port, dev.addr);
 }
 
+/** Types the scan table offers, in select order. */
+const SCAN_TYPE_OPTIONS = [
+  ['mr02m','МР-02м'], ['dtv','ДТВ-RS-485'], ['ce02m3','СЭ-02м-3'], ['led','LED'],
+  ['template','MTD262-MB'], ['carel','Carel'],
+];
+
+/** The type a scan row starts with — '' when the scan did not identify it.
+ *  Never a guess: a foreign device pre-set to МР-02м got an MR poller and
+ *  Fast Modbus aimed at it by one «Добавить все». */
+function scanPreselectType(dev) {
+  const t = dev && dev.type;
+  return SCAN_TYPE_OPTIONS.some(([v]) => v === t) ? t : '';
+}
+
 function refreshScanAddAll() {
   const view = _scanView;
   if (!view) return;
   const already = (d) => scanListedAlready(view.target, d);
-  const newCount = view.devices.filter((d) => !already(d)).length;
+  // Rows and view.devices are appended together, so row i is device i.
+  const typed = (i) => {
+    const tr = view.tbody.querySelectorAll('tr')[i];
+    const sel = tr && tr.querySelector('select');
+    return !!(sel && sel.value);
+  };
+  const newCount = view.devices.filter((d, i) => !already(d) && typed(i)).length;
   if (newCount <= 0) {
     if (view.addAllBtn) view.addAllBtn.remove();
     view.addAllBtn = null;
@@ -2806,7 +2826,8 @@ function refreshScanAddAll() {
         const sel = tr.querySelector('select');
         const inp = tr.querySelector('input');
         const btn = tr.querySelector('button');
-        if (!sel || !inp || !btn) return;
+        // An untyped row is skipped, never defaulted (see scanPreselectType).
+        if (!sel || !inp || !btn || !sel.value) return;
         addDeviceFromScan(
           d, sel.value, inp.value, view.target.port, view.target.baud,
           view.target.via === 'gateway' ? view.target : null);
@@ -2850,9 +2871,14 @@ function appendScanDevice(dev) {
   const gateway = target.via === 'gateway';
   const port = target.port;
   const baud = target.baud;
-  const devType = (dev.type === 'unknown') ? 'mr02m' : (dev.type || 'mr02m');
+  const devType = scanPreselectType(dev);
   const typeSelect = h('select', {'class': 'mqtt-select-small'});
-  for (const [val, lbl] of [['mr02m','МР-02м'], ['dtv','ДТВ-RS-485'], ['ce02m3','СЭ-02м-3'], ['led','LED'], ['template','MTD262-MB'], ['carel','Carel']]) {
+  if (!devType) {
+    const ph = h('option', {value: ''}, '— выберите тип —');
+    ph.selected = true;
+    typeSelect.appendChild(ph);
+  }
+  for (const [val, lbl] of SCAN_TYPE_OPTIONS) {
     const opt = h('option', {value: val}, lbl);
     if (val === devType) opt.selected = true;
     typeSelect.appendChild(opt);
@@ -2868,17 +2894,22 @@ function appendScanDevice(dev) {
     'placeholder': 'Сигнатура / имя',
     'value': nameValue,
   });
+  let addBtn = null;
   typeSelect.addEventListener('change', () => {
     const d = {...dev, type: typeSelect.value};
     delete d.name;
-    nameInput.value = scanShortName(d, typeSelect.value);
+    nameInput.value = typeSelect.value ? scanShortName(d, typeSelect.value) : '';
+    if (addBtn) addBtn.disabled = !typeSelect.value;
+    refreshScanAddAll();
   });
   const listed = !!listedDev;
   const actionCell = h('td', {'class': 'mqtt-scan-action'}, listed
     ? scanListedCheck()
     : (() => {
-        const addBtn = h('button', {'class': 'btn btn-primary btn-sm'}, '+ Добавить');
+        addBtn = h('button', {'class': 'btn btn-primary btn-sm'}, '+ Добавить');
+        addBtn.disabled = !typeSelect.value;
         addBtn.onclick = () => {
+          if (!typeSelect.value) return;
           addDeviceFromScan(dev, typeSelect.value, nameInput.value, port, baud, gateway ? target : null);
           addBtn.replaceWith(scanListedCheck());
           refreshScanAddAll();
@@ -3147,6 +3178,10 @@ function addGatewayDeviceFromScan(scanDev, type, name, gateway) {
 }
 
 function addDeviceFromScan(scanDev, type, name, port, baud, gateway) {
+  if (!type) {
+    showToast('Выберите тип устройства', 'warn');
+    return;
+  }
   if (gateway && gateway.via === 'gateway') {
     addGatewayDeviceFromScan(scanDev, type, name, gateway);
     return;

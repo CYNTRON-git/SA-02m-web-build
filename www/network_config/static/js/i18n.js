@@ -1041,6 +1041,9 @@
     'нет доступных шаблонов': 'no templates available',
     'не проверено на оборудовании': 'not verified against hardware',
     'Выберите шаблон устройства': 'Select a device template',
+    // MQTT scan: an unidentified row is never pre-set to a type.
+    '— выберите тип —': '— select type —',
+    'Выберите тип устройства': 'Select the device type',
     // Modbus TCP in the add-device modal (1.0.6.56, docs/contracts/bridge-modbus-tcp.md).
     'Способ подключения': 'Connection type',
     'Семейство Carel': 'Carel family',
