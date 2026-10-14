@@ -18,7 +18,9 @@ family class. Contract + supported schema: `docs/contracts/template-device.md`.
   sensor's list and holding 9 is parity 0..2, and input 0/3 read as presence
   and status. It takes the baud of the port it is added to (a sensor on COM3
   next to the other 19200 devices stays at 19200 8N1). `stopbits: 2` only if
-  the 8N1 sweep missed it.
+  the 8N1 sweep missed it. Each writable setting carries the maker's `min`/`max`
+  in engineering units — the bridge ignores them; the flasher's MTD settings
+  window reads them as its write range.
 - `config-mp02-ahu.json` (`template: mp02-ahu`) — the CYNTRON **MP-02** PLC
   running its air-handling-unit (AHU / ПВУ) program, 24 controls. Authored by
   the MP-02 firmware team from their own register map, not a Wiren Board file
