@@ -131,6 +131,11 @@
       "mode": "0644",
       "owner": "root:root"
     },
+    "etc/sa02m-install-profile-lib.sh": {
+      "dst": "/usr/local/lib/sa02m-install-profile-lib.sh",
+      "mode": "0644",
+      "owner": "root:root"
+    },
     "etc/sa02m-web-reboot.sh": {
       "dst": "/usr/local/sbin/sa02m-web-reboot.sh",
       "mode": "0755",

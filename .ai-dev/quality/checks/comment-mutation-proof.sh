@@ -210,6 +210,17 @@ status-vplc-probe|www/network_config/cgi-bin/status.cgi|SVC_VPLC_UI=$(fast_servi
 status-vplc-probe|www/network_config/cgi-bin/status.cgi|"svc_vplc_ui": "${SVC_VPLC_UI:-unknown}"
 status-vplc-probe|www/network_config/cgi-bin/status.cgi|echo "$_vui"
 devices-tables-drift|opt/sa02m-modbus-mqtt/devices_tables.py|MR02M_MODULE_TYPES = [
+install-profile|etc/sa02m-install-profile-lib.sh|[ -n "${SA02M_ROOTFS_BUILD:-}" ] && return 0
+install-profile|scripts/03-webserver.sh|sa02m_atomic_install -m 644 "$SCRIPT_DIR/../etc/sa02m-install-profile-lib.sh" /usr/local/lib/sa02m-install-profile-lib.sh
+install-profile|install.sh|sa02m_profile_apply_cli "$_PROFILE_SKIP" "$_PROFILE_KEEP" || exit 2
+install-profile|install.sh|sa02m_profile_enforce AGENT_API || log WARN
+install-profile|install.sh|--skip-module) _PROFILE_SKIP=
+install-profile|etc/sa02m-update-runner.sh|prepare_profile_excludes "$txn"
+install-profile|etc/sa02m-update-runner.sh|skipped.append(fields[1])
+install-profile|scripts/update-www-only.sh|log INFO "/usr/local/sbin/$_h: модуль пропущен профилем установки"
+install-profile|scripts/update-www-only.sh|log INFO "/etc/sudoers.d/$_sud: модуль пропущен профилем установки"
+install-profile|etc/sa02m-web-update-apply.sh|log "$tgt: модуль пропущен профилем установки"
+install-profile|www/network_config/cgi-bin/sa02m_agent_api.cgi|echo '"'"'{"ok":true,"state":"not_installed"
 ota-dst-allowlist-parity|opt/sa02m-update/lib/validate_package.py|re.compile(r"^/etc/nginx/"),
 ota-dst-allowlist-parity|scripts/pack-offline-update.py|r"etc/systemd/system/sa02m-|"
 ota-dst-allowlist-parity|etc/sa02m-update-runner.sh|r"etc/systemd/system/sa02m-|"
