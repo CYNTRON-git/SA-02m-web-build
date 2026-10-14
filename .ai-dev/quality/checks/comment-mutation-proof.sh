@@ -192,6 +192,8 @@ update-recover-boot|scripts/update-www-only.sh|sa02m-update-recover.service sa02
 update-recover-boot|scripts/pack-offline-update.py|"sa02m-update-verify.service"
 update-recover-boot|etc/sa02m-update-runner.sh|trap '"'"'exit 143'"'"' INT TERM
 no-absolute-api-paths|www/network_config/static/js/devices.js|"api/devices
+js-unit-flasher-mtd-window|opt/sa02m-flasher/sa02m_flasher/mtd_config.py|MTD_MODEL = "MTDx62-MB"
+js-unit-flasher-mtd-window|www/network_config/static/js/i18n.js|'"'"'Датчик присутствия MTD'"'"': '"'"'MTD presence sensor'"'"',
 flasher-auth-header-strip|etc/nginx/network_config.conf|X-SA02M-Auth  "";
 vplc-route-contract|etc/nginx/network_config.conf|location ^~ /vplc/ {
 vplc-route-contract|etc/nginx/network_config.conf|auth_request /_auth_check;
