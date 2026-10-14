@@ -135,19 +135,48 @@ class TestFifoSafeReadRegs(unittest.TestCase):
                     bridge_serial.MODBUS_MAX_READ_REGS)
 
     def test_ceiling_is_resolved_again_when_the_port_opens(self):
-        # /dev/COMx not linked yet when the pool entry is built: uncapped until
-        # open maps it to its ttyS line.
-        ms = bridge_serial.ModbusSerial("/dev/COM4", 115200)
-        self.assertEqual(ms.max_read_regs, bridge_serial.MODBUS_MAX_READ_REGS)
+        # /dev/COMx not linked yet when the pool entry is built: capped (fail
+        # closed) until the open maps it — here to a node that is no 8250
+        # line, so only a re-resolve on open can lift the cap.
+        with mock.patch.object(bridge_serial.os.path, "exists",
+                               lambda _p: False):
+            ms = bridge_serial.ModbusSerial("/dev/COM4", 115200)
+        self.assertEqual(ms.max_read_regs, 24)
         fake_serial = types.SimpleNamespace(
             PARITY_NONE="N", STOPBITS_ONE=1,
             Serial=lambda **kw: OverrunUart())
         with mock.patch.object(bridge_serial, "serial", fake_serial), \
                 mock.patch.object(bridge_serial, "uart_line_index",
-                                  lambda _p: 5), \
+                                  lambda _p: None), \
+                mock.patch.object(bridge_serial, "_unresolved_builtin_uart",
+                                  lambda _p: False), \
                 mock.patch.object(bridge_serial.time, "sleep", lambda _s: None):
             ms._ensure_open()
-        self.assertEqual(ms.max_read_regs, 24)
+        self.assertEqual(ms.max_read_regs, bridge_serial.MODBUS_MAX_READ_REGS)
+
+    def test_unresolved_builtin_uart_name_fails_closed(self):
+        with mock.patch.object(bridge_serial.os.path, "exists",
+                               lambda _p: False), \
+                mock.patch.object(bridge_serial, "uart_line_index",
+                                  lambda _p: None):
+            for port in ("/dev/COM1", "/dev/COM4", "/dev/COM5", "/dev/ttyS3"):
+                with self.subTest(port=port):
+                    self.assertEqual(
+                        bridge_serial.fifo_safe_read_regs(port, 115200), 24)
+            for port in ("/dev/ttyUSB0", "/dev/COM9", "/dev/rs485"):
+                with self.subTest(port=port):
+                    self.assertEqual(
+                        bridge_serial.fifo_safe_read_regs(port, 115200),
+                        bridge_serial.MODBUS_MAX_READ_REGS)
+
+    def test_resolved_com_link_to_no_8250_line_is_uncapped(self):
+        with mock.patch.object(bridge_serial.os.path, "exists",
+                               lambda _p: True), \
+                mock.patch.object(bridge_serial, "uart_line_index",
+                                  lambda _p: None):
+            self.assertEqual(
+                bridge_serial.fifo_safe_read_regs("/dev/COM4", 115200),
+                bridge_serial.MODBUS_MAX_READ_REGS)
 
     def test_port_exposes_its_ceiling(self):
         self.assertEqual(
@@ -166,6 +195,17 @@ class TestModbusSerialSplitsLongReads(unittest.TestCase):
                          list(range(400, 484)))
         self.assertTrue(all(n <= bridge_serial.UART_RX_SAFE_BYTES
                             for n in uart.replies), uart.replies)
+
+    def test_first_read_before_the_com_link_resolves_is_split(self):
+        # The pool entry is built before udev links /dev/COM4; the first read
+        # runs before any open re-resolves the cap and must already be split.
+        uart = OverrunUart()
+        with mock.patch.object(bridge_serial.os.path, "exists",
+                               lambda _p: False):
+            ms = _serial("/dev/COM4", 115200, uart)
+        self.assertEqual(ms.read_holding_registers(12, 400, 42),
+                         list(range(400, 442)))
+        self.assertEqual(uart.requests, [(3, 400, 24), (3, 424, 18)])
 
     def test_42_register_read_no_longer_truncates(self):
         uart = OverrunUart()

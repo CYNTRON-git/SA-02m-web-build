@@ -116,9 +116,15 @@ class TestPollerUsesResolvedChunk(unittest.TestCase):
         self.assertEqual(reads, [(400, 21), (421, 21), (442, 21), (463, 21)])
 
     def test_default_chunk_keeps_the_previous_split(self):
+        # The bus is named explicitly as one with no host-FIFO read ceiling (a
+        # USB adapter). The assertion (42+42 on an uncapped bus) is unchanged;
+        # the fixture used to take the default /dev/COM1 and passed only
+        # because the dev host has no /dev/COM1 — on a board, and since the
+        # fail-closed cap (bridge_serial._unresolved_builtin_uart) everywhere,
+        # that default bus is capped to 21-register AI chunks.
         with mock.patch.dict(os.environ, {}, clear=False):
             os.environ.pop(ENV, None)
-            p = self._poller({})
+            p = self._poller({"port": "/dev/ttyUSB0"})
         p._ai = 12
         reads: list[tuple[int, int]] = []
 
