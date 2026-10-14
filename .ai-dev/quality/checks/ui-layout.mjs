@@ -456,7 +456,11 @@ const MANAGEMENT_SERVICES = {
 // carel-ahu.md); precision comes from its fmt()/aiUnitPrecision(). Four MR
 // channels carry sensor codes whose card caption is Russian source text
 // (34/38/40/41), so the EN cells exercise their translation too. The Carel
-// record carries a season, so its «Сезон» tile renders a value («ЗИМА»), not «—».
+// record carries `season: 0` (winter — numeric per carel-ahu.md; a string reads
+// as no season and leaves «—»), so «Сезон» renders «ЗИМА» / «WINTER» and the
+// winter setpoint stepper row is shown. «Сезон» is a value run (fit, EN and
+// layout-jump checks); the stepper is not — the fit pass skips it and the
+// layout-jump pass leaves its number in place, so it is rendered, not measured.
 // The MTD presence card is NOT in the fixture: its settings tiles clip at the
 // 1101 px three-card width and its «да» has no EN entry — pre-existing defects
 // outside this check's fix, to be gated together with their fix.
@@ -465,7 +469,7 @@ const DEVICES_LIVE = {
   available: [],
   carel: [{ id: 'carel-COM3-1', kind: 'carel', label: 'Carel c.pCOmini № 1', ok: true, age_s: 2,
     plant_state_text: 'Остановлена', supply_temp: -12.3, return_water_temp: 34.2, setpoint: 21.5,
-    season: 'winter', heat_valve: 100, fan_supply: 100, alarm: 0 }],
+    season: 0, heat_valve: 100, fan_supply: 100, alarm: 0 }],
   dtv: [{ id: 'dtv-COM2-3', kind: 'dtv', label: 'ДТВ № 3 порт 2', ok: true, age_s: 1,
     room_temp: -12.5, humidity: 100, eco2_ppm: 5000, tvoc_mg_m3: 12.34, pressure_mmhg: 780.5, light_pct: 100 }],
   ce: [{ id: 'ce02m3-COM2-14', kind: 'ce', label: 'СЭ-02м-3 № 14 порт 2', ok: true, age_s: 1,
