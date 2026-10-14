@@ -49,7 +49,7 @@ viewport for a human to review the вёрстка, use the geometry driver
 `npm run ui-layout:install` once, then `npm run ui-layout`. It renders the
 dashboard + every «Управление» sub-pane (one surface each) across phone/tablet/desktop × both themes
 × both HW variants and measures real `getBoundingClientRect` / Range geometry.
-A third, geometry-only surface renders the «Устройства» cards from a stubbed
+A further, geometry-only surface renders the «Устройства» cards from a stubbed
 `/api/devices` (RU + EN) and gates that every value fits its tile with no
 layout jump, every card header stays one line with nothing overlapping, and
 no tile text is left in Russian in EN — the fixture and width list are in the

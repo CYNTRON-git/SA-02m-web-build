@@ -263,7 +263,7 @@ const DEVICES_VIEWPORTS = [
   { name: 'phone-3col-min', width: 401,  height: 900,  overflowGate: false },
   { name: 'phone',          width: 375,  height: 812,  overflowGate: false },
 ];
-const DEV_ROWS_MIN = 30;   // non-vacuity floor: DEVICES_LIVE renders 39 value runs.
+const DEV_ROWS_MIN = 30;   // non-vacuity floor: DEVICES_LIVE renders 38 value runs (Carel 5, ДТВ 6, СЭ 9, MR 12 + 6).
 const DEV_KINDS = ['carel', 'dtv', 'ce', 'mr'];
 
 // TOUCH_WHITELIST — the ledger of interactive controls knowingly below 44×44.
@@ -455,13 +455,17 @@ const MANAGEMENT_SERVICES = {
 // shape is the one devices.js reads (docs/contracts/devices-mr-history.md,
 // carel-ahu.md); precision comes from its fmt()/aiUnitPrecision(). Four MR
 // channels carry sensor codes whose card caption is Russian source text
-// (34/38/40/41), so the EN cells exercise their translation too.
+// (34/38/40/41), so the EN cells exercise their translation too. The Carel
+// record carries a season, so its «Сезон» tile renders a value («ЗИМА»), not «—».
+// The MTD presence card is NOT in the fixture: its settings tiles clip at the
+// 1101 px three-card width and its «да» has no EN entry — pre-existing defects
+// outside this check's fix, to be gated together with their fix.
 const DEVICES_LIVE = {
   ok: true,
   available: [],
   carel: [{ id: 'carel-COM3-1', kind: 'carel', label: 'Carel c.pCOmini № 1', ok: true, age_s: 2,
-    plant_state_text: 'Остановлена', supply_temp: -12.3, return_water_temp: 34.2, setpoint: 21,
-    heat_valve: 100, fan_supply: 100, alarm: 0 }],
+    plant_state_text: 'Остановлена', supply_temp: -12.3, return_water_temp: 34.2, setpoint: 21.5,
+    season: 'winter', heat_valve: 100, fan_supply: 100, alarm: 0 }],
   dtv: [{ id: 'dtv-COM2-3', kind: 'dtv', label: 'ДТВ № 3 порт 2', ok: true, age_s: 1,
     room_temp: -12.5, humidity: 100, eco2_ppm: 5000, tvoc_mg_m3: 12.34, pressure_mmhg: 780.5, light_pct: 100 }],
   ce: [{ id: 'ce02m3-COM2-14', kind: 'ce', label: 'СЭ-02м-3 № 14 порт 2', ok: true, age_s: 1,
