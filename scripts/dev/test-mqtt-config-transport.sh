@@ -340,7 +340,7 @@ fi
 # ── 15-16: GET advertises what the modal may offer — only with the lib ─────
 cp "$GOLDEN" "$YAML_FILE"
 out=$(call GET "$GOOD_COOKIE" "" "")
-if [ "$(jget "$out" 'j.get("capabilities")')" = "{'tcp_types': ['template', 'carel'], 'carel_families': ['crst', 'uaria'], 'tcp_default_port': 502}" ] \
+if [ "$(jget "$out" 'j.get("capabilities")')" = "{'tcp_types': ['template', 'carel'], 'carel_families': ['crst', 'uaria'], 'tcp_default_port': 502, 'rtu_tcp_types': ['ce02m3', 'dtv', 'led', 'mr02m', 'template']}" ] \
    && [ "$(jget "$out" 'len(j.get("devices") or [])')" = 3 ]; then
     ok "15 GET carries capabilities (tcp_types template+carel) beside the unchanged config"
 else

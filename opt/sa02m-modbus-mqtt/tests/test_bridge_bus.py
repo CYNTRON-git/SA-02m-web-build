@@ -112,7 +112,19 @@ class TestTcpAccepted(unittest.TestCase):
             "tcp_types": ["template", "carel"],
             "carel_families": ["crst", "uaria"],
             "tcp_default_port": 502,
+            "rtu_tcp_types": ["ce02m3", "dtv", "led", "mr02m", "template"],
         })
+
+    def test_capabilities_rtu_tcp_types_is_the_validator_set(self):
+        # One home: the scan's gateway offer is RTU_TCP_TYPES, and Carel is
+        # not in it (rtu_tcp Carel is refused type_not_tcp_capable).
+        caps = bridge_bus.capabilities()
+        self.assertEqual(caps["rtu_tcp_types"], sorted(bridge_bus.RTU_TCP_TYPES))
+        self.assertNotIn("carel", caps["rtu_tcp_types"])
+        for t in caps["rtu_tcp_types"]:
+            self.assertEqual(bridge_bus.validate_devices([{
+                "id": "x", "type": t, "transport": "rtu_tcp",
+                "host": "192.168.1.50", "tcp_port": 502, "address": 5}]), [], t)
 
 
 class TestTcpRefused(unittest.TestCase):
