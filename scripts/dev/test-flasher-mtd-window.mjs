@@ -206,7 +206,9 @@ check(/state\.scanJobId \|\| state\.flashJobId \|\| state\.configLinkBusy/.test(
 {
   // A8: a dropped tag makes mtdWindow() throw on double-click — both modules
   // load before flasher.js, each with a ?v= and an &r= cache-bust.
-  const html = readFileSync(join(ROOT, 'www', 'network_config', 'index.html'), 'utf8');
+  // Comment-stripped first: a tag inside <!-- … --> loads nothing
+  // (quality-gate-rigor.md shape (a)).
+  const html = readFileSync(join(ROOT, 'www', 'network_config', 'index.html'), 'utf8').replace(/<!--[\s\S]*?-->/g, '');
   const at = (name) => {
     const m = new RegExp('<script src="static/js/' + name.replace(/[./]/g, (c) => '\\' + c) + '\\?v=[0-9.]+&r=[A-Za-z0-9_-]+"></script>').exec(html);
     return m ? m.index : -1;
@@ -640,6 +642,27 @@ async function relinkCases() {
     check(h.rec.toasts.some(([, k]) => k === 'error') && !h.rec.toasts.some(([, k]) => k === 'success'),
       'a failed relink: error toast, no success toast');
   }
+  {
+    // B1: deferred + moved but the sensor has NO MQTT entry — the banner must
+    // not claim an entry on this line, nor ask to fix one.
+    const h = makeHost(snapshot());
+    fakeBridge(bridgeConfig([OTHER_PORT]));   // nothing on COM3: F2 allows 9600, no entry to move
+    h.reply = () => netReply({ address: 21, baudrate: 19200, parity: 'N', stopbits: 1 }, { applies_after_restart: true });
+    await linkChange(h, 21, 9600);
+    const banner = (h.rec.banners.find(([, k]) => k === 'info') || [''])[0];
+    check(/перейдёт на адрес 21, 9600 бод/.test(banner) && !/запись MQTT/.test(banner),
+      `deferred, no MQTT entry: the banner claims no entry (${banner})`);
+  }
+  {
+    // B2: only the baud changed and the relink failed — the toast does not
+    // speak of a new address.
+    const h = makeHost(snapshot());
+    fakeBridge(bridgeConfig([MTD_ENTRY]), { postReply: { ok: false, error: 'config_apply_failed' } });
+    h.reply = () => netReply({ address: 20, baudrate: 9600, parity: 'N', stopbits: 1 });
+    await linkChange(h, 20, 9600);
+    check(h.rec.toasts.some(([m, k]) => k === 'error' && /на новой линии/.test(m)) &&
+      !h.rec.toasts.some(([m]) => /на новом адресе/.test(m)), 'baud-only change, failed relink: «на новой линии», not «на новом адресе»');
+  }
   // ── F2 ──
   const self = { address: 20, match: BR.templateMatch('mtdx62-mb') };
   const all = [1200, 2400, 4800, 9600, 19200, 38400, 57600];
@@ -761,6 +784,7 @@ console.log('G. i18n (the runtime composes it)');
     [bridgeConfig([MTD_ENTRY]), null, { error: refusedFmt ? sample(refusedFmt[1]) : 'x' }],
     [bridgeConfig([MTD_ENTRY]), null, { applies_after_restart: true }],
     [null, { error: 'unauthorized' }, { applies_after_restart: true }],
+    [bridgeConfig([OTHER_PORT]), null, { applies_after_restart: true }],
   ];
   for (const [cfg, getReply, extra] of scen) {
     const h = makeHost(snapshot(), { t });
