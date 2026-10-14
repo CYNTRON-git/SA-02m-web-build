@@ -416,6 +416,13 @@ if [ -f "$SCRIPT_DIR/../etc/sa02m-stacks-policy.sh" ]; then
 else
     log WARN "Нет etc/sa02m-stacks-policy.sh — service-ctl не будет записывать /etc/sa02m_stacks.conf"
 fi
+# ── Профиль установки (читает раннер OTA; docs/contracts/install-profile.md) ─
+if [ -f "$SCRIPT_DIR/../etc/sa02m-install-profile-lib.sh" ]; then
+    sa02m_atomic_install -m 644 "$SCRIPT_DIR/../etc/sa02m-install-profile-lib.sh" /usr/local/lib/sa02m-install-profile-lib.sh
+    sed -i 's/\r$//' /usr/local/lib/sa02m-install-profile-lib.sh
+else
+    log WARN "Нет etc/sa02m-install-profile-lib.sh — OTA не сможет учесть профиль установки платы"
+fi
 if [ -f "$SCRIPT_DIR/../etc/sa02m-repair-web-env.sh" ]; then
     sa02m_atomic_install -m 755 "$SCRIPT_DIR/../etc/sa02m-repair-web-env.sh" /usr/local/sbin/sa02m-repair-web-env
     sed -i 's/\r$//' /usr/local/sbin/sa02m-repair-web-env

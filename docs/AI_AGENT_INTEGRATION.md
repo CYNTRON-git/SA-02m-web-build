@@ -5,7 +5,9 @@
 один раз. Этот файл — как подключиться и как вызывать операции. Полный перечень
 операций, коды и границы — `docs/contracts/agent-api.md`. Машиночитаемая схема —
 `GET /api/v1/openapi.json` (нужен токен). Текст, который плата отдаёт агенту
-при MCP `initialize`, — ресурс `sa02m://guide`.
+при MCP `initialize`, — ресурс `sa02m://guide`. Плату, на которой модуля быть
+не должно вовсе (`install.sh --skip-module AGENT_API`), описывает
+`docs/contracts/install-profile.md`.
 
 ## Пять минут
 

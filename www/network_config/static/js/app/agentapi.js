@@ -45,6 +45,15 @@ function fmtDate(ts) {
 function render(data) {
   var on = data && data.active === 'active';
   var state = $('agentapi-state');
+  var body = $('agentapi-body');
+  // The board's install profile skips the module (docs/contracts/agent-api.md
+  // «Плата без модуля»): one state line, no form.
+  if (data && data.state === 'not_installed') {
+    if (state) state.textContent = uiT('Не установлен на этой плате');
+    if (body) body.hidden = true;
+    return;
+  }
+  if (body) body.hidden = false;
   if (state) {
     var text = on ? uiT('Служба API включена') : uiT('Служба API выключена');
     if (data && data.nginx_routed === false) text += '. ' + uiT('Маршрут /api/v1 в nginx не настроен');
@@ -95,6 +104,7 @@ function toggle() {
   busy = true;
   post({ action: on ? 'disable' : 'enable' }).then(function (data) {
     busy = false;
+    if (data && data.error === 'not_installed') return load();
     if (!data || data.ok === false) say(uiT('Не удалось выполнить действие'));
     return load();
   }).catch(function () { busy = false; say(uiT('Не удалось выполнить действие')); });
@@ -116,6 +126,7 @@ function create() {
     busy = false;
     if (!data || !data.token) {
       var why = data && data.error;
+      if (why === 'not_installed') return load();
       if (why === 'root_auth') say(uiT('Неверный пароль root'));
       else if (why === 'E_CSRF' || (data && data.error_code === 'E_CSRF')) say(uiT('Сессия устарела, обновите страницу'));
       else say(uiT('Не удалось выполнить действие'));
@@ -139,6 +150,7 @@ function revoke(id) {
   busy = true;
   post({ action: 'revoke', id: id }).then(function (data) {
     busy = false;
+    if (data && data.error === 'not_installed') return load();
     say(data && data.ok ? uiT('Токен отозван') : uiT('Не удалось выполнить действие'));
     return load();
   }).catch(function () { busy = false; say(uiT('Не удалось выполнить действие')); });

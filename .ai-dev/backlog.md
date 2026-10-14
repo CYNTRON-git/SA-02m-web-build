@@ -2,9 +2,7 @@
 
 Recorded findings and deferred work (`.ai-dev/procedures/backlog.md` owns the
 format). One status per finding: `- [OPEN|RESOLVED] <date> <item>`. Resolved
-entries are pruned (history lives in git); last prune 2026-09-24 (1.0.6.54 — audit 2026-09-24 M5:
-24 RESOLVED entries and one OPEN entry shipped in 1.0.6.51 removed; the removed text is that
-commit's diff of this file).
+entries are pruned (history lives in git); last prune 2026-10-14 (1.0.7.2 - audit 2026-10-14 C-6: 20 RESOLVED entries and nine 2026-10-14 entries fixed in that release removed; the removed text is that commit's diff of this file).
 
 ## Open
 
@@ -72,23 +70,7 @@ commit's diff of this file).
   only** (`etc/mosquitto/10listeners.conf:8`, LAN goes to 1884 with auth). Other rows cite the same
   premise (grep `1883` in that file). Still worded so on `main` at 1.0.7.1. Pending: a docs fix
   on its own branch.
-- [RESOLVED template-poller-pult] 2026-09-29 **[LOW] Template poller: a block split resets the pass
-  resume point to 0** (review A3). Closed by the stop rule of review B1: a pass stops early only
-  when nothing answered in it nor in the previous pass, and a split needs a channel that answered,
-  so a split pass always runs to the end and the next pass starts at the first unit
-  (`bridge_template.py` `poll_io`). Pinned by
-  `test_template_block_read.py::TestStallOnBlock::test_split_pass_with_a_failing_run_reads_to_the_end`.
 
-- [RESOLVED] 2026-09-28 **[MED] HomeKit conf `preserve` followed a planted symlink as root.**
-  `opt/sa02m-homekit/sa02m_homekit/fsutil.py` `atomic_write(preserve=True)` read the old conf's
-  owner/mode with `os.stat` (follows symlinks); root reaches it via `homekit_sync_enabled`
-  (`etc/sa02m-web-service-ctl.sh`) → `config.save`, so www-data planting
-  `/etc/sa02m-homekit/sa02m-homekit.conf -> <any file>` in the (then 0770) dir made root mint the new conf
-  with the target's owner/mode (web-card lockout; special bits carried). Found by the round-2
-  review (A2). Fixed on the 1.0.6.57 HomeKit branch: `lstat`, preserve only from a regular
-  single-link file, setuid/setgid/sticky stripped, else the §13 default (today
-  `www-data:sa02m-homekit` 0640 in a 2750 dir — the group scheme that replaced the 0770
-  root:www-data layout); `test_config` cases RED before, GREEN after.
 - [OPEN] 2026-09-24 **[MED] `install.sh --port N` is not persisted — the next re-render resets nginx to
   9999.** `scripts/03-webserver.sh:12` and `scripts/11-devices.sh:18` default `PORT` to 9999 and render
   `etc/nginx/network_config.conf` with it; `scripts/update-www-only.sh` never sets it, and nothing saves
@@ -171,13 +153,6 @@ commit's diff of this file).
   converters, the «Умный дом» window, `docs/contracts/alice-mqtt-mapping.md`, and
   `led-mb2ws.md` where it applies. Design and evidence: the 1.0.6.51 plan's F-C5(b); the plan
   is transient, so re-derive.
-- [RESOLVED 1.0.6.60] 2026-09-23 **[LOW] `scripts/sync-app-version.py` writes CRLF on Windows.** It calls
-  `write_text` without `newline="\n"`, so a version sync run from a Windows checkout leaves the
-  version homes (VERSION, index.html, login.html, three bundles) CRLF in the working tree. On
-  1.0.6.51 the Builder converted them back to LF by hand. Git normalises on commit, but any local
-  gate that reads the working tree, and any pscp-style delivery, sees CRLF. Fix: pass
-  `newline="\n"` on every write, and add a harness case that runs the syncer and asserts LF.
-  Queued for R58 (gates and tools).
 - [OPEN] 2026-09-23 **[MED] Armbian's log hooks move the journal to RAM every 15 min and
   truncate it — the repo's `Storage=persistent` promise does not hold for `journalctl -b -1`.**
   `etc/systemd/sa02m-journald.conf` (installed by `scripts/01-system.sh`) promises the journal
@@ -194,42 +169,6 @@ commit's diff of this file).
   same day by the 1.0.6.51 planner's measurement and re-checked by the orchestrator.) Fix in
   1.0.6.51 (Operator decision A-1: Armbian hooks off, journal persistent, 1-min sync; reaches a
   board only via a full install or the next golden image, not OTA).
-- [RESOLVED 2026-09-29 — wiring: the CE-02m3's second RS-485 port; see DATA 2026-09-29] 2026-09-23 **[MED] Bench 1.135 COM3 answers ~500 short/CRC polls per hour, bus-wide, and
-  the flood caps journal retention at ~1.5 days.** Measured after the 1.0.6.50 deploy, rate unchanged
-  across it (not caused by it): carel-COM3-1/-2, mr02m-COM3-10, led-COM3-13 all log `Short response`
-  / `CRC mismatch`; COM1/2/4/5 together log ~11/h. Only the bridge (PID of `modbus_mqtt_bridge.py`)
-  holds `/dev/ttyS4`; mplc4 holds no tty, the flasher is idle — so no second master ON THE BOARD.
-  Open: a master elsewhere on the wire, termination/wiring, or one babbling device (unplug-one-at-a-
-  time settles it). Consequence for 1.0.6.50: the write-back audit line lives in a journal that
-  loses the middle of each day — the mechanism and its correction are in the journal entry above
-  (armbian-ramlog is DISABLED; the 15-min `armbian-truncate-logs` hook relinquishes the journal to
-  `/run`, `RuntimeMaxUse=16M`; midnight flush). Inferred, fits both observed gaps (22 Sep
-  00:00:18→18:37, 23 Sep 00:00→06:00): at ~6,460 lines/h the 16M runtime journal holds ~5–6 h, so
-  a write-back audit line survives ~5–6 h under this flood, not a day. Journal side fixed in
-  1.0.6.51 (A-1); the bus itself: Operator decision «data first» — B3 diagnostics ship in
-  1.0.6.51, the COM3 fix follows in 1.0.6.52 on 1 h of bench data. «22 Sep 18:00» is a retention
-  edge, not the onset (cloud session + re-checked here).
-  DATA 2026-09-24 10:54 (B3 capture, bench on 1.0.6.53): UART framing errors 20–51/min on COM3 only
-  (the other four ports ~0); errors per hour by device: mr02m-COM3-10 652, carel-COM3-1 368,
-  carel-COM3-2 336, led-COM3-13 123. Framing errors are a line-level symptom (baud, termination,
-  wiring, a talker off-board), not a software one — no code change is indicated. RE-TARGETED: the next
-  step is a person at the stand — unplug one device at a time and re-sample the framing-error rate;
-  no release carries this until that data exists. The Carel in-reply-pause loss (its own entry) is a
-  separate, software cause.
-  DATA 2026-09-29 — ROOT CAUSE FOUND. A line scan (all five ports × 2400–115200 × N/E × addr 1–15) found
-  TWO device groups on the COM3 wire: 19200 (Carel 1/2, MR-02m 6AI6AO @6 — then not in the bridge
-  config, MR-02m 6DO8DI @10, LED @13) and 115200 (16DO @2, 6DO @4, 14DI @5, CE-02m3 @14, SENSOR @15 — none
-  configured on COM3). The CE-02m3 has two RS-485 ports: port 1 on COM2 (polled by the bridge at 115200),
-  port 2 on COM3 (the Operator's hypothesis). Controlled test, bridge stopped, clean 19200 polling on COM3
-  in 45 s phases: COM2 silent → 1527 clean / 0 bad, fe +0; the CE-02m3 polled on COM2 → 325/366, fe +179;
-  silent → 1530/0; polled → 290/384, fe +161 — answering on port 1 drives the COM3 line through port 2.
-  The Operator disconnected port 2 and wired the 19200 chain to COM3 directly: the same test 1524/0 ·
-  1490/0 · 1540/0 · 1498/0, fe +0 in every phase; real bridge 3 min: Short/CRC 0 on all COM3 devices and
-  on the CE, COM3 fe 0/min (was 20–92/min), poll cycle ~270 ms (was ~290). Rejected on the way: a foreign
-  master (passive sniff: 0 bytes in 32 s), Fast Modbus scanning on COM3 (off 5 min: fe unchanged), the
-  devices themselves (600 clean exchanges each). Follow-ups: the defect report went to the CE-02m-3
-  firmware session (2026-09-29); the wiring warning is in README («Modbus→MQTT мост»); the 6AI6AO @6 was
-  added to the bench bridge config the same day.
 - [OPEN] 2026-09-09 **[MED] An Alice «включи» is answered DONE while `sa02m-rules` is down.**
   The registry publishes `/devices/sa02m-rules-<sid>/controls/run/on` and reports success;
   with the engine stopped the publish is simply lost and the user gets «сделано» for a
@@ -252,17 +191,6 @@ commit's diff of this file).
   and skip. Any real fix is a change to the worker's own contract — e.g. it takes a lock and a
   second instance exits — which is `etc/sa02m-beeper-override.sh`'s to make, not the daemon's.
   Recorded because it is an ACCEPTANCE nobody had written down. Found by the 1.0.6.43 ship review.
-- [RESOLVED 1.0.6.68] 2026-09-10 **[LOW] The daemon's `makedirs` fallback could root-own the shared override
-  directory.** If `/run/sa02m-hw-override` is ever missing when the telemetry daemon writes the
-  beeper override, root creates it and the www-data CGI can no longer stage its temp file there —
-  the PANEL's own override would start failing, having been broken by the daemon. Unreachable on
-  any board that has the feature: `scripts/03-webserver.sh` installs a tmpfiles.d entry
-  `d /run/sa02m-hw-override 0775 www-data www-data`, recreated every boot. The Builder mirrored
-  the CGI rather than hard-coding a second home for that ownership and recorded the consequence
-  at the site. Found while building 1.0.6.43. **The 1.0.6.43 review sharpened this:** the
-  «unreachable» reasoning is true today but NOTHING KEEPS IT TRUE — delete that tmpfiles.d line
-  and this finding goes live with every quality row still green. Whoever closes this should
-  either pin the tmpfiles.d entry or stop depending on it.
 - [OPEN] 2026-09-10 **[LOW, Operator's call] After taking the override path the daemon publishes
   the COMMANDED `controls/beeper` value, not a measured one.** It did not drive the pin — the
   worker does, later — so the retained value is a claim about a byte this process never wrote.
@@ -279,28 +207,6 @@ commit's diff of this file).
   rather than silently made to match after the release was stamped. Resolving it is a choice
   about which consumer moves: matching the CGI drops bit3 (KLogic's blue LED) on both when a
   conf carries a blank line, matching the daemon keeps it. Found by the 1.0.6.42 round-2 review.
-- [RESOLVED 1.0.6.68] 2026-09-10 **[MED] The daemon's conf-key ledger is a TEXT SCAN for one idiom, not an
-  enumeration — and the next queued fix walks straight into its blind spot.** The pin added in
-  `680ebe7` finds keys with `re.findall(r'val\("(SA02M_[A-Z0-9_]*)"', src)`. The 1.0.6.42 round-2
-  reviewer defeated it three ways, each leaving the ledger GREEN: `_read_conf_value(path,
-  "SA02M_…")` directly, `val('…')` with single quotes, and a key assembled in a variable. **No
-  key is unpinned today** — the only `_read_conf_value` call sites are the two the `val` closure
-  wraps — which is why this did not block 1.0.6.42. The trap is the entry below: `_i2cget` and
-  `_i2cset` are module-level and cannot see the `val` closure, so reading
-  `SA02M_I2C_TIMEOUT_SEC` there naturally uses `_read_conf_value` — a seventh mirrored default
-  that the ledger would not see while the registry still promises coverage. **Fix the two
-  together, on one branch**, and make the scan see every read idiom (or make the code use one).
-- [RESOLVED 1.0.6.68] 2026-09-09 **[LOW] The telemetry daemon hard-codes its I2C subprocess timeout instead
-  of reading `SA02M_I2C_TIMEOUT_SEC`** — `_i2cget`/`_i2cset` pass `timeout=1`, a second copy of a
-  conf value that happens to equal the shipped default. A board that raised it would have the
-  CGI waiting 3 s and the daemon 1 s on the same bus. Found while fixing the channel map
-  (1.0.6.42); it is the same one-home defect class as the map itself, one layer down. Fix is to
-  read it where the rest of the profile is read.
-- [RESOLVED 1.0.6.68] 2026-09-09 **[LOW] The telemetry daemon does not read back after a hardware write.**
-  `lib_hw.sh` verifies the output register after writing it; the daemon publishes success on the
-  `i2cset` return code alone. On the byte that carries the discrete output, «the write returned
-  0» and «the pin moved» are not the same claim — this release's whole subject is the gap
-  between them. Found while fixing the channel map (1.0.6.42).
 - [OPEN] 2026-09-09 **[MED, peer observation — not verified by me] `sa02m-cloud-control` on
   bench 1.135 drops its connection with «lib:transport error» every 10-70 min all day, and at
   13:04:47 systemd killed it on its stop timeout; load average ~6.** Reported by the peer session
@@ -324,35 +230,6 @@ commit's diff of this file).
   `metric` column staying the resume marker) so no single lock is long, or give the migration
   window its own longer busy timeout. The measured bound is now stated in
   `docs/contracts/carel-ahu.md` and `CHANGELOG.md` rather than promised away.
-- [RESOLVED 1.0.6.60 — both sites atomic; the codemod docstring is the record] 2026-09-09 **[MED] Two live-path `install -m` sites under `etc/` remain**, and
-  neither is blocked by a missing helper — **my earlier record here was false**: it claimed
-  closing them «needs the helper duplicated into a device-side lib», but `atomic_install_file()`
-  already existed at `etc/sa02m-update-runner.sh `atomic_install_file()`` (used its two callers) and
-  `etc/sa02m-factory-reset-runner.sh `atomic_install_file()`` (one caller), and `etc/sa02m-web-update-apply.sh:59`
-  now carries a third. The three are NOT byte-identical and carry no `cmp` pin: each is scoped
-  to its own caller's duties (the factory runner adds a destination allow-list and a rollback
-  journal; the OTA one adds CRLF normalisation), which is why a further copy is a decision, not
-  a formality.
-  - `etc/sa02m-web-service-ctl.sh:1359` → `/etc/systemd/system/nodered.service` — the
-    incident's own shape. Survives because this file carries no atomic helper yet.
-  - `etc/sa02m-update-runner.sh `rollback_from_journal()`` → `"$rel"`, an absolute path replayed from the
-    pre-update rollback archive, whose members are the manifest's `deploy[].dst` entries
-    (`build_rollback_archive`, `:968-985`) — so `/usr/local/**` and `/etc/systemd/system/**`
-    are exactly what it restores. **Survives only because nobody looked:** this file DEFINES
-    `atomic_install_file` 283 lines above, so the conversion needs no new helper — and this is
-    the site that runs when the board is already mid-failure. Highest-value of the two.
-  My earlier list was wrong in both directions. Not live paths, so outside the rule rather than
-  exceptions to it: `sa02m-web-service-ctl.sh:895,898` → `/opt/mplc4/*.so`;
-  `sa02m-commit-web-env.sh:14` → `/etc/sa02m_web.env`; `sa02m-web-update-apply.sh:396,432`
-  (I recorded `:316,352`) → `/etc/tmpfiles.d/*` and `/etc/sudoers.d/sa02m-www`. And
-  I also recorded `sa02m-update-runner.sh:394` as a live-path site; it was wrong on both axes.
-  The `install -m` is in `self_reexec_before_deploy()`, and its destination is
-  `"$STATEDIR/runner/$txn/runner"`, a per-transaction scratch self-copy exec'd immediately —
-  not a live path at all. **Cite the symbol, not the line:** every line number in this entry
-  went stale at least once while the entry was being corrected, twice inside the commit that
-  corrected it. Full enumeration, including the sites that ARE the atomic staging
-  write: the docstring of `scripts/dev/codemod-install-atomic.py`, the one home of «which
-  install sites are live-path».
 - [OPEN] 2026-09-09 **[LOW] `scripts/update-www-only.sh`: the non-unit, non-`/usr/local`
   `install -m` sites are still non-atomic** — widen the codemod's `LIVE_PREFIXES` or
   record why those paths are not live-path.
@@ -434,21 +311,6 @@ commit's diff of this file).
   simply inject a default, because a topic already publishing µg/m³ would then be
   scaled wrongly — so either warn when a known-conversion instance arrives without a
   scale, or carry the source unit explicitly. Do not silently coerce.
-- [RESOLVED 1.0.6.68] 2026-08-27 **[MED] Telemetry self-evicts in a ~1 Hz reconnect loop.** Broker log
-  on 1.135 (cloud session, measured): `Client sa02m-SA-02m-telemetry already connected,
-  closing old connection` repeating at ~1 Hz for 2.5 hours, journal alternating
-  `MQTT connected` / `MQTT disconnected: Unspecified error`, 31 s of CPU burned — from a
-  SINGLE process holding one ESTAB socket. Cause: `sa02m_telemetry.py`'s reconnect path
-  builds a NEW paho client with the same FIXED client id (`<device_id>-telemetry`)
-  without stopping or disconnecting the old one, so each CONNECT evicts its predecessor
-  and the survivor's disconnect drives the next reconnect — self-sustaining once
-  triggered. A clean `systemctl stop` + `start` breaks it. MQTT is effectively down for
-  the duration, which is worse than the CPU. Deliberately NOT folded into 1.0.6.22: that
-  branch's production code is byte-stable after three review rounds and the id fix should
-  not wait. Fix shape: stop/disconnect the previous client before building a new one (and
-  check whether a new client is needed at all — paho reconnects on its own). Acceptance:
-  restart mosquitto, watch exactly one clean reconnect in the journal and no eviction line
-  in the broker log.
 
 - [OPEN] 2026-08-27 **[LOW] A contract sentence is hostage to an unpinned JS line.**
   `docs/contracts/alice-mqtt-mapping.md` states that a `complete_link` over an already
@@ -460,23 +322,6 @@ commit's diff of this file).
   JS↔contract side. Fix direction: a small assertion in the headless driver (the
   linked-state card offers «Отвязать», never «Завершить привязку»).
 
-- [RESOLVED 1.0.6.66] 2026-08-27 **[MED] Alice client never resubscribes MQTT after a broker
-  reconnect.** Subscriptions are taken once, right after `mqtt.connect()`
-  (`client/main.py`, the connect path); `loop_start()` reconnects the socket but
-  paho does NOT restore subscriptions — the documented idiom is to subscribe
-  inside `on_connect` precisely so they are renewed. A mosquitto restart
-  therefore leaves the client Socket.IO-connected and MQTT-deaf: values freeze
-  at their last cached reading and `query` keeps serving them as current, until
-  the SIO session happens to drop and the outer loop rebuilds everything.
-  **Honesty label: derived from paho's documented reconnect/`on_connect`
-  behaviour and this code's structure — NOT reproduced on hardware.**
-  Acceptance: `systemctl restart mosquitto` on bench 1.135, then watch state
-  keep flowing. Fix shape: subscribe inside an `on_connect` handler, arming
-  `RetainedGrace` for ALL topics first — the 1.0.6.19 grace mechanism
-  generalises to it directly (~10 lines). Deliberately NOT folded into
-  1.0.6.19: a different guarantee ("survive a broker restart") with a different
-  acceptance test, and it would re-time the connect settle window that shipped
-  in 1.0.6.16. Fork 2 of plan `alice-registry-reload.md`.
 - [OPEN] 2026-08-27 **[MED → cross-repo, `CYNTRON-git/cloud`] Overlapping
   controller sessions across a restart: the hub's `sn → sid` map is overwritten
   silently.** Bench 1.135, 2026-08-27 09:31–09:34: connect 09:31:47 → unprompted
@@ -543,63 +388,6 @@ commit's diff of this file).
   by the CGI), `/etc/sa02m-alice` 0770 group-write, the argument-unrestricted sudoers
   trigger with enable/disable/restart verbs, the CGI nudges — is homed only in review
   stamps that ship-beat deletion removes. Give it a durable home.
-- [RESOLVED 1.0.7.1] 2026-09-24 **[MED, Operator decision] The GitHub-OTA runner never deploys the nginx site
-  config.** Operator chose (a) on 2026-10-03: `map_dst` ships `etc/nginx/network_config.conf` to
-  `sites-available` after `render_nginx_template()` fills `__PORT__` / `__WEB_ROOT__` from the live
-  site (else 9999 and `/var/www/network_config`). Honest limit stays: the on-board runner builds the
-  manifest, so the site arrives on the update after the one that delivers this runner.
-  Original note: `etc/sa02m-update-runner.sh` `prepare_github_overlay` → `map_dst` has no branch for
-  `etc/nginx/` (`DST_RE` admits the destination, the filter is map_dst AND DST_RE). The site file
-  reaches a board by every OTHER lane — the one-home list is `docs/deployment.md` «Чего
-  OTA/офлайн-пакет не делает никогда» (full install/refresh via `03-webserver.sh`; www-only from a
-  checkout with `etc/` + `opt/sa02m-devices/` via `update-www-only.sh` → `11-devices.sh`; the offline
-  `.sa02m` package; the golden image) — never GitHub-OTA. Measured 2026-09-24 on 1.135: after the
-  panel OTA 1.0.6.52 → 1.0.6.53 the `X-SA02M-Auth` strip is absent under /etc/nginx while the repo
-  gate is green. Consequence: every nginx-level hardening is invisible to boards updated only through
-  the panel. Fork for the Operator:
-  (a) Расширить `map_dst` раннера веткой для `etc/nginx/network_config.conf` **с шагом рендера**: файл в
-  репо — шаблон с `__PORT__`/`__WEB_ROOT__` (рендерят `scripts/03-webserver.sh` и
-  `scripts/11-devices.sh:94-97` через `sed`), голая ветка положила бы литеральные плейсхолдеры в
-  `/etc/nginx/sites-available/network_config`; `nginx -t` + `reload` раннер уже выполняет в health-gate
-  и rollback, так что добавляется только рендер — и решение Оператора, что GitHub-OTA получает право
-  переписывать конфиг edge (security surface).
-  Cloud team's note (2026-09-24): with the cloud forwarding the whole `X-SA02M-` family, the one case
-  where that forwarding stops being harmless is a board updated ONLY through the panel OTA (no nginx
-  strip) on which someone set a non-empty `INTERNAL_TOKEN` for the flasher — weigh it in this fork.
-  (b) Оставить как есть и держать одним домом в `docs/deployment.md`: site-файл nginx приезжает полной
-  установкой (`03-webserver.sh`), www-only из чекаута с `etc/` + `opt/sa02m-devices/`
-  (`update-www-only.sh` → `11-devices.sh`), офлайн-пакетом и образом — никогда GitHub-OTA; правка
-  nginx, которая должна дойти до флота, едет одним из этих путей. Until decided, the texts say (b).
-- [RESOLVED ci-linux-green] 2026-09-24 **[LOW] Two load-induced harness flakes.** (1) `test-web-update-apply-guard.sh`
-  R1: the live-runner fixture was `sleep 30`; under quality-runner load section R reached it 44–50 s
-  later → false RED. FIXED in 1.0.6.52 (`sleep 900`). (2) `test-web-auth.sh` case 59 «NOT locked
-  after MAXFAIL failures — brute force is unthrottled» FAILED once inside a full `build` beat on
-  2026-09-24 (87/88) and passed on the immediate re-run and every later run — a timing window of
-  the throttle test under load, class (1); not reproduced, not investigated. When it recurs: read the
-  case's time budget against the throttle's window and pin the fixture like R1. RECURRED 2026-09-28
-  three times under load (1.0.6.58 builder; 1.0.6.60 reviews rounds 2 and 3; standalone re-run green each
-  time) — the 2 s lockout window is the suspect. FIXED 1.0.6.63: the window was the cause (three
-  failures + the check outran 2 s under a loaded build; 3 of 4 standalone runs red on 2026-09-29) — the
-  harness now uses a 30 s window for 57–61 and judges 62 with a 1 s window at check time, after an
-  explicit «locked» precondition. (3) `test-web-update-apply-guard.sh` rows 7, R4 and H1/H1b
-  fail under WSL on `d66d7b6` as well (1.0.6.62 builder + reviewer, twice) — the ~1.2 s sudo shim appears to
-  leak into the next row. Item (3) is still queued behind the 1.0.6.63–.68 train (2-agent cap).
-  RESOLVED 2026-09-30 (branch ci-linux-green): (1) and (2) were already fixed (1.0.6.52, 1.0.6.63); (3) was
-  case 5's launch stand-in still holding the lock on fast Linux hosts and reboot.cgi's real background
-  chain firing on root hosts — apply-guard now waits for its stand-ins and drives a sandboxed reboot.cgi.
-- [RESOLVED 1.0.6.65] 2026-09-23 **[MED] `sa02m-devices-api` listens on `127.0.0.1:8765` with no auth of its
-  own.** `opt/sa02m-devices/sa02m_devices/api.py` reads only Content-Length and relies entirely on
-  nginx's `auth_request` in front of `/api/devices*`; any local process or user on the board can
-  open the loopback port and bypass the panel's session. Found while sweeping the `X-SA02M-Auth`
-  class (1.0.6.53): a different class (unauthenticated loopback TCP), the same shape the Alice config
-  API had before it moved to a root-only unix socket (1.0.6.24, `88032f4`). Fix direction: the same
-  move (AF_UNIX socket, 0660 root:www-data) or a shared local secret set by nginx only. Threat model
-  row to add with the fix.
-- [RESOLVED 1.0.6.63] 2026-09-23 **[LOW] XHR upload paths have no CSRF refresh-and-retry of their own.** The
-  panel's two XMLHttpRequest uploads (`status.js` ~:1756 and ~:2318, offline package / MPLC project)
-  read the refreshed token but bypass the fetch wrapper, so an E_CSRF there still ends the upload
-  with a plain error instead of the 1.0.6.53 refresh-once-retry-once path. Route them through the
-  same reaction or document the difference in `docs/contracts/cloud-panel-proxy.md`.
 - [OPEN] 2026-09-23 **[LOW] Known limit: the delivering GitHub OTA on a ≤1.0.6.51 board still
   freezes at 85 %.** `self_reexec_before_deploy` copies the INSTALLED runner and execs the copy,
   so the whole delivering apply (health gate included) runs under the OLD code and dies at
@@ -1215,45 +1003,19 @@ commit's diff of this file).
   carries port and address; the topic inventory is a flat list). Fix: carry the family to the window —
   the bridge publishes it as control meta, or `sa02m_alice_topics.cgi` returns a device→family map.
   Found by the 1.0.6.31 review; recorded in `docs/contracts/carel-ahu.md` §6.
-- [RESOLVED 2026-09-29 — not a Carel pause: the COM3 entry's DATA 2026-09-29 is the cause; the
-  read-to-length fix was built, reviewed (APPROVED) and NOT shipped on the Operator's decision after a
-  10-min bench A/B: Carel Short 99 → 98, control MR-02m 91 → 96, zero recovered pauses, poll cycle
-  289 → 295 ms; the unshipped branch is `1.0.6.64` (local, `18f9fba0`…`1419353d`), the number is not
-  reused] 2026-09-03 **[MED] Carel polling loses ~1.5 % of frames on an in-reply pause.** Bench 1.135,
-  COM3 19200, both PLCs polled: ~9 `Short response` per minute for two devices, values still correct
-  and fresh (the retry recovers the frame; no offline). The «phantom `mr02m-COM3-10`» hypothesis was
-  tested and REJECTED (same rate with it removed). Cause: `bridge_serial.py` ends the read at the first
-  silent gap without waiting for the computed frame length, and Carel PLCs pause mid-reply (both
-  11/13- and 72/77-byte frames are cut). Fix locally, not globally — the early exit exists for MR-02m
-  and changing it moves every poller's bus timing: a per-transaction «read to computed length» for
-  Carel, measured on the bench before and after. Found in the 1.0.6.31 hardware acceptance. Related:
-  the COM3 error-rate entry (2026-09-24 data).
 - [OPEN] 2026-09-24 **[MED] OTA never deletes retired files.** The runner path applies `delete: []` on every manifest (`etc/sa02m-update-runner.sh` github manifest builder; `scripts/pack-offline-update.py` likewise), while the legacy rsync path did `--delete`. A file removed from the repo stays on every OTA-updated board forever (stale CGI, stale unit, stale helper twin). Fix shape: the packer / manifest builder computes `delete[]` from the previous release's deploy list (git), the runner already journals and rolls back `delete` records. Found while building 1.0.6.54 (fast OTA, CHANGELOG entry).
 - [OPEN] 2026-09-24 **[LOW] Deploy loop, next rung (a2): one python process for the whole deploy.** 1.0.6.54 (a1) removed the per-item interpreter starts in bash (~2,100 → ~20 per apply); an in-process Python deploy (compare/backup/journal/install, per-file fdatasync kept) would take the 505-item deploy from ≈1.5–2 min to ≈10–20 s. Not taken: it moves the root apply core out of bash and breaks the single-function extraction of three harnesses. Trigger: the bench measurement of a 1.0.6.54 apply's DEPLOY PHASE (505 items) lands above 3 min. Recorded while building 1.0.6.54 (CHANGELOG entry). MEASURED 2026-09-24 on 1.135 (514 items, 411 changed, load ~8): deploy 2 min 30 s, «Применить» → done 4 min 15 s (repeat 2:31 / 4:18) — the deploy trigger is not met; the remaining ~1 min 45 s is clone/staging/rollback archive (~30 s) and the health gate's restarts (~70 s).
 
 - [OPEN] 2026-10-07 **[MED] CE-02m-3 `power_total` has no `meta/units`; an orphan control `total` carries it.** `opt/sa02m-modbus-mqtt/bridge_dtv_ce.py` `CE02M3Poller` setup publishes `meta/readonly` + `meta/units=W` for a control named `total`, while the value is published under `power_total` (the other three totals — `reactive_total`, `apparent_total`, `pf_total` — match). Every CE device on every board carries the orphan retained `…/controls/total/meta/*`. Found by the vPLC session's read-only survey (2026-10-07). Fix: rename the meta row to `power_total` + a poller test that the meta names equal the value names; the orphan retained topic needs a one-time clear on boards (bench hygiene, Operator word). Code half RESOLVED-pending-ship (Builder D, 2026-10-07): the meta row is `power_total`, pinned by `opt/sa02m-modbus-mqtt/tests/test_ce02m3_meta.py` (no meta for an unvalued name; every valued control readonly + units except the DIMENSIONLESS set — the earlier `KNOWN_META_GAPS` ledger was emptied and removed in Builder D's round 2). Broker half still OPEN: the fix stops publishing `…/controls/total/meta/*` but does not clear it — every board that ran the old bridge keeps the retained orphan (`total/meta/readonly`, `/units`, `/precision`, the `/meta` blob) until an empty retained publish clears it (Operator word).
-- [RESOLVED-pending-ship] 2026-10-07 **[MED] СЭ archive stores energy at 0.1 kWh resolution — hourly deltas of a small load read as zero.** `opt/sa02m-devices/sa02m_devices/stand_devices.py` rounds `energy_active_import/1000` to ONE decimal before `ce_samples` gets it, so a 32 W load (≈0.03 kWh/h) produces a flat line in `range=24h` and the hourly `delta` buckets of `energy_kwh_import` are 0 until the counter crosses a 0.1 kWh step. The vPLC energy page needs hourly bars. Fix: keep Wh resolution (three decimals) in the snapshot and the archive; readers already treat the metric as a delta (`history_query.py`). Found by the vPLC session (2026-10-07). Dispatched: queued after the current feature (devices daemon tree, not in flight now). RESOLVED-pending-ship 2026-10-07: «fix(devices): keep СЭ energy at Wh resolution in archive» — `_build_ce` rounds to 3 decimals (`CE_ENERGY_DECIMALS`) and the served `energy_kwh_import` series rounds to 3 (`history_metrics.py` `decimals`), the second site that zeroed a 0.03 kWh hour; no DDL change, UI display precision unchanged; pinned RED→GREEN by `opt/sa02m-devices/tests/test_ce_energy_resolution.py`. Resolution only — the counter's unit is now the Wh the bridge publishes (see the «SCALED PULSES» entry, resolved: `docs/contracts/ce-energy-mqtt.md`). Mercury (`_build_spodes`) shares the 3-decimal value (Orchestrator-authorised contract change: the pin in `test_spodes_devices.py::test_card_is_mercury_and_energy_is_kwh` moved 12.3 → 12.346 — stored resolution, not a weakened test; `docs/contracts/spodes-mercury.md` states real Wh and now the 1 Wh archive step). Same branch: `period_summary_ce` sums non-negative register steps (`history_ce_roll.energy_total` over `_counter_step`) when the window's last reading is below its first, instead of 0 kWh / 0 ₽ (`test_ce_energy_summary_break.py`; plan `ce-energy-unit.md` §3.C.2).
-- [RESOLVED-pending-ship 2026-10-07 — unit established: 1 count = 0.01 CF = 1/320 Wh (fw ≥ 1.0.7.4, K cancels; older: secondary ×K/1000) from the ATM90E32 datasheet + firmware code (contracts `docs/contracts/ce-energy-mqtt.md` and CE-02m-3 `en-meter-measurement-map.md`; from CE fw 1.0.7.11 the meter publishes Wh itself, the bridge passes through); Operator decided: convert in the BRIDGE, archives stay (counter break), old firmware converts with K read from the device. Built: bridge conversion + fail-closed + marker `/devices/<id>/meta/energy_unit = Wh` (contract `docs/contracts/ce-energy-mqtt.md`, Builder H); firmware docs/constant/pin in CE-02m-3 1.0.7.9 (Builder F/CE-1). Bench confirmation of MC↔PLconst still pending (`hil_en_meter_audit.py --energy-sec`).] **[HIGH, Operator decision] The CE-02m-3 energy counters are published as `Wh` but the firmware stores SCALED PULSES.** `bridge_dtv_ce.py` publishes input regs 580–599 raw with `units=Wh`; `docs/MQTT_TOPICS.md` and the devices daemon (`/1000` → `energy_kwh_import`, `/history/summary` kWh + rubles) build on that. The firmware contract (`CYNTRON-git/CE-02m-3` `docs/contracts/en-meter-measurement-map.md` «Инвариант 2», `MODBUS_VARIABLES.txt` 580–583) says the accumulator unit is «масштабированные импульсы» ATM90E32 (×K/1000, K=4000 factory; `PLconst` 0x0861C468 in `module_en_meter.c`), and states Wh only for NP/NN (648+, мВт·ч). The vPLC survey measured `energy_active_import` on bench 1.135 growing ≈330× faster than `power_total` implies (≈248 kWh/day at ≈32 W). The pulse→Wh constant is not recorded on either side, so NO coefficient is applied here on a guess. Needs: the firmware to record Wh-per-LSB of 580–599 (or expose a Wh register), then one conversion in the bridge + the daemon's kWh/rouble summary re-checked against a reference meter. Until then the kWh figures in «Устройства», Alice and the vPLC page are counter units, not kWh — relative comparisons hold, absolute values do not.
 - [OPEN] 2026-10-07 **[LOW] vPLC-requested panel conveniences.** (a) Pre-fill «Добавить устройство» from a link (`/#mqtt?type=carel&port=COM3&addr=N`, `transport=tcp&host=…`) so the vPLC settings page can hand the operator a ready form; (b) a server-side rouble tariff (`kwh_rub`) home instead of the browser's localStorage, read by `/history/summary` by default; (c) a formal contract for `/api/devices/history` groups `climate|energy|ahu|mtd` and `/history/summary` (today only `kind=mr` is contracted in `devices-mr-history.md`; the grammar's home is `handle_history` in `api.py`). Source: the vPLC session's SA02M_INTEGRATION_POINTS survey (2026-10-07).
-- [RESOLVED-pending-ship 2026-10-07 — Builder H: unsigned decode of 510–513 and FMB current events, 514–517 ×10 fallback at the 65534 ceiling on fw ≥ 1.0.7.5; `tests/test_ce_current_decode.py`; flasher window parity queued to Builder W2.] **[HIGH] СЭ-02м-3 currents 510–513 are read as signed int16 — negative above 32.767 A, frozen above 65.5 A.** `opt/sa02m-modbus-mqtt/bridge_dtv_ce.py` (`_s16` on regs 510–513 and on FMB current events) while the firmware stores unsigned mA (CE-02m-3 `modbus_en_meter_cache_ce.c:168,1583-1590`, `MODBUS_VARIABLES.txt:277-283`); the ×10 registers 514–517 (full range since fw 1.0.7.5) are never read. Factory K=4000 = 80 A CT, so normal loads hit it. Affects the «Устройства» card, history, MQTT tab, Alice amperage, FMB events; the flasher window reads them correctly. Found by the CE-02m-3 integration audit (scratchpad `ce02m3-audit.md` #1–#3). Dispatched: Builder H (bridge, after the energy-unit conversion lands in the same file).
 - [OPEN] 2026-10-07 **[MED] СЭ-02м-3 integration docs and UI contradict the firmware** (audit `ce02m3-audit.md`): `docs/MQTT_TOPICS.md` says P/Q/S ×0.1 (firmware: whole W/var/VA), claims `type` meta the poller never publishes, lists units meta for `voltage_ab/bc/ca`/`current_n` that are not published, calls PF «cosφ», omits `ct_ratio_x1000`, says Carel id is only `carel-{port}-{addr}` and Carel poll «10 с» (it is 2 s; 10 s is the archive); `docs/MPLC4_MQTT.md` swaps hi/lo of 30524/30525 and repeats ×0.1; `README.md:126` two-port warning is stale (fixed in CE fw 1.0.7.6) and says Carel is RS-485 only; `CHANGELOG.md:147` says FMB wire from 1.0.6.12 (1.0.6.13); MQTT tab: CT hint «4000 = CT 4А» (K=4000 = 80 A CT), line-voltage toggle mapped to `voltages` instead of `line_voltages` (unticking Uab stops Ua/Ub/Uc), power poll default 1 s in UI vs 5 s in bridge/template, `phases` filter applied to U/P only; bridge: `apparent_*` meta published even when values are off, dead meter chip (686/65511) shows as 0 V/0 A with no error flag, bus-scan fingerprint `Holding 1 == 0xCE02` is dead code (Input 0 == 100), the «CE has no bus-mode register» rationale is false (Holding 122 is 3-state since fw 1.0.7.0). Status 2026-10-07: docs half RESOLVED-pending-ship (DOC/D Builders: MQTT_TOPICS, MPLC4_MQTT, README, CE meta rows); UI half RESOLVED-pending-ship (B: CT hint, line_voltages key, poll default); bridge half RESOLVED-pending-ship (D: apparent meta gated, chip-link error flag; H: currents). Still OPEN: `phases` filter applied to U/P only (#37), bus-scan dead fingerprint (#44), CE bus-mode rationale (#45). Builder D (2026-10-07), RESOLVED-pending-ship: the bridge now publishes `units` for `voltage_ab/bc/ca` (V), `current_n` (A), `uptime_s` (s) and `readonly` on every CE control (`pf_*` stay unit-less per firmware); `apparent_*` and phase-excluded meta are gated on the same flags as the values (`tests/test_ce02m3_meta.py`, no orphan meta in 3 configs); a dead meter chip (500–679 all 0; confirmed by Input 686 frozen on fw ≥ 1.0.7.6 — 65511 is a sticky last-error code, not a link state) publishes no zeros and sets `meta/error="r"` on every measurement control, cleared on recovery (`tests/test_ce_meter_link.py`, rule in `docs/contracts/ce-energy-mqtt.md`). Found on the way and RESOLVED-pending-ship (bridge-wide, not CE-only): a retained control `meta/error` left by an earlier bridge process was never cleared (`pub_error` skips `""` for a control this process never flagged — the anti-storm guard, kept); now `MQTTPublisher.clear_control_errors` publishes `""` once per control after each poller's `setup()` (both port schedulers) and after MR-02m's late init in `poll_slow_if_due` (`tests/test_pub_error_stale.py`, rule in `docs/MQTT_TOPICS.md` «Восстановление»). Still open in this entry: the `phases` filter applying to U/P only (bridge + MQTT tab) and every other item listed above.
 - [OPEN] 2026-10-07 **[MED] Flasher writes СЭ CT/inversion/phase-loss (553–559) on any firmware; ≤1.0.7.4 hangs and resets on 557–559; no 65519 read-back; CT fallback 1000 vs device default 4000.** RESOLVED-pending-ship (Builder W2, 2026-10-07): live firmware-version gate ≥ 1.0.7.5 for 557–559, 65519 read-back, fallback 4000, `tests/test_ce_ct_write.py`.
-- [RESOLVED-pending-ship 2026-10-07 — ladder pinned by gate `js-unit-carel-card-ladder`; window season = coil 17; mqtt.js fan floor 20; Ma18-only settle; HR197 low byte; contract rows #4/5/7/8/9/18/22/30/34 updated] **[MED] Carel: `devices.js` is a second home of the fan ladder (2/4/7/10 ↔ 20/40/70/100, ties-up rule) and the setpoint maxima 50/99** — written to the bus through `mqtt_set.cgi`; the `carel-shared-home` gate sees only constant names, so a ladder change in `carel_fan` leaves the card writing the old values with every gate green (audit `carel-audit.md` #10). Also: the flasher window shows uAria «Сезон» as raw HR34 while MQTT/card show coil 17 (#35); `mqtt.js` lets the MQTT tab send `fan_supply` 0..19 that the bridge clamps to 20 (#36); the bridge settles 0.8 s after uAria Gs04 too (contract says Ma18 only; harmless, #14); uAria fan step HR197 not masked `& 0xFF` (#44); contract §1 omits the MQTT-tab scan's deliberate FC17 probe of MR-02m rows (#5) and §7 still calls the card «display-only» (#30); smaller doc rows #4,7,8,9,18,22,34,39,40,41. Dispatched: code half → Builder after B (index.html) and A (bridge_carel.py, carel-ahu.md) hand back; doc half → same docs Builder.
 - [OPEN] 2026-10-07 **[LOW] CE-02m-3 firmware docs** (not ours; relay to the CE-02m-3 session): README reg 122 says classic/Fast only vs 3-state in MODBUS_VARIABLES; README 560–571 «raw» vs 563–565 primary; hours snapshot «every 6 h» (README) vs hourly (MODBUS_VARIABLES); MCU temp 124 doc lacks «0.1 °C». Plus the inactive-energy truncation (648–679) found by the energy planner (`.ai-dev/plans/ce-energy-unit.md` §1 «Попутный дефект»).
 
 - [OPEN] 2026-10-07 **[LOW] vPLC asks for a bridge device type for Wilo SK712 drainage cabinets (Modbus RTU).** Their adapter is written against a proposed control set (vPLC `vplc/docs/UNITS_API.md` §5.4: `tank_level`, `pump1_run/pump2_run/pump1_alarm/pump2_alarm`, `overflow`, `manual`, frequency/hours, `ack`). SA-02m has no SK712 type; the cheapest path is a `type: template` descriptor in the shared devices catalogue (`CYNTRON-git/devices`, `docs/contracts/template-device.md`) — control names are then the descriptor's channel names, so agree the names in the descriptor, not in the bridge. Needs the SK712 Modbus map (not in any declared sibling). Nothing built; recorded from the vPLC session's message.
 
-- [OPEN] 2026-10-14 **[HIGH, process] Four commits reached `main` on 2026-10-12 without a PR and without CI.** `9a740f3c` (imaging: wipe gateway probe cache), `68c4359e` (smart-home device types: `opt/sa02m-alice`, `smarthome.js`, `i18n.js`), `6e8ddfe5` (time sync, Segoe UI, layout: `index.html`, `login.html`, `main.css`, `app/{forms,misc,nav}.js`, `devices.js`), `76eb64e0` (bench SSH host key) were merged into `main` by a local merge commit `a62cec0c` «Merge branch 1.0.7.1» and pushed directly: `gh pr list --head 1.0.7.1` → none, `gh run list --branch 1.0.7.1` → none, the last `web-quality` run is PR #202 (`a3b40296`, 2026-10-08). Possible only because branch protection has `enforce_admins=false` (audit 2026-10-14 C-1). Also breaks the git flow (`PROTOCOL.md ## Git flow`: squash via PR, never a merge commit on `main`). Fix: (1) enable «Include administrators» + `strict` on `main` protection (setup step 5); (2) re-validate the four commits — open a no-op PR off `main` or run the suite on Linux (`web-quality` is PR-only by budget, `.ai-dev/notes/ci-budget.md`); the Windows run of 2026-10-14 is not evidence for the 9 environment-failing rows. Audit 2026-10-14.
-- [OPEN] 2026-10-14 **[MED] `status.cgi:435` — the `vplc-plant-ui` probe forks `timeout systemctl show … | head | tr` (4 forks + dbus) on every `services` build on every board, including boards with no such unit file.** Comments disagree on the seam: `:426-428` «socket may be a leftover» vs `etc/nginx/network_config.conf:346-347` + `docs/threat-model.md:434-436` (RuntimeDirectory removed on stop). Fix: short-circuit on `systemd_unit_file_installed vplc-plant-ui.service` (zero forks on a board without the unit), then socket-test only or reconcile the three comments. Poll-path floor `web-code-rigor.md ## Architecture`. Audit 2026-10-14 A-1.
-- [OPEN] 2026-10-14 **[MED] `docs/plans/vplc-integration.md` (1064 lines, «Статус: проект (design)») is the only home of shipped seam guarantees.** `docs/threat-model.md:425,443`, `tools.json` row `vplc-route-contract`, `vplc-route-contract.sh:48` cite «§9.6» of a design plan; a new HTTP route shipped with no `docs/contracts/` entry (`PROTOCOL.md` beat 5). Fix: promote §9 to `docs/contracts/vplc-page-seam.md` (socket path/owner/mode, headers, prefix cut, CSRF seam, GET-never-mutates, `svc_vplc_ui` semantics), repoint the citations, the vPLC repo points here; prune the plan. Audit 2026-10-14 A-2.
-- [OPEN] 2026-10-14 **[MED, Operator decision] «Плата без vPLC и без API» — the opt-out does not survive OTA and the project has no install-profile home.** Facts: the vPLC runtime is a separate deb; this repo's vPLC seams cost 0 when no browser polls and ≈5–7 forks per 45 s services build when the panel is open (the A-1 probe is the only unconditional one); an installed-but-off `sa02m-agent-api` is 0 CPU — its cost is footprint + `/etc/sudoers.d/sa02m-agent-api` (12 NOPASSWD lines for `www-data`, incl. `enable`). `SA02M_SKIP_*` (13 flags: `install.sh:48` + `:244-313`) are env-only — not persisted for `--refresh`, and the OTA manifest (`etc/sa02m-update-runner.sh:667,1022`, `scripts/pack-offline-update.py:75-76`, `scripts/offline-update-deploy-map.json:45-52`) has no per-module filter: an opted-out board regains the full agent-api footprint incl. sudoers at the first OTA (only the unit stays off via `restart_if_active`). `sa02m_hw_variant.conf` is hardware-derived; `SA02M_STATUS_ENABLE_SERVICES=0` kills the whole «Службы» widget. Options: (1) separate lean branch — every fix twice, breaks branch==version and the single OTA semver channel, buys ≈0 CPU; (2) RECOMMENDED one tree + persisted profile conf (`/etc/sa02m_install_profile.conf`, root-owned) sourced by `install.sh`/`--refresh` and honoured by the OTA manifest filter + packer + deploy map, the A-1 guard, a lean recipe in `docs/deployment.md`; (3) nothing — honest if the concern was CPU only. Audit 2026-10-14 B.
-- [OPEN] 2026-10-14 **[MED] Branch protection on `main`: `required_status_checks.contexts=["quality"]` ✓ but `enforce_admins=false`, `strict=false`** (live `gh api …/branches/main/protection`). An admin merge bypasses the quality gate — see the HIGH entry above for the realised case. Fix: setup step 5 «Include administrators»; `strict: true`. Audit 2026-10-14 C-1.
-- [OPEN] 2026-10-14 **[MED] `devices_tables.py` generated twin has no drift row.** `opt/sa02m-rs485-roster/devices_tables.py` and `opt/sa02m-modbus-mqtt/devices_tables.py` are byte-identical 12 007-line generated files (copied by `scripts/05-mqtt.sh:173-174`); no `tools.json` row names them — a hand edit or a one-sided regeneration passes every gate. Fix: a `*-drift` row (`cmp` + generator-header pin), `covers` both paths. Audit 2026-10-14 C-4.
-- [OPEN] 2026-10-14 **[LOW] `applyVplcNavLink` / `svc_vplc_ui` have no test and the `services` part has no contract** (pre-existing for the part). `js-unit-*` brace-extraction reaches it cheaply. Audit 2026-10-14 A-4.
-- [OPEN] 2026-10-14 **[LOW] CHANGELOG 1.0.7.1 «vPLC»: «`nginx -t` только на плате при установке»** — the OTA runner also runs it (`etc/sa02m-update-runner.sh:2181`, rollback `:2004`). Fix wording: «на плате (установка и OTA)». Audit 2026-10-14 A-5.
-- [OPEN] 2026-10-14 **[LOW] Default factory credentials are hard-coded as defaults in 12 committed tool/doc sites and `docs/threat-model.md` has no default-credential row** (`install.sh:37`, `tools/ssh/*`, `tools/deploy/sa02m_deploy.py:92`, `tools/imaging/*`, `docs/AGENTS_SSH_AND_DEVICE_ACCESS.md:62`, `docs/vendor-integrations.md:275-283`). Published factory default (`README.md:222`), not a leak; the commissioning rule («сменить при вводе») and the tools' assumption are unrecorded. Fix: one threat-model §4 row; env-only defaults in the tools (`SA02M_PASS` exists). Audit 2026-10-14 C-3.
-- [OPEN] 2026-10-14 **[LOW] Hygiene sweep (audit 2026-10-14 C-6/C-7/C-8/C-9).** (a) this file carries 19 `- [RESOLVED…` entries against its own prune rule; (b) the main checkout holds 26 `.ai-dev/plans/*.md` and 9 `.ai-dev/reviews/*_review.md`, of which 11 plans + 3 stamps belong to branches already merged into `main` (`alice-followups`, `ce-energy-wh`, `devices-icons`, `devices-python-api-contract`, `dtv-ce-channel-flags`, `installer-port`, `quality-followups`, `sh-modal-fit`, `sweep-followups`, `telemetry-followups`, `verify-check9`; stamps `1.0.6.70`, `devices-icons`, `homekit-port`) — the ship-beat delete was skipped; (c) 15 of 30 `.claude/worktrees/*` sit on merged branches, 16 merged local branches, 181 refs (`gc`); 13 worktree branches still carry unmerged commits (e.g. `rules-store-hardening` 25, `1.0.6.69` 18, `rules-mqtt-overflow` 12) and need an Operator word each: merge or abandon; (d) `docs/deployment.md` has no lean/partial-install section — the `SA02M_SKIP_*` list lives only in `install.sh:236-243`, naming 6 of the 13 honoured flags.
-- [OPEN] 2026-10-14 **[LOW] Decompose worklist (audit 2026-10-14 C-5, files > 1500 lines, split by cohesion):** `flasher.js` 5939 · `devices.js` 4078 · `mqtt.js` 3955 · `etc/sa02m-update-runner.sh` 2818 · `status.cgi` 2686 (+29 this week) · `app/status.js` 2681 · `flash_protocol.py` 2517 · `app/smarthome.js` 2295 · `device_config.py` 2239 · `led_mb2ws.py` 1943 · `sa02m_telemetry.py` 1795 · `sa02m-web-service-ctl.sh` 1706 · `alice/config/api.py` 1705 · `flasher/runner.py` 1686 · `flasher/scanner.py` 1667. Priority: `status.cgi` (part gatherers → `lib_status_*.sh`), `flasher.js` (per-family modules).
+- [OPEN] 2026-10-14 **[LOW] Hygiene sweep (audit 2026-10-14 C-7/C-8), what is still open after 1.0.7.2.** (a) the main checkout holds 26 `.ai-dev/plans/*.md` and 9 `.ai-dev/reviews/*_review.md`, of which 11 plans + 3 stamps belong to branches already merged into `main` (`alice-followups`, `ce-energy-wh`, `devices-icons`, `devices-python-api-contract`, `dtv-ce-channel-flags`, `installer-port`, `quality-followups`, `sh-modal-fit`, `sweep-followups`, `telemetry-followups`, `verify-check9`; stamps `1.0.6.70`, `devices-icons`, `homekit-port`) — prune in the main checkout; (b) `.claude/worktrees/*` on merged branches (15 of 30 at audit time) and the local branches of the 14 triaged ones: DROP as landed/superseded — `daemon-followups`, `devices-events-clear`, `bridge-flag-restart`, `devices-history-charts`, `rules-store-hardening`, `feature/template-poller-pult`; REPLAYED and merged — `com-overrun`, `harness-sweep`, `template-poller-pult`, `rules-mqtt-overflow`, `devices-value-clip`, the `1.0.6.69` and `mr-ai-type-mqtt` subsets — the old worktrees/branches can be removed (`gc`), Operator word. Done in 1.0.7.2: 19 RESOLVED entries pruned here; `docs/deployment.md` lean-install section (C-9).
+- [OPEN] 2026-10-14 **[LOW] Decompose worklist (audit 2026-10-14 C-5 + the 1.0.7.2 reviews; files > 1500 lines, split by cohesion):** `flasher.js` 6022 (1.0.7.3) · `devices.js` 4078 · `mqtt.js` 4006 · `etc/sa02m-update-runner.sh` ~2860 · `status.cgi` ~2690 · `app/status.js` 2681 · `flash_protocol.py` 2517 · `device_config.py` 2302 (1.0.7.3) · `app/smarthome.js` 2295 · `led_mb2ws.py` 1943 · `sa02m_telemetry.py` 1795 · `scanner.py` 1729 (1.0.7.3) · `sa02m-web-service-ctl.sh` 1706 · `alice/config/api.py` 1705 · `flasher/runner.py` 1686 · `sa02m_rules/engine.py` 1317 · `bridge_mr02m.py` 1015 · `bridge_template.py` 687. Priority: `status.cgi` (part gatherers → `lib_status_*.sh`), `flasher.js` (per-family modules), `mqtt.js`.
 - [OPEN] 2026-10-08 **[LOW, flasher UX]** A CE-02m-3 wired to the panel through its EXTERNAL (top) RS-485 connector
   cannot be flashed from the panel: that connector is the meter's AUX port (USART1) and the shared bootloader
   listens on USART2 (end-face bus) only; CE app ≤ 1.0.7.10 even ACKs reg 129 on AUX without resetting (fixed on
@@ -1269,3 +1031,14 @@ commit's diff of this file).
   summing across it: either `break: true` / `unit_changed` on the summary object when the window straddles a
   unit change, or a new series started at the change. Needs the Operator's word (contract `devices-history-api.md`
   §6 + test `test_ce_energy_summary_break.py`); until then clients treat straddling windows as unreliable.
+- [OPEN] 2026-10-14 **[LOW] GitHub-OTA maps `etc/sa02m-stacks-policy.sh` to a stray executable `/usr/local/sbin/sa02m-stacks-policy`** (runner `map_dst` `.sh` rule) and never refreshes `/usr/local/lib/sa02m-stacks-policy.sh`; the offline pack ships neither. Low (the lib changes rarely). Fix: runner `map_dst` + packer rename + allowlist + an allow-listed cleanup of the stray. Found by the 1.0.7.2 planner (Q4); own branch after 1.0.7.2.
+- [OPEN] 2026-10-14 **[MED] A flasher-window address/baud change of an MR-02m / ДТВ / СЭ module leaves the bridge polling the old address** (`flasher.js` network write updates only the scan row; nothing touches `/etc/sa02m-modbus-mqtt.yaml`). The MTD window (1.0.7.3) solves it for the sensor with `flasher/bridge-relink.js` (read `mqtt_config.cgi`, edit the one matching entry, post with `restart:false`); reuse it for the other families. Own branch after 1.0.7.3.
+- [OPEN] 2026-10-14 **[LOW] MTD presence card (1.0.7.0) is not in the `ui-layout` «Устройства» fixture** (`ui-layout.mjs` names the omission): at the 1101 px three-card width its settings tiles clip (input row hides «м»/«с» by 4–6 px; labels «Освещённость», «Зона экранирования» clipped), «да» has no EN DICT entry, and the 70 px header reserve should include `.dev-card--mtd` (`main.css` ~:6212, no remove button). Fix, then add the MTD card to `DEVICES_LIVE` / `DEV_KINDS`. From the devices-value-clip replay review.
+- [OPEN] 2026-10-14 **[LOW] EN gaps on the «Устройства» tab:** «+ Добавить виджет» stays Russian at 1101/1280 px and «Архив: —» is untranslated (devices-value-clip review A4). DICT + `uiT()`.
+- [OPEN] 2026-10-14 **[LOW, Operator judgement] Devices card value fitting is per tile, so values in one card end up different sizes** (at 1101 px «12.34 mg/m³» / «780.5 mmHg» ~10 px next to full-size «5000 ppm»). Alternative: one scale per card. Asked 2026-10-14, no answer yet; keep per-tile until the Operator says otherwise.
+- [OPEN] 2026-10-14 **[LOW] Fast Modbus `poll_events` (up to 128 data bytes, `bridge_fmb.py`) and FC17 replies are not capped on fast built-in ttyS lines** — the 1.0.7.2 FIFO cap covers FC03/FC04 register reads only (`docs/MQTT_TOPICS.md` says so). Measure on the bench whether these replies overrun before designing a cap. com-overrun review A1.
+- [OPEN] 2026-10-14 **[LOW] A retained value of a disabled channel is never cleared** — `di_N_count` after `counter: false` (mr-ai-type), `meta/error = r` of a channel removed from a template or set `enabled:false` (template-poller review Q4); the same class as other orphaned retained topics (CE `controls/total/meta/*`). One general «clear retained topics of a channel the bridge no longer publishes» fix, own branch.
+- [OPEN] 2026-10-14 **[LOW] MTD window (1.0.7.3) residuals:** a devices-card write (`mqtt_set.cgi`, QoS 0, bridge stopped under the flasher lease) during an open window is dropped, never replayed; a deferred register (applies after a power cycle) is not followed by the bridge entry — both stated in `docs/contracts/mtd-presence.md`. Bench walk on 1.135 (COM3 @19200, address 20) offered to the Operator, not run.
+- [OPEN] 2026-10-14 **[LOW] The `services` status part has no contract.** Its fields (`svc_*`, `optional_services`, `dash_services`, `svc_vplc_ui`) are read by `app/status.js`/`app/services.js` with no `docs/contracts/` entry; only `svc_vplc_ui` is contracted (`vplc-page-seam.md` §4). Pre-existing; the audit A-4 entry's second half. Fix: a `status-services-part.md` contract + a validating row.
+- [OPEN] 2026-10-14 **[LOW] ~35 `'<prefix>: ' + err.message` sites in `flasher.js` leave the daemon message Russian in EN mode** (the prefixes are translated by REGEX rows; the suffix is not). Audit A-3 reduced to its true residual. Fix: translate daemon refusal texts through standalone REGEX rows as the MTD window does (1.0.7.3 `i18n.js`), one family at a time.
+- [OPEN] 2026-10-14 **[LOW] `etc/sa02m-factory-reset-runner.sh:1334` opens the update lock with `>` (truncating) instead of `>>`** — the same pattern the 1.0.7.2 review caught in the profile lib (F1): it wipes the OTA runner's pid line the panel reads for the `stale` status. Own branch; the runner's own `8>>` idiom (`sa02m-update-runner.sh:165-168`) is the model.

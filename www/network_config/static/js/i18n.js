@@ -1939,6 +1939,7 @@
     'Скопировать конфиг MCP': 'Copy the MCP config',
     'Служба API включена': 'The API service is on',
     'Служба API выключена': 'The API service is off',
+    'Не установлен на этой плате': 'Not installed on this board',
     'Отозвать': 'Revoke',
     'Секрет показан один раз. Сохраните его.': 'The secret is shown once. Save it.',
     'Конфиг MCP скопирован': 'MCP config copied',

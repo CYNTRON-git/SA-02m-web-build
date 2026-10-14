@@ -421,24 +421,17 @@ fast_service_state() {
             fi
             ;;
         vplc-plant-ui|vplc-plant-ui.service)
-            # The vPLC page server (the vPLC team's unit, behind nginx /vplc/,
-            # which proxies to its unix socket /run/vplc-plant-ui/ui.sock).
-            # BOTH the unit active AND the socket present: an active unit may
-            # not have bound yet (nginx would answer 502), and a socket file
-            # alone may be a leftover of a stopped unit. The unit state comes
-            # from systemd, not a process name the vPLC side is free to
-            # change. No systemctl -> unknown (the link stays as is).
-            if ! command -v systemctl >/dev/null 2>&1; then
-                echo unknown
-            else
-                local _vui
-                _vui=$(status_timeout_run systemctl show -p ActiveState --value vplc-plant-ui.service 2>/dev/null | head -n1 | tr -d '\r')
-                if [ "$_vui" = "active" ] && [ -S /run/vplc-plant-ui/ui.sock ]; then
-                    echo active
-                else
-                    echo inactive
-                fi
+            # The vPLC page server behind nginx /vplc/. Its unit has no
+            # RuntimeDirectoryPreserve, so systemd removes /run/vplc-plant-ui
+            # on stop: the socket exists iff the unit runs and has bound.
+            # Unit file installed AND socket present -> active; no external
+            # process (three file tests and a socket test), so a board without
+            # vPLC pays nothing. Seam: docs/contracts/vplc-page-seam.md §3-§4.
+            local _vui=inactive
+            if systemd_unit_file_installed vplc-plant-ui.service && [ -S /run/vplc-plant-ui/ui.sock ]; then
+                _vui=active
             fi
+            echo "$_vui"
             ;;
         docker|docker.service)
             if proc_is_running dockerd || [ -S /run/docker.sock ]; then
@@ -1944,8 +1937,9 @@ gather_services_metrics() {
     build_dash_services_json
     # Not a dash_services row (it would take one of the widget's six slots):
     # a bare state the sidebar «vPLC ↗» link follows (app/status.js
-    # applyVplcNavLink). Never svc_fast_unknown — one bounded systemctl show
-    # plus one socket test, and an "unknown" fast pass would blink the link.
+    # applyVplcNavLink). Never svc_fast_unknown — the probe starts no external
+    # process (file and socket tests), and an "unknown" fast pass would blink
+    # the link.
     SVC_VPLC_UI=$(fast_service_state vplc-plant-ui)
 
     SVC_CODESYS_INSTALLED=0

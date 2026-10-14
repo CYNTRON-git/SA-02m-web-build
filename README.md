@@ -4,7 +4,7 @@
   <img src="https://img.shields.io/badge/platform-Armbian%20%7C%20Linux%20ARM-orange?style=flat-square"/>
   <img src="https://img.shields.io/badge/stack-nginx%20%2B%20fcgiwrap%20%2B%20Bash%20CGI-blue?style=flat-square"/>
   <img src="https://img.shields.io/badge/license-MIT-green?style=flat-square"/>
-  <img src="https://img.shields.io/badge/version-1.0.7.1-cyan?style=flat-square"/>
+  <img src="https://img.shields.io/badge/version-1.0.7.2-cyan?style=flat-square"/>
 </p>
 
 Веб-интерфейс для **[сервера автоматизации СА-02м](https://cyntron.ru/catalog/ustroystva_avtomatizatsii/servery_avtomatizatsii/)** производства [ЦИНТРОН](https://cyntron.ru) на базе процессорного модуля [A40i-2eth](https://cyntron.ru/catalog/ustroystva_avtomatizatsii/komplektuyushchie/7705/) (Allwinner A40i, Linux).
@@ -222,6 +222,8 @@ _Тёмная тема с циановыми акцентами и скругл�
 | **SSH** (PuTTY, терминал) | `root` | `cyntron` | `192.168.1.136`, порт `22` |
 | **Веб-интерфейс** (браузер) | `admin` | `cyntron` | `http://192.168.1.136:9999` |
 
+> Это заводские пароли, они опубликованы. При вводе в эксплуатацию смените пароль веб-интерфейса (вкладка «Управление») и пароль `root` (`passwd` по SSH).
+
 ---
 
 ### Шаг 1 — Подключитесь по SSH
@@ -299,7 +301,7 @@ chmod +x install.sh scripts/*.sh etc/*.sh
 | `06-gateway.sh` | RS-485→Ethernet шлюз, gateway CGI, systemd unit | `SA02M_SKIP_GATEWAY=1` |
 | `06-alice.sh` | Яндекс Алиса: `opt/sa02m-alice`, обе службы **выключены** по умолчанию | `SA02M_SKIP_ALICE=1` |
 | `06b-rules.sh` | Сценарии на плате: `opt/sa02m-rules`, `sa02m-rules.service` | `SA02M_SKIP_RULES=1` |
-| `13-agent-api.sh` | API для ИИ-агентов: `opt/sa02m-agent-api`, служба **выключена** | `SA02M_SKIP_AGENT_API=1` |
+| `13-agent-api.sh` | API для ИИ-агентов: `opt/sa02m-agent-api`, служба **выключена** | `SA02M_SKIP_AGENT_API=1`; насовсем, и для OTA — `--skip-module AGENT_API` (`docs/deployment.md` «Неполная установка») |
 | `06c-homekit.sh` | Мост Apple HomeKit: `opt/sa02m-homekit` + venv, служба **выключена**; ставится **только** с `--with-homekit` / `SA02M_WITH_HOMEKIT=1` (уже установленный — обновляется) | `SA02M_SKIP_HOMEKIT=1` |
 | `06d-homeconnect.sh` | Клиент BSH Home Connect (только чтение): `opt/sa02m-homeconnect`, без pip, служба **выключена**; ставится **только** с `--with-homeconnect` / `SA02M_WITH_HOMECONNECT=1` (уже установленный — обновляется) | `SA02M_SKIP_HOMECONNECT=1` |
 | `07-nodered.sh` | Node.js LTS + Node-RED, `nodered.service`, UI на порту 1880 | `SA02M_SKIP_NODERED=1` |

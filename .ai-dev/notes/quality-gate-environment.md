@@ -33,6 +33,9 @@ assert inside a row that otherwise ran) still prints PASS for the row:
 | `install-atomic` | case 8b only: MSYS derives a mode from the file body (a `#!` first line reads 755, anything else 644) and ignores `chmod`, so `-m 644` and `-m 755` are indistinguishable | Linux CI |
 | `update-cgroup-escape` | E5's «lock held again» assert only: git-bash has no `flock`, so the harness shims it as a no-op and prints SKIP for that one line | Linux CI |
 | `sudoers-visudo` | `visudo` not on `PATH` (git-bash): whole row SKIP | WSL / Linux CI (`sudo` package) |
+| `path-mask-lib` | case P5 only: git-bash cannot create the dangling symlink the case needs; the summary line counts it as a skip, never as a pass (1.0.7.2) | Linux CI |
+| `web-update-launcher-guard` | cases L8-L11 only: no `flock` on git-bash (printed as SKIP) | Linux CI |
+| `status-vplc-probe` | two cases need `AF_UNIX` (Windows CPython has none): 5 PASS + 2 SKIP here, 7/7 under WSL (1.0.7.2) | WSL / Linux CI |
 
 When reporting results, say "skipped", never "passed". A reviewer that reports a
 skipped row as a pass is making a false claim about verification.
@@ -48,6 +51,10 @@ unmutated tree». Not evidence of a defect, not evidence of health either:
 |---|---|---|
 | `homekit-trigger`, `homeconnect-trigger` | `FAIL — flock not found (util-linux)` (first line, exit 1) | git-bash ships no `flock` |
 | `homekit-cgi`, `homeconnect-cgi` | `FAIL 5a GET → the dispatch answer, verbatim …` — the CGI answers `{"ok":false,"error":"homekit_api_failed","message":"python dispatch failed or timed out"}` (and the `homeconnect_api_failed` twin) | NOT `flock`: the CGI's python dispatch fails on this box; cause not traced (Windows python under the stubbed CGI is the suspect) |
+| `py-unit-homekit`, `py-unit-homeconnect` | `ModuleNotFoundError: grp` / `fcntl`, `OSError: [WinError 1314]` (symlink privilege) in 13-21 tests; the rows print FAIL, not SKIP, because pytest itself is importable | Windows CPython has no `grp`/`fcntl` and the account lacks the symlink privilege; rc=0 under WSL Ubuntu-24.04 on the same tree (2026-10-14) |
+| `alice-image-identity`, `service-ctl-policy-write` | `ln: failed to create symbolic link` cases (CB2 belt, Home Connect dirty-link dimensions) | git-bash symlinks need the Windows privilege; rc=0 under WSL |
+| `update-conditional-restart` | run8: `python.exe: can't open file 'C:\tmp\tmp.*\gen-manifest.py'` | MSYS `/tmp` is not Windows python's `C:\tmp`; rc=0 under WSL |
+| transient (host load) | `py-unit-alice` broker-restart timing, `telemetry-device-id-contract`, `no-absolute-api-paths`, `iface-dns-ensure` wait budgets, `install-atomic` 9c - seen RED once each with 4-6 parallel agent runs on the box, PASS alone | not environment, not a defect: contention; re-run alone before filing |
 
 ## `nginx -t` runs only on the board
 

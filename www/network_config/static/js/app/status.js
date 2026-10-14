@@ -974,10 +974,10 @@ function applyServicesStatus(d) {
 
 /* Sidebar «vPLC ↗» (index.html #nav-vplc, a static node outside every
    renderer-owned container) follows svc_vplc_ui — status.cgi's probe of the
-   vPLC page server: the vplc-plant-ui unit active AND its unix socket
-   /run/vplc-plant-ui/ui.sock (the one nginx /vplc/ proxies to) present, so
-   neither a still-binding unit nor a leftover socket file shows the link.
-   Running → shown; stopped or absent →
+   vPLC page server: the vplc-plant-ui unit file installed AND its unix socket
+   /run/vplc-plant-ui/ui.sock (the one nginx /vplc/ proxies to) present; systemd
+   removes the socket's directory when the unit stops, so a socket means a bound
+   server (docs/contracts/vplc-page-seam.md §3-§4). Running → shown; stopped or absent →
    hidden on the next services poll (the part is cached up to 45 s, so a
    just-stopped page can still answer 502 until then). A payload without the field (an
    older backend, the part disabled → "unknown") leaves the link as it is. */

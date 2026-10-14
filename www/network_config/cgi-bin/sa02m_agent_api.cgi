@@ -14,8 +14,19 @@ if ! web_session_check_cookie; then
     exit 0
 fi
 
+AGENT_ROOT="${SA02M_AGENT_API_ROOT:-/opt/sa02m-agent-api}"
+# A board whose install profile skips the module has no package (and no
+# daemon, helpers or grant): answer the card honestly, run nothing
+# (docs/contracts/agent-api.md «Плата без модуля»).
+AGENT_INSTALLED=1
+[ -f "$AGENT_ROOT/sa02m_agent_api/panel.py" ] || AGENT_INSTALLED=0
+
 if [ "${REQUEST_METHOD:-GET}" = "GET" ]; then
-    PYTHONPATH="/opt/sa02m-agent-api${PYTHONPATH:+:$PYTHONPATH}" \
+    if [ "$AGENT_INSTALLED" = 0 ]; then
+        echo '{"ok":true,"state":"not_installed","active":"inactive","tokens":[],"message":"Agent API module is not installed on this board (install profile)"}'
+        exit 0
+    fi
+    PYTHONPATH="$AGENT_ROOT${PYTHONPATH:+:$PYTHONPATH}" \
         python3 -m sa02m_agent_api.panel status
     exit 0
 fi
@@ -30,12 +41,17 @@ if ! web_csrf_validate; then
     exit 0
 fi
 
+if [ "$AGENT_INSTALLED" = 0 ]; then
+    echo '{"ok":false,"error":"not_installed","state":"not_installed"}'
+    exit 0
+fi
+
 BODY=$(mktemp /tmp/sa02m-agent-body.XXXXXX)
 cleanup() { rm -f "$BODY" "${record:-}" "${response:-}" "${pass:-}"; return 0; }
 trap cleanup EXIT
 head -c 65536 >"$BODY"
 
-if ! INSTR=$(PYTHONPATH="/opt/sa02m-agent-api${PYTHONPATH:+:$PYTHONPATH}" \
+if ! INSTR=$(PYTHONPATH="$AGENT_ROOT${PYTHONPATH:+:$PYTHONPATH}" \
         python3 -m sa02m_agent_api.panel prepare "$BODY"); then
     printf '%s\n' "$INSTR"
     exit 0

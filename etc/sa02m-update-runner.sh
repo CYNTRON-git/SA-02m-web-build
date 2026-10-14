@@ -1452,12 +1452,33 @@ apply_deploy_items() {
     mf=$(manifest_path "$txn")
     overlay="$STATEDIR/staging/$txn/overlay"
     items="$STATEDIR/staging/$txn/deploy.items"
-    total=$(python3 - "$mf" "$items" <<'PY'
-import json, sys
-mf, out = sys.argv[1], sys.argv[2]
+    # The board's install profile (docs/contracts/install-profile.md): an item
+    # whose dst is an exact pattern of meta/profile.exclude, or lies under a
+    # `/`-terminated one, is never written to deploy.items — so it is never
+    # installed, journalled or counted (files_done == files_total holds on the
+    # kept count) — and its dst goes to deploy.excluded for the log below. No
+    # exclude file (no profile) ⇒ byte-identical to before. Same python start.
+    local excl_pats="$STATEDIR/staging/$txn/meta/profile.exclude"
+    local excluded="$STATEDIR/staging/$txn/deploy.excluded"
+    total=$(python3 - "$mf" "$items" "$excl_pats" "$excluded" <<'PY'
+import json, os, sys
+mf, out, excl_pats, excluded = sys.argv[1:5]
 deploy = json.load(open(mf, encoding="utf-8")).get("deploy", [])
+pats = []
+if os.path.isfile(excl_pats):
+    pats = [l.rstrip("\n") for l in open(excl_pats, encoding="utf-8") if l.strip()]
+if os.path.exists(excluded):
+    os.remove(excluded)
+def is_excluded(dst):
+    for p in pats:
+        if (p.endswith("/") and dst.startswith(p)) or dst == p:
+            return True
+    return False
+kept = 0
+skipped = []
 with open(out, "wb") as f:
     for it in deploy:
+        fields = []
         for k in ("src", "dst", "mode", "owner"):
             s = str(it.get(k, "0644" if k == "mode" else ""))
             # NUL is the field separator: one inside a value would shift every
@@ -1466,8 +1487,17 @@ with open(out, "wb") as f:
             # anyway: the exit fails the capture below (gate: case 10).
             if "\0" in s:
                 sys.exit("deploy.items: NUL inside manifest field %r of item %r" % (k, it.get("dst")))
+            fields.append(s)
+        if pats and is_excluded(fields[1]):
+            skipped.append(fields[1])
+            continue
+        for s in fields:
             f.write(s.encode("utf-8") + b"\0")
-print(len(deploy))
+        kept += 1
+if skipped:
+    with open(excluded, "w", encoding="utf-8") as g:
+        g.write("".join(d + "\n" for d in skipped))
+print(kept)
 PY
 ) || {
         # Checked EXPLICITLY: cmd_apply calls this function under `if !`, which
@@ -1485,6 +1515,14 @@ PY
             return 1
             ;;
     esac
+    if [ -s "$excluded" ]; then
+        local xdst xn=0
+        while IFS= read -r xdst; do
+            log "apply: profile skip $xdst"
+            xn=$((xn + 1))
+        done <"$excluded"
+        log "apply: install profile excluded $xn item(s) (/etc/sa02m_install_profile.conf)"
+    fi
     txn_patch "files_total=$total" "files_done=0" "progress_pct=0"
     done=0
     # Progress cadence: a txn_patch is a JSON rewrite + two fsyncs + one python3
@@ -2428,6 +2466,38 @@ for u in json.load(open(sys.argv[1],encoding="utf-8")).get("services",{}).get("s
 
 # --- main apply / recover ----------------------------------------------------
 
+# The board's install profile → meta/profile.exclude (the dst patterns of every
+# skipped module), read by apply_deploy_items. Computed ONCE per transaction,
+# under the lock, before anything is touched; persisted in staging so the
+# post-re-exec deploy reads the same snapshot. The patterns come from the lib
+# (the one home of the module table), sourced in a SUBSHELL so it can neither
+# exit this process nor shadow its functions. Fail closed: a profile that
+# marks anything skip (checked without the lib — wider than the lib's reader,
+# never narrower) and no working reader ⇒ refuse the update, nothing deployed
+# (Operator decision Q5, 2026-10-14). No profile ⇒ no exclude file ⇒ the
+# deploy is byte-identical to before. Contract: docs/contracts/install-profile.md.
+prepare_profile_excludes() {
+    local txn=$1
+    local conf=${SA02M_PROFILE_CONF:-/etc/sa02m_install_profile.conf}
+    local lib=${SA02M_INSTALL_PROFILE_LIB:-/usr/local/lib/sa02m-install-profile-lib.sh}
+    local meta="$STATEDIR/staging/$txn/meta" out n
+    mkdir -p "$meta"
+    rm -f "$meta/profile.exclude"
+    [ -f "$conf" ] || return 0
+    grep -qE '^[[:space:]]*MODULE_[A-Z_]+[[:space:]]*=[[:space:]"]*skip' "$conf" 2>/dev/null || return 0
+    if [ ! -r "$lib" ] || ! out=$( . "$lib" && sa02m_profile_ota_excludes ); then
+        die E_COMPAT "install profile present but its reader is missing: run install.sh --refresh"
+    fi
+    if [ -z "$out" ]; then
+        log "apply: install profile present, nothing skipped"
+        return 0
+    fi
+    printf '%s\n' "$out" | cut -f2 >"$meta/profile.exclude" \
+        || die E_INTERNAL "cannot write $meta/profile.exclude"
+    n=$(grep -c . "$meta/profile.exclude")
+    log "apply: install profile skips $(printf '%s\n' "$out" | cut -f1 | sort -u | tr '\n' ' ')($n pattern(s))"
+}
+
 cmd_apply() {
     ensure_dirs
     migrate_legacy_state
@@ -2497,6 +2567,7 @@ cmd_apply() {
         fi
 
         honour_cancel_if_early
+        prepare_profile_excludes "$txn"
         txn_patch "stage=backing_up" "progress_pct=25"
         honour_cancel_if_early
         build_rollback_archive "$txn"

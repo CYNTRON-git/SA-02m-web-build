@@ -1868,6 +1868,10 @@ html[data-theme="light"] .nav-sub-item.active { color: var(--btn-primary-hover);
   gap: 10px;
 }
 .system-manage-grid .ctrl-card-main > * { min-width: 0; }
+/* Agent card form wrapper: its children keep the card's column gap; hidden on
+   a board whose install profile skips the module (app/agentapi.js). */
+#agentapi-body { display: contents; }
+#agentapi-body[hidden] { display: none; }
 
 /* Подвал с кнопками — всегда внизу, кнопки на всю ширину */
 .system-manage-grid .system-manage-tile-foot,

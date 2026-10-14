@@ -768,6 +768,12 @@ sa02m_cleanup_b1_deploy_artifacts() {
 # shellcheck source=../etc/sa02m-stacks-policy.sh
 source "$(dirname "${BASH_SOURCE[0]}")/../etc/sa02m-stacks-policy.sh"
 
+# ── Install profile (product modules this board does not carry) ─────────────
+# Same shape as the stacks policy: one POSIX file, shared with the OTA runner
+# and both shell delivery paths. Contract: docs/contracts/install-profile.md.
+# shellcheck source=../etc/sa02m-install-profile-lib.sh
+source "$(dirname "${BASH_SOURCE[0]}")/../etc/sa02m-install-profile-lib.sh"
+
 # sa02m_pip_install <import_name> <pip_spec>
 # Already importable ⇒ return 0 silently; offline ⇒ WARN + skip (the feature
 # degrades); else a bounded `pip3 install`, failure ⇒ WARN. Never aborts.

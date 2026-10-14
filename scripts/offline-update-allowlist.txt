@@ -41,6 +41,8 @@ etc/sa02m-status-blocks-guard.sh
 etc/sa02m-prepare-working-board.sh
 etc/sa02m-failure-monitor.sh
 etc/sa02m-web-backup.sh
+# Install profile reader (→ /usr/local/lib; the runner filters OTA by it)
+etc/sa02m-install-profile-lib.sh
 
 # Site config template (packer renders __PORT__/__WEB_ROOT__ before sealing)
 etc/nginx/network_config.conf
