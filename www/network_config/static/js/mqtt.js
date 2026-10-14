@@ -327,6 +327,9 @@ let _mqttTabSeq = 0;
 // mqtt_config.cgi GET `capabilities` (Modbus TCP types, Carel families, default
 // port) — null until loaded, or when the board cannot validate TCP entries.
 let _tcpCaps = null;
+// capabilities.rtu_tcp_types — what a gateway scan row may add (bridge_bus
+// RTU_TCP_TYPES). null = an older CGI without the key: offer the full list.
+let _rtuTcpTypes = null;
 let _monitorPollTimer = null;
 let _monitorPaused = false;
 let _monitorLastVal = Object.create(null);
@@ -1812,6 +1815,8 @@ async function loadConfig() {
     // = the modal stays RS-485 only.
     const caps = data.capabilities;
     _tcpCaps = (caps && Array.isArray(caps.tcp_types) && caps.tcp_types.length) ? caps : null;
+    _rtuTcpTypes = (caps && Array.isArray(caps.rtu_tcp_types) && caps.rtu_tcp_types.length)
+      ? caps.rtu_tcp_types.map(String) : null;
     delete data.capabilities;
     _config = data;
     for (const dev of _config.devices || []) {
@@ -2790,12 +2795,22 @@ const SCAN_TYPE_OPTIONS = [
   ['template','MTD262-MB'], ['carel','Carel'],
 ];
 
-/** The type a scan row starts with — '' when the scan did not identify it.
+/** The types a scan row may offer. A gateway row offers only what the bridge
+ *  accepts over rtu_tcp (a Carel there fails the whole save with
+ *  type_not_tcp_capable); never an empty list — an unknown set offers all. */
+function scanTypeOptions(gateway) {
+  if (!gateway || !_rtuTcpTypes) return SCAN_TYPE_OPTIONS;
+  const allowed = SCAN_TYPE_OPTIONS.filter(([v]) => _rtuTcpTypes.includes(v));
+  return allowed.length ? allowed : SCAN_TYPE_OPTIONS;
+}
+
+/** The type a scan row starts with — '' when the scan did not identify it,
+ *  or identified a type this row cannot offer.
  *  Never a guess: a foreign device pre-set to МР-02м got an MR poller and
  *  Fast Modbus aimed at it by one «Добавить все». */
-function scanPreselectType(dev) {
+function scanPreselectType(dev, options = SCAN_TYPE_OPTIONS) {
   const t = dev && dev.type;
-  return SCAN_TYPE_OPTIONS.some(([v]) => v === t) ? t : '';
+  return options.some(([v]) => v === t) ? t : '';
 }
 
 function refreshScanAddAll() {
@@ -2871,14 +2886,15 @@ function appendScanDevice(dev) {
   const gateway = target.via === 'gateway';
   const port = target.port;
   const baud = target.baud;
-  const devType = scanPreselectType(dev);
+  const typeOptions = scanTypeOptions(gateway);
+  const devType = scanPreselectType(dev, typeOptions);
   const typeSelect = h('select', {'class': 'mqtt-select-small'});
   if (!devType) {
     const ph = h('option', {value: ''}, uiT('— тип —'));
     ph.selected = true;
     typeSelect.appendChild(ph);
   }
-  for (const [val, lbl] of SCAN_TYPE_OPTIONS) {
+  for (const [val, lbl] of typeOptions) {
     const opt = h('option', {value: val}, lbl);
     if (val === devType) opt.selected = true;
     typeSelect.appendChild(opt);

@@ -132,6 +132,50 @@ console.log('6. the scan table speaks the UI language');
   check(enName === 'Device 7', `EN: an unnamed device is «Device 7» (got "${enName}")`);
 }
 
+console.log('7. a gateway row offers only what the bridge accepts over rtu_tcp');
+{
+  // The capabilities reach the page the real way: loadConfig() over a stubbed
+  // GET of mqtt_config.cgi. The list is bridge_bus.capabilities()'s
+  // rtu_tcp_types (pinned there by test_bridge_bus.py).
+  const RTU_TCP = ['ce02m3', 'dtv', 'led', 'mr02m', 'template'];
+  async function gatewayTable(devices, caps, target = GW_TARGET) {
+    const sb = loadMqttJs();
+    const results = sb.el('div');
+    sb.ids['mqtt-scan-results'] = results;
+    const body = { mqtt: {}, devices: [] };
+    if (caps) body.capabilities = caps;
+    sb.ctx.fetch = async () => ({ ok: true, status: 200, json: async () => JSON.parse(JSON.stringify(body)) });
+    await sb.run('loadConfig()').catch(() => {});
+    sb.ctx.__devs = devices;
+    sb.ctx.__target = target;
+    sb.run('beginScanResults(__target); __devs.forEach((d) => appendScanDevice(d));');
+    return results.querySelectorAll('tr').filter((tr) => tr.querySelector('select'))
+      .map((tr) => tr.querySelector('select'));
+  }
+  const vals = (sel) => sel.options.map((o) => o.value).filter(Boolean);
+  const caps = { tcp_types: ['template', 'carel'], carel_families: ['crst', 'uaria'],
+                 tcp_default_port: 502, rtu_tcp_types: RTU_TCP };
+
+  let [gw] = await gatewayTable([MR], caps);
+  check(!vals(gw).includes('carel'), `gateway row offers no Carel (got ${JSON.stringify(vals(gw))})`);
+  check(vals(gw).includes('dtv') && vals(gw).includes('mr02m') && vals(gw).includes('template'),
+        'gateway row still offers ДТВ, МР-02м and the template');
+  check(gw.value === 'mr02m', `an identified МР-02м keeps its pre-selection on the gateway (got "${gw.value}")`);
+
+  [gw] = await gatewayTable([{ addr: 4, type: 'carel', family: 'crst' }], caps);
+  check(gw.value === '' && !vals(gw).includes('carel'),
+        `a Carel hit on the gateway gets the placeholder, not an unsavable type (got "${gw.value}")`);
+
+  const [com] = await gatewayTable([MR], caps, COM_TARGET);
+  check(vals(com).includes('carel'), 'a COM row still offers Carel');
+
+  const [old] = await gatewayTable([MR], { tcp_types: ['template', 'carel'] });
+  check(vals(old).length === 6 && vals(old).includes('carel'),
+        `an older CGI without rtu_tcp_types: the full list, never an empty select (got ${JSON.stringify(vals(old))})`);
+  const [none] = await gatewayTable([MR], null);
+  check(vals(none).length === 6, 'no capabilities at all: the full list');
+}
+
 console.log(`\n${checks - failures}/${checks} checks passed`);
-if (checks < 20) { console.log('FAIL: fewer than 20 checks ran — the harness stopped measuring'); process.exit(1); }
+if (checks < 27) { console.log('FAIL: fewer than 27 checks ran — the harness stopped measuring'); process.exit(1); }
 process.exit(failures === 0 ? 0 : 1);

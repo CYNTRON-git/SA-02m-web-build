@@ -104,8 +104,12 @@ already opened with … (first entry wins)») и оставляет первый
 Если на плате нет модуля-валидатора, `mqtt_config.cgi` отвечает
 `{"ok":false,"error":"transport_validator_unavailable"}` на любое сохранение с
 TCP-записью; сохранение только RS-485 проходит как раньше. GET отдаёт
-`capabilities` (`tcp_types`, `carel_families`, `tcp_default_port`) только когда
-валидатор импортируется — иначе окно не предлагает Ethernet. Причина
+`capabilities` (`tcp_types`, `carel_families`, `tcp_default_port`,
+`rtu_tcp_types`) только когда валидатор импортируется — иначе окно не предлагает
+Ethernet. `rtu_tcp_types` — отсортированный `RTU_TCP_TYPES` (§11): типы, которые
+поиск через шлюз предлагает в строке находки. Ключ добавочный: старый
+закэшированный `mqtt.js` его не читает и ведёт себя как раньше, а новый при его
+отсутствии предлагает полный список типов, никогда не пустой. Причина
 (не удалось импортировать `bridge_bus`) в обоих случаях пишется в stderr
 эндпойнта — на плате это журнал ошибок nginx.
 
@@ -301,7 +305,9 @@ MBAP, скорость линии задаёт UART шлюза. Найденна
 ```
 
 `port` и `baudrate` запрещены (`serial_keys_on_tcp`): устройство не сажается
-на `/dev/COMx`. Carel остаётся на `transport: tcp` (MBAP). SPODES с
+на `/dev/COMx`. Carel остаётся на `transport: tcp` (MBAP), поэтому строка
+находки при поиске через шлюз Carel не предлагает (`capabilities.rtu_tcp_types`):
+такая запись отклонила бы всё сохранение (`type_not_tcp_capable`). SPODES с
 `transport: rtu_tcp` — `transport_unknown` (ему по-прежнему `transparent` /
 `wrapper` / HDLC). `transport: tcp` у `mr02m` по-прежнему
 `type_not_tcp_capable`. Один сокет на `host:tcp_port`, методы те же, что у
@@ -312,7 +318,12 @@ MBAP, скорость линии задаёт UART шлюза. Найденна
 
 - `opt/sa02m-modbus-mqtt/tests/test_bridge_bus.py` — каждый код отказа,
   значения RS-485 по умолчанию, предел 16 адресов, семейства Carel сверены с
-  `sa02m_carel.controls`, модуль импортируется без pyserial/paho/yaml.
+  `sa02m_carel.controls`, `capabilities.rtu_tcp_types` равен
+  `sorted(RTU_TCP_TYPES)` и каждый его тип проходит `validate_devices`, модуль
+  импортируется без pyserial/paho/yaml.
+- `scripts/dev/test-mqtt-scan-type.mjs` (секция 7) — строка находки через шлюз
+  не предлагает Carel, предлагает ДТВ/МР-02м/шаблон; без `rtu_tcp_types` —
+  полный список.
 - `tests/test_bridge_tcp.py` — клиент через настоящий сокет (`tests/mbap_fake.py`):
   все функции, исключения, таймаут без переотправки, чужие ответы, переотправка
   на устаревшем соединении, окно переподключений, отказ самой плате, один запрос

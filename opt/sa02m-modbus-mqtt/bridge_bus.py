@@ -392,4 +392,7 @@ def capabilities() -> dict:
         "tcp_types": list(TCP_CAPABLE_TYPES),
         "carel_families": list(CAREL_FAMILIES),
         "tcp_default_port": TCP_DEFAULT_PORT,
+        # What the scan may add from a gateway hit. Additive: a bundle that
+        # does not read it keeps offering its own list.
+        "rtu_tcp_types": sorted(RTU_TCP_TYPES),
     }
