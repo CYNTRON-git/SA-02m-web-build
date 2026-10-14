@@ -323,6 +323,48 @@ class UnknownReadingTests(unittest.TestCase):
         self.assertIsNone(self.app.state["lamp"]["on_off"])       # RED: 1 kept
         self.assertIsNone(self.app.state["SA-02m"]["alarm_led"])
 
+    def test_an_instance_keyed_edge_trigger_rebaselines_after_unknown(self):
+        """A trigger on a range capability narrowed by `instance` reads the
+        mirror key `range|brightness` (device_index.state_key). With TWO
+        range capabilities on the device (a Carel AHU) the topic maps to that
+        key only — no bare `range` — and the unknown reading must reset THAT
+        trigger's edge baseline, so the first reading after it is a first
+        sight, not a crossing from the stale 10."""
+        devices = os.path.join(self.td.name, "devices.conf")
+        with open(devices, "w", encoding="utf-8") as fh:
+            fh.write('{"devices":[{"id":"lamp","capabilities":['
+                     '{"type":"devices.capabilities.on_off",'
+                     '"mqtt":"/devices/sw/controls/K1"},'
+                     '{"type":"devices.capabilities.range",'
+                     '"mqtt":"/devices/dim/controls/ch1",'
+                     '"parameters":{"instance":"brightness"}},'
+                     '{"type":"devices.capabilities.range",'
+                     '"mqtt":"/devices/dim/controls/ch2",'
+                     '"parameters":{"instance":"temperature"}}]}]}')
+        self.app._alice_path = devices
+        self.app._alice_mtime = 0.0
+        self.app.reload_index()
+        self.app.engine.adopt({"scenarios": [
+            {"id": "br", "name": "br", "enabled": True, "type": "block",
+             "trigger": [{"kind": "state", "device": "lamp", "cap": "range",
+                          "instance": "brightness", "op": "rises_above",
+                          "value": 20}],
+             "condition": {}, "action": [{"kind": "set", "device": "lamp",
+                                          "cap": "on_off", "value": 1}]}],
+            "runs": [], "notify_queue": [], "library": "", "vars": {}})
+        self.feed("/devices/dim/controls/ch1", "10")
+        self.feed("/devices/dim/controls/ch1", "nan")
+        self.assertIsNone(self.app.state["lamp"]["range|brightness"])
+        self.client.published.clear()
+        self.feed("/devices/dim/controls/ch1", "30")
+        # RED when forget_state matched the trigger by bare `cap`: the stale
+        # baseline 10 survived and 10→30 fired as a crossing.
+        self.assertEqual(self.commands(), [])
+        self.feed("/devices/dim/controls/ch1", "10")
+        self.feed("/devices/dim/controls/ch1", "30")
+        self.assertEqual(self.commands(), ["/devices/sw/controls/K1/on"],
+                         "a real crossing after the new baseline must fire")
+
     def test_an_int_past_the_json_digit_limit_is_unknown(self):
         """>4300 digits: json.loads refuses it (ValueError), the raw string
         still float-parses to inf — unknown, not a crash, not a string."""

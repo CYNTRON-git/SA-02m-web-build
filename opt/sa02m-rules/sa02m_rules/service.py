@@ -319,10 +319,10 @@ class RulesApp:
             if self._first_time(self._warned_non_finite, state_topic):
                 LOG.warning("non-finite value on %r: value unknown", state_topic)
             # Every key this topic feeds: the raw (device, control) name, and
-            # the mapped (device, capability) when the index binds one.
+            # each (device, key) the document binds to it.
             self.engine.forget_state(parts[1], parts[3])
-            if mapped:
-                self.engine.forget_state(device, cap)
+            for device, key in mapped or ():
+                self.engine.forget_state(device, key)
             return
         self.reload()
         # The raw (MQTT device, control) path carries button counters, the

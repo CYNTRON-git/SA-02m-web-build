@@ -626,8 +626,9 @@ class Engine:
             if not isinstance(s, dict):
                 continue
             for i, tr in enumerate(s.get("trigger") or []):
+                # The key _triggered matches on: `cap` narrowed by `instance`.
                 if isinstance(tr, dict) and tr.get("kind") == "state" \
-                        and tr.get("device") == device and tr.get("cap") == cap:
+                        and tr.get("device") == device and _item_key(tr) == cap:
                     self._trig_prev.pop((str(s.get("id")), i), None)
 
     def run_now(self, sid: str) -> Optional[Dict[str, Any]]:
