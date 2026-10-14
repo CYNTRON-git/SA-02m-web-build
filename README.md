@@ -301,7 +301,7 @@ chmod +x install.sh scripts/*.sh etc/*.sh
 | `06-gateway.sh` | RS-485→Ethernet шлюз, gateway CGI, systemd unit | `SA02M_SKIP_GATEWAY=1` |
 | `06-alice.sh` | Яндекс Алиса: `opt/sa02m-alice`, обе службы **выключены** по умолчанию | `SA02M_SKIP_ALICE=1` |
 | `06b-rules.sh` | Сценарии на плате: `opt/sa02m-rules`, `sa02m-rules.service` | `SA02M_SKIP_RULES=1` |
-| `13-agent-api.sh` | API для ИИ-агентов: `opt/sa02m-agent-api`, служба **выключена** | `SA02M_SKIP_AGENT_API=1` |
+| `13-agent-api.sh` | API для ИИ-агентов: `opt/sa02m-agent-api`, служба **выключена** | `SA02M_SKIP_AGENT_API=1`; насовсем, и для OTA — `--skip-module AGENT_API` (`docs/deployment.md` «Неполная установка») |
 | `06c-homekit.sh` | Мост Apple HomeKit: `opt/sa02m-homekit` + venv, служба **выключена**; ставится **только** с `--with-homekit` / `SA02M_WITH_HOMEKIT=1` (уже установленный — обновляется) | `SA02M_SKIP_HOMEKIT=1` |
 | `06d-homeconnect.sh` | Клиент BSH Home Connect (только чтение): `opt/sa02m-homeconnect`, без pip, служба **выключена**; ставится **только** с `--with-homeconnect` / `SA02M_WITH_HOMECONNECT=1` (уже установленный — обновляется) | `SA02M_SKIP_HOMECONNECT=1` |
 | `07-nodered.sh` | Node.js LTS + Node-RED, `nodered.service`, UI на порту 1880 | `SA02M_SKIP_NODERED=1` |

@@ -443,6 +443,39 @@ bash scripts/dev/board-state-snapshot.sh > /root/after.txt
 diff /root/before.txt /root/after.txt
 ```
 
+### Неполная установка: разовый пропуск, профиль платы, политика стеков
+
+Три механизма, у каждого своя область. Какой модуль каким флагом пропускается —
+таблица модулей в `README.md` («Установщик автоматически выполняет»).
+
+| Механизм | Что охватывает | Переживает `--refresh` и OTA? | Как вернуть |
+|---|---|---|---|
+| `SA02M_SKIP_<ID>=1` — переменная на один запуск | любой модуль установщика из таблицы README | нет: следующий запуск без переменной модуль ставит, OTA его файлы обновляет; ничего не удаляет | запустить без переменной |
+| `install.sh --skip-module <ID>` — профиль платы `/etc/sa02m_install_profile.conf` | продуктовые модули из `docs/contracts/install-profile.md` §2 (сейчас `AGENT_API`) | да: не ставит `install.sh`, не привозит OTA (раннер ≥ 1.0.7.2) и `update-www-only.sh`; уже стоящий модуль удаляется, данные остаются | `install.sh --keep-module <ID>` |
+| `STACK_<ID>=disabled` в `/etc/sa02m_stacks.conf` — «Удалить» в панели | сторонние стеки (Node-RED, CODESYS, MPLC, Docker, KLogic) | да | «Установить» в панели или `--with-optional` |
+
+**Плата без API для ИИ-агентов** (решение интегратора: на объекте не должно быть
+управления от ИИ-агентов и его root-грантов):
+
+1. Доставить на плату дерево ≥ 1.0.7.2 (шаги ниже) и запустить
+   `sudo ./install.sh --refresh --skip-module AGENT_API`.
+2. Проверить: `cat /etc/sa02m_install_profile.conf` → `MODULE_AGENT_API=skip`;
+   `ls /etc/sudoers.d/sa02m-agent-api /opt/sa02m-agent-api` → нет таких файлов;
+   `systemctl cat sa02m-agent-api` → юнит не найден;
+   `/etc/sa02m-agent-api/tokens.json` на месте; в журнале
+   `grep 'Профиль установки' /var/log/sa02m_install.log` — что удалено и что
+   сохранено.
+3. Повторный `sudo ./install.sh --refresh` → «удалять нечего», модуль не ставится.
+4. Панель, «Управление → Система», карточка «API для ИИ-агентов» → «Не
+   установлен на этой плате».
+5. Вернуть: `sudo ./install.sh --refresh --keep-module AGENT_API` — модуль
+   ставится заново, старые токены снова действуют.
+
+Фильтр OTA на плате впервые виден на обновлении **после** 1.0.7.2:
+`grep 'profile skip' /var/lib/sa02m-update/update.log` (обновление, которое
+привозит 1.0.7.2, применяет прежний раннер — без фильтра; пределы —
+`docs/contracts/install-profile.md` §7).
+
 ### Предусловия
 - Изменение уже смержено в `main` — деплой ведётся из смерженного коммита, не
   из рабочего дерева (шаг 2).
@@ -459,10 +492,8 @@ diff /root/before.txt /root/after.txt
   Прежней строки `[ERR] Нет доступа к registry.npmjs.org` больше нет — при
   проверке лога (шаг 7) ищите `WARN`, а не только `ERR`.
   Чтобы стек не ставился вовсе — пропустить модуль явно:
-  `SA02M_SKIP_NODERED=1 bash install.sh`. Так же отключаются остальные
-  опциональные стеки: `SA02M_SKIP_MQTT`, `SA02M_SKIP_GATEWAY`,
-  `SA02M_SKIP_CODESYS`, `SA02M_SKIP_MPLC`, `SA02M_SKIP_DOCKER`
-  (перечень — `install.sh`).
+  `SA02M_SKIP_NODERED=1 bash install.sh`; какой механизм пропуска выбрать
+  (разовый, профиль платы, политика стеков) — «Неполная установка» выше.
 - **MPLC runtime на git-archive деплое — обязательная доставка payload'а.**
   Runtime-тарбол MPLC (`mplc4.tar.gz`, ~18 MB) под vendor-EULA и **не в git**
   (`.gitignore`), поэтому в `git archive` он не попадает. Чтобы MPLC поставился

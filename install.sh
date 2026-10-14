@@ -251,9 +251,8 @@ sa02m_run_module 05-cloud-agent.sh
 sa02m_run_module 10-rs485-roster.sh
 
 # ── Optional stacks (MQTT / Gateway / Node-RED / CODESYS / MPLC / Docker) ─
-# Можно отключить по-отдельности:
-#   SA02M_SKIP_MQTT=1 SA02M_SKIP_GATEWAY=1 SA02M_SKIP_NODERED=1 \
-#   SA02M_SKIP_CODESYS=1 SA02M_SKIP_MPLC=1 SA02M_SKIP_DOCKER=1 ./install.sh
+# Skipping a module (one-shot SA02M_SKIP_<ID>=1, the board profile, the stacks
+# policy): docs/deployment.md «Неполная установка».
 # По умолчанию — устанавливаем всё, чтобы после первой прошивки был полный стек.
 # CODESYS/MPLC ставятся только если найден vendor-payload (см. docs/vendor-integrations.md);
 # отсутствие payload'а не считается ошибкой — шаг просто пропускается.
