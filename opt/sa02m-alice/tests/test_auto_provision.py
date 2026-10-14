@@ -547,5 +547,93 @@ class TestCommitAndWatcher(unittest.TestCase):
         self.assertEqual([(d["id"], d["name"], d["type"]) for d in store["devices"]], ids)
 
 
+def _mtd_topics(mid: str, *, presence: bool = True, lux: bool = True):
+    """The bridge's template channels for the MTDx62-MB (config-mtdx62-mb.json)."""
+    out = {
+        "/devices/%s/controls/target_distance" % mid,
+        "/devices/%s/controls/device_status" % mid,
+        "/devices/%s/controls/trigger_sensitivity" % mid,
+    }
+    if presence:
+        out.add("/devices/%s/controls/presence_status" % mid)
+    if lux:
+        out.add("/devices/%s/controls/illuminance" % mid)
+    return out
+
+
+class TestProvisionMtd(unittest.TestCase):
+    """An MTDx62-MB bridge entry (id `mtdx62-mb-<COM>-<addr>`, the prefix the
+    MQTT tab mints) becomes ONE presence sensor: motion from presence_status,
+    illumination from illuminance when the bridge publishes it."""
+
+    MID = "mtdx62-mb-COM3-20"
+
+    def test_motion_and_lux(self):
+        _doc, added = ap.provision({"rooms": [], "devices": []}, self.MID, _mtd_topics(self.MID))
+        self.assertEqual(len(added), 1)
+        dev = added[0]
+        self.assertEqual(dev["type"], "devices.types.sensor.motion")
+        self.assertEqual(dev["name"], "Присутствие COM3 20")
+        self.assertEqual(_insts(dev), ["motion", "illumination"])
+        motion, lux = dev["properties"]
+        self.assertEqual(motion["type"], "devices.properties.event")
+        self.assertEqual(motion["mqtt"], "/devices/mtdx62-mb-COM3-20/controls/presence_status")
+        self.assertEqual(lux["type"], "devices.properties.float")
+        self.assertEqual(lux["mqtt"], "/devices/mtdx62-mb-COM3-20/controls/illuminance")
+        self.assertEqual(lux["parameters"]["unit"], "unit.illumination.lux")
+        self.assertNotIn("scale", lux)
+
+    def test_motion_only(self):
+        _doc, added = ap.provision(
+            {"rooms": [], "devices": []}, self.MID, _mtd_topics(self.MID, lux=False))
+        self.assertEqual(_insts(added[0]), ["motion"])
+
+    def test_lux_without_presence_adds_nothing(self):
+        doc = {"rooms": [], "devices": []}
+        _doc, added = ap.provision(doc, self.MID, _mtd_topics(self.MID, presence=False))
+        self.assertEqual(added, [])
+        self.assertEqual(doc["devices"], [])
+
+    def test_second_pass_is_noop(self):
+        doc = {"rooms": [], "devices": []}
+        ap.provision(doc, self.MID, _mtd_topics(self.MID))
+        _doc, again = ap.provision(doc, self.MID, _mtd_topics(self.MID))
+        self.assertEqual(again, [])
+        self.assertEqual(len(doc["devices"]), 1)
+
+    def test_tcp_form_id_name_fits(self):
+        mid = "mtdx62-mb-rtu-192_168_100_250-50200-247"
+        _doc, added = ap.provision({"rooms": [], "devices": []}, mid, _mtd_topics(mid))
+        self.assertEqual(added[0]["name"], "Присутствие 247")
+        self.assertLessEqual(len(added[0]["name"]), 25)
+        long_com = "mtdx62-mb-COM12345-247"
+        _doc, added = ap.provision({"rooms": [], "devices": []}, long_com, _mtd_topics(long_com))
+        self.assertLessEqual(len(added[0]["name"]), 25)
+
+    def test_yaml_listed_meta_only_uses_both_channels(self):
+        _doc, added = ap.provision(
+            {"rooms": [], "devices": []}, self.MID, None, yaml_ids={self.MID})
+        self.assertEqual(_insts(added[0]), ["motion", "illumination"])
+
+    def test_the_watcher_admits_the_prefix(self):
+        store = {"rooms": [], "devices": []}
+        clock = {"t": 0.0}
+
+        def save(doc):
+            snap = json.loads(json.dumps(doc))
+            store.clear()
+            store.update(snap)
+
+        prov = ap.AutoProvisioner(load=lambda: store, save=save, clock=lambda: clock["t"],
+                                  settle_s=1.0, yaml_ids=lambda: set())
+        extra = prov.note("/devices/%s/meta/name" % self.MID, "MTD262-MB (COM3 addr=20)")
+        self.assertEqual(extra, "/devices/%s/controls/+" % self.MID)
+        for topic in _mtd_topics(self.MID):
+            self.assertIsNone(prov.note(topic, "1"))
+        clock["t"] = 1.1
+        self.assertTrue(prov.tick())
+        self.assertEqual([d["type"] for d in store["devices"]], ["devices.types.sensor.motion"])
+
+
 if __name__ == "__main__":
     unittest.main()

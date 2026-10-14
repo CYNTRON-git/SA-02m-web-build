@@ -85,10 +85,10 @@ row `alice-topics-cgi`).
 Validating tests: `opt/sa02m-alice/tests/test_inventory.py`,
 `test_topics_inventory.py`, `scripts/dev/sh-modal-layout-smoke.mjs`.
 
-### Auto-provision (DTV / CE-02m-3 / Mercury SPODES)
+### Auto-provision (DTV / CE-02m-3 / Mercury SPODES / MTDx62-MB)
 
 The Yandex-profile client watches `/devices/+/meta/name` and
-`/devices/+/meta/driver`. A new MQTT id whose prefix is `dtv-`, `ce02m3-` or `spodes-`
+`/devices/+/meta/driver`. A new MQTT id whose prefix is `dtv-`, `ce02m3-`, `spodes-` or `mtdx62-mb-`
 and that **no existing binding already maps** is appended to the same
 document (`save_devices`, atomic, mode/owner preserved) **only when**
 the id is listed in `/etc/sa02m-modbus-mqtt.yaml` **or** at least one
@@ -114,6 +114,14 @@ Validating tests: `opt/sa02m-alice/tests/test_auto_provision.py`.
   `cloud_only: true` (`CLOUD_ONLY_FLOAT_INSTANCES`; the boards' documents
   carry it from the 1.0.6.36 auto-provision, 1.0.6.58). Validating:
   `tests/test_cloud_only_items.py TestCePhaseFrequency`.
+- `mtdx62-mb-` (the MTDx62-MB presence sensor's template entry) → ONE
+  `devices.types.sensor.motion`: `motion` event from `presence_status`,
+  `illumination` (`unit.illumination.lux`, no scale — the bridge already
+  publishes lux) from `illuminance` when that topic exists. No
+  `presence_status` → no device. Name «Присутствие COMn a» from an RS-485 id,
+  «Присутствие a» from any other id form (≤25 characters). Validating:
+  `tests/test_auto_provision.py TestProvisionMtd`; sensor side:
+  `docs/contracts/mtd-presence.md`.
 - A second pass is a no-op. Lights, Carel, sirens and other bindings stay.
 - After persist the in-process registry reloads (same `apply_reload` path
   as a CGI edit). The hub catalog is the next `alice_devices_list`.
