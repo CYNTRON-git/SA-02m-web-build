@@ -108,9 +108,9 @@
       </div>
 
       <!-- External link, not a tab (no data-tab: initNav never binds it). Shown by
-           applyVplcNavLink (app/status.js) while the vPLC page server runs (unit active
-           AND its socket /run/vplc-plant-ui/ui.sock present — the one nginx /vplc/
-           proxies to). -->
+           applyVplcNavLink (app/status.js) while the vPLC page server runs (unit file
+           installed AND its socket /run/vplc-plant-ui/ui.sock present — the one nginx
+           /vplc/ proxies to; docs/contracts/vplc-page-seam.md §4). -->
       <a class="nav-item" id="nav-vplc" href="vplc/" target="_blank" rel="noopener" hidden title="Открыть vPLC в новой вкладке">
         <svg viewBox="0 0 24 24" aria-hidden="true"><rect x="6" y="6" width="12" height="12" rx="2"/><rect x="10" y="10" width="4" height="4"/><path d="M9 2v4M15 2v4M9 18v4M15 18v4M2 9h4M2 15h4M18 9h4M18 15h4"/></svg>
         <span class="nav-label" data-i18n="vPLC ↗">vPLC ↗</span>

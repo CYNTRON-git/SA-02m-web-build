@@ -206,6 +206,10 @@ vplc-route-contract|etc/nginx/network_config.conf|"~^(GET|HEAD):"  0;
 vplc-route-contract|etc/nginx/network_config.conf|"~^[^:]+:$"      1;
 vplc-route-contract|etc/nginx/network_config.conf|location = /vplc {
 vplc-route-contract|etc/nginx/network_config.conf|return 301 vplc/;
+status-vplc-probe|www/network_config/cgi-bin/status.cgi|SVC_VPLC_UI=$(fast_service_state vplc-plant-ui)
+status-vplc-probe|www/network_config/cgi-bin/status.cgi|"svc_vplc_ui": "${SVC_VPLC_UI:-unknown}"
+status-vplc-probe|www/network_config/cgi-bin/status.cgi|echo "$_vui"
+devices-tables-drift|opt/sa02m-modbus-mqtt/devices_tables.py|MR02M_MODULE_TYPES = [
 ota-dst-allowlist-parity|opt/sa02m-update/lib/validate_package.py|re.compile(r"^/etc/nginx/"),
 ota-dst-allowlist-parity|scripts/pack-offline-update.py|r"etc/systemd/system/sa02m-|"
 ota-dst-allowlist-parity|etc/sa02m-update-runner.sh|r"etc/systemd/system/sa02m-|"
