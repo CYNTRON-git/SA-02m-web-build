@@ -128,6 +128,7 @@ js-unit-carel-card-ladder|opt/sa02m-carel/sa02m_carel/controls.py|FAMILY_UARIA: 
 js-unit-carel-card-ladder|opt/sa02m-carel/sa02m_carel/carel_ahu.py|FAN_PCT_MIN = 20.0
 js-unit-carel-card-ladder|www/network_config/static/js/devices.js|{ id: "turbo", value: 10 },
 js-unit-carel-card-ladder|www/network_config/static/js/mqtt.js|const CAREL_FAN_PCT_MIN = 20;
+js-unit-mqtt-ai-type|www/network_config/static/js/mqtt.js|return Number(live) & 0xffff;
 led-shared-home|scripts/05-mqtt.sh|sa02m_install_led_pkg "$BASE_DIR"
 led-shared-home|scripts/update-www-only.sh|sa02m_install_led_pkg "$REPO_ROOT"
 gateway-acl-contract|www/network_config/cgi-bin/gateway_config.cgi|norm_allow_from(name, pcfg, all_errors)

@@ -223,12 +223,6 @@ function migrateLegacyAiSensorCode(code) {
   return (c >= 0 && c <= 42) ? c : 0;
 }
 
-function isLegacyAiRegisterCode(code) {
-  const c = Number(code) & 0xffff;
-  return Object.prototype.hasOwnProperty.call(AI_SENSOR_LEGACY_ENUM_MIGRATION, c)
-    && AI_SENSOR_LEGACY_ENUM_MIGRATION[c] !== c;
-}
-
 function migrateDeviceLegacyAiSensorTypes(dev) {
   if (!dev || dev.type !== 'mr02m') return;
   const schema = Number(dev.ai_sensor_schema || 1);
@@ -630,7 +624,7 @@ function aiTypeSweepPending(devId) {
 function aiTypeRevertChannelToLive(dev, ch) {
   if (!dev.channels) dev.channels = {};
   const live = _liveSensorTypes[dev.id] && _liveSensorTypes[dev.id][`ai_${ch}`];
-  if (live == null || live === '' || isLegacyAiRegisterCode(Number(live))) return;
+  if (live == null || live === '') return;
   getOrCreateChannel(dev.channels, 'ai', ch).sensor_type = Number(live) & 0xffff;
 }
 
@@ -751,16 +745,11 @@ function mr02mAiEffectiveSensorType(dev, ch, channels) {
   const cfgType = chCfg.sensor_type != null ? Number(chCfg.sensor_type) : null;
   const live = _liveSensorTypes[dev.id]?.[`ai_${ch}`];
   if (_aiTypeEditGuard.has(key) && cfgType != null) return cfgType & 0xffff;
-  if (cfgType != null && live != null && live !== '') {
-    const liveN = Number(live) & 0xffff;
-    if (isLegacyAiRegisterCode(liveN)) return cfgType & 0xffff;
-    if (liveN === 0 && (cfgType & 0xffff) !== 0) return cfgType & 0xffff;
-  }
-  if (live != null && live !== '') {
-    const liveN = Number(live) & 0xffff;
-    if (isLegacyAiRegisterCode(liveN) && cfgType != null) return cfgType & 0xffff;
-    return liveN;
-  }
+  // The bridge reports the module's type register as is (bridge_mr02m_map.py
+  // _resolve_ai_sensor_type): codes 1..38 overlap the pre-1.0.9.1 enum, so a
+  // «legacy» reading would show the YAML type the module is not using, and a
+  // live 0 means the module has the channel off.
+  if (live != null && live !== '') return Number(live) & 0xffff;
   const mt = getModuleTypeCode(dev);
   const parent = mr02mAiPairParent(ch);
   if (mr02mAiIsNLeg(mt, ch) && parent) {

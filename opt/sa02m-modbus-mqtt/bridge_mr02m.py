@@ -205,6 +205,10 @@ class MR02mPoller(DevicePoller):
     def _ch_enabled(self, kind: str, ch: int) -> bool:
         return self._ch_cfg(kind, ch).get("enabled", True)
 
+    def _di_counter_on(self, ch: int) -> bool:
+        """MQTT tab «счётчик» checkbox (yaml `counter`); absent = on."""
+        return self._ch_cfg("di", ch).get("counter", True) is not False
+
     def _sys_ch_cfg(self, key: str) -> dict:
         for e in self._channels.get("sys", []):
             if isinstance(e, dict) and str(e.get("key", "")) == str(key):
@@ -322,12 +326,13 @@ class MR02mPoller(DevicePoller):
             title = self._ch_title("di", i, f"DI{i}")
             if title:
                 self.pub.pub_control_meta(self.device_id, n, "title", title)
-            cn = f"di_{i}_count"
-            self.pub.pub_control_meta(self.device_id, cn, "type", "value")
-            self.pub.pub_control_meta(self.device_id, cn, "readonly", "1")
-            ct = self._ch_title("di", i, f"DI{i} счётчик")
-            if ct:
-                self.pub.pub_control_meta(self.device_id, cn, "title", ct)
+            if self._di_counter_on(i):
+                cn = f"di_{i}_count"
+                self.pub.pub_control_meta(self.device_id, cn, "type", "value")
+                self.pub.pub_control_meta(self.device_id, cn, "readonly", "1")
+                ct = self._ch_title("di", i, f"DI{i} счётчик")
+                if ct:
+                    self.pub.pub_control_meta(self.device_id, cn, "title", ct)
             if i in self._di_button:
                 self._publish_press_meta(i)
 
@@ -369,9 +374,11 @@ class MR02mPoller(DevicePoller):
             self.pub.pub_control_meta(self.device_id, name, "readonly", "1")
             if units:
                 self.pub.pub_control_units(self.device_id, name, units)
+            # MQTT tab «Системные» label (yaml channels.sys[].label).
+            label = str(self._sys_ch_cfg(name).get("label") or "").strip()
             self.pub.pub_control_meta(
                 self.device_id, name, "title",
-                _make_title(title, ""),
+                _make_title(label or title, ""),
             )
 
     def _poll_do_di(self) -> None:
@@ -408,7 +415,8 @@ class MR02mPoller(DevicePoller):
         """DI pulse counters: Input Reg 77+2*(ch-1).. (uint32 lo-hi), FC04."""
         if self._di <= 0:
             return
-        chs = [i for i in range(1, self._di + 1) if self._ch_enabled("di", i)]
+        chs = [i for i in range(1, self._di + 1)
+               if self._ch_enabled("di", i) and self._di_counter_on(i)]
         if not chs:
             return
         max_ch = max(chs)
