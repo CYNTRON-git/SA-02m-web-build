@@ -44,6 +44,7 @@ from .modbus_io import (
     write_single,
 )
 from . import module_profiles
+from . import mtd_config
 
 REG_SERIAL_LO = 270
 REG_SIGNATURE = 290
@@ -1925,6 +1926,54 @@ def led_write(
     return payload
 
 
+# ── MTDx62-MB presence sensor ─────────────────────────────────────────────────
+# A scan row signed «MTDx62-MB» rides the SAME routes as every other window
+# (snapshot / holding / network); the sensor-specific work is mtd_config. It
+# has none of the MR identity block (270/290/320/330), so these branches run
+# BEFORE _read_live_identity — eight timeouts would not fit the window's tick.
+
+_MTD_NOT_VERIFIED = (
+    "Устройство на этом адресе не опознано как датчик MTD — запись отменена"
+)
+
+
+def _mtd_write_holding(
+    device_path: str, device: Dict[str, Any], reg: int, value: int
+) -> Dict[str, Any]:
+    # Range and register are refused before any frame; the sensor is then
+    # re-verified live, so a forged scan row cannot route a write elsewhere.
+    mtd_config.check_setting(reg, value)
+    send, close_transport = _open_transport(device_path, device)
+    try:
+        slave = _device_slave(device)
+        if mtd_config.verify_live(send, slave) is None:
+            raise RuntimeError(_MTD_NOT_VERIFIED)
+        write = mtd_config.write_setting(send, slave, reg, value)
+        payload = mtd_config.read_snapshot(send, slave, device)
+    finally:
+        close_transport()
+    payload["write"] = write
+    return payload
+
+
+def _mtd_apply_network(
+    device_path: str, device: Dict[str, Any], network: Dict[str, Any]
+) -> Dict[str, Any]:
+    result = mtd_config.apply_network(
+        device, network, lambda line: _open_transport(device_path, line), port=device_path
+    )
+    # The fresh snapshot is read on the line the sensor was last FOUND on —
+    # also when the change stopped half-way.
+    line = dict(result["device"])
+    send, close_transport = _open_transport(device_path, line)
+    try:
+        payload = mtd_config.read_snapshot(send, _device_slave(line), line)
+    finally:
+        close_transport()
+    payload["network_apply"] = result
+    return payload
+
+
 def snapshot_for_device(
     device_path: str,
     device: Dict[str, Any],
@@ -1942,6 +1991,10 @@ def snapshot_for_device(
     send, close_transport = _open_transport(device_path, device)
     try:
         slave = _device_slave(device)
+        if mtd_config.device_is_mtd(device):
+            payload = mtd_config.read_snapshot(send, slave, device)
+            payload["active_tab"] = active_tab
+            return payload
         if _device_is_carel(device):
             # Ни живой личности, ни сетевого блока: ПЛК не отвечает ни на один из
             # этих адресов, и восемь таймаутов не помещаются в такт окна.
@@ -2008,6 +2061,10 @@ def apply_network_settings(
     device: Dict[str, Any],
     network: Dict[str, Any],
 ) -> Dict[str, Any]:
+    if mtd_config.device_is_mtd(device):
+        # Its own validation (the sensor's baud list, parity N only) is the
+        # authority — the MR register codes below do not apply.
+        return _mtd_apply_network(device_path, device, network)
     baud = int(network.get("baudrate") or 0)
     baud_reg = baud // 100
     if baud_reg not in ALLOWED_BAUD_REG_CODES:
@@ -2084,6 +2141,8 @@ def write_allowed_holding(
     reg: int,
     value: int,
 ) -> Dict[str, Any]:
+    if mtd_config.device_is_mtd(device):
+        return _mtd_write_holding(device_path, device, reg, value)
     if _device_is_carel(device):
         raise ValueError(_CAREL_SINGLE_WRITE_REFUSED)
     if _device_is_led(device):
@@ -2142,6 +2201,8 @@ def write_bus_mode(
     слой после окна применения через /bacnet/verify)."""
     if not bus_mode.bus_mode_valid(mode):
         raise ValueError("Режим шины: только 0 (классический), 1 (Fast) или 2 (BACnet)")
+    if mtd_config.device_is_mtd(device):
+        raise ValueError("Полевая шина недоступна для этого семейства устройств")
     target = int(mode) & 0xFFFF
     send, close_transport = _open_transport(device_path, device)
     try:
@@ -2197,6 +2258,8 @@ def write_allowed_coil(
     coil: int,
     on: bool,
 ) -> Dict[str, Any]:
+    if mtd_config.device_is_mtd(device):
+        raise ValueError("Запись этой катушки через веб-окно не разрешена")
     if _device_is_carel(device):
         raise ValueError(_CAREL_SINGLE_WRITE_REFUSED)
     if _device_is_led(device):
