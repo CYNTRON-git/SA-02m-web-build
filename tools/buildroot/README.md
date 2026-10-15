@@ -44,6 +44,7 @@
 |----------|------|
 | VM VMware | `D:\SK-A40i-SODIMM\Linux\SK-A40i_Linux_build_machine\lubuntu64.vmx` |
 | Логин VM | `user` / `123456` (SSH: `192.168.150.128`, VMnet1) |
+| VirtualBox-вариант (ПК Оператора, 2026-10) | VM «A40-i», диск `E:\SK-A40i_Linux_build_machine\lubuntu64.vmdk`, NAT: `ssh -p 2222 user@127.0.0.1` |
 | Buildroot | `/home/user/src/buildroot-2022.08.8-sk-a40i` |
 | RT патч A40i | `patch-6.1-rc6-rt4.patch.gz` ([Сборка ядра на ВМ.txt](file:///C:/Users/admin/YandexDisk/ЦИНТРОН/Сборка%20линукс/Linux%20RT/Сборка%20ядра%20на%20ВМ.txt)) |
 
