@@ -88,6 +88,7 @@ PAT3='sa02m-[<{(]?[$]?[{(]?[A-Za-z_]{0,12}[Hh][Oo][Ss][Tt][Nn][Aa][Mm][Ee]'
 SANCTIONED_PREFIXES=(
     '/devices/sa02m-bridge'   # the bridge STATUS device (docs/MQTT_TOPICS.md, «sa02m-bridge»)
     '/devices/sa02m-rules-'   # per-scenario VIRTUAL device sa02m-rules-{id} (docs/MQTT_TOPICS.md:100; docs/contracts/cloud-scenarios.md §MQTT mirror) — retained on deployed boards since 1.0.6.37, a rename would orphan that subtree
+    '/devices/sa02m-audio/'   # the audio recorder's FIXED device id sa02m-audio (docs/contracts/audio-recorder.md §2, 1.0.7.4) — a subsystem id like sa02m-bridge, never hostname-derived; the trailing slash keeps the entry from excusing any longer sa02m-audio* id
 )
 
 # Sweep a LIST of files in three grep invocations rather than three per file —
