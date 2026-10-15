@@ -544,6 +544,13 @@ LEDGER = {
         "/usr/local/sbin/sa02m-homeconnect-web-trigger.sh restart",
         "/usr/local/sbin/sa02m-homeconnect-web-trigger.sh unlink",
     ],
+    # Audio recorder (docs/contracts/audio-recorder.md §16): the three verbs
+    # sa02m_audio_api.cgi nudges; the helper re-validates argv.
+    "etc/sudoers.d/sa02m-audio": [
+        "/usr/local/sbin/sa02m-audio-web-trigger.sh enable",
+        "/usr/local/sbin/sa02m-audio-web-trigger.sh disable",
+        "/usr/local/sbin/sa02m-audio-web-trigger.sh restart",
+    ],
     "etc/sudoers.d/sa02m-agent-api": [
         "/usr/local/sbin/sa02m-agent-api-ctl.sh enable",
         "/usr/local/sbin/sa02m-agent-api-ctl.sh disable",
@@ -716,6 +723,7 @@ PIN_REQUIRED = [
     "/usr/local/sbin/sa02m-alice-web-trigger.sh",
     "/usr/local/sbin/sa02m-homekit-web-trigger.sh",
     "/usr/local/sbin/sa02m-homeconnect-web-trigger.sh",
+    "/usr/local/sbin/sa02m-audio-web-trigger.sh",
     "/usr/local/sbin/sa02m-gateway-config-apply.sh",
 ]
 for helper in PIN_REQUIRED:

@@ -8,7 +8,7 @@
   <meta name="theme-color" content="#161618" id="theme-color-meta">
   <title>СА-02м — Панель управления</title>
   <link rel="icon" type="image/svg+xml" href="static/favicon_cyntron.svg?v=1.0.7.4&r=devhist1">
-  <link rel="stylesheet" href="static/css/main.css?v=1.0.7.4&r=lean1">
+  <link rel="stylesheet" href="static/css/main.css?v=1.0.7.4&r=audio1">
   <script>try{var _lt=localStorage.getItem('sa02m-theme')==='light';if(_lt)document.documentElement.setAttribute('data-theme','light');var _m=document.getElementById('theme-color-meta');if(_m)_m.setAttribute('content',_lt?'#ececf3':'#161618');}catch(e){}</script>
 </head>
 <body>
@@ -660,6 +660,71 @@
                 <p class="field-hint text-sm" id="agentapi-secret" hidden></p>
                 </div>
                 <p class="field-hint text-sm" id="agentapi-msg" role="status"></p>
+              </div>
+            </div>
+            <!-- On-command audio recorder (app/audio.js, sa02m_audio_api.cgi;
+                 docs/contracts/audio-recorder.md). Every value below is
+                 renderer-owned; clips and events are rebuilt on each poll. -->
+            <div class="ctrl-card system-manage-tile system-manage-alice-card system-manage-audio-card" id="audio-card">
+              <div class="ctrl-card-main">
+                <h3 class="system-manage-tile-title" data-i18n="Запись звука">Запись звука</h3>
+                <dl class="cloud-meta web-upd-meta">
+                  <div><dt data-i18n="Состояние">Состояние</dt><dd id="audio-state"><span class="badge badge-unk">…</span></dd></div>
+                  <div><dt data-i18n="Микрофон">Микрофон</dt><dd id="audio-mic">—</dd></div>
+                  <div><dt data-i18n="Носитель">Носитель</dt><dd id="audio-medium">—</dd></div>
+                  <div><dt data-i18n="Записей">Записей</dt><dd id="audio-count">—</dd></div>
+                </dl>
+                <p class="field-hint text-sm audio-removable-note" id="audio-removable-note" hidden>Записи на съёмном носителе может прочитать любой, у кого есть физический доступ к плате или носителю: файловая система носителя не хранит права доступа. Внутренняя память (по умолчанию) защищена правами.</p>
+                <div class="audio-record-row" id="audio-record-row" hidden>
+                  <div class="field audio-seconds-field">
+                    <label for="audio-seconds" data-i18n="Длительность, с">Длительность, с</label>
+                    <input type="number" id="audio-seconds" inputmode="numeric" min="2" max="30" step="1" value="10">
+                  </div>
+                  <button type="button" class="btn btn-sm btn-primary" id="audio-btn-record" onclick="audioRecord()" disabled data-i18n="Записать">Записать</button>
+                  <button type="button" class="btn btn-sm" id="audio-btn-stop" onclick="audioStop()" hidden data-i18n="Остановить">Остановить</button>
+                  <span class="mono audio-elapsed" id="audio-elapsed"></span>
+                </div>
+                <ul class="homekit-skip-list homeconnect-apps-list audio-clip-list" id="audio-clips" hidden></ul>
+                <audio class="audio-player" id="audio-player" controls preload="none" hidden></audio>
+                <details class="homekit-net audio-settings" id="audio-settings" hidden>
+                  <summary data-i18n="Настройки записи">Настройки записи</summary>
+                  <div class="field">
+                    <label for="audio-storage" data-i18n="Куда сохранять">Куда сохранять</label>
+                    <select id="audio-storage">
+                      <option value="emmc" data-i18n="Внутренняя память">Внутренняя память</option>
+                      <option value="usb" data-i18n="USB-накопитель">USB-накопитель</option>
+                      <option value="sdcard" data-i18n="Карта microSD">Карта microSD</option>
+                    </select>
+                  </div>
+                  <p class="field-hint text-sm audio-storage-warn" id="audio-storage-warn" hidden>Записи на съёмном носителе может прочитать любой, у кого есть физический доступ к плате или носителю: файловая система носителя не хранит права доступа. Внутренняя память (по умолчанию) защищена правами.</p>
+                  <label class="audio-ack-row" id="audio-ack-row" hidden><input type="checkbox" id="audio-ack"> <span data-i18n="Понимаю">Понимаю</span></label>
+                  <div class="field">
+                    <label for="audio-default-dur" data-i18n="Длительность по умолчанию, с">Длительность по умолчанию, с</label>
+                    <input type="number" id="audio-default-dur" inputmode="numeric" min="2" max="30" step="1">
+                  </div>
+                  <div class="field">
+                    <label for="audio-keep-files" data-i18n="Хранить записей, не больше">Хранить записей, не больше</label>
+                    <input type="number" id="audio-keep-files" inputmode="numeric" min="1" max="50" step="1">
+                  </div>
+                  <div class="field">
+                    <label for="audio-keep-mb" data-i18n="Объём, МБ, не больше">Объём, МБ, не больше</label>
+                    <input type="number" id="audio-keep-mb" inputmode="numeric" min="1" max="4096" step="1">
+                  </div>
+                  <div class="field">
+                    <label for="audio-keep-hours" data-i18n="Хранить, часов">Хранить, часов</label>
+                    <input type="number" id="audio-keep-hours" inputmode="numeric" min="1" max="168" step="1">
+                  </div>
+                  <button type="button" class="btn btn-sm" id="audio-btn-save" onclick="audioSave()" data-i18n="Сохранить">Сохранить</button>
+                </details>
+                <details class="homekit-net audio-events" id="audio-events" hidden>
+                  <summary data-i18n="Последние события">Последние события</summary>
+                  <ul class="homekit-skip-list audio-event-list" id="audio-event-list"></ul>
+                </details>
+                <div id="audio-msg" class="cloud-msg" role="status" hidden></div>
+              </div>
+              <div class="cloud-agent-ctrl system-manage-tile-foot">
+                <button type="button" class="btn btn-sm" id="audio-btn-restart" onclick="audioRestart()" hidden data-i18n="Перезапустить">Перезапустить</button>
+                <button type="button" class="btn btn-sm btn-primary" id="audio-btn-enable" onclick="audioToggle()" disabled>…</button>
               </div>
             </div>
             <div class="system-manage-tile system-manage-log-panel dash-span-top4">
@@ -1719,8 +1784,8 @@
   </div>
 </div>
 
-<script src="static/js/i18n.js?v=1.0.7.4&r=mtd3"></script>
-<script src="static/js/app.js?v=1.0.7.4&r=agentapi2"></script>
+<script src="static/js/i18n.js?v=1.0.7.4&r=audio1"></script>
+<script src="static/js/app.js?v=1.0.7.4&r=audio1"></script>
 <script src="static/js/app/status.js?v=1.0.7.4&r=vplcprobe1"></script>
 <script src="static/js/app/hw.js?v=1.0.7.4&r=devhist1"></script>
 <script src="static/js/app/rs485.js?v=1.0.7.4&r=audit39a"></script>
@@ -1742,6 +1807,7 @@
 <script src="static/js/app/homekit.js?v=1.0.7.4&r=syssub1"></script>
 <script src="static/js/app/homeconnect.js?v=1.0.7.4&r=syssub1"></script>
 <script src="static/js/app/agentapi.js?v=1.0.7.4&r=lean1"></script>
+<script src="static/js/app/audio.js?v=1.0.7.4&r=audio1"></script>
 <script src="static/js/devices-kpi-fit.js?v=1.0.7.4&r=kpifit1"></script>
 
 <div id="dev-modal" class="dev-modal" hidden>

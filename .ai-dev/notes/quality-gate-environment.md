@@ -36,6 +36,8 @@ assert inside a row that otherwise ran) still prints PASS for the row:
 | `path-mask-lib` | case P5 only: git-bash cannot create the dangling symlink the case needs; the summary line counts it as a skip, never as a pass (1.0.7.2) | Linux CI |
 | `web-update-launcher-guard` | cases L8-L11 only: no `flock` on git-bash (printed as SKIP) | Linux CI |
 | `status-vplc-probe` | two cases need `AF_UNIX` (Windows CPython has none): 5 PASS + 2 SKIP here, 7/7 under WSL (1.0.7.2) | WSL / Linux CI |
+| `py-unit-audio` | POSIX-only cases (fcntl leases, `dir_fd`, process groups, the real `timeout`): partial skip — roughly half the suite skips here and the row still prints PASS; the whole suite runs under WSL (1.0.7.4) | WSL / Linux CI |
+| `audio-trigger` | no `flock` on git-bash: whole row SKIP (exit 77), never a pass (1.0.7.4) | WSL / Linux CI |
 
 When reporting results, say "skipped", never "passed". A reviewer that reports a
 skipped row as a pass is making a false claim about verification.

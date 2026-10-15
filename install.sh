@@ -281,6 +281,13 @@ if [ "${SA02M_SKIP_RULES:-0}" != "1" ] && [ -f "$SCRIPT_DIR/scripts/06b-rules.sh
     log INFO "──── Опциональный стек: сценарии (sa02m-rules) ────"
     sa02m_run_module 06b-rules.sh || log WARN "06b-rules.sh завершился с ошибкой"
 fi
+# On-command audio recorder — on EVERY board, shipped off (Operator decision
+# F6; docs/contracts/audio-recorder.md). After 06b-rules.sh: its upload path
+# imports sa02m_rules.http_guard (shared dependency before its consumer).
+if [ "${SA02M_SKIP_AUDIO:-0}" != "1" ] && [ -f "$SCRIPT_DIR/scripts/15-audio.sh" ]; then
+    log INFO "──── Запись звука по команде (sa02m-audio, служба выключена) ────"
+    sa02m_run_module 15-audio.sh || log WARN "15-audio.sh завершился с ошибкой"
+fi
 if [ "${SA02M_SKIP_AGENT_API:-0}" != "1" ] && [ -f "$SCRIPT_DIR/scripts/13-agent-api.sh" ]; then
     log INFO "──── API для ИИ-агентов (sa02m-agent-api, служба выключена) ────"
     sa02m_run_module 13-agent-api.sh || log WARN "13-agent-api.sh завершился с ошибкой"

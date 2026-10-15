@@ -34,6 +34,10 @@ TMP_PREFIX = ".au-"
 TMP_SUFFIX = ".tmp"
 DAEMON_USER = "sa02m-audio"
 WEB_GROUP = "www-data"
+# Install footprint the panel dispatch probes for `not_installed`: the unit,
+# the package and the daemon's system user. OTA delivers the first two only.
+UNIT_FILE = "/etc/systemd/system/sa02m-audio.service"
+PACKAGE_DIR = "/opt/sa02m-audio/sa02m_audio"
 
 # ── Media (contract §Носители) ─────────────────────────────────────────────
 # One home for where a clip may be written. `mount_point` None = the rootfs
@@ -194,6 +198,24 @@ STATES = (
     STATE_DISABLED, STATE_CONF_UNREADABLE, STATE_MISSING_DEPS, STATE_IDLE,
     STATE_RECORDING, STATE_STOPPED, STATE_ERROR,
 )
+
+# ── Panel dispatch (contract §CGI) ─────────────────────────────────────────
+# A live daemon rewrites status.json at least every MEDIA_CHECK_S; older than
+# this, the panel says it is not running.
+STATUS_STALE_S = 30
+EVENTS_TAIL = 20
+# A valid clip is < 1 MB (30 s); anything bigger in a store is never streamed.
+DOWNLOAD_MAX_BYTES = 2 * MB
+MAX_BODY_BYTES = 16384
+MAX_QUERY_BYTES = 512
+# The privileged verbs the CGI may nudge — exactly the sudoers pin.
+TRIGGER_VERBS = ("enable", "disable", "restart")
+# Panel-only states: never written by the daemon.
+STATE_NOT_INSTALLED = "not_installed"
+STATE_NOT_RUNNING = "not_running"
+PANEL_STATES = (STATE_NOT_INSTALLED, STATE_NOT_RUNNING)
+# The removable media whose selection needs the explicit acknowledgement.
+REMOVABLE_MEDIA = (MEDIUM_USB, MEDIUM_SDCARD)
 
 # Event kinds in events.jsonl (contract §Журнал).
 EVENT_KINDS = (

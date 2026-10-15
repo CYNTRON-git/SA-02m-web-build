@@ -378,6 +378,28 @@ function safeStaticPath(urlPath) {
   return existsSync(abs) && statSync(abs).isFile() ? abs : null;
 }
 
+const AUDIO_STATUS = {
+  ok: true, state: 'idle', installed: true, enabled: true, live: true, mic: 'present',
+  mic_device: 'plughw:CARD=Microphone,DEV=0', medium: 'usb', medium_state: 'ok',
+  media: {}, recording: null, last_file: '20261015T120500Z-0a1b2d', last_status: 'ok',
+  last_duration_ms: 10000, last_size: 320044, last_peak_dbfs: -12, last_upload: 'off',
+  rate_used: 2, rate_max: 60, present: ['emmc', 'usb'],
+  clips: [
+    { id: '20261015T120500Z-0a1b2d', medium: 'usb', size: 320044, ts: 1760530000 },
+    { id: '20261015T120000Z-0a1b2c', medium: 'emmc', size: 960044, ts: 1760529700 },
+    { id: '20261014T235959Z-ffffff', medium: 'emmc', size: 64044, ts: 1760486399 },
+  ],
+  events: [
+    { ts: 1760529700, event: 'start', id: '20261015T120000Z-0a1b2c', medium: 'emmc', seconds: 30, detail: 'plughw:CARD=Microphone,DEV=0', source: 'mqtt' },
+    { ts: 1760530010, event: 'end', id: '20261015T120500Z-0a1b2d', medium: 'usb', status: 'ok', detail: '10000 ms, 320044 B, peak -12 dBFS' },
+  ],
+  conf: { enabled: true, storage: 'usb', device: 'auto', default_duration_s: 10, max_duration_s: 30,
+    keep_files: 50, keep_mb: 32, keep_hours: 24, delete_after_upload: true },
+  bounds: { max_duration_s: [2, 30], default_duration_s: [2, 30], keep_files: [1, 50], keep_hours: [1, 168],
+    keep_mb: { emmc: [1, 256], usb: [1, 4096], sdcard: [1, 4096] } },
+  removable: ['usb', 'sdcard'],
+};
+
 // CGI stub body. Default is `{}` — enough for the auth wrapper to see a 200
 // (never a 401) and for the guarded apply*Status() functions to no-op. The one
 // endpoint that MUST carry real data is services_ctrl.cgi: the app auto-fetches
@@ -392,6 +414,10 @@ function cgiBody(url) {
   // The «Устройства» tab (devices.js) polls the devices API, not a CGI: feed it
   // the worst-case card set (j), and an empty events journal.
   const path = url.split('?')[0];
+  // The «Запись звука» card (app/audio.js) in its fullest state: live, a
+  // removable medium selected (the persistent warning note), clips on two
+  // media, events with a long detail — measured, not left at «не отвечает».
+  if (path === '/cgi-bin/sa02m_audio_api.cgi') return JSON.stringify(AUDIO_STATUS);
   if (path === '/api/devices') return JSON.stringify(DEVICES_LIVE);
   if (path === '/api/devices/events') return JSON.stringify({ ok: true, events: [] });
   return '{}';

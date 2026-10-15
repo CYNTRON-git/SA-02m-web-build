@@ -4,8 +4,9 @@ The contract carries a second copy of lists the code owns once: §2 controls
 (`constants.CONTROLS`), §3 last_status values (`constants.LAST_STATUSES`),
 §5 media (`constants.MEDIA`), §8 conf keys + defaults (`config.KEYS`,
 `config.RecorderConfig`), §9 states and status.json keys (`constants.STATES`,
-`service.STATUS_KEYS`), §10 event kinds (`constants.EVENT_KINDS`), and every
-"`NAME` = <number>" it quotes. Each is parsed out of the markdown and compared;
+`service.STATUS_KEYS`), §10 event kinds (`constants.EVENT_KINDS`), §15 panel
+actions and dispatch codes (`api.MUTATIONS`, `api.ERROR_CODES`), §16 helper
+verbs (`constants.TRIGGER_VERBS`), and every "`NAME` = <number>" it quotes. Each is parsed out of the markdown and compared;
 a table that is missing or parses to zero rows FAILS — an empty parse never
 reads as "nothing differs".
 
@@ -18,6 +19,7 @@ import os
 import re
 import unittest
 
+from sa02m_audio import api
 from sa02m_audio import config
 from sa02m_audio import constants as C
 from sa02m_audio import service
@@ -139,6 +141,17 @@ class ContractTablesTest(unittest.TestCase):
                          set(C.EVENT_KINDS))
         for key in service.EVENT_KEYS:
             self.assertIn("`%s`" % key, block, key)
+
+    def test_panel_actions_and_dispatch_codes(self):
+        block = self.block(15)
+        actions = {first_code(r[0]) for r in table_by_header(block, "Действие")}
+        self.assertEqual(actions, {"status", "download"} | set(api.MUTATIONS))
+        codes = {first_code(r[0]) for r in table_by_header(block, "Код")}
+        self.assertEqual(codes, set(api.ERROR_CODES))
+
+    def test_trigger_verbs(self):
+        verbs = {first_code(r[0]) for r in table_by_header(self.block(16), "Глагол")}
+        self.assertEqual(verbs, set(C.TRIGGER_VERBS))
 
     def test_quoted_constants_match(self):
         quoted = _QUOTED_CONSTANT.findall(self.text)

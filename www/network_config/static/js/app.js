@@ -354,6 +354,7 @@ function systemStopIntegrations() {
   if (window.homekitTabDestroy) window.homekitTabDestroy();
   if (window.homeconnectTabDestroy) window.homeconnectTabDestroy();
   if (window.agentApiTabDestroy) window.agentApiTabDestroy();
+  if (window.audioTabDestroy) window.audioTabDestroy();
   if (window.aliceTabDestroy) window.aliceTabDestroy();
 }
 
@@ -377,6 +378,7 @@ function systemLoadSub(key) {
     if (typeof loadKernelControl === 'function') loadKernelControl(false);
     if (typeof fetchSystemWidget === 'function') fetchSystemWidget();
     if (window.agentApiTabInit) window.agentApiTabInit();
+    if (window.audioTabInit) window.audioTabInit();
     setTimeout(function () {
       if (gen !== _systemLoadGen) return;
       if (typeof loadLog === 'function') loadLog();

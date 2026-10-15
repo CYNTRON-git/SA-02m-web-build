@@ -2771,11 +2771,48 @@ html[data-theme="light"] .homeconnect-verify-link { color: var(--cyan-hover); }
 .sh-pick-manual-row > input { flex: 1 1 auto; min-width: 0; min-height: var(--tap); }
 .sh-pick-manual-row > .btn { flex: 0 0 auto; min-height: var(--tap); }
 
+/* ── Audio recorder card (#audio-card, app/audio.js) ─────────────────────────
+   Reuses the HomeKit / Home Connect list, details and message classes; no
+   new colour pairs — only layout, existing tokens. */
+#audio-btn-restart[hidden],
+#audio-btn-stop[hidden] { display: none !important; }
+.audio-record-row {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: flex-end;
+  gap: 6px 8px;
+  margin-top: 8px;
+}
+.audio-record-row[hidden] { display: none !important; }
+.audio-record-row .audio-seconds-field { flex: 0 0 96px; margin-bottom: 0; }
+.audio-record-row .btn { min-height: var(--tap); }
+.audio-elapsed { font-size: .8rem; color: var(--text-sec); align-self: center; }
+.audio-clip-list { margin-top: 8px; max-height: 300px; }
+.audio-clip-list li { padding: 6px 0; border-bottom: 1px solid var(--border); }
+.audio-clip-list .homeconnect-app-name,
+.audio-clip-list .homeconnect-app-meta { flex: 1 1 100%; }
+.audio-clip-actions { display: flex; flex-wrap: wrap; gap: 6px; }
+.audio-clip-actions .btn { min-height: var(--tap); padding: 0 10px; }
+.audio-player { display: block; width: 100%; margin-top: 6px; }
+.audio-player[hidden] { display: none !important; }
+.audio-removable-note,
+.audio-storage-warn { margin: 6px 0 0 !important; }
+.audio-ack-row {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  min-height: var(--tap);
+  font-size: .8rem;
+}
+.audio-ack-row[hidden] { display: none !important; }
+.audio-event-list { max-height: 200px; }
+
 #alice-msg.cloud-msg,
 #cloud-ctrl-msg.cloud-msg,
 #sh-bind-msg.cloud-msg,
 #homekit-msg.cloud-msg,
-#homeconnect-msg.cloud-msg {
+#homeconnect-msg.cloud-msg,
+#audio-msg.cloud-msg {
   margin-top: 4px;
   padding: 8px 12px;
   border-radius: var(--radius-sm);
@@ -2786,7 +2823,8 @@ html[data-theme="light"] .homeconnect-verify-link { color: var(--cyan-hover); }
 #cloud-ctrl-msg.cloud-msg.is-ok,
 #sh-bind-msg.cloud-msg.is-ok,
 #homekit-msg.cloud-msg.is-ok,
-#homeconnect-msg.cloud-msg.is-ok {
+#homeconnect-msg.cloud-msg.is-ok,
+#audio-msg.cloud-msg.is-ok {
   background: var(--badge-ok-bg);
   color: var(--green);
   border: 1px solid var(--badge-ok-border);
@@ -2795,7 +2833,8 @@ html[data-theme="light"] .homeconnect-verify-link { color: var(--cyan-hover); }
 #cloud-ctrl-msg.cloud-msg.is-err,
 #sh-bind-msg.cloud-msg.is-err,
 #homekit-msg.cloud-msg.is-err,
-#homeconnect-msg.cloud-msg.is-err {
+#homeconnect-msg.cloud-msg.is-err,
+#audio-msg.cloud-msg.is-err {
   background: var(--badge-err-bg);
   color: var(--red);
   border: 1px solid var(--badge-err-border);

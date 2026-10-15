@@ -290,6 +290,16 @@ daemon-access-effect|usr/local/sbin/sa02m-daemon-access.sh|probe yes "$DAEMON" r
 daemon-access-effect|usr/local/sbin/sa02m-daemon-access.sh|ops+=("f:$CONF:0640:$WEB_UID:$DAEMON_GID:${WEB_GID:-x},$DAEMON_GID")
 daemon-access-effect|usr/local/sbin/sa02m-daemon-access.sh|os.fchown(fd, uid, gid)
 spodes-no-gpl|opt/sa02m-modbus-mqtt/bridge_bus.py|"mixed_framing"
+audio-trigger|usr/local/sbin/sa02m-audio-web-trigger.sh|timeout 10 systemctl stop "$UNIT" >/dev/null 2>&1 || true
+audio-trigger|usr/local/sbin/sa02m-audio-web-trigger.sh|au_log "conf read of $CONF gave no 0/1 answer
+audio-cgi|www/network_config/cgi-bin/sa02m_audio_api.cgi|TRIG_OUT=$(timeout 11 sudo -n /usr/local/sbin/sa02m-audio-web-trigger.sh "$VERB" 2>/dev/null) || TRIG_RC=$?
+audio-cgi|www/network_config/cgi-bin/sa02m_audio_api.cgi|au_audit "publish ${TOPIC##*/controls/}=$PAYLOAD result=$DONE"
+cgi-csrf-policy|www/network_config/cgi-bin/sa02m_audio_api.cgi|web_csrf_validate
+sudoers-pin-contract|etc/sudoers.d/sa02m-audio|/usr/local/sbin/sa02m-audio-web-trigger.sh restart
+installer-order|install.sh|sa02m_run_module 15-audio.sh
+installer-svc-policy-gate|scripts/15-audio.sh|sa02m_svc_capture "$UNIT"
+daemon-least-privilege|etc/systemd/system/sa02m-audio.service|SupplementaryGroups=audio
+daemon-access-effect|usr/local/sbin/sa02m-daemon-access.sh|probe no "$WEB_USER" w "$d"
 '
 
 command -v git >/dev/null 2>&1 || { echo "comment-mutation-proof: FAIL — git is required to build the pristine copy"; exit 1; }

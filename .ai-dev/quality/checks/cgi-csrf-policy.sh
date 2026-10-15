@@ -125,6 +125,7 @@ web_update_cancel.cgi|["sudo", "-n", "/usr/bin/systemctl", "stop", "sa02m-update
 web_update_check.cgi|sudo -n /usr/local/sbin/sa02m-web-update-check --manual
 web_update_upload.cgi|UPLOAD_JSON=$(
 sa02m_agent_api.cgi|timeout 15 sudo -n /usr/local/sbin/sa02m-agent-api-ctl.sh enable
+sa02m_audio_api.cgi|TRIG_OUT=$(timeout 11 sudo -n /usr/local/sbin/sa02m-audio-web-trigger.sh "$VERB" 2>/dev/null) || TRIG_RC=$?
 '
 # Notes on three anchors: services_ctrl.cgi runs `sudo CTL list` (a read) on
 # GET at :58 BEFORE the token at :71 — the anchor is the ACTION launch, not the
@@ -136,6 +137,10 @@ sa02m_agent_api.cgi|timeout 15 sudo -n /usr/local/sbin/sa02m-agent-api-ctl.sh en
 # trigger token (www-data sockets, no sudo) so the sweep cannot discover it —
 # ledgered by declaration; its "mutation" is the outbound probe launch, and it
 # stays outside MUTATING_FLOOR (the sweep floor assumes triggered rows).
+# sa02m_audio_api.cgi carries TWO mutators on one POST branch — the
+# mosquitto_pub of a record/delete command and the sudo nudge; the anchor is
+# the sudo line, and the publish sits after the same token check (read, not
+# pinned: an anchor matches exactly one line). Its GET download is read-only.
 READ_ONLY_SUDO='
 mqtt_status.cgi|sudo -n cat /etc/sa02m_mqtt.env + sudo -n sa02m-mqtt-external-info.py: reads only, nothing written
 status.cgi|sudo -n CTL list + sudo -n rs485-stats-helper driver/inuse: reads only (dashboard poll)
