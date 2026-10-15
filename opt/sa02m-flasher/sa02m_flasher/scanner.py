@@ -3,6 +3,7 @@
 Сканирование RS-485: сначала быстрый скан WB extended (0xFD 0x46 0x01) по всем выбранным скоростям, затем опрос диапазона адресов по всем скоростям. Порядок скоростей: 115200 → 38400 → 19200 → 9600.
 Через Modbus TCP (шлюз, MBAP) или RTU over TCP (сырой RTU по сокету) доступна только фаза 2 (стандартный Modbus); 0xFD по TCP обычно не поддерживается.
 """
+import logging
 import threading
 import time
 from enum import Enum
@@ -32,7 +33,10 @@ from .serial_port import (
 )
 from .flash_protocol import FlasherProtocol
 from . import module_profiles
+from . import mtd_config, mtd_link
 from .serial_ranges import signature_from_serial
+
+log = logging.getLogger(__name__)
 
 BROADCAST_ADDR = modbus_rtu.BROADCAST_ADDR
 # Адреса для broadcast: 255 (MP-02m), 0xFD (быстрый Modbus / расширенный WB)
@@ -716,6 +720,63 @@ def _apply_carel_fc17(
     )
 
 
+def _apply_mtd_fingerprint(
+    dev: DeviceInfo,
+    port: str,
+    address: int,
+    baud: int,
+    parity: str,
+    stop: int,
+    tcp_ep: Optional[Tuple[str, int]] = None,
+    cancel_cb: Optional[Callable[[], bool]] = None,
+    ser: Optional[Any] = None,
+) -> DeviceInfo:
+    """Recognise an MTDx62-MB presence sensor by the MQTT scan's own rule
+    (mtd_link; the bridge test test_mtd_link_parity.py holds the two equal).
+
+    Called where a row came out serial-less (holding 270..271 did not answer):
+    without it the sensor was listed as a module in its bootloader. RS-485 only
+    (a TCP gateway's line baud is unknown) and only up to 57600 (the sensor's
+    fastest). Holding 7..9, then input 0 and input 3; on a hit one more read of
+    input 4..5 for the firmware version. Any failure = not an MTD, the row goes
+    on unchanged.
+    """
+    if tcp_ep is not None or int(baud) > mtd_link.MTD_MAX_BAUD:
+        return dev
+
+    def _words(reader, start: int, count: int) -> Optional[List[int]]:
+        _a, payload = reader(
+            port, address, start, count, baud, parity, stop, SCAN_TIMEOUT_MS,
+            cancel_cb=cancel_cb, ser=ser,
+        )
+        if not payload:
+            return None
+        words = parse_regs_be_u16(payload)
+        return words if len(words) == count else None
+
+    try:
+        ident = _words(_read_regs, mtd_config.HR_DEVICE_ID, len(mtd_config.NETWORK_REGS))
+        if not mtd_link.link_triple_match(ident, address):
+            return dev
+        presence = _words(_read_input_regs, mtd_config.IR_PRESENCE, 1)
+        status = _words(_read_input_regs, mtd_config.IR_DEVICE_STATUS, 1)
+        if not mtd_link.inputs_match(presence, status):
+            return dev
+        ver = _words(_read_input_regs, mtd_config.IR_APP_VERSION, 2)
+    except Exception as exc:  # noqa: BLE001 — a scan row must survive, but never silently
+        # Transport errors are already (None, None) from _transact_raw; what
+        # reaches here is a defect, so it is named, and the row goes on as it was.
+        log.warning("MTD probe failed on %s addr %s @%s: %r", port, address, baud, exc)
+        return dev
+    return replace(
+        dev,
+        signature=mtd_config.MTD_MODEL,
+        app_version=mtd_config.version_text(ver[0], ver[1]) if ver else "—",
+        bootloader_version="—",
+        in_bootloader=False,
+    )
+
+
 def _read_regs_broadcast(
     port: str,
     start: int,
@@ -1056,10 +1117,17 @@ def scan_address(
                     # Несущий случай: ПЛК Carel отвечает на рег. 0, но серийного
                     # 270–271 у него нет — без FC17 строка уходит в таблицу как
                     # «модуль в бутлоадере» (оба ПЛК стенда именно так и выглядели).
-                    dev = _apply_carel_fc17(
-                        dev, port, address, baud, parity, stopbits, SCAN_TIMEOUT_MS,
+                    # The MTD presence sensor looks the same: its rule first
+                    # (three short reads), and then it needs no FC17.
+                    dev = _apply_mtd_fingerprint(
+                        dev, port, address, baud, parity, stopbits,
                         tcp_ep=tcp_ep, cancel_cb=cancel_cb, ser=ser_local,
                     )
+                    if dev.signature != mtd_config.MTD_MODEL:
+                        dev = _apply_carel_fc17(
+                            dev, port, address, baud, parity, stopbits, SCAN_TIMEOUT_MS,
+                            tcp_ep=tcp_ep, cancel_cb=cancel_cb, ser=ser_local,
+                        )
                     _emit(_tag(dev))
                     return _tag(dev)
                 serial_val = _parse_serial(pl_ser)

@@ -33,6 +33,7 @@
     lastScanRequest: null,
     configOpen: false,
     configBusy: false,
+    configLinkBusy: false,
     configBackgroundBusy: false,
     configDeviceIdx: -1,
     configTab: '',
@@ -1466,6 +1467,9 @@
     // Лента — тоже до подсказок MP/MR: её сигнатура не проходит батч-прошивочный
     // отбор, и без этой ветки строка не открывалась бы двойным кликом.
     if (signatureLooksLikeLed(n)) return 'led';
+    // MTDx62-MB presence sensor: the daemon's scan writes its model into the
+    // signature (mtd_config.MTD_MODEL) — also before the MP/MR hints.
+    if (n === 'MTDX62-MB') return 'mtd';
     if (n.includes('SENSOR') || n.startsWith('SENS.') || n === 'SENS' || n.startsWith('SENS')) return 'dtv';
     if (n.includes('CE02M3') || n.includes('CE-02M-3') || n.includes('CE-02M3')) return 'ce';
     if (isMpModuleSignatureForFirmwareHint(raw)) return 'mr';
@@ -1481,6 +1485,7 @@
     if (kind === 'ce') return 'Анализатор сети CE-02м-3';
     if (kind === 'carel') return 'Приточная установка Carel';
     if (kind === 'led') return ledWindow().title();
+    if (kind === 'mtd') return mtdWindow().title();
     return String(sig || '').trim() || 'Модуль MR/MP-02м';
   }
 
@@ -1569,6 +1574,19 @@
       stub.carel = {};
     }
     if (kind === 'led') stub.led = {};
+    if (kind === 'mtd') {
+      // The sensor answers on the line the scan found it on; the house line
+      // profile (MR 115200 for an unknown signature) would move the window —
+      // configDeviceFromSnapshot follows info.line for this kind.
+      stub.info.model = String(sig || '').trim();
+      stub.info.line = {
+        baudrate: dev.baudrate || line.baudrate,
+        parity: dev.parity || 'N',
+        stopbits: dev.stopbits || 1,
+      };
+      stub.network.writable = true;
+      stub.mtd = {};
+    }
     if (kind === 'mr') {
       const caps = capsFromSignature(sig) || [0, 0, 0, 0];
       stub.mr = {
@@ -1824,7 +1842,16 @@
 
   function ensureConfigCloseEnabled() {
     const closeBtn = configModalEl('flasher-config-close-btn');
-    if (closeBtn) closeBtn.disabled = false;
+    if (closeBtn) closeBtn.disabled = !!state.configLinkBusy;
+  }
+
+  /** A link change (address/baud) and the bridge relink after it must finish:
+      closing the window restores the port lease and restarts the bridge, and
+      a page reload would drop the relink. While it runs, Close is disabled and
+      F5 / tab close asks first (plan mtd-settings-window F4). */
+  function setConfigLinkBusy(busy) {
+    state.configLinkBusy = !!busy;
+    ensureConfigCloseEnabled();
   }
 
   function aiSensorEditGuardAdd(channel) {
@@ -1963,6 +1990,18 @@
   function configDeviceFromSnapshot(snap) {
     const dev = currentConfigDevice();
     if (!dev || !snap || !snap.info || !snap.network) return;
+    if (snap.kind === 'mtd') {
+      // The MTD's network block is its registers 7..9, which may hold values
+      // the sensor applies only after a power cycle: the window keeps talking
+      // on the line the daemon actually used (info.address / info.line).
+      const ln = snap.info.line || {};
+      if (snap.info.address != null) dev.address = snap.info.address;
+      if (ln.baudrate) dev.baudrate = ln.baudrate;
+      if (ln.parity) dev.parity = ln.parity;
+      if (ln.stopbits) dev.stopbits = ln.stopbits;
+      dev.app_version = snap.info.app_version || dev.app_version;
+      return;
+    }
     dev.address = snap.network.address;
     dev.baudrate = snap.network.baudrate;
     dev.parity = snap.network.parity;
@@ -2610,6 +2649,7 @@
   function patchConfigLiveReadouts(snap) {
     if (snap && snap.kind === 'carel') return patchCarelLiveReadouts(snap);
     if (snap && snap.kind === 'led') return ledWindow().patch(snap);
+    if (snap && snap.kind === 'mtd') return mtdWindow().patch(snap);
     if (!snap || snap.kind !== 'mr') return;
     const mr = snap.mr || {};
     const mcu = mr.mcu || {};
@@ -2709,6 +2749,7 @@
   function configTabsForSnapshot(snap) {
     if (!snap) return [];
     if (snap.kind === 'led') return ledWindow().tabs(snap);
+    if (snap.kind === 'mtd') return mtdWindow().tabs(snap);
     if (snap.kind === 'carel') {
       const alarms = ((snap.carel || {}).alarms || []).length;
       return [
@@ -3657,6 +3698,35 @@
     return _ledWindow;
   }
 
+  let _mtdWindow = null;
+  /** The MTD presence-sensor window (flasher/mtd.js): the same host as the
+      strip, plus the bridge relink helper and the link-change close guard. */
+  function mtdWindow() {
+    if (!_mtdWindow) {
+      if (!window.sa02mMtdWindow) throw new Error('flasher/mtd.js не загружен');
+      if (!window.sa02mBridgeRelink) throw new Error('flasher/bridge-relink.js не загружен');
+      _mtdWindow = window.sa02mMtdWindow.create({
+        escapeHtml: escapeHtml,
+        t: t,
+        toast: toast,
+        configModalEl: configModalEl,
+        configApi: configApi,
+        getState: function () { return state; },
+        applyConfigSnapshot: applyConfigSnapshot,
+        setConfigBusy: setConfigBusy,
+        setConfigBanner: setConfigBanner,
+        setLinkBusy: setConfigLinkBusy,
+        currentConfigDevice: currentConfigDevice,
+        currentPort: function () { return $('flasher-port').value; },
+        invalidatePolls: function () { ++_configPollSeq; },
+        activeElement: function () { return document.activeElement; },
+        refreshSnapshot: function () { return refreshConfigSnapshot(false, 'full'); },
+        bridge: window.sa02mBridgeRelink,
+      });
+    }
+    return _mtdWindow;
+  }
+
   /** Тег вкладки для опроса. У ленты фоновый `panel`-такт вкладки «Сцена» идёт с
       пустым active_tab — базовый блок 400×20 без дорогих 453/494/516/640
       (план §8, F6); остальные виды шлют вкладку как есть. */
@@ -4097,6 +4167,7 @@
     }
     let html = '';
     if (snap.kind === 'carel') html = renderCarelTab(snap);
+    else if (snap.kind === 'mtd') html = mtdWindow().render(snap, state.configTab);
     else if (state.configTab === 'network') html = renderNetworkTab(snap);
     else if (snap.kind === 'led' && /^led_/.test(state.configTab)) html = ledWindow().render(snap, state.configTab);
     else if (state.configTab === 'relay' && snap.kind === 'mr') html = renderModuleRelayTab(snap);
@@ -4120,6 +4191,7 @@
      таблиц входов/выходов и ввод оператора. */
   function configBodyRenderKey(snap) {
     if (snap && snap.kind === 'led') return ledWindow().renderKey(snap, state.configTab);
+    if (snap && snap.kind === 'mtd') return mtdWindow().renderKey(snap, state.configTab);
     if (!snap || snap.kind !== 'carel') return '';
     const c = carelBlock(snap);
     const counts = CAREL_IO_KEYS.concat(['alarms'])
@@ -4129,7 +4201,7 @@
   }
 
   function configBodyIsPatchable(snap) {
-    if (!snap || (snap.kind !== 'carel' && snap.kind !== 'led') || !state.configBodyKey) return false;
+    if (!snap || (snap.kind !== 'carel' && snap.kind !== 'led' && snap.kind !== 'mtd') || !state.configBodyKey) return false;
     const host = configModalEl('flasher-config-body');
     if (!host || !host.firstChild) return false;
     return state.configBodyKey === configBodyRenderKey(snap);
@@ -4193,14 +4265,19 @@
     const sub = configModalEl('flasher-config-sub');
     const kicker = configModalEl('flasher-config-kicker');
     if (title) title.textContent = deviceConfigTitle(merged.kind, merged.info && merged.info.signature);
-    if (kicker) kicker.textContent = merged.kind === 'dtv' ? 'Настройка датчика' : merged.kind === 'ce' ? 'Настройка анализатора сети' : merged.kind === 'carel' ? 'Настройка приточной установки' : merged.kind === 'led' ? ledWindow().kicker() : 'Настройка модуля расширения';
+    if (kicker) kicker.textContent = merged.kind === 'dtv' ? 'Настройка датчика' : merged.kind === 'ce' ? 'Настройка анализатора сети' : merged.kind === 'carel' ? 'Настройка приточной установки' : merged.kind === 'led' ? ledWindow().kicker() : merged.kind === 'mtd' ? mtdWindow().kicker() : 'Настройка модуля расширения';
     if (sub) {
       const info = merged.info || {};
       const line = `${info.address ?? '—'} адр. · ${(merged.network && merged.network.baudrate) || '—'} ${(merged.network && merged.network.parity) || 'N'}${(merged.network && merged.network.stopbits) || 1}`;
       // У Carel серийного номера нет (holding 270/271 ПЛК не отдаёт) — вместо
       // прочерка в подзаголовке стоит модель из ответа на функцию 17.
+      // The MTD has no serial either; its header names the line the daemon
+      // actually talked on (info.line), not the registers 7..9.
+      const ln = info.line || {};
       sub.textContent = merged.kind === 'carel'
         ? `${line} · ${info.model || carelModelLabel(info.signature)}`
+        : merged.kind === 'mtd'
+        ? `${info.address ?? '—'} адр. · ${ln.baudrate || '—'} ${ln.parity || 'N'}${ln.stopbits || 1} · ${info.model || info.signature || ''}`
         : `${line} · ${serialHex(info.serial)}`;
     }
     if (!state.configTab) state.configTab = 'info';
@@ -4265,6 +4342,7 @@
     state.configNetworkDirty = false;
     state.configBodyKey = '';
     state.configBusy = false;
+    state.configLinkBusy = false;
     state.configBackgroundBusy = false;
     clearAiConfigEditState();
     configModalEl('flasher-config-modal').hidden = false;
@@ -4283,6 +4361,10 @@
   }
 
   function closeConfigModal() {
+    if (state.configLinkBusy) {
+      toast('Дождитесь окончания смены параметров связи', 'warn');
+      return;
+    }
     stopConfigPolling();
     ++_configPollSeq; // инвалидируем все текущие in-flight запросы этой сессии
     ensureConfigCloseEnabled();
@@ -5110,6 +5192,7 @@
     if (!body) return;
     wireCarelBodyEvents(body);
     if (state.configSnapshot && state.configSnapshot.kind === 'led') ledWindow().wire(body);
+    if (state.configSnapshot && state.configSnapshot.kind === 'mtd') mtdWindow().wire(body);
     const saveNet = body.querySelector('#cfg-net-save-btn');
     if (saveNet) saveNet.addEventListener('click', saveConfigNetwork);
     const refreshNet = body.querySelector('#cfg-net-refresh-btn');
@@ -5906,7 +5989,7 @@
       if (ev.key === 'Escape' && state.configOpen) closeConfigModal();
     });
     window.addEventListener('beforeunload', (ev) => {
-      if (state.scanJobId || state.flashJobId) {
+      if (state.scanJobId || state.flashJobId || state.configLinkBusy) {
         ev.preventDefault();
         ev.returnValue = '';
       }

@@ -15,9 +15,11 @@ Supported v1 subset (contract: docs/contracts/template-device.md):
   * reg_type: coil, discrete, input, holding
   * format:   u16, s16, u32, s32, float  (32-bit honours word_order)
   * fields:   address, scale, offset, word_order, units, type (WB control type),
-              readonly, enabled, min/max (meta only), and device.setup holding
+              readonly, enabled, and device.setup holding
               writes.
   * writable: a holding/coil channel with readonly:false (writeback subscribed).
+  * min/max: not read by the bridge (accepted and ignored; the flasher's
+              MTD settings window reads them).
 
 Anything outside that subset is SKIPPED LOUDLY (one WARN per channel, dropped
 from the poll set) — the bridge never invents a value it cannot honestly decode:

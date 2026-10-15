@@ -732,5 +732,64 @@ class TestShippedMp02Ahu(unittest.TestCase):
                 self.assertEqual(fake.writes, [("coil", coil, on)])
 
 
+class TestShippedMtdx62(unittest.TestCase):
+    """The shipped MTDx62-MB template (templates/config-mtdx62-mb.json).
+
+    The flasher's MTD settings window reads each writable channel's `min`/`max`
+    from this file (docs/contracts/template-device.md §3: the bridge itself
+    does not read them). Pinned here: adding the ranges changed nothing the
+    bridge polls — the same 11 channels, no loud skip — and every writable
+    channel carries a usable range: numeric, min <= max, both bounds on the
+    channel's scale grid and inside the u16 raw range.
+    """
+
+    DEVICE_ID = "mtdx62-mb-COM3-20"
+    CHANNELS = ["presence_status", "illuminance", "target_distance", "device_status",
+                "detection_distance", "detection_shielding_distance",
+                "admission_confirmation_delay", "departure_disappearance_delay",
+                "trigger_sensitivity", "maintain_sensitivity",
+                "entrance_distance_reduction"]
+
+    def _raw_channels(self):
+        doc = json.loads((TEMPLATES_DIR / "config-mtdx62-mb.json").read_text(encoding="utf-8"))
+        return doc["device"]["channels"]
+
+    def test_parses_all_11_channels_without_skip(self):
+        logger_name = f"dev.{self.DEVICE_ID}"
+        with self.assertLogs(logger_name, level="WARNING") as cm:
+            import logging
+            logging.getLogger(logger_name).warning("sentinel")
+            p, _pub = _poller("mtdx62-mb", TEMPLATES_DIR, id=self.DEVICE_ID,
+                              port="/dev/COM3", baudrate=19200, address=20)
+        self.assertEqual(cm.output, [f"WARNING:{logger_name}:sentinel"],
+                         "mtdx62-mb load emitted a skip WARN or an ERROR")
+        self.assertFalse(p._load_error)
+        self.assertEqual([c.name for c in p._channels], self.CHANNELS)
+
+    def test_every_writable_channel_carries_a_range_on_its_grid(self):
+        writable = [ch for ch in self._raw_channels() if ch.get("readonly") is False]
+        self.assertEqual(len(writable), 7, "non-vacuous: the seven holding settings")
+        for ch in writable:
+            with self.subTest(channel=ch["name"]):
+                self.assertEqual(ch["reg_type"], "holding")
+                lo, hi = ch.get("min"), ch.get("max")
+                for bound in (lo, hi):
+                    self.assertIsInstance(bound, (int, float))
+                    self.assertNotIsInstance(bound, bool)
+                self.assertLessEqual(lo, hi)
+                scale = ch.get("scale", 1)
+                for bound in (lo, hi):
+                    steps = bound / scale
+                    self.assertAlmostEqual(steps, round(steps), places=6,
+                                           msg=f"{bound} is off the {scale} grid")
+                    self.assertTrue(0 <= round(steps) <= 0xFFFF, bound)
+
+    def test_read_only_channels_carry_no_range(self):
+        for ch in self._raw_channels():
+            if ch.get("readonly") is not False:
+                self.assertNotIn("min", ch, ch["name"])
+                self.assertNotIn("max", ch, ch["name"])
+
+
 if __name__ == "__main__":
     unittest.main()

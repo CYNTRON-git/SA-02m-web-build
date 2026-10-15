@@ -1,4 +1,4 @@
-"""MQTT-driven append of DTV / CE-02m-3 devices into the Alice document.
+"""MQTT-driven append of DTV / CE-02m-3 / MTDx62-MB devices into the Alice document.
 
 One home — the same `sa02m-alice-devices.conf` the UI and both client
 profiles already read. Discovery watches Wiren-style `/devices/+/meta/name`
@@ -36,12 +36,19 @@ WATCH_TOPICS = (
 _DEVICES_PREFIX = "/devices/"
 _META_RE = re.compile(r"^/devices/([^/]+)/meta/(name|driver)$")
 _CONTROL_RE = re.compile(r"^/devices/([^/]+)/controls/([^/]+)$")
-_ID_TAIL_RE = re.compile(r"^(?:dtv|ce02m3|spodes)-([A-Za-z0-9]+)-(\d+)$")
+_ID_TAIL_RE = re.compile(r"^(?:dtv|ce02m3|spodes|mtdx62-mb)-([A-Za-z0-9]+)-(\d+)$")
+_ID_ADDR_RE = re.compile(r"-(\d+)$")
 _SPODES_TCP_RE = re.compile(r"^spodes-tcp-(?:[0-9]+_){3}([0-9]+)-(\d+)$")
 
 DTV_PREFIX = "dtv-"
 CE_PREFIX = "ce02m3-"
 SPODES_PREFIX = "spodes-"
+# The id the MQTT tab mints for the MTDx62-MB template entry (mqtt.js
+# makeDeviceId / makeRtuTcpDeviceId: the template name is the prefix).
+MTD_PREFIX = "mtdx62-mb-"
+# Its template channels (opt/sa02m-modbus-mqtt/templates/config-mtdx62-mb.json).
+_MTD_MOTION = "presence_status"
+_MTD_LUX = "illuminance"
 
 # First existing control wins per instance — live «ДТВ цех» uses BME280
 # for T/RH/P and BME680 for eCO₂; a newer slave may publish BME680 for all.
@@ -104,6 +111,10 @@ def is_ce_id(mqtt_id: str) -> bool:
 
 def is_spodes_id(mqtt_id: str) -> bool:
     return bool(mqtt_id) and mqtt_id.startswith(SPODES_PREFIX)
+
+
+def is_mtd_id(mqtt_id: str) -> bool:
+    return bool(mqtt_id) and mqtt_id.startswith(MTD_PREFIX)
 
 
 def mapped_mqtt_ids(doc: Dict[str, Any]) -> Set[str]:
@@ -278,6 +289,19 @@ def ce_name(mqtt_id: str, phase_letter: str) -> str:
     return "Анализатор %s %s" % (_id_label(mqtt_id), phase_letter)
 
 
+def mtd_name(mqtt_id: str) -> str:
+    """Yandex-web-safe (≤25): «Присутствие COM3 20» from an RS-485 id,
+    «Присутствие 20» from any other form (Modbus TCP: host and port would
+    not fit)."""
+    m = _ID_TAIL_RE.match(mqtt_id or "")
+    if m:
+        name = "Присутствие %s %s" % (m.group(1), m.group(2))
+        if len(name) <= 25:
+            return name
+    tail = _ID_ADDR_RE.search(mqtt_id or "")
+    return "Присутствие %s" % (tail.group(1) if tail else "MTD")
+
+
 def spodes_name(mqtt_id: str, phase_letter: str) -> str:
     """Yandex-web-safe (≤25): «Меркурий COM2 17 А»."""
     tcp = _SPODES_TCP_RE.match(mqtt_id or "")
@@ -367,6 +391,25 @@ def build_dtv(mqtt_id: str, present: Optional[Iterable[str]] = None) -> Optional
     }
 
 
+def build_mtd(mqtt_id: str, present: Optional[Iterable[str]] = None) -> Optional[Dict[str, Any]]:
+    """ONE presence sensor: motion from presence_status, illumination from
+    illuminance when published. No presence channel → no device (a lux-only
+    tile would be a light sensor, not this one)."""
+    names = _present_names(mqtt_id, present)
+    if not _has(names, _MTD_MOTION):
+        return None
+    props: List[Dict[str, Any]] = [_motion_prop(mqtt_id, _MTD_MOTION)]
+    if _has(names, _MTD_LUX):
+        props.append(_float_prop(mqtt_id, _MTD_LUX, "illumination", "unit.illumination.lux", None))
+    return {
+        "id": models.new_id(),
+        "name": mtd_name(mqtt_id),
+        "type": "devices.types.sensor.motion",
+        "capabilities": [],
+        "properties": props,
+    }
+
+
 def provision(
     doc: Dict[str, Any],
     mqtt_id: str,
@@ -399,6 +442,10 @@ def provision(
         added.extend(ce_devices(mqtt_id, present))
     elif is_spodes_id(mqtt_id):
         added.extend(spodes_devices(mqtt_id, present))
+    elif is_mtd_id(mqtt_id):
+        dev = build_mtd(mqtt_id, present)
+        if dev:
+            added.append(dev)
     if not added:
         return doc, []
     cleaned: List[Dict[str, Any]] = []
@@ -492,7 +539,7 @@ class AutoProvisioner:
         """Record a discovery message. Returns an extra topic to subscribe, or None."""
         mid = mqtt_id_from_meta_topic(topic)
         if mid:
-            if not (is_dtv_id(mid) or is_ce_id(mid)):
+            if not (is_dtv_id(mid) or is_ce_id(mid) or is_mtd_id(mid)):
                 return None
             if mid in self._done:
                 return None
