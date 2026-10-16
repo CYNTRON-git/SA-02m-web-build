@@ -14,9 +14,11 @@ older than `keep_hours`, then oldest first while over `keep_files` or
 
 from __future__ import annotations
 
+import json
 import os
 import re
 import secrets
+import stat as stat_module
 import time
 from collections import namedtuple
 from typing import Dict, Iterable, List, Optional, Tuple
@@ -29,6 +31,28 @@ Clip = namedtuple("Clip", "id medium size mtime")
 
 ID_RE = re.compile(C.ID_RE)
 _CLIP_NAME = re.compile(C.ID_RE[:-1] + re.escape(C.CLIP_SUFFIX) + "$")
+_META_NAME = re.compile(C.ID_RE[:-1] + re.escape(C.META_SUFFIX) + "$")
+_O_NONBLOCK = getattr(os, "O_NONBLOCK", 0)
+# The sidecar's keys and their check: everything else is dropped on read.
+META_KEYS = ("duration_ms", "peak_dbfs", "upload")
+
+
+def clean_meta(raw: object) -> Dict[str, object]:
+    """A sidecar's values that pass their grammar; {} for anything else (a
+    sidecar on a removable medium can be planted by anyone)."""
+    out: Dict[str, object] = {}
+    if not isinstance(raw, dict):
+        return out
+    d = raw.get("duration_ms")
+    if isinstance(d, int) and not isinstance(d, bool) and 0 <= d <= C.MAX_DURATION_HARD_S * 1000:
+        out["duration_ms"] = d
+    p = raw.get("peak_dbfs")
+    if isinstance(p, int) and not isinstance(p, bool) and C.PEAK_FLOOR_DBFS <= p <= 0:
+        out["peak_dbfs"] = p
+    u = raw.get("upload")
+    if isinstance(u, str) and u in C.UPLOAD_STATES:
+        out["upload"] = u
+    return out
 _O_CLOEXEC = getattr(os, "O_CLOEXEC", 0)
 _O_NOFOLLOW = getattr(os, "O_NOFOLLOW", 0)
 
@@ -57,6 +81,9 @@ class Part:
         self.fd = fd
         self.name = rec_id + C.PART_SUFFIX
         self.closed = False
+        # Bytes copied from the write descriptor before it is closed. Upload
+        # sends these, never a later open of the clip's name.
+        self._clip_bytes: Optional[bytes] = None
 
     def commit(self) -> int:
         """rename into rec/ + fsync the directory; returns the clip size."""
@@ -70,6 +97,45 @@ class Part:
 
     def abandon(self) -> None:
         unlink_quietly(self.tmp_fd, self.name)
+
+    def remember_written(self, fd: int) -> None:
+        """Copy the file this descriptor has just written.
+
+        `pread` does not move the write offset. The copy is what an upload
+        sends: opening `rec/<id>.wav` by name later can see a different file
+        (a removable medium is writable by anyone holding it). A short read
+        keeps nothing — a partial WAV is not uploaded."""
+        pread = getattr(os, "pread", None)
+        if pread is None:
+            return
+        try:
+            st = os.fstat(fd)
+            if (not stat_module.S_ISREG(st.st_mode) or st.st_nlink != 1
+                    or st.st_size <= 0 or st.st_size > C.DOWNLOAD_MAX_BYTES):
+                return
+            chunks = []
+            offset = 0
+            left = st.st_size
+            while left > 0:
+                chunk = pread(fd, min(65536, left), offset)
+                if not chunk:
+                    return
+                chunks.append(chunk)
+                offset += len(chunk)
+                left -= len(chunk)
+            self._clip_bytes = b"".join(chunks)
+        except OSError:
+            return
+
+    def read_clip(self, max_bytes: int) -> Optional[bytes]:
+        """The bytes `remember_written` copied, or None.
+
+        Never opens the clip name. None also when that copy is missing or
+        larger than `max_bytes` (the upload then fails closed)."""
+        data = self._clip_bytes
+        if data is None or len(data) > max_bytes:
+            return None
+        return data
 
     def close(self) -> None:
         if not self.closed:
@@ -115,7 +181,7 @@ class Store:
                 if entry.endswith(C.PART_SUFFIX):
                     if unlink_quietly(fds[1], entry):
                         removed += 1
-                elif entry.startswith(C.PROBE_PREFIX):
+                elif entry.startswith(C.PROBE_PREFIX) or entry.endswith(C.META_TMP_SUFFIX):
                     unlink_quietly(fds[1], entry)
         except OSError:
             pass
@@ -151,9 +217,87 @@ class Store:
         if fds is None:
             return False
         try:
-            return unlink_quietly(fds[1], rec_id + C.CLIP_SUFFIX)
+            gone = unlink_quietly(fds[1], rec_id + C.CLIP_SUFFIX)
+            unlink_quietly(fds[1], rec_id + C.META_SUFFIX)
+            return gone
         finally:
             close_all(*fds)
+
+    def write_meta(self, name: str, rec_id: str, meta: Dict[str, object]) -> bool:
+        """Replace `rec/<id>.json` atomically (temp in tmp/, rename into rec/,
+        same filesystem). Written only next to an existing clip: a sidecar
+        never outlives or precedes its WAV."""
+        if not valid_id(rec_id):
+            return False
+        body = json.dumps(clean_meta(meta), sort_keys=True).encode("ascii")
+        try:
+            fds = store_dirs(self.media[name], create=False)
+        except OSError:
+            return False
+        tmp = rec_id + C.META_TMP_SUFFIX
+        try:
+            if is_regular(fds[1], rec_id + C.CLIP_SUFFIX) is None:
+                return False
+            unlink_quietly(fds[2], tmp)
+            fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_EXCL | _O_NOFOLLOW | _O_CLOEXEC,
+                         0o640, dir_fd=fds[2])
+            try:
+                os.write(fd, body)
+                os.fsync(fd)
+            finally:
+                os.close(fd)
+            os.rename(tmp, rec_id + C.META_SUFFIX, src_dir_fd=fds[2], dst_dir_fd=fds[1])
+            fsync_dir(fds[1])
+            return True
+        except OSError:
+            unlink_quietly(fds[2], tmp)
+            return False
+        finally:
+            close_all(*fds)
+
+    def read_meta(self, name: str, rec_id: str) -> Dict[str, object]:
+        """The sidecar's checked values, {} when absent or not trusted (a
+        link, a FIFO, a hard link, oversize, not JSON)."""
+        if not valid_id(rec_id):
+            return {}
+        fds = self._dirs(name, C.REC_SUBDIR)
+        if fds is None:
+            return {}
+        try:
+            fd = os.open(rec_id + C.META_SUFFIX, os.O_RDONLY | _O_NOFOLLOW | _O_NONBLOCK | _O_CLOEXEC,
+                         dir_fd=fds[1])
+        except OSError:
+            close_all(*fds)
+            return {}
+        try:
+            st = os.fstat(fd)
+            if not stat_module.S_ISREG(st.st_mode) or st.st_nlink != 1 or st.st_size > C.META_MAX_BYTES:
+                return {}
+            raw = os.read(fd, C.META_MAX_BYTES + 1)
+            return clean_meta(json.loads(raw.decode("ascii")))
+        except (OSError, ValueError, UnicodeDecodeError):
+            return {}
+        finally:
+            os.close(fd)
+            close_all(*fds)
+
+    def sweep_orphan_meta(self, name: str) -> int:
+        """Delete sidecars whose clip is gone (deleted by hand, a torn run)."""
+        fds = self._dirs(name, C.REC_SUBDIR)
+        if fds is None:
+            return 0
+        removed = 0
+        try:
+            names = set(os.listdir(fds[1]))
+            for entry in names:
+                if _META_NAME.match(entry) and entry[:-len(C.META_SUFFIX)] + C.CLIP_SUFFIX not in names:
+                    if unlink_quietly(fds[1], entry):
+                        removed += 1
+        except OSError:
+            pass
+        finally:
+            close_all(*fds)
+        return removed
 
     def retention(self, name: str, *, keep_files: int, keep_mb: int, keep_hours: int,
                   now: Optional[float] = None) -> List[str]:
@@ -174,6 +318,7 @@ class Store:
             total -= clip.size
             if self._unlink_clip(name, clip.id):
                 deleted.append(clip.id)
+        self.sweep_orphan_meta(name)
         return deleted
 
     def delete(self, present: Iterable[str], target: str) -> List[str]:

@@ -219,6 +219,14 @@ class Sandbox:
         return os.path.join(os.path.dirname(self.rec(medium)), C.TMP_SUBDIR)
 
     def clips(self, medium: str = C.MEDIUM_EMMC) -> List[str]:
+        """The WAV files in rec/ (each clip's `<id>.json` sidecar is not a
+        clip — `sidecars()` lists those)."""
+        return [n for n in self.rec_names(medium) if not n.endswith(C.META_SUFFIX)]
+
+    def sidecars(self, medium: str = C.MEDIUM_EMMC) -> List[str]:
+        return [n for n in self.rec_names(medium) if n.endswith(C.META_SUFFIX)]
+
+    def rec_names(self, medium: str = C.MEDIUM_EMMC) -> List[str]:
         try:
             return sorted(os.listdir(self.rec(medium)))
         except FileNotFoundError:

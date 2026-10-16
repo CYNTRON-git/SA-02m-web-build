@@ -12,6 +12,10 @@ from collections import namedtuple
 # the defaults, which the unit and the tmpfiles entry name.
 ETC_DIR = os.environ.get("SA02M_AUDIO_ETC", "/etc/sa02m-audio")
 CONF_FILE = os.path.join(ETC_DIR, "sa02m-audio.conf")
+# The upload bearer token: a secret. www-data:sa02m-audio 0640 — the panel
+# writes it (write-only field), the daemon reads it; never logged, never in a
+# backup, never in a response.
+TOKEN_FILE = os.path.join(ETC_DIR, "upload.token")
 VAR_DIR = os.environ.get("SA02M_AUDIO_VAR", "/var/lib/sa02m-audio")
 # Audit ring; always on eMMC, whatever medium the clips go to.
 EVENTS_FILE = os.path.join(VAR_DIR, "events.jsonl")
@@ -29,6 +33,11 @@ TMP_SUBDIR = "tmp"
 REMOVABLE_STORE_NAME = "sa02m-audio"
 PART_SUFFIX = ".wav.part"
 CLIP_SUFFIX = ".wav"
+# Per-clip sidecar `<id>.json` next to the clip (duration, peak, upload state),
+# written atomically by the daemon; its temp name lives in tmp/.
+META_SUFFIX = ".json"
+META_TMP_SUFFIX = ".meta.tmp"
+META_MAX_BYTES = 1024
 PROBE_PREFIX = ".probe-"
 TMP_PREFIX = ".au-"
 TMP_SUFFIX = ".tmp"
@@ -141,10 +150,29 @@ MIC_ABSENT = "absent"
 MIC_BUSY = "busy"
 MIC_STATES = (MIC_PRESENT, MIC_ABSENT, MIC_BUSY)
 
-# last_upload values; `off` is the only one this daemon writes until an
-# upload URL exists (contract §Передача).
+# last_upload values (contract §Передача): `off` no URL configured; `pending`
+# queued / attempts running; `ok` a 2xx; `failed` attempts exhausted, queue
+# full, or the token unreadable; `refused` the URL policy refused the target;
+# `unavailable` the URL policy (sa02m_rules.http_guard) cannot be imported.
 UP_OFF = "off"
-UPLOAD_STATES = ("off", "pending", "ok", "failed", "refused", "unavailable")
+UP_PENDING = "pending"
+UP_OK = "ok"
+UP_FAILED = "failed"
+UP_REFUSED = "refused"
+UP_UNAVAILABLE = "unavailable"
+UPLOAD_STATES = (UP_OFF, UP_PENDING, UP_OK, UP_FAILED, UP_REFUSED, UP_UNAVAILABLE)
+
+# ── Upload (contract §Передача) ────────────────────────────────────────────
+# The URL policy's home is the rules engine (decision M1); it lives here.
+RULES_DIR = os.environ.get("SA02M_AUDIO_RULES_DIR", "/opt/sa02m-rules")
+UPLOAD_URL_MAX = 500
+UPLOAD_TIMEOUT_S = 10
+# One attempt at each offset after the clip is stored: 3 attempts.
+UPLOAD_DELAYS_S = (0, 10, 60)
+UPLOAD_QUEUE_MAX = 5
+UPLOAD_MAX_REDIRECTS = 3
+UPLOAD_RESPONSE_MAX = 64 * 1024
+TOKEN_RE = r"^[A-Za-z0-9._~+/=-]{1,512}$"
 
 # ── MQTT (docs/MQTT_TOPICS.md convention) ──────────────────────────────────
 MQTT_HOST = "127.0.0.1"
@@ -220,7 +248,7 @@ REMOVABLE_MEDIA = (MEDIUM_USB, MEDIUM_SDCARD)
 # Event kinds in events.jsonl (contract §Журнал).
 EVENT_KINDS = (
     "start", "end", "refused", "failed", "interrupted", "discarded", "xrun",
-    "delete", "retention", "config", "medium", "mqtt",
+    "delete", "retention", "config", "medium", "mqtt", "upload",
 )
 
 

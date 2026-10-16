@@ -39,6 +39,7 @@ from .capture import (OUT_ERROR, OUT_INTERRUPTED, OUT_MIC_BUSY, OUT_NO_MIC, OUT_
 from .fsutil import atomic_write
 from .media import MediaProbe, Verdict
 from .store import Store, new_id
+from .upload import Uploader, UploadJob, UploadResult, host_of, load_guard
 
 log = logging.getLogger("sa02m_audio")
 
@@ -159,6 +160,10 @@ class Daemon:
         check_dependencies: Callable[[], List[str]] = missing_dependencies,
         clock: Callable[[], float] = time.time,
         mono: Callable[[], float] = time.monotonic,
+        token_path: Optional[str] = None,
+        guard_loader: Callable[[], Any] = load_guard,
+        upload_opener: Any = None,
+        upload_delays=C.UPLOAD_DELAYS_S,
     ) -> None:
         self.stop = stop or threading.Event()
         self.conf_path = conf_path
@@ -175,10 +180,16 @@ class Daemon:
         self._check_dependencies = check_dependencies
         self.clock = clock
         self.mono = mono
+        self.token_path = token_path
+        self._guard_loader = guard_loader
+        self._upload_opener = upload_opener
+        self._upload_delays = upload_delays
+        self.uploader: Optional[Uploader] = None
 
         self.conf = conf_mod.RecorderConfig()
         self.inbox: "queue.Queue[Any]" = queue.Queue(maxsize=C.INBOX_MAX)
-        self.results: "queue.Queue[CaptureResult]" = queue.Queue()
+        # Capture results and upload results, both handed back by worker threads.
+        self.results: "queue.Queue[Any]" = queue.Queue()
         self.link: Any = None
         self.events: Optional[EventLog] = None
         self.rate = RateLimit(mono)
@@ -417,10 +428,64 @@ class Daemon:
         self.write_status(C.STATE_RECORDING)
 
     # ── finalize ──────────────────────────────────────────────────────────
-    def upload_state(self, rec_id: str, medium: str) -> str:
-        """last_upload for a clip just stored. The upload worker hooks in
-        here; with no upload configured the answer is `off`."""
-        return C.UP_OFF
+    def _get_uploader(self) -> Optional[Uploader]:
+        """The worker, started on first use; None while the URL policy
+        (sa02m_rules.http_guard) cannot be imported — retried next time."""
+        if self.uploader is None:
+            guard = self._guard_loader()
+            if guard is None:
+                return None
+            self.uploader = Uploader(self.results.put, self.stop, guard=guard,
+                                     opener=self._upload_opener, delays=self._upload_delays)
+        return self.uploader
+
+    def upload_state(self, rec_id: str, medium: str, data: Optional[bytes],
+                     duration_ms: int, peak_dbfs: int) -> str:
+        """Queue the clip just stored for upload; returns its last_upload."""
+        url = self.conf.upload_url
+        if not url:
+            return C.UP_OFF
+        token = conf_mod.read_token(self.token_path)
+        if token is None:
+            self.event("upload", id=rec_id, medium=medium, status=C.UP_FAILED,
+                       detail="token file unreadable or invalid — not sent")
+            return C.UP_FAILED
+        uploader = self._get_uploader()
+        if uploader is None:
+            self.event("upload", id=rec_id, medium=medium, status=C.UP_UNAVAILABLE,
+                       detail="URL policy sa02m_rules.http_guard not installed — not sent")
+            return C.UP_UNAVAILABLE
+        if data is None:
+            self.event("upload", id=rec_id, medium=medium, status=C.UP_FAILED,
+                       detail="clip could not be read back")
+            return C.UP_FAILED
+        state = uploader.submit(UploadJob(rec_id, medium, data, duration_ms, peak_dbfs, url, token))
+        if state == C.UP_FAILED:
+            self.event("upload", id=rec_id, medium=medium, status=state, detail="upload queue full")
+        else:
+            log.info("upload of %s queued to host %s", rec_id, host_of(url))
+        return state
+
+    def on_upload(self, result: UploadResult) -> None:
+        """An upload ended (main thread): sidecar, delete_after_upload,
+        last_upload when it is still the last clip, the event."""
+        self.event("upload", id=result.rec_id, medium=result.medium, status=result.state,
+                   detail=result.detail)
+        # Measured duration and peak, not whatever the sidecar file says now.
+        # On a removable medium that file can be replaced before this runs.
+        self.store.write_meta(result.medium, result.rec_id, {
+            "duration_ms": result.duration_ms, "peak_dbfs": result.peak_dbfs,
+            "upload": result.state,
+        })
+        if result.state == C.UP_OK and self.conf.delete_after_upload:
+            if self.store.delete([result.medium], result.rec_id):
+                self.event("delete", id=result.rec_id, medium=result.medium,
+                           detail="deleted after a successful upload", source="upload")
+                self.put("count", self.count())
+        if self.last.get("last_file") == result.rec_id:
+            self.last["last_upload"] = result.state
+            self.put("last_upload", result.state)
+        self.write_status(self._state())
 
     def finalize(self, result: CaptureResult) -> None:
         capture, self.capture = self.capture, None
@@ -476,7 +541,10 @@ class Daemon:
         if result.xrun:
             self.event("xrun", id=result.rec_id, medium=name, detail=result.detail)
         self.retention(name)
-        upload = self.upload_state(result.rec_id, name)
+        data = part.read_clip(C.DOWNLOAD_MAX_BYTES)
+        upload = self.upload_state(result.rec_id, name, data, result.duration_ms, result.peak_dbfs)
+        self.store.write_meta(name, result.rec_id, {"duration_ms": result.duration_ms,
+                                                    "peak_dbfs": result.peak_dbfs, "upload": upload})
         self.last.update(last_file=result.rec_id, last_duration_ms=result.duration_ms,
                          last_size=size, last_peak_dbfs=result.peak_dbfs, last_upload=upload)
         for key in ("last_duration_ms", "last_size", "last_peak_dbfs", "last_upload", "last_file"):
@@ -603,18 +671,33 @@ class Daemon:
                 result = self.results.get_nowait()
             except queue.Empty:
                 return
-            self.finalize(result)
+            if isinstance(result, UploadResult):
+                self.on_upload(result)
+            else:
+                self.finalize(result)
 
     def _shutdown(self) -> None:
+        # Also the upload worker's stop: a disable or an unreadable conf ends
+        # the loop without the signal having set it.
+        self.stop.set()
         # A clip that finished just before the stop is stored, not discarded.
         self._drain_results()
         if self.capture is not None:
             capture = self.capture
             capture.interrupt()
             capture.join(C.CHILD_STOP_WAIT_S * 2 + 2)
-            try:
-                result = self.results.get(timeout=1.0)
-            except queue.Empty:
+            result = None
+            deadline = time.monotonic() + 1.0
+            while result is None and time.monotonic() < deadline:
+                try:
+                    item = self.results.get(timeout=max(0.0, deadline - time.monotonic()))
+                except queue.Empty:
+                    break
+                if isinstance(item, UploadResult):
+                    self.on_upload(item)
+                else:
+                    result = item
+            if result is None:
                 result = CaptureResult(capture.part.id, OUT_INTERRUPTED, detail="no result")
             result.outcome = OUT_INTERRUPTED
             result.detail = result.detail or "daemon stopped"

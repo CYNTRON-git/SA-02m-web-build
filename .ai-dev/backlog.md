@@ -6,6 +6,11 @@ entries are pruned (history lives in git); last prune 2026-10-14 (1.0.7.2 - audi
 
 ## Open
 
+- [OPEN] 2026-10-15 **[MED] Factory reset and the image pipeline do not wipe audio recordings (1.0.7.4, plan audio-record-on-command §13 step 12).**
+  The recordings are speech of people on site (threat model S5) and the upload token is a secret. Factory reset
+  should wipe `/var/lib/sa02m-audio/{rec,tmp}/*`, `events.jsonl` and `/etc/sa02m-audio/upload.token` (and the
+  `sa02m-audio/` dir on a present removable medium); the five image sites of `docs/contracts/image-identity-reset.md`
+  §8 should do the eMMC part. Today only the manual golden-image step `docs/deployment.md` 2c does it.
 - [OPEN] 2026-09-30 **[MED] Sweep the other harnesses for host-binary / host-root side effects (ci-linux-green
   finding).** Two harnesses could, on a ROOT host, reach real system actions: firstboot-sb-csum a real
   `fsfreeze -f /`, web-update-apply-guard reboot.cgi's real `sudo … reboot -f` chain. Both fixed on

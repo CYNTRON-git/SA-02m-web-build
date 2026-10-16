@@ -59,7 +59,8 @@ const IDS = ['audio-card', 'audio-state', 'audio-mic', 'audio-medium', 'audio-co
   'audio-record-row', 'audio-seconds', 'audio-btn-record', 'audio-btn-stop', 'audio-elapsed', 'audio-clips',
   'audio-player', 'audio-settings', 'audio-storage', 'audio-storage-warn', 'audio-ack-row', 'audio-ack',
   'audio-default-dur', 'audio-keep-files', 'audio-keep-mb', 'audio-keep-hours', 'audio-btn-save',
-  'audio-events', 'audio-event-list', 'audio-msg', 'audio-btn-restart', 'audio-btn-enable'];
+  'audio-events', 'audio-event-list', 'audio-msg', 'audio-btn-restart', 'audio-btn-enable',
+  'audio-last-upload', 'audio-upload-url', 'audio-delete-after', 'audio-token', 'audio-token-state'];
 const dom = {};
 IDS.forEach(id => { dom[id] = el(id); });
 
@@ -172,6 +173,35 @@ check(dom['audio-removable-note'].hidden === true, 'eMMC hides the removable not
 A.render({ ok: true, state: 'not_installed', installed: false, enabled: false, live: false });
 check(dom['audio-record-row'].hidden === true && dom['audio-btn-enable'].disabled === true, 'not_installed: no record row, toggle disabled');
 check(dom['audio-msg'].textContent === 'Нужна полная установка (install.sh --refresh)', 'not_installed: the install hint');
+
+// ── upload (slice C): states, settings, token, per-clip sidecar fields ──
+const upBlock = py.slice(py.indexOf('UPLOAD_STATES = ('), py.indexOf(')', py.indexOf('UPLOAD_STATES = (')));
+const upNames = [...upBlock.matchAll(/\bUP_[A-Z_]+/g)].map(m => m[0]);
+const upValues = {};
+for (const m of py.matchAll(/^(UP_[A-Z_]+) = "([a-z_]+)"$/gm)) upValues[m[1]] = m[2];
+const upStates = upNames.map(n => upValues[n]).filter(Boolean);
+check(upStates.length === 6, `UPLOAD_STATES read from constants.py (${upStates.length})`);
+upStates.filter(st => st !== 'off').forEach(st => check(A.uploadText(st).length > 0, `upload state ${st} has a line`));
+check(A.uploadText('off') === '' && A.uploadText('made_up') === '', 'off / unknown upload state: no line');
+out = A.saveBody(form({ upload_url: ' https://192.168.1.10/up ', delete_after_upload: false }), d0);
+check(out.body && out.body.upload_url === 'https://192.168.1.10/up' && out.body.delete_after_upload === false,
+  'save carries upload_url (trimmed) and delete_after_upload');
+check(A.saveBody(form({ upload_url: '' }), d0).body.upload_url === '', 'an empty URL switches the upload off');
+['ftp://x/y', 'javascript:alert(1)', 'http://a b'].forEach(u =>
+  check(A.saveBody(form({ upload_url: u }), d0).error === 'invalid_value', `URL ${JSON.stringify(u)} refused before a request`));
+check(A.tokenBody(' tok-1.A~ ').body.token === 'tok-1.A~', 'a token is trimmed into a set_token body');
+['', 'has space', 'x'.repeat(513), 'ключ'].forEach(t =>
+  check(A.tokenBody(t).error === 'bad_token', `token ${JSON.stringify(t.slice(0, 12))} refused before a request`));
+A.render({ ...live, medium: 'emmc', conf: { storage: 'emmc', default_duration_s: 10, max_duration_s: 30, keep_files: 50,
+  keep_mb: 32, keep_hours: 24, upload_url: 'https://h/up', delete_after_upload: true }, bounds, token_set: true,
+  last_file: '20261015T120000Z-0a1b2c', last_upload: 'failed',
+  clips: [{ id: '20261015T120000Z-0a1b2c', medium: 'emmc', size: 160044, ts: 1, duration_ms: 4980, peak_dbfs: -12, upload: 'failed' }],
+  events: [] });
+const meta = dom['audio-clips'].children[0].children[1].textContent;
+check(/4\.98? с|5\.0 с/.test(meta) && !/≈/.test(meta), `the sidecar's exact duration replaces the estimate (${meta})`);
+check(meta.includes('-12 дБFS') && meta.includes('не отправлено'), 'the row shows the peak and the upload state');
+check(dom['audio-last-upload'].textContent.includes('не отправлено'), 'the card states the last clip\'s upload');
+check(dom['audio-token-state'].textContent === 'Токен задан', 'the token is shown only as set / not set');
 
 console.log(`js-unit-audio-card: ${passes} passed, ${failures} failed`);
 process.exit(failures ? 1 : 0);

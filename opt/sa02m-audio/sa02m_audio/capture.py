@@ -249,6 +249,9 @@ class Capture:
             wav.close()
             fh.flush()
             os.fsync(fh.fileno())
+            # Before the descriptor is closed and before retention runs:
+            # the name can be replaced on a removable medium.
+            self.part.remember_written(fh.fileno())
         except (OSError, ValueError, wave.Error) as exc:
             write_error = getattr(exc, "strerror", None) or type(exc).__name__
         finally:

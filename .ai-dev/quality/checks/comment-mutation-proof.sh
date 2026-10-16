@@ -300,6 +300,9 @@ installer-order|install.sh|sa02m_run_module 15-audio.sh
 installer-svc-policy-gate|scripts/15-audio.sh|sa02m_svc_capture "$UNIT"
 daemon-least-privilege|etc/systemd/system/sa02m-audio.service|SupplementaryGroups=audio
 daemon-access-effect|usr/local/sbin/sa02m-daemon-access.sh|probe no "$WEB_USER" w "$d"
+mqtt-acl-audio|etc/mosquitto/acl_default.conf|topic deny /devices/sa02m-audio/controls/+/on
+mqtt-acl-audio|scripts/15-audio.sh|au_acl_migrate /etc/mosquitto/acl/default.conf
+daemon-access-effect|usr/local/sbin/sa02m-daemon-access.sh|EXTRA_FILES="/etc/sa02m-audio/upload.token"
 '
 
 command -v git >/dev/null 2>&1 || { echo "comment-mutation-proof: FAIL — git is required to build the pristine copy"; exit 1; }

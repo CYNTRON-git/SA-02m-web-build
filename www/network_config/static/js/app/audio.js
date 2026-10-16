@@ -23,6 +23,8 @@ var AU_GET_TIMEOUT_MS = 10000;
 var AU_POST_TIMEOUT_MS = 21000;
 // Contract §7: the only id form a URL or a delete may carry.
 var AU_ID_RE = /^[0-9]{8}T[0-9]{6}Z-[0-9a-f]{6}$/;
+// Contract §12: the token grammar the CGI accepts (write-only field).
+var AU_TOKEN_RE = /^[A-Za-z0-9._~+\/=-]{1,512}$/;
 var AU_REMOVABLE = ['usb', 'sdcard'];
 var AU_WAV_HEADER = 44;
 var AU_BYTES_PER_S = 32000;
@@ -123,8 +125,22 @@ function errorText(code) {
     case 'conf_write_failed': return uiT('Не удалось сохранить настройки');
     case 'conf_unreadable': return uiT('Нет доступа к настройкам');
     case 'publish_failed': return uiT('Брокер MQTT не принял команду');
+    case 'url_refused': return uiT('Этот адрес отправки запрещён (локальный или служебный)');
+    case 'bad_token': return uiT('Недопустимый токен');
     case 'audio_api_failed': return uiT('Нет ответа от платы');
     default: return uiT('Не удалось выполнить действие');
+  }
+}
+
+// last_upload / a clip's upload state → its short line ('' for none).
+function uploadText(st) {
+  switch (st) {
+    case 'pending': return uiT('отправляется');
+    case 'ok': return uiT('отправлено');
+    case 'failed': return uiT('не отправлено');
+    case 'refused': return uiT('адрес запрещён');
+    case 'unavailable': return uiT('отправка недоступна');
+    default: return '';
   }
 }
 
@@ -145,12 +161,16 @@ function idDate(id) {
 function clipLine(c) {
   var when = idDate(c && c.id);
   var size = c && typeof c.size === 'number' ? c.size : 0;
-  var secs = Math.max(0, (size - AU_WAV_HEADER) / AU_BYTES_PER_S);
+  // The sidecar's exact duration when there is one, else ≈ from the size.
+  var exact = c && typeof c.duration_ms === 'number';
+  var secs = exact ? c.duration_ms / 1000 : Math.max(0, (size - AU_WAV_HEADER) / AU_BYTES_PER_S);
   return {
     when: when ? when.toLocaleString() : String((c && c.id) || '?'),
     medium: mediumLabel(c && c.medium),
-    dur: '≈' + secs.toFixed(1) + ' ' + uiT('с'),
+    dur: (exact ? '' : '≈') + secs.toFixed(1) + ' ' + uiT('с'),
     size: (size / 1024).toFixed(0) + ' ' + uiT('КБ'),
+    peak: c && typeof c.peak_dbfs === 'number' ? c.peak_dbfs + ' ' + uiT('дБFS') : '',
+    upload: uploadText(c && c.upload),
   };
 }
 
@@ -174,6 +194,12 @@ function saveBody(form, d) {
     if (Array.isArray(lim) && (v < lim[0] || v > lim[1])) return { error: 'invalid_value' };
     body[k] = v;
   }
+  if (typeof form.upload_url === 'string') {
+    var url = form.upload_url.trim();
+    if (url && !/^https?:\/\/[^\s]+$/.test(url)) return { error: 'invalid_value' };
+    body.upload_url = url;
+  }
+  if (typeof form.delete_after_upload === 'boolean') body.delete_after_upload = form.delete_after_upload;
   if (AU_REMOVABLE.indexOf(storage) >= 0) {
     if (form.ack !== true) return { error: 'ack_required' };
     body.ack_removable = true;
@@ -225,7 +251,8 @@ function renderClips(d) {
     name.textContent = line.when;
     var meta = document.createElement('span');
     meta.className = 'homeconnect-app-meta';
-    meta.textContent = [line.medium, line.dur, line.size].join(' · ');
+    meta.textContent = [line.medium, line.dur, line.size, line.peak, line.upload]
+      .filter(function (x) { return x; }).join(' · ');
     var play = document.createElement('button');
     play.type = 'button';
     play.className = 'btn btn-sm';
@@ -278,6 +305,11 @@ function fillSettings(d) {
   var det = $('audio-settings');
   if (!det) return;
   det.hidden = !(d && d.installed && d.conf);
+  // Not an edited field: keep it current while the form is open (language
+  // switch, or the token action's own answer).
+  if (d && d.installed) {
+    setText('audio-token-state', d.token_set ? uiT('Токен задан') : uiT('Токен не задан'));
+  }
   if (det.hidden || det.open) return;   // never overwrite what is being edited
   var c = d.conf;
   var sel = $('audio-storage');
@@ -290,6 +322,10 @@ function fillSettings(d) {
   });
   var ack = $('audio-ack');
   if (ack) ack.checked = false;
+  var url = $('audio-upload-url');
+  if (url && typeof c.upload_url === 'string') url.value = c.upload_url;
+  var del = $('audio-delete-after');
+  if (del) del.checked = c.delete_after_upload !== false;
   onStorageChange();
 }
 
@@ -311,6 +347,9 @@ function render(d) {
     : d.mic === 'absent' ? uiT('не подключён') : '—');
   setText('audio-medium', installed ? mediumLabel(d.medium) : '—');
   setText('audio-count', installed && Array.isArray(d.clips) ? String(d.clips.length) : '—');
+  var up = uploadText(d.last_upload);
+  if (up && d.last_file) setText('audio-last-upload', uiT('Последняя запись') + ': ' + up);
+  else setText('audio-last-upload', '');
   setHidden('audio-removable-note', !(installed && AU_REMOVABLE.indexOf(d.medium) >= 0));
 
   var recording = d.state === 'recording';
@@ -499,11 +538,40 @@ function audioSave() {
     keep_hours: $('audio-keep-hours') ? $('audio-keep-hours').value : '',
     ack: !!($('audio-ack') && $('audio-ack').checked),
   };
+  if ($('audio-upload-url')) form.upload_url = $('audio-upload-url').value;
+  if ($('audio-delete-after')) form.delete_after_upload = !!$('audio-delete-after').checked;
   var out = saveBody(form, _last);
   if (out.error) { actionNotice(errorText(out.error), false); return Promise.resolve(null); }
   return mutate(out.body, uiT('Сохранено')).then(function (d) {
     var det = $('audio-settings');
     if (d && d.ok && det) { det.open = false; if (d.status) render(d.status); }
+    return d;
+  });
+}
+
+// The token is write-only: the field is cleared after a save, the card shows
+// only «задан / не задан».
+function tokenBody(raw) {
+  var t = String(raw || '').trim();
+  if (!AU_TOKEN_RE.test(t)) return { error: 'bad_token' };
+  return { body: { action: 'set_token', token: t } };
+}
+
+function audioSaveToken() {
+  var el = $('audio-token');
+  var out = tokenBody(el ? el.value : '');
+  if (out.error) { actionNotice(errorText(out.error), false); return Promise.resolve(null); }
+  return mutate(out.body, uiT('Токен сохранён')).then(function (d) {
+    if (!(d && d.ok)) return d;
+    if (el) el.value = '';
+    setText('audio-token-state', d.token_set ? uiT('Токен задан') : uiT('Токен не задан'));
+    return d;
+  });
+}
+
+function audioClearToken() {
+  return mutate({ action: 'set_token', token: '' }, uiT('Токен удалён')).then(function (d) {
+    if (d && d.ok) setText('audio-token-state', uiT('Токен не задан'));
     return d;
   });
 }
@@ -550,11 +618,13 @@ window.audioRestart = audioRestart;
 window.audioRecord = audioRecord;
 window.audioStop = audioStop;
 window.audioSave = audioSave;
+window.audioSaveToken = audioSaveToken;
+window.audioClearToken = audioClearToken;
 window.refreshAudioI18n = refreshAudioI18n;
 window.sa02mAudioCard = {
   stateBadge: stateBadge, stateHint: stateHint, lastStatusText: lastStatusText,
   errorText: errorText, recordAllowed: recordAllowed, idDate: idDate, clipLine: clipLine,
-  clipUrl: clipUrl, saveBody: saveBody, render: render,
+  clipUrl: clipUrl, saveBody: saveBody, render: render, uploadText: uploadText, tokenBody: tokenBody,
 };
 
 if (document.readyState === 'loading') document.addEventListener('DOMContentLoaded', init);

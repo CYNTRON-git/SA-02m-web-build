@@ -2806,6 +2806,9 @@ html[data-theme="light"] .homeconnect-verify-link { color: var(--cyan-hover); }
 }
 .audio-ack-row[hidden] { display: none !important; }
 .audio-event-list { max-height: 200px; }
+/* A long upload URL is truncated with an ellipsis while not edited (the
+   field still scrolls with the caret) instead of being cut off mid-glyph. */
+#audio-upload-url { text-overflow: ellipsis; white-space: nowrap; }
 
 #alice-msg.cloud-msg,
 #cloud-ctrl-msg.cloud-msg,

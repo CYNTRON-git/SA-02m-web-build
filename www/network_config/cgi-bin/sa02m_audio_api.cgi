@@ -80,7 +80,10 @@ fi
 if [ "$METHOD" = "GET" ]; then
     case "${QUERY_STRING:-}" in
         action=download\&*)
-            QUERY_STRING="${QUERY_STRING:0:512}" PYTHONDONTWRITEBYTECODE=1 PYTHONPATH="$AU_ROOT" \
+            # Pass the query through unchanged. The dispatch answers
+            # bad_request when it is longer than 512 bytes (contract §15);
+            # truncating it here would still serve the clip.
+            PYTHONDONTWRITEBYTECODE=1 PYTHONPATH="$AU_ROOT" \
                 timeout 10 python3 -m sa02m_audio.api DOWNLOAD || true
             exit 0
             ;;
@@ -140,7 +143,9 @@ if [ "$METHOD" = "POST" ]; then
             TOPIC=/devices/sa02m-audio/controls/record/on; PAYLOAD=stop ;;
         "pub record "*)
             PAYLOAD=${FOLLOW#pub record }
-            [[ $PAYLOAD =~ ^[1-9][0-9]?$ ]] && TOPIC=/devices/sa02m-audio/controls/record/on ;;
+            # Closed grammar is 2…30 (contract §15). 1 is the daemon's
+            # default-duration word and must not be published from the panel.
+            [[ $PAYLOAD =~ ^(30|[12][0-9]|[2-9])$ ]] && TOPIC=/devices/sa02m-audio/controls/record/on ;;
         "pub delete "*)
             PAYLOAD=${FOLLOW#pub delete }
             if [ "$PAYLOAD" = all ] || [[ $PAYLOAD =~ $ID_RE ]]; then
@@ -171,8 +176,9 @@ if [ "$METHOD" = "POST" ]; then
             DONE_ERROR=${BASH_REMATCH[1]}
         fi
         au_audit "$VERB result=$DONE"
-    elif [[ $RESULT == '{"ok": true, "action": "save"'* ]]; then
-        au_audit "save"
+    elif [[ $RESULT =~ ^\{\"ok\":\ true,\ \"action\":\ \"(save|set_token)\" ]]; then
+        # The action name only — never a value (a token is a secret).
+        au_audit "${BASH_REMATCH[1]}"
     fi
 fi
 

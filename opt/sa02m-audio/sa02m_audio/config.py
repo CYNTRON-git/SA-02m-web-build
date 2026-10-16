@@ -15,7 +15,10 @@ Fail-closed rules (contract §Конфиг):
 from __future__ import annotations
 
 import configparser
+import os
 import re
+import stat as stat_module
+import urllib.parse
 from dataclasses import dataclass, field
 from typing import List, Optional
 
@@ -31,8 +34,33 @@ _FALSE = ("0", "false", "no", "off")
 # Every key `render` writes, in file order — compared with the contract.
 KEYS = (
     "enabled", "storage", "device", "default_duration_s", "max_duration_s",
-    "keep_files", "keep_mb", "keep_hours", "delete_after_upload",
+    "keep_files", "keep_mb", "keep_hours", "delete_after_upload", "upload_url",
 )
+_TOKEN_RE = re.compile(C.TOKEN_RE)
+_O_NOFOLLOW = getattr(os, "O_NOFOLLOW", 0)
+_O_CLOEXEC = getattr(os, "O_CLOEXEC", 0)
+_O_NONBLOCK = getattr(os, "O_NONBLOCK", 0)
+
+
+def valid_upload_url(value: object) -> bool:
+    """The STATIC grammar of `upload_url` ("" = no upload): http/https, a
+    host, no `user:pass@`, printable ASCII without spaces, ≤ UPLOAD_URL_MAX.
+    Where the target may be reached is the URL policy's to judge
+    (sa02m_rules.http_guard, at request time)."""
+    if not isinstance(value, str):
+        return False
+    if value == "":
+        return True
+    if len(value) > C.UPLOAD_URL_MAX or not all(33 <= ord(ch) <= 126 for ch in value):
+        return False
+    try:
+        parts = urllib.parse.urlsplit(value)
+        host = parts.hostname
+        parts.port
+    except ValueError:
+        return False
+    return (parts.scheme in ("http", "https") and bool(host)
+            and parts.username is None and parts.password is None)
 
 
 @dataclass
@@ -46,6 +74,7 @@ class RecorderConfig:
     keep_mb: int = C.KEEP_MB_DEFAULT
     keep_hours: int = C.KEEP_HOURS_DEFAULT
     delete_after_upload: bool = True
+    upload_url: str = ""
     warnings: List[str] = field(default_factory=list)
     # The file EXISTS but could not be read — never the same as disabled.
     unreadable: bool = False
@@ -116,6 +145,12 @@ def load(path: Optional[str] = None) -> RecorderConfig:
         out.warnings.append("device %r refused, using %s" % (device[:20], C.DEVICE_AUTO))
     out.delete_after_upload = _read_bool(sec.get("delete_after_upload", "true"), True,
                                          "delete_after_upload", out.warnings)
+    url = sec.get("upload_url", "").strip()
+    if valid_upload_url(url):
+        out.upload_url = url
+    else:
+        # Never echo the refused value: it may carry a credential.
+        out.warnings.append("upload_url refused (not an http/https URL without credentials)")
     # max before default: the default's upper bound is the max.
     for key in ("max_duration_s", "default_duration_s", "keep_files", "keep_mb", "keep_hours"):
         raw = sec.get(key)
@@ -147,6 +182,8 @@ def validate(conf: RecorderConfig) -> None:
     for key in ("enabled", "delete_after_upload"):
         if not isinstance(getattr(conf, key), bool):
             raise ValueError("invalid %s" % key)
+    if not valid_upload_url(conf.upload_url):
+        raise ValueError("invalid upload_url")
     for key, (lo, hi) in bounds(conf).items():
         value = getattr(conf, key)
         if isinstance(value, bool) or not isinstance(value, int) or value < lo or value > hi:
@@ -169,3 +206,67 @@ def save(conf: RecorderConfig, path: Optional[str] = None) -> None:
     """Validate, then replace the conf atomically (0640; the setgid conf dir
     gives the file the daemon's group)."""
     atomic_write(path or C.CONF_FILE, render(conf), mode=0o640)
+
+
+# ── the upload token (a secret; contract §Передача) ───────────────────────
+def valid_token(value: object) -> bool:
+    return isinstance(value, str) and bool(_TOKEN_RE.match(value))
+
+
+def read_token(path: Optional[str] = None) -> Optional[str]:
+    """The bearer token, "" when none is set, None when the file exists but
+    is not a readable regular single-link file holding a valid token (the
+    upload then fails closed — it is never sent without the token the
+    Operator set)."""
+    target = path or C.TOKEN_FILE
+    try:
+        fd = os.open(target, os.O_RDONLY | _O_NOFOLLOW | _O_NONBLOCK | _O_CLOEXEC)
+    except FileNotFoundError:
+        return ""
+    except OSError:
+        return None
+    try:
+        st = os.fstat(fd)
+        if not stat_module.S_ISREG(st.st_mode) or st.st_nlink != 1 or st.st_size > 1024:
+            return None
+        raw = os.read(fd, 1025)
+    except OSError:
+        return None
+    finally:
+        os.close(fd)
+    try:
+        text = raw.decode("ascii")
+    except UnicodeDecodeError:
+        return None
+    # save_token writes one trailing newline. Anything else (empty, blank,
+    # a second line, surrounding spaces) is not the token grammar: the file
+    # exists, so the upload fails closed instead of going out with no token.
+    if text.endswith("\r\n"):
+        text = text[:-2]
+    elif text.endswith("\n") or text.endswith("\r"):
+        text = text[:-1]
+    return text if valid_token(text) else None
+
+
+def token_set(path: Optional[str] = None) -> bool:
+    """Is a token stored? (the panel's write-only field answers only this)"""
+    try:
+        st = os.lstat(path or C.TOKEN_FILE)
+    except OSError:
+        return False
+    return stat_module.S_ISREG(st.st_mode) and st.st_size > 0
+
+
+def save_token(token: str, path: Optional[str] = None) -> None:
+    """Replace (or, with "", remove) the token, 0640 — the setgid conf dir
+    gives the file the daemon's group."""
+    target = path or C.TOKEN_FILE
+    if token == "":
+        try:
+            os.unlink(target)
+        except FileNotFoundError:
+            pass
+        return
+    if not valid_token(token):
+        raise ValueError("invalid token")
+    atomic_write(target, token + "\n", mode=0o640)

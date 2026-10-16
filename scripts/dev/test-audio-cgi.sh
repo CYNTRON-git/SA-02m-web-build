@@ -134,6 +134,8 @@ if mode == "crash":
     raise RuntimeError("boom")
 if mode == "save":
     print(json.dumps({"ok": True, "action": "save", "status": {"state": "idle"}}))
+elif mode == "set_token":
+    print(json.dumps({"ok": True, "action": "set_token", "token_set": True}))
 else:
     print(json.dumps({"ok": True, "state": "idle", "name": "Кухня \"A\""}, ensure_ascii=False))
 print(os.environ.get("STUB_FOLLOW", ""))
@@ -261,6 +263,12 @@ if [ "$(ran sudo)" -eq 0 ] && [ "$(ran mosquitto_pub)" -eq 0 ] \
    && grep -q '^logger -t sa02m-audio-panel -- source=panel save$' "$STUB_CALLS"; then
     ok "6 a save runs no publish and no sudo, and leaves its audit line"
 else bad "6 save: $(tr '\n' ' ' < "$STUB_CALLS")"; fi
+run_cgi POST '{"action":"set_token","token":"SECRET-tok.123"}' STUB_API=set_token STUB_FOLLOW=""
+if [ "$(ran sudo)" -eq 0 ] && [ "$(ran mosquitto_pub)" -eq 0 ] \
+   && grep -q '^logger -t sa02m-audio-panel -- source=panel set_token$' "$STUB_CALLS" \
+   && ! grep -q 'SECRET-tok' "$STUB_CALLS"; then
+    ok "6 set_token runs nothing privileged and audits the action name only, never the token"
+else bad "6 set_token: $(tr '\n' ' ' < "$STUB_CALLS")"; fi
 
 echo "7. follow-ups outside the grammar run nothing"
 for follow in 'pub record 10; reboot' 'pub record 100' 'pub record 0' 'pub record -r' 'pub record 10 -r' \

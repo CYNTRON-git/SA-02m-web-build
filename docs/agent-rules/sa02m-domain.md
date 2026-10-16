@@ -84,6 +84,11 @@ background set `storage,time,uptime,network,load,system,services,hardware`
 | Устройства RS-485 (flasher) | `flasher.js` (reconnect state via `sessionStorage`, irreversible-flash guard) | `flasher` daemon HTTP + CGI | `sa02m-flasher.service` (Python), MR-02m/DTV/CE-02m-3/Carel/LED, MTD presence sensor (settings window, `docs/contracts/mtd-presence.md`). LED settings window backend exists; the flasher tab UI is not drawn yet. Bus-mode/BACnet ops (register 122 selector, MS/TP verify, in-band recover — 1.0.5.65) run as daemon jobs under the same COM lease; contract `docs/contracts/web-bus-mode-bacnet.md`, firmware seam in the sibling MR-02m/DTV `bus-protocol.md`. |
 | Шлюз RS-485 | `gateway.js` (builds its own DOM; COM1..COM5 sub-nav dots) | `gateway_*.cgi` | `sa02m-gateway.yaml` (Modbus TCP / RTU-over-TCP / transparent) |
 | Управление (+ карточки «Яндекс Алиса», «Облако», «Умный дом») | `app/services.js`, `app/misc.js`, `app/alice.js`, `app/smarthome.js`, `cloud.js` | `services_ctrl.cgi`, `kernel_ctrl.cgi`, `cpu_profile.cgi`, `web_update_*.cgi`, `web_creds.cgi`, `sa02m_alice_*.cgi`, `cloud.cgi` | systemd + SysV (mplc4, codesys), `sa02m-kernel-select.sh` (RT/SMP zImage swap → reboot), `sa02m-cpu-profile.sh` (CPU profiles SMP-only). Cloud-profile catalogue + on-board scenarios: `sa02m-cloud-control` + `sa02m-rules` (`docs/contracts/cloud-scenarios.md`). |
+| Управление → Система: «Запись звука» | `app/audio.js` | `sa02m_audio_api.cgi` | `sa02m-audio` (on every board, off by default): one bounded WAV per MQTT `record/on`, eMMC or a removable medium, optional upload to the Operator's URL. Contract: `docs/contracts/audio-recorder.md`. |
+
+The USB microphone has a **mic lease** (`flock` on `/run/lock/sa02m-mic.lock`,
+held while the device is open): every opener of the mic takes it — the
+protocol's one home is `docs/contracts/audio-recorder.md` §11.
 
 Port-sharing invariant: RS-485 lines are shared between MPLC4 polling, the
 MQTT bridge, and the flasher — the flasher takes a **port lease**

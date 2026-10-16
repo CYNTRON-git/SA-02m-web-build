@@ -5,6 +5,16 @@
 
 ---
 
+## [2026-10-15 22:52] branch: 1.0.7.4
+
+**Файл(ы):** `opt/sa02m-audio/sa02m_audio/media.py`, `opt/sa02m-audio/tests/test_media.py`, `docs/contracts/audio-recorder.md`
+**Тип:** Некорректное поведение
+**Описание:** На 192.168.1.135 служба `sa02m-audio` отказывала в записи с `medium_readonly` / `rootfs mounted ro`, хотя каталог записей был доступен на запись.
+**Причина:** `ProtectSystem=strict` показывает внутри юнита `/` как `ro` и отдельно монтирует `/var/lib/sa02m-audio` как `rw`. Вердикт eMMC смотрел только опции `/` и возвращал отказ до пробной записи.
+**Исправление:** eMMC судится по самой длинной точке монтирования, которая покрывает каталог записей. Один `ro` на `/` по-прежнему даёт `readonly`. На плате измеренная таблица: `/` ro, `/var/lib/sa02m-audio` rw.
+
+---
+
 ## [2026-10-12 11:18] branch: 1.0.7.1
 
 **Файл(ы):** `www/network_config/static/js/app/misc.js`, `www/network_config/static/js/app/forms.js`

@@ -93,6 +93,11 @@ PRESERVE_PATHS=(
     # the call budget — an OTA never overwrites either.
     /etc/sa02m-homeconnect/
     /var/lib/sa02m-homeconnect/
+    # Audio recorder (docs/contracts/audio-recorder.md §19): the conf and the
+    # upload token are the operator's, the store holds the recordings and
+    # the audit events — an OTA never overwrites any of them.
+    /etc/sa02m-audio/
+    /var/lib/sa02m-audio/
 )
 
 CMD="${1:-apply}"
@@ -904,6 +909,10 @@ manifest = {
             # (scripts/06d-homeconnect.sh `app off`); it holds
             # /opt/sa02m-homeconnect in memory.
             "sa02m-homeconnect",
+            # Audio recorder: on every board, installed stopped/disabled
+            # (scripts/15-audio.sh `app off`); it holds /opt/sa02m-audio in
+            # memory.
+            "sa02m-audio",
             # Agent API is off until the panel card enables it (13-agent-api.sh
             # `app off`). Bounce only a running daemon so new /opt code is not
             # left in memory, and never start one the operator left off.
@@ -1044,6 +1053,8 @@ PRESERVE_PREFIXES = (
     "/var/lib/sa02m-homekit/",
     "/etc/sa02m-homeconnect/",
     "/var/lib/sa02m-homeconnect/",
+    "/etc/sa02m-audio/",
+    "/var/lib/sa02m-audio/",
 )
 
 def fail(code, msg):
@@ -1427,7 +1438,7 @@ cleanup_b1_deploy_artifacts() {
     done
     # OTA may land sa02m-* sudoers as 0644 (source tree mode); visudo -c then
     # WARN-fails even when syntax is OK. Harden known drop-ins we ship.
-    for _name in sa02m-www sa02m-cloud sa02m-flasher sa02m-mqtt sa02m-gateway sa02m-alice sa02m-homekit sa02m-homeconnect sa02m-agent-api; do
+    for _name in sa02m-www sa02m-cloud sa02m-flasher sa02m-mqtt sa02m-gateway sa02m-alice sa02m-homekit sa02m-homeconnect sa02m-audio sa02m-agent-api; do
         _path="/etc/sudoers.d/$_name"
         if [ -f "$_path" ]; then
             chmod 0440 "$_path" 2>/dev/null || true

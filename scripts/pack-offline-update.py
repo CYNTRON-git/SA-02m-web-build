@@ -606,6 +606,10 @@ def build_services_block(min_updater: str = MIN_UPDATER) -> dict[str, Any]:
         # (06d-homeconnect.sh `app off`), same rule. Must stay in step with
         # etc/sa02m-update-runner.sh.
         "sa02m-homeconnect",
+        # Audio recorder — on every board, installed stopped (15-audio.sh
+        # `app off`), same rule. Must stay in step with
+        # etc/sa02m-update-runner.sh.
+        "sa02m-audio",
         # Must stay in step with etc/sa02m-update-runner.sh. Off until the
         # panel enables it; restarting an inactive unit would turn it on.
         "sa02m-agent-api",

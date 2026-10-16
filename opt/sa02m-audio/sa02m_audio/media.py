@@ -16,7 +16,9 @@ entry with no medium behind it (a tmpfs or a bind of a rootfs dir over the
 path) — without them such an entry would put clips on eMMC unnoticed.
 
 WRITABLE = the mount options lack `ro` AND (on a start) a probe file can be
-created and unlinked in the store's `tmp/`. The periodic check never writes:
+created and unlinked in the store's `tmp/`. For eMMC the options are those of
+the longest mount that covers the store (`/` when the unit has not split it
+off). The periodic check never writes:
 it judges presence, `ro` and free space only, so an idle recorder does not
 touch the flash every 10 s.
 
@@ -59,6 +61,27 @@ def parse_mounts(text: str) -> Dict[str, Mount]:
                       tuple(parts[3].split(",")))
         out[mount.mount_point] = mount
     return out
+
+
+def _covering_mount(mounts: Dict[str, Mount], store: str) -> str:
+    """Longest mount point that contains `store`.
+
+    `ProtectSystem=strict` leaves `/` read-only and bind-mounts the store
+    read-write (bench 1.135, 2026-10-15). The options that decide eMMC are
+    that bind, which is `/` only when the sandbox has not split the store
+    off the root. A path that is not under any listed point still names `/`,
+    so a truly read-only root stays read-only.
+    """
+    covered = "/"
+    for point in mounts:
+        if point == "/":
+            ok = store.startswith("/")
+        else:
+            base = point.rstrip("/")
+            ok = store == base or store.startswith(base + "/")
+        if ok and len(point) > len(covered):
+            covered = point
+    return covered
 
 
 def _default_dev_of(path: str) -> int:
@@ -158,7 +181,9 @@ class MediaProbe:
         if entry is not None and "ro" in entry.options:
             return Verdict(name, C.MEDIUM_READONLY, 0, dev, "mounted ro")
         if medium.mount_point is None and mounts is not None:
-            root = mounts.get("/")
+            # The mount that covers the store, not the root line. See
+            # _covering_mount: a strict unit shows `/` ro and the store rw.
+            root = mounts.get(_covering_mount(mounts, medium.store_dir))
             if root is not None and "ro" in root.options:
                 return Verdict(name, C.MEDIUM_READONLY, 0, dev, "rootfs mounted ro")
         fds: Tuple[int, ...] = ()

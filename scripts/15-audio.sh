@@ -175,6 +175,53 @@ sa02m_atomic_install -m 0755 -o root -g root \
     /usr/local/sbin/sa02m-audio-web-trigger.sh
 sa02m_install_sudoers "$BASE_DIR/etc/sudoers.d/sa02m-audio" /etc/sudoers.d/sa02m-audio
 
+# ── 1884 ACL: no direct recording command from the external listener ───────
+# A board installed before this module carries an ACL without the deny line
+# (05-mqtt.sh seeds the template only when no ACL exists). The line goes INTO
+# the `user mqttuser` block: a `pattern deny` is not applied to a user that
+# has a grant (mosquitto 2.0.18, bench 1.135, 2026-10-15). Idempotent: the
+# exact line present ⇒ nothing changes and nothing is reloaded. An ACL that
+# is not a regular file, or has no mqttuser block (a hand-written one), is
+# left alone with a WARN. mosquitto re-reads acl_file on SIGHUP (its unit's
+# ExecReload), bounded by timeout, and only when the file changed.
+# >>> ACL MIGRATION (extracted by scripts/dev/test-mqtt-acl-audio.sh)
+AU_ACL_DENY='topic deny /devices/sa02m-audio/controls/+/on'
+au_acl_migrate() {
+    local acl=$1 tmp
+    if [ ! -e "$acl" ] && [ ! -L "$acl" ]; then
+        log INFO "[15-audio] $acl нет — внешний слушатель MQTT не настроен, ACL не дополняется"
+        return 0
+    fi
+    if [ -L "$acl" ] || [ ! -f "$acl" ]; then
+        log WARN "[15-audio] $acl — не обычный файл, не тронут; добавьте вручную: $AU_ACL_DENY"
+        return 0
+    fi
+    if awk -v d="$AU_ACL_DENY" '{ sub(/^[[:space:]]+/, ""); sub(/[[:space:]]+$/, "") } $0 == d { f = 1 } END { exit !f }' "$acl"; then
+        return 0
+    fi
+    if ! grep -Eq '^[[:space:]]*user[[:space:]]+mqttuser[[:space:]]*$' "$acl"; then
+        log WARN "[15-audio] в $acl нет блока «user mqttuser» — запрет записи звука с порта 1884 не добавлен; добавьте вручную: $AU_ACL_DENY"
+        return 0
+    fi
+    tmp=$(mktemp "$acl.au.XXXXXX") || { log WARN "[15-audio] mktemp рядом с $acl не удался — ACL не дополнен"; return 0; }
+    awk -v d="$AU_ACL_DENY" '{ print } /^[[:space:]]*user[[:space:]]+mqttuser[[:space:]]*$/ && !done { print d; done = 1 }' \
+        "$acl" > "$tmp"
+    if ! sa02m_atomic_install -m 0640 -o root -g mosquitto "$tmp" "$acl"; then
+        rm -f -- "$tmp"
+        log WARN "[15-audio] $acl не обновлён — запрет записи звука с порта 1884 не действует"
+        return 0
+    fi
+    rm -f -- "$tmp"
+    log OK "в $acl добавлен запрет прямой команды записи звука с порта 1884"
+    if systemctl is-active --quiet mosquitto; then
+        timeout 10 systemctl reload mosquitto >>"$LOG_FILE" 2>&1 \
+            || log WARN "[15-audio] systemctl reload mosquitto не удался — запрет вступит в силу после перезапуска брокера"
+    fi
+    return 0
+}
+# <<< ACL MIGRATION
+au_acl_migrate /etc/mosquitto/acl/default.conf
+
 # ── CGI ────────────────────────────────────────────────────────────────────
 install -m 0755 -o www-data -g www-data \
     "$BASE_DIR/www/network_config/cgi-bin/sa02m_audio_api.cgi" \

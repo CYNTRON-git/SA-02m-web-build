@@ -34,6 +34,22 @@ class ParseMountsTest(unittest.TestCase):
     def test_short_lines_are_skipped(self):
         self.assertEqual(media.parse_mounts("garbage\n\n/dev/x /y\n"), {})
 
+    def test_covering_mount_is_the_store_bind_not_the_ro_root(self):
+        # Bench 1.135 inside sa02m-audio: ProtectSystem=strict.
+        mounts = media.parse_mounts(
+            "/dev/root / ext4 ro,nosuid,noatime,errors=remount-ro,commit=600 0 0\n"
+            "/dev/root /var ext4 rw,nosuid,noatime,errors=remount-ro,commit=600 0 0\n"
+            "/dev/root /var/lib/sa02m-audio ext4 rw,nosuid,noatime,errors=remount-ro,commit=600 0 0\n"
+            "/dev/root /var/tmp ext4 rw,nosuid,noatime,errors=remount-ro,commit=600 0 0\n")
+        self.assertEqual(
+            media._covering_mount(mounts, "/var/lib/sa02m-audio"),
+            "/var/lib/sa02m-audio")
+        self.assertNotIn("ro", mounts["/var/lib/sa02m-audio"].options)
+        self.assertIn("ro", mounts["/"].options)
+        only_root = media.parse_mounts("/dev/root / ext4 ro,noatime 0 0\n")
+        self.assertEqual(
+            media._covering_mount(only_root, "/var/lib/sa02m-audio"), "/")
+
 
 @unittest.skipUnless(POSIX, POSIX_REASON)
 class VerdictTest(unittest.TestCase):
@@ -123,6 +139,18 @@ class VerdictTest(unittest.TestCase):
         with open(self.sb.mounts, "w") as fh:
             fh.write("/dev/root / ext4 ro,noatime 0 0\n")
         self.assertEqual(self.probe.verdict(C.MEDIUM_EMMC, probe=True).state, C.MEDIUM_READONLY)
+
+    def test_emmc_rw_bind_under_ro_root_is_writable(self):
+        # ProtectSystem=strict: `/` is ro inside the unit, the store path is
+        # its own rw bind (measured on 1.135, pid mount table, 2026-10-15).
+        store = self.probe.media[C.MEDIUM_EMMC].store_dir
+        with open(self.sb.mounts, "w") as fh:
+            fh.write(
+                "/dev/root / ext4 ro,nosuid,noatime,errors=remount-ro,commit=600 0 0\n"
+                "/dev/root %s ext4 rw,nosuid,noatime,errors=remount-ro,commit=600 0 0\n"
+                % store)
+        v = self.probe.verdict(C.MEDIUM_EMMC, probe=True)
+        self.assertEqual(v.state, C.MEDIUM_OK, v.reason)
 
     def test_still_there_needs_the_same_filesystem(self):
         self.sb.mount(self.sb.usb)

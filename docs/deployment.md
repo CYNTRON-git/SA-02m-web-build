@@ -989,6 +989,62 @@ mosquitto_sub -h 127.0.0.1 -v -t '/devices/hc-+/controls/#' -C 20
 G6/G7 в `docs/decisions/homekit-home-connect.md` (там же записываются
 результаты). Удаление модуля не автоматизировано.
 
+## Модуль записи звука (`15-audio.sh`)
+
+Рекордер звука с USB-микрофона (`sa02m-audio`) ставится полной установкой
+на **каждую** плату и остаётся **выключенным** (решение Оператора F6): процесса
+нет, ничего не пишется, пока его не включат на карточке «Запись звука»
+(Управление → Система). Контракт — `docs/contracts/audio-recorder.md`.
+
+### Предусловия
+
+- `scripts/05-mqtt.sh` отработал (mosquitto, `python3-paho-mqtt`, ACL
+  внешнего слушателя), `scripts/06b-rules.sh` отработал (политика адресов
+  `sa02m_rules.http_guard` для отправки на URL; без неё отправка честно
+  `unavailable`).
+- `arecord` (`alsa-utils`) — уже на плате; драйвер микрофона —
+  `docs/usb-audio-microphone.md`.
+
+### Шаги
+
+```
+sudo ./install.sh --refresh                  # модуль входит в полную установку
+sudo bash scripts/15-audio.sh                # только модуль, на плате, где install.sh уже отработал
+```
+
+`SA02M_SKIP_AUDIO=1` — не трогать модуль. Повторный запуск идемпотентен:
+обновляет код, не трогает конфиг, токен отправки, записи, журнал событий и
+решение оператора «включён/выключен». В уже существующий ACL
+`/etc/mosquitto/acl/default.conf` добавляется запрет прямой команды записи с
+порта 1884 (контракт §20); при изменении брокер перечитывает ACL (SIGHUP).
+Плата, обновлённая только через OTA, получает пакет без пользователя и
+каталогов — карточка показывает «не установлено» до `install.sh --refresh`.
+
+### Проверка на стенде
+
+```
+systemctl is-enabled sa02m-audio             # disabled
+stat -c '%a %U:%G %n' /var/lib/sa02m-audio /var/lib/sa02m-audio/rec /var/lib/sa02m-audio/tmp \
+      /run/sa02m-audio /etc/sa02m-audio /etc/sa02m-audio/sa02m-audio.conf
+# 2750 sa02m-audio:www-data · 2750 sa02m-audio:www-data · 700 sa02m-audio:sa02m-audio ·
+# 2750 sa02m-audio:www-data · 2750 www-data:sa02m-audio · 640 www-data:sa02m-audio
+/usr/local/sbin/sa02m-daemon-access.sh check audio    # «доступ sa02m-audio подтверждён: …», код 0
+grep -n 'topic deny /devices/sa02m-audio/controls' /etc/mosquitto/acl/default.conf   # строка в блоке user mqttuser
+```
+
+После «Включить» на карточке:
+
+```
+mosquitto_sub -h 127.0.0.1 -v -t '/devices/sa02m-audio/#' &
+mosquitto_pub -h 127.0.0.1 -t /devices/sa02m-audio/controls/record/on -m 5
+ls -l /var/lib/sa02m-audio/rec/                       # <id>.wav и <id>.json
+mosquitto_pub -h <плата> -p 1884 -u mqttuser -P '<пароль>' \
+      -t /devices/sa02m-audio/controls/record/on -m 5   # записи нет: ACL
+```
+
+Полная стендовая проверка (носители, отправка, отказы) — план фичи, §12.
+Удаление модуля не автоматизировано.
+
 ## Подготовка золотого образа (мастер для клонирования)
 
 Единственный дом процедуры санитизации платы-мастера перед снятием образа eMMC
@@ -1123,6 +1179,26 @@ Client ID интегратора в конфиге остаётся (не сек
 sa02m-homeconnect` = `disabled`; в конфиге `enabled = false`. Пайплайн снятия
 образа делает то же на пяти площадках — `docs/contracts/image-identity-reset.md`
 §8.
+
+### 2c. Запись звука — очистить записи и токен
+
+Записи — звук помещения мастера, токен отправки — секрет получателя мастера;
+ни то, ни другое клоны нести не должны. Рекордер остаётся установленным и
+выключенным:
+
+```
+systemctl stop sa02m-audio; systemctl disable sa02m-audio
+sed -i 's/^[[:space:]]*enabled[[:space:]]*=.*/enabled = false/' /etc/sa02m-audio/sa02m-audio.conf
+sed -i 's/^[[:space:]]*upload_url[[:space:]]*=.*/upload_url = /' /etc/sa02m-audio/sa02m-audio.conf
+rm -f /etc/sa02m-audio/upload.token
+rm -f /var/lib/sa02m-audio/rec/* /var/lib/sa02m-audio/tmp/* /var/lib/sa02m-audio/events.jsonl
+rm -f /run/sa02m-audio/*
+```
+
+Съёмные носители в образ не входят — вынуть их до снятия. Проверка:
+`ls -A /var/lib/sa02m-audio/rec` пусто, токена нет. **Только вручную:**
+площадки пайплайна снятия образа (`docs/contracts/image-identity-reset.md` §8)
+этот шаг пока не делают — пункт в бэклоге.
 
 ### 3. Облако — отвязать
 

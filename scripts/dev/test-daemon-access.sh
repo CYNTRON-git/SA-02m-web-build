@@ -57,7 +57,9 @@
 #      all three to the package tmpfiles modes (store + rec 2750
 #      61004:61033, tmp 0700) and the check passes; a NEW conf saved by
 #      www-data through sa02m_audio.config.save is 61033:61004 0640 and the
-#      check still passes.
+#      check still passes; so is the upload token saved by www-data through
+#      sa02m_audio.config.save_token, and a token the daemon cannot read
+#      (0600) FAILS naming it, `apply` heals it to 0640.
 #
 # Root is required (chown to foreign uids, setpriv). Not root: re-exec through
 # `sudo -n` where that works (the CI runner), else every case is printed as
@@ -499,6 +501,26 @@ rc=0; run_helper "$C" check audio >/dev/null || rc=$?
 if [ "$got" = "61033:61004 640" ] && [ "$rc" = 0 ]; then
     ok "M audio: a NEW conf saved by www-data is 61033:61004 0640 (setgid dir's group), check passes"
 else bad "M audio new conf: got $got, check rc=$rc"; fi
+(cd "$C" && setpriv --reuid=61033 --regid=61033 --groups=61033 -- env \
+    SA02M_AUDIO_ETC="$C/etc/sa02m-audio" PYTHONDONTWRITEBYTECODE=1 python3 -c "
+import sys; sys.path[:0] = ['$C']
+from sa02m_audio import config as au; au.save_token('tok-123.ABC')
+") > "$C/mt.out" 2>&1 || bad "M audio: the token save failed as www-data: $(tr '\n' '|' < "$C/mt.out" | cut -c1-300)"
+tok=$C/etc/sa02m-audio/upload.token
+got="$(mode_of "$tok" 2>/dev/null)"
+rc=0; run_helper "$C" check audio >/dev/null || rc=$?
+if [ "$got" = "61033:61004 640" ] && [ "$rc" = 0 ]; then
+    ok "M audio: the upload token saved by www-data is 61033:61004 0640, check passes"
+else bad "M audio token save: got $got, check rc=$rc"; fi
+chmod 0600 "$tok"
+rc=0; out=$(run_helper "$C" check audio) || rc=$?
+if [ "$rc" = 1 ] && grep -qF "sa02m-audio не может читать $tok" <<<"$out"; then
+    ok "M audio: a token the daemon cannot read FAILS check, naming it"
+else bad "M audio unreadable token: rc=$rc, output: $(tr '\n' '|' <<<"$out" | cut -c1-300)"; fi
+rc=0; out=$(run_helper "$C" apply audio) || rc=$?
+if [ "$rc" = 0 ] && [ "$(mode_of "$tok")" = "61033:61004 640" ]; then
+    ok "M audio: apply heals the token to 61033:61004 0640"
+else bad "M audio token heal: rc=$rc, now $(mode_of "$tok"), output: $(tr '\n' '|' <<<"$out" | cut -c1-300)"; fi
 
 if [ "$fails" -gt 0 ]; then
     echo "test-daemon-access: $fails FAILURE(S)"

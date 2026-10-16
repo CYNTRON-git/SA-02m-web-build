@@ -61,6 +61,7 @@ ALICE_DIR=
 DEVDOC=
 WEB_READ_DIRS=
 PRIVATE_DIRS=
+EXTRA_FILES=
 case "$KIND" in
     homekit)
         DAEMON=sa02m-homekit
@@ -95,6 +96,9 @@ case "$KIND" in
         WEB_READ_DIRS="/var/lib/sa02m-audio /var/lib/sa02m-audio/rec"
         # The .part of a running recording: the daemon's alone.
         PRIVATE_DIRS="/var/lib/sa02m-audio/tmp"
+        # The upload token: the conf's shape (www-data:<daemon> 0640) — the
+        # panel writes it, the daemon reads it.
+        EXTRA_FILES="/etc/sa02m-audio/upload.token"
         DENY_READ="/etc/sa02m_web.env /etc/sa02m-alice/sa02m-alice-devices.conf"
         ;;
     *)
@@ -156,6 +160,9 @@ if [ "$VERB" = apply ]; then
     # f:path:mode:uid:gid:root-gids — the last field is the owner rule (see
     # the python below): root-owned files are taken only with one of these groups.
     ops+=("f:$CONF:0640:$WEB_UID:$DAEMON_GID:${WEB_GID:-x},$DAEMON_GID")
+    for f in $EXTRA_FILES; do
+        ops+=("f:$f:0640:$WEB_UID:$DAEMON_GID:${WEB_GID:-x},$DAEMON_GID")
+    done
     if [ -n "$DEVDOC" ]; then
         # Traverse only; the mode's home is etc/tmpfiles.d/sa02m-alice.conf —
         # ensured here too so an Alice copy older than that line cannot cut
@@ -325,6 +332,9 @@ probe yes "$DAEMON" w "$VAR_DIR"
 probe yes "$DAEMON" w "$RUN_DIR"
 probe yes "$WEB_USER" r "$CONF"
 probe yes "$WEB_USER" w "$CONF_DIR"
+for f in $EXTRA_FILES; do
+    probe yes "$DAEMON" r "$f"
+done
 if [ -n "$WEB_READ_DIRS" ]; then
     for d in $WEB_READ_DIRS; do
         probe yes "$DAEMON" w "$d"

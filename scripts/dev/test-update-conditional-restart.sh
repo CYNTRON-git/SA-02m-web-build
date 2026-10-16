@@ -99,6 +99,8 @@
 #   RED 2026-09-28: both generators at HEAD d7d9c4a -> 3 FAIL (not in the set,
 #   running client not restarted, never probed — the homekit half green); the
 #   runner at d7d9c4a alone -> 4 FAIL (the parity check too).
+#   Since the audio recorder (1.0.7.4) the same checks run for sa02m-audio
+#   (installed `app off` by 15-audio.sh on every board).
 #
 # Run: bash scripts/dev/test-update-conditional-restart.sh   (bash + python3 +
 #   coreutils; no systemd — the shims replace it).
@@ -695,7 +697,7 @@ PY
     else
         bad "run8: online and offline restart_if_active differ — the two updates disagree about which opt-in units are bounced (online: $on_ria | offline: $off_ria)"
     fi
-    for u8 in sa02m-homekit sa02m-homeconnect sa02m-agent-api; do
+    for u8 in sa02m-homekit sa02m-homeconnect sa02m-audio sa02m-agent-api; do
         case " $on_ria " in
             *" $u8 "*) ok "run8: $u8 is in the generated restart_if_active" ;;
             *) bad "run8: $u8 is NOT in the generated restart_if_active — an OTA leaves the running daemon on stale code" ;;
@@ -714,7 +716,7 @@ PY
               "health": {"http_url": "", "units_active": [], "version_file": "$TW/VERSION"}}}
 JSON
     : > "$STAGE/journal.jsonl"
-    for u8 in sa02m-homekit sa02m-homeconnect sa02m-agent-api; do
+    for u8 in sa02m-homekit sa02m-homeconnect sa02m-audio sa02m-agent-api; do
         printf '%s\n' "$u8" > "$ACTIVE_FILE"
         run_health
         if [ "$run_rc" -eq 0 ] && called "restart $u8"; then

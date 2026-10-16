@@ -126,7 +126,10 @@ class ContractTablesTest(unittest.TestCase):
             key = first_code(r[0])
             value = getattr(defaults, key)
             rendered = ("true" if value else "false") if isinstance(value, bool) else str(value)
-            self.assertEqual(first_code(r[1]), rendered, key)
+            # An empty default (upload_url) is written «—»; any other cell
+            # must carry the value as `code`.
+            doc = "" if r[1].strip() == "—" else first_code(r[1])
+            self.assertEqual(doc, rendered, key)
 
     def test_states_and_status_keys(self):
         block = self.block(9)

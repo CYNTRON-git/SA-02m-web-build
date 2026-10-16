@@ -50,15 +50,15 @@ _O_NOFOLLOW = getattr(os, "O_NOFOLLOW", 0)
 _O_NONBLOCK = getattr(os, "O_NONBLOCK", 0)
 # Panel-editable conf keys (the device name is not a panel setting).
 SAVE_KEYS = ("storage", "default_duration_s", "max_duration_s", "keep_files", "keep_mb",
-             "keep_hours", "delete_after_upload")
-MUTATIONS = ("record", "stop", "delete", "save", "enable", "disable", "restart")
+             "keep_hours", "delete_after_upload", "upload_url")
+MUTATIONS = ("record", "stop", "delete", "save", "set_token", "enable", "disable", "restart")
 # Every `"error"` code the dispatch can answer — compared with the contract;
 # `_err` refuses any other.
 ERROR_CODES = (
     "not_found", "not_installed", "conf_unreadable", "disabled", "not_running",
     "bad_seconds", "bad_id", "not_enabled", "unknown_field", "invalid_value",
     "ack_required", "conf_write_failed", "method_not_allowed", "payload_too_large",
-    "invalid_json", "bad_request",
+    "invalid_json", "bad_request", "url_refused", "bad_token",
 )
 MEDIA = C.MEDIA
 
@@ -126,12 +126,36 @@ def present_media() -> List[str]:
 
 
 def clips_view(present: List[str]) -> List[Dict[str, Any]]:
+    """Clips of the present media, newest first, each with what its sidecar
+    says (duration, peak, upload) when the sidecar passes its checks."""
     store = Store(MEDIA)
     clips = []
     for name in present:
         clips.extend(store.list_clips(name))
     clips.sort(key=lambda c: (c.mtime, c.id), reverse=True)
-    return [{"id": c.id, "medium": c.medium, "size": c.size, "ts": int(c.mtime)} for c in clips]
+    out = []
+    for c in clips:
+        row: Dict[str, Any] = {"id": c.id, "medium": c.medium, "size": c.size, "ts": int(c.mtime)}
+        row.update(store.read_meta(c.medium, c.id))
+        out.append(row)
+    return out
+
+
+def url_refusal(url: str) -> str:
+    """The URL policy's STATIC verdict ("" = acceptable), when the policy is
+    installed. The daemon judges again at request time, after resolving;
+    without the policy the daemon never sends (`unavailable`)."""
+    if not url:
+        return ""
+    from .upload import load_guard
+
+    guard = load_guard()
+    if guard is None:
+        return ""
+    try:
+        return str(guard.check_url(url, resolve=False))[:120]
+    except Exception:
+        return "url check failed"
 
 
 def events_tail() -> List[Dict[str, Any]]:
@@ -215,6 +239,7 @@ def status_view(now: Optional[float] = None) -> Response:
         events=events_tail(),
         conf=conf_view(conf),
         bounds=bounds_view(conf),
+        token_set=conf_mod.token_set(),
     )
     return base
 
@@ -266,6 +291,10 @@ def _apply_save(conf: conf_mod.RecorderConfig, body: Dict[str, Any]) -> Optional
     except ValueError as exc:
         field = str(exc).replace("invalid ", "")[:32]
         return _err("invalid_value", field=field)
+    if "upload_url" in body:
+        reason = url_refusal(conf.upload_url)
+        if reason:
+            return _err("url_refused", reason=reason)
     return None
 
 
@@ -300,6 +329,16 @@ def mutate(body: Dict[str, Any]) -> Tuple[Response, str]:
         if not (target == C.DELETE_ALL or valid_id(target)):
             return _err("bad_id"), ""
         return {"ok": True, "action": action}, "pub delete %s" % target
+    if action == "set_token":
+        token = body.get("token")
+        if not (token == "" or conf_mod.valid_token(token)):
+            return _err("bad_token"), ""
+        try:
+            conf_mod.save_token(token)
+        except (OSError, ValueError):
+            return _err("conf_write_failed"), ""
+        # Write-only: the answer says whether a token is set, never what it is.
+        return {"ok": True, "action": action, "token_set": conf_mod.token_set()}, ""
     if action == "restart":
         if not conf.enabled:
             return _err("not_enabled"), ""

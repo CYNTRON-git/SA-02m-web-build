@@ -100,6 +100,7 @@ HA-автодискавери через WB). Это **аддитивно**: в�
 | LED type 120 | `led-{port}-{addr}` | `led-COM3-13` |
 | Сценарий (виртуальный) | `sa02m-rules-{id}` | `sa02m-rules-s1` |
 | Прибор Home Connect (облако BSH) | `hc-{haId}` | `hc-siemens-sn53es02ce-68a40e2c5a2e` |
+| Рекордер звука (виртуальный) | `sa02m-audio` — постоянный, как `sa02m-bridge`, не имя платы | `sa02m-audio` |
 
 Карты Carel / LED — `docs/contracts/carel-ahu.md`, `docs/contracts/led-mb2ws.md`.
 Счётчик Меркурий (не Modbus) — `docs/contracts/spodes-mercury.md`. Имена
@@ -716,6 +717,26 @@ insurance-опрос.
 # все приборы Home Connect и их доступность
 mosquitto_sub -h 127.0.0.1 -v -t '/devices/+/meta/error' | grep '/hc-'
 mosquitto_sub -h 127.0.0.1 -v -t '/devices/hc-+/controls/#'
+```
+
+---
+
+## Запись звука — `sa02m-audio`
+
+Рекордер звука с USB-микрофона (`sa02m-audio`, на каждой плате, по умолчанию
+выключен). Команды — `…/controls/record/on` (длительность или остановка) и
+`…/controls/delete/on` (id или `all`), **без retain** (retained-команда
+отвергается и очищается); состояние — retained `record`, `mic`, `medium`,
+`medium_state`, `last_file`, `last_status`, `last_duration_ms`, `last_size`,
+`last_peak_dbfs`, `last_upload`, `count`; LWT `meta/error = "r"`. Байты звука
+в MQTT не идут. С внешнего слушателя 1884 команды запрещены ACL.
+
+Единственный дом грамматики, значений и правил — `docs/contracts/audio-recorder.md`
+(§2–§4, §20). Здесь они не повторяются.
+
+```bash
+mosquitto_sub -h 127.0.0.1 -v -t '/devices/sa02m-audio/#'
+mosquitto_pub -h 127.0.0.1 -t /devices/sa02m-audio/controls/record/on -m 5
 ```
 
 ---
