@@ -5,6 +5,16 @@
 
 ---
 
+## [2026-10-16 15:52] branch: 1.0.7.1
+
+**Файл(ы):** `opt/sa02m-devices/sa02m_devices/stand_socket_group.py`, `scripts/11-devices.sh`, `etc/systemd/system/sa02m-stand-api.service.d/20-devices-socket-group.conf`
+**Тип:** Некорректное поведение
+**Описание:** На 192.168.1.135 вкладка «Устройства» пустая, хотя модули в MQTT живые.
+**Причина:** nginx ходит только на `/run/sa02m-devices/api.sock`. Сокет с загрузки 15.10 14:42 был `root:root` `0660`, воркеры nginx — `www-data`, `connect` давал EACCES и 502. `ExecStartPost` ждёт сокет 10 с и при опоздании молча выходит. Холодный импорт gunicorn занял ~19 с (старт процесса 14:42:39, inode 14:42:58). Фронт ошибку опроса глотает и оставляет текст «Нет устройств».
+**Исправление:** Хук gunicorn `when_ready` (после bind) ставит группу `www-data` и режим `0660`. `11-devices.sh` подключает его drop-in'ом только если юнит `sa02m-stand-api` уже есть, и только если файл хука на месте.
+
+---
+
 ## [2026-10-12 11:18] branch: 1.0.7.1
 
 **Файл(ы):** `www/network_config/static/js/app/misc.js`, `www/network_config/static/js/app/forms.js`
