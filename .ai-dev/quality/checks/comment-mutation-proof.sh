@@ -245,6 +245,8 @@ cgi-csrf-policy|opt/sa02m-devices/sa02m_devices/api.py|check_csrf(
 js-post-csrf-headers|www/network_config/static/js/devices.js|? withCsrfHeaders({ "Content-Type": "application/json" })
 websession-parity|opt/sa02m-devices/sa02m_devices/websession.py|def check_csrf(
 devices-api-upstream|etc/nginx/network_config.conf|server unix:/run/sa02m-devices/api.sock;
+devices-api-upstream|opt/sa02m-devices/sa02m_devices/stand_socket_group.py|def when_ready(server):
+devices-api-upstream|etc/systemd/system/sa02m-stand-api.service.d/20-devices-socket-group.conf|Environment=GUNICORN_CMD_ARGS=--config=/opt/sa02m-devices/sa02m_devices/stand_socket_group.py
 homekit-trigger|usr/local/sbin/sa02m-homekit-web-trigger.sh|hk_write_disabled_status "$since"
 homekit-trigger|usr/local/sbin/sa02m-homekit-web-trigger.sh|rm -f -- "$VAR_DIR/state.json" 2>/dev/null || true
 homekit-trigger|usr/local/sbin/sa02m-homekit-web-trigger.sh|out=${out//[^[:print:]]/ }

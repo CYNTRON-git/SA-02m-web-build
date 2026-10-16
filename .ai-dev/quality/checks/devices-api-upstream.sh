@@ -42,6 +42,16 @@
 #   5. opt/sa02m-devices/sa02m_devices/api.py carries the same two literals
 #      (SOCKET_PATH_DEFAULT / SOCKET_UPSTREAM_MARK) — the daemon's half of the
 #      three-home agreement.
+#   6. Bench gunicorn (sa02m-stand-api, outside this tree) binds the same socket
+#      as root. A 10s ExecStartPost misses a cold import — measured on 1.135
+#      2026-10-15: process start 14:42:39, socket inode 14:42:58 — and the inode
+#      stays root:root 0660, so nginx (www-data) gets EACCES and the Devices tab
+#      is an empty 502. The group is re-asserted IN the master after bind
+#      (stand_socket_group.py when_ready, the same 0660/www-data as
+#      bind_unix_listener). scripts/11-devices.sh installs that config as a
+#      drop-in only when the stand unit is already on the board (a field board
+#      has no such unit — the install is a no-op) and BEFORE it restarts the
+#      stand API, and it refuses to point gunicorn at a missing hook file.
 #
 # PROVEN RED (2026-09-28, 1.0.6.65) on the 1.0.6.56 tree: no upstream block, both
 # locations on the literal port, installer order and log string old, unit and
@@ -60,6 +70,8 @@ CONF=etc/nginx/network_config.conf
 INST=scripts/11-devices.sh
 UNIT=etc/systemd/sa02m-devices-api.service
 API=opt/sa02m-devices/sa02m_devices/api.py
+HOOK=opt/sa02m-devices/sa02m_devices/stand_socket_group.py
+DROP=etc/systemd/system/sa02m-stand-api.service.d/20-devices-socket-group.conf
 SOCK='/run/sa02m-devices/api.sock'
 UP='sa02m_devices_api'
 LOC_MIN=2
@@ -68,7 +80,7 @@ fails=0
 ok()  { printf 'devices-api-upstream: ok    %s\n' "$1"; }
 bad() { printf 'devices-api-upstream: FAIL  %s\n' "$1"; fails=$((fails + 1)); }
 
-for f in "$CONF" "$INST" "$UNIT" "$API"; do
+for f in "$CONF" "$INST" "$UNIT" "$API" "$HOOK" "$DROP"; do
     [ -r "$f" ] || { bad "missing: $f"; }
 done
 [ "$fails" -eq 0 ] || { echo "devices-api-upstream: $fails FAILED"; exit 1; }
@@ -152,6 +164,32 @@ if stripped_has "$API" "SOCKET_PATH_DEFAULT = \"$SOCK\""; then ok "$API: SOCKET_
 else bad "$API: SOCKET_PATH_DEFAULT is not \"$SOCK\""; fi
 if stripped_has "$API" 'SOCKET_UPSTREAM_MARK = "unix:" + SOCKET_PATH_DEFAULT'; then ok "$API: SOCKET_UPSTREAM_MARK derives from the same literal"
 else bad "$API: SOCKET_UPSTREAM_MARK no longer derives from SOCKET_PATH_DEFAULT — the auto-compat sniff can drift from nginx"; fi
+
+# ── 6. stand socket group, after bind (not a timed ExecStartPost) ───────────
+if stripped_has "$HOOK" 'def when_ready(server):'; then ok "$HOOK: when_ready runs after gunicorn bind"
+else bad "$HOOK: no live when_ready — the stand socket stays root:root and the Devices tab 502s"; fi
+if stripped_has "$HOOK" 'SOCKET_GROUP = "www-data"'; then ok "$HOOK: group www-data (nginx)"
+else bad "$HOOK: SOCKET_GROUP is not www-data — nginx workers cannot connect"; fi
+if stripped_has "$HOOK" "SOCKET_PATH = \"$SOCK\""; then ok "$HOOK: SOCKET_PATH = $SOCK"
+else bad "$HOOK: SOCKET_PATH is not \"$SOCK\""; fi
+if stripped_has "$HOOK" 'os.chmod(path, 0o660)'; then ok "$HOOK: mode 0660 re-asserted after chgrp"
+else bad "$HOOK: chmod 0660 is gone — umask alone leaves the socket root:root or world-open"; fi
+if stripped_has "$DROP" "Environment=GUNICORN_CMD_ARGS=--config=/opt/sa02m-devices/sa02m_devices/stand_socket_group.py"; then
+    ok "$DROP: gunicorn loads the hook via GUNICORN_CMD_ARGS (no space — systemd splits those)"
+else bad "$DROP: missing GUNICORN_CMD_ARGS=--config=/opt/…/stand_socket_group.py — a space in Environment= is split by systemd and gunicorn exits 2"; fi
+if stripped_has "$INST" '[ -f "$stand_unit" ] || return 0'; then
+    ok "$INST: no stand unit ⇒ no drop-in (field board is a no-op)"
+else bad "$INST: the stand drop-in is not guarded on the unit file — a field board would grow a stand-api fragment"; fi
+if stripped_has "$INST" '[ -f "$hook" ] || {'; then
+    ok "$INST: refuses to point gunicorn at a missing hook"
+else bad "$INST: a missing hook file would still install --config and take down sa02m-stand-api"; fi
+hook_ln=$(stripped_first_line "$INST" 'sa02m_stand_devices_socket_group')
+restart_ln=$(stripped_first_line "$INST" 'sa02m_svc_restart_if_active sa02m-stand-api\.service')
+if [ -n "$hook_ln" ] && [ -n "$restart_ln" ] && [ "$hook_ln" -lt "$restart_ln" ]; then
+    ok "$INST installs the socket-group drop-in (line $hook_ln) before restarting stand-api (line $restart_ln)"
+else
+    bad "$INST: socket-group install (line ${hook_ln:-none}) must precede the stand-api restart (line ${restart_ln:-none}) — a restart otherwise keeps the root:root socket"
+fi
 
 echo
 if [ "$fails" -eq 0 ]; then
