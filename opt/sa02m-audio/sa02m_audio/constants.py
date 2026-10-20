@@ -16,6 +16,9 @@ CONF_FILE = os.path.join(ETC_DIR, "sa02m-audio.conf")
 # writes it (write-only field), the daemon reads it; never logged, never in a
 # backup, never in a response.
 TOKEN_FILE = os.path.join(ETC_DIR, "upload.token")
+# Operator allow list for commands returned in an upload response. Absent or
+# invalid ⇒ the daemon applies nothing (voice_commands stays fail-closed).
+VOICE_ALLOW_FILE = os.path.join(ETC_DIR, "voice-allow.json")
 VAR_DIR = os.environ.get("SA02M_AUDIO_VAR", "/var/lib/sa02m-audio")
 # Audit ring; always on eMMC, whatever medium the clips go to.
 EVENTS_FILE = os.path.join(VAR_DIR, "events.jsonl")
@@ -173,6 +176,11 @@ UPLOAD_QUEUE_MAX = 5
 UPLOAD_MAX_REDIRECTS = 3
 UPLOAD_RESPONSE_MAX = 64 * 1024
 TOKEN_RE = r"^[A-Za-z0-9._~+/=-]{1,512}$"
+# How many command objects one JSON reply may carry, and how many clip ids
+# are remembered so a retry of the same upload does not publish twice.
+VOICE_COMMANDS_MAX = 8
+VOICE_SEEN_MAX = 64
+VOICE_ALLOW_MAX_BYTES = 8192
 
 # ── MQTT (docs/MQTT_TOPICS.md convention) ──────────────────────────────────
 MQTT_HOST = "127.0.0.1"
@@ -248,7 +256,7 @@ REMOVABLE_MEDIA = (MEDIUM_USB, MEDIUM_SDCARD)
 # Event kinds in events.jsonl (contract §Журнал).
 EVENT_KINDS = (
     "start", "end", "refused", "failed", "interrupted", "discarded", "xrun",
-    "delete", "retention", "config", "medium", "mqtt", "upload",
+    "delete", "retention", "config", "medium", "mqtt", "upload", "voice",
 )
 
 

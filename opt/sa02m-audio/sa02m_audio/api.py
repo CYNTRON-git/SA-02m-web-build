@@ -50,7 +50,7 @@ _O_NOFOLLOW = getattr(os, "O_NOFOLLOW", 0)
 _O_NONBLOCK = getattr(os, "O_NONBLOCK", 0)
 # Panel-editable conf keys (the device name is not a panel setting).
 SAVE_KEYS = ("storage", "default_duration_s", "max_duration_s", "keep_files", "keep_mb",
-             "keep_hours", "delete_after_upload", "upload_url")
+             "keep_hours", "delete_after_upload", "upload_url", "voice_commands")
 MUTATIONS = ("record", "stop", "delete", "save", "set_token", "enable", "disable", "restart")
 # Every `"error"` code the dispatch can answer — compared with the contract;
 # `_err` refuses any other.

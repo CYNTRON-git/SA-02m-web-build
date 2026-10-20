@@ -311,6 +311,7 @@ bind каталога корневой ФС поверх пути). Без ни�
 | `keep_hours` | `24` | `1`…`168` |
 | `delete_after_upload` | `true` | `true` \| `false` |
 | `upload_url` | — | пусто — отправки нет; иначе `http`/`https`, есть хост, без `user:pass@`, печатный ASCII без пробелов, ≤ `UPLOAD_URL_MAX` = 500 символов; иное ⇒ пусто и предупреждение без самого значения |
+| `voice_commands` | `false` | `true` \| `false`. `true` само по себе команды не исполняет: нужен годный `voice-allow.json` (§12) |
 
 Файл есть, но не открывается ⇒ демон пишет состояние `conf_unreadable` и не
 записывает ничего; это не «выключено». Нет файла или секции, ошибка разбора ⇒
@@ -380,6 +381,7 @@ bind каталога корневой ФС поверх пути). Без ни�
 | `medium` | вердикт по выбранному носителю изменился |
 | `mqtt` | retained-команда отвергнута и очищена |
 | `upload` | отправка клипа закончилась или не начата (`status` — состояние `last_upload`, `detail` — хост и код ответа, без URL и токена) |
+| `voice` | к ответу загрузки приложены команды: `ok` — опубликованы или повтор того же id; `refused` — нет белого списка или команда вне него; `failed` — брокер не принял запись |
 
 ## 11. Аренда микрофона
 
@@ -411,7 +413,7 @@ LED, живое распознавание) **обязаны** её брать. 
     `X-SA02M-Recording-Id`, `X-SA02M-Duration-Ms`, `X-SA02M-Peak-Dbfs` и, если
     токен задан, `Authorization: Bearer <токен>`; получатель отбрасывает
     повторы по id (повторная попытка может прийти дважды);
-  - успех — HTTP 2xx. Попытки — в моменты `UPLOAD_DELAYS_S` (0, 10 и 60 с
+  - успех — HTTP 2xx. Тело с `Content-Type: application/json` может нести команды (ниже); любой другой тип или пустое тело успех не отменяют — это только факт доставки. Попытки — в моменты `UPLOAD_DELAYS_S` (0, 10 и 60 с
     после сохранения), каждая с тайм-аутом `UPLOAD_TIMEOUT_S` = 10 с на
     каждую операцию сокета; после третьей неудачи — `failed`, файл остаётся и
     доступен для скачивания;
@@ -430,6 +432,7 @@ LED, живое распознавание) **обязаны** её брать. 
     никогда не задерживает новую запись;
   - `delete_after_upload` = `true` ⇒ после успешной отправки демон удаляет
     клип (событие `delete`, `source` = `upload`);
+  - **команды в теле ответа** разбирает `voice.py`, применяет главный поток демона, и только когда `voice_commands` = `true`. Документ: `commands` — список `{device, control, value}`, не больше `VOICE_COMMANDS_MAX` = 8. `value` — десятичная строка без знака. Если в документе есть `recording_id` и он не совпал с id клипа, команды отбрасываются целиком. Повтор того же id не публикуется второй раз (помнятся последние `VOICE_SEEN_MAX` = 64 id). Публикация — QoS 1, **без retain**, топик `/devices/<device>/controls/<control>/on` на loopback `127.0.0.1:1883`, без ожидания PUBACK: нет соединения — `failed`, файл команд не помечается исполненным. Белый список — `/etc/sa02m-audio/voice-allow.json` рядом с конфигом, не больше `VOICE_ALLOW_MAX_BYTES` = 8192 байт, вид `{"devices":{"<id>":{"<control>":{"min":0,"max":255}}}}`. Нет файла, файл битый или значение вне `min`…`max` — команда не публикуется (`refused`). Чужое устройство в списке не названо — не публикуется. RK3588 сам в брокер выходов не пишет;
   - **токен** — секрет: `/etc/sa02m-audio/upload.token`, `www-data:sa02m-audio`
     0640; панель его только записывает (ответы CGI несут лишь
     `token_set: true|false`), демон читает при каждой отправке. Файл есть, но
@@ -450,6 +453,7 @@ LED, живое распознавание) **обязаны** её брать. 
 |---|---|---|
 | `/etc/sa02m-audio/` | `www-data:sa02m-audio` 2750 | панель пишет конфиг, демон читает через группу |
 | `/etc/sa02m-audio/upload.token` | `www-data:sa02m-audio` 0640 | панель пишет (поле только для записи), демон читает; секрет §12 |
+| `/etc/sa02m-audio/voice-allow.json` | `www-data:sa02m-audio` 0640 | оператор пишет белый список команд §12; демон только читает |
 | `/var/lib/sa02m-audio/`, `rec/` | `sa02m-audio:www-data` 2750 | демон пишет; `www-data` читает через группу |
 | `/var/lib/sa02m-audio/tmp/` | `sa02m-audio` 0700 | только демон (`.part`) |
 | `/run/sa02m-audio/` (`status.json`, `daemon.lock`) | `sa02m-audio:www-data` 2750 | демон пишет, `www-data` читает |
@@ -522,7 +526,7 @@ CGI — тонкая обвязка: сессия → (POST) CSRF → огран
 | `record` | POST | `{"action":"record","seconds":N}`, N = 2…`max_duration_s` | `pub record N` |
 | `stop` | POST | `{"action":"stop"}` | `pub record stop` |
 | `delete` | POST | `{"action":"delete","id":<id> или "all"}` | `pub delete …` |
-| `save` | POST | ключи конфига `storage`, `default_duration_s`, `max_duration_s`, `keep_files`, `keep_mb`, `keep_hours`, `delete_after_upload`, `upload_url` (любое подмножество) и `ack_removable` | — (демон перечитывает конфиг сам за 2 с) |
+| `save` | POST | ключи конфига `storage`, `default_duration_s`, `max_duration_s`, `keep_files`, `keep_mb`, `keep_hours`, `delete_after_upload`, `upload_url`, `voice_commands` (любое подмножество) и `ack_removable` | — (демон перечитывает конфиг сам за 2 с) |
 | `set_token` | POST | `{"action":"set_token","token":"<токен>"}`; `""` — удалить | — (ответ: `token_set`, сам токен — никогда) |
 | `enable` | POST | — | конфиг `enabled = true`, затем `sudo enable` |
 | `disable` | POST | — | конфиг `enabled = false`, затем `sudo disable` |

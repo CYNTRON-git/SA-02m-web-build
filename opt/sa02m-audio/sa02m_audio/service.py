@@ -40,6 +40,7 @@ from .fsutil import atomic_write
 from .media import MediaProbe, Verdict
 from .store import Store, new_id
 from .upload import Uploader, UploadJob, UploadResult, host_of, load_guard
+from .voice import SeenIds, allow_path_for, apply_commands, load_allow
 
 log = logging.getLogger("sa02m_audio")
 
@@ -164,6 +165,7 @@ class Daemon:
         guard_loader: Callable[[], Any] = load_guard,
         upload_opener: Any = None,
         upload_delays=C.UPLOAD_DELAYS_S,
+        voice_allow_path: Optional[str] = None,
     ) -> None:
         self.stop = stop or threading.Event()
         self.conf_path = conf_path
@@ -184,6 +186,8 @@ class Daemon:
         self._guard_loader = guard_loader
         self._upload_opener = upload_opener
         self._upload_delays = upload_delays
+        self.voice_allow_path = voice_allow_path or allow_path_for(conf_path)
+        self._voice_seen = SeenIds()
         self.uploader: Optional[Uploader] = None
 
         self.conf = conf_mod.RecorderConfig()
@@ -485,7 +489,18 @@ class Daemon:
         if self.last.get("last_file") == result.rec_id:
             self.last["last_upload"] = result.state
             self.put("last_upload", result.state)
+        self.apply_voice(result)
         self.write_status(self._state())
+
+    def apply_voice(self, result: UploadResult) -> None:
+        """Apply absolute commands from a JSON upload reply, on this thread."""
+        if result.state != C.UP_OK or not self.conf.voice_commands or not result.commands:
+            return
+        status, detail = apply_commands(
+            self.link, result.rec_id, result.commands,
+            load_allow(self.voice_allow_path), self._voice_seen)
+        if status:
+            self.event("voice", id=result.rec_id, status=status, detail=detail)
 
     def finalize(self, result: CaptureResult) -> None:
         capture, self.capture = self.capture, None

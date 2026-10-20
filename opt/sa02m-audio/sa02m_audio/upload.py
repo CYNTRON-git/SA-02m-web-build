@@ -13,7 +13,10 @@
   `unavailable`, nothing is sent, the file is kept.
 * HOW: body = the WAV; `Content-Type: audio/wav`, `X-SA02M-Recording-Id`,
   `X-SA02M-Duration-Ms`, `X-SA02M-Peak-Dbfs`, and `Authorization: Bearer <t>`
-  when a token is set. Success = HTTP 2xx. Each attempt is bounded by
+  when a token is set. Success = HTTP 2xx. A 2xx whose Content-Type is
+  application/json may carry absolute commands (voice.commands_from_body);
+  any other body is still success and carries no commands. Each attempt is
+  bounded by
   UPLOAD_TIMEOUT_S; attempts at UPLOAD_DELAYS_S (0, 10, 60 s), then `failed`
   and the file stays. A refused URL is `refused` at once (no retry). Only a
   307/308 redirect is followed (the body is re-sent), at most
@@ -40,6 +43,7 @@ from dataclasses import dataclass
 from typing import Any, Callable, Optional
 
 from . import constants as C
+from . import voice
 
 log = logging.getLogger("sa02m_audio.upload")
 
@@ -65,6 +69,19 @@ class UploadResult:
     # attempt ends. None only for a result built without a job.
     duration_ms: Optional[int] = None
     peak_dbfs: Optional[int] = None
+    # Absolute commands from a JSON 2xx, already checked for shape. () when
+    # the reply was not a command document. The daemon applies them.
+    commands: tuple = ()
+
+
+class Attempt(tuple):
+    """(state, detail) plus `.commands`. Two-item unpack keeps old callers."""
+
+    def __new__(cls, state: str, detail: str, commands: tuple = ()):
+        return tuple.__new__(cls, (state, detail))
+
+    def __init__(self, state: str, detail: str, commands: tuple = ()) -> None:
+        self.commands = tuple(commands)
 
 
 def load_guard(rules_dir: Optional[str] = None) -> Optional[Any]:
@@ -118,24 +135,25 @@ def default_opener() -> Any:
     return urllib.request.build_opener(_NoRedirect())
 
 
-def post_once(job: UploadJob, guard: Any, opener: Any, timeout: float) -> tuple:
-    """One attempt: (state, detail) with state ok | refused | retry."""
+def post_once(job: UploadJob, guard: Any, opener: Any, timeout: float) -> Attempt:
+    """One attempt: state ok | refused | retry. `.commands` only on a JSON 2xx."""
     url = job.url
     for _hop in range(C.UPLOAD_MAX_REDIRECTS + 1):
         try:
             reason = guard.check_url(url, resolve=True)
         except Exception as exc:
-            return "retry", "%s: %s" % (host_of(url), type(exc).__name__)
+            return Attempt("retry", "%s: %s" % (host_of(url), type(exc).__name__))
         if reason:
-            return C.UP_REFUSED, "%s: %s" % (host_of(url), reason)
+            return Attempt(C.UP_REFUSED, "%s: %s" % (host_of(url), reason))
         try:
             checked = (urllib.parse.urlsplit(url).hostname or "").lower()
         except ValueError:
-            return C.UP_REFUSED, "%s: bad url" % host_of(url)
+            return Attempt(C.UP_REFUSED, "%s: bad url" % host_of(url))
+        commands: tuple = ()
         try:
             req = urllib.request.Request(url, data=job.data, method="POST")
             if _dial_host(req.host or "") != checked:
-                return C.UP_REFUSED, "%s: dial host was not the host that was checked" % host_of(url)
+                return Attempt(C.UP_REFUSED, "%s: dial host was not the host that was checked" % host_of(url))
             req.add_header("Content-Type", "audio/wav")
             req.add_header("X-SA02M-Recording-Id", job.rec_id)
             req.add_header("X-SA02M-Duration-Ms", str(job.duration_ms))
@@ -143,8 +161,11 @@ def post_once(job: UploadJob, guard: Any, opener: Any, timeout: float) -> tuple:
             if job.token:
                 req.add_header("Authorization", "Bearer " + job.token)
             with opener.open(req, timeout=timeout) as resp:
-                resp.read(C.UPLOAD_RESPONSE_MAX)
                 code = int(resp.status)
+                ctype = resp.headers.get("Content-Type") or ""
+                payload = resp.read(C.UPLOAD_RESPONSE_MAX)
+                if 200 <= code < 300 and "application/json" in ctype.lower():
+                    commands = voice.commands_from_body(payload, job.rec_id)
         except urllib.error.HTTPError as exc:
             try:
                 code = int(exc.code)
@@ -159,11 +180,11 @@ def post_once(job: UploadJob, guard: Any, opener: Any, timeout: float) -> tuple:
                 url = urllib.parse.urljoin(url, location)
                 continue
         except Exception as exc:  # URLError, timeout, TLS, a URL Request rejects
-            return "retry", "%s: %s" % (host_of(url), type(exc).__name__)
+            return Attempt("retry", "%s: %s" % (host_of(url), type(exc).__name__))
         if 200 <= code < 300:
-            return C.UP_OK, "%s: HTTP %d" % (host_of(url), code)
-        return "retry", "%s: HTTP %d" % (host_of(url), code)
-    return "retry", "%s: too many redirects" % host_of(job.url)
+            return Attempt(C.UP_OK, "%s: HTTP %d" % (host_of(url), code), commands)
+        return Attempt("retry", "%s: HTTP %d" % (host_of(url), code))
+    return Attempt("retry", "%s: too many redirects" % host_of(job.url))
 
 
 class Uploader:
@@ -200,9 +221,10 @@ class Uploader:
                 continue
             self._deliver(self._attempts(job))
 
-    def _result(self, job: UploadJob, state: str, detail: str) -> UploadResult:
+    def _result(self, job: UploadJob, state: str, detail: str,
+                commands: tuple = ()) -> UploadResult:
         return UploadResult(job.rec_id, job.medium, state, detail,
-                            job.duration_ms, job.peak_dbfs)
+                            job.duration_ms, job.peak_dbfs, commands)
 
     def _attempts(self, job: UploadJob) -> UploadResult:
         detail = ""
@@ -211,8 +233,9 @@ class Uploader:
             if self._stop.wait(max(0.0, at - previous)):
                 return self._result(job, C.UP_FAILED, "daemon stopped")
             previous = at
-            state, detail = post_once(job, self._guard, self._opener, self._timeout)
+            attempt = post_once(job, self._guard, self._opener, self._timeout)
+            state, detail = attempt
             log.info("upload %s attempt %d/%d: %s", job.rec_id, n, len(self._delays), detail)
             if state in (C.UP_OK, C.UP_REFUSED):
-                return self._result(job, state, detail)
+                return self._result(job, state, detail, attempt.commands)
         return self._result(job, C.UP_FAILED, "%s after %d attempts" % (detail, len(self._delays)))

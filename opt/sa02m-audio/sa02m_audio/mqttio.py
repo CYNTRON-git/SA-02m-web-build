@@ -48,6 +48,10 @@ def command_topic(name: str) -> str:
 
 
 COMMAND_TOPICS = {command_topic(n): n for n in C.COMMAND_CONTROLS}
+# Absolute write the voice path may publish: /devices/<id>/controls/<name>/on
+_ABS_COMMAND_RE = re.compile(
+    r"^/devices/[A-Za-z0-9_.-]{1,64}/controls/[A-Za-z0-9_]{1,32}/on$"
+)
 META_ERROR_TOPIC = C.DEVICE_TOPIC + "/meta/error"
 
 
@@ -189,6 +193,19 @@ class Link:
                 return
             self._retained[topic] = payload
         self._send(topic, payload, True)
+
+    def publish_command(self, topic: str, payload: str) -> bool:
+        """Non-retained QoS 1 write to another device's `/on`.
+
+        Returns False at once when the broker is down or the topic is not a
+        device command. Does not wait for PUBACK and does not cache the value.
+        """
+        if not _ABS_COMMAND_RE.match(topic):
+            log.warning("command topic refused: %s", topic[:80])
+            return False
+        if not self._connected.is_set():
+            return False
+        return self._send(topic, str(payload), False)
 
     def clear_retained_command(self, topic: str) -> None:
         """Zero-length retained publish: removes a retained `/on` from the broker."""

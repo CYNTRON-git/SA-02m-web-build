@@ -35,6 +35,7 @@ _FALSE = ("0", "false", "no", "off")
 KEYS = (
     "enabled", "storage", "device", "default_duration_s", "max_duration_s",
     "keep_files", "keep_mb", "keep_hours", "delete_after_upload", "upload_url",
+    "voice_commands",
 )
 _TOKEN_RE = re.compile(C.TOKEN_RE)
 _O_NOFOLLOW = getattr(os, "O_NOFOLLOW", 0)
@@ -75,6 +76,9 @@ class RecorderConfig:
     keep_hours: int = C.KEEP_HOURS_DEFAULT
     delete_after_upload: bool = True
     upload_url: str = ""
+    # JSON commands in an upload response are applied only when this is true
+    # AND voice-allow.json next to the conf is a valid allow list.
+    voice_commands: bool = False
     warnings: List[str] = field(default_factory=list)
     # The file EXISTS but could not be read — never the same as disabled.
     unreadable: bool = False
@@ -145,6 +149,8 @@ def load(path: Optional[str] = None) -> RecorderConfig:
         out.warnings.append("device %r refused, using %s" % (device[:20], C.DEVICE_AUTO))
     out.delete_after_upload = _read_bool(sec.get("delete_after_upload", "true"), True,
                                          "delete_after_upload", out.warnings)
+    out.voice_commands = _read_bool(sec.get("voice_commands", "false"), False,
+                                    "voice_commands", out.warnings)
     url = sec.get("upload_url", "").strip()
     if valid_upload_url(url):
         out.upload_url = url
@@ -179,7 +185,7 @@ def validate(conf: RecorderConfig) -> None:
         raise ValueError("invalid storage")
     if not (conf.device == C.DEVICE_AUTO or _DEVICE_RE.match(conf.device)):
         raise ValueError("invalid device")
-    for key in ("enabled", "delete_after_upload"):
+    for key in ("enabled", "delete_after_upload", "voice_commands"):
         if not isinstance(getattr(conf, key), bool):
             raise ValueError("invalid %s" % key)
     if not valid_upload_url(conf.upload_url):

@@ -45,6 +45,7 @@ class Receiver:
         self.requests = []
         self.mode = "ok"
         self.redirect_to = "/moved"
+        self.json_body = b"{}"
         receiver = self
 
         class Handler(http.server.BaseHTTPRequestHandler):
@@ -63,6 +64,16 @@ class Receiver:
                     self.send_header("Location", receiver.redirect_to)
                     self.end_headers()
                     receiver.mode = "ok"
+                    return
+                if mode == "json":
+                    raw = receiver.json_body
+                    if not isinstance(raw, bytes):
+                        raw = raw.encode("utf-8")
+                    self.send_response(200)
+                    self.send_header("Content-Type", "application/json")
+                    self.send_header("Content-Length", str(len(raw)))
+                    self.end_headers()
+                    self.wfile.write(raw)
                     return
                 if mode == "302" and self.path == "/up":
                     # Its target would answer 201: following a 302 would read as ok.
@@ -156,6 +167,38 @@ class PostOnceTest(unittest.TestCase):
         state, _ = upload.post_once(job(self.rx.url), OpenGuard(), self.opener, 0.5)
         self.assertEqual(state, "retry")
         self.assertLess(time.monotonic() - t0, 1.4)
+
+    def test_plain_body_carries_no_commands(self):
+        attempt = upload.post_once(job(self.rx.url), OpenGuard(), self.opener, 5)
+        self.assertEqual(attempt[0], "ok")
+        self.assertEqual(attempt.commands, ())
+
+    def test_json_commands_come_back_with_the_clip(self):
+        self.rx.mode = "json"
+        self.rx.json_body = json.dumps({
+            "recording_id": "20261015T120000Z-0a1b2c",
+            "text": "включи свет",
+            "commands": [
+                {"device": "led-COM3-13", "control": "power", "value": "1"},
+                {"device": "led-COM3-13", "control": "brightness", "value": 40},
+                {"device": "led-COM3-13", "control": "color", "value": "#fff"},
+            ],
+        })
+        attempt = upload.post_once(job(self.rx.url), OpenGuard(), self.opener, 5)
+        self.assertEqual(attempt[0], "ok")
+        self.assertEqual(attempt.commands, (
+            {"device": "led-COM3-13", "control": "power", "value": "1"},
+            {"device": "led-COM3-13", "control": "brightness", "value": "40"},
+        ))
+
+    def test_json_recording_id_mismatch_drops_commands(self):
+        self.rx.mode = "json"
+        self.rx.json_body = json.dumps({
+            "recording_id": "20261015T120000Z-ffffff",
+            "commands": [{"device": "led-COM3-13", "control": "power", "value": "1"}],
+        })
+        attempt = upload.post_once(job(self.rx.url), OpenGuard(), self.opener, 5)
+        self.assertEqual((attempt[0], attempt.commands), ("ok", ()))
 
     def test_connection_refused_is_a_retry(self):
         s = socket.socket()
