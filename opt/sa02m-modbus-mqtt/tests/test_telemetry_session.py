@@ -626,6 +626,66 @@ class TestTheInstanceLockCannotBeSquatted(SessionTestCase):
         self.assertEqual(self.lock_path.stat().st_mode & 0o777, 0o600)
 
 
+@unittest.skipUnless(os.name == "posix" and tel.fcntl is not None,
+                     "file modes and flock are POSIX")
+class TestTheInstanceLockModeHasTwoIndependentPins(SessionTestCase):
+    """1.0.6.68 review round 3 (backlog D2, D3). The 0600 mode rests on TWO
+    steps — the create mode and the narrowing fchmod — and each was pinned
+    only through the other: creating 0644 with the fchmod kept stayed GREEN
+    (the fchmod hid it), and a failed fchmod was silent. Each is now measured
+    with the other one out of the way."""
+
+    def setUp(self):
+        super().setUp()
+        self._tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self._tmp.cleanup)
+        self.lock_path = Path(self._tmp.name) / "sa02m-telemetry.lock"
+        os.environ[LOCK_ENV] = str(self.lock_path)
+        # umask 0 so the create mode is visible exactly — under a 077 umask a
+        # 0644 create would come out 0600 and the D3 case would test nothing.
+        old = os.umask(0)
+        self.addCleanup(os.umask, old)
+
+    def _release(self, client):
+        fd = getattr(client, "_instance_lock_fd", None)
+        if fd is not None:
+            os.close(fd)
+
+    def test_the_file_is_created_0600_without_the_narrowing(self):
+        """D3: the fchmod stubbed out, so only the CREATE mode decides.
+        Proof by mutation (round-3 run): creating 0644 with the fchmod kept is
+        GREEN on every other case and RED here."""
+        client = self.make()
+        with mock.patch.object(tel.os, "fchmod", lambda fd, mode: None):
+            client._take_instance_lock()
+        self.addCleanup(self._release, client)
+        self.assertEqual(self.lock_path.stat().st_mode & 0o777, 0o600)
+
+    def test_a_failed_narrowing_is_named_once_and_the_lock_still_taken(self):
+        """D2: a failing fchmod was swallowed in silence. Now one WARN names
+        the path, the mode and the error; everything else is unchanged — the
+        lock is held and the pid hint written. RED before: no WARN at all."""
+        self.lock_path.write_bytes(b"1\n")
+        os.chmod(self.lock_path, 0o644)
+        client = self.make()
+
+        def refuse(fd, mode):
+            raise PermissionError(1, "Operation not permitted")
+
+        with mock.patch.object(tel.os, "fchmod", refuse):
+            with self.assertLogs(tel.log, level="WARNING") as caught:
+                client._take_instance_lock()
+        self.addCleanup(self._release, client)
+
+        warns = [ln for ln in caught.output if ln.startswith("WARNING")]
+        self.assertEqual(len(warns), 1, caught.output)
+        self.assertIn(str(self.lock_path), warns[0])
+        self.assertIn("0600", warns[0])
+        self.assertIn("Operation not permitted", warns[0])
+        self.assertIsNotNone(client._instance_lock_fd)
+        self.assertEqual(self.lock_path.read_text().strip(), str(os.getpid()))
+
+
 # ── Item 2: the eviction detector ────────────────────────────────────────────
 class TestTheEvictionDetector(SessionTestCase):
     """Three short sessions are a storm; one long one is a broker restart."""

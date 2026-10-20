@@ -2390,11 +2390,17 @@ import { aiSensorLabel, aiUnitPrecision } from "./ai-sensors.js?v=1.0.7.4";
 
   /**
    * ΔE per bucket from the cumulative counter → [[start, ΔE, end], …]. A rise
-   * between consecutive samples counts in the later sample's bucket. A drop is
-   * held: a recovery to the pre-drop level was a glitch (only the rise above that
-   * level counts); a second low sample is a counter reset and rebases. A rise whose
-   * earlier sample is not in the same or the previous bucket spans a gap and is not
-   * drawn (no fake spike after an outage); a bucket with no counted rise has no bar.
+   * between accepted samples counts in the later sample's bucket; never negative.
+   * Glitches:
+   *  - a rise the next sample falls back from (to at least the old level) is an
+   *    upward spike — skipped;
+   *  - a drop makes that low reading the new baseline and counts nothing (a
+   *    counter reset); if the counter later climbs back to the pre-drop level —
+   *    a dip of one or more samples — only the rise ABOVE that level counts, so
+   *    a dip is never billed as the whole counter.
+   * A rise whose earlier sample is not in the same or the previous bucket spans a
+   * gap and is not drawn (no fake spike after an outage); a bucket with no counted
+   * rise has no bar.
    */
   function bucketEnergyDeltaPoints(points, bucketSec) {
     const pts = (points || [])
@@ -2404,29 +2410,32 @@ import { aiSensorLabel, aiUnitPrecision } from "./ai-sensors.js?v=1.0.7.4";
       .sort((a, b) => a[0] - b[0]);
     const acc = new Map();
     let ref = null;
-    let low = 0;
-    let dropped = false;
+    let preDrop = null;
     let prevB = null;
-    pts.forEach(([t, v]) => {
+    pts.forEach(([t, v], i) => {
       const b = barBucketStart(t, bucketSec);
       if (ref === null) {
         ref = v;
         prevB = b;
         return;
       }
-      let inc;
+      const next = i + 1 < pts.length ? pts[i + 1][1] : null;
+      let inc = 0;
       if (v >= ref) {
-        inc = v - ref;
+        if (next !== null && next < v && next >= ref) {
+          prevB = b; // upward spike: the device answered, the value is not kept
+          return;
+        }
+        if (preDrop !== null && v >= preDrop) {
+          inc = v - preDrop; // back at the pre-drop level: only the rise above it
+          preDrop = null;
+        } else {
+          inc = v - ref;
+        }
         ref = v;
-        dropped = false;
-      } else if (!dropped) {
-        dropped = true;
-        low = v;
-        inc = 0;
       } else {
-        inc = Math.max(0, v - low);
+        if (preDrop === null) preDrop = ref; // drop: new baseline, counts nothing
         ref = v;
-        dropped = false;
       }
       if (prevB === b || prevB === barBucketStart(b - 1, bucketSec)) {
         acc.set(b, (acc.get(b) || 0) + inc);
@@ -2487,6 +2496,69 @@ import { aiSensorLabel, aiUnitPrecision } from "./ai-sensors.js?v=1.0.7.4";
     const minY = lo < 0 ? -4 * niceCeil((-lo * 1.08) / 4) : 0;
     const maxY = hi > 0 ? 4 * niceCeil((hi * 1.08) / 4) : minY < 0 ? 0 : 1;
     return { minY, maxY };
+  }
+
+  /** Energy bars between two measure marks: the ΔE of every bucket from A's to
+      B's, both inclusive (either order) — the consumption the marks enclose, the
+      figure the counter line's «B − A» gave before the chart became bars.
+      → { sum, n buckets, t0 first start, t1 last end }. */
+  function sumBarsBetween(points, tA, tB) {
+    const lo = Math.min(tA, tB);
+    const hi = Math.max(tA, tB);
+    let sum = 0;
+    let n = 0;
+    let t0 = null;
+    let t1 = null;
+    (points || []).forEach((p) => {
+      if (!(p[0] <= hi && p[2] > lo)) return;
+      sum += Number(p[1]) || 0;
+      n += 1;
+      if (t0 === null || p[0] < t0) t0 = p[0];
+      if (t1 === null || p[2] > t1) t1 = p[2];
+    });
+    return { sum, n, t0, t1 };
+  }
+
+  /* Chart units: the history API sends Latin units (W, V, kWh, WB meta for MR-02m);
+     the Russian UI prints Russian ones (the «За период» panel already shows кВт·ч),
+     and the i18n DICT turns each back into its EN symbol. Neutral symbols (°C, %,
+     ppm, …) and unknown or already-Russian units pass through. */
+  const CHART_UNIT_RU = {
+    V: "В",
+    kV: "кВ",
+    mV: "мВ",
+    A: "А",
+    mA: "мА",
+    W: "Вт",
+    kW: "кВт",
+    Wh: "Вт·ч",
+    kWh: "кВт·ч",
+    var: "вар",
+    kvar: "квар",
+    VA: "В·А",
+    kVA: "кВ·А",
+    Hz: "Гц",
+    kPa: "кПа",
+    Pa: "Па",
+    mbar: "мбар",
+    bar: "бар",
+    mmHg: "мм рт.ст.",
+    "Ω": "Ом",
+    "kΩ": "кОм",
+    "mg/m³": "мг/м³",
+    cm: "см",
+    m: "м",
+  };
+
+  function chartUnitLabel(unit) {
+    const u = String(unit == null ? "" : unit).trim();
+    return Object.prototype.hasOwnProperty.call(CHART_UNIT_RU, u) ? CHART_UNIT_RU[u] : u;
+  }
+
+  /** A unit as printed inside a composite chart string (tip, legend, Δ card). */
+  function chartUnitText(unit) {
+    const u = chartUnitLabel(unit);
+    return u ? " " + tl(u) : "";
   }
 
   /** Side-by-side slots of n bars inside a bucket spanning [x0, x1] px. */
@@ -2806,7 +2878,7 @@ import { aiSensorLabel, aiUnitPrecision } from "./ai-sensors.js?v=1.0.7.4";
     const lines = [`<div class="dev-chart-tip-time">${escapeAttr(when)}</div>`];
     rows.forEach((row) => {
       const color = COLORS[row.idx % COLORS.length];
-      const unit = row.unit ? ` ${row.unit}` : "";
+      const unit = chartUnitText(row.unit);
       const dec = tipDecimalsFor(row.unit, row.metric || metric);
       lines.push(
         `<div class="dev-chart-tip-row"><i style="background:${color}"></i>` +
@@ -3008,7 +3080,7 @@ import { aiSensorLabel, aiUnitPrecision } from "./ai-sensors.js?v=1.0.7.4";
         if (!a || !b) return;
         const color = COLORS[idx % COLORS.length];
         const unit = a.unit || b.unit || "";
-        const unitS = unit ? ` ${unit}` : "";
+        const unitS = chartUnitText(unit);
         const dy = Number(b.y) - Number(a.y);
         const dec = tipDecimalsFor(unit, a.metric || b.metric || metric);
         dLines.push(
@@ -3019,6 +3091,31 @@ import { aiSensorLabel, aiUnitPrecision } from "./ai-sensors.js?v=1.0.7.4";
         );
       });
     return dLines.join("");
+  }
+
+  /** Δ card for energy bars: Δt of the enclosed buckets + their summed ΔE. */
+  function consumptionHtmlBetween(drawSeries, tA, tB, metric, unitNote) {
+    const lines = [];
+    let span = null;
+    (drawSeries || []).forEach((ser, i) => {
+      const r = sumBarsBetween(ser.points, tA, tB);
+      if (!r.n) return;
+      if (!span) span = r;
+      const color = COLORS[(ser._ci != null ? ser._ci : i) % COLORS.length];
+      const unit = ser.unit || unitNote || "";
+      const dec = tipDecimalsFor(unit, ser.metric || metric);
+      lines.push(
+        `<div class="dev-chart-delta-row"><i style="background:${color}"></i>` +
+          `<b>${escapeAttr(tl("Расход"))} ${escapeAttr(
+            fmtTipValue(r.sum, dec) + chartUnitText(unit)
+          )}</b></div>`
+      );
+    });
+    if (!span) return "";
+    return (
+      `<div class="dev-chart-delta-time">Δt ${escapeAttr(fmtDurationMs(span.t1 - span.t0))}</div>` +
+      lines.join("")
+    );
   }
 
   function drawOntoCanvas(canvas, series, opts) {
@@ -3260,8 +3357,16 @@ import { aiSensorLabel, aiUnitPrecision } from "./ai-sensors.js?v=1.0.7.4";
     if (marks.length === 2) {
       const xA = xScale(marks[0]);
       const xB = xScale(marks[1]);
-      const x0 = Math.min(xA, xB);
-      const x1 = Math.max(xA, xB);
+      let x0 = Math.min(xA, xB);
+      let x1 = Math.max(xA, xB);
+      if (opts.barMode === "delta" && drawSeries.length) {
+        // Shade exactly the buckets the consumption card sums (B's included).
+        const span = sumBarsBetween(drawSeries[0].points, marks[0], marks[1]);
+        if (span.n) {
+          x0 = Math.max(pad.l, xScale(span.t0));
+          x1 = Math.min(w - pad.r, xScale(span.t1));
+        }
+      }
       ctx.save();
       ctx.fillStyle = "rgba(10, 132, 255, 0.14)";
       ctx.fillRect(x0, pad.t, Math.max(1, x1 - x0), plotH);
@@ -3341,8 +3446,12 @@ import { aiSensorLabel, aiUnitPrecision } from "./ai-sensors.js?v=1.0.7.4";
       const xB = xScale(marks[1]);
       const htmlA = rows0.length ? tipHtmlFromRows(rows0, rangeKey, metricId) : "";
       const htmlB = rows1.length ? tipHtmlFromRows(rows1, rangeKey, metricId) : "";
+      // Energy bars: a bar is already a consumption, so the Δ card sums the
+      // buckets the marks enclose (bar A − bar B would read «0 over 4 days»).
       const htmlD =
-        rows0.length || rows1.length
+        opts.barMode === "delta"
+          ? consumptionHtmlBetween(drawSeries, marks[0], marks[1], metricId, unitNote)
+          : rows0.length || rows1.length
           ? deltaHtmlFromRows(
               rows0,
               rows1,
@@ -3415,7 +3524,7 @@ import { aiSensorLabel, aiUnitPrecision } from "./ai-sensors.js?v=1.0.7.4";
         const raw = s._rawPoints || s.points || [];
         const last = raw[raw.length - 1];
         const u = s.unit || unitNote || "";
-        const unit = u ? ` ${u}` : "";
+        const unit = chartUnitText(u);
         const dec = tipDecimalsFor(u, metric || s.metric || "");
         const val = last
           ? (Number.isInteger(dec) ? fmt(last[1], dec) : fmtTipValue(last[1])) + unit
@@ -3925,6 +4034,7 @@ import { aiSensorLabel, aiUnitPrecision } from "./ai-sensors.js?v=1.0.7.4";
       windowMax: chartMeta.windowMax,
       hidden: hidden,
       bars: !!barMode,
+      barMode: barMode,
     });
     if (!normalize) renderLegend(shown, hidden);
   }

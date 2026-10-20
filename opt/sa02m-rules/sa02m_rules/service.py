@@ -63,12 +63,52 @@ RUN_CONTROL = "run"
 #: are rare (a voice phrase, a button), and the inbox is bounded either way.
 SUBSCRIPTIONS = ("/devices/+/controls/+", "/devices/+/controls/+/on")
 
+#: Engine availability (contract cloud-scenarios.md §MQTT mirror): ONE
+#: retained device-level flag for the whole engine, because MQTT allows one
+#: will per connection — the bridge/telemetry pattern. `"r"` = down (the will,
+#: and a graceful stop), `""` = listening. The Alice registry refuses a scene
+#: command while it is set; its mirror of this topic is
+#: `sa02m_alice.config.scene_devices.ENGINE_AVAILABILITY_TOPIC`. `sa02m-rules`
+#: has no dash, so it is never a scenario device `sa02m-rules-<sid>`.
+AVAILABILITY_TOPIC = "/devices/sa02m-rules/meta/error"
+OFFLINE = "r"
+
 
 def subscribe_all(client: Any) -> None:
     """One home for the subscription set, so `on_connect` cannot drift from
     what `_apply_message` knows how to handle."""
     for topic in SUBSCRIPTIONS:
         client.subscribe(topic, qos=1)
+
+
+def arm_availability(client: Any) -> None:
+    """The will — before `connect()`, which is when paho sends it. Fail-soft:
+    the flag is advisory, running scenarios is the job."""
+    try:
+        client.will_set(AVAILABILITY_TOPIC, OFFLINE, qos=1, retain=True)
+    except Exception as exc:
+        LOG.error("availability will not armed: %s", exc)
+
+
+def _mark(client: Any, payload: str) -> None:
+    try:
+        client.publish(AVAILABILITY_TOPIC, payload, qos=1, retain=True)
+    except Exception as exc:
+        LOG.warning("availability mark %r refused: %s", payload, exc)
+
+
+def announce_online(client: Any) -> None:
+    """Clear the flag. Called AFTER `subscribe_all` on the same connection, so
+    a reader that sees it clear sends its command to a subscribed engine."""
+    _mark(client, "")
+
+
+def announce_offline(client: Any) -> None:
+    """Graceful stop. Not waited for: `main()` never sends DISCONNECT, so the
+    broker fires the will when the process exits even if this mark is still
+    queued. It is here for the day someone adds a `disconnect()`, which
+    discards the will."""
+    _mark(client, OFFLINE)
 
 
 def _geo() -> tuple:
@@ -392,9 +432,12 @@ def main() -> int:
     def on_connect(c, _u, _f, rc):
         LOG.info("mqtt rc=%s", rc)
         subscribe_all(c)
+        if int(getattr(rc, "value", rc) or 0) == 0:
+            announce_online(c)
 
     client.on_connect = on_connect
     client.on_message = app.on_message
+    arm_availability(client)
     client.connect(MQTT_HOST, MQTT_PORT, 30)
     client.loop_start()
     app.boot()
@@ -411,6 +454,7 @@ def main() -> int:
         pass
     finally:
         app.stop()
+        announce_offline(client)
     client.loop_stop()
     return 0
 

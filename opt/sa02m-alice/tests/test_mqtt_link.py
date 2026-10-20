@@ -17,6 +17,7 @@ from __future__ import annotations
 import logging
 import os
 import sys
+import threading
 import unittest
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
@@ -274,6 +275,103 @@ class TestConnackRules(_LinkCase):
         self.fake().accept()
         self.assertEqual(link.subscribe_all(), 0)
         self.assertEqual(self.grace.armed_count(), 0)
+
+    def test_a_pass_with_a_refused_topic_inside_one_live_session_is_rerun(self):
+        """Review 1.0.6.66 N2 — the `accepted == len(topics)` clause of the
+        trust check. Connected from start to end, no CONNACK in between, but
+        the library refused one topic (a socket paho has not yet seen die):
+        every other clause says «trusted», and only this one re-runs the pass
+        before the topic is left deaf behind `mqtt_connected: true`."""
+        refused = sorted(self.topics)[0]
+
+        class _RefuseOnce(FakePahoClient):
+            def __init__(self, *a, **k):
+                super().__init__(*a, **k)
+                self.refusals = 0
+
+            def subscribe(self, topic, qos=0, *_a, **_k):
+                if topic == refused and not self.refusals:
+                    self.refusals += 1
+                    return (MQTT_ERR_NO_CONN, None)
+                return super().subscribe(topic, qos)
+
+        link = self.link(client_factory=lambda cid: _RefuseOnce(1, client_id=cid)).connect()
+        fake = self.fake()
+        fake.accept()
+        with self.assertLogs(self.log, level="INFO") as captured:
+            accepted = link.subscribe_all()
+        self.assertEqual(fake.refusals, 1, "harness: the refusal never happened")
+        self.assertIn("re-running it", "\n".join(captured.output))
+        self.assertEqual(accepted, len(self.topics))
+        self.assertIn(refused, {t for t, _q in fake.subscribed}, fake.subscribed)
+
+
+class TestLockDiscipline(_LinkCase):
+    """Review 1.0.6.66 N3 — the CONNACK side and the pass side each decide
+    against the other inside ONE lock: `_on_connect` sets `connected` and reads
+    `_pass_ran` under it; `_pass` sets `_pass_ran` and reads `connected` under
+    it. Whoever takes the lock second sees the first, so one of them re-runs.
+
+    The harmful reordering is `connected.set()` BELOW the lock: the CONNACK
+    reads «no pass yet» and returns, the pass then reads «not connected» and
+    does not retry, and the link is up with nothing subscribed. The test forces
+    exactly that interleaving on two real threads: `connected.set()` is
+    hooked to hand the pass a window before it takes effect. With the set
+    inside the lock the pass is blocked on the lock for the whole window and
+    cannot use it."""
+
+    WINDOW_S = 0.5
+
+    def test_a_connack_racing_the_initial_pass_never_leaves_the_link_deaf(self):
+        topics = sorted(self.topics)
+        ready = threading.Event()        # the pass has sent its last SUBSCRIBE
+        set_entered = threading.Event()  # the CONNACK reached connected.set()
+        pass_done = threading.Event()    # subscribe_all() returned
+
+        class _HookedEvent(threading.Event):
+            def set(self_inner):
+                set_entered.set()
+                pass_done.wait(TestLockDiscipline.WINDOW_S)
+                super().set()
+
+        class _PauseAfterFirstPass(FakePahoClient):
+            def __init__(self, *a, **k):
+                super().__init__(*a, **k)
+                self.paused = False
+
+            def subscribe(self, topic, qos=0, *_a, **_k):
+                rc = super().subscribe(topic, qos)
+                if not self.paused and topic == topics[-1]:
+                    self.paused = True
+                    ready.set()
+                    set_entered.wait(5.0)
+                return rc
+
+        link = self.link(
+            client_factory=lambda cid: _PauseAfterFirstPass(1, client_id=cid))
+        # White-box by necessity: the hook sits on the one call whose position
+        # relative to the lock is the property under test.
+        link._connected = _HookedEvent()
+        link.connect()
+        fake = self.fake()
+        fake.up = False  # the initial pass runs before CONNACK #1: NO_CONN
+
+        def initial_pass():
+            link.subscribe_all()
+            pass_done.set()
+
+        main_thread = threading.Thread(target=initial_pass, daemon=True)
+        main_thread.start()
+        self.assertTrue(ready.wait(5.0), "harness: the pass never reached its last topic")
+        paho_thread = threading.Thread(target=fake.accept, daemon=True)
+        paho_thread.start()
+        main_thread.join(10.0)
+        paho_thread.join(10.0)
+        self.assertFalse(main_thread.is_alive() or paho_thread.is_alive(), "threads hung")
+        self.assertTrue(set_entered.is_set(), "harness: the CONNACK never set connected")
+        self.assertTrue(link.connected)
+        self.assertEqual({t for t, _q in fake.subscribed}, set(topics),
+                         "connected with the set unsubscribed: %r" % (fake.subscribed,))
 
 
 class TestDisconnectAndMessages(_LinkCase):

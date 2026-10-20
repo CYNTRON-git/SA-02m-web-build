@@ -1186,6 +1186,95 @@ class TestTheOverrideFileMatchesItsConsumer(unittest.TestCase):
                       f"writes")
 
 
+class TestAPersistentReadFailureIsNotAJournalFlood(LockTestCase):
+    """Bench 1.136, 2026-09-30: the PCA9536 read failed on EVERY 30 s poll for
+    hours (i2c-2 SDA stuck low from boot; the kernel logs «mv64xxx: I2C bus
+    locked» at each attempt) and the daemon wrote one identical WARN per poll —
+    223 lines in 2 h, ~112 an hour, burying everything else in the persistent
+    journal. The condition is worth ONE line when it starts, a summary while it
+    lasts, and one line when it ends; the repeats carry no information."""
+
+    POLL_S = 30
+
+    def setUp(self):
+        super().setUp()
+        self.clock = [5000.0]
+        for p in (mock.patch.object(tel.time, "monotonic", lambda: self.clock[0]),
+                  mock.patch.object(tel, "cpu_usage_pct", lambda: 0)):
+            p.start()
+            self.addCleanup(p.stop)
+
+    def polls(self, stub, n):
+        for _ in range(n):
+            tel.TelemetryClient._publish_metrics(stub)
+            self.clock[0] += self.POLL_S
+
+    def hw_lines(self, output):
+        return [ln for ln in output if "HW state" in ln]
+
+    def test_twenty_minutes_of_failed_reads_log_a_start_and_a_summary(self):
+        """RED before: 40 identical WARNs for 40 failed polls."""
+        stub = self.ready_client()
+        self.exp.readable = False
+
+        with self.assertLogs(tel.log, level="WARNING") as caught:
+            self.polls(stub, 40)                    # t = 0 … 1170 s
+
+        lines = self.hw_lines(caught.output)
+        budget = 1 + int(40 * self.POLL_S // tel.HW_READ_FAIL_SUMMARY_S)
+        self.assertLessEqual(len(lines), budget,
+                             f"{len(lines)} HW lines for 40 polls: {lines}")
+        self.assertIn("did not answer the read", lines[0],
+                      "the first line must name the reason")
+        self.assertTrue(any("40" in ln or "failed polls" in ln for ln in lines[1:])
+                        or len(lines) == 1, lines)
+
+    def test_the_summary_counts_the_failed_polls(self):
+        """The summary is the evidence that replaced the flood: it carries how
+        many polls failed, so nothing measurable is lost by the rate limit."""
+        stub = self.ready_client()
+        self.exp.readable = False
+        polls = tel.HW_READ_FAIL_SUMMARY_S // self.POLL_S + 1
+
+        with self.assertLogs(tel.log, level="WARNING") as caught:
+            self.polls(stub, polls)
+
+        summaries = [ln for ln in self.hw_lines(caught.output)[1:]]
+        self.assertEqual(len(summaries), 1, caught.output)
+        self.assertIn(f"{polls} failed polls", summaries[0])
+
+    def test_a_read_that_answers_again_is_said_once(self):
+        stub = self.ready_client()
+        self.exp.readable = False
+        with self.assertLogs(tel.log, level="WARNING"):
+            self.polls(stub, 5)
+        self.exp.readable = True
+
+        with self.assertLogs(tel.log, level="INFO") as caught:
+            self.polls(stub, 3)
+
+        back = [ln for ln in caught.output if "published again" in ln]
+        self.assertEqual(len(back), 1, caught.output)
+        self.assertIn("5 failed polls", back[0])
+        self.assertEqual(dict(stub.published).get("controls/do"), "0",
+                         "the recovered read was not published")
+
+    def test_a_new_failure_after_recovery_warns_again_at_once(self):
+        """The rate limit belongs to one failure run — a fresh failure after a
+        good read is news and must not wait for the old summary clock."""
+        stub = self.ready_client()
+        self.exp.readable = False
+        self.polls(stub, 2)
+        self.exp.readable = True
+        self.polls(stub, 1)
+        self.exp.readable = False
+
+        with self.assertLogs(tel.log, level="WARNING") as caught:
+            self.polls(stub, 1)
+
+        self.assertEqual(len(self.hw_lines(caught.output)), 1, caught.output)
+
+
 class TestTheReadPath(LockTestCase):
     """Locked, single-shot, and deliberately not owner-gated."""
 
@@ -1505,7 +1594,13 @@ def conf_reads(src: str) -> tuple[set, list]:
         alias (`v = val`), a wrapper that is not ours (`functools.partial`), a
         keyword or starred argument, or our own helper receiving it under
         another name (review round 2's R1: `_peek(val)` into
-        `def _peek(reader)`, whose `reader('SA02M_…')` was invisible).
+        `def _peek(reader)`, whose `reader('SA02M_…')` was invisible). The
+        callee is resolved to what its name BINDS to, not matched by name
+        alone (round 3, D1): the `def` must be the only binding of that name
+        in the daemon — a same-named assignment, lambda or import beside it is
+        an offence, since the call may run that instead — and a non-static
+        method must be reached through a bound call on `self`/`cls` (an unbound
+        `HwProfile._peek(val)` puts `val` into the `self` slot).
       * a val() call takes exactly one positional argument and no keyword: a
         string literal `SA02M_…` (the key), or `"<prefix>" + <name>.upper()`
         for a prefix in LEDGER_PREFIXES (recorded as the prefix). Anything
@@ -1523,8 +1618,9 @@ def conf_reads(src: str) -> tuple[set, list]:
 
     What it does NOT claim: it is a structural check of the source as written,
     not a sandbox. A read written outside these shapes on purpose — exec/eval,
-    a name computed at run time, the conf file parsed by hand under a name
-    other than `val` — is not seen; nor is a call to `_resolve_device_id`'s
+    a name computed or rebound at run time (setattr, globals()[…]), the conf
+    file parsed by hand under a name other than `val` — is not seen; nor is a
+    call to `_resolve_device_id`'s
     sanctioned reader with a hardware key (review round 2's R8), since that
     site is allowed by name. A callee is matched by name: an unbound method
     or a same-named lambda is not told apart from the one definition found.
@@ -1589,20 +1685,49 @@ def conf_reads(src: str) -> tuple[set, list]:
             return func.attr
         return None
 
+    # Every OTHER binding of a name in the daemon — an assignment (a lambda
+    # included) or an import. A helper that receives `val` must be the only
+    # binding of its name, or the call may run something else (D1).
+    other_bindings: dict = {}
+    for n in ast.walk(tree):
+        if isinstance(n, ast.Name) and isinstance(n.ctx, (ast.Store, ast.Del)):
+            other_bindings[n.id] = other_bindings.get(n.id, 0) + 1
+        elif isinstance(n, ast.alias):
+            bound = n.asname or n.name.split(".")[0]
+            other_bindings[bound] = other_bindings.get(bound, 0) + 1
+
     def receiving_param(call, index):
-        """The parameter name a positional argument of `call` binds to, when
-        the callee is exactly ONE function or method defined in the daemon;
-        None when it is not ours (or ambiguous), so it cannot be followed."""
-        defs = defs_by_name.get(callee_name(call.func), [])
+        """(parameter name, problem) for a positional argument of `call`.
+
+        The name is resolved to what it BINDS to, not just matched: the callee
+        must be exactly one `def` in the daemon with no other binding of that
+        name beside it (a same-named lambda or import would run instead), and a
+        non-static method must be reached through a BOUND call on `self`/`cls`
+        — an unbound `Class.method(val)` puts `val` into the `self` slot.
+        `problem` is non-empty when the call cannot be followed."""
+        name = callee_name(call.func)
+        defs = defs_by_name.get(name, [])
         if len(defs) != 1:
-            return None
+            return None, (f"{name or 'an expression'}, which is not one "
+                          f"function of this daemon — a wrapper "
+                          f"(functools.partial and the like) hides its reads")
+        if other_bindings.get(name):
+            return None, (f"{name}, a name also bound by an assignment or an "
+                          f"import beside its def — the call may not run the "
+                          f"def the ledger reads")
         fn = defs[0]
         params = fn.args.posonlyargs + fn.args.args
         static = any(isinstance(d, ast.Name) and d.id == "staticmethod"
                      for d in fn.decorator_list)
         if isinstance(parents.get(fn), ast.ClassDef) and not static:
+            bound = (isinstance(call.func, ast.Attribute)
+                     and isinstance(call.func.value, ast.Name)
+                     and call.func.value.id in ("self", "cls"))
+            if not bound:
+                return None, (f"{name} through an unbound call — `val` would "
+                              f"bind to its `self`/`cls` parameter")
             params = params[1:]         # self / cls is bound by the call
-        return params[index].arg if index < len(params) else ""
+        return (params[index].arg if index < len(params) else ""), ""
 
     for node in ast.walk(tree):
         where = f"line {getattr(node, 'lineno', '?')}"
@@ -1638,13 +1763,9 @@ def conf_reads(src: str) -> tuple[set, list]:
                 else:
                     keys.add(key)
             elif isinstance(parent, ast.Call) and node in parent.args:
-                param = receiving_param(parent, parent.args.index(node))
-                if param is None:
-                    offences.append(
-                        f"{where}: `val` passed to "
-                        f"{callee_name(parent.func) or 'an expression'}, which "
-                        f"is not one function of this daemon — a wrapper "
-                        f"(functools.partial and the like) hides its reads")
+                param, problem = receiving_param(parent, parent.args.index(node))
+                if problem:
+                    offences.append(f"{where}: `val` passed to {problem}")
                 elif param != "val":
                     offences.append(
                         f"{where}: `val` handed to {callee_name(parent.func)} "
@@ -1977,7 +2098,45 @@ class TestTheFallbacksMatchTheCgi(unittest.TestCase):
             "def _hw_conf_path() -> str:\n",
             "def _hw_secret() -> str:\n"
             "    return _read_conf_value(_hw_conf_path(), 'SA02M_I2C_SECRET_KEY')\n\n\n"),
+        # -- backlog 2026-09-30, 1.0.6.68 review round 3, D1: the callee was
+        # matched by NAME. Both of these stayed GREEN on the shipped checker.
+        # A lambda bound to the SAME name as the helper that receives `val`:
+        # at run time the later binding wins and reads through `reader`.
+        "a same-named lambda beside the helper": (
+            "class HwProfile:\n",
+            "_hw_extra_output_mask = lambda reader: reader('SA02M_I2C_UNPINNED')\n\n\n"),
+        # An UNBOUND call of a non-static method: `val` lands in the `self`
+        # slot, so the body reads through `self`, not through `val`.
+        "an unbound method call puts val into self": [
+            ("    @staticmethod\n    def _resolve_backend(val) -> str:\n",
+             "    def _peek(self, val):\n"
+             "        return self('SA02M_I2C_UNPINNED')\n\n"),
+            ("        extra = _hw_extra_output_mask(val)\n",
+             "        _probe = HwProfile._peek(val)\n")],
     }
+
+    def test_a_bound_method_receiving_val_is_followed(self):
+        """Non-vacuity for the `self`/`cls` skip in the checker (D1): a method
+        that takes `val` after its bound first parameter, called through `cls`,
+        is followed — its val() call is read as a key and nothing is an
+        offence. Without the skip the checker would compare `cls` with `val`
+        and refuse a correct helper; the round-3 mutation run removes the skip
+        and records this case RED."""
+        src = self._daemon_source()
+        mutated = src
+        for anchor, addition in (
+                ("    @staticmethod\n    def _resolve_backend(val) -> str:\n",
+                 "    @classmethod\n    def _peek_ok(cls, val):\n"
+                 "        return val('SA02M_I2C_LOCK_FILE')\n\n"),
+                ("        extra = _hw_extra_output_mask(val)\n",
+                 "        _probe = cls._peek_ok(val)\n")):
+            self.assertIn(anchor, mutated)
+            mutated = mutated.replace(anchor, addition + anchor, 1)
+        found, offences = conf_reads(mutated)
+        self.assertEqual(offences, [], "\n".join(offences))
+        self.assertIn("SA02M_I2C_LOCK_FILE", found)
+        self.assertEqual(found, conf_reads(src)[0],
+                         "the followed helper read a key the daemon does not")
 
     def test_every_escape_shape_is_an_offence(self):
         """RED before the review-F2 fix for O11, O12, the string-reached

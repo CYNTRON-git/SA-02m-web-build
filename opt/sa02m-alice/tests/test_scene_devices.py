@@ -705,6 +705,115 @@ class HomekitProfileWiringTests(_Wiring):
     def test_nothing_ticked_attaches_nothing(self):
         hk = self.registry(self.devices_doc(), profile=C.PROFILE_HOMEKIT)
         self.assertEqual([d for d, _x, _c, _p in hk.catalogue_items()], ["lamp"])
+#: The engine's availability flag, written literally here so the behavioural
+#: cases do not depend on the constant they check (parity is its own case).
+ENGINE_FLAG = "/devices/sa02m-rules/meta/error"
+
+
+class EngineAvailabilityTests(_Wiring):
+    """Backlog 2026-09-09 [MED]: with `sa02m-rules` down a «включи» was
+    answered DONE — the `run/on` publish reached the broker, nobody consumed
+    it, and the scene never ran. The engine now keeps ONE LWT-backed flag
+    (`ENGINE_FLAG`); a scene switch is down while it is set
+    (docs/contracts/alice-mqtt-mapping.md §Scene devices)."""
+
+    RUN_ON = "/devices/sa02m-rules-s1/controls/run/on"
+
+    def engine(self, reg, payload):
+        # Retained: the will and the online mark are both retained, and the
+        # client caches a retained flag exactly like a live one.
+        reg.note_mqtt(ENGINE_FLAG, payload, retained=True)
+
+    def act(self, reg, value=True):
+        return reg.apply_actions(
+            [{"id": self.scene_dev_id(), "capabilities": [self.on_off(value)]}])
+
+    def test_engine_down_refuses_the_scene_command_and_publishes_nothing(self):
+        reg = self.registry()
+        self.engine(reg, "r")
+        for value in (True, False):
+            with self.subTest(value=value):
+                results, pubs = self.act(reg, value)
+                self.assertEqual(pubs, [])
+                cap = results[0]["capabilities"][0]
+                self.assertEqual(cap["status"], C.STATUS_ERROR)
+                self.assertEqual(cap["error_code"], C.ERR_DEVICE_UNREACHABLE)
+
+    def test_engine_back_up_commands_again(self):
+        reg = self.registry()
+        self.engine(reg, "r")
+        self.engine(reg, "")
+        results, pubs = self.act(reg)
+        self.assertEqual(pubs, [(self.RUN_ON, "1")])
+        self.assertEqual(results[0]["capabilities"][0]["status"], C.STATUS_DONE)
+
+    def test_no_flag_seen_is_up(self):
+        """Fail-open on absence — the `/meta/error` semantics the hook has
+        always had; the residual is named in the contract."""
+        results, pubs = self.act(self.registry())
+        self.assertEqual(pubs, [(self.RUN_ON, "1")])
+        self.assertEqual(results[0]["capabilities"][0]["status"], C.STATUS_DONE)
+
+    def test_the_engine_flag_never_takes_a_physical_device_down(self):
+        reg = self.registry()
+        self.engine(reg, "r")
+        results, pubs = reg.apply_actions(
+            [{"id": "lamp", "capabilities": [self.on_off(True)]}])
+        self.assertEqual(pubs, [("/devices/SA-02m/controls/do_1/on", "1")])
+        self.assertEqual(results[0]["capabilities"][0]["status"], C.STATUS_DONE)
+
+    def test_query_of_the_scene_is_unreachable_while_the_engine_is_down(self):
+        reg = self.registry()
+        self.engine(reg, "r")
+        entry = reg.query_devices([self.scene_dev_id()])[0]
+        self.assertEqual(entry.get("error_code"), C.ERR_DEVICE_UNREACHABLE)
+        self.engine(reg, "")
+        self.assertNotIn("error_code", reg.query_devices([self.scene_dev_id()])[0])
+
+    def test_the_engine_down_edge_pushes_no_stub_for_a_scene(self):
+        """«No state is ever pushed» holds for DOWN too: a scene switch never
+        reports, so nothing would clear a pushed unreachable mark in the app.
+        The engine flag is answered on demand (action, query) only. The
+        physical device's own edge in the same sweep is the non-vacuity."""
+        reg = self.registry()
+        self.engine(reg, "r")
+        stubs = reg.take_unreachable_transitions(ENGINE_FLAG)
+        self.assertEqual([s["id"] for s in stubs], ["lamp"])
+        self.assertEqual(reg.take_unreachable_transitions(), [])
+
+    def test_the_engine_flag_is_subscribed_when_a_scene_is_exposed(self):
+        self.assertIn(ENGINE_FLAG, self.registry().subscribe_topics())
+
+    def test_the_engine_flag_is_not_subscribed_without_a_scene(self):
+        with mock.patch.object(scene_devices, "rules_store", return_value=None):
+            self.assertNotIn(ENGINE_FLAG, self.registry().subscribe_topics())
+
+    def test_the_whole_action_chain_publishes_nothing_while_the_engine_is_down(self):
+        """Through the Socket.IO handler, the layer that answers Yandex."""
+        from sa02m_alice.client.sio_handlers import SioHandlers
+
+        reg = self.registry()
+        self.engine(reg, "r")
+        published, responses = [], []
+        handlers = SioHandlers(reg, publish_mqtt=lambda t, p: published.append((t, p)),
+                               emit_response=responses.append)
+        handlers.handle(C.EVT_DEVICES_ACTION, {
+            "request_id": "rq1",
+            "payload": {"devices": [{"id": self.scene_dev_id(),
+                                     "capabilities": [self.on_off(True)]}]}})
+        self.assertEqual(published, [])
+        cap = responses[0]["payload"]["devices"][0]["capabilities"][0]
+        self.assertEqual((cap["status"], cap.get("error_code")),
+                         (C.STATUS_ERROR, C.ERR_DEVICE_UNREACHABLE))
+
+    def test_the_flag_topic_matches_the_engine_publisher(self):
+        """The two packages cannot share a module: the topic is mirrored, and
+        this case is what keeps the mirror honest."""
+        from sa02m_rules import service as rules_service
+
+        self.assertEqual(scene_devices.ENGINE_AVAILABILITY_TOPIC, ENGINE_FLAG)
+        self.assertEqual(rules_service.AVAILABILITY_TOPIC, ENGINE_FLAG)
+        self.assertTrue(rules_service.OFFLINE.strip())
 
 
 if __name__ == "__main__":

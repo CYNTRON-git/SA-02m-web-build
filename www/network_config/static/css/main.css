@@ -2564,6 +2564,16 @@ html[data-theme="light"] .homeconnect-verify-link { color: var(--cyan-hover); }
    `min-width: 0` is load-bearing — without it a long topic string blows the
    flex row out past the dialog edge. */
 .sh-rows { display: flex; flex-direction: column; gap: 6px; margin-bottom: 8px; }
+/* «Добавить показание» and the two preset shortcuts («Светильник», «Штора») on
+   ONE row at the foot of the readings group — the presets flush right as a
+   pair, wrapping below the add button (still together) when the pane is
+   narrow. On a .btn-row of their own above the label they cost the pane 50 px
+   (38 px buttons + the row's 8/4 px margins) and left 7.5 px of headroom at
+   1280×720 in the tallest edit state, under the 24 px floor
+   sh-modal-layout-smoke gates; here they cost no height at all, and the
+   binding button keeps its width. */
+.sh-rows-actions { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; }
+.sh-preset-group { display: flex; flex-wrap: wrap; gap: 8px; margin-left: auto; }
 .sh-bind-row { display: flex; align-items: center; gap: 8px; }
 .sh-bind-row > .sh-row-kind  { flex: 0 0 40%; min-width: 0; }
 /* The binding target is a BUTTON since 1.0.6.38 (.sh-row-bind); the topic

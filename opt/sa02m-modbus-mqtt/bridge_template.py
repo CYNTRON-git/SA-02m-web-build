@@ -40,15 +40,24 @@ reads for good; an attempt whose sweep read nothing resets that count. The
 refusal is recognised by that behaviour, not by an exception code, because the
 RS-485 transport does not surface the code today.
 
-A silent device stops the pass: once a failed read puts it in back-off, and
-nothing has answered in this pass nor in the previous one, the pass ends there
-and the next pass resumes where this one stopped (the next unit, or the
-unfinished sweep). A device that never answers therefore costs
-offline_after_fails transactions once, then one per back-off window. A device
-that answered in either pass is read in full, as before the stop existed, so a
-live device with broken channels keeps its availability and its writes — and a
-device that goes silent after answering is read in full in the pass it fell
-silent in and the next one, then costs one transaction per window.
+A silent device stops the pass (Operator decision 2026-09-30, per-channel
+memory): the pass ends once offline_after_fails consecutive reads have failed
+on units that answered when they were last read while the device was
+answering — the device died. A channel that was already failing while the
+device answered is known broken: its failure never counts toward the stop, so
+a live device with broken channels reads every channel every pass and keeps
+its availability and its writes; a device that dies, mid-pass or between
+passes, is detected after exactly the threshold of fresh failures, as the
+availability state machine detects it today. The first pass after start has
+no history and reads everything: a live device with a broken head is never
+offline at start, a device dead from start costs one full pass. While the
+device stays silent every back-off window costs one read — a probe: first
+the unit that answered last, then, if that fails, the next unit that answered
+when last read (a known-broken channel is never the probe); a device that has
+never answered is probed unit by unit in template order. When the probe
+answers the pass reads the remaining units in template order, so a returning
+device is read in full on its first window back, whatever its broken channels
+and however long the outage.
 
 Classic polling only in v1 (no Fast Modbus): fmb_event_ranges() inherits [] from
 the base. The port-lease invariant is inherited structurally — TemplatePoller
@@ -119,7 +128,7 @@ class _ReadUnit:
     """One read request: a single channel, or a block of same-type channels."""
 
     __slots__ = ("channels", "reg_type", "start", "count", "split_streak",
-                 "first_idx", "sweep_at", "sweep_ok")
+                 "first_idx", "sweep_at", "sweep_ok", "alive")
 
     def __init__(self, channels, reg_type, first_idx):
         self.channels = channels
@@ -128,6 +137,12 @@ class _ReadUnit:
         self.count = max(ch.address + ch.words for ch in channels) - self.start
         self.split_streak = 0
         self.first_idx = first_idx
+        # The outcome of this unit's last read in a pass where the device
+        # answered (None = no such read yet). A failure on a False unit is the
+        # channel's, not the device's: it never counts toward stopping a pass
+        # and the unit is never the probe. A failure in a pass with no answer
+        # at all is the device's and does not clear it.
+        self.alive = None
         # Single-read sweep after a failed block read: index of the next
         # channel to read (None = no sweep pending), and whether the sweep has
         # read any channel so far.
@@ -235,13 +250,20 @@ class TemplatePoller(DevicePoller):
         self._setup_writes: list[tuple[int, int]] = []
         self._channels: list[TemplateChannel] = []
         self._units: list[_ReadUnit] = []
-        self._resume_idx = 0
-        # Whether any read has succeeded in the current / the previous pass: a
-        # pass may stop early only when both are False (_may_stop). The
-        # previous pass starts False so a device that never answers is
-        # detected in offline_after_fails transactions.
+        # First channel of the unit a silent device's next window reads first
+        # (the probe): the unit that answered last, or the one _next_probe
+        # chose after a failed probe. A channel object, not an index, so a
+        # split (which renumbers the units) cannot lose it. None until the
+        # first stop or answer = probe from the first unit.
+        self._probe_ch: TemplateChannel | None = None
+        # The last pass stopped and nothing has answered since: the next pass
+        # reads the probe first and stops on its failure.
+        self._probing = False
+        # Consecutive failed reads on units not known broken (_note_read); at
+        # offline_after_fails the device died and the pass may stop.
+        self._fresh_fails = 0
+        self._passes = 0
         self._answered_now = False
-        self._answered_before = False
         self._load_error = ""
         try:
             self._load_template()
@@ -463,42 +485,91 @@ class TemplatePoller(DevicePoller):
         if now - self._t_poll < self._poll_s:
             return
         self._t_poll = now
-        n = len(self._units)
-        start = self._resume_idx
-        self._resume_idx = 0
+        order = self._pass_order()
         self._answered_now = False
+        failed: list[_ReadUnit] = []
         to_split: list[_ReadUnit] = []
-        for k in range(n):
-            i = (start + k) % n
-            ok = self._poll_unit(self._units[i], to_split)
-            if not ok and self._may_stop():
-                # The device is silent: stop spending the shared line on it,
-                # and resume where the pass stopped so a stalled head never
-                # starves the tail — at this unit while its single-read sweep
-                # is unfinished, else at the next unit.
-                stalled = self._units[i]
-                self._resume_idx = i if stalled.sweep_at is not None else (i + 1) % n
+        for k, i in enumerate(order):
+            unit = self._units[i]
+            if self._poll_unit(unit, to_split):
+                continue
+            failed.append(unit)
+            if self._may_stop():
+                # The device died: stop spending the shared line on it. A
+                # failed probe moves the probe on (_next_probe); a stop after
+                # an answer keeps the unit that answered last as the probe.
                 # The units this pass skips keep their last value: say it is
                 # stale, as their own failed read would have (docs/MQTT_TOPICS.md).
-                for rest in range(k + 1, n):
-                    self._flag_stale(self._units[(start + rest) % n].channels)
+                if self._probing:
+                    self._probe_ch = self._next_probe(i, unit).channels[0]
+                self._probing = True
+                for rest in order[k + 1:]:
+                    self._flag_stale(self._units[rest].channels)
                 break
+        if self._answered_now:
+            # A failure while the device answers is the channel's, not the
+            # device's: it neither stops a later pass nor gets probed.
+            for unit in failed:
+                unit.alive = False
         if to_split:
-            # Only a pass that ran to the end splits: a sweep that read a
-            # channel means the device answered, and _may_stop never ends such
-            # a pass. So the resume point is the first unit, which the
-            # renumbering keeps first.
             self._split_units(to_split)
-        self._answered_before = self._answered_now
+        self._passes += 1
         DeviceLiveCache.flush_file(self.device_id)
 
+    def _note_read(self, unit: _ReadUnit, ok: bool) -> None:
+        """Feed one read's outcome to the stop and probe state."""
+        if ok:
+            self._fresh_fails = 0
+            self._probing = False
+            self._answered_now = True
+            unit.alive = True
+            self._probe_ch = unit.channels[0]     # the unit that answered last
+        elif unit.alive is not False:
+            self._fresh_fails += 1
+
+    def _pass_order(self) -> list[int]:
+        """Unit indices in read order: template order — or, while the device is
+        silent (the last pass stopped), the probe first and the rest in
+        template order, so a device that comes back is read in full in that
+        same pass and ends it where a plain pass ends."""
+        n = len(self._units)
+        if not self._probing:
+            return list(range(n))
+        first = self._probe_index()
+        return [first] + [i for i in range(n) if i != first]
+
+    def _probe_index(self) -> int:
+        if self._probe_ch is not None:
+            for j, unit in enumerate(self._units):
+                if unit.channels[0] is self._probe_ch:
+                    return j
+        return 0
+
+    def _next_probe(self, i: int, stalled: _ReadUnit) -> _ReadUnit:
+        """The unit the next window reads first, after a failed read at unit i
+        stopped the pass: the same unit while its single-read sweep is pending;
+        else the next unit after it that answered the last time the device
+        was answering — a broken channel is never the probe, so a returning
+        device answers on its first window — or, while no unit has answered
+        yet, simply the next unit, so a device that never answers still costs
+        one read per window (G1) and a broken head at start is walked once."""
+        if stalled.sweep_at is not None:
+            return stalled
+        n = len(self._units)
+        known = any(unit.alive for unit in self._units)
+        for step in range(1, n + 1):
+            unit = self._units[(i + step) % n]
+            if unit.alive or not known:
+                return unit
+        return stalled
+
     def _may_stop(self) -> bool:
-        """The pass may end here: the device is in back-off and nothing has
-        answered in this pass nor in the previous one. A device that answered
-        is read in full — stopping it would end the pass in back-off, offline,
-        with its writes refused, which a full pass does not (review B1)."""
-        return (self.in_backoff() and not self._answered_now
-                and not self._answered_before)
+        """The pass may end here: offline_after_fails consecutive reads failed
+        on units not known broken — the device died, on the same threshold the
+        availability state machine uses. Never in the first pass: with no
+        history yet it reads everything, so a live device with a broken head
+        is never stopped at start (Operator decision 2026-09-30)."""
+        return self._passes > 0 and self._fresh_fails >= self._fail_threshold
 
     def _split_units(self, to_split: list) -> None:
         """Replace each refused block by its channels' single reads, in place."""
@@ -523,7 +594,7 @@ class TemplatePoller(DevicePoller):
         must stop here.
         """
         if len(unit.channels) == 1:
-            return self._poll_single(unit.channels[0])
+            return self._poll_single(unit.channels[0], unit)
         if unit.sweep_at is None:
             t_read = self._monotonic()
             try:
@@ -536,11 +607,12 @@ class TemplatePoller(DevicePoller):
                 # when this failure stops the pass.
                 unit.sweep_at = 0
                 unit.sweep_ok = False
+                self._note_read(unit, False)
                 if self._may_stop():
                     self._flag_stale(unit.channels)
                     return False
             else:
-                self._answered_now = True
+                self._note_read(unit, True)
                 for ch in unit.channels:
                     off = ch.address - unit.start
                     self._publish_value(ch, data[off:off + ch.words], t_read)
@@ -560,7 +632,7 @@ class TemplatePoller(DevicePoller):
         chans = unit.channels
         read_now = False
         for j in range(unit.sweep_at, len(chans)):
-            if self._poll_single(chans[j]):
+            if self._poll_single(chans[j], unit):
                 read_now = unit.sweep_ok = True
             elif self._may_stop():
                 self._flag_stale(chans[j + 1:])
@@ -577,17 +649,18 @@ class TemplatePoller(DevicePoller):
             unit.split_streak = 0
         return read_now
 
-    def _poll_single(self, ch: TemplateChannel) -> bool:
+    def _poll_single(self, ch: TemplateChannel, unit: _ReadUnit) -> bool:
         t_read = self._monotonic()
         try:
             words = self._read_channel(ch)
         except Exception as e:
             self.log.debug("template read %s: %s", ch.name, e)
+            self._note_read(unit, False)
             # Read-error convention (docs/MQTT_TOPICS.md): the channel keeps
             # its last good value but says it is stale — never a silent freeze.
             self.pub.pub_error(self.device_id, ch.name, "r")
             return False
-        self._answered_now = True
+        self._note_read(unit, True)
         self._publish_value(ch, words, t_read)
         return True
 

@@ -1735,15 +1735,20 @@
           </label>
         </div>
         <div class="field">
-          <div class="btn-row">
-            <button type="button" class="btn btn-sm" id="sh-preset-light" onclick="shApplyPreset('light')" data-i18n="Светильник">Светильник</button>
-            <button type="button" class="btn btn-sm" id="sh-preset-curtain" onclick="shApplyPreset('curtain')" data-i18n="Штора">Штора</button>
-          </div>
-          <p class="field-hint text-sm" id="sh-preset-hint" hidden></p>
           <label id="sh-rows-label" data-i18n="Показания">Показания</label>
           <div id="sh-rows" class="sh-rows" role="group" aria-labelledby="sh-rows-label"></div>
           <p class="field-hint text-sm" id="sh-btn-hint" data-i18n="Вход не в режиме «Кнопка»" hidden>Вход не в режиме «Кнопка»</p>
-          <button type="button" class="btn btn-sm" id="sh-row-add" onclick="shAddRow()" data-i18n="Добавить показание">Добавить показание</button>
+          <!-- The preset shortcuts share the add button's row (.sh-rows-actions in
+               main.css says why): a row of their own cost the pane the headroom
+               sh-modal-layout-smoke gates at 1280×720. -->
+          <div class="sh-rows-actions">
+            <button type="button" class="btn btn-sm" id="sh-row-add" onclick="shAddRow()" data-i18n="Добавить показание">Добавить показание</button>
+            <span class="sh-preset-group">
+              <button type="button" class="btn btn-sm" id="sh-preset-light" onclick="shApplyPreset('light')" data-i18n="Светильник">Светильник</button>
+              <button type="button" class="btn btn-sm" id="sh-preset-curtain" onclick="shApplyPreset('curtain')" data-i18n="Штора">Штора</button>
+            </span>
+          </div>
+          <p class="field-hint text-sm" id="sh-preset-hint" hidden></p>
         </div>
         <div class="btn-row">
           <button type="button" class="btn btn-sm btn-primary" id="sh-dev-save" onclick="shAddDevice()" data-i18n="Добавить">Добавить</button>

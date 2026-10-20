@@ -84,12 +84,9 @@ past 64 answers `too_many`; `MAX_WRITES=8` direct write actions
 (`set`/`toggle`/`ramp`) per row — a row with more answers
 `too_many_writes` (the engine's per-run cap is the **same constant**, so a
 stored row can never half-apply; nested `scenario`/`scene` children count
-toward the run's cap); `params` ≤ 4096 UTF-8 bytes of compact JSON as
-stored: NaN, ±Infinity and integers past float range inside `params` are
-stored as `null` (the template then uses its default) and the bound is judged
-after that; an oversize `params` is not stored and the answer names it in
-`dropped` as `{"part": "params", "index": null, "reason": "too_large"}`
-(§«Проверка при сохранении»); a `last_run` the client sends is never stored or
+toward the run's cap); `params` — size bound, normalisation and the
+`too_large` answer: §«Проверка при сохранении» (one home); a `last_run` the
+client sends is never stored or
 echoed (it is the board's own record), so the store and every answer stay
 strict JSON; a row saved again by `id` — single, `upsert` or `replace` — keeps
 the board's `last_run` / `last_error`; `runs` 50; `notify_queue` 20.
@@ -219,11 +216,14 @@ can never drop a board-written tick.
 `index` — позиция элемента в присланном списке (для условий — в списке
 `all`/`any`; `null` для целого поля); `reason` — код из таблиц ниже.
 
-`params` больше 4096 байт UTF-8 в компактном JSON (после замены NaN,
-±Infinity и чисел вне диапазона на `null`) не сохраняется, а ответ называет
-это: `{"part": "params", "index": null, "reason": "too_large"}`. Сохранение не
-отменяется — шаблон работает на значениях по умолчанию, и редактор должен
-показать это автору.
+`params` — объект; NaN, ±Infinity и числа вне диапазона `float` внутри него
+сохраняются как `null` (шаблон берёт значение по умолчанию). `params` больше
+4096 байт UTF-8 в компактном JSON после этой замены, а также вложенный глубже
+предела рекурсии интерпретатора (порядка 1000 уровней — такой объект нельзя
+обработать, даже если он укладывается в 4096 байт), не сохраняется, а ответ
+называет это: `{"part": "params", "index": null, "reason": "too_large"}`.
+Сохранение не отменяется — шаблон работает на значениях по умолчанию, и
+редактор должен показать это автору.
 
 Общие причины: `not_object` — элемент не объект; `unknown_kind` — неизвестный
 `kind`; `over_limit` — первый элемент сверх лимита строки (триггеров 8,
@@ -431,11 +431,13 @@ MQTT-сообщения, в шаге `tick()` (перечитывание док
 статуса шаблонов, запуск по `.run`) или в `on_boot()` записывается в журнал
 службы и не завершает процесс: при первом отказе — с трассировкой, дальше —
 выборочно. Строку сценария, которую нельзя взвести, движок выключает целиком
-до изменения этой строки в документе: её не запускают ни таймеры, ни триггеры
-состояния, `boot`, кнопок и присутствия, ни ручной запуск (`run_now`, команда
-сцены, вызов дочерним сценарием), а `last_error="not armed: …"` остаётся
-видимым. Остальные строки взводятся — и при горячей перезагрузке документа, и
-при старте. `SIGTERM` по-прежнему останавливает службу. Тест: `opt/sa02m-rules/tests/test_loop_guards.py`.
+до изменения этой строки в документе: её не запускают ни таймеры, ни
+часовые триггеры (`time`, `sun`), ни триггеры состояния, `boot`, кнопок и
+присутствия, ни ручной запуск (`run_now`, команда сцены, вызов дочерним
+сценарием), а `last_error="not armed: …"` остаётся видимым. Остальные строки
+взводятся — и при горячей перезагрузке документа, и при старте. `SIGTERM`
+по-прежнему останавливает службу. Тест:
+`opt/sa02m-rules/tests/test_loop_guards.py`.
 
 **Пробел деградации, названный:** служба остаётся `active`, даже когда шаг
 отказывает постоянно (например, `engine.tick` на сохранённом триггере `sun` с
@@ -526,10 +528,16 @@ and a few builtins. Bound by the `RUN_S` deadline above. Empty
 
 `Vars` хранит только конечные числа. `Vars.set` со значением, в котором есть
 `NaN` или `±Infinity` (на любой глубине), отказывает исключением — не
-пойманное телом, оно становится ошибкой прогона — и ничего не сохраняет. Такое значение, попавшее в `Vars` изменением уже сохранённого
-объекта (например, `Vars.get('l').append(math.nan)`), хранится как `None`, а
-прогон завершается ошибкой; документ с `Vars` на диске остаётся строгим JSON,
-в том числе при сохранении посреди прогона (`Vars.home_mode`). Тест:
+пойманное телом, оно становится ошибкой прогона — и ничего не сохраняет.
+Такое значение, попавшее в `Vars` изменением уже сохранённого объекта
+(например, `Vars.get('l').append(math.nan)`), хранится как `None`, а прогон
+завершается ошибкой; документ с `Vars` на диске остаётся строгим JSON, в том
+числе при сохранении посреди прогона (`Vars.home_mode`). Размер значения
+ограничен `VARS_NODE_MAX` узлами (`code_runner.py`): большее `Vars.set`
+отклоняет, а проверка при сохранении отбрасывает (хранится `None`) с ошибкой
+прогона. Проверка — один линейный проход; дедлайн `RUN_S` её не покрывает
+(она идёт после тела и на пути сохранения движка), поэтому её стоимость
+ограничена размером значения, а не временем. Тест:
 `opt/sa02m-rules/tests/test_non_finite_consumers.py`.
 
 The shared `library` and the scenario body execute in **one** namespace, so
@@ -596,11 +604,36 @@ means off. `RulesApp.pub` **refuses** to publish any `/on` under
 `sa02m-rules-*`, so a stored action naming a scenario device cannot command
 the engine through the broker.
 
-**Availability gap, stated:** with `sa02m-rules` down, a `run/on` publish
-lands on the broker, nobody consumes it, and the caller (Alice) has already
-been told `DONE`. An LWT-backed `/devices/sa02m-rules-<id>/meta/error` is the
-fix; the device-level error flag is already honoured by the Alice registry,
-so the hook exists and only the publisher is missing.
+**Availability — `/devices/sa02m-rules/meta/error`.** With the engine down a
+`run/on` publish lands on the broker and nobody consumes it (no retain), so the
+engine publishes ONE retained device-level flag, the bridge/telemetry pattern
+(`docs/MQTT_TOPICS.md` «Last Will»): one flag for the whole engine, not one per
+scene, because MQTT allows one will per connection. `sa02m-rules` carries no
+dash, so it is never a scenario device.
+
+| When | Payload (retained, QoS 1) |
+|---|---|
+| crash, kill, lost socket — the will, armed before `connect()` | `r` |
+| every accepted CONNACK, **after** the command subscription went out | `""` |
+| graceful stop (SIGTERM), before the network loop stops | `r` |
+
+The reader is the Alice registry: while the flag is non-empty a scene switch
+answers `ERROR / DEVICE_UNREACHABLE` and publishes nothing
+(`alice-mqtt-mapping.md` §Scene devices). Validating:
+`tests/test_availability.py` (through `main()`: will before connect, online
+after the subscribe and only on CONNACK rc 0, offline on SIGTERM; arming and
+marks fail-soft — the flag is advisory, running scenarios is the job).
+Residuals, named — each leaves the flag reading «up» while no command runs:
+
+- **No flag at all** reads as up. An engine that has not connected since the
+  broker lost its retained store (the image-prep step erases `mosquitto.db`)
+  leaves none.
+- **Engine died while the broker was down**: the will has no broker to fire
+  on, and the restarted broker serves the last retained `""`.
+- **Session, not execution**: the flag says the engine's MQTT session is
+  alive. An engine whose main loop is stuck (one long C call inside a `code`
+  scenario) still reads as up; the command waits in its bounded inbox
+  (`INBOX_MAX`) and runs late, or is dropped when that is full.
 
 ---
 

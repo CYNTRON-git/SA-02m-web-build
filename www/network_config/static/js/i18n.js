@@ -77,6 +77,30 @@
     'среднее за 15 мин': 'average per 15 min',
     'среднее за 1 ч': 'average per 1 h',
     'среднее за сутки': 'average per day',
+    // Measure card on the СЭ energy bars: consumption between the two marks.
+    'Расход': 'Consumption',
+    // History chart units (devices.js CHART_UNIT_RU: backend unit → RU; back to EN here).
+    // 'В', 'мВ', 'мА', 'Ом' already live under the AI quantity units below.
+    'кВ': 'kV',
+    'А': 'A',
+    'Вт': 'W',
+    'кВт': 'kW',
+    'Вт·ч': 'Wh',
+    'кВт·ч': 'kWh',
+    'вар': 'var',
+    'квар': 'kvar',
+    'В·А': 'VA',
+    'кВ·А': 'kVA',
+    'Гц': 'Hz',
+    'кПа': 'kPa',
+    'Па': 'Pa',
+    'мбар': 'mbar',
+    'бар': 'bar',
+    'мм рт.ст.': 'mmHg',
+    'кОм': 'kΩ',
+    'мг/м³': 'mg/m³',
+    'см': 'cm',
+    'м': 'm',
     'Удалить виджет': 'Remove widget',
     'Переименовать виджет': 'Rename widget',
     'Переименовать': 'Rename',
@@ -256,7 +280,7 @@
     'Управление из облака': 'Cloud control',
     'Показывать в Алисе': 'Show in Alice',
     'скрыто из Алисы': 'hidden from Alice',
-    // Apple HomeKit card + «Показывать в HomeKit» (1.0.6.57, app/homekit.js)
+    // Apple HomeKit card + «Показывать в HomeKit» (1.0.7.0, app/homekit.js)
     'Мост': 'Bridge',
     'Сопряжение': 'Pairing',
     'Аксессуаров': 'Accessories',
@@ -412,7 +436,7 @@
     'Токен (Bearer)': 'Token (Bearer)',
     'Сохранить токен': 'Save token',
     'Удалить токен': 'Remove token',
-    // Phase 3 (1.0.6.57): HomeKit / Home Connect cards (short state lines)
+    // Phase 3 (1.0.7.0): HomeKit / Home Connect cards (short state lines)
     // and the «Умный дом» additions (button, thermostat, CO₂, scenes).
     'Код недоступен': 'Code unavailable',
     'Статус устарел': 'Status is stale',

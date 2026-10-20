@@ -1172,6 +1172,19 @@ class ParamsSizeTests(_Tmp):
         self.assertIsNone(stored)
         self.assertEqual(r.get("dropped"), self.TOO_LARGE)
 
+    def test_nesting_past_the_recursion_limit_is_too_large(self):
+        """A20: a `params` far under 4096 bytes but nested deeper than the
+        interpreter's recursion limit (1000 on CPython 3.11+) cannot be
+        normalised — it is not stored and is named `too_large`, never an
+        unhandled RecursionError (`error: "internal"`)."""
+        deep = 0
+        for _ in range(2000):   # "[[[…0…]]]" ≈ 4001 bytes: under the byte bound
+            deep = [deep]
+        self.assertGreater(2000, sys.getrecursionlimit())  # non-vacuous: past the limit
+        r, stored = self._save({"a": deep})
+        self.assertIsNone(stored)
+        self.assertEqual(r.get("dropped"), self.TOO_LARGE)
+
     def test_the_bound_is_exactly_4096_compact_bytes(self):
         r, stored = self._save({"a": "x" * 4088})   # {"a":"…"} = 4096 bytes
         self.assertEqual(stored, {"a": "x" * 4088})

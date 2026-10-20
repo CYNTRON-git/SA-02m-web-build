@@ -107,7 +107,7 @@ devices:
   #   publish_per_phase_energy: false
   #   channels_enabled:
   #     voltages: true
-  #     line_voltages: true
+  #     line_voltages: true   # yaml-only; off when voltages is false
   #     currents: true
   #     power_active: true
   #     power_reactive: true
