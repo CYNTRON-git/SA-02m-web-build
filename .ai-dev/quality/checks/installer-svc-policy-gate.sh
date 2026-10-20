@@ -21,7 +21,7 @@
 # Run: bash .ai-dev/quality/checks/installer-svc-policy-gate.sh
 #
 # The negative sweeps (a)-(c) and (e) skip comment lines by construction, and
-# (d) reads its capture from comment-stripped text (since 1.0.6.57 — before it
+# (d) reads its capture from comment-stripped text (since 1.0.7.0 — before it
 # a commented-out capture still counted); the COUNTS in (f) and the banner pin
 # in (g) did not, and a count that includes
 # commented-out call sites is a non-vacuity floor that a mass comment-out slides
@@ -110,7 +110,7 @@ fi
 # ── (d) every app apply has a preceding capture in the same file ───────────
 # The capture is looked up in COMMENT-STRIPPED text (lib_check.sh): a raw grep
 # counted `#sa02m_svc_capture "$UNIT"` as a capture, so commenting the capture
-# out of scripts/06c-homekit.sh left this gate GREEN (found 1.0.6.57 while
+# out of scripts/06c-homekit.sh left this gate GREEN (found 1.0.7.0 while
 # registering the HomeKit module; comment-mutation-proof now cases it).
 d_bad=""
 for f in "${MODULES[@]}"; do

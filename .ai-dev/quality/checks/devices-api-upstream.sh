@@ -129,7 +129,9 @@ while IFS=$'\x1f' read -r head has_up has_port; do
 done <<<"$records"
 
 # ── 3. installer order + log string ─────────────────────────────────────────
-render_ln=$(stripped_first_line "$INST" '> */etc/nginx/sites-available/network_config')
+# The render is the shared renderer call (scripts/lib.sh sa02m_render_nginx_site,
+# since the port became a saved setting — row web-port-persist).
+render_ln=$(stripped_first_line "$INST" 'sa02m_render_nginx_site +"\$ETC_DIR/nginx/network_config\.conf"')
 capture_ln=$(stripped_first_line "$INST" 'sa02m_svc_capture sa02m-devices-api\.service')
 if [ -n "$render_ln" ] && [ -n "$capture_ln" ] && [ "$render_ln" -lt "$capture_ln" ]; then
     ok "$INST renders nginx (line $render_ln) before the devices units are captured/applied (line $capture_ln)"

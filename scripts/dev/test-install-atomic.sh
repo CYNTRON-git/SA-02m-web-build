@@ -23,7 +23,7 @@
 # empty sweep cannot pass, and driven to failure on a scratch copy with one
 # site reverted (case 7c) plus a planted raw unit write in install.sh (case 7d
 # - install.sh carries zero install -m sites today, so 7c alone would leave the
-# "and install.sh" half of the claim unmeasured). Cases 7e-7h (1.0.6.57) plant
+# "and install.sh" half of the claim unmeasured). Cases 7e-7h (1.0.7.0) plant
 # the three shapes the sweep used to miss — `cp` through a literal dir
 # variable, /lib/systemd/system/, a `"$VAR"; }` one-line body — plus a
 # negative control for an ambiguous variable. RED observed 2026-09-27 on
@@ -67,6 +67,9 @@ trap 'rm -rf "$T"' EXIT
 fails=0
 ok()  { printf 'ok    %s\n' "$1"; }
 bad() { printf 'FAIL  %s\n' "$1"; fails=$((fails + 1)); }
+# A case this host cannot run (6c, 8b, 8h) prints SKIP and is handed to the
+# runner, which then reports the row PARTIAL instead of PASS.
+. .ai-dev/quality/checks/lib_skip.sh || { echo "FAIL  cannot source .ai-dev/quality/checks/lib_skip.sh"; exit 1; }
 
 export LOG_FILE="$T/install.log"
 # shellcheck disable=SC1090
@@ -152,7 +155,7 @@ rc=0; sa02m_atomic_install -d -m 0755 "$T/live/newdir" >/dev/null 2>&1 || rc=$?
 # 1.0.6.41 finding 8 — the same shape shipped in the OTA helper, case 8h). Run
 # under `timeout` so a regression FAILS here instead of hanging the suite.
 if ! command -v timeout >/dev/null 2>&1; then
-    echo "SKIP  6c dangling flag (no coreutils 'timeout' on this host to bound a hang) — CI is the authority"
+    quality_skip "6c dangling flag (no coreutils 'timeout' on this host to bound a hang) — CI is the authority"
 else
     for flag in -m -o -g; do
         rc=0
@@ -220,7 +223,7 @@ else
     else
         bad "7d a raw unit write planted in install.sh was NOT caught (rc=$rrc): $(printf '%s\n' "$red" | head -3 | tr '\n' ' ')"
     fi
-    # 7e-7h: the three shapes the sweep was blind to until 1.0.6.57, each
+    # 7e-7h: the three shapes the sweep was blind to until 1.0.7.0, each
     # planted in the byte shape that actually shipped (scripts/05-cloud-agent.sh
     # and scripts/06-gateway.sh on 1.0.6.54, where this row was GREEN over four
     # raw unit/binary writes). A fresh scratch copy per case so one plant can
@@ -314,7 +317,7 @@ else
 ' > "$T/modeprobe"; chmod 600 "$T/modeprobe" 2>/dev/null
     if [ "$(stat -c '%a' "$T/modeprobe" 2>/dev/null)" = "600" ]; then fidelity=real; else fidelity=heuristic-host; fi
     if [ "$fidelity" != "real" ]; then
-        echo "SKIP  8b mode assertions (POSIX modes are not representable on $(uname -s): MSYS derives a mode from the file body and ignores chmod, so -m 644 and -m 755 are indistinguishable here) — CI is the authority"
+        quality_skip "8b mode assertions (POSIX modes are not representable on $(uname -s): MSYS derives a mode from the file body and ignores chmod, so -m 644 and -m 755 are indistinguishable here) — CI is the authority"
     else
         mode_ok=1
         for m in 644 755; do
@@ -387,7 +390,7 @@ SHIM
     # holds the board's self-update (finding 8 — a hang here wedges web-update
     # until reboot, the lock being cleared only from the EXIT trap).
     if ! command -v timeout >/dev/null 2>&1; then
-        echo "SKIP  8h dangling '-m' (no coreutils 'timeout' on this host to bound a hang) — CI is the authority"
+        quality_skip "8h dangling '-m' (no coreutils 'timeout' on this host to bound a hang) — CI is the authority"
     else
         rc=0
         timeout 5 bash -c 'log() { :; }; LOGFILE=$2; . "$1"; atomic_install_script -m' _ "$T/apply-helper.sh" "$LOGFILE" >/dev/null 2>&1 || rc=$?

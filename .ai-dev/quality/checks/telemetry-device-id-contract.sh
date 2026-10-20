@@ -89,6 +89,7 @@ SANCTIONED_PREFIXES=(
     '/devices/sa02m-bridge'   # the bridge STATUS device (docs/MQTT_TOPICS.md, «sa02m-bridge»)
     '/devices/sa02m-rules-'   # per-scenario VIRTUAL device sa02m-rules-{id} (docs/MQTT_TOPICS.md:100; docs/contracts/cloud-scenarios.md §MQTT mirror) — retained on deployed boards since 1.0.6.37, a rename would orphan that subtree
     '/devices/sa02m-audio/'   # the audio recorder's FIXED device id sa02m-audio (docs/contracts/audio-recorder.md §2, 1.0.7.4) — a subsystem id like sa02m-bridge, never hostname-derived; the trailing slash keeps the entry from excusing any longer sa02m-audio* id
+    '/devices/sa02m-rules/'   # the scenario ENGINE's own availability device, its LWT flag /devices/sa02m-rules/meta/error (docs/contracts/cloud-scenarios.md §MQTT mirror) — the bridge-status pattern; the trailing slash keeps it to that one exact id
 )
 
 # Sweep a LIST of files in three grep invocations rather than three per file —
@@ -153,6 +154,7 @@ printf '%s\n' '/devices/sa02m-SA-02/controls/beeper' > "$BAD"
 printf '%s\n' 'f"sa02m-{hostname}"' 'sa02m-<hostname> — id телеметрии' >> "$BAD"
 printf '%s\n' '/devices/sa02m-bridge/controls/devices_online' \
               '/devices/sa02m-rules-s1/controls/rule_enabled' \
+              '/devices/sa02m-rules/meta/error' \
               'sa02m-<serial> cloud enrollment' \
               'RAW_IMG="$WORK/sa02m-${STAMP}-raw.img"' \
               '/devices/SA-02m/controls/beeper' > "$GOOD"

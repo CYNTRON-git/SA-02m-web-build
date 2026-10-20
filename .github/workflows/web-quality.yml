@@ -9,7 +9,7 @@ name: web-quality
 # here, so the headless review rows (ui-layout, cloud-card-smoke,
 # sh-modal-layout-smoke, homekit-card-smoke, homeconnect-card-smoke) run for real
 # instead of skipping or
-# exiting 2 (audit 2026-09-16, H3). Since 1.0.6.57 a venv built from
+# exiting 2 (audit 2026-09-16, H3). Since 1.0.7.0 a venv built from
 # opt/sa02m-homekit/requirements.lock makes py-unit-homekit's HAP-python/segno
 # tests run instead of skipping. The Home Connect client needs nothing extra:
 # py-unit-homeconnect is stdlib-only (paho is faked), and its card smoke uses
@@ -28,6 +28,11 @@ permissions:
 jobs:
   quality:
     runs-on: ubuntu-latest
+    # Every row's tool is installed below on purpose, so here a SKIP (or a row
+    # that skipped part of its checks) means a broken install step: the runner
+    # turns both into a FAIL (strict mode — .ai-dev/quality/run.mjs header).
+    env:
+      QUALITY_STRICT: '1'
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4

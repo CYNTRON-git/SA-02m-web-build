@@ -1061,7 +1061,7 @@ async function runInventoryHang(browser, base) {
   return 1;
 }
 
-/* ── Phase 3 editor additions (1.0.6.57) ────────────────────────────────────
+/* ── Phase 3 editor additions (1.0.7.0) ────────────────────────────────────
    Home Connect appliances in the picker and the kinds that bind them with the
    right semantics, the «Кнопка» kind with its press-counter hint and the O5
    Alice default, the thermostat setpoint kind — asserted from the real

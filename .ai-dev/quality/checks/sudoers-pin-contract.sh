@@ -286,21 +286,39 @@ if [ -f "$IFACE_HELPER" ]; then
             || fail "sandbox: the installer's default-route post-up hook was rejected"
 
         # (c) symlink at an allow-listed name: refused (exit 2), target untouched.
-        # Only meaningful where the platform makes a REAL symlink — on a dev
-        # Windows/MSYS box `ln -s` copies, so [ -L ] cannot fire; skip with a
-        # note there (Linux CI is the enforcing run), same posture as shellcheck.
+        # (b4) has just written eth1.conf; with it in place `ln -s` failed
+        # «File exists» and (c) skipped on EVERY host, Linux CI included — so
+        # the fixture path is removed first. Whether the host can make a real
+        # symlink at all is decided by a probe on a fresh path, never by the
+        # case's own `ln -s`: only a host that cannot (git-bash/MSYS copies
+        # instead) SKIPs, and a host that can but fails to plant the fixture
+        # FAILS. The payload must be content the helper ACCEPTS — proven by
+        # writing it to the plain path first — so only the symlink refusal can
+        # refuse it: an invalid payload (the old `PWN`) is refused by the
+        # content validator too, and the case passed with the refusal gone.
+        c_payload='allow-hotplug eth1\niface eth1 inet dhcp\n'
         : > "$sbox/target"
-        ln -s "$sbox/target" "$sbox/interfaces.d/eth1.conf" 2>/dev/null
-        if [ -L "$sbox/interfaces.d/eth1.conf" ]; then
-            printf 'PWN\n' | bash "$th" "$sbox/interfaces.d/eth1.conf" >/dev/null 2>&1
+        rm -f "$sbox/interfaces.d/eth1.conf"
+        if ln -s "$sbox/target" "$sbox/symlink-probe" 2>/dev/null && [ -L "$sbox/symlink-probe" ]; then
+            printf '%b' "$c_payload" | bash "$th" "$sbox/interfaces.d/eth1.conf" >/dev/null 2>&1
             rc=$?
-            if [ "$rc" = 2 ] && [ ! -s "$sbox/target" ]; then
-                pass "sandbox: symlink destination refused (exit 2, target untouched)"
+            if [ "$rc" != 0 ] || [ -L "$sbox/interfaces.d/eth1.conf" ] || ! grep -q 'inet dhcp' "$sbox/interfaces.d/eth1.conf" 2>/dev/null; then
+                fail "sandbox (c) fixture: the payload is not accepted at the plain path (rc=$rc) — a refusal at the symlink could be the content validator's"
+            elif rm -f "$sbox/interfaces.d/eth1.conf" \
+                 && ln -s "$sbox/target" "$sbox/interfaces.d/eth1.conf" 2>/dev/null \
+                 && [ -L "$sbox/interfaces.d/eth1.conf" ]; then
+                printf '%b' "$c_payload" | bash "$th" "$sbox/interfaces.d/eth1.conf" >/dev/null 2>&1
+                rc=$?
+                if [ "$rc" = 2 ] && [ ! -s "$sbox/target" ] && [ -L "$sbox/interfaces.d/eth1.conf" ]; then
+                    pass "sandbox: symlink destination refused (exit 2, target untouched) — a payload the plain path accepts"
+                else
+                    fail "sandbox: a symlink destination was NOT refused (rc=$rc, target $([ -s "$sbox/target" ] && echo WRITTEN || echo untouched))"
+                fi
             else
-                fail "sandbox: a symlink destination was NOT refused (rc=$rc)"
+                fail "sandbox (c) fixture: this host makes symlinks but the one at interfaces.d/eth1.conf could not be planted — the symlink-refusal case did not run"
             fi
         else
-            printf 'sudoers-pin-contract: note  platform made no real symlink — symlink-refusal case skipped (Linux CI enforces it)\n'
+            printf 'sudoers-pin-contract: SKIP  sandbox (c) symlink-refusal — this host cannot create a real symlink (git-bash/MSYS copies); it runs on WSL/Linux CI\n'
         fi
         rm -rf "$sbox"
     else

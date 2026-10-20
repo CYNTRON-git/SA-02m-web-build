@@ -537,10 +537,10 @@ cut_block() {  # $1 file  $2 literal first-line prefix (after indentation) → t
 }
 cut_block "$WWW_ONLY" 'for _h in sa02m-gateway-config-apply.sh' > "$P9/www-helpers.sh"
 cut_block "$WWW_ONLY" 'for _sud in sa02m-cloud ' > "$P9/www-sudoers.sh"
-cut_block "$LEGACY" 'PROFILE_LIB="$TMPDIR/repo/etc/sa02m-install-profile-lib.sh"' > "$P9/legacy.sh"
+cut_block "$LEGACY" 'PROFILE_LIB="$CLONE_TMP/repo/etc/sa02m-install-profile-lib.sh"' > "$P9/legacy.sh"
 p9_run() {  # $1 block  $2 conf → prints installed targets, one per line
     ( SA02M_PROFILE_CONF=$2; export SA02M_PROFILE_CONF
-      REPO_SBIN="$P9/sbin"; REPO_ETC="$P9/etc"; TMPDIR="$P9/clone"; LOGFILE=/dev/null
+      REPO_SBIN="$P9/sbin"; REPO_ETC="$P9/etc"; CLONE_TMP="$P9/clone"; LOGFILE=/dev/null
       log() { printf 'LOG %s\n' "$*"; }
       sed() { :; }
       visudo() { return 0; }

@@ -36,8 +36,11 @@
 #   # continue` (unvalidated operator data reaches resolvconf)
 #   DNS_ENSURE_SRC=/tmp/broken.sh bash scripts/dev/test-iface-dns-ensure.sh
 # WAIT_CARRIER_SRC does the same for the carrier wait (e.g. remove the deadline
-# check and the budget-expiry case hangs / fails). Neither override ever edits
-# the real tree.
+# check: the budget-expiry case FAILS — the simulated clock's cap stops the loop
+# instead of hanging; drop the `ip link set up`: the admin-down case reads the
+# whole budget). Neither override ever edits the real tree. The wait's timings
+# are measured on a SIMULATED clock (its `date`/`sleep` are shims — see the
+# wait section), so host load cannot fail them and no budget is really waited.
 #
 # Run: bash scripts/dev/test-iface-dns-ensure.sh   (stdlib bash only, no deps)
 # ═══════════════════════════════════════════════════════════════════════════
@@ -381,48 +384,90 @@ seed_iface() {   # $1 iface, $2 carrier now ("" = unreadable/admin-down), $3 car
     [ -n "${3:-}" ] && printf '%s\n' "$3" > "$SYS/$1/.pending"
     return 0
 }
-timed() {  # prints elapsed seconds of "$@"
-    local s e; s=$(date +%s); "$@" >/dev/null 2>&1; e=$(date +%s); echo $((e - s))
+# ── the wait's clock is SIMULATED, not the host's ─────────────────────────
+# The cases below assert how long the wait waits. Measured in wall seconds,
+# that was the host's fork latency as much as the wait's logic: with many
+# agents in parallel a zero-sleep path took 3–5 s of `date`/`sed`/`grep`/shim
+# forks and the cases went RED with the shipped loop unchanged, while an idle
+# host and WSL passed (every review of 2026-09-29/30). The wait reads time
+# through `date +%s` and waits through `sleep 1` — the two calls in wait_one —
+# so both are PATH shims for its invocations (run_wait; never for the harness
+# or dns-ensure): `sleep N` advances a clock file by N and returns at once,
+# `date +%s` reads it. Elapsed is then exactly the loop's own sleeps — a burned
+# budget reads as the budget, a zero-sleep path reads 0 — whatever the host is
+# doing, and no wall second is spent waiting a budget out. A loop that never
+# reaches its deadline (the check deleted) would sleep forever: past CLOCK_CAP
+# simulated seconds the sleep shim stops the wait (SIGTERM to its shell), so
+# that defect FAILS its case instead of hanging the beat.
+CLK="$T/bin-clock"; mkdir -p "$CLK"
+CLOCK="$T/clock"; CLOCK_CAP=600
+cat > "$CLK/date" <<SHIM
+#!/bin/bash
+if [ "\$#" = 1 ] && [ "\$1" = "+%s" ]; then
+    read -r _t < "$CLOCK" 2>/dev/null || _t=0
+    echo \$((1700000000 + _t)); exit 0
+fi
+PATH=/usr/bin:/bin exec date "\$@"
+SHIM
+cat > "$CLK/sleep" <<SHIM
+#!/bin/bash
+echo "sleep \$*" | tee -a "$CALLS_ALL" >> "$CALLS"
+_n=\${1%%.*}; case "\$_n" in ''|*[!0-9]*) _n=1 ;; esac
+read -r _t < "$CLOCK" 2>/dev/null || _t=0
+_t=\$((_t + _n)); echo "\$_t" > "$CLOCK"
+if [ "\$_t" -gt $CLOCK_CAP ]; then
+    echo "harness: the wait slept past $CLOCK_CAP simulated seconds without reaching a deadline — stopped" >> "$LOGGED"
+    kill -TERM "\$PPID" 2>/dev/null
+fi
+exit 0
+SHIM
+chmod +x "$CLK/date" "$CLK/sleep"
+clock_now() { read -r _t < "$CLOCK" 2>/dev/null || _t=0; echo "$_t"; }
+run_wait() {   # runs the wait from simulated 0; leaves rc, el (simulated s), sleeps (count)
+    echo 0 > "$CLOCK"
+    PATH="$CLK:$PATH" "$WAIT" "$@" >/dev/null 2>&1; rc=$?
+    el=$(clock_now); sleeps=$(grep -c '^sleep ' "$CALLS" 2>/dev/null || true)
 }
-# «Returns without waiting» cases: the budget is FAST_BUDGET and the run must
-# finish within FAST_MAX. `date +%s` is whole seconds, so a sub-second run can
-# read 1 s across a tick, and a slow fork (git-bash, a loaded CI box) adds one
-# more — 3 s was observed on git-bash for a run that never waited, against the
-# old `-le 2` / 3 s budget (a 1 s margin). Three seconds of slack still proves
-# the point: a run that waits out the budget reads >= FAST_BUDGET = 6 s, twice
-# FAST_MAX, so a real wait cannot pass for a fast return.
-FAST_BUDGET=6; FAST_MAX=3
+# Precondition: the clock is live and advances ONLY through `sleep` — a shim
+# that fell off PATH would make every zero-elapsed assertion below vacuous.
+echo 0 > "$CLOCK"
+probe=$(PATH="$CLK:$PATH" sh -c 's=$(date +%s); sleep 3; sleep 2; e=$(date +%s); echo $((e - s))' 2>&1)
+if [ "$probe" = 5 ] && [ "$(clock_now)" = 5 ]; then
+    ok "harness: the wait's clock is simulated — 'sleep 3; sleep 2' advance date +%s by exactly 5, no wall time"
+else
+    bad "harness: simulated clock broken (probe='$probe' clock=$(clock_now)) — the wait timings below would be vacuous"
+fi
 
 reset
 seed_iface eth0 1
 conf_static eth0 "dns-nameservers 77.88.8.8"
-printf 'IFUP_CARRIER_WAIT_SECS=%s\n' "$FAST_BUDGET" > "$NETCONF"   # FAST_* slack: see timed()
-el=$(timed "$WAIT" eth0)
-if [ "$el" -le "$FAST_MAX" ] && grep -q 'carrier up for \[eth0\]' "$LOGGED"; then
-    ok "wait: returns immediately when carrier is already up (${el}s)"
+printf 'IFUP_CARRIER_WAIT_SECS=5\n' > "$NETCONF"
+run_wait eth0
+if [ "$rc" = 0 ] && [ "$el" = 0 ] && grep -q 'carrier up for \[eth0\]' "$LOGGED"; then
+    ok "wait: returns immediately when carrier is already up (${el}s simulated, ${sleeps} sleeps)"
 else
-    bad "wait: carrier-up path took ${el}s / did not log"
+    bad "wait: carrier-up path rc=$rc took ${el}s simulated (${sleeps} sleeps) / did not log"
 fi
 
 reset
 seed_iface eth0 0
 conf_static eth0 "dns-nameservers 77.88.8.8"
 printf 'IFUP_CARRIER_WAIT_SECS=2\n' > "$NETCONF"
-s=$(date +%s); "$WAIT" eth0 >/dev/null 2>&1; rc=$?; el=$(( $(date +%s) - s ))
-if [ "$rc" = 0 ] && [ "$el" -ge 2 ] && [ "$el" -le 6 ] && grep -q 'budget 2s expired' "$LOGGED"; then
-    ok "wait: TERMINATES at the budget on a carrier-less port, rc=0 (${el}s)"
+run_wait eth0
+if [ "$rc" = 0 ] && [ "$el" = 2 ] && [ "$sleeps" = 2 ] && grep -q 'budget 2s expired' "$LOGGED"; then
+    ok "wait: TERMINATES at the budget on a carrier-less port, rc=0 (exactly ${el}s simulated = ${sleeps} sleeps, not one more)"
 else
-    bad "wait: budget expiry rc=$rc elapsed=${el}s"
+    bad "wait: budget expiry rc=$rc elapsed=${el}s simulated sleeps=${sleeps}"
 fi
 
 reset
 seed_iface eth0 0
 printf 'IFUP_CARRIER_WAIT_SECS=0\n' > "$NETCONF"
-s=$(date +%s); "$WAIT" eth0 >/dev/null 2>&1; rc=$?; el=$(( $(date +%s) - s ))
-if [ "$rc" = 0 ] && [ "$el" -le 1 ] && [ ! -s "$LOGGED" ]; then
+run_wait eth0
+if [ "$rc" = 0 ] && [ "$el" = 0 ] && [ ! -s "$LOGGED" ]; then
     ok "wait: IFUP_CARRIER_WAIT_SECS=0 disables it completely (no wait, no side effect)"
 else
-    bad "wait: the 0 escape hatch did not disable (rc=$rc elapsed=${el}s)"
+    bad "wait: the 0 escape hatch did not disable (rc=$rc elapsed=${el}s simulated)"
 fi
 
 # An admin-DOWN device answers -EINVAL to a carrier read, so without raising the
@@ -431,11 +476,11 @@ fi
 reset
 seed_iface eth0 "" 1
 printf 'IFUP_CARRIER_WAIT_SECS=6\n' > "$NETCONF"
-el=$(timed "$WAIT" eth0)
-if [ "$el" -le 2 ] && grep -q '^ip link set eth0 up$' "$CALLS" && grep -q 'carrier up' "$LOGGED"; then
-    ok "wait: an admin-down device is raised first, then carrier is observed (${el}s)"
+run_wait eth0
+if [ "$rc" = 0 ] && [ "$el" = 0 ] && grep -q '^ip link set eth0 up$' "$CALLS" && grep -q 'carrier up' "$LOGGED"; then
+    ok "wait: an admin-down device is raised first, then carrier is observed (${el}s simulated)"
 else
-    bad "wait: admin-down path took ${el}s / no 'ip link set up'"
+    bad "wait: admin-down path rc=$rc took ${el}s simulated (${sleeps} sleeps) / no 'ip link set up'"
 fi
 
 reset
@@ -443,22 +488,20 @@ seed_iface eth0 1; seed_iface eth1 0; seed_iface eth2 0
 conf_static eth0 "dns-nameservers 77.88.8.8"
 printf 'auto eth1\niface eth1 inet dhcp\n' > "$CD/eth1.conf"
 printf 'auto eth2\niface eth2 inet static\n    address 10.0.0.2\n    netmask 255.255.255.0\n' > "$CD/eth2.conf"
-# A wrongly selected eth2 (static, no gateway, no carrier) would burn the whole
-# budget, so the time bound is what proves it was skipped — FAST_* slack: see timed().
-printf 'IFUP_CARRIER_WAIT_SECS=%s\n' "$FAST_BUDGET" > "$NETCONF"
-el=$(timed "$WAIT" --auto)
+printf 'IFUP_CARRIER_WAIT_SECS=3\n' > "$NETCONF"
+run_wait --auto
 line=$(grep 'carrier' "$LOGGED" | tail -n 1)
-if [ "$el" -le "$FAST_MAX" ] && [ "${line#*eth0}" != "$line" ] \
+if [ "$rc" = 0 ] && [ "$el" = 0 ] && [ "${line#*eth0}" != "$line" ] \
    && [ "${line#*eth1}" = "$line" ] && [ "${line#*eth2}" = "$line" ]; then
     ok "wait: --auto selects only auto+static+gateway interfaces (dhcp and gateway-less skipped)"
 else
-    bad "wait: --auto selection wrong (${el}s): $line"
+    bad "wait: --auto selection wrong (rc=$rc ${el}s simulated): $line"
 fi
 
 reset
 seed_iface eth0 1
 printf 'IFUP_CARRIER_WAIT_SECS=9999\n' > "$NETCONF"
-"$WAIT" eth0 >/dev/null 2>&1
+run_wait eth0
 if grep -q 'exceeds the 120s ceiling' "$LOGGED"; then
     ok "wait: an over-large budget is clamped AND logged, never silently honoured"
 else
@@ -470,32 +513,32 @@ fi
 reset
 seed_iface eth0 1
 printf 'IFUP_CARRIER_WAIT_SECS=99999999999999999999\n' > "$NETCONF"
-s=$(date +%s); "$WAIT" eth0 >/dev/null 2>&1; rc=$?; el=$(( $(date +%s) - s ))
-if [ "$rc" = 0 ] && [ "$el" -le 5 ] && grep -q 'exceeds the 120s ceiling' "$LOGGED"; then
-    ok "wait: an arithmetic-overflow-wide budget is still clamped, never unbounded (${el}s)"
+run_wait eth0
+if [ "$rc" = 0 ] && [ "$el" = 0 ] && grep -q 'exceeds the 120s ceiling' "$LOGGED"; then
+    ok "wait: an arithmetic-overflow-wide budget is still clamped, never unbounded (${el}s simulated)"
 else
-    bad "wait: overflow-wide budget was not clamped (rc=$rc elapsed=${el}s)"
+    bad "wait: overflow-wide budget was not clamped (rc=$rc elapsed=${el}s simulated)"
 fi
 
 reset
 seed_iface eth0 0
-printf 'IFUP_CARRIER_WAIT_SECS=%s\n' "$FAST_BUDGET" > "$NETCONF"   # FAST_* slack: see timed()
-el=$(timed "$WAIT" 'eth0;reboot')
-if [ "$el" -le "$FAST_MAX" ] && grep -q 'malformed interface name' "$LOGGED" \
+printf 'IFUP_CARRIER_WAIT_SECS=3\n' > "$NETCONF"
+run_wait 'eth0;reboot'
+if [ "$rc" = 0 ] && [ "$el" = 0 ] && grep -q 'malformed interface name' "$LOGGED" \
    && ! grep -q 'eth0;reboot' "$LOGGED"; then
     ok "wait: a malformed interface name is refused before it reaches a path or ip(8)"
 else
-    bad "wait: malformed name not refused (${el}s)"
+    bad "wait: malformed name not refused (rc=$rc ${el}s simulated)"
 fi
 
 reset
 seed_iface lo 0
-printf 'IFUP_CARRIER_WAIT_SECS=%s\n' "$FAST_BUDGET" > "$NETCONF"   # FAST_* slack: see timed()
-el=$(timed "$WAIT" lo)
-if [ "$el" -le "$FAST_MAX" ]; then
+printf 'IFUP_CARRIER_WAIT_SECS=5\n' > "$NETCONF"
+run_wait lo
+if [ "$rc" = 0 ] && [ "$el" = 0 ]; then
     ok "wait: lo is never waited on (ifup@lo pays nothing)"
 else
-    bad "wait: lo waited ${el}s"
+    bad "wait: lo waited ${el}s simulated (rc=$rc)"
 fi
 
 # Both clamp cases above seed carrier-up, so they prove the LOG fires — not that

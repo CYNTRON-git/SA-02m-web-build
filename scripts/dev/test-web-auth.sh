@@ -83,9 +83,11 @@ ok()  { printf 'ok    %s\n' "$1"; }
 bad() { printf 'FAIL  %s\n' "$1"; fails=$((fails + 1)); }
 # A case the ENVIRONMENT cannot run is reported as SKIP and counted, never as ok
 # (quality-gate-rigor.md ## Honesty: "a skipped row is reported as skipped, never
-# as passed"; review Q4, 1.0.6.24). Reserved for genuine environment gaps whose
-# authority is CI — never for a missing in-repo file, which is a defect.
-skip() { skips=$((skips + 1)); printf 'SKIP  %s\n' "$1"; }
+# as passed"; review Q4, 1.0.6.24), and handed to the runner through lib_skip.sh
+# so the row reads PARTIAL there, not PASS. Reserved for genuine environment gaps
+# whose authority is CI — never for a missing in-repo file, which is a defect.
+. .ai-dev/quality/checks/lib_skip.sh || { echo "FAIL  cannot source .ai-dev/quality/checks/lib_skip.sh"; exit 1; }
+skip() { skips=$((skips + 1)); quality_skip "$1"; }
 
 # ── recording `install` shim ───────────────────────────────────────────────
 # web_auth_repair_file asks for `install -m 640 -o root -g www-data`. Neither a
@@ -451,9 +453,9 @@ stage "55 no credential at all"    "SA02M_WEB_USER='admin'
 # ═══ 8. Login brute-force throttle (M4) ═══════════════════════════════════
 # A single shared password over plain HTTP with no attempt limit is an
 # unthrottled oracle (threat model §5). web_login_check/record_failure/
-# record_success implement a per-client windowed lockout under /run. Driven here
-# Cases 57–61 use a 30 s window (SA02M_LOGIN_LOCKOUT=30). Case 62 judges
-# expiry with a 1 s window at check time, after a 2 s sleep.
+# record_success implement a per-client windowed lockout under /run. Driven
+# against a scratch dir: 57–61 with a 30 s window (far longer than their forks
+# can take), 62 judges expiry against a 1 s window in force at check time.
 #
 # Proven RED (1.0.6.24), mutations of a scratch copy of the lib:
 #   web_login_check always returns 0 (never locks)          -> 59 RED

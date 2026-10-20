@@ -1312,7 +1312,7 @@ else:
 # exists only where scripts/06c-homekit.sh ran: on any other board its lines
 # fail to resolve at every boot and it creates an empty /etc/sa02m-homekit.
 # So the conf lives in the package (inert under /opt) and only the installer
-# copies it into /etc/tmpfiles.d/ (review advisory A1, 1.0.6.57).
+# copies it into /etc/tmpfiles.d/ (review advisory A1, 1.0.7.0).
 print("── 12. the HomeKit tmpfiles conf is installer-owned, never OTA'd into /etc/tmpfiles.d ──")
 HK12_SRC = "opt/sa02m-homekit/tmpfiles.d/sa02m-homekit.conf"
 runner12 = read(RUNNER)

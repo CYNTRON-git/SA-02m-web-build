@@ -223,6 +223,7 @@ install-profile|scripts/update-www-only.sh|log INFO "/usr/local/sbin/$_h: мод
 install-profile|scripts/update-www-only.sh|log INFO "/etc/sudoers.d/$_sud: модуль пропущен профилем установки"
 install-profile|etc/sa02m-web-update-apply.sh|log "$tgt: модуль пропущен профилем установки"
 install-profile|www/network_config/cgi-bin/sa02m_agent_api.cgi|echo '"'"'{"ok":true,"state":"not_installed"
+i2c2-bus-recovery|etc/sa02m-pre-start.sh|sa02m_i2c2_gpio_recover || true
 ota-dst-allowlist-parity|opt/sa02m-update/lib/validate_package.py|re.compile(r"^/etc/nginx/"),
 ota-dst-allowlist-parity|scripts/pack-offline-update.py|r"etc/systemd/system/sa02m-|"
 ota-dst-allowlist-parity|etc/sa02m-update-runner.sh|r"etc/systemd/system/sa02m-|"
@@ -303,6 +304,12 @@ daemon-access-effect|usr/local/sbin/sa02m-daemon-access.sh|probe no "$WEB_USER" 
 mqtt-acl-audio|etc/mosquitto/acl_default.conf|topic deny /devices/sa02m-audio/controls/+/on
 mqtt-acl-audio|scripts/15-audio.sh|au_acl_migrate /etc/mosquitto/acl/default.conf
 daemon-access-effect|usr/local/sbin/sa02m-daemon-access.sh|EXTRA_FILES="/etc/sa02m-audio/upload.token"
+devices-python-api-contract|opt/sa02m-devices/sa02m_devices/device_history_db.py|custom_range_key,
+web-port-persist|install.sh|sa02m_web_port_persist "$_ARG_PORT" || exit 2
+web-port-persist|scripts/lib.sh|port=$(sa02m_web_port_effective)
+web-port-persist|scripts/11-devices.sh|&& sa02m_render_nginx_site "$ETC_DIR/nginx/network_config.conf" "$WEB_ROOT"; then
+web-port-persist|etc/sa02m-update-runner.sh|if ! localize_staged_package_port "$txn"; then
+web-port-persist|etc/sa02m-web-port-lib.sh|[ "$1" -le 65535 ]
 '
 
 command -v git >/dev/null 2>&1 || { echo "comment-mutation-proof: FAIL — git is required to build the pristine copy"; exit 1; }
@@ -396,7 +403,9 @@ gate_cmd() {  # $1 = gate id ; prints the row's run command, empty when unknown
 run_gate() {  # $1 = gate id ; returns the gate's exit status
     local cmd="${ROW_RUN[$1]:-}"
     [ -n "$cmd" ] || return 2
-    ( cd "$TREE" && bash -c "$cmd" ) >/dev/null 2>&1
+    # The runner's per-row QUALITY_SKIP_LOG is THIS row's: a gate run here must
+    # not write its skips into it (run.mjs header, PARTIAL).
+    ( unset QUALITY_SKIP_LOG; cd "$TREE" && bash -c "$cmd" ) >/dev/null 2>&1
 }
 
 # The token a developer would actually use to disable a line in THIS file type.

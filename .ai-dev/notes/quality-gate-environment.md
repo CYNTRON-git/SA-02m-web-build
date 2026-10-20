@@ -13,8 +13,11 @@ A row that cannot run here exits 77 and `node .ai-dev/quality/run.mjs` prints
 `SKIP` for it, counts it apart and names it in the summary (the convention's home
 is `run.mjs`'s header); the beat stays green — a missing optional tool must not
 block a dev machine. Before 1.0.6.58 a skip exited 0 and printed `PASS`. Either
-way **a green local run is not evidence for these rows** — a partial skip (one
-assert inside a row that otherwise ran) still prints PASS for the row:
+way **a green local run is not evidence for these rows**. A partial skip (one
+assert inside a row that otherwise ran) prints `PARTIAL` only where the harness
+reports it to the runner (`.ai-dev/quality/checks/lib_skip.sh`; the protocol is
+in `run.mjs`'s header); a harness that does not still prints `PASS` — the
+«Partial skips» section below says which is which:
 
 | Row | Skips when | Real authority |
 |---|---|---|
@@ -38,6 +41,7 @@ assert inside a row that otherwise ran) still prints PASS for the row:
 | `status-vplc-probe` | two cases need `AF_UNIX` (Windows CPython has none): 5 PASS + 2 SKIP here, 7/7 under WSL (1.0.7.2) | WSL / Linux CI |
 | `py-unit-audio` | POSIX-only cases (fcntl leases, `dir_fd`, process groups, the real `timeout`): partial skip — roughly half the suite skips here and the row still prints PASS; the whole suite runs under WSL (1.0.7.4) | WSL / Linux CI |
 | `audio-trigger` | no `flock` on git-bash: whole row SKIP (exit 77), never a pass (1.0.7.4) | WSL / Linux CI |
+| `sudoers-pin-contract` | sandbox case (c) only, the iface-conf-write symlink refusal: git-bash cannot create a real symlink (`ln -s` copies), so that one case prints SKIP | WSL / Linux CI |
 
 When reporting results, say "skipped", never "passed". A reviewer that reports a
 skipped row as a pass is making a false claim about verification.
@@ -70,6 +74,28 @@ board, at install: `scripts/03-webserver.sh:134`
 (`devices-api-upstream`, `flasher-auth-header-strip`, `vplc-route-contract`)
 pin intent, not syntax — a green beat says nothing about whether nginx accepts
 the file.
+## Partial skips, and CI strict mode
+
+**Reported as `PARTIAL`** (the harness sources `lib_skip.sh`): `web-auth-behaviour`
+(cases 5–6 off Linux, 34–37 without a hasher) and `install-atomic` (8b on MSYS,
+6c/8h without coreutils `timeout`).
+
+**Still printed `PASS` although part of the row did not run** — not opted in yet:
+`web-update-launcher-guard` (L8–L11 without `flock`; the 1.0.6.62 A3 example),
+`update-cgroup-escape` (E5 without `flock`), `update-deploy-skip` (15e when not
+root — this one also skips on Linux CI), `sudoers-pin-contract` (the symlink
+case, «note» line — also on Linux CI), `py-unit-alice` (unittest `skipped=4`,
+also on Linux CI). Opting in is one `quality_skip` call per skip site; the three
+marked «also on Linux CI» would then FAIL there under strict mode, so each needs
+its CI skip removed (or the row's scope decided) in the same change.
+
+**Strict mode**: `web-quality.yml` sets `QUALITY_STRICT=1` for the whole job, so
+in CI a `SKIP` or a `PARTIAL` is a `FAIL` — every tool is installed there on
+purpose, and a skip means a broken install step. Locally the variable is absent.
+The CI runs the switch was measured against had zero whole-row skips and no
+`PARTIAL`-reporting row skipping: 1.0.6.67 (run 36709584151) 102/102 build,
+9/9 review; the non-version branch `ci-linux-green` (run 36695168996) 96/96,
+9/9.
 
 ## shellcheck — version skew is real and it has already cost a CI failure
 

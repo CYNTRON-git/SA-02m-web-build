@@ -289,25 +289,69 @@ try:
         return scene_devices.exposed_scene_devices(
             scene_devices.load_rules_doc(), ROOMS, BOARD)
 
-    base = len(proj())
-    store.apply_command({"id": "vscn", "name": "verify scene", "type": "scene",
-                         "enabled": True, "alice_expose": True,
-                         "captured_from": {"room_id": "r1"},
-                         "action": [{"kind": "scenario", "id": "vscn2"}]}, P)
-    devs = proj()
-    mine = [d for d in devs if str(d.get("id", "")).endswith("-vscn")]
-    d = mine[0] if mine else {}
-    good = (len(devs) == base + 1
-            and d.get("type") == scene_devices.SCENE_DEVICE_TYPE
-            and str(d.get("id", "")).startswith(scene_devices.SCENE_ID_PREFIX)
-            and d.get("room_id") == "r1"
-            and (d.get("capabilities") or [{}])[0].get("mqtt")
-            == scene_devices.scene_run_topic("vscn"))
-    print(("PASS" if good else "FAIL") +
-          " 9 an exposed scene becomes a device: id=%r type=%r room_id=%r topic=%r (%d -> %d)"
-          % (d.get("id"), d.get("type"), d.get("room_id"),
-             (d.get("capabilities") or [{}])[0].get("mqtt"), base, len(devs)))
-    store.apply_command({"id": "vscn", "delete": True}, P)
+    # A scene is set-only, and since 1.0.7.0 the store refuses a save whose
+    # only action it drops and checks every set target against the board's
+    # Alice device document (cloud-scenarios.md §Проверка при сохранении) —
+    # a `scenario` action left this check with no scene at all. So the
+    # fixture writes the first capability the board's own index resolves;
+    # saving never runs the scene, so that device is not touched. With no
+    # readable document the store skips the target check and any set does.
+    target = {"device": "vdev", "cap": "on_off"}
+    skip_why = ""
+    try:
+        from sa02m_rules import device_index
+        ix = device_index.load_index(device_index.devices_path())
+    except ImportError:  # a release before the index: no target check
+        ix = None
+    if ix is not None and ix.loaded:
+        keys = sorted(ix.cap_topics)  # (device, "cap") | (device, "cap|instance")
+        plain = [k for k in keys if "|" not in k[1]]
+        if plain:
+            target = {"device": plain[0][0], "cap": plain[0][1]}
+        elif keys:
+            cap, inst = keys[0][1].split("|", 1)
+            target = {"device": keys[0][0], "cap": cap, "instance": inst}
+        else:
+            skip_why = ("the device document %s resolves no capability, so "
+                        "the store accepts no scene" % device_index.devices_path())
+    if skip_why:
+        print("SKIP 9 exposed scene: " + skip_why)
+    else:
+        try:
+            # A row left by an interrupted run would inflate the baseline.
+            store.apply_command({"id": "vscn", "delete": True}, P)
+            base = len(proj())
+            res = store.apply_command(
+                {"id": "vscn", "name": "verify scene", "type": "scene",
+                 "enabled": True, "alice_expose": True,
+                 "captured_from": {"room_id": "r1"},
+                 "action": [dict(target, kind="set", value=True)]}, P)
+            if not isinstance(res, dict):
+                res = {"ok": False, "error": "non-dict answer %r" % (res,)}
+            devs = proj()
+            mine = [d for d in devs if str(d.get("id", "")).endswith("-vscn")]
+            d = mine[0] if mine else {}
+            good = (res.get("ok") is True
+                    and len(devs) == base + 1
+                    and d.get("type") == scene_devices.SCENE_DEVICE_TYPE
+                    and str(d.get("id", "")).startswith(scene_devices.SCENE_ID_PREFIX)
+                    and d.get("room_id") == "r1"
+                    and (d.get("capabilities") or [{}])[0].get("mqtt")
+                    == scene_devices.scene_run_topic("vscn"))
+            if not res.get("ok"):
+                # The store's own answer is what makes a refusal diagnosable.
+                print("FAIL 9 an exposed scene becomes a device: the store refused "
+                      "the fixture scene: error=%r dropped=%r target=%r (%d -> %d)"
+                      % (res.get("error"), res.get("dropped"), target, base, len(devs)))
+            else:
+                print(("PASS" if good else "FAIL") +
+                      " 9 an exposed scene becomes a device: id=%r type=%r room_id=%r "
+                      "topic=%r target=%r (%d -> %d)"
+                      % (d.get("id"), d.get("type"), d.get("room_id"),
+                         (d.get("capabilities") or [{}])[0].get("mqtt"),
+                         target, base, len(devs)))
+        finally:
+            store.apply_command({"id": "vscn", "delete": True}, P)
 except Exception as e:
     print("FAIL 9 scene_devices: %r" % (e,))
 PY

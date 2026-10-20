@@ -17,6 +17,15 @@
   `etc/` → `/etc`, `opt/` → `/opt` (см. `install.sh`).
 - Веб-корень на устройстве: `/var/www/network_config`.
 - nginx на устройстве слушает **:9999 (обычный HTTP)**, за ним fcgiwrap + Bash CGI.
+  Другой порт задаёт `install.sh --port N`; он сохраняется в
+  `/etc/sa02m_web_port.conf` (`SA02M_WEB_PORT=N`, формат —
+  `etc/sa02m-web-port-lib.sh`), и каждый следующий рендер site-файла, www-only,
+  `--refresh`, офлайн-пакет и проверка здоровья обновления берут порт оттуда.
+  Нет файла — 9999. Плата, поставленная с `--port`, когда порт ещё не
+  сохранялся, переносит его в файл из живого site-файла при первом прогоне
+  установщика или www-only (одно OTA этого не делает). Прочие
+  локальные пробы (`sa02m-userspace-watchdog`, `sa02m-failure-monitor`, guard'ы
+  `hw-backend`/`status-blocks`) по-прежнему ходят на `127.0.0.1:9999`.
 - Демон прошивальщика: `sa02m-flasher.service`, unix-socket
   `/run/sa02m-flasher/flasher.sock`.
 - Маркер развёрнутого коммита: `/var/lib/sa02m-web-build/deployed_commit`.
@@ -139,10 +148,16 @@ OTA и офлайн-пакет **копируют файлы по карте н�
   - **www-only** — `scripts/update-www-only.sh` из чекаута, в котором есть
     `scripts/11-devices.sh` **и** `opt/sa02m-devices/sa02m_devices/`: он вызывает
     `11-devices.sh`, а тот рендерит тот же шаблон, перелинковывает `sites-enabled`
-    и делает `nginx -t && reload` (`update-www-only.sh:431-435`, `11-devices.sh:94-101`);
+    и делает `nginx -t && reload` (блок nginx в `11-devices.sh`);
     чекаут без этих двух путей site-файл не трогает;
+  - оба рендера идут через одну функцию `sa02m_render_nginx_site`
+    (`scripts/lib.sh`) с сохранённым портом платы (строка про порт в «Что где
+    лежит»);
   - **офлайн-пакет `.sa02m`** — `scripts/offline-update-deploy-map.json` →
-    `/etc/nginx/sites-available/network_config`;
+    `/etc/nginx/sites-available/network_config`; упаковщик рендерит его на 9999,
+    раннер перед раскладкой переводит `listen` на сохранённый порт платы (и так
+    же — URL проверки здоровья; с раннера, который это умеет, т.е. со
+    следующего обновления после доставившего его);
   - **золотой образ**;
   - **GitHub-OTA («Обновление веб»)** — да, с рендером. `map_dst` кладёт
     `etc/nginx/network_config.conf` в `/etc/nginx/sites-available/network_config`.
@@ -253,8 +268,9 @@ tmpfiles-юнит. Если релиз менял демон/`opt/sa02m-flasher/
 
 **`etc/` обязателен в поставке — без него скрипт не стартует.**
 `update-www-only.sh` подключает `scripts/lib.sh`, а тот безусловно
-`source`-ит `../etc/sa02m-stacks-policy.sh` (`scripts/lib.sh` — блок
-«Stack policy», намеренный fail-loud: отсутствие файла = сломанное дерево).
+`source`-ит `../etc/sa02m-stacks-policy.sh` и `../etc/sa02m-web-port-lib.sh`
+(`scripts/lib.sh` — блоки «Stack policy» и «Panel port», намеренный
+fail-loud: отсутствие файла = сломанное дерево).
 При `set -euo pipefail` это обрывает скрипт **до первого копирования**:
 
 ```
@@ -268,7 +284,7 @@ scripts/lib.sh: line <N>: .../scripts/../etc/sa02m-stacks-policy.sh: No such fil
 | Форма | Что везём | Что получаем |
 |---|---|---|
 | **полная (рекомендуется)** | `www/` + `scripts/` + `etc/` | www + идемпотентные `[ -f ]`-инсталлы helper'ов/юнитов из `etc/` (см. абзац выше) |
-| **минимальная** | `www/` + `scripts/` + **только** `etc/sa02m-stacks-policy.sh` | ровно синхронизация `www/`: остальные `[ -f ]`-гарды не срабатывают — исходное «чисто-www» поведение |
+| **минимальная** | `www/` + `scripts/` + **только** `etc/sa02m-stacks-policy.sh` и `etc/sa02m-web-port-lib.sh` | ровно синхронизация `www/` (плюс сама lib порта в `/usr/local/lib`): остальные `[ -f ]`-гарды не срабатывают — исходное «чисто-www» поведение |
 
 Минимальная форма годится, когда релиз не менял ничего в `etc/`; во всех
 остальных случаях берите полную. Проверено на пустом дереве 2026-08-28
@@ -300,9 +316,9 @@ scripts/lib.sh: line <N>: .../scripts/../etc/sa02m-stacks-policy.sh: No such fil
      `tar xzf … -C /root/sa02m-deploy-<ver>` (практика деплоев 1.0.5.10–12).
    **`etc/` без вариантов должен быть в поставке** — иначе скрипт падает на
    `source` ещё до копирования (см. «Пути деплоя» выше). Если нужен именно
-   «чисто-www» эффект, везите `etc/sa02m-stacks-policy.sh` в одиночку —
-   остальные `[ -f ]`-гарды тогда молчат:
-   `git archive … HEAD www/network_config scripts etc/sa02m-stacks-policy.sh`.
+   «чисто-www» эффект, везите из `etc/` только `etc/sa02m-stacks-policy.sh` и
+   `etc/sa02m-web-port-lib.sh` — остальные `[ -f ]`-гарды тогда молчат:
+   `git archive … HEAD www/network_config scripts etc/sa02m-stacks-policy.sh etc/sa02m-web-port-lib.sh`.
 3. **Снять CRLF** со скриптов (репозиторий часто синхронизируется с Windows):
    ```
    ssh root@<dev> "sed -i 's/\r$//' /root/sa02m-deploy-<ver>/scripts/*.sh"

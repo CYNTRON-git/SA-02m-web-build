@@ -94,6 +94,20 @@ bad() { printf 'FAIL  %s\n' "$1"; fails=$((fails + 1)); }
 LEGACY="$T/legacy"; UPD="$T/upd"; BIN="$T/bin"
 mkdir -p "$LEGACY" "$UPD" "$BIN"
 export SA02M_WEB_BUILD_STATEDIR="$LEGACY" SA02M_UPDATE_STATEDIR="$UPD"
+# Every launcher run inherits a SANDBOX canary as TMPDIR, never the host's: a
+# launcher whose EXIT trap removes an inherited TMPDIR (114e542f and earlier —
+# L12) must only ever be able to delete this directory. Checked after every
+# run (canary_check) and asserted per path in L12.
+CANARY="$T/inherited-tmpdir"
+canary_make() { mkdir -p "$CANARY" && printf 'keep\n' > "$CANARY/keep"; }
+canary_ok() { [ -f "$CANARY/keep" ]; }
+CANARY_LOST=""; CANARY_KEPT=yes
+canary_check() {  # $1=label — record a loss (CANARY_KEPT: the last run's verdict), then restore for the next run
+  if canary_ok; then CANARY_KEPT=yes; else CANARY_KEPT=no; CANARY_LOST="$CANARY_LOST $1"; canary_make; fi
+}
+canary_kept() { [ "$CANARY_KEPT" = yes ]; }
+canary_make || { echo "FAIL  cannot create the TMPDIR canary"; exit 1; }
+export TMPDIR="$CANARY"
 export SA02M_UPDATE_RUNNER="$T/no-such-runner"   # never reached: the clone fails first
 
 cat > "$BIN/git" <<SHIM
@@ -120,11 +134,12 @@ write_txn() {  # $1=stage
 }
 run_launcher() {
   rm -f "$T/git.calls" "$LEGACY/update_status" "$LEGACY/update.lock"
-  env -u TMPDIR bash "$LAUNCHER" >/dev/null 2>&1; rc=$?
+  bash "$LAUNCHER" >/dev/null 2>&1; rc=$?
+  RUN_N=$((RUN_N + 1)); canary_check "run#$RUN_N"
 }
 cloned() { grep -q ' clone ' "$T/git.calls" 2>/dev/null; }
 status_is() { [ "$(cat "$LEGACY/update_status" 2>/dev/null)" = "$1" ]; }
-rc=0
+rc=0; RUN_N=0
 
 # ── L1: live runner at applying → refused before the clone ──────────────────
 write_txn applying; printf '%s\n' "$LIVE_PID" > "$UPD/update.lock"
@@ -154,7 +169,8 @@ write_txn done
 run_launcher_locked() {
   rm -f "$T/git.calls" "$LEGACY/update_status"
   printf '%s\n' "$LIVE_PID" > "$LEGACY/update.lock"
-  env -u TMPDIR bash "$LAUNCHER" >/dev/null 2>&1; rc=$?
+  bash "$LAUNCHER" >/dev/null 2>&1; rc=$?
+  RUN_N=$((RUN_N + 1)); canary_check "run#$RUN_N"
 }
 run_launcher_locked
 [ "$rc" -ne 0 ] && ! cloned && ok "L5 the legacy launcher lock (live pid) still refuses a second launcher" \
@@ -189,6 +205,62 @@ write_txn rolling_back; printf '%s\n' "$DEAD_PID" > "$UPD/update.lock"
 run_launcher
 cloned && ok "L7 rolling_back with a dead runner (the bench residue) → «Применить» proceeds (clone attempted)" \
   || bad "L7 rolling_back + dead runner → clone NOT attempted (rc=$rc) — a stuck board could never re-apply"
+
+# ── L12: the EXIT trap removes only the clone dir this launcher created ───────
+# Until the fix the clone dir lived in the env name TMPDIR and the EXIT trap
+# (`rm -rf "${TMPDIR:-}"`) was armed BEFORE the launcher's own mktemp, so every
+# exit ahead of the clone — a busy transaction, a held legacy lock, a refused
+# REPO_URL — removed the CALLER's inherited $TMPDIR, recursively, as root on a
+# manual run (sudo's env_reset strips TMPDIR on the panel path). The canary
+# exported above stands in for the caller's TMPDIR. L12a exits BEFORE the
+# mktemp, L12b after it (the clone fails), L12c when the mktemp itself fails —
+# the launcher must stop there, not clone into «/repo». L12b is a
+# non-regression pin (green on both trees): the clone dir is still removed.
+# Drive-to-failure: WEB_UPDATE_LAUNCHER=<(git show 114e542f:etc/sa02m-web-update-apply.sh)
+#   (under WSL/Linux, non-root; from a Windows worktree `git show` it to disk).
+# RED observed 2026-09-30 (WSL, admin) on that launcher: 3 FAIL — L12a
+# «inherited TMPDIR DELETED», L12c «cloned: yes (/repo)», and the aggregate
+# line below (6 of 15 runs deleted the canary: L1, L6, L12a and L8 ×3). GREEN on
+# the fixed launcher, 3 of 3. Mutations of the fixed launcher, each RED: the
+# post-mktemp `trap cleanup EXIT` disabled → L12b «LEFT BEHIND»; the early trap
+# given back `rm -rf "${TMPDIR:-}"` → L12a, L12c and the aggregate; the mktemp
+# result unchecked → L12c.
+canary_make; write_txn applying; printf '%s\n' "$LIVE_PID" > "$UPD/update.lock"
+run_launcher
+if [ "$rc" -ne 0 ] && ! cloned && canary_kept; then
+  ok "L12a exit before the clone (busy transaction) → the inherited TMPDIR survives"
+else
+  bad "L12a exit before the clone → rc=$rc, cloned: $(cloned && echo yes || echo no), inherited TMPDIR $(canary_kept && echo kept || echo DELETED) — the EXIT trap removed the caller's directory"
+fi
+canary_make; rm -f "$UPD/transaction.json" "$UPD/update.lock"
+run_launcher
+clone_dest=$(grep ' clone ' "$T/git.calls" 2>/dev/null | tail -1 | awk '{print $NF}')
+clone_dir=${clone_dest%/repo}
+if ! cloned || [ -z "$clone_dest" ] || [ "$clone_dir" = "$clone_dest" ]; then
+  bad "L12b fixture: no clone destination recorded (cloned: $(cloned && echo yes || echo no), dest '$clone_dest') — nothing to check"
+elif [ "$rc" -ne 0 ] && canary_kept && [ ! -e "$clone_dir" ] && [ "$clone_dir" != "$CANARY" ]; then
+  ok "L12b clone failed after the mktemp → the launcher's own clone dir removed, the inherited TMPDIR survives"
+else
+  bad "L12b clone failed → rc=$rc, clone dir '$clone_dir' $([ -e "$clone_dir" ] && echo LEFT BEHIND || echo removed), inherited TMPDIR $(canary_kept && echo kept || echo DELETED)"
+fi
+[ -n "$clone_dir" ] && [ "$clone_dir" != "$clone_dest" ] && case "$clone_dir" in /tmp/sa02m-web-update-*) rm -rf "$clone_dir" ;; esac
+REAL_MKTEMP=$(command -v mktemp)
+mkdir -p "$T/mkfail"
+cat > "$T/mkfail/mktemp" <<SHIM
+#!/bin/bash
+case "\$*" in *sa02m-web-update-*) echo "shim: mktemp refused" >&2; exit 1 ;; esac
+exec "$REAL_MKTEMP" "\$@"
+SHIM
+chmod +x "$T/mkfail/mktemp"
+canary_make
+SAVED_PATH=$PATH; PATH="$T/mkfail:$PATH"
+run_launcher
+PATH=$SAVED_PATH
+if [ "$rc" -ne 0 ] && ! cloned && status_is error && canary_kept; then
+  ok "L12c mktemp failed → exit $rc, NO clone, update_status=error, the inherited TMPDIR survives"
+else
+  bad "L12c mktemp failed → rc=$rc, cloned: $(cloned && echo "yes ($(grep ' clone ' "$T/git.calls" | awk '{print $NF}'))" || echo no), status='$(cat "$LEGACY/update_status" 2>/dev/null)', inherited TMPDIR $(canary_kept && echo kept || echo DELETED) — the launcher went on without its clone dir"
+fi
 
 # ── L8–L11: the clobber PAST the pre-clone guard (1.0.6.62, audit 2026-09-28 M1) ─
 # Until 1.0.6.62 the guard above pinned FOUR stages and ran only BEFORE the
@@ -396,9 +468,9 @@ d=json.load(open(sys.argv[1],encoding="utf-8")); raise SystemExit(0 if d.get("st
     || bad "L11 re-take over the inherited descriptor FAILED ($(grep '^reacquire=' "$T/runner.calls" 2>/dev/null)) — the real runner would die on E_LOCK against its own launcher"
 fi
 
-legacy_reached && bad "a case reached the launcher's legacy deploy (stopped at the sandbox's exit 97) — a fixture broke the handoff; on a root host that path writes /var/www, /etc/sudoers.d, /opt"
-[ -f "$DECOY_TMPDIR/keep" ] && ok "the caller's TMPDIR survived every launcher run (env -u TMPDIR)" \
-  || bad "the caller's TMPDIR ($DECOY_TMPDIR) was removed — a launcher run inherited it and its EXIT trap rm -rf'd it"
+echo
+[ -z "$CANARY_LOST" ] && ok "L12 the inherited TMPDIR survived every launcher run ($RUN_N runs + L5)" \
+  || bad "L12 the inherited TMPDIR was DELETED by launcher run(s):$CANARY_LOST"
 echo "-----"
 if [ "$fails" -eq 0 ]; then echo "PASS (all checks${skipped:+; SKIPPED here: $skipped})"; exit 0
 else echo "FAIL ($fails check(s)${skipped:+; SKIPPED here: $skipped})"; exit 1; fi
