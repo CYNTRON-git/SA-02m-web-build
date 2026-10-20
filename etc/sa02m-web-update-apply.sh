@@ -154,11 +154,18 @@ printf '%s' "$$" > "$LOCKFILE"
 printf 'running' > "$STATUS_FILE"
 chmod 644 "$LOCKFILE" "$STATUS_FILE" 2>/dev/null || true
 
+# Until the clone dir exists the EXIT trap releases the lock and nothing else.
+# The dir-removing trap is armed only AFTER this launcher's own mktemp, on a
+# private name: an inherited TMPDIR (a manual root run — sudo's env_reset
+# strips it on the panel path) is the caller's directory, never ours to remove.
+# Harness: scripts/dev/test-web-update-launcher-guard.sh L12.
+trap 'rm -f "$LOCKFILE"' EXIT
+CLONE_TMP=""
 cleanup() {
     rm -f "$LOCKFILE"
-    rm -rf "${TMPDIR:-}" 2>/dev/null || true
+    [ -n "$CLONE_TMP" ] && rm -rf "$CLONE_TMP" 2>/dev/null
+    return 0
 }
-trap cleanup EXIT
 
 > "$LOGFILE"
 log "START: $REPO_URL ветка $BRANCH"
@@ -238,26 +245,32 @@ refuse_if_running() {
 refuse_if_running "до клонирования"
 
 # Temporary directory for clone
-TMPDIR=$(mktemp -d /tmp/sa02m-web-update-XXXXXX)
-chmod 755 "$TMPDIR"
+if ! CLONE_TMP=$(mktemp -d /tmp/sa02m-web-update-XXXXXX) || [ -z "$CLONE_TMP" ]; then
+    CLONE_TMP=""
+    log "ERROR: mktemp для клона не удался"
+    printf 'error' > "$STATUS_FILE"
+    exit 1
+fi
+trap cleanup EXIT
+chmod 755 "$CLONE_TMP"
 
 log "Клонирование репозитория..."
 if ! git -c http.lowSpeedLimit=1000 -c http.lowSpeedTime=30 \
-    clone --depth=1 --branch "$BRANCH" "$REPO_URL" "$TMPDIR/repo" 2>&1 | tee -a "$LOGFILE"; then
+    clone --depth=1 --branch "$BRANCH" "$REPO_URL" "$CLONE_TMP/repo" 2>&1 | tee -a "$LOGFILE"; then
     log "ERROR: git clone не удался"
     printf 'error' > "$STATUS_FILE"
     exit 1
 fi
 
 # Trust gate after clone (plan §2.9)
-remote_url=$(git -C "$TMPDIR/repo" remote get-url origin 2>/dev/null || echo "")
+remote_url=$(git -C "$CLONE_TMP/repo" remote get-url origin 2>/dev/null || echo "")
 if ! repo_url_allowed "$remote_url"; then
     log "ERROR: cloned remote URL not in allowlist: $remote_url"
     printf 'error' > "$STATUS_FILE"
     exit 1
 fi
 
-NEW_COMMIT=$(git -C "$TMPDIR/repo" rev-parse HEAD 2>/dev/null || echo "")
+NEW_COMMIT=$(git -C "$CLONE_TMP/repo" rev-parse HEAD 2>/dev/null || echo "")
 if [ -z "$NEW_COMMIT" ]; then
     log "ERROR: cannot resolve cloned HEAD"
     printf 'error' > "$STATUS_FILE"
@@ -318,8 +331,8 @@ handoff_to_shared_runner() {
         prev_ver=$(tr -d '\r' <"$WEB_ROOT/VERSION" | grep -E '^[0-9]+(\.[0-9]+){1,3}$' | head -1 || true)
     fi
     local target_ver=""
-    if [ -f "$TMPDIR/repo/www/network_config/VERSION" ]; then
-        target_ver=$(tr -d '\r' <"$TMPDIR/repo/www/network_config/VERSION" | grep -E '^[0-9]+(\.[0-9]+){1,3}$' | head -1 || true)
+    if [ -f "$CLONE_TMP/repo/www/network_config/VERSION" ]; then
+        target_ver=$(tr -d '\r' <"$CLONE_TMP/repo/www/network_config/VERSION" | grep -E '^[0-9]+(\.[0-9]+){1,3}$' | head -1 || true)
     fi
 
     mkdir -p "$UPDATE_STATEDIR" "$UPDATE_STATEDIR/state" "$UPDATE_STATEDIR/incoming"
@@ -349,12 +362,12 @@ handoff_to_shared_runner() {
     refuse_if_running "после клонирования, под локом раннера"
 
     # Keep clone for runner overlay (cleanup trap must not remove it after handoff).
-    export SA02M_UPDATE_GITHUB_OVERLAY="$TMPDIR/repo"
+    export SA02M_UPDATE_GITHUB_OVERLAY="$CLONE_TMP/repo"
     trap 'rm -f "$LOCKFILE"' EXIT
 
     local txn_id
     txn_id=$(
-        UPDATE_STATEDIR="$UPDATE_STATEDIR" OVERLAY="$TMPDIR/repo" \
+        UPDATE_STATEDIR="$UPDATE_STATEDIR" OVERLAY="$CLONE_TMP/repo" \
         TARGET_COMMIT="$NEW_COMMIT" TARGET_VER="${target_ver:-}" PREV_VER="${prev_ver:-}" \
         REPO_URL="$REPO_URL" BRANCH="$BRANCH" \
         python3 - <<'PY'
@@ -402,9 +415,9 @@ PY
         log "ERROR: failed to write github transaction.json"
         return 1
     fi
-    log "Handoff to shared runner txn=$txn_id overlay=$TMPDIR/repo"
+    log "Handoff to shared runner txn=$txn_id overlay=$CLONE_TMP/repo"
     # Do not delete clone on EXIT — runner owns overlay_path.
-    TMPDIR=""
+    CLONE_TMP=""
     rm -f "$LOCKFILE"
     printf 'running' > "$STATUS_FILE"
     exec "$RUNNER" apply
@@ -420,14 +433,14 @@ log "Деплой веб-файлов в $WEB_ROOT..."
 # device (a stale/vulnerable CGI would keep serving). Fall back to a purge+cp
 # where rsync is unavailable. Mirrors the installer's find -delete + copy.
 if command -v rsync >/dev/null 2>&1; then
-    if ! rsync -a --delete "$TMPDIR/repo/www/network_config/" "$WEB_ROOT/" 2>&1 | tee -a "$LOGFILE"; then
+    if ! rsync -a --delete "$CLONE_TMP/repo/www/network_config/" "$WEB_ROOT/" 2>&1 | tee -a "$LOGFILE"; then
         log "ERROR: rsync не удался"
         printf 'error' > "$STATUS_FILE"
         exit 1
     fi
 else
     find "$WEB_ROOT" -mindepth 1 -delete 2>/dev/null || true
-    if ! cp -a "$TMPDIR/repo/www/network_config/." "$WEB_ROOT/" 2>&1 | tee -a "$LOGFILE"; then
+    if ! cp -a "$CLONE_TMP/repo/www/network_config/." "$WEB_ROOT/" 2>&1 | tee -a "$LOGFILE"; then
         log "ERROR: копирование не удалось"
         printf 'error' > "$STATUS_FILE"
         exit 1
@@ -442,27 +455,27 @@ chown -R www-data:www-data "$WEB_ROOT" 2>/dev/null || true
 
 # Обновляем вспомогательные скрипты из репозитория
 for src in etc/sa02m-web-build-lib.sh etc/sa02m-web-update-check.sh etc/sa02m-web-update-apply.sh etc/sa02m-web-auth-lib.sh etc/sa02m-repair-web-env.sh etc/sa02m-web-root-cmd.sh etc/sa02m-update-runner.sh etc/sa02m-update-inspect.sh; do
-    if [ -f "$TMPDIR/repo/$src" ]; then
+    if [ -f "$CLONE_TMP/repo/$src" ]; then
         tgt="/usr/local/sbin/$(basename "${src%.sh}")"
         if [ "$src" = "etc/sa02m-web-auth-lib.sh" ]; then
             tgt="/usr/local/lib/sa02m-web-auth-lib.sh"
-            atomic_install_script -m 644 "$TMPDIR/repo/$src" "$tgt"
+            atomic_install_script -m 644 "$CLONE_TMP/repo/$src" "$tgt"
         elif [ "$src" = "etc/sa02m-web-build-lib.sh" ]; then
             tgt="/usr/local/lib/sa02m-web-build-lib.sh"
-            atomic_install_script -m 644 "$TMPDIR/repo/$src" "$tgt"
+            atomic_install_script -m 644 "$CLONE_TMP/repo/$src" "$tgt"
         elif [ "$src" = "etc/sa02m-web-root-cmd.sh" ]; then
             tgt="/usr/local/sbin/sa02m-web-root-cmd.sh"
-            atomic_install_script -m 755 "$TMPDIR/repo/$src" "$tgt"
+            atomic_install_script -m 755 "$CLONE_TMP/repo/$src" "$tgt"
         elif [ "$src" = "etc/sa02m-update-runner.sh" ]; then
             mkdir -p /usr/local/libexec
             tgt="/usr/local/libexec/sa02m-update-runner"
-            atomic_install_script -m 755 "$TMPDIR/repo/$src" "$tgt"
+            atomic_install_script -m 755 "$CLONE_TMP/repo/$src" "$tgt"
         elif [ "$src" = "etc/sa02m-update-inspect.sh" ]; then
             mkdir -p /usr/local/libexec
             tgt="/usr/local/libexec/sa02m-update-inspect"
-            atomic_install_script -m 755 "$TMPDIR/repo/$src" "$tgt"
+            atomic_install_script -m 755 "$CLONE_TMP/repo/$src" "$tgt"
         else
-            atomic_install_script -m 755 "$TMPDIR/repo/$src" "$tgt"
+            atomic_install_script -m 755 "$CLONE_TMP/repo/$src" "$tgt"
         fi
         log "Обновлён $tgt"
     fi
@@ -477,7 +490,7 @@ done
 # (docs/contracts/install-profile.md §4). The reader comes from this clone and
 # runs in a subshell per check (it cannot shadow this script's functions); a
 # clone without it ⇒ unchanged behaviour, said in the log when a profile exists.
-PROFILE_LIB="$TMPDIR/repo/etc/sa02m-install-profile-lib.sh"
+PROFILE_LIB="$CLONE_TMP/repo/etc/sa02m-install-profile-lib.sh"
 if [ ! -f "$PROFILE_LIB" ]; then
     PROFILE_LIB=""
     [ -f /etc/sa02m_install_profile.conf ] \
@@ -498,8 +511,8 @@ for src in usr/local/sbin/sa02m-gateway-config-apply.sh \
         log "$tgt: модуль пропущен профилем установки"
         continue
     fi
-    if [ -f "$TMPDIR/repo/$src" ]; then
-        atomic_install_script -m 755 "$TMPDIR/repo/$src" "$tgt"
+    if [ -f "$CLONE_TMP/repo/$src" ]; then
+        atomic_install_script -m 755 "$CLONE_TMP/repo/$src" "$tgt"
         log "Обновлён $tgt"
     fi
 done
@@ -509,8 +522,8 @@ done
 # lib_web_auth.sh fails OPEN, security review 1.0.6.24 F1; the shared PCA9536
 # flock, review 1.0.6.68 B1).
 for conf in sa02m-web-login.conf sa02m-i2c-lock.conf; do
-    if [ -f "$TMPDIR/repo/etc/tmpfiles.d/$conf" ]; then
-        install -m 644 "$TMPDIR/repo/etc/tmpfiles.d/$conf" "/etc/tmpfiles.d/$conf"
+    if [ -f "$CLONE_TMP/repo/etc/tmpfiles.d/$conf" ]; then
+        install -m 644 "$CLONE_TMP/repo/etc/tmpfiles.d/$conf" "/etc/tmpfiles.d/$conf"
         sed -i 's/\r$//' "/etc/tmpfiles.d/$conf"
         if command -v systemd-tmpfiles >/dev/null 2>&1; then
             systemd-tmpfiles --create "/etc/tmpfiles.d/$conf" >>"$LOGFILE" 2>&1 || true
@@ -520,13 +533,13 @@ for conf in sa02m-web-login.conf sa02m-i2c-lock.conf; do
 done
 
 # Bootstrap updater libs from the same clone when present (release N → N+1).
-if [ -d "$TMPDIR/repo/opt/sa02m-update" ]; then
+if [ -d "$CLONE_TMP/repo/opt/sa02m-update" ]; then
     mkdir -p /opt/sa02m-update
     if command -v rsync >/dev/null 2>&1; then
         rsync -a --delete --exclude '__pycache__' --exclude '*.pyc' \
-            "$TMPDIR/repo/opt/sa02m-update/" /opt/sa02m-update/ 2>&1 | tee -a "$LOGFILE" || true
+            "$CLONE_TMP/repo/opt/sa02m-update/" /opt/sa02m-update/ 2>&1 | tee -a "$LOGFILE" || true
     else
-        cp -a "$TMPDIR/repo/opt/sa02m-update/." /opt/sa02m-update/ 2>&1 | tee -a "$LOGFILE" || true
+        cp -a "$CLONE_TMP/repo/opt/sa02m-update/." /opt/sa02m-update/ 2>&1 | tee -a "$LOGFILE" || true
     fi
     log "Обновлён /opt/sa02m-update"
 fi
@@ -541,10 +554,10 @@ fi
 # Installing the committed file whole does both jobs: the root-cmd grant lands,
 # and a stale grant is REMOVED. Validate before activating — a malformed
 # drop-in breaks sudo globally.
-if [ -f "$TMPDIR/repo/etc/sudoers.d/sa02m-www" ]; then
+if [ -f "$CLONE_TMP/repo/etc/sudoers.d/sa02m-www" ]; then
     _sud_tmp=$(mktemp 2>/dev/null) || _sud_tmp=""
     if [ -n "$_sud_tmp" ]; then
-        sed 's/\r$//' "$TMPDIR/repo/etc/sudoers.d/sa02m-www" > "$_sud_tmp"
+        sed 's/\r$//' "$CLONE_TMP/repo/etc/sudoers.d/sa02m-www" > "$_sud_tmp"
         if ! command -v visudo >/dev/null 2>&1 || visudo -cf "$_sud_tmp" >>"$LOGFILE" 2>&1; then
             install -m 0440 -o root -g root "$_sud_tmp" /etc/sudoers.d/sa02m-www \
                 && log "Обновлён /etc/sudoers.d/sa02m-www (установлен целиком)"

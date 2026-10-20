@@ -21,7 +21,6 @@ check_root
 REPO_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
 OPT_SRC="$REPO_ROOT/opt/sa02m-devices"
 ETC_DIR="$REPO_ROOT/etc"
-: "${PORT:=9999}"
 : "${WEB_ROOT:=/var/www/network_config}"
 
 if [ ! -d "$OPT_SRC/sa02m_devices" ]; then
@@ -61,10 +60,13 @@ install -d -m 0755 /var/lib/sa02m-stand
 # nginx proxy /api/devices* (если в репо есть полный conf) — rendered FIRST,
 # before the daemon is (re)started below: it sniffs this file at start to
 # decide on the TCP compat listener (see the header).
-if [ -f "$ETC_DIR/nginx/network_config.conf" ]; then
-    sed "s|__PORT__|$PORT|g; s|__WEB_ROOT__|$WEB_ROOT|g" \
-        "$ETC_DIR/nginx/network_config.conf" \
-        > /etc/nginx/sites-available/network_config
+# The port is the SAVED one (install.sh --port → /etc/sa02m_web_port.conf), not
+# an env default: this block runs from update-www-only.sh too, where no PORT is
+# set, and used to put a --port board back on 9999 (scripts/lib.sh
+# sa02m_render_nginx_site — the one renderer). A failed render leaves the live
+# site untouched and skips the relink/reload below.
+if [ -f "$ETC_DIR/nginx/network_config.conf" ] \
+    && sa02m_render_nginx_site "$ETC_DIR/nginx/network_config.conf" "$WEB_ROOT"; then
     rm -f /etc/nginx/sites-enabled/network_config \
         /etc/nginx/sites-enabled/000-sa02m-network_config
     ln -sf /etc/nginx/sites-available/network_config \

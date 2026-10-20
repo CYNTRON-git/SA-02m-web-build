@@ -299,6 +299,9 @@ def overlay_workdir_files(paths: list[str], dest: Path) -> int:
 
 
 def render_nginx_template(overlay: Path) -> None:
+    # Sealed at the DEFAULT panel port: the packer cannot know a board's. The
+    # runner re-points the listen line at the board's saved port before deploy
+    # (etc/sa02m-update-runner.sh localize_staged_package_port).
     conf = overlay / "etc" / "nginx" / "network_config.conf"
     if not conf.is_file():
         return

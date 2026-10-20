@@ -37,7 +37,9 @@ export LOG_FILE="/var/log/sa02m_install.log"
 export NETMASK="255.255.255.0"
 export DNS_SERVERS="77.88.8.8 77.88.8.1"
 export NET_IFACE="eth0"
-export PORT="9999"
+# Panel port: set by --port only; its home is /etc/sa02m_web_port.conf
+# (etc/sa02m-web-port-lib.sh). Resolved after lib.sh is sourced.
+_ARG_PORT=""
 export WEB_ROOT="/var/www/network_config"
 export ADMIN_PASS="cyntron"
 export SA02M_SERIAL_PROFILE=""
@@ -63,7 +65,7 @@ while [[ $# -gt 0 ]]; do
         --ip)      _ARG_IP="$2";             shift 2 ;;
         --mask)    NETMASK="$2";             shift 2 ;;
         --gw)      _ARG_GW="$2";             shift 2 ;;
-        --port)    PORT="$2";                shift 2 ;;
+        --port)    _ARG_PORT="$2";           shift 2 ;;
         --pass)    ADMIN_PASS="$2";          shift 2 ;;
         --serial-profile) SA02M_SERIAL_PROFILE="$2"; shift 2 ;;
         --variant) SA02M_HW_VARIANT="$2";   shift 2 ;;
@@ -111,6 +113,18 @@ esac
 # not carry. An unknown ID writes nothing and stops the run. One home:
 # etc/sa02m-install-profile-lib.sh.
 sa02m_profile_apply_cli "$_PROFILE_SKIP" "$_PROFILE_KEEP" || exit 2
+# Panel port: --port is saved (validated — garbage exits 2 before anything is
+# touched) so every later re-render keeps it; without --port the saved port is
+# used (a board installed with --port before it was saved is carried over once
+# from its live site), else the default 9999. The modules render nginx from the
+# file, not from this variable (scripts/lib.sh sa02m_render_nginx_site).
+if [ -n "$_ARG_PORT" ]; then
+    sa02m_web_port_persist "$_ARG_PORT" || exit 2
+else
+    sa02m_web_port_migrate
+fi
+export PORT
+PORT=$(sa02m_web_port_effective)
 
 # Migration: create /etc/sa02m_stacks.conf from live state ONLY if absent (an
 # operator decision is never overwritten; never under a rootfs build — the

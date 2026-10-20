@@ -51,6 +51,18 @@ RUNTIME_WDT_PREV=""
 UPDATER_VERSION_FALLBACK=1.0.5.66
 RUNNER_VERSION_FILE="$STATEDIR/runner.version"
 RUNNER_BIN_DST="${SA02M_UPDATE_RUNNER_DST:-/usr/local/libexec/sa02m-update-runner}"
+# The panel's nginx port on THIS board. Both manifests name it at the default
+# 9999 — the packer seals the site file and the health URL on the build host,
+# and the online manifest is generated from the same literal — so a board
+# installed with `install.sh --port N` failed the health probe and rolled back
+# every update, and an offline pack moved its panel to 9999 (audit 2026-09-28
+# L4). The board's port has one home, read through the shared lib
+# (etc/sa02m-web-port-lib.sh → /usr/local/lib); no lib on the board ⇒ the
+# default, i.e. exactly the behaviour before the lib existed. Read-only here:
+# only the installer writes the port file.
+WEB_PORT_LIB="${SA02M_WEB_PORT_LIB:-/usr/local/lib/sa02m-web-port-lib.sh}"
+WEB_PORT_PACKED=9999
+NGINX_SITE_DST=/etc/nginx/sites-available/network_config
 read_version_line() {  # $1=file → first "x.y[.z[.w]]" line, CRLF tolerated; empty when none
     if [ -f "$1" ]; then
         tr -d '\r' <"$1" | grep -E '^[0-9]+(\.[0-9]+){1,3}$' | head -1 || true
@@ -2314,6 +2326,106 @@ unit_settled() {
     done
 }
 
+# board_web_port → the port the panel is served on HERE (see WEB_PORT_LIB at
+# the top). No lib ⇒ the packed default, silently (a pre-lib board). A port file
+# the lib refuses, or a lib that does not load, ⇒ the default with a WARN line:
+# never a half-parsed value in a URL or a listen line.
+board_web_port() {
+    local p="" rc=0
+    if [ ! -f "$WEB_PORT_LIB" ]; then
+        printf '%s\n' "$WEB_PORT_PACKED"
+        return 0
+    fi
+    # shellcheck disable=SC1090
+    p=$(. "$WEB_PORT_LIB" && sa02m_web_port) || rc=$?
+    case "$p" in
+        ''|*[!0-9]*)
+            log "WARN: web port: $WEB_PORT_LIB did not load (rc=$rc) - using $WEB_PORT_PACKED"
+            p=$WEB_PORT_PACKED
+            ;;
+        *)
+            [ "$rc" -eq 0 ] || log "WARN: web port: the saved panel port is not a valid port - using $p"
+            ;;
+    esac
+    printf '%s\n' "$p"
+}
+
+# Fit the STAGED package to this board's panel port before deploy. Both
+# manifests name the panel at the packed default port: the offline packer seals
+# the nginx site rendered at 9999 (it cannot know a board's port), and both
+# generators write the health URL http://127.0.0.1:9999/…. On a board serving
+# another port this re-points (1) the staged site's `listen … default_server;`
+# and (2) services.health.http_url when it is that loopback default-port URL —
+# so the update neither moves the panel nor probes a port nothing listens on
+# and rolls itself back. health_check, cmd_verify and cmd_recover read the same
+# staged manifest, so the probe is right on every path. Staging is the runner's
+# own scratch (the signature was checked at extract); the live site is replaced
+# by apply_deploy_items as usual — journalled, so a rollback restores it.
+# A board on the default port, a manifest with no site file (every GitHub OTA,
+# a www-only pack) or a non-loopback URL are left exactly as they are.
+# Idempotent (the resume path runs it again). rc 1 with APPLY_FAIL_REASON when
+# a rewrite cannot be proven: deploying the 9999 file would move the panel.
+localize_staged_package_port() {
+    local txn=$1 p mf fit src f tmp got line
+    p=$(board_web_port)
+    [ "$p" = "$WEB_PORT_PACKED" ] && return 0
+    mf=$(manifest_path "$txn")
+    fit=$(python3 - "$mf" "$NGINX_SITE_DST" "$WEB_PORT_PACKED" "$p" <<'PY'
+import json, os, sys
+mf, site, packed, port = sys.argv[1:5]
+with open(mf, encoding="utf-8") as fh:
+    m = json.load(fh)
+src = ""
+for it in m.get("deploy", []):
+    if it.get("dst") == site:
+        src = str(it.get("src", ""))
+        break
+health = m.get("services", {}).get("health", {})
+pre = "http://127.0.0.1:%s/" % packed
+url = health.get("http_url", "")
+if isinstance(url, str) and url.startswith(pre):
+    health["http_url"] = "http://127.0.0.1:%s/%s" % (port, url[len(pre):])
+    tmp = mf + ".port.tmp"
+    with open(tmp, "w", encoding="utf-8") as fh:
+        fh.write(json.dumps(m, indent=2, sort_keys=True) + "\n")
+        fh.flush()
+        os.fsync(fh.fileno())
+    os.replace(tmp, mf)
+    print("url")
+if src:
+    print("site " + src)
+PY
+) || {
+        log "ERROR: web port: staged manifest read/rewrite failed ($mf)"
+        APPLY_FAIL_REASON="web port: staged manifest not fitted to port $p"
+        return 1
+    }
+    src=""
+    while IFS= read -r line; do
+        case "$line" in
+            url) log "apply: health probe re-pointed at this board's panel port $p (packed $WEB_PORT_PACKED)" ;;
+            "site "*) src=${line#site } ;;
+        esac
+    done <<< "$fit"
+    [ -n "$src" ] || return 0
+    f="$STATEDIR/staging/$txn/overlay/$src"
+    tmp="$f.port.$$"
+    # shellcheck disable=SC1090
+    if [ -f "$f" ] && (. "$WEB_PORT_LIB" && sa02m_web_port_set_listen "$p") <"$f" >"$tmp"; then
+        got=$(. "$WEB_PORT_LIB" && sa02m_web_port_from_site "$tmp") || got=""
+    else
+        got=""
+    fi
+    if [ "$got" != "$p" ] || ! mv -f "$tmp" "$f"; then
+        rm -f "$tmp"
+        log "ERROR: web port: could not re-point the staged nginx site ($src) at port $p"
+        APPLY_FAIL_REASON="web port: nginx site not re-pointed at port $p"
+        return 1
+    fi
+    log "apply: nginx site re-pointed at this board's panel port $p (packed $WEB_PORT_PACKED)"
+    return 0
+}
+
 # The health gate proper: units_active (settled), the http probe, the version
 # file. Returns 1 with HEALTH_FAIL_REASON set — the reason lands in
 # transaction.json (rollback_from_journal E_HEALTH) and in the panel.
@@ -2599,7 +2711,14 @@ cmd_apply() {
     fi
 
     txn_patch "stage=applying" "progress_pct=40"
-    # Extract already done before re-exec; deploy now.
+    # Extract already done before re-exec. Runs on the resume path too (it is
+    # idempotent): the staged package must carry this board's panel port.
+    if ! localize_staged_package_port "$txn"; then
+        rollback_from_journal "$txn" E_APPLY "${APPLY_FAIL_REASON:-web port: package not fitted}"
+        log "ERROR [E_APPLY]: panel port fit failed (${ROLLBACK_OUTCOME:-rollback attempted})"
+        exit 1
+    fi
+    # Deploy now.
     if ! apply_deploy_items "$txn"; then
         rollback_from_journal "$txn" E_APPLY "${APPLY_FAIL_REASON:-deploy failed}"
         log "ERROR [E_APPLY]: deploy failed (${ROLLBACK_OUTCOME:-rollback attempted})"

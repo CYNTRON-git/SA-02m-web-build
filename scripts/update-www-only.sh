@@ -170,6 +170,12 @@ if [ -f "$REPO_ETC/sa02m-update-runner.sh" ]; then
     log OK "sa02m-update-runner установлен"
     sa02m_stamp_runner_version "$REPO_ROOT/www/network_config/VERSION" || true
 fi
+# The runner reads the saved panel port through this lib (health probe, offline
+# pack site file); same destination as 03-webserver.sh.
+if [ -f "$REPO_ETC/sa02m-web-port-lib.sh" ]; then
+    sa02m_atomic_install -m 644 "$REPO_ETC/sa02m-web-port-lib.sh" /usr/local/lib/sa02m-web-port-lib.sh
+    sed -i 's/\r$//' /usr/local/lib/sa02m-web-port-lib.sh
+fi
 if [ -f "$REPO_ETC/sa02m-update-inspect.sh" ]; then
     sa02m_atomic_install -m 755 "$REPO_ETC/sa02m-update-inspect.sh" /usr/local/libexec/sa02m-update-inspect
     sed -i 's/\r$//' /usr/local/libexec/sa02m-update-inspect
