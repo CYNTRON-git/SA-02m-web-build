@@ -96,9 +96,10 @@ case "$KIND" in
         WEB_READ_DIRS="/var/lib/sa02m-audio /var/lib/sa02m-audio/rec"
         # The .part of a running recording: the daemon's alone.
         PRIVATE_DIRS="/var/lib/sa02m-audio/tmp"
-        # The upload token: the conf's shape (www-data:<daemon> 0640) — the
-        # panel writes it, the daemon reads it.
-        EXTRA_FILES="/etc/sa02m-audio/upload.token"
+        # The upload token and the voice allow list: the conf's shape
+        # (www-data:<daemon> 0640) — the panel / the Operator write them, the
+        # daemon reads them. Each is optional: an absent one is skipped.
+        EXTRA_FILES="/etc/sa02m-audio/upload.token /etc/sa02m-audio/voice-allow.json"
         DENY_READ="/etc/sa02m_web.env /etc/sa02m-alice/sa02m-alice-devices.conf"
         ;;
     *)

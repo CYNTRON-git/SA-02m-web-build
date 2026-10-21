@@ -59,7 +59,9 @@
 #      www-data through sa02m_audio.config.save is 61033:61004 0640 and the
 #      check still passes; so is the upload token saved by www-data through
 #      sa02m_audio.config.save_token, and a token the daemon cannot read
-#      (0600) FAILS naming it, `apply` heals it to 0640.
+#      (0600) FAILS naming it, `apply` heals it to 0640; the voice allow list
+#      the same way (absent passes, 0600 FAILS naming it, apply heals it, a
+#      root:root file at the name is refused by apply).
 #
 # Root is required (chown to foreign uids, setpriv). Not root: re-exec through
 # `sudo -n` where that works (the CI runner), else every case is printed as
@@ -521,6 +523,29 @@ rc=0; out=$(run_helper "$C" apply audio) || rc=$?
 if [ "$rc" = 0 ] && [ "$(mode_of "$tok")" = "61033:61004 640" ]; then
     ok "M audio: apply heals the token to 61033:61004 0640"
 else bad "M audio token heal: rc=$rc, now $(mode_of "$tok"), output: $(tr '\n' '|' <<<"$out" | cut -c1-300)"; fi
+# The voice allow list (§12/§13) has the token's shape: absent passes, one the
+# daemon cannot read FAILS naming it, apply heals it, a root:root file at the
+# name is refused, never taken over.
+va=$C/etc/sa02m-audio/voice-allow.json
+rc=0; run_helper "$C" check audio >/dev/null || rc=$?
+if [ ! -e "$va" ] && [ "$rc" = 0 ]; then
+    ok "M audio: no voice allow list — check passes (absent is not a grant failure)"
+else bad "M audio absent allow list: exists=$([ -e "$va" ] && echo yes || echo no), check rc=$rc"; fi
+printf '{"devices":{"led-COM3-13":{"power":{"min":0,"max":1}}}}\n' > "$va"
+chown 61033:61004 "$va"; chmod 0600 "$va"
+rc=0; out=$(run_helper "$C" check audio) || rc=$?
+if [ "$rc" = 1 ] && grep -qF "sa02m-audio не может читать $va" <<<"$out"; then
+    ok "M audio: a voice allow list the daemon cannot read FAILS check, naming it"
+else bad "M audio unreadable allow list: rc=$rc, output: $(tr '\n' '|' <<<"$out" | cut -c1-300)"; fi
+rc=0; out=$(run_helper "$C" apply audio) || rc=$?
+if [ "$rc" = 0 ] && [ "$(mode_of "$va")" = "61033:61004 640" ]; then
+    ok "M audio: apply heals the voice allow list to 61033:61004 0640"
+else bad "M audio allow-list heal: rc=$rc, now $(mode_of "$va"), output: $(tr '\n' '|' <<<"$out" | cut -c1-300)"; fi
+chown 0:0 "$va"; chmod 0600 "$va"
+rc=0; out=$(run_helper "$C" apply audio) || rc=$?
+if [ "$rc" = 1 ] && grep -qF "ОШИБКА: $va: владелец 0:0" <<<"$out" && [ "$(mode_of "$va")" = "0:0 600" ]; then
+    ok "M audio: a root:root file at the allow-list name is refused by apply, not taken over"
+else bad "M audio root:root allow list: rc=$rc, now $(mode_of "$va"), output: $(tr '\n' '|' <<<"$out" | cut -c1-300)"; fi
 
 if [ "$fails" -gt 0 ]; then
     echo "test-daemon-access: $fails FAILURE(S)"

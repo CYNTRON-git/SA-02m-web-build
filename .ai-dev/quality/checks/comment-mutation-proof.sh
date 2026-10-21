@@ -309,7 +309,7 @@ daemon-least-privilege|etc/systemd/system/sa02m-audio.service|SupplementaryGroup
 daemon-access-effect|usr/local/sbin/sa02m-daemon-access.sh|probe no "$WEB_USER" w "$d"
 mqtt-acl-audio|etc/mosquitto/acl_default.conf|topic deny /devices/sa02m-audio/controls/+/on
 mqtt-acl-audio|scripts/15-audio.sh|au_acl_migrate /etc/mosquitto/acl/default.conf
-daemon-access-effect|usr/local/sbin/sa02m-daemon-access.sh|EXTRA_FILES="/etc/sa02m-audio/upload.token"
+daemon-access-effect|usr/local/sbin/sa02m-daemon-access.sh|EXTRA_FILES="/etc/sa02m-audio/upload.token /etc/sa02m-audio/voice-allow.json"
 devices-python-api-contract|opt/sa02m-devices/sa02m_devices/device_history_db.py|custom_range_key,
 web-port-persist|install.sh|sa02m_web_port_persist "$_ARG_PORT" || exit 2
 web-port-persist|scripts/lib.sh|port=$(sa02m_web_port_effective)
