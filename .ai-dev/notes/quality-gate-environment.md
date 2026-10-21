@@ -142,6 +142,23 @@ only ever contained the code under test. It was a **latent hazard**, not a live
 wrong result: the first future case added below a definition would have inherited
 a stub it never asked for.
 
+### Node under WSL — the gate silently ran on Windows until 2026-10-21
+
+WSL Ubuntu-24.04 on this box had NO native Node: `/usr/local/bin/node` is a
+symlink to `/mnt/c/Program Files/nodejs/node.exe`, so `wsl -- node
+.ai-dev/quality/run.mjs build` spawned Windows children (Windows Python,
+`C:	mp` paths) and every Linux-only row FAILed exactly as on git-bash. Since
+2026-10-21 the distro package is installed (`apt-get install nodejs`, v18.19);
+run the beat with `/usr/bin` first on PATH so the symlink does not win:
+`PATH=/usr/bin:/bin:/usr/sbin:/sbin node .ai-dev/quality/run.mjs build`, and
+redirect the log INSIDE WSL (the wsl.exe stdout relay dropped a multi-MB run
+mid-way). Node 18 cannot import a module-only `.js` through
+`scripts/dev/mqtt-js-sandbox.mjs`, so `js-unit-mqtt-scan-type` and
+`js-unit-mqtt-tcp-dialog` FAIL there and are authoritative on Windows Node 24;
+`node_modules` (a Windows junction) is invisible under WSL, so Playwright rows
+run from Windows. A Linux run is `final-build-3-wsl.log` /
+`final-review-3-wsl.log` in `.ai-dev/audit/remediation-20261020/`.
+
 ### Getting the real row to run on Windows
 
 WSL reproduces CI exactly:
