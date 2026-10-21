@@ -16,8 +16,9 @@
 # later code update; only the user, the dirs and the conf seed need this
 # installer (a board updated by OTA alone shows `not_installed`).
 # Idempotent: a re-run on a configured board refreshes code only — the conf,
-# the recordings, the events and the operator's enable/run state are never
-# touched.
+# the voice allow list, the recordings, the events and the operator's
+# enable/run state are never touched (conf and allow list are seeded only
+# when absent).
 # ═══════════════════════════════════════════════════════════════════════════
 set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -105,57 +106,89 @@ install -d -m 2750 -o www-data -g sa02m-audio /etc/sa02m-audio
 sa02m_atomic_install -m 0755 -o root -g root \
     "$BASE_DIR/usr/local/sbin/sa02m-daemon-access.sh" /usr/local/sbin/sa02m-daemon-access.sh
 
-# ── Conf seed — only if absent (the card owns it afterwards) ───────────────
-# The seed is the package's OWN render of the defaults (config.render(
-# RecorderConfig()): enabled = false, storage = emmc). /etc/sa02m-audio is
-# www-data's, so www-data can plant any name there, and chown/chmod follow a
-# symlink: root creates the seed with O_CREAT|O_EXCL|O_NOFOLLOW and re-asserts
+# ── Conf + voice allow list seed — only if absent (the card / the Operator ─
+# own them afterwards). The conf is the package's OWN render of the defaults
+# (config.render(RecorderConfig()): enabled = false, storage = emmc); the
+# allow list is a copy of /opt/sa02m-audio/voice-allow.default.json (its one
+# home), seeded only after the installed voice.load_allow accepts it, and
+# inert while the conf's voice_commands = false (the default). A re-run
+# never overwrites either: that is why sa02m_atomic_install is NOT used here
+# — it replaces the live file on every run (not idempotent for an
+# Operator-edited file), and its rename-over + chown into this directory is
+# exactly what a planted name could redirect. /etc/sa02m-audio is www-data's,
+# so www-data can plant any name there, and chown/chmod follow a symlink:
+# root creates each seed with O_CREAT|O_EXCL|O_NOFOLLOW and re-asserts
 # owner/group/mode only on a regular, singly-linked file through an O_NOFOLLOW
 # fd (the scripts/06d-homeconnect.sh pattern). `-I -B`: no module from the
 # operator's cwd or PYTHONPATH, no __pycache__ written into /opt as root.
-python3 -I -B - "$INSTALL_DIR" /etc/sa02m-audio sa02m-audio.conf www-data "$AU_USER" <<'PY' \
-    || log WARN "[15-audio] конфиг /etc/sa02m-audio/sa02m-audio.conf не проверен (python3)"
+python3 -I -B - "$INSTALL_DIR" /etc/sa02m-audio www-data "$AU_USER" sa02m-audio.conf voice-allow.json <<'PY'     || log WARN "[15-audio] конфиг или белый список голосовых команд в /etc/sa02m-audio не проверены (python3)"
 import grp, os, pwd, stat, sys
-pkg, conf_dir, name, owner, group = sys.argv[1:6]
+pkg, conf_dir, owner, group = sys.argv[1:5]
 uid = pwd.getpwnam(owner).pw_uid
 gid = grp.getgrnam(group).gr_gid
-path = f"{conf_dir}/{name}"
-dfd = os.open(conf_dir, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
-try:
-    fd = os.open(name, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW | os.O_CLOEXEC, 0o600, dir_fd=dfd)
-except FileExistsError:
-    fd = None
-if fd is not None:
-    try:
-        sys.path.insert(0, pkg)
+sys.path.insert(0, pkg)
+
+
+def body_of(name):
+    if name == "sa02m-audio.conf":
         from sa02m_audio import config
-        body = config.render(config.RecorderConfig()).encode("utf-8")
-    except Exception:
+        return config.render(config.RecorderConfig()).encode("utf-8"), "enabled = false, storage = emmc"
+    if name == "voice-allow.json":
+        from sa02m_audio import voice
+        src = os.path.join(pkg, "voice-allow.default.json")
+        if voice.load_allow(src) is None:
+            raise ValueError(f"{src} is not a valid allow list")
+        with open(src, "rb") as fh:
+            return fh.read(), "default LED controls, inert while voice_commands = false"
+    raise ValueError(f"no seed for {name}")
+
+
+def seed(dfd, name):
+    path = f"{conf_dir}/{name}"
+    try:
+        fd = os.open(name, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW | os.O_CLOEXEC, 0o600, dir_fd=dfd)
+    except FileExistsError:
+        fd = None
+    if fd is not None:
+        try:
+            body, what = body_of(name)
+        except Exception:
+            os.close(fd)
+            os.unlink(name, dir_fd=dfd)
+            raise
+        view = memoryview(body)
+        while view:
+            view = view[os.write(fd, view):]
+        os.fchown(fd, uid, gid)
+        os.fchmod(fd, 0o640)
+        os.fsync(fd)
         os.close(fd)
-        os.unlink(name, dir_fd=dfd)
-        raise
-    view = memoryview(body)
-    while view:
-        view = view[os.write(fd, view):]
+        print(f"OK: created {path} ({what})")
+        return
+    try:
+        fd = os.open(name, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK | os.O_CLOEXEC, dir_fd=dfd)
+        st = os.fstat(fd)
+        if not stat.S_ISREG(st.st_mode) or st.st_nlink != 1:
+            os.close(fd)
+            raise OSError(f"{stat.filemode(st.st_mode)}, {st.st_nlink} link(s)")
+    except OSError as e:
+        print(f"WARN: {path}: not a regular singly-linked file ({e}) — left alone", file=sys.stderr)
+        return
     os.fchown(fd, uid, gid)
     os.fchmod(fd, 0o640)
-    os.fsync(fd)
     os.close(fd)
-    print(f"OK: created {path} (enabled = false, storage = emmc)")
-    sys.exit(0)
-try:
-    fd = os.open(name, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK | os.O_CLOEXEC, dir_fd=dfd)
-    st = os.fstat(fd)
-    if not stat.S_ISREG(st.st_mode) or st.st_nlink != 1:
-        os.close(fd)
-        raise OSError(f"{stat.filemode(st.st_mode)}, {st.st_nlink} link(s)")
-except OSError as e:
-    print(f"WARN: {path}: not a regular singly-linked file ({e}) — left alone", file=sys.stderr)
-    sys.exit(0)
-os.fchown(fd, uid, gid)
-os.fchmod(fd, 0o640)
-os.close(fd)
-print(f"INFO: {path} already exists — kept, owner/group/mode re-asserted")
+    print(f"INFO: {path} already exists — kept, owner/group/mode re-asserted")
+
+
+dfd = os.open(conf_dir, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
+failed = 0
+for name in sys.argv[5:]:
+    try:
+        seed(dfd, name)
+    except Exception as e:
+        print(f"WARN: {conf_dir}/{name}: not seeded ({e})", file=sys.stderr)
+        failed = 1
+sys.exit(failed)
 PY
 
 # ── systemd ────────────────────────────────────────────────────────────────
