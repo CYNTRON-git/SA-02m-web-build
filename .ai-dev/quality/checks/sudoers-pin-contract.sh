@@ -361,6 +361,131 @@ for _twin in sa02m-iface-conf-write sa02m-usb-power sa02m-gateway-config-apply \
     fi
 done
 
+# ── 8c. Every sa02m-* drop-in is brought to 0440 root:root on every delivery path ──
+# Bench 1.136, 2026-10-21: a board the 1.0.7.3 GitHub OTA had updated carried
+# /etc/sudoers.d/sa02m-homekit and sa02m-homeconnect at 0644 (the source-tree
+# mode). The installer normalised only the files it installs itself and the
+# lib's fix-up loop was a hand-kept list of six names, so a module that is not
+# reinstalled kept the bad mode — `visudo -c` FAILED the --refresh post-checks
+# and the two grants were dead. The fix is allow-listed by PREFIX (every
+# REGULAR $SA02M_SUDOERS_DIR/sa02m-*), so no name list can fall behind
+# etc/sudoers.d/ again. Behavioural: the shipped installer helper and the
+# runner's cleanup RUN against a sandbox dir holding a copy of every committed
+# drop-in at 0644, plus a non-sa02m file, a directory and a symlink that must
+# stay untouched; the second run must repair nothing (idempotent). Needs a real
+# mode model — git-bash/MSYS collapses it (chmod 0440 reads back 644), so there
+# the case SKIPs and runs on WSL / Linux CI, as section 7's symlink case does.
+# visudo is stubbed in both runs: the real `visudo -c` reads the HOST's
+# /etc/sudoers, not the sandbox. Owner is asserted only as root (chown fails
+# for anyone else; the installer and the runner always run as root).
+committed_dropins=(etc/sudoers.d/sa02m-*)
+if [ ! -f "${committed_dropins[0]}" ]; then
+    fail "8c non-vacuity: etc/sudoers.d/ carries no sa02m-* drop-in — the mode case has nothing to copy"
+else
+    pass "8c ${#committed_dropins[@]} committed sa02m-* drop-in(s) feed the mode case"
+fi
+stripped_has_inline scripts/lib.sh 'sa02m_normalise_sudoers_modes() {' \
+    && pass "8c lib.sh defines sa02m_normalise_sudoers_modes" \
+    || fail "8c lib.sh missing sa02m_normalise_sudoers_modes — the installer repairs only the files it installs itself"
+# The repair precedes the aggregate visudo -c of sa02m_remove_obsolete_www_sudoers
+# (else the check still FAILS on the very run that fixes the mode).
+_8c_call=$(stripped_first_line scripts/lib.sh '^[[:space:]]+sa02m_normalise_sudoers_modes[[:space:]]*$')
+_8c_vis=$(stripped_first_line scripts/lib.sh '^[[:space:]]+visudo -c >/dev/null 2>&1')
+if [ -n "$_8c_call" ] && [ -n "$_8c_vis" ] && [ "$_8c_call" -lt "$_8c_vis" ]; then
+    pass "8c lib.sh calls sa02m_normalise_sudoers_modes (line $_8c_call) before the aggregate visudo -c (line $_8c_vis)"
+else
+    fail "8c lib.sh: sa02m_normalise_sudoers_modes call (line '${_8c_call:-none}') is not before the aggregate visudo -c (line '${_8c_vis:-none}')"
+fi
+# Both sites sweep by prefix; neither keeps a name list (the shape that fell behind).
+for _8c_f in scripts/lib.sh etc/sa02m-update-runner.sh; do
+    stripped_has_inline "$_8c_f" '/sa02m-*; do' \
+        && pass "8c $_8c_f sweeps \$SA02M_SUDOERS_DIR/sa02m-* by prefix" \
+        || fail "8c $_8c_f does not sweep the sudoers dir by the sa02m- prefix"
+    if stripped_matches_inline "$_8c_f" 'for _name in sa02m-www sa02m-cloud'; then
+        fail "8c $_8c_f still carries a hand-kept sudoers name list — the list that missed sa02m-homekit/sa02m-homeconnect"
+    else
+        pass "8c $_8c_f has no hand-kept sudoers name list"
+    fi
+done
+
+run_8c_lib() {  # $1 sandbox sudoers dir → the helper's log lines
+    ( LOG_FILE=/dev/null; export SA02M_SUDOERS_DIR="$1"
+      # shellcheck disable=SC1091
+      . scripts/lib.sh
+      log() { printf 'LOG %s %s\n' "$1" "${2:-}"; }   # after the source: lib.sh defines its own log()
+      visudo() { return 0; }
+      sa02m_normalise_sudoers_modes ) 2>&1
+}
+run_8c_runner() {  # $1 sandbox sudoers dir → the cleanup's log lines
+    local fn
+    fn=$(awk -v start='cleanup_b1_deploy_artifacts() {' 'index($0,start)==1{f=1} f{print} f&&/^\}/{exit}' etc/sa02m-update-runner.sh)
+    if ! printf '%s\n' "$fn" | grep -q '^}'; then
+        printf 'EXTRACT-FAILED\n'
+        return 1
+    fi
+    ( export SA02M_SUDOERS_DIR="$1"
+      log() { printf 'LOG %s\n' "$*"; }
+      visudo() { return 0; }
+      rm() { :; }   # its legacy-removal sites name the HOST's /etc and /usr/local — inert here, pinned in 8
+      eval "$fn"
+      cleanup_b1_deploy_artifacts ) 2>&1
+}
+seed_8c() {  # $1 sandbox sudoers dir — every committed drop-in at 0644 + the three decoys
+    local f
+    rm -rf "$1"; mkdir -p "$1/not-a-file"
+    for f in "${committed_dropins[@]}"; do
+        cp "$f" "$1/$(basename "$f")" && chmod 0644 "$1/$(basename "$f")"
+    done
+    printf 'other vendor\n' > "$1/other-vendor"; chmod 0644 "$1/other-vendor"
+    printf 'target\n' > "$1/../link-target"; chmod 0644 "$1/../link-target"
+    ln -s "$1/../link-target" "$1/sa02m-link"
+}
+check_8c() {  # $1 sandbox sudoers dir  $2 label  $3 log text of the FIRST run  $4 log text of the SECOND run
+    local f n m want n_log n_log2 bad=0
+    if [ "$(id -u)" = 0 ]; then want="440 root:root"; else want="440"; fi
+    for f in "${committed_dropins[@]}"; do
+        n=$(basename "$f")
+        if [ "$(id -u)" = 0 ]; then m=$(stat -c '%a %U:%G' "$1/$n" 2>/dev/null); else m=$(stat -c '%a' "$1/$n" 2>/dev/null); fi
+        [ "$m" = "$want" ] || { bad=1; fail "8c $2: $n is '$m' after the run, expected '$want'"; }
+    done
+    [ "$(stat -c '%a' "$1/other-vendor" 2>/dev/null)" = 644 ] \
+        || { bad=1; fail "8c $2: a non-sa02m file was touched — the prefix allow-list is broken"; }
+    [ -L "$1/sa02m-link" ] && [ "$(stat -c '%a' "$1/../link-target" 2>/dev/null)" = 644 ] \
+        || { bad=1; fail "8c $2: the sa02m-* symlink was followed or replaced — only REGULAR files may be repaired"; }
+    n_log=$(printf '%s\n' "$3" | grep -c 'sudoers sa02m-.*0440')
+    n_log2=$(printf '%s\n' "$4" | grep -c 'sudoers sa02m-.*0440')
+    [ "$n_log" = "${#committed_dropins[@]}" ] \
+        || { bad=1; fail "8c $2: $n_log repair line(s) logged for ${#committed_dropins[@]} repaired file(s) — each repair must be logged: $(printf '%s' "$3" | tr '\n' '|' | head -c 300)"; }
+    [ "$n_log2" = 0 ] \
+        || { bad=1; fail "8c $2: the second run logged $n_log2 repair(s) on an already-normalised dir — not idempotent"; }
+    [ "$bad" = 0 ] && pass "8c $2: ${#committed_dropins[@]} drop-ins 0644 → $want, each logged once, decoys untouched, second run silent"
+}
+_8c_root=$(mktemp -d 2>/dev/null) || _8c_root=""
+if [ -z "$_8c_root" ]; then
+    printf 'sudoers-pin-contract: note  mktemp unavailable — 8c behavioural run skipped\n'
+elif [ ! -f "${committed_dropins[0]}" ]; then
+    :   # already failed above; nothing to seed
+else
+    printf 'x' > "$_8c_root/probe"; chmod 0644 "$_8c_root/probe"; _8c_m1=$(stat -c '%a' "$_8c_root/probe" 2>/dev/null)
+    chmod 0440 "$_8c_root/probe"; _8c_m2=$(stat -c '%a' "$_8c_root/probe" 2>/dev/null)
+    ln -s "$_8c_root/probe" "$_8c_root/probe-link" 2>/dev/null
+    if [ "$_8c_m1" != 644 ] || [ "$_8c_m2" != 440 ] || [ ! -L "$_8c_root/probe-link" ]; then
+        printf 'sudoers-pin-contract: SKIP  8c mode normalisation — this host has no faithful chmod/symlink model (git-bash/MSYS); it runs on WSL/Linux CI\n'
+    else
+        for _8c_site in lib runner; do
+            seed_8c "$_8c_root/$_8c_site/sudoers.d"
+            _8c_out1=$("run_8c_$_8c_site" "$_8c_root/$_8c_site/sudoers.d")
+            _8c_out2=$("run_8c_$_8c_site" "$_8c_root/$_8c_site/sudoers.d")
+            if [ "$_8c_out1" = EXTRACT-FAILED ]; then
+                fail "8c runner: cleanup_b1_deploy_artifacts() could not be extracted from the runner (marker moved?) — the OTA path is NOT covered"
+            else
+                check_8c "$_8c_root/$_8c_site/sudoers.d" "$_8c_site path" "$_8c_out1" "$_8c_out2"
+            fi
+        done
+    fi
+    rm -rf "$_8c_root"
+fi
+
 # ── 9-14. All six grant homes, the ledgers, and the two class assertions ────
 # Everything that needs real sudoers parsing (continuation joining, Cmnd_Alias
 # expansion, inline-comment stripping) and the deploy-path resolution runs in
