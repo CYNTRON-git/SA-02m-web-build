@@ -74,7 +74,7 @@ try {
  await page.evaluate(()=>{noteStatusFailure('priority',new Error('offline'));noteStatusSuccess('network',{_status_meta:{age_s:0}});});
  const alert=await page.locator('#dashboard-poll-alert').innerText();
  assert.match(alert,/^CPU, температура, ОЗУ, диск: /);assert.doesNotMatch(alert,/priority/);
- await page.evaluate(()=>{noteStatusSuccess('priority',{_status_meta:{age_s:20}});});
+ await page.evaluate(()=>{noteStatusSuccess('priority',{_status_meta:{age_s:statusStaleAfter('priority',0)/1000+1}});});
  assert.match(await page.locator('#dashboard-poll-alert').innerText(),/устарели/);
  for(const theme of ['dark','light']) for(const variant of ['sa02m-1eth','sa02m-2eth']) for(const locale of ['ru','en']) {
   await page.evaluate(({theme,variant,locale})=>{document.documentElement.setAttribute('data-theme',theme);applyVariantVisibility(variant);if(window.sa02mI18n)window.sa02mI18n.setLang(locale);},{theme,variant,locale});

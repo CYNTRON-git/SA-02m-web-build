@@ -84,10 +84,19 @@ const statusFailures = {
   rs485: 0
 };
 const statusPauseUntil = { main: 0, rs485: 0 };
+/** Request timeout per part — the ONE home (statusRequestTimeout reads it, the
+ *  freshness deadline below is derived from it). Body-inclusive: the clock runs
+ *  from the request start to the end of r.json(). A value must cover the part's
+ *  real worst-case build on the A40i with margin, or every cache expiry turns
+ *  into a false «Ошибка обновления»: a cold `services` build is ~9 s (audit
+ *  p95 8.5 s, bench 136 2026-10-21 9.3 s) and a cold `main` ~14 s, so both get
+ *  20 s; the fast parts keep their short values. The cost of a long timeout is
+ *  paid only while a request really hangs (single-flight queue). */
 const STATUS_TIMEOUT_MS = {
   priority: 3000,
-  /** Координатор force-refresh (staggered burst всех part=*). */
-  main: 6000,
+  /** part=main is no longer requested by the client (fetchStatusMain fans out
+   *  per part); kept for the CGI's cold-build figure should a caller return. */
+  main: 20000,
   rs485: 10000,
   storage: 6000,
   time: 4000,
@@ -95,7 +104,10 @@ const STATUS_TIMEOUT_MS = {
   network: 5000,
   load: 3000,
   system: 4000,
-  services: 8000,
+  services: 20000,
+  /** The init one-shot (fetchServicesFast) skips the CTL list and is best-effort:
+   *  it must not hold the queue for the full services budget. */
+  services_fast: 8000,
   hardware: 10000
 };
 /** Интервалы опроса и минимальный зазор между запросами одной части (клиентский rate-limit). */
@@ -496,12 +508,50 @@ const STATUS_PART_LABELS = {
 function statusPartLabel(part) {
   return statusText(STATUS_PART_LABELS[part] || part);
 }
-/* The source TTL arrives with every answer (`_status_meta.ttl_s` — status.cgi's
-   cache table is its one home); priority is live and ages by the poll alone. */
-function statusStaleAfter(part, ttlMs) {
-  if (part === 'priority') return 15000;
-  return (ttlMs || 0) + 2 * (HEAVY_STATUS_PARTS.indexOf(part) >= 0 || part === 'rs485' ? 12000 : 6000);
+/* Freshness deadline = source TTL (`_status_meta.ttl_s`, status.cgi's cache table
+   is its one home) + the poll-side deadline derived from the scheduler tables
+   above — never a constant. With one request in flight at a time
+   (scheduleStatusFetch) a part's next successful poll lags its 6/12 s timer by
+   the whole queue: on bench 136 (2026-10-21, no fault) the background set
+   cycled every 23–30 s and rs485 every 18–23 s, and the old «ttl + 2 periods»
+   flagged healthy parts «Данные устарели» between two HTTP 200s on every cycle.
+   The bound used here is the queue's own guarantee, not a measurement: one
+   slot per queued part (dedupe), each slot at most its timeout plus the global
+   gap (a heavy slot at least the heavy gap), background parts FIFO with a due
+   priority allowed between any two slots, priority itself waiting for the
+   request in flight plus one background slot (it jumps the FIFO, never twice
+   in a row). Loose by design: the banner is a warning floor, not a speed SLA
+   (docs/contracts/status-polling.md); a request that fails or times out is
+   reported at once through noteStatusFailure, the deadline only covers silence.
+   A part never fetched this page load has no entry and is neither. */
+function statusPartPeriodMs(part) {
+  if (STATUS_POLL_INTERVAL_MS[part]) return STATUS_POLL_INTERVAL_MS[part];
+  return HEAVY_STATUS_PARTS.indexOf(part) >= 0 ? HEAVY_PART_PERIOD_MS : LIGHT_PART_PERIOD_MS;
 }
+/** Longest time one request of `part` can hold the single-flight slot. */
+function statusSlotMs(part) {
+  const timeout = STATUS_TIMEOUT_MS[part] || 3500;
+  return Math.max(timeout, isHeavyStatusPart(part) ? STATUS_HEAVY_MIN_GAP_MS : 0) + STATUS_GLOBAL_MIN_GAP_MS;
+}
+const _statusPollDeadlineMs = {};
+function statusPollDeadlineMs(part) {
+  if (_statusPollDeadlineMs[part]) return _statusPollDeadlineMs[part];
+  const polled = ['priority', 'rs485'].concat(BACKGROUND_STATUS_PARTS);
+  const others = polled.filter(function (p) { return p !== part && p !== 'priority'; });
+  const slots = others.map(statusSlotMs);
+  const wait = part === 'priority'
+    ? 2 * Math.max.apply(null, slots)
+    : slots.reduce(function (sum, ms) { return sum + ms; }, 0) + (others.length + 1) * statusSlotMs('priority');
+  _statusPollDeadlineMs[part] = statusPartPeriodMs(part) + wait + statusSlotMs(part);
+  return _statusPollDeadlineMs[part];
+}
+function statusStaleAfter(part, ttlMs) {
+  return (ttlMs || 0) + statusPollDeadlineMs(part);
+}
+/* Runs every second: a part turns stale only once its deadline has passed and
+   turns fresh only through noteStatusSuccess (a new record), so a tick can never
+   flip it back — no flapping inside a period by construction. The banner is
+   written only when its text changes (no per-tick layout work). */
 function renderStatusFreshness() {
   const now = Date.now();
   const issues = [];
@@ -514,10 +564,11 @@ function renderStatusFreshness() {
     if (state !== 'fresh') issues.push(statusPartLabel(part) + ': ' + statusText(state === 'error' ? 'Ошибка обновления' : state === 'stale' ? 'Данные устарели' : 'Возраст данных неизвестен'));
   });
   const el = document.getElementById('dashboard-poll-alert');
-  if (el) {
-    el.style.display = issues.length ? 'block' : 'none';
-    el.textContent = issues.join('; ');
-  }
+  if (!el) return;
+  const text = issues.join('; ');
+  const display = text ? 'block' : 'none';
+  if (el.textContent !== text) el.textContent = text;
+  if (el.style.display !== display) el.style.display = display;
 }
 function statusText(text) {
   return window.sa02mI18n ? window.sa02mI18n.t(text) : text;
@@ -1329,7 +1380,7 @@ function fetchServicesFast(gen) {
     }
     const url = 'cgi-bin/status.cgi?part=services&fast=1';
     const queueWaitMs = meta && meta.queueWaitMs ? meta.queueWaitMs : 0;
-    statusFetchJson('services_fast', url, statusRequestTimeout('services', queueWaitMs), gen, function () {})
+    statusFetchJson('services_fast', url, statusRequestTimeout('services_fast', queueWaitMs), gen, function () {})
       .then(function (d) {
         if (gen !== _statusPollGeneration || !d || d.error || backgroundLoaded.services) return;
         _lastPartStatus.services = d;
