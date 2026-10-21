@@ -429,7 +429,7 @@ if [ -f "$ETC/systemd/sa02m-watchdog.conf" ]; then
     install -m 644 "$ETC/systemd/sa02m-watchdog.conf" \
         "$mnt/etc/systemd/system.conf.d/sa02m-watchdog.conf"
 else
-    printf '%s\n' '[Manager]' 'RuntimeWatchdogSec=15s' 'RebootWatchdogSec=0' \
+    printf '%s\n' '[Manager]' 'RuntimeWatchdogSec=15s' 'RebootWatchdogSec=16s' \
         > "$mnt/etc/systemd/system.conf.d/sa02m-watchdog.conf"
 fi
 sed -i 's/^RuntimeWatchdogSec=/#RuntimeWatchdogSec=/' \
