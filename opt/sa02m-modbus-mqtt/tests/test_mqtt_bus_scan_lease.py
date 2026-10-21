@@ -151,6 +151,16 @@ class TestScanLeaseFollowsPort(unittest.TestCase):
             socks.append(sock)
             return sock
 
+        class CoordinatorLease:
+            def __init__(self, port):
+                self.sock = factory()
+                self.sock.sendall(json.dumps({"via": "com", "port": port}).encode())
+                self.status = {"ok": True, "lease": {"port": port}}
+            def __enter__(self):
+                return self
+            def __exit__(self, *args):
+                self.sock.close()
+
         def wrapped(spec):
             return _RecordingLease(spec, real_lease(spec), exits)
 
@@ -165,6 +175,7 @@ class TestScanLeaseFollowsPort(unittest.TestCase):
         patches = [
             mock.patch.object(scan.socket, "socket", factory),
             mock.patch.object(scan, "poll_lease", wrapped),
+            mock.patch.object(scan, "_coordinator_lease", CoordinatorLease),
             mock.patch.object(scan, "_lease_trace"),
             mock.patch.object(scan, "_wait_uart_free", return_value=uart_free),
             mock.patch.object(scan.time, "sleep"),

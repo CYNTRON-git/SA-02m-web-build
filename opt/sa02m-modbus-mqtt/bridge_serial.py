@@ -11,6 +11,8 @@ across three audits); the entry module re-exports every public name.
 from __future__ import annotations
 
 import contextlib
+import sys
+from pathlib import Path
 import os
 import re
 import struct
@@ -20,6 +22,14 @@ import logging
 from collections import OrderedDict
 
 import serial
+
+def _port_client():
+    path = str(Path(__file__).resolve().parent.parent / "sa02m-port-coordinator")
+    if path not in sys.path:
+        sys.path.insert(0, path)
+    from sa02m_ports import PollLock, Lease
+    return PollLock, Lease
+
 
 log = logging.getLogger("bridge")
 
@@ -358,6 +368,7 @@ class ModbusSerial:
         # to its ttyS line (capped meanwhile — _unresolved_builtin_uart).
         self.max_read_regs = fifo_safe_read_regs(port, baudrate)
         self._ser: serial.Serial | None = None
+        self._ownership = None
         self._lock = threading.Lock()
         self._scan_hold = threading.Event()
         # Timing of the last frame read (_read_rtu_response): ms from the
@@ -480,10 +491,15 @@ class ModbusSerial:
                 stopbits=self._stopbits,
                 timeout=self._timeout,
             )
+            if self._ownership is not None:
+                self._ownership.close()
+            self._ownership = _port_client()[0](self._port).acquire()
             try:
                 self._ser = serial.Serial(**open_kwargs, exclusive=True)
-            except TypeError:
-                self._ser = serial.Serial(**open_kwargs)
+            except BaseException:
+                self._ownership.close()
+                self._ownership = None
+                raise
             self.max_read_regs = fifo_safe_read_regs(self._port, self._baudrate)
             time.sleep(0.05)
             try:
@@ -498,6 +514,9 @@ class ModbusSerial:
             if self._ser and self._ser.is_open:
                 self._ser.close()
             self._ser = None
+            if self._ownership is not None:
+                self._ownership.close()
+                self._ownership = None
 
     def _transact(self, request: bytes, expected: int,
                   timeout: float | None = None) -> bytes:
@@ -782,14 +801,17 @@ class FastModbusScanner:
     def scan(self, port_path: str, baudrate: int) -> list[dict]:
         """Return [{serial, address}] for each found device."""
         devices: list[dict] = []
+        lease = _port_client()[1](port_path, "scan")
         try:
+            lease.__enter__()
             ser = serial.Serial(
                 port_path, baudrate, bytesize=8,
                 parity=serial.PARITY_NONE, stopbits=serial.STOPBITS_ONE,
-                timeout=self.SCAN_TIMEOUT,
+                timeout=self.SCAN_TIMEOUT, exclusive=True,
             )
             time.sleep(0.05)
         except Exception as e:
+            lease.close()
             log.error("FMB scan: cannot open %s: %s", port_path, e)
             return devices
 
@@ -824,6 +846,9 @@ class FastModbusScanner:
         except Exception as e:
             log.error("FMB scan error on %s: %s", port_path, e)
         finally:
-            ser.close()
+            try:
+                ser.close()
+            finally:
+                lease.close()
 
         return devices

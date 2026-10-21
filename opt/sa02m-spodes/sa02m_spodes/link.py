@@ -9,7 +9,10 @@ the frames on that socket are HDLC, not the IEC wrapper.
 from __future__ import annotations
 
 import socket
+import sys
+from pathlib import Path
 import time
+import threading
 
 from sa02m_spodes.hdlc import HdlcError, IncompleteFrame, parse_frame
 
@@ -19,12 +22,26 @@ class HdlcLink:
 
     def __init__(self, port: str, baudrate: int = 9600):
         import serial  # pyserial, already required by the Modbus bridge
-        self._ser = serial.Serial(
-            port=port, baudrate=int(baudrate), bytesize=8, parity="N",
-            stopbits=1, timeout=1,
-        )
+        self._lock = threading.Lock()
+        package = str(Path(__file__).resolve().parents[2] / "sa02m-port-coordinator")
+        if package not in sys.path:
+            sys.path.insert(0, package)
+        from sa02m_ports import PollLock
+        self._ownership = PollLock(port).acquire()
+        try:
+            self._ser = serial.Serial(
+                port=port, baudrate=int(baudrate), bytesize=8, parity="N",
+                stopbits=1, timeout=1, exclusive=True,
+            )
+        except BaseException:
+            self._ownership.close()
+            raise
 
     def exchange(self, frame: bytes, timeout_s: float) -> bytes:
+        with self._lock:
+            return self._exchange_locked(frame, timeout_s)
+
+    def _exchange_locked(self, frame: bytes, timeout_s: float) -> bytes:
         self._ser.timeout = max(float(timeout_s), 0.05)
         self._ser.write(frame)
         self._ser.flush()
@@ -41,10 +58,11 @@ class HdlcLink:
         raise TimeoutError("hdlc")
 
     def close(self) -> None:
-        try:
-            self._ser.close()
-        except Exception:
-            pass
+        with self._lock:
+            try:
+                self._ser.close()
+            finally:
+                self._ownership.close()
 
 
 def _take_hdlc(buf: bytes) -> bytes | None:

@@ -1,0 +1,31 @@
+[Unit]
+Description=SA-02m UART ownership and recovery coordinator
+After=local-fs.target sa02m-update-recover.service
+Before=sa02m-flasher.service sa02m-serial-gateway.service
+
+[Service]
+# READY=1 is sent by the broker itself once control.sock listens (stdlib
+# sd_notify in sa02m_ports/broker.py): consumers ordered After= this unit
+# then find a broker that answers, not one still canonicalising units.
+Type=notify
+NotifyAccess=main
+User=root
+Group=sa02m-flasher
+UMask=0007
+WorkingDirectory=/opt/sa02m-port-coordinator
+Environment=PYTHONUNBUFFERED=1
+ExecStart=/usr/bin/python3 -m sa02m_ports.broker
+Restart=on-failure
+RestartSec=2
+StateDirectory=sa02m-port-coordinator
+StateDirectoryMode=0700
+RuntimeDirectory=sa02m-port-coordinator
+RuntimeDirectoryMode=0755
+RuntimeDirectoryPreserve=yes
+NoNewPrivileges=yes
+ProtectHome=yes
+ProtectSystem=strict
+ReadWritePaths=-/run/sa02m-modbus-mqtt /run/sa02m-port-coordinator /var/lib/sa02m-port-coordinator
+
+[Install]
+WantedBy=multi-user.target
