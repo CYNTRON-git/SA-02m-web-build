@@ -6,6 +6,32 @@ entries are pruned (history lives in git); last prune 2026-10-14 (1.0.7.2 - audi
 
 ## Open
 
+- [OPEN] 2026-10-21 **[LOW] A long clip is always uploaded twice: the recogniser answers after the socket
+  timeout (bench 1.135, RK3588 agent, series 8×30 s).** RK3588 needs 11–13 s to recognise a 30 s clip, more
+  than `UPLOAD_TIMEOUT_S` = 10 s (audio-recorder.md §12). The first attempt times out, the second (10 s later)
+  gets the receiver's cached answer by `recording_id` — all 8 uploads in `events.jsonl` were `ok` exactly 20 s
+  after `end`. The seam holds (dedup by id), but every long clip costs a redundant upload and +10 s before its
+  voice commands apply. Direction (an Operator decision, §12 change): a reply timeout that grows with the clip
+  length (e.g. 15 s for clips ≥ 20 s), or a separate response-read timeout. Not started. Same fix corrects the
+  §12 wording: attempts are not at 0/10/60 s «после сохранения» — `upload.py:233` waits `at - previous` after the
+  previous attempt ENDS, so a timed-out first attempt puts the second at ~20 s (1.0.7.7 review D4).
+- [OPEN] 2026-10-21 **[MED] sa02m-audio grammars still accept a trailing line break (1.0.7.7 build finding).**
+  1.0.7.7 moved the voice, command-topic and ALSA-device grammars to `\Z`; three remain on `$` + `match`:
+  `TOKEN_RE` (`config.valid_token("tok\n")` is True, the panel's `set_token` stores it and `read_token` returns a
+  token ending in `\n`), `ID_RE` (`valid_id(id + "\n")`; `store.py` slices `C.ID_RE[:-1]` for its name patterns,
+  so the fix touches that too), `CARD_ID_RE` (input from `/proc/asound`, lowest); for a complete sweep also
+  `mqttio._INT` and `config._INT_RE` (harmless today: input is stripped first). Same branch, two 1.0.7.7 review
+  wording nits: `led-effects.json` `notes_ru.sound_reactive` repeats «в карте регистров нет»; `threat-model.md`
+  «для голосового управления нужен https://» is advice — the code accepts `http://` («рекомендуется https://,
+  код http:// не запрещает»). Queued to one sa02m-audio
+  hardening branch, cut AFTER 1.0.7.9 merges (it refactors capture.py/service.py): this entry, then the next,
+  then the five recorder observability findings light-music recorded on 1.0.7.9 (stuck mic, early-cut reason,
+  one-shot retained warning, silent `stop` without a recording, repr in the journal) — at branch time merge
+  those entries with these, never duplicate.
+- [OPEN] 2026-10-21 **[LOW] No committed harness for the 15-audio.sh conf / allow-list seeder (1.0.7.7 review
+  A1).** The O_EXCL/O_NOFOLLOW seeder (only-if-absent, symlink left alone, invalid default not seeded) is
+  verified only by manual WSL runs. Direction: extract and run the heredoc in a sandbox like
+  `test-mqtt-acl-audio.sh` part B, as a registry row with its mutation case.
 - [OPEN] 2026-10-15 **[MED] Factory reset and the image pipeline do not wipe audio recordings (1.0.7.4, plan audio-record-on-command §13 step 12).**
   The recordings are speech of people on site (threat model S5) and the upload token is a secret. Factory reset
   should wipe `/var/lib/sa02m-audio/{rec,tmp}/*`, `events.jsonl` and `/etc/sa02m-audio/upload.token` (and the
