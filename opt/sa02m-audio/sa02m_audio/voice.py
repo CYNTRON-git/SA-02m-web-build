@@ -12,18 +12,26 @@ import json
 import logging
 import os
 import re
-from typing import Any, Dict, List, Optional, Sequence, Tuple
+from typing import Any, Dict, List, Optional, Sequence, Tuple, Union
 
 from . import constants as C
 
 log = logging.getLogger("sa02m_audio.voice")
 
-_DEVICE_RE = re.compile(r"^[A-Za-z0-9_.-]{1,64}$")
-_CONTROL_RE = re.compile(r"^[A-Za-z0-9_]{1,32}$")
-_VALUE_RE = re.compile(r"^(0|[1-9][0-9]{0,5})$")
+# `\Z`, never `$`: with re.match, `$` also matches before a trailing newline,
+# which then rides into the topic or the payload.
+_DEVICE_RE = re.compile(r"^[A-Za-z0-9_.-]{1,64}\Z")
+_CONTROL_RE = re.compile(r"^[A-Za-z0-9_]{1,32}\Z")
+_VALUE_RE = re.compile(r"^(0|[1-9][0-9]{0,5})\Z")
+# `R;G;B`, the bridge's WB `rgb` form (bridge_led._parse_color).
+_RGB_RE = re.compile(r"^(0|[1-9][0-9]{0,2});(0|[1-9][0-9]{0,2});(0|[1-9][0-9]{0,2})\Z")
+
+# An allow entry is either (min, max) for a decimal control or RGB.
+RGB = "rgb"
 
 Command = Dict[str, str]
-Allow = Dict[str, Dict[str, Tuple[int, int]]]
+Bound = Union[Tuple[int, int], str]
+Allow = Dict[str, Dict[str, Bound]]
 
 
 def allow_path_for(conf_path: Optional[str]) -> str:
@@ -37,7 +45,8 @@ def commands_from_body(body: bytes, rec_id: str) -> Tuple[Command, ...]:
     """Commands in a JSON body, or () when the body is not a command document.
 
     A `recording_id` that is present and does not match this clip drops the
-    whole document. Items that are not absolute decimal commands are skipped.
+    whole document. Items whose value is neither a decimal nor an `R;G;B`
+    string are skipped; which grammar a control takes is split()'s to judge.
     """
     try:
         data = json.loads(body.decode("utf-8"))
@@ -72,14 +81,19 @@ def _one(item: Any) -> Optional[Command]:
         value = str(value)
     if not isinstance(value, str):
         return None
-    if not (_DEVICE_RE.match(device) and _CONTROL_RE.match(control) and _VALUE_RE.match(value)):
+    if not (_DEVICE_RE.match(device) and _CONTROL_RE.match(control)):
+        return None
+    if not (_VALUE_RE.match(value) or _RGB_RE.match(value)):
         return None
     return {"device": device, "control": control, "value": value}
 
 
 def load_allow(path: str) -> Optional[Allow]:
-    """device -> control -> (min, max). None when the file is missing or not
-    a closed allow list (fail closed: apply nothing)."""
+    """device -> control -> (min, max) or RGB. None when the file is missing
+    or not a closed allow list (fail closed: apply nothing).
+
+    A control is `{"min": n, "max": m}` or exactly `{"type": "rgb"}`; any
+    other `type`, or `type` next to another key, invalidates the file."""
     try:
         with open(path, encoding="utf-8") as fh:
             text = fh.read(C.VOICE_ALLOW_MAX_BYTES + 1)
@@ -100,12 +114,17 @@ def load_allow(path: str) -> Optional[Allow]:
     for device, controls in devices.items():
         if not isinstance(device, str) or not _DEVICE_RE.match(device) or not isinstance(controls, dict):
             return None
-        parsed: Dict[str, Tuple[int, int]] = {}
+        parsed: Dict[str, Bound] = {}
         for control, bounds in controls.items():
             if not isinstance(control, str) or not _CONTROL_RE.match(control):
                 return None
             if not isinstance(bounds, dict):
                 return None
+            if "type" in bounds:
+                if set(bounds) != {"type"} or bounds["type"] != RGB:
+                    return None
+                parsed[control] = RGB
+                continue
             lo, hi = bounds.get("min"), bounds.get("max")
             if isinstance(lo, bool) or isinstance(hi, bool):
                 return None
@@ -119,7 +138,8 @@ def load_allow(path: str) -> Optional[Allow]:
 
 
 def split(commands: Sequence[Command], allow: Allow) -> Tuple[Tuple[Command, ...], int]:
-    """(accepted, rejected_count). A value outside the control's range is rejected."""
+    """(accepted, rejected_count). A value outside the control's range, or of
+    the other grammar than the control's entry, is rejected — never raised."""
     accepted: List[Command] = []
     rejected = 0
     for cmd in commands:
@@ -127,12 +147,20 @@ def split(commands: Sequence[Command], allow: Allow) -> Tuple[Tuple[Command, ...
         if bounds is None:
             rejected += 1
             continue
-        value = int(cmd["value"])
-        if value < bounds[0] or value > bounds[1]:
+        if not _value_fits(cmd["value"], bounds):
             rejected += 1
             continue
         accepted.append(cmd)
     return tuple(accepted), rejected
+
+
+def _value_fits(value: str, bounds: Bound) -> bool:
+    if bounds == RGB:
+        m = _RGB_RE.match(value)
+        return m is not None and all(int(part) <= 255 for part in m.groups())
+    if isinstance(bounds, str) or not _VALUE_RE.match(value):
+        return False
+    return bounds[0] <= int(value) <= bounds[1]
 
 
 class SeenIds:

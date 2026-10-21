@@ -13,7 +13,7 @@ from sa02m_audio import service
 from sa02m_audio import voice
 from sa02m_audio.upload import UploadResult
 
-from . import POSIX, POSIX_REASON
+from . import AUDIO_ROOT, POSIX, POSIX_REASON, REPO_ROOT
 from .fakes import DaemonHarness, FakePaho, Sandbox, wait_for
 
 REC = "20261016T120000Z-abc123"
@@ -163,6 +163,167 @@ class DaemonApplyTest(unittest.TestCase):
         self.assertEqual(link.sent, [("/devices/led-COM3-13/controls/power/on", "1")])
         kinds = [e["event"] for e in daemon.events.events]
         self.assertEqual(kinds, ["voice", "voice"])
+
+
+RGB_ALLOW = {
+    "devices": {
+        "led-COM3-13": {
+            "power": {"min": 0, "max": 1},
+            "brightness": {"min": 0, "max": 255},
+            "color": {"type": "rgb"},
+        }
+    }
+}
+COLOR = {"device": "led-COM3-13", "control": "color", "value": "255;128;0"}
+COLOR_TOPIC = "/devices/led-COM3-13/controls/color/on"
+POWER_TOPIC = "/devices/led-COM3-13/controls/power/on"
+
+
+def _color(value):
+    return {"device": "led-COM3-13", "control": "color", "value": value}
+
+
+class RgbControlTest(unittest.TestCase):
+    """`{"type": "rgb"}` allow entries and the `R;G;B` value grammar (§12)."""
+
+    def setUp(self):
+        self.td = Sandbox()
+        self.addCleanup(self.td.cleanup)
+        self.path = os.path.join(self.td.etc_dir, "voice-allow.json")
+        self.write(RGB_ALLOW)
+        self.link = _Link()
+        self.seen = voice.SeenIds()
+
+    def write(self, doc):
+        with open(self.path, "w", encoding="utf-8") as fh:
+            json.dump(doc, fh)
+
+    def apply(self, *items):
+        cmds = voice.commands_from_body(json.dumps({"commands": list(items)}).encode(), REC)
+        return voice.apply_commands(self.link, REC, cmds, voice.load_allow(self.path), voice.SeenIds())
+
+    def test_rgb_entry_loads_and_color_is_published(self):
+        self.assertIsNotNone(voice.load_allow(self.path))
+        self.assertEqual(self.apply(COLOR), ("ok", "applied 1"))
+        self.assertEqual(self.link.sent, [(COLOR_TOPIC, "255;128;0")])
+
+    def test_rgb_value_on_a_range_control_is_rejected_not_raised(self):
+        hot = {"device": "led-COM3-13", "control": "brightness", "value": "255;0;0"}
+        self.assertEqual(self.apply(hot, POWER), ("ok", "applied 1, rejected 1"))
+        self.assertEqual(self.link.sent, [(POWER_TOPIC, "1")])
+        # Past the body filter too: split() itself never raises on it, also
+        # with an allow list that has no rgb entry at all.
+        with open(self.path, "w", encoding="utf-8") as fh:
+            json.dump(ALLOW, fh)
+        self.assertEqual(voice.split((hot,), voice.load_allow(self.path)), ((), 1))
+
+    def test_decimal_and_int_on_the_rgb_control_are_rejected(self):
+        # 16711680 (packed 0xFF0000) is longer than the decimal grammar and is
+        # dropped by the body filter; 65280 and the JSON int reach split().
+        status, detail = self.apply(_color("16711680"), _color("65280"), _color(255), POWER)
+        self.assertEqual((status, detail), ("ok", "applied 1, rejected 2"))
+        self.assertEqual(self.link.sent, [(POWER_TOPIC, "1")])
+
+    def test_malformed_rgb_strings_are_never_published(self):
+        allow = voice.load_allow(self.path)
+        self.assertIsNotNone(allow)
+        for bad in ("256;0;0", "01;0;0", "1;2", "1;2;3;4", " 1;2;3", "1; 2;3", "#FF0000",
+                    "-1;0;0", "1;2;3;", "1;2;3\n", "", [255, 0, 0], {"r": 1}):
+            with self.subTest(value=bad):
+                self.link.sent = []
+                status, _ = self.apply(_color(bad), COLOR)
+                self.assertEqual(status, "ok")
+                self.assertEqual(self.link.sent, [(COLOR_TOPIC, "255;128;0")])
+                if isinstance(bad, str):
+                    self.assertEqual(voice.split((_color(bad),), allow), ((), 1))
+
+    def test_component_bounds_are_inclusive(self):
+        allow = voice.load_allow(self.path)
+        for good in ("0;0;0", "255;255;255", "9;99;199"):
+            with self.subTest(value=good):
+                self.assertEqual(voice.split((_color(good),), allow), ((_color(good),), 0))
+
+    def test_invalid_rgb_entries_invalidate_the_whole_file(self):
+        for entry in ({"type": "hsv"}, {"type": "rgb", "min": 0, "max": 1}, {"type": 1},
+                      {"type": True}, {"type": "rgb", "extra": 1}, {"type": "RGB"}):
+            with self.subTest(entry=entry):
+                doc = json.loads(json.dumps(RGB_ALLOW))
+                doc["devices"]["led-COM3-13"]["color"] = entry
+                self.write(doc)
+                self.assertIsNone(voice.load_allow(self.path))
+
+    def test_range_only_file_loads_as_before(self):
+        self.write(ALLOW)
+        self.assertEqual(voice.load_allow(self.path),
+                         {"led-COM3-13": {"power": (0, 1), "brightness": (0, 255)}})
+
+
+class TrailingNewlineTest(unittest.TestCase):
+    """`^…$` with re.match also accepts a trailing "\\n"; every field of a
+    command, every allow-list key and the command topic must refuse it."""
+
+    ENDINGS = ("\n", "\r\n", "\r")
+
+    def test_command_fields_refuse_a_line_ending(self):
+        for end in self.ENDINGS:
+            for field in ("device", "control", "value"):
+                with self.subTest(field=field, end=end):
+                    item = dict(LED)
+                    item[field] = item[field] + end
+                    body = json.dumps({"commands": [item]}).encode()
+                    self.assertEqual(voice.commands_from_body(body, REC), ())
+
+    def test_split_refuses_a_value_with_a_line_ending(self):
+        allow = {"led-COM3-13": {"brightness": (0, 255)}}
+        for end in self.ENDINGS:
+            with self.subTest(end=end):
+                cmd = dict(LED, value="40" + end)
+                self.assertEqual(voice.split((cmd,), allow), ((), 1))
+
+    def test_allow_keys_refuse_a_line_ending(self):
+        td = Sandbox()
+        self.addCleanup(td.cleanup)
+        path = os.path.join(td.etc_dir, "voice-allow.json")
+        for end in self.ENDINGS:
+            for doc in ({"devices": {"led-COM3-13" + end: {"power": {"min": 0, "max": 1}}}},
+                        {"devices": {"led-COM3-13": {"power" + end: {"min": 0, "max": 1}}}}):
+                with self.subTest(doc=doc):
+                    with open(path, "w", encoding="utf-8") as fh:
+                        json.dump(doc, fh)
+                    self.assertIsNone(voice.load_allow(path))
+
+    def test_command_topic_refuses_a_line_ending(self):
+        paho = FakePaho()
+        link = mqttio.Link(queue.Queue(), client_factory=lambda: paho)
+        link.start()
+        for end in self.ENDINGS:
+            with self.subTest(end=end):
+                self.assertFalse(link.publish_command("/devices/led-COM3-13/controls/power/on" + end, "1"))
+        self.assertEqual([item for item in paho.snapshot() if not item[2]], [])
+
+
+class DefaultAllowFileTest(unittest.TestCase):
+    """The allow list 15-audio.sh seeds when none exists (contract §12/§13)."""
+
+    DEFAULT = os.path.join(AUDIO_ROOT, "voice-allow.default.json")
+    EFFECTS = os.path.join(REPO_ROOT, "docs", "contracts", "led-effects.json")
+
+    def test_default_file_loads_to_the_expected_table(self):
+        self.assertEqual(voice.load_allow(self.DEFAULT), {"led-COM3-13": {
+            "power": (0, 1),
+            "brightness": (0, 255),
+            "effect": (0, 81),
+            "speed": (0, 255),
+            "color": voice.RGB,
+        }})
+
+    def test_effect_range_follows_the_effect_catalogue(self):
+        with open(self.EFFECTS, encoding="utf-8") as fh:
+            effects = json.load(fh)["effects"]
+        self.assertGreater(len(effects), 0)
+        allow = voice.load_allow(self.DEFAULT)
+        self.assertIsNotNone(allow)
+        self.assertEqual(allow["led-COM3-13"]["effect"], (0, len(effects) - 1))
 
 
 class _Link:

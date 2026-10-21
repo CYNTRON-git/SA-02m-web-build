@@ -208,6 +208,15 @@ class MutationTest(ApiTestBase):
         self.assertEqual(self.post(action="save", keep_hours=48)[0]["error"], "ack_required")
         self.assertTrue(self.post(action="save", storage="emmc", keep_mb=100)[0]["ok"])
 
+    def test_save_never_takes_the_alsa_device(self):
+        # The device name is not a panel setting (api.SAVE_KEYS): a value with
+        # a line ending is refused as a field, before any grammar.
+        for value in ("hw:1\n", "hw:1\r\n", "hw:1"):
+            with self.subTest(value=value):
+                self.assertEqual(self.post(action="save", device=value)[0],
+                                 {"ok": False, "error": "unknown_field", "field": "device"})
+        self.assertEqual(config.load(self.sb.conf).device, C.DEVICE_AUTO)
+
     def test_save_values_are_typed_and_bounded(self):
         for body in ({"keep_mb": 300}, {"keep_mb": "10"}, {"keep_files": True}, {"keep_hours": 0},
                      {"storage": "nfs"}, {"max_duration_s": 31}, {"default_duration_s": 1},

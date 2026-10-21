@@ -49,8 +49,9 @@ def command_topic(name: str) -> str:
 
 COMMAND_TOPICS = {command_topic(n): n for n in C.COMMAND_CONTROLS}
 # Absolute write the voice path may publish: /devices/<id>/controls/<name>/on
+# `\Z`, not `$`: `$` would let a topic with a trailing newline through.
 _ABS_COMMAND_RE = re.compile(
-    r"^/devices/[A-Za-z0-9_.-]{1,64}/controls/[A-Za-z0-9_]{1,32}/on$"
+    r"^/devices/[A-Za-z0-9_.-]{1,64}/controls/[A-Za-z0-9_]{1,32}/on\Z"
 )
 META_ERROR_TOPIC = C.DEVICE_TOPIC + "/meta/error"
 

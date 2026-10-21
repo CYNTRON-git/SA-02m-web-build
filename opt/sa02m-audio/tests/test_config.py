@@ -99,6 +99,21 @@ class ConfigTest(unittest.TestCase):
             keys = [line.split(" = ")[0] for line in fh if " = " in line]
         self.assertEqual(tuple(keys), config.KEYS)
 
+    def test_alsa_device_refuses_a_line_ending(self):
+        # `^…$` with re.match also accepts a trailing "\n": render() would then
+        # write it into the conf.
+        for end in ("\n", "\r\n", "\r"):
+            with self.subTest(end=end):
+                with self.assertRaises(ValueError):
+                    config.validate(config.RecorderConfig(device="hw:1" + end))
+                with self.assertRaises(ValueError):
+                    config.render(config.RecorderConfig(device="hw:1" + end))
+        # The read path strips the value; an embedded line break (a
+        # configparser continuation) is refused to `auto`.
+        self.assertEqual(self.write("[recorder]\ndevice = hw:1\n").device, "hw:1")
+        self.assertEqual(self.write("[recorder]\ndevice = hw:1\n  x\n").device, "auto")
+        self.assertFalse(os.path.exists(self.path + ".tmp"))
+
     def test_save_refuses_out_of_bounds(self):
         for kwargs in ({"storage": "nfs"}, {"keep_mb": 300}, {"keep_mb": 0},
                        {"max_duration_s": 31}, {"default_duration_s": 1},

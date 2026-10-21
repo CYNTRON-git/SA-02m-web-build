@@ -96,7 +96,8 @@ CHILD_STOP_WAIT_S = 3.0
 
 # ── Device (contract §Устройство захвата) ──────────────────────────────────
 DEVICE_AUTO = "auto"
-DEVICE_RE = r"^[A-Za-z0-9:=,_.-]{1,64}$"
+# `\Z`, not `$`: with re.match, `$` also accepts a trailing newline.
+DEVICE_RE = r"^[A-Za-z0-9:=,_.-]{1,64}\Z"
 CARD_ID_RE = r"^[A-Za-z0-9_]{1,32}$"
 USB_AUDIO_DRIVER = "USB-Audio"
 
