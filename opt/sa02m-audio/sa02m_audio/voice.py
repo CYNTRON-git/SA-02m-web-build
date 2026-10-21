@@ -46,7 +46,7 @@ def commands_from_body(body: bytes, rec_id: str) -> Tuple[Command, ...]:
     if not isinstance(data, dict):
         return ()
     rid = data.get("recording_id")
-    if isinstance(rid, str) and rid != "" and rid != rec_id:
+    if "recording_id" in data and (not isinstance(rid, str) or rid != rec_id):
         log.warning("voice response recording id does not match clip %s", rec_id)
         return ()
     raw = data.get("commands")
@@ -83,7 +83,8 @@ def load_allow(path: str) -> Optional[Allow]:
     try:
         with open(path, encoding="utf-8") as fh:
             text = fh.read(C.VOICE_ALLOW_MAX_BYTES + 1)
-    except OSError:
+    except (OSError, UnicodeError) as exc:
+        log.warning("voice allow list unreadable: %s", exc)
         return None
     if len(text) > C.VOICE_ALLOW_MAX_BYTES:
         log.warning("voice allow list too large")

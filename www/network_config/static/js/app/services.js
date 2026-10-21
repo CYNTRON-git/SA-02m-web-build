@@ -21,14 +21,25 @@ function svcCtlDisplayLabel(svc) {
 }
 
 function svcCtlRowState(svc) {
-  if (svc.masked || svc.user_disabled) return 'disabled';
-  return svc.active || 'inactive';
+  return coordinatedServiceState(svc, svc.paused ? 'paused' : svc.active || 'unknown');
+}
+
+/** «Автозапуск …» from the CGI's `enabled` (a JSON boolean from
+ *  etc/sa02m-web-service-ctl.sh cmd_list; the 'enabled'/'disabled' strings are
+ *  the older spelling) and the admin-off flag. '' when unknown. */
+function svcCtlAutostartLabel(svc) {
+  const e = svc ? svc.enabled : undefined;
+  const on = e === true || e === 'enabled';
+  const off = e === false || e === 'disabled';
+  if ((svc && svc.user_disabled) || off) return 'Автозапуск выключен';
+  if (on) return 'Автозапуск включён';
+  return '';
 }
 
 /** Кнопка «Пуск», если службу нужно включить (остановлена или отключена админом). */
 function svcCtlWantsStart(svc) {
   if (!svc) return true;
-  if (svc.masked || svc.user_disabled) return true;
+  if (svc.active === 'activating' || svc.active === 'deactivating') return false;
   return !svcStateIsActive(svc.active);
 }
 
@@ -135,7 +146,19 @@ function svcCtlSyncRow(row, svc, flasherBusy, pending) {
   }
   if (!badge) return;
   if (!badge.id) badge.id = 'svc-ctl-badge-' + svc.id;
-  if (installed) svcBadge(badge.id, svcCtlRowState(svc));
+  if (installed) {
+    svcBadge(badge.id, svcCtlRowState(svc));
+    const policy = svc.masked ? 'Заблокирован' : svcCtlAutostartLabel(svc);
+    // Own line under the state: the badge track is 118 px (main.css), and
+    // «Неактивен · Автозапуск включён» on one line was clipped at both ends.
+    if (policy) {
+      const line = document.createElement('small');
+      line.className = 'svc-ctl-policy';
+      line.textContent = svcCtlT(policy);
+      badge.appendChild(line);
+      badge.className += ' svc-ctl-badge-stacked';
+    }
+  }
   else {
     badge.textContent = svcCtlT('Не установлен');
     badge.className = 'badge badge-unk';
@@ -570,6 +593,8 @@ function svcCtlErrorMessage(code) {
     still_running: 'процесс службы всё ещё работает',
     start_failed: 'не удалось запустить службу',
     flasher_busy: 'идёт прошивка или сканирование RS-485',
+    port_busy: 'порт RS-485 занят операцией или восстановлением службы',
+    coordinator_unavailable: 'координатор портов недоступен — управление службами RS-485 заблокировано',
     sudo_failed: 'нет прав sudo для управления службами',
     ctl_missing: 'скрипт управления не установлен',
     timeout: 'истекло время ожидания смены состояния',

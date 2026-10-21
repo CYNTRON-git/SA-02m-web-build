@@ -450,8 +450,8 @@ function hcFetch(opt, ms) {
   return fetch(HC_API, opt);
 }
 
-function hcGet() {
-  return hcFetch({ method: 'GET', credentials: 'same-origin', cache: 'no-store' }, HC_GET_TIMEOUT_MS)
+function hcGet(signal) {
+  return hcFetch({ method: 'GET', credentials: 'same-origin', cache: 'no-store', signal: signal }, HC_GET_TIMEOUT_MS)
     .then(function (r) { return r.json(); });
 }
 
@@ -471,6 +471,7 @@ let _hcLastFailed = false;   // the last poll got no usable answer
 let _hcBusy = false;         // an action is in flight — every control disabled
 let _hcSeq = 0;              // newest request wins; an older answer never renders
 let _hcInflight = null;
+let _hcController = null;
 let _hcTabActive = false;
 let _hcPoll = null;
 let _hcFastPoll = null;
@@ -705,7 +706,9 @@ function hcRender(d) {
 function hcRefresh() {
   if (_hcInflight) return _hcInflight;
   const seq = ++_hcSeq;
-  _hcInflight = hcGet()
+  const controller = new AbortController();
+  _hcController = controller;
+  const pending = hcGet(controller.signal)
     .then(function (d) {
       if (seq !== _hcSeq) return null;
       // The session died: the fetch guard / status poll own the login flow.
@@ -716,8 +719,12 @@ function hcRefresh() {
       if (seq === _hcSeq) hcRender(null);
       return null;
     })
-    .finally(function () { _hcInflight = null; });
-  return _hcInflight;
+    .finally(function () {
+      if (_hcInflight === pending) _hcInflight = null;
+      if (_hcController === controller) _hcController = null;
+    });
+  _hcInflight = pending;
+  return pending;
 }
 
 function hcPageVisible() {
@@ -725,6 +732,10 @@ function hcPageVisible() {
 }
 
 function hcStopPolls() {
+  ++_hcSeq;
+  if (_hcController) _hcController.abort();
+  _hcController = null;
+  _hcInflight = null;
   if (_hcPoll) { clearInterval(_hcPoll); _hcPoll = null; }
   if (_hcFastPoll) { clearTimeout(_hcFastPoll); _hcFastPoll = null; }
   _hcFastPollGen += 1;   // retire an in-flight fast-poll chain

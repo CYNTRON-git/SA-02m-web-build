@@ -1,5 +1,5 @@
 /* Devices tab — live ДТВ / СЭ-02м-3 widgets + MR-02m analog cards + history modal / Excel / events */
-import { aiSensorLabel, aiUnitPrecision } from "./ai-sensors.js?v=1.0.7.4";
+import { aiSensorLabel, aiUnitPrecision } from "./ai-sensors.js?v=1.0.7.5";
 
 (function () {
   "use strict";
@@ -373,7 +373,7 @@ import { aiSensorLabel, aiUnitPrecision } from "./ai-sensors.js?v=1.0.7.4";
   function buildMtdMetricsHtml() {
     const readings = [
       ["mtd_presence", "presence", "", "Присутствие"],
-      ["mtd_illuminance", "lux", "lux", "Освещённость"],
+      ["mtd_illuminance", "lux", "лк", "Освещённость"],
       ["mtd_target_distance", "dist", "м", "Дистанция до цели"],
     ];
     const readHtml = readings
@@ -1504,7 +1504,7 @@ import { aiSensorLabel, aiUnitPrecision } from "./ai-sensors.js?v=1.0.7.4";
       setField(
         card,
         "presence",
-        d.presence == null || Number.isNaN(present) ? "—" : present > 0 ? "да" : "нет"
+        d.presence == null || Number.isNaN(present) ? "—" : present > 0 ? tl("Есть") : tl("Нет")
       );
       setField(card, "lux", fmt(d.illuminance_lux, 1));
       setField(card, "dist", fmt(d.target_distance_m, 2));
@@ -2524,6 +2524,8 @@ import { aiSensorLabel, aiUnitPrecision } from "./ai-sensors.js?v=1.0.7.4";
      and the i18n DICT turns each back into its EN symbol. Neutral symbols (°C, %,
      ppm, …) and unknown or already-Russian units pass through. */
   const CHART_UNIT_RU = {
+    lux: "лк",
+    lx: "лк",
     V: "В",
     kV: "кВ",
     mV: "мВ",

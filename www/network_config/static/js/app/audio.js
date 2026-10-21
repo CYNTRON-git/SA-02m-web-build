@@ -37,6 +37,8 @@ var _fast = null;
 var _fastUntil = 0;
 var _recSeen = 0;
 var _seq = 0;
+var _inflight = null;
+var _controller = null;
 // An action's own message stays this long before the state line may replace it.
 var AU_NOTICE_MS = 6000;
 var _noticeUntil = 0;
@@ -392,42 +394,46 @@ function render(d) {
 }
 
 // ── transport ──────────────────────────────────────────────────────────────
-function withTimeout(promise, ms) {
-  return Promise.race([promise, new Promise(function (_r, rej) {
-    setTimeout(function () { rej(new Error('timeout')); }, ms);
-  })]);
-}
-
-function get() {
-  return withTimeout(fetch(AU_API, { method: 'GET', credentials: 'same-origin', cache: 'no-store' })
-    .then(function (r) { return r.json(); }), AU_GET_TIMEOUT_MS);
+function get(signal) {
+  return fetchWithTimeout(AU_API, { method: 'GET', credentials: 'same-origin', cache: 'no-store', signal: signal }, AU_GET_TIMEOUT_MS)
+    .then(function (r) { return r.json(); });
 }
 
 function post(body) {
-  return withTimeout(fetch(AU_API, {
+  return fetchWithTimeout(AU_API, {
     method: 'POST',
     headers: withCsrfHeaders({ 'Content-Type': 'application/json' }),
-    credentials: 'same-origin',
-    cache: 'no-store',
-    body: JSON.stringify(body)
-  }).then(function (r) { return r.json(); }), AU_POST_TIMEOUT_MS);
+    credentials: 'same-origin', cache: 'no-store', body: JSON.stringify(body)
+  }, AU_POST_TIMEOUT_MS).then(function (r) { return r.json(); });
 }
 
 function refresh() {
+  if (_inflight) return _inflight;
   var seq = ++_seq;
-  return get().then(function (d) {
+  var controller = new AbortController();
+  _controller = controller;
+  var pending = get(controller.signal).then(function (d) {
     if (seq !== _seq) return null;
     if (d && d.error === 'unauthorized') return null;
     render(d);
     schedule(d);
     return d;
   }, function () {
-    if (seq === _seq) render(null);
+    if (seq === _seq) { render(null); schedule(null); }
     return null;
+  }).finally(function () {
+    if (_inflight === pending) _inflight = null;
+    if (_controller === controller) _controller = null;
   });
+  _inflight = pending;
+  return pending;
 }
 
 function stopTimers() {
+  ++_seq;
+  if (_controller) _controller.abort();
+  _controller = null;
+  _inflight = null;
   if (_poll) { clearInterval(_poll); _poll = null; }
   if (_fast) { clearTimeout(_fast); _fast = null; }
 }

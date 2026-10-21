@@ -13,7 +13,8 @@ from sa02m_audio import service
 from sa02m_audio import voice
 from sa02m_audio.upload import UploadResult
 
-from .fakes import FakePaho, Sandbox
+from . import POSIX, POSIX_REASON
+from .fakes import DaemonHarness, FakePaho, Sandbox, wait_for
 
 REC = "20261016T120000Z-abc123"
 LED = {"device": "led-COM3-13", "control": "brightness", "value": "40"}
@@ -36,6 +37,14 @@ class BodyTest(unittest.TestCase):
         self.assertEqual(voice.commands_from_body(b"[1,2]", REC), ())
         body = json.dumps({"recording_id": "other", "commands": [POWER]}).encode()
         self.assertEqual(voice.commands_from_body(body, REC), ())
+
+    def test_present_recording_id_must_be_matching_string(self):
+        for rid in (123, False, {}, [], None, "", "other"):
+            with self.subTest(rid=rid):
+                body = json.dumps({"recording_id": rid, "commands": [POWER]}).encode()
+                self.assertEqual(voice.commands_from_body(body, REC), ())
+        for doc in ({"commands": [POWER]}, {"recording_id": REC, "commands": [POWER]}):
+            self.assertEqual(voice.commands_from_body(json.dumps(doc).encode(), REC), (POWER,))
 
     def test_int_value_is_accepted_as_decimal(self):
         body = json.dumps({"commands": [{"device": "led-COM3-13", "control": "brightness", "value": 40}]}).encode()
@@ -99,6 +108,29 @@ class LinkPublishTest(unittest.TestCase):
 
 
 class DaemonApplyTest(unittest.TestCase):
+    @unittest.skipUnless(POSIX, POSIX_REASON)
+    def test_invalid_utf8_refuses_result_and_loop_processes_next_result(self):
+        sb = Sandbox()
+        self.addCleanup(sb.cleanup)
+        sb.write_conf(voice_commands=True)
+        allow_path = os.path.join(sb.etc_dir, "voice-allow.json")
+        with open(allow_path, "wb") as fh:
+            fh.write(b"\xff")
+        harness = DaemonHarness(sb)
+        self.addCleanup(harness.stop)
+        harness.start()
+        harness.daemon.results.put(UploadResult(REC, "emmc", "ok", "HTTP 200", 1000, -12, (POWER,)))
+        self.assertTrue(wait_for(lambda: any(e.get("event") == "voice" for e in harness.events())))
+        events = [e for e in harness.events() if e.get("event") == "voice"]
+        self.assertEqual(events[-1]["status"], "refused")
+        self.assertEqual([p for p in harness.paho.snapshot() if p[0].endswith("/on")], [])
+        self.assertTrue(harness.thread.is_alive())
+        with open(allow_path, "w", encoding="utf-8") as fh:
+            json.dump(ALLOW, fh)
+        harness.daemon.results.put(UploadResult(REC, "emmc", "ok", "HTTP 200", 1000, -12, (POWER,)))
+        self.assertTrue(wait_for(lambda: any(t.endswith("/power/on") for t, _, _ in harness.paho.snapshot())))
+        self.assertTrue(harness.thread.is_alive())
+
     def test_flag_off_does_not_publish(self):
         sb = Sandbox()
         self.addCleanup(sb.cleanup)

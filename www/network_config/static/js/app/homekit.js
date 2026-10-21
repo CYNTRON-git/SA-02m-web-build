@@ -122,8 +122,8 @@ function hkFetch(opt, ms) {
   return fetch(HK_API, opt);
 }
 
-function hkGet() {
-  return hkFetch({ method: 'GET', credentials: 'same-origin', cache: 'no-store' }, HK_GET_TIMEOUT_MS)
+function hkGet(signal) {
+  return hkFetch({ method: 'GET', credentials: 'same-origin', cache: 'no-store', signal: signal }, HK_GET_TIMEOUT_MS)
     .then(function (r) { return r.json(); });
 }
 
@@ -143,6 +143,7 @@ let _hkLastFailed = false;   // the last poll got no usable answer
 let _hkBusy = false;         // an action is in flight — every button disabled
 let _hkSeq = 0;              // newest request wins; an older answer never renders
 let _hkInflight = null;
+let _hkController = null;
 let _hkSkipOpen = false;
 let _hkCodeShown = false;
 let _hkTabActive = false;
@@ -569,7 +570,9 @@ async function homekitSaveDevices() {
 function hkRefresh() {
   if (_hkInflight) return _hkInflight;
   const seq = ++_hkSeq;
-  _hkInflight = hkGet()
+  const controller = new AbortController();
+  _hkController = controller;
+  const pending = hkGet(controller.signal)
     .then(function (d) {
       if (seq !== _hkSeq) return null;
       // The session died: the fetch guard / status poll own the login flow.
@@ -580,8 +583,12 @@ function hkRefresh() {
       if (seq === _hkSeq) hkRender(null);
       return null;
     })
-    .finally(function () { _hkInflight = null; });
-  return _hkInflight;
+    .finally(function () {
+      if (_hkInflight === pending) _hkInflight = null;
+      if (_hkController === controller) _hkController = null;
+    });
+  _hkInflight = pending;
+  return pending;
 }
 
 function hkPageVisible() {
@@ -589,6 +596,10 @@ function hkPageVisible() {
 }
 
 function hkStopPolls() {
+  ++_hkSeq;
+  if (_hkController) _hkController.abort();
+  _hkController = null;
+  _hkInflight = null;
   if (_hkPoll) { clearInterval(_hkPoll); _hkPoll = null; }
   if (_hkFastPoll) { clearTimeout(_hkFastPoll); _hkFastPoll = null; }
   _hkFastPollGen += 1;   // retire an in-flight fast-poll chain

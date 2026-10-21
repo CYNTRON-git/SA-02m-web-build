@@ -3122,6 +3122,25 @@ html[data-theme="light"] .homeconnect-verify-link { color: var(--cyan-hover); }
   overflow: hidden;
   text-overflow: ellipsis;
 }
+/* State and autostart policy are two facts (status-polling.md «Службы и
+   порты»); the policy gets its own 9 px line inside the 118 px badge track —
+   each line stays one line («Автозапуск выключен» ≈ 85 px at 9 px), the row
+   grows from 28 to ~38 px only when a policy is shown. */
+.system-manage-services-card.widget-svc .svc-ctl-row .badge.svc-ctl-badge-stacked {
+  height: auto;
+  padding: 3px 8px;
+  flex-direction: column;
+  row-gap: 1px;
+}
+.system-manage-services-card.widget-svc .svc-ctl-row .svc-ctl-policy {
+  display: block;
+  font-size: 9px;
+  font-weight: 400;
+  line-height: 1.1;
+  letter-spacing: 0;
+  opacity: .9;
+  white-space: nowrap;
+}
 
 /* ── Журнал событий ─────────────────────────────────────────────────────── */
 .system-manage-log-panel {
@@ -6373,9 +6392,13 @@ html[data-theme="light"] .mqtt-ch-live-ok { color: var(--cyan-hover); }
 }
 /* MTD262-MB: 3 readings + 7 setpoints. History is the «График» button;
    the number field writes the holding on Enter (same mqtt_set path as the MQTT tab). */
+/* Settings need room for the numeric field and unit at the three-card breakpoint. */
+#tab-devices .dev-card--mtd .dev-metrics {
+  grid-template-columns: repeat(auto-fit, minmax(min(100%, 7rem), 1fr));
+}
 #tab-devices .dev-card--mtd .dev-kpi-lbl {
   font-size: 0.68rem; white-space: normal;
-  display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical;
+  display: block; overflow: visible; overflow-wrap: anywhere;
 }
 #tab-devices .dev-card--mtd .dev-kpi[data-metric],
 #tab-devices .dev-card--mtd .dev-kpi--set { cursor: pointer; }

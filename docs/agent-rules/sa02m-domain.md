@@ -56,9 +56,11 @@ detail (queue functions, the apply-map).
 `app/status.js` polls `status.cgi?part=<name>` on a rolling scheduler (the
 scheduler and every `apply*Status` live there since the F10 split, not in
 `app.js`) — parts:
-`priority` (CPU/temp/RAM/swap/disk, 6 s), `main` (6 s), `rs485` (12 s), and the
+`priority` (CPU/temp/RAM/swap/disk, 6 s), `rs485` (12 s), and the
 background set `storage,time,uptime,network,load,system,services,hardware`
-(phase-shifted). Facts that bite:
+(phase-shifted). `fetchStatusMain` coordinates those split parts; it does not
+request `part=main`. Queueing and freshness are specified in
+`docs/contracts/status-polling.md`. Facts that bite:
 
 - Each part has its own `apply*Status()` function; UI ids are contract between
   `index.html` and `app.js` — renaming an id in one place is a finding.
@@ -90,11 +92,14 @@ The USB microphone has a **mic lease** (`flock` on `/run/lock/sa02m-mic.lock`,
 held while the device is open): every opener of the mic takes it — the
 protocol's one home is `docs/contracts/audio-recorder.md` §11.
 
-Port-sharing invariant: RS-485 lines are shared between MPLC4 polling, the
-MQTT bridge, and the flasher — the flasher takes a **port lease**
-(stop/restore units via `MPLC_STOP_SERVICES`); `flasher_busy` gates MPLC/MQTT
-start buttons. Any change to who opens a COM port must respect that lease
-protocol (CHANGELOG 1.0.3.35 documents the prior regressions).
+RS-485 ownership — the MQTT / whole-service pauses, the manual operations and
+the recovery after a failure — has one contract:
+[port-ownership.md](../contracts/port-ownership.md). Every managed UART open
+and every state change of an assigned service goes through it. The legacy
+flasher key `MPLC_STOP_SERVICES` sets no coordinator policy; the coordinator's
+own configuration (`/etc/sa02m/port-coordinator.json`) is authoritative. The UI
+and `/health` report state; neither is by itself an atomic permission to start
+a service.
 
 ## Version discipline (the contract)
 
