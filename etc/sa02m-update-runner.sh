@@ -1455,12 +1455,28 @@ cleanup_b1_deploy_artifacts() {
             rm -f "$_p" && log "cleanup: removed extension-less B1 helper twin $_p"
         fi
     done
-    # OTA may land sa02m-* sudoers as 0644 (source tree mode); visudo -c then
-    # WARN-fails even when syntax is OK. Harden known drop-ins we ship.
-    for _name in sa02m-www sa02m-cloud sa02m-flasher sa02m-mqtt sa02m-gateway sa02m-alice sa02m-homekit sa02m-homeconnect sa02m-audio sa02m-agent-api; do
-        _path="/etc/sudoers.d/$_name"
-        if [ -f "$_path" ]; then
-            chmod 0440 "$_path" 2>/dev/null || true
+    # The GitHub OTA of releases before 1.0.7.5 landed sa02m-* sudoers at the
+    # source-tree mode 0644; visudo -c then fails and the grant is dead. Every
+    # REGULAR $SA02M_SUDOERS_DIR/sa02m-* goes to 0440 root:root — allow-listed
+    # by PREFIX, not the name list this replaces (a list cannot know the drop-in
+    # a later module adds); symlinks skipped, each repair logged. Same rule as
+    # the installer's sa02m_normalise_sudoers_modes (scripts/lib.sh); gate:
+    # sudoers-pin-contract 8c.
+    local sudoers_dir=${SA02M_SUDOERS_DIR:-/etc/sudoers.d} _was
+    sudoers_dir=${sudoers_dir%/}
+    for _path in "$sudoers_dir"/sa02m-*; do
+        if [ ! -f "$_path" ] || [ -L "$_path" ]; then
+            continue
+        fi
+        _was=$(stat -c '%a %U:%G' "$_path" 2>/dev/null) || continue
+        if [ "$_was" = "440 root:root" ]; then
+            continue
+        fi
+        chown root:root "$_path" 2>/dev/null || true
+        if chmod 0440 "$_path" 2>/dev/null; then
+            log "cleanup: sudoers $(basename "$_path") $_was -> 0440 root:root"
+        else
+            log "WARN: cleanup: sudoers $(basename "$_path") stays $_was — chmod 0440 failed"
         fi
     done
     if command -v visudo >/dev/null 2>&1; then
