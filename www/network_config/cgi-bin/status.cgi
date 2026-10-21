@@ -1786,7 +1786,7 @@ build_dash_services_json() {
     _dash_probe_add vplc "vPLC" vplc
     _dash_probe_add alice "Яндекс Алиса" sa02m-alice-client
     _dash_probe_add stand-api "Стенд API" sa02m-stand-api
-    _dash_probe_add devices-logger "Логгер устройств" sa02m-devices-logger
+    _dash_probe_add devices-logger "Логгер" sa02m-devices-logger
     _dash_probe_add cloud-agent "Облако" sa02m-cloud-agent
     _dash_probe_add mqtt-telemetry "MQTT телеметрия" sa02m-telemetry
     _dash_svc_add codesys "CODESYS" "${DASH_CODESYS:-}" "${DASH_CODESYS_UP:-0}"
