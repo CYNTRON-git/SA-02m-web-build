@@ -137,6 +137,10 @@ mqtt-tcp-probe-contract|www/network_config/cgi-bin/mqtt_tcp_probe.cgi|web_csrf_v
 mqtt-set-contract|www/network_config/cgi-bin/mqtt_set.cgi|timeout 5 mosquitto_pub
 mqtt-set-contract|www/network_config/cgi-bin/mqtt_set.cgi|web_csrf_validate
 web-update-csrf-contract|www/network_config/cgi-bin/web_update_apply.cgi|web_csrf_validate
+web-update-csrf-contract|www/network_config/cgi-bin/lib_web_update_control.sh|out=$(sudo -n /usr/local/libexec/sa02m-update-control
+web-update-csrf-contract|etc/sa02m-update-control.sh|exec /usr/bin/python3 -I -c
+sudoers-pin-contract|etc/sudoers.d/sa02m-www|/usr/local/libexec/sa02m-update-control,
+sudoers-pin-contract|etc/sa02m-web-update-apply.sh|exec "$RUNNER" apply
 i18n-dict-contract|www/network_config/static/js/i18n.js|'"'"'Сеть'"'"': '"'"'Network'"'"',
 no-eschtml-in-attr|www/network_config/static/js/app.js|function escAttr(
 sh-model-schema|.ai-dev/quality/checks/sh-model-schema.sh|negatives.append(("point missing required
@@ -185,6 +189,8 @@ firstboot-sb-csum|etc/sa02m-rootfs-expand.sh|sync_files "$RESULT" "$DONE" "$LOG"
 cgi-csrf-policy|www/network_config/cgi-bin/mqtt_scan.cgi|web_csrf_validate
 cgi-csrf-policy|www/network_config/cgi-bin/web_update_check.cgi|web_csrf_require
 cgi-csrf-policy|www/network_config/cgi-bin/services_ctrl.cgi|web_csrf_require
+cgi-csrf-policy|www/network_config/cgi-bin/web_update_cancel.cgi|web_csrf_require
+board-verifier-safety|scripts/dev/verify-release-on-board.sh|verdict(7, found and unchanged,
 firstboot-overlay-parity|tools/imaging/firstboot-overlay/usr/local/bin/fix-eth.sh|dns_ensure "$iface"
 firstboot-sb-csum|etc/sa02m-rootfs-expand.sh|rm -f "$RESULT.tmp"
 update-recover-boot|etc/systemd/sa02m-update-verify.service|ExecStart=/usr/local/libexec/sa02m-update-runner verify
@@ -221,7 +227,7 @@ install-profile|etc/sa02m-update-runner.sh|prepare_profile_excludes "$txn"
 install-profile|etc/sa02m-update-runner.sh|skipped.append(fields[1])
 install-profile|scripts/update-www-only.sh|log INFO "/usr/local/sbin/$_h: модуль пропущен профилем установки"
 install-profile|scripts/update-www-only.sh|log INFO "/etc/sudoers.d/$_sud: модуль пропущен профилем установки"
-install-profile|etc/sa02m-web-update-apply.sh|log "$tgt: модуль пропущен профилем установки"
+install-profile|etc/sa02m-web-update-apply.sh|exec "$RUNNER" apply
 install-profile|www/network_config/cgi-bin/sa02m_agent_api.cgi|echo '"'"'{"ok":true,"state":"not_installed"
 i2c2-bus-recovery|etc/sa02m-pre-start.sh|sa02m_i2c2_gpio_recover || true
 ota-dst-allowlist-parity|opt/sa02m-update/lib/validate_package.py|re.compile(r"^/etc/nginx/"),

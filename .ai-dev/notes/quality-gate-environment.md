@@ -15,15 +15,16 @@ is `run.mjs`'s header); the beat stays green — a missing optional tool must no
 block a dev machine. Before 1.0.6.58 a skip exited 0 and printed `PASS`. Either
 way **a green local run is not evidence for these rows**. A partial skip (one
 assert inside a row that otherwise ran) prints `PARTIAL` only where the harness
-reports it to the runner (`.ai-dev/quality/checks/lib_skip.sh`; the protocol is
-in `run.mjs`'s header); a harness that does not still prints `PASS` — the
+reports it to the runner (`.ai-dev/quality/checks/lib_skip.sh`) or unittest
+prints its native `OK (skipped=N)` summary. The protocol lives in `run.mjs`'s
+header; another harness that reports neither still prints `PASS` — the
 «Partial skips» section below says which is which:
 
 | Row | Skips when | Real authority |
 |---|---|---|
 | `shellcheck` | `shellcheck` not on `PATH` (whole row SKIP) | Linux CI |
 | `py-unit-*` (pytest-suite.sh), `sh-model-schema` | pytest / a listed dep / `jsonschema` not importable by the first working `python3`/`python`/`py` (whole row SKIP) | Linux CI (`web-quality.yml` installs them) |
-| `py-unit-agent-api` | `test_devices_ops.DevicesSocket` (the fake devices daemon on AF_UNIX that checks the agent's panel-session cookie): Windows CPython has no `socket.AF_UNIX` — partial skip, the row still prints PASS | WSL / Linux CI |
+| `py-unit-agent-api` | `test_devices_ops.DevicesSocket` (the fake devices daemon on AF_UNIX that checks the agent's panel-session cookie): Windows CPython has no `socket.AF_UNIX` — native unittest skips make the row PARTIAL | WSL / Linux CI |
 | `update-deploy-skip` | the mode probe: git-bash cannot represent POSIX modes (whole row SKIP — the live one on a Windows box); also no `python3` | WSL / Linux CI |
 | `update-conditional-restart`, `update-recover-boot`, `web-update-launcher-guard` | no `python3` (whole row SKIP) | Linux CI |
 | `cache-bust-r` | no reference state reachable (no `origin/<ver>`, `origin/<ver-1>`, `origin/main`; whole row SKIP) | the local build beat (CI's clean checkout is toothless by design — the row's own header) |
@@ -37,11 +38,15 @@ in `run.mjs`'s header); a harness that does not still prints `PASS` — the
 | `update-cgroup-escape` | E5's «lock held again» assert only: git-bash has no `flock`, so the harness shims it as a no-op and prints SKIP for that one line | Linux CI |
 | `sudoers-visudo` | `visudo` not on `PATH` (git-bash): whole row SKIP | WSL / Linux CI (`sudo` package) |
 | `path-mask-lib` | case P5 only: git-bash cannot create the dangling symlink the case needs; the summary line counts it as a skip, never as a pass (1.0.7.2) | Linux CI |
-| `web-update-launcher-guard` | cases L8-L11 only: no `flock` on git-bash (printed as SKIP) | Linux CI |
+| `web-update-launcher-guard` | whole row SKIP (exit 77) since 1.0.7.5: the launcher's first act is `flock(1)` on launch.lock, so without util-linux flock every L case would exit 1 and read as a guard failure; before 1.0.7.5 only L8-L11 skipped | WSL / Linux CI |
 | `status-vplc-probe` | two cases need `AF_UNIX` (Windows CPython has none): 5 PASS + 2 SKIP here, 7/7 under WSL (1.0.7.2) | WSL / Linux CI |
 | `py-unit-audio` | POSIX-only cases (fcntl leases, `dir_fd`, process groups, the real `timeout`): partial skip — roughly half the suite skips here and the row still prints PASS; the whole suite runs under WSL (1.0.7.4) | WSL / Linux CI |
 | `audio-trigger` | no `flock` on git-bash: whole row SKIP (exit 77), never a pass (1.0.7.4) | WSL / Linux CI |
 | `sudoers-pin-contract` | sandbox case (c) only, the iface-conf-write symlink refusal: git-bash cannot create a real symlink (`ln -s` copies), so that one case prints SKIP | WSL / Linux CI |
+| `install-maintenance`, `update-control-boundaries` | whole row SKIP (exit 77): Windows CPython has no `fcntl` (the wrapper's and the controller's flock idiom); measured 2026-10-21 — 16 / 11 tests OK under WSL Ubuntu-24.04 as root (three boundary cases are `skipUnless root` and native-skip on a non-root Linux runner: PARTIAL, FAIL under QUALITY_STRICT) | WSL / Linux CI |
+| `py-unit-update` | PARTIAL: `tests/test_control_cgi.py` (HTTP → real Bash CGI → controller) skips as a module without `fcntl` and writes one QUALITY_SKIP_LOG line — 25 passed + 1 skipped here, 36 passed under WSL (2026-10-21); before 1.0.7.5 the whole row was RED on Windows (collection error, `final-build-1.log:3655`) | WSL / Linux CI |
+| `board-verifier-safety` | whole row SKIP (exit 77) off Linux — the script guards itself (`sys.platform`, `/proc`; it needs `/proc`, `os.pidfd_open`, `select` on pipes) and writes the skip-log line; the row's `run` is the plain python call | WSL / Linux CI |
+| `status-reliability-browser` | whole row SKIP (exit 77) when `playwright` is not resolvable from `scripts/dev` — the guard is in the row's `run` (the script imports playwright unconditionally); with `npm run ui-layout:install` done it RUNS here and under WSL (PASS on both, 2026-10-20/21) | Linux CI (installs the harness) |
 
 When reporting results, say "skipped", never "passed". A reviewer that reports a
 skipped row as a pass is making a false claim about verification.
@@ -60,6 +65,8 @@ unmutated tree». Not evidence of a defect, not evidence of health either:
 | `py-unit-homekit`, `py-unit-homeconnect` | `ModuleNotFoundError: grp` / `fcntl`, `OSError: [WinError 1314]` (symlink privilege) in 13-21 tests; the rows print FAIL, not SKIP, because pytest itself is importable | Windows CPython has no `grp`/`fcntl` and the account lacks the symlink privilege; rc=0 under WSL Ubuntu-24.04 on the same tree (2026-10-14) |
 | `alice-image-identity`, `service-ctl-policy-write` | `ln: failed to create symbolic link` cases (CB2 belt, Home Connect dirty-link dimensions) | git-bash symlinks need the Windows privilege; rc=0 under WSL |
 | `update-conditional-restart` | run8: `python.exe: can't open file 'C:\tmp\tmp.*\gen-manifest.py'` | MSYS `/tmp` is not Windows python's `C:\tmp`; rc=0 under WSL |
+| `port-coordinator`, `status-coordinator-projection` (1.0.7.5) | `port-coordinator`: AF_UNIX / `/proc` / SO_PEERCRED cases error out; `status-coordinator-projection`: `UnicodeDecodeError: 'charmap'` — the harness reads `status.cgi` with the locale codec (cp1251) and the file is UTF-8 | Windows CPython has no AF_UNIX and defaults text I/O to cp1251; both PASS under WSL Ubuntu-24.04 (`final-build-2-wsl.log`). The scripts belong to the ports/status areas; a `read_text(encoding='utf-8')` would make the second one run here |
+| `js-unit-mqtt-scan-type`, `js-unit-mqtt-tcp-dialog` | NOT Windows: they FAIL under WSL Ubuntu-24.04's native Node 18 (`SyntaxError: Unexpected token 'export'` from `scripts/dev/mqtt-js-sandbox.mjs` importing a module-only `.js`) and PASS on Windows Node 24 (`final-build-1.log`, the 1.0.7.5 touched run 2026-10-21) | Node < 22 has no ESM syntax detection for a `.js` without `"type":"module"`; CI's Node version is the authority — a WSL run of these two rows needs Node >= 22 on PATH |
 | transient (host load) | `py-unit-alice` broker-restart timing, `telemetry-device-id-contract`, `no-absolute-api-paths`, `iface-dns-ensure` wait budgets, `install-atomic` 9c - seen RED once each with 4-6 parallel agent runs on the box, PASS alone | not environment, not a defect: contention; re-run alone before filing |
 
 ## `nginx -t` runs only on the board
@@ -77,11 +84,13 @@ the file.
 ## Partial skips, and CI strict mode
 
 **Reported as `PARTIAL`** (the harness sources `lib_skip.sh`): `web-auth-behaviour`
-(cases 5–6 off Linux, 34–37 without a hasher) and `install-atomic` (8b on MSYS,
-6c/8h without coreutils `timeout`).
+(cases 5–6 off Linux, 34–37 without a hasher), `install-atomic` (6c without
+coreutils `timeout`; its 8b/8h skips left with the launcher's extracted helper in
+1.0.7.5) and `py-unit-update` (the Linux-only CGI module writes its own
+QUALITY_SKIP_LOG line, since pytest's `N skipped` summary is not parsed by the
+runner — only unittest's `OK (skipped=N)` is).
 
 **Still printed `PASS` although part of the row did not run** — not opted in yet:
-`web-update-launcher-guard` (L8–L11 without `flock`; the 1.0.6.62 A3 example),
 `update-cgroup-escape` (E5 without `flock`), `update-deploy-skip` (15e when not
 root — this one also skips on Linux CI), `sudoers-pin-contract` (the symlink
 case, «note» line — also on Linux CI), `py-unit-alice` (unittest `skipped=4`,

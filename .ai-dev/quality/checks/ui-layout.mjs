@@ -488,11 +488,9 @@ const MANAGEMENT_SERVICES = {
 // winter setpoint stepper row is shown. «Сезон» is a value run (fit, EN and
 // layout-jump checks); the stepper is not — the fit pass skips it and the
 // layout-jump pass leaves its number in place, so it is rendered, not measured.
-// The MTD presence card is NOT in the fixture: its settings tiles clip at the
-// 1101 px three-card width and its «да» has no EN entry — pre-existing defects
-// outside this check's fix, to be gated together with their fix.
 const DEVICES_LIVE = {
   ok: true,
+  mtd: [{id:'mtdx62-COM2-1',kind:'mtd',label:'MTD262-MB',ok:true,age_s:1,presence:1,illuminance_lux:1234.5,target_distance_m:7.99,detection_distance_m:8.00,detection_shielding_m:1.00,admission_delay_s:9.99,departure_delay_s:120,trigger_sensitivity:9,maintain_sensitivity:9,entrance_reduction_m:0.50}],
   available: [],
   carel: [{ id: 'carel-COM3-1', kind: 'carel', label: 'Carel c.pCOmini № 1', ok: true, age_s: 2,
     plant_state_text: 'Остановлена', supply_temp: -12.3, return_water_temp: 34.2, setpoint: 21.5,

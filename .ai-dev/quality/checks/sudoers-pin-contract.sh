@@ -342,8 +342,11 @@ stripped_has_inline etc/sa02m-update-runner.sh 'cleanup_b1_deploy_artifacts' \
 # The extension-less OTA twins a PAST release created must still be cleaned on
 # every delivery path — a board that took one keeps a stale root helper at a
 # path sudo does not grant, and (for the gateway/mqtt pair) the vulnerable file.
+# sa02m-stacks-policy (1.0.7.5): until the map_dst rename the GitHub OTA landed
+# etc/sa02m-stacks-policy.sh as the extension-less /usr/local/sbin/sa02m-stacks-policy
+# twin of the real /usr/local/lib/sa02m-stacks-policy.sh - a stray nobody calls.
 for _twin in sa02m-iface-conf-write sa02m-usb-power sa02m-gateway-config-apply \
-             sa02m-mqtt-config-apply sa02m-conf-rm sa02m-mplc-project-deploy; do
+             sa02m-mqtt-config-apply sa02m-conf-rm sa02m-mplc-project-deploy sa02m-stacks-policy; do
     # Boundary-matched: the twin path must appear as a whole token, never as the
     # prefix of the .sh path it is the twin OF.
     if stripped_matches_inline etc/sa02m-update-runner.sh "/usr/local/sbin/$_twin([^A-Za-z0-9._-]|$)"; then
@@ -471,12 +474,8 @@ LEDGER = {
         "/usr/local/sbin/sa02m-usb-power.sh *",
         "/usr/local/sbin/sa02m-set-storage-auto-format",
         "/usr/local/sbin/sa02m-web-update-check",
-        "/usr/local/sbin/sa02m-web-update-apply",
-        "/usr/bin/systemctl start sa02m-update.service",
-        "/usr/bin/systemctl stop sa02m-update.service",
-        "/usr/bin/systemctl reset-failed sa02m-update.service",
-        "/usr/bin/systemctl start sa02m-factory-reset.service",
-        "/usr/local/libexec/sa02m-update-inspect",
+        # Fixed controller owns authenticated update/reset requests and root journals.
+        "/usr/local/libexec/sa02m-update-control",
         "/usr/local/sbin/sa02m-web-backup.sh",
         "/usr/local/sbin/sa02m-web-reboot.sh",
         "/usr/local/sbin/sa02m-web-restart-services.sh",
@@ -1193,6 +1192,20 @@ for carrier in PIN_CARRIERS:
         # (the circularity that made the first draft of this check hollow). The
         # leading class must NOT exclude `/` or `.` — every install line writes
         # the basename right after a slash.
+        if carrier == "etc/sa02m-web-update-apply.sh":
+            # Online delivery now delegates exclusively to the shared transaction
+            # runner. Preserve the old per-helper assertion through its real map.
+            handoff = ('exec "$RUNNER" apply' in text and
+                       'if handoff_to_shared_runner; then' in text and
+                       'E_BOOTSTRAP_REQUIRED' in text and
+                       not re.search(r"^\s*(rsync|install)\s", text, re.M))
+            mapped = map_dst(src) if map_dst is not None else None
+            if handoff and Path(src).is_file() and mapped == dst:
+                ok("%s delegates and shared overlay delivers %s to %s" % (carrier, src, dst))
+                checked_pin += 1
+            else:
+                bad("PIN WITHOUT HELPER: shared handoff/map/source missing for %s -> %s" % (src, dst))
+            continue
         if re.search(r"(?<![\w-])%s(?![\w.-])" % re.escape(base), text):
             ok("%s deploys the panel AND delivers %s (granted by sudoers.d/%s)"
                % (carrier, base, ",".join(grants)))

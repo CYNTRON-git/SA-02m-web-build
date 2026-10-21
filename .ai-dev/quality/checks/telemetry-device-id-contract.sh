@@ -86,6 +86,8 @@ PAT3='sa02m-[<{(]?[$]?[{(]?[A-Za-z_]{0,12}[Hh][Oo][Ss][Tt][Nn][Aa][Mm][Ee]'
 # Topic-form hits carrying one of these prefixes are not the retired id. Keep
 # the list NARROW: a bare `/devices/sa02m-` entry would blind the sweep.
 SANCTIONED_PREFIXES=(
+    "/devices/sa02m-audio'"   # exact quoted recorder id in the ACL prefix matcher; no suffix admitted
+
     '/devices/sa02m-bridge'   # the bridge STATUS device (docs/MQTT_TOPICS.md, «sa02m-bridge»)
     '/devices/sa02m-rules-'   # per-scenario VIRTUAL device sa02m-rules-{id} (docs/MQTT_TOPICS.md:100; docs/contracts/cloud-scenarios.md §MQTT mirror) — retained on deployed boards since 1.0.6.37, a rename would orphan that subtree
     '/devices/sa02m-audio/'   # the audio recorder's FIXED device id sa02m-audio (docs/contracts/audio-recorder.md §2, 1.0.7.4) — a subsystem id like sa02m-bridge, never hostname-derived; the trailing slash keeps the entry from excusing any longer sa02m-audio* id
@@ -155,6 +157,7 @@ printf '%s\n' 'f"sa02m-{hostname}"' 'sa02m-<hostname> — id телеметри�
 printf '%s\n' '/devices/sa02m-bridge/controls/devices_online' \
               '/devices/sa02m-rules-s1/controls/rule_enabled' \
               '/devices/sa02m-rules/meta/error' \
+              "/devices/sa02m-audio'" \
               'sa02m-<serial> cloud enrollment' \
               'RAW_IMG="$WORK/sa02m-${STAMP}-raw.img"' \
               '/devices/SA-02m/controls/beeper' > "$GOOD"
@@ -164,6 +167,10 @@ grep -Eq "$PAT3" "$BAD" || fail "A0: pattern 3 no longer matches its known-bad f
 if sweep_file "$GOOD" | grep -q .; then
     fail "A0: a pattern widened onto a legitimate look-alike:"
     sweep_file "$GOOD" | sed 's/^/      /'
+fi
+printf '%s\n' '/devices/sa02m-audio-unexpected/controls/power' > "$TMP/audio-suffix.txt"
+if ! sweep_file "$TMP/audio-suffix.txt" | grep -q .; then
+    fail "A0: exact quoted audio id exemption admitted a different device id"
 fi
 [ "$FAIL" -eq 0 ] && ok "patterns detect the known-bad forms and spare the look-alikes"
 

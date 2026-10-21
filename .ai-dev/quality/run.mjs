@@ -42,7 +42,10 @@
 // gate's status is also read directly (comment-mutation-proof), where a new
 // non-zero "green" would read as RED. A harness that has not opted in still
 // reads PASS on a partial run; which ones have: the note above. A row that
-// itself runs other gates unsets QUALITY_SKIP_LOG for them, or their skips
+// Native unittest "OK (skipped=N)" summaries are also collected from the
+// command output. Output is spooled to a per-row file and replayed on completion;
+// an unreadable evidence file fails the row. A missing optional skip log is empty.
+// A row that itself runs other gates unsets QUALITY_SKIP_LOG for them, or their skips
 // would land in its own log.
 //
 // Strict mode — QUALITY_STRICT set to anything but ""/0/false/no/off (see
@@ -381,12 +384,29 @@ export function run(beat, root, registryPath, touchedFiles, opts) {
       }
       const skipLog = path.join(skipDir, `${i}.log`).replace(/\\/g, "/");
       let status = 0;
+      const outputLog = path.join(skipDir, `${i}.output`);
+      const fd = fs.openSync(outputLog, "w");
       try {
-        execSync(row.run, { cwd: root, stdio: "inherit", env: { ...process.env, QUALITY_SKIP_LOG: skipLog } });
+        execSync(row.run, { cwd: root, stdio: ["inherit", fd, fd], env: { ...process.env, QUALITY_SKIP_LOG: skipLog } });
       } catch (e) {
-        status = e && typeof e.status === "number" ? e.status : null; // null = killed by a signal
+        status = e && typeof e.status === "number" ? e.status : null;
+      } finally {
+        fs.closeSync(fd);
       }
-      const skippedChecks = readSkipLog(skipLog);
+      let skippedChecks;
+      try {
+        const output = fs.readFileSync(outputLog, "utf8");
+        process.stdout.write(output);
+        skippedChecks = readSkipLog(skipLog);
+        // unittest reports skips on stderr, independently of our side channel.
+        for (const match of output.matchAll(/^OK \([^\r\n]*?skipped=(\d+)[^\r\n]*\)\s*$/gm)) {
+          if (Number(match[1])) skippedChecks.push(`${match[1]} unittest tests skipped`);
+        }
+      } catch (e) {
+        console.error(`FAIL  ${row.id} - cannot read verification evidence: ${e.message}`);
+        failed++;
+        return;
+      }
       if (status === 0 && skippedChecks.length === 0) {
         console.log(`PASS  ${row.id}`);
       } else if (status === 0) {
@@ -431,8 +451,9 @@ function readSkipLog(file) {
   let text;
   try {
     text = fs.readFileSync(file, "utf8");
-  } catch {
-    return []; // the row never wrote it
+  } catch (e) {
+    if (e.code === "ENOENT") return []; // the row never wrote it
+    throw e;
   }
   return text.split(/\r?\n/).map((l) => l.trim()).filter(Boolean);
 }

@@ -80,6 +80,12 @@
 # naming the moved line; both stayed ALL OK under the first cut's literal
 # anchor. Cases (`check_csrf(` in service.py and api.py) registered in
 # comment-mutation-proof.
+# RE-ANCHORED 2026-10-21 (1.0.7.5, UPD-01..03): the four update/reset rows moved
+# from their sudo/nohup lines to the controller calls; on that tree the old
+# ledger was RED exactly as the pins promise — 4 anchors matching 0 live lines
+# and the sweep at 29/48 < floor 31 (the three lib-calling CGIs carried no
+# trigger token until web_update_control joined TRIGGER_ERE). Case
+# `web_csrf_require` in web_update_cancel.cgi registered in comment-mutation-proof.
 #
 # Run: bash .ai-dev/quality/checks/cgi-csrf-policy.sh
 #      CGI_DIR=<dir> judges another copy of cgi-bin (the RED run).
@@ -119,20 +125,27 @@ services_ctrl.cgi|nohup sudo -n "$CTL" "$ACTION" "$SID"
 storage_format_set.cgi|sudo -n /usr/local/sbin/sa02m-set-storage-auto-format "$VAL"
 variant.cgi|sudo /usr/local/sbin/sa02m-apply-variant.sh "$VARIANT"
 web_creds.cgi|sudo /usr/local/sbin/sa02m-commit-web-env
-web_factory_reset.cgi|sudo -n /usr/bin/systemctl start sa02m-factory-reset.service
-web_update_apply.cgi|nohup sudo -n /usr/local/sbin/sa02m-web-update-apply
-web_update_cancel.cgi|["sudo", "-n", "/usr/bin/systemctl", "stop", "sa02m-update.service"]
+web_factory_reset.cgi|sudo -n /usr/local/libexec/sa02m-update-control factory-reset SA02M-RESET true
+web_update_apply.cgi|web_update_control apply "$CONFIRM"
+web_update_cancel.cgi|web_update_control cancel
 web_update_check.cgi|sudo -n /usr/local/sbin/sa02m-web-update-check --manual
-web_update_upload.cgi|UPLOAD_JSON=$(
+web_update_upload.cgi|web_update_control upload "${CONTENT_TYPE:-}" "${CONTENT_LENGTH:-}"
 sa02m_agent_api.cgi|timeout 15 sudo -n /usr/local/sbin/sa02m-agent-api-ctl.sh enable
 sa02m_audio_api.cgi|TRIG_OUT=$(timeout 11 sudo -n /usr/local/sbin/sa02m-audio-web-trigger.sh "$VERB" 2>/dev/null) || TRIG_RC=$?
 '
 # Notes on three anchors: services_ctrl.cgi runs `sudo CTL list` (a read) on
 # GET at :58 BEFORE the token at :71 — the anchor is the ACTION launch, not the
-# first sudo. web_update_upload.cgi runs `sudo inspect` (a read of an already
-# uploaded package) on its GET branch before the token; the mutation is the
-# multipart receive on the POST branch (UPLOAD_JSON=$( … receive_multipart_file)
-# after web_csrf_require. cpu_profile / kernel_ctrl read `status --json` on GET;
+# first sudo. Since 1.0.7.5 the four update/reset endpoints mutate through the
+# fixed root controller: web_update_{apply,cancel,upload}.cgi call
+# `web_update_control <op>` (lib_web_update_control.sh → `sudo -n
+# /usr/local/libexec/sa02m-update-control`), so that lib call IS their trigger
+# token (TRIGGER_ERE below) and their anchor; web_factory_reset.cgi still calls
+# sudo itself (its one controller line). web_update_upload.cgi runs
+# `web_update_control inspect` (a read) on its GET branch before the token; the
+# mutation is the `upload` call on the POST branch after web_csrf_require.
+# web_update_apply.cgi carries TWO controller calls — `apply` (the file POST
+# branch) anchored here, `online` (the legacy GitHub branch) region-pinned by
+# web-update-csrf-contract. cpu_profile / kernel_ctrl read `status --json` on GET;
 # the anchor is the `set` on the POST branch. mqtt_tcp_probe.cgi carries no
 # trigger token (www-data sockets, no sudo) so the sweep cannot discover it —
 # ledgered by declaration; its "mutation" is the outbound probe launch, and it
@@ -167,7 +180,7 @@ DAEMON_FLOOR=3
 
 # Trigger tokens (ERE on a comment-stripped line). The sudo form also catches
 # the python-list spelling ["sudo", …] that a `sudo ` (trailing space) grep misses.
-TRIGGER_ERE='(^|[^A-Za-z0-9_./-])sudo([^A-Za-z0-9_-]|$)|mosquitto_pub|systemctl[[:space:]]+(-n[[:space:]]+)?(start|stop|restart|reload|enable|disable|mask|unmask)([^-]|$)|>>?[[:space:]]*/etc/|tee[[:space:]]+(-a[[:space:]]+)?/etc/|sa02m_hw_i2c_write_channel_web|sa02m_hw_gpio_write_channel'
+TRIGGER_ERE='(^|[^A-Za-z0-9_./-])sudo([^A-Za-z0-9_-]|$)|web_update_control([^A-Za-z0-9_]|$)|mosquitto_pub|systemctl[[:space:]]+(-n[[:space:]]+)?(start|stop|restart|reload|enable|disable|mask|unmask)([^-]|$)|>>?[[:space:]]*/etc/|tee[[:space:]]+(-a[[:space:]]+)?/etc/|sa02m_hw_i2c_write_channel_web|sa02m_hw_gpio_write_channel'
 
 # ── helpers (capture-then-match; no early-exit pipe) ────────────────────────
 rows_of() {  # $1 = ledger text → "cgi|rest" lines, blanks dropped

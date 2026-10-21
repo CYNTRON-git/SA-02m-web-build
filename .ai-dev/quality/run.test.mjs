@@ -234,6 +234,34 @@ check(coversToRegex('etc/') instanceof RegExp, 'coversToRegex() returns a RegExp
 check(fileMatchesCovers(['etc/x'], ['nope/', 'etc/']) === true,
   'fileMatchesCovers() ORs across patterns — a later pattern still matches');
 
+// ── B2. every `covers` entry of every registry row selects >=1 real file ──
+// A wildcard-free entry is a PREFIX (B above), so `"etc/sa02m-update"` compiles
+// to /^etc\/sa02m-update(\/.*)?$/ and matches NOTHING — the row never ran under
+// --touched when the files it names were edited (status review F1, 1.0.7.5:
+// three dead entries across port-coordinator / update-control-boundaries; the
+// author meant `etc/sa02m-update*`). The registry itself is the fixture: every
+// entry must select at least one file git knows (tracked, or untracked and not
+// ignored — a row may name a script added in the same change). Non-vacuous:
+// the enumeration must see >=100 entries over >=1000 files.
+{
+  const regRoot = dirname(dirname(dirname(fileURLToPath(import.meta.url))));
+  const known = execSync('git ls-files -z --cached --others --exclude-standard', { cwd: regRoot, encoding: 'utf8', maxBuffer: 64 * 1024 * 1024 })
+    .split('\0').filter(Boolean);
+  const reg = JSON.parse(readFileSync(runner.resolveRegistry(regRoot), 'utf8'));
+  let entries = 0;
+  const dead = [];
+  for (const row of reg.tools || []) {
+    for (const pattern of row.covers || []) {
+      entries++;
+      if (!fileMatchesCovers(known, [pattern])) dead.push(row.id + ': ' + JSON.stringify(pattern));
+    }
+  }
+  check(known.length >= 1000 && entries >= 100,
+    'registry covers: the enumeration saw ' + entries + ' entries over ' + known.length + ' known files (floors 100 / 1000)');
+  check(dead.length === 0,
+    'registry covers: every entry selects >=1 known file' + (dead.length ? ' — dead entries (a bare prefix that is really a glob?): ' + dead.join(', ') : ''));
+}
+
 // ── D. a documented environment skip is reported as SKIP, never as PASS ───
 // A row that cannot run here (its tool is not installed) used to exit 0, and
 // the runner printed `PASS` for it — five rows did exactly that on a box
@@ -247,14 +275,17 @@ function runCaptured(rows, beat = 'build', opts) {
   const lines = [];
   const origLog = console.log;
   const origErr = console.error;
+  const origWrite = process.stdout.write;
   console.log = (...a) => { lines.push(a.join(' ')); };
   console.error = (...a) => { lines.push(a.join(' ')); };
+  process.stdout.write = (text) => { lines.push(String(text).trimEnd()); return true; };
   let rc;
   try {
     rc = run(beat, d, reg, null, opts);
   } finally {
     console.log = origLog;
     console.error = origErr;
+    process.stdout.write = origWrite;
     rmSync(d, { recursive: true, force: true });
   }
   return { rc, out: lines.join('\n') };
@@ -632,6 +663,20 @@ check(process.env.QUALITY_SKIP_LOG === undefined,
 // files / 68 rows against the branch's true 6 files; 1.0.6.62 review A9). The
 // committed half is now `$(git merge-base <ref> HEAD)..HEAD` — for an explicit
 // base and for the origin/main / main fallbacks alike.
+// A missing side channel is optional; an unreadable one is lost evidence.
+{
+  const row = { id: 'g-unreadable', beat: 'build', run: 'node -e "require(\'fs\').mkdirSync(process.env.QUALITY_SKIP_LOG)"' };
+  const { rc, out } = runCaptured([row]);
+  check(rc === 1 && /^FAIL  g-unreadable/m.test(out), 'partial: unreadable skip log fails closed');
+}
+{
+  const row = { id: 'g-unittest', beat: 'build', run: 'node -e "console.error(\'Ran 3 tests in 0.1s\'); console.error(\'OK (skipped=2)\')"' };
+  const { rc, out } = runCaptured([row]);
+  check(rc === 0 && /^PARTIAL  g-unittest/m.test(out) && /2 unittest/.test(out), 'partial: native unittest skips are collected');
+  const strict = runCaptured([row], 'build', { strict: true });
+  check(strict.rc === 1, 'partial: native unittest skips fail strict mode');
+}
+
 const dir3 = mkdtempSync(join(tmpdir(), 'sa02m-run-mjs-test-mergebase-'));
 function git3(cmd) {
   return execSync('git ' + cmd, { cwd: dir3, stdio: 'pipe', env, encoding: 'utf8' }).trim();
