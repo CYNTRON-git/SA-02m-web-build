@@ -121,7 +121,8 @@ sa02m_atomic_install -m 0755 -o root -g root \
 # owner/group/mode only on a regular, singly-linked file through an O_NOFOLLOW
 # fd (the scripts/06d-homeconnect.sh pattern). `-I -B`: no module from the
 # operator's cwd or PYTHONPATH, no __pycache__ written into /opt as root.
-python3 -I -B - "$INSTALL_DIR" /etc/sa02m-audio www-data "$AU_USER" sa02m-audio.conf voice-allow.json <<'PY'     || log WARN "[15-audio] конфиг или белый список голосовых команд в /etc/sa02m-audio не проверены (python3)"
+python3 -I -B - "$INSTALL_DIR" /etc/sa02m-audio www-data "$AU_USER" sa02m-audio.conf voice-allow.json <<'PY' \
+    || log WARN "[15-audio] конфиг или белый список голосовых команд в /etc/sa02m-audio не проверены (python3)"
 import grp, os, pwd, stat, sys
 pkg, conf_dir, owner, group = sys.argv[1:5]
 uid = pwd.getpwnam(owner).pw_uid
