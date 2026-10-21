@@ -115,6 +115,16 @@
       "dst": "/usr/local/sbin/sa02m-restore-backup.sh",
       "mode": "0755",
       "owner": "root:root"
+    },
+    "etc/sa02m-update-control.sh": {
+      "dst": "/usr/local/libexec/sa02m-update-control",
+      "mode": "0755",
+      "owner": "root:root"
+    },
+    "etc/sa02m-stacks-policy.sh": {
+      "dst": "/usr/local/lib/sa02m-stacks-policy.sh",
+      "mode": "0644",
+      "owner": "root:root"
     }
   },
   "etc_helper_renames": {

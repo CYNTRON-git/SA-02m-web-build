@@ -84,6 +84,7 @@ printf '%s\n' "\$*" >> "$T/sudo.calls"
 printf '%s' "\$\$" > "$STATE/update.lock"
 sleep 1.2
 rm -f "$STATE/update.lock" "$T/sudo.live.\$\$"
+printf '%s\n' '{"ok":true,"status":"running","http_status":202}'
 exit 0
 SHIM
 chmod +x "$BIN/sudo"
@@ -144,8 +145,8 @@ expect_launch() {
   local label="$1" body code
   body=$(run_cgi)
   code=$(code_of "$body")
-  if sudo_called && grep -q 'sa02m-web-update-apply' "$T/sudo.calls" && [ -z "$code" ] && printf '%s' "$body" | grep -q '"status":"running"'; then
-    ok "$label → launched (sudo sa02m-web-update-apply), status running"
+  if sudo_called && grep -q 'sa02m-update-control online' "$T/sudo.calls" && [ -z "$code" ] && printf '%s' "$body" | grep -q '"status":"running"'; then
+    ok "$label → accepted (sudo sa02m-update-control online), status running"
   else
     bad "$label → sudo called: $(sudo_called && echo yes || echo no), code '${code:-none}' (want a launch) — body: ${body##*$'\n\n'}"
   fi
@@ -321,6 +322,29 @@ SHIM
 chmod +x "$BIN/systemctl"
 write_txn verifying "$OLD_TS"; printf '%s\n' "$DEAD_PID" > "$UPD/update.lock"
 expect_get "G6 verifying, 600 s old, dead pid, sa02m-update-verify.service activating (oneshot mid-run)" False running None
+# G7 the online path (1.0.7.5): the controller starts sa02m-update-download.service,
+# the launcher exec's the runner INSIDE that unit and the runner escapes only
+# fcgiwrap's cgroup - no transient sa02m-update-apply-* unit, and after the
+# exec the legacy lock pid no longer matches the launcher. The unit half must
+# count the download unit, or an online apply reads «stale — reboot» 120 s into
+# its health gate and reboot.cgi lets the reboot through (review B3; R5 below).
+cat > "$BIN/systemctl" <<'SHIM'
+#!/bin/bash
+case "${1:-}" in
+  is-active) exit 3 ;;
+  show)
+    u=""; for a in "$@"; do u=$a; done
+    case "$*" in *ActiveState*) if [ "$u" = sa02m-update-download.service ]; then echo activating; else echo inactive; fi ;; esac
+    exit 0 ;;
+  *) exit 0 ;;
+esac
+SHIM
+chmod +x "$BIN/systemctl"
+write_txn applying "$OLD_TS"; printf '%s\n' "$DEAD_PID" > "$UPD/update.lock"
+expect_get "G7 applying, 600 s old, dead pid, sa02m-update-download.service activating (online apply)" False running None
+body=$(run_get)
+[ "$(json_field "$body" runner_alive)" = "True" ] && ok "G7 runner_alive=true reported" \
+  || bad "G7 runner_alive: $(json_field "$body" runner_alive) (want True) — the online apply has no other liveness source"
 # ═══ R. reboot.cgi refuses while a LIVE runner works, reboots a stale one ═══
 # (1.0.6.52, F5a) A hard reset mid-apply was one click away: reboot.cgi ran
 # `reboot -f` with no look at the transaction. Now: applying / verifying /
@@ -408,6 +432,27 @@ if [ "$R_RUN" = 1 ]; then
   body=$(run_reboot "wrong-token")
   if printf '%s' "$body" | grep -q '"error_code":"E_CSRF"' && ! sudo_called && ! nohup_called; then ok "R4 wrong CSRF → E_CSRF before the update guard, no reboot"
   else bad "R4 wrong CSRF → body: ${body##*$'\n\n'}, sudo called: $(sudo_called && echo yes || echo no), reboot chain launched: $(nohup_called && echo yes || echo no)"; fi
+  # R5 online apply (G7): dead lock pid, the download unit activating → the
+  # runner is alive inside that unit, the reboot is refused (review B3)
+  cat > "$BIN/systemctl" <<'SHIM'
+#!/bin/bash
+case "${1:-}" in
+  is-active) exit 3 ;;
+  show)
+    u=""; for a in "$@"; do u=$a; done
+    case "$*" in *ActiveState*) if [ "$u" = sa02m-update-download.service ]; then echo activating; else echo inactive; fi ;; esac
+    exit 0 ;;
+  *) exit 0 ;;
+esac
+SHIM
+  chmod +x "$BIN/systemctl"
+  write_txn applying "$OLD_TS"; printf '%s\n' "$DEAD_PID" > "$UPD/update.lock"
+  body=$(run_reboot)
+  if printf '%s' "$body" | grep -q '"error_code":"E_UPDATE_RUNNING"' && ! sudo_called && ! nohup_called; then
+    ok "R5 online apply (download unit activating, dead lock pid) → E_UPDATE_RUNNING, no reboot"
+  else
+    bad "R5 online apply → body: ${body##*$'\n\n'}, reboot chain launched: $(nohup_called && echo yes || echo no) (want E_UPDATE_RUNNING, no launch) — a reboot mid-health-gate rolls a healthy update back"
+  fi
 else
   echo "SKIP  R1–R4 not run — the reboot.cgi copy failed its sandbox guard (counted FAIL above)"
 fi
@@ -476,6 +521,7 @@ case "$1" in
     printf '{"schema_version":1,"id":"abcdef12-0000-4000-8000-000000000053","operation":"update","source":"github","stage":"validating","progress_pct":0,"result":"pending","error_code":null,"error_message":null,"target_version":"1.0.6.38","updated_at":"%s"}\n' "\$(date -u +%Y-%m-%dT%H:%M:%SZ)" > "$UPD/transaction.json"
     printf '%s\n' "$DEAD_PID" > "$UPD/update.lock" ;;
 esac
+case "$1" in txn|txn-deadpid) printf '%s\n' '{"ok":true,"status":"running","http_status":202}' ;; esac
 exit 0
 SHIM
   chmod +x "$BIN/sudo"

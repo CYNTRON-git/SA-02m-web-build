@@ -559,7 +559,10 @@ fi
 #   drop etc/tmpfiles.d/sa02m-web-login.conf            -> 67 + 68 RED
 #   drop the install from scripts/03-webserver.sh       -> 68 RED (installer)
 #   drop the install from scripts/update-www-only.sh    -> 68 RED (www-only)
-#   drop the install from etc/sa02m-web-update-apply.sh -> 68 RED (legacy rsync)
+#   (until 1.0.7.4: drop the install from etc/sa02m-web-update-apply.sh -> 68 RED;
+#    since 1.0.7.5 the launcher delivers nothing itself - UPD-03 removed its
+#    legacy rsync path, the shared OTA runner's tmpfiles.d mapping below IS that
+#    path's delivery - so it is no longer a site of this case)
 #   drop the line from scripts/offline-update-allowlist.txt -> 68 RED (offline)
 #   comment out any of the above (`#` in front)         -> RED, not green
 
@@ -652,7 +655,9 @@ for _entry in "${RUNTIME_DIRS[@]}"; do
         continue
     fi
     _base=$(basename "$_conf")
-    for _path in scripts/03-webserver.sh scripts/update-www-only.sh etc/sa02m-web-update-apply.sh; do
+    # The GitHub launcher left this list in 1.0.7.5: it installs nothing itself
+    # any more (UPD-03) - its delivery IS the shared OTA runner, asserted below.
+    for _path in scripts/03-webserver.sh scripts/update-www-only.sh; do
         stripped_has "$_path" "$_base" \
             && ok "68 $_path installs $_base (provisions $_dir)" \
             || bad "68 $_path does NOT install $_base — a board updated through that path gets the code that needs $_dir but never the dir, and the feature silently fails open"

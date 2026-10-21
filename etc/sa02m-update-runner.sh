@@ -163,7 +163,7 @@ ensure_dirs() {
         "$STATEDIR/runner" \
         "$STATEDIR/backup-export"
     chmod 0755 "$STATEDIR" 2>/dev/null || true
-    chmod 0770 "$STATEDIR/incoming" 2>/dev/null || true
+    chmod 0700 "$STATEDIR/incoming" 2>/dev/null || true
     chmod 0750 "$STATEDIR/staging" "$STATEDIR/rollback" "$STATEDIR/state" "$STATEDIR/runner" 2>/dev/null || true
 }
 
@@ -189,7 +189,9 @@ migrate_legacy_state() {
 try_lock() {  # [WAIT_SECS] — rc 1 when another runner holds the lock
     local wait=${1:-}
     mkdir -p "$STATEDIR"
-    exec 9>>"$LOCKFILE"
+    if [ "$(readlink /proc/$$/fd/9 2>/dev/null || true)" != "$LOCKFILE" ]; then
+        exec 9>>"$LOCKFILE"
+    fi
     if [ -n "$wait" ]; then
         flock -w "$wait" 9 || return 1
     else
@@ -695,6 +697,8 @@ MPLC_OTA_PLUGINS = frozenset({
 
 def map_dst(rel: str):
     rel = rel.replace("\\", "/").lstrip("./")
+    if rel == "etc/sa02m-update-state-migrate.sh":
+        return None  # Checkout-only installer preflight; not a runtime helper.
     if rel.startswith("www/network_config/"):
         # rel is www/network_config/... → /var/www/network_config/...
         return "/var/" + rel
@@ -719,7 +723,7 @@ def map_dst(rel: str):
         return "/opt/mplc4/" + name
     # Helpers etc/sa02m-*.sh → /usr/local/sbin or lib
     if rel.startswith("etc/") and name.startswith("sa02m-"):
-        if name.endswith("-lib.sh") or name in ("sa02m-web-build-lib.sh", "sa02m-web-auth-lib.sh"):
+        if name.endswith("-lib.sh") or name in ("sa02m-web-build-lib.sh", "sa02m-web-auth-lib.sh", "sa02m-stacks-policy.sh"):
             return "/usr/local/lib/" + name
         # Privileged helpers sudo grants by an explicit path must land at THAT
         # path — a stripped extension deploys a twin nobody calls and leaves the
@@ -744,12 +748,12 @@ def map_dst(rel: str):
                 "sa02m-rs485-stats.sh", "sa02m-kernel-select.sh",
                 "sa02m-cpu-profile.sh", "sa02m-web-backup.sh",
                 "sa02m-restore-backup.sh", "sa02m-update-runner.sh",
-                "sa02m-update-inspect.sh", "sa02m-factory-reset-runner.sh",
+                "sa02m-update-inspect.sh", "sa02m-update-control.sh", "sa02m-factory-reset-runner.sh",
                 "sa02m-iface-conf-write.sh", "sa02m-usb-power.sh",
                 "sa02m-ensure-eth1-dhcp-hook.sh",
                 "sa02m-conf-rm.sh", "sa02m-mplc-project-deploy.sh",
             ):
-                if "runner" in name or "inspect" in name or "factory-reset" in name:
+                if "runner" in name or "inspect" in name or "factory-reset" in name or name == "sa02m-update-control.sh":
                     return "/usr/local/libexec/" + name.replace(".sh", "")
                 return "/usr/local/sbin/" + name
             return "/usr/local/sbin/" + base
@@ -845,7 +849,7 @@ manifest = {
     "repo_commit": commit if re.fullmatch(r"[0-9a-f]{40}", commit) else ("0" * 40),
     "built_at": __import__("time").strftime("%Y-%m-%dT%H:%M:%SZ", __import__("time").gmtime()),
     "signing_key_id": "github-unsigned",
-    "min_updater": "1.0.5.66",
+    "min_updater": "1.0.7.5",
     "min_version": "1.0.5.60",
     "payload": {"size": 0, "sha256": "0" * 64, "uncompressed_size_max": 1},
     "preflight": {
@@ -1441,9 +1445,12 @@ cleanup_b1_deploy_artifacts() {
             rm -f "$_path" && log "cleanup: removed obsolete sudoers $_path"
         fi
     done
+    # sa02m-stacks-policy: the pre-1.0.7.5 map_dst stripped the .sh and landed
+    # the lib under sbin, beside the real /usr/local/lib/sa02m-stacks-policy.sh.
     for _p in /usr/local/sbin/sa02m-iface-conf-write /usr/local/sbin/sa02m-usb-power \
               /usr/local/sbin/sa02m-gateway-config-apply /usr/local/sbin/sa02m-mqtt-config-apply \
-              /usr/local/sbin/sa02m-conf-rm /usr/local/sbin/sa02m-mplc-project-deploy; do
+              /usr/local/sbin/sa02m-conf-rm /usr/local/sbin/sa02m-mplc-project-deploy \
+              /usr/local/sbin/sa02m-stacks-policy; do
         if [ -f "$_p" ] && [ ! -L "$_p" ]; then
             rm -f "$_p" && log "cleanup: removed extension-less B1 helper twin $_p"
         fi
@@ -1988,6 +1995,9 @@ PY
         fi
     fi
     restart_after_rollback "$txn" || true
+    if [ "${RUNNER_CONTEXT:-}" != boot ]; then
+        restore_port_consumers || incomplete="UART service restoration failed"
+    fi
     if [ -n "$incomplete" ]; then
         # Terminal and honest: not rolled_back over a partly restored tree, and
         # not a crash either (a crash here would freeze the stage at
@@ -2000,6 +2010,14 @@ PY
         log "ERROR: rollback INCOMPLETE: $incomplete"
         return 0
     fi
+    if [ "${RUNNER_CONTEXT:-}" = boot ] && txn_has_key port_services; then
+        txn_patch "stage=rolling_back" "result=pending" "port_restore_pending=true" \
+            "error_code=$code" "error_message=${message:-null}"
+        systemctl start --no-block sa02m-update-verify.service || return 1
+        log "rollback files restored; service restoration queued after boot"
+        return 0
+    fi
+    rm -f "$STATEDIR/maintenance"
     txn_patch "stage=rolled_back" "result=rolled_back" "error_code=$code" \
         "error_message=${message:-null}" "finished_at=$(utc_now)"
     cleanup_imaging_lock || true
@@ -2075,6 +2093,7 @@ for u,p in m.items():
     done <<< "$restart_list"
     while IFS= read -r u; do
         [ -n "$u" ] || continue
+        case "$u" in sa02m-port-coordinator|sa02m-flasher|sa02m-modbus-mqtt|sa02m-serial-gateway) txn_has_key port_services && continue ;; esac
         if systemctl is-active --quiet "$u"; then
             _systemctl_bounded 60 restart "$u" || true
             log "restarted after rollback (if-active): $u"
@@ -2083,6 +2102,7 @@ for u,p in m.items():
     while IFS=$'\t' read -r u prefix; do
         [ -n "$u" ] && [ -n "${prefix:-}" ] || continue
         _journal_has_dst_prefix "$txn" "$prefix" || continue
+        case "$u" in sa02m-port-coordinator|sa02m-flasher|sa02m-modbus-mqtt|sa02m-serial-gateway) txn_has_key port_services && continue ;; esac
         if systemctl is-active --quiet "$u"; then
             _systemctl_bounded 60 restart "$u" || true
             log "restarted after rollback (changed, if-active): $u"
@@ -2249,7 +2269,7 @@ for u,p in m.items():
     while IFS= read -r u; do
         [ -n "$u" ] || continue
         case "$u" in
-            fcgiwrap|fcgiwrap.service|nginx|nginx.service) continue ;;
+            fcgiwrap|fcgiwrap.service|nginx|nginx.service|sa02m-port-coordinator|sa02m-flasher|sa02m-modbus-mqtt|sa02m-serial-gateway) continue ;;
         esac
         log "health: restarting $u..."
         _systemctl_bounded 60 restart "$u" || _systemctl_bounded 45 start "$u" || true
@@ -2262,6 +2282,7 @@ for u,p in m.items():
     # `app off`). Here: restart ONLY a currently-active unit, never start one.
     while IFS= read -r u; do
         [ -n "$u" ] || continue
+        case "$u" in sa02m-port-coordinator|sa02m-flasher|sa02m-modbus-mqtt|sa02m-serial-gateway) txn_has_key port_services && continue ;; esac
         if systemctl is-active --quiet "$u"; then
             log "health: restarting (if-active) $u..."
             _systemctl_bounded 60 restart "$u" || true
@@ -2282,6 +2303,7 @@ for u,p in m.items():
             log "health: $u — $prefix unchanged, conditional restart skipped"
             continue
         fi
+        case "$u" in sa02m-port-coordinator|sa02m-flasher|sa02m-modbus-mqtt|sa02m-serial-gateway) txn_has_key port_services && continue ;; esac
         if systemctl is-active --quiet "$u"; then
             log "health: restarting (changed, if-active) $u..."
             _systemctl_bounded 60 restart "$u" || true
@@ -2547,6 +2569,7 @@ for v in vals:
 restart_services_and_health() {
     local txn=$1
     services_enable_and_tmpfiles "$txn" || return 1
+    restore_port_consumers || { HEALTH_FAIL_REASON="UART service restoration failed"; return 1; }
     services_restart_sets "$txn" || return 1
     health_check "$txn"
 }
@@ -2582,9 +2605,102 @@ for u in json.load(open(sys.argv[1],encoding="utf-8")).get("services",{}).get("s
 ' "$mf") || die E_APPLY "manifest read failed (services.stop_before_apply) - nothing deployed"
     while IFS= read -r u; do
         [ -n "$u" ] || continue
-        systemctl stop "$u" 2>/dev/null || true
+        _systemctl_bounded 30 stop "$u" || die E_APPLY "cannot stop $u before apply"
         log "stopped before apply: $u"
     done <<< "$list"
+}
+
+# Shared gate survives self-reexec; the broker preserves the lock inode on restart.
+acquire_port_maintenance() {
+    local gate=/run/sa02m-port-coordinator/maintenance.lock
+    if [ "$(readlink /proc/$$/fd/10 2>/dev/null || true)" = "$gate" ]; then
+        flock -n 10
+        return $?
+    fi
+    mkdir -p "$(dirname "$gate")" || return 1
+    exec 10>>"$gate"
+    flock -n 10 || return 1
+    # Boot recovery precedes all UART units; runtime recovery may find all of
+    # them stopped by this transaction. In either case the durable snapshot was
+    # written only after a successful idle check under this same gate.
+    if [ "${RUNNER_CONTEXT:-}" = boot ]; then
+        return 0
+    fi
+    if txn_has_key port_services; then
+        local active=0 u
+        for u in sa02m-port-coordinator sa02m-flasher sa02m-modbus-mqtt sa02m-serial-gateway; do
+            case "$(systemctl show -p ActiveState --value "$u" 2>/dev/null)" in
+                active|activating|reloading|deactivating) active=1 ;;
+            esac
+        done
+        [ "$active" = 0 ] && return 0
+    fi
+    python3 -I -c 'import sys; sys.path.insert(0,"/opt/sa02m-port-coordinator"); from sa02m_ports import assert_idle_for_maintenance; assert_idle_for_maintenance()' || return 1
+}
+
+stop_port_consumers() {
+    local snapshot u active
+    if ! txn_has_key port_services; then
+        snapshot=$(python3 - <<'PORTSTATE'
+import json,subprocess
+units=["sa02m-port-coordinator", "sa02m-flasher", "sa02m-modbus-mqtt", "sa02m-serial-gateway"]
+states={}
+for unit in units:
+    p=subprocess.run(["systemctl","show","-p","ActiveState","--value",unit],capture_output=True,text=True,timeout=10)
+    state=p.stdout.strip()
+    if state not in {"active","activating","reloading","inactive","failed"}:
+        load=subprocess.run(["systemctl","show","-p","LoadState","--value",unit],capture_output=True,text=True,timeout=10)
+        if load.stdout.strip() != "not-found":
+            raise RuntimeError("cannot snapshot stable service state: "+unit)
+    states[unit]=state in {"active","activating","reloading"}
+print(json.dumps(states))
+PORTSTATE
+        ) || return 1
+        txn_patch "port_services=$snapshot" || return 1
+    fi
+    for u in sa02m-serial-gateway sa02m-modbus-mqtt sa02m-flasher sa02m-port-coordinator; do
+        active=$(txn_get port_services | python3 -c 'import json,sys; print("yes" if json.load(sys.stdin).get(sys.argv[1]) else "no")' "$u") || return 1
+        if [ "$active" = yes ]; then
+            _systemctl_bounded 30 stop "$u" || return 1
+        fi
+    done
+}
+
+# Boot jobs must evaluate inactive consumers before verify removes these guards.
+guard_boot_port_consumers() {
+    [ "${RUNNER_CONTEXT:-}" = boot ] || return 0
+    txn_has_key port_services || return 0
+    [ ! -e /run/sa02m-update-inactive-port-permit ] && [ ! -L /run/sa02m-update-inactive-port-permit ] || return 1
+    local u active dir
+    for u in sa02m-port-coordinator sa02m-flasher sa02m-modbus-mqtt sa02m-serial-gateway; do
+        active=$(txn_get port_services | python3 -c 'import json,sys; print("yes" if json.load(sys.stdin).get(sys.argv[1]) else "no")' "$u") || return 1
+        if [ "$active" = no ]; then
+            dir="/run/systemd/system/$u.service.d"
+            mkdir -p "$dir" || return 1
+            printf '[Unit]\nConditionPathExists=/run/sa02m-update-inactive-port-permit\n' > "$dir/90-sa02m-update-inactive.conf" || return 1
+        fi
+    done
+    _systemctl_bounded 30 daemon-reload
+}
+
+restore_port_consumers() {
+    txn_has_key port_services || return 0
+    local u active removed=0 guard
+    for u in sa02m-port-coordinator sa02m-flasher sa02m-modbus-mqtt sa02m-serial-gateway; do
+        guard="/run/systemd/system/$u.service.d/90-sa02m-update-inactive.conf"
+        if [ -f "$guard" ]; then
+            rm -f "$guard" || return 1
+            removed=1
+        fi
+    done
+    [ "$removed" = 0 ] || _systemctl_bounded 30 daemon-reload || return 1
+    for u in sa02m-port-coordinator sa02m-flasher sa02m-modbus-mqtt sa02m-serial-gateway; do
+        active=$(txn_get port_services | python3 -c 'import json,sys; print("yes" if json.load(sys.stdin).get(sys.argv[1]) else "no")' "$u") || return 1
+        if [ "$active" = yes ]; then
+            _systemctl_bounded 45 start "$u" || return 1
+            systemctl is-active --quiet "$u" || return 1
+        fi
+    done
 }
 
 # --- main apply / recover ----------------------------------------------------
@@ -2626,7 +2742,7 @@ cmd_apply() {
     migrate_legacy_state
     # After a cgroup handover the previous process has just closed its lock fd:
     # wait for it instead of failing on the race.
-    acquire_lock "${SA02M_UPDATE_ESCAPED:+15}"
+    acquire_lock 15
 
     if ! txn_exists; then
         log "apply: no transaction.json — no-op"
@@ -2650,6 +2766,7 @@ cmd_apply() {
         exit 0
     fi
 
+    acquire_port_maintenance || die E_BUSY "port coordinator unavailable or operation active; refresh/recover first"
     honour_cancel_if_early
 
     local pkg txn previous source overlay_src
@@ -2695,9 +2812,25 @@ cmd_apply() {
         honour_cancel_if_early
         build_rollback_archive "$txn"
 
-        stop_before_apply "$txn"
-        install_imaging_lock
+        exec 8>>"$STATEDIR/control.lock"
+        flock -x 8
+        honour_cancel_if_early
+        printf '%s\n' "$txn" > "$STATEDIR/maintenance.tmp"
+        sync "$STATEDIR/maintenance.tmp"
+        mv -f "$STATEDIR/maintenance.tmp" "$STATEDIR/maintenance"
+        sync "$STATEDIR"
         txn_patch "stage=applying" "progress_pct=35"
+        flock -u 8
+        exec 8>&-
+        if ! stop_port_consumers; then
+            rollback_from_journal "$txn" E_APPLY "cannot stop UART consumers"
+            exit 1
+        fi
+        if ! (stop_before_apply "$txn"); then
+            rollback_from_journal "$txn" E_APPLY "cannot stop services before apply"
+            exit 1
+        fi
+        install_imaging_lock
         self_reexec_before_deploy
     fi
 
@@ -2754,6 +2887,7 @@ cmd_apply() {
         "error_message=null" "finished_at=$(utc_now)"
     cleanup_imaging_lock
     sync
+    rm -f "$STATEDIR/maintenance"
     log "DONE: update applied successfully txn=$txn"
     exit 0
 }
@@ -2812,6 +2946,17 @@ recover_transaction() {
     stage=$(txn_get stage)
     txn=$(txn_get id)
     log "recover: stage=$stage txn=$txn context=${RUNNER_CONTEXT:-runtime}"
+    if [ "$(txn_get operation)" = factory_reset ]; then
+        case "$stage" in
+            done|rolled_back|cancelled|idle) return 0 ;;
+            *) log "E_RECOVERY_REQUIRED: factory reset journal requires explicit root recovery; OTA journal unchanged"; return 1 ;;
+        esac
+    fi
+    case "$stage" in
+        backing_up|applying|verifying|committing|rolling_back)
+            guard_boot_port_consumers || return 1
+            acquire_port_maintenance || { log "ERROR: recovery blocked by UART operation/coordinator; journal retained"; return 1; } ;;
+    esac
     # The hold (if any) was taken before the reboot; reload its value before
     # install_imaging_lock reads a manager that already says 0 (F6).
     load_runtime_wdt_prev
@@ -2883,10 +3028,21 @@ recover_transaction() {
             fi
             ;;
         rolling_back)
+            if [ "$(txn_get port_restore_pending)" = true ]; then
+                systemctl start --no-block sa02m-update-verify.service || return 1
+                return 0
+            fi
             install_imaging_lock || true
             rollback_from_journal "$txn" E_POWER "power loss during rollback"
             ;;
-        done|error|idle|rolled_back)
+        done|rolled_back)
+            # A crash after the terminal journal write may precede marker cleanup.
+            rm -f "$STATEDIR/maintenance"
+            sync "$STATEDIR"
+            log "recover: terminal transaction cleanup for stage=$stage"
+            cleanup_imaging_lock || true
+            ;;
+        error|idle)
             log "recover: no-op for stage=$stage"
             cleanup_imaging_lock || true
             ;;
@@ -2945,6 +3101,16 @@ cmd_verify() {
     stage=$(txn_get stage)
     txn=$(txn_get id)
     case "$stage" in
+        rolling_back)
+            if [ "$(txn_get port_restore_pending)" = true ]; then
+                acquire_port_maintenance || return 1
+                restore_port_consumers || return 1
+                txn_patch "stage=rolled_back" "result=rolled_back" "port_restore_pending=false" "finished_at=$(utc_now)"
+                rm -f "$STATEDIR/maintenance"
+                cleanup_imaging_lock || true
+                return 0
+            fi
+            return 1 ;;
         verifying|committing) ;;
         *)
             log "verify: stage=$stage — no-op"
@@ -2955,6 +3121,8 @@ cmd_verify() {
         log "ERROR [E_INTERNAL]: verify: manifest missing for txn=$txn — stage left at $stage (the panel reports it stale; a reboot retries)"
         exit 1
     fi
+    acquire_port_maintenance || { log "ERROR: verification blocked by UART operation/coordinator; journal retained"; exit 1; }
+    restore_port_consumers || { log "ERROR: UART services not restored; journal retained"; exit 1; }
     log "verify: post-boot verification txn=$txn stage=$stage"
     load_runtime_wdt_prev
     if [ -f "$IMAGING_LOCK" ]; then
@@ -2977,6 +3145,7 @@ cmd_verify() {
         "error_message=null" "finished_at=$(utc_now)"
     cleanup_imaging_lock
     sync
+    rm -f "$STATEDIR/maintenance"
     log "DONE: update verified after boot txn=$txn"
     exit 0
 }
@@ -3011,6 +3180,7 @@ case "$CMD" in
     recover) cmd_recover ;;
     verify) cmd_verify ;;
     reclaim) cmd_reclaim ;;
+    capabilities) printf '%s\n' '{"control_v1":true,"port_maintenance_v1":true}' ;;
     version) printf '%s\n' "$UPDATER_VERSION" ;;
     *)
         echo "usage: $0 apply|recover|verify|reclaim|version" >&2

@@ -50,6 +50,8 @@ etc/nginx/network_config.conf
 # Updater runner/inspect sources (→ /usr/local/libexec/) + public keys + tmpfiles
 etc/sa02m-update-runner.sh
 etc/sa02m-update-inspect.sh
+etc/sa02m-update-control.sh
+etc/sa02m-stacks-policy.sh
 etc/sa02m-update/
 etc/tmpfiles.d/sa02m.conf
 etc/tmpfiles.d/sa02m-update.conf

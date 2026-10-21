@@ -314,6 +314,18 @@ else
         || bad "B15 template without placeholder: rc $rc, live site $(cmp -s "$W/etc/nginx/sites-available/network_config" "$T/b8.orig" && echo same || echo CHANGED)"
 fi
 
+# A failed migration must not overwrite a live custom listener with the default.
+W=$(board persistence_failure)
+render_ref 8080 > "$W/etc/nginx/sites-available/network_config"
+cp "$W/etc/nginx/sites-available/network_config" "$W/before"
+if inst "$W" 'sa02m_web_port_persist() { return 1; }; sa02m_render_nginx_site "$TPL" /var/www/network_config'; then
+    bad "B persistence failure allowed nginx rendering"
+elif cmp -s "$W/before" "$W/etc/nginx/sites-available/network_config"; then
+    ok "B persistence failure refuses rendering and preserves live 8080 bytes"
+else
+    bad "B persistence failure changed live nginx configuration"
+fi
+
 echo "── C. wiring (comment-stripped) ──"
 I="$TREE/install.sh"; M3="$TREE/scripts/03-webserver.sh"; M11="$TREE/scripts/11-devices.sh"; WO="$TREE/scripts/update-www-only.sh"
 stripped_matches_inline "$I" '^[[:space:]]*--port\)[[:space:]]+_ARG_PORT="\$2"' \
@@ -341,8 +353,8 @@ for f in $sweep; do
 done
 if [ "$nsw" -lt 20 ]; then
     bad "C7 the renderer sweep saw only $nsw shell files — the glob is dead"
-elif [ "$hits" = " scripts/lib.sh" ]; then
-    ok "C7 scripts/lib.sh is the ONLY __PORT__ renderer among $nsw shell files"
+elif [ "$hits" = " etc/sa02m-update-runner.sh scripts/lib.sh" ]; then
+    ok "C7 only installer and staged OTA renderers are present among $nsw shell files"
 else
     bad "C7 __PORT__ substitution outside the one renderer:${hits:- none at all}"
 fi

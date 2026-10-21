@@ -4,8 +4,12 @@ set -o pipefail  # catch masked failures in pipes (Y7); set -u deferred pending 
 # 03-webserver.sh  •  nginx + fcgiwrap + sudo + web-app deploy
 # ═══════════════════════════════════════════════════════════════════════════
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+if [ "${SA02M_INSTALL_GUARDED:-0}" != 1 ]; then
+    exec python3 "$SCRIPT_DIR/install-maintenance.py" --require-coordinator "$SCRIPT_DIR/03-webserver.sh" "$@"
+fi
 source "$SCRIPT_DIR/lib.sh"
 check_root
+bash "$SCRIPT_DIR/../etc/sa02m-update-state-migrate.sh" || exit 1
 
 log INFO "=== [03] Настройка веб-сервера ==="
 
@@ -343,7 +347,7 @@ d /var/lib/sa02m-web-build 0755 root root -
 d /run/sa02m-web-sessions 2750 www-data www-data -
 d /run/sa02m-hw-override 0775 www-data www-data -
 d /var/lib/sa02m-update 0755 root root -
-d /var/lib/sa02m-update/incoming 0770 root www-data -
+d /var/lib/sa02m-update/incoming 0700 root root -
 d /var/lib/sa02m-update/staging 0750 root root -
 d /var/lib/sa02m-update/rollback 0750 root root -
 d /var/lib/sa02m-update/state 0750 root root -
@@ -481,6 +485,9 @@ if [ -f "$SCRIPT_DIR/../etc/sa02m-update-runner.sh" ]; then
     sed -i 's/\r$//' /usr/local/libexec/sa02m-update-runner
     sa02m_stamp_runner_version "$SCRIPT_DIR/../www/network_config/VERSION" || true
 fi
+if [ -f "$SCRIPT_DIR/../etc/sa02m-update-control.sh" ]; then
+    sa02m_atomic_install -m 755 "$SCRIPT_DIR/../etc/sa02m-update-control.sh" /usr/local/libexec/sa02m-update-control
+fi
 if [ -f "$SCRIPT_DIR/../etc/sa02m-update-inspect.sh" ]; then
     install -d -m 755 /usr/local/libexec
     sa02m_atomic_install -m 755 "$SCRIPT_DIR/../etc/sa02m-update-inspect.sh" /usr/local/libexec/sa02m-update-inspect
@@ -502,7 +509,7 @@ mkdir -p /etc/sa02m-update/trusted-keys
 if [ -d "$SCRIPT_DIR/../etc/sa02m-update/trusted-keys" ]; then
     install -m 644 "$SCRIPT_DIR/../etc/sa02m-update/trusted-keys/"*.pem /etc/sa02m-update/trusted-keys/ 2>/dev/null || true
 fi
-for _upd_unit in sa02m-update.service sa02m-update-recover.service sa02m-update-verify.service sa02m-factory-reset.service; do
+for _upd_unit in sa02m-update.service sa02m-update-download.service sa02m-update-recover.service sa02m-update-verify.service sa02m-factory-reset.service; do
     if [ -f "$SYSTEMD_DIR/$_upd_unit" ]; then
         sa02m_atomic_install -m 644 "$SYSTEMD_DIR/$_upd_unit" "/etc/systemd/system/$_upd_unit"
         sed -i 's/\r$//' "/etc/systemd/system/$_upd_unit"
@@ -616,7 +623,7 @@ if [ -f "$ETC_DIR/tmpfiles.d/sa02m-update.conf" ]; then
     fi
     log OK "tmpfiles sa02m-update.conf"
 fi
-for _upd_unit in sa02m-update.service sa02m-update-recover.service sa02m-update-verify.service sa02m-factory-reset.service; do
+for _upd_unit in sa02m-update.service sa02m-update-download.service sa02m-update-recover.service sa02m-update-verify.service sa02m-factory-reset.service; do
     if [ -f "$SYSTEMD_DIR/$_upd_unit" ]; then
         sa02m_atomic_install -m 644 "$SYSTEMD_DIR/$_upd_unit" "/etc/systemd/system/$_upd_unit"
         sed -i 's/\r$//' "/etc/systemd/system/$_upd_unit"

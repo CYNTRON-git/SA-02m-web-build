@@ -745,9 +745,13 @@ sa02m_remove_obsolete_www_sudoers() {
 # same divergence, found by the widened sudoers-pin-contract gate.
 sa02m_remove_stale_b1_helper_twins() {
     local _p
+    # sa02m-stacks-policy: the GitHub OTA's old map_dst stripped the .sh of
+    # etc/sa02m-stacks-policy.sh and landed it under sbin, beside the real
+    # /usr/local/lib/sa02m-stacks-policy.sh (1.0.7.5; backlog 2026-10-14).
     for _p in /usr/local/sbin/sa02m-iface-conf-write /usr/local/sbin/sa02m-usb-power \
               /usr/local/sbin/sa02m-gateway-config-apply /usr/local/sbin/sa02m-mqtt-config-apply \
-              /usr/local/sbin/sa02m-conf-rm /usr/local/sbin/sa02m-mplc-project-deploy; do
+              /usr/local/sbin/sa02m-conf-rm /usr/local/sbin/sa02m-mplc-project-deploy \
+              /usr/local/sbin/sa02m-stacks-policy; do
         if [ -f "$_p" ] && [ ! -L "$_p" ]; then
             rm -f "$_p" \
                 && log OK "удалён helper без .sh (OTA twin): $_p" \
@@ -824,7 +828,7 @@ sa02m_web_port_migrate() {
     live=$(sa02m_web_port_from_site "$SA02M_NGINX_SITE") || return 0
     [ "$live" = "$SA02M_WEB_PORT_DEFAULT" ] && return 0
     log INFO "Порт веб-панели $live взят из действующего конфига nginx (установка с --port до сохранения порта)"
-    sa02m_web_port_persist "$live" || log WARN "Не удалось сохранить порт $live — следующая перерисовка nginx вернёт $SA02M_WEB_PORT_DEFAULT"
+    sa02m_web_port_persist "$live" || { log ERR "Cannot persist live web port $live; nginx config preserved"; return 1; }
     return 0
 }
 
@@ -848,8 +852,8 @@ sa02m_web_port_effective() {
 # rc 0 rendered; 1 failure (logged).
 sa02m_render_nginx_site() {
     local tpl=$1 root=$2 port got tmp
-    sa02m_web_port_migrate
-    port=$(sa02m_web_port_effective)
+    sa02m_web_port_migrate || return 1
+    port=$(sa02m_web_port_effective) || return 1
     tmp=$(mktemp) || { log ERR "nginx: не удалось создать временный файл"; return 1; }
     if ! sed "s|__PORT__|$port|g; s|__WEB_ROOT__|$root|g" "$tpl" > "$tmp"; then
         rm -f -- "$tmp"

@@ -31,6 +31,9 @@
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+if [ "${SA02M_INSTALL_GUARDED:-0}" != 1 ]; then
+    exec python3 "$SCRIPT_DIR/scripts/install-maintenance.py" "$SCRIPT_DIR/install.sh" "$@"
+fi
 export LOG_FILE="/var/log/sa02m_install.log"
 
 # ── Parse arguments ────────────────────────────────────────────────────────
@@ -259,6 +262,7 @@ sa02m_run_module() {
 sa02m_run_module 01-system.sh
 sa02m_run_module 02-network.sh
 sa02m_run_module 03-webserver.sh
+sa02m_run_module 03a-port-coordinator.sh
 sa02m_run_module 04-flasher.sh
 sa02m_run_module 05-cloud-agent.sh
 # Bus-free RS-485 module-roster aggregator (reads flasher scan cache + MQTT bridge).

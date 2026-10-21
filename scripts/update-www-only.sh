@@ -7,8 +7,12 @@
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+if [ "${SA02M_INSTALL_GUARDED:-0}" != 1 ]; then
+    exec python3 "$SCRIPT_DIR/install-maintenance.py" --require-coordinator "$SCRIPT_DIR/update-www-only.sh" "$@"
+fi
 source "$SCRIPT_DIR/lib.sh"
 check_root
+bash "$SCRIPT_DIR/../etc/sa02m-update-state-migrate.sh" || exit 1
 
 : "${WEB_ROOT:=/var/www/network_config}"
 WWW_DIR="$SCRIPT_DIR/../www/network_config"
@@ -176,6 +180,12 @@ if [ -f "$REPO_ETC/sa02m-web-port-lib.sh" ]; then
     sa02m_atomic_install -m 644 "$REPO_ETC/sa02m-web-port-lib.sh" /usr/local/lib/sa02m-web-port-lib.sh
     sed -i 's/\r$//' /usr/local/lib/sa02m-web-port-lib.sh
 fi
+if [ -f "$REPO_ETC/sa02m-update-control.sh" ]; then
+    sa02m_atomic_install -m 755 "$REPO_ETC/sa02m-update-control.sh" /usr/local/libexec/sa02m-update-control
+fi
+if [ -f "$REPO_ETC/sa02m-stacks-policy.sh" ]; then
+    sa02m_atomic_install -m 644 "$REPO_ETC/sa02m-stacks-policy.sh" /usr/local/lib/sa02m-stacks-policy.sh
+fi
 if [ -f "$REPO_ETC/sa02m-update-inspect.sh" ]; then
     sa02m_atomic_install -m 755 "$REPO_ETC/sa02m-update-inspect.sh" /usr/local/libexec/sa02m-update-inspect
     sed -i 's/\r$//' /usr/local/libexec/sa02m-update-inspect
@@ -227,7 +237,7 @@ if [ -f "$REPO_ETC/tmpfiles.d/sa02m-alice.conf" ]; then
     fi
 fi
 _upd_daemon_reload=0
-for _upd_unit in sa02m-update.service sa02m-update-recover.service sa02m-update-verify.service sa02m-factory-reset.service; do
+for _upd_unit in sa02m-update.service sa02m-update-download.service sa02m-update-recover.service sa02m-update-verify.service sa02m-factory-reset.service; do
     if [ -f "$SYSTEMD_SRC/$_upd_unit" ]; then
         sa02m_atomic_install -m 644 "$SYSTEMD_SRC/$_upd_unit" "/etc/systemd/system/$_upd_unit"
         sed -i 's/\r$//' "/etc/systemd/system/$_upd_unit"

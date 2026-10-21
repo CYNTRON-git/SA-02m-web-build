@@ -144,82 +144,13 @@ case "$PARSE" in
     ;;
 esac
 
-# Refuse if lock held
-if [ -f "$LOCKFILE" ]; then
-  pid=$(tr -d ' \r\n' <"$LOCKFILE" 2>/dev/null || true)
-  if [[ "$pid" =~ ^[0-9]+$ ]] && kill -0 "$pid" 2>/dev/null; then
-    json_out '{"ok":false,"error_code":"E_LOCK","error_message":"update/reset already running"}'
-    exit 0
-  fi
+# The fixed root controller serializes reset with OTA and owns the journal. Its
+# stdout IS the answer (structured JSON, ok:false on a refusal) - never a second
+# launcher. A refused sudo (an old sudoers file) prints nothing: the headers are
+# already out, so the body gets the same bootstrap shape lib_web_update_control.sh
+# answers, instead of an empty body the panel cannot parse.
+OUT=$(sudo -n /usr/local/libexec/sa02m-update-control factory-reset SA02M-RESET true) || true
+if [ -z "$OUT" ]; then
+  OUT='{"ok":false,"status":"error","error_code":"E_CMD","error_message":"update controller unavailable; run install.sh --refresh"}'
 fi
-
-mkdir -p "$STATEDIR" 2>/dev/null || true
-
-# Write transaction then start oneshot service (no args)
-TXN_ID=$(python3 - <<'PY'
-import json, os, tempfile, time, uuid
-statedir = "/var/lib/sa02m-update"
-path = statedir + "/transaction.json"
-os.makedirs(statedir, exist_ok=True)
-now = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
-txn = {
-    "schema_version": 1,
-    "id": str(uuid.uuid4()),
-    "operation": "factory_reset",
-    "source": "web",
-    "package_path": None,
-    "target_version": None,
-    "target_commit": None,
-    "previous_version": None,
-    "stage": "confirmed",
-    "progress_pct": 0,
-    "files_total": 0,
-    "files_done": 0,
-    "result": "pending",
-    "error_code": None,
-    "error_message": None,
-    "rollback_archive": None,
-    "imaging_lock": False,
-    "signature_ok": True,
-    "confirm_phrase_ok": True,
-    "backup_ok": True,
-    "started_at": now,
-    "updated_at": now,
-    "finished_at": None,
-}
-data = json.dumps(txn, ensure_ascii=False, indent=2, sort_keys=True) + "\n"
-fd, tmp = tempfile.mkstemp(prefix=".txn.", dir=statedir)
-with os.fdopen(fd, "w", encoding="utf-8") as f:
-    f.write(data)
-    f.flush()
-    os.fsync(f.fileno())
-os.replace(tmp, path)
-print(txn["id"])
-PY
-)
-
-if [ -z "$TXN_ID" ]; then
-  json_out '{"ok":false,"error_code":"E_INTERNAL","error_message":"failed to write transaction"}'
-  exit 0
-fi
-
-if ! command -v sudo >/dev/null 2>&1; then
-  json_out '{"ok":false,"error_code":"E_CMD","error_message":"sudo not found"}'
-  exit 0
-fi
-
-if sudo -n /usr/bin/systemctl start sa02m-factory-reset.service >/dev/null 2>&1; then
-  python3 -c 'import json,sys; print(json.dumps({"ok":True,"transaction_id":sys.argv[1],"stage":"confirmed"},ensure_ascii=False))' \
-    "$TXN_ID"
-  exit 0
-fi
-
-# Fallback when unit is not installed yet: start pinned runner under sudo.
-if [ -x /usr/local/libexec/sa02m-factory-reset-runner ]; then
-  nohup sudo -n /usr/local/libexec/sa02m-factory-reset-runner run >/dev/null 2>&1 &
-  python3 -c 'import json,sys; print(json.dumps({"ok":True,"transaction_id":sys.argv[1],"stage":"confirmed","warning":"started runner directly"},ensure_ascii=False))' \
-    "$TXN_ID"
-  exit 0
-fi
-
-json_out '{"ok":false,"error_code":"E_CMD","error_message":"failed to start sa02m-factory-reset.service"}'
+json_out "$OUT"

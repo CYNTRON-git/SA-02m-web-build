@@ -125,6 +125,12 @@ fi
 cat "$SRC" > "$T/runner.sh" 2>/dev/null || { echo "FAIL  cannot read runner source: $SRC"; exit 1; }
 SRC="$T/runner.sh"
 
+# UART coordinator composition is exercised by test-update-control-boundaries.py.
+# These existing fixtures have no UART snapshot or external broker.
+acquire_port_maintenance() { return 0; }
+guard_boot_port_consumers() { return 0; }
+restore_port_consumers() { return 0; }
+txn_has_key() { return 1; }
 fails=0
 ok()  { printf 'ok    %s\n' "$1"; }
 bad() { printf 'FAIL  %s\n' "$1"; fails=$((fails + 1)); }

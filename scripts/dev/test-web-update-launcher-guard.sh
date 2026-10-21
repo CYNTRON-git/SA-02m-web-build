@@ -55,6 +55,11 @@ cd "$(dirname "${BASH_SOURCE[0]}")/../.." || exit 1
 
 SRC="${WEB_UPDATE_LAUNCHER:-etc/sa02m-web-update-apply.sh}"
 command -v python3 >/dev/null 2>&1 || { echo "SKIP  python3 unavailable (launcher requires it)"; exit 77; }  # run.mjs SKIP_EXIT
+# Since 1.0.7.5 the launcher takes flock(1) on launch.lock before anything else
+# (`exec 7>>…; flock -n 7 || exit 1`), so on a host without util-linux flock
+# EVERY case exits 1 at that line and reads as a guard failure — the whole row
+# is a SKIP here, not a FAIL (git-bash; WSL / Linux CI are the authority).
+command -v flock >/dev/null 2>&1 || { echo "SKIP  flock(1) unavailable (util-linux) — the launcher's first act needs it; run under WSL / Linux CI"; exit 77; }  # run.mjs SKIP_EXIT
 T=$(mktemp -d) || exit 1
 cat "$SRC" > "$T/launcher.sh" 2>/dev/null || { echo "FAIL  cannot read launcher source: $SRC"; exit 1; }
 LAUNCHER="$T/launcher.sh"
@@ -78,7 +83,6 @@ sed -i -e "s|^LIB=/usr/local/lib/sa02m-web-build-lib\.sh\$|LIB=$T/no-host-lib.sh
        -e "s|^WEB_ROOT=/var/www/network_config\$|WEB_ROOT=$T/www|" \
        -e "s|^log \"Using legacy rsync deploy .*|echo reached >> \"$T/legacy.reached\"; exit 97|" "$LAUNCHER"
 if ! grep -qxF "LIB=$T/no-host-lib.sh" "$LAUNCHER" || ! grep -qxF "WEB_ROOT=$T/www" "$LAUNCHER" \
-   || ! grep -qxF "echo reached >> \"$T/legacy.reached\"; exit 97" "$LAUNCHER" \
    || grep -q 'Using legacy rsync deploy' "$LAUNCHER"; then
   echo "FAIL  the launcher copy is not sandboxed (host lib / WEB_ROOT / legacy-deploy entry not retargeted) — refusing to run it"
   rm -rf "$T"; exit 1
@@ -108,7 +112,12 @@ canary_check() {  # $1=label — record a loss (CANARY_KEPT: the last run's verd
 canary_kept() { [ "$CANARY_KEPT" = yes ]; }
 canary_make || { echo "FAIL  cannot create the TMPDIR canary"; exit 1; }
 export TMPDIR="$CANARY"
-export SA02M_UPDATE_RUNNER="$T/no-such-runner"   # never reached: the clone fails first
+export SA02M_UPDATE_RUNNER="$T/capable-runner"
+cat > "$SA02M_UPDATE_RUNNER" <<'CAPABLE'
+#!/bin/sh
+printf '%s\n' '{"control_v1":true,"port_maintenance_v1":true}'
+CAPABLE
+chmod +x "$SA02M_UPDATE_RUNNER"
 
 cat > "$BIN/git" <<SHIM
 #!/bin/bash
@@ -154,8 +163,11 @@ grep -q 'уже выполняется' "$LEGACY/update.log" 2>/dev/null && ok "
 # ── L2: stale transaction (runner gone) → the launch proceeds to the clone ──
 write_txn verifying; printf '%s\n' "$DEAD_PID" > "$UPD/update.lock"
 run_launcher
-cloned && ok "L2 dead runner (stale transaction) → the launch proceeds (clone attempted)" \
-  || bad "L2 dead runner → clone NOT attempted (rc=$rc) — a stale transaction blocks re-apply"
+if ! cloned && [ "$rc" -ne 0 ] && grep -q E_RECOVERY_REQUIRED "$LEGACY/update.log"; then
+  ok "L2 dead pending runner requires recovery; clone refused"
+else
+  bad "L2 dead pending transaction was overwritten or silently accepted"
+fi
 # ── L3: no transaction at all → proceeds ────────────────────────────────────
 rm -f "$UPD/transaction.json" "$UPD/update.lock"
 run_launcher
@@ -203,8 +215,11 @@ case "${1:-}" in is-active) exit 3 ;; *) exit 0 ;; esac
 SHIM
 write_txn rolling_back; printf '%s\n' "$DEAD_PID" > "$UPD/update.lock"
 run_launcher
-cloned && ok "L7 rolling_back with a dead runner (the bench residue) → «Применить» proceeds (clone attempted)" \
-  || bad "L7 rolling_back + dead runner → clone NOT attempted (rc=$rc) — a stuck board could never re-apply"
+if ! cloned && [ "$rc" -ne 0 ] && grep -q '"stage":"rolling_back"' "$UPD/transaction.json" && grep -q E_RECOVERY_REQUIRED "$LEGACY/update.log"; then
+  ok "L7 dead rollback requires recovery; journal retained"
+else
+  bad "L7 rollback journal overwritten or recovery not reported"
+fi
 
 # ── L12: the EXIT trap removes only the clone dir this launcher created ───────
 # Until the fix the clone dir lived in the env name TMPDIR and the EXIT trap
@@ -342,6 +357,10 @@ SHIM
   FAKE_RUNNER="$T/fake-runner"
   cat > "$FAKE_RUNNER" <<SHIM
 #!/bin/bash
+if [ "\${1:-}" = capabilities ]; then
+  printf '%s\n' '{"control_v1":true,"port_maintenance_v1":true}'
+  exit 0
+fi
 # fake sa02m-update-runner — capability tokens for the launcher's grep: overlay_path SA02M_UPDATE_GITHUB
 lock="\${SA02M_UPDATE_STATEDIR:?}/update.lock"
 {
@@ -400,35 +419,20 @@ SHIM
   done
   kill "$HOLD_PID" 2>/dev/null
 
-  # ── L9: the race — nothing running at the guard, a runner takes the lock DURING the clone → refused at the lock ─
-  rm -f "$UPD/transaction.json" "$UPD/update.lock" "$T/hold9.pid" "$T/txn.before"
+  # L9: the stronger lock excludes a contender throughout clone, before handoff.
+  rm -f "$UPD/transaction.json" "$UPD/update.lock" "$T/clone-lock-refused"
   cat > "$T/on-clone" <<HOOK
 #!/bin/bash
-printf '{"schema_version":1,"id":"abcdef12-0000-4000-8000-000000000009","operation":"update","source":"file","stage":"validating","progress_pct":5,"result":"pending","error_code":null,"error_message":null,"updated_at":"%s"}\n' "\$(date -u +%Y-%m-%dT%H:%M:%SZ)" > "$UPD/transaction.json"
-bash -c 'exec 9>>"\$0" && flock -w 10 9 || exit 99; exec -a sa02m-update-runner sleep 900' "$UPD/update.lock" </dev/null >/dev/null 2>&1 &
-echo \$! > "$T/hold9.pid"
-i=0; while flock -n "$UPD/update.lock" true 2>/dev/null; do i=\$((i + 1)); [ "\$i" -ge 100 ] && exit 1; sleep 0.1; done
-# NO pid line: the holder is one the liveness test cannot name (a runner
-# between its flock and its pid write, a launcher between its flock and exec),
-# so only the launcher's own flock can refuse here.
-cp "$UPD/transaction.json" "$T/txn.before"
-exit 0
+if flock -n "$UPD/update.lock" true; then exit 99; fi
+: > "$T/clone-lock-refused"
 HOOK
   chmod +x "$T/on-clone"
   run_launcher_ho
-  [ -s "$T/hold9.pid" ] && HOLD_PIDS="$HOLD_PIDS $(cat "$T/hold9.pid")"
-  if ! cloned || [ ! -s "$T/txn.before" ]; then
-    bad "L9 fixture: the clone/hook did not run (cloned: $(cloned && echo yes || echo no), rc=$rc) — nothing was raced"
-  elif [ -s "$UPD/update.lock" ]; then
-    bad "L9 fixture: the lock file names a pid ('$(tr -d '\n' < "$UPD/update.lock")') — the liveness re-check could refuse instead of the flock"
+  if [ -f "$T/clone-lock-refused" ] && runner_execd; then
+    ok "L9 clone holds update.lock; contender refused and owner reaches handoff"
   else
-    BEFORE_ID=abcdef12-0000-4000-8000-000000000009
-    refused_intact "L9 an unnamed holder took the lock during the clone (validating)"
-    grep -qE 'лок .*update\.lock занят' "$LEGACY/update.log" 2>/dev/null \
-      && ok "L9 the refusal is the busy-lock one («лок … занят»), not the liveness re-check" \
-      || bad "L9 no «лок … занят» line in the update log — the flock result decided nothing"
+    bad "L9 clone not protected or owner failed handoff (rc=$rc)"
   fi
-  [ -s "$T/hold9.pid" ] && kill "$(cat "$T/hold9.pid")" 2>/dev/null
 
   # ── L10: under the lock — the lock is FREE but a runner is alive at validating (cgroup handover) → refused before the write ─
   rm -f "$UPD/transaction.json" "$UPD/update.lock" "$T/txn.before"

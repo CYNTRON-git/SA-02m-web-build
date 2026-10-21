@@ -520,7 +520,7 @@ else
     fi
 fi
 
-# ── P9 the shell delivery paths: update-www-only.sh and the legacy rsync path ─
+# ── P9 the shell delivery paths: partial refresh and mandatory shared handoff ─
 # The shipped loops are cut out and RUN with stubbed installers; the lib is the
 # real one, the profile a sandbox file.
 WWW_ONLY=${WWW_ONLY_SRC:-scripts/update-www-only.sh}
@@ -537,7 +537,6 @@ cut_block() {  # $1 file  $2 literal first-line prefix (after indentation) → t
 }
 cut_block "$WWW_ONLY" 'for _h in sa02m-gateway-config-apply.sh' > "$P9/www-helpers.sh"
 cut_block "$WWW_ONLY" 'for _sud in sa02m-cloud ' > "$P9/www-sudoers.sh"
-cut_block "$LEGACY" 'PROFILE_LIB="$CLONE_TMP/repo/etc/sa02m-install-profile-lib.sh"' > "$P9/legacy.sh"
 p9_run() {  # $1 block  $2 conf → prints installed targets, one per line
     ( SA02M_PROFILE_CONF=$2; export SA02M_PROFILE_CONF
       REPO_SBIN="$P9/sbin"; REPO_ETC="$P9/etc"; CLONE_TMP="$P9/clone"; LOGFILE=/dev/null
@@ -553,7 +552,7 @@ p9_run() {  # $1 block  $2 conf → prints installed targets, one per line
       . "$1" ) 2>&1
 }
 printf 'MODULE_AGENT_API=skip\n' > "$T/p9.conf"
-for blk in www-helpers www-sudoers legacy; do
+for blk in www-helpers www-sudoers; do
     if ! grep -q '^done' "$P9/$blk.sh"; then
         bad "P9 could not extract the $blk loop (the guarded block moved or is gone)"
         continue
@@ -572,11 +571,27 @@ for blk in www-helpers www-sudoers legacy; do
         ok "P9 $blk: profile skip ⇒ none of the module's $n_agent target(s) delivered, each logged, the rest delivered; no profile ⇒ everything delivered"
     fi
 done
-rm -f "$P9/clone/repo/etc/sa02m-install-profile-lib.sh"
-noreader=$(p9_run "$P9/legacy.sh" "$T/p9.conf")
-text_has "$noreader" "INSTALL /usr/local/sbin/sa02m-agent-api-ctl.sh" \
-    && ok "P9 legacy, a clone without the reader: unchanged behaviour (delivers everything)" \
-    || bad "P9 legacy without a reader must not break the loop: $(tr '\n' '|' <<<"$noreader" | head -c 300)"
+# Online updates use the same profile-aware runner tested by P3/P4. The old
+# absent-reader fallback was deliberately removed: missing preparation refuses.
+stripped_has "$LEGACY" 'exec "$RUNNER" apply' \
+    && ok "P9 online delivery delegates to the shared profile-aware runner" \
+    || bad "P9 online delivery bypasses the shared profile-aware runner"
+awk '/^if handoff_to_shared_runner; then/{f=1} f{print}' "$LEGACY" > "$P9/handoff.sh"
+(
+    STATUS_FILE="$P9/status"
+    handoff_to_shared_runner() { return 1; }
+    log() { printf '%s\n' "$*"; }
+    rsync() { echo UNSAFE_FALLBACK; }
+    install() { echo UNSAFE_FALLBACK; }
+    . "$P9/handoff.sh"
+) > "$P9/handoff.out" 2>&1
+handoff_rc=$?
+if [ "$handoff_rc" = 1 ] && grep -q 'E_BOOTSTRAP_REQUIRED' "$P9/handoff.out" \
+   && [ "$(cat "$P9/status" 2>/dev/null)" = error ] && ! grep -q UNSAFE_FALLBACK "$P9/handoff.out"; then
+    ok "P9 unavailable shared runner refuses before any legacy copy (missing-reader refusal covered by P4)"
+else
+    bad "P9 unavailable shared runner did not refuse safely: rc=$handoff_rc"
+fi
 P9C='sa02m_atomic_install -m 644 "$SCRIPT_DIR/../etc/sa02m-install-profile-lib.sh" /usr/local/lib/sa02m-install-profile-lib.sh'
 stripped_has "$WWW_ONLY" "$P9C" && ok "P9 update-www-only.sh installs the reader to /usr/local/lib/" || bad "P9 update-www-only.sh does not install the reader"
 
