@@ -715,6 +715,37 @@ sa02m_install_sudoers() {
     return 0
 }
 
+# Bring every REGULAR $SA02M_SUDOERS_DIR/sa02m-* (default /etc/sudoers.d) to
+# 0440 root:root; symlinks and non-regular entries are skipped, each repair is
+# logged, an already-correct file is silent. Allow-listed by the sa02m- PREFIX
+# — never /etc/sudoers.d/* wholesale, and never a name list: the list of six
+# this replaces missed sa02m-homekit and sa02m-homeconnect, which the GitHub OTA
+# of releases before 1.0.7.5 landed at the source-tree mode 0644, and the
+# installer repaired only the files it installs itself — on a board where that
+# module is not reinstalled the drop-in stayed 0644, `visudo -c` FAILED the
+# --refresh post-checks and the grant was dead (bench 1.136, 2026-10-21).
+# Runs BEFORE the aggregate visudo -c below. Gate: sudoers-pin-contract 8c.
+sa02m_normalise_sudoers_modes() {
+    local _dir=${SA02M_SUDOERS_DIR:-/etc/sudoers.d} _p _was
+    _dir=${_dir%/}
+    for _p in "$_dir"/sa02m-*; do
+        if [ ! -f "$_p" ] || [ -L "$_p" ]; then
+            continue
+        fi
+        _was=$(stat -c '%a %U:%G' "$_p" 2>/dev/null) || continue
+        if [ "$_was" = "440 root:root" ]; then
+            continue
+        fi
+        chown root:root "$_p" 2>/dev/null || true
+        if chmod 0440 "$_p" 2>/dev/null; then
+            log OK "sudoers $(basename "$_p"): права $_was → 0440 ($(stat -c '%a %U:%G' "$_p" 2>/dev/null))"
+        else
+            log WARN "sudoers $(basename "$_p"): не удалось привести права $_was к 0440 root:root"
+        fi
+    done
+    return 0
+}
+
 # Remove known-obsolete www-data sudoers drop-ins superseded by etc/sudoers.d/sa02m-www
 # (audit B1 deploy-gap). Allow-list ONLY — never glob /etc/sudoers.d/*.
 sa02m_remove_obsolete_www_sudoers() {
@@ -727,12 +758,7 @@ sa02m_remove_obsolete_www_sudoers() {
                 || log WARN "не удалось удалить устаревший sudoers: $_path"
         fi
     done
-    for _name in sa02m-www sa02m-cloud sa02m-flasher sa02m-mqtt sa02m-gateway sa02m-alice; do
-        _path="/etc/sudoers.d/$_name"
-        if [ -f "$_path" ]; then
-            chmod 0440 "$_path" 2>/dev/null || true
-        fi
-    done
+    sa02m_normalise_sudoers_modes
     if command -v visudo >/dev/null 2>&1; then
         visudo -c >/dev/null 2>&1 \
             || log WARN "visudo -c после удаления legacy sudoers — проверьте /etc/sudoers.d"
