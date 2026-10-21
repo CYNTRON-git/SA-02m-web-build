@@ -760,6 +760,71 @@ if (typeof isStrict === 'function') {
   check(off.rc === 0 && /^SKIP  i-off-skip$/m.test(off.out), 'strict: without the variable a skip stays a SKIP (the local default)');
 }
 
+// ── P. CLI output survives a slow pipe ────────────────────────────────────
+// CI (#216, 2026-10-21) lost every PASS/FAIL line and the summary: the runner
+// spools a row's output and replays it with process.stdout.write; on a pipe
+// that write completes asynchronously, the next rows' execSync block the
+// event loop, and process.exit() at the end drops whatever was still queued —
+// the log stopped mid-word ~64 KB into a multi-MB row. The CLI is exercised as
+// CI runs it: a copy of run.mjs with a registry beside it, stdout into a pipe
+// whose reader starts late. The truncation reproduces on Linux only (node on
+// Windows already blocks on pipes); the kill case below pins delivery AT
+// row end — a verdict buffered until the run returns is lost when CI kills it.
+{
+  const d = mkdtempSync(join(tmpdir(), 'sa02m-run-mjs-test-pipe-'));
+  try {
+    const q = join(d, '.ai-dev', 'quality');
+    mkdirSync(q, { recursive: true });
+    copyFileSync(join(REPO, '.ai-dev', 'quality', 'run.mjs'), join(q, 'run.mjs'));
+    const big = "node -e \"for(let i=0;i<60000;i++)process.stderr.write('INFO [telemetry] line '+String(i).padStart(6,'0')+' '+'x'.repeat(56)+'\\n')\"";
+    writeFileSync(join(q, 'tools.json'), JSON.stringify({ tools: [
+      { id: 'p-big', beat: 'build', run: big },
+      { id: 'p-after', beat: 'build', run: 'node -e "setTimeout(()=>console.log(\'after-ok\'),1500)"' },
+      { id: 'p-red', beat: 'build', run: 'node -e "process.exit(1)"' },
+    ] }));
+    const node = process.execPath.replace(/\\/g, '/');
+    const cmd = `"${node}" .ai-dev/quality/run.mjs build | (sleep 2; cat); exit \${PIPESTATUS[0]}`;
+    const r = spawnSync('bash', ['-c', cmd], { cwd: d, encoding: 'utf8', maxBuffer: 64 * 1024 * 1024 });
+    const out = r.stdout || '';
+    check(/line 059999 x{56}/.test(out), 'pipe: the last line of a 5 MB row reaches a late reader (' + out.length + ' bytes seen)');
+    check(/^PASS  p-after$/m.test(out) && /^FAIL  p-red$/m.test(out), 'pipe: the rows after the big one are reported');
+    check(/^build: 2\/3 passed — 1 FAILED$/m.test(out), 'pipe: the summary line is printed');
+    check(r.status === 1, 'pipe: the CLI exit code is the run result, not lost (got ' + r.status + ')');
+
+    // Reader closes early (`| head`): no false FAIL, run result unchanged.
+    writeFileSync(join(q, 'tools.json'), JSON.stringify({ tools: [
+      { id: 'h-big', beat: 'build', run: big },
+      { id: 'h-small', beat: 'build', run: 'node -e "0"' },
+    ] }));
+    const hcmd = `"${node}" .ai-dev/quality/run.mjs build 2>/dev/null | head -c 100 >/dev/null; exit \${PIPESTATUS[0]}`;
+    const h = spawnSync('bash', ['-c', hcmd], { cwd: d, encoding: 'utf8' });
+    check(h.status === 0, 'pipe: a reader that closes early does not turn a green run red (got ' + h.status + ')');
+
+    // Killed mid-run: the verdicts of rows that already ended must be out.
+    // Linux only — where the queued-write loss happens; on Windows the killed
+    // runner's children keep the temp dir busy and the pipe already blocks.
+    if (process.platform === 'linux') {
+    writeFileSync(join(q, 'tools.json'), JSON.stringify({ tools: [
+      { id: 'k-big', beat: 'build', run: big },
+      { id: 'k-small', beat: 'build', run: 'node -e "0"' },
+      { id: 'k-hang', beat: 'build', run: 'node -e "setTimeout(()=>{},10000)"' },
+    ] }));
+    const kcmd = `timeout -s KILL 6 "${node}" .ai-dev/quality/run.mjs build | (sleep 2; cat)`;
+    // TMPDIR inside d: the killed runner never reaches its own spool cleanup.
+    const k = spawnSync('bash', ['-c', kcmd], { cwd: d, encoding: 'utf8', maxBuffer: 64 * 1024 * 1024, env: { ...process.env, TMPDIR: d } });
+    const kout = k.stdout || '';
+    check(/^PASS  k-big$/m.test(kout) && /^PASS  k-small$/m.test(kout),
+      'pipe: verdicts of finished rows survive a kill of the run (' + kout.length + ' bytes seen)');
+    } else {
+      console.log('  skip - pipe: kill-mid-run case is Linux-only (' + process.platform + ')');
+    }
+  } finally {
+    // The killed runner's k-hang child lives on for a few seconds and holds
+    // the directory on Windows: retry instead of failing the self-test.
+    rmSync(d, { recursive: true, force: true, maxRetries: 30, retryDelay: 500 });
+  }
+}
+
 if (failures) {
   console.error('quality-runner-self-test: ' + failures + ' assertion(s) failed');
   process.exit(1);

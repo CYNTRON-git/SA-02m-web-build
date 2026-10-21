@@ -470,8 +470,55 @@ function projectRoot() {
   return path.resolve(here, "..", "..");
 }
 
+// Synchronous replacement for process.stdout/stderr.write, used by the CLI
+// only (the self-test captures output by patching these methods in-process).
+// console.log/error call stream.write, so they follow. Terminals keep node's
+// own writer: it converts to the Windows console code page, raw bytes would
+// not, and a terminal is not where output was lost. EAGAIN appears when the
+// descriptor is non-blocking and the reader is slow: wait and retry. EPIPE
+// means the reader is gone (`| head`): stop writing to that stream, as a CLI
+// on a closed pipe does, without turning the row being replayed into a FAIL.
+const closedFds = new Set();
+function writeAllSync(fd, chunk, encoding) {
+  if (closedFds.has(fd)) return;
+  const buf = Buffer.isBuffer(chunk) ? chunk
+    : ArrayBuffer.isView(chunk) ? Buffer.from(chunk.buffer, chunk.byteOffset, chunk.byteLength)
+    : Buffer.from(String(chunk), typeof encoding === "string" ? encoding : "utf8");
+  const pause = new Int32Array(new SharedArrayBuffer(4));
+  let off = 0;
+  while (off < buf.length) {
+    try {
+      off += fs.writeSync(fd, buf, off, buf.length - off);
+    } catch (e) {
+      if (e.code === "EPIPE") { closedFds.add(fd); return; }
+      if (e.code !== "EAGAIN") throw e;
+      Atomics.wait(pause, 0, 0, 5);
+    }
+  }
+}
+
+function installSyncStdio() {
+  for (const [stream, fd] of [[process.stdout, 1], [process.stderr, 2]]) {
+    if (stream.isTTY) continue;
+    if (stream._handle && typeof stream._handle.setBlocking === "function") stream._handle.setBlocking(true);
+    stream.write = (chunk, encoding, cb) => {
+      writeAllSync(fd, chunk, encoding);
+      const done = typeof encoding === "function" ? encoding : cb;
+      if (typeof done === "function") done();
+      return true;
+    };
+  }
+}
+
 // CLI entry — only when invoked directly, not when imported by the self-test.
 if (process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
+  // On a pipe (CI, git hooks, `| tee`) node queues large writes and completes
+  // them on the event loop, which the rows' execSync keep blocked: verdicts
+  // arrived only after the whole run, and process.exit() or a kill dropped
+  // them (#216 CI: the log stopped mid-word ~64 KB into a row, no PASS/FAIL).
+  // Non-terminal stdout/stderr writes of the CLI go straight to the
+  // descriptor instead, so each line is delivered when the row ends, in order.
+  installSyncStdio();
   const beat = process.argv[2];
   if (!beat) {
     console.error(`Usage: node src/quality/run.mjs <${BEATS.join("|")}> [--touched [<base>]]`);
@@ -496,5 +543,5 @@ if (process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.me
     }
   }
 
-  process.exit(run(beat, projectRoot(), null, touchedFiles));
+  process.exitCode = run(beat, projectRoot(), null, touchedFiles);
 }
