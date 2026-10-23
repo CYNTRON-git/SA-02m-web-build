@@ -24,6 +24,11 @@ ROOT = Path(__file__).resolve().parents[2]
 spec = importlib.util.spec_from_file_location("maintenance", ROOT / "scripts/install-maintenance.py")
 m = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(m)
+# The journal directory must belong to m.JOURNAL_OWNER_UID (root on the board).
+# Rebind it to this process so the wrapper cases run unprivileged with no skip
+# (CI is a non-root runner); JournalDirectory pins the root default and the
+# refusal of a foreign owner.
+m.JOURNAL_OWNER_UID = os.geteuid()
 
 
 class System:
@@ -374,11 +379,22 @@ class GuardTests(unittest.TestCase):
         target = self.root / "target"
         (target / "etc/systemd/system").mkdir(parents=True)
         commands = self.root / "commands"
+        owners = self.root / "owners"
+        # install -o/-g needs root; the stub records the requested owner and
+        # installs as the running user, so the case runs unprivileged and the
+        # root:root request is still asserted below.
         (stage / "scripts/lib.sh").write_text(
             'check_root() { :; }\n'
             'getent() { return 1; }\nid() { return 1; }\n'
             'groupadd() { echo group >> "$COMMANDS"; }\n'
             'useradd() { echo user >> "$COMMANDS"; }\n'
+            'install() {\n'
+            '  local owner=- group=-; local -a args=()\n'
+            '  while [ $# -gt 0 ]; do\n'
+            '    case "$1" in -o) owner=$2; shift 2 ;; -g) group=$2; shift 2 ;; *) args+=("$1"); shift ;; esac\n'
+            '  done\n'
+            '  echo "$owner:$group ${args[*]: -1}" >> "$OWNERS"\n'
+            '  command install "${args[@]}"\n}\n'
             'chown() { :; }\nsystemctl() { :; }\n'
             'sa02m_atomic_install() { install "$@"; }\n'
             'sa02m_svc_apply() {\n'
@@ -392,14 +408,89 @@ class GuardTests(unittest.TestCase):
         module = stage / "scripts/03a-port-coordinator.sh"
         module.write_text(source)
         env = {**os.environ, "SA02M_ROOTFS_BUILD": "1", "SA02M_INSTALL_GUARDED": "1",
-               "TARGET": str(target), "COMMANDS": str(commands)}
+               "TARGET": str(target), "COMMANDS": str(commands), "OWNERS": str(owners)}
+        seed = "root:root %s/etc/sa02m/port-coordinator.json" % target
         for expected in ('{"seed":true}', '{"operator":"preserved"}'):
             if expected != '{"seed":true}':
                 (target / "etc/sa02m/port-coordinator.json").write_text(expected)
+            owners.unlink(missing_ok=True)
             result = subprocess.run(["bash", str(module)], env=env, capture_output=True, text=True)
             self.assertEqual(result.returncode, 0, result.stderr)
             self.assertEqual((target / "etc/sa02m/port-coordinator.json").read_text(), expected)
             self.assertEqual(commands.read_text().splitlines()[-3:], ["group", "user", "broker"])
+            # Every install of the broker's files asks for root:root; the seed
+            # is installed only while absent.
+            self.assertEqual(owners.read_text().splitlines(), [
+                "root:root %s/etc/sa02m" % target,
+                *([seed] if expected == '{"seed":true}' else []),
+                "root:root %s/etc/systemd/system/sa02m-port-coordinator.service" % target,
+            ])
+
+
+class JournalDirectory(unittest.TestCase):
+    """The recovery journal lives in a root-only directory on the board."""
+
+    def test_owner_default_is_root(self):
+        # A fresh interpreter: the module-level rebinding above must not mask a
+        # product default that drifted away from root.
+        result = subprocess.run(
+            [sys.executable, "-I", "-c",
+             "import importlib.util as u, sys; s = u.spec_from_file_location('x', sys.argv[1]); "
+             "mod = u.module_from_spec(s); s.loader.exec_module(mod); print(mod.JOURNAL_OWNER_UID)",
+             str(ROOT / "scripts/install-maintenance.py")],
+            capture_output=True, text=True, timeout=30)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(result.stdout.strip(), "0")
+
+    def test_unsafe_directory_refused_before_any_guard(self):
+        temp = tempfile.TemporaryDirectory()
+        self.addCleanup(temp.cleanup)
+        root = Path(temp.name)
+        journal = root / "var/lib/sa02m-install-maintenance"
+        elsewhere = root / "elsewhere"
+        journal.parent.mkdir(parents=True)
+
+        def path(value):
+            value = str(value)
+            return root / value.lstrip("/") if value.startswith("/var/") else Path(value)
+
+        def foreign_owner():
+            journal.mkdir()
+            journal.chmod(0o700)
+            return {"JOURNAL_OWNER_UID": os.geteuid() + 1}
+
+        def group_readable():
+            journal.mkdir()
+            journal.chmod(0o750)
+            return {}
+
+        def symlinked():
+            # On Linux a symlink's own lstat mode is 0777, so the mode clause
+            # refuses it too; this case pins the refusal, not the is_symlink() term.
+            elsewhere.mkdir()
+            elsewhere.chmod(0o700)
+            journal.symlink_to(elsewhere, target_is_directory=True)
+            return {}
+
+        for case in (foreign_owner, group_readable, symlinked):
+            with self.subTest(case=case.__name__):
+                for leftover in (journal, elsewhere):
+                    if leftover.is_symlink():
+                        leftover.unlink()
+                    elif leftover.exists():
+                        leftover.rmdir()
+                overrides = case()
+                with contextlib.ExitStack() as stack:
+                    for name, value in overrides.items():
+                        stack.enter_context(patch.object(m, name, value))
+                    stack.enter_context(patch.object(m, "Path", side_effect=path))
+                    stack.enter_context(patch.object(m.os, "geteuid", return_value=0))
+                    guard = stack.enter_context(patch.object(m, "Guard"))
+                    child = stack.enter_context(patch.object(m.subprocess, "Popen"))
+                    with self.assertRaisesRegex(RuntimeError, "unsafe install-maintenance journal directory"):
+                        m.run_installer(["install.sh", "--refresh"])
+                    guard.assert_not_called()
+                    child.assert_not_called()
 
 
 if __name__ == "__main__":

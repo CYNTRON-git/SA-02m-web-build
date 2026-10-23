@@ -18,6 +18,9 @@ WEB = ("nginx.service", "fcgiwrap.service", "fcgiwrap.socket", "fcgiwrap-unix.so
 UPDATE = tuple("sa02m-" + name + ".service" for name in (
     "update", "update-download", "update-verify", "update-recover", "factory-reset"))
 FLASHER_SOCKET = "/run/sa02m-flasher/flasher.sock"
+# The recovery journal directory must belong to root. A module constant only so
+# the test suite can rebind it to its own uid and run unprivileged.
+JOURNAL_OWNER_UID = 0
 UART = (
     "sa02m-flasher.service", "sa02m-serial-gateway.service", "sa02m-modbus-mqtt.service",
     "mplc.service", "mplc4.service", "codesys.service", "codesyscontrol.service",
@@ -308,7 +311,7 @@ def run_installer(argv):
     journal = Path("/var/lib/sa02m-install-maintenance")
     journal.mkdir(mode=0o700, exist_ok=True)
     st = journal.lstat()
-    if journal.is_symlink() or st.st_uid != 0 or st.st_mode & 0o077:
+    if journal.is_symlink() or st.st_uid != JOURNAL_OWNER_UID or st.st_mode & 0o077:
         raise RuntimeError("unsafe install-maintenance journal directory")
     web = Guard(WEB, journal=journal / "web.json")
     consumers = Guard(UART + UPDATE, journal=journal / "uart.json")
