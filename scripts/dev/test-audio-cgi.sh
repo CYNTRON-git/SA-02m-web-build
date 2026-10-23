@@ -16,20 +16,27 @@
 #
 # Cases:
 #   1  no session              → unauthorized; dispatch, sudo, mosquitto_pub
-#                                NEVER run — for a POST and for a download
+#                                NEVER run — for a POST (a light_music one
+#                                included) and for a download
 #   2  PUT / DELETE            → method_not_allowed; nothing runs
-#   3  POST, bad CSRF          → E_CSRF body; nothing runs (even `status`)
+#   3  POST, bad CSRF          → E_CSRF body; nothing runs (even `status`,
+#                                and a light_music switch)
 #   4  CONTENT_LENGTH over 16 KiB / 7 digits → payload_too_large; a
 #      non-numeric length reads as an empty body
 #   5  GET                     → dispatch(GET), empty stdin; a follow-up the
 #                                dispatch names is NOT executed on GET
 #   6  POST, every follow-up of the grammar → mosquitto_pub argv is exactly
 #      `-h 127.0.0.1 -p 1883 -q 1 -t <command topic> -m <payload>` (never
-#      `-r`), sudo argv exactly `-n /usr/local/sbin/sa02m-audio-web-trigger.sh
-#      <verb>`; ONE JSON object + "done":"ok"; one audit line `source=panel`
-#   7  follow-ups outside the grammar (injection shapes, a retain flag, a
-#      third topic, the Home Connect verb, an extra argument) → nothing runs,
-#      no "done" field
+#      `-r`) on one of the three command topics (record, delete, light_music
+#      with 0 / 1 only), sudo argv exactly `-n /usr/local/sbin/sa02m-audio-
+#      web-trigger.sh <verb>`; ONE JSON object + "done":"ok"; one audit line
+#      `source=panel` (for light_music exactly `publish light_music/on=<0|1>`)
+#   7  follow-ups outside the grammar (injection shapes, a retain flag, an
+#      unknown topic, the Home Connect verb, an extra argument, a light_music
+#      value other than a bare 0 / 1) → nothing runs, no "done" field
+#   T  the CGI's command-topic literals EQUAL the topics the daemon takes
+#      commands on (sa02m_audio.mqttio.COMMAND_TOPICS, imported, not copied)
+#      — fewer than 3 on either side FAILS
 #   8  helper fails → "done":"failed" + its [a-z_] code; other text NOT echoed
 #   9  helper hangs → "done":"timeout" within the 11 s budget
 #   10 mosquitto_pub fails → "done":"failed","done_error":"publish_failed"
@@ -47,7 +54,8 @@
 # that is not exactly one JSON object FAILS.
 #
 # Run: bash scripts/dev/test-audio-cgi.sh   (bash, python3/python/py, coreutils)
-#      AUDIO_CGI_SRC=<file> judges another copy of the CGI (the RED run).
+#      AUDIO_CGI_SRC=<file> judges another copy of the CGI (the RED run);
+#      AUDIO_PKG_DIR=<dir> reads case T's daemon topics from another package.
 # ═══════════════════════════════════════════════════════════════════════════
 set -u
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
@@ -193,6 +201,11 @@ else bad "1b work before auth: $(tr '\n' ' ' < "$STUB_CALLS")"; fi
 run_cgi GET '' STUB_AUTH_RC=1 QUERY_STRING="action=download&id=20261015T120000Z-0a1b2c"
 one_doc "1c a download without a session → unauthorized JSON" 'd.get("error") == "unauthorized"'
 nothing_ran && ok "1d no dispatch runs for an unauthenticated download" || bad "1d download before auth ran: $(tr '\n' ' ' < "$STUB_CALLS")"
+run_cgi POST '{"action":"light_music","on":true}' STUB_AUTH_RC=1 STUB_FOLLOW="pub light_music 1"
+one_doc "1e a light_music switch without a session → unauthorized" 'd == {"ok": False, "error": "unauthorized"}'
+if nothing_ran && [ "$(ran csrf)" -eq 0 ]; then
+    ok "1f no dispatch, no publish, no CSRF read for an unauthenticated light_music switch"
+else bad "1f light_music before auth: $(tr '\n' ' ' < "$STUB_CALLS")"; fi
 
 echo "2. method gate"
 for m in PUT DELETE; do
@@ -207,6 +220,11 @@ one_doc "3a bad token → E_CSRF" 'd.get("error_code") == "E_CSRF"'
 nothing_ran && ok "3b no dispatch, no publish, no sudo on a bad token" || bad "3b bad token still reached: $(tr '\n' ' ' < "$STUB_CALLS")"
 run_cgi POST '{"action":"status"}' STUB_CSRF_RC=1
 one_doc "3c even a status POST is token-checked" 'd.get("error_code") == "E_CSRF"'
+run_cgi POST '{"action":"light_music","on":false}' STUB_CSRF_RC=1 STUB_FOLLOW="pub light_music 0"
+one_doc "3d a light_music switch with a bad token → E_CSRF" 'd.get("error_code") == "E_CSRF"'
+if nothing_ran && [ "$(ran auth)" -eq 1 ] && [ "$(ran csrf)" -eq 1 ]; then
+    ok "3e session then token checked, and no dispatch, no publish on a bad token"
+else bad "3e light_music bad token: $(tr '\n' ' ' < "$STUB_CALLS")"; fi
 
 echo "4. bounded body"
 for cl in 16385 9999999; do
@@ -225,7 +243,7 @@ grep -q '^api POST len=0$' "$STUB_CALLS" && ok "4 a non-numeric CONTENT_LENGTH r
     || bad "4 non-numeric CONTENT_LENGTH: $(tr '\n' ' ' < "$STUB_CALLS")"
 
 echo "5. GET never acts"
-for follow in "sudo enable" "pub record 10"; do
+for follow in "sudo enable" "pub record 10" "pub light_music 1"; do
     run_cgi GET '' STUB_FOLLOW="$follow"
     one_doc "5a GET [$follow] → the dispatch answer, verbatim" 'd.get("state") == "idle" and "done" not in d'
     if grep -q '^api GET len=0$' "$STUB_CALLS" && [ "$(ran sudo)" -eq 0 ] && [ "$(ran mosquitto_pub)" -eq 0 ]; then
@@ -237,6 +255,7 @@ echo "6. every follow-up of the grammar"
 check_follow() {  # $1 follow, $2 stub tool, $3 exact argv wanted
     local body='{"action":"x","pad":"Кухня — «тест»"}'
     run_cgi POST "$body" STUB_FOLLOW="$1"
+    argv_of mosquitto_pub >> "$BOX/pubs"
     one_doc "6 [$1] → one JSON object, done ok, dispatch fields kept" \
         'd.get("done") == "ok" and d.get("state") == "idle" and d.get("name") == "Кухня \"A\""'
     if [ "$(ran "$2")" -eq 1 ] && [ "$(argv_of "$2")" = "$3" ]; then
@@ -254,10 +273,22 @@ check_follow "pub record 2" mosquitto_pub "-h 127.0.0.1 -p 1883 -q 1 -t $REC -m 
 check_follow "pub record stop" mosquitto_pub "-h 127.0.0.1 -p 1883 -q 1 -t $REC -m stop"
 check_follow "pub delete 20261015T120000Z-0a1b2c" mosquitto_pub "-h 127.0.0.1 -p 1883 -q 1 -t $DEL -m 20261015T120000Z-0a1b2c"
 check_follow "pub delete all" mosquitto_pub "-h 127.0.0.1 -p 1883 -q 1 -t $DEL -m all"
+LM=/devices/sa02m-audio/controls/light_music/on
+for v in 1 0; do
+    check_follow "pub light_music $v" mosquitto_pub "-h 127.0.0.1 -p 1883 -q 1 -t $LM -m $v"
+    if grep -qx "logger -t sa02m-audio-panel -- source=panel publish light_music/on=$v result=ok" "$STUB_CALLS"; then
+        ok "6 [pub light_music $v] → audit names the topic and the value: publish light_music/on=$v"
+    else bad "6 [pub light_music $v] audit line: $(grep '^logger' "$STUB_CALLS" | tr '\n' '|')"; fi
+done
 for verb in enable disable restart; do
     check_follow "sudo $verb" sudo "-n /usr/local/sbin/sa02m-audio-web-trigger.sh $verb"
 done
-if grep -q -- ' -r' "$STUB_CALLS"; then bad "6 a publish carried -r"; else ok "6 no publish ever carries -r (retain)"; fi
+# Every publish of case 6, accumulated by check_follow ($STUB_CALLS holds only
+# the last run, a sudo one): seven publishes or the sweep saw nothing.
+n_pub=$(grep -c . "$BOX/pubs" 2>/dev/null); n_pub=${n_pub:-0}
+if [ "$n_pub" -lt 7 ]; then bad "6 retain sweep saw $n_pub publish(es), expected 7"
+elif grep -qE '(^| )-r( |$)' "$BOX/pubs"; then bad "6 a publish carried -r: $(grep -E '(^| )-r( |$)' "$BOX/pubs" | head -1)"
+else ok "6 none of the $n_pub publishes carries -r (retain)"; fi
 run_cgi POST '{"action":"save"}' STUB_API=save STUB_FOLLOW=""
 if [ "$(ran sudo)" -eq 0 ] && [ "$(ran mosquitto_pub)" -eq 0 ] \
    && grep -q '^logger -t sa02m-audio-panel -- source=panel save$' "$STUB_CALLS"; then
@@ -274,12 +305,30 @@ echo "7. follow-ups outside the grammar run nothing"
 for follow in 'pub record 10; reboot' 'pub record 100' 'pub record 0' 'pub record -r' 'pub record 10 -r' \
               'pub record $(id)' 'pub delete ../x' 'pub delete ALL' 'pub delete 20261015T120000Z-0a1b2c x' \
               'pub foo 1' 'pub /devices/x/controls/y/on 1' 'sudo unlink' 'sudo enable extra' 'sudo  enable' \
-              'sudo -u root enable' 'enable' 'pub record' ' pub record 10'; do
+              'sudo -u root enable' 'enable' 'pub record' ' pub record 10' \
+              'pub light_music 2' 'pub light_music on' 'pub light_music true' 'pub light_music 01' \
+              'pub light_music -1' 'pub light_music 1 -r' 'pub light_music -r' 'pub light_music' \
+              'pub light_music ' 'pub light_music  1' 'pub light_music 1 ' 'pub light_music 1; reboot' \
+              'pub light_music $(id)' 'pub light_music stop' 'pub lightmusic 1' 'pub LIGHT_MUSIC 1'; do
     run_cgi POST '{"action":"x"}' STUB_FOLLOW="$follow"
     if [ "$(ran sudo)" -eq 0 ] && [ "$(ran mosquitto_pub)" -eq 0 ] && [ -n "$OUT" ] && [[ $OUT != *'"done"'* ]]; then
         ok "7 [$follow] → nothing run, no done field"
     else bad "7 [$follow] → $(tr '\n' ' ' < "$STUB_CALLS") out=$OUT"; fi
 done
+
+echo "T. the CGI's command topics = the daemon's"
+AUDIO_PKG_DIR="${AUDIO_PKG_DIR:-$HERE/opt/sa02m-audio}"
+t_daemon=$(PYTHONDONTWRITEBYTECODE=1 PYTHONIOENCODING=utf-8 PYTHONPATH="$AUDIO_PKG_DIR" "$REAL_PY" -c '
+from sa02m_audio import mqttio
+print("\n".join(mqttio.COMMAND_TOPICS))' 2>/dev/null | tr -d '\r' | sort -u)
+t_cgi=$(sed 's/^[[:space:]]*#.*$//' "$CGI_SRC" | grep -oE 'TOPIC=/[^ ;"]+' | sed 's/^TOPIC=//' | sort -u)
+if [ "$(printf '%s\n' "$t_daemon" | grep -c .)" -lt 3 ] || [ "$(printf '%s\n' "$t_cgi" | grep -c .)" -lt 3 ]; then
+    bad "T non-vacuity: daemon topics '$(printf '%s' "$t_daemon" | tr '\n' ' ')', CGI topics '$(printf '%s' "$t_cgi" | tr '\n' ' ')'"
+elif [ "$t_cgi" = "$t_daemon" ]; then
+    ok "T CGI command topics == mqttio.COMMAND_TOPICS ($(printf '%s' "$t_cgi" | tr '\n' ' '))"
+else
+    bad "T CGI command topics differ — CGI: $(printf '%s' "$t_cgi" | tr '\n' ' ') | daemon: $(printf '%s' "$t_daemon" | tr '\n' ' ')"
+fi
 
 echo "8. helper failure is reported, never echoed"
 run_cgi POST '{"action":"enable"}' STUB_FOLLOW="sudo enable" STUB_SUDO=fail

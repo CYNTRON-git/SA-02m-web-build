@@ -31,11 +31,20 @@
 #      B8 broker inactive ⇒ the file updated, no reload.
 #   C  scripts/15-audio.sh calls the migration on /etc/mosquitto/acl/default.conf
 #      on a live line after the block.
+#   D  the deny filter covers EVERY command topic of the recorder, under
+#      MQTT wildcard rules (`+` one level, `#` the rest): the topics the
+#      daemon subscribes (sa02m_audio.mqttio.COMMAND_TOPICS, imported) and
+#      every `TOPIC=` literal of the panel CGI — light_music/on (1.0.7.10)
+#      included; fewer than 3 topics on either side FAILS. A command topic
+#      outside `controls/+/on` would be open to mqttuser's `/devices/#` grant.
 # RED (recorded in the row): the `print d` of the insert removed ⇒ B1/B3/B4;
-# the call commented out ⇒ C; the template line commented out ⇒ A.
+# the call commented out ⇒ C; the template line commented out ⇒ A; the CGI's
+# light_music topic moved to a two-level name, or a daemon command topic
+# outside `controls/<name>/on` ⇒ D.
 #
-# Run: bash scripts/dev/test-mqtt-acl-audio.sh
-#      ACL_TEMPLATE=<file> / AUDIO_INSTALLER=<file> judge other copies.
+# Run: bash scripts/dev/test-mqtt-acl-audio.sh   (D needs python3/python/py)
+#      ACL_TEMPLATE=<file> / AUDIO_INSTALLER=<file> / AUDIO_CGI=<file> /
+#      AUDIO_PKG_DIR=<dir> judge other copies.
 # ═══════════════════════════════════════════════════════════════════════════
 set -u
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
@@ -149,6 +158,49 @@ call=$(grep -n '^au_acl_migrate /etc/mosquitto/acl/default\.conf[[:space:]]*$' "
 if [ -n "$call" ] && [ -n "$blk_end" ] && [ "$call" -gt "$blk_end" ]; then
     ok "C 15-audio.sh runs the migration on /etc/mosquitto/acl/default.conf (line $call)"
 else bad "C 15-audio.sh never calls au_acl_migrate /etc/mosquitto/acl/default.conf after the block"; fi
+
+echo "D. the deny covers every command topic"
+CGI="${AUDIO_CGI:-$HERE/www/network_config/cgi-bin/sa02m_audio_api.cgi}"
+PKG="${AUDIO_PKG_DIR:-$HERE/opt/sa02m-audio}"
+# mqtt_match FILTER TOPIC — MQTT 3.1.1 §4.7 topic-filter match.
+mqtt_match() {
+    awk -v f="$1" -v t="$2" 'BEGIN {
+        nf = split(f, fp, "/"); nt = split(t, tp, "/")
+        for (i = 1; i <= nf; i++) {
+            if (fp[i] == "#") exit 0
+            if (i > nt) exit 1
+            if (fp[i] != "+" && fp[i] != tp[i]) exit 1
+        }
+        exit (nf == nt) ? 0 : 1 }'
+}
+d_py=""
+for p in python3 python py; do
+    if "$p" -c "import sys" >/dev/null 2>&1; then d_py=$p; break; fi
+done
+d_daemon=""
+if [ -n "$d_py" ]; then
+    d_daemon=$(PYTHONDONTWRITEBYTECODE=1 PYTHONPATH="$PKG" "$d_py" -c '
+from sa02m_audio import mqttio
+print("\n".join(mqttio.COMMAND_TOPICS))' 2>/dev/null | tr -d '\r' | sort -u)
+fi
+d_cgi=""
+[ -r "$CGI" ] && d_cgi=$(sed 's/^[[:space:]]*#.*$//' "$CGI" | grep -oE 'TOPIC=/[^ ;"]+' | sed 's/^TOPIC=//' | sort -u)
+filter=${DENY#topic deny }
+if [ "$(printf '%s\n' "$d_daemon" | grep -c .)" -lt 3 ] || [ "$(printf '%s\n' "$d_cgi" | grep -c .)" -lt 3 ]; then
+    bad "D non-vacuity: daemon topics '$(printf '%s' "$d_daemon" | tr '\n' ' ')' (python: ${d_py:-none}), CGI topics '$(printf '%s' "$d_cgi" | tr '\n' ' ')'"
+else
+    while IFS= read -r t; do
+        [ -n "$t" ] || continue
+        if mqtt_match "$filter" "$t"; then ok "D '$filter' denies $t"
+        else bad "D $t is NOT matched by '$filter' — mqttuser could command it"; fi
+    done <<<"$(printf '%s\n%s\n' "$d_daemon" "$d_cgi" | sort -u)"
+    # The matcher itself must be able to say no (else every D line is decoration).
+    if mqtt_match "$filter" /devices/sa02m-audio/controls/light/music/on \
+       || mqtt_match "$filter" /devices/sa02m-audio/controls/record \
+       || ! mqtt_match '/devices/#' /devices/sa02m-audio/controls/record/on; then
+        bad "D the topic matcher is broken (two-level name or missing /on matched, or # did not)"
+    else ok "D matcher self-check: a two-level name and a missing /on are not matched, # is"; fi
+fi
 
 if [ "$fails" -eq 0 ]; then
     echo "mqtt-acl-audio: all checks passed"

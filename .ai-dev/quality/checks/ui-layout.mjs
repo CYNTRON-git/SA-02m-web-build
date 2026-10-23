@@ -395,10 +395,18 @@ const AUDIO_STATUS = {
   ],
   conf: { enabled: true, storage: 'usb', device: 'auto', default_duration_s: 10, max_duration_s: 30,
     keep_files: 50, keep_mb: 32, keep_hours: 24, delete_after_upload: true,
-    upload_url: 'https://192.168.1.10/sa02m-audio/upload' },
+    upload_url: 'https://192.168.1.10/sa02m-audio/upload',
+    light_music_target: 'led_kitchen_ceiling', light_music_style: 'equalizer', light_music_rate_hz: 8,
+    capture_gain: 12 },
   bounds: { max_duration_s: [2, 30], default_duration_s: [2, 30], keep_files: [1, 50], keep_hours: [1, 168],
-    keep_mb: { emmc: [1, 256], usb: [1, 4096], sdcard: [1, 4096] } },
+    keep_mb: { emmc: [1, 256], usb: [1, 4096], sdcard: [1, 4096] }, light_music_rate_hz: [1, 10] },
   removable: ['usb', 'sdcard'],
+  // 1.0.7.10: the light-music line and switch row in their longest state
+  // («лента недоступна» / «strip unavailable», switch on), a strip list, and
+  // the mic-gain row (inside the closed settings <details>: present, not measured).
+  light_music: true, light_music_state: 'strip_offline', light_music_update_hz: 0,
+  light_music_styles: ['level', 'color', 'equalizer'], led_devices: ['led_kitchen_ceiling', 'strip_1'],
+  mic_gain: { state: 'applied', want: 12, applied: 12, min: 0, max: 31, db: '18.75', control: 'Mic' },
 };
 
 // CGI stub body. Default is `{}` — enough for the auth wrapper to see a 200
