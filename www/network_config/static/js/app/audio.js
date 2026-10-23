@@ -154,6 +154,24 @@ function lightMusicAllowed(d) {
   return !!d && d.ok === true && d.live === true && !!(d.conf && d.conf.light_music_target);
 }
 
+// Same rule as the capture_gain row: a daemon older than 1.0.7.9 (a web-only
+// update) has none of these keys in its conf and refuses a save carrying one
+// (unknown_field), so the fields hide and the save leaves them out.
+var AU_LM_CONF_KEYS = ['light_music_target', 'light_music_style', 'light_music_rate_hz'];
+function lightMusicSupported(d) {
+  var c = d && d.conf;
+  return !!c && typeof c === 'object' && AU_LM_CONF_KEYS.every(function (k) { return k in c; });
+}
+
+// The strip / picture / rate inputs carry no id on their `.field` wrappers.
+function showLightMusicFields(show) {
+  ['audio-lm-target', 'audio-lm-style', 'audio-lm-rate'].forEach(function (id) {
+    var el = $(id);
+    var field = el && el.closest ? el.closest('.field') : null;
+    if (field) field.hidden = !show;
+  });
+}
+
 // last_upload / a clip's upload state → its short line ('' for none).
 function uploadText(st) {
   switch (st) {
@@ -349,6 +367,7 @@ function fillSettings(d) {
   if (d && d.installed) {
     setText('audio-token-state', d.token_set ? uiT('Токен задан') : uiT('Токен не задан'));
   }
+  showLightMusicFields(lightMusicSupported(d));
   if (det.hidden || det.open) return;   // never overwrite what is being edited
   var c = d.conf;
   var sel = $('audio-storage');
@@ -630,9 +649,11 @@ function audioSave() {
   };
   if ($('audio-upload-url')) form.upload_url = $('audio-upload-url').value;
   if ($('audio-delete-after')) form.delete_after_upload = !!$('audio-delete-after').checked;
-  if ($('audio-lm-target')) form.light_music_target = $('audio-lm-target').value;
-  if ($('audio-lm-style')) form.light_music_style = $('audio-lm-style').value;
-  if ($('audio-lm-rate')) form.light_music_rate_hz = $('audio-lm-rate').value;
+  if (lightMusicSupported(_last)) {
+    if ($('audio-lm-target')) form.light_music_target = $('audio-lm-target').value;
+    if ($('audio-lm-style')) form.light_music_style = $('audio-lm-style').value;
+    if ($('audio-lm-rate')) form.light_music_rate_hz = $('audio-lm-rate').value;
+  }
   var out = saveBody(form, _last);
   out = gainSaveMerge(out, _last);
   if (out.error) { actionNotice(errorText(out.error), false); return Promise.resolve(null); }
