@@ -376,8 +376,18 @@ done
 # mode model — git-bash/MSYS collapses it (chmod 0440 reads back 644), so there
 # the case SKIPs and runs on WSL / Linux CI, as section 7's symlink case does.
 # visudo is stubbed in both runs: the real `visudo -c` reads the HOST's
-# /etc/sudoers, not the sandbox. Owner is asserted only as root (chown fails
-# for anyone else; the installer and the runner always run as root).
+# /etc/sudoers, not the sandbox.
+# OWNER is half of the target (the product's skip test is `440 root:root`) and
+# is exercised on purpose: every seeded copy has a NON-root owner and one is
+# already 0440, so only its owner is wrong — a mode-only skip test leaves it.
+# As root the seeds are chowned to 65534:65534 and the real chown is observed.
+# Anyone else cannot chown to root (CI runs this row non-root), so there the
+# invoker stands in for root: `chown root:root F` on a sandbox file is RECORDED
+# (_8C_CHOWNED) and from then on stat reports F's owner as root:root, every
+# other byte of its output real; the product code runs unmodified. Without that
+# model the owner never reaches root:root, every run "repairs" again and the
+# idempotence check is RED for the sandbox, not the product (PR #217 CI,
+# 2026-10-23: 10 "repairs" on the second run as non-root, GREEN as root).
 committed_dropins=(etc/sudoers.d/sa02m-*)
 if [ ! -f "${committed_dropins[0]}" ]; then
     fail "8c non-vacuity: etc/sudoers.d/ carries no sa02m-* drop-in — the mode case has nothing to copy"
@@ -408,12 +418,36 @@ for _8c_f in scripts/lib.sh etc/sa02m-update-runner.sh; do
     fi
 done
 
+_8c_is_root=0; [ "$(id -u)" = 0 ] && _8c_is_root=1
+_8C_CHOWNED=""
+stat_8c() {  # stat as the product sees it in the sandbox (owner model above)
+    local _o _p="${!#}"
+    _o=$(command stat "$@") || return
+    if [ "$_8c_is_root" = 0 ] && [ -n "$_8C_CHOWNED" ] && [ -f "$_8C_CHOWNED" ] \
+        && [[ $_o =~ ^[0-7]+\ [^\ ]+:[^\ ]+$ ]] && grep -qxF -- "$_p" "$_8C_CHOWNED"; then
+        _o="${_o% *} root:root"
+    fi
+    printf '%s\n' "$_o"
+}
+_8C_CHOWN_REFUSE=0
+chown_8c() {  # non-root: record `chown root:root F` instead of failing it; 8d: refuse every chown
+    if [ "$_8C_CHOWN_REFUSE" = 1 ]; then
+        return 1
+    fi
+    if [ "$_8c_is_root" = 0 ] && [ -n "$_8C_CHOWNED" ] && [ "$#" = 2 ] && [ "$1" = root:root ]; then
+        printf '%s\n' "$2" >> "$_8C_CHOWNED"
+        return 0
+    fi
+    command chown "$@"
+}
 run_8c_lib() {  # $1 sandbox sudoers dir → the helper's log lines
     ( LOG_FILE=/dev/null; export SA02M_SUDOERS_DIR="$1"
       # shellcheck disable=SC1091
       . scripts/lib.sh
       log() { printf 'LOG %s %s\n' "$1" "${2:-}"; }   # after the source: lib.sh defines its own log()
       visudo() { return 0; }
+      stat() { stat_8c "$@"; }
+      chown() { chown_8c "$@"; }
       sa02m_normalise_sudoers_modes ) 2>&1
 }
 run_8c_runner() {  # $1 sandbox sudoers dir → the cleanup's log lines
@@ -426,26 +460,43 @@ run_8c_runner() {  # $1 sandbox sudoers dir → the cleanup's log lines
     ( export SA02M_SUDOERS_DIR="$1"
       log() { printf 'LOG %s\n' "$*"; }
       visudo() { return 0; }
+      stat() { stat_8c "$@"; }
+      chown() { chown_8c "$@"; }
       rm() { :; }   # its legacy-removal sites name the HOST's /etc and /usr/local — inert here, pinned in 8
       eval "$fn"
       cleanup_b1_deploy_artifacts ) 2>&1
 }
-seed_8c() {  # $1 sandbox sudoers dir — every committed drop-in at 0644 + the three decoys
-    local f
-    rm -rf "$1"; mkdir -p "$1/not-a-file"
+seed_8c() {  # $1 sandbox sudoers dir — every committed drop-in (non-root owner; the first 0440, the rest 0644) + the three decoys
+    local f n first=1
+    rm -rf "$1"; mkdir -p "$1/not-a-file"; : > "$_8C_CHOWNED"
     for f in "${committed_dropins[@]}"; do
-        cp "$f" "$1/$(basename "$f")" && chmod 0644 "$1/$(basename "$f")"
+        n=$(basename "$f")
+        cp "$f" "$1/$n"
+        if [ "$first" = 1 ]; then chmod 0440 "$1/$n"; first=0; else chmod 0644 "$1/$n"; fi
+        [ "$_8c_is_root" = 1 ] && chown 65534:65534 "$1/$n"
     done
     printf 'other vendor\n' > "$1/other-vendor"; chmod 0644 "$1/other-vendor"
     printf 'target\n' > "$1/../link-target"; chmod 0644 "$1/../link-target"
     ln -s "$1/../link-target" "$1/sa02m-link"
 }
-check_8c() {  # $1 sandbox sudoers dir  $2 label  $3 log text of the FIRST run  $4 log text of the SECOND run
-    local f n m want n_log n_log2 bad=0
-    if [ "$(id -u)" = 0 ]; then want="440 root:root"; else want="440"; fi
+seed_ok_8c() {  # $1 sandbox sudoers dir  $2 label — no seed may already read root:root, or the owner half tests nothing
+    local f n m
     for f in "${committed_dropins[@]}"; do
         n=$(basename "$f")
-        if [ "$(id -u)" = 0 ]; then m=$(stat -c '%a %U:%G' "$1/$n" 2>/dev/null); else m=$(stat -c '%a' "$1/$n" 2>/dev/null); fi
+        m=$(stat_8c -c '%a %U:%G' "$1/$n" 2>/dev/null)
+        case "$m" in
+            ''|*' root:root')
+                fail "8c $2: seeded $n reads '$m' before the run — the owner repair would be untested (non-vacuity)"
+                return 1 ;;
+        esac
+    done
+    return 0
+}
+check_8c() {  # $1 sandbox sudoers dir  $2 label  $3 log text of the FIRST run  $4 log text of the SECOND run
+    local f n m want="440 root:root" n_log n_log2 bad=0
+    for f in "${committed_dropins[@]}"; do
+        n=$(basename "$f")
+        m=$(stat_8c -c '%a %U:%G' "$1/$n" 2>/dev/null)
         [ "$m" = "$want" ] || { bad=1; fail "8c $2: $n is '$m' after the run, expected '$want'"; }
     done
     [ "$(stat -c '%a' "$1/other-vendor" 2>/dev/null)" = 644 ] \
@@ -458,7 +509,7 @@ check_8c() {  # $1 sandbox sudoers dir  $2 label  $3 log text of the FIRST run  
         || { bad=1; fail "8c $2: $n_log repair line(s) logged for ${#committed_dropins[@]} repaired file(s) — each repair must be logged: $(printf '%s' "$3" | tr '\n' '|' | head -c 300)"; }
     [ "$n_log2" = 0 ] \
         || { bad=1; fail "8c $2: the second run logged $n_log2 repair(s) on an already-normalised dir — not idempotent"; }
-    [ "$bad" = 0 ] && pass "8c $2: ${#committed_dropins[@]} drop-ins 0644 → $want, each logged once, decoys untouched, second run silent"
+    [ "$bad" = 0 ] && pass "8c $2: ${#committed_dropins[@]} drop-ins (non-root owner; one already 0440, the rest 0644) → $want, each logged once, decoys untouched, second run silent ($([ "$_8c_is_root" = 1 ] && echo 'real chown' || echo 'non-root: chown root:root modelled'))"
 }
 _8c_root=$(mktemp -d 2>/dev/null) || _8c_root=""
 if [ -z "$_8c_root" ]; then
@@ -470,10 +521,12 @@ else
     chmod 0440 "$_8c_root/probe"; _8c_m2=$(stat -c '%a' "$_8c_root/probe" 2>/dev/null)
     ln -s "$_8c_root/probe" "$_8c_root/probe-link" 2>/dev/null
     if [ "$_8c_m1" != 644 ] || [ "$_8c_m2" != 440 ] || [ ! -L "$_8c_root/probe-link" ]; then
-        printf 'sudoers-pin-contract: SKIP  8c mode normalisation — this host has no faithful chmod/symlink model (git-bash/MSYS); it runs on WSL/Linux CI\n'
+        printf 'sudoers-pin-contract: SKIP  8c mode normalisation + 8d read-back — this host has no faithful chmod/symlink model (git-bash/MSYS); it runs on WSL/Linux CI\n'
     else
         for _8c_site in lib runner; do
+            mkdir -p "$_8c_root/$_8c_site"; _8C_CHOWNED="$_8c_root/$_8c_site/chowned"
             seed_8c "$_8c_root/$_8c_site/sudoers.d"
+            seed_ok_8c "$_8c_root/$_8c_site/sudoers.d" "$_8c_site path" || continue
             _8c_out1=$("run_8c_$_8c_site" "$_8c_root/$_8c_site/sudoers.d")
             _8c_out2=$("run_8c_$_8c_site" "$_8c_root/$_8c_site/sudoers.d")
             if [ "$_8c_out1" = EXTRACT-FAILED ]; then
@@ -482,6 +535,47 @@ else
                 check_8c "$_8c_root/$_8c_site/sudoers.d" "$_8c_site path" "$_8c_out1" "$_8c_out2"
             fi
         done
+        # ── 8d. The OTA cleanup reports what it READ BACK, not what it asked for ──
+        # The runner logs a repair as done only when the drop-in reads back
+        # `440 root:root`; a chown that did not land (a read-only or odd
+        # filesystem, an immutable bit) leaves the grant owned by someone else,
+        # and the run must say WARN for it — never "-> 0440 root:root", the line
+        # an operator reads as "fixed". Every chown is refused here (as root and
+        # not), so each seeded drop-in stays non-root owned after the run; the
+        # assertion is wording-agnostic: every line naming a drop-in carries WARN.
+        _8C_CHOWNED="$_8c_root/8d/chowned"; mkdir -p "$_8c_root/8d"
+        seed_8c "$_8c_root/8d/sudoers.d"
+        _8d_out=$(_8C_CHOWN_REFUSE=1; run_8c_runner "$_8c_root/8d/sudoers.d")
+        if [ "$_8d_out" = EXTRACT-FAILED ]; then
+            fail "8d: cleanup_b1_deploy_artifacts() could not be extracted from the runner — the read-back is NOT covered"
+        else
+            _8d_bad=0
+            for _8d_f in "${committed_dropins[@]}"; do
+                _8d_n=$(basename "$_8d_f")
+                _8d_m=$(stat_8c -c '%a %U:%G' "$_8c_root/8d/sudoers.d/$_8d_n" 2>/dev/null)
+                case "$_8d_m" in
+                    ''|*' root:root')
+                        _8d_bad=1
+                        fail "8d non-vacuity: $_8d_n reads '$_8d_m' after a run with every chown refused — the refusal did not take" ;;
+                esac
+                # Captured, then matched in-shell: no early-exit grep on a pipe
+                # (quality-gate-rigor shape f).
+                _8d_seen=0; _8d_plain=""
+                while IFS= read -r _8d_l; do
+                    [[ $_8d_l == *"sudoers $_8d_n"[!A-Za-z0-9_.-]* || $_8d_l == *"sudoers $_8d_n" ]] || continue
+                    _8d_seen=1
+                    [[ $_8d_l == *WARN* ]] || _8d_plain="$_8d_plain|$_8d_l"
+                done <<< "$_8d_out"
+                if [ "$_8d_seen" = 0 ]; then
+                    _8d_bad=1
+                    fail "8d: the run with chown refused logged nothing for $_8d_n (left '$_8d_m') — a failed repair must be reported"
+                elif [ -n "$_8d_plain" ]; then
+                    _8d_bad=1
+                    fail "8d: $_8d_n stayed '$_8d_m' but the runner logged it without WARN: ${_8d_plain:1:200}"
+                fi
+            done
+            [ "$_8d_bad" = 0 ] && pass "8d runner: with every chown refused, all ${#committed_dropins[@]} drop-ins are reported WARN, none as repaired"
+        fi
     fi
     rm -rf "$_8c_root"
 fi
