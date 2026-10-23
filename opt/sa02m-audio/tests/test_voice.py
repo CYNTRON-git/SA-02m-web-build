@@ -315,6 +315,8 @@ class DefaultAllowFileTest(unittest.TestCase):
             "effect": (0, 81),
             "speed": (0, 255),
             "color": voice.RGB,
+        }, "sa02m-audio": {
+            "light_music": (0, 1),
         }})
 
     def test_effect_range_follows_the_effect_catalogue(self):

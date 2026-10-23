@@ -111,6 +111,25 @@ class StateTest(ApiTestBase):
                          ("", "", "", ""))
         self.assertEqual(view["media"]["emmc"], {"state": "absent", "free_bytes": 0, "files": 0, "bytes": 0})
 
+    def test_mic_gain_view_is_rechecked(self):
+        good = {"state": "applied", "want": 8, "applied": 8, "min": 0, "max": 16,
+                "db": "12.00", "control": "Mic"}
+        self.status("idle", mic_gain=good)
+        self.assertEqual(api.status_view()["mic_gain"], good)
+        planted = {"state": "applied", "want": "8", "applied": True, "min": 16, "max": 0,
+                   "db": "<b>", "control": "Mic;rm -rf"}
+        self.status("idle", mic_gain=planted)
+        self.assertEqual(api.status_view()["mic_gain"],
+                         {"state": "applied", "want": None, "applied": None, "min": None,
+                          "max": None, "db": "", "control": ""})
+        for raw in ({"state": "pwned"}, "applied", None):
+            with self.subTest(raw=raw):
+                self.status("idle", mic_gain=raw)
+                self.assertIsNone(api.status_view()["mic_gain"])
+        # A stale daemon reports no gain at all.
+        self.status("idle", age=C.STATUS_STALE_S + 5, mic_gain=good)
+        self.assertIsNone(api.status_view()["mic_gain"])
+
     def test_bounds_and_conf_for_the_card(self):
         view = api.status_view()
         self.assertEqual(view["bounds"]["keep_mb"], {"emmc": [1, 256], "usb": [1, 4096], "sdcard": [1, 4096]})
@@ -227,6 +246,31 @@ class MutationTest(ApiTestBase):
         self.assertEqual(self.post(action="save", device="hw:0")[0],
                          {"ok": False, "error": "unknown_field", "field": "device"})
         self.assertEqual(self.post(action="save", enabled=True)[0]["error"], "unknown_field")
+
+    def test_save_accepts_capture_gain(self):
+        self.assertIn("capture_gain", api.SAVE_KEYS)
+        resp, follow = self.post(action="save", capture_gain=12)
+        self.assertEqual((resp["ok"], follow), (True, ""))
+        self.assertEqual(config.load(self.sb.conf).capture_gain, 12)
+        self.assertEqual(resp["status"]["conf"]["capture_gain"], 12)
+        # The device range is the daemon's to judge at apply time: the panel
+        # takes any value inside the static grammar, negative included.
+        for value in (-7, 5000):
+            with self.subTest(value=value):
+                self.assertTrue(self.post(action="save", capture_gain=value)[0]["ok"])
+                self.assertEqual(config.load(self.sb.conf).capture_gain, value)
+        # null = not managed: the daemon stops touching the mixer.
+        self.assertTrue(self.post(action="save", capture_gain=None)[0]["ok"])
+        self.assertIsNone(config.load(self.sb.conf).capture_gain)
+
+    def test_save_refuses_a_capture_gain_outside_its_grammar(self):
+        self.sb.write_conf(enabled=True, capture_gain=8)
+        for value in ("12", True, False, 1.5, [1], 100001, -100001):
+            with self.subTest(value=value):
+                self.assertEqual(self.post(action="save", capture_gain=value),
+                                 ({"ok": False, "error": "invalid_value", "field": "capture_gain"},
+                                  ""))
+        self.assertEqual(config.load(self.sb.conf).capture_gain, 8)  # nothing saved
 
     def test_save_answers_with_the_status(self):
         resp, _ = self.post(action="save", keep_files=10)

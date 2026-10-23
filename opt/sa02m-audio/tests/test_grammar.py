@@ -72,17 +72,24 @@ class DeleteGrammarTest(unittest.TestCase):
 
 
 class TopicsTest(unittest.TestCase):
-    def test_command_topics_are_exactly_two(self):
+    def test_command_topics_are_exactly_three(self):
         self.assertEqual(set(mqttio.COMMAND_TOPICS), {
+            "/devices/sa02m-audio/controls/record/on",
+            "/devices/sa02m-audio/controls/delete/on",
+            "/devices/sa02m-audio/controls/light_music/on"})
+        # `light_music/on` is subscribed only while light music has a target.
+        self.assertEqual(set(mqttio.ALWAYS_TOPICS), {
             "/devices/sa02m-audio/controls/record/on",
             "/devices/sa02m-audio/controls/delete/on"})
 
-    def test_meta_marks_only_record_writable(self):
+    def test_meta_marks_only_record_and_light_music_writable(self):
         meta = dict(mqttio.meta_topics())
         self.assertEqual(meta["/devices/sa02m-audio/meta/driver"], "sa02m-audio")
-        self.assertEqual(meta["/devices/sa02m-audio/controls/record/meta/readonly"], "0")
+        for name in ("record", "light_music"):
+            self.assertEqual(meta["/devices/sa02m-audio/controls/%s/meta/readonly" % name], "0",
+                             name)
         for control in C.CONTROLS:
-            if control.name != "record":
+            if control.name not in ("record", "light_music"):
                 self.assertEqual(meta["/devices/sa02m-audio/controls/%s/meta/readonly" % control.name],
                                  "1", control.name)
         self.assertFalse(any(t.endswith("/on") for t in meta))

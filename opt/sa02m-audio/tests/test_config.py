@@ -114,6 +114,45 @@ class ConfigTest(unittest.TestCase):
         self.assertEqual(self.write("[recorder]\ndevice = hw:1\n  x\n").device, "auto")
         self.assertFalse(os.path.exists(self.path + ".tmp"))
 
+    def test_capture_gain_absent_or_empty_is_not_managed(self):
+        for body in ("[recorder]\nenabled = true\n", "[recorder]\ncapture_gain =\n",
+                     "[recorder]\ncapture_gain =   \n"):
+            with self.subTest(body=body):
+                conf = self.write(body)
+                self.assertIsNone(conf.capture_gain)
+                self.assertEqual(conf.warnings, [])
+        self.assertIsNone(config.RecorderConfig().capture_gain)
+
+    def test_capture_gain_grammar_on_read(self):
+        # Raw control units; the device range is the daemon's to judge, so a
+        # value no mic can take still reads (only the garbage guard refuses).
+        for raw, value in (("12", 12), ("0", 0), ("-3", -3), ("5000", 5000),
+                           ("100000", 100000), ("-100000", -100000)):
+            with self.subTest(raw=raw):
+                conf = self.write("[recorder]\ncapture_gain = %s\n" % raw)
+                self.assertEqual((conf.capture_gain, conf.warnings), (value, []))
+        for raw in ("12dB", "1e3", "true", "1 2", "+5", "100001", "-100001", "1234567", "0x10",
+                    "$(id)"):
+            with self.subTest(raw=raw):
+                conf = self.write("[recorder]\ncapture_gain = %s\n" % raw)
+                self.assertIsNone(conf.capture_gain)
+                self.assertEqual(len(conf.warnings), 1)
+                self.assertIn("capture_gain", conf.warnings[0])
+                self.assertIn("not managed", conf.warnings[0])
+
+    def test_capture_gain_validate_and_render(self):
+        for bad in (True, False, "12", 1.5, 100001, -100001):
+            with self.subTest(bad=bad):
+                with self.assertRaises(ValueError):
+                    config.validate(config.RecorderConfig(capture_gain=bad))
+        # None renders as an empty value, which reads back as not managed.
+        for value in (None, 0, -7, 14):
+            with self.subTest(value=value):
+                text = config.render(config.RecorderConfig(capture_gain=value))
+                self.assertIn("capture_gain = %s\n" % ("" if value is None else value), text)
+                back = self.write(text)
+                self.assertEqual((back.capture_gain, back.warnings), (value, []))
+
     def test_save_refuses_out_of_bounds(self):
         for kwargs in ({"storage": "nfs"}, {"keep_mb": 300}, {"keep_mb": 0},
                        {"max_duration_s": 31}, {"default_duration_s": 1},
