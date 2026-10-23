@@ -43,7 +43,11 @@ calls sys.exit() at import when paho is absent, so the stub is mandatory.
 """
 from __future__ import annotations
 
+import functools
 import os
+import re
+import shutil
+import subprocess
 import sys
 import types
 import tempfile
@@ -75,6 +79,58 @@ import sa02m_telemetry as tel  # noqa: E402
 LOCK_ENV = "SA02M_TELEMETRY_LOCK_FILE"
 # os.geteuid does not exist on Windows; decorators evaluate at import.
 IS_ROOT = hasattr(os, "geteuid") and os.geteuid() == 0
+# Set in the child a root case re-runs itself in, so the child never recurses.
+AS_ROOT_ENV = "SA02M_TELEMETRY_TEST_AS_ROOT"
+
+
+@functools.lru_cache(maxsize=None)
+def _passwordless_sudo() -> str | None:
+    """`sudo` when it answers `sudo -n true` without a password (the CI runner),
+    else None. Never in the re-run child and never as root."""
+    if IS_ROOT or os.name != "posix" or os.environ.get(AS_ROOT_ENV):
+        return None
+    sudo = shutil.which("sudo")
+    if not sudo:
+        return None
+    try:
+        probe = subprocess.run([sudo, "-n", "true"], stdin=subprocess.DEVNULL,
+                               stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=15)
+    except (OSError, subprocess.SubprocessError):
+        return None
+    return sudo if probe.returncode == 0 else None
+
+
+def root_case(why: str):
+    """A case that needs root (a real chown to another uid, setuid to nobody).
+
+    As root it runs in place. Unprivileged it re-runs ITSELF as root through
+    `sudo -n` where that needs no password (the CI runner, which runs this row
+    as a non-root user) and passes only on that child's plain `OK` for exactly
+    one test — a child that skipped, failed or ran nothing fails it. With
+    neither it is reported as skipped, never as passed. The idiom is
+    scripts/dev/test-daemon-access.sh's whole-script `sudo -n` re-exec, per case.
+    """
+    def wrap(fn):
+        @functools.wraps(fn)
+        def run(self):
+            if IS_ROOT:
+                return fn(self)
+            sudo = _passwordless_sudo()
+            if sudo is None:
+                self.skipTest(why + " — not root and no passwordless `sudo -n` here")
+            test_id = f"{Path(__file__).stem}.{type(self).__name__}.{fn.__name__}"
+            cmd = [sudo, "-n", "env", f"{AS_ROOT_ENV}=1", "PYTHONDONTWRITEBYTECODE=1",
+                   sys.executable, "-B", "-m", "unittest", "-v", test_id]
+            child = subprocess.run(cmd, cwd=str(Path(__file__).resolve().parent), stdin=subprocess.DEVNULL,
+                                   capture_output=True, text=True, timeout=300)
+            out = child.stdout + child.stderr
+            if (child.returncode != 0 or not re.search(r"^Ran 1 test\b", out, re.M)
+                    or not re.search(r"^OK\s*$", out, re.M)):
+                self.fail(f"{test_id} re-run as root via sudo -n: rc={child.returncode}\n{out[-3000:]}")
+        return run
+    return wrap
+
+
 STORM_PHRASE = "already connected, closing old connection"
 
 
@@ -408,8 +464,7 @@ class TestTheInstanceLockTrustsOnlyItsOwnFile(SessionTestCase):
         self.assertIn("owned by uid", warns[0])
         self.assertIsNone(client._instance_lock_fd)
 
-    @unittest.skipUnless(hasattr(os, "geteuid") and os.geteuid() == 0,
-                         "a real chown to another uid needs root")
+    @root_case("a real chown to another uid needs root")
     def test_a_really_chowned_file_is_not_trusted(self):
         """The same with the kernel's own uid, as the board would see it."""
         self.lock_path.write_bytes(b"4242\n")
@@ -528,7 +583,7 @@ class TestTheInstanceLockCannotBeSquatted(SessionTestCase):
         self.assertIsNotNone(client._instance_lock_fd)
         self._release(client)
 
-    @unittest.skipUnless(IS_ROOT, "setuid to nobody needs root")
+    @root_case("setuid to nobody needs root")
     def test_nobody_cannot_even_open_the_lock_file(self):
         """RED before the fix: the open succeeded (result 0, not EACCES)."""
         import errno
@@ -541,7 +596,7 @@ class TestTheInstanceLockCannotBeSquatted(SessionTestCase):
                          "another uid could open the instance lock — and a "
                          "read-only fd is enough to flock it")
 
-    @unittest.skipUnless(IS_ROOT, "setuid to nobody needs root")
+    @root_case("setuid to nobody needs root")
     def test_a_squatter_cannot_keep_the_service_down(self):
         """The reviewer's scenario end to end: root takes the lock and exits,
         `nobody` tries to hold it, root starts again. RED before the fix:

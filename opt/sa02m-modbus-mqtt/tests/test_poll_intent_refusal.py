@@ -8,8 +8,11 @@ open path — `PollLock.acquire` asks the broker for `poll` intent and the broke
 refuses while a lease on that UART exists — and this pins it where it lives,
 against the real broker process, a real PTY and the shipped bridge pool.
 
-Needs Linux root (the broker's lock inodes must be root-owned) and a PTY;
-elsewhere the cases are reported as skipped, never as passed.
+Needs Linux and a PTY; elsewhere the cases are reported as skipped, never as
+passed. Root is NOT needed: the broker fixture (test_process_ownership, imported
+in setUp) rebinds the lock-inode owner to the running uid and narrows the
+occupant scan to this process tree, so the same ownership and occupancy checks
+run unprivileged (the CI runner) — as root it is the product's own owner.
 """
 from __future__ import annotations
 
@@ -27,10 +30,10 @@ sys.path.insert(0, str(BRIDGE_DIR))
 sys.path.insert(0, str(COORDINATOR_DIR))
 sys.path.insert(0, str(COORDINATOR_DIR / "tests"))
 
-LINUX_ROOT = sys.platform == "linux" and hasattr(os, "geteuid") and os.geteuid() == 0
+LINUX_PTY = sys.platform == "linux" and hasattr(os, "openpty")
 
 
-@unittest.skipUnless(LINUX_ROOT, "real broker needs Linux root (root-owned lock inodes) and a PTY")
+@unittest.skipUnless(LINUX_PTY, "real broker needs Linux (AF_UNIX peer credentials, /proc) and a PTY")
 class PollIntentRefusal(unittest.TestCase):
     def setUp(self):
         import pty

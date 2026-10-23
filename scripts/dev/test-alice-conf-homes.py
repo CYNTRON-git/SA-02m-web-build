@@ -78,7 +78,8 @@ Method — behavioural where the code can be run, never a grep for a string:
      pairing store, creates a missing conf dir with the tmpfiles owner/mode,
      restores the conf without touching a HomeKit unit (the daemon re-reads it
      every 2 s) and fails the preflight on a symlinked conf; the runner's 0440
-     re-mode loop names every committed etc/sudoers.d/ drop-in (open world).
+     re-mode loop, extracted and run on a sandbox sudoers dir, takes every
+     committed etc/sudoers.d/ drop-in 0644 -> 0440 (open world).
   11/12. the HomeKit installer's conf seed and its tmpfiles conf (see those
      sections).
   13. the Home Connect client homes (docs/contracts/home-connect.md §11-§12),
@@ -129,6 +130,13 @@ cases (each RED, one at a time, with the proof's own awk): the validator entry
 (13.1), the runner-bootstrap entry (13.2), the restore ALLOW entry
 (13.6/13.8a/b), the restore DIR_SPEC entry (13.7), and the 06d seed's
 `os.fchmod(fd, 0o660)` (14a/14b/14f).
+10.9 became behavioural in 1.0.7.10: since 1.0.7.5 (4f250366) the runner
+re-modes by prefix (`"$sudoers_dir"/sa02m-*`), and the old name-list regex read
+that as «loop not found» — the row's only failure on CI (PR #217). RED observed
+2026-10-23 under WSL as `nobody`, one mutation at a time: the glob narrowed to
+`sa02m-a*` (7 drop-ins left 0644, named), the loop's guard made `if true`
+(all 10), a `continue` before the chmod (all 10), an extra committed
+`etc/sudoers.d/zz-extra` (named), and the pre-1.0.7.5 runner (non-vacuity).
 The backup list is not cased: its entries sit inside a backslash-continued
 `for p in \\` list, where a `#` breaks the syntax of the whole loop — a RED for
 the wrong reason.
@@ -1150,22 +1158,45 @@ else:
                     f"victim={victim.read_bytes()!r}, output: {out.strip()[-300:]!r}")
 
 # 10.9 — the OTA lands every committed sudoers drop-in, the github-overlay path
-# at 0644 (the runner's deploy_mode), and its cleanup step re-modes a NAMED list
-# to 0440 (visudo -c flags anything else). Open world: every file under
-# etc/sudoers.d/ must be in that list — a new drop-in (sa02m-homekit) left out
-# ships as a visudo failure on every OTA'd board.
-m_loop = re.search(r"^\s*for _name in ([^;\n]+); do\n\s*_path=\"/etc/sudoers\.d/\$_name\"\n\s*if \[ -f \"\$_path\" \]; then\n\s*chmod 0440",
-                   rtxt, re.M)
+# at 0644 (the runner's deploy_mode), and its cleanup step re-modes them to 0440
+# (visudo -c flags anything else). Since 1.0.7.5 the re-mode is allow-listed by
+# PREFIX (`for _path in "$sudoers_dir"/sa02m-*`), not a name list. Open world,
+# and behavioural: the SHIPPED loop is extracted from cleanup_b1_deploy_artifacts
+# and run by bash against a sandbox SA02M_SUDOERS_DIR seeded with every file
+# under etc/sudoers.d/ at 0644 — each must come out 0440, so a new drop-in the
+# prefix does not reach (or a loop that stops re-moding) FAILS by name. Mode
+# only: the root:root half needs root and is sudoers-pin-contract 8c's.
+m_cleanup = re.search(r"^cleanup_b1_deploy_artifacts\(\) \{\n(.*?)^\}\n", rtxt, re.M | re.S)
+m_loop = re.search(r"^([ \t]*local sudoers_dir=\$\{SA02M_SUDOERS_DIR:-/etc/sudoers\.d\}.*?\n"
+                   r"[ \t]*for _path in \"\$sudoers_dir\"/[^\n]*; do\n.*?^[ \t]*done\n)",
+                   m_cleanup.group(1) if m_cleanup else "", re.M | re.S)
 committed = sorted(p.name for p in (ROOT / "etc/sudoers.d").iterdir() if p.is_file()) if (ROOT / "etc/sudoers.d").is_dir() else []
-if not m_loop or not committed:
-    bad(f"10.9 could not extract the runner's 0440 re-mode loop (found={bool(m_loop)}) or list etc/sudoers.d ({len(committed)} files) (non-vacuity)")
+loop = m_loop.group(1) if m_loop else ""
+# The loop runs as whoever runs this row (root on a dev box): refuse to run a
+# block naming a /etc/sudoers.d/ path outright — only the retargeted
+# $sudoers_dir may reach a file.
+if not m_loop or not committed or "chmod 0440" not in loop or re.search(r"/etc/sudoers\.d/", loop):
+    bad(f"10.9 could not extract the runner's 0440 re-mode loop from cleanup_b1_deploy_artifacts "
+        f"(function found={bool(m_cleanup)}, loop found={bool(m_loop)}) or list etc/sudoers.d ({len(committed)} files) (non-vacuity)")
 else:
-    named = set(m_loop.group(1).split())
-    missing_mode = [n for n in committed if n not in named]
-    if missing_mode:
-        bad(f"10.9 committed sudoers drop-ins the OTA never re-modes to 0440: {missing_mode}")
+    with tempfile.TemporaryDirectory() as sb109:
+        sd = Path(sb109, "sudoers.d")
+        sd.mkdir()
+        for n in committed:
+            shutil.copyfile(ROOT / "etc/sudoers.d" / n, sd / n)
+            os.chmod(sd / n, 0o644)
+        script = "log() { printf '%s\\n' \"$*\"; }\nremode() {\n" + loop + "}\nremode\n"
+        r109 = subprocess.run(["bash", "-c", script], capture_output=True, text=True, timeout=60,
+                              env={**os.environ, "SA02M_SUDOERS_DIR": str(sd)})
+        modes = {n: os.lstat(sd / n).st_mode & 0o7777 for n in committed}
+    missing_mode = sorted(n for n, m in modes.items() if m != 0o440)
+    if r109.returncode != 0 or missing_mode:
+        bad(f"10.9 committed sudoers drop-ins the OTA re-mode loop leaves off 0440: "
+            f"{ {n: oct(modes[n]) for n in missing_mode} } (rc={r109.returncode}, "
+            f"output: {(r109.stdout + r109.stderr).strip()[-300:]!r})")
     else:
-        ok(f"10.9 the OTA re-modes all {len(committed)} committed sudoers drop-ins to 0440 (sa02m-homekit included)")
+        ok(f"10.9 the OTA re-mode loop, run on a sandbox, takes all {len(committed)} committed sudoers drop-ins "
+           f"0644 -> 0440 (sa02m-homekit included)")
 
 # ── 11. HomeKit installer conf seed: root never writes/chmods through a plant ─
 # scripts/06c-homekit.sh (root, on every install.sh refresh once the bridge is
