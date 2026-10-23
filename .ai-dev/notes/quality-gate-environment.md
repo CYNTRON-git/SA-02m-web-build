@@ -42,8 +42,8 @@ header; another harness that reports neither still prints `PASS` — the
 | `status-vplc-probe` | two cases need `AF_UNIX` (Windows CPython has none): 5 PASS + 2 SKIP here, 7/7 under WSL (1.0.7.2) | WSL / Linux CI |
 | `py-unit-audio` | POSIX-only cases (fcntl leases, `dir_fd`, process groups, the real `timeout`): partial skip — roughly half the suite skips here and the row still prints PASS; the whole suite runs under WSL (1.0.7.4) | WSL / Linux CI |
 | `audio-trigger` | no `flock` on `PATH`: whole row SKIP (exit 77), never a pass (1.0.7.4). With Cygwin's `flock` on `PATH` (this box, 2026-10-23) the row RUNS and FAILs — every helper call answers `busy` (the same MSYS-fd-under-Cygwin-`flock` suspect as `install-profile` P6l below), so `comment-mutation-proof` reports its case «not green on an unmutated tree» | WSL / Linux CI |
-| `sudoers-pin-contract` | two cases print SKIP and the row still exits 0: sandbox (c), the iface-conf-write symlink refusal (git-bash cannot create a real symlink, `ln -s` copies), and 8c, the 0440 mode normalisation (MSYS ignores `chmod`: 0440 reads back 644). Because 8c cannot run, `comment-mutation-proof`'s two cases on the `if chmod 0440 …` lines (`scripts/lib.sh`, `etc/sa02m-update-runner.sh`) cannot go RED here and FAIL on this box | WSL / Linux CI |
-| `install-maintenance`, `update-control-boundaries` | whole row SKIP (exit 77): Windows CPython has no `fcntl` (the wrapper's and the controller's flock idiom). `install-maintenance`: 16 tests OK under WSL as root (2026-10-21). `update-control-boundaries`: 15 tests, no root skip — the suite rebinds the state owner to the running uid (1.0.7.10); 15 OK under WSL both as root and as `nobody` (2026-10-23) | WSL / Linux CI |
+| `sudoers-pin-contract` | two cases print SKIP and the row still exits 0: sandbox (c), the iface-conf-write symlink refusal (git-bash cannot create a real symlink, `ln -s` copies), and 8c/8d, the 0440 root:root normalisation and the runner's read-back (MSYS ignores `chmod`: 0440 reads back 644). Because 8c/8d cannot run, `comment-mutation-proof`'s cases on the `if chmod 0440 …` lines (`scripts/lib.sh`, `etc/sa02m-update-runner.sh`) cannot go RED here and FAIL on this box. On Linux 8c/8d run as any user: as non-root (CI) the chown to root is modelled, never skipped; GREEN under WSL as root and as `nobody` (2026-10-23) | WSL / Linux CI |
+| `install-maintenance`, `update-control-boundaries` | whole row SKIP (exit 77): Windows CPython has no `fcntl` (the wrapper's and the controller's flock idiom). Neither needs root since 1.0.7.10 — each suite rebinds its owner constant to the running uid (`install-maintenance`: `JOURNAL_OWNER_UID`, plus an `install -o/-g` stub in the 03a fixture; `update-control-boundaries`: the state owner). `install-maintenance`: 18 OK under WSL as root and as `nobody`; `update-control-boundaries`: 15 OK as root and as `nobody` (both 2026-10-23) | WSL / Linux CI |
 | `py-unit-update` | PARTIAL: `tests/test_control_cgi.py` (HTTP → real Bash CGI → controller) skips as a module without `fcntl` and writes one QUALITY_SKIP_LOG line — 25 passed + 1 skipped here, 36 passed under WSL (2026-10-21); before 1.0.7.5 the whole row was RED on Windows (collection error, `final-build-1.log:3655`) | WSL / Linux CI |
 | `board-verifier-safety` | whole row SKIP (exit 77) off Linux — the script guards itself (`sys.platform`, `/proc`; it needs `/proc`, `os.pidfd_open`, `select` on pipes) and writes the skip-log line; the row's `run` is the plain python call | WSL / Linux CI |
 | `status-reliability-browser` | whole row SKIP (exit 77) when `playwright` is not resolvable from `scripts/dev` — the guard is in the row's `run` (the script imports playwright unconditionally); with `npm run ui-layout:install` done it RUNS here and under WSL (PASS on both, 2026-10-20/21) | Linux CI (installs the harness) |
@@ -65,7 +65,7 @@ unmutated tree». Not evidence of a defect, not evidence of health either:
 | `py-unit-homekit`, `py-unit-homeconnect` | `ModuleNotFoundError: grp` / `fcntl`, `OSError: [WinError 1314]` (symlink privilege) in 13-21 tests; the rows print FAIL, not SKIP, because pytest itself is importable | Windows CPython has no `grp`/`fcntl` and the account lacks the symlink privilege; rc=0 under WSL Ubuntu-24.04 on the same tree (2026-10-14) |
 | `alice-image-identity`, `service-ctl-policy-write` | `ln: failed to create symbolic link` cases (CB2 belt, Home Connect dirty-link dimensions) | git-bash symlinks need the Windows privilege; rc=0 under WSL |
 | `update-conditional-restart` | run8: `python.exe: can't open file 'C:\tmp\tmp.*\gen-manifest.py'` | MSYS `/tmp` is not Windows python's `C:\tmp`; rc=0 under WSL |
-| `port-coordinator`, `status-coordinator-projection` (1.0.7.5) | `port-coordinator`: AF_UNIX / `/proc` / SO_PEERCRED cases error out; `status-coordinator-projection`: `UnicodeDecodeError: 'charmap'` — the harness reads `status.cgi` with the locale codec (cp1251) and the file is UTF-8 | Windows CPython has no AF_UNIX and defaults text I/O to cp1251; both PASS under WSL Ubuntu-24.04 (`final-build-2-wsl.log`). The scripts belong to the ports/status areas; a `read_text(encoding='utf-8')` would make the second one run here |
+| `port-coordinator`, `status-coordinator-projection` (1.0.7.5) | `port-coordinator`: AF_UNIX / `/proc` / SO_PEERCRED cases error out; `status-coordinator-projection`: `UnicodeDecodeError: 'charmap'` — the harness reads `status.cgi` with the locale codec (cp1251) and the file is UTF-8 | Windows CPython has no AF_UNIX and defaults text I/O to cp1251; both PASS under WSL Ubuntu-24.04 (`final-build-2-wsl.log`). The scripts belong to the ports/status areas; a `read_text(encoding='utf-8')` would make the second one run here. On Linux `port-coordinator` (and `py-unit-gateway`'s real-broker test, which imports its fixture) runs as any user: unprivileged, the occupant scan is scoped to the suite's own process tree since 1.0.7.10 — a root process elsewhere in the session (the CI runner's launcher, `runuser`/`sudo` without `setsid`) is not read; the session scope it replaced refused every lease on CI with `PermissionError` on `/proc/<pid>/fd` |
 | `py-unit-gateway` | `AttributeError: module 'os' has no attribute 'openpty'` (30 tests, `tests/test_lease_retry.py` + `tests/test_transport_lifecycle.py`) and one `ModuleNotFoundError: No module named 'termios'`; the row prints FAIL, not SKIP, because pytest, serial and yaml are importable | Windows CPython has no pty (`os.openpty`, `termios`); 140 passed under WSL Ubuntu-24.04 on the same tree (2026-10-21, 1.0.7.7) |
 | `js-unit-mqtt-scan-type`, `js-unit-mqtt-tcp-dialog` | NOT Windows: they FAIL under WSL Ubuntu-24.04's native Node 18 (`SyntaxError: Unexpected token 'export'` from `scripts/dev/mqtt-js-sandbox.mjs` importing a module-only `.js`) and PASS on Windows Node 24 (`final-build-1.log`, the 1.0.7.5 touched run 2026-10-21) | Node < 22 has no ESM syntax detection for a `.js` without `"type":"module"`; CI's Node version is the authority — a WSL run of these two rows needs Node >= 22 on PATH |
 | `install-profile` | P6l only (the real-flock wait): with Cygwin's util-linux `flock` on `PATH` (`/c/cygwin64/bin/flock` on this box) the case RUNS instead of skipping and FAILs — «lock content '4242', grant removed=no, rc=1»: the removal never got the lock the holder released; cause not traced (an MSYS shell's fd under a Cygwin `flock` is the suspect). Without any `flock` on `PATH` it prints SKIP. 62/62 OK under WSL (2026-10-23) | WSL / Linux CI |
@@ -90,16 +90,21 @@ the file.
 coreutils `timeout`; its 8b/8h skips left with the launcher's extracted helper in
 1.0.7.5) and `py-unit-update` (the Linux-only CGI module writes its own
 QUALITY_SKIP_LOG line, since pytest's `N skipped` summary is not parsed by the
-runner — only unittest's `OK (skipped=N)` is).
+runner — only unittest's `OK (skipped=N)` is). Every stdlib-unittest row is
+`PARTIAL` by that summary with no opt-in; that is how strict mode caught, on
+PR #217, `py-unit`'s root-only cases, `py-unit-alice`'s paho/socketio cases and
+`py-unit-homekit`'s segno-absent case — closed in 1.0.7.10 (the root cases
+re-run through passwordless `sudo -n`, CI installs paho-mqtt and
+python-socketio, segno is hidden in-process).
 
 **Still printed `PASS` although part of the row did not run** — not opted in yet:
 `update-cgroup-escape` (E5 without `flock`), `update-deploy-skip` (15e when not
 root — this one also skips on Linux CI), `sudoers-pin-contract` (the symlink
-case, «note» line — also on Linux CI; 8c off Linux), `install-profile` (P6l
-without a `flock` on `PATH`, named in its summary line only), `py-unit-alice` (unittest `skipped=4`,
-also on Linux CI). Opting in is one `quality_skip` call per skip site; the three
-marked «also on Linux CI» would then FAIL there under strict mode, so each needs
-its CI skip removed (or the row's scope decided) in the same change.
+case, «note» line — also on Linux CI; 8c/8d off Linux), `install-profile` (P6l
+without a `flock` on `PATH`, named in its summary line only). Opting in is one
+`quality_skip` call per skip site; the two marked «also on Linux CI» would then
+FAIL there under strict mode, so each needs its CI skip removed (or the row's
+scope decided) in the same change.
 
 **Strict mode**: `web-quality.yml` sets `QUALITY_STRICT=1` for the whole job, so
 in CI a `SKIP` or a `PARTIAL` is a `FAIL` — every tool is installed there on
