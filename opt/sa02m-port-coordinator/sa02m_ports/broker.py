@@ -93,29 +93,44 @@ def snapshot_document(state, config, pid, start_ticks):
 # cannot be read makes the device unsafe (the PermissionError propagates).
 # A test suite run by an unprivileged user cannot read the /proc/<pid>/fd of
 # other users — nor of its own uid's processes in another sandbox or user
-# namespace (a browser's renderers) — so it sets its own session id and only
-# that session is scanned (tests/test_process_ownership.py): every process that
-# can hold its PTYs is its own child. Inside the scope an unreadable process
-# still refuses.
-OCCUPANT_SCAN_SESSION = None
+# namespace (a browser's renderers) — so it names its own pid here and only that
+# process and its descendants are scanned (tests/test_process_ownership.py):
+# every process that can hold its PTYs is one of them. Not its session: a CI
+# runner or `runuser`/`sudo` keeps a root ancestor in the session of the test
+# it launched, and that ancestor's descriptors are unreadable. Inside the scope
+# an unreadable process still refuses.
+OCCUPANT_SCAN_ROOT = None
 
 
-def _session(entry):
+def _parent(entry):
     try:
-        return int((entry / "stat").read_text().rsplit(")", 1)[1].split()[3])
+        return int((entry / "stat").read_text().rsplit(")", 1)[1].split()[1])
     except (FileNotFoundError, ProcessLookupError, IndexError, ValueError):
         return None
+
+
+def _process_tree(entries, root):
+    children = {}
+    for entry in entries:
+        children.setdefault(_parent(entry), []).append(int(entry.name))
+    tree, pending = set(), [root]
+    while pending:
+        pid = pending.pop()
+        if pid not in tree:
+            tree.add(pid)
+            pending.extend(children.get(pid, ()))
+    return tree
 
 
 def occupants(device):
     """Read actual character-device descriptors; an unreadable process is unsafe."""
     target = os.stat(device).st_rdev
     found = []
-    for entry in Path("/proc").iterdir():
-        if not entry.name.isdigit():
-            continue
+    entries = [entry for entry in Path("/proc").iterdir() if entry.name.isdigit()]
+    scope = None if OCCUPANT_SCAN_ROOT is None else _process_tree(entries, OCCUPANT_SCAN_ROOT)
+    for entry in entries:
         try:
-            if OCCUPANT_SCAN_SESSION is not None and _session(entry) != OCCUPANT_SCAN_SESSION:
+            if scope is not None and int(entry.name) not in scope:
                 continue
             for fd in (entry / "fd").iterdir():
                 try:

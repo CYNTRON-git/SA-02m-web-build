@@ -28,12 +28,15 @@ CTX = mp.get_context("spawn")
 # Spawned children re-import this module, so the broker, the lease holders and
 # the bridge fixture apply the same rebinding; so does every suite that imports
 # this fixture (test_poll_intent_refusal, the gateway's real-broker test).
-# Unprivileged, the occupant scan is narrowed to this session (it cannot read
-# other users' /proc/<pid>/fd, nor a sandboxed process of its own uid); as root
-# the full scan runs.
+# Unprivileged, the occupant scan is narrowed to the suite's own process tree
+# (it cannot read other users' /proc/<pid>/fd, nor a sandboxed process of its
+# own uid); as root the full scan runs. The tree's root is the first process
+# that imported this fixture: spawned children inherit it through the
+# environment instead of naming themselves.
 locks.OWNER_UID, locks.OWNER_GID = os.getuid(), os.getgid()
+SCAN_ROOT_ENV = "SA02M_PORTS_TEST_SCAN_ROOT"
 if os.getuid() != 0:
-    broker_module.OCCUPANT_SCAN_SESSION = os.getsid(0)
+    broker_module.OCCUPANT_SCAN_ROOT = int(os.environ.setdefault(SCAN_ROOT_ENV, str(os.getpid())))
 
 
 class FakeSystem:
@@ -152,6 +155,72 @@ def denied_peer(path, port, result, drop=True):
             result.send("unexpected success")
     except PortError as exc:
         result.send(str(exc))
+
+
+def hold_undumpable(port, ready):
+    """Open the UART, then make /proc/<pid>/fd unreadable to every non-root uid."""
+    import ctypes
+    os.open(port, os.O_RDWR | os.O_NOCTTY)  # held until the process is killed
+    if ctypes.CDLL(None, use_errno=True).prctl(4, 0, 0, 0, 0) != 0:  # PR_SET_DUMPABLE
+        ready.send("prctl failed: errno %d" % ctypes.get_errno())
+        return
+    ready.send(True)
+    while True:
+        time.sleep(1)
+
+
+def idle(ready):
+    ready.send(True)
+    while True:
+        time.sleep(1)
+
+
+class OccupantScanScope(unittest.TestCase):
+    """Real processes: an unreadable UART holder in the suite's session.
+
+    Unprivileged, the holder's descriptors cannot be read. Inside the scanned
+    tree that refuses; outside it — a sibling of the scope root in the same
+    session, the shape a CI runner's root ancestor has — it is not read. As
+    root (the board) the same holder is read and found by the product scan.
+    """
+
+    def setUp(self):
+        master, slave = pty.openpty()
+        self.addCleanup(os.close, master)
+        self.port = os.ttyname(slave)
+        os.close(slave)
+        self.children = []
+        self.addCleanup(self.stop_children)
+
+    def stop_children(self):
+        for child in self.children:
+            child.kill()
+            child.join(3)
+
+    def start(self, target, *args):
+        parent, child = CTX.Pipe()
+        proc = CTX.Process(target=target, args=args + (child,))
+        proc.start()
+        self.children.append(proc)
+        self.assertTrue(parent.poll(10))
+        self.assertIs(parent.recv(), True)
+        return proc
+
+    def test_an_unreadable_holder_refuses_inside_the_tree_only(self):
+        from unittest import mock
+        holder = self.start(hold_undumpable, self.port)
+        sibling = self.start(idle)
+        self.assertEqual(os.getsid(holder.pid), os.getsid(sibling.pid))
+        if os.getuid() == 0:
+            for root in (None, os.getpid()):
+                with mock.patch.object(broker_module, "OCCUPANT_SCAN_ROOT", root):
+                    self.assertEqual(broker_module.occupants(self.port), [holder.pid])
+            return
+        with mock.patch.object(broker_module, "OCCUPANT_SCAN_ROOT", os.getpid()):
+            with self.assertRaises(PermissionError):
+                broker_module.occupants(self.port)
+        with mock.patch.object(broker_module, "OCCUPANT_SCAN_ROOT", sibling.pid):
+            self.assertEqual(broker_module.occupants(self.port), [])
 
 
 class ProcessOwnership(unittest.TestCase):
@@ -475,7 +544,7 @@ class LockOwnership(unittest.TestCase):
         import subprocess
         out = subprocess.run(
             [sys.executable, "-c", "from sa02m_ports import broker, locks; "
-             "print(locks.OWNER_UID, locks.OWNER_GID, broker.OCCUPANT_SCAN_SESSION)"],
+             "print(locks.OWNER_UID, locks.OWNER_GID, broker.OCCUPANT_SCAN_ROOT)"],
             cwd=str(Path(__file__).resolve().parents[1]), capture_output=True, text=True, timeout=30)
         self.assertEqual(out.stdout.split(), ["0", "0", "None"], out.stderr)
 
@@ -494,47 +563,64 @@ class LockOwnership(unittest.TestCase):
                 raise PermissionError("[Errno 13] Permission denied: '/proc/4242/fd'")
 
             def read_text(self):
-                raise AssertionError("the product scan must not filter by session")
+                raise AssertionError("the product scan must not filter by process tree")
 
         class Proc:
             def iterdir(self):
                 return iter([Entry()])
 
-        with mock.patch.object(broker_module, "OCCUPANT_SCAN_SESSION", None), \
+        with mock.patch.object(broker_module, "OCCUPANT_SCAN_ROOT", None), \
                 mock.patch.object(broker_module, "Path", lambda path: Proc()):
             with self.assertRaises(PermissionError):
                 broker_module.occupants(os.devnull)
 
     def test_the_scoped_scan_refuses_its_own_unreadable_process(self):
         # The test-only scope narrows WHICH processes are read, never what an
-        # unreadable one means: inside the session it still refuses; a process
-        # of another session is not read at all. The session comes from the
-        # real /proc/<pid>/stat shape, a ')' in the command name included.
+        # unreadable one means: inside the scope root's process tree (a
+        # grandchild included) it still refuses; a process outside the tree is
+        # not read at all, even one sharing the root's session — the CI shape,
+        # where the runner's root ancestor sits in the session of the test it
+        # launched. The parent comes from the real /proc/<pid>/stat shape, a
+        # ')' in the command name included.
         from unittest import mock
 
-        def proc(session):
+        def proc(*table):
+            # table rows: (pid, ppid, session, readable)
             class Entry:
-                name = "4242"
+                def __init__(self, pid, ppid, session, readable):
+                    self.name, self.ppid, self.session = str(pid), ppid, session
+                    self.readable = readable
 
                 def __truediv__(self, child):
                     return self
 
                 def iterdir(self):
-                    raise PermissionError("[Errno 13] Permission denied: '/proc/4242/fd'")
+                    if not self.readable:
+                        raise PermissionError(
+                            "[Errno 13] Permission denied: '/proc/%s/fd'" % self.name)
+                    return iter([])
 
                 def read_text(self):
-                    return "4242 (odd) name) S 1 4242 %d 0 -1 4194560\n" % session
+                    return "%s (odd) name) S %d %s %d 0 -1 4194560\n" % (
+                        self.name, self.ppid, self.name, self.session)
 
             class Proc:
                 def iterdir(self):
-                    return iter([Entry()])
-            return Proc()
+                    return iter([Entry(*row) for row in table])
+            return lambda path: Proc()
 
-        with mock.patch.object(broker_module, "OCCUPANT_SCAN_SESSION", 777):
-            with mock.patch.object(broker_module, "Path", lambda path: proc(777)):
+        with mock.patch.object(broker_module, "OCCUPANT_SCAN_ROOT", 777):
+            with mock.patch.object(broker_module, "Path",
+                                   proc((777, 1, 777, True), (4242, 777, 777, False))):
                 with self.assertRaises(PermissionError):
                     broker_module.occupants(os.devnull)
-            with mock.patch.object(broker_module, "Path", lambda path: proc(778)):
+            with mock.patch.object(broker_module, "Path",
+                                   proc((777, 1, 777, True), (4242, 777, 777, True),
+                                        (4343, 4242, 777, False))):
+                with self.assertRaises(PermissionError):
+                    broker_module.occupants(os.devnull)
+            with mock.patch.object(broker_module, "Path",
+                                   proc((4242, 1, 4242, False), (777, 4242, 4242, True))):
                 self.assertEqual(broker_module.occupants(os.devnull), [])
 
     def test_a_directory_or_inode_of_another_owner_is_refused(self):
