@@ -1671,7 +1671,7 @@
     },
     {
       "id": "board-verifier-safety",
-      "checks": "The isolated-fixture block of scripts/dev/verify-release-on-board.sh (check 9 and its siblings) never mutates the operator's scenario store: run_fixture_checks is EXECUTED against a private store (apply_command patched to assert the path is under a sa02m-release-check-* temp dir, the live file byte-identical after), prints 6 PASS and no FAIL/SKIP (non-vacuity), cancellation removes only the private store and closes the loopback listener, and a SIGKILLed shell parent takes the worker and its listener down (pidfd watch). Plan 1.0.7.5 preservation risk: the old CLEAN block deleted operator rows vtmo/vcap/vscn (verifier-red.log). Linux-only (/proc, os.pidfd_open, select on pipes): the row exits 77 (SKIP) elsewhere. Comment-out case in comment-mutation-proof: the verdict(7) line of the fixture block (5 PASS lines instead of 6 → RED). Known soft spot, owned by the status area: test_cleanup_preserves_preexisting_fixture_names searches for a CLEAN heredoc that no longer exists and asserts byte-equality of an untouched file — vacuous (quality-gate-rigor shape (e)); replace with an assertIsNone on the block.",
+      "checks": "The isolated-fixture block of scripts/dev/verify-release-on-board.sh (check 9 and its siblings) never mutates the operator's scenario store: run_fixture_checks is EXECUTED against a private store (apply_command patched to assert the path is under a sa02m-release-check-* temp dir, the live file byte-identical after), prints 6 PASS and no FAIL/SKIP (non-vacuity), cancellation removes only the private store and closes the loopback listener, and a SIGKILLed shell parent takes the worker and its listener down (pidfd watch) — 'down' means every thread of the worker has exited (/proc/<pid>/task), not just the main thread showing Z; the listener is released only by the last thread out. Plan 1.0.7.5 preservation risk: the old CLEAN block deleted operator rows vtmo/vcap/vscn (verifier-red.log). Linux-only (/proc, os.pidfd_open, select on pipes): the row exits 77 (SKIP) elsewhere. Comment-out case in comment-mutation-proof: the verdict(7) line of the fixture block (5 PASS lines instead of 6 → RED).",
       "config": null,
       "run": "python3 scripts/dev/test-board-verifier-safety.py -v",
       "beat": "build",
@@ -1679,6 +1679,9 @@
         "scripts/dev/verify-release-on-board.sh",
         "scripts/dev/test-board-verifier-safety.py",
         "opt/sa02m-rules/sa02m_rules/store.py",
+        "opt/sa02m-rules/sa02m_rules/engine.py",
+        "opt/sa02m-rules/sa02m_rules/code_runner.py",
+        "opt/sa02m-rules/sa02m_rules/http_guard.py",
         "opt/sa02m-alice/sa02m_alice/config/scene_devices.py"
       ],
       "init": "python3 (Linux: /proc, pidfd_open, select on pipes; imports opt/sa02m-rules and opt/sa02m-alice from the tree) — run under WSL / Linux CI"
