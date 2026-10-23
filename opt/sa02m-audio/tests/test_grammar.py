@@ -71,6 +71,30 @@ class DeleteGrammarTest(unittest.TestCase):
         self.assertEqual(mqttio.parse_delete(""), (mqttio.CMD_IGNORE, ""))
 
 
+class SwitchGrammarTest(unittest.TestCase):
+    """`light_music/on` (contract §2): only `1` and `0` — unlike `record/on`,
+    no Alice-style words."""
+
+    def test_one_and_zero(self):
+        for payload in ("1", " 1 ", "1\n"):
+            with self.subTest(payload=payload):
+                self.assertEqual(mqttio.parse_switch(payload), mqttio.CMD_START)
+        for payload in ("0", " 0 ", "0\n"):
+            with self.subTest(payload=payload):
+                self.assertEqual(mqttio.parse_switch(payload), mqttio.CMD_STOP)
+
+    def test_empty_is_ignored(self):
+        for payload in ("", " ", "\n"):
+            with self.subTest(payload=payload):
+                self.assertEqual(mqttio.parse_switch(payload), mqttio.CMD_IGNORE)
+
+    def test_everything_else_is_bad(self):
+        for payload in ("on", "ON", "off", "true", "True", "false", "yes", "2", "-1", "01", "1.0",
+                        "1 1", '{"on": 1}', "{'on': True}"):
+            with self.subTest(payload=payload):
+                self.assertEqual(mqttio.parse_switch(payload), mqttio.CMD_BAD)
+
+
 class TopicsTest(unittest.TestCase):
     def test_command_topics_are_exactly_three(self):
         self.assertEqual(set(mqttio.COMMAND_TOPICS), {

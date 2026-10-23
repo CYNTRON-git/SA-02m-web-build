@@ -22,6 +22,7 @@ from .fakes import Sandbox
 
 ID1 = "20261015T120000Z-0a1b2c"
 ID2 = "20261015T120500Z-0a1b2d"
+STRIP = "led-COM3-13"
 
 
 @unittest.skipUnless(POSIX, POSIX_REASON)
@@ -298,13 +299,107 @@ class MutationTest(ApiTestBase):
         seen = set()
         for body in ({"action": "record", "seconds": 2}, {"action": "record", "seconds": 30},
                      {"action": "stop"}, {"action": "delete", "id": ID1}, {"action": "delete", "id": "all"},
+                     {"action": "light_music", "on": True}, {"action": "light_music", "on": False},
                      {"action": "enable"}, {"action": "disable"}, {"action": "restart"}):
-            self.sb.write_conf(enabled=True)
+            self.sb.write_conf(enabled=True, light_music_target=STRIP)
             seen.add(api.dispatch("POST", json.dumps(body))[1])
-        grammar = re.compile(r"^(pub record ([1-9][0-9]?|stop)|pub delete (all|%s)|sudo (%s))$"
+        grammar = re.compile(r"^(pub record ([1-9][0-9]?|stop)|pub delete (all|%s)"
+                             r"|pub light_music [01]|sudo (%s))$"
                              % (C.ID_RE[1:-1], "|".join(C.TRIGGER_VERBS)))
         self.assertTrue(all(grammar.match(f) for f in seen), seen)
-        self.assertEqual(len(seen), 8)
+        self.assertEqual(len(seen), 10)
+        # Every mutation that names a follow-up was exercised above.
+        named = {f.split(" ")[1] for f in seen}
+        self.assertEqual(named, {"record", "delete", "light_music"} | set(C.TRIGGER_VERBS))
+
+
+# The bridge conf (contract §15 `light_music_target`): only `type: led` items
+# of the block-style `devices:` list are strips.
+BRIDGE_YAML = """\
+mqtt:
+  host: 127.0.0.1
+devices:
+  # - id: led-COM5-9
+  #   type: led
+  - id: mr02m-COM1-5
+    type: mr02m
+    port: /dev/COM1
+  - id: led-COM3-13
+    type: led
+    port: /dev/COM3
+  - id: "led-COM4-2"   # a quoted id
+    type: 'led'
+  - id: carel-COM2-1
+    type: carel
+  - id: bad id;rm
+    type: led
+gateway:
+  - id: led-COM9-1
+    type: led
+"""
+
+
+class LightMusicTest(ApiTestBase):
+    def setUp(self):
+        super().setUp()
+        self.bridge = os.path.join(self.sb.etc_dir, "sa02m-modbus-mqtt.yaml")
+        with open(self.bridge, "w", encoding="utf-8") as fh:
+            fh.write(BRIDGE_YAML)
+        p = mock.patch.object(C, "BRIDGE_CONF", self.bridge)
+        p.start()
+        self.addCleanup(p.stop)
+
+    def test_led_devices_are_only_the_bridge_led_items(self):
+        self.assertEqual(api.led_devices(), [STRIP, "led-COM4-2"])
+        self.assertEqual(api.status_view()["led_devices"], [STRIP, "led-COM4-2"])
+        os.unlink(self.bridge)
+        self.assertEqual(api.led_devices(), [])
+
+    def test_save_target_must_be_a_listed_strip(self):
+        for target in ("mr02m-COM1-5", "carel-COM2-1", "led-COM5-9", "led-COM9-1", "led-COM7-1"):
+            with self.subTest(target=target):
+                self.assertEqual(self.post(action="save", light_music_target=target),
+                                 ({"ok": False, "error": "invalid_value",
+                                   "field": "light_music_target"}, ""))
+                self.assertEqual(config.load(self.sb.conf).light_music_target, "")
+        for target in (STRIP, "led-COM4-2", ""):
+            with self.subTest(target=target):
+                self.assertTrue(self.post(action="save", light_music_target=target)[0]["ok"])
+                self.assertEqual(config.load(self.sb.conf).light_music_target, target)
+        # The bridge lost the strip: a save naming it again is refused.
+        with open(self.bridge, "w", encoding="utf-8") as fh:
+            fh.write("devices:\n")
+        self.assertEqual(self.post(action="save", light_music_target=STRIP)[0]["error"],
+                         "invalid_value")
+
+    def test_light_music_switch(self):
+        self.status("idle")
+        self.sb.write_conf(enabled=True, light_music_target=STRIP)
+        self.assertEqual(self.post(action="light_music", on=True),
+                         ({"ok": True, "action": "light_music"}, "pub light_music 1"))
+        self.assertEqual(self.post(action="light_music", on=False),
+                         ({"ok": True, "action": "light_music"}, "pub light_music 0"))
+
+    def test_light_music_on_must_be_a_json_bool(self):
+        self.status("idle")
+        self.sb.write_conf(enabled=True, light_music_target=STRIP)
+        for body in ({"on": 1}, {"on": 0}, {"on": "1"}, {"on": "true"}, {"on": None}, {}):
+            with self.subTest(body=body):
+                self.assertEqual(self.post(action="light_music", **body),
+                                 ({"ok": False, "error": "invalid_value", "field": "on"}, ""))
+
+    def test_light_music_without_a_target_is_no_target(self):
+        self.status("idle")
+        self.sb.write_conf(enabled=True)
+        for on in (True, False):
+            with self.subTest(on=on):
+                self.assertEqual(self.post(action="light_music", on=on),
+                                 ({"ok": False, "error": "no_target"}, ""))
+
+    def test_light_music_needs_a_live_daemon(self):
+        self.sb.write_conf(enabled=True, light_music_target=STRIP)
+        resp, follow = self.post(action="light_music", on=True)
+        self.assertEqual((resp["ok"], resp["error"], follow), (False, "not_running", ""))
 
 
 class DownloadTest(ApiTestBase):
