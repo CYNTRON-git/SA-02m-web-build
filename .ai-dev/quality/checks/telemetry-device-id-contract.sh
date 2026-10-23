@@ -98,12 +98,15 @@ SANCTIONED_PREFIXES=(
 # a per-file loop over ~700 tracked files costs ~40 s on a Windows dev box, and
 # a build-beat row that slow gets skipped by hand. `-H` forces the filename
 # prefix even for a one-file list. The sanctioned subsystem ids — real,
-# unchanged — are filtered out of the topic-form hits.
+# unchanged — are filtered out of the topic-form hits. `-r`: on an EMPTY list
+# (outside a git checkout, `git ls-files` yields nothing) xargs would still run
+# grep once with no file operand, and grep would read the gate's stdin — a hang,
+# not the non-vacuity FAIL below (the A1 file-count floor).
 sweep_list() {
     {
-        xargs -d '\n' -a "$1" grep -HnI  -e "$PAT1" 2>/dev/null
-        xargs -d '\n' -a "$1" grep -HnIF -e "$PAT2" 2>/dev/null | grep -vF -f "$SANCTIONED_LST"
-        xargs -d '\n' -a "$1" grep -HnIE -e "$PAT3" 2>/dev/null
+        xargs -r -d '\n' -a "$1" grep -HnI  -e "$PAT1" 2>/dev/null
+        xargs -r -d '\n' -a "$1" grep -HnIF -e "$PAT2" 2>/dev/null | grep -vF -f "$SANCTIONED_LST"
+        xargs -r -d '\n' -a "$1" grep -HnIE -e "$PAT3" 2>/dev/null
     } | sort -u
 }
 
@@ -240,7 +243,7 @@ fi
 # tree — the same stale-ledger rule as the two exclusions above (a prefix whose
 # consumer is gone would silently cover the day a regression lands under it).
 for prefix in "${SANCTIONED_PREFIXES[@]}"; do
-    N=$(xargs -d '\n' -a "$LIST" grep -HnIF -e "$prefix" 2>/dev/null | wc -l)
+    N=$(xargs -r -d '\n' -a "$LIST" grep -HnIF -e "$prefix" 2>/dev/null | wc -l)
     if [ "$N" -gt 0 ]; then
         ok "sanctioned prefix $prefix still names a live subsystem id ($N line(s) excused)"
     else
