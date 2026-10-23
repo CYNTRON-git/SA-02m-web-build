@@ -8,6 +8,7 @@ and a failure must not escape into gunicorn — that would take down :8765 too.
 from __future__ import annotations
 
 import os
+import socket
 import unittest
 from unittest import mock
 
