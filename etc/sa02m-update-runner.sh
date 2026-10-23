@@ -1459,10 +1459,11 @@ cleanup_b1_deploy_artifacts() {
     # source-tree mode 0644; visudo -c then fails and the grant is dead. Every
     # REGULAR $SA02M_SUDOERS_DIR/sa02m-* goes to 0440 root:root — allow-listed
     # by PREFIX, not the name list this replaces (a list cannot know the drop-in
-    # a later module adds); symlinks skipped, each repair logged. Same rule as
-    # the installer's sa02m_normalise_sudoers_modes (scripts/lib.sh); gate:
-    # sudoers-pin-contract 8c.
-    local sudoers_dir=${SA02M_SUDOERS_DIR:-/etc/sudoers.d} _was
+    # a later module adds); symlinks skipped, each repair logged — and logged
+    # as one only when the file reads back 440 root:root (a chown that did not
+    # take is a WARN). Same rule as the installer's sa02m_normalise_sudoers_modes
+    # (scripts/lib.sh); gate: sudoers-pin-contract 8c, 8d.
+    local sudoers_dir=${SA02M_SUDOERS_DIR:-/etc/sudoers.d} _was _now _fail
     sudoers_dir=${sudoers_dir%/}
     for _path in "$sudoers_dir"/sa02m-*; do
         if [ ! -f "$_path" ] || [ -L "$_path" ]; then
@@ -1473,10 +1474,17 @@ cleanup_b1_deploy_artifacts() {
             continue
         fi
         chown root:root "$_path" 2>/dev/null || true
+        _now="" _fail="chmod 0440 failed"
         if chmod 0440 "$_path" 2>/dev/null; then
+            _now=$(stat -c '%a %U:%G' "$_path" 2>/dev/null) || _now=""
+            _fail="read-back (stat) failed"
+        fi
+        if [ "$_now" = "440 root:root" ]; then
             log "cleanup: sudoers $(basename "$_path") $_was -> 0440 root:root"
+        elif [ -n "$_now" ]; then
+            log "WARN: cleanup: sudoers $(basename "$_path") $_was -> $_now, not 0440 root:root"
         else
-            log "WARN: cleanup: sudoers $(basename "$_path") stays $_was — chmod 0440 failed"
+            log "WARN: cleanup: sudoers $(basename "$_path") $_was -> not verified: $_fail"
         fi
     done
     if command -v visudo >/dev/null 2>&1; then
