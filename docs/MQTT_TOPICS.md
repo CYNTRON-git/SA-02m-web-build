@@ -762,15 +762,19 @@ mosquitto_sub -h 127.0.0.1 -v -t '/devices/hc-+/controls/#'
 ## Запись звука — `sa02m-audio`
 
 Рекордер звука с USB-микрофона (`sa02m-audio`, на каждой плате, по умолчанию
-выключен). Команды — `…/controls/record/on` (длительность или остановка) и
-`…/controls/delete/on` (id или `all`), **без retain** (retained-команда
-отвергается и очищается); состояние — retained `record`, `mic`, `medium`,
-`medium_state`, `last_file`, `last_status`, `last_duration_ms`, `last_size`,
-`last_peak_dbfs`, `last_upload`, `count`; LWT `meta/error = "r"`. Байты звука
-в MQTT не идут. С внешнего слушателя 1884 команды запрещены ACL.
+выключен). Три командных топика `…/controls/{record,delete,light_music}/on`
+(запись, удаление клипов, светомузыка на LED-ленте), **без retain**
+(retained-команда отвергается и очищается); `light_music/on` подписан, только
+пока в конфиге выбрана лента. Состояние — retained-контролы рекордера, в том
+числе `light_music` и `light_music_state`; LWT `meta/error = "r"`. Во время
+светомузыки демон сам пишет в `/devices/<лента>/controls/<control>/on`
+выбранной ленты (поток кадров и возврат её состояния). Байты звука в MQTT не
+идут. С внешнего слушателя 1884 команды рекордеру запрещены ACL.
 
-Единственный дом грамматики, значений и правил — `docs/contracts/audio-recorder.md`
-(§2–§4, §20). Здесь они не повторяются.
+Единственный дом топиков, грамматики, значений и правил —
+`docs/contracts/audio-recorder.md`: таблицы топиков и контролов — §2, исходы —
+§3, сценарии — §4, ACL 1884 — §20, светомузыка и записи в ленту — §22. Здесь
+они не повторяются.
 
 ```bash
 mosquitto_sub -h 127.0.0.1 -v -t '/devices/sa02m-audio/#'

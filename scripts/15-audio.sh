@@ -140,7 +140,7 @@ def body_of(name):
         if voice.load_allow(src) is None:
             raise ValueError(f"{src} is not a valid allow list")
         with open(src, "rb") as fh:
-            return fh.read(), "default LED controls, inert while voice_commands = false"
+            return fh.read(), "default LED controls + light_music, inert while voice_commands = false"
     raise ValueError(f"no seed for {name}")
 
 

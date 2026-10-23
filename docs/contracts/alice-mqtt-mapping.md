@@ -67,10 +67,39 @@ so the picker works with no gateway and no bus. Rules:
   `remaining_s` / `progress_pct` wait for a numeric binding kind), all
   `rw: "r"`;
   topics are built from the validated id and a table name only. An appliance
-  sorts after every COM device and before the controller; a disconnected one
-  is still offered (bindability is not liveness), one with nothing bindable is
-  not. Validating: `tests/test_inventory_homeconnect.py`, case 8 of
+  sorts after every COM device and before the audio recorder and the
+  controller; a disconnected one is still offered (bindability is not
+  liveness), one with nothing bindable is not. Validating:
+  `tests/test_inventory_homeconnect.py`, case 8 of
   `scripts/dev/test-alice-topics-cgi.sh`.
+- **The on-board audio recorder** (1.0.7.10; `docs/contracts/audio-recorder.md`
+  §2, §22) is offered **only where `sa02m-audio` is installed**: the marker is
+  a regular file `sa02m-audio.conf` in `/etc/sa02m-audio` (env
+  `SA02M_AUDIO_ETC`), which `scripts/15-audio.sh` seeds on every install,
+  enabled or not; presence only, the file is never opened. Absent ⇒ no entry
+  (a topic no daemon serves would bind a switch that never answers). The entry
+  is `id: sa02m-audio`, `type: "audio"`, name «Запись звука», with exactly
+  **one** channel in the `other` group: `light_music`, title «Светомузыка»,
+  `rw: "rw"`, topic `/devices/sa02m-audio/controls/light_music` (its command
+  `…/light_music/on` takes `1`/`0`, its state is a retained `0`/`1` — an
+  `on_off` binding carries it). No other recorder control is offered
+  (`record` stays reachable from scenarios, not the picker). The id, the
+  switch and the conf path are a copy of `sa02m_audio.constants` and the
+  installer's seed call (`AUDIO_*` in `inventory.py`). It sorts after Home
+  Connect and just before the controller. Like the controller, it does **not**
+  count as a configured device: with no yaml device the flat list still falls
+  back to `_roster.json` (`topics.py: list_mqtt_topics`). The LED strip's
+  light-music stream controls (`music_level`, `music_color`, `fx_aux`) are
+  never offered, even when the strip's live cache carries them — they are not
+  in the `LED_*` table. Validating: `tests/test_inventory_audio.py` — absent
+  marker, a directory in its place, and the marker read from the env dir offer
+  nothing; installed offers exactly the one channel above and the flat list
+  carries its topic; order Home Connect → recorder → controller; the roster
+  fallback still runs with the recorder installed; the three stream controls
+  stay out of `LED_*` and out of a live-cached strip's channels; the copied
+  id, switch row (`switch`, writable, a command control) and conf path equal
+  their homes in `opt/sa02m-audio/sa02m_audio/constants.py`, and
+  `scripts/15-audio.sh` has exactly one seed call for the marker.
 
 **Budget and shape (1.0.6.39).** The CGI wraps its python in `timeout` at
 `TOPICS_CGI_TIMEOUT_S` (15 s, `constants.py`; shell default
