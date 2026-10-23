@@ -27,20 +27,29 @@ from .fsutil import atomic_write
 
 SECTION = "recorder"
 _DEVICE_RE = re.compile(C.DEVICE_RE)
+_TARGET_RE = re.compile(C.LIGHT_MUSIC_TARGET_RE)
 _INT_RE = re.compile(r"^[0-9]{1,6}$")
+_GAIN_RE = re.compile(C.CAPTURE_GAIN_RE)
 _TRUE = ("1", "true", "yes", "on")
 _FALSE = ("0", "false", "no", "off")
 
 # Every key `render` writes, in file order — compared with the contract.
 KEYS = (
-    "enabled", "storage", "device", "default_duration_s", "max_duration_s",
+    "enabled", "storage", "device", "capture_gain", "default_duration_s", "max_duration_s",
     "keep_files", "keep_mb", "keep_hours", "delete_after_upload", "upload_url",
-    "voice_commands",
+    "voice_commands", "light_music_target", "light_music_style", "light_music_rate_hz",
 )
 _TOKEN_RE = re.compile(C.TOKEN_RE)
 _O_NOFOLLOW = getattr(os, "O_NOFOLLOW", 0)
 _O_CLOEXEC = getattr(os, "O_CLOEXEC", 0)
 _O_NONBLOCK = getattr(os, "O_NONBLOCK", 0)
+
+
+def valid_light_target(value: object) -> bool:
+    """A strip id the bridge could have: the grammar, and never this
+    recorder's own device id (its topics would swallow record/on)."""
+    return (isinstance(value, str) and bool(_TARGET_RE.match(value))
+            and value != C.DEVICE_ID)
 
 
 def valid_upload_url(value: object) -> bool:
@@ -79,6 +88,15 @@ class RecorderConfig:
     # JSON commands in an upload response are applied only when this is true
     # AND voice-allow.json next to the conf is a valid allow list.
     voice_commands: bool = False
+    # Light music (contract §Светомузыка): the strip it drives ("" = none —
+    # light music unavailable), the picture, the update ceiling.
+    light_music_target: str = ""
+    light_music_style: str = C.LIGHT_MUSIC_DEFAULT_STYLE
+    light_music_rate_hz: int = C.LIGHT_MUSIC_RATE_DEFAULT
+    # Capture gain in the mic control's raw units (contract §6); None = the
+    # daemon never touches the mixer. The device range is the daemon's to
+    # judge at apply time — only the static grammar lives here.
+    capture_gain: Optional[int] = None
     warnings: List[str] = field(default_factory=list)
     # The file EXISTS but could not be read — never the same as disabled.
     unreadable: bool = False
@@ -86,6 +104,15 @@ class RecorderConfig:
     def comparable(self) -> tuple:
         """The values a running daemon reacts to (warnings excluded)."""
         return tuple(getattr(self, k) for k in KEYS) + (self.unreadable,)
+
+
+def valid_capture_gain(value: object) -> bool:
+    """The STATIC grammar of `capture_gain`: None (not managed) or an int —
+    never a bool — within the garbage guard (not the device range)."""
+    if value is None:
+        return True
+    return (isinstance(value, int) and not isinstance(value, bool)
+            and C.CAPTURE_GAIN_GRAMMAR_MIN <= value <= C.CAPTURE_GAIN_GRAMMAR_MAX)
 
 
 def keep_mb_max(storage: str) -> int:
@@ -100,6 +127,7 @@ def bounds(conf: RecorderConfig) -> dict:
         "keep_files": (C.KEEP_FILES_MIN, C.KEEP_FILES_MAX),
         "keep_mb": (C.KEEP_MB_MIN, keep_mb_max(conf.storage)),
         "keep_hours": (C.KEEP_HOURS_MIN, C.KEEP_HOURS_MAX),
+        "light_music_rate_hz": (C.LIGHT_MUSIC_RATE_MIN, C.LIGHT_MUSIC_RATE_MAX),
     }
 
 
@@ -157,8 +185,20 @@ def load(path: Optional[str] = None) -> RecorderConfig:
     else:
         # Never echo the refused value: it may carry a credential.
         out.warnings.append("upload_url refused (not an http/https URL without credentials)")
+    target = sec.get("light_music_target", "").strip()
+    if target == "" or valid_light_target(target):
+        out.light_music_target = target
+    else:
+        out.warnings.append("light_music_target %r refused, light music unavailable" % target[:20])
+    style = sec.get("light_music_style", C.LIGHT_MUSIC_DEFAULT_STYLE).strip()
+    if style in C.LIGHT_MUSIC_STYLES:
+        out.light_music_style = style
+    else:
+        out.warnings.append("light_music_style %r refused, using %s"
+                            % (style[:20], C.LIGHT_MUSIC_DEFAULT_STYLE))
     # max before default: the default's upper bound is the max.
-    for key in ("max_duration_s", "default_duration_s", "keep_files", "keep_mb", "keep_hours"):
+    for key in ("max_duration_s", "default_duration_s", "keep_files", "keep_mb", "keep_hours",
+                "light_music_rate_hz"):
         raw = sec.get(key)
         if raw is None:
             continue
@@ -176,6 +216,13 @@ def load(path: Optional[str] = None) -> RecorderConfig:
     # A lowered max drags a default that was read before it was known.
     if out.default_duration_s > out.max_duration_s:
         out.default_duration_s = out.max_duration_s
+    gain = sec.get("capture_gain", "").strip()
+    if gain:
+        value = int(gain) if _GAIN_RE.match(gain) else None
+        if value is not None and valid_capture_gain(value):
+            out.capture_gain = value
+        else:
+            out.warnings.append("capture_gain %r refused, not managed" % gain[:20])
     return out
 
 
@@ -190,6 +237,12 @@ def validate(conf: RecorderConfig) -> None:
             raise ValueError("invalid %s" % key)
     if not valid_upload_url(conf.upload_url):
         raise ValueError("invalid upload_url")
+    if not (conf.light_music_target == "" or valid_light_target(conf.light_music_target)):
+        raise ValueError("invalid light_music_target")
+    if conf.light_music_style not in C.LIGHT_MUSIC_STYLES:
+        raise ValueError("invalid light_music_style")
+    if not valid_capture_gain(conf.capture_gain):
+        raise ValueError("invalid capture_gain")
     for key, (lo, hi) in bounds(conf).items():
         value = getattr(conf, key)
         if isinstance(value, bool) or not isinstance(value, int) or value < lo or value > hi:
@@ -204,6 +257,8 @@ def render(conf: RecorderConfig) -> str:
         value = getattr(conf, key)
         if isinstance(value, bool):
             value = "true" if value else "false"
+        elif value is None:
+            value = ""  # capture_gain not managed
         lines.append("%s = %s" % (key, value))
     return "\n".join(lines) + "\n"
 

@@ -5,6 +5,14 @@ import os
 from pathlib import Path
 import stat
 
+# The owner every lock directory and lock inode must carry. The broker runs as
+# root on the board, so both stay 0 in the product; nothing here assigns them.
+# A test suite run by an unprivileged user (CI) rebinds them to its own ids
+# (tests/test_process_ownership.py) so these same checks run against inodes it
+# is able to create, instead of the whole suite being unreachable off root.
+OWNER_UID = 0
+OWNER_GID = 0
+
 
 def secure_directory(directory):
     path = Path(directory)
@@ -12,7 +20,7 @@ def secure_directory(directory):
     fd = os.open(path, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW | os.O_CLOEXEC)
     try:
         info = os.fstat(fd)
-        if info.st_uid != 0:
+        if info.st_uid != OWNER_UID:
             raise PermissionError("Lock directory must belong to root")
         os.fchmod(fd, 0o755)
     finally:
@@ -21,14 +29,14 @@ def secure_directory(directory):
 
 def _check_directory(directory):
     info = os.lstat(directory)
-    if not stat.S_ISDIR(info.st_mode) or info.st_uid != 0 or info.st_mode & 0o022:
+    if not stat.S_ISDIR(info.st_mode) or info.st_uid != OWNER_UID or info.st_mode & 0o022:
         raise PermissionError("Lock directory is not root-controlled")
 
 
 def _check_inode(fd, path, *, strict_mode=True):
     info = os.fstat(fd)
     named = os.stat(path, follow_symlinks=False)
-    if (not stat.S_ISREG(info.st_mode) or info.st_uid != 0 or info.st_nlink != 1
+    if (not stat.S_ISREG(info.st_mode) or info.st_uid != OWNER_UID or info.st_nlink != 1
             or (info.st_dev, info.st_ino) != (named.st_dev, named.st_ino)
             or (strict_mode and info.st_mode & 0o077)):
         raise PermissionError("Unsafe or replaced lock inode")

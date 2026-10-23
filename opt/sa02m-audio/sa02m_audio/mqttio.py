@@ -48,6 +48,23 @@ def command_topic(name: str) -> str:
 
 
 COMMAND_TOPICS = {command_topic(n): n for n in C.COMMAND_CONTROLS}
+# Subscribed only while light music has a target (Link.set_extra_topics);
+# the other command topics always.
+LIGHT_TOPIC = command_topic(C.CMD_LIGHT_MUSIC)
+ALWAYS_TOPICS = tuple(t for t in COMMAND_TOPICS if t != LIGHT_TOPIC)
+
+
+def parse_switch(payload: str) -> str:
+    """`light_music/on`: `1` = on, `0` = off, empty = ignored (a retained
+    clear coming back), anything else bad."""
+    text = payload.strip()
+    if text == "":
+        return CMD_IGNORE
+    if text == "1":
+        return CMD_START
+    if text == "0":
+        return CMD_STOP
+    return CMD_BAD
 # Absolute write the voice path may publish: /devices/<id>/controls/<name>/on
 # `\Z`, not `$`: `$` would let a topic with a trailing newline through.
 _ABS_COMMAND_RE = re.compile(
@@ -132,6 +149,7 @@ class Link:
         self._connected = threading.Event()
         self._lock = threading.Lock()
         self._retained: Dict[str, str] = {}
+        self._extra: tuple = ()
         self.dropped = 0
         self._client = (client_factory or _default_client_factory)()
         self._client.will_set(META_ERROR_TOPIC, "r", qos=C.MQTT_QOS, retain=True)
@@ -148,7 +166,7 @@ class Link:
             log.error("MQTT connect refused: rc=%s", rc)
             return
         self._connected.set()
-        for topic in COMMAND_TOPICS:
+        for topic in ALWAYS_TOPICS + self._extra:
             client.subscribe(topic, qos=C.MQTT_QOS)
         with self._lock:
             items = sorted(self._retained.items())
@@ -207,6 +225,22 @@ class Link:
         if not self._connected.is_set():
             return False
         return self._send(topic, str(payload), False)
+
+    def set_extra_topics(self, topics) -> None:
+        """Subscriptions beyond the command topics (light music: its switch
+        and the target strip's state); re-subscribed on every reconnect."""
+        new = tuple(topics)
+        with self._lock:
+            old, self._extra = self._extra, new
+        if not self._connected.is_set():
+            return
+        unsubscribe = getattr(self._client, "unsubscribe", None)
+        for topic in old:
+            if topic not in new and unsubscribe is not None:
+                unsubscribe(topic)
+        for topic in new:
+            if topic not in old:
+                self._client.subscribe(topic, qos=C.MQTT_QOS)
 
     def clear_retained_command(self, topic: str) -> None:
         """Zero-length retained publish: removes a retained `/on` from the broker."""

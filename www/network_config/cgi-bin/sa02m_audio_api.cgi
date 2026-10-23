@@ -7,6 +7,7 @@
 #   POST {"action":"status"}                → recorder status
 #   POST {"action":"record","seconds":N} | {"action":"stop"}
 #        {"action":"delete","id":"<id>"|"all"}
+#        {"action":"light_music","on":true|false}
 #        {"action":"save", …conf keys…, "ack_removable":true}
 #        {"action":"enable"|"disable"|"restart"}
 #
@@ -15,7 +16,7 @@
 # the package on PYTHONPATH (stdlib only) and prints two lines: the response
 # JSON and the follow-up. The follow-up reaches mosquitto_pub or sudo only
 # through the `case` below, which re-checks it against the fixed grammar:
-# exactly two command topics on the LOCAL broker, never retained, and exactly
+# exactly three command topics on the LOCAL broker, never retained, and exactly
 # the three verbs the sudoers pin grants (etc/sudoers.d/sa02m-audio).
 # A download is written by the dispatch itself (headers + bytes): the bytes
 # never pass through a shell variable.
@@ -146,6 +147,9 @@ if [ "$METHOD" = "POST" ]; then
             # Closed grammar is 2…30 (contract §15). 1 is the daemon's
             # default-duration word and must not be published from the panel.
             [[ $PAYLOAD =~ ^(30|[12][0-9]|[2-9])$ ]] && TOPIC=/devices/sa02m-audio/controls/record/on ;;
+        "pub light_music 0"|"pub light_music 1")
+            PAYLOAD=${FOLLOW#pub light_music }
+            TOPIC=/devices/sa02m-audio/controls/light_music/on ;;
         "pub delete "*)
             PAYLOAD=${FOLLOW#pub delete }
             if [ "$PAYLOAD" = all ] || [[ $PAYLOAD =~ $ID_RE ]]; then

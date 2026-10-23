@@ -17,6 +17,7 @@ import time
 import uuid
 
 from .client import LOCK_DIR, SOCKET, PortError, device_key, lock_device
+from . import locks
 from .locks import open_locked, provision, secure_directory
 
 log = logging.getLogger(__name__)
@@ -88,6 +89,24 @@ def snapshot_document(state, config, pid, start_ticks):
     }
 
 
+# None in the product: every process is scanned, and one whose descriptors
+# cannot be read makes the device unsafe (the PermissionError propagates).
+# A test suite run by an unprivileged user cannot read the /proc/<pid>/fd of
+# other users — nor of its own uid's processes in another sandbox or user
+# namespace (a browser's renderers) — so it sets its own session id and only
+# that session is scanned (tests/test_process_ownership.py): every process that
+# can hold its PTYs is its own child. Inside the scope an unreadable process
+# still refuses.
+OCCUPANT_SCAN_SESSION = None
+
+
+def _session(entry):
+    try:
+        return int((entry / "stat").read_text().rsplit(")", 1)[1].split()[3])
+    except (FileNotFoundError, ProcessLookupError, IndexError, ValueError):
+        return None
+
+
 def occupants(device):
     """Read actual character-device descriptors; an unreadable process is unsafe."""
     target = os.stat(device).st_rdev
@@ -96,6 +115,8 @@ def occupants(device):
         if not entry.name.isdigit():
             continue
         try:
+            if OCCUPANT_SCAN_SESSION is not None and _session(entry) != OCCUPANT_SCAN_SESSION:
+                continue
             for fd in (entry / "fd").iterdir():
                 try:
                     info = fd.stat()
@@ -484,7 +505,7 @@ def reply(conn, value, fd=None):
     conn.sendmsg([data], ancillary)
 
 
-def handle(broker, conn, allowed_uids):
+def handle(broker, conn, allowed_uids, admin_uids=frozenset({0})):
     token = None
     try:
         pid, uid, gid = struct.unpack("3i", conn.getsockopt(
@@ -498,14 +519,14 @@ def handle(broker, conn, allowed_uids):
         if req.get("op") == "poll":
             reply(conn, broker.poll(req.get("port")))
             return
-        if req.get("op") == "service-mutation" and uid == 0:
+        if req.get("op") == "service-mutation" and uid in admin_uids:
             fd, unit = broker.service_mutation(req.get("unit"))
             try:
                 reply(conn, {"ok": True, "unit": unit}, fd)
             finally:
                 os.close(fd)
             return
-        if req.get("op") == "maintenance" and uid == 0:
+        if req.get("op") == "maintenance" and uid in admin_uids:
             with broker.mutex:
                 broker.assert_idle()
                 reply(conn, {"ok": True})
@@ -531,13 +552,17 @@ def handle(broker, conn, allowed_uids):
         conn.close()
 
 
-def serve(broker, path=None, allowed_uids=None, group=None):
+def serve(broker, path=None, allowed_uids=None, group=None, admin_uids=None):
+    # admin_uids: the peers allowed the root-only operations (maintenance,
+    # service-mutation). Root in the product; a test run by an unprivileged
+    # user passes its own uid so it can play the updater.
     path = path or str(broker.runtime / "control.sock")
     allowed_uids = allowed_uids or {0, pwd.getpwnam("sa02m-flasher").pw_uid}
+    admin_uids = frozenset({0} if admin_uids is None else admin_uids)
     if group is None:
         group = pwd.getpwnam("sa02m-flasher").pw_gid
     os.chown(broker.runtime, -1, group)
-    os.chown(broker.lock_dir, 0, 0)
+    os.chown(broker.lock_dir, locks.OWNER_UID, locks.OWNER_GID)
     os.chmod(broker.runtime, 0o755)
     os.chmod(broker.lock_dir, 0o755)
     if os.path.exists(path):
@@ -562,7 +587,7 @@ def serve(broker, path=None, allowed_uids=None, group=None):
     threading.Thread(target=recover_loop, daemon=True).start()
     while True:
         conn, _ = listener.accept()
-        threading.Thread(target=handle, args=(broker, conn, allowed_uids),
+        threading.Thread(target=handle, args=(broker, conn, allowed_uids, admin_uids),
                          daemon=True).start()
 
 

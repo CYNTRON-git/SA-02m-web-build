@@ -129,9 +129,29 @@ function errorText(code) {
     case 'publish_failed': return uiT('Брокер MQTT не принял команду');
     case 'url_refused': return uiT('Этот адрес отправки запрещён (локальный или служебный)');
     case 'bad_token': return uiT('Недопустимый токен');
+    case 'no_target': return uiT('Сначала выберите ленту в настройках');
     case 'audio_api_failed': return uiT('Нет ответа от платы');
     default: return uiT('Не удалось выполнить действие');
   }
+}
+
+// light_music_state (contract §22) → its short line ('' for none / unknown).
+var AU_LM_STYLES = ['level', 'equalizer', 'color'];
+var AU_LM_TARGET_RE = /^[A-Za-z0-9_.-]{1,64}$/;
+function lightMusicText(st) {
+  switch (st) {
+    case 'off': return uiT('не играет');
+    case 'running': return uiT('играет');
+    case 'no_mic': return uiT('нет микрофона');
+    case 'strip_offline': return uiT('лента недоступна');
+    case 'disabled': return uiT('лента не выбрана');
+    default: return '';
+  }
+}
+
+// The switch is offered only with a live daemon and a configured strip.
+function lightMusicAllowed(d) {
+  return !!d && d.ok === true && d.live === true && !!(d.conf && d.conf.light_music_target);
 }
 
 // last_upload / a clip's upload state → its short line ('' for none).
@@ -202,6 +222,23 @@ function saveBody(form, d) {
     body.upload_url = url;
   }
   if (typeof form.delete_after_upload === 'boolean') body.delete_after_upload = form.delete_after_upload;
+  if (typeof form.light_music_target === 'string') {
+    var target = form.light_music_target;
+    var leds = d && Array.isArray(d.led_devices) ? d.led_devices : [];
+    // Only "" or a strip the board's bridge has; the CGI checks the same.
+    if (target && (!AU_LM_TARGET_RE.test(target) || leds.indexOf(target) < 0)) return { error: 'invalid_value' };
+    body.light_music_target = target;
+  }
+  if (typeof form.light_music_style === 'string') {
+    if (AU_LM_STYLES.indexOf(form.light_music_style) < 0) return { error: 'invalid_value' };
+    body.light_music_style = form.light_music_style;
+  }
+  if (form.light_music_rate_hz !== undefined) {
+    var rate = Number(form.light_music_rate_hz);
+    var rlim = Array.isArray(b.light_music_rate_hz) ? b.light_music_rate_hz : [1, 10];
+    if (!Number.isInteger(rate) || rate < rlim[0] || rate > rlim[1]) return { error: 'invalid_value' };
+    body.light_music_rate_hz = rate;
+  }
   if (AU_REMOVABLE.indexOf(storage) >= 0) {
     if (form.ack !== true) return { error: 'ack_required' };
     body.ack_removable = true;
@@ -328,7 +365,30 @@ function fillSettings(d) {
   if (url && typeof c.upload_url === 'string') url.value = c.upload_url;
   var del = $('audio-delete-after');
   if (del) del.checked = c.delete_after_upload !== false;
+  fillTargets(d);
+  var style = $('audio-lm-style');
+  if (style && AU_LM_STYLES.indexOf(c.light_music_style) >= 0) style.value = c.light_music_style;
+  var rate = $('audio-lm-rate');
+  if (rate && typeof c.light_music_rate_hz === 'number') rate.value = String(c.light_music_rate_hz);
   onStorageChange();
+}
+
+// The strip select: «— нет —» plus the bridge's `type: led` ids, as text.
+function fillTargets(d) {
+  var sel = $('audio-lm-target');
+  if (!sel) return;
+  while (sel.firstChild) sel.removeChild(sel.firstChild);
+  var ids = [''].concat((Array.isArray(d.led_devices) ? d.led_devices : [])
+    .filter(function (id) { return typeof id === 'string' && AU_LM_TARGET_RE.test(id); }));
+  var current = d.conf && typeof d.conf.light_music_target === 'string' ? d.conf.light_music_target : '';
+  if (current && ids.indexOf(current) < 0 && AU_LM_TARGET_RE.test(current)) ids.push(current);
+  ids.forEach(function (id) {
+    var opt = document.createElement('option');
+    opt.value = id;
+    opt.textContent = id || uiT('— нет —');
+    sel.appendChild(opt);
+  });
+  sel.value = current;
 }
 
 function render(d) {
@@ -340,7 +400,9 @@ function render(d) {
     setText('audio-mic', '—');
     setText('audio-medium', '—');
     setText('audio-count', '—');
+    setText('audio-lm-state', '—');
     setHidden('audio-record-row', true);
+    setHidden('audio-lm-row', true);
     notice('', true);
     return;
   }
@@ -372,6 +434,14 @@ function render(d) {
     setText('audio-elapsed', '');
   }
 
+  setHidden('audio-lm-row', !(installed && d.enabled));
+  var lm = $('audio-lm-on');
+  if (lm) {
+    lm.checked = d.light_music === true;
+    lm.disabled = _busy || !lightMusicAllowed(d);
+  }
+  setText('audio-lm-state', lightMusicText(d.live ? d.light_music_state : '') || '—');
+
   var en = $('audio-btn-enable');
   if (en) {
     var on = !!d.enabled;
@@ -386,6 +456,7 @@ function render(d) {
   renderClips(d);
   renderEvents(d);
   fillSettings(d);
+  renderGain(d);
 
   if (Date.now() < _noticeUntil) return;
   var hint = stateHint(d);
@@ -518,6 +589,19 @@ function audioDelete(id) {
   return mutate({ action: 'delete', id: id }, uiT('Запись удалена'));
 }
 
+function audioLightMusic() {
+  var lm = $('audio-lm-on');
+  if (!lm) return Promise.resolve(null);
+  var on = !!lm.checked;
+  if (!lightMusicAllowed(_last)) {
+    lm.checked = !on;
+    actionNotice(errorText(_last && _last.live ? 'no_target' : 'not_running'), false);
+    return Promise.resolve(null);
+  }
+  return mutate({ action: 'light_music', on: on },
+    on ? uiT('Светомузыка включена') : uiT('Светомузыка выключена'));
+}
+
 function audioPlay(id) {
   var player = $('audio-player');
   var url = clipUrl(id, true);
@@ -546,7 +630,11 @@ function audioSave() {
   };
   if ($('audio-upload-url')) form.upload_url = $('audio-upload-url').value;
   if ($('audio-delete-after')) form.delete_after_upload = !!$('audio-delete-after').checked;
+  if ($('audio-lm-target')) form.light_music_target = $('audio-lm-target').value;
+  if ($('audio-lm-style')) form.light_music_style = $('audio-lm-style').value;
+  if ($('audio-lm-rate')) form.light_music_rate_hz = $('audio-lm-rate').value;
   var out = saveBody(form, _last);
+  out = gainSaveMerge(out, _last);
   if (out.error) { actionNotice(errorText(out.error), false); return Promise.resolve(null); }
   return mutate(out.body, uiT('Сохранено')).then(function (d) {
     var det = $('audio-settings');
@@ -582,6 +670,135 @@ function audioClearToken() {
   });
 }
 
+// ── mic capture gain (contract §8 `capture_gain`, §9 `mic_gain`) ───────────
+// Self-contained block; render() and audioSave() each call in once. The row
+// shows only when the daemon's conf carries the key: an older daemon (a
+// web-only update) never sees an unknown field in its save body. The device
+// range is the daemon's to read (the CGI cannot open the mixer), so the
+// client clamps only to a range the daemon reported.
+var AU_GAIN_GRAMMAR = 100000;           // config.py static grammar bound, not a device range
+var AU_GAIN_DB_RE = /^[+-]?[0-9]{1,3}(\.[0-9]{1,3})?$/;
+
+function gainSupported(d) {
+  return !!(d && d.conf && typeof d.conf === 'object' && 'capture_gain' in d.conf);
+}
+
+// mic_gain.min/max → [min, max] when both are integers in order, else null.
+function gainRange(g) {
+  if (!g || !Number.isInteger(g.min) || !Number.isInteger(g.max) || g.min > g.max) return null;
+  return [g.min, g.max];
+}
+
+// amixer's own dB string → "+18,75 дБ" (RU decimal comma), or ''.
+function gainDb(db) {
+  if (typeof db !== 'string' || !AU_GAIN_DB_RE.test(db)) return '';
+  var s = db.charAt(0) === '+' || db.charAt(0) === '-' ? db : (Number(db) > 0 ? '+' : '') + db;
+  var en = window.sa02mI18n && window.sa02mI18n.lang === 'en';
+  return (en ? s : s.replace('.', ',')) + ' ' + uiT('дБ');
+}
+
+function gainRangeText(r) {
+  return r ? r[0] + '…' + r[1] : '';
+}
+
+// The one-line hint under the field: the range, or why there is none yet.
+function gainHint(d) {
+  var r = gainRange(d && d.mic_gain);
+  return r ? uiT('Диапазон') + ': ' + gainRangeText(r) : uiT('Диапазон — когда есть микрофон');
+}
+
+// mic_gain.state → the one status line (§9); conf alone when the daemon has
+// not reported yet.
+function gainStateText(d) {
+  var g = d && d.mic_gain && typeof d.mic_gain === 'object' ? d.mic_gain : null;
+  var r = gainRange(g);
+  var want = g && Number.isInteger(g.want) ? g.want : (d && d.conf && Number.isInteger(d.conf.capture_gain) ? d.conf.capture_gain : null);
+  switch (g ? g.state : '') {
+    case 'off': return uiT('Не задано — уровень не меняется');
+    case 'applied': {
+      var v = Number.isInteger(g.applied) ? g.applied : want;
+      var db = gainDb(g.db);
+      return uiT('Сейчас') + ': ' + (v === null ? '—' : v) + (r ? ' ' + uiT('из') + ' ' + gainRangeText(r) : '')
+        + (db ? ' (' + db + ')' : '');
+    }
+    case 'out_of_range':
+      return (want === null ? '' : want + ' ') + (r ? uiT('вне') + ' ' + gainRangeText(r) + ' ' : '')
+        + '— ' + uiT('не применено');
+    case 'no_control': return uiT('Нет регулятора усиления');
+    case 'no_card': return uiT('Карта микрофона не определена');
+    case 'failed': return uiT('Не удалось задать усиление');
+    case 'no_mic': return uiT('Ждёт подключения микрофона');
+    default:
+      if (d && d.conf && d.conf.capture_gain === null) return uiT('Не задано — уровень не меняется');
+      return uiT('Результат пока неизвестен');
+  }
+}
+
+// The checkbox + field → {value: int|null} or {error}; clamps to the
+// daemon-reported range only (`clamped` tells the caller to show it).
+function gainValue(on, raw, d) {
+  if (!on) return { value: null };
+  var s = String(raw == null ? '' : raw).trim();
+  if (!/^-?[0-9]{1,6}$/.test(s)) return { error: 'invalid_value' };
+  var v = Number(s);
+  if (v < -AU_GAIN_GRAMMAR || v > AU_GAIN_GRAMMAR) return { error: 'invalid_value' };
+  var r = gainRange(d && d.mic_gain);
+  if (r && (v < r[0] || v > r[1])) return { value: v < r[0] ? r[0] : r[1], clamped: true };
+  return { value: v };
+}
+
+// audioSave hook: adds capture_gain to a built save body, or an error.
+function gainSaveMerge(out, d) {
+  if (!out || out.error || !out.body || !gainSupported(d)) return out;
+  var cb = $('audio-gain-on');
+  var inp = $('audio-gain');
+  var g = gainValue(!!(cb && cb.checked), inp ? inp.value : '', d);
+  if (g.error) return { error: g.error };
+  if (g.clamped && inp) inp.value = String(g.value);
+  out.body.capture_gain = g.value;
+  return out;
+}
+
+function gainSyncInput() {
+  var cb = $('audio-gain-on');
+  var inp = $('audio-gain');
+  if (inp) inp.disabled = !(cb && cb.checked);
+}
+
+// render hook: visibility, hint and status line always (not edited fields);
+// the checkbox and the value only while the form is closed, like fillSettings.
+function renderGain(d) {
+  var row = $('audio-gain-row');
+  if (!row) return;
+  var ok = !!(d && d.installed && gainSupported(d));
+  row.hidden = !ok;
+  if (!ok) return;
+  var cb = $('audio-gain-on');
+  var inp = $('audio-gain');
+  var r = gainRange(d.mic_gain);
+  if (inp) {
+    inp.min = r ? String(r[0]) : '';
+    inp.max = r ? String(r[1]) : '';
+  }
+  if (cb && !cb.dataset.bound) {
+    cb.dataset.bound = '1';
+    cb.addEventListener('change', gainSyncInput);
+  }
+  setText('audio-gain-hint', gainHint(d));
+  setText('audio-gain-state', gainStateText(d));
+  var det = $('audio-settings');
+  if (det && (det.hidden || det.open)) return;   // never overwrite what is being edited
+  var cur = d.conf.capture_gain;
+  if (cb) cb.checked = Number.isInteger(cur);
+  if (inp) inp.value = Number.isInteger(cur) ? String(cur) : '';
+  gainSyncInput();
+}
+
+window.sa02mAudioGain = {
+  gainSupported: gainSupported, gainRange: gainRange, gainDb: gainDb, gainHint: gainHint,
+  gainStateText: gainStateText, gainValue: gainValue, gainSaveMerge: gainSaveMerge, renderGain: renderGain,
+};
+
 // ── tab lifecycle (app.js systemLoadSub / systemStopIntegrations) ──────────
 function audioTabInit() {
   if (!$('audio-card')) return;
@@ -615,6 +832,8 @@ function init() {
   if (sel) sel.addEventListener('change', onStorageChange);
   var secs = $('audio-seconds');
   if (secs) secs.addEventListener('input', function () { secs.dataset.touched = '1'; });
+  var lm = $('audio-lm-on');
+  if (lm) lm.addEventListener('change', audioLightMusic);
 }
 
 window.audioTabInit = audioTabInit;
@@ -631,6 +850,7 @@ window.sa02mAudioCard = {
   stateBadge: stateBadge, stateHint: stateHint, lastStatusText: lastStatusText,
   errorText: errorText, recordAllowed: recordAllowed, idDate: idDate, clipLine: clipLine,
   clipUrl: clipUrl, saveBody: saveBody, render: render, uploadText: uploadText, tokenBody: tokenBody,
+  lightMusicText: lightMusicText, lightMusicAllowed: lightMusicAllowed, audioLightMusic: audioLightMusic,
 };
 
 if (document.readyState === 'loading') document.addEventListener('DOMContentLoaded', init);

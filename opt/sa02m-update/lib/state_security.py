@@ -11,6 +11,12 @@ import time
 from . import PackageError
 
 STAMP = "controller-state-v1"
+# The owner the update state must carry, and the uid the migration must run as:
+# root on the board; nothing here assigns them. A test run by an unprivileged
+# user rebinds both to its own ids (scripts/dev/test-update-control-boundaries.py)
+# so the same ownership checks and repairs run against a state it can create.
+OWNER_UID = 0
+OWNER_GID = 0
 
 
 def require_secure_state(state):
@@ -21,19 +27,19 @@ def require_secure_state(state):
         except OSError as exc:
             raise PackageError("E_BOOTSTRAP_REQUIRED", "run install.sh --refresh to secure update state") from exc
         kind = stat.S_ISDIR(st.st_mode) if directory else stat.S_ISREG(st.st_mode)
-        if not kind or st.st_uid != 0 or st.st_mode & 0o022 or (not directory and st.st_nlink != 1):
+        if not kind or st.st_uid != OWNER_UID or st.st_mode & 0o022 or (not directory and st.st_nlink != 1):
             raise PackageError("E_BOOTSTRAP_REQUIRED", "unsafe update state; run install.sh --refresh")
     incoming = state / "incoming"
     if incoming.exists() or incoming.is_symlink():
         st = incoming.lstat()
-        if not stat.S_ISDIR(st.st_mode) or st.st_uid != 0 or st.st_mode & 0o077:
+        if not stat.S_ISDIR(st.st_mode) or st.st_uid != OWNER_UID or st.st_mode & 0o077:
             raise PackageError("E_BOOTSTRAP_REQUIRED", "unsafe incoming directory; run install.sh --refresh")
     for name in ("transaction.json", "update.lock", "control.lock", "cancel"):
         path = state / name
         if not path.exists() and not path.is_symlink():
             continue
         st = path.lstat()
-        if not stat.S_ISREG(st.st_mode) or st.st_uid != 0 or st.st_mode & 0o022 or st.st_nlink != 1:
+        if not stat.S_ISREG(st.st_mode) or st.st_uid != OWNER_UID or st.st_mode & 0o022 or st.st_nlink != 1:
             raise PackageError("E_BOOTSTRAP_REQUIRED", "unsafe update journal; run install.sh --refresh")
 
 
@@ -43,7 +49,7 @@ def migrate(state=Path("/var/lib/sa02m-update")):
 
 
 def _migrate(state, stack):
-    if os.geteuid() != 0:
+    if os.geteuid() != OWNER_UID:
         raise PermissionError("root required")
     state = Path(state)
     secure = False
@@ -74,7 +80,7 @@ def _migrate(state, stack):
     held = None
     if state.exists():
         if not secure:
-            os.chown(state, 0, 0)
+            os.chown(state, OWNER_UID, OWNER_GID)
             os.chmod(state, 0o755)
         if (state / "maintenance").exists() or (state / "maintenance").is_symlink():
             raise RuntimeError("unfinished maintenance requires recovery before refresh")
@@ -114,10 +120,10 @@ def _migrate(state, stack):
             quarantine = state.with_name(state.name+".untrusted-"+str(time.time_ns()))
             state.rename(quarantine)
             if not quarantine.is_symlink():
-                os.chown(quarantine, 0, 0)
+                os.chown(quarantine, OWNER_UID, OWNER_GID)
                 os.chmod(quarantine, 0o700)
         state.mkdir(mode=0o755)
-        os.chown(state, 0, 0)
+        os.chown(state, OWNER_UID, OWNER_GID)
         (state / "incoming").mkdir(mode=0o700)
         stamp = state / STAMP
         stamp.write_text("1\n")

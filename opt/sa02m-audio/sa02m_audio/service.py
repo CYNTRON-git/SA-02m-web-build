@@ -6,9 +6,20 @@ says disabled (status `disabled`), the conf exists but cannot be read
 (`missing_deps`), or SIGTERM. A second copy exits 75 (the lock is held).
 Anything unexpected is status `error` + exit 1 (systemd retries).
 
-One main thread owns all state, every publish and every file decision:
-paho's network thread only enqueues commands (bounded, mqttio.Link), the
-capture thread only hands back its result. Order of the start checks, first
+One main thread owns all state, every retained publish and every file
+decision: paho's network thread only enqueues commands (bounded,
+mqttio.Link), a stream's reader thread only feeds its subscribers and hands
+back a clip's result. The one exception is the light-music sink: its strip
+writes (`music_level` / `music_color`, and the strip switch before the first
+of them) go out from the reader thread, behind the sink's lock; a stop
+detaches and closes the sink before the restore is written, so no stream
+write follows it.
+
+The mic has one owner. With light music off a clip runs on a stream of its
+own (capture.Capture: exactly the §6 argv, one arecord child per clip, none
+on a refusal). While light music runs the daemon holds the §11 lease and one
+unbounded stream; the light-music sink and any clip are its subscribers, so
+`record/on` then records at once from that stream (contract §Светомузыка). Order of the start checks, first
 refusal wins: grammar → one recording at a time → rate limit → mic present →
 the configured medium usable → mic lease. A refused start writes nothing
 anywhere and never falls back to another medium.
@@ -33,9 +44,11 @@ from . import __version__
 from . import alsa
 from . import config as conf_mod
 from . import constants as C
+from . import mixer
 from . import mqttio
 from .capture import (OUT_ERROR, OUT_INTERRUPTED, OUT_MIC_BUSY, OUT_NO_MIC, OUT_OK,
-                      OUT_SHORT, Capture, CaptureResult, MicLease)
+                      OUT_SHORT, Capture, CaptureResult, MicLease, Stream, StreamClip)
+from .lightshow import Sink, restore_writes, start_writes
 from .fsutil import atomic_write
 from .media import MediaProbe, Verdict
 from .store import Store, new_id
@@ -54,7 +67,8 @@ STATUS_KEYS = (
     "state", "ts", "version", "enabled", "message", "mic", "mic_device", "medium",
     "medium_state", "media", "recording", "last_file", "last_status",
     "last_duration_ms", "last_size", "last_peak_dbfs", "last_upload", "count",
-    "rate_used", "rate_max", "conf_warnings",
+    "rate_used", "rate_max", "conf_warnings", "light_music", "light_music_state",
+    "light_music_update_hz", "mic_gain",
 )
 MEDIA_KEYS = ("state", "free_bytes", "files", "bytes")
 EVENT_KEYS = ("ts", "event", "status", "id", "medium", "seconds", "detail", "source")
@@ -166,6 +180,8 @@ class Daemon:
         upload_opener: Any = None,
         upload_delays=C.UPLOAD_DELAYS_S,
         voice_allow_path: Optional[str] = None,
+        stream_factory: Callable[..., Stream] = Stream,
+        light_session_file: Optional[str] = None,
     ) -> None:
         self.stop = stop or threading.Event()
         self.conf_path = conf_path
@@ -208,6 +224,34 @@ class Daemon:
         self.last: Dict[str, Any] = {}
         self.warned_retained: set = set()
         self._lock_fd: Optional[int] = None
+        # Light music: the daemon-owned stream and its sink, what was asked,
+        # what the strip held at start, the strip's retained state.
+        self._stream_factory = stream_factory
+        self.stream: Optional[Stream] = None
+        self.sink: Optional[Sink] = None
+        self.lm_wanted = False
+        self.lm_state = C.LM_DISABLED
+        self.lm_style = C.LIGHT_MUSIC_DEFAULT_STYLE
+        self.lm_session: Optional[Dict[str, Any]] = None
+        self.lm_retry_at = 0.0
+        self.lm_rate = RateLimit(mono, limit=C.LIGHT_MUSIC_STARTS_MAX)
+        self.led: Dict[str, Dict[str, str]] = {}
+        self.led_error: Dict[str, str] = {}
+        # After a restore: key -> (written value, deadline) until the bridge
+        # echoes exactly it; keys whose value nobody can vouch for.
+        self.led_pending: Dict[str, Dict[str, Any]] = {}
+        self.led_unknown: Dict[str, set] = {}
+        # Always on eMMC beside the events ring.
+        self.light_session_file = light_session_file or os.path.join(
+            os.path.dirname(events_file) or ".", C.LIGHT_SESSION_NAME)
+        # Capture gain (contract §6): status.json `mic_gain`, the runtime
+        # warning added to conf_warnings, and what was last attempted —
+        # (card identity, amixer card, value): nothing forks while it holds.
+        self.gain: Dict[str, Any] = self._gain_view(C.GAIN_OFF)
+        self.gain_warning = ""
+        self._gain_done: Optional[tuple] = None
+        self._gain_confirm = False
+        self._gain_reapplied = False
 
     # ── outputs ───────────────────────────────────────────────────────────
     def put(self, name: str, value: Any, force: bool = False) -> None:
@@ -267,7 +311,11 @@ class Daemon:
             "count": sum(v["files"] for v in media.values()),
             "rate_used": self.rate.used,
             "rate_max": self.rate.limit,
-            "conf_warnings": list(self.conf.warnings)[:10],
+            "conf_warnings": self._conf_warnings(),
+            "light_music": bool(self.lm_wanted),
+            "light_music_state": self.lm_state,
+            "light_music_update_hz": self.sink.update_hz() if self.sink is not None else 0.0,
+            "mic_gain": dict(self.gain),
         }
         try:
             os.makedirs(os.path.dirname(self.status_file) or ".", exist_ok=True)
@@ -301,7 +349,7 @@ class Daemon:
         self.put("medium", self.conf.storage)
         self.put("medium_state", configured.state)
         self.put("count", self.count())
-        if self.capture is None:
+        if self.capture is None and self.stream is None:
             self.check_mic()
 
     def _medium_appeared(self, name: str) -> None:
@@ -315,6 +363,7 @@ class Daemon:
 
     def check_mic(self) -> None:
         device, _card = alsa.resolve(self.conf.device, self.asound_dir)
+        self._sync_gain(_card, confirm=True)
         if device is None:
             self.mic, self.mic_device = C.MIC_ABSENT, ""
         elif self.lease.acquire():
@@ -340,16 +389,30 @@ class Daemon:
         self.put("count", self.count())
 
     # ── commands ──────────────────────────────────────────────────────────
+    def _refuse_retained(self, item: mqttio.Inbound) -> None:
+        if item.topic not in self.warned_retained:
+            self.warned_retained.add(item.topic)
+            log.warning("retained command on %s ignored and cleared", item.topic)
+            self.event("mqtt", detail="retained command ignored: %s" % item.topic)
+        self.link.clear_retained_command(item.topic)
+
     def handle(self, item: mqttio.Inbound) -> None:
+        if item.topic == mqttio.LIGHT_TOPIC and self.conf.light_music_target:
+            if item.retain:
+                self._refuse_retained(item)
+            else:
+                self.light_command(item.payload)
+            return
+        for target in self._light_targets():
+            prefix = self._prefix(target)
+            if item.topic.startswith(prefix):
+                self.observe_led(target, item.topic[len(prefix):], item.payload)
+                return
         control = mqttio.COMMAND_TOPICS.get(item.topic)
         if control is None:
             return
         if item.retain:
-            if item.topic not in self.warned_retained:
-                self.warned_retained.add(item.topic)
-                log.warning("retained command on %s ignored and cleared", item.topic)
-                self.event("mqtt", detail="retained command ignored: %s" % item.topic)
-            self.link.clear_retained_command(item.topic)
+            self._refuse_retained(item)
             return
         if control == C.CMD_RECORD:
             kind, seconds = mqttio.parse_record(item.payload, default_s=self.conf.default_duration_s,
@@ -383,6 +446,7 @@ class Daemon:
             self.refuse(C.ST_RATE_LIMITED, seconds=seconds)
             return
         device, _card = alsa.resolve(self.conf.device, self.asound_dir)
+        self._sync_gain(_card)
         if device is None:
             self.mic, self.mic_device = C.MIC_ABSENT, ""
             self.put("mic", self.mic)
@@ -397,7 +461,16 @@ class Daemon:
         if verdict.state != C.MEDIUM_OK:
             self.refuse(C.MEDIUM_REFUSAL[verdict.state], seconds=seconds, detail=verdict.reason)
             return
-        if not self.lease.acquire():
+        if self.stream is not None and self.stream.ended.is_set():
+            # A light-music stream that ended but is not cleared yet still
+            # holds our own lease: clear it now, or our own clip reads mic_busy.
+            if self.sink is not None:
+                self.light_update()
+            if self.stream is not None and self.stream.ended.is_set() \
+                    and not isinstance(self.capture, StreamClip):
+                self._end_stream()
+        shared = self.stream is not None and not self.stream.ended.is_set()
+        if not shared and not self.lease.acquire():
             self.mic, self.mic_device = C.MIC_BUSY, device
             self.put("mic", self.mic)
             self.refuse(C.ST_MIC_BUSY, seconds=seconds)
@@ -406,19 +479,32 @@ class Daemon:
         try:
             part = self.store.open_part(name, rec_id)
         except OSError as exc:
-            self.lease.release()
+            if not shared:
+                self.lease.release()
             self.refuse(C.ST_ERROR, seconds=seconds, detail="part: %s" % (exc.strerror or exc))
             return
-        capture = self._capture_factory(device, seconds, part, self.results.put)
-        try:
-            capture.start()
-        except OSError as exc:
-            os.close(part.fd)
-            part.abandon()
-            part.close()
-            self.lease.release()
-            self.refuse(C.ST_ERROR, seconds=seconds, detail="arecord: %s" % (exc.strerror or exc))
-            return
+        if shared:
+            # Light music owns the mic: the clip joins its stream, at once.
+            capture: Any = StreamClip(self.stream, seconds, part, self.results.put)
+            capture.open()
+            if not self.stream.attach(capture):
+                capture.discard()  # closes its file and with it the part's descriptor
+                part.abandon()
+                part.close()
+                self.refuse(C.ST_ERROR, seconds=seconds, detail="stream ended")
+                return
+            device = self.stream.device
+        else:
+            capture = self._capture_factory(device, seconds, part, self.results.put)
+            try:
+                capture.start()
+            except OSError as exc:
+                os.close(part.fd)
+                part.abandon()
+                part.close()
+                self.lease.release()
+                self.refuse(C.ST_ERROR, seconds=seconds, detail="arecord: %s" % (exc.strerror or exc))
+                return
         self.rate.record()
         self.capture = capture
         self.capture_medium = name
@@ -504,7 +590,10 @@ class Daemon:
 
     def finalize(self, result: CaptureResult) -> None:
         capture, self.capture = self.capture, None
-        self.lease.release()
+        if self.stream is None:
+            self.lease.release()
+        elif self.sink is None:
+            self._end_stream()  # light music went off while the clip ran
         if capture is None:
             return
         part = capture.part
@@ -566,6 +655,314 @@ class Daemon:
             self.put(key, self.last[key])
         return C.ST_OK
 
+    # ── light music ───────────────────────────────────────────────────────
+    # A SESSION runs from an accepted `1` to its end (`0`, the target cleared
+    # or changed, the daemon stopping): the strip's state is read ONCE, before
+    # the strip is first switched, and persisted beside events.jsonl. Internal
+    # restarts (a no_mic retry, the strip back online, a style or rate change)
+    # reuse it — never the strip's live state, which by then is the session's
+    # own FX. The file is deleted only after its restore reached an online
+    # strip; one left by a crash is restored on the next start.
+    @staticmethod
+    def _prefix(target: str) -> str:
+        return "/devices/%s/" % target if target else ""
+
+    def _session_target(self) -> str:
+        return self.lm_session["target"] if self.lm_session else ""
+
+    def _light_targets(self) -> List[str]:
+        return sorted({t for t in (self.conf.light_music_target, self._session_target()) if t})
+
+    def _light_topics(self) -> tuple:
+        topics: tuple = (mqttio.LIGHT_TOPIC,) if self.conf.light_music_target else ()
+        for target in self._light_targets():
+            prefix = self._prefix(target)
+            topics += (prefix + "controls/+", prefix + "controls/+/meta/error", prefix + "meta/error")
+        return topics
+
+    def _led_write(self, target: str, control: str, payload: str) -> bool:
+        if self.link is None or not target:
+            return False
+        return bool(self.link.publish_command("%scontrols/%s/on" % (self._prefix(target), control),
+                                              payload))
+
+    def _led_online(self, target: str) -> bool:
+        """Only a strip the bridge has positively reported (`meta/error` ""):
+        a restore sent to an unknown or offline strip is skipped by the bridge."""
+        return self.led_error.get(target) == ""
+
+    def _lm_set(self, state: str, detail: str = "") -> None:
+        if state == self.lm_state:
+            return
+        self.lm_state = state
+        self.put("light_music_state", state)
+        self.event("light_music", status=state, detail=detail)
+        self.write_status(self._state())
+
+    def light_command(self, payload: str) -> None:
+        kind = mqttio.parse_switch(payload)
+        if kind == mqttio.CMD_BAD:
+            self.refuse(C.ST_BAD_COMMAND, detail="light_music/on %r" % payload[:40])
+            return
+        if kind == mqttio.CMD_IGNORE:
+            return
+        if kind == mqttio.CMD_START and not self.lm_wanted:
+            # Every start rewrites the strip's persisted FX registers: an EEPROM
+            # wear path from the LAN, so starts are limited like record/on.
+            if not self.lm_rate.allowed():
+                self.refuse(C.ST_RATE_LIMITED, detail="light_music/on 1")
+                return
+            self.lm_rate.record()
+            self.lm_retry_at = 0.0
+        self.lm_wanted = kind == mqttio.CMD_START
+        self.put(C.CMD_LIGHT_MUSIC, 1 if self.lm_wanted else 0)
+        self.light_update()
+
+    def observe_led(self, target: str, sub: str, payload: str) -> None:
+        """A strip's retained state (what a session's snapshot reads) and its
+        bridge availability (`meta/error`: "" online, `r` offline)."""
+        if sub == "meta/error":
+            self.led_error[target] = payload.strip()
+        elif sub.startswith("controls/"):
+            rest = sub[len("controls/"):]
+            pending = self.led_pending.setdefault(target, {})
+            if rest.endswith("/meta/error"):
+                name = rest[:-len("/meta/error")]
+                # The bridge could not write it: what the strip holds is unknown.
+                if name in pending and payload.strip() == "w":
+                    pending.pop(name)
+                    self._forget(target, name)
+            elif rest and "/" not in rest:
+                if rest in pending:
+                    # Only the echo of exactly what was written confirms it; a
+                    # differing report was published before the restore landed.
+                    if payload == pending[rest][0]:
+                        pending.pop(rest)
+                        self.led.setdefault(target, {})[rest] = payload
+                else:
+                    self.led.setdefault(target, {})[rest] = payload
+                    self.led_unknown.setdefault(target, set()).discard(rest)
+        self.light_update()
+
+    def _forget(self, target: str, name: str) -> None:
+        self.led.get(target, {}).pop(name, None)
+        self.led_unknown.setdefault(target, set()).add(name)
+
+    def _expire_pending(self) -> None:
+        now = time.monotonic()
+        for target, pending in self.led_pending.items():
+            for name in [n for n, (_v, deadline) in pending.items() if now >= deadline]:
+                pending.pop(name)
+                self._forget(target, name)  # never back to a stale report
+
+    def _snapshot_ready(self, target: str) -> bool:
+        """Every required key known, and none waiting for the echo of a
+        restore or left unknown by a failed or unconfirmed one."""
+        if self.led_pending.get(target) or self.led_unknown.get(target):
+            return False
+        state = self.led.get(target, {})
+        return all(c in state for c in C.LED_SNAPSHOT_REQUIRED)
+
+    def light_update(self) -> None:
+        """The state machine, on every command, strip message and tick."""
+        now = self.mono()
+        target = self.conf.light_music_target
+        if self.sink is not None:
+            stalled = (self.stream is None or self.stream.ended.is_set()
+                       or time.monotonic() - self.stream.last_data > C.LIGHT_MUSIC_STALL_S)
+            if not target or target != self._session_target():
+                self.light_stop(C.LM_DISABLED if not target else C.LM_OFF, "target changed", end=True)
+            elif not self.lm_wanted:
+                self.light_stop(C.LM_OFF, "off", end=True)
+            elif self.led_error.get(target) == "r":
+                self.light_stop(C.LM_STRIP_OFFLINE, "strip offline", restore=False)
+            elif stalled:
+                self.lm_retry_at = now + C.LIGHT_MUSIC_RETRY_S
+                self.light_stop(C.LM_NO_MIC, "stream stopped")
+            else:
+                self.sink.tick()
+            return
+        if self.lm_session is not None and (not self.lm_wanted or target != self._session_target()):
+            self._end_session()
+        if not target:
+            self._lm_set(C.LM_DISABLED)
+        elif not self.lm_wanted:
+            self._lm_set(C.LM_OFF)
+        elif self.led_error.get(target) == "r":
+            self._lm_set(C.LM_STRIP_OFFLINE, "strip offline")
+        elif self.lm_session is None and not (self._led_online(target) and self._snapshot_ready(target)):
+            # Never a session that could not be restored exactly: wait for the
+            # bridge's report and its slow poll of 455 (one poll, ~30 s:
+            # led-mb2ws.md §4).
+            self._lm_set(C.LM_STRIP_OFFLINE, "waiting for the strip's state")
+        elif now >= self.lm_retry_at and self.capture is None:
+            # A clip on a stream of its own holds the mic: start after it.
+            self.light_start()
+
+    def light_start(self) -> None:
+        target = self.conf.light_music_target
+        device, _card = alsa.resolve(self.conf.device, self.asound_dir)
+        self._sync_gain(_card)
+        reason = ""
+        if device is None:
+            reason = "no microphone"
+        elif not self.lease.acquire():
+            reason = "mic lease held by another opener"
+        if not reason and self.lm_session is None:
+            snapshot = {c: self.led[target][c] for c in C.LED_SNAPSHOT_CONTROLS
+                        if c in self.led.get(target, {})}
+            self.lm_session = {"target": target, "snapshot": snapshot, "switched": False}
+            if not self._save_session():
+                self.lm_session = None
+                self.lease.release()
+                reason = "session file not written"
+        if not reason:
+            stream = self._stream_factory(device)
+            try:
+                stream.start()
+            except OSError as exc:
+                self.lease.release()
+                reason = "arecord: %s" % (exc.strerror or exc)
+        if reason:
+            self.lm_retry_at = self.mono() + C.LIGHT_MUSIC_RETRY_S
+            self._lm_set(C.LM_NO_MIC, reason)
+            return
+        self.stream = stream
+        style = self.conf.light_music_style
+        self.lm_style = style
+        prefix = self._prefix(target)
+        topic = "%scontrols/%s/on" % (prefix, C.LIGHT_MUSIC_STREAM_CONTROL[style])
+        link = self.link
+        writes = start_writes(style)
+
+        def switch_strip() -> None:
+            for control, payload in writes:
+                link.publish_command("%scontrols/%s/on" % (prefix, control), payload)
+
+        self.sink = Sink(style, self.conf.light_music_rate_hz,
+                         lambda value: link.publish_command(topic, value), prelude=switch_strip)
+        self.stream.attach(self.sink)
+        self.mic, self.mic_device = C.MIC_PRESENT, device
+        self.put("mic", self.mic)
+        self._lm_set(C.LM_RUNNING, style)
+
+    def light_stop(self, state: str, detail: str = "", *, end: bool = False,
+                   restore: bool = True) -> None:
+        """Quiesce the sink FIRST (detach, then close: an analysis in flight
+        on the reader thread finishes and nothing more is published), then
+        write the strip back from the session snapshot when this run switched
+        it, then end the stream unless a clip is still written from it.
+        `end`: the session is over — its file goes once the restore landed."""
+        sink, self.sink = self.sink, None
+        if sink is not None:
+            if self.stream is not None:
+                self.stream.detach(sink)
+            sink.close()
+            if sink.switched and self.lm_session is not None:
+                self.lm_session["switched"] = True
+        if not isinstance(self.capture, StreamClip):
+            self._end_stream()
+        if end:
+            self._end_session()
+        elif restore and sink is not None and sink.switched:
+            self._restore_strip()
+        self._lm_set(state, detail)
+
+    def _restore_strip(self) -> bool:
+        """The session snapshot back onto the session's own strip; True when
+        every write was handed to an online strip."""
+        if self.lm_session is None:
+            return True
+        target = self.lm_session["target"]
+        if not self._led_online(target):
+            return False
+        ok = True
+        writes = restore_writes(self.lm_style, self.lm_session["snapshot"])
+        for control, payload in writes:
+            ok = self._led_write(target, control, payload) and ok
+        if ok:
+            # What the strip holds now is what was just written — not the
+            # bridge's retained state, which can still carry the session's own
+            # values. Each key stays PENDING until the bridge echoes exactly
+            # it (a report published before the bridge processed the restore
+            # is ignored); a failed write or no echo within LED_CONFIRM_S makes
+            # it unknown. No session snapshots a pending or unknown key.
+            deadline = time.monotonic() + C.LED_CONFIRM_S
+            self.led.setdefault(target, {}).update(dict(writes))
+            pending = self.led_pending.setdefault(target, {})
+            for control, payload in writes:
+                pending[control] = (payload, deadline)
+                self.led_unknown.setdefault(target, set()).discard(control)
+        return ok
+
+    def _end_session(self) -> None:
+        """Restore (only if the strip was ever switched), then forget the
+        session; a restore that could not land keeps the file for later."""
+        if self.lm_session is None:
+            return
+        if self.lm_session.get("switched") and not self._restore_strip():
+            return
+        self.lm_session = None
+        self._delete_session()
+        if self.link is not None:
+            self.link.set_extra_topics(self._light_topics())
+
+    def _save_session(self) -> bool:
+        try:
+            atomic_write(self.light_session_file,
+                         json.dumps(self.lm_session, ensure_ascii=False, sort_keys=True) + "\n",
+                         mode=0o640)
+            return True
+        except OSError as exc:
+            log.error("light-music session not saved: %s", exc)
+            return False
+
+    def _delete_session(self) -> None:
+        try:
+            os.unlink(self.light_session_file)
+        except FileNotFoundError:
+            pass
+        except OSError as exc:
+            log.error("light-music session file not removed: %s", exc)
+
+    def _load_session(self) -> None:
+        """A session file left by a crash: its strip is restored as soon as
+        the bridge reports it online (never sooner)."""
+        try:
+            fd = os.open(self.light_session_file,
+                         os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0) | getattr(os, "O_CLOEXEC", 0))
+        except OSError:
+            return
+        try:
+            with os.fdopen(fd, encoding="utf-8") as fh:
+                data = json.loads(fh.read(8192))
+        except (OSError, ValueError):
+            data = None
+        target = data.get("target") if isinstance(data, dict) else None
+        snapshot = data.get("snapshot") if isinstance(data, dict) else None
+        if not (isinstance(target, str) and conf_mod.valid_light_target(target)
+                and isinstance(snapshot, dict)):
+            log.warning("light-music session file unusable — removed")
+            self._delete_session()
+            return
+        snapshot = {c: snapshot[c] for c in C.LED_SNAPSHOT_CONTROLS
+                    if isinstance(snapshot.get(c), str) and len(snapshot[c]) <= 32}
+        self.lm_session = {"target": target, "snapshot": snapshot, "switched": True}
+        self.event("light_music", status=C.LM_OFF, detail="restoring %s after a restart" % target)
+
+    def _end_stream(self) -> None:
+        stream, self.stream = self.stream, None
+        if stream is not None:
+            stream.stop()
+            stream.join(C.CHILD_STOP_WAIT_S * 2 + 2)
+            self.lease.release()
+
+    def _light_tick(self) -> None:
+        self._expire_pending()
+        if isinstance(self.capture, StreamClip):
+            self.capture.check_deadline(time.monotonic())
+        self.light_update()
+
     # ── conf ──────────────────────────────────────────────────────────────
     def reload_conf(self) -> bool:
         """False when the daemon must exit (disabled or unreadable)."""
@@ -584,8 +981,149 @@ class Daemon:
                    + ("; " + "; ".join(fresh.warnings) if fresh.warnings else ""))
         if old.storage != fresh.storage:
             self.check_media()
+        light = ("light_music_target", "light_music_style", "light_music_rate_hz")
+        if any(getattr(old, k) != getattr(fresh, k) for k in light):
+            if not fresh.light_music_target:
+                self.lm_wanted = False
+                self.put(C.CMD_LIGHT_MUSIC, 0)
+            if self.sink is not None and fresh.light_music_target == self._session_target():
+                # Same strip, new style or rate: restart the run without a
+                # restore — the session snapshot stays the pre-session state.
+                self.light_stop(self.lm_state, "conf changed", restore=False)
+            # A changed or cleared target ends the session on ITS strip
+            # (light_update, with the session's own target).
+            if self.link is not None:
+                self.link.set_extra_topics(self._light_topics())
+            self.light_update()
+        self._gain_reload(old)
         self.write_status(self._state())
         return True
+
+    # ── capture gain (contract §6 «Усиление захвата») ─────────────────────
+    @staticmethod
+    def _gain_view(state: str, want: Optional[int] = None,
+                   ctl: Optional[mixer.Control] = None) -> Dict[str, Any]:
+        applied = state == C.GAIN_APPLIED and ctl is not None
+        return {"state": state, "want": want,
+                "applied": ctl.values[0] if applied else None,
+                "min": ctl.min if ctl is not None else None,
+                "max": ctl.max if ctl is not None else None,
+                "db": ctl.db if applied else "",
+                "control": ctl.name if ctl is not None else ""}
+
+    def _conf_warnings(self) -> List[str]:
+        """Parse warnings (conf.warnings stays parse-only: it feeds
+        comparable()) plus the runtime gain warning, ≤ 10 in all."""
+        extra = [self.gain_warning] if self.gain_warning else []
+        return list(self.conf.warnings)[:10 - len(extra)] + extra
+
+    def _gain_target(self, card: Optional[alsa.Card]) -> Optional[tuple]:
+        """((index, amixer card, usbbus), amixer card) of the mic's card, or
+        None when it cannot be named. auto: the card `resolve` found. An
+        explicit device: the card its name points at (resolve then returns
+        the first capture card, which may be a different one)."""
+        if self.conf.device == C.DEVICE_AUTO:
+            if card is None:
+                return None
+            target, index = mixer.card_arg(card), card.index
+        else:
+            target = mixer.card_from_device(self.conf.device)
+            if target is None:
+                return None
+            index = int(target) if target.isdigit() else next(
+                (c.index for c in alsa.read_cards(self.asound_dir) if c.id == target), None)
+        # The USB device number in usbbus changes on every replug, so a replug
+        # faster than one mic check still changes the identity.
+        usbbus = ""
+        if index is not None:
+            try:
+                with open(os.path.join(self.asound_dir, "card%d" % index, "usbbus"),
+                          encoding="ascii", errors="replace") as fh:
+                    usbbus = fh.read(64).strip()
+            except OSError:
+                pass
+        return (index, target, usbbus), target
+
+    def _gain_set(self, state: str, want: Optional[int], ctl: Optional[mixer.Control] = None,
+                  detail: str = "", event_status: str = "") -> None:
+        self.gain = self._gain_view(state, want, ctl)
+        self.gain_warning = detail if state == C.GAIN_OUT_OF_RANGE else ""
+        if event_status:
+            self.event("gain", status=event_status, detail=detail)
+
+    def _gain_reload(self, old: conf_mod.RecorderConfig) -> None:
+        """A changed `capture_gain` is applied at once — also while a clip or
+        light music runs (no stream restart; the mixer change is live)."""
+        if old.capture_gain != self.conf.capture_gain:
+            _device, card = alsa.resolve(self.conf.device, self.asound_dir)
+            self._sync_gain(card)
+
+    def _sync_gain(self, card: Optional[alsa.Card], confirm: bool = False) -> None:
+        """Make the mixer hold `capture_gain`; `card` is what alsa.resolve
+        returned (None ⇔ no mic). amixer forks only when the card identity or
+        the value changed since the last attempt, plus one confirmation read
+        on the next mic check after an apply. Key None ⇒ nothing is ever
+        forked."""
+        want = self.conf.capture_gain
+        if want is None:
+            self._gain_done, self._gain_confirm = None, False
+            if self.gain["state"] != C.GAIN_OFF:
+                self._gain_set(C.GAIN_OFF, None)
+            return
+        if card is None:
+            # Mic gone: identity cleared, the next presence re-applies.
+            self._gain_done, self._gain_confirm = None, False
+            self._gain_set(C.GAIN_NO_MIC, want)
+            return
+        found = self._gain_target(card)
+        if found is None:
+            key = (C.GAIN_NO_CARD, self.conf.device, want)
+            if key != self._gain_done:
+                self._gain_done, self._gain_confirm = key, False
+                self._gain_set(C.GAIN_NO_CARD, want, detail="device %s: card not derivable"
+                               % self.conf.device, event_status=C.GAIN_NO_CARD)
+            return
+        identity, target = found
+        key = (identity, target, want)
+        if key == self._gain_done:
+            if confirm and self._gain_confirm:
+                self._gain_confirm_read(target, want)
+            return
+        # Recorded on every outcome: a failure is retried on the next replug
+        # or conf change, never every 10 s (a hung amixer costs 3 s each).
+        self._gain_done, self._gain_confirm, self._gain_reapplied = key, False, False
+        self._gain_apply(target, want)
+
+    def _gain_apply(self, target: str, want: int, overridden: bool = False) -> None:
+        result = mixer.apply(target, want)
+        ctl = result.control
+        if result.state == C.GAIN_OUT_OF_RANGE:
+            detail = result.detail
+        else:
+            detail = "card %s control %s value %d" % (target, ctl.name if ctl else "-", want)
+            if result.detail:
+                detail += ": " + result.detail
+            elif ctl is not None and ctl.db:
+                detail += " (%s dB)" % ctl.db
+        status = result.state
+        if result.state == C.GAIN_APPLIED:
+            # The confirmation read follows a first apply only, never a re-apply.
+            self._gain_confirm = not overridden
+            if overridden:
+                status = C.GAIN_OVERRIDDEN
+                detail = "overwritten after apply, re-applied once: " + detail
+        log.info("capture gain %s: %s", status, detail)
+        self._gain_set(result.state, want, ctl, detail=detail, event_status=status)
+
+    def _gain_confirm_read(self, target: str, want: int) -> None:
+        """One read after an apply: udev `alsactl restore` may race the
+        hot-plug and overwrite the value — then re-apply ONCE, never a loop."""
+        self._gain_confirm = False
+        answered, ctl = mixer.read(target)
+        if not answered or ctl is None or mixer.landed(ctl, want) or self._gain_reapplied:
+            return
+        self._gain_reapplied = True
+        self._gain_apply(target, want, overridden=True)
 
     # ── lifecycle ─────────────────────────────────────────────────────────
     def _take_lock(self) -> bool:
@@ -647,6 +1185,12 @@ class Daemon:
             self.link.put(topic, payload)
         self.link.put(mqttio.META_ERROR_TOPIC, "")
         self.put("record", 0)
+        # Never on at boot: light music starts only on a command.
+        self.lm_state = C.LM_OFF if self.conf.light_music_target else C.LM_DISABLED
+        self._load_session()
+        self.put(C.CMD_LIGHT_MUSIC, 0)
+        self.put("light_music_state", self.lm_state)
+        self.link.set_extra_topics(self._light_topics())
         self.check_media(startup=True)
         self.write_status(C.STATE_IDLE)
         self.link.start()
@@ -664,6 +1208,7 @@ class Daemon:
                 if item is not None:
                     self.handle(item)
                 self._drain_results()
+                self._light_tick()
                 now = self.mono()
                 if now >= next_conf:
                     next_conf = now + C.CONF_POLL_S
@@ -717,6 +1262,11 @@ class Daemon:
             result.outcome = OUT_INTERRUPTED
             result.detail = result.detail or "daemon stopped"
             self.finalize(result)
+        if self.sink is not None or self.stream is not None or self.lm_session is not None:
+            # SIGTERM / disable: the strip gets its previous state back while
+            # the broker is still reachable; a restore that cannot land keeps
+            # the session file for the next start.
+            self.light_stop(C.LM_OFF, "daemon stopped", end=True)
         if self.link is not None:
             self.link.put(mqttio.META_ERROR_TOPIC, "r")
             time.sleep(0.3)  # let paho flush the last retained publishes

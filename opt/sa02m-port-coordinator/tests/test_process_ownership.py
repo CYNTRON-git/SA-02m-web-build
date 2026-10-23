@@ -15,10 +15,25 @@ import time
 import unittest
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
-from sa02m_ports import Lease, PollLock, PortError, assert_idle_for_maintenance
+from sa02m_ports import Lease, PollLock, PortError, ServiceMutation, assert_idle_for_maintenance
+from sa02m_ports import broker as broker_module, locks
 from sa02m_ports.broker import Broker, atomic_json, serve
 
 CTX = mp.get_context("spawn")
+
+# The broker's lock directory and inodes must belong to locks.OWNER_UID (root
+# on the board). This suite creates them as whoever runs it, so it rebinds the
+# owner to itself: as root that is the product value, as an unprivileged CI
+# user it lets the same ownership checks run instead of refusing every inode.
+# Spawned children re-import this module, so the broker, the lease holders and
+# the bridge fixture apply the same rebinding; so does every suite that imports
+# this fixture (test_poll_intent_refusal, the gateway's real-broker test).
+# Unprivileged, the occupant scan is narrowed to this session (it cannot read
+# other users' /proc/<pid>/fd, nor a sandboxed process of its own uid); as root
+# the full scan runs.
+locks.OWNER_UID, locks.OWNER_GID = os.getuid(), os.getgid()
+if os.getuid() != 0:
+    broker_module.OCCUPANT_SCAN_SESSION = os.getsid(0)
 
 
 class FakeSystem:
@@ -76,7 +91,7 @@ class PtyBroker(Broker):
         assert all(p.startswith("/dev/pts/") for p in self.config["ports"])
 
 
-def run_broker(root, ports):
+def run_broker(root, ports, allowed=None, admin=None):
     import sa02m_ports.broker as module
     persist = module.atomic_json
 
@@ -88,7 +103,10 @@ def run_broker(root, ports):
     module.atomic_json = write
     broker = PtyBroker({"ports": {p: ["mplc4.service"] for p in ports}},
                        root + "/state", root + "/run", FakeSystem(root + "/system.json"))
-    serve(broker, allowed_uids={os.getuid()}, group=os.getgid())
+    # This uid plays both the consumer and the root updater unless a case
+    # narrows either list (the peer-credential and admin-only cases).
+    serve(broker, allowed_uids=allowed or {os.getuid()},
+          admin_uids={os.getuid()} if admin is None else admin, group=os.getgid())
 
 
 def own_until_killed(path, port, ready):
@@ -125,9 +143,10 @@ def run_mqtt(root, ports, ready):
         time.sleep(0.02)
 
 
-def denied_peer(path, port, result):
-    os.setgid(65534)
-    os.setuid(65534)
+def denied_peer(path, port, result, drop=True):
+    if drop:
+        os.setgid(65534)
+        os.setuid(65534)
     try:
         with Lease(port, "scan", path):
             result.send("unexpected success")
@@ -158,8 +177,8 @@ class ProcessOwnership(unittest.TestCase):
         os.environ["NOTIFY_SOCKET"] = self.root + "/notify.sock"
         self.start_broker()
 
-    def start_broker(self):
-        self.broker = CTX.Process(target=run_broker, args=(self.root, self.ports))
+    def start_broker(self, **lists):
+        self.broker = CTX.Process(target=run_broker, args=(self.root, self.ports), kwargs=lists)
         self.broker.start()
         self.children.append(self.broker)
         self.wait(lambda: Path(self.path).exists() and self.broker.is_alive())
@@ -401,17 +420,139 @@ class ProcessOwnership(unittest.TestCase):
         self.wait(lambda: self.system()["active"])
         self.assertFalse(self.state()["leases"])
 
-    @unittest.skipUnless(os.getuid() == 0, "setuid peer test requires Linux root")
+    def restart_broker(self, **lists):
+        self.broker.kill()
+        self.broker.join()
+        self.start_broker(**lists)
+
     def test_peer_credentials_even_if_socket_permissions_are_widened(self):
+        if os.getuid() != 0:
+            # Without root no foreign uid can be assumed, so the refused peer
+            # is this uid itself: the broker is restarted allowing root only.
+            self.restart_broker(allowed={0})
         os.chmod(self.root, 0o755)
         os.chmod(self.path, 0o666)
         parent, child = CTX.Pipe()
-        proc = CTX.Process(target=denied_peer, args=(self.path, self.ports[0], child))
+        # As root (allowed: root only) the peer drops to nobody first.
+        proc = CTX.Process(target=denied_peer,
+                           args=(self.path, self.ports[0], child, os.getuid() == 0))
         proc.start()
         self.children.append(proc)
         self.assertTrue(parent.poll(10))
         self.assertIn("Peer is not permitted", parent.recv())
         self.assertFalse(self.state()["leases"])
+
+    def test_root_only_operations_refuse_a_permitted_non_admin_peer(self):
+        # A consumer uid (the flasher user on the board) may lease and poll but
+        # never run the updater's idle check or take a service-mutation guard.
+        self.restart_broker(admin=set())
+        with self.assertRaises(PortError) as caught:
+            os.close(self.maintenance())
+        self.assertIn("Unknown operation", str(caught.exception))
+        with self.assertRaises(PortError) as caught:
+            with ServiceMutation("mplc4.service", self.path):
+                pass
+        self.assertIn("Unknown operation", str(caught.exception))
+        with self.lease():
+            pass
+
+
+class LockOwnership(unittest.TestCase):
+    """The owner check itself: an inode or directory under another uid is refused."""
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.tmp.cleanup)
+        self.locks = Path(self.tmp.name, "locks")
+        locks.secure_directory(self.locks)
+        self.inode = self.locks / "1-2.lock"
+        locks.provision(self.inode)
+        self.addCleanup(setattr, locks, "OWNER_UID", locks.OWNER_UID)
+
+    def test_the_product_owner_is_root_and_the_scan_is_unscoped(self):
+        # The rebinding above is this suite's; a fresh interpreter sees root
+        # and the whole-process occupant scan.
+        import subprocess
+        out = subprocess.run(
+            [sys.executable, "-c", "from sa02m_ports import broker, locks; "
+             "print(locks.OWNER_UID, locks.OWNER_GID, broker.OCCUPANT_SCAN_SESSION)"],
+            cwd=str(Path(__file__).resolve().parents[1]), capture_output=True, text=True, timeout=30)
+        self.assertEqual(out.stdout.split(), ["0", "0", "None"], out.stderr)
+
+    def test_an_unreadable_process_makes_the_device_unsafe(self):
+        # Product scan (no uid scope): a process whose descriptors cannot be
+        # read is not skipped, the PermissionError reaches the caller.
+        from unittest import mock
+
+        class Entry:
+            name = "4242"
+
+            def __truediv__(self, child):
+                return self
+
+            def iterdir(self):
+                raise PermissionError("[Errno 13] Permission denied: '/proc/4242/fd'")
+
+            def read_text(self):
+                raise AssertionError("the product scan must not filter by session")
+
+        class Proc:
+            def iterdir(self):
+                return iter([Entry()])
+
+        with mock.patch.object(broker_module, "OCCUPANT_SCAN_SESSION", None), \
+                mock.patch.object(broker_module, "Path", lambda path: Proc()):
+            with self.assertRaises(PermissionError):
+                broker_module.occupants(os.devnull)
+
+    def test_the_scoped_scan_refuses_its_own_unreadable_process(self):
+        # The test-only scope narrows WHICH processes are read, never what an
+        # unreadable one means: inside the session it still refuses; a process
+        # of another session is not read at all. The session comes from the
+        # real /proc/<pid>/stat shape, a ')' in the command name included.
+        from unittest import mock
+
+        def proc(session):
+            class Entry:
+                name = "4242"
+
+                def __truediv__(self, child):
+                    return self
+
+                def iterdir(self):
+                    raise PermissionError("[Errno 13] Permission denied: '/proc/4242/fd'")
+
+                def read_text(self):
+                    return "4242 (odd) name) S 1 4242 %d 0 -1 4194560\n" % session
+
+            class Proc:
+                def iterdir(self):
+                    return iter([Entry()])
+            return Proc()
+
+        with mock.patch.object(broker_module, "OCCUPANT_SCAN_SESSION", 777):
+            with mock.patch.object(broker_module, "Path", lambda path: proc(777)):
+                with self.assertRaises(PermissionError):
+                    broker_module.occupants(os.devnull)
+            with mock.patch.object(broker_module, "Path", lambda path: proc(778)):
+                self.assertEqual(broker_module.occupants(os.devnull), [])
+
+    def test_a_directory_or_inode_of_another_owner_is_refused(self):
+        fd = locks.open_locked(self.inode)  # control: the owner's own inode locks
+        os.close(fd)
+        fd = os.open(self.inode, os.O_RDWR)
+        self.addCleanup(os.close, fd)
+        locks.OWNER_UID = os.getuid() + 1
+        # The inode check alone (a foreign inode in an owned directory cannot
+        # be created without root, so it is called directly).
+        with self.assertRaisesRegex(PermissionError, "Unsafe or replaced lock inode"):
+            locks._check_inode(fd, self.inode)
+        with self.assertRaisesRegex(PermissionError, "must belong to root"):
+            locks.secure_directory(self.locks)
+        with self.assertRaisesRegex(PermissionError, "not root-controlled"):
+            locks.open_locked(self.inode)
+        with self.assertRaisesRegex(PermissionError, "not root-controlled"):
+            locks.provision(self.inode)
 
 
 if __name__ == "__main__":

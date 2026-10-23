@@ -91,6 +91,10 @@ TIMEOUT = "timeout"
 ARECORD_GRACE_S = 5
 ARECORD_KILL_AFTER_S = 2
 READ_CHUNK = BYTES_PER_S // 10
+# The stream's short ALSA buffer (bench 1.135: the default buffer delivered
+# 37 % of frames late) and its read size — one light-music frame, 50 ms.
+ARECORD_BUFFER_FLAGS = ("--buffer-time=100000", "--period-time=25000")
+STREAM_BLOCK = BYTES_PER_S // 20
 STDERR_KEEP = 4096
 CHILD_STOP_WAIT_S = 3.0
 
@@ -192,12 +196,15 @@ DEVICE_ID = "sa02m-audio"
 DRIVER = "sa02m-audio"
 DEVICE_NAME = "SA-02m audio recorder"
 DEVICE_TOPIC = "/devices/" + DEVICE_ID
-# Command controls: the only topics this daemon subscribes to.
+# Command controls: the topics this daemon takes commands on. `light_music`
+# is subscribed only while light music has a target (mqttio.Link).
 CMD_RECORD = "record"
 CMD_DELETE = "delete"
-COMMAND_CONTROLS = (CMD_RECORD, CMD_DELETE)
-# State controls, in WB order: (name, WB type, units). `record` is the only
-# writable one (its `/on` is the command); every other is readonly.
+CMD_LIGHT_MUSIC = "light_music"
+COMMAND_CONTROLS = (CMD_RECORD, CMD_DELETE, CMD_LIGHT_MUSIC)
+# State controls, in WB order: (name, WB type, units). `record` and
+# `light_music` are writable (their `/on` is the command); every other is
+# readonly.
 Control = namedtuple("Control", "name wb_type units")
 CONTROLS = (
     Control("record", "switch", ""),
@@ -211,8 +218,61 @@ CONTROLS = (
     Control("last_peak_dbfs", "value", ""),
     Control("last_upload", "text", ""),
     Control("count", "value", ""),
+    Control("light_music", "switch", ""),
+    Control("light_music_state", "text", ""),
 )
-WRITABLE_CONTROLS = ("record",)
+WRITABLE_CONTROLS = ("record", CMD_LIGHT_MUSIC)
+
+# ── Light music (contract §Светомузыка) ────────────────────────────────────
+LM_OFF = "off"
+LM_RUNNING = "running"
+LM_NO_MIC = "no_mic"
+LM_STRIP_OFFLINE = "strip_offline"
+LM_DISABLED = "disabled"
+LIGHT_MUSIC_STATES = (LM_OFF, LM_RUNNING, LM_NO_MIC, LM_STRIP_OFFLINE, LM_DISABLED)
+LM_STYLE_LEVEL = "level"
+LM_STYLE_COLOR = "color"
+LM_STYLE_EQUALIZER = "equalizer"
+LIGHT_MUSIC_STYLES = (LM_STYLE_LEVEL, LM_STYLE_COLOR, LM_STYLE_EQUALIZER)
+LIGHT_MUSIC_DEFAULT_STYLE = LM_STYLE_LEVEL
+LIGHT_MUSIC_RATE_MIN = 1
+LIGHT_MUSIC_RATE_MAX = 10
+LIGHT_MUSIC_RATE_DEFAULT = 8
+# A `type: led` device id of the bridge (docs/contracts/led-mb2ws.md).
+LIGHT_MUSIC_TARGET_RE = r"^[A-Za-z0-9_.-]{1,64}\Z"
+# The bridge's device list: the panel offers and accepts only its `type: led`
+# ids (root:www-data 0660, scripts/05-mqtt.sh). Read, never written.
+BRIDGE_CONF = os.environ.get("SA02M_AUDIO_BRIDGE_CONF", "/etc/sa02m-modbus-mqtt.yaml")
+BRIDGE_CONF_MAX_BYTES = 256 * 1024
+# Mic gone or the stream silent for LIGHT_MUSIC_STALL_S ⇒ no_mic, next try
+# after LIGHT_MUSIC_RETRY_S.
+LIGHT_MUSIC_RETRY_S = 10.0
+LIGHT_MUSIC_STALL_S = 2.0
+# Per style: the strip's FX while running and the stream control written.
+LIGHT_MUSIC_FX = {LM_STYLE_LEVEL: 75, LM_STYLE_EQUALIZER: 43, LM_STYLE_COLOR: 0}
+LIGHT_MUSIC_STREAM_CONTROL = {LM_STYLE_LEVEL: "music_level", LM_STYLE_EQUALIZER: "music_level",
+                              LM_STYLE_COLOR: "music_color"}
+# The strip's retained controls remembered at start and written back at stop.
+# brightness (FxParam 407, persisted) and scene_source (RenderSource 402) are
+# in it because the bridge's power/on 1 overwrites both.
+LED_SNAPSHOT_CONTROLS = ("power", "effect", "speed", "color", "fx_aux", "brightness", "scene_source")
+# Without these known no session starts: it could not be restored exactly.
+LED_SNAPSHOT_REQUIRED = ("power", "effect", "fx_aux", "brightness", "scene_source")
+# After a restore each written key waits for the bridge's forced echo of
+# exactly that value. The bridge writes the ~7 restore registers serially on
+# COM3 (55-148 ms each on the bench, plus the lock bracket of power): about
+# 1 s at worst. 5 s is >4x that; an unconfirmed key then becomes UNKNOWN and
+# takes the bridge's next report. The guarantee holds while the bridge
+# processes the restore within this bound; a longer bound narrows the stale
+# window further but delays the next session (§22).
+LED_CONFIRM_S = 5.0
+# One session's snapshot, beside events.jsonl (eMMC), until its restore landed.
+LIGHT_SESSION_NAME = "light-music-session.json"
+# Light-music starts per sliding RATE_WINDOW_S (each rewrites persisted FX).
+LIGHT_MUSIC_STARTS_MAX = 60
+# FxAux 455 is restored as its whole word through the strip's raw control.
+FX_AUX_CONTROL = "fx_aux"
+FX_AUX_MAX = 0xFFFF
 
 # ── Daemon timing ──────────────────────────────────────────────────────────
 TICK_S = 0.5
@@ -257,8 +317,41 @@ REMOVABLE_MEDIA = (MEDIUM_USB, MEDIUM_SDCARD)
 # Event kinds in events.jsonl (contract §Журнал).
 EVENT_KINDS = (
     "start", "end", "refused", "failed", "interrupted", "discarded", "xrun",
-    "delete", "retention", "config", "medium", "mqtt", "upload", "voice",
+    "delete", "retention", "config", "medium", "mqtt", "upload", "voice", "light_music",
+    "gain",
 )
+
+
+# ── Capture gain (contract §6 «Усиление захвата», §8 `capture_gain`) ──────
+# The conf value is the control's raw units. The grammar bounds are a garbage
+# guard only, NOT the device range: the daemon reads the range from the live
+# control at apply time and refuses a value outside it.
+CAPTURE_GAIN_RE = r"^-?[0-9]{1,6}\Z"
+CAPTURE_GAIN_GRAMMAR_MIN = -100000
+CAPTURE_GAIN_GRAMMAR_MAX = 100000
+AMIXER = "amixer"
+# `timeout -k 1 3 amixer …`, and the subprocess timeout as the outer bound.
+AMIXER_TIMEOUT_S = 3
+AMIXER_KILL_AFTER_S = 1
+AMIXER_RUN_TIMEOUT_S = 5
+AMIXER_OUTPUT_MAX = 65536
+# A simple control name passed to amixer as one argv word; outside ⇒ no control.
+MIXER_CONTROL_RE = r"^[A-Za-z0-9 _.-]{1,44}\Z"
+# amixer's own dB string (`18.75`), carried into status.json as is.
+MIXER_DB_RE = r"^-?[0-9]{1,3}\.[0-9]{2}\Z"
+# status.json mic_gain.state and the `gain` event's status.
+GAIN_OFF = "off"
+GAIN_APPLIED = "applied"
+GAIN_OUT_OF_RANGE = "out_of_range"
+GAIN_NO_CONTROL = "no_control"
+GAIN_NO_CARD = "no_card"
+GAIN_FAILED = "failed"
+GAIN_NO_MIC = "no_mic"
+GAIN_STATES = (GAIN_OFF, GAIN_APPLIED, GAIN_OUT_OF_RANGE, GAIN_NO_CONTROL, GAIN_NO_CARD,
+               GAIN_FAILED, GAIN_NO_MIC)
+# Event status only: the confirmation read found the value overwritten (udev
+# `alsactl restore` racing the hot-plug) and it was re-applied once.
+GAIN_OVERRIDDEN = "overridden"
 
 
 def medium(name: str) -> Medium:
