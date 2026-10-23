@@ -38,7 +38,7 @@
 | **full install** | новое устройство, или менялись `etc/`/`opt/`/systemd/демон | `install.sh` (на настроенной плате — `install.sh --refresh`, «Режим обновления» ниже) |
 | **web-update (OTA)** | штатное самообновление с интернетом | вкладка «Обновление» → GitHub (`web_update_*.cgi`, semver); apply через shared runner при наличии. С 1.0.6.52 раннер работает transient-юнитом `sa02m-update-apply-<txn8>` (не в cgroup fcgiwrap), а перезагрузка платы на `verifying` **завершает** обновление (`sa02m-update-verify.service` после nginx), а не откатывает его — гарантии G1–G5 в `docs/contracts/web-update.md` «Жизненный цикл apply»; что из этого действует уже в доставляющем обновлении — таблица ниже. С 1.0.6.54 цикл раскладки файлов в раннере не запускает интерпретатор на каждый файл (старый раннер запускал `python3` на каждый файл; его раскладка на стенде заняла 33 мин в замере 23.09 и 16 мин в замере 24.09): **обновление, доставляющее 1.0.6.54, — последнее медленное** (его ещё выполняет старый раннер); со следующего apply раскладка занимает минуты — подтверждено на стенде 1.135 (24.09, новый раннер): раскладка 2 мин 30 с, всё обновление 4 мин 15 с; замер и условия — `CHANGELOG.md` 1.0.6.54 |
 | **offline package** | обновление без интернета платы после подготовительного полного `--refresh` (runner ≥ 1.0.7.5 и capability gate; [матрица](contracts/web-update.md)) | вкладка «Обновление» → файл `.sa02m`; packer на ПК: `python scripts/pack-offline-update.py` |
-| **offline full update** | плата **< 1.0.5.60** (старый updater, `.sa02m` не примется) или любой разрыв `etc/`/`opt/` с текущим релизом, без интернета | полный архив `origin/main` в `/tmp` платы + `scripts/offline-full-update.sh` — «Офлайн-вариант» в разделе «Полный деплой» (запускает `install.sh --refresh`) |
+| **offline full update** | плата **< 1.0.5.60** (старый updater, `.sa02m` не примется) или любой разрыв `etc/`/`opt/` с текущим релизом, без интернета | полный архив `origin/<ref>` (какой `<ref>` — Предусловия «Полного деплоя») в `/tmp` платы + `scripts/offline-full-update.sh` — «Офлайн-вариант» в разделе «Полный деплой» (запускает `install.sh --refresh`) |
 | ~~self-upgrade bridge~~ **(ОТМЕНЁН — не использовать)** | плата **< 1.0.5.75** без интернета/по SSH | **вместо моста — «offline full update» выше.** Мост переписывал боевые version-ветки force-push'ем и ОТКЛОНЁН: `docs/decisions/no-force-push-version-branches.md` |
 | **vendor-payload** | доставка/обновление опционального стека (Node-RED) вне релиза веб-интерфейса | процедура «Доставка vendor-payload Node-RED» ниже |
 
@@ -310,15 +310,16 @@ scripts/lib.sh: line <N>: .../scripts/../etc/sa02m-stacks-policy.sh: No such fil
 2. **Доставка** `www/`, `scripts/` **и `etc/`** в staging на устройстве. Два
    равнозначных транспорта:
    - `pscp -r www scripts etc root@<dev>:/root/sa02m-deploy-<ver>/`;
-   - архив из git (гарантированно LF, без CRLF-сюрпризов Windows-чекаута):
-     `git archive --format=tar.gz -o deploy.tar.gz HEAD www/network_config scripts etc`,
+   - архив из git (гарантированно LF, без CRLF-сюрпризов Windows-чекаута;
+     `<ref>` и `<src>` — по Предусловиям полного деплоя):
+     `git fetch origin && git archive --format=tar.gz -o deploy-<src>.tar.gz origin/<ref> www/network_config scripts etc`,
      загрузка по SFTP (paramiko / WinSCP), на устройстве
      `tar xzf … -C /root/sa02m-deploy-<ver>` (практика деплоев 1.0.5.10–12).
    **`etc/` без вариантов должен быть в поставке** — иначе скрипт падает на
    `source` ещё до копирования (см. «Пути деплоя» выше). Если нужен именно
    «чисто-www» эффект, везите из `etc/` только `etc/sa02m-stacks-policy.sh` и
    `etc/sa02m-web-port-lib.sh` — остальные `[ -f ]`-гарды тогда молчат:
-   `git archive … HEAD www/network_config scripts etc/sa02m-stacks-policy.sh etc/sa02m-web-port-lib.sh`.
+   `git archive … origin/<ref> www/network_config scripts etc/sa02m-stacks-policy.sh etc/sa02m-web-port-lib.sh`.
 3. **Снять CRLF** со скриптов (репозиторий часто синхронизируется с Windows):
    ```
    ssh root@<dev> "sed -i 's/\r$//' /root/sa02m-deploy-<ver>/scripts/*.sh"
@@ -519,8 +520,19 @@ diff /root/before.txt /root/after.txt
 `docs/contracts/install-profile.md` §7).
 
 ### Предусловия
-- Изменение уже смержено в `main` — деплой ведётся из смерженного коммита, не
-  из рабочего дерева (шаг 2).
+- **Источник архива — `origin/<ref>` после `git fetch`, никогда не рабочее
+  дерево** (единственный дом правила: шаг 2, «Офлайн-вариант» и www-only
+  ссылаются сюда). Какой `<ref>` допустим, решает назначение платы:
+  - **тестовый деплой на стенд** — запушенная ветка, в том числе до слияния:
+    `<ref>` = `<branch>`. Незапушенные коммиты в архив не попадут — сначала
+    `git push`;
+  - **боевые платы флота и мастер золотого образа** («Подготовка золотого
+    образа») — **только смерженный `main`**: `<ref>` = `main`.
+
+  Имя архива (и `<topic>` шагов ниже — каталог доставки и лог) несёт
+  `<src>` = `<ref>-<sha7>`, где `<sha7>` = `git rev-parse --short origin/<ref>`
+  после того же `git fetch` (например `1.0.7.10-f9ec51e`; `/` в имени ветки
+  заменить на `-`) — по нему видно, какой коммит уехал на плату.
 - **Источник опциональных стеков: payload или интернет.** Node-RED ставится из
   локального payload'а (`/opt/vendor-installers/nodered/`, приоритетно) либо из
   сети. Проверить до запуска, если рассчитываете на сеть:
@@ -553,7 +565,8 @@ diff /root/before.txt /root/after.txt
 
 ### Шаги
 Шаги 2-3 выполняются **на рабочей машине**, остальные — **на устройстве**.
-`<topic>` — короткое имя задачи, общее для каталога доставки и файла лога.
+`<topic>` — короткое имя задачи, общее для каталога доставки и файла лога;
+начинается с `<src>` (Предусловия), например `1.0.7.10-f9ec51e-audio`.
 
 1. **(устройство) Бэкап `/etc` целиком.** Установщик правит настройки по всему
    дереву `/etc` и переписывает в том числе файлы дистрибутива —
@@ -572,15 +585,15 @@ diff /root/before.txt /root/after.txt
    только этот архив. **Чего НЕ покрывает:** установленные пакеты и
    опциональные стеки (Node-RED, Docker, CODESYS/MPLC) — это откат
    конфигурации, а не удаление софта.
-2. **(рабочая машина) Архив из смерженного коммита** (не из рабочего дерева) —
-   всё дерево, а не только `www/`: полной установке нужны `etc/`, `opt/`,
-   `scripts/`, `install.sh`:
+2. **(рабочая машина) Архив из `origin/<ref>`** (Предусловия; не из рабочего
+   дерева) — всё дерево, а не только `www/`: полной установке нужны `etc/`,
+   `opt/`, `scripts/`, `install.sh`:
    ```
-   git fetch origin && git archive --format=tar.gz -o deploy.tar.gz origin/main
+   git fetch origin && git archive --format=tar.gz -o deploy-<src>.tar.gz origin/<ref>
    ```
-   `git fetch` обязателен: после мержа на форже локальный `origin/main` ещё
-   указывает на прежний коммит, архив соберётся молча и без ошибок, размер
-   сойдётся — и на устройство уедет предыдущая версия.
+   `git fetch` обязателен: после мержа на форже или пуша в ветку локальный
+   `origin/<ref>` ещё указывает на прежний коммит, архив соберётся молча и без
+   ошибок, размер сойдётся — и на устройство уедет предыдущая версия.
    В прогоне 2026-08-05 архив весил ~2.3 MB (растёт вместе с репозиторием —
    ориентир, не константа; сверяется размер загрузки, шаг 3).
 3. **(рабочая машина) Загрузка по SFTP** (paramiko). Хост и учётные данные из
@@ -591,14 +604,14 @@ diff /root/before.txt /root/after.txt
    import sa02m_remote as R
    cli = R.connect(R.DEFAULT_HOST, R.DEFAULT_USER, R.DEFAULT_PASS)
    sftp = cli.open_sftp()
-   sftp.put("deploy.tar.gz", "/root/deploy.tar.gz")
-   print(sftp.stat("/root/deploy.tar.gz").st_size)
+   sftp.put("deploy-<src>.tar.gz", "/root/deploy-<src>.tar.gz")
+   print(sftp.stat("/root/deploy-<src>.tar.gz").st_size)
    ```
    **Сверить размер на устройстве с локальным** — расхождение означает обрыв
    загрузки; повторить, не распаковывая.
 4. **(устройство) Распаковка:**
    ```
-   mkdir -p /root/sa02m-deploy-<topic> && tar xzf /root/deploy.tar.gz -C /root/sa02m-deploy-<topic>
+   mkdir -p /root/sa02m-deploy-<topic> && tar xzf /root/deploy-<src>.tar.gz -C /root/sa02m-deploy-<topic>
    ```
    Снимать CRLF на этом пути НЕ нужно: `.gitattributes` фиксирует
    `*.sh text eol=lf`, поэтому архив из git приходит с LF — тот же довод, что
@@ -710,15 +723,16 @@ updater не примет `.sa02m` — пороги `MIN_VERSION`/`MIN_UPDATER` 
 (этот раздел), упакованный в один скрипт: после него плата ходит за обновлениями
 в `main` и дальше обновляется через UI.
 
-**Архив на рабочей машине** (имя несёт версию; `git fetch` обязателен — шаг 2):
+**Архив на рабочей машине** (имя несёт версию и `<src>`; какой `<ref>`
+допустим — Предусловия этого раздела; `git fetch` обязателен — шаг 2):
 ```
-git fetch origin && git archive --format=tar.gz -o SA-02m-full-<ver>.tar.gz origin/main
+git fetch origin && git archive --format=tar.gz -o SA-02m-full-<ver>-<src>.tar.gz origin/<ref>
 ```
 Архив кладётся в `/tmp` платы любым транспортом (SFTP, шаг 3; WinSCP).
 
 **На плате (root), одной строкой:**
 ```
-mkdir -p /tmp/sa02m-upd && tar xzf /tmp/SA-02m-full-<ver>.tar.gz -C /tmp/sa02m-upd && bash /tmp/sa02m-upd/scripts/offline-full-update.sh
+mkdir -p /tmp/sa02m-upd && tar xzf /tmp/SA-02m-full-<ver>-<src>.tar.gz -C /tmp/sa02m-upd && bash /tmp/sa02m-upd/scripts/offline-full-update.sh
 ```
 Скрипт выполняет шаги 1, 5–7 этого раздела (шаг 4 — распаковка — это сама строка выше): проверяет, что дерево полное
 (www-only архив отклоняется), показывает установленную и целевую версию
@@ -1102,6 +1116,9 @@ mosquitto_pub -h <плата> -p 1884 -u mqttuser -P '<пароль>' \
 - **НЕ удалять установочные файлы служб:** systemd-юниты, пакеты в `/opt/*`,
   `start_mplc4.sh`, init.d-скрипты, `.so`-библиотеки. Санитизация убирает
   *данные и идентичность*, а не *установленный софт* — иначе клон не запустится.
+- **Софт мастера — только из смерженного `main`.** Ветка до слияния годится
+  для стенда, но не для образа: правило источника — «Полный деплой
+  (`install.sh`)» → «Предусловия».
 - **СНАЧАЛА бэкап ключей/идентичности ЛОКАЛЬНО (off-device).** До любого
   удаления скачать файлы шага 1 на машину оператора: с затёртого мастера
   восстановить их будет уже неоткуда.
