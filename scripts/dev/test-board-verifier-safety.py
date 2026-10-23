@@ -29,6 +29,31 @@ def fixture_module():
     return namespace
 
 
+def thread_group_running(pid):
+    """True while any thread of `pid` has not finished exiting.
+
+    The leader's own /proc/<pid>/stat is not enough: a multithreaded leader
+    reads 'Z' as soon as IT exits, while a sibling thread (here the listener's
+    serve_forever or the parent watcher) is still running down — and the
+    shared fd table, the listening socket with it, is released only by the
+    last thread out. Probing the port in that window found it still accepting
+    (CI at f9ec51e5). A task listed under /proc/<pid>/task in 'Z' or 'X' has
+    passed its fd release; a vanished task or directory has been reaped.
+    """
+    try:
+        tids = os.listdir('/proc/%d/task' % pid)
+    except (FileNotFoundError, ProcessLookupError):
+        return False
+    for tid in tids:
+        try:
+            state = Path('/proc/%d/task/%s/stat' % (pid, tid)).read_text().rsplit(')', 1)[1].split()[0]
+        except (FileNotFoundError, ProcessLookupError):
+            continue  # reaped between the listing and the read
+        if state not in ('Z', 'X'):
+            return True
+    return False
+
+
 class FixtureSafety(unittest.TestCase):
     def test_operator_rows_under_the_fixture_ids_survive_a_full_unpatched_run(self):
         # The defect this pins: the old CLEAN block deleted the operator's own
@@ -138,10 +163,7 @@ ns['run_fixture_checks'](phase)
             deadline = time.monotonic() + 5
             alive = True
             while time.monotonic() < deadline:
-                try:
-                    alive = Path('/proc/%d/stat' % ready['pid']).read_text().rsplit(')', 1)[1].split()[0] != 'Z'
-                except (FileNotFoundError, ProcessLookupError):
-                    alive = False  # reaped between the existence check and the read
+                alive = thread_group_running(ready['pid'])
                 if not alive:
                     break
                 time.sleep(0.05)
