@@ -22,6 +22,15 @@ sys.path.insert(0, str(ROOT / "opt/sa02m-update"))
 from lib import state_security as security
 from lib import transaction as tx
 
+# The update state must belong to security.OWNER_UID and the migration must run
+# as it (root on the board). This suite creates the state as whoever runs it, so
+# it rebinds the owner to itself: as root that is the product value; as an
+# unprivileged CI user the same ownership checks and repairs run instead of
+# skipping the migration cases (a skip is PARTIAL, FAIL under QUALITY_STRICT).
+# StateOwnership pins that the product value is still root and that a foreign
+# owner is still refused.
+security.OWNER_UID, security.OWNER_GID = os.geteuid(), os.getegid()
+
 SOURCE = Path(os.environ.get("SA02M_TEST_RUNNER", str(ROOT / "etc/sa02m-update-runner.sh"))).read_text()
 
 
@@ -231,7 +240,6 @@ log() { echo "$*" >&2; }
                 self.assertNotIn("command not found", r.stderr)
 
 
-    @unittest.skipUnless(os.geteuid() == 0, "root ownership migration requires root")
     def test_secure_migration_quarantines_untrusted_terminal_state(self):
         state = self.root / "state"
         state.mkdir(mode=0o775)
@@ -257,7 +265,6 @@ log() { echo "$*" >&2; }
         self.assertEqual(lock_mode & 0o022, 0, "update.lock mode %o: writable beyond root" % lock_mode)
         security.require_secure_state(state)
 
-    @unittest.skipUnless(os.geteuid() == 0, "root ownership migration requires root")
     def test_completed_recover_oneshot_allowed_but_running_or_failed_rejected(self):
         def systemctl(argv, **kw):
             value = "inactive"
@@ -277,7 +284,6 @@ log() { echo "$*" >&2; }
                         security.migrate(state)
 
 
-    @unittest.skipUnless(os.geteuid() == 0, "root ownership migration requires root")
     def test_migration_refuses_pending_symlink_hardlink_and_held_lock(self):
         state = self.root / "state"
         state.mkdir()
@@ -307,6 +313,61 @@ log() { echo "$*" >&2; }
             with self.assertRaises(RuntimeError):
                 security.migrate(state)
             self.assertEqual(journal.read_text(), '{"stage":"done"}')
+
+
+class StateOwnership(unittest.TestCase):
+    """The owner check itself: the rebinding above changes WHICH uid is the
+    owner, never whether a foreign owner is refused."""
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.tmp.cleanup)
+        self.state = Path(self.tmp.name) / "state"
+        with patch.object(security.subprocess, "run", return_value=subprocess.CompletedProcess([], 0, stdout="inactive\n")):
+            security.migrate(self.state)
+        self.addCleanup(setattr, security, "OWNER_UID", security.OWNER_UID)
+
+    def test_the_product_owner_is_root(self):
+        # The rebinding is this suite's; a fresh interpreter sees root.
+        out = subprocess.run(
+            [sys.executable, "-c", "from lib import state_security as s; print(s.OWNER_UID, s.OWNER_GID)"],
+            cwd=str(ROOT / "opt/sa02m-update"), capture_output=True, text=True, timeout=30)
+        self.assertEqual(out.stdout.split(), ["0", "0"], out.stderr)
+
+    def test_the_migration_creates_the_state_under_the_owner(self):
+        for path in (self.state, self.state / security.STAMP, self.state / "incoming"):
+            self.assertEqual(path.lstat().st_uid, security.OWNER_UID, path)
+
+    def test_the_migration_refuses_any_uid_but_the_owner(self):
+        security.OWNER_UID = os.geteuid() + 1
+        with self.assertRaisesRegex(PermissionError, "root required"):
+            security.migrate(self.state)
+
+    def test_every_owner_check_refuses_a_foreign_uid(self):
+        # A file of another uid cannot be created without root, so lstat
+        # reports one for exactly the path under test; every other path keeps
+        # its real owner. The control run proves the state is otherwise secure.
+        (self.state / "transaction.json").write_text('{"stage":"done"}')
+        os.chmod(self.state / "transaction.json", 0o644)
+        security.require_secure_state(self.state)
+        real = Path.lstat
+        cases = ((self.state, "unsafe update state"),
+                 (self.state / security.STAMP, "unsafe update state"),
+                 (self.state / "incoming", "unsafe incoming directory"),
+                 (self.state / "transaction.json", "unsafe update journal"))
+        for target, message in cases:
+            def lstat(path, *args, **kwargs):
+                st = real(path, *args, **kwargs)
+                if path != target:
+                    return st
+                fields = list(st[:10])
+                fields[4] = security.OWNER_UID + 1  # st_uid
+                return os.stat_result(fields)
+            with self.subTest(path=target.name), patch.object(Path, "lstat", lstat):
+                with self.assertRaises(security.PackageError) as caught:
+                    security.require_secure_state(self.state)
+                self.assertEqual(caught.exception.code, "E_BOOTSTRAP_REQUIRED")
+                self.assertIn(message, caught.exception.message)
 
 
 if __name__ == "__main__":
