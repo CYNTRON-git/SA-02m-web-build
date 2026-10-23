@@ -9,8 +9,11 @@ limiter. stdlib only (the per-sample loop costs ~3 % of one board core at
 
 Input is the recorder's shared stream (16 kHz) or an 8 kHz one; 16 kHz is
 decimated ×2 by a C-level slice before the per-sample loop, so the analysis
-always runs at 8 kHz cost. No anti-alias filter: 4..8 kHz folds into the top
-band, which is where it belongs on a three-colour strip anyway.
+always runs at 8 kHz cost. No anti-alias filter: after the ×2 slice a tone
+at f in 4..8 kHz folds to 8000 − f Hz. So 4..6 kHz lands in the top band
+(2..4 kHz), but 6..8 kHz lands in mid/bass (2 kHz and below) — measured:
+7 kHz reads mid 1.0 / high 0.79, 7.8 kHz reads red. Accepted as deployed in
+1.0.7.10: the analysis is not changed for it.
 
 Chain per block: decimate → band split (two one-pole sections) → block RMS per band →
 absolute noise gate → per-band automatic gain → fast-attack/slow-release
@@ -61,9 +64,10 @@ LEVEL_MAX = 100
 RATE_HZ_MIN = float(C.LIGHT_MUSIC_RATE_MIN)
 RATE_HZ_MAX = float(C.LIGHT_MUSIC_RATE_MAX)
 RATE_HZ_DEFAULT = float(C.LIGHT_MUSIC_RATE_DEFAULT)
-# Register 455 is persisted: every write re-arms the strip's 5 s save
-# countdown, so a stream that pauses longer than that costs an EEPROM save.
-# Rewriting at least every KEEPALIVE_S keeps the countdown from expiring.
+# Register 455 is persisted: the strip saves its settings to flash a few
+# seconds after the last write (the figure lives in led-mb2ws.md
+# §Поток светомузыки), so a stream that pauses longer than that costs a flash
+# save. Rewriting at least every KEEPALIVE_S keeps the countdown from expiring.
 KEEPALIVE_S = 2.0
 # Float slack for comparisons of caller-supplied times.
 _TIME_EPS = 1e-6

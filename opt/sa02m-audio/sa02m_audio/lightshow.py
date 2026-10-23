@@ -43,8 +43,9 @@ def restore_writes(style: str, snapshot: Dict[str, str]) -> List[Write]:
     `power/on 1` rewrites RenderSource, FxId and FxParam (brightness) and its
     `power/on 0` rewrites RenderSource, so everything those touch comes after
     it. FxAux 455 comes back as the exact word through `fx_aux/on`, right
-    after `effect`: its layout belongs to the effect, so the bridge judges the
-    word against the effect running when it lands (led-mb2ws.md §4).
+    after `effect`, since its layout belongs to the effect. The bridge checks
+    the 16-bit width only (`rgbw_fx_aux_word_ok`), not the word against the
+    running effect: it writes any 0..65535 word as-is (led-mb2ws.md §4).
     `scene_source` goes last, after every write that could move it."""
     out: List[Write] = []
     for control in ("power", "effect"):
