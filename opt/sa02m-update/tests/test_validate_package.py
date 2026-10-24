@@ -202,6 +202,22 @@ class TestManifestAndPackage(unittest.TestCase):
         spec.loader.exec_module(pack)
         return pack
 
+    def test_controller_coordinator_and_policy_delivery_destinations(self) -> None:
+        pack = self._load_packer()
+        mapping = pack.load_deploy_map()
+        expected = {
+            "etc/sa02m-update-control.sh": "/usr/local/libexec/sa02m-update-control",
+            "etc/sa02m-stacks-policy.sh": "/usr/local/lib/sa02m-stacks-policy.sh",
+            "etc/systemd/sa02m-port-coordinator.service": "/etc/systemd/system/sa02m-port-coordinator.service",
+            "etc/systemd/sa02m-update-download.service": "/etc/systemd/system/sa02m-update-download.service",
+            "opt/sa02m-port-coordinator/sa02m_ports/client.py": "/opt/sa02m-port-coordinator/sa02m_ports/client.py",
+        }
+        for source, destination in expected.items():
+            self.assertTrue((_REPO / source).is_file(), source)
+            self.assertEqual(pack.map_deploy_entry(source, mapping)["dst"], destination)
+        self.assertEqual(pack.MIN_UPDATER, "1.0.7.5")
+        self.assertIsNone(pack.map_deploy_entry("etc/sa02m/port-coordinator.json", mapping))
+
     def test_packer_services_tier_rule(self) -> None:
         # CONSCIOUS REWRITE (1.0.6.39, audit 2026-09-08 D6). The case this
         # replaces (test_packer_frozen_v1_for_min_updater_1_0_5_66) pinned the

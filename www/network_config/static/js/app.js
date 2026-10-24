@@ -6,7 +6,7 @@
 'use strict';
 
 /** Версия веб-интерфейса — см. www/network_config/VERSION или scripts/sync-app-version.py */
-const APP_VERSION = '1.0.7.3';
+const APP_VERSION = '1.0.7.10';
 
 function uiT(s) {
   return window.sa02mI18n ? window.sa02mI18n.t(String(s)) : String(s);
@@ -255,11 +255,47 @@ function sa02mXhrWithCsrfRetry(send, done) {
   });
 }
 
+/* The session re-check the JSON guard runs BEFORE it logs anyone out: resolves
+   true only when auth_check.cgi (never status.cgi — it serves a cached 200
+   that outlives the session) answers 401. Installed together with the fetch
+   guard, which owns the native fetch; until then the guard cannot confirm a
+   dead session and therefore never logs out. */
+let _sa02mSessionGone = null;
+
+// Inspect the body once, when a JSON consumer actually reads it. Keeping the
+// native promise pending preserves the caller's AbortController deadline.
+function sa02mGuardJsonResponse(res) {
+  if (!res || typeof res.json !== 'function' || res._sa02mJsonGuard) return res;
+  const read = res.json.bind(res);
+  res.json = function () {
+    return read().then(function (data) {
+      // HTTP 200 + `error:"unauthorized"` is the CGI idiom for a dead session.
+      // A real 401 (devices-api, flasher) is re-verified by the status path of
+      // the fetch guard, so only an ok response is acted on here — and only
+      // once auth_check confirms, so a transient backend error (a daemon
+      // answering that body on a hiccup) cannot log the Operator out.
+      if (data && data.error === 'unauthorized' && res.ok && _sa02mSessionGone && !_sa02mRedirecting) {
+        return _sa02mSessionGone().then(function (gone) {
+          if (gone) sa02mCsrfLogout();
+          return data;
+        }, function () { return data; });
+      }
+      return data;
+    });
+  };
+  res._sa02mJsonGuard = true;
+  return res;
+}
+
 function sa02mInstallFetchGuard() {
   const _fetch = window.fetch;
   const ctx = {
     fetch: function () { return _fetch.apply(window, arguments); },
     logout: sa02mCsrfLogout
+  };
+  _sa02mSessionGone = function () {
+    return _fetch('cgi-bin/auth_check.cgi', { credentials: 'same-origin', cache: 'no-store' })
+      .then(function (chk) { return !!chk && chk.status === 401; });
   };
   window.fetch = function () {
     const self = this, args = arguments;
@@ -271,7 +307,7 @@ function sa02mInstallFetchGuard() {
     } catch (e) { /* keep GET */ }
     method = String(method).toUpperCase();
 
-    return _fetch.apply(self, args).then(function (res) {
+    return _fetch.apply(self, args).then(sa02mGuardJsonResponse).then(function (res) {
       // E_CSRF is returned as HTTP 200 with error_code:"E_CSRF" in the body
       // (project idiom — the CGI layer never uses a 401 status), so the
       // status===401 path below cannot catch it. Peek a clone so the caller's
@@ -281,7 +317,7 @@ function sa02mInstallFetchGuard() {
       if (res && res.ok && !_sa02mRedirecting && method !== 'GET' && method !== 'HEAD') {
         return res.clone().json().then(function (j) {
           if (j && j.error_code === 'E_CSRF' && !_sa02mRedirecting) {
-            return sa02mHandleCsrfRejection(res, j, args, ctx);
+            return sa02mHandleCsrfRejection(res, j, args, ctx).then(sa02mGuardJsonResponse);
           }
           return res;
         }, function () { return res; });   // non-JSON body (e.g. 504 HTML) — as is
@@ -289,13 +325,13 @@ function sa02mInstallFetchGuard() {
       if (!res || res.status !== 401 || _sa02mRedirecting) return res;
       // Re-check via the canonical auth endpoint — NOT status.cgi (it serves a
       // cached 200 that outlives the session) — and never from cache.
-      return _fetch('cgi-bin/auth_check.cgi', { credentials: 'same-origin', cache: 'no-store' })
+      return _fetch('cgi-bin/auth_check.cgi', { credentials: 'same-origin', cache: 'no-store', signal: args[1] && args[1].signal })
         .then(function (chk) {
           if (chk && chk.status === 401) {
             ctx.logout();
             return res;
           }
-          return method === 'GET' ? _fetch.apply(self, args) : res;
+          return method === 'GET' ? _fetch.apply(self, args).then(sa02mGuardJsonResponse) : res;
         })
         .catch(function () { return res; });
     });
@@ -354,6 +390,7 @@ function systemStopIntegrations() {
   if (window.homekitTabDestroy) window.homekitTabDestroy();
   if (window.homeconnectTabDestroy) window.homeconnectTabDestroy();
   if (window.agentApiTabDestroy) window.agentApiTabDestroy();
+  if (window.audioTabDestroy) window.audioTabDestroy();
   if (window.aliceTabDestroy) window.aliceTabDestroy();
 }
 
@@ -377,6 +414,7 @@ function systemLoadSub(key) {
     if (typeof loadKernelControl === 'function') loadKernelControl(false);
     if (typeof fetchSystemWidget === 'function') fetchSystemWidget();
     if (window.agentApiTabInit) window.agentApiTabInit();
+    if (window.audioTabInit) window.audioTabInit();
     setTimeout(function () {
       if (gen !== _systemLoadGen) return;
       if (typeof loadLog === 'function') loadLog();
@@ -674,8 +712,17 @@ function getPriorityWarmupPart(part) {
   const cache = readPriorityWarmupCache();
   const hit = cache[part];
   if (!hit || !hit.data || !hit.ts) return null;
-  if (Date.now() - hit.ts > PRIORITY_WARMUP_TTL_MS) return null;
-  return hit.data;
+  if (Date.now() < hit.ts || Date.now() - hit.ts > PRIORITY_WARMUP_TTL_MS) return null;
+  const data = Object.assign({}, hit.data);
+  if (data._status_meta) {
+    const age = data._status_meta.age_s;
+    // Unknown source age cannot be inferred from the time spent in storage.
+    const knownAge = typeof age === 'number' && Number.isFinite(age) && age >= 0;
+    data._status_meta = Object.assign({}, data._status_meta, {
+      age_s: knownAge ? age + Math.max(0, Date.now() - hit.ts) / 1000 : null
+    });
+  }
+  return data;
 }
 function hydratePriorityWarmup() {
   const applyMap = {
@@ -686,7 +733,7 @@ function hydratePriorityWarmup() {
   };
   Object.entries(applyMap).forEach(([part, applyFn]) => {
     const data = getPriorityWarmupPart(part);
-    if (data) applyFn(data);
+    if (data) { applyFn(data); noteStatusSuccess('priority', data); }
   });
 }
 
@@ -703,7 +750,7 @@ function normSvcState(v) {
 }
 function svcStateIsActive(v) {
   const s = normSvcState(v);
-  return s === 'active' || s === 'running' || s === 'activating';
+  return s === 'active' || s === 'running';
 }
 
 function svcBadge(id, state) {
@@ -715,15 +762,14 @@ function svcBadge(id, state) {
     el.className = 'badge badge-unk';
     return;
   }
-  if (s === 'disabled') {
-    el.textContent = window.sa02mI18n ? window.sa02mI18n.t('Отключен') : 'Отключен';
-    el.className = 'badge badge-err';
-    return;
-  }
-  const ok = svcStateIsActive(state);
-  const ru = ok ? 'Активен' : 'Неактивен';
+  const labels = { active: 'Активен', running: 'Активен', activating: 'Запускается', deactivating: 'Останавливается', failed: 'Ошибка', inactive: 'Неактивен', disabled: 'Отключен', masked: 'Заблокирован', paused: 'Приостановлено' };
+  const ru = labels[s] || 'Состояние неизвестно';
   el.textContent = window.sa02mI18n ? window.sa02mI18n.t(ru) : ru;
-  el.className = 'badge ' + (ok ? 'badge-ok' : 'badge-err');
+  // Colours unchanged from before the state split: a stopped / disabled /
+  // masked / failed service stays RED (the dashboard's attention signal);
+  // only a transition and the coordinator's pause are neutral.
+  const transient = s === 'activating' || s === 'deactivating' || s === 'paused';
+  el.className = 'badge ' + (svcStateIsActive(s) ? 'badge-ok' : transient ? 'badge-unk' : 'badge-err');
 }
 
 /** Короткое имя unit для подписи (mplc4 вместо mplc4.service). */
@@ -809,6 +855,17 @@ function paintSvcRows(host, rows) {
   });
 }
 
+function coordinatedServiceState(service, fallback) {
+  const snapshot = typeof _lastServicesStatus !== 'undefined' && _lastServicesStatus && _lastServicesStatus.port_coordinator;
+  if (!snapshot || !snapshot.services) return fallback;
+  const units = { 'mqtt-bridge': 'sa02m-modbus-mqtt.service', 'mqtt-telemetry': 'sa02m-telemetry.service', 'stand-api': 'sa02m-test-stand.service' };
+  const unit = service.unit || units[service.id] || String(service.id || '') + '.service';
+  const state = snapshot.services[unit];
+  if (!state) return fallback;
+  if (!snapshot.available) return 'unknown';
+  return state.phase === 'restore_failed' ? 'failed' : state.phase === 'stopping' ? 'deactivating' : 'paused';
+}
+
 function renderServicesDynamic(d) {
   const host = document.getElementById('svc-dynamic-list');
   if (!host) return;
@@ -819,7 +876,8 @@ function renderServicesDynamic(d) {
     const seen = new Set();
     d.dash_services.forEach(function (s) {
       if (!s || rows.length >= SVC_WIDGET_MAX_ROWS) return;
-      if (!svcStateIsActive(s.status)) return;
+      const state = coordinatedServiceState(s, s.status);
+      if (!svcStateIsActive(state) && ['paused', 'failed', 'deactivating', 'unknown'].indexOf(state) < 0) return;
       const lab = String(s.label || '').trim();
       if (!lab) return;
       const key = lab.toLowerCase();
@@ -828,7 +886,7 @@ function renderServicesDynamic(d) {
       rows.push({
         label: lab,
         uptimeS: s.uptime_s,
-        state: s.status,
+        state: state,
         mono: true,
         title: ''
       });

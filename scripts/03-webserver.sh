@@ -4,12 +4,15 @@ set -o pipefail  # catch masked failures in pipes (Y7); set -u deferred pending 
 # 03-webserver.sh  •  nginx + fcgiwrap + sudo + web-app deploy
 # ═══════════════════════════════════════════════════════════════════════════
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+if [ "${SA02M_INSTALL_GUARDED:-0}" != 1 ]; then
+    exec python3 "$SCRIPT_DIR/install-maintenance.py" --require-coordinator "$SCRIPT_DIR/03-webserver.sh" "$@"
+fi
 source "$SCRIPT_DIR/lib.sh"
 check_root
+bash "$SCRIPT_DIR/../etc/sa02m-update-state-migrate.sh" || exit 1
 
 log INFO "=== [03] Настройка веб-сервера ==="
 
-: "${PORT:=9999}"
 : "${WEB_ROOT:=/var/www/network_config}"
 : "${AUTH_FILE:=/etc/nginx/.htpasswd}"
 : "${ADMIN_PASS:=cyntron}"
@@ -26,14 +29,19 @@ echo "admin:$HASHED" > "$AUTH_FILE"
 chmod 600 "$AUTH_FILE"
 
 # ── nginx site config ─────────────────────────────────────────────────────
+# The port is the SAVED one (/etc/sa02m_web_port.conf — install.sh --port), never
+# an env default: a per-module `PORT:=9999` put a --port board back on 9999 at
+# the next re-render. One renderer: scripts/lib.sh sa02m_render_nginx_site.
+sa02m_web_port_migrate
+PORT=$(sa02m_web_port_effective)
 log INFO "Настройка nginx (порт $PORT)"
 if [ -f "$ETC_DIR/nginx/network_config.conf" ]; then
-    sed "s|__PORT__|$PORT|g; s|__WEB_ROOT__|$WEB_ROOT|g" \
-        "$ETC_DIR/nginx/network_config.conf" \
-        > /etc/nginx/sites-available/network_config
+    sa02m_render_nginx_site "$ETC_DIR/nginx/network_config.conf" "$WEB_ROOT" \
+        || log ERR "nginx: site-конфиг не обновлён — см. $LOG_FILE"
 else
-    # Fallback: generate inline
-    cat > /etc/nginx/sites-available/network_config <<NGINX
+    # Fallback: generate inline (to a tmp, landed atomically like the template)
+    _site_tmp=$(mktemp)
+    cat > "$_site_tmp" <<NGINX
 server {
     listen ${PORT} default_server;
     server_name _;
@@ -75,6 +83,9 @@ server {
     error_log  /var/log/nginx/sa02m_error.log warn;
 }
 NGINX
+    sa02m_atomic_install -m 644 "$_site_tmp" "$SA02M_NGINX_SITE" \
+        || log ERR "nginx: site-конфиг не обновлён — см. $LOG_FILE"
+    rm -f -- "$_site_tmp"
 fi
 
 # Сокет fcgiwrap всегда /run/fcgiwrap/fcgiwrap.socket — создаётся нашим
@@ -336,7 +347,7 @@ d /var/lib/sa02m-web-build 0755 root root -
 d /run/sa02m-web-sessions 2750 www-data www-data -
 d /run/sa02m-hw-override 0775 www-data www-data -
 d /var/lib/sa02m-update 0755 root root -
-d /var/lib/sa02m-update/incoming 0770 root www-data -
+d /var/lib/sa02m-update/incoming 0700 root root -
 d /var/lib/sa02m-update/staging 0750 root root -
 d /var/lib/sa02m-update/rollback 0750 root root -
 d /var/lib/sa02m-update/state 0750 root root -
@@ -423,6 +434,14 @@ if [ -f "$SCRIPT_DIR/../etc/sa02m-install-profile-lib.sh" ]; then
 else
     log WARN "Нет etc/sa02m-install-profile-lib.sh — OTA не сможет учесть профиль установки платы"
 fi
+
+# ── Порт веб-панели (общая lib установщика и раннера обновлений) ───────────
+# The update runner reads the saved panel port through it for its health probe
+# and the offline pack's site file; without it the runner assumes 9999.
+if [ -f "$SCRIPT_DIR/../etc/sa02m-web-port-lib.sh" ]; then
+    sa02m_atomic_install -m 644 "$SCRIPT_DIR/../etc/sa02m-web-port-lib.sh" /usr/local/lib/sa02m-web-port-lib.sh
+    sed -i 's/\r$//' /usr/local/lib/sa02m-web-port-lib.sh
+fi
 if [ -f "$SCRIPT_DIR/../etc/sa02m-repair-web-env.sh" ]; then
     sa02m_atomic_install -m 755 "$SCRIPT_DIR/../etc/sa02m-repair-web-env.sh" /usr/local/sbin/sa02m-repair-web-env
     sed -i 's/\r$//' /usr/local/sbin/sa02m-repair-web-env
@@ -466,6 +485,9 @@ if [ -f "$SCRIPT_DIR/../etc/sa02m-update-runner.sh" ]; then
     sed -i 's/\r$//' /usr/local/libexec/sa02m-update-runner
     sa02m_stamp_runner_version "$SCRIPT_DIR/../www/network_config/VERSION" || true
 fi
+if [ -f "$SCRIPT_DIR/../etc/sa02m-update-control.sh" ]; then
+    sa02m_atomic_install -m 755 "$SCRIPT_DIR/../etc/sa02m-update-control.sh" /usr/local/libexec/sa02m-update-control
+fi
 if [ -f "$SCRIPT_DIR/../etc/sa02m-update-inspect.sh" ]; then
     install -d -m 755 /usr/local/libexec
     sa02m_atomic_install -m 755 "$SCRIPT_DIR/../etc/sa02m-update-inspect.sh" /usr/local/libexec/sa02m-update-inspect
@@ -487,7 +509,7 @@ mkdir -p /etc/sa02m-update/trusted-keys
 if [ -d "$SCRIPT_DIR/../etc/sa02m-update/trusted-keys" ]; then
     install -m 644 "$SCRIPT_DIR/../etc/sa02m-update/trusted-keys/"*.pem /etc/sa02m-update/trusted-keys/ 2>/dev/null || true
 fi
-for _upd_unit in sa02m-update.service sa02m-update-recover.service sa02m-update-verify.service sa02m-factory-reset.service; do
+for _upd_unit in sa02m-update.service sa02m-update-download.service sa02m-update-recover.service sa02m-update-verify.service sa02m-factory-reset.service; do
     if [ -f "$SYSTEMD_DIR/$_upd_unit" ]; then
         sa02m_atomic_install -m 644 "$SYSTEMD_DIR/$_upd_unit" "/etc/systemd/system/$_upd_unit"
         sed -i 's/\r$//' "/etc/systemd/system/$_upd_unit"
@@ -601,7 +623,7 @@ if [ -f "$ETC_DIR/tmpfiles.d/sa02m-update.conf" ]; then
     fi
     log OK "tmpfiles sa02m-update.conf"
 fi
-for _upd_unit in sa02m-update.service sa02m-update-recover.service sa02m-update-verify.service sa02m-factory-reset.service; do
+for _upd_unit in sa02m-update.service sa02m-update-download.service sa02m-update-recover.service sa02m-update-verify.service sa02m-factory-reset.service; do
     if [ -f "$SYSTEMD_DIR/$_upd_unit" ]; then
         sa02m_atomic_install -m 644 "$SYSTEMD_DIR/$_upd_unit" "/etc/systemd/system/$_upd_unit"
         sed -i 's/\r$//' "/etc/systemd/system/$_upd_unit"

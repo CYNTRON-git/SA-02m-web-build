@@ -745,6 +745,20 @@ def rgbw_fx_aux_compose(fx_id: int, low: int = 0, flag: bool = False, high: int 
     return ((high_byte & 0xFF) << 8) | (low_byte & 0xFF)
 
 
+def rgbw_fx_aux_word_ok(word) -> bool:
+    """True when ``word`` may be written to reg 455 as-is (a raw restore).
+
+    The rule is the register width and nothing per effect: firmware stores any
+    16-bit word in FxAux whatever FX runs and answers no Modbus exception for
+    it (``RGBW_WS2812@32ed509 Core/Src/svc_mb_mb2ws.c:831`` — the 455 branch of
+    the single-register write assigns and returns true; the soft clock beside
+    it is what validates). Each renderer interprets the bytes itself, clamping
+    on read (:func:`rgbw_fx_aux_decompose` mirrors that). A wider value would
+    be silently truncated by the 16-bit frame, so it is refused here.
+    """
+    return type(word) is int and 0 <= word <= 0xFFFF
+
+
 def rgbw_fx_aux_decompose(fx_id: int, value: int) -> Tuple[int, bool, int]:
     """Reg-455 value → ``(low_field, flag, high_field)`` for ``fx_id``.
 

@@ -9,7 +9,7 @@ name: web-quality
 # here, so the headless review rows (ui-layout, cloud-card-smoke,
 # sh-modal-layout-smoke, homekit-card-smoke, homeconnect-card-smoke) run for real
 # instead of skipping or
-# exiting 2 (audit 2026-09-16, H3). Since 1.0.6.57 a venv built from
+# exiting 2 (audit 2026-09-16, H3). Since 1.0.7.0 a venv built from
 # opt/sa02m-homekit/requirements.lock makes py-unit-homekit's HAP-python/segno
 # tests run instead of skipping. The Home Connect client needs nothing extra:
 # py-unit-homeconnect is stdlib-only (paho is faked), and its card smoke uses
@@ -28,13 +28,24 @@ permissions:
 jobs:
   quality:
     runs-on: ubuntu-latest
+    # Every row's tool is installed below on purpose, so here a SKIP (or a row
+    # that skipped part of its checks) means a broken install step: the runner
+    # turns both into a FAIL (strict mode — .ai-dev/quality/run.mjs header).
+    env:
+      QUALITY_STRICT: '1'
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
         with:
           node-version: '20'
+      # paho-mqtt / python-socketio: the floors of opt/sa02m-alice/requirements.txt,
+      # so py-unit-alice runs its real-library tests (test_mqtt_link_broker,
+      # the socketio wording pin in test_sio_connection) instead of skipping.
+      # openpyxl: the floor of opt/sa02m-devices/requirements.txt, so
+      # py-unit-devices runs test_export_xlsx_format_unchanged — a pytest skip
+      # there is not reported by pytest-suite.sh, it would read as a pass.
       - name: Install Python test deps (make the py-unit-* pytest rows real, not skipped)
-        run: python3 -m pip install --quiet pytest pyserial pyyaml cryptography jsonschema
+        run: python3 -m pip install --quiet pytest pyserial pyyaml cryptography jsonschema "paho-mqtt>=1.6.1" "python-socketio[client]>=5.11.0" "openpyxl>=3.1.0"
       # The board's own install contract (docs/decisions/homekit-home-connect.md
       # G1): system python3 + apt python3-cffi-backend, venv with
       # --system-site-packages, `pip install --no-deps` from the hash-pinned

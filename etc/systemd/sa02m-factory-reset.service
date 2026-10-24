@@ -6,8 +6,7 @@ Conflicts=sa02m-update.service sa02m-update-recover.service
 
 [Service]
 Type=oneshot
-# CGI writes transaction.json (operation=factory_reset, confirm+backup_ok) then
-# starts this unit with no args (plan §4.6).
+# The fixed root controller reserves operation=factory_reset before async start.
 ExecStart=/usr/local/libexec/sa02m-factory-reset-runner run
 TimeoutStartSec=0
 Nice=5

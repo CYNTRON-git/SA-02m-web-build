@@ -43,7 +43,11 @@ calls sys.exit() at import when paho is absent, so the stub is mandatory.
 """
 from __future__ import annotations
 
+import functools
 import os
+import re
+import shutil
+import subprocess
 import sys
 import types
 import tempfile
@@ -75,6 +79,58 @@ import sa02m_telemetry as tel  # noqa: E402
 LOCK_ENV = "SA02M_TELEMETRY_LOCK_FILE"
 # os.geteuid does not exist on Windows; decorators evaluate at import.
 IS_ROOT = hasattr(os, "geteuid") and os.geteuid() == 0
+# Set in the child a root case re-runs itself in, so the child never recurses.
+AS_ROOT_ENV = "SA02M_TELEMETRY_TEST_AS_ROOT"
+
+
+@functools.lru_cache(maxsize=None)
+def _passwordless_sudo() -> str | None:
+    """`sudo` when it answers `sudo -n true` without a password (the CI runner),
+    else None. Never in the re-run child and never as root."""
+    if IS_ROOT or os.name != "posix" or os.environ.get(AS_ROOT_ENV):
+        return None
+    sudo = shutil.which("sudo")
+    if not sudo:
+        return None
+    try:
+        probe = subprocess.run([sudo, "-n", "true"], stdin=subprocess.DEVNULL,
+                               stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=15)
+    except (OSError, subprocess.SubprocessError):
+        return None
+    return sudo if probe.returncode == 0 else None
+
+
+def root_case(why: str):
+    """A case that needs root (a real chown to another uid, setuid to nobody).
+
+    As root it runs in place. Unprivileged it re-runs ITSELF as root through
+    `sudo -n` where that needs no password (the CI runner, which runs this row
+    as a non-root user) and passes only on that child's plain `OK` for exactly
+    one test — a child that skipped, failed or ran nothing fails it. With
+    neither it is reported as skipped, never as passed. The idiom is
+    scripts/dev/test-daemon-access.sh's whole-script `sudo -n` re-exec, per case.
+    """
+    def wrap(fn):
+        @functools.wraps(fn)
+        def run(self):
+            if IS_ROOT:
+                return fn(self)
+            sudo = _passwordless_sudo()
+            if sudo is None:
+                self.skipTest(why + " — not root and no passwordless `sudo -n` here")
+            test_id = f"{Path(__file__).stem}.{type(self).__name__}.{fn.__name__}"
+            cmd = [sudo, "-n", "env", f"{AS_ROOT_ENV}=1", "PYTHONDONTWRITEBYTECODE=1",
+                   sys.executable, "-B", "-m", "unittest", "-v", test_id]
+            child = subprocess.run(cmd, cwd=str(Path(__file__).resolve().parent), stdin=subprocess.DEVNULL,
+                                   capture_output=True, text=True, timeout=300)
+            out = child.stdout + child.stderr
+            if (child.returncode != 0 or not re.search(r"^Ran 1 test\b", out, re.M)
+                    or not re.search(r"^OK\s*$", out, re.M)):
+                self.fail(f"{test_id} re-run as root via sudo -n: rc={child.returncode}\n{out[-3000:]}")
+        return run
+    return wrap
+
+
 STORM_PHRASE = "already connected, closing old connection"
 
 
@@ -408,8 +464,7 @@ class TestTheInstanceLockTrustsOnlyItsOwnFile(SessionTestCase):
         self.assertIn("owned by uid", warns[0])
         self.assertIsNone(client._instance_lock_fd)
 
-    @unittest.skipUnless(hasattr(os, "geteuid") and os.geteuid() == 0,
-                         "a real chown to another uid needs root")
+    @root_case("a real chown to another uid needs root")
     def test_a_really_chowned_file_is_not_trusted(self):
         """The same with the kernel's own uid, as the board would see it."""
         self.lock_path.write_bytes(b"4242\n")
@@ -528,7 +583,7 @@ class TestTheInstanceLockCannotBeSquatted(SessionTestCase):
         self.assertIsNotNone(client._instance_lock_fd)
         self._release(client)
 
-    @unittest.skipUnless(IS_ROOT, "setuid to nobody needs root")
+    @root_case("setuid to nobody needs root")
     def test_nobody_cannot_even_open_the_lock_file(self):
         """RED before the fix: the open succeeded (result 0, not EACCES)."""
         import errno
@@ -541,7 +596,7 @@ class TestTheInstanceLockCannotBeSquatted(SessionTestCase):
                          "another uid could open the instance lock — and a "
                          "read-only fd is enough to flock it")
 
-    @unittest.skipUnless(IS_ROOT, "setuid to nobody needs root")
+    @root_case("setuid to nobody needs root")
     def test_a_squatter_cannot_keep_the_service_down(self):
         """The reviewer's scenario end to end: root takes the lock and exits,
         `nobody` tries to hold it, root starts again. RED before the fix:
@@ -624,6 +679,66 @@ class TestTheInstanceLockCannotBeSquatted(SessionTestCase):
         self.addCleanup(self._release, client)
 
         self.assertEqual(self.lock_path.stat().st_mode & 0o777, 0o600)
+
+
+@unittest.skipUnless(os.name == "posix" and tel.fcntl is not None,
+                     "file modes and flock are POSIX")
+class TestTheInstanceLockModeHasTwoIndependentPins(SessionTestCase):
+    """1.0.6.68 review round 3 (backlog D2, D3). The 0600 mode rests on TWO
+    steps — the create mode and the narrowing fchmod — and each was pinned
+    only through the other: creating 0644 with the fchmod kept stayed GREEN
+    (the fchmod hid it), and a failed fchmod was silent. Each is now measured
+    with the other one out of the way."""
+
+    def setUp(self):
+        super().setUp()
+        self._tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self._tmp.cleanup)
+        self.lock_path = Path(self._tmp.name) / "sa02m-telemetry.lock"
+        os.environ[LOCK_ENV] = str(self.lock_path)
+        # umask 0 so the create mode is visible exactly — under a 077 umask a
+        # 0644 create would come out 0600 and the D3 case would test nothing.
+        old = os.umask(0)
+        self.addCleanup(os.umask, old)
+
+    def _release(self, client):
+        fd = getattr(client, "_instance_lock_fd", None)
+        if fd is not None:
+            os.close(fd)
+
+    def test_the_file_is_created_0600_without_the_narrowing(self):
+        """D3: the fchmod stubbed out, so only the CREATE mode decides.
+        Proof by mutation (round-3 run): creating 0644 with the fchmod kept is
+        GREEN on every other case and RED here."""
+        client = self.make()
+        with mock.patch.object(tel.os, "fchmod", lambda fd, mode: None):
+            client._take_instance_lock()
+        self.addCleanup(self._release, client)
+        self.assertEqual(self.lock_path.stat().st_mode & 0o777, 0o600)
+
+    def test_a_failed_narrowing_is_named_once_and_the_lock_still_taken(self):
+        """D2: a failing fchmod was swallowed in silence. Now one WARN names
+        the path, the mode and the error; everything else is unchanged — the
+        lock is held and the pid hint written. RED before: no WARN at all."""
+        self.lock_path.write_bytes(b"1\n")
+        os.chmod(self.lock_path, 0o644)
+        client = self.make()
+
+        def refuse(fd, mode):
+            raise PermissionError(1, "Operation not permitted")
+
+        with mock.patch.object(tel.os, "fchmod", refuse):
+            with self.assertLogs(tel.log, level="WARNING") as caught:
+                client._take_instance_lock()
+        self.addCleanup(self._release, client)
+
+        warns = [ln for ln in caught.output if ln.startswith("WARNING")]
+        self.assertEqual(len(warns), 1, caught.output)
+        self.assertIn(str(self.lock_path), warns[0])
+        self.assertIn("0600", warns[0])
+        self.assertIn("Operation not permitted", warns[0])
+        self.assertIsNotNone(client._instance_lock_fd)
+        self.assertEqual(self.lock_path.read_text().strip(), str(os.getpid()))
 
 
 # ── Item 2: the eviction detector ────────────────────────────────────────────

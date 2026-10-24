@@ -61,6 +61,12 @@ SRC="${UPDATE_RUNNER_SRC:-etc/sa02m-update-runner.sh}"
 T=$(mktemp -d) || exit 1
 trap 'rm -rf "$T"' EXIT
 
+# UART coordinator composition is exercised by test-update-control-boundaries.py.
+# These existing fixtures have no UART snapshot or external broker.
+acquire_port_maintenance() { return 0; }
+guard_boot_port_consumers() { return 0; }
+restore_port_consumers() { return 0; }
+txn_has_key() { return 1; }
 fails=0
 ok()  { printf 'ok    %s\n' "$1"; }
 bad() { printf 'FAIL  %s\n' "$1"; fails=$((fails + 1)); }

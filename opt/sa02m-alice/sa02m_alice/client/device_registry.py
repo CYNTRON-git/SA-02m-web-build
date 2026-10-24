@@ -113,6 +113,10 @@ def _availability_topics_for(control_topic: str) -> Set[str]:
         extra.add("%s%s/meta/error" % (_DEVICES_PREFIX, mid))
         if "-COM" in mid:
             extra.add("%s%s%s" % (_DEVICES_PREFIX, mid, _UPTIME_SUFFIX))
+    if scene_devices.is_virtual_scene_topic(control_topic):
+        # The executor of a scene command is the engine, whose one LWT flag
+        # is not keyed by scene.
+        extra.add(scene_devices.ENGINE_AVAILABILITY_TOPIC)
     return extra
 
 
@@ -282,8 +286,24 @@ class DeviceRegistry:
             return catalog | extra
 
     def _slave_down(self, topic: str) -> bool:
+        """The device-level `/meta/error` flag behind `topic` is set. For a
+        scene command topic that is ALSO the engine's own flag: with
+        `sa02m-rules` down nobody consumes `run/on`, and a DONE would be a lie
+        (docs/contracts/alice-mqtt-mapping.md §Scene devices)."""
         mid = _mqtt_device_id(topic)
-        return bool(mid and (self._device_error.get(mid) or "").strip())
+        if mid and (self._device_error.get(mid) or "").strip():
+            return True
+        return bool(
+            scene_devices.is_virtual_scene_topic(topic)
+            and (self._device_error.get(scene_devices.ENGINE_DEVICE_ID) or "").strip()
+        )
+
+    def _scene_only(self, did: str) -> bool:
+        """Every capability of `did` is a scenario command topic (a scene
+        switch from `scene_devices`). Caller holds the lock."""
+        dev = self._devices_by_id.get(did)
+        topics = [str(i.get("mqtt") or "") for i in self._items(dev, "capabilities")] if dev else []
+        return bool(topics) and all(scene_devices.is_virtual_scene_topic(t) for t in topics)
 
     def _note_slave_live(self, topic: str) -> None:
         mid = _mqtt_device_id(topic)
@@ -657,7 +677,11 @@ class DeviceRegistry:
         with self._lock:
             for entry in entries:
                 did = str(entry.get("id") or "")
-                if not did:
+                if not did or self._scene_only(did):
+                    # A scene switch is never pushed a state (contract §Scene
+                    # devices): it never reports, so nothing would ever clear
+                    # a pushed DOWN. Its action and query answer the engine's
+                    # flag on demand instead.
                     continue
                 down = str(entry.get("error_code") or "") == C.ERR_DEVICE_UNREACHABLE
                 was = self._announced_down.get(did, False)

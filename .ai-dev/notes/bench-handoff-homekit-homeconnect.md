@@ -1,4 +1,4 @@
-# Bench hand-off — HomeKit + Home Connect (1.0.6.57)
+# Bench hand-off — HomeKit + Home Connect (1.0.7.0)
 
 For the local-network agent that deploys to the bench (192.168.1.135 — the
 board actually used; the G procedures also name 192.168.1.136 and an SA-02m-2). The
@@ -7,11 +7,11 @@ what follows needs a board, an iPhone or a BSH account.
 
 ## What is on the branch
 
-`claude/home-connect-homekit-integration-4llog3` (version 1.0.6.57, stacked on
-1.0.6.56): HomeKit bridge, Home Connect read-only client, and Phase 3
+Ships in the 1.0.7.0 batch (developed on
+`claude/home-connect-homekit-integration-4llog3`, stacked on 1.0.6.56): HomeKit bridge, Home Connect read-only client, and Phase 3
 cross-feeding (Home Connect controls in «Умный дом», scenario recipes, CO₂
 alarm threshold, buttons, thermostat setpoint, scenes in Apple Home). The
-CHANGELOG 1.0.6.57 section is the user-facing summary.
+CHANGELOG 1.0.7.0 section is the user-facing summary.
 
 ## Deploy
 

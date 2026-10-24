@@ -7,8 +7,8 @@
        iPhone top/bottom areas must match the page background, not a default). -->
   <meta name="theme-color" content="#161618" id="theme-color-meta">
   <title>СА-02м — Панель управления</title>
-  <link rel="icon" type="image/svg+xml" href="static/favicon_cyntron.svg?v=1.0.7.3&r=devhist1">
-  <link rel="stylesheet" href="static/css/main.css?v=1.0.7.3&r=lean1">
+  <link rel="icon" type="image/svg+xml" href="static/favicon_cyntron.svg?v=1.0.7.10&r=devhist1">
+  <link rel="stylesheet" href="static/css/main.css?v=1.0.7.10&r=audio2">
   <script>try{var _lt=localStorage.getItem('sa02m-theme')==='light';if(_lt)document.documentElement.setAttribute('data-theme','light');var _m=document.getElementById('theme-color-meta');if(_m)_m.setAttribute('content',_lt?'#ececf3':'#161618');}catch(e){}</script>
 </head>
 <body>
@@ -21,8 +21,8 @@
       <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" aria-hidden="true"><path d="M4 6h16M4 12h16M4 18h16"/></svg>
     </button>
     <div class="topbar-logo">
-      <img class="topbar-logo-img" src="static/logo-vector_cyntron.svg?v=1.0.7.3&r=devhist1" height="28" width="120" alt="ЦИНТРОН" title="Сведения">
-      <img class="topbar-logo-chip" src="static/logo-chip_cyntron.svg?v=1.0.7.3&r=devhist1" height="28" width="28" alt="ЦИНТРОН" title="Сведения">
+      <img class="topbar-logo-img" src="static/logo-vector_cyntron.svg?v=1.0.7.10&r=devhist1" height="28" width="120" alt="ЦИНТРОН" title="Сведения">
+      <img class="topbar-logo-chip" src="static/logo-chip_cyntron.svg?v=1.0.7.10&r=devhist1" height="28" width="28" alt="ЦИНТРОН" title="Сведения">
     </div>
     <div class="topbar-branding">
       <span class="topbar-brand-text" id="device-title">Сервер автоматизации СА-02м</span><span class="topbar-brand-short" id="device-title-short">СА-02м</span><span class="topbar-brand-ver" id="app-version" title="Версия веб-интерфейса"></span>
@@ -140,6 +140,7 @@
         </div>
 
         <div id="dashboard-poll-alert" class="dashboard-poll-alert" style="display:none" role="status" aria-live="polite"></div>
+        <div id="port-operation-status" class="dashboard-poll-alert" style="display:none" role="status" aria-live="polite"></div>
 
         <div class="dash-grid">
 
@@ -662,6 +663,115 @@
                 <p class="field-hint text-sm" id="agentapi-msg" role="status"></p>
               </div>
             </div>
+            <!-- On-command audio recorder (app/audio.js, sa02m_audio_api.cgi;
+                 docs/contracts/audio-recorder.md). Every value below is
+                 renderer-owned; clips and events are rebuilt on each poll. -->
+            <div class="ctrl-card system-manage-tile system-manage-alice-card system-manage-audio-card" id="audio-card">
+              <div class="ctrl-card-main">
+                <h3 class="system-manage-tile-title" data-i18n="Запись звука">Запись звука</h3>
+                <dl class="cloud-meta web-upd-meta">
+                  <div><dt data-i18n="Состояние">Состояние</dt><dd id="audio-state"><span class="badge badge-unk">…</span></dd></div>
+                  <div><dt data-i18n="Микрофон">Микрофон</dt><dd id="audio-mic">—</dd></div>
+                  <div><dt data-i18n="Носитель">Носитель</dt><dd id="audio-medium">—</dd></div>
+                  <div><dt data-i18n="Записей">Записей</dt><dd id="audio-count">—</dd></div>
+                  <div><dt data-i18n="Светомузыка">Светомузыка</dt><dd id="audio-lm-state">—</dd></div>
+                </dl>
+                <p class="field-hint text-sm" id="audio-last-upload"></p>
+                <p class="field-hint text-sm audio-removable-note" id="audio-removable-note" hidden>Записи на съёмном носителе может прочитать любой, у кого есть физический доступ к плате или носителю: файловая система носителя не хранит права доступа. Внутренняя память (по умолчанию) защищена правами.</p>
+                <div class="audio-record-row" id="audio-record-row" hidden>
+                  <div class="field audio-seconds-field">
+                    <label for="audio-seconds" data-i18n="Длительность, с">Длительность, с</label>
+                    <input type="number" id="audio-seconds" inputmode="numeric" min="2" max="30" step="1" value="10">
+                  </div>
+                  <button type="button" class="btn btn-sm btn-primary" id="audio-btn-record" onclick="audioRecord()" disabled data-i18n="Записать">Записать</button>
+                  <button type="button" class="btn btn-sm" id="audio-btn-stop" onclick="audioStop()" hidden data-i18n="Остановить">Остановить</button>
+                  <span class="mono audio-elapsed" id="audio-elapsed"></span>
+                </div>
+                <div class="audio-record-row audio-lm-row" id="audio-lm-row" hidden>
+                  <label class="audio-ack-row"><input type="checkbox" id="audio-lm-on" disabled> <span data-i18n="Светомузыка">Светомузыка</span></label>
+                </div>
+                <ul class="homekit-skip-list homeconnect-apps-list audio-clip-list" id="audio-clips" hidden></ul>
+                <audio class="audio-player" id="audio-player" controls preload="none" hidden></audio>
+                <details class="homekit-net audio-settings" id="audio-settings" hidden>
+                  <summary data-i18n="Настройки записи">Настройки записи</summary>
+                  <div class="field">
+                    <label for="audio-storage" data-i18n="Куда сохранять">Куда сохранять</label>
+                    <select id="audio-storage">
+                      <option value="emmc" data-i18n="Внутренняя память">Внутренняя память</option>
+                      <option value="usb" data-i18n="USB-накопитель">USB-накопитель</option>
+                      <option value="sdcard" data-i18n="Карта microSD">Карта microSD</option>
+                    </select>
+                  </div>
+                  <p class="field-hint text-sm audio-storage-warn" id="audio-storage-warn" hidden>Записи на съёмном носителе может прочитать любой, у кого есть физический доступ к плате или носителю: файловая система носителя не хранит права доступа. Внутренняя память (по умолчанию) защищена правами.</p>
+                  <label class="audio-ack-row" id="audio-ack-row" hidden><input type="checkbox" id="audio-ack"> <span data-i18n="Понимаю">Понимаю</span></label>
+                  <!-- Mic capture gain (contract §8 capture_gain, §9 mic_gain): shown
+                       only when the daemon's conf carries the key (app/audio.js). -->
+                  <div class="audio-gain-row" id="audio-gain-row" hidden>
+                    <label class="audio-ack-row"><input type="checkbox" id="audio-gain-on"> <span data-i18n="Задавать усиление">Задавать усиление</span></label>
+                    <div class="field">
+                      <label for="audio-gain" data-i18n="Усиление микрофона">Усиление микрофона</label>
+                      <input type="number" id="audio-gain" inputmode="numeric" step="1" disabled>
+                      <p class="field-hint text-sm" id="audio-gain-hint"></p>
+                      <p class="field-hint text-sm" id="audio-gain-state"></p>
+                    </div>
+                  </div>
+                  <div class="field">
+                    <label for="audio-default-dur" data-i18n="Длительность по умолчанию, с">Длительность по умолчанию, с</label>
+                    <input type="number" id="audio-default-dur" inputmode="numeric" min="2" max="30" step="1">
+                  </div>
+                  <div class="field">
+                    <label for="audio-keep-files" data-i18n="Хранить записей, не больше">Хранить записей, не больше</label>
+                    <input type="number" id="audio-keep-files" inputmode="numeric" min="1" max="50" step="1">
+                  </div>
+                  <div class="field">
+                    <label for="audio-keep-mb" data-i18n="Объём, МБ, не больше">Объём, МБ, не больше</label>
+                    <input type="number" id="audio-keep-mb" inputmode="numeric" min="1" max="4096" step="1">
+                  </div>
+                  <div class="field">
+                    <label for="audio-keep-hours" data-i18n="Хранить, часов">Хранить, часов</label>
+                    <input type="number" id="audio-keep-hours" inputmode="numeric" min="1" max="168" step="1">
+                  </div>
+                  <div class="field">
+                    <label for="audio-upload-url" data-i18n="Отправлять на URL (необязательно)">Отправлять на URL (необязательно)</label>
+                    <input type="url" id="audio-upload-url" maxlength="500" autocomplete="off" spellcheck="false" placeholder="https://…">
+                  </div>
+                  <label class="audio-ack-row"><input type="checkbox" id="audio-delete-after"> <span data-i18n="Удалять после отправки">Удалять после отправки</span></label>
+                  <div class="field">
+                    <label for="audio-lm-target" data-i18n="Лента светомузыки">Лента светомузыки</label>
+                    <select id="audio-lm-target"></select>
+                  </div>
+                  <div class="field">
+                    <label for="audio-lm-style" data-i18n="Картинка">Картинка</label>
+                    <select id="audio-lm-style">
+                      <option value="level" data-i18n="Уровень">Уровень</option>
+                      <option value="equalizer" data-i18n="Эквалайзер">Эквалайзер</option>
+                      <option value="color" data-i18n="Цвет">Цвет</option>
+                    </select>
+                  </div>
+                  <div class="field">
+                    <label for="audio-lm-rate" data-i18n="Обновлений в секунду">Обновлений в секунду</label>
+                    <input type="number" id="audio-lm-rate" inputmode="numeric" min="1" max="10" step="1">
+                  </div>
+                  <button type="button" class="btn btn-sm" id="audio-btn-save" onclick="audioSave()" data-i18n="Сохранить">Сохранить</button>
+                  <div class="field audio-token-field">
+                    <label for="audio-token" data-i18n="Токен (Bearer)">Токен (Bearer)</label>
+                    <input type="password" id="audio-token" maxlength="512" autocomplete="new-password" spellcheck="false">
+                    <p class="field-hint text-sm" id="audio-token-state"></p>
+                  </div>
+                  <button type="button" class="btn btn-sm" id="audio-btn-token" onclick="audioSaveToken()" data-i18n="Сохранить токен">Сохранить токен</button>
+                  <button type="button" class="btn btn-sm" id="audio-btn-token-clear" onclick="audioClearToken()" data-i18n="Удалить токен">Удалить токен</button>
+                </details>
+                <details class="homekit-net audio-events" id="audio-events" hidden>
+                  <summary data-i18n="Последние события">Последние события</summary>
+                  <ul class="homekit-skip-list audio-event-list" id="audio-event-list"></ul>
+                </details>
+                <div id="audio-msg" class="cloud-msg" role="status" hidden></div>
+              </div>
+              <div class="cloud-agent-ctrl system-manage-tile-foot">
+                <button type="button" class="btn btn-sm" id="audio-btn-restart" onclick="audioRestart()" hidden data-i18n="Перезапустить">Перезапустить</button>
+                <button type="button" class="btn btn-sm btn-primary" id="audio-btn-enable" onclick="audioToggle()" disabled>…</button>
+              </div>
+            </div>
             <div class="system-manage-tile system-manage-log-panel dash-span-top4">
               <h3 class="system-manage-tile-title system-manage-log-title">Журнал событий</h3>
               <div class="btn-group system-manage-log-actions">
@@ -1112,7 +1222,7 @@
                 </div>
                 <div class="widget-sub flasher-status-text flasher-line-hint" id="flasher-port-hint">Выберите порт, чтобы увидеть состояние линии и опроса.</div>
                 <div class="btn-group flasher-port-actions">
-                  <button class="btn btn-sm" id="flasher-release-port-btn" type="button" title="Остановить unit’ы опроса RS-485 (MPLC_STOP_SERVICES)">Остановить опрос</button>
+                  <button class="btn btn-sm" id="flasher-release-port-btn" type="button" title="Зарезервировать все COM через координатор портов (пауза MQTT, остановка назначенных служб)">Остановить опрос</button>
                   <button class="btn btn-sm" id="flasher-restore-port-btn" type="button" title="Запустить обратно службы, остановленные вручную">Вернуть опрос</button>
                 </div>
               </div>
@@ -1657,15 +1767,20 @@
           </label>
         </div>
         <div class="field">
-          <div class="btn-row">
-            <button type="button" class="btn btn-sm" id="sh-preset-light" onclick="shApplyPreset('light')" data-i18n="Светильник">Светильник</button>
-            <button type="button" class="btn btn-sm" id="sh-preset-curtain" onclick="shApplyPreset('curtain')" data-i18n="Штора">Штора</button>
-          </div>
-          <p class="field-hint text-sm" id="sh-preset-hint" hidden></p>
           <label id="sh-rows-label" data-i18n="Показания">Показания</label>
           <div id="sh-rows" class="sh-rows" role="group" aria-labelledby="sh-rows-label"></div>
           <p class="field-hint text-sm" id="sh-btn-hint" data-i18n="Вход не в режиме «Кнопка»" hidden>Вход не в режиме «Кнопка»</p>
-          <button type="button" class="btn btn-sm" id="sh-row-add" onclick="shAddRow()" data-i18n="Добавить показание">Добавить показание</button>
+          <!-- The preset shortcuts share the add button's row (.sh-rows-actions in
+               main.css says why): a row of their own cost the pane the headroom
+               sh-modal-layout-smoke gates at 1280×720. -->
+          <div class="sh-rows-actions">
+            <button type="button" class="btn btn-sm" id="sh-row-add" onclick="shAddRow()" data-i18n="Добавить показание">Добавить показание</button>
+            <span class="sh-preset-group">
+              <button type="button" class="btn btn-sm" id="sh-preset-light" onclick="shApplyPreset('light')" data-i18n="Светильник">Светильник</button>
+              <button type="button" class="btn btn-sm" id="sh-preset-curtain" onclick="shApplyPreset('curtain')" data-i18n="Штора">Штора</button>
+            </span>
+          </div>
+          <p class="field-hint text-sm" id="sh-preset-hint" hidden></p>
         </div>
         <div class="btn-row">
           <button type="button" class="btn btn-sm btn-primary" id="sh-dev-save" onclick="shAddDevice()" data-i18n="Добавить">Добавить</button>
@@ -1719,30 +1834,31 @@
   </div>
 </div>
 
-<script src="static/js/i18n.js?v=1.0.7.3&r=mtd3"></script>
-<script src="static/js/app.js?v=1.0.7.3&r=agentapi2"></script>
-<script src="static/js/app/status.js?v=1.0.7.3&r=vplcprobe1"></script>
-<script src="static/js/app/hw.js?v=1.0.7.3&r=devhist1"></script>
-<script src="static/js/app/rs485.js?v=1.0.7.3&r=audit39a"></script>
-<script src="static/js/app/forms.js?v=1.0.7.3&r=timesync1"></script>
-<script src="static/js/app/services.js?v=1.0.7.3&r=vplc1"></script>
-<script src="static/js/app/misc.js?v=1.0.7.3&r=timesync1"></script>
-<script src="static/js/app/init.js?v=1.0.7.3&r=cloud53a"></script>
-<script src="static/js/app/nav.js?v=1.0.7.3&r=navscroll1"></script>
-<script src="static/js/flasher/led.js?v=1.0.7.3&r=led1"></script>
-<script src="static/js/flasher/bridge-relink.js?v=1.0.7.3&r=mtd1"></script>
-<script src="static/js/flasher/mtd.js?v=1.0.7.3&r=mtd3"></script>
-<script src="static/js/flasher.js?v=1.0.7.3&r=mtd1"></script>
-<script type="module" src="static/js/mqtt.js?v=1.0.7.3&r=scantype3"></script>
-<script src="static/js/gateway.js?v=1.0.7.3&r=gwport2"></script>
-<script type="module" src="static/js/devices.js?v=1.0.7.3&r=segoe1"></script>
-<script src="static/js/cloud.js?v=1.0.7.3&r=audit39a"></script>
-<script src="static/js/app/alice.js?v=1.0.7.3&r=syssub1"></script>
-<script src="static/js/app/smarthome.js?v=1.0.7.3&r=shtypes1"></script>
-<script src="static/js/app/homekit.js?v=1.0.7.3&r=syssub1"></script>
-<script src="static/js/app/homeconnect.js?v=1.0.7.3&r=syssub1"></script>
-<script src="static/js/app/agentapi.js?v=1.0.7.3&r=lean1"></script>
-<script src="static/js/devices-kpi-fit.js?v=1.0.7.3&r=kpifit1"></script>
+<script src="static/js/i18n.js?v=1.0.7.10&r=micgain1"></script>
+<script src="static/js/app.js?v=1.0.7.10&r=audio1"></script>
+<script src="static/js/app/status.js?v=1.0.7.10&r=integ3"></script>
+<script src="static/js/app/hw.js?v=1.0.7.10&r=devhist1"></script>
+<script src="static/js/app/rs485.js?v=1.0.7.10&r=audit39a"></script>
+<script src="static/js/app/forms.js?v=1.0.7.10&r=timesync1"></script>
+<script src="static/js/app/services.js?v=1.0.7.10&r=vplc1"></script>
+<script src="static/js/app/misc.js?v=1.0.7.10&r=timesync1"></script>
+<script src="static/js/app/init.js?v=1.0.7.10&r=cloud53a"></script>
+<script src="static/js/app/nav.js?v=1.0.7.10&r=navscroll1"></script>
+<script src="static/js/flasher/led.js?v=1.0.7.10&r=led1"></script>
+<script src="static/js/flasher/bridge-relink.js?v=1.0.7.10&r=mtd1"></script>
+<script src="static/js/flasher/mtd.js?v=1.0.7.10&r=mtd3"></script>
+<script src="static/js/flasher.js?v=1.0.7.10&r=mtd1"></script>
+<script type="module" src="static/js/mqtt.js?v=1.0.7.10&r=scantype3"></script>
+<script src="static/js/gateway.js?v=1.0.7.10&r=gwport2"></script>
+<script type="module" src="static/js/devices.js?v=1.0.7.10&r=segoe1"></script>
+<script src="static/js/cloud.js?v=1.0.7.10&r=audit39a"></script>
+<script src="static/js/app/alice.js?v=1.0.7.10&r=syssub1"></script>
+<script src="static/js/app/smarthome.js?v=1.0.7.10&r=shtypes1"></script>
+<script src="static/js/app/homekit.js?v=1.0.7.10&r=syssub1"></script>
+<script src="static/js/app/homeconnect.js?v=1.0.7.10&r=syssub1"></script>
+<script src="static/js/app/agentapi.js?v=1.0.7.10&r=lean1"></script>
+<script src="static/js/app/audio.js?v=1.0.7.10&r=lmguard1"></script>
+<script src="static/js/devices-kpi-fit.js?v=1.0.7.10&r=kpifit1"></script>
 
 <div id="dev-modal" class="dev-modal" hidden>
   <div class="dev-modal-backdrop" id="dev-modal-backdrop"></div>

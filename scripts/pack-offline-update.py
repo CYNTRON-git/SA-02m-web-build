@@ -41,7 +41,7 @@ SYNC_SCRIPT = ROOT / "scripts" / "sync-app-version.py"
 VERSION_FILE = ROOT / "www" / "network_config" / "VERSION"
 DEFAULT_OUT_DIR = ROOT / "out"
 DEFAULT_KEY_ID = "release-2026-08"
-MIN_UPDATER = "1.0.5.66"
+MIN_UPDATER = "1.0.7.5"
 MIN_VERSION = "1.0.5.60"
 # First on-device validator that accepts services.enable / restart_if_*
 # (commit 1295837). Packs that advertise a MIN_UPDATER below it MUST emit
@@ -280,6 +280,10 @@ def overlay_workdir_files(paths: list[str], dest: Path) -> int:
     for src in [
         ROOT / "etc" / "sa02m-update-runner.sh",
         ROOT / "etc" / "sa02m-update-inspect.sh",
+        ROOT / "etc" / "sa02m-update-control.sh",
+        ROOT / "etc" / "sa02m-stacks-policy.sh",
+        ROOT / "etc" / "systemd" / "sa02m-update-download.service",
+        ROOT / "etc" / "systemd" / "sa02m-port-coordinator.service",
         ROOT / "etc" / "sa02m-web-backup.sh",
         ROOT / "etc" / "sa02m-restore-backup.sh",
         ROOT / "etc" / "sa02m-factory-reset-runner.sh",
@@ -299,6 +303,9 @@ def overlay_workdir_files(paths: list[str], dest: Path) -> int:
 
 
 def render_nginx_template(overlay: Path) -> None:
+    # Sealed at the DEFAULT panel port: the packer cannot know a board's. The
+    # runner re-points the listen line at the board's saved port before deploy
+    # (etc/sa02m-update-runner.sh localize_staged_package_port).
     conf = overlay / "etc" / "nginx" / "network_config.conf"
     if not conf.is_file():
         return
@@ -543,16 +550,9 @@ def frozen_services_note(min_updater: str = MIN_UPDATER) -> str:
 def build_services_block(min_updater: str = MIN_UPDATER) -> dict[str, Any]:
     """services{} for the packed manifest.
 
-    Frozen v1 (required keys only) while MIN_UPDATER is still 1.0.5.66 so
-    boards on the documented floor can apply the pack. Optional keys
-    (enable, restart_if_active, restart_if_changed) are emitted only when
-    min_updater is already a validator that accepts them. sa02m-rules stays
-    in restart[] — that list is required v1 and the 1.0.5.66 runner executes
-    it. Alice/modbus conditional restarts first bite on the pack AFTER
-    MIN_UPDATER is raised (honest limit: apply uses the previous runner).
-    The online generator in etc/sa02m-update-runner.sh still emits the
-    optional keys: that manifest is built ON the board by the runner
-    already installed there.
+    The current floor accepts optional service keys. Explicitly older floors
+    retain required v1 keys for compatibility tests; production packages require
+    the root controller and maintenance capabilities installed by full refresh.
     """
     services: dict[str, Any] = {
         "daemon_reload": True,
@@ -606,6 +606,10 @@ def build_services_block(min_updater: str = MIN_UPDATER) -> dict[str, Any]:
         # (06d-homeconnect.sh `app off`), same rule. Must stay in step with
         # etc/sa02m-update-runner.sh.
         "sa02m-homeconnect",
+        # Audio recorder — on every board, installed stopped (15-audio.sh
+        # `app off`), same rule. Must stay in step with
+        # etc/sa02m-update-runner.sh.
+        "sa02m-audio",
         # Must stay in step with etc/sa02m-update-runner.sh. Off until the
         # panel enables it; restarting an inactive unit would turn it on.
         "sa02m-agent-api",

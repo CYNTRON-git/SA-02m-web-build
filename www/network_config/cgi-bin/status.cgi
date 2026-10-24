@@ -97,19 +97,87 @@ STATUS_CACHE_LOCK_WAIT_SEC="${STATUS_CACHE_LOCK_WAIT_SEC:-0.25}"
 # json_escape lives in the shared lib (web-code-rigor.md ## Bash CGI floors).
 . "$SCRIPT_DIR/lib_web_json.sh"
 
+# The poll path forks nothing it can avoid: $EPOCHSECONDS instead of date(1),
+# read builtins instead of cat/python3 — every fork here runs once per part per
+# tab per poll period on the shared ARM target (web-code-rigor.md ## Resource
+# model). A cached `services` answer costs 2 forks (the two stat calls), not 7.
 cache_is_fresh() {
     local file=$1 ttl=$2 now mtime
     [ -f "$file" ] || return 1
-    now=$(date +%s 2>/dev/null || echo 0)
+    now=$EPOCHSECONDS
     mtime=$(stat -c %Y "$file" 2>/dev/null || echo 0)
     (( mtime > now )) && return 1
     (( now - mtime < ttl ))
 }
 
+# The broker's public snapshot, projected for the panel into the global
+# STATUS_PORT_COORDINATOR (a variable, not a subshell — no fork). Pure bash: the
+# file is written by our own sa02m_ports/broker.py `snapshot_document` (json.dump,
+# one line, a FIXED top-level key order) and that layout is exactly what the
+# anchored regex accepts — json.dump escapes every quote inside a string value,
+# so the literal `, "broker_pid": ` can only occur at the top level. Anything
+# else (truncated, hand-edited, an extra key, oversize) is not our snapshot and
+# is reported unavailable rather than guessed at. `available` = the recorded pid
+# is alive, not a zombie, has the recorded start ticks (no pid reuse) and the
+# control socket exists — process existence, not RPC readiness
+# (docs/contracts/status-polling.md). Both ends are pinned by
+# scripts/dev/test-status-coordinator-projection.py.
+STATUS_PORT_COORDINATOR_DIR=${STATUS_PORT_COORDINATOR_DIR:-/run/sa02m-port-coordinator}
+STATUS_PORT_COORDINATOR_RE='^\{"timestamp": ([0-9.eE+-]+), ("leases": \[.*\], "services": \{.*\}, "configured_scopes": \{.*\}), "broker_pid": ([0-9]+), "broker_start_ticks": "([0-9]+)"\}$'
+status_port_coordinator() {
+    local snapshot="$STATUS_PORT_COORDINATOR_DIR/status.json" data body pid ticks stat_line fields alive=false
+    STATUS_PORT_COORDINATOR='{"available":false,"error":"snapshot_unavailable"}'
+    [ -r "$snapshot" ] || return 0
+    # 128 KiB + 1: a snapshot that fills the buffer is oversize, not ours.
+    IFS= read -r -d '' -n 131073 data 2>/dev/null < "$snapshot" || true
+    [ "${#data}" -le 131072 ] || return 0
+    data=${data%$'\n'}
+    [[ "$data" =~ $STATUS_PORT_COORDINATOR_RE ]] || return 0
+    body="\"timestamp\":${BASH_REMATCH[1]},${BASH_REMATCH[2]}"
+    pid=${BASH_REMATCH[3]} ticks=${BASH_REMATCH[4]}
+    if [ "$pid" -gt 0 ] 2>/dev/null && [ -S "$STATUS_PORT_COORDINATOR_DIR/control.sock" ] \
+            && IFS= read -r stat_line 2>/dev/null < "/proc/$pid/stat"; then
+        # /proc/<pid>/stat after the last ')': state first, starttime 20th.
+        read -r -a fields <<< "${stat_line##*) }"
+        if [ "${fields[0]:-Z}" != Z ] && [ "${fields[19]:-}" = "$ticks" ]; then alive=true; fi
+    fi
+    STATUS_PORT_COORDINATOR="{${body},\"available\":${alive}}"
+}
+
+# Metadata measures the snapshot, not the time a cached response is served.
+status_emit_snapshot() {
+    local payload=$1 measured=$2 ttl=$3 now age
+    now=$EPOCHSECONDS
+    age=$(( now - measured ))
+    if (( age < 0 )) || [[ "$payload" == *'"hw_poll_disabled":1'* ]]; then age=null; fi
+    if [ "${STATUS_PART:-}" = services ]; then
+        status_port_coordinator
+        payload="${payload%?},\"port_coordinator\":${STATUS_PORT_COORDINATOR}}"
+    fi
+    printf '%s,"_status_meta":{"measured_at":%s,"age_s":%s,"ttl_s":%s}}\n' "${payload%?}" "$measured" "$age" "$ttl"
+}
+
+status_emit_cache() {
+    local file=$1 ttl=$2 measured payload
+    # One descriptor pins the inode across an atomic cache replacement.
+    exec 9<"$file" || return 1
+    measured=$(stat -Lc %Y /proc/self/fd/9 2>/dev/null || echo 0)
+    IFS= read -r -d '' payload <&9 || true
+    exec 9<&-
+    status_emit_snapshot "${payload%$'\n'}" "$measured" "$ttl"
+}
+
+status_emit_live() {
+    local measured payload
+    measured=$EPOCHSECONDS
+    payload=$("$1") || return $?
+    status_emit_snapshot "$payload" "$measured" 0
+}
+
 cache_print_or_build() {
     local file=$1 ttl=$2 builder=$3 tmp lock_file rc have_lock=0
     if cache_is_fresh "$file" "$ttl"; then
-        cat "$file"
+        status_emit_cache "$file" "$ttl"
         return 0
     fi
 
@@ -119,7 +187,7 @@ cache_print_or_build() {
         if flock -w "$STATUS_CACHE_LOCK_WAIT_SEC" 8 >/dev/null 2>&1; then
             have_lock=1
             if cache_is_fresh "$file" "$ttl"; then
-                cat "$file"
+                status_emit_cache "$file" "$ttl"
                 flock -u 8 >/dev/null 2>&1 || true
                 exec 8>&-
                 return 0
@@ -130,13 +198,13 @@ cache_print_or_build() {
             tmp="${file}.$$"
             if "$builder" > "$tmp"; then
                 mv "$tmp" "$file" 2>/dev/null || cp "$tmp" "$file" 2>/dev/null
-                cat "$file"
+                status_emit_cache "$file" "$ttl"
                 rm -f "$tmp"
                 return 0
             fi
             rm -f "$tmp"
             if [ -f "$file" ]; then
-                cat "$file"
+                status_emit_cache "$file" "$ttl"
                 return 0
             fi
         fi
@@ -146,7 +214,7 @@ cache_print_or_build() {
     if "$builder" > "$tmp"; then
         mv "$tmp" "$file" 2>/dev/null || cp "$tmp" "$file" 2>/dev/null
         # После mv временный путь исчез — читаем уже атомарно записанный кэш.
-        cat "$file"
+        status_emit_cache "$file" "$ttl"
         rm -f "$tmp"
         if (( have_lock )); then
             flock -u 8 >/dev/null 2>&1 || true
@@ -161,7 +229,7 @@ cache_print_or_build() {
         exec 8>&-
     fi
     if [ -f "$file" ]; then
-        cat "$file"
+        status_emit_cache "$file" "$ttl"
         return 0
     fi
     return "$rc"
@@ -1718,7 +1786,7 @@ build_dash_services_json() {
     _dash_probe_add vplc "vPLC" vplc
     _dash_probe_add alice "Яндекс Алиса" sa02m-alice-client
     _dash_probe_add stand-api "Стенд API" sa02m-stand-api
-    _dash_probe_add devices-logger "Логгер устройств" sa02m-devices-logger
+    _dash_probe_add devices-logger "Логгер" sa02m-devices-logger
     _dash_probe_add cloud-agent "Облако" sa02m-cloud-agent
     _dash_probe_add mqtt-telemetry "MQTT телеметрия" sa02m-telemetry
     _dash_svc_add codesys "CODESYS" "${DASH_CODESYS:-}" "${DASH_CODESYS_UP:-0}"
@@ -2619,31 +2687,31 @@ build_full_json() {
 
 case "$STATUS_PART" in
     cpu)
-        build_cpu_json
+        status_emit_live build_cpu_json
         ;;
     temp)
-        build_temp_json
+        status_emit_live build_temp_json
         ;;
     ram)
-        build_ram_json
+        status_emit_live build_ram_json
         ;;
     disk)
-        build_disk_json
+        status_emit_live build_disk_json
         ;;
     storage)
         cache_print_or_build "${CACHE_DIR}/storage.json" 10 build_storage_json
         ;;
     time)
-        build_time_json
+        status_emit_live build_time_json
         ;;
     uptime)
-        build_uptime_json
+        status_emit_live build_uptime_json
         ;;
     network)
         cache_print_or_build "${CACHE_DIR}/network.json" 8 build_network_json
         ;;
     load)
-        build_load_json
+        status_emit_live build_load_json
         ;;
     system)
         cache_print_or_build "${CACHE_DIR}/system.json" 30 build_system_json
@@ -2660,10 +2728,10 @@ case "$STATUS_PART" in
         cache_print_or_build "${CACHE_DIR}/hardware.json" 10 build_hardware_json
         ;;
     priority)
-        build_priority_json
+        status_emit_live build_priority_json
         ;;
     main)
-        build_main_json
+        status_emit_live build_main_json
         ;;
     rs485)
         cache_print_or_build "${CACHE_DIR}/rs485.json" 8 build_rs485_json
@@ -2672,9 +2740,9 @@ case "$STATUS_PART" in
         cache_print_or_build "${CACHE_DIR}/blocks.json" 60 build_blocks_json
         ;;
     core)
-        build_core_json
+        status_emit_live build_core_json
         ;;
     *)
-        build_full_json
+        status_emit_live build_full_json
         ;;
 esac

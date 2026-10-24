@@ -1,0 +1,9 @@
+{
+  "ports": {
+    "/dev/COM1": [],
+    "/dev/COM2": [],
+    "/dev/COM3": [],
+    "/dev/COM4": [],
+    "/dev/COM5": []
+  }
+}

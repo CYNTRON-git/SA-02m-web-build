@@ -40,7 +40,9 @@ marks the device offline.
 from __future__ import annotations
 
 import os
+import re
 import sys
+import threading
 import time
 
 from bridge_device import DevicePoller
@@ -93,9 +95,26 @@ _LEGAL_BLOCK_WRITES = {
 _TRUE_WORDS = ("1", "true", "on", "yes")
 _FALSE_WORDS = ("0", "false", "off", "no")
 
+# The light-music stream sinks (docs/contracts/led-mb2ws.md §4 «Поток
+# светомузыки»): writable, and deliberately NOT in sa02m_led.controls — that
+# table is what Alice offers and what every write echoes. A stream write lands
+# on the bus and nothing else: no echo, no forced publish, no live-cache flush,
+# no /meta (they hold no state a reader could use).
+STREAM_CONTROLS = ("music_level", "music_color")
+# FxAux 455: read back on the slow poll, and written back raw through
+# `fx_aux/on` when the daemon restores the strip at stop. Its meta stays
+# readonly — the write is that restore path, not a control for the panel or
+# Alice.
+FX_AUX_CONTROL = "fx_aux"
+_FX_AUX_WORD_RE = re.compile(r"^[0-9]{1,5}\Z")
+# `music_level` payload: the percent field FX 43 / FX 75 read from the low byte.
+MUSIC_LEVEL_MAX = 100
+
 
 class LedPoller(DevicePoller):
-    """Poll an LED strip and publish the controls named in sa02m_led.controls."""
+    """Poll an LED strip and publish the controls named in sa02m_led.controls,
+    plus the light-music side channel (STREAM_CONTROLS in, FX_AUX_CONTROL read
+    back and written back raw)."""
 
     def __init__(self, cfg: dict, pub: MQTTPublisher):
         super().__init__(cfg, pub)
@@ -106,6 +125,19 @@ class LedPoller(DevicePoller):
         self._yaml_applied = False
         self._yaml_attempts = 0
         self._names = set(lc.control_names())
+        # What `music_level` composes 455 against: the running FX (from the
+        # poll, or from our own FX write) and the last 455 the device held.
+        # None = not known yet; the stream write then reads it first.
+        # Shared by the poll thread and the port's writeback worker: every
+        # compare-and-assign / assign-and-bump of these four, and the pair read
+        # a stream frame packs from, goes under _live_lock (a compare landing
+        # between a write's assign and its bump would reinstate the old
+        # value). Never held across a bus transaction.
+        self._live_lock = threading.Lock()
+        self._fx_id = None
+        self._fx_writes = 0      # bumped by every FX write of ours
+        self._fx_aux = None
+        self._aux_writes = 0     # bumped by every 455 write of ours (stream or raw)
 
     # --- setup ----------------------------------------------------------------
 
@@ -127,6 +159,11 @@ class LedPoller(DevicePoller):
         for cname in lc.writable_names():
             self.pub.subscribe_writeback(
                 self.device_id, cname, self._make_writeback_cb(cname))
+        self.pub.pub_control_meta(self.device_id, FX_AUX_CONTROL, "type", "value")
+        self.pub.pub_control_meta(self.device_id, FX_AUX_CONTROL, "readonly", "1")
+        for cname in STREAM_CONTROLS + (FX_AUX_CONTROL,):
+            self.pub.subscribe_writeback(
+                self.device_id, cname, self._make_writeback_cb(cname))
 
     def fmb_event_ranges(self):
         """No Fast Modbus: the strip's event ranges are unverified, so none are claimed.
@@ -145,10 +182,19 @@ class LedPoller(DevicePoller):
             return
         self._t_poll = now
         t_read = now
+        fx_writes = self._fx_writes   # one attribute load: atomic, no lock needed
         snap = self._read_snapshot()
         if snap is None:
             return
         self._apply_yaml_defaults(snap)
+        # A snapshot read while our own FX write landed is older than that
+        # write: it must not hand `music_level` the previous effect's 455
+        # layout. A counter, not a timestamp — monotonic() ticks at ~16 ms on
+        # some hosts, so a read and a write can share one reading.
+        fx_id = lm.rgbw_resolve_fx_id(self._base_reg(snap, lm.MB2WS_FX_ID))
+        with self._live_lock:
+            if fx_writes == self._fx_writes:
+                self._fx_id = fx_id
         self._publish(self._controls_from_snapshot(snap), t_read)
         DeviceLiveCache.flush_file(self.device_id)
 
@@ -156,6 +202,7 @@ class LedPoller(DevicePoller):
         if now - self._t_text < self._poll_text_s:
             return
         self._t_text = now
+        self._poll_fx_aux()
         regs = self._read_optional(
             "holding", lm.MB2WS_TEXT_BASE, lm.MB2WS_TEXT_REG_COUNT)
         if regs is None:
@@ -165,6 +212,31 @@ class LedPoller(DevicePoller):
         # pixel-data class and a power cycle clears it.
         self._publish({"text": lm.rgbw_unpack_text_cp1251(regs)}, now)
         DeviceLiveCache.flush_file(self.device_id)
+
+    def _poll_fx_aux(self) -> None:
+        """FxAux 455 → readonly `fx_aux`, the raw word as a decimal string.
+
+        Slow cadence: it changes only when something writes it, and the reader
+        is the light-music daemon's start snapshot, not a live display. Its own
+        optional read — 455 is not inside the 400..419 block.
+
+        A read during which one of our 455 writes completed is older than that
+        write and is dropped — neither published nor cached. Otherwise a read
+        on the bus just before the stop's raw restore would publish the
+        streamed word AFTER the restore and a next session would snapshot it.
+        """
+        aux_writes = self._aux_writes   # one attribute load: atomic, no lock needed
+        aux = self._read_optional("holding", lm.MB2WS_FX_AUX, 1)
+        if aux is None:
+            self.pub.pub_error(self.device_id, FX_AUX_CONTROL, "r")
+            return
+        word = int(aux[0]) & 0xFFFF
+        with self._live_lock:
+            if aux_writes != self._aux_writes:
+                return
+            self._fx_aux = word
+            self.pub.pub_control(self.device_id, FX_AUX_CONTROL, str(word))
+            self.pub.pub_error(self.device_id, FX_AUX_CONTROL, "")
 
     def _publish(self, values: dict, t_read: float) -> None:
         for cname, value in values.items():
@@ -450,6 +522,11 @@ class LedPoller(DevicePoller):
                 except Exception:
                     pass
             raise
+        if lm.MB2WS_FX_ID in writes:
+            fx_id = lm.rgbw_resolve_fx_id(int(writes[lm.MB2WS_FX_ID]))
+            with self._live_lock:
+                self._fx_id = fx_id
+                self._fx_writes += 1
 
     def _write_block(self, start: int, values) -> None:
         """One FC16, refused unless (start, length) is a sanctioned block write."""
@@ -558,6 +635,81 @@ class LedPoller(DevicePoller):
         self._wb_write_retry(
             lambda: self.write_register(self.address, lm.MB2WS_USER_COLOR, word))
         self._wb_done("color", lm.rgbw_user_color_to_hex(word))
+
+    # --- light-music stream (led-mb2ws.md §4 «Поток светомузыки») ------------
+    # Up to 8 writes/s on a line shared with Carel and MR-02m. Each handler is
+    # ONE FC06 and then only clears its own write-error flag (a no-op publish
+    # while it is already clear) — never `_wb_done`, whose forced echo and
+    # live-cache flush would cost an MQTT publish and a file rewrite per frame.
+
+    def _wb_music_color(self, payload: str) -> None:
+        """Holding 434 from `#RRGGBB`, the same encoder as `color` (black → 1)."""
+        text = str(payload or "").strip()
+        rgb = _hex_rgb8(text) if text.startswith("#") else None
+        if rgb is None:
+            raise ValueError("unparseable stream colour %r" % (payload,))
+        word = lm.rgbw_rgb8_to_user_color(*rgb)
+        self._wb_write_retry(
+            lambda: self.write_register(self.address, lm.MB2WS_USER_COLOR, word))
+        self.pub.pub_error(self.device_id, "music_color", "")
+
+    def _wb_music_level(self, payload: str) -> None:
+        """FxAux 455: loudness 0..100 into the low byte's level field.
+
+        Bit 7 and the high byte are the strip's own (orientation, colour
+        override): taken from the last 455 the device held and packed by the
+        map for the RUNNING effect's layout — never hand-packed here.
+        """
+        level = _clamp(_int_payload(payload), 0, MUSIC_LEVEL_MAX)
+        with self._live_lock:
+            fx_id, aux = self._fx_id, self._fx_aux
+        if fx_id is None:
+            fx_id = lm.rgbw_resolve_fx_id(self._read_one(lm.MB2WS_FX_ID))
+            with self._live_lock:
+                if self._fx_id is None:
+                    self._fx_id = fx_id
+        if aux is None:
+            aux = self._read_one(lm.MB2WS_FX_AUX)
+        _low, flag, high = lm.rgbw_fx_aux_decompose(fx_id, aux)
+        word = lm.rgbw_fx_aux_compose(fx_id, level, flag, high)
+        self._wb_write_retry(
+            lambda: self.write_register(self.address, lm.MB2WS_FX_AUX, word))
+        with self._live_lock:
+            self._fx_aux = word
+            self._aux_writes += 1
+        self.pub.pub_error(self.device_id, "music_level", "")
+
+    def _wb_fx_aux(self, payload: str) -> None:
+        """The raw 455 word back, exactly — every byte, whatever FX runs.
+
+        `music_level` packs for the running layout and so drops what that
+        layout does not read; a restore must not. Decimal 0..65535 only,
+        refused before the bus otherwise (`rgbw_fx_aux_word_ok`). One FC06,
+        not `_wb_done` (no echo bookkeeping, no live-cache flush) — but, once
+        it landed, ONE forced publish of the written word: the restore is the strip's state from
+        now on, and a retained `fx_aux` still holding a streamed word (the slow
+        read runs every ~30 s) is what a next session would snapshot. Published
+        under the same lock as the slow read's guard, so a read that straddled
+        this write cannot publish after it.
+        """
+        text = str(payload or "").strip()
+        word = int(text) if _FX_AUX_WORD_RE.match(text) else None
+        if not lm.rgbw_fx_aux_word_ok(word):
+            raise ValueError("refused 455 word %r" % (payload,))
+        self._wb_write_retry(
+            lambda: self.write_register(self.address, lm.MB2WS_FX_AUX, word))
+        with self._live_lock:
+            self._fx_aux = word
+            self._aux_writes += 1
+            self.pub.pub_control(self.device_id, FX_AUX_CONTROL, str(word), force=True)
+            self.pub.pub_error(self.device_id, FX_AUX_CONTROL, "")
+
+    def _read_one(self, address: int) -> int:
+        """One holding register, raising on failure (the caller writes nothing)."""
+        regs = self._read_optional("holding", address, 1)
+        if not regs:
+            raise IOError("read of holding %d failed" % address)
+        return int(regs[0]) & 0xFFFF
 
     def _wb_text(self, payload: str) -> None:
         """The marquee window — always the full 64 registers at the CURRENT base.

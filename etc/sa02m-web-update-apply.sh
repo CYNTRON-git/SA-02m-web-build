@@ -1,7 +1,6 @@
 #!/bin/bash
-# Fetch web UI from GitHub and deploy. Runs as root via sudo.
-# Prefers shared sa02m-update-runner (plan §2.9) when installed; otherwise
-# falls back to the legacy rsync path (bootstrap release N).
+# Fetch the fixed GitHub source under the root download unit.
+# A capable shared runner is mandatory; legacy boards require full refresh.
 # Output → $LOGFILE; status → $STATEDIR/update_status (running/done/error).
 set -uo pipefail
 
@@ -34,86 +33,6 @@ chmod 755 "$STATEDIR"
 
 log() { local ts; ts=$(date '+%Y-%m-%d %H:%M:%S'); printf '%s %s\n' "$ts" "$*" | tee -a "$LOGFILE"; }
 
-# atomic_install_script -m MODE SRC DST
-# Land a LIVE-PATH shell file (a helper under /usr/local/{sbin,lib,libexec})
-# so a hard reset at ANY instant leaves DST either the OLD file or the NEW one
-# — never the 0-byte window `install -m` opens between its truncate and its
-# fill, and never the half-converted window a follow-up `sed -i` opened on top
-# of that. Bench 1.136 (2026-09-08) reset mid-install and booted with an empty
-# sa02m-flasher.service, which systemd reads as MASKED; the same shape on
-# /usr/local/lib/sa02m-web-auth-lib.sh takes out every CGI on the board, and
-# THIS script is how a field board updates itself.
-#
-# A third device-side copy of the shape by construction, not by choice: this
-# script runs standalone on the board, where scripts/ is not deployed, so it
-# cannot source scripts/lib.sh sa02m_atomic_install. The two device-side copies
-# that already exist are not reusable here and are not byte-identical to each
-# other: etc/sa02m-update-runner.sh atomic_install_file() fdatasyncs the tmp and
-# fsyncs the directory, etc/sa02m-factory-reset-runner.sh atomic_install_file()
-# adds the wipe allow-list and the rollback journal that runner owns, and
-# neither carries the CRLF normalisation these sites need. Flags mirror
-# sa02m_atomic_install (-m MODE SRC DST) so the family reads the same way.
-#
-# The CRLF strip is folded INTO the staged copy — `sed` writes the tmp — rather
-# than running `sed -i` over the live file afterwards, so the live path is
-# written exactly once, by the rename. Returns 0 only when DST carries the new
-# bytes; on any failure the tmp is removed and DST is left untouched.
-# Harness: scripts/dev/test-install-atomic.sh section 8.
-atomic_install_script() {
-    local mode="" src dst tmp
-    while [ $# -gt 0 ]; do
-        case "$1" in
-            # Refused BEFORE the shift: `shift 2` on a one-element "$@" fails,
-            # $# never decreases and the loop spins forever — here that would
-            # wedge the board's self-update until reboot, since $LOCKFILE is
-            # only cleared from the EXIT trap (ship review 1.0.6.41, finding 8).
-            -m) [ $# -ge 2 ] || { log "ERROR: atomic_install_script: ключ -m без значения"; return 1; }
-                mode=$2; shift 2 ;;
-            --) shift; break ;;
-            -*) log "ERROR: atomic_install_script: неизвестный ключ $1"; return 1 ;;
-            *)  break ;;
-        esac
-    done
-    if [ $# -ne 2 ] || [ -z "$mode" ]; then
-        log "ERROR: atomic_install_script: нужны -m MODE SRC DST (получено $#)"
-        return 1
-    fi
-    src=$1; dst=$2
-    if [ ! -f "$src" ]; then
-        log "ERROR: atomic_install_script: источник $src не найден"
-        return 1
-    fi
-    if ! mkdir -p "$(dirname "$dst")" 2>>"$LOGFILE"; then
-        log "ERROR: atomic_install_script: не удалось создать каталог для $dst"
-        return 1
-    fi
-    # A tmp left by an earlier crash is junk, never a decision — clear it first.
-    rm -f -- "$dst".sa02m-tmp.* 2>/dev/null
-    tmp="$dst.sa02m-tmp.$$"
-    # Stage + normalise line endings in ONE write, into the tmp.
-    if ! sed 's/\r$//' "$src" > "$tmp" 2>>"$LOGFILE"; then
-        rm -f -- "$tmp"
-        log "ERROR: atomic_install_script: не удалось записать $tmp (живой $dst не тронут)"
-        return 1
-    fi
-    if ! chmod "$mode" "$tmp" 2>>"$LOGFILE"; then
-        rm -f -- "$tmp"
-        log "ERROR: atomic_install_script: не удалось выставить режим $mode на $tmp"
-        return 1
-    fi
-    # coreutils >= 8.24: `sync FILE` = fsync(2) of that file; older ones take no
-    # operand — fall back to a full sync (slow, but never a torn rename). The
-    # data must be on disk BEFORE the rename: ext4 commit=600 on the board
-    # otherwise leaves a named-but-empty file after a reset.
-    sync -- "$tmp" 2>/dev/null || sync
-    if ! mv -f -- "$tmp" "$dst" 2>>"$LOGFILE"; then
-        rm -f -- "$tmp"
-        log "ERROR: atomic_install_script: не удалось переименовать $tmp → $dst (живой файл не тронут)"
-        return 1
-    fi
-    return 0
-}
-
 normalize_repo_url() {
     local u=$1
     u="${u%.git}"
@@ -141,6 +60,10 @@ repo_url_allowed() {
     return 1
 }
 
+# Serialize direct invocations as well as systemd starts. Never unlink this inode.
+exec 7>>"$STATEDIR/launch.lock"
+flock -n 7 || exit 1
+
 # Lock
 if [ -f "$LOCKFILE" ]; then
     pid=$(cat "$LOCKFILE" 2>/dev/null || echo "")
@@ -154,10 +77,49 @@ printf '%s' "$$" > "$LOCKFILE"
 printf 'running' > "$STATUS_FILE"
 chmod 644 "$LOCKFILE" "$STATUS_FILE" 2>/dev/null || true
 
+# Until the clone dir exists the EXIT trap releases the lock and nothing else.
+# The dir-removing trap is armed only AFTER this launcher's own mktemp, on a
+# private name: an inherited TMPDIR (a manual root run — sudo's env_reset
+# strips it on the panel path) is the caller's directory, never ours to remove.
+# Harness: scripts/dev/test-web-update-launcher-guard.sh L12.
+trap 'rm -f "$LOCKFILE"' EXIT
+CLONE_TMP=""
+UPDATE_LOCK_HELD=0
+# The controller reserved the journal (validating, download_pending) before it
+# started this unit; a failed run closes that reservation with the code the
+# failing step names, never leaves it to age into E_RECOVERY_REQUIRED.
+FAIL_CODE=E_DOWNLOAD
+FAIL_MESSAGE="download failed; see update log"
 cleanup() {
+    local rc=$?
+    if [ "$rc" -ne 0 ] && [ "$UPDATE_LOCK_HELD" = 1 ] && [ -f "$UPDATE_STATEDIR/transaction.json" ]; then
+        FAIL_CODE="$FAIL_CODE" FAIL_MESSAGE="$FAIL_MESSAGE" python3 - "$UPDATE_STATEDIR/transaction.json" <<'PYFAIL'
+import json,sys,os,time
+from pathlib import Path
+p=Path(sys.argv[1])
+try:
+    d=json.loads(p.read_text())
+    if d.get("download_pending") and d.get("source") == "github":
+        d.update(stage="error", result="failed", error_code=os.environ.get("FAIL_CODE") or "E_DOWNLOAD",
+                 error_message=os.environ.get("FAIL_MESSAGE") or "download failed; see update log", finished_at=time.strftime("%Y-%m-%dT%H:%M:%SZ",time.gmtime()))
+        tmp=p.with_suffix(".tmp")
+        with tmp.open("w") as f:
+            json.dump(d,f); f.flush(); os.fsync(f.fileno())
+        os.replace(tmp,p)
+        dfd=os.open(p.parent,os.O_RDONLY)
+        try:
+            os.fsync(dfd)
+        finally:
+            os.close(dfd)
+except Exception:
+    pass
+PYFAIL
+    fi
     rm -f "$LOCKFILE"
-    rm -rf "${TMPDIR:-}" 2>/dev/null || true
+    [ -n "$CLONE_TMP" ] && rm -rf "$CLONE_TMP" 2>/dev/null
+    return 0
 }
+
 trap cleanup EXIT
 
 > "$LOGFILE"
@@ -183,7 +145,10 @@ fi
 # verify). Same liveness test as the CGI side
 # (www/network_config/cgi-bin/lib_web_update.sh) — a second copy by necessity:
 # a root helper must not source a www-data-writable file. Keep the two in
-# step. Harness: scripts/dev/test-web-update-launcher-guard.sh.
+# step, except for sa02m-update-download.service: the CGI side counts it (the
+# online runner lives inside it), this launcher IS it and would refuse
+# itself; a manual run beside the unit is refused by launch.lock above.
+# Harness: scripts/dev/test-web-update-launcher-guard.sh.
 update_runner_alive() {
     local lock="$UPDATE_STATEDIR/update.lock" pid cmd units
     if [ -r "$lock" ]; then
@@ -197,6 +162,7 @@ update_runner_alive() {
     fi
     if command -v systemctl >/dev/null 2>&1; then
         # Both oneshot: `activating` is their running state (is-active would say rc 3).
+        # Not sa02m-update-download.service — see the header note above.
         local u st
         for u in sa02m-update.service sa02m-update-verify.service; do
             st=$(timeout 5 systemctl show -p ActiveState --value "$u" 2>/dev/null) || st=""
@@ -232,32 +198,68 @@ refuse_if_running() {
                 printf 'error' > "$STATUS_FILE"
                 exit 1
             fi
+            if ! python3 - "$UPDATE_STATEDIR/transaction.json" <<'RESERVATION'
+import json,sys
+try:
+    d=json.load(open(sys.argv[1]))
+except Exception:
+    raise SystemExit(1)
+raise SystemExit(0 if d.get("source")=="github" and d.get("download_pending") is True else 1)
+RESERVATION
+            then
+                log "ERROR [E_RECOVERY_REQUIRED]: unfinished transaction $txn_id at $txn_stage; recover before retry"
+                printf 'error' > "$STATUS_FILE"
+                exit 1
+            fi
             ;;
     esac
 }
 refuse_if_running "до клонирования"
 
+# Hold the runner lock throughout download: upload cannot replace a pending transaction.
+mkdir -p "$UPDATE_STATEDIR"
+exec 9>>"$UPDATE_STATEDIR/update.lock"
+flock -w 15 9 || { log "ERROR [E_LOCK]: update busy"; exit 1; }
+UPDATE_LOCK_HELD=1
+
+# Refused only now, under the lock: the EXIT trap (cleanup) closes the
+# controller's reservation with the bootstrap code instead of leaving it
+# at validating.
+if [ ! -x "$RUNNER" ] || ! ( "$RUNNER" capabilities | python3 -c 'import json,sys; d=json.load(sys.stdin); sys.exit(0 if d.get("control_v1") and d.get("port_maintenance_v1") else 1)' ); then
+    log "ERROR [E_BOOTSTRAP_REQUIRED]: run install.sh --refresh from a verified checkout before updating"
+    FAIL_CODE=E_BOOTSTRAP_REQUIRED
+    FAIL_MESSAGE="update runner missing or incapable; run install.sh --refresh"
+    printf 'error' > "$STATUS_FILE"
+    exit 1
+fi
+
 # Temporary directory for clone
-TMPDIR=$(mktemp -d /tmp/sa02m-web-update-XXXXXX)
-chmod 755 "$TMPDIR"
+if ! CLONE_TMP=$(mktemp -d /tmp/sa02m-web-update-XXXXXX) || [ -z "$CLONE_TMP" ]; then
+    CLONE_TMP=""
+    log "ERROR: mktemp для клона не удался"
+    printf 'error' > "$STATUS_FILE"
+    exit 1
+fi
+trap cleanup EXIT
+chmod 755 "$CLONE_TMP"
 
 log "Клонирование репозитория..."
 if ! git -c http.lowSpeedLimit=1000 -c http.lowSpeedTime=30 \
-    clone --depth=1 --branch "$BRANCH" "$REPO_URL" "$TMPDIR/repo" 2>&1 | tee -a "$LOGFILE"; then
+    clone --depth=1 --branch "$BRANCH" "$REPO_URL" "$CLONE_TMP/repo" 2>&1 | tee -a "$LOGFILE"; then
     log "ERROR: git clone не удался"
     printf 'error' > "$STATUS_FILE"
     exit 1
 fi
 
 # Trust gate after clone (plan §2.9)
-remote_url=$(git -C "$TMPDIR/repo" remote get-url origin 2>/dev/null || echo "")
+remote_url=$(git -C "$CLONE_TMP/repo" remote get-url origin 2>/dev/null || echo "")
 if ! repo_url_allowed "$remote_url"; then
     log "ERROR: cloned remote URL not in allowlist: $remote_url"
     printf 'error' > "$STATUS_FILE"
     exit 1
 fi
 
-NEW_COMMIT=$(git -C "$TMPDIR/repo" rev-parse HEAD 2>/dev/null || echo "")
+NEW_COMMIT=$(git -C "$CLONE_TMP/repo" rev-parse HEAD 2>/dev/null || echo "")
 if [ -z "$NEW_COMMIT" ]; then
     log "ERROR: cannot resolve cloned HEAD"
     printf 'error' > "$STATUS_FILE"
@@ -303,13 +305,12 @@ else
     fi
 fi
 
-# Shared runner handoff when installed and capable of source=github (plan §2.9).
-# Bootstrap N: runner may be absent or not yet understand github overlay → legacy.
+# Hand off only to the capable installed runner. Full refresh owns bootstrap.
 handoff_to_shared_runner() {
     [ -x "$RUNNER" ] || return 1
-    # Runner must mention github trust path; otherwise keep legacy www rsync.
-    if ! grep -qE 'source=.github.|overlay_path|SA02M_UPDATE_GITHUB' "$RUNNER" 2>/dev/null; then
-        log "WARN: $RUNNER present but no github handoff support yet — legacy deploy"
+    # Recheck capabilities before reserving the staged overlay.
+    if ! "$RUNNER" capabilities | python3 -c 'import json,sys; d=json.load(sys.stdin); sys.exit(0 if d.get("control_v1") and d.get("port_maintenance_v1") else 1)' 2>/dev/null; then
+        log "ERROR [E_BOOTSTRAP_REQUIRED]: runner capabilities changed; full refresh required"
         return 1
     fi
 
@@ -318,8 +319,8 @@ handoff_to_shared_runner() {
         prev_ver=$(tr -d '\r' <"$WEB_ROOT/VERSION" | grep -E '^[0-9]+(\.[0-9]+){1,3}$' | head -1 || true)
     fi
     local target_ver=""
-    if [ -f "$TMPDIR/repo/www/network_config/VERSION" ]; then
-        target_ver=$(tr -d '\r' <"$TMPDIR/repo/www/network_config/VERSION" | grep -E '^[0-9]+(\.[0-9]+){1,3}$' | head -1 || true)
+    if [ -f "$CLONE_TMP/repo/www/network_config/VERSION" ]; then
+        target_ver=$(tr -d '\r' <"$CLONE_TMP/repo/www/network_config/VERSION" | grep -E '^[0-9]+(\.[0-9]+){1,3}$' | head -1 || true)
     fi
 
     mkdir -p "$UPDATE_STATEDIR" "$UPDATE_STATEDIR/state" "$UPDATE_STATEDIR/incoming"
@@ -329,17 +330,9 @@ handoff_to_shared_runner() {
     # so a contender never truncates the holder's pid line): a live runner holds
     # it, so this launcher cannot write transaction.json over its transaction —
     # by construction, not by the stage list above. fd 9 is not close-on-exec,
-    # so the lock rides into the runner; its try_lock re-opens fd 9 on the same
-    # path — closing this description (the lock drops) and `flock -n 9` re-takes
-    # it in the same process at once: no deadlock, no second lock file, and the
-    # only unguarded instant is the one every runner entry point already has
-    # between its open and its flock. The pid line stays the runner's to write.
-    # A busy lock refuses whatever holds it (a missing flock(1) refuses too —
-    # the safe side). The pre-clone guard ran 30–60 s ago: a runner that became
-    # alive since and is between its lock holds (the cgroup handover closes fd 9
-    # for a moment) is caught by the re-check UNDER the lock, before the write.
-    # Harness: scripts/dev/test-web-update-launcher-guard.sh L9–L11.
-    exec 9>>"$UPDATE_STATEDIR/update.lock"
+    # so the lock rides into the runner. Its try_lock reuses this open file
+    # description; it never closes and reopens a held descriptor. The recheck
+    # below protects the journal immediately before atomic replacement.
     if ! flock -n 9; then
         read_txn
         log "ERROR: обновление уже выполняется (лок $UPDATE_STATEDIR/update.lock занят; txn ${txn_id:-?} stage=${txn_stage:-?}) — повторный запуск отклонён"
@@ -349,16 +342,14 @@ handoff_to_shared_runner() {
     refuse_if_running "после клонирования, под локом раннера"
 
     # Keep clone for runner overlay (cleanup trap must not remove it after handoff).
-    export SA02M_UPDATE_GITHUB_OVERLAY="$TMPDIR/repo"
-    trap 'rm -f "$LOCKFILE"' EXIT
-
+    export SA02M_UPDATE_GITHUB_OVERLAY="$CLONE_TMP/repo"
     local txn_id
     txn_id=$(
-        UPDATE_STATEDIR="$UPDATE_STATEDIR" OVERLAY="$TMPDIR/repo" \
+        UPDATE_STATEDIR="$UPDATE_STATEDIR" OVERLAY="$CLONE_TMP/repo" \
         TARGET_COMMIT="$NEW_COMMIT" TARGET_VER="${target_ver:-}" PREV_VER="${prev_ver:-}" \
         REPO_URL="$REPO_URL" BRANCH="$BRANCH" \
         python3 - <<'PY'
-import json, os, time, uuid
+import json, os, tempfile, time, uuid
 from pathlib import Path
 
 statedir = Path(os.environ["UPDATE_STATEDIR"])
@@ -391,20 +382,39 @@ txn = {
     "finished_at": None,
 }
 path = statedir / "transaction.json"
-tmp = statedir / (".txn." + txn["id"])
-tmp.write_text(json.dumps(txn, ensure_ascii=False, indent=2, sort_keys=True) + "\n", encoding="utf-8")
-tmp.replace(path)
+if path.is_file():
+    old = json.loads(path.read_text(encoding="utf-8"))
+    if old.get("download_pending") and old.get("source") == "github":
+        txn["id"] = old["id"]
+        txn["started_at"] = old["started_at"]
+fd, tmp = tempfile.mkstemp(prefix=".txn-", dir=statedir)
+try:
+    with os.fdopen(fd, "w", encoding="utf-8") as out:
+        out.write(json.dumps(txn, ensure_ascii=False, indent=2, sort_keys=True) + "\n")
+        out.flush()
+        os.fchmod(out.fileno(), 0o644)
+        os.fsync(out.fileno())
+    os.replace(tmp, path)
+    dfd = os.open(statedir, os.O_RDONLY)
+    try:
+        os.fsync(dfd)
+    finally:
+        os.close(dfd)
+finally:
+    if os.path.exists(tmp):
+        os.unlink(tmp)
 print(txn["id"])
 PY
-    )
+    ) || { log "ERROR: cannot reserve downloaded overlay"; return 1; }
+    trap 'rm -f "$LOCKFILE"' EXIT
 
     if [ -z "$txn_id" ]; then
         log "ERROR: failed to write github transaction.json"
         return 1
     fi
-    log "Handoff to shared runner txn=$txn_id overlay=$TMPDIR/repo"
+    log "Handoff to shared runner txn=$txn_id overlay=$CLONE_TMP/repo"
     # Do not delete clone on EXIT — runner owns overlay_path.
-    TMPDIR=""
+    CLONE_TMP=""
     rm -f "$LOCKFILE"
     printf 'running' > "$STATUS_FILE"
     exec "$RUNNER" apply
@@ -413,180 +423,6 @@ PY
 if handoff_to_shared_runner; then
     : # exec never returns
 fi
-log "Using legacy rsync deploy (shared runner missing or github handoff unavailable)"
-
-log "Деплой веб-файлов в $WEB_ROOT..."
-# rsync --delete so files removed in a newer release do NOT linger on the
-# device (a stale/vulnerable CGI would keep serving). Fall back to a purge+cp
-# where rsync is unavailable. Mirrors the installer's find -delete + copy.
-if command -v rsync >/dev/null 2>&1; then
-    if ! rsync -a --delete "$TMPDIR/repo/www/network_config/" "$WEB_ROOT/" 2>&1 | tee -a "$LOGFILE"; then
-        log "ERROR: rsync не удался"
-        printf 'error' > "$STATUS_FILE"
-        exit 1
-    fi
-else
-    find "$WEB_ROOT" -mindepth 1 -delete 2>/dev/null || true
-    if ! cp -a "$TMPDIR/repo/www/network_config/." "$WEB_ROOT/" 2>&1 | tee -a "$LOGFILE"; then
-        log "ERROR: копирование не удалось"
-        printf 'error' > "$STATUS_FILE"
-        exit 1
-    fi
-fi
-
-# Права доступа
-find "$WEB_ROOT/cgi-bin" -name '*.cgi' -exec chmod 755 {} \; 2>/dev/null || true
-find "$WEB_ROOT/static" \( -name '*.css' -o -name '*.js' \) -exec chmod 644 {} \; 2>/dev/null || true
-chmod 644 "$WEB_ROOT/index.html" "$WEB_ROOT/login.html" 2>/dev/null || true
-chown -R www-data:www-data "$WEB_ROOT" 2>/dev/null || true
-
-# Обновляем вспомогательные скрипты из репозитория
-for src in etc/sa02m-web-build-lib.sh etc/sa02m-web-update-check.sh etc/sa02m-web-update-apply.sh etc/sa02m-web-auth-lib.sh etc/sa02m-repair-web-env.sh etc/sa02m-web-root-cmd.sh etc/sa02m-update-runner.sh etc/sa02m-update-inspect.sh; do
-    if [ -f "$TMPDIR/repo/$src" ]; then
-        tgt="/usr/local/sbin/$(basename "${src%.sh}")"
-        if [ "$src" = "etc/sa02m-web-auth-lib.sh" ]; then
-            tgt="/usr/local/lib/sa02m-web-auth-lib.sh"
-            atomic_install_script -m 644 "$TMPDIR/repo/$src" "$tgt"
-        elif [ "$src" = "etc/sa02m-web-build-lib.sh" ]; then
-            tgt="/usr/local/lib/sa02m-web-build-lib.sh"
-            atomic_install_script -m 644 "$TMPDIR/repo/$src" "$tgt"
-        elif [ "$src" = "etc/sa02m-web-root-cmd.sh" ]; then
-            tgt="/usr/local/sbin/sa02m-web-root-cmd.sh"
-            atomic_install_script -m 755 "$TMPDIR/repo/$src" "$tgt"
-        elif [ "$src" = "etc/sa02m-update-runner.sh" ]; then
-            mkdir -p /usr/local/libexec
-            tgt="/usr/local/libexec/sa02m-update-runner"
-            atomic_install_script -m 755 "$TMPDIR/repo/$src" "$tgt"
-        elif [ "$src" = "etc/sa02m-update-inspect.sh" ]; then
-            mkdir -p /usr/local/libexec
-            tgt="/usr/local/libexec/sa02m-update-inspect"
-            atomic_install_script -m 755 "$TMPDIR/repo/$src" "$tgt"
-        else
-            atomic_install_script -m 755 "$TMPDIR/repo/$src" "$tgt"
-        fi
-        log "Обновлён $tgt"
-    fi
-done
-# Privileged config-apply helpers from usr/local/sbin. The sudoers block below
-# installs the pins that name these paths; shipping the pin without the helper
-# leaves a board that only ever updates this way running the OLD, trust-the-
-# caller helper while the panel reports the new version (security review
-# 1.0.6.24, F4). They live under usr/local/sbin/ precisely so every delivery
-# path — this one included — can copy them 1:1 with no rename table.
-# A helper of a module the board's install profile skips is not delivered
-# (docs/contracts/install-profile.md §4). The reader comes from this clone and
-# runs in a subshell per check (it cannot shadow this script's functions); a
-# clone without it ⇒ unchanged behaviour, said in the log when a profile exists.
-PROFILE_LIB="$TMPDIR/repo/etc/sa02m-install-profile-lib.sh"
-if [ ! -f "$PROFILE_LIB" ]; then
-    PROFILE_LIB=""
-    [ -f /etc/sa02m_install_profile.conf ] \
-        && log "WARN: install profile present, this release ships no reader — helpers delivered unfiltered"
-fi
-for src in usr/local/sbin/sa02m-gateway-config-apply.sh \
-           usr/local/sbin/sa02m-mqtt-config-apply.sh \
-           usr/local/sbin/sa02m-cloud-web-trigger.sh \
-           usr/local/sbin/sa02m-agent-api-ctl.sh \
-           usr/local/sbin/sa02m-agent-token-store.sh \
-           usr/local/sbin/sa02m-agent-root-cap.sh \
-           usr/local/sbin/sa02m-agent-root-exec.sh \
-           usr/local/sbin/sa02m-rules-store-apply.sh \
-           usr/local/sbin/sa02m-user-unit.sh \
-           usr/local/sbin/sa02m-agent-journal.sh; do
-    tgt="/usr/local/sbin/$(basename "$src")"
-    if [ -n "$PROFILE_LIB" ] && ( . "$PROFILE_LIB" && sa02m_profile_path_excluded "$tgt" ); then
-        log "$tgt: модуль пропущен профилем установки"
-        continue
-    fi
-    if [ -f "$TMPDIR/repo/$src" ]; then
-        atomic_install_script -m 755 "$TMPDIR/repo/$src" "$tgt"
-        log "Обновлён $tgt"
-    fi
-done
-
-# tmpfiles: runtime paths the deployed tree needs but www-data cannot create
-# under root-owned /run (the login-throttle store — without it the lockout in
-# lib_web_auth.sh fails OPEN, security review 1.0.6.24 F1; the shared PCA9536
-# flock, review 1.0.6.68 B1).
-for conf in sa02m-web-login.conf sa02m-i2c-lock.conf; do
-    if [ -f "$TMPDIR/repo/etc/tmpfiles.d/$conf" ]; then
-        install -m 644 "$TMPDIR/repo/etc/tmpfiles.d/$conf" "/etc/tmpfiles.d/$conf"
-        sed -i 's/\r$//' "/etc/tmpfiles.d/$conf"
-        if command -v systemd-tmpfiles >/dev/null 2>&1; then
-            systemd-tmpfiles --create "/etc/tmpfiles.d/$conf" >>"$LOGFILE" 2>&1 || true
-        fi
-        log "Обновлён /etc/tmpfiles.d/$conf"
-    fi
-done
-
-# Bootstrap updater libs from the same clone when present (release N → N+1).
-if [ -d "$TMPDIR/repo/opt/sa02m-update" ]; then
-    mkdir -p /opt/sa02m-update
-    if command -v rsync >/dev/null 2>&1; then
-        rsync -a --delete --exclude '__pycache__' --exclude '*.pyc' \
-            "$TMPDIR/repo/opt/sa02m-update/" /opt/sa02m-update/ 2>&1 | tee -a "$LOGFILE" || true
-    else
-        cp -a "$TMPDIR/repo/opt/sa02m-update/." /opt/sa02m-update/ 2>&1 | tee -a "$LOGFILE" || true
-    fi
-    log "Обновлён /opt/sa02m-update"
-fi
-# sudoers: install the committed single-home file WHOLESALE (audit B1, home 6).
-#
-# This used to APPEND the sa02m-web-root-cmd.sh grant when it was missing. An
-# append can only ever WIDEN: it never removes a stale dangerous grant, and it
-# falsified the "installed WHOLESALE … no append-if-missing" claim in the file's
-# own header. It could not simply be deleted either — this legacy rsync path
-# deploys no /etc/sudoers.d file of its own (see the helper loop above), so a
-# board that only ever updated this way would stop converging altogether.
-# Installing the committed file whole does both jobs: the root-cmd grant lands,
-# and a stale grant is REMOVED. Validate before activating — a malformed
-# drop-in breaks sudo globally.
-if [ -f "$TMPDIR/repo/etc/sudoers.d/sa02m-www" ]; then
-    _sud_tmp=$(mktemp 2>/dev/null) || _sud_tmp=""
-    if [ -n "$_sud_tmp" ]; then
-        sed 's/\r$//' "$TMPDIR/repo/etc/sudoers.d/sa02m-www" > "$_sud_tmp"
-        if ! command -v visudo >/dev/null 2>&1 || visudo -cf "$_sud_tmp" >>"$LOGFILE" 2>&1; then
-            install -m 0440 -o root -g root "$_sud_tmp" /etc/sudoers.d/sa02m-www \
-                && log "Обновлён /etc/sudoers.d/sa02m-www (установлен целиком)"
-        else
-            log "WARN: visudo отклонил etc/sudoers.d/sa02m-www — живой файл не тронут"
-        fi
-        rm -f "$_sud_tmp"
-    fi
-fi
-if [ -x /usr/local/sbin/sa02m-repair-web-env ]; then
-    /usr/local/sbin/sa02m-repair-web-env >>"$LOGFILE" 2>&1 || true
-fi
-
-# Записываем задеплоенный коммит
-if [ -n "$NEW_COMMIT" ]; then
-    printf '%s\n' "$NEW_COMMIT" > "$STATEDIR/deployed_commit"
-    date -u +%Y-%m-%dT%H:%M:%SZ > "$STATEDIR/deployed_at"
-    chmod 644 "$STATEDIR/deployed_commit" "$STATEDIR/deployed_at" 2>/dev/null || true
-    mkdir -p "$UPDATE_STATEDIR/state" 2>/dev/null || true
-    printf '%s\n' "$NEW_COMMIT" > "$UPDATE_STATEDIR/state/deployed_commit" 2>/dev/null || true
-    date -u +%Y-%m-%dT%H:%M:%SZ > "$UPDATE_STATEDIR/state/deployed_at" 2>/dev/null || true
-    log "Задеплоен коммит $NEW_COMMIT"
-fi
-
-if type write_web_build_conf_branch >/dev/null 2>&1; then
-    # Persist the branch we actually targeted — NEVER the deployed VERSION.
-    # Releases live on main and version-named branches are deleted post-merge,
-    # so writing a version here re-poisons the conf that resolve_web_build_branch
-    # reads on the next check (1.0.5.75: false network_or_git_failed). A bare
-    # version (or empty/main/HEAD) collapses to main; a real dev branch stays.
-    conf_branch="$BRANCH"
-    if [ -z "$conf_branch" ] || [ "$conf_branch" = "HEAD" ] \
-       || printf '%s' "$conf_branch" | grep -qE '^[0-9]+(\.[0-9]+){1,3}$'; then
-        conf_branch=main
-    fi
-    write_web_build_conf_branch "$conf_branch" && log "Записан /etc/sa02m_web_build.conf branch=$conf_branch"
-fi
-
-# Сбрасываем кэш check.json
-rm -f "$STATEDIR/check.json" 2>/dev/null || true
-# Сбрасываем кэш status.cgi (JS/CSS обновились — новая версия в браузере сразу)
-rm -f /tmp/sa02m_status_cache/*.json /tmp/sa02m_status_cache/*.lock 2>/dev/null || true
-
-log "DONE: обновление завершено успешно"
-printf 'done' > "$STATUS_FILE"
+log "ERROR [E_BOOTSTRAP_REQUIRED]: run install.sh --refresh from a verified checkout before updating"
+printf 'error' > "$STATUS_FILE"
+exit 1

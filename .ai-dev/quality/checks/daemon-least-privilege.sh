@@ -2,7 +2,8 @@
 # daemon-least-privilege.sh — quality row `daemon-least-privilege`.
 #
 # The HomeKit bridge listens on the LAN before it is paired; the Home Connect
-# client talks to a foreign cloud. Neither may hold group `www-data`: that
+# client talks to a foreign cloud; the audio recorder holds a microphone. None
+# may hold group `www-data`: that
 # group reads the panel credentials (/etc/sa02m_web.env 0640 root:www-data),
 # the gateway YAML, every Alice conf and the CSRF files (bench-session audit,
 # 2026-09-28, MED). Each daemon gets exactly what it needs instead, through
@@ -29,11 +30,19 @@
 # The group can come from TWO homes, both are read (quality-gate-rigor.md
 # shape (b)): the unit's User=/Group=/SupplementaryGroups=, and the account's
 # own /etc/group membership (the installer's useradd/usermod/gpasswd/adduser).
-# No third home ships in this repo (no drop-in for either unit). An ALLOW-LIST,
-# not a denylist: the units carry NO SupplementaryGroups= line at all; the
-# only membership adds are the two exact lines of the sa02m-alice-devices group
-# in 06c (its name pinned too, so it cannot be pointed at www-data), and
-# otherwise membership is only ever REMOVED (www-data, the upgrade path).
+# No third home ships in this repo (no drop-in for any of the units). An
+# ALLOW-LIST, not a denylist: a unit carries a SupplementaryGroups= line only
+# where its row allows one, and then exactly that line — the audio recorder's
+# `SupplementaryGroups=audio` (/dev/snd is root:audio 0660), the other two
+# none; the only membership adds are the two exact lines of the
+# sa02m-alice-devices group in 06c (its name pinned too, so it cannot be
+# pointed at www-data), and otherwise membership is only ever REMOVED
+# (www-data, the upgrade path).
+# The audio recorder's store is READ by the panel (docs/contracts/
+# audio-recorder.md §13): its tmpfiles conf must make the store and rec/
+# sa02m-audio:www-data 2750 and tmp/ 0700 for the daemon alone, and the
+# helper must probe www-data reading, not writing, those dirs and not entering
+# tmp/ — pinned below.
 #
 # The grant's files are pinned in usr/local/sbin/sa02m-daemon-access.sh (the
 # owner/group/mode it re-asserts and the probes it runs as the daemon), and
@@ -69,10 +78,11 @@ bad() { printf 'FAIL  %s\n' "$1"; fails=$((fails + 1)); }
 HELPER=usr/local/sbin/sa02m-daemon-access.sh
 ALICE_TMPFILES=etc/tmpfiles.d/sa02m-alice.conf
 
-# name|unit|installer|tmpfiles|user|user-var|run dir|conf dir|conf|allowed membership adds (~-separated, exact)
+# name|unit|installer|tmpfiles|user|user-var|run dir|conf dir|conf|allowed membership adds (~-separated, exact)|allowed SupplementaryGroups= value (exact; empty = no line)
 DAEMONS=(
   "homekit|etc/systemd/system/sa02m-homekit.service|scripts/06c-homekit.sh|opt/sa02m-homekit/tmpfiles.d/sa02m-homekit.conf|sa02m-homekit|HK_USER|/run/sa02m-homekit|/etc/sa02m-homekit|/etc/sa02m-homekit/sa02m-homekit.conf|gpasswd -a \"\$HK_USER\" \"\$HK_DEVDOC_GROUP\" >>\"\$LOG_FILE\" 2>&1 \\~if gpasswd -a www-data \"\$HK_DEVDOC_GROUP\" >>\"\$LOG_FILE\" 2>&1; then"
-  "homeconnect|etc/systemd/system/sa02m-homeconnect.service|scripts/06d-homeconnect.sh|opt/sa02m-homeconnect/tmpfiles.d/sa02m-homeconnect.conf|sa02m-homeconnect|HC_USER|/run/sa02m-homeconnect|/etc/sa02m-homeconnect|/etc/sa02m-homeconnect/sa02m-homeconnect.conf|"
+  "homeconnect|etc/systemd/system/sa02m-homeconnect.service|scripts/06d-homeconnect.sh|opt/sa02m-homeconnect/tmpfiles.d/sa02m-homeconnect.conf|sa02m-homeconnect|HC_USER|/run/sa02m-homeconnect|/etc/sa02m-homeconnect|/etc/sa02m-homeconnect/sa02m-homeconnect.conf||"
+  "audio|etc/systemd/system/sa02m-audio.service|scripts/15-audio.sh|opt/sa02m-audio/tmpfiles.d/sa02m-audio.conf|sa02m-audio|AU_USER|/run/sa02m-audio|/etc/sa02m-audio|/etc/sa02m-audio/sa02m-audio.conf||audio"
 )
 
 # A line adds an account to a group.
@@ -86,7 +96,7 @@ for f in "$HELPER" "$ALICE_TMPFILES"; do
 done
 
 for row in "${DAEMONS[@]}"; do
-  IFS='|' read -r name unit inst tmpf user uvar rundir confdir conf allowed <<<"$row"
+  IFS='|' read -r name unit inst tmpf user uvar rundir confdir conf allowed supp <<<"$row"
   for f in "$unit" "$inst" "$tmpf"; do
     [ -f "$f" ] || { bad "$name: missing $f"; continue 2; }
   done
@@ -95,9 +105,18 @@ for row in "${DAEMONS[@]}"; do
   # ── unit ──
   if text_matches "$u" "^[[:space:]]*User=${user}[[:space:]]*$"; then ok "$name: unit runs as User=$user"
   else bad "$name: $unit has no live User=$user line (nothing to judge)"; fi
-  if text_matches "$uw" '^[[:space:]]*SupplementaryGroups='; then
-    bad "$name: $unit carries a SupplementaryGroups= line — the daemon needs none (allow-list: empty)"
-  else ok "$name: unit carries no SupplementaryGroups="; fi
+  supp_lines=$(grep -E '^[[:space:]]*SupplementaryGroups=' <<<"$uw" || true)
+  if [ -z "$supp" ]; then
+    if [ -n "$supp_lines" ]; then
+      bad "$name: $unit carries a SupplementaryGroups= line — the daemon needs none (allow-list: empty)"
+    else ok "$name: unit carries no SupplementaryGroups="; fi
+  else
+    supp_live=$(grep -E '^[[:space:]]*SupplementaryGroups=' <<<"$u" || true)
+    if [ "$(printf '%s\n' "$supp_lines" | grep -c .)" = 1 ] \
+       && [ "$(printf '%s' "$supp_live" | tr -d '[:space:]')" = "SupplementaryGroups=$supp" ]; then
+      ok "$name: unit carries exactly SupplementaryGroups=$supp (allow-list)"
+    else bad "$name: $unit must carry exactly one line SupplementaryGroups=$supp, found: [$(tr '\n' ' ' <<<"$supp_lines")]"; fi
+  fi
   if text_matches "$uw" '^[[:space:]]*(User|Group|DynamicUser)=.*www-data'; then
     bad "$name: $unit names www-data in User=/Group="
   else ok "$name: unit names no www-data in User=/Group="; fi
@@ -134,6 +153,15 @@ for row in "${DAEMONS[@]}"; do
     else bad "$name: $inst lacks HK_DEVDOC_GROUP=sa02m-alice-devices — the allowed adds would join an unknown group"; fi
     if text_has "$ip" 'groupadd --system "$HK_DEVDOC_GROUP"'; then ok "$name: $inst creates the device-document group"
     else bad "$name: $inst lacks groupadd --system \"\$HK_DEVDOC_GROUP\""; fi
+  fi
+  if [ "$name" = audio ]; then
+    at=$(stripped_text_inline "$tmpf")
+    for pin in '^d[[:space:]]+/var/lib/sa02m-audio[[:space:]]+2750[[:space:]]+sa02m-audio[[:space:]]+www-data[[:space:]]' \
+               '^d[[:space:]]+/var/lib/sa02m-audio/rec[[:space:]]+2750[[:space:]]+sa02m-audio[[:space:]]+www-data[[:space:]]' \
+               '^d[[:space:]]+/var/lib/sa02m-audio/tmp[[:space:]]+0700[[:space:]]+sa02m-audio[[:space:]]+sa02m-audio[[:space:]]'; do
+      if text_matches "$at" "$pin"; then ok "$name: tmpfiles pin $pin"
+      else bad "$name: $tmpf lacks the line $pin (the panel reads the store, never tmp/)"; fi
+    done
   fi
   if text_has "$ip" "gpasswd -d \"\$${uvar}\" www-data"; then ok "$name: $inst drops an upgraded account out of www-data"
   else bad "$name: $inst lacks the upgrade removal gpasswd -d \"\$${uvar}\" www-data"; fi
@@ -190,6 +218,11 @@ for pin in \
   'probe yes "$WEB_USER" r "$CONF"' \
   'probe yes "$WEB_USER" w "$CONF_DIR"' \
   'probe no "$DAEMON" r "$f"' \
+  'probe yes "$WEB_USER" r "$d"' \
+  'probe no "$WEB_USER" w "$d"' \
+  'probe no "$WEB_USER" x "$d"' \
+  'WEB_READ_DIRS="/var/lib/sa02m-audio /var/lib/sa02m-audio/rec"' \
+  'PRIVATE_DIRS="/var/lib/sa02m-audio/tmp"' \
   'setpriv) timeout 5 setpriv --reuid="$uid" --regid="$gid" --groups="${grps// /,}"' \
   '*" ${WEB_GID:-none} "*) fail "$DAEMON состоит в группе $WEB_USER'; do
   if text_has "$h" "$pin"; then ok "helper: $pin"

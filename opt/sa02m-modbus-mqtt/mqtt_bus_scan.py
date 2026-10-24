@@ -1026,6 +1026,14 @@ def _wait_uart_free(port: str, timeout_s: float = 2.0) -> bool:
         time.sleep(0.05)
 
 
+def _coordinator_lease(port):
+    package = Path(__file__).resolve().parent.parent / "sa02m-port-coordinator"
+    if str(package) not in sys.path:
+        sys.path.insert(0, str(package))
+    from sa02m_ports import Lease
+    return Lease(port, "scan")
+
+
 @contextmanager
 def poll_lease(spec: dict):
     """Pause the bridge poll of this line before the caller opens it.
@@ -1037,6 +1045,13 @@ def poll_lease(spec: dict):
     When the socket answers, only the requested line is paused. A socket
     that refuses the lease still fails closed.
     """
+    if spec.get("via") == "com":
+        try:
+            with _coordinator_lease(spec.get("port")) as lease:
+                yield lease.status
+        except RuntimeError as exc:
+            raise PollLeaseError(str(exc)) from exc
+        return
     sock = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
     idle = False
     try:
@@ -1166,6 +1181,7 @@ def main() -> None:
     except PollLeaseError as exc:
         _write_json({"ok": False, "error": str(exc), "devices": []})
         return
+    completion = None
     try:
         try:
             if not Path(port).exists():
@@ -1184,7 +1200,7 @@ def main() -> None:
                     "com", phase, baud, max_addr - addr_from + 1),
                 _write_json)
             with serial.Serial(port, baud, bytesize=8, parity="N", stopbits=1,
-                               timeout=0.1) as ser:
+                               timeout=0.1, exclusive=True) as ser:
                 time.sleep(0.05)
                 devices, scan_method, seen = _fast_then_standard(
                     ser, max_addr, phase=phase, known=known, baudrate=baud,
@@ -1210,7 +1226,7 @@ def main() -> None:
                             port, extra, max_addr, seen, emit=_write_json,
                             on_step=progress.step, addr_from=addr_from))
 
-            _write_json({
+            completion = {
                 "event": "done",
                 "ok": True,
                 "devices": devices,
@@ -1218,7 +1234,7 @@ def main() -> None:
                 "baudrate": baud,
                 "scan_method": scan_method,
                 "phase": phase,
-            })
+            }
         except FileNotFoundError as e:
             _write_json({"ok": False, "error": str(e), "devices": []})
         except serial.SerialException as e:
@@ -1228,7 +1244,15 @@ def main() -> None:
         except Exception as e:
             _write_json({"ok": False, "error": str(e), "devices": []})
     finally:
-        _lease.__exit__(None, None, None)
+        try:
+            _lease.__exit__(None, None, None)
+        except Exception as exc:
+            completion = {"event": "done", "ok": False,
+                          "operation_ok": bool(completion and completion.get("ok")),
+                          "restoration_pending": True, "error": str(exc),
+                          "devices": (completion or {}).get("devices", [])}
+        if completion is not None:
+            _write_json(completion)
 
 
 def _mtd_stop2_pass(port, baud, max_addr, already, emit=None, on_step=None,
@@ -1242,7 +1266,7 @@ def _mtd_stop2_pass(port, baud, max_addr, already, emit=None, on_step=None,
     found = []
     try:
         ser = serial.Serial(
-            port, baud, bytesize=8, parity="N", stopbits=2, timeout=0.1)
+            port, baud, bytesize=8, parity="N", stopbits=2, timeout=0.1, exclusive=True)
     except Exception:
         # The pass did not run. Count its addresses so the bar does not
         # sit short of 100 until the final line.

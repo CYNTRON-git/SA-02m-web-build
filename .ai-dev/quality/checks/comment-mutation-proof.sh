@@ -137,6 +137,17 @@ mqtt-tcp-probe-contract|www/network_config/cgi-bin/mqtt_tcp_probe.cgi|web_csrf_v
 mqtt-set-contract|www/network_config/cgi-bin/mqtt_set.cgi|timeout 5 mosquitto_pub
 mqtt-set-contract|www/network_config/cgi-bin/mqtt_set.cgi|web_csrf_validate
 web-update-csrf-contract|www/network_config/cgi-bin/web_update_apply.cgi|web_csrf_validate
+web-update-csrf-contract|www/network_config/cgi-bin/lib_web_update_control.sh|out=$(sudo -n /usr/local/libexec/sa02m-update-control
+web-update-csrf-contract|etc/sa02m-update-control.sh|exec /usr/bin/python3 -I -c
+sudoers-pin-contract|etc/sudoers.d/sa02m-www|/usr/local/libexec/sa02m-update-control,
+sudoers-pin-contract|etc/sa02m-web-update-apply.sh|exec "$RUNNER" apply
+sudoers-pin-contract|scripts/lib.sh|if chmod 0440 "$_p" 2>/dev/null; then
+sudoers-pin-contract|etc/sa02m-update-runner.sh|if chmod 0440 "$_path" 2>/dev/null; then
+sudoers-pin-contract|etc/sa02m-update-runner.sh|_now=$(stat -c
+unit-shutdown-semantics|etc/sa02m-shutdown-marker.service|Conflicts=shutdown.target
+unit-shutdown-semantics|scripts/01-system.sh|sa02m_atomic_install -m 644 "$ETC_REPO/sa02m-shutdown-marker.service"
+unit-shutdown-semantics|scripts/01-system.sh|sa02m_svc_apply sa02m-shutdown-marker.service infra start
+unit-shutdown-semantics|etc/sa02m-pre-start.sh|SA02M_CLEAN_MARKER=/var/lib/sa02m-clean-shutdown
 i18n-dict-contract|www/network_config/static/js/i18n.js|'"'"'Сеть'"'"': '"'"'Network'"'"',
 no-eschtml-in-attr|www/network_config/static/js/app.js|function escAttr(
 sh-model-schema|.ai-dev/quality/checks/sh-model-schema.sh|negatives.append(("point missing required
@@ -185,6 +196,8 @@ firstboot-sb-csum|etc/sa02m-rootfs-expand.sh|sync_files "$RESULT" "$DONE" "$LOG"
 cgi-csrf-policy|www/network_config/cgi-bin/mqtt_scan.cgi|web_csrf_validate
 cgi-csrf-policy|www/network_config/cgi-bin/web_update_check.cgi|web_csrf_require
 cgi-csrf-policy|www/network_config/cgi-bin/services_ctrl.cgi|web_csrf_require
+cgi-csrf-policy|www/network_config/cgi-bin/web_update_cancel.cgi|web_csrf_require
+board-verifier-safety|scripts/dev/verify-release-on-board.sh|verdict(7, found and unchanged,
 firstboot-overlay-parity|tools/imaging/firstboot-overlay/usr/local/bin/fix-eth.sh|dns_ensure "$iface"
 firstboot-sb-csum|etc/sa02m-rootfs-expand.sh|rm -f "$RESULT.tmp"
 update-recover-boot|etc/systemd/sa02m-update-verify.service|ExecStart=/usr/local/libexec/sa02m-update-runner verify
@@ -221,8 +234,9 @@ install-profile|etc/sa02m-update-runner.sh|prepare_profile_excludes "$txn"
 install-profile|etc/sa02m-update-runner.sh|skipped.append(fields[1])
 install-profile|scripts/update-www-only.sh|log INFO "/usr/local/sbin/$_h: модуль пропущен профилем установки"
 install-profile|scripts/update-www-only.sh|log INFO "/etc/sudoers.d/$_sud: модуль пропущен профилем установки"
-install-profile|etc/sa02m-web-update-apply.sh|log "$tgt: модуль пропущен профилем установки"
+install-profile|etc/sa02m-web-update-apply.sh|exec "$RUNNER" apply
 install-profile|www/network_config/cgi-bin/sa02m_agent_api.cgi|echo '"'"'{"ok":true,"state":"not_installed"
+i2c2-bus-recovery|etc/sa02m-pre-start.sh|sa02m_i2c2_gpio_recover || true
 ota-dst-allowlist-parity|opt/sa02m-update/lib/validate_package.py|re.compile(r"^/etc/nginx/"),
 ota-dst-allowlist-parity|scripts/pack-offline-update.py|r"etc/systemd/system/sa02m-|"
 ota-dst-allowlist-parity|etc/sa02m-update-runner.sh|r"etc/systemd/system/sa02m-|"
@@ -236,6 +250,8 @@ cgi-csrf-policy|opt/sa02m-devices/sa02m_devices/api.py|check_csrf(
 js-post-csrf-headers|www/network_config/static/js/devices.js|? withCsrfHeaders({ "Content-Type": "application/json" })
 websession-parity|opt/sa02m-devices/sa02m_devices/websession.py|def check_csrf(
 devices-api-upstream|etc/nginx/network_config.conf|server unix:/run/sa02m-devices/api.sock;
+devices-api-upstream|opt/sa02m-devices/sa02m_devices/stand_socket_group.py|def when_ready(server):
+devices-api-upstream|etc/systemd/system/sa02m-stand-api.service.d/20-devices-socket-group.conf|Environment=GUNICORN_CMD_ARGS=--config=/opt/sa02m-devices/sa02m_devices/stand_socket_group.py
 homekit-trigger|usr/local/sbin/sa02m-homekit-web-trigger.sh|hk_write_disabled_status "$since"
 homekit-trigger|usr/local/sbin/sa02m-homekit-web-trigger.sh|rm -f -- "$VAR_DIR/state.json" 2>/dev/null || true
 homekit-trigger|usr/local/sbin/sa02m-homekit-web-trigger.sh|out=${out//[^[:print:]]/ }
@@ -290,6 +306,25 @@ daemon-access-effect|usr/local/sbin/sa02m-daemon-access.sh|probe yes "$DAEMON" r
 daemon-access-effect|usr/local/sbin/sa02m-daemon-access.sh|ops+=("f:$CONF:0640:$WEB_UID:$DAEMON_GID:${WEB_GID:-x},$DAEMON_GID")
 daemon-access-effect|usr/local/sbin/sa02m-daemon-access.sh|os.fchown(fd, uid, gid)
 spodes-no-gpl|opt/sa02m-modbus-mqtt/bridge_bus.py|"mixed_framing"
+audio-trigger|usr/local/sbin/sa02m-audio-web-trigger.sh|timeout 10 systemctl stop "$UNIT" >/dev/null 2>&1 || true
+audio-trigger|usr/local/sbin/sa02m-audio-web-trigger.sh|au_log "conf read of $CONF gave no 0/1 answer
+audio-cgi|www/network_config/cgi-bin/sa02m_audio_api.cgi|TRIG_OUT=$(timeout 11 sudo -n /usr/local/sbin/sa02m-audio-web-trigger.sh "$VERB" 2>/dev/null) || TRIG_RC=$?
+audio-cgi|www/network_config/cgi-bin/sa02m_audio_api.cgi|au_audit "publish ${TOPIC##*/controls/}=$PAYLOAD result=$DONE"
+cgi-csrf-policy|www/network_config/cgi-bin/sa02m_audio_api.cgi|web_csrf_validate
+sudoers-pin-contract|etc/sudoers.d/sa02m-audio|/usr/local/sbin/sa02m-audio-web-trigger.sh restart
+installer-order|install.sh|sa02m_run_module 15-audio.sh
+installer-svc-policy-gate|scripts/15-audio.sh|sa02m_svc_capture "$UNIT"
+daemon-least-privilege|etc/systemd/system/sa02m-audio.service|SupplementaryGroups=audio
+daemon-access-effect|usr/local/sbin/sa02m-daemon-access.sh|probe no "$WEB_USER" w "$d"
+mqtt-acl-audio|etc/mosquitto/acl_default.conf|topic deny /devices/sa02m-audio/controls/+/on
+mqtt-acl-audio|scripts/15-audio.sh|au_acl_migrate /etc/mosquitto/acl/default.conf
+daemon-access-effect|usr/local/sbin/sa02m-daemon-access.sh|EXTRA_FILES="/etc/sa02m-audio/upload.token /etc/sa02m-audio/voice-allow.json"
+devices-python-api-contract|opt/sa02m-devices/sa02m_devices/device_history_db.py|custom_range_key,
+web-port-persist|install.sh|sa02m_web_port_persist "$_ARG_PORT" || exit 2
+web-port-persist|scripts/lib.sh|port=$(sa02m_web_port_effective)
+web-port-persist|scripts/11-devices.sh|&& sa02m_render_nginx_site "$ETC_DIR/nginx/network_config.conf" "$WEB_ROOT"; then
+web-port-persist|etc/sa02m-update-runner.sh|if ! localize_staged_package_port "$txn"; then
+web-port-persist|etc/sa02m-web-port-lib.sh|[ "$1" -le 65535 ]
 '
 
 command -v git >/dev/null 2>&1 || { echo "comment-mutation-proof: FAIL — git is required to build the pristine copy"; exit 1; }
@@ -383,7 +418,9 @@ gate_cmd() {  # $1 = gate id ; prints the row's run command, empty when unknown
 run_gate() {  # $1 = gate id ; returns the gate's exit status
     local cmd="${ROW_RUN[$1]:-}"
     [ -n "$cmd" ] || return 2
-    ( cd "$TREE" && bash -c "$cmd" ) >/dev/null 2>&1
+    # The runner's per-row QUALITY_SKIP_LOG is THIS row's: a gate run here must
+    # not write its skips into it (run.mjs header, PARTIAL).
+    ( unset QUALITY_SKIP_LOG; cd "$TREE" && bash -c "$cmd" ) >/dev/null 2>&1
 }
 
 # The token a developer would actually use to disable a line in THIS file type.

@@ -336,11 +336,12 @@ def list_mqtt_topics() -> Dict[str, Any]:
     inv = build_mqtt_inventory()
     topics: List[str] = inventory_topics(inv)
     source = inv.get("source")
-    # The controller entry is always present, so "the yaml told us nothing" is
-    # measured by the configured devices, not by the topic count.
+    # The controller entry is always present (and the audio recorder's on every
+    # board it is installed on), so "the yaml told us nothing" is measured by
+    # the configured devices, not by the topic count.
     configured = [
         dev for dev in inv.get("devices") or []
-        if dev.get("type") != "controller"
+        if dev.get("type") not in ("controller", "audio")
     ]
     if not configured:
         for path in ROSTER_CANDIDATES:

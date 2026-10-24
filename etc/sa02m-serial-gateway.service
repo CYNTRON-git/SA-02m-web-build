@@ -1,7 +1,8 @@
 [Unit]
 Description=SA-02m RS-485 to Ethernet gateway
 Documentation=https://github.com/CYNTRON-git/SA-02m-web-build
-After=network.target
+After=network.target sa02m-port-coordinator.service
+Wants=sa02m-port-coordinator.service
 Wants=network.target
 
 [Service]

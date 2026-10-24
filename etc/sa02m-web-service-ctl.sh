@@ -156,6 +156,19 @@ flasher_blocks_com_pollers() {
     flasher_poll_lock_held
 }
 
+# UI-grade refusal for the COM pollers: a fast, clear `flasher_busy` while a
+# flash/scan holds the line. Defense in depth only — the broker's mutation
+# guard (the `ACTION:ID` dispatch below) is the atomic authority; this runs in
+# front of it so the panel gets the honest reason instead of a generic
+# `port_busy`, and once more inside cmd_start on the guarded re-exec.
+start_blocked_by_flasher() {
+    case "$1" in
+        mplc4|mqtt-bridge) flasher_blocks_com_pollers ;;
+        vplc) vplc_uses_rtu && flasher_blocks_com_pollers ;;
+        *) return 1 ;;
+    esac
+}
+
 # vPLC держит COM только в режиме RTU. Признак пишет интегратор, когда в
 # проекте есть modbus_devices mode=rtu. В режиме MQTT пуск не блокируется
 # прошивкой: шину занимает мост, не vPLC.
@@ -1678,6 +1691,42 @@ cmd_uninstall() {
 
 ACTION=${1:-}
 ID=${2:-}
+
+# The root broker serializes the entire helper operation against UART leases.
+# The inherited fd is checked by inode; a UI flag or snapshot is not authority.
+case "$ACTION:$ID" in
+    start:mplc4|stop:mplc4|install:mplc4|uninstall:mplc4|    start:codesys|stop:codesys|install:codesys|uninstall:codesys|    start:vplc|stop:vplc|start:mqtt-bridge|stop:mqtt-bridge)
+        case "$ID" in
+            mplc4) _guard_unit=mplc4.service ;;
+            codesys) _guard_unit=codesyscontrol.service ;;
+            vplc) _guard_unit=vplc.service ;;
+            mqtt-bridge) _guard_unit=sa02m-modbus-mqtt.service ;;
+        esac
+        if resolve_unit_for_id "$ID" && [ -n "$_found_unit" ]; then
+            _guard_unit=$_found_unit
+        fi
+        _guard_code='import sys; sys.path.insert(0, "/opt/sa02m-port-coordinator"); from sa02m_ports.service_guard import main; sys.exit(main())'
+        SVC_RESULT_FILE="${RESULT_DIR}/${ID}.json"
+        if [ -n "${SA02M_SERVICE_GUARD_FD:-}" ]; then
+            if ! _guard_reply=$(/usr/bin/python3 -I -c "$_guard_code" --verify "$_guard_unit"); then
+                emit_result "${_guard_reply:-{\"ok\":false,\"error\":\"coordinator_unavailable\",\"detail\":\"service guard did not answer\"\}}"
+                exit 1
+            fi
+        else
+            if [ "$ACTION" = start ] && start_blocked_by_flasher "$ID"; then
+                emit_result '{"ok":false,"error":"flasher_busy"}'
+                exit 1
+            fi
+            _guard_reply=$(/usr/bin/python3 -I -c "$_guard_code" --run "$0" "$ACTION" "$ID" "$_guard_unit")
+            _guard_rc=$?
+            # The guard prints the codes the panel maps (`coordinator_unavailable`
+            # = outage to repair, `port_busy` = a real lease/maintenance conflict);
+            # an interpreter that printed nothing is the outage case.
+            emit_result "${_guard_reply:-{\"ok\":false,\"error\":\"coordinator_unavailable\",\"detail\":\"service guard did not answer\"\}}"
+            exit "$_guard_rc"
+        fi
+        ;;
+esac
 
 case "$ACTION" in
     list)

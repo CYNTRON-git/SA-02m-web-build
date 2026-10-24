@@ -21,7 +21,6 @@ check_root
 REPO_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
 OPT_SRC="$REPO_ROOT/opt/sa02m-devices"
 ETC_DIR="$REPO_ROOT/etc"
-: "${PORT:=9999}"
 : "${WEB_ROOT:=/var/www/network_config}"
 
 if [ ! -d "$OPT_SRC/sa02m_devices" ]; then
@@ -61,10 +60,13 @@ install -d -m 0755 /var/lib/sa02m-stand
 # nginx proxy /api/devices* (если в репо есть полный conf) — rendered FIRST,
 # before the daemon is (re)started below: it sniffs this file at start to
 # decide on the TCP compat listener (see the header).
-if [ -f "$ETC_DIR/nginx/network_config.conf" ]; then
-    sed "s|__PORT__|$PORT|g; s|__WEB_ROOT__|$WEB_ROOT|g" \
-        "$ETC_DIR/nginx/network_config.conf" \
-        > /etc/nginx/sites-available/network_config
+# The port is the SAVED one (install.sh --port → /etc/sa02m_web_port.conf), not
+# an env default: this block runs from update-www-only.sh too, where no PORT is
+# set, and used to put a --port board back on 9999 (scripts/lib.sh
+# sa02m_render_nginx_site — the one renderer). A failed render leaves the live
+# site untouched and skips the relink/reload below.
+if [ -f "$ETC_DIR/nginx/network_config.conf" ] \
+    && sa02m_render_nginx_site "$ETC_DIR/nginx/network_config.conf" "$WEB_ROOT"; then
     rm -f /etc/nginx/sites-enabled/network_config \
         /etc/nginx/sites-enabled/000-sa02m-network_config
     ln -sf /etc/nginx/sites-available/network_config \
@@ -116,4 +118,38 @@ fi
 # rendered first, above the units); pinned by case 12d of
 # scripts/dev/test-installer-svc-helpers.sh. Its one home is the bench runbook
 # docs/bench-board-target-state.md.
+#
+# Socket group. gunicorn --umask 0117 creates the inode as 0660 root:<process
+# group>. nginx is www-data. A 10s ExecStartPost misses a cold import (1.135,
+# 2026-10-15: socket 19s after start, tab 502 until a manual chgrp). The hook
+# runs in the master after bind. Install it BEFORE the restart below, and only
+# when both the unit and the hook file exist — a --config path that is not
+# there makes gunicorn refuse to start and takes the bench UI (:8765) with it.
+sa02m_stand_devices_socket_group() {
+    local stand_unit="/etc/systemd/system/sa02m-stand-api.service"
+    local hook="/opt/sa02m-devices/sa02m_devices/stand_socket_group.py"
+    local drop_src="$ETC_DIR/systemd/system/sa02m-stand-api.service.d/20-devices-socket-group.conf"
+    local drop_dir="/etc/systemd/system/sa02m-stand-api.service.d"
+    local drop_dst="$drop_dir/20-devices-socket-group.conf"
+    [ -f "$stand_unit" ] || return 0
+    [ -f "$hook" ] || {
+        log WARN "нет $hook — drop-in стенда не ставлю (--config на отсутствующий файл уронил бы sa02m-stand-api)"
+        return 0
+    }
+    if [ ! -f "$drop_src" ]; then
+        log WARN "нет $drop_src — группу сокета стенда не выставляю"
+        return 0
+    fi
+    install -d -m 0755 "$drop_dir"
+    # One-off waiter (60s ExecStartPost). It blocks start and still loses if
+    # the import is slower. The hook replaces it.
+    rm -f "$drop_dir/21-socket-group-wait.conf"
+    sa02m_atomic_install -m 644 "$drop_src" "$drop_dst"
+    sed -i 's/\r$//' "$drop_dst"
+    if [ -z "${SA02M_ROOTFS_BUILD:-}" ]; then
+        systemctl daemon-reload
+    fi
+    log OK "sa02m-stand-api: сокет Устройств — группа www-data после bind"
+}
+sa02m_stand_devices_socket_group
 sa02m_svc_restart_if_active sa02m-stand-api.service

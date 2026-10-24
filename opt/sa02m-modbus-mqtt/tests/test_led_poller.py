@@ -704,8 +704,13 @@ class TestSetup(unittest.TestCase):
             self.assertEqual(meta[name]["readonly"], "1" if readonly else "0")
 
     def test_every_writable_control_is_subscribed(self):
+        """The inventory's writables plus the light-music side channel
+        (led-mb2ws.md §4 «Поток светомузыки») — and nothing else."""
         subscribed = {c.args[1] for c in self.pub.subscribe_writeback.call_args_list}
-        self.assertEqual(subscribed, set(lc.writable_names()))
+        self.assertEqual(
+            subscribed,
+            set(lc.writable_names()) | set(bridge_led.STREAM_CONTROLS)
+            | {bridge_led.FX_AUX_CONTROL})
 
     def test_no_readonly_control_is_subscribed(self):
         subscribed = {c.args[1] for c in self.pub.subscribe_writeback.call_args_list}

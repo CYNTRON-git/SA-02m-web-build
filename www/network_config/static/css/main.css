@@ -2564,6 +2564,16 @@ html[data-theme="light"] .homeconnect-verify-link { color: var(--cyan-hover); }
    `min-width: 0` is load-bearing — without it a long topic string blows the
    flex row out past the dialog edge. */
 .sh-rows { display: flex; flex-direction: column; gap: 6px; margin-bottom: 8px; }
+/* «Добавить показание» and the two preset shortcuts («Светильник», «Штора») on
+   ONE row at the foot of the readings group — the presets flush right as a
+   pair, wrapping below the add button (still together) when the pane is
+   narrow. On a .btn-row of their own above the label they cost the pane 50 px
+   (38 px buttons + the row's 8/4 px margins) and left 7.5 px of headroom at
+   1280×720 in the tallest edit state, under the 24 px floor
+   sh-modal-layout-smoke gates; here they cost no height at all, and the
+   binding button keeps its width. */
+.sh-rows-actions { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; }
+.sh-preset-group { display: flex; flex-wrap: wrap; gap: 8px; margin-left: auto; }
 .sh-bind-row { display: flex; align-items: center; gap: 8px; }
 .sh-bind-row > .sh-row-kind  { flex: 0 0 40%; min-width: 0; }
 /* The binding target is a BUTTON since 1.0.6.38 (.sh-row-bind); the topic
@@ -2771,11 +2781,51 @@ html[data-theme="light"] .homeconnect-verify-link { color: var(--cyan-hover); }
 .sh-pick-manual-row > input { flex: 1 1 auto; min-width: 0; min-height: var(--tap); }
 .sh-pick-manual-row > .btn { flex: 0 0 auto; min-height: var(--tap); }
 
+/* ── Audio recorder card (#audio-card, app/audio.js) ─────────────────────────
+   Reuses the HomeKit / Home Connect list, details and message classes; no
+   new colour pairs — only layout, existing tokens. */
+#audio-btn-restart[hidden],
+#audio-btn-stop[hidden] { display: none !important; }
+.audio-record-row {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: flex-end;
+  gap: 6px 8px;
+  margin-top: 8px;
+}
+.audio-record-row[hidden] { display: none !important; }
+.audio-record-row .audio-seconds-field { flex: 0 0 96px; margin-bottom: 0; }
+.audio-record-row .btn { min-height: var(--tap); }
+.audio-elapsed { font-size: .8rem; color: var(--text-sec); align-self: center; }
+.audio-clip-list { margin-top: 8px; max-height: 300px; }
+.audio-clip-list li { padding: 6px 0; border-bottom: 1px solid var(--border); }
+.audio-clip-list .homeconnect-app-name,
+.audio-clip-list .homeconnect-app-meta { flex: 1 1 100%; }
+.audio-clip-actions { display: flex; flex-wrap: wrap; gap: 6px; }
+.audio-clip-actions .btn { min-height: var(--tap); padding: 0 10px; }
+.audio-player { display: block; width: 100%; margin-top: 6px; }
+.audio-player[hidden] { display: none !important; }
+.audio-removable-note,
+.audio-storage-warn { margin: 6px 0 0 !important; }
+.audio-ack-row {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  min-height: var(--tap);
+  font-size: .8rem;
+}
+.audio-ack-row[hidden] { display: none !important; }
+.audio-event-list { max-height: 200px; }
+/* A long upload URL is truncated with an ellipsis while not edited (the
+   field still scrolls with the caret) instead of being cut off mid-glyph. */
+#audio-upload-url { text-overflow: ellipsis; white-space: nowrap; }
+
 #alice-msg.cloud-msg,
 #cloud-ctrl-msg.cloud-msg,
 #sh-bind-msg.cloud-msg,
 #homekit-msg.cloud-msg,
-#homeconnect-msg.cloud-msg {
+#homeconnect-msg.cloud-msg,
+#audio-msg.cloud-msg {
   margin-top: 4px;
   padding: 8px 12px;
   border-radius: var(--radius-sm);
@@ -2786,7 +2836,8 @@ html[data-theme="light"] .homeconnect-verify-link { color: var(--cyan-hover); }
 #cloud-ctrl-msg.cloud-msg.is-ok,
 #sh-bind-msg.cloud-msg.is-ok,
 #homekit-msg.cloud-msg.is-ok,
-#homeconnect-msg.cloud-msg.is-ok {
+#homeconnect-msg.cloud-msg.is-ok,
+#audio-msg.cloud-msg.is-ok {
   background: var(--badge-ok-bg);
   color: var(--green);
   border: 1px solid var(--badge-ok-border);
@@ -2795,7 +2846,8 @@ html[data-theme="light"] .homeconnect-verify-link { color: var(--cyan-hover); }
 #cloud-ctrl-msg.cloud-msg.is-err,
 #sh-bind-msg.cloud-msg.is-err,
 #homekit-msg.cloud-msg.is-err,
-#homeconnect-msg.cloud-msg.is-err {
+#homeconnect-msg.cloud-msg.is-err,
+#audio-msg.cloud-msg.is-err {
   background: var(--badge-err-bg);
   color: var(--red);
   border: 1px solid var(--badge-err-border);
@@ -3069,6 +3121,25 @@ html[data-theme="light"] .homeconnect-verify-link { color: var(--cyan-hover); }
   min-width: 0;
   overflow: hidden;
   text-overflow: ellipsis;
+}
+/* State and autostart policy are two facts (status-polling.md «Службы и
+   порты»); the policy gets its own 9 px line inside the 118 px badge track —
+   each line stays one line («Автозапуск выключен» ≈ 85 px at 9 px), the row
+   grows from 28 to ~38 px only when a policy is shown. */
+.system-manage-services-card.widget-svc .svc-ctl-row .badge.svc-ctl-badge-stacked {
+  height: auto;
+  padding: 3px 8px;
+  flex-direction: column;
+  row-gap: 1px;
+}
+.system-manage-services-card.widget-svc .svc-ctl-row .svc-ctl-policy {
+  display: block;
+  font-size: 9px;
+  font-weight: 400;
+  line-height: 1.1;
+  letter-spacing: 0;
+  opacity: .9;
+  white-space: nowrap;
 }
 
 /* ── Журнал событий ─────────────────────────────────────────────────────── */
@@ -6321,9 +6392,13 @@ html[data-theme="light"] .mqtt-ch-live-ok { color: var(--cyan-hover); }
 }
 /* MTD262-MB: 3 readings + 7 setpoints. History is the «График» button;
    the number field writes the holding on Enter (same mqtt_set path as the MQTT tab). */
+/* Settings need room for the numeric field and unit at the three-card breakpoint. */
+#tab-devices .dev-card--mtd .dev-metrics {
+  grid-template-columns: repeat(auto-fit, minmax(min(100%, 7rem), 1fr));
+}
 #tab-devices .dev-card--mtd .dev-kpi-lbl {
   font-size: 0.68rem; white-space: normal;
-  display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical;
+  display: block; overflow: visible; overflow-wrap: anywhere;
 }
 #tab-devices .dev-card--mtd .dev-kpi[data-metric],
 #tab-devices .dev-card--mtd .dev-kpi--set { cursor: pointer; }

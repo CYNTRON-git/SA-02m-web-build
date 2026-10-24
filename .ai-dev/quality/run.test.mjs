@@ -17,6 +17,13 @@
         forced absent.
      F. a registry-run script exiting with a failure COUNT (77 failures read
         as SKIP, 256 as PASS — review F1, 1.0.6.58).
+     G. a row that skipped PART of its run reading PASS (1.0.6.62 review A3) —
+        now PARTIAL, through the QUALITY_SKIP_LOG side channel + lib_skip.sh.
+     H. `--touched <ref>` diffing two-dot `<ref>..HEAD`, so a base that moved on
+        pulled its own changes into the branch's scope (1.0.6.62 review A9) —
+        now `$(git merge-base <ref> HEAD)..HEAD`.
+     I. QUALITY_STRICT (CI): a SKIP or a PARTIAL is a FAIL where the
+        environment is supposed to run the row (1.0.6.58 follow-up (1)).
    ───────────────────────────────────────────────────────────────────────────
    Regression A: the fallback used to `.trim()` the WHOLE multi-line
    `git status --short` output before splitting into lines. Trimming the
@@ -69,6 +76,13 @@ import { computeTouchedFiles, coversToRegex, fileMatchesCovers, run, workingTree
 // Read off the namespace so the pre-fix runner (no such export) yields
 // undefined and section D goes RED on assertions instead of a link error.
 const SKIP_EXIT = runner.SKIP_EXIT;
+
+// This file is itself a runner row: the runner that launched it hands it a
+// QUALITY_SKIP_LOG and, in CI, QUALITY_STRICT. Neither may reach the fixtures
+// below — the nested run() calls pick their own, and a harness spawned here must
+// not write into the outer row's log. Sections G and I set them explicitly.
+delete process.env.QUALITY_SKIP_LOG;
+delete process.env.QUALITY_STRICT;
 
 let failures = 0;
 function check(cond, msg) {
@@ -220,27 +234,58 @@ check(coversToRegex('etc/') instanceof RegExp, 'coversToRegex() returns a RegExp
 check(fileMatchesCovers(['etc/x'], ['nope/', 'etc/']) === true,
   'fileMatchesCovers() ORs across patterns — a later pattern still matches');
 
+// ── B2. every `covers` entry of every registry row selects >=1 real file ──
+// A wildcard-free entry is a PREFIX (B above), so `"etc/sa02m-update"` compiles
+// to /^etc\/sa02m-update(\/.*)?$/ and matches NOTHING — the row never ran under
+// --touched when the files it names were edited (status review F1, 1.0.7.5:
+// three dead entries across port-coordinator / update-control-boundaries; the
+// author meant `etc/sa02m-update*`). The registry itself is the fixture: every
+// entry must select at least one file git knows (tracked, or untracked and not
+// ignored — a row may name a script added in the same change). Non-vacuous:
+// the enumeration must see >=100 entries over >=1000 files.
+{
+  const regRoot = dirname(dirname(dirname(fileURLToPath(import.meta.url))));
+  const known = execSync('git ls-files -z --cached --others --exclude-standard', { cwd: regRoot, encoding: 'utf8', maxBuffer: 64 * 1024 * 1024 })
+    .split('\0').filter(Boolean);
+  const reg = JSON.parse(readFileSync(runner.resolveRegistry(regRoot), 'utf8'));
+  let entries = 0;
+  const dead = [];
+  for (const row of reg.tools || []) {
+    for (const pattern of row.covers || []) {
+      entries++;
+      if (!fileMatchesCovers(known, [pattern])) dead.push(row.id + ': ' + JSON.stringify(pattern));
+    }
+  }
+  check(known.length >= 1000 && entries >= 100,
+    'registry covers: the enumeration saw ' + entries + ' entries over ' + known.length + ' known files (floors 100 / 1000)');
+  check(dead.length === 0,
+    'registry covers: every entry selects >=1 known file' + (dead.length ? ' — dead entries (a bare prefix that is really a glob?): ' + dead.join(', ') : ''));
+}
+
 // ── D. a documented environment skip is reported as SKIP, never as PASS ───
 // A row that cannot run here (its tool is not installed) used to exit 0, and
 // the runner printed `PASS` for it — five rows did exactly that on a box
 // without their tool (audit 2026-09-24 L1). The runner now reads SKIP_EXIT
 // (77) as a skip: printed SKIP, counted apart from the passes, named in the
 // summary, and NOT a red beat. Every other non-zero code stays a FAIL.
-function runCaptured(rows, beat = 'build') {
+function runCaptured(rows, beat = 'build', opts) {
   const d = mkdtempSync(join(tmpdir(), 'sa02m-run-mjs-test-skip-'));
   const reg = join(d, 'tools.json');
   writeFileSync(reg, JSON.stringify({ tools: rows }));
   const lines = [];
   const origLog = console.log;
   const origErr = console.error;
+  const origWrite = process.stdout.write;
   console.log = (...a) => { lines.push(a.join(' ')); };
   console.error = (...a) => { lines.push(a.join(' ')); };
+  process.stdout.write = (text) => { lines.push(String(text).trimEnd()); return true; };
   let rc;
   try {
-    rc = run(beat, d, reg, null);
+    rc = run(beat, d, reg, null, opts);
   } finally {
     console.log = origLog;
     console.error = origErr;
+    process.stdout.write = origWrite;
     rmSync(d, { recursive: true, force: true });
   }
   return { rc, out: lines.join('\n') };
@@ -553,9 +598,236 @@ function exitViolations(text, lang) {
     (bad.length ? ' — ' + bad.length + ' site(s):\n      ' + bad.join('\n      ') : ''));
 }
 
+// ── G. a partial section skip is reported as PARTIAL, never as PASS ───────
+// `web-update-launcher-guard` runs L1–L7 everywhere and L8–L11 only where
+// flock(1) exists; on git-bash it printed «PASS (all checks; SKIPPED here:
+// L8–L11)» and the runner counted a PASS (1.0.6.62 review A3). The runner now
+// hands each row a fresh QUALITY_SKIP_LOG file; a line in it after exit 0 makes
+// the row PARTIAL: printed apart, not counted as passed, named in the summary,
+// beat still green. The exit code is untouched on purpose (lib_skip.sh header).
+const partRow = (id, code, text = 'L8 no flock') => ({
+  id, beat: 'build',
+  run: 'node -e "const f = process.env.QUALITY_SKIP_LOG; if (f) require(\'fs\').appendFileSync(f, \'' + text +
+    '\\n\'); process.exit(' + code + ')"',
+});
+{
+  const { rc, out } = runCaptured([partRow('g-part', 0), exitRow('g-pass', 0)]);
+  check(rc === 0, 'partial: a partial row beside a pass is a GREEN beat (rc 0) — got ' + rc);
+  check(/^PARTIAL  g-part\b/m.test(out), 'partial: the row that skipped a section prints `PARTIAL  g-part` — got ' + JSON.stringify(out));
+  check(!/^PASS  g-part$/m.test(out), 'partial: the row that skipped a section does NOT print `PASS  g-part` — the A3 defect');
+  check(/L8 no flock/.test(out), 'partial: the runner prints WHAT was skipped (the row\'s own skip line)');
+  check(/^PASS  g-pass$/m.test(out), 'partial: the log is per row — the clean row after it still prints PASS');
+  const last = out.split('\n').pop();
+  check(/build: 1\/2 passed/.test(last) && /1 PARTIAL/.test(last) && /g-part/.test(last),
+    'partial: the summary counts it apart from the passes and names it (1/2 passed, 1 PARTIAL) — got ' + JSON.stringify(last));
+}
+{
+  const { rc, out } = runCaptured([partRow('g-part-fail', 1)]);
+  check(rc === 1 && /^FAIL  g-part-fail$/m.test(out) && !/PARTIAL/.test(out),
+    'partial: a skip line never softens a failure — exit 1 stays FAIL');
+}
+{
+  const { rc, out } = runCaptured([partRow('g-part-skip', SKIP_EXIT)]);
+  check(rc === 0 && /^SKIP  g-part-skip$/m.test(out) && !/PARTIAL/.test(out),
+    'partial: a whole-row skip (77) stays SKIP, whatever the log holds');
+}
+check(process.env.QUALITY_SKIP_LOG === undefined,
+  'partial: run() does not leave QUALITY_SKIP_LOG set in its own process (each row gets its own, in the child env only)');
+{
+  // The shell helper every opted-in harness sources. Behavioural: source it,
+  // call it, read the file it wrote.
+  const d = mkdtempSync(join(tmpdir(), 'sa02m-run-mjs-test-libskip-'));
+  try {
+    const log = join(d, 'skip.log').replace(/\\/g, '/');
+    const cmd = '. .ai-dev/quality/checks/lib_skip.sh || exit 9; quality_skip "5  modes (not Linux)"; quality_skip "6  (see 5)"; echo "rc=$?"';
+    let r = spawnSync('bash', ['-c', cmd], { cwd: REPO, env: { ...process.env, QUALITY_SKIP_LOG: log }, encoding: 'utf8' });
+    let logged = '';
+    try { logged = readFileSync(log, 'utf8'); } catch { /* absent — asserted below */ }
+    check(r.status === 0 && /^SKIP  5  modes \(not Linux\)$/m.test(r.stdout) && /rc=0/.test(r.stdout),
+      'lib_skip: quality_skip prints the `SKIP  <text>` line and returns 0 — got rc ' + r.status + ' ' + JSON.stringify((r.stdout || '') + (r.stderr || '')));
+    check(logged === '5  modes (not Linux)\n6  (see 5)\n',
+      'lib_skip: with QUALITY_SKIP_LOG set, each skip is appended to it, one line each — got ' + JSON.stringify(logged));
+    const env = { ...process.env };
+    delete env.QUALITY_SKIP_LOG;
+    r = spawnSync('bash', ['-c', 'set -eu; ' + cmd], { cwd: REPO, env, encoding: 'utf8' });
+    check(r.status === 0 && /^SKIP  6  \(see 5\)$/m.test(r.stdout),
+      'lib_skip: unset (a hand run, a gate run by comment-mutation-proof) it only prints, and survives `set -eu` — got rc ' + r.status);
+  } finally {
+    rmSync(d, { recursive: true, force: true });
+  }
+}
+
+// ── H. `--touched <ref>` diffs from the merge-base, not two-dot ────────────
+// `git diff <ref>..HEAD` compares the two TREES, so once <ref> moved past the
+// branch point every file <ref> changed since then showed up as touched (81
+// files / 68 rows against the branch's true 6 files; 1.0.6.62 review A9). The
+// committed half is now `$(git merge-base <ref> HEAD)..HEAD` — for an explicit
+// base and for the origin/main / main fallbacks alike.
+// A missing side channel is optional; an unreadable one is lost evidence.
+{
+  const row = { id: 'g-unreadable', beat: 'build', run: 'node -e "require(\'fs\').mkdirSync(process.env.QUALITY_SKIP_LOG)"' };
+  const { rc, out } = runCaptured([row]);
+  check(rc === 1 && /^FAIL  g-unreadable/m.test(out), 'partial: unreadable skip log fails closed');
+}
+{
+  const row = { id: 'g-unittest', beat: 'build', run: 'node -e "console.error(\'Ran 3 tests in 0.1s\'); console.error(\'OK (skipped=2)\')"' };
+  const { rc, out } = runCaptured([row]);
+  check(rc === 0 && /^PARTIAL  g-unittest/m.test(out) && /2 unittest/.test(out), 'partial: native unittest skips are collected');
+  const strict = runCaptured([row], 'build', { strict: true });
+  check(strict.rc === 1, 'partial: native unittest skips fail strict mode');
+}
+
+const dir3 = mkdtempSync(join(tmpdir(), 'sa02m-run-mjs-test-mergebase-'));
+function git3(cmd) {
+  return execSync('git ' + cmd, { cwd: dir3, stdio: 'pipe', env, encoding: 'utf8' }).trim();
+}
+try {
+  git3('init -q -b main');
+  writeFileSync(join(dir3, 'base.txt'), 'a\n');
+  git3('add base.txt');
+  git3('commit -q -m base');
+  const forkPoint = git3('rev-parse HEAD');
+  git3('checkout -q -b feature');
+  writeFileSync(join(dir3, 'feature.js'), 'branch work\n');
+  git3('add feature.js');
+  git3('commit -q -m "branch work"');
+  git3('checkout -q main');
+  // main moves on after the fork. Distinct bytes from feature.js: identical
+  // content lets git pair the two files as a rename, and --name-only then
+  // prints only the new name — hiding the very path this section is about.
+  writeFileSync(join(dir3, 'moved-on.sh'), 'main moved on\n');
+  git3('add moved-on.sh');
+  git3('commit -q -m "main moves on"');
+  git3('update-ref refs/remotes/origin/main refs/heads/main');
+  git3('checkout -q feature');
+
+  const meta = {};
+  const touched = computeTouchedFiles(dir3, 'main', meta);
+  check(Array.isArray(touched) && touched.includes('feature.js'),
+    'merge-base: the branch\'s own commit is touched (feature.js) — got ' + JSON.stringify(touched));
+  check(Array.isArray(touched) && !touched.includes('moved-on.sh'),
+    'merge-base: `--touched main` does NOT pull in what main changed after the fork (moved-on.sh) — the A9 defect; got ' + JSON.stringify(touched));
+  check(meta.ref === 'main' && meta.mergeBase === forkPoint,
+    'merge-base: the resolved base is reported — ref main, merge-base = the fork point — got ' + JSON.stringify(meta));
+
+  const dflt = computeTouchedFiles(dir3, null);
+  check(Array.isArray(dflt) && dflt.includes('feature.js') && !dflt.includes('moved-on.sh'),
+    'merge-base: the default base (origin/main, moved on) resolves through the merge-base too — got ' + JSON.stringify(dflt));
+
+  const metaBad = {};
+  const bad = computeTouchedFiles(dir3, 'no-such-ref', metaBad);
+  check(Array.isArray(bad) && bad.includes('feature.js') && !bad.includes('moved-on.sh') && metaBad.ref === 'origin/main',
+    'merge-base: an unresolvable base falls back to origin/main, and says so — got ' + JSON.stringify({ bad, metaBad }));
+} finally {
+  rmSync(dir3, { recursive: true, force: true });
+}
+
+// ── I. QUALITY_STRICT: a skip is a FAIL where the tool is supposed to exist ─
+// CI installs every tool a row needs (web-quality.yml), so there a SKIP means a
+// broken install step, not a missing optional tool — and a green beat over it is
+// the L1 false green again, one level up (1.0.6.58 follow-up (1)). Locally the
+// variable is absent and a skip stays a skip (section D).
+const isStrict = runner.isStrict;
+check(typeof isStrict === 'function', 'strict: run.mjs exports isStrict()');
+if (typeof isStrict === 'function') {
+  for (const [envVal, want] of [[undefined, false], ['', false], ['0', false], ['false', false], ['no', false],
+    ['1', true], ['true', true], ['yes', true], ['on', true]]) {
+    const e = envVal === undefined ? {} : { QUALITY_STRICT: envVal };
+    check(isStrict(e) === want, 'strict: QUALITY_STRICT=' + JSON.stringify(envVal) + ' => ' + want +
+      ' (an unrecognised non-empty value is strict — fail safe to more rigor)');
+  }
+}
+{
+  const { rc, out } = runCaptured([exitRow('i-pass', 0), exitRow('i-skip', SKIP_EXIT)], 'build', { strict: true });
+  check(rc === 1, 'strict: a SKIP turns the beat RED (rc 1) — got ' + rc);
+  check(/^FAIL  i-skip\b/m.test(out) && !/^SKIP  i-skip$/m.test(out), 'strict: the skipped row prints FAIL, not SKIP — got ' + JSON.stringify(out));
+  check(/^PASS  i-pass$/m.test(out), 'strict: a passing row is unaffected');
+}
+{
+  const { rc, out } = runCaptured([partRow('i-part', 0)], 'build', { strict: true });
+  check(rc === 1 && /^FAIL  i-part\b/m.test(out) && !/^PARTIAL/m.test(out),
+    'strict: a PARTIAL turns the beat RED too — a skipped section is a skip — got ' + JSON.stringify(out));
+}
+{
+  // The env wiring: run() with no explicit option reads QUALITY_STRICT itself —
+  // that is how the CI step turns it on.
+  process.env.QUALITY_STRICT = '1';
+  let res;
+  try { res = runCaptured([exitRow('i-env-skip', SKIP_EXIT)]); } finally { delete process.env.QUALITY_STRICT; }
+  check(res.rc === 1 && /^FAIL  i-env-skip\b/m.test(res.out) && /QUALITY_STRICT/.test(res.out),
+    'strict: QUALITY_STRICT=1 in the environment is honoured by run() and named in its output — got ' + JSON.stringify(res));
+  const off = runCaptured([exitRow('i-off-skip', SKIP_EXIT)]);
+  check(off.rc === 0 && /^SKIP  i-off-skip$/m.test(off.out), 'strict: without the variable a skip stays a SKIP (the local default)');
+}
+
+// ── P. CLI output survives a slow pipe ────────────────────────────────────
+// CI (#216, 2026-10-21) lost every PASS/FAIL line and the summary: the runner
+// spools a row's output and replays it with process.stdout.write; on a pipe
+// that write completes asynchronously, the next rows' execSync block the
+// event loop, and process.exit() at the end drops whatever was still queued —
+// the log stopped mid-word ~64 KB into a multi-MB row. The CLI is exercised as
+// CI runs it: a copy of run.mjs with a registry beside it, stdout into a pipe
+// whose reader starts late. The truncation reproduces on Linux only (node on
+// Windows already blocks on pipes); the kill case below pins delivery AT
+// row end — a verdict buffered until the run returns is lost when CI kills it.
+{
+  const d = mkdtempSync(join(tmpdir(), 'sa02m-run-mjs-test-pipe-'));
+  try {
+    const q = join(d, '.ai-dev', 'quality');
+    mkdirSync(q, { recursive: true });
+    copyFileSync(join(REPO, '.ai-dev', 'quality', 'run.mjs'), join(q, 'run.mjs'));
+    const big = "node -e \"for(let i=0;i<60000;i++)process.stderr.write('INFO [telemetry] line '+String(i).padStart(6,'0')+' '+'x'.repeat(56)+'\\n')\"";
+    writeFileSync(join(q, 'tools.json'), JSON.stringify({ tools: [
+      { id: 'p-big', beat: 'build', run: big },
+      { id: 'p-after', beat: 'build', run: 'node -e "setTimeout(()=>console.log(\'after-ok\'),1500)"' },
+      { id: 'p-red', beat: 'build', run: 'node -e "process.exit(1)"' },
+    ] }));
+    const node = process.execPath.replace(/\\/g, '/');
+    const cmd = `"${node}" .ai-dev/quality/run.mjs build | (sleep 2; cat); exit \${PIPESTATUS[0]}`;
+    const r = spawnSync('bash', ['-c', cmd], { cwd: d, encoding: 'utf8', maxBuffer: 64 * 1024 * 1024 });
+    const out = r.stdout || '';
+    check(/line 059999 x{56}/.test(out), 'pipe: the last line of a 5 MB row reaches a late reader (' + out.length + ' bytes seen)');
+    check(/^PASS  p-after$/m.test(out) && /^FAIL  p-red$/m.test(out), 'pipe: the rows after the big one are reported');
+    check(/^build: 2\/3 passed — 1 FAILED$/m.test(out), 'pipe: the summary line is printed');
+    check(r.status === 1, 'pipe: the CLI exit code is the run result, not lost (got ' + r.status + ')');
+
+    // Reader closes early (`| head`): no false FAIL, run result unchanged.
+    writeFileSync(join(q, 'tools.json'), JSON.stringify({ tools: [
+      { id: 'h-big', beat: 'build', run: big },
+      { id: 'h-small', beat: 'build', run: 'node -e "0"' },
+    ] }));
+    const hcmd = `"${node}" .ai-dev/quality/run.mjs build 2>/dev/null | head -c 100 >/dev/null; exit \${PIPESTATUS[0]}`;
+    const h = spawnSync('bash', ['-c', hcmd], { cwd: d, encoding: 'utf8' });
+    check(h.status === 0, 'pipe: a reader that closes early does not turn a green run red (got ' + h.status + ')');
+
+    // Killed mid-run: the verdicts of rows that already ended must be out.
+    // Linux only — where the queued-write loss happens; on Windows the killed
+    // runner's children keep the temp dir busy and the pipe already blocks.
+    if (process.platform === 'linux') {
+    writeFileSync(join(q, 'tools.json'), JSON.stringify({ tools: [
+      { id: 'k-big', beat: 'build', run: big },
+      { id: 'k-small', beat: 'build', run: 'node -e "0"' },
+      { id: 'k-hang', beat: 'build', run: 'node -e "setTimeout(()=>{},10000)"' },
+    ] }));
+    const kcmd = `timeout -s KILL 6 "${node}" .ai-dev/quality/run.mjs build | (sleep 2; cat)`;
+    // TMPDIR inside d: the killed runner never reaches its own spool cleanup.
+    const k = spawnSync('bash', ['-c', kcmd], { cwd: d, encoding: 'utf8', maxBuffer: 64 * 1024 * 1024, env: { ...process.env, TMPDIR: d } });
+    const kout = k.stdout || '';
+    check(/^PASS  k-big$/m.test(kout) && /^PASS  k-small$/m.test(kout),
+      'pipe: verdicts of finished rows survive a kill of the run (' + kout.length + ' bytes seen)');
+    } else {
+      console.log('  skip - pipe: kill-mid-run case is Linux-only (' + process.platform + ')');
+    }
+  } finally {
+    // The killed runner's k-hang child lives on for a few seconds and holds
+    // the directory on Windows: retry instead of failing the self-test.
+    rmSync(d, { recursive: true, force: true, maxRetries: 30, retryDelay: 500 });
+  }
+}
+
 if (failures) {
   console.error('quality-runner-self-test: ' + failures + ' assertion(s) failed');
   process.exit(1);
 }
-console.log('quality-runner-self-test: computeTouchedFiles() fallback + covers prefix/glob matching + SKIP status ok');
+console.log('quality-runner-self-test: computeTouchedFiles() fallback + merge-base + covers prefix/glob matching + SKIP / PARTIAL / strict status ok');
 process.exit(0);

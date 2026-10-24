@@ -2,8 +2,10 @@
 # ═══════════════════════════════════════════════════════════════════════════
 # Офлайн ПОЛНОЕ обновление СА-02м из распакованного архива репозитория.
 # Запуск на устройстве (root), из любого каталога:
-#   mkdir -p /tmp/sa02m-upd && tar xzf /tmp/SA-02m-full-<ver>.tar.gz -C /tmp/sa02m-upd
+#   mkdir -p /tmp/sa02m-upd && tar xzf /tmp/SA-02m-full-<ver>-<ref>-<sha7>.tar.gz -C /tmp/sa02m-upd
 #   bash /tmp/sa02m-upd/scripts/offline-full-update.sh [опции]
+# The archive is `git archive origin/<ref>` after `git fetch`; which <ref> is
+# allowed: docs/deployment.md «Полный деплой» → «Предусловия».
 # Процедура и WHY — docs/deployment.md «Полный деплой» → «Офлайн-вариант»;
 # режим --unattended — там же, «Мост самообновления для плат < 1.0.5.75».
 # ═══════════════════════════════════════════════════════════════════════════
@@ -145,7 +147,7 @@ for p in install.sh scripts etc opt www/network_config/VERSION; do
 done
 if [ -n "$missing" ]; then
     log ERR "В $REPO_ROOT нет:$missing"
-    log ERR "Нужен ПОЛНЫЙ архив репозитория (git archive origin/main), а не www-only: install.sh + scripts/ + etc/ + opt/ + www/."
+    log ERR "Нужен ПОЛНЫЙ архив репозитория (git archive origin/<ref>, имя SA-02m-full-<ver>-<ref>-<sha7>.tar.gz; см. docs/deployment.md «Полный деплой» → «Предусловия»), а не www-only: install.sh + scripts/ + etc/ + opt/ + www/."
     exit 1
 fi
 

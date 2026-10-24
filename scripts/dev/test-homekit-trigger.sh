@@ -61,7 +61,8 @@
 #   (a comment-out leaves zero lines — measured RED, not registered: each case
 #   re-runs this whole harness).
 #
-# Run: bash scripts/dev/test-homekit-trigger.sh      (bash, python3, flock)
+# Run: bash scripts/dev/test-homekit-trigger.sh      (bash, python3, flock,
+#      timeout(1) — L4 needs a real kill)
 #      HK_TRIGGER_SRC=<file> judges another copy of the helper (the RED run).
 # ═══════════════════════════════════════════════════════════════════════════
 set -u

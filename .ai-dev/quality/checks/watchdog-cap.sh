@@ -16,8 +16,10 @@
 #      pass the very bug above, and the spaced form "2 min" (valid per
 #      systemd.time(7)) must reach the parser intact, not truncated to "2".
 #   2. RuntimeWatchdogSec=15s in every copy that writes the drop-in.
-#   3. RebootWatchdogSec=0 in every copy that sets it, and the set of copies
-#      that set it is exactly the expected list.
+#   3. RebootWatchdogSec=16s in every copy that sets it (armed at the driver
+#      cap since 1.0.7.5 so a reboot that hangs inside the kernel self-resets —
+#      the policy home has the reasoning; it was =0 from 2026-08-05 to then),
+#      and the set of copies that set it is exactly the expected list.
 #   4. No active ShutdownWatchdogSec= anywhere under SWEEP_ROOTS (deprecated
 #      pre-v243 alias of RebootWatchdogSec — two knobs for one policy is how
 #      the copies diverged).
@@ -74,6 +76,7 @@ FILES=(
     tools/imaging/patch-firstboot-image.sh
     tools/imaging/autorun.sh
     tools/imaging/autorun-fel.sh
+    tools/imaging/stand/postflash-monitor.py
     tools/imaging/ssh-flash-safe.sh
     tools/imaging/make-image.sh
     tools/imaging/stream-after-cleanup.sh
@@ -90,6 +93,7 @@ RUNTIME_VALUE_FILES=(
     tools/imaging/patch-firstboot-image.sh
     tools/imaging/autorun.sh
     tools/imaging/autorun-fel.sh
+    tools/imaging/stand/postflash-monitor.py
 )
 # Copies that set the shutdown/reboot watchdog at all.
 REBOOT_VALUE_FILES=("${RUNTIME_VALUE_FILES[@]}")
@@ -250,16 +254,16 @@ for f in "${RUNTIME_VALUE_FILES[@]}"; do
     fi
 done
 
-# ── 3. RebootWatchdogSec=0 in every copy that sets it ──────────────────────
+# ── 3. RebootWatchdogSec=16s in every copy that sets it ────────────────────
 for f in "${REBOOT_VALUE_FILES[@]}"; do
     [ -f "$f" ] || continue
     vals=$(uncommented "$f" | grep -oE 'RebootWatchdogSec=[0-9A-Za-z.]*' | grep -vE '=$|=\.' | sort -u)
     if [ -z "$vals" ]; then
-        fail "$f no longer sets RebootWatchdogSec — the shutdown watchdog must be explicitly disabled, not left to the systemd default (10min)"
-    elif [ "$vals" != "RebootWatchdogSec=0" ]; then
-        fail "$f sets [$(printf '%s' "$vals" | tr '\n' ' ')] — the shutdown watchdog is disabled on purpose; see the trade-off in $POLICY_HOME"
+        fail "$f no longer sets RebootWatchdogSec — the reboot watchdog must be armed explicitly at the driver cap; the systemd default (10min) is EINVAL on this board and leaves it disarmed"
+    elif [ "$vals" != "RebootWatchdogSec=16s" ]; then
+        fail "$f sets [$(printf '%s' "$vals" | tr '\n' ' ')] — every copy must match the policy home: $POLICY_HOME carries RebootWatchdogSec=16s (the driver cap, armed so a hung reboot self-resets)"
     else
-        pass "$f: RebootWatchdogSec=0"
+        pass "$f: RebootWatchdogSec=16s"
     fi
 done
 

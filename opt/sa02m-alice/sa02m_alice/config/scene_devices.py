@@ -26,7 +26,7 @@ exposed rather than truncated (a truncated id could collide with another
 scene's), a missing/unreadable rules stack projects nothing, and the flag is
 read as `is True` so a hand-edited `"true"` string never exposes a scene.
 
-HomeKit (1.0.6.57, Phase 3 C) is the second reader, with its OWN flag home:
+HomeKit (1.0.7.0, Phase 3 C) is the second reader, with its OWN flag home:
 the device document's top-level `homekit_scenes` list, never `alice_expose`
 (docs/contracts/homekit-bridge.md §2 isolation string). Its ids are
 `scene-hk-<sid>` — board-independent on purpose: the controller serial may be
@@ -64,6 +64,12 @@ SCENE_DEVICE_TYPE = "devices.types.switch"
 RULES_DEVICE_PREFIX = "sa02m-rules-"
 VIRTUAL_TOPIC_PREFIX = "/devices/" + RULES_DEVICE_PREFIX
 RUN_CONTROL = "run"
+#: The engine's ONE availability flag (its LWT; contract cloud-scenarios.md
+#: §MQTT mirror) — mirrors `sa02m_rules.service.AVAILABILITY_TOPIC`, parity
+#: pinned by tests/test_scene_devices.py. Non-empty ⇒ every scene switch is
+#: down. No dash after `sa02m-rules`, so it is never a scene device.
+ENGINE_DEVICE_ID = "sa02m-rules"
+ENGINE_AVAILABILITY_TOPIC = "/devices/" + ENGINE_DEVICE_ID + "/meta/error"
 SCENE_ID_PREFIX = "scene-"
 HOMEKIT_SCENE_ID_PREFIX = "scene-hk-"
 #: Skip reason for a ticked scene the store has disabled

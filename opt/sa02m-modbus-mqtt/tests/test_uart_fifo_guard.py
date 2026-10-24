@@ -146,6 +146,7 @@ class TestFifoSafeReadRegs(unittest.TestCase):
             PARITY_NONE="N", STOPBITS_ONE=1,
             Serial=lambda **kw: OverrunUart())
         with mock.patch.object(bridge_serial, "serial", fake_serial), \
+                mock.patch.object(bridge_serial, "_port_client", return_value=(mock.Mock(), mock.Mock())), \
                 mock.patch.object(bridge_serial, "uart_line_index",
                                   lambda _p: None), \
                 mock.patch.object(bridge_serial, "_unresolved_builtin_uart",

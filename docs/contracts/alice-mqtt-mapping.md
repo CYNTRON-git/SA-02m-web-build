@@ -54,7 +54,7 @@ so the picker works with no gateway and no bus. Rules:
   is the truth;
 - the board's own four controls are always offered, so the picker is never
   empty on a fresh board;
-- **Home Connect appliances** (1.0.6.57) come from
+- **Home Connect appliances** (1.0.7.0) come from
   `/run/sa02m-homeconnect/inventory.json` (`docs/contracts/home-connect.md`
   §6; env `SA02M_HOMECONNECT_INVENTORY`). The file belongs to another uid, so
   the reader is a boundary: size > 64 KiB (`HC_INVENTORY_MAX_BYTES`, read at
@@ -67,10 +67,39 @@ so the picker works with no gateway and no bus. Rules:
   `remaining_s` / `progress_pct` wait for a numeric binding kind), all
   `rw: "r"`;
   topics are built from the validated id and a table name only. An appliance
-  sorts after every COM device and before the controller; a disconnected one
-  is still offered (bindability is not liveness), one with nothing bindable is
-  not. Validating: `tests/test_inventory_homeconnect.py`, case 8 of
+  sorts after every COM device and before the audio recorder and the
+  controller; a disconnected one is still offered (bindability is not
+  liveness), one with nothing bindable is not. Validating:
+  `tests/test_inventory_homeconnect.py`, case 8 of
   `scripts/dev/test-alice-topics-cgi.sh`.
+- **The on-board audio recorder** (1.0.7.10; `docs/contracts/audio-recorder.md`
+  §2, §22) is offered **only where `sa02m-audio` is installed**: the marker is
+  a regular file `sa02m-audio.conf` in `/etc/sa02m-audio` (env
+  `SA02M_AUDIO_ETC`), which `scripts/15-audio.sh` seeds on every install,
+  enabled or not; presence only, the file is never opened. Absent ⇒ no entry
+  (a topic no daemon serves would bind a switch that never answers). The entry
+  is `id: sa02m-audio`, `type: "audio"`, name «Запись звука», with exactly
+  **one** channel in the `other` group: `light_music`, title «Светомузыка»,
+  `rw: "rw"`, topic `/devices/sa02m-audio/controls/light_music` (its command
+  `…/light_music/on` takes `1`/`0`, its state is a retained `0`/`1` — an
+  `on_off` binding carries it). No other recorder control is offered
+  (`record` stays reachable from scenarios, not the picker). The id, the
+  switch and the conf path are a copy of `sa02m_audio.constants` and the
+  installer's seed call (`AUDIO_*` in `inventory.py`). It sorts after Home
+  Connect and just before the controller. Like the controller, it does **not**
+  count as a configured device: with no yaml device the flat list still falls
+  back to `_roster.json` (`topics.py: list_mqtt_topics`). The LED strip's
+  light-music stream controls (`music_level`, `music_color`, `fx_aux`) are
+  never offered, even when the strip's live cache carries them — they are not
+  in the `LED_*` table. Validating: `tests/test_inventory_audio.py` — absent
+  marker, a directory in its place, and the marker read from the env dir offer
+  nothing; installed offers exactly the one channel above and the flat list
+  carries its topic; order Home Connect → recorder → controller; the roster
+  fallback still runs with the recorder installed; the three stream controls
+  stay out of `LED_*` and out of a live-cached strip's channels; the copied
+  id, switch row (`switch`, writable, a command control) and conf path equal
+  their homes in `opt/sa02m-audio/sa02m_audio/constants.py`, and
+  `scripts/15-audio.sh` has exactly one seed call for the marker.
 
 **Budget and shape (1.0.6.39).** The CGI wraps its python in `timeout` at
 `TOPICS_CGI_TIMEOUT_S` (15 s, `constants.py`; shell default
@@ -190,7 +219,7 @@ prefixes are named here:
 The HomeKit bridge (`sa02m-homekit`, `docs/contracts/homekit-bridge.md`) reads
 the same document through `DeviceRegistry` and never writes it.
 
-**Top-level `homekit_scenes`** (1.0.6.57): the scenario ids ticked «Показывать в
+**Top-level `homekit_scenes`** (1.0.7.0): the scenario ids ticked «Показывать в
 HomeKit» on the «Умный дом» card — a list of `_ID_RE` strings, de-duplicated,
 ≤ 64 (`models.validate_homekit_scenes`, `HOMEKIT_SCENES_MAX` = the store's
 `SCENARIOS_MAX`). Absent ⇒ no scene is in HomeKit. Its ONE writer is the
@@ -242,17 +271,27 @@ the Yandex account as a switch. Projection home:
 - **`retrievable`/`reportable` false, `split` true.** The board cannot know
   whether a scene is currently «on» — it fired once and the room may have
   been changed by hand since. So the switch never claims a state: `query`
-  answers `{id, capabilities: [], properties: []}` with **no `error_code`**,
-  and no `device_state` is ever emitted for it. Alice renders «включить» /
-  «выключить» rather than a toggle whose position we would have to invent.
+  answers `{id, capabilities: [], properties: []}` with **no `error_code`**
+  while the engine is up, and no `device_state` is ever emitted for it — not
+  even the unreachable stub (§Error codes): the switch never reports, so
+  nothing would ever clear a pushed DOWN in the app. Alice renders
+  «включить» / «выключить» rather than a toggle whose position we would have
+  to invent.
 - **Never `DEVICE_UNREACHABLE` for silence.** A command topic has no poller
   behind it and nothing republishes it, so the freshness rules that decide a
   Modbus coil is dead do not apply: neither the unreachable-transition sweep
   nor the action path may refuse a scene for a topic that was never seen or
-  has aged past `STATUS_STALE_S`. The device-level flag
-  `/devices/sa02m-rules-<sid>/meta/error` **is** still honoured — the hook for
-  a future rules-service availability signal (the gap named in
-  `cloud-scenarios.md` §MQTT mirror).
+  has aged past `STATUS_STALE_S`.
+- **Down while the engine is down.** The executor of every scene command is
+  `sa02m-rules`; its availability flag `/devices/sa02m-rules/meta/error`
+  (`cloud-scenarios.md` §MQTT mirror) is subscribed whenever a scene is
+  exposed. While it is non-empty every scene switch is down, answered on
+  demand: an action answers `ERROR / DEVICE_UNREACHABLE` and publishes
+  **nothing**, `query` answers `DEVICE_UNREACHABLE`; the transition sweep
+  pushes nothing for it (above). The per-scene
+  `/devices/sa02m-rules-<sid>/meta/error` is honoured the same way. No flag
+  seen ⇒ up (the `/meta/error` semantics); the residuals of that are the
+  engine contract's.
 - **Board-keyed id.** `<board>` is the controller serial (else machine-id[:16],
   else `sa02m`), sanitised to the id charset and bounded to 24 chars: two
   SA-02m under ONE Yandex account both mint scenario `s1` and would otherwise
@@ -270,8 +309,15 @@ the Yandex account as a switch. Projection home:
   place — a store write that does not change the projection (a run journal
   flush, a `vars` edit) costs no rebuild.
 - **Action.** `on` / `off` publish `"1"` / `"0"` to
-  `…/controls/run/on`, no retain, and answer `DONE` as any device does; what
-  the engine then executes is `cloud-scenarios.md` §MQTT mirror.
+  `…/controls/run/on`, no retain, and answer `DONE` as any device does — unless
+  the engine is down (above); what the engine then executes is
+  `cloud-scenarios.md` §MQTT mirror. `DONE` means «handed to a listening
+  engine», not «the scene ran»: there is no acknowledgement round-trip.
+
+Validating, engine availability: `tests/test_scene_devices.py`
+`EngineAvailabilityTests` (registry + the Socket.IO action handler, and the
+topic's parity with the engine's constant); the publisher side is
+`opt/sa02m-rules/tests/test_availability.py`.
 
 ### Device type (`type`)
 
@@ -317,7 +363,7 @@ not conjure one.
 Validating: `tests/test_cloud_control_api.py::TestUpsertDeviceRooms`,
 `::TestUpsertRoomMembership`, `tests/test_models.py::TestRoomId`.
 
-### Tile fields (`alice_visible`, `icon`, `homekit_visible`) — 1.0.6.26 / 1.0.6.57
+### Tile fields (`alice_visible`, `icon`, `homekit_visible`) — 1.0.6.26 / 1.0.7.0
 
 Two optional device-level keys beside `room_id`, validated by
 `config/models.py::validate_device`:
@@ -334,7 +380,7 @@ Two optional device-level keys beside `room_id`, validated by
   control page; the ids match that page's sprite and the board's own
   `#sh-icons`. Never forwarded to Yandex.
 - `homekit_visible` (bool; **absent ⇒ hidden** — the opposite default of
-  `alice_visible`, on purpose; 1.0.6.57). Read only by the HomeKit bridge:
+  `alice_visible`, on purpose; 1.0.7.0). Read only by the HomeKit bridge:
   a device reaches Apple Home only while this is `true`
   (`docs/contracts/homekit-bridge.md` §2 — the exposure rule, its skip reason
   `hidden`, and what the bridge does with it live there). A non-bool value is
@@ -499,7 +545,7 @@ leak a non-Yandex field to the platform.
 - In use: kPa → mmHg `7.50062` (DTV pressure), mg/m³ → µg/m³ `1000` (TVOC),
   Wh → kWh `0.001` (CE `electricity_meter`).
 
-### CO₂ threshold (`co2_alarm_ppm`, item level, never sent to Yandex) — 1.0.6.57
+### CO₂ threshold (`co2_alarm_ppm`, item level, never sent to Yandex) — 1.0.7.0
 
 The HomeKit bridge's `CarbonDioxideDetected` threshold (`homekit-bridge.md`
 §3, row M15) sits beside `mqtt` on the `devices.properties.float`
@@ -704,7 +750,10 @@ profiles**: the re-subscribe, the re-subscribe after a drop before the first
 CONNACK, one snapshot after the grace and none while deaf — including a drop
 inside the grace — the refused command, the status keys),
 `tests/test_mqtt_link.py` (the link in isolation, including a CONNACK landing
-mid-pass),
+mid-pass, a topic the library refuses inside one live session — the pass is
+re-run — and the lock discipline: two real threads forced into the
+interleaving where a `connected.set()` moved below the lock would leave the
+link up and unsubscribed),
 `tests/test_mqtt_link_broker.py` (the real paho against a mini broker — the
 library's callback arity, its own re-dial, retained re-delivery, a broker that
 closes every socket before CONNACK while the initial pass runs, the wire; it
@@ -781,8 +830,10 @@ Modbus coil unless the **slave** is down; a per-channel `r` does not refuse
 the command (Yandex scenario: switch + socket on one module in one burst).
 A **scene device** (`/devices/sa02m-rules-…`) is outside all of this: it
 carries no readable state and its silence is never `DEVICE_UNREACHABLE`
-(§Scene devices) — only the device-level `/meta/error` flag can take one
-down. A command the **broker** cannot take — the client's MQTT link is down
+(§Scene devices) — only a device-level flag can take one down: its own
+`/devices/sa02m-rules-<sid>/meta/error`, or the engine's
+`/devices/sa02m-rules/meta/error`; and it is never sent the unreachable stub
+below — it answers down on action and query only. A command the **broker** cannot take — the client's MQTT link is down
 or the library refuses the publish — is `ERROR / DEVICE_UNREACHABLE` for that
 capability and is never queued for later (§Broker reconnect).
 
@@ -1048,7 +1099,7 @@ Validating tests: `opt/sa02m-alice/tests/test_cloud_profile.py`,
 the trigger verbs by `scripts/dev/test-alice-reload-handshake.sh` and the
 sudoers pin by `.ai-dev/quality/checks/sudoers-pin-contract.sh`.
 
-### Catalogue profiles other than `yandex` / `cloud` (1.0.6.57)
+### Catalogue profiles other than `yandex` / `cloud` (1.0.7.0)
 
 A `DeviceRegistry` built with any other profile — today only `homekit`
 (`constants.PROFILE_HOMEKIT`), the HomeKit bridge's

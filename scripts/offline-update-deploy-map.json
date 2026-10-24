@@ -7,14 +7,21 @@
       "dst_prefix": "/var/www/network_config/",
       "mode": "0644",
       "owner": "www-data:www-data",
-      "exec_globs": ["cgi-bin/**", "**/*.cgi", "**/*.sh"]
+      "exec_globs": [
+        "cgi-bin/**",
+        "**/*.cgi",
+        "**/*.sh"
+      ]
     },
     {
       "src_prefix": "opt/sa02m-",
       "dst_prefix": "/opt/sa02m-",
       "mode": "0644",
       "owner": "root:root",
-      "exec_globs": ["**/bin/**", "**/*.sh"]
+      "exec_globs": [
+        "**/bin/**",
+        "**/*.sh"
+      ]
     },
     {
       "src_prefix": "usr/local/sbin/",
@@ -71,7 +78,7 @@
       "dst": "/etc/nginx/sites-available/network_config",
       "mode": "0644",
       "owner": "root:root",
-      "note": "Packer renders __PORT__=9999 and __WEB_ROOT__=/var/www/network_config before sealing."
+      "note": "Packer renders __PORT__=9999 and __WEB_ROOT__=/var/www/network_config before sealing; on a board with a saved panel port (/etc/sa02m_web_port.conf) the runner re-points the listen line at it before deploy."
     },
     "etc/default/sa02m-devices": {
       "dst": "/etc/default/sa02m-devices",
@@ -107,6 +114,16 @@
     "etc/sa02m-restore-backup.sh": {
       "dst": "/usr/local/sbin/sa02m-restore-backup.sh",
       "mode": "0755",
+      "owner": "root:root"
+    },
+    "etc/sa02m-update-control.sh": {
+      "dst": "/usr/local/libexec/sa02m-update-control",
+      "mode": "0755",
+      "owner": "root:root"
+    },
+    "etc/sa02m-stacks-policy.sh": {
+      "dst": "/usr/local/lib/sa02m-stacks-policy.sh",
+      "mode": "0644",
       "owner": "root:root"
     }
   },
@@ -278,6 +295,11 @@
       "dst": "/opt/mplc4/mplc_protocol_fast_modbus.so",
       "mode": "0755",
       "owner": "root:root"
+    },
+    "etc/sa02m-web-port-lib.sh": {
+      "dst": "/usr/local/lib/sa02m-web-port-lib.sh",
+      "mode": "0644",
+      "owner": "root:root"
     }
   },
   "systemd_flat_map": {
@@ -305,6 +327,8 @@
     "/etc/sa02m-homekit/",
     "/var/lib/sa02m-homekit/",
     "/etc/sa02m-homeconnect/",
-    "/var/lib/sa02m-homeconnect/"
+    "/var/lib/sa02m-homeconnect/",
+    "/etc/sa02m-audio/",
+    "/var/lib/sa02m-audio/"
   ]
 }

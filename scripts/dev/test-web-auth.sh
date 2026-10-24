@@ -83,9 +83,11 @@ ok()  { printf 'ok    %s\n' "$1"; }
 bad() { printf 'FAIL  %s\n' "$1"; fails=$((fails + 1)); }
 # A case the ENVIRONMENT cannot run is reported as SKIP and counted, never as ok
 # (quality-gate-rigor.md ## Honesty: "a skipped row is reported as skipped, never
-# as passed"; review Q4, 1.0.6.24). Reserved for genuine environment gaps whose
-# authority is CI — never for a missing in-repo file, which is a defect.
-skip() { skips=$((skips + 1)); printf 'SKIP  %s\n' "$1"; }
+# as passed"; review Q4, 1.0.6.24), and handed to the runner through lib_skip.sh
+# so the row reads PARTIAL there, not PASS. Reserved for genuine environment gaps
+# whose authority is CI — never for a missing in-repo file, which is a defect.
+. .ai-dev/quality/checks/lib_skip.sh || { echo "FAIL  cannot source .ai-dev/quality/checks/lib_skip.sh"; exit 1; }
+skip() { skips=$((skips + 1)); quality_skip "$1"; }
 
 # ── recording `install` shim ───────────────────────────────────────────────
 # web_auth_repair_file asks for `install -m 640 -o root -g www-data`. Neither a
@@ -451,9 +453,9 @@ stage "55 no credential at all"    "SA02M_WEB_USER='admin'
 # ═══ 8. Login brute-force throttle (M4) ═══════════════════════════════════
 # A single shared password over plain HTTP with no attempt limit is an
 # unthrottled oracle (threat model §5). web_login_check/record_failure/
-# record_success implement a per-client windowed lockout under /run. Driven here
-# Cases 57–61 use a 30 s window (SA02M_LOGIN_LOCKOUT=30). Case 62 judges
-# expiry with a 1 s window at check time, after a 2 s sleep.
+# record_success implement a per-client windowed lockout under /run. Driven
+# against a scratch dir: 57–61 with a 30 s window (far longer than their forks
+# can take), 62 judges expiry against a 1 s window in force at check time.
 #
 # Proven RED (1.0.6.24), mutations of a scratch copy of the lib:
 #   web_login_check always returns 0 (never locks)          -> 59 RED
@@ -557,7 +559,10 @@ fi
 #   drop etc/tmpfiles.d/sa02m-web-login.conf            -> 67 + 68 RED
 #   drop the install from scripts/03-webserver.sh       -> 68 RED (installer)
 #   drop the install from scripts/update-www-only.sh    -> 68 RED (www-only)
-#   drop the install from etc/sa02m-web-update-apply.sh -> 68 RED (legacy rsync)
+#   (until 1.0.7.4: drop the install from etc/sa02m-web-update-apply.sh -> 68 RED;
+#    since 1.0.7.5 the launcher delivers nothing itself - UPD-03 removed its
+#    legacy rsync path, the shared OTA runner's tmpfiles.d mapping below IS that
+#    path's delivery - so it is no longer a site of this case)
 #   drop the line from scripts/offline-update-allowlist.txt -> 68 RED (offline)
 #   comment out any of the above (`#` in front)         -> RED, not green
 
@@ -650,7 +655,9 @@ for _entry in "${RUNTIME_DIRS[@]}"; do
         continue
     fi
     _base=$(basename "$_conf")
-    for _path in scripts/03-webserver.sh scripts/update-www-only.sh etc/sa02m-web-update-apply.sh; do
+    # The GitHub launcher left this list in 1.0.7.5: it installs nothing itself
+    # any more (UPD-03) - its delivery IS the shared OTA runner, asserted below.
+    for _path in scripts/03-webserver.sh scripts/update-www-only.sh; do
         stripped_has "$_path" "$_base" \
             && ok "68 $_path installs $_base (provisions $_dir)" \
             || bad "68 $_path does NOT install $_base — a board updated through that path gets the code that needs $_dir but never the dir, and the feature silently fails open"

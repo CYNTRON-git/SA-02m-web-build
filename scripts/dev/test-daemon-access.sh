@@ -50,6 +50,18 @@
 #   K  Home Connect's deny list: a world-readable device document FAILS
 #      `check homeconnect`.
 #   L  a NEW conf saved by www-data takes the setgid dir's group, checks pass.
+#   M  the audio recorder (docs/contracts/audio-recorder.md §13), whose store
+#      the panel READS: the tmpfiles layout passes `check audio`; www-data
+#      able to write rec/, able to enter tmp/, or unable to list the store
+#      each FAILS naming the dir; the daemon in www-data FAILS; `apply` heals
+#      all three to the package tmpfiles modes (store + rec 2750
+#      61004:61033, tmp 0700) and the check passes; a NEW conf saved by
+#      www-data through sa02m_audio.config.save is 61033:61004 0640 and the
+#      check still passes; so is the upload token saved by www-data through
+#      sa02m_audio.config.save_token, and a token the daemon cannot read
+#      (0600) FAILS naming it, `apply` heals it to 0640; the voice allow list
+#      the same way (absent passes, 0600 FAILS naming it, apply heals it, a
+#      root:root file at the name is refused by apply).
 #
 # Root is required (chown to foreign uids, setpriv). Not root: re-exec through
 # `sudo -n` where that works (the CI runner), else every case is printed as
@@ -64,6 +76,8 @@ HC_TMPF=$ROOT/opt/sa02m-homeconnect/tmpfiles.d/sa02m-homeconnect.conf
 HK_PKG=$ROOT/opt/sa02m-homekit
 HC_PKG=$ROOT/opt/sa02m-homeconnect
 AL_PKG=$ROOT/opt/sa02m-alice
+AU_TMPF=$ROOT/opt/sa02m-audio/tmpfiles.d/sa02m-audio.conf
+AU_PKG=$ROOT/opt/sa02m-audio
 
 if [ "$(id -u)" != 0 ]; then
     if [ -z "${DAEMON_ACCESS_NO_SUDO:-}" ] && command -v sudo >/dev/null 2>&1 \
@@ -71,7 +85,7 @@ if [ "$(id -u)" != 0 ]; then
         exec sudo -n env DAEMON_ACCESS_NO_SUDO=1 ${DAEMON_ACCESS_SRC:+DAEMON_ACCESS_SRC="$DAEMON_ACCESS_SRC"} \
             PATH="$PATH" bash "${BASH_SOURCE[0]}"
     fi
-    for c in A B C D E F G H I J K L; do echo "SKIP  $c needs root (chown to foreign uids, setpriv) — not run (a skip is not a pass)"; done
+    for c in A B C D E F G H I J K L M; do echo "SKIP  $c needs root (chown to foreign uids, setpriv) — not run (a skip is not a pass)"; done
     echo "test-daemon-access: SKIPPED, NOT PASSED (not root, no sudo -n)"
     exit 77
 fi
@@ -87,7 +101,8 @@ chmod 0755 "$SB"
 
 # ── A: non-vacuity ─────────────────────────────────────────────────────────
 for f in "$SRC" "$HK_TMPF" "$HC_TMPF" "$HK_PKG/sa02m_homekit/config.py" \
-         "$HC_PKG/sa02m_homeconnect/config.py" "$AL_PKG/sa02m_alice/common/config_store.py"; do
+         "$HC_PKG/sa02m_homeconnect/config.py" "$AL_PKG/sa02m_alice/common/config_store.py" \
+         "$AU_TMPF" "$AU_PKG/sa02m_audio/config.py"; do
     [ -f "$f" ] || { bad "A missing $f — nothing to judge"; echo "test-daemon-access: $fails FAILURE(S)"; exit 1; }
 done
 command -v setpriv >/dev/null 2>&1 || { bad "A setpriv (util-linux) missing — the probes cannot run"; exit 1; }
@@ -416,6 +431,121 @@ rc=0; run_helper "$C" check homekit >/dev/null || rc=$?; rc2=0; run_helper "$C" 
 if [ "$got" = "61033:61001 640|61033:61002 640" ] && [ "$rc" = 0 ] && [ "$rc2" = 0 ]; then
     ok "L a NEW conf saved by www-data is 61033:<daemon> 0640 (setgid dir's group) and both checks pass"
 else bad "L new-file saves: got $got, check rc=$rc/$rc2"; fi
+
+# ── M: the audio recorder — the panel reads its store ──────────────────────
+# Own tree and id table: sa02m-audio = 61004, www-data = 61033.
+new_audio_case() {  # $1 = name, $2 = layout: new | broken ; $3 daemon-in-www (0|1)
+    local c=$SB/$1 ag="61004"
+    mkdir -p "$c"; chmod 0755 "$c"
+    [ "$3" = 1 ] && ag="61004 61033"
+    printf 'sa02m-audio 61004 61004 %s\nwww-data 61033 61033 61033\nroot 0 0 0\n' "$ag" > "$c/accounts"
+    printf 'sa02m-audio 61004\nwww-data 61033\nroot 0\n' > "$c/groups"
+    mk_shims "$c"
+    mkdir -p "$c/etc/sa02m-audio" "$c/etc/sa02m-alice" "$c/var/lib/sa02m-audio/rec" "$c/var/lib/sa02m-audio/tmp" \
+             "$c/run/sa02m-audio" "$c/opt/sa02m-audio/tmpfiles.d"
+    chmod 0755 "$c/etc" "$c/var" "$c/var/lib" "$c/run" "$c/opt" "$c/opt/sa02m-audio" "$c/opt/sa02m-audio/tmpfiles.d"
+    retarget "$AU_TMPF" "$c/opt/sa02m-audio/tmpfiles.d/sa02m-audio.conf" "$c"
+    printf '[recorder]\nenabled = true\n' > "$c/etc/sa02m-audio/sa02m-audio.conf"
+    printf 'WEB_PASS=secret\n' > "$c/etc/sa02m_web.env"; chown 0:61033 "$c/etc/sa02m_web.env"; chmod 0640 "$c/etc/sa02m_web.env"
+    printf '{"devices": []}\n' > "$c/etc/sa02m-alice/sa02m-alice-devices.conf"
+    chown 0:61033 "$c/etc/sa02m-alice"; chmod 0771 "$c/etc/sa02m-alice"
+    chown 61033:61033 "$c/etc/sa02m-alice/sa02m-alice-devices.conf"; chmod 0640 "$c/etc/sa02m-alice/sa02m-alice-devices.conf"
+    chown 61033:61004 "$c/etc/sa02m-audio"; chmod 2750 "$c/etc/sa02m-audio"
+    chown 61033:61004 "$c/etc/sa02m-audio/sa02m-audio.conf"; chmod 0640 "$c/etc/sa02m-audio/sa02m-audio.conf"
+    chown 61004:61033 "$c/run/sa02m-audio"; chmod 2750 "$c/run/sa02m-audio"
+    chown 61004:61033 "$c/var/lib/sa02m-audio" "$c/var/lib/sa02m-audio/rec"
+    chmod 2750 "$c/var/lib/sa02m-audio" "$c/var/lib/sa02m-audio/rec"
+    chown 61004:61004 "$c/var/lib/sa02m-audio/tmp"; chmod 0700 "$c/var/lib/sa02m-audio/tmp"
+    retarget "$SRC" "$c/helper.sh" "$c"
+    echo "$c"
+}
+C=$(new_audio_case m-new new 0)
+rc=0; out=$(run_helper "$C" check audio) || rc=$?
+if [ "$rc" = 0 ] && grep -q '^доступ sa02m-audio' <<<"$out" && ! grep -q 'ОШИБКА' <<<"$out"; then
+    ok "M audio: the tmpfiles layout passes check ($(grep -m1 '^доступ' <<<"$out"))"
+else bad "M audio: the tmpfiles layout: rc=$rc, output: $(tr '\n' '|' <<<"$out" | cut -c1-400)"; fi
+for bad_case in "rec-writable|chmod 2770 rec|www-data может писать в @C@/var/lib/sa02m-audio/rec — лишний доступ" \
+                "tmp-open|chown 61004:61033 tmp; chmod 2750 tmp|www-data может входить в @C@/var/lib/sa02m-audio/tmp — лишний доступ" \
+                "store-closed|chmod 0700 store|www-data не может читать @C@/var/lib/sa02m-audio "; do
+    IFS='|' read -r label _how want <<<"$bad_case"
+    C=$(new_audio_case "m-$label" new 0)
+    case "$label" in
+        rec-writable) chmod 2770 "$C/var/lib/sa02m-audio/rec" ;;
+        tmp-open)     chown 61004:61033 "$C/var/lib/sa02m-audio/tmp"; chmod 2750 "$C/var/lib/sa02m-audio/tmp" ;;
+        store-closed) chmod 0700 "$C/var/lib/sa02m-audio" ;;
+    esac
+    want=${want//@C@/$C}
+    rc=0; out=$(run_helper "$C" check audio) || rc=$?
+    if [ "$rc" = 1 ] && grep -qF "$want" <<<"$out" && ! grep -q '^доступ ' <<<"$out"; then
+        ok "M audio $label: check FAILS naming it («$want»)"
+    else bad "M audio $label: rc=$rc, want «$want», output: $(tr '\n' '|' <<<"$out" | cut -c1-400)"; fi
+    rc=0; out=$(run_helper "$C" apply audio) || rc=$?
+    got="$(mode_of "$C/var/lib/sa02m-audio")|$(mode_of "$C/var/lib/sa02m-audio/rec")|$(mode_of "$C/var/lib/sa02m-audio/tmp")"
+    if [ "$rc" = 0 ] && [ "$got" = "61004:61033 2750|61004:61033 2750|61004:61004 700" ] && grep -q '^доступ sa02m-audio' <<<"$out"; then
+        ok "M audio $label: apply heals to the package tmpfiles modes ($got), check passes"
+    else bad "M audio $label: apply: rc=$rc, got $got, output: $(tr '\n' '|' <<<"$out" | cut -c1-400)"; fi
+done
+C=$(new_audio_case m-www new 1)
+rc=0; out=$(run_helper "$C" check audio) || rc=$?
+if [ "$rc" = 1 ] && grep -q 'sa02m-audio состоит в группе www-data' <<<"$out"; then
+    ok "M audio: the daemon in www-data FAILS check"
+else bad "M audio in www-data: rc=$rc, output: $(tr '\n' '|' <<<"$out" | cut -c1-300)"; fi
+C=$(new_audio_case m-save new 0)
+cp -r "$AU_PKG/sa02m_audio" "$C/"; chmod -R a+rX "$C/sa02m_audio"
+rm -f "$C/etc/sa02m-audio/sa02m-audio.conf"
+(cd "$C" && setpriv --reuid=61033 --regid=61033 --groups=61033 -- env \
+    SA02M_AUDIO_ETC="$C/etc/sa02m-audio" PYTHONDONTWRITEBYTECODE=1 python3 -c "
+import sys; sys.path[:0] = ['$C']
+from sa02m_audio import config as au; au.save(au.RecorderConfig(enabled=True))
+") > "$C/m.out" 2>&1 || bad "M audio: the new-conf save failed as www-data: $(tr '\n' '|' < "$C/m.out" | cut -c1-300)"
+got="$(mode_of "$C/etc/sa02m-audio/sa02m-audio.conf" 2>/dev/null)"
+rc=0; run_helper "$C" check audio >/dev/null || rc=$?
+if [ "$got" = "61033:61004 640" ] && [ "$rc" = 0 ]; then
+    ok "M audio: a NEW conf saved by www-data is 61033:61004 0640 (setgid dir's group), check passes"
+else bad "M audio new conf: got $got, check rc=$rc"; fi
+(cd "$C" && setpriv --reuid=61033 --regid=61033 --groups=61033 -- env \
+    SA02M_AUDIO_ETC="$C/etc/sa02m-audio" PYTHONDONTWRITEBYTECODE=1 python3 -c "
+import sys; sys.path[:0] = ['$C']
+from sa02m_audio import config as au; au.save_token('tok-123.ABC')
+") > "$C/mt.out" 2>&1 || bad "M audio: the token save failed as www-data: $(tr '\n' '|' < "$C/mt.out" | cut -c1-300)"
+tok=$C/etc/sa02m-audio/upload.token
+got="$(mode_of "$tok" 2>/dev/null)"
+rc=0; run_helper "$C" check audio >/dev/null || rc=$?
+if [ "$got" = "61033:61004 640" ] && [ "$rc" = 0 ]; then
+    ok "M audio: the upload token saved by www-data is 61033:61004 0640, check passes"
+else bad "M audio token save: got $got, check rc=$rc"; fi
+chmod 0600 "$tok"
+rc=0; out=$(run_helper "$C" check audio) || rc=$?
+if [ "$rc" = 1 ] && grep -qF "sa02m-audio не может читать $tok" <<<"$out"; then
+    ok "M audio: a token the daemon cannot read FAILS check, naming it"
+else bad "M audio unreadable token: rc=$rc, output: $(tr '\n' '|' <<<"$out" | cut -c1-300)"; fi
+rc=0; out=$(run_helper "$C" apply audio) || rc=$?
+if [ "$rc" = 0 ] && [ "$(mode_of "$tok")" = "61033:61004 640" ]; then
+    ok "M audio: apply heals the token to 61033:61004 0640"
+else bad "M audio token heal: rc=$rc, now $(mode_of "$tok"), output: $(tr '\n' '|' <<<"$out" | cut -c1-300)"; fi
+# The voice allow list (§12/§13) has the token's shape: absent passes, one the
+# daemon cannot read FAILS naming it, apply heals it, a root:root file at the
+# name is refused, never taken over.
+va=$C/etc/sa02m-audio/voice-allow.json
+rc=0; run_helper "$C" check audio >/dev/null || rc=$?
+if [ ! -e "$va" ] && [ "$rc" = 0 ]; then
+    ok "M audio: no voice allow list — check passes (absent is not a grant failure)"
+else bad "M audio absent allow list: exists=$([ -e "$va" ] && echo yes || echo no), check rc=$rc"; fi
+printf '{"devices":{"led-COM3-13":{"power":{"min":0,"max":1}}}}\n' > "$va"
+chown 61033:61004 "$va"; chmod 0600 "$va"
+rc=0; out=$(run_helper "$C" check audio) || rc=$?
+if [ "$rc" = 1 ] && grep -qF "sa02m-audio не может читать $va" <<<"$out"; then
+    ok "M audio: a voice allow list the daemon cannot read FAILS check, naming it"
+else bad "M audio unreadable allow list: rc=$rc, output: $(tr '\n' '|' <<<"$out" | cut -c1-300)"; fi
+rc=0; out=$(run_helper "$C" apply audio) || rc=$?
+if [ "$rc" = 0 ] && [ "$(mode_of "$va")" = "61033:61004 640" ]; then
+    ok "M audio: apply heals the voice allow list to 61033:61004 0640"
+else bad "M audio allow-list heal: rc=$rc, now $(mode_of "$va"), output: $(tr '\n' '|' <<<"$out" | cut -c1-300)"; fi
+chown 0:0 "$va"; chmod 0600 "$va"
+rc=0; out=$(run_helper "$C" apply audio) || rc=$?
+if [ "$rc" = 1 ] && grep -qF "ОШИБКА: $va: владелец 0:0" <<<"$out" && [ "$(mode_of "$va")" = "0:0 600" ]; then
+    ok "M audio: a root:root file at the allow-list name is refused by apply, not taken over"
+else bad "M audio root:root allow list: rc=$rc, now $(mode_of "$va"), output: $(tr '\n' '|' <<<"$out" | cut -c1-300)"; fi
 
 if [ "$fails" -gt 0 ]; then
     echo "test-daemon-access: $fails FAILURE(S)"

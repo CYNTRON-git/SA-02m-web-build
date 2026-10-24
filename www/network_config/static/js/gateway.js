@@ -174,10 +174,23 @@ function _gwToggleBtnHtml(active) {
   return `<button type="button" class="${cls}" id="gw-btn-toggle" title="${title}">${label}</button>`;
 }
 
+function _ownershipScopeHtml(port) {
+  const state = _status.port_coordinator || {};
+  const scope = (state.configured_scopes || {})['/dev/' + port];
+  if (!state.available || !Array.isArray(scope)) {
+    return `<div class="field-hint warn">${escAttr(port)}: ${uiT('Координатор портов недоступен')}</div>`;
+  }
+  const whole = scope.length ? `; ${uiT('целиком службы')}: ${scope.map(escAttr).join(', ')}` : '';
+  const failed = scope.filter(unit => (state.services || {})[unit]?.phase === 'restore_failed');
+  return `<div class="field-hint">${escAttr(port)}: ${uiT('пауза MQTT только на этом порту')}${whole}</div>` +
+    (failed.length ? `<div class="field-hint warn">${uiT('Восстановление служб ожидается')}: ${failed.map(escAttr).join(', ')}</div>` : '');
+}
+
 function _renderDevicePanel(area) {
   const active = _status.service_active;
   const svcClass = active ? 'badge badge-ok' : 'badge badge-err';
-  const svcText  = uiT(active ? 'Активен' : 'Остановлен');
+  const svcText = uiT(({ active: 'Активен', inactive: 'Остановлен', activating: 'Запускается',
+    deactivating: 'Останавливается', failed: 'Ошибка' })[_status.service_state] || 'Недоступно');
 
   const activePorts = PORTS.filter(p => _portToggleOn(_config[p]));
   const runningPorts = PORTS.filter(p => {
@@ -197,6 +210,7 @@ function _renderDevicePanel(area) {
           Включено портов: ${activePorts.length} / 5 &nbsp;|&nbsp; Работают: ${runningPorts.length}
         </span>
       </div>
+      ${activePorts.map(_ownershipScopeHtml).join('')}
       <div class="btn-group gw-svc-actions">
         ${_gwToggleBtnHtml(active)}
         <button class="btn btn-sm btn-warn" id="gw-btn-restart">Перезапустить</button>
@@ -265,6 +279,7 @@ function _renderPortPanel(area, port) {
         <div id="gw-counters-${port}" class="gw-counters">${_countersHtml(st)}</div>
       </div>
 
+      ${_ownershipScopeHtml(port)}
       <div class="gw-form-rows">
 
         <div class="gw-form-row">
@@ -624,13 +639,14 @@ function _statusBadgeHtml(st, cfg) {
   if (!_portToggleOn(cfg)) {
     return '<span class="badge badge-unk">Отключён</span>';
   }
+  if (_status.stale) return `<span class="badge badge-unk">${uiT('Данные устарели')}</span>`;
   if (st && st.running) {
     const modeLabel = MODES.find(m => m.value === cfg.mode)?.label || cfg.mode;
     return `<span class="badge badge-ok">Работает</span>
             <span class="badge" style="background:var(--bg-panel);color:var(--text-sec);border:1px solid var(--border)">
               ${modeLabel}&nbsp;:${cfg.tcp_port || '?'}</span>`;
   }
-  const err = st && st.last_error ? ` — ${st.last_error}` : '';
+  const err = st && st.last_error ? ` — ${escAttr(st.last_error)}` : '';
   return `<span class="badge badge-err">Остановлен${err}</span>`;
 }
 

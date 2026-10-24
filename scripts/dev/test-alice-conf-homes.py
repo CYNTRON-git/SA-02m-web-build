@@ -55,9 +55,14 @@ Method — behavioural where the code can be run, never a grep for a string:
      non-regular dest and a symlinked parent in a directory others can write
      are refused, each leaving a victim byte- and mode-identical (7c-7g). A
      missing conf dir is created with the tmpfiles owner/mode (7h; 7s
-     cross-checks that spec against tmpfiles and the installer). Only 7a/7b/7h
-     observe an owner and need root; a non-root host reports them as SKIP,
-     never a pass, and runs everything else — CI runs this row non-root;
+     cross-checks that spec against tmpfiles and the installer). Only
+     7a/7b/7b2/7h observe an owner and need root; everything else runs as any
+     user. CI runs this row non-root with passwordless sudo: unprivileged, the
+     script re-runs itself as root through `sudo -n` (sections 0-7, the child
+     stops there) and takes the owner cases' verdicts from that child — a
+     label it did not print `ok` FAILS. With neither root nor `sudo -n` they
+     are SKIP, logged to QUALITY_SKIP_LOG like every skip() here, so the row
+     reads PARTIAL (a FAIL under QUALITY_STRICT), never PASS;
   8. the WHOLE restore script runs end to end with /etc/ retargeted into a
      sandbox and systemctl/nginx shimmed: a planted symlinked dest fails
      --apply in the preflight with nothing written (not even the archive's
@@ -78,7 +83,8 @@ Method — behavioural where the code can be run, never a grep for a string:
      pairing store, creates a missing conf dir with the tmpfiles owner/mode,
      restores the conf without touching a HomeKit unit (the daemon re-reads it
      every 2 s) and fails the preflight on a symlinked conf; the runner's 0440
-     re-mode loop names every committed etc/sudoers.d/ drop-in (open world).
+     re-mode loop, extracted and run on a sandbox sudoers dir, takes every
+     committed etc/sudoers.d/ drop-in 0644 -> 0440 (open world).
   11/12. the HomeKit installer's conf seed and its tmpfiles conf (see those
      sections).
   13. the Home Connect client homes (docs/contracts/home-connect.md §11-§12),
@@ -129,6 +135,25 @@ cases (each RED, one at a time, with the proof's own awk): the validator entry
 (13.1), the runner-bootstrap entry (13.2), the restore ALLOW entry
 (13.6/13.8a/b), the restore DIR_SPEC entry (13.7), and the 06d seed's
 `os.fchmod(fd, 0o660)` (14a/14b/14f).
+10.9 became behavioural in 1.0.7.10: since 1.0.7.5 (4f250366) the runner
+re-modes by prefix (`"$sudoers_dir"/sa02m-*`), and the old name-list regex read
+that as «loop not found» — the row's only failure on CI (PR #217). RED observed
+2026-10-23 under WSL as `nobody`, one mutation at a time: the glob narrowed to
+`sa02m-a*` (7 drop-ins left 0644, named), the loop's guard made `if true`
+(all 10), a `continue` before the chmod (all 10), an extra committed
+`etc/sudoers.d/zz-extra` (named), and the pre-1.0.7.5 runner (non-vacuity).
+The owner cases were hollow on CI until 1.0.7.10: a non-root run printed SKIP
+for 7a/7b/7h, wrote nothing to QUALITY_SKIP_LOG, and the runner read PASS.
+Observed 2026-10-23 under WSL with the runner in strict mode, as a non-root
+user with passwordless sudo (the CI shape): with the restore's owner line
+forced to 0:0, or its parent chown commented out, the old script still read
+PASS; this one goes RED, one mutation at a time — existing owner not kept (7a),
+new file's group 0 (7b/7b2/7h), DIR_SPEC owner ignored (7b2), fchown commented
+out (7a/7b/7b2/7h), the missing dir not chowned (7h) or left 0700 (7h). As
+`nobody` (no sudo) the row is PARTIAL — a strict FAIL — never PASS. The
+harness's own floor, each RED in the CI shape: the sudo probe forced to None
+(skips logged, strict FAIL), a label the child never prints, a child that
+exits before section 7. With the skip-log write removed, `nobody` read PASS.
 The backup list is not cased: its entries sit inside a backslash-continued
 `for p in \\` list, where a `#` breaks the syntax of the whole loop — a RED for
 the wrong reason.
@@ -157,6 +182,13 @@ if os.name == "nt":
     print("SKIP  alice-conf-homes retargets Linux paths and needs a symlink-capable host")
     raise SystemExit(77)
 
+# The sandboxes stand in for the board's /etc, which root makes under umask
+# 022. Under a user-private-group umask (002, a regular login on Ubuntu) every
+# sandbox directory comes out group-writable, and the shipped trusted-path rule
+# rightly refuses it — 13 FAILs (5e, 8, 10.5e/10.8, 13.5e/13.8) caused by the
+# host, not the code. The modes a case is about are still set explicitly.
+os.umask(0o022)
+
 ROOT = Path(__file__).resolve().parents[2]
 RUNNER = ROOT / "etc/sa02m-update-runner.sh"
 VALIDATOR_DIR = ROOT / "opt/sa02m-update"
@@ -184,7 +216,14 @@ def bad(msg: str) -> None:
 
 
 def skip(msg: str) -> None:
+    """A check not run here. Printed, and — under the quality runner — one line
+    in QUALITY_SKIP_LOG, or the row reads PASS with the case never run (the
+    runner reads no SKIP line from stdout; strict CI turns the log into a FAIL)."""
     print("SKIP  " + msg)
+    log = os.environ.get("QUALITY_SKIP_LOG")
+    if log:
+        with open(log, "a", encoding="utf-8") as fh:
+            fh.write("alice-conf-homes " + msg + "\n")
 
 
 def read(p: Path) -> str:
@@ -478,12 +517,42 @@ else:
 # www-data account (any panel session: cmd_exec.cgi) can create names in the
 # directory it writes into. Every case below plants what www-data could plant
 # (in a www-data-writable directory, as on the board) and asserts a victim file stays byte-,
-# mode- and owner-identical. Only the cases that OBSERVE an owner (7a/7b/7h)
+# mode- and owner-identical. Only the cases that OBSERVE an owner (7a/7b/7b2/7h)
 # need root; 7c-7g run everywhere — CI runs this row as a non-root user, and
 # the comment-mutation proof of the restore's refusal line depends on them.
+# Unprivileged, this script re-runs ITSELF as root through `sudo -n` where that
+# needs no password (the CI runner) for the owner cases — sections 0-7 in the
+# child, which stops after 7 — and takes their verdicts from it (after the
+# section). With neither root nor sudo they are skipped into QUALITY_SKIP_LOG.
+# The idiom is scripts/dev/test-daemon-access.sh's `sudo -n` re-exec.
 print("── 7. restore atomic_install() ownership + symlink hardening ──")
 HELPERS = ("RestoreRefused", "DIR_SPEC", "dest_check", "ensure_parent", "atomic_install")
 IS_ROOT = hasattr(os, "geteuid") and os.geteuid() == 0
+# Set in the root re-run child, so it never recurses and stops after section 7.
+AS_ROOT_ENV = "SA02M_ALICE_CONF_HOMES_AS_ROOT"
+ROOT_LABELS = ("7a", "7b", "7b2", "7h")
+IN_ROOT_CHILD = bool(os.environ.get(AS_ROOT_ENV))
+if IN_ROOT_CHILD and not IS_ROOT:
+    bad("7 the root re-run child is not root — the owner cases cannot be observed")
+
+
+def passwordless_sudo() -> str | None:
+    """`sudo` when it answers `sudo -n true` without a password, else None.
+    Never as root and never in the re-run child."""
+    if IS_ROOT or IN_ROOT_CHILD:
+        return None
+    sudo = shutil.which("sudo")
+    if not sudo:
+        return None
+    try:
+        probe = subprocess.run([sudo, "-n", "true"], stdin=subprocess.DEVNULL,
+                               stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=15)
+    except (OSError, subprocess.SubprocessError):
+        return None
+    return sudo if probe.returncode == 0 else None
+
+
+ROOT_RERUN = passwordless_sudo()
 TWIN_RE = re.compile(r"^# >>> trusted-path resolver.*?^# <<< trusted-path resolver\n", re.S | re.M)
 
 
@@ -623,7 +692,11 @@ else:
                 bad(f"7b2 new restored HomeKit conf is {st and (st.st_uid, st.st_gid, oct(stat_mod.S_IMODE(st.st_mode)))} "
                     f"err={err!r} — expected 61033:61001 0640 (the CGI must be able to read it)")
         else:
-            skip("7a/7b owner-keeping cases need root to observe a chown — not run on this host (a skip is not a pass)")
+            if ROOT_RERUN:
+                print("      7a/7b/7b2 need root to observe a chown — re-run as root through `sudo -n` after this section")
+            else:
+                skip("7a/7b/7b2 owner-keeping cases need root to observe a chown — not root and no passwordless "
+                     "`sudo -n` on this host, not run (a skip is not a pass)")
             fresh.write_text("old\n", encoding="utf-8")
 
         # 7c: a symlink planted at the temp name. The pre-fix code used the
@@ -702,8 +775,12 @@ else:
         # 7h: a missing Alice conf dir is created with its tmpfiles owner/mode.
         if spec is None:
             bad("7h no DIR_SPEC entry for the Alice conf dir — a missing dir is created root:root 0755")
+        elif not IS_ROOT and ROOT_RERUN:
+            print("      7h creating the conf dir root:www-data needs root to chown — re-run as root through `sudo -n` "
+                  "after this section")
         elif not IS_ROOT:
-            skip("7h creating the conf dir root:www-data needs root to chown — not run on this host (a skip is not a pass)")
+            skip("7h creating the conf dir root:www-data needs root to chown — not root and no passwordless `sudo -n` "
+                 "on this host, not run (a skip is not a pass)")
         else:
             try:
                 want_gid = grp.getgrnam(spec[2]).gr_gid
@@ -727,6 +804,49 @@ else:
                 else:
                     bad(f"7h missing conf dir created as {got} (want {(spec[0], want_uid, want_gid)}), "
                         f"conf gid={fst and fst.st_gid}, err={err!r}")
+
+if IN_ROOT_CHILD:
+    # The root re-run child: its parent runs everything past section 7 itself.
+    print("")
+    if fails:
+        print(f"alice-conf-homes (root re-run): {fails} FAILURE(S)")
+        sys.exit(1)
+    print("alice-conf-homes (root re-run): ALL OK")
+    sys.exit(0)
+if ROOT_RERUN:
+    # The owner cases' verdicts come from the root child: each of ROOT_LABELS
+    # must print `ok` there; a child FAIL on any label fails here, a child SKIP
+    # (7h with www-data absent) is a skip here, and a label the child never
+    # printed — or a child that crashed — FAILS. The child gets no skip log.
+    cmd = [ROOT_RERUN, "-n", "env", "-u", "QUALITY_SKIP_LOG", f"{AS_ROOT_ENV}=1", "PYTHONDONTWRITEBYTECODE=1",
+           sys.executable, "-B", str(Path(__file__).resolve())]
+    try:
+        child = subprocess.run(cmd, cwd=str(ROOT), stdin=subprocess.DEVNULL, capture_output=True,
+                               text=True, timeout=600)
+        out, rc = child.stdout + child.stderr, child.returncode
+    except (OSError, subprocess.SubprocessError) as e:
+        out, rc = f"{type(e).__name__}: {e}", None
+    seen: set = set()
+    forwarded_fail = False
+    for line in out.splitlines():
+        parts = line.split(None, 2)
+        if len(parts) < 2:
+            continue
+        verdict, label = parts[0], parts[1]
+        if verdict == "FAIL":
+            bad("[root via sudo -n] " + line[6:])
+            forwarded_fail = True
+            seen.add(label)
+        elif verdict == "ok" and label in ROOT_LABELS:
+            ok("[root via sudo -n] " + line[6:])
+            seen.add(label)
+        elif verdict == "SKIP" and label in ROOT_LABELS:
+            skip("[root via sudo -n] " + line[6:])
+            seen.add(label)
+    unseen = [label for label in ROOT_LABELS if label not in seen]
+    if unseen or rc is None or rc not in (0, 1) or (rc == 1) != forwarded_fail:
+        bad(f"7 the root re-run through `sudo -n` did not report {unseen or ROOT_LABELS} cleanly "
+            f"(rc={rc}) — the owner cases ran nowhere:\n{out[-2000:]}")
 
 # ── 8. the SHIPPED restore script, end to end in a sandbox ─────────────────
 # Section 7 runs the functions; this runs the whole script (shell wrapper +
@@ -1150,22 +1270,45 @@ else:
                     f"victim={victim.read_bytes()!r}, output: {out.strip()[-300:]!r}")
 
 # 10.9 — the OTA lands every committed sudoers drop-in, the github-overlay path
-# at 0644 (the runner's deploy_mode), and its cleanup step re-modes a NAMED list
-# to 0440 (visudo -c flags anything else). Open world: every file under
-# etc/sudoers.d/ must be in that list — a new drop-in (sa02m-homekit) left out
-# ships as a visudo failure on every OTA'd board.
-m_loop = re.search(r"^\s*for _name in ([^;\n]+); do\n\s*_path=\"/etc/sudoers\.d/\$_name\"\n\s*if \[ -f \"\$_path\" \]; then\n\s*chmod 0440",
-                   rtxt, re.M)
+# at 0644 (the runner's deploy_mode), and its cleanup step re-modes them to 0440
+# (visudo -c flags anything else). Since 1.0.7.5 the re-mode is allow-listed by
+# PREFIX (`for _path in "$sudoers_dir"/sa02m-*`), not a name list. Open world,
+# and behavioural: the SHIPPED loop is extracted from cleanup_b1_deploy_artifacts
+# and run by bash against a sandbox SA02M_SUDOERS_DIR seeded with every file
+# under etc/sudoers.d/ at 0644 — each must come out 0440, so a new drop-in the
+# prefix does not reach (or a loop that stops re-moding) FAILS by name. Mode
+# only: the root:root half needs root and is sudoers-pin-contract 8c's.
+m_cleanup = re.search(r"^cleanup_b1_deploy_artifacts\(\) \{\n(.*?)^\}\n", rtxt, re.M | re.S)
+m_loop = re.search(r"^([ \t]*local sudoers_dir=\$\{SA02M_SUDOERS_DIR:-/etc/sudoers\.d\}.*?\n"
+                   r"[ \t]*for _path in \"\$sudoers_dir\"/[^\n]*; do\n.*?^[ \t]*done\n)",
+                   m_cleanup.group(1) if m_cleanup else "", re.M | re.S)
 committed = sorted(p.name for p in (ROOT / "etc/sudoers.d").iterdir() if p.is_file()) if (ROOT / "etc/sudoers.d").is_dir() else []
-if not m_loop or not committed:
-    bad(f"10.9 could not extract the runner's 0440 re-mode loop (found={bool(m_loop)}) or list etc/sudoers.d ({len(committed)} files) (non-vacuity)")
+loop = m_loop.group(1) if m_loop else ""
+# The loop runs as whoever runs this row (root on a dev box): refuse to run a
+# block naming a /etc/sudoers.d/ path outright — only the retargeted
+# $sudoers_dir may reach a file.
+if not m_loop or not committed or "chmod 0440" not in loop or re.search(r"/etc/sudoers\.d/", loop):
+    bad(f"10.9 could not extract the runner's 0440 re-mode loop from cleanup_b1_deploy_artifacts "
+        f"(function found={bool(m_cleanup)}, loop found={bool(m_loop)}) or list etc/sudoers.d ({len(committed)} files) (non-vacuity)")
 else:
-    named = set(m_loop.group(1).split())
-    missing_mode = [n for n in committed if n not in named]
-    if missing_mode:
-        bad(f"10.9 committed sudoers drop-ins the OTA never re-modes to 0440: {missing_mode}")
+    with tempfile.TemporaryDirectory() as sb109:
+        sd = Path(sb109, "sudoers.d")
+        sd.mkdir()
+        for n in committed:
+            shutil.copyfile(ROOT / "etc/sudoers.d" / n, sd / n)
+            os.chmod(sd / n, 0o644)
+        script = "log() { printf '%s\\n' \"$*\"; }\nremode() {\n" + loop + "}\nremode\n"
+        r109 = subprocess.run(["bash", "-c", script], capture_output=True, text=True, timeout=60,
+                              env={**os.environ, "SA02M_SUDOERS_DIR": str(sd)})
+        modes = {n: os.lstat(sd / n).st_mode & 0o7777 for n in committed}
+    missing_mode = sorted(n for n, m in modes.items() if m != 0o440)
+    if r109.returncode != 0 or missing_mode:
+        bad(f"10.9 committed sudoers drop-ins the OTA re-mode loop leaves off 0440: "
+            f"{ {n: oct(modes[n]) for n in missing_mode} } (rc={r109.returncode}, "
+            f"output: {(r109.stdout + r109.stderr).strip()[-300:]!r})")
     else:
-        ok(f"10.9 the OTA re-modes all {len(committed)} committed sudoers drop-ins to 0440 (sa02m-homekit included)")
+        ok(f"10.9 the OTA re-mode loop, run on a sandbox, takes all {len(committed)} committed sudoers drop-ins "
+           f"0644 -> 0440 (sa02m-homekit included)")
 
 # ── 11. HomeKit installer conf seed: root never writes/chmods through a plant ─
 # scripts/06c-homekit.sh (root, on every install.sh refresh once the bridge is
@@ -1312,7 +1455,7 @@ else:
 # exists only where scripts/06c-homekit.sh ran: on any other board its lines
 # fail to resolve at every boot and it creates an empty /etc/sa02m-homekit.
 # So the conf lives in the package (inert under /opt) and only the installer
-# copies it into /etc/tmpfiles.d/ (review advisory A1, 1.0.6.57).
+# copies it into /etc/tmpfiles.d/ (review advisory A1, 1.0.7.0).
 print("── 12. the HomeKit tmpfiles conf is installer-owned, never OTA'd into /etc/tmpfiles.d ──")
 HK12_SRC = "opt/sa02m-homekit/tmpfiles.d/sa02m-homekit.conf"
 runner12 = read(RUNNER)

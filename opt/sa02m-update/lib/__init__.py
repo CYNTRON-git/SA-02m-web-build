@@ -30,6 +30,10 @@ ERROR_CODES = frozenset(
         "E_INTERNAL",
         "E_UPLOAD",
         "E_MANIFEST",
+        "E_BOOTSTRAP_REQUIRED",
+        "E_RECOVERY_REQUIRED",
+        "E_BUSY",
+        "E_DOWNLOAD",
     }
 )
 

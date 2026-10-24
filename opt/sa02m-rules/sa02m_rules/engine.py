@@ -468,11 +468,15 @@ class Engine:
         self._rebuild_for_s_index()
 
     def _inactive(self, s: Dict[str, Any]) -> bool:
-        """Disabled, or a row _adopt could not arm — never run either way."""
-        sid = s.get("id")
+        """Disabled, or a row _adopt could not arm — never run either way.
+        Any hashable id (a hand-edited file may carry an int) is looked up
+        alike; an unhashable one was never keyed by _adopt to begin with."""
         if s.get("enabled") is False:
             return True
-        return isinstance(sid, str) and sid in self._unarmed
+        try:
+            return s.get("id") in self._unarmed
+        except TypeError:
+            return False
 
     @staticmethod
     def _same_runtime(a: Dict[str, Any], b: Dict[str, Any]) -> bool:
@@ -528,8 +532,10 @@ class Engine:
         # The one engine-side document save: scenarios.json stays strict JSON
         # whatever a sandbox run left in Vars (code_runner scrubs the same
         # way at run end; this covers every other caller of the save).
-        from sa02m_rules.code_runner import non_finite_inside
-        non_finite_inside(self.doc["vars"], fix=True)
+        from sa02m_rules.code_runner import scrub_vars
+        reason = scrub_vars(self.doc["vars"])
+        if reason:
+            LOG.warning("vars scrubbed before save: %s", reason)
         save(self.doc, self.path)
         # leave: home/night → away/holiday; arrive: away/holiday → home.
         # night is «home, asleep» — entering it is not an arrival event.

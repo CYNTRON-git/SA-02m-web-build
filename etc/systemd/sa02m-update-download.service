@@ -1,0 +1,9 @@
+[Unit]
+Description=SA-02m internet update download and apply
+After=network-online.target
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/sbin/sa02m-web-update-apply
+TimeoutStartSec=0
+Nice=5

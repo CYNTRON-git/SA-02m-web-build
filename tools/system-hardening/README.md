@@ -8,7 +8,7 @@
 
 | Слой | Файл | Назначение |
 |---|---|---|
-| **HW WDT (PID1)** | `etc/systemd/sa02m-watchdog.conf` | drop-in для `system.conf` — `RuntimeWatchdogSec=15s`, `RebootWatchdogSec=0` (watchdog на время выключения отключён намеренно; обоснование — в шапке самого файла). PID1 systemd сам владеет `/dev/watchdog0`. |
+| **HW WDT (PID1)** | `etc/systemd/sa02m-watchdog.conf` | drop-in для `system.conf` — `RuntimeWatchdogSec=15s`, `RebootWatchdogSec=16s` (сторож на время перезагрузки взведён на кэп драйвера, чтобы зависшая перезагрузка сбрасывалась сама; обоснование — в шапке самого файла). PID1 systemd сам владеет `/dev/watchdog0`. |
 | **Userspace WDT** | `etc/sa02m-userspace-watchdog.sh` + `etc/systemd/sa02m-userspace-watchdog.service` | health-checks (procs/ports/http/iface/load/mem); при стойком сбое делает forced reboot (graceful → reboot -f → kernel WDT). |
 | **Failure monitor** | `etc/sa02m-failure-monitor.sh` + `etc/sa02m-failure-monitor.service` | логирование переходов состояний и snapshot при сбоях, без reboot. |
 | **COM-fallback** | `serial-getty@ttyS0` (115200) | если сеть зависла — root login через USB-serial COM7. |

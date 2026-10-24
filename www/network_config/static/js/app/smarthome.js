@@ -2052,6 +2052,9 @@ function shBeginEdit(id) {
   if (co2El) co2El.value = shStoredCo2Threshold(dev);
   const exportHint = $('sh-export-hint');
   if (exportHint) exportHint.hidden = true;
+  // A preset hint describes the form it was applied to, not this device.
+  const presetHint = $('sh-preset-hint');
+  if (presetHint) presetHint.hidden = true;
   shSyncRowFields();
   const save = $('sh-dev-save');
   if (save) save.textContent = uiT('Сохранить');
@@ -2077,6 +2080,8 @@ function shCancelEdit() {
   shExportTouched = false;
   const exportHint = $('sh-export-hint');
   if (exportHint) exportHint.hidden = true;
+  const presetHint = $('sh-preset-hint');
+  if (presetHint) presetHint.hidden = true;
   shDtypeTouched = false;
   shIconTouched = false;
   shClearRows();
@@ -2285,6 +2290,7 @@ window.shAddDevice = shAddDevice;
 window.shCancelEdit = shCancelEdit;
 window.shAddRoom = shAddRoom;
 window.shHomekitTickAll = shHomekitTickAll;
+window.shApplyPreset = shApplyPreset;
 
 if (document.readyState === 'loading') {
   document.addEventListener('DOMContentLoaded', shInit);

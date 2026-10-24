@@ -217,7 +217,7 @@ apply_firstboot_wiring() {
     # Значения обязаны совпадать с эталоном etc/systemd/sa02m-watchdog.conf
     # (репо на носителе нет — отсюда копия); стережёт
     # .ai-dev/quality/checks/watchdog-cap.sh.
-    printf '%s\n' '[Manager]' 'RuntimeWatchdogSec=15s' 'RebootWatchdogSec=0' \
+    printf '%s\n' '[Manager]' 'RuntimeWatchdogSec=15s' 'RebootWatchdogSec=16s' \
         > "$root/etc/systemd/system.conf.d/sa02m-watchdog.conf"
     if [ -f "$root/etc/systemd/system.conf" ]; then
         sed -i 's/^RuntimeWatchdogSec=/#RuntimeWatchdogSec=/' \

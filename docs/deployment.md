@@ -17,6 +17,15 @@
   `etc/` → `/etc`, `opt/` → `/opt` (см. `install.sh`).
 - Веб-корень на устройстве: `/var/www/network_config`.
 - nginx на устройстве слушает **:9999 (обычный HTTP)**, за ним fcgiwrap + Bash CGI.
+  Другой порт задаёт `install.sh --port N`; он сохраняется в
+  `/etc/sa02m_web_port.conf` (`SA02M_WEB_PORT=N`, формат —
+  `etc/sa02m-web-port-lib.sh`), и каждый следующий рендер site-файла, www-only,
+  `--refresh`, офлайн-пакет и проверка здоровья обновления берут порт оттуда.
+  Нет файла — 9999. Плата, поставленная с `--port`, когда порт ещё не
+  сохранялся, переносит его в файл из живого site-файла при первом прогоне
+  установщика или www-only (одно OTA этого не делает). Прочие
+  локальные пробы (`sa02m-userspace-watchdog`, `sa02m-failure-monitor`, guard'ы
+  `hw-backend`/`status-blocks`) по-прежнему ходят на `127.0.0.1:9999`.
 - Демон прошивальщика: `sa02m-flasher.service`, unix-socket
   `/run/sa02m-flasher/flasher.sock`.
 - Маркер развёрнутого коммита: `/var/lib/sa02m-web-build/deployed_commit`.
@@ -28,8 +37,8 @@
 | **www-only** | изменения только в `www/` (frontend + CGI) | `scripts/update-www-only.sh` |
 | **full install** | новое устройство, или менялись `etc/`/`opt/`/systemd/демон | `install.sh` (на настроенной плате — `install.sh --refresh`, «Режим обновления» ниже) |
 | **web-update (OTA)** | штатное самообновление с интернетом | вкладка «Обновление» → GitHub (`web_update_*.cgi`, semver); apply через shared runner при наличии. С 1.0.6.52 раннер работает transient-юнитом `sa02m-update-apply-<txn8>` (не в cgroup fcgiwrap), а перезагрузка платы на `verifying` **завершает** обновление (`sa02m-update-verify.service` после nginx), а не откатывает его — гарантии G1–G5 в `docs/contracts/web-update.md` «Жизненный цикл apply»; что из этого действует уже в доставляющем обновлении — таблица ниже. С 1.0.6.54 цикл раскладки файлов в раннере не запускает интерпретатор на каждый файл (старый раннер запускал `python3` на каждый файл; его раскладка на стенде заняла 33 мин в замере 23.09 и 16 мин в замере 24.09): **обновление, доставляющее 1.0.6.54, — последнее медленное** (его ещё выполняет старый раннер); со следующего apply раскладка занимает минуты — подтверждено на стенде 1.135 (24.09, новый раннер): раскладка 2 мин 30 с, всё обновление 4 мин 15 с; замер и условия — `CHANGELOG.md` 1.0.6.54 |
-| **offline package** | обновление без интернета платы **≥ 1.0.5.60** (runner ≥ 1.0.5.66 — `MIN_VERSION`/`MIN_UPDATER` в `scripts/pack-offline-update.py`) | вкладка «Обновление» → файл `.sa02m`; packer на ПК: `python scripts/pack-offline-update.py` |
-| **offline full update** | плата **< 1.0.5.60** (старый updater, `.sa02m` не примется) или любой разрыв `etc/`/`opt/` с текущим релизом, без интернета | полный архив `origin/main` в `/tmp` платы + `scripts/offline-full-update.sh` — «Офлайн-вариант» в разделе «Полный деплой» (запускает `install.sh --refresh`) |
+| **offline package** | обновление без интернета платы после подготовительного полного `--refresh` (runner ≥ 1.0.7.5 и capability gate; [матрица](contracts/web-update.md)) | вкладка «Обновление» → файл `.sa02m`; packer на ПК: `python scripts/pack-offline-update.py` |
+| **offline full update** | плата **< 1.0.5.60** (старый updater, `.sa02m` не примется) или любой разрыв `etc/`/`opt/` с текущим релизом, без интернета | полный архив `origin/<ref>` (какой `<ref>` — Предусловия «Полного деплоя») в `/tmp` платы + `scripts/offline-full-update.sh` — «Офлайн-вариант» в разделе «Полный деплой» (запускает `install.sh --refresh`) |
 | ~~self-upgrade bridge~~ **(ОТМЕНЁН — не использовать)** | плата **< 1.0.5.75** без интернета/по SSH | **вместо моста — «offline full update» выше.** Мост переписывал боевые version-ветки force-push'ем и ОТКЛОНЁН: `docs/decisions/no-force-push-version-branches.md` |
 | **vendor-payload** | доставка/обновление опционального стека (Node-RED) вне релиза веб-интерфейса | процедура «Доставка vendor-payload Node-RED» ниже |
 
@@ -139,10 +148,16 @@ OTA и офлайн-пакет **копируют файлы по карте н�
   - **www-only** — `scripts/update-www-only.sh` из чекаута, в котором есть
     `scripts/11-devices.sh` **и** `opt/sa02m-devices/sa02m_devices/`: он вызывает
     `11-devices.sh`, а тот рендерит тот же шаблон, перелинковывает `sites-enabled`
-    и делает `nginx -t && reload` (`update-www-only.sh:431-435`, `11-devices.sh:94-101`);
+    и делает `nginx -t && reload` (блок nginx в `11-devices.sh`);
     чекаут без этих двух путей site-файл не трогает;
+  - оба рендера идут через одну функцию `sa02m_render_nginx_site`
+    (`scripts/lib.sh`) с сохранённым портом платы (строка про порт в «Что где
+    лежит»);
   - **офлайн-пакет `.sa02m`** — `scripts/offline-update-deploy-map.json` →
-    `/etc/nginx/sites-available/network_config`;
+    `/etc/nginx/sites-available/network_config`; упаковщик рендерит его на 9999,
+    раннер перед раскладкой переводит `listen` на сохранённый порт платы (и так
+    же — URL проверки здоровья; с раннера, который это умеет, т.е. со
+    следующего обновления после доставившего его);
   - **золотой образ**;
   - **GitHub-OTA («Обновление веб»)** — да, с рендером. `map_dst` кладёт
     `etc/nginx/network_config.conf` в `/etc/nginx/sites-available/network_config`.
@@ -253,8 +268,9 @@ tmpfiles-юнит. Если релиз менял демон/`opt/sa02m-flasher/
 
 **`etc/` обязателен в поставке — без него скрипт не стартует.**
 `update-www-only.sh` подключает `scripts/lib.sh`, а тот безусловно
-`source`-ит `../etc/sa02m-stacks-policy.sh` (`scripts/lib.sh` — блок
-«Stack policy», намеренный fail-loud: отсутствие файла = сломанное дерево).
+`source`-ит `../etc/sa02m-stacks-policy.sh` и `../etc/sa02m-web-port-lib.sh`
+(`scripts/lib.sh` — блоки «Stack policy» и «Panel port», намеренный
+fail-loud: отсутствие файла = сломанное дерево).
 При `set -euo pipefail` это обрывает скрипт **до первого копирования**:
 
 ```
@@ -268,7 +284,7 @@ scripts/lib.sh: line <N>: .../scripts/../etc/sa02m-stacks-policy.sh: No such fil
 | Форма | Что везём | Что получаем |
 |---|---|---|
 | **полная (рекомендуется)** | `www/` + `scripts/` + `etc/` | www + идемпотентные `[ -f ]`-инсталлы helper'ов/юнитов из `etc/` (см. абзац выше) |
-| **минимальная** | `www/` + `scripts/` + **только** `etc/sa02m-stacks-policy.sh` | ровно синхронизация `www/`: остальные `[ -f ]`-гарды не срабатывают — исходное «чисто-www» поведение |
+| **минимальная** | `www/` + `scripts/` + **только** `etc/sa02m-stacks-policy.sh` и `etc/sa02m-web-port-lib.sh` | ровно синхронизация `www/` (плюс сама lib порта в `/usr/local/lib`): остальные `[ -f ]`-гарды не срабатывают — исходное «чисто-www» поведение |
 
 Минимальная форма годится, когда релиз не менял ничего в `etc/`; во всех
 остальных случаях берите полную. Проверено на пустом дереве 2026-08-28
@@ -291,18 +307,23 @@ scripts/lib.sh: line <N>: .../scripts/../etc/sa02m-stacks-policy.sh: No such fil
    ```
    ssh root@<dev> 'tar czf /root/www-backup-$(date +%Y%m%d-%H%M%S).tgz -C /var/www network_config'
    ```
-2. **Доставка** `www/`, `scripts/` **и `etc/`** в staging на устройстве. Два
-   равнозначных транспорта:
-   - `pscp -r www scripts etc root@<dev>:/root/sa02m-deploy-<ver>/`;
-   - архив из git (гарантированно LF, без CRLF-сюрпризов Windows-чекаута):
-     `git archive --format=tar.gz -o deploy.tar.gz HEAD www/network_config scripts etc`,
+2. **Доставка** `www/`, `scripts/` **и `etc/`** в staging на устройстве.
+   - **Основной путь — архив из git** (гарантированно LF, без CRLF-сюрпризов
+     Windows-чекаута; источник, `<ref>` и `<src>` — Предусловия полного деплоя):
+     `git fetch origin && git archive --format=tar.gz -o deploy-<src>.tar.gz origin/<ref> www/network_config scripts etc`,
      загрузка по SFTP (paramiko / WinSCP), на устройстве
      `tar xzf … -C /root/sa02m-deploy-<ver>` (практика деплоев 1.0.5.10–12).
+   - **Запасной путь — только когда архив на плату не доставить:**
+     `pscp -r www scripts etc root@<dev>:/root/sa02m-deploy-<ver>/`. Он копирует
+     рабочее дерево в обход правила источника, и на плату может уйти
+     незакоммиченное и незапушенное содержимое. Поэтому перед копированием
+     запишите коммит (`git rev-parse --short HEAD`) и убедитесь, что
+     `git status --short` пуст; после копирования шаг 3 обязателен.
    **`etc/` без вариантов должен быть в поставке** — иначе скрипт падает на
    `source` ещё до копирования (см. «Пути деплоя» выше). Если нужен именно
-   «чисто-www» эффект, везите `etc/sa02m-stacks-policy.sh` в одиночку —
-   остальные `[ -f ]`-гарды тогда молчат:
-   `git archive … HEAD www/network_config scripts etc/sa02m-stacks-policy.sh`.
+   «чисто-www» эффект, везите из `etc/` только `etc/sa02m-stacks-policy.sh` и
+   `etc/sa02m-web-port-lib.sh` — остальные `[ -f ]`-гарды тогда молчат:
+   `git archive … origin/<ref> www/network_config scripts etc/sa02m-stacks-policy.sh etc/sa02m-web-port-lib.sh`.
 3. **Снять CRLF** со скриптов (репозиторий часто синхронизируется с Windows):
    ```
    ssh root@<dev> "sed -i 's/\r$//' /root/sa02m-deploy-<ver>/scripts/*.sh"
@@ -366,21 +387,13 @@ scripts/lib.sh: line <N>: .../scripts/../etc/sa02m-stacks-policy.sh: No such fil
 push сценария из облака терял `trigger`/`end`). То же относится к
 `sa02m-alice-config` — он тоже импортирует `sa02m_rules.store`.
 
-OTA и оффлайн-пакет делают это сами (с 1.0.6.37): манифест обновления несёт
-`sa02m-rules` в `services.restart[]` (обязательный v1 — исполняет и runner
-1.0.5.66). Alice-семейство и мост — в опциональных `restart_if_*`; пакер
-**не пишет** эти ключи, пока `MIN_UPDATER` < 1.0.6.37, иначе валидаторы
-релизов 1.0.5.69–1.0.6.36 отвергают пакет с `E_MANIFEST` (окно и его дом —
-`docs/OFFLINE_UPDATE_PACKAGE_V1.md`). Онлайн-OTA
-после установки 1.0.6.37 пишет полный набор (манифест собирает уже новый
-runner на плате). Честный предел: обновление применяет runner/валидатор
-ПРЕДЫДУЩЕГО релиза — условные рестарты Alice/моста срабатывают со следующего
-после 1.0.6.37 обновления; оффлайн-пакет с замороженным v1 принимается
-платой ≥ 1.0.5.60 / runner ≥ 1.0.5.66, но **не включает ни одного юнита**
-(`sa02m-dns-ensure.service` включает bootstrap-шим `sa02m-eth-coldboot.sh`).
-С 1.0.6.39 runner сообщает свою версию (`UPDATER_VERSION`, гейт
-`min_updater`) не штампом `1.0.5.66` — только поэтому порог `MIN_UPDATER`
-вообще можно поднять (иначе `E_COMPAT` на каждой плате). С 1.0.6.40 источник
+OTA и оффлайн-пакет используют декларативные обязательные и условные
+перезапуски. Текущий пакет требует runner ≥ 1.0.7.5, root controller и
+координатор портов; старые установки сначала проходят полный `--refresh`.
+Условия совместимости и восстановление описаны в
+[контракте обновления](contracts/web-update.md), структура манифеста — в
+[формате пакета](OFFLINE_UPDATE_PACKAGE_V1.md).
+С 1.0.6.40 источник
 один — `/var/lib/sa02m-update/runner.version`: релиз, который установил
 runner. Его пишут все точки установки runner'а (`03-webserver.sh`,
 `update-www-only.sh` при наличии `etc/`, сам runner при OTA / пакете — через
@@ -427,6 +440,38 @@ Cloud, Docker) refresh **сам не выставляет** — таблица �
   стек не вернёт ни один путь установки. Дорога назад: кнопка «Установить»
   в панели или `--with-optional` (ставит/обновляет сторонние стеки, включая
   отключённые).
+
+**Что `--refresh` делает с платой с 1.0.7.5** — прогон идёт через обёртку
+`scripts/install-maintenance.py` (её вызывает сам `install.sh`); полный контракт,
+журнал и порядок восстановления — `docs/contracts/installer-refresh-policy.md`,
+здесь только то, что оператор увидит:
+
+- на время прогона останавливаются nginx/fcgiwrap **и все потребители UART** —
+  flasher, шлюз, MQTT-мост, `mplc4`/`codesys*`/`vplc`, стенд; их состояние
+  (active / enabled / masked) записывается до первой остановки и
+  восстанавливается в конце, веб — последним. Активная прошивка
+  (`poll_locked` в `/health` флашера) или незавершённое обновление ⇒ отказ до
+  единой записи на диск;
+- состояние обновлений `/var/lib/sa02m-update` переводится в root-only; старый
+  каталог целиком (журнал, архивы отката, `backup-export/`) переезжает в
+  карантин `/var/lib/sa02m-update.untrusted-<ns>` (0700) — он не читается и
+  автоматически не восстанавливается, `runner.version` установщик пишет
+  заново; **загруженный через панель пакет нужно загрузить заново**;
+- после SIGKILL / перезагрузки посреди прогона остаётся журнал
+  `/var/lib/sa02m-install-maintenance`, и следующий `--refresh` отказывает до
+  `sudo python3 scripts/install-maintenance.py --recover` из проверенной копии
+  проекта (восстанавливает записанные состояния служб, удаляет журнал).
+
+**«Управление → Службы» отвечает `coordinator_unavailable`** (пуск/останов
+PLC, MQTT-моста, шлюза): брокер портов не отвечает —
+`systemctl status sa02m-port-coordinator`, `journalctl -u sa02m-port-coordinator -b`,
+затем `systemctl restart sa02m-port-coordinator`. Нечитаемый журнал аренд не
+даёт брокеру стартовать (он не выдаёт «свободную шину» наугад) — что и как
+чинить: `docs/contracts/port-ownership.md`. Там же формат
+`/etc/sa02m/port-coordinator.json` — единственного места, где на плате с
+ПЛК/стендом задаётся, какие службы останавливаются целиком на время операции
+на порту (шаблон установщика — пять пустых списков: без явной настройки такой
+порт для прошивки/сканирования закрыт).
 
 Правило «не расширять состояние прикладных служб» действует и в полной
 установке (`./install.sh` без флагов): полный режим отличается только тем, что
@@ -479,8 +524,19 @@ diff /root/before.txt /root/after.txt
 `docs/contracts/install-profile.md` §7).
 
 ### Предусловия
-- Изменение уже смержено в `main` — деплой ведётся из смерженного коммита, не
-  из рабочего дерева (шаг 2).
+- **Источник архива — `origin/<ref>` после `git fetch`, никогда не рабочее
+  дерево** (единственный дом правила: шаг 2, «Офлайн-вариант» и www-only
+  ссылаются сюда). Какой `<ref>` допустим, решает назначение платы:
+  - **тестовый деплой на стенд** — запушенная ветка, в том числе до слияния:
+    `<ref>` = `<branch>`. Незапушенные коммиты в архив не попадут — сначала
+    `git push`;
+  - **боевые платы флота и мастер золотого образа** («Подготовка золотого
+    образа») — **только смерженный `main`**: `<ref>` = `main`.
+
+  Имя архива (и `<topic>` шагов ниже — каталог доставки и лог) несёт
+  `<src>` = `<ref>-<sha7>`, где `<sha7>` = `git rev-parse --short origin/<ref>`
+  после того же `git fetch` (например `1.0.7.10-f9ec51e`; `/` в имени ветки
+  заменить на `-`) — по нему видно, какой коммит уехал на плату.
 - **Источник опциональных стеков: payload или интернет.** Node-RED ставится из
   локального payload'а (`/opt/vendor-installers/nodered/`, приоритетно) либо из
   сети. Проверить до запуска, если рассчитываете на сеть:
@@ -513,7 +569,8 @@ diff /root/before.txt /root/after.txt
 
 ### Шаги
 Шаги 2-3 выполняются **на рабочей машине**, остальные — **на устройстве**.
-`<topic>` — короткое имя задачи, общее для каталога доставки и файла лога.
+`<topic>` — короткое имя задачи, общее для каталога доставки и файла лога;
+начинается с `<src>` (Предусловия), например `1.0.7.10-f9ec51e-audio`.
 
 1. **(устройство) Бэкап `/etc` целиком.** Установщик правит настройки по всему
    дереву `/etc` и переписывает в том числе файлы дистрибутива —
@@ -532,15 +589,15 @@ diff /root/before.txt /root/after.txt
    только этот архив. **Чего НЕ покрывает:** установленные пакеты и
    опциональные стеки (Node-RED, Docker, CODESYS/MPLC) — это откат
    конфигурации, а не удаление софта.
-2. **(рабочая машина) Архив из смерженного коммита** (не из рабочего дерева) —
-   всё дерево, а не только `www/`: полной установке нужны `etc/`, `opt/`,
-   `scripts/`, `install.sh`:
+2. **(рабочая машина) Архив из `origin/<ref>`** (Предусловия; не из рабочего
+   дерева) — всё дерево, а не только `www/`: полной установке нужны `etc/`,
+   `opt/`, `scripts/`, `install.sh`:
    ```
-   git fetch origin && git archive --format=tar.gz -o deploy.tar.gz origin/main
+   git fetch origin && git archive --format=tar.gz -o deploy-<src>.tar.gz origin/<ref>
    ```
-   `git fetch` обязателен: после мержа на форже локальный `origin/main` ещё
-   указывает на прежний коммит, архив соберётся молча и без ошибок, размер
-   сойдётся — и на устройство уедет предыдущая версия.
+   `git fetch` обязателен: после мержа на форже или пуша в ветку локальный
+   `origin/<ref>` ещё указывает на прежний коммит, архив соберётся молча и без
+   ошибок, размер сойдётся — и на устройство уедет предыдущая версия.
    В прогоне 2026-08-05 архив весил ~2.3 MB (растёт вместе с репозиторием —
    ориентир, не константа; сверяется размер загрузки, шаг 3).
 3. **(рабочая машина) Загрузка по SFTP** (paramiko). Хост и учётные данные из
@@ -551,14 +608,14 @@ diff /root/before.txt /root/after.txt
    import sa02m_remote as R
    cli = R.connect(R.DEFAULT_HOST, R.DEFAULT_USER, R.DEFAULT_PASS)
    sftp = cli.open_sftp()
-   sftp.put("deploy.tar.gz", "/root/deploy.tar.gz")
-   print(sftp.stat("/root/deploy.tar.gz").st_size)
+   sftp.put("deploy-<src>.tar.gz", "/root/deploy-<src>.tar.gz")
+   print(sftp.stat("/root/deploy-<src>.tar.gz").st_size)
    ```
    **Сверить размер на устройстве с локальным** — расхождение означает обрыв
    загрузки; повторить, не распаковывая.
 4. **(устройство) Распаковка:**
    ```
-   mkdir -p /root/sa02m-deploy-<topic> && tar xzf /root/deploy.tar.gz -C /root/sa02m-deploy-<topic>
+   mkdir -p /root/sa02m-deploy-<topic> && tar xzf /root/deploy-<src>.tar.gz -C /root/sa02m-deploy-<topic>
    ```
    Снимать CRLF на этом пути НЕ нужно: `.gitattributes` фиксирует
    `*.sh text eol=lf`, поэтому архив из git приходит с LF — тот же довод, что
@@ -670,15 +727,16 @@ updater не примет `.sa02m` — пороги `MIN_VERSION`/`MIN_UPDATER` 
 (этот раздел), упакованный в один скрипт: после него плата ходит за обновлениями
 в `main` и дальше обновляется через UI.
 
-**Архив на рабочей машине** (имя несёт версию; `git fetch` обязателен — шаг 2):
+**Архив на рабочей машине** (имя несёт версию и `<src>`; какой `<ref>`
+допустим — Предусловия этого раздела; `git fetch` обязателен — шаг 2):
 ```
-git fetch origin && git archive --format=tar.gz -o SA-02m-full-<ver>.tar.gz origin/main
+git fetch origin && git archive --format=tar.gz -o SA-02m-full-<ver>-<src>.tar.gz origin/<ref>
 ```
 Архив кладётся в `/tmp` платы любым транспортом (SFTP, шаг 3; WinSCP).
 
 **На плате (root), одной строкой:**
 ```
-mkdir -p /tmp/sa02m-upd && tar xzf /tmp/SA-02m-full-<ver>.tar.gz -C /tmp/sa02m-upd && bash /tmp/sa02m-upd/scripts/offline-full-update.sh
+mkdir -p /tmp/sa02m-upd && tar xzf /tmp/SA-02m-full-<ver>-<src>.tar.gz -C /tmp/sa02m-upd && bash /tmp/sa02m-upd/scripts/offline-full-update.sh
 ```
 Скрипт выполняет шаги 1, 5–7 этого раздела (шаг 4 — распаковка — это сама строка выше): проверяет, что дерево полное
 (www-only архив отклоняется), показывает установленную и целевую версию
@@ -706,6 +764,10 @@ setsid nohup bash /tmp/sa02m-upd/scripts/offline-full-update.sh --unattended \
 ```
 
 Дальше состояние смотрят отдельным вызовом `… offline-full-update.sh --status`.
+Имени лога можно дать `-<sha7>` архива (`install-offline-<ver>-<sha7>.wrapper.log`):
+проверка 13 `scripts/dev/verify-release-on-board.sh` берёт самый свежий
+`install-offline-<ver>[-<sha7>].wrapper.log`, называет его и пропускает (SKIP),
+если он записан раньше текущей установки (`runner.version` / `VERSION`).
 Именно эта форма довела до конца стенд 1.136 08.09.2026 в 22:48 после того, как
 запуск через `nohup … &` в 22:07 оборвался; сам `install.sh` обёртка с 1.0.6.41
 всегда запускает через `setsid … </dev/null` (видно в `--dry-run`).
@@ -989,6 +1051,62 @@ mosquitto_sub -h 127.0.0.1 -v -t '/devices/hc-+/controls/#' -C 20
 G6/G7 в `docs/decisions/homekit-home-connect.md` (там же записываются
 результаты). Удаление модуля не автоматизировано.
 
+## Модуль записи звука (`15-audio.sh`)
+
+Рекордер звука с USB-микрофона (`sa02m-audio`) ставится полной установкой
+на **каждую** плату и остаётся **выключенным** (решение Оператора F6): процесса
+нет, ничего не пишется, пока его не включат на карточке «Запись звука»
+(Управление → Система). Контракт — `docs/contracts/audio-recorder.md`.
+
+### Предусловия
+
+- `scripts/05-mqtt.sh` отработал (mosquitto, `python3-paho-mqtt`, ACL
+  внешнего слушателя), `scripts/06b-rules.sh` отработал (политика адресов
+  `sa02m_rules.http_guard` для отправки на URL; без неё отправка честно
+  `unavailable`).
+- `arecord` (`alsa-utils`) — уже на плате; драйвер микрофона —
+  `docs/usb-audio-microphone.md`.
+
+### Шаги
+
+```
+sudo ./install.sh --refresh                  # модуль входит в полную установку
+sudo bash scripts/15-audio.sh                # только модуль, на плате, где install.sh уже отработал
+```
+
+`SA02M_SKIP_AUDIO=1` — не трогать модуль. Повторный запуск идемпотентен:
+обновляет код, не трогает конфиг, токен отправки, записи, журнал событий и
+решение оператора «включён/выключен». В уже существующий ACL
+`/etc/mosquitto/acl/default.conf` добавляется запрет прямой команды записи с
+порта 1884 (контракт §20); при изменении брокер перечитывает ACL (SIGHUP).
+Плата, обновлённая только через OTA, получает пакет без пользователя и
+каталогов — карточка показывает «не установлено» до `install.sh --refresh`.
+
+### Проверка на стенде
+
+```
+systemctl is-enabled sa02m-audio             # disabled
+stat -c '%a %U:%G %n' /var/lib/sa02m-audio /var/lib/sa02m-audio/rec /var/lib/sa02m-audio/tmp \
+      /run/sa02m-audio /etc/sa02m-audio /etc/sa02m-audio/sa02m-audio.conf
+# 2750 sa02m-audio:www-data · 2750 sa02m-audio:www-data · 700 sa02m-audio:sa02m-audio ·
+# 2750 sa02m-audio:www-data · 2750 www-data:sa02m-audio · 640 www-data:sa02m-audio
+/usr/local/sbin/sa02m-daemon-access.sh check audio    # «доступ sa02m-audio подтверждён: …», код 0
+grep -n 'topic deny /devices/sa02m-audio/controls' /etc/mosquitto/acl/default.conf   # строка в блоке user mqttuser
+```
+
+После «Включить» на карточке:
+
+```
+mosquitto_sub -h 127.0.0.1 -v -t '/devices/sa02m-audio/#' &
+mosquitto_pub -h 127.0.0.1 -t /devices/sa02m-audio/controls/record/on -m 5
+ls -l /var/lib/sa02m-audio/rec/                       # <id>.wav и <id>.json
+mosquitto_pub -h <плата> -p 1884 -u mqttuser -P '<пароль>' \
+      -t /devices/sa02m-audio/controls/record/on -m 5   # записи нет: ACL
+```
+
+Полная стендовая проверка (носители, отправка, отказы) — план фичи, §12.
+Удаление модуля не автоматизировано.
+
 ## Подготовка золотого образа (мастер для клонирования)
 
 Единственный дом процедуры санитизации платы-мастера перед снятием образа eMMC
@@ -1006,6 +1124,9 @@ G6/G7 в `docs/decisions/homekit-home-connect.md` (там же записыва�
 - **НЕ удалять установочные файлы служб:** systemd-юниты, пакеты в `/opt/*`,
   `start_mplc4.sh`, init.d-скрипты, `.so`-библиотеки. Санитизация убирает
   *данные и идентичность*, а не *установленный софт* — иначе клон не запустится.
+- **Софт мастера — только из смерженного `main`.** Ветка до слияния годится
+  для стенда, но не для образа: правило источника — «Полный деплой
+  (`install.sh`)» → «Предусловия».
 - **СНАЧАЛА бэкап ключей/идентичности ЛОКАЛЬНО (off-device).** До любого
   удаления скачать файлы шага 1 на машину оператора: с затёртого мастера
   восстановить их будет уже неоткуда.
@@ -1123,6 +1244,26 @@ Client ID интегратора в конфиге остаётся (не сек
 sa02m-homeconnect` = `disabled`; в конфиге `enabled = false`. Пайплайн снятия
 образа делает то же на пяти площадках — `docs/contracts/image-identity-reset.md`
 §8.
+
+### 2c. Запись звука — очистить записи и токен
+
+Записи — звук помещения мастера, токен отправки — секрет получателя мастера;
+ни то, ни другое клоны нести не должны. Рекордер остаётся установленным и
+выключенным:
+
+```
+systemctl stop sa02m-audio; systemctl disable sa02m-audio
+sed -i 's/^[[:space:]]*enabled[[:space:]]*=.*/enabled = false/' /etc/sa02m-audio/sa02m-audio.conf
+sed -i 's/^[[:space:]]*upload_url[[:space:]]*=.*/upload_url = /' /etc/sa02m-audio/sa02m-audio.conf
+rm -f /etc/sa02m-audio/upload.token
+rm -f /var/lib/sa02m-audio/rec/* /var/lib/sa02m-audio/tmp/* /var/lib/sa02m-audio/events.jsonl
+rm -f /run/sa02m-audio/*
+```
+
+Съёмные носители в образ не входят — вынуть их до снятия. Проверка:
+`ls -A /var/lib/sa02m-audio/rec` пусто, токена нет. **Только вручную:**
+площадки пайплайна снятия образа (`docs/contracts/image-identity-reset.md` §8)
+этот шаг пока не делают — пункт в бэклоге.
 
 ### 3. Облако — отвязать
 

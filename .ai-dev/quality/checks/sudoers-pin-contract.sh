@@ -286,21 +286,39 @@ if [ -f "$IFACE_HELPER" ]; then
             || fail "sandbox: the installer's default-route post-up hook was rejected"
 
         # (c) symlink at an allow-listed name: refused (exit 2), target untouched.
-        # Only meaningful where the platform makes a REAL symlink — on a dev
-        # Windows/MSYS box `ln -s` copies, so [ -L ] cannot fire; skip with a
-        # note there (Linux CI is the enforcing run), same posture as shellcheck.
+        # (b4) has just written eth1.conf; with it in place `ln -s` failed
+        # «File exists» and (c) skipped on EVERY host, Linux CI included — so
+        # the fixture path is removed first. Whether the host can make a real
+        # symlink at all is decided by a probe on a fresh path, never by the
+        # case's own `ln -s`: only a host that cannot (git-bash/MSYS copies
+        # instead) SKIPs, and a host that can but fails to plant the fixture
+        # FAILS. The payload must be content the helper ACCEPTS — proven by
+        # writing it to the plain path first — so only the symlink refusal can
+        # refuse it: an invalid payload (the old `PWN`) is refused by the
+        # content validator too, and the case passed with the refusal gone.
+        c_payload='allow-hotplug eth1\niface eth1 inet dhcp\n'
         : > "$sbox/target"
-        ln -s "$sbox/target" "$sbox/interfaces.d/eth1.conf" 2>/dev/null
-        if [ -L "$sbox/interfaces.d/eth1.conf" ]; then
-            printf 'PWN\n' | bash "$th" "$sbox/interfaces.d/eth1.conf" >/dev/null 2>&1
+        rm -f "$sbox/interfaces.d/eth1.conf"
+        if ln -s "$sbox/target" "$sbox/symlink-probe" 2>/dev/null && [ -L "$sbox/symlink-probe" ]; then
+            printf '%b' "$c_payload" | bash "$th" "$sbox/interfaces.d/eth1.conf" >/dev/null 2>&1
             rc=$?
-            if [ "$rc" = 2 ] && [ ! -s "$sbox/target" ]; then
-                pass "sandbox: symlink destination refused (exit 2, target untouched)"
+            if [ "$rc" != 0 ] || [ -L "$sbox/interfaces.d/eth1.conf" ] || ! grep -q 'inet dhcp' "$sbox/interfaces.d/eth1.conf" 2>/dev/null; then
+                fail "sandbox (c) fixture: the payload is not accepted at the plain path (rc=$rc) — a refusal at the symlink could be the content validator's"
+            elif rm -f "$sbox/interfaces.d/eth1.conf" \
+                 && ln -s "$sbox/target" "$sbox/interfaces.d/eth1.conf" 2>/dev/null \
+                 && [ -L "$sbox/interfaces.d/eth1.conf" ]; then
+                printf '%b' "$c_payload" | bash "$th" "$sbox/interfaces.d/eth1.conf" >/dev/null 2>&1
+                rc=$?
+                if [ "$rc" = 2 ] && [ ! -s "$sbox/target" ] && [ -L "$sbox/interfaces.d/eth1.conf" ]; then
+                    pass "sandbox: symlink destination refused (exit 2, target untouched) — a payload the plain path accepts"
+                else
+                    fail "sandbox: a symlink destination was NOT refused (rc=$rc, target $([ -s "$sbox/target" ] && echo WRITTEN || echo untouched))"
+                fi
             else
-                fail "sandbox: a symlink destination was NOT refused (rc=$rc)"
+                fail "sandbox (c) fixture: this host makes symlinks but the one at interfaces.d/eth1.conf could not be planted — the symlink-refusal case did not run"
             fi
         else
-            printf 'sudoers-pin-contract: note  platform made no real symlink — symlink-refusal case skipped (Linux CI enforces it)\n'
+            printf 'sudoers-pin-contract: SKIP  sandbox (c) symlink-refusal — this host cannot create a real symlink (git-bash/MSYS copies); it runs on WSL/Linux CI\n'
         fi
         rm -rf "$sbox"
     else
@@ -324,8 +342,11 @@ stripped_has_inline etc/sa02m-update-runner.sh 'cleanup_b1_deploy_artifacts' \
 # The extension-less OTA twins a PAST release created must still be cleaned on
 # every delivery path — a board that took one keeps a stale root helper at a
 # path sudo does not grant, and (for the gateway/mqtt pair) the vulnerable file.
+# sa02m-stacks-policy (1.0.7.5): until the map_dst rename the GitHub OTA landed
+# etc/sa02m-stacks-policy.sh as the extension-less /usr/local/sbin/sa02m-stacks-policy
+# twin of the real /usr/local/lib/sa02m-stacks-policy.sh - a stray nobody calls.
 for _twin in sa02m-iface-conf-write sa02m-usb-power sa02m-gateway-config-apply \
-             sa02m-mqtt-config-apply sa02m-conf-rm sa02m-mplc-project-deploy; do
+             sa02m-mqtt-config-apply sa02m-conf-rm sa02m-mplc-project-deploy sa02m-stacks-policy; do
     # Boundary-matched: the twin path must appear as a whole token, never as the
     # prefix of the .sh path it is the twin OF.
     if stripped_matches_inline etc/sa02m-update-runner.sh "/usr/local/sbin/$_twin([^A-Za-z0-9._-]|$)"; then
@@ -339,6 +360,225 @@ for _twin in sa02m-iface-conf-write sa02m-usb-power sa02m-gateway-config-apply \
         fail "lib.sh sa02m_remove_stale_b1_helper_twins does NOT cover /usr/local/sbin/$_twin"
     fi
 done
+
+# ── 8c. Every sa02m-* drop-in is brought to 0440 root:root on every delivery path ──
+# Bench 1.136, 2026-10-21: a board the 1.0.7.3 GitHub OTA had updated carried
+# /etc/sudoers.d/sa02m-homekit and sa02m-homeconnect at 0644 (the source-tree
+# mode). The installer normalised only the files it installs itself and the
+# lib's fix-up loop was a hand-kept list of six names, so a module that is not
+# reinstalled kept the bad mode — `visudo -c` FAILED the --refresh post-checks
+# and the two grants were dead. The fix is allow-listed by PREFIX (every
+# REGULAR $SA02M_SUDOERS_DIR/sa02m-*), so no name list can fall behind
+# etc/sudoers.d/ again. Behavioural: the shipped installer helper and the
+# runner's cleanup RUN against a sandbox dir holding a copy of every committed
+# drop-in at 0644, plus a non-sa02m file, a directory and a symlink that must
+# stay untouched; the second run must repair nothing (idempotent). Needs a real
+# mode model — git-bash/MSYS collapses it (chmod 0440 reads back 644), so there
+# the case SKIPs and runs on WSL / Linux CI, as section 7's symlink case does.
+# visudo is stubbed in both runs: the real `visudo -c` reads the HOST's
+# /etc/sudoers, not the sandbox.
+# OWNER is half of the target (the product's skip test is `440 root:root`) and
+# is exercised on purpose: every seeded copy has a NON-root owner and one is
+# already 0440, so only its owner is wrong — a mode-only skip test leaves it.
+# As root the seeds are chowned to 65534:65534 and the real chown is observed.
+# Anyone else cannot chown to root (CI runs this row non-root), so there the
+# invoker stands in for root: `chown root:root F` on a sandbox file is RECORDED
+# (_8C_CHOWNED) and from then on stat reports F's owner as root:root, every
+# other byte of its output real; the product code runs unmodified. Without that
+# model the owner never reaches root:root, every run "repairs" again and the
+# idempotence check is RED for the sandbox, not the product (PR #217 CI,
+# 2026-10-23: 10 "repairs" on the second run as non-root, GREEN as root).
+committed_dropins=(etc/sudoers.d/sa02m-*)
+if [ ! -f "${committed_dropins[0]}" ]; then
+    fail "8c non-vacuity: etc/sudoers.d/ carries no sa02m-* drop-in — the mode case has nothing to copy"
+else
+    pass "8c ${#committed_dropins[@]} committed sa02m-* drop-in(s) feed the mode case"
+fi
+stripped_has_inline scripts/lib.sh 'sa02m_normalise_sudoers_modes() {' \
+    && pass "8c lib.sh defines sa02m_normalise_sudoers_modes" \
+    || fail "8c lib.sh missing sa02m_normalise_sudoers_modes — the installer repairs only the files it installs itself"
+# The repair precedes the aggregate visudo -c of sa02m_remove_obsolete_www_sudoers
+# (else the check still FAILS on the very run that fixes the mode).
+_8c_call=$(stripped_first_line scripts/lib.sh '^[[:space:]]+sa02m_normalise_sudoers_modes[[:space:]]*$')
+_8c_vis=$(stripped_first_line scripts/lib.sh '^[[:space:]]+visudo -c >/dev/null 2>&1')
+if [ -n "$_8c_call" ] && [ -n "$_8c_vis" ] && [ "$_8c_call" -lt "$_8c_vis" ]; then
+    pass "8c lib.sh calls sa02m_normalise_sudoers_modes (line $_8c_call) before the aggregate visudo -c (line $_8c_vis)"
+else
+    fail "8c lib.sh: sa02m_normalise_sudoers_modes call (line '${_8c_call:-none}') is not before the aggregate visudo -c (line '${_8c_vis:-none}')"
+fi
+# Both sites sweep by prefix; neither keeps a name list (the shape that fell behind).
+for _8c_f in scripts/lib.sh etc/sa02m-update-runner.sh; do
+    stripped_has_inline "$_8c_f" '/sa02m-*; do' \
+        && pass "8c $_8c_f sweeps \$SA02M_SUDOERS_DIR/sa02m-* by prefix" \
+        || fail "8c $_8c_f does not sweep the sudoers dir by the sa02m- prefix"
+    if stripped_matches_inline "$_8c_f" 'for _name in sa02m-www sa02m-cloud'; then
+        fail "8c $_8c_f still carries a hand-kept sudoers name list — the list that missed sa02m-homekit/sa02m-homeconnect"
+    else
+        pass "8c $_8c_f has no hand-kept sudoers name list"
+    fi
+done
+
+_8c_is_root=0; [ "$(id -u)" = 0 ] && _8c_is_root=1
+_8C_CHOWNED=""
+stat_8c() {  # stat as the product sees it in the sandbox (owner model above)
+    local _o _p="${!#}"
+    _o=$(command stat "$@") || return
+    if [ "$_8c_is_root" = 0 ] && [ -n "$_8C_CHOWNED" ] && [ -f "$_8C_CHOWNED" ] \
+        && [[ $_o =~ ^[0-7]+\ [^\ ]+:[^\ ]+$ ]] && grep -qxF -- "$_p" "$_8C_CHOWNED"; then
+        _o="${_o% *} root:root"
+    fi
+    printf '%s\n' "$_o"
+}
+_8C_CHOWN_REFUSE=0
+chown_8c() {  # non-root: record `chown root:root F` instead of failing it; 8d: refuse every chown
+    if [ "$_8C_CHOWN_REFUSE" = 1 ]; then
+        return 1
+    fi
+    if [ "$_8c_is_root" = 0 ] && [ -n "$_8C_CHOWNED" ] && [ "$#" = 2 ] && [ "$1" = root:root ]; then
+        printf '%s\n' "$2" >> "$_8C_CHOWNED"
+        return 0
+    fi
+    command chown "$@"
+}
+run_8c_lib() {  # $1 sandbox sudoers dir → the helper's log lines
+    ( LOG_FILE=/dev/null; export SA02M_SUDOERS_DIR="$1"
+      # shellcheck disable=SC1091
+      . scripts/lib.sh
+      log() { printf 'LOG %s %s\n' "$1" "${2:-}"; }   # after the source: lib.sh defines its own log()
+      visudo() { return 0; }
+      stat() { stat_8c "$@"; }
+      chown() { chown_8c "$@"; }
+      sa02m_normalise_sudoers_modes ) 2>&1
+}
+run_8c_runner() {  # $1 sandbox sudoers dir → the cleanup's log lines
+    local fn
+    fn=$(awk -v start='cleanup_b1_deploy_artifacts() {' 'index($0,start)==1{f=1} f{print} f&&/^\}/{exit}' etc/sa02m-update-runner.sh)
+    if ! printf '%s\n' "$fn" | grep -q '^}'; then
+        printf 'EXTRACT-FAILED\n'
+        return 1
+    fi
+    ( export SA02M_SUDOERS_DIR="$1"
+      log() { printf 'LOG %s\n' "$*"; }
+      visudo() { return 0; }
+      stat() { stat_8c "$@"; }
+      chown() { chown_8c "$@"; }
+      rm() { :; }   # its legacy-removal sites name the HOST's /etc and /usr/local — inert here, pinned in 8
+      eval "$fn"
+      cleanup_b1_deploy_artifacts ) 2>&1
+}
+seed_8c() {  # $1 sandbox sudoers dir — every committed drop-in (non-root owner; the first 0440, the rest 0644) + the three decoys
+    local f n first=1
+    rm -rf "$1"; mkdir -p "$1/not-a-file"; : > "$_8C_CHOWNED"
+    for f in "${committed_dropins[@]}"; do
+        n=$(basename "$f")
+        cp "$f" "$1/$n"
+        if [ "$first" = 1 ]; then chmod 0440 "$1/$n"; first=0; else chmod 0644 "$1/$n"; fi
+        [ "$_8c_is_root" = 1 ] && chown 65534:65534 "$1/$n"
+    done
+    printf 'other vendor\n' > "$1/other-vendor"; chmod 0644 "$1/other-vendor"
+    printf 'target\n' > "$1/../link-target"; chmod 0644 "$1/../link-target"
+    ln -s "$1/../link-target" "$1/sa02m-link"
+}
+seed_ok_8c() {  # $1 sandbox sudoers dir  $2 label — no seed may already read root:root, or the owner half tests nothing
+    local f n m
+    for f in "${committed_dropins[@]}"; do
+        n=$(basename "$f")
+        m=$(stat_8c -c '%a %U:%G' "$1/$n" 2>/dev/null)
+        case "$m" in
+            ''|*' root:root')
+                fail "8c $2: seeded $n reads '$m' before the run — the owner repair would be untested (non-vacuity)"
+                return 1 ;;
+        esac
+    done
+    return 0
+}
+check_8c() {  # $1 sandbox sudoers dir  $2 label  $3 log text of the FIRST run  $4 log text of the SECOND run
+    local f n m want="440 root:root" n_log n_log2 bad=0
+    for f in "${committed_dropins[@]}"; do
+        n=$(basename "$f")
+        m=$(stat_8c -c '%a %U:%G' "$1/$n" 2>/dev/null)
+        [ "$m" = "$want" ] || { bad=1; fail "8c $2: $n is '$m' after the run, expected '$want'"; }
+    done
+    [ "$(stat -c '%a' "$1/other-vendor" 2>/dev/null)" = 644 ] \
+        || { bad=1; fail "8c $2: a non-sa02m file was touched — the prefix allow-list is broken"; }
+    [ -L "$1/sa02m-link" ] && [ "$(stat -c '%a' "$1/../link-target" 2>/dev/null)" = 644 ] \
+        || { bad=1; fail "8c $2: the sa02m-* symlink was followed or replaced — only REGULAR files may be repaired"; }
+    n_log=$(printf '%s\n' "$3" | grep -c 'sudoers sa02m-.*0440')
+    n_log2=$(printf '%s\n' "$4" | grep -c 'sudoers sa02m-.*0440')
+    [ "$n_log" = "${#committed_dropins[@]}" ] \
+        || { bad=1; fail "8c $2: $n_log repair line(s) logged for ${#committed_dropins[@]} repaired file(s) — each repair must be logged: $(printf '%s' "$3" | tr '\n' '|' | head -c 300)"; }
+    [ "$n_log2" = 0 ] \
+        || { bad=1; fail "8c $2: the second run logged $n_log2 repair(s) on an already-normalised dir — not idempotent"; }
+    [ "$bad" = 0 ] && pass "8c $2: ${#committed_dropins[@]} drop-ins (non-root owner; one already 0440, the rest 0644) → $want, each logged once, decoys untouched, second run silent ($([ "$_8c_is_root" = 1 ] && echo 'real chown' || echo 'non-root: chown root:root modelled'))"
+}
+_8c_root=$(mktemp -d 2>/dev/null) || _8c_root=""
+if [ -z "$_8c_root" ]; then
+    printf 'sudoers-pin-contract: note  mktemp unavailable — 8c behavioural run skipped\n'
+elif [ ! -f "${committed_dropins[0]}" ]; then
+    :   # already failed above; nothing to seed
+else
+    printf 'x' > "$_8c_root/probe"; chmod 0644 "$_8c_root/probe"; _8c_m1=$(stat -c '%a' "$_8c_root/probe" 2>/dev/null)
+    chmod 0440 "$_8c_root/probe"; _8c_m2=$(stat -c '%a' "$_8c_root/probe" 2>/dev/null)
+    ln -s "$_8c_root/probe" "$_8c_root/probe-link" 2>/dev/null
+    if [ "$_8c_m1" != 644 ] || [ "$_8c_m2" != 440 ] || [ ! -L "$_8c_root/probe-link" ]; then
+        printf 'sudoers-pin-contract: SKIP  8c mode normalisation + 8d read-back — this host has no faithful chmod/symlink model (git-bash/MSYS); it runs on WSL/Linux CI\n'
+    else
+        for _8c_site in lib runner; do
+            mkdir -p "$_8c_root/$_8c_site"; _8C_CHOWNED="$_8c_root/$_8c_site/chowned"
+            seed_8c "$_8c_root/$_8c_site/sudoers.d"
+            seed_ok_8c "$_8c_root/$_8c_site/sudoers.d" "$_8c_site path" || continue
+            _8c_out1=$("run_8c_$_8c_site" "$_8c_root/$_8c_site/sudoers.d")
+            _8c_out2=$("run_8c_$_8c_site" "$_8c_root/$_8c_site/sudoers.d")
+            if [ "$_8c_out1" = EXTRACT-FAILED ]; then
+                fail "8c runner: cleanup_b1_deploy_artifacts() could not be extracted from the runner (marker moved?) — the OTA path is NOT covered"
+            else
+                check_8c "$_8c_root/$_8c_site/sudoers.d" "$_8c_site path" "$_8c_out1" "$_8c_out2"
+            fi
+        done
+        # ── 8d. The OTA cleanup reports what it READ BACK, not what it asked for ──
+        # The runner logs a repair as done only when the drop-in reads back
+        # `440 root:root`; a chown that did not land (a read-only or odd
+        # filesystem, an immutable bit) leaves the grant owned by someone else,
+        # and the run must say WARN for it — never "-> 0440 root:root", the line
+        # an operator reads as "fixed". Every chown is refused here (as root and
+        # not), so each seeded drop-in stays non-root owned after the run; the
+        # assertion is wording-agnostic: every line naming a drop-in carries WARN.
+        _8C_CHOWNED="$_8c_root/8d/chowned"; mkdir -p "$_8c_root/8d"
+        seed_8c "$_8c_root/8d/sudoers.d"
+        _8d_out=$(_8C_CHOWN_REFUSE=1; run_8c_runner "$_8c_root/8d/sudoers.d")
+        if [ "$_8d_out" = EXTRACT-FAILED ]; then
+            fail "8d: cleanup_b1_deploy_artifacts() could not be extracted from the runner — the read-back is NOT covered"
+        else
+            _8d_bad=0
+            for _8d_f in "${committed_dropins[@]}"; do
+                _8d_n=$(basename "$_8d_f")
+                _8d_m=$(stat_8c -c '%a %U:%G' "$_8c_root/8d/sudoers.d/$_8d_n" 2>/dev/null)
+                case "$_8d_m" in
+                    ''|*' root:root')
+                        _8d_bad=1
+                        fail "8d non-vacuity: $_8d_n reads '$_8d_m' after a run with every chown refused — the refusal did not take" ;;
+                esac
+                # Captured, then matched in-shell: no early-exit grep on a pipe
+                # (quality-gate-rigor shape f).
+                _8d_seen=0; _8d_plain=""
+                while IFS= read -r _8d_l; do
+                    [[ $_8d_l == *"sudoers $_8d_n"[!A-Za-z0-9_.-]* || $_8d_l == *"sudoers $_8d_n" ]] || continue
+                    _8d_seen=1
+                    [[ $_8d_l == *WARN* ]] || _8d_plain="$_8d_plain|$_8d_l"
+                done <<< "$_8d_out"
+                if [ "$_8d_seen" = 0 ]; then
+                    _8d_bad=1
+                    fail "8d: the run with chown refused logged nothing for $_8d_n (left '$_8d_m') — a failed repair must be reported"
+                elif [ -n "$_8d_plain" ]; then
+                    _8d_bad=1
+                    fail "8d: $_8d_n stayed '$_8d_m' but the runner logged it without WARN: ${_8d_plain:1:200}"
+                fi
+            done
+            [ "$_8d_bad" = 0 ] && pass "8d runner: with every chown refused, all ${#committed_dropins[@]} drop-ins are reported WARN, none as repaired"
+        fi
+    fi
+    rm -rf "$_8c_root"
+fi
 
 # ── 9-14. All six grant homes, the ledgers, and the two class assertions ────
 # Everything that needs real sudoers parsing (continuation joining, Cmnd_Alias
@@ -453,12 +693,8 @@ LEDGER = {
         "/usr/local/sbin/sa02m-usb-power.sh *",
         "/usr/local/sbin/sa02m-set-storage-auto-format",
         "/usr/local/sbin/sa02m-web-update-check",
-        "/usr/local/sbin/sa02m-web-update-apply",
-        "/usr/bin/systemctl start sa02m-update.service",
-        "/usr/bin/systemctl stop sa02m-update.service",
-        "/usr/bin/systemctl reset-failed sa02m-update.service",
-        "/usr/bin/systemctl start sa02m-factory-reset.service",
-        "/usr/local/libexec/sa02m-update-inspect",
+        # Fixed controller owns authenticated update/reset requests and root journals.
+        "/usr/local/libexec/sa02m-update-control",
         "/usr/local/sbin/sa02m-web-backup.sh",
         "/usr/local/sbin/sa02m-web-reboot.sh",
         "/usr/local/sbin/sa02m-web-restart-services.sh",
@@ -543,6 +779,13 @@ LEDGER = {
         "/usr/local/sbin/sa02m-homeconnect-web-trigger.sh disable",
         "/usr/local/sbin/sa02m-homeconnect-web-trigger.sh restart",
         "/usr/local/sbin/sa02m-homeconnect-web-trigger.sh unlink",
+    ],
+    # Audio recorder (docs/contracts/audio-recorder.md §16): the three verbs
+    # sa02m_audio_api.cgi nudges; the helper re-validates argv.
+    "etc/sudoers.d/sa02m-audio": [
+        "/usr/local/sbin/sa02m-audio-web-trigger.sh enable",
+        "/usr/local/sbin/sa02m-audio-web-trigger.sh disable",
+        "/usr/local/sbin/sa02m-audio-web-trigger.sh restart",
     ],
     "etc/sudoers.d/sa02m-agent-api": [
         "/usr/local/sbin/sa02m-agent-api-ctl.sh enable",
@@ -716,6 +959,7 @@ PIN_REQUIRED = [
     "/usr/local/sbin/sa02m-alice-web-trigger.sh",
     "/usr/local/sbin/sa02m-homekit-web-trigger.sh",
     "/usr/local/sbin/sa02m-homeconnect-web-trigger.sh",
+    "/usr/local/sbin/sa02m-audio-web-trigger.sh",
     "/usr/local/sbin/sa02m-gateway-config-apply.sh",
 ]
 for helper in PIN_REQUIRED:
@@ -1167,6 +1411,20 @@ for carrier in PIN_CARRIERS:
         # (the circularity that made the first draft of this check hollow). The
         # leading class must NOT exclude `/` or `.` — every install line writes
         # the basename right after a slash.
+        if carrier == "etc/sa02m-web-update-apply.sh":
+            # Online delivery now delegates exclusively to the shared transaction
+            # runner. Preserve the old per-helper assertion through its real map.
+            handoff = ('exec "$RUNNER" apply' in text and
+                       'if handoff_to_shared_runner; then' in text and
+                       'E_BOOTSTRAP_REQUIRED' in text and
+                       not re.search(r"^\s*(rsync|install)\s", text, re.M))
+            mapped = map_dst(src) if map_dst is not None else None
+            if handoff and Path(src).is_file() and mapped == dst:
+                ok("%s delegates and shared overlay delivers %s to %s" % (carrier, src, dst))
+                checked_pin += 1
+            else:
+                bad("PIN WITHOUT HELPER: shared handoff/map/source missing for %s -> %s" % (src, dst))
+            continue
         if re.search(r"(?<![\w-])%s(?![\w.-])" % re.escape(base), text):
             ok("%s deploys the panel AND delivers %s (granted by sudoers.d/%s)"
                % (carrier, base, ",".join(grants)))

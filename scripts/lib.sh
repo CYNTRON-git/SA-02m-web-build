@@ -715,6 +715,37 @@ sa02m_install_sudoers() {
     return 0
 }
 
+# Bring every REGULAR $SA02M_SUDOERS_DIR/sa02m-* (default /etc/sudoers.d) to
+# 0440 root:root; symlinks and non-regular entries are skipped, each repair is
+# logged, an already-correct file is silent. Allow-listed by the sa02m- PREFIX
+# — never /etc/sudoers.d/* wholesale, and never a name list: the list of six
+# this replaces missed sa02m-homekit and sa02m-homeconnect, which the GitHub OTA
+# of releases before 1.0.7.5 landed at the source-tree mode 0644, and the
+# installer repaired only the files it installs itself — on a board where that
+# module is not reinstalled the drop-in stayed 0644, `visudo -c` FAILED the
+# --refresh post-checks and the grant was dead (bench 1.136, 2026-10-21).
+# Runs BEFORE the aggregate visudo -c below. Gate: sudoers-pin-contract 8c.
+sa02m_normalise_sudoers_modes() {
+    local _dir=${SA02M_SUDOERS_DIR:-/etc/sudoers.d} _p _was
+    _dir=${_dir%/}
+    for _p in "$_dir"/sa02m-*; do
+        if [ ! -f "$_p" ] || [ -L "$_p" ]; then
+            continue
+        fi
+        _was=$(stat -c '%a %U:%G' "$_p" 2>/dev/null) || continue
+        if [ "$_was" = "440 root:root" ]; then
+            continue
+        fi
+        chown root:root "$_p" 2>/dev/null || true
+        if chmod 0440 "$_p" 2>/dev/null; then
+            log OK "sudoers $(basename "$_p"): права $_was → 0440 ($(stat -c '%a %U:%G' "$_p" 2>/dev/null))"
+        else
+            log WARN "sudoers $(basename "$_p"): не удалось привести права $_was к 0440 root:root"
+        fi
+    done
+    return 0
+}
+
 # Remove known-obsolete www-data sudoers drop-ins superseded by etc/sudoers.d/sa02m-www
 # (audit B1 deploy-gap). Allow-list ONLY — never glob /etc/sudoers.d/*.
 sa02m_remove_obsolete_www_sudoers() {
@@ -727,12 +758,7 @@ sa02m_remove_obsolete_www_sudoers() {
                 || log WARN "не удалось удалить устаревший sudoers: $_path"
         fi
     done
-    for _name in sa02m-www sa02m-cloud sa02m-flasher sa02m-mqtt sa02m-gateway sa02m-alice; do
-        _path="/etc/sudoers.d/$_name"
-        if [ -f "$_path" ]; then
-            chmod 0440 "$_path" 2>/dev/null || true
-        fi
-    done
+    sa02m_normalise_sudoers_modes
     if command -v visudo >/dev/null 2>&1; then
         visudo -c >/dev/null 2>&1 \
             || log WARN "visudo -c после удаления legacy sudoers — проверьте /etc/sudoers.d"
@@ -745,9 +771,13 @@ sa02m_remove_obsolete_www_sudoers() {
 # same divergence, found by the widened sudoers-pin-contract gate.
 sa02m_remove_stale_b1_helper_twins() {
     local _p
+    # sa02m-stacks-policy: the GitHub OTA's old map_dst stripped the .sh of
+    # etc/sa02m-stacks-policy.sh and landed it under sbin, beside the real
+    # /usr/local/lib/sa02m-stacks-policy.sh (1.0.7.5; backlog 2026-10-14).
     for _p in /usr/local/sbin/sa02m-iface-conf-write /usr/local/sbin/sa02m-usb-power \
               /usr/local/sbin/sa02m-gateway-config-apply /usr/local/sbin/sa02m-mqtt-config-apply \
-              /usr/local/sbin/sa02m-conf-rm /usr/local/sbin/sa02m-mplc-project-deploy; do
+              /usr/local/sbin/sa02m-conf-rm /usr/local/sbin/sa02m-mplc-project-deploy \
+              /usr/local/sbin/sa02m-stacks-policy; do
         if [ -f "$_p" ] && [ ! -L "$_p" ]; then
             rm -f "$_p" \
                 && log OK "удалён helper без .sh (OTA twin): $_p" \
@@ -773,6 +803,102 @@ source "$(dirname "${BASH_SOURCE[0]}")/../etc/sa02m-stacks-policy.sh"
 # and both shell delivery paths. Contract: docs/contracts/install-profile.md.
 # shellcheck source=../etc/sa02m-install-profile-lib.sh
 source "$(dirname "${BASH_SOURCE[0]}")/../etc/sa02m-install-profile-lib.sh"
+# ── Panel port (nginx site) ─────────────────────────────────────────────────
+# Default, file format, reader and listen-line grammar: etc/sa02m-web-port-lib.sh
+# (one home, shared with the update runner). Here: the installer's writer and
+# the ONE site renderer both 03-webserver.sh and 11-devices.sh call, so every
+# re-render reads the saved port instead of a per-module `PORT:=9999`.
+# Harness: scripts/dev/test-web-port-persist.sh (row web-port-persist).
+# shellcheck source=../etc/sa02m-web-port-lib.sh
+source "$(dirname "${BASH_SOURCE[0]}")/../etc/sa02m-web-port-lib.sh"
+SA02M_NGINX_SITE="${SA02M_NGINX_SITE:-/etc/nginx/sites-available/network_config}"
+
+# sa02m_web_port_persist <port> — save the panel port (install.sh --port).
+# rc 2 on an invalid port (ERR logged, nothing written); rc 1 on a write
+# failure; no write when the file already holds that port (idempotent re-run).
+# Written through sa02m_atomic_install: a reset mid-write leaves the old file or
+# the new one, never an empty one that would read back as «invalid ⇒ 9999».
+sa02m_web_port_persist() {
+    local port=${1:-} cur tmp shown
+    if ! sa02m_web_port_valid "$port"; then
+        shown=${port:0:16}
+        log ERR "Порт веб-панели «${shown//[^0-9A-Za-z._-]/?}» недопустим: нужно целое 1..65535"
+        return 2
+    fi
+    if [ -f "$SA02M_WEB_PORT_CONF" ] && cur=$(sa02m_web_port) && [ "$cur" = "$port" ]; then
+        return 0
+    fi
+    tmp=$(mktemp) || { log ERR "Порт веб-панели: не удалось создать временный файл"; return 1; }
+    printf '%s\n' \
+        '# SA-02m web panel port (nginx). Written by install.sh --port; read by every nginx' \
+        '# re-render and by the update runner. Absent = 9999. Format: etc/sa02m-web-port-lib.sh' \
+        "SA02M_WEB_PORT=$port" > "$tmp" || { rm -f -- "$tmp"; return 1; }
+    if ! sa02m_atomic_install -m 644 "$tmp" "$SA02M_WEB_PORT_CONF"; then
+        rm -f -- "$tmp"
+        return 1
+    fi
+    rm -f -- "$tmp"
+    log OK "Порт веб-панели $port сохранён в $SA02M_WEB_PORT_CONF"
+    return 0
+}
+
+# sa02m_web_port_migrate — one-time carry-over for a board installed with
+# `--port N` BEFORE the port was saved: the file is absent, and the live site
+# still listens on N. Saves N so the re-render that follows keeps it. Never
+# overwrites an existing file (even an invalid one — that one WARNs on read);
+# a live site on the default port writes nothing (no file ⇒ same behaviour).
+# Must run BEFORE anything rewrites the live site: it is the only record.
+sa02m_web_port_migrate() {
+    local live
+    [ -e "$SA02M_WEB_PORT_CONF" ] && return 0
+    live=$(sa02m_web_port_from_site "$SA02M_NGINX_SITE") || return 0
+    [ "$live" = "$SA02M_WEB_PORT_DEFAULT" ] && return 0
+    log INFO "Порт веб-панели $live взят из действующего конфига nginx (установка с --port до сохранения порта)"
+    sa02m_web_port_persist "$live" || { log ERR "Cannot persist live web port $live; nginx config preserved"; return 1; }
+    return 0
+}
+
+# sa02m_web_port_effective → prints the saved port (default when none). An
+# invalid file is refused: WARN (to stderr + the install log — stdout carries
+# only the port) and the default.
+sa02m_web_port_effective() {
+    local port rc=0
+    port=$(sa02m_web_port) || rc=$?
+    if [ "$rc" -ne 0 ]; then
+        log WARN "$SA02M_WEB_PORT_CONF: SA02M_WEB_PORT не является портом 1..65535 — используется $SA02M_WEB_PORT_DEFAULT" >&2
+    fi
+    printf '%s\n' "$port"
+}
+
+# sa02m_render_nginx_site <template> <web_root> — render the site template
+# (__PORT__ / __WEB_ROOT__) at the SAVED port into $SA02M_NGINX_SITE. The
+# rendered text must carry `listen <port> default_server;` (a template that lost
+# its placeholder is refused, the live file untouched); lands through
+# sa02m_atomic_install (a torn site file = nginx -t fails = no panel).
+# rc 0 rendered; 1 failure (logged).
+sa02m_render_nginx_site() {
+    local tpl=$1 root=$2 port got tmp
+    sa02m_web_port_migrate || return 1
+    port=$(sa02m_web_port_effective) || return 1
+    tmp=$(mktemp) || { log ERR "nginx: не удалось создать временный файл"; return 1; }
+    if ! sed "s|__PORT__|$port|g; s|__WEB_ROOT__|$root|g" "$tpl" > "$tmp"; then
+        rm -f -- "$tmp"
+        log ERR "nginx: не удалось отрендерить $tpl"
+        return 1
+    fi
+    got=$(sa02m_web_port_from_site "$tmp") || got=""
+    if [ "$got" != "$port" ]; then
+        rm -f -- "$tmp"
+        log ERR "nginx: в отрендеренном $tpl нет «listen $port default_server;» — живой конфиг не тронут"
+        return 1
+    fi
+    if ! sa02m_atomic_install -m 644 "$tmp" "$SA02M_NGINX_SITE"; then
+        rm -f -- "$tmp"
+        return 1
+    fi
+    rm -f -- "$tmp"
+    return 0
+}
 
 # sa02m_pip_install <import_name> <pip_spec>
 # Already importable ⇒ return 0 silently; offline ⇒ WARN + skip (the feature
