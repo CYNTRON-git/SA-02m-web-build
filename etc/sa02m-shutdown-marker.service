@@ -1,14 +1,23 @@
 [Unit]
 Description=SA-02m clean shutdown marker
 DefaultDependencies=no
+# DefaultDependencies=no drops the implicit Conflicts=shutdown.target, so
+# without this line nothing stops the unit at shutdown and ExecStop never runs
+# (every boot then read "no clean-shutdown marker"). Every reboot, poweroff,
+# halt and kexec path pulls shutdown.target in.
+Conflicts=shutdown.target
 Before=shutdown.target reboot.target halt.target
+# Stop runs in reverse order: the marker is written before local file systems
+# are unmounted.
 After=local-fs.target
 
 [Service]
 Type=oneshot
 RemainAfterExit=yes
 ExecStart=/bin/true
-ExecStop=/bin/sh -c 'mkdir -p /var/lib && printf "halt at %s" "$(date +%Y-%m-%dT%H:%M:%S)" > /var/lib/sa02m-clean-shutdown && sync'
+# `%%` is a literal percent: a bare `%s`/`%Y`/`%m`... is a systemd specifier
+# expanded at unit load, which turned the date format into paths.
+ExecStop=/bin/sh -c 'mkdir -p /var/lib && printf "halt at %%s" "$(date +%%Y-%%m-%%dT%%H:%%M:%%S)" > /var/lib/sa02m-clean-shutdown && sync'
 
 [Install]
 WantedBy=multi-user.target

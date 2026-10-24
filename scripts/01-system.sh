@@ -360,6 +360,18 @@ if [ -f "$ETC_REPO/sa02m-pre-start.sh" ]; then
     log OK "sa02m-pre-start установлен и включён"
 fi
 
+# ── Clean-shutdown marker: pre-start reads /var/lib/sa02m-clean-shutdown ────
+# The unit's ExecStop writes the marker at shutdown; pre-start logs the
+# previous shutdown as CLEAN or UNEXPECTED from it. `start`, never `restart`:
+# a restart runs ExecStop and leaves a marker that would mask the next crash.
+# On a refresh the unit is already active — daemon-reload alone makes the new
+# ExecStop/Conflicts= the ones used at the next shutdown.
+if [ -f "$ETC_REPO/sa02m-shutdown-marker.service" ]; then
+    sa02m_atomic_install -m 644 "$ETC_REPO/sa02m-shutdown-marker.service" /etc/systemd/system/sa02m-shutdown-marker.service
+    systemctl daemon-reload >> "$LOG_FILE" 2>&1 || true
+    sa02m_svc_apply sa02m-shutdown-marker.service infra start
+fi
+
 # ── USB VBUS hold: отдельный Type=simple юнит с `gpioset -m signal 0 268=1` ──
 # См. etc/systemd/sa02m-usb-vbus.service — исторически pre-start (oneshot) держал
 # VBUS сам, но `KillMode=control-group` убивал backgrounded gpioset вместе с
