@@ -27,16 +27,22 @@
 #      of the specifiers somebody remembered — a date format is the classic way
 #      in, and %s %Y %m %d %H %M %S are all valid specifiers, so systemd
 #      accepts the line without a word.
-#   C. The marker pair agrees: the unit's ExecStop writes the exact path
-#      etc/sa02m-pre-start.sh reads as SA02M_CLEAN_MARKER, pre-start tests it
-#      with `[ -f "$SA02M_CLEAN_MARKER" ]`, the unit orders After=local-fs.target
-#      (stop runs in reverse, so the write lands before unmount), and the unit
-#      is not in KNOWN_OPEN.
+#   C. The marker pair agrees: pre-start's SA02M_CLEAN_MARKER= is a plain
+#      literal path (optionally double-quoted, nothing else on the line), and
+#      the unit's ExecStop redirects (`>` or `> `) to exactly that path. The
+#      match is anchored at both ends: the path must be followed by whitespace,
+#      `&`, `;`, a quote or the end of the value, so `…-shutdown2`, `….tmp`, or
+#      a pre-start path that is only a prefix of the unit's all FAIL. Pre-start
+#      tests it with `[ -f "$SA02M_CLEAN_MARKER" ]`, the unit orders
+#      After=local-fs.target (stop runs in reverse, so the write lands before
+#      unmount), and the unit is not in KNOWN_OPEN.
 #   D. Installer: scripts/01-system.sh lands the unit through
 #      sa02m_atomic_install (web-code-rigor.md, live-path files) and applies it
-#      with `sa02m_svc_apply … infra start`; nowhere under the installer homes
-#      is it landed by a bare install/cp, or restarted — a restart runs
-#      ExecStop and leaves a marker that would report the next crash as CLEAN.
+#      with `sa02m_svc_apply … infra start`; under the installer homes no line
+#      NAMING the unit lands it by a bare install/cp/mv or restarts it — a
+#      restart runs ExecStop and leaves a marker that would report the next
+#      crash as CLEAN. Known limit: a static per-line pin, so a restart through
+#      a variable (`u=…marker.service; systemctl restart "$u"`) is not seen.
 #
 # Comment handling: systemd treats only WHOLE lines starting with `#` or `;` as
 # comments (an inline ` # …` is part of the value), so unit text is stripped of
@@ -81,6 +87,24 @@ unit_values() {  # $1=text  $2=key
 
 names_word() {  # $1=space-separated list  $2=word
     case " $1 " in *" $2 "*) return 0 ;; *) return 1 ;; esac
+}
+
+# True when TEXT redirects (`>` or `> `) to exactly PATH: the path must be
+# followed by whitespace, `&`, `;`, a quote or the end of TEXT — a longer path
+# (`PATH2`, `PATH.tmp`) is a different file.
+writes_exact_path() {  # $1=text  $2=path
+    local needle rest c
+    for needle in "> $2" ">$2"; do
+        rest=$1
+        while [[ $rest == *"$needle"* ]]; do
+            rest=${rest#*"$needle"}
+            c=${rest:0:1}
+            case "$c" in
+                ''|' '|$'\t'|'&'|';'|"'"|'"') return 0 ;;
+            esac
+        done
+    done
+    return 1
 }
 
 known_open_reason() {  # $1=path -> prints reason, rc 0 when listed
@@ -168,20 +192,30 @@ if [ ! -f "$MARKER_UNIT" ] || [ ! -f "$PRE_START" ]; then
 else
     mtext=$(unit_text "$MARKER_UNIT")
     ptext=$(stripped_text "$PRE_START")
-    mpath=$(grep -E '^SA02M_CLEAN_MARKER=' <<<"$ptext") || mpath=""
-    mpath=${mpath%%$'\n'*}
-    mpath=${mpath#SA02M_CLEAN_MARKER=}
-    mpath=${mpath//\"/}
-    if [ -z "$mpath" ]; then
+    aline=$(grep -E '^[[:space:]]*SA02M_CLEAN_MARKER=' <<<"$ptext") || aline=""
+    aline=${aline%%$'\n'*}
+    mpath=""
+    # The whole value, exact: a plain absolute path, bare or double-quoted.
+    # Two patterns, not one with a `\1` backreference: ERE has none, and the
+    # MSYS regex engine rejects it where glibc accepts it.
+    path_re_bare='^[[:space:]]*SA02M_CLEAN_MARKER=(/[A-Za-z0-9._/-]+)[[:space:]]*$'
+    path_re_quoted='^[[:space:]]*SA02M_CLEAN_MARKER="(/[A-Za-z0-9._/-]+)"[[:space:]]*$'
+    if [[ $aline =~ $path_re_bare ]] || [[ $aline =~ $path_re_quoted ]]; then
+        mpath=${BASH_REMATCH[1]}
+    fi
+    if [ -z "$aline" ]; then
         bad "C $PRE_START sets no SA02M_CLEAN_MARKER= on an uncommented line"
+    elif [ -z "$mpath" ]; then
+        bad "C $PRE_START SA02M_CLEAN_MARKER= is not a plain literal path: $aline"
     else
         stop=$(unit_values "$mtext" ExecStop)
-        if text_has "$stop" "> $mpath"; then
-            ok "C $MARKER_UNIT ExecStop writes $mpath, the path $PRE_START reads"
+        if writes_exact_path "$stop" "$mpath"; then
+            ok "C $MARKER_UNIT ExecStop writes exactly $mpath, the path $PRE_START reads"
         else
-            bad "C $MARKER_UNIT ExecStop does not write $mpath (the path $PRE_START reads) — the marker can never be found"
+            bad "C $MARKER_UNIT ExecStop does not redirect to exactly $mpath (the path $PRE_START reads) — the marker can never be found"
         fi
     fi
+    # shellcheck disable=SC2016  # literal needle: the "$…" is the source text
     if text_has "$ptext" '[ -f "$SA02M_CLEAN_MARKER" ]'; then
         ok "C $PRE_START tests the marker"
     else
@@ -202,6 +236,7 @@ itext=$(stripped_text "$INSTALLER")
 if [ -z "$itext" ]; then
     bad "D $INSTALLER is missing or empty"
 else
+    # shellcheck disable=SC2016  # literal needle: the "$…" is the source text
     if text_has "$itext" 'sa02m_atomic_install -m 644 "$ETC_REPO/sa02m-shutdown-marker.service" /etc/systemd/system/sa02m-shutdown-marker.service'; then
         ok "D $INSTALLER lands the unit via sa02m_atomic_install"
     else
@@ -236,7 +271,7 @@ for f in "${d_files[@]}"; do
         fi
     done <<<"$hits"
 done
-[ "$d_bad" -eq 0 ] && ok "D no installer home restarts the marker unit or lands it non-atomically"
+[ "$d_bad" -eq 0 ] && ok "D no installer line naming the marker unit restarts it or lands it non-atomically"
 
 if [ "$fails" -gt 0 ]; then
     echo "unit-shutdown-semantics: $fails failure(s)"
