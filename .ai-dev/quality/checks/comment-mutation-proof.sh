@@ -144,6 +144,10 @@ sudoers-pin-contract|etc/sa02m-web-update-apply.sh|exec "$RUNNER" apply
 sudoers-pin-contract|scripts/lib.sh|if chmod 0440 "$_p" 2>/dev/null; then
 sudoers-pin-contract|etc/sa02m-update-runner.sh|if chmod 0440 "$_path" 2>/dev/null; then
 sudoers-pin-contract|etc/sa02m-update-runner.sh|_now=$(stat -c
+unit-shutdown-semantics|etc/sa02m-shutdown-marker.service|Conflicts=shutdown.target
+unit-shutdown-semantics|scripts/01-system.sh|sa02m_atomic_install -m 644 "$ETC_REPO/sa02m-shutdown-marker.service"
+unit-shutdown-semantics|scripts/01-system.sh|sa02m_svc_apply sa02m-shutdown-marker.service infra start
+unit-shutdown-semantics|etc/sa02m-pre-start.sh|SA02M_CLEAN_MARKER=/var/lib/sa02m-clean-shutdown
 i18n-dict-contract|www/network_config/static/js/i18n.js|'"'"'Сеть'"'"': '"'"'Network'"'"',
 no-eschtml-in-attr|www/network_config/static/js/app.js|function escAttr(
 sh-model-schema|.ai-dev/quality/checks/sh-model-schema.sh|negatives.append(("point missing required
