@@ -350,24 +350,47 @@ else
     no "12 empty served asset(s): $(printf '%s' "$ZW" | tr '\n' ' ')"
 fi
 
-# 13 the offline-update post-checks of THIS version, when one was run here.
-# The wrapper (scripts/offline-full-update.sh) prints its PASS/FAIL table to
-# stdout and, with --log PATH, appends it there; the runbooks run it
-# `--unattended --log /root/install-offline-<ver>.wrapper.log`
-# (docs/deployment.md «Офлайн-вариант»), so that file is the record. The log
-# accumulates across re-runs: the LAST «ИТОГ:» line is the verdict. An
-# interactive run keeps its table on the terminal only — nothing to read.
-# (Until 1.0.6.54 this read /root/offline-<ver>.out, which nothing writes: a
-# check that could only ever SKIP.)
-OUTF=/root/install-offline-$VER.wrapper.log
-if [ ! -f "$OUTF" ]; then
-    skip "13 offline update post-checks: $OUTF absent (no --log'ged offline update of $VER here; an interactive run keeps its table on the terminal only)"
+# 13 the offline-update post-checks of the INSTALLED tree, when that install
+# was --log'ged here. The wrapper (scripts/offline-full-update.sh) prints its
+# PASS/FAIL table to stdout and, with --log PATH, appends it there; the
+# runbooks name that file /root/install-offline-<ver>[-<sha7>].wrapper.log
+# (docs/deployment.md «Офлайн-вариант»; the -<sha7> follows the archive name).
+# The log accumulates across re-runs: the LAST «ИТОГ:» line is the verdict.
+# Several logs of this version may sit in /root: the NEWEST by mtime is judged
+# and named. It counts only if it was last written no earlier than the newest
+# delivery of the tree — otherwise it is the table of an EARLIER install (bench
+# 136, 2026-10-24: a 2026-10-22 log PASSed a later install it never saw) and
+# the check SKIPs, as for an absent log: nothing here records THIS install.
+# The delivery anchor is the newer mtime of runner.version — every install
+# site writes it with `install` (fresh mtime), inside install.sh before the
+# wrapper appends its table — and the deployed VERSION, which a pscp www-only
+# copy moves without stamping. `-<ver>-*` and not `-<ver>*`: 1.0.7.1 must not
+# pick up 1.0.7.10's log. An interactive run keeps its table on the terminal
+# only — nothing to read. (Until 1.0.6.54 this read /root/offline-<ver>.out,
+# which nothing writes: a check that could only ever SKIP.)
+mtime_of() { date -r "$1" '+%F %T' 2>/dev/null || echo 'mtime unread'; }
+OUTF=""
+for f in "/root/install-offline-$VER.wrapper.log" /root/install-offline-"$VER"-*.wrapper.log; do
+    [ -f "$f" ] || continue
+    if [ -z "$OUTF" ] || [ "$f" -nt "$OUTF" ]; then OUTF=$f; fi
+done
+ANCHOR=""
+for f in /var/lib/sa02m-update/runner.version "$WEB_ROOT/VERSION"; do
+    [ -f "$f" ] || continue
+    if [ -z "$ANCHOR" ] || [ "$f" -nt "$ANCHOR" ]; then ANCHOR=$f; fi
+done
+if [ -z "$OUTF" ]; then
+    skip "13 offline update post-checks: no /root/install-offline-${VER}[-<sha7>].wrapper.log (no --log'ged offline update of $VER here; an interactive run keeps its table on the terminal only)"
+elif [ -z "$ANCHOR" ]; then
+    skip "13 offline update post-checks: $OUTF ($(mtime_of "$OUTF")) found, but neither runner.version nor VERSION is readable — cannot tell whether it describes the installed tree"
+elif [ "$OUTF" -ot "$ANCHOR" ]; then
+    skip "13 offline update post-checks: newest log $OUTF ($(mtime_of "$OUTF")) is older than $ANCHOR ($(mtime_of "$ANCHOR")) — it records an earlier install, not the tree on this board"
 else
     VERDICT=$(grep -E 'ИТОГ: (PASS|FAIL)' "$OUTF" 2>/dev/null | tail -1)
     case "$VERDICT" in
-        *'ИТОГ: PASS'*) ok "13 offline update post-checks: ${VERDICT#*ИТОГ: }" ;;
-        *'ИТОГ: FAIL'*) no "13 offline update post-checks: ${VERDICT#*ИТОГ: }" ;;
-        *) no "13 offline update post-checks: $OUTF has no «ИТОГ:» line (the wrapper is still running or died before its table)" ;;
+        *'ИТОГ: PASS'*) ok "13 offline update post-checks ($OUTF, $(mtime_of "$OUTF")): ${VERDICT#*ИТОГ: }" ;;
+        *'ИТОГ: FAIL'*) no "13 offline update post-checks ($OUTF, $(mtime_of "$OUTF")): ${VERDICT#*ИТОГ: }" ;;
+        *) no "13 offline update post-checks: $OUTF ($(mtime_of "$OUTF")) has no «ИТОГ:» line (the wrapper is still running or died before its table)" ;;
     esac
 fi
 

@@ -764,6 +764,10 @@ setsid nohup bash /tmp/sa02m-upd/scripts/offline-full-update.sh --unattended \
 ```
 
 Дальше состояние смотрят отдельным вызовом `… offline-full-update.sh --status`.
+Имени лога можно дать `-<sha7>` архива (`install-offline-<ver>-<sha7>.wrapper.log`):
+проверка 13 `scripts/dev/verify-release-on-board.sh` берёт самый свежий
+`install-offline-<ver>[-<sha7>].wrapper.log`, называет его и пропускает (SKIP),
+если он записан раньше текущей установки (`runner.version` / `VERSION`).
 Именно эта форма довела до конца стенд 1.136 08.09.2026 в 22:48 после того, как
 запуск через `nohup … &` в 22:07 оборвался; сам `install.sh` обёртка с 1.0.6.41
 всегда запускает через `setsid … </dev/null` (видно в `--dry-run`).
