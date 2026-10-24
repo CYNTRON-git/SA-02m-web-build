@@ -13,8 +13,11 @@ the monthly ceiling in July (308 runs). **Every push is a spend decision.**
 - **Doc-only / note-only changes never get their own push.** They ride the
   next feature branch. This file itself did.
 - Local gates are the substitute for CI iteration: `node
-  .ai-dev/quality/run.mjs build` + `review` (full, never `--touched` — see
-  the backlog entry on its vacuity) reproduce the CI job exactly, for free.
+  .ai-dev/quality/run.mjs build` + `review` (full, never `--touched`: CI runs
+  the full set, and `--touched` selects a subset) run the
+  same registry as the CI job, for free — but not on the same host:
+  `quality-gate-environment.md` lists the rows that skip or fail locally, and
+  CI stays the authority.
 
 ## Where the runs actually go (measured 2026-07-23)
 
@@ -27,17 +30,18 @@ costs two runs**: one on the PR, one re-validating the identical tree after
 the squash-merge.
 
 - **Saving applied in 1.0.5.52: the `push: branches: [main]` trigger dropped**
-  — halves the run count with no gate loss ONLY when branch protection really
-  blocks a direct push. **Live state, measured 2026-09-16** (`gh api
-  …/branches/main/protection`, audit H1): `quality` is required but
-  `enforce_admins: false` and `strict: false` — an admin push lands on `main`
-  unvalidated, and one did (`1dfa503`, 2026-09-10, no PR). The earlier claim
-  here that `enforce_admins: true` blocked direct pushes was false. The
-  **intended, Operator-approved** setting is `enforce_admins=true` +
-  `strict=true`, applied through setup step 5 **after the billing unlock**
-  (backlog H1). Until then the gate is the local suite: Actions runs have not
-  executed since 1.0.6.24 (billing-locked — backlog H2), and
-  `quality-gate-environment.md` says where the local substitute lies.
+  — halves the run count with no gate loss, because branch protection blocks
+  a direct push. **Live state, measured 2026-10-24** (`gh api
+  …/branches/main/protection`, audit 2026-10-24 «Branch-protection floor»):
+  required status check `quality` (= job `quality`, `web-quality.yml`),
+  `strict: true`, `enforce_admins: true`, force pushes and deletions off — so
+  no commit lands on `main` without a green `quality` check, admins included
+  (there is no PR-review rule; the Reviewer stamp is the review). **The gate is CI**: Actions runs execute
+  (green since at least 2026-10-14, 1.0.7.2 / 1.0.7.3; PR #217). The local
+  suite is the free pre-push iteration, not the gate —
+  `quality-gate-environment.md` says where it differs from CI. The one direct
+  push that landed before protection was enforced (`1dfa503`, 1.0.6.46) still
+  owes its retro-review (backlog).
 - **Cost added in 1.0.6.49 (audit H3):** the review beat now installs the
   scripts/dev Playwright harness (`npm --prefix scripts/dev ci`) and chromium
   (`playwright install --with-deps chromium`, ≈150 MB) so the three headless
