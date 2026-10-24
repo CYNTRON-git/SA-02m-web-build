@@ -99,8 +99,9 @@ Per the excerpts:
 ## Rebuild order
 
 1. Merge #216 and #215 (they are intact) or re-stack them, carrying `7399d9dd`.
-2. Rebuild the dead-crystal reset path from the recovered bytecode (crystal
-   note).
+2. Rebuild the dead-crystal reset path from the recovered bytecode: the
+   helper's source is rebuilt (2026-10-24); its unit, contract, tests and
+   landing remain (crystal note).
 3. Restore 1.0.7.9 light music and 1.0.7.10 mic gain from the deployed
    snapshot: map each deployed path back to its repo path (`install.sh` and
    `scripts/*.sh` are the map), diff against `origin/1.0.7.7`, and rewrite the
