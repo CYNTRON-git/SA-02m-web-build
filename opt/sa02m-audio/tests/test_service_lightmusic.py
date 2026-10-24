@@ -14,6 +14,7 @@ dir_fd / flock paths are the daemon suite's, test_daemon.py)."""
 from __future__ import annotations
 
 import io
+import json
 import math
 import os
 import queue
@@ -314,6 +315,106 @@ class SwitchTest(LightMusicDaemonBase):
         self.assertEqual(writes[-len(STRIP):], [
             ("power", "0"), ("effect", "12"), ("fx_aux", "513"), ("speed", "128"),
             ("color", "#102030"), ("brightness", "200"), ("scene_source", "manual")])
+
+
+class StripAvailabilityTest(LightMusicDaemonBase):
+    """The bridge's device-level `meta/error` under the WB convention
+    (docs/MQTT_TOPICS.md): `r` = offline; cleared = an EMPTY retained publish,
+    which deletes the retained message — a subscriber that connects after the
+    clear (the normal boot order: bridge first, audio daemon later) receives
+    no `meta/error` at all. Found on bench 1.135 (2026-10-24): `led-COM3-13`
+    live with its controls retained and no `meta/error` topic, light music
+    stuck in `strip_offline` forever."""
+
+    def report_controls(self, values=STRIP):
+        for control, value in values.items():
+            self.deliver(PREFIX + control, value, retain=True)
+
+    def test_late_subscriber_with_no_meta_error_and_the_strips_state_starts(self):
+        self.deliver(mqttio.LIGHT_TOPIC, "1")
+        self.report_controls()  # retained state only: no meta/error ever arrives
+        self.assertTrue(self.d._led_online(TARGET))
+        self.assertEqual(self.d.lm_state, C.LM_RUNNING)
+        self.assertEqual(len(self.streams), 1)
+        self.assertEqual(self.d.lm_session["snapshot"], STRIP)
+
+    def test_meta_error_r_is_offline_even_with_the_state_retained(self):
+        self.deliver(mqttio.LIGHT_TOPIC, "1")
+        self.deliver("/devices/%s/meta/error" % TARGET, "r", retain=True)
+        self.report_controls()
+        self.assertFalse(self.d._led_online(TARGET))
+        self.assertEqual(self.d.lm_state, C.LM_STRIP_OFFLINE)
+        self.assertEqual(self.streams, [])
+        self.assertEqual(self.link.commands, [])
+
+    def test_r_cleared_live_brings_the_strip_back(self):
+        self.deliver(mqttio.LIGHT_TOPIC, "1")
+        self.deliver("/devices/%s/meta/error" % TARGET, "r", retain=True)
+        self.report_controls()
+        self.assertEqual(self.d.lm_state, C.LM_STRIP_OFFLINE)
+        self.deliver("/devices/%s/meta/error" % TARGET, "")  # the bridge's clear, live
+        self.assertEqual(self.d.lm_state, C.LM_RUNNING)
+
+    def test_no_state_at_all_is_not_online(self):
+        self.deliver(mqttio.LIGHT_TOPIC, "1")
+        self.d.light_update()
+        self.assertFalse(self.d._led_online(TARGET))
+        self.assertEqual(self.d.lm_state, C.LM_STRIP_OFFLINE)
+        self.assertEqual(self.streams, [])
+
+    def test_a_partial_state_is_not_online(self):
+        """Every required snapshot control must have been reported: a strip
+        missing one (here the slow-polled `fx_aux`) is still waited for."""
+        partial = {k: v for k, v in STRIP.items() if k != "fx_aux"}
+        self.deliver(mqttio.LIGHT_TOPIC, "1")
+        self.report_controls(partial)
+        self.assertFalse(self.d._led_online(TARGET))
+        self.assertEqual(self.d.lm_state, C.LM_STRIP_OFFLINE)
+        self.report_controls({"fx_aux": STRIP["fx_aux"]})
+        self.assertEqual(self.d.lm_state, C.LM_RUNNING)
+
+    def test_an_empty_control_payload_is_not_a_report(self):
+        """A zero-length message deletes a retained topic: it says nothing
+        about the strip being there."""
+        self.deliver(mqttio.LIGHT_TOPIC, "1")
+        self.report_controls({k: "" for k in STRIP})
+        self.assertFalse(self.d._led_online(TARGET))
+        self.assertEqual(self.d.lm_state, C.LM_STRIP_OFFLINE)
+
+    def test_meta_error_is_subscribed_before_the_controls(self):
+        """mosquitto hands a new subscription's retained messages over in the
+        order the subscriptions were made, so a retained `r` reaches the
+        daemon before the strip's retained controls could make it online."""
+        topics = self.d._light_topics()
+        prefix = "/devices/%s/" % TARGET
+        self.assertLess(topics.index(prefix + "meta/error"), topics.index(prefix + "controls/+"))
+        self.assertLess(topics.index(prefix + "meta/error"),
+                        topics.index(prefix + "controls/+/meta/error"))
+
+    def write_crash_session(self):
+        plain_write(self.d.light_session_file,
+                    json.dumps({"target": TARGET, "snapshot": STRIP, "switched": True}))
+        self.d._load_session()
+
+    def test_crash_session_restored_to_a_late_subscribed_strip(self):
+        self.write_crash_session()
+        self.d.light_update()
+        self.assertEqual(self.link.commands, [])  # nothing known yet: wait
+        self.assertTrue(os.path.exists(self.d.light_session_file))
+        self.report_controls({k: "0" if k == "power" else v for k, v in STRIP.items()})
+        writes = self.link.strip_writes()
+        self.assertEqual(writes[-1], ("scene_source", "manual"))
+        self.assertIn(("effect", "12"), writes)
+        self.assertIsNone(self.d.lm_session)
+        self.assertFalse(os.path.exists(self.d.light_session_file))
+
+    def test_crash_session_not_restored_to_an_offline_strip(self):
+        self.write_crash_session()
+        self.deliver("/devices/%s/meta/error" % TARGET, "r", retain=True)
+        self.report_controls()
+        self.assertEqual(self.link.commands, [])
+        self.assertIsNotNone(self.d.lm_session)
+        self.assertTrue(os.path.exists(self.d.light_session_file))
 
 
 class DefaultStyleTest(LightMusicDaemonBase):

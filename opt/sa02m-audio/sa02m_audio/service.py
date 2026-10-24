@@ -237,6 +237,9 @@ class Daemon:
         self.lm_rate = RateLimit(mono, limit=C.LIGHT_MUSIC_STARTS_MAX)
         self.led: Dict[str, Dict[str, str]] = {}
         self.led_error: Dict[str, str] = {}
+        # Controls the bridge itself has reported per strip (never our own
+        # restore writes): the half of "online" a missing meta/error cannot give.
+        self.led_reported: Dict[str, set] = {}
         # After a restore: key -> (written value, deadline) until the bridge
         # echoes exactly it; keys whose value nobody can vouch for.
         self.led_pending: Dict[str, Dict[str, Any]] = {}
@@ -677,7 +680,10 @@ class Daemon:
         topics: tuple = (mqttio.LIGHT_TOPIC,) if self.conf.light_music_target else ()
         for target in self._light_targets():
             prefix = self._prefix(target)
-            topics += (prefix + "controls/+", prefix + "controls/+/meta/error", prefix + "meta/error")
+            # meta/error FIRST: mosquitto queues a subscription's retained
+            # messages in subscribe order, so a retained `r` is seen before the
+            # retained controls could make the strip online (_led_online).
+            topics += (prefix + "meta/error", prefix + "controls/+", prefix + "controls/+/meta/error")
         return topics
 
     def _led_write(self, target: str, control: str, payload: str) -> bool:
@@ -687,9 +693,16 @@ class Daemon:
                                               payload))
 
     def _led_online(self, target: str) -> bool:
-        """Only a strip the bridge has positively reported (`meta/error` ""):
-        a restore sent to an unknown or offline strip is skipped by the bridge."""
-        return self.led_error.get(target) == ""
+        """WB convention (docs/MQTT_TOPICS.md): no device-level `meta/error`
+        flag AND the bridge has reported every required control. A cleared
+        flag is an empty retained publish, which deletes the retained
+        message, so a daemon subscribing after the clear never receives a
+        "" — absence is the online signal, and the reported state is what
+        separates it from a strip the bridge never published. A restore sent
+        to an unknown or offline strip is skipped by the bridge."""
+        if self.led_error.get(target, ""):
+            return False
+        return set(C.LED_SNAPSHOT_REQUIRED) <= self.led_reported.get(target, set())
 
     def _lm_set(self, state: str, detail: str = "") -> None:
         if state == self.lm_state:
@@ -720,7 +733,8 @@ class Daemon:
 
     def observe_led(self, target: str, sub: str, payload: str) -> None:
         """A strip's retained state (what a session's snapshot reads) and its
-        bridge availability (`meta/error`: "" online, `r` offline)."""
+        bridge availability (`meta/error` `r` offline; cleared or absent with
+        the state reported — online, _led_online)."""
         if sub == "meta/error":
             self.led_error[target] = payload.strip()
         elif sub.startswith("controls/"):
@@ -733,6 +747,8 @@ class Daemon:
                     pending.pop(name)
                     self._forget(target, name)
             elif rest and "/" not in rest:
+                if payload:  # an empty payload deletes a retained topic: no report
+                    self.led_reported.setdefault(target, set()).add(rest)
                 if rest in pending:
                     # Only the echo of exactly what was written confirms it; a
                     # differing report was published before the restore landed.
@@ -792,8 +808,8 @@ class Daemon:
             self._lm_set(C.LM_STRIP_OFFLINE, "strip offline")
         elif self.lm_session is None and not (self._led_online(target) and self._snapshot_ready(target)):
             # Never a session that could not be restored exactly: wait for the
-            # bridge's report and its slow poll of 455 (one poll, ~30 s:
-            # led-mb2ws.md §4).
+            # bridge's retained state, incl. its slow poll of 455 (one poll,
+            # ~30 s: led-mb2ws.md §4).
             self._lm_set(C.LM_STRIP_OFFLINE, "waiting for the strip's state")
         elif now >= self.lm_retry_at and self.capture is None:
             # A clip on a stream of its own holds the mic: start after it.
@@ -927,7 +943,7 @@ class Daemon:
 
     def _load_session(self) -> None:
         """A session file left by a crash: its strip is restored as soon as
-        the bridge reports it online (never sooner)."""
+        it is online (_led_online — never sooner)."""
         try:
             fd = os.open(self.light_session_file,
                          os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0) | getattr(os, "O_CLOEXEC", 0))
