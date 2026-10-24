@@ -307,14 +307,18 @@ scripts/lib.sh: line <N>: .../scripts/../etc/sa02m-stacks-policy.sh: No such fil
    ```
    ssh root@<dev> 'tar czf /root/www-backup-$(date +%Y%m%d-%H%M%S).tgz -C /var/www network_config'
    ```
-2. **Доставка** `www/`, `scripts/` **и `etc/`** в staging на устройстве. Два
-   равнозначных транспорта:
-   - `pscp -r www scripts etc root@<dev>:/root/sa02m-deploy-<ver>/`;
-   - архив из git (гарантированно LF, без CRLF-сюрпризов Windows-чекаута;
-     `<ref>` и `<src>` — по Предусловиям полного деплоя):
+2. **Доставка** `www/`, `scripts/` **и `etc/`** в staging на устройстве.
+   - **Основной путь — архив из git** (гарантированно LF, без CRLF-сюрпризов
+     Windows-чекаута; источник, `<ref>` и `<src>` — Предусловия полного деплоя):
      `git fetch origin && git archive --format=tar.gz -o deploy-<src>.tar.gz origin/<ref> www/network_config scripts etc`,
      загрузка по SFTP (paramiko / WinSCP), на устройстве
      `tar xzf … -C /root/sa02m-deploy-<ver>` (практика деплоев 1.0.5.10–12).
+   - **Запасной путь — только когда архив на плату не доставить:**
+     `pscp -r www scripts etc root@<dev>:/root/sa02m-deploy-<ver>/`. Он копирует
+     рабочее дерево в обход правила источника, и на плату может уйти
+     незакоммиченное и незапушенное содержимое. Поэтому перед копированием
+     запишите коммит (`git rev-parse --short HEAD`) и убедитесь, что
+     `git status --short` пуст; после копирования шаг 3 обязателен.
    **`etc/` без вариантов должен быть в поставке** — иначе скрипт падает на
    `source` ещё до копирования (см. «Пути деплоя» выше). Если нужен именно
    «чисто-www» эффект, везите из `etc/` только `etc/sa02m-stacks-policy.sh` и
