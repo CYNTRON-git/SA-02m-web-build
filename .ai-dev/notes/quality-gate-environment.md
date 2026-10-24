@@ -101,10 +101,15 @@ python-socketio, segno is hidden in-process).
 `update-cgroup-escape` (E5 without `flock`), `update-deploy-skip` (15e when not
 root — this one also skips on Linux CI), `sudoers-pin-contract` (the symlink
 case, «note» line — also on Linux CI; 8c/8d off Linux), `install-profile` (P6l
-without a `flock` on `PATH`, named in its summary line only). Opting in is one
-`quality_skip` call per skip site; the two marked «also on Linux CI» would then
-FAIL there under strict mode, so each needs its CI skip removed (or the row's
-scope decided) in the same change.
+without a `flock` on `PATH`, named in its summary line only), and every
+`pytest-suite.sh` row whose tests skip per test — the runner does not parse
+pytest's `N skipped`: `py-unit-devices` prints PASS here with 6 `test_api_socket.py`
+cases skipped (no `AF_UNIX` on Windows; 0 skipped under WSL, 2026-10-23). Its
+`openpyxl` case is no longer one of them: `openpyxl` is a listed dep of the row,
+so without it the whole row SKIPs. Opting in is one `quality_skip` call per skip
+site; the two marked «also on Linux CI» would then FAIL there under strict mode,
+so each needs its CI skip removed (or the row's scope decided) in the same
+change.
 
 **Strict mode**: `web-quality.yml` sets `QUALITY_STRICT=1` for the whole job, so
 in CI a `SKIP` or a `PARTIAL` is a `FAIL` — every tool is installed there on
