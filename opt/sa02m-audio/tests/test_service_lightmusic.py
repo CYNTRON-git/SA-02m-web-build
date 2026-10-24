@@ -435,6 +435,67 @@ class DefaultStyleTest(LightMusicDaemonBase):
         self.assertEqual(self.d.lm_style, C.LM_STYLE_LEVEL)
 
 
+class AlreadyOnStripTest(LightMusicDaemonBase):
+    """Bench 1.135, 2026-10-24: `led-COM3-13` lit (power 1, effect 0,
+    brightness 100); light music sent `power/on 1` before its effect, and the
+    bridge's power-on rewrote brightness to its yaml 40 for the whole session.
+    A strip already playing its FX gets only the style's effect; the restore
+    at stop stays the exact snapshot."""
+
+    ON = dict(STRIP, power="1", effect="0", brightness="100", scene_source="1")
+
+    def run_frames(self, values, n=20):
+        self.deliver(mqttio.LIGHT_TOPIC, "1")
+        self.strip_reports(values)
+        self.assertEqual(self.d.lm_state, C.LM_RUNNING)
+        stream = self.streams[-1]
+        self.assertEqual(self.link.commands, [])  # still nothing before the first frame
+        for i in range(n):
+            stream.push(tone_block(i))
+        return self.link.strip_writes()
+
+    def test_playing_strip_gets_no_power_write_only_the_effect(self):
+        writes = self.run_frames(self.ON)
+        self.assertEqual(writes[0], ("effect", "75"))
+        self.assertNotIn("power", [c for c, _ in writes])
+        self.assertNotIn("brightness", [c for c, _ in writes])
+        self.assertGreater(len(writes), 1)
+        self.assertEqual({c for c, _ in writes[1:]}, {"music_level"})
+
+    def test_restore_after_a_powerless_start_is_the_exact_snapshot(self):
+        self.run_frames(self.ON)
+        before = len(self.link.strip_writes())
+        self.deliver(mqttio.LIGHT_TOPIC, "0")
+        self.assertEqual(self.d.lm_state, C.LM_OFF)
+        self.assertEqual(self.link.strip_writes()[before:], [
+            ("power", "1"), ("effect", "0"), ("fx_aux", "513"), ("speed", "128"),
+            ("color", "#102030"), ("brightness", "100"), ("scene_source", "1")])
+
+    def test_off_strip_still_gets_power_then_the_effect(self):
+        writes = self.run_frames(dict(self.ON, power="0"))
+        self.assertEqual(writes[:2], [("power", "1"), ("effect", "75")])
+        self.assertEqual(writes.count(("power", "1")), 1)
+
+    def test_strip_on_a_scene_still_gets_power_then_the_effect(self):
+        """power 1 with RenderSource POOL: the FX would not render without
+        the bridge's power-on, which sets RenderSource to FX."""
+        writes = self.run_frames(dict(self.ON, scene_source="0"))
+        self.assertEqual(writes[:2], [("power", "1"), ("effect", "75")])
+
+    def test_crash_snapshot_saying_on_does_not_skip_power(self):
+        """A crash session's snapshot can be stale: with the strip's current
+        state not reported as playing, the power path is taken."""
+        plain_write(self.d.light_session_file,
+                    json.dumps({"target": TARGET, "snapshot": self.ON, "switched": True}))
+        self.d._load_session()
+        self.deliver(mqttio.LIGHT_TOPIC, "1")
+        self.assertEqual(self.d.lm_state, C.LM_RUNNING)
+        stream = self.streams[-1]
+        for i in range(5):
+            stream.push(tone_block(i))
+        self.assertEqual(self.link.strip_writes()[:2], [("power", "1"), ("effect", "75")])
+
+
 class RateFromConfTest(LightMusicDaemonBase):
     conf_values = {"light_music_target": TARGET, "light_music_rate_hz": 3}
 

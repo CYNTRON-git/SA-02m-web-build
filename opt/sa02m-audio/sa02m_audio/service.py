@@ -48,7 +48,7 @@ from . import mixer
 from . import mqttio
 from .capture import (OUT_ERROR, OUT_INTERRUPTED, OUT_MIC_BUSY, OUT_NO_MIC, OUT_OK,
                       OUT_SHORT, Capture, CaptureResult, MicLease, Stream, StreamClip)
-from .lightshow import Sink, restore_writes, start_writes
+from .lightshow import Sink, restore_writes, start_writes, strip_playing
 from .fsutil import atomic_write
 from .media import MediaProbe, Verdict
 from .store import Store, new_id
@@ -849,7 +849,12 @@ class Daemon:
         prefix = self._prefix(target)
         topic = "%scontrols/%s/on" % (prefix, C.LIGHT_MUSIC_STREAM_CONTROL[style])
         link = self.link
-        writes = start_writes(style)
+        # A strip already playing its FX by its last report gets no
+        # `power/on 1` (it would reset the brightness). The report, not the
+        # snapshot: a fresh session's snapshot is this same report, and a
+        # crash session's or a retry's can be stale — a strip turned off since
+        # would stay dark. Not known ⇒ the power path.
+        writes = start_writes(style, strip_playing(self.led.get(target, {})))
 
         def switch_strip() -> None:
             for control, payload in writes:

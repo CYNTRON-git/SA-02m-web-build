@@ -31,10 +31,28 @@ def encode(style: str, bands: Bands) -> str:
     return str(level_of(bands))
 
 
-def start_writes(style: str) -> List[Write]:
-    """Play first: the bridge's `power/on 1` also resets the FX to 0, so the
-    style's FX goes after it."""
-    return [("power", "1"), ("effect", str(C.LIGHT_MUSIC_FX[style]))]
+# What the bridge publishes for a strip that is playing (Play 416 = PLAY) and
+# rendering its FX (RenderSource 402 = FX): `power` 1 and `scene_source` 1.
+_PLAYING_FX = {"power": "1", "scene_source": "1"}
+
+
+def strip_playing(state: Dict[str, str]) -> bool:
+    """The strip already plays its FX: the style needs only its FX written.
+    Anything else — off, paused, a scene (RenderSource POOL/FLASH), a key not
+    known — is not, and takes the `power/on 1` path."""
+    return all(state.get(k) == v for k, v in _PLAYING_FX.items())
+
+
+def start_writes(style: str, playing: bool = False) -> List[Write]:
+    """The style's FX, after `power/on 1` unless the strip already plays its
+    FX (`playing`, strip_playing). The bridge's `power/on 1` also rewrites
+    FxId (to Static) and FxParam 407, the brightness, to its power-on default
+    (`bridge_led._power_on_settings`), so the FX goes after it — and a strip
+    that is already on is never sent it: its brightness would drop for the
+    whole session (bench 1.135, 2026-10-24: 100 → 40). Not known to be
+    playing ⇒ the power path."""
+    fx = ("effect", str(C.LIGHT_MUSIC_FX[style]))
+    return [fx] if playing else [("power", "1"), fx]
 
 
 def restore_writes(style: str, snapshot: Dict[str, str]) -> List[Write]:

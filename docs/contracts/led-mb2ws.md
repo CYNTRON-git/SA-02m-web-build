@@ -196,7 +196,10 @@ layout `0x0408` (TileCount=4 + 90° CW, MIRROR_X=0). Рецепт:
 «LED лента» — это свет, не метеостанция: YAML `effect: 0` (STATIC —
 заливка color1, не анимация), `weather_lines` / `text_lines` = 1 (поллер не
 восстанавливает FX 64 и не пинит 494=2). `power/on` 1 → RenderSource=FX +
-FxId 0 + Play; `power/on` 0 → `rgbw_stop_blank_writes` (STOP + pool +
+FxId 0 (или YAML `effect`) + FxParam 407 = YAML `brightness` (без него —
+255) + Play — в том числе на уже включённой ленте, поэтому светомузыка шлёт
+его только ленте, которая свой эффект не играет (`audio-recorder.md` §22);
+`power/on` 0 → `rgbw_stop_blank_writes` (STOP + pool +
 CLEAR_POOL + REFRESH). Layout `0x0408` остаётся. YAML `led-COM3-13`:
 `matrix_layout` / `rotate_90_cw` / `mirror_x` / `weather_lines` /
 `text_lines` / `effect` / `brightness` / `led_count` — поллер один раз

@@ -93,6 +93,45 @@ class StyleTest(unittest.TestCase):
         self.assertRegex(S.encode(C.LM_STYLE_LEVEL, L.Bands(0, 0, 0, 1.0)), r"^(100|[1-9]?[0-9])\Z")
 
 
+class StartOnPlayingStripTest(unittest.TestCase):
+    """A strip already playing its FX gets only the style's effect: the
+    bridge's `power/on 1` rewrites FxParam (brightness) to its yaml default,
+    which cost bench 1.135 its brightness (100 → 40) for a whole session
+    (2026-10-24)."""
+
+    PLAYING = {"power": "1", "effect": "0", "speed": "128", "fx_aux": "0",
+               "brightness": "100", "scene_source": "1"}
+
+    def test_a_playing_strip_gets_only_the_styles_effect(self):
+        for style in C.LIGHT_MUSIC_STYLES:
+            with self.subTest(style=style):
+                self.assertEqual(S.start_writes(style, playing=True),
+                                 [("effect", str(C.LIGHT_MUSIC_FX[style]))])
+
+    def test_not_playing_keeps_power_before_the_effect(self):
+        for style in C.LIGHT_MUSIC_STYLES:
+            with self.subTest(style=style):
+                self.assertEqual(S.start_writes(style, playing=False),
+                                 [("power", "1"), ("effect", str(C.LIGHT_MUSIC_FX[style]))])
+
+    def test_playing_means_power_1_and_the_fx_render_source(self):
+        self.assertTrue(S.strip_playing(self.PLAYING))
+        not_playing = {
+            "off": dict(self.PLAYING, power="0"),
+            "paused (Play 416 = 2 reads power 0)": dict(self.PLAYING, power="0", scene_source="1"),
+            "scene pool": dict(self.PLAYING, scene_source="0"),
+            "flash scene": dict(self.PLAYING, scene_source="2"),
+            "power unknown": {k: v for k, v in self.PLAYING.items() if k != "power"},
+            "render source unknown": {k: v for k, v in self.PLAYING.items() if k != "scene_source"},
+            "nothing known": {},
+            "padded power": dict(self.PLAYING, power="1 "),
+            "padded render source": dict(self.PLAYING, scene_source=" 1"),
+        }
+        for name, state in not_playing.items():
+            with self.subTest(name):
+                self.assertFalse(S.strip_playing(state))
+
+
 class RestoreWritesTest(unittest.TestCase):
     FULL = {"power": "0", "effect": "12", "speed": "128", "color": "#102030", "fx_aux": "513",
             "brightness": "200", "scene_source": "manual"}
