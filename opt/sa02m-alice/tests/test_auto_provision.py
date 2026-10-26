@@ -574,8 +574,11 @@ class TestProvisionMtd(unittest.TestCase):
         dev = added[0]
         self.assertEqual(dev["type"], "devices.types.sensor.motion")
         self.assertEqual(dev["name"], "Присутствие COM3 20")
-        self.assertEqual(_insts(dev), ["motion", "illumination"])
-        motion, lux = dev["properties"]
+        self.assertEqual(_insts(dev), ["motion", "illumination", "target_distance"])
+        motion, lux, distance = dev["properties"]
+        self.assertIs(distance["cloud_only"], True)
+        self.assertEqual(distance["parameters"]["unit"], "unit.length.meter")
+        self.assertNotIn("scale", distance)
         self.assertEqual(motion["type"], "devices.properties.event")
         self.assertEqual(motion["mqtt"], "/devices/mtdx62-mb-COM3-20/controls/presence_status")
         self.assertEqual(lux["type"], "devices.properties.float")
@@ -586,7 +589,7 @@ class TestProvisionMtd(unittest.TestCase):
     def test_motion_only(self):
         _doc, added = ap.provision(
             {"rooms": [], "devices": []}, self.MID, _mtd_topics(self.MID, lux=False))
-        self.assertEqual(_insts(added[0]), ["motion"])
+        self.assertEqual(_insts(added[0]), ["motion", "target_distance"])
 
     def test_lux_without_presence_adds_nothing(self):
         doc = {"rooms": [], "devices": []}

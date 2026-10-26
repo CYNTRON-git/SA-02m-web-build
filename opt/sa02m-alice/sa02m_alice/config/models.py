@@ -63,6 +63,7 @@ EVENT_INSTANCES = {
 # item (client/device_registry.py). Widen deliberately: nothing downstream
 # re-checks these (docs/contracts/alice-mqtt-mapping.md).
 CLOUD_ONLY_FLOAT_INSTANCES = {
+    "target_distance",
     "supply_temperature",
     "return_water_temperature",
     "room_temperature",
