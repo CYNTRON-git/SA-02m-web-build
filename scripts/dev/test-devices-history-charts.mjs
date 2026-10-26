@@ -421,6 +421,41 @@ console.log('# status note i18n');
   check(I18N.indexOf("'Скрыть с графика':") >= 0 && I18N.indexOf("'Показать на графике':") >= 0, 'DICT has both legend toggle hints');
 }
 
+console.log('# TVOC display scale');
+{
+  const value = tryLoad('tvocDisplayValue');
+  const display = tryLoad('historyDisplayMetric', { tvocDisplayValue: value });
+  const flatten = load('flattenMetricSeries', { historyDisplayMetric: display });
+  const raw = { metric: 'tvoc_mg_m3', unit: 'mg/m³', label: 'TVOC', series: [
+    { field: 'tvoc_zmod', label: 'ZMOD4410', points: [[1, 0.16], [2, 0], [3, 0.25]] },
+  ] };
+  const before = JSON.stringify(raw);
+  const plotted = flatten([raw]);
+  eq(plotted[0].unit, 'µg/m³', 'overview uses micrograms');
+  eq(JSON.stringify(plotted[0].points), '[[1,160],[2,0],[3,250]]', 'overview scales 0.16 to 160 and keeps zero');
+  eq(JSON.stringify(raw), before, 'overview does not mutate canonical API points or units');
+  eq(JSON.stringify(flatten([raw])), JSON.stringify(plotted), 're-render scales the original response exactly once');
+  const html = load('buildDtvMetricsHtml', { escapeHtml: (s) => s })();
+  check(html.includes('мкг/м³') && html.includes('ZMOD4410'), 'KPI microgram unit keeps sensor caption');
+  if (!value || !display) {
+    check(false, 'TVOC display conversion helpers exist');
+  } else {
+    eq(value(0.16), 160, 'KPI conversion uses the same factor as history');
+    eq(value(0), 0, 'KPI zero is not missing');
+    for (const invalid of [null, undefined, '', ' ', 'invalid', Infinity, false]) {
+      eq(value(invalid), null, 'missing/nonfinite/nonnumeric TVOC stays missing');
+    }
+    const single = display(raw, raw.metric);
+    eq(JSON.stringify(single.series[0].points), JSON.stringify(plotted[0].points), 'single-metric and overview history share scale');
+    eq(single.unit, 'µg/m³', 'single-metric history unit agrees');
+    eq(load('tipDecimalsFor', { aiUnitPrecision: () => 2 })('µg/m³', 'tvoc_mg_m3'), 0, 'tooltip and legend use integer micrograms');
+    const invalidHistory = { series: [{ points: [[1, null], [2, 'invalid'], [3, 0]] }] };
+    eq(JSON.stringify(display(invalidHistory, 'tvoc_mg_m3').series[0].points), '[[3,0]]', 'invalid history does not become a zero sample');
+    const temperature = { metric: 'room_temp', unit: '°C', series: [{ points: [[1, 23.4]] }] };
+    eq(display(temperature, 'room_temp'), temperature, 'other metrics are unchanged');
+  }
+}
+
 if (failures) {
   console.error('js-unit-devices-charts: ' + failures + ' assertion(s) failed');
   process.exit(1);

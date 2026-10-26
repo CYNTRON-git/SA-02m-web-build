@@ -1,5 +1,5 @@
 /* Devices tab — live ДТВ / СЭ-02м-3 widgets + MR-02m analog cards + history modal / Excel / events */
-import { aiSensorLabel, aiUnitPrecision } from "./ai-sensors.js?v=1.0.7.10";
+import { aiSensorLabel, aiUnitPrecision } from "./ai-sensors.js?v=1.0.7.11";
 
 (function () {
   "use strict";
@@ -122,6 +122,27 @@ import { aiSensorLabel, aiUnitPrecision } from "./ai-sensors.js?v=1.0.7.10";
     if (v === null || v === undefined || Number.isNaN(Number(v))) return "—";
     const n = Number(v);
     return Number.isInteger(digits) ? n.toFixed(digits) : String(n);
+  }
+
+  // Storage and API stay in mg/m³; only presentation uses micrograms.
+  function tvocDisplayValue(v) {
+    if ((typeof v !== "number" && typeof v !== "string") || String(v).trim() === "") return null;
+    const n = Number(v) * 1000;
+    return Number.isFinite(n) ? n : null;
+  }
+
+  function historyDisplayMetric(data, metric) {
+    if (metric !== "tvoc_mg_m3") return data;
+    return {
+      ...data,
+      unit: "µg/m³",
+      series: (data.series || []).map((s) => ({
+        ...s,
+        points: (s.points || [])
+          .map((p) => [p[0], tvocDisplayValue(p[1]), ...p.slice(2)])
+          .filter((p) => p[1] !== null),
+      })),
+    };
   }
 
   function fetchJson(url, opts) {
@@ -314,7 +335,7 @@ import { aiSensorLabel, aiUnitPrecision } from "./ai-sensors.js?v=1.0.7.10";
       ["room_temp", "temp", "°C", "Температура", "cycle"],
       ["humidity", "rh", "%", "Влажность", "cycle"],
       ["eco2_ppm", "eco2", "ppm", "eCO₂", "cycle"],
-      ["tvoc_mg_m3", "tvoc", "mg/m³", "TVOC", "ZMOD4410"],
+      ["tvoc_mg_m3", "tvoc", "мкг/м³", "TVOC", "ZMOD4410"],
       ["pressure_mmhg", "pressure", "mmHg", "Давление", "cycle"],
       ["light_pct", "light", "%", "Освещённость", ""],
     ];
@@ -1563,7 +1584,7 @@ import { aiSensorLabel, aiUnitPrecision } from "./ai-sensors.js?v=1.0.7.10";
       // Cycling cells (temp/rh/eco2/pressure) render at the CURRENT shared tick
       // so a 5 s poll refresh keeps the caption the 2 s timer last showed.
       applyDtvCyclingCells(card, d, dtvRotTick);
-      setField(card, "tvoc", fmt(d.tvoc_mg_m3, 2));
+      setField(card, "tvoc", fmt(tvocDisplayValue(d.tvoc_mg_m3), 0));
       setField(card, "light", fmt(d.light_pct, 0));
       renderPresence(card, d, stale);
     }
@@ -1916,7 +1937,7 @@ import { aiSensorLabel, aiUnitPrecision } from "./ai-sensors.js?v=1.0.7.10";
       room_temp: 1,
       humidity: 1,
       eco2_ppm: 0,
-      tvoc_mg_m3: 2,
+      tvoc_mg_m3: 0,
       pressure_mmhg: 1,
       light_pct: 0,
       presence: 0,
@@ -1939,6 +1960,7 @@ import { aiSensorLabel, aiUnitPrecision } from "./ai-sensors.js?v=1.0.7.10";
     if (u === "°C") return 1;
     if (u === "ppm") return 0;
     if (u === "mg/m³") return 2;
+    if (u === "µg/m³" || u === "мкг/м³") return 0;
     if (u === "mmHg" || u === "мм рт.ст.") return 1;
     if (u === "%") return 1; // RH default; light uses metric light_pct
     return null;
@@ -2548,6 +2570,7 @@ import { aiSensorLabel, aiUnitPrecision } from "./ai-sensors.js?v=1.0.7.10";
     "Ω": "Ом",
     "kΩ": "кОм",
     "mg/m³": "мг/м³",
+    "µg/m³": "мкг/м³",
     cm: "см",
     m: "м",
   };
@@ -3582,7 +3605,8 @@ import { aiSensorLabel, aiUnitPrecision } from "./ai-sensors.js?v=1.0.7.10";
   function flattenMetricSeries(metricsPayload) {
     /* Convert history_batch metrics[] → flat series with unit/label for overview */
     const out = [];
-    (metricsPayload || []).forEach((m) => {
+    (metricsPayload || []).forEach((raw) => {
+      const m = historyDisplayMetric(raw, raw.metric);
       const unit = m.unit || "";
       const series = m.series || [];
       if (!series.length) return;
@@ -3946,9 +3970,10 @@ import { aiSensorLabel, aiUnitPrecision } from "./ai-sensors.js?v=1.0.7.10";
         }
         const barMode = barModeFor(activeDevice, modalMode, activeMetric);
         const prepared = !!(barMode && data.prepared && Number(data.bucket_s) > 0);
+        const display = historyDisplayMetric(data, activeMetric);
         chartMeta = {
           label: data.label || "",
-          unit: data.unit || "",
+          unit: display.unit || "",
           metric: activeMetric,
           range: rangeLabelKey(),
           normalize: false,
@@ -3962,7 +3987,7 @@ import { aiSensorLabel, aiUnitPrecision } from "./ai-sensors.js?v=1.0.7.10";
             ? barBucketSec(windowSec, calendarMode)
             : 0,
         };
-        chartSeries = data.series || [];
+        chartSeries = display.series || [];
         let n = 0;
         if (prepared) {
           const seen = {};

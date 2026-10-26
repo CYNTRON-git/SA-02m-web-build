@@ -180,6 +180,12 @@ if [ -f "$REPO_ETC/sa02m-web-port-lib.sh" ]; then
     sa02m_atomic_install -m 644 "$REPO_ETC/sa02m-web-port-lib.sh" /usr/local/lib/sa02m-web-port-lib.sh
     sed -i 's/\r$//' /usr/local/lib/sa02m-web-port-lib.sh
 fi
+# The runner scrubs legacy password lines from served logs through this lib;
+# same destination as 03-webserver.sh.
+if [ -f "$REPO_ETC/sa02m-web-log-scrub-lib.sh" ]; then
+    sa02m_atomic_install -m 644 "$REPO_ETC/sa02m-web-log-scrub-lib.sh" /usr/local/lib/sa02m-web-log-scrub-lib.sh
+    sed -i 's/\r$//' /usr/local/lib/sa02m-web-log-scrub-lib.sh
+fi
 if [ -f "$REPO_ETC/sa02m-update-control.sh" ]; then
     sa02m_atomic_install -m 755 "$REPO_ETC/sa02m-update-control.sh" /usr/local/libexec/sa02m-update-control
 fi

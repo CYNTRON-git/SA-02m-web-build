@@ -35,46 +35,55 @@ header; another harness that reports neither still prints `PASS` — the
 | `html-id-contract` | never (node only) | Linux CI |
 | `web-auth-behaviour` | two POSIX-mode asserts skip off Linux | Linux CI |
 | `install-atomic` | case 8b only: MSYS derives a mode from the file body (a `#!` first line reads 755, anything else 644) and ignores `chmod`, so `-m 644` and `-m 755` are indistinguishable | Linux CI |
-| `update-cgroup-escape` | E5's «lock held again» assert only: git-bash has no `flock`, so the harness shims it as a no-op and prints SKIP for that one line | Linux CI |
+| `update-cgroup-escape` | E5's «lock held again» assert only, and only when NO `flock` is on `PATH`: the harness shims it as a no-op and prints SKIP for that one line. With Cygwin's `flock` on `PATH` (this box) the row RUNS and FAILs — see the FAIL table | Linux CI |
 | `sudoers-visudo` | `visudo` not on `PATH` (git-bash): whole row SKIP | WSL / Linux CI (`sudo` package) |
 | `path-mask-lib` | case P5 only: git-bash cannot create the dangling symlink the case needs; the summary line counts it as a skip, never as a pass (1.0.7.2) | Linux CI |
-| `web-update-launcher-guard` | whole row SKIP (exit 77) since 1.0.7.5: the launcher's first act is `flock(1)` on launch.lock, so without util-linux flock every L case would exit 1 and read as a guard failure; before 1.0.7.5 only L8-L11 skipped | WSL / Linux CI |
+| `web-update-launcher-guard` | whole row SKIP (exit 77) when NO `flock` is on `PATH` (since 1.0.7.5): the launcher's first act is `flock(1)` on launch.lock, so without a flock every L case would exit 1 and read as a guard failure. With Cygwin's `flock` on `PATH` (this box) the row RUNS and FAILs — see the FAIL table | WSL / Linux CI |
 | `status-vplc-probe` | two cases need `AF_UNIX` (Windows CPython has none): 5 PASS + 2 SKIP here, 7/7 under WSL (1.0.7.2) | WSL / Linux CI |
-| `py-unit-audio` | POSIX-only cases (fcntl leases, `dir_fd`, process groups, the real `timeout`): partial skip — roughly half the suite skips here and the row still prints PASS; the whole suite runs under WSL (1.0.7.4) | WSL / Linux CI |
+| `py-unit-audio` | POSIX-only cases (fcntl leases, `dir_fd`, process groups, the real `timeout`): partial skip — roughly half the suite skips here and the row prints `PARTIAL` (audit 2026-10-24, build table); the whole suite runs under WSL (1.0.7.4) | WSL / Linux CI |
 | `audio-trigger` | no `flock` on `PATH`: whole row SKIP (exit 77), never a pass (1.0.7.4). With Cygwin's `flock` on `PATH` (this box, 2026-10-23) the row RUNS and FAILs — every helper call answers `busy` (the same MSYS-fd-under-Cygwin-`flock` suspect as `install-profile` P6l below), so `comment-mutation-proof` reports its case «not green on an unmutated tree» | WSL / Linux CI |
 | `sudoers-pin-contract` | two cases print SKIP and the row still exits 0: sandbox (c), the iface-conf-write symlink refusal (git-bash cannot create a real symlink, `ln -s` copies), and 8c/8d, the 0440 root:root normalisation and the runner's read-back (MSYS ignores `chmod`: 0440 reads back 644). Because 8c/8d cannot run, `comment-mutation-proof`'s cases on the `if chmod 0440 …` lines (`scripts/lib.sh`, `etc/sa02m-update-runner.sh`) cannot go RED here and FAIL on this box. On Linux 8c/8d run as any user: as non-root (CI) the chown to root is modelled, never skipped; GREEN under WSL as root and as `nobody` (2026-10-23) | WSL / Linux CI |
 | `install-maintenance`, `update-control-boundaries` | whole row SKIP (exit 77): Windows CPython has no `fcntl` (the wrapper's and the controller's flock idiom). Neither needs root since 1.0.7.10 — each suite rebinds its owner constant to the running uid (`install-maintenance`: `JOURNAL_OWNER_UID`, plus an `install -o/-g` stub in the 03a fixture; `update-control-boundaries`: the state owner). `install-maintenance`: 18 OK under WSL as root and as `nobody`; `update-control-boundaries`: 15 OK as root and as `nobody` (both 2026-10-23) | WSL / Linux CI |
-| `py-unit-update` | PARTIAL: `tests/test_control_cgi.py` (HTTP → real Bash CGI → controller) skips as a module without `fcntl` and writes one QUALITY_SKIP_LOG line — 25 passed + 1 skipped here, 36 passed under WSL (2026-10-21); before 1.0.7.5 the whole row was RED on Windows (collection error, `final-build-1.log:3655`) | WSL / Linux CI |
+| `py-unit-update` | PARTIAL: `tests/test_control_cgi.py` (HTTP → real Bash CGI → controller) skips as a module without `fcntl` and writes one QUALITY_SKIP_LOG line — 25 passed + 1 skipped here, 36 passed under WSL (2026-10-21) | WSL / Linux CI |
 | `board-verifier-safety` | whole row SKIP (exit 77) off Linux — the script guards itself (`sys.platform`, `/proc`; it needs `/proc`, `os.pidfd_open`, `select` on pipes) and writes the skip-log line; the row's `run` is the plain python call | WSL / Linux CI |
 | `status-reliability-browser` | whole row SKIP (exit 77) when `playwright` is not resolvable from `scripts/dev` — the guard is in the row's `run` (the script imports playwright unconditionally); with `npm run ui-layout:install` done it RUNS here and under WSL (PASS on both, 2026-10-20/21) | Linux CI (installs the harness) |
+| `daemon-access-effect` | whole row SKIP (exit 77) when not root and no passwordless `sudo -n`: every case chowns to foreign uids / uses `setpriv` (`scripts/dev/test-daemon-access.sh` header). PASS under WSL as root (audit 2026-10-24) | WSL (root) / Linux CI |
+| `alice-conf-homes` | whole row SKIP (exit 77) on `os.name == "nt"`: it retargets Linux paths and needs a symlink-capable host. PASS under WSL as root (audit 2026-10-24) | WSL / Linux CI |
+| `factory-reset-runner` | whole row SKIP (exit 77) on `os.name == "nt"`: it needs a POSIX host (`grp`, euid, the retargeted runner). PASS under WSL as root (audit 2026-10-24) | WSL / Linux CI |
+| `status-coordinator-projection` | whole row SKIP (exit 77) off Linux: «Linux /proc + AF_UNIX required» (the script's own guard). PASS under WSL (audit 2026-10-24) | WSL / Linux CI |
 
 When reporting results, say "skipped", never "passed". A reviewer that reports a
 skipped row as a pass is making a false claim about verification.
 
 ## Rows that FAIL (not skip) on a Windows dev box — environment, CI is the authority
 
-Observed 2026-10-07 on git-bash (MINGW64), each row run by hand. They do not
+Observed on git-bash (MINGW64), each row run by hand (2026-10-07; re-measured in
+the full build beat by audit 2026-10-24, Step 1 / F4). This box has Cygwin's
+util-linux `flock` on `PATH` (`/c/cygwin64/bin/flock`), so the flock-dependent
+rows RUN instead of skipping, and FAIL. They do not
 exit 77, so `run.mjs` and `comment-mutation-proof` count them as RED, and
 every `comment-mutation-proof` case of theirs reports «not green on an
 unmutated tree». Not evidence of a defect, not evidence of health either:
 
 | Row | Exact failure here | Cause |
 |---|---|---|
-| `homekit-trigger`, `homeconnect-trigger` | `FAIL — flock not found (util-linux)` (first line, exit 1) | git-bash ships no `flock` |
+| `homekit-trigger`, `homeconnect-trigger` | with Cygwin's `flock` on `PATH`: 57 failed asserts, every helper call answering `{"ok":false,"error":"busy"}`; with no `flock` on `PATH`: `FAIL — flock not found (util-linux)` (first line, exit 1) | an MSYS shell's fd under a Cygwin `flock` (the `install-profile` P6l suspect below); git-bash itself ships no `flock`. PASS under WSL (audit 2026-10-24) |
+| `update-cgroup-escape` | 23 failed checks (audit 2026-10-24) | Cygwin's `flock` on `PATH`: PASS on this box with `/c/cygwin64/bin` removed from `PATH` (E5 then skips, see the SKIP table), and PASS under WSL |
+| `web-update-launcher-guard` | 18 failed checks (audit 2026-10-24) | Cygwin's `flock` on `PATH` makes the row RUN instead of SKIP: same proof — PASS with `/c/cygwin64/bin` removed from `PATH` (the row then SKIPs), PASS under WSL |
 | `homekit-cgi`, `homeconnect-cgi` | `FAIL 5a GET → the dispatch answer, verbatim …` — the CGI answers `{"ok":false,"error":"homekit_api_failed","message":"python dispatch failed or timed out"}` (and the `homeconnect_api_failed` twin) | NOT `flock`: the CGI's python dispatch fails on this box; cause not traced (Windows python under the stubbed CGI is the suspect) |
 | `py-unit-homekit`, `py-unit-homeconnect` | `ModuleNotFoundError: grp` / `fcntl`, `OSError: [WinError 1314]` (symlink privilege) in 13-21 tests; the rows print FAIL, not SKIP, because pytest itself is importable | Windows CPython has no `grp`/`fcntl` and the account lacks the symlink privilege; rc=0 under WSL Ubuntu-24.04 on the same tree (2026-10-14) |
 | `alice-image-identity`, `service-ctl-policy-write` | `ln: failed to create symbolic link` cases (CB2 belt, Home Connect dirty-link dimensions) | git-bash symlinks need the Windows privilege; rc=0 under WSL |
 | `update-conditional-restart` | run8: `python.exe: can't open file 'C:\tmp\tmp.*\gen-manifest.py'` | MSYS `/tmp` is not Windows python's `C:\tmp`; rc=0 under WSL |
-| `port-coordinator`, `status-coordinator-projection` (1.0.7.5) | `port-coordinator`: AF_UNIX / `/proc` / SO_PEERCRED cases error out; `status-coordinator-projection`: `UnicodeDecodeError: 'charmap'` — the harness reads `status.cgi` with the locale codec (cp1251) and the file is UTF-8 | Windows CPython has no AF_UNIX and defaults text I/O to cp1251; both PASS under WSL Ubuntu-24.04 (`final-build-2-wsl.log`). The scripts belong to the ports/status areas; a `read_text(encoding='utf-8')` would make the second one run here. On Linux `port-coordinator` (and `py-unit-gateway`'s real-broker test, which imports its fixture) runs as any user: unprivileged, the occupant scan is scoped to the suite's own process tree since 1.0.7.10 — a root process elsewhere in the session (the CI runner's launcher, `runuser`/`sudo` without `setsid`) is not read; the session scope it replaced refused every lease on CI with `PermissionError` on `/proc/<pid>/fd` |
-| `py-unit-gateway` | `AttributeError: module 'os' has no attribute 'openpty'` (30 tests, `tests/test_lease_retry.py` + `tests/test_transport_lifecycle.py`) and one `ModuleNotFoundError: No module named 'termios'`; the row prints FAIL, not SKIP, because pytest, serial and yaml are importable | Windows CPython has no pty (`os.openpty`, `termios`); 140 passed under WSL Ubuntu-24.04 on the same tree (2026-10-21, 1.0.7.7) |
-| `js-unit-mqtt-scan-type`, `js-unit-mqtt-tcp-dialog` | NOT Windows: they FAIL under WSL Ubuntu-24.04's native Node 18 (`SyntaxError: Unexpected token 'export'` from `scripts/dev/mqtt-js-sandbox.mjs` importing a module-only `.js`) and PASS on Windows Node 24 (`final-build-1.log`, the 1.0.7.5 touched run 2026-10-21) | Node < 22 has no ESM syntax detection for a `.js` without `"type":"module"`; CI's Node version is the authority — a WSL run of these two rows needs Node >= 22 on PATH |
+| `port-coordinator` (1.0.7.5) | AF_UNIX / `/proc` / SO_PEERCRED cases error out | Windows CPython has no AF_UNIX; PASS under WSL. (Its sibling `status-coordinator-projection` now SKIPs off Linux — the SKIP table.) On Linux `port-coordinator` (and `py-unit-gateway`'s real-broker test, which imports its fixture) runs as any user: unprivileged, the occupant scan is scoped to the suite's own process tree since 1.0.7.10 — a root process elsewhere in the session (the CI runner's launcher, `runuser`/`sudo` without `setsid`) is not read; the session scope it replaced refused every lease on CI with `PermissionError` on `/proc/<pid>/fd` |
+| `py-unit-gateway` | 35 failed / 105 passed (audit 2026-10-24): `AttributeError: module 'os' has no attribute 'openpty'` (`tests/test_lease_retry.py` + `tests/test_transport_lifecycle.py`), `ModuleNotFoundError: No module named 'termios'`, and `socket.AF_UNIX` cases; the row prints FAIL, not SKIP, because pytest, serial and yaml are importable | Windows CPython has no pty (`os.openpty`, `termios`) and no AF_UNIX; 140 passed under WSL on the same tree (2026-10-21, 1.0.7.7) |
+| `js-unit-mqtt-scan-type`, `js-unit-mqtt-tcp-dialog` | NOT a Windows row: they FAILed under the former WSL distro's Node 18 (`SyntaxError: Unexpected token 'export'` from `scripts/dev/mqtt-js-sandbox.mjs` importing a module-only `.js`, 2026-10-21) and PASS on Windows Node 24 and on CI's Node 20 (`web-quality.yml` `node-version: '20'`) | Node before 20.19 has no ESM syntax detection for a `.js` without `"type":"module"`; CI is the authority — any Node >= 20.19 runs them (the current WSL distro's Node 22.22.1 qualifies; not re-run there on 2026-10-24) |
 | `install-profile` | P6l only (the real-flock wait): with Cygwin's util-linux `flock` on `PATH` (`/c/cygwin64/bin/flock` on this box) the case RUNS instead of skipping and FAILs — «lock content '4242', grant removed=no, rc=1»: the removal never got the lock the holder released; cause not traced (an MSYS shell's fd under a Cygwin `flock` is the suspect). Without any `flock` on `PATH` it prints SKIP. 62/62 OK under WSL (2026-10-23) | WSL / Linux CI |
 | transient (host load) | `py-unit-alice` broker-restart timing, `telemetry-device-id-contract`, `no-absolute-api-paths`, `iface-dns-ensure` wait budgets, `install-atomic` 9c - seen RED once each with 4-6 parallel agent runs on the box, PASS alone | not environment, not a defect: contention; re-run alone before filing |
 
 ## `nginx -t` runs only on the board
 
-No dev box here has nginx (git-bash none; WSL Ubuntu-24.04 none, its docker
-daemon not running), and CI does not run it. The site file
+No dev box here is known to have nginx (git-bash none; the WSL distro has not
+been checked for it), and CI does not run it. The site file
 `etc/nginx/network_config.conf` is syntax-checked for the first time on the
 board, at install: `scripts/03-webserver.sh:134`
 (`nginx -t >> "$LOG_FILE" 2>&1 && log OK "nginx config OK"`), and again in
@@ -155,40 +164,39 @@ only ever contained the code under test. It was a **latent hazard**, not a live
 wrong result: the first future case added below a definition would have inherited
 a stub it never asked for.
 
-### Node under WSL — the gate silently ran on Windows until 2026-10-21
+### WSL on this box — a Linux host, not a CI replica
 
-WSL Ubuntu-24.04 on this box had NO native Node: `/usr/local/bin/node` is a
-symlink to `/mnt/c/Program Files/nodejs/node.exe`, so `wsl -- node
-.ai-dev/quality/run.mjs build` spawned Windows children (Windows Python,
-`C:	mp` paths) and every Linux-only row FAILed exactly as on git-bash. Since
-2026-10-21 the distro package is installed (`apt-get install nodejs`, v18.19);
-run the beat with `/usr/bin` first on PATH so the symlink does not win:
-`PATH=/usr/bin:/bin:/usr/sbin:/sbin node .ai-dev/quality/run.mjs build`, and
+The distro is `Ubuntu` (Ubuntu 26.04 LTS) — `wsl -d Ubuntu-24.04` fails with
+`WSL_E_DISTRO_NOT_FOUND`; use `wsl -d Ubuntu`. Measured by audit 2026-10-24:
+native Node v22.22.1, python 3.14.4, util-linux `flock`, shellcheck 0.11.0,
+runs as root. It differs from CI's `ubuntu-latest` (Node 20, non-root runner,
+the 0.9.0-family shellcheck), so a WSL green is Linux evidence, not CI proof.
+
+Two traps from the earlier distro still apply to how the beat is run: put
+`/usr/bin` first on PATH so a Windows `node.exe` symlink (the old
+`/usr/local/bin/node` → `/mnt/c/Program Files/nodejs/node.exe`) cannot win and
+silently spawn Windows children —
+`PATH=/usr/bin:/bin:/usr/sbin:/sbin node .ai-dev/quality/run.mjs build` — and
 redirect the log INSIDE WSL (the wsl.exe stdout relay dropped a multi-MB run
-mid-way). Node 18 cannot import a module-only `.js` through
-`scripts/dev/mqtt-js-sandbox.mjs`, so `js-unit-mqtt-scan-type` and
-`js-unit-mqtt-tcp-dialog` FAIL there and are authoritative on Windows Node 24;
-`node_modules` (a Windows junction) is invisible under WSL, so Playwright rows
-run from Windows. A Linux run is `final-build-3-wsl.log` /
-`final-review-3-wsl.log` in `.ai-dev/audit/remediation-20261020/`.
+mid-way). `node_modules` (a Windows junction) is invisible under WSL, so
+Playwright rows run from Windows.
 
-### Getting the real row to run on Windows
+### Getting the real row to run on Windows — there is no exact local replica
 
-WSL reproduces CI exactly:
+No local shellcheck here matches CI's version: the WSL distro package is
+0.11.0, the same as `npx shellcheck`. A WSL 0.11.0 run of
+`.ai-dev/quality/checks/shellcheck.sh` is **evidence only** (audit 2026-10-24:
+rc=0) and is reported as such — the row stays SKIP locally and CI is the
+authority. The only way to reproduce CI's version is a distro whose package is
+the 0.9.0 family (e.g. a separate `Ubuntu-24.04` WSL install with
+`apt-get install -y shellcheck`), reached through a `shellcheck` shim on `PATH`
+that forwards to it — WSL inherits the Windows working directory, so relative
+paths pass straight through. Keep the shim in the session scratchpad; it is a
+dev-box convenience, not a repo artifact.
 
-```bash
-wsl -d Ubuntu-24.04 -- sudo apt-get install -y shellcheck   # 0.9.0
-```
-
-Then put a shim named `shellcheck` on `PATH` that forwards to WSL — WSL
-inherits the Windows working directory, so relative paths pass straight
-through — and `bash .ai-dev/quality/checks/shellcheck.sh` runs for real instead
-of skipping. Keep the shim in the session scratchpad; it is a dev-box
-convenience, not a repo artifact.
-
-**Never shim the newer `npx` binary onto `PATH` to make the row report PASS.**
-That converts an honest skip into a false green on the one check CI is the
-authority for.
+**Never shim a newer binary (`npx`, or the 0.11.0 WSL package) onto `PATH` to
+make the row report PASS.** That converts an honest skip into a false green on
+the one check CI is the authority for.
 
 ## A row that RUNS everywhere but gives the wrong answer per shell — `sed | grep -q` under pipefail
 

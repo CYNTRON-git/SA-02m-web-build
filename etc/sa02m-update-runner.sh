@@ -63,6 +63,9 @@ RUNNER_BIN_DST="${SA02M_UPDATE_RUNNER_DST:-/usr/local/libexec/sa02m-update-runne
 WEB_PORT_LIB="${SA02M_WEB_PORT_LIB:-/usr/local/lib/sa02m-web-port-lib.sh}"
 WEB_PORT_PACKED=9999
 NGINX_SITE_DST=/etc/nginx/sites-available/network_config
+# Legacy password lines in the panel-served logs: the scrub has one home,
+# shared with install.sh (etc/sa02m-web-log-scrub-lib.sh → /usr/local/lib).
+WEB_LOG_SCRUB_LIB="${SA02M_WEB_LOG_SCRUB_LIB:-/usr/local/lib/sa02m-web-log-scrub-lib.sh}"
 read_version_line() {  # $1=file → first "x.y[.z[.w]]" line, CRLF tolerated; empty when none
     if [ -f "$1" ]; then
         tr -d '\r' <"$1" | grep -E '^[0-9]+(\.[0-9]+){1,3}$' | head -1 || true
@@ -2372,6 +2375,25 @@ unit_settled() {
     done
 }
 
+# Scrub the legacy `Логин: admin / <value>` summary lines older installers left
+# in the panel-served logs (audit 2026-10-24 F1). Runs on EVERY apply, before
+# the outcome is known — the lines are a leak whether or not this update
+# lands — and never fails it: no lib (a board installed before 1.0.7.11) is a
+# no-op, the lib itself never returns non-zero. Logs the file, never a line.
+scrub_cred_banner_logs() {
+    local f
+    [ -f "$WEB_LOG_SCRUB_LIB" ] || return 0
+    # shellcheck disable=SC1090
+    while IFS= read -r f; do
+        case "$f" in
+            'scrub error:'*) log "WARN $f" ;;
+            '') ;;
+            *) log "log scrub: the panel password removed from old install summary lines in $f" ;;
+        esac
+    done < <(. "$WEB_LOG_SCRUB_LIB" && sa02m_scrub_cred_banner_logs 2>&1 || true)
+    return 0
+}
+
 # board_web_port → the port the panel is served on HERE (see WEB_PORT_LIB at
 # the top). No lib ⇒ the packed default, silently (a pre-lib board). A port file
 # the lib refuses, or a lib that does not load, ⇒ the default with a WARN line:
@@ -2789,6 +2811,7 @@ cmd_apply() {
         log "handed over to $ESCAPE_UNIT"
         exit 0
     fi
+    scrub_cred_banner_logs || true
 
     acquire_port_maintenance || die E_BUSY "port coordinator unavailable or operation active; refresh/recover first"
     honour_cancel_if_early

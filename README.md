@@ -4,7 +4,7 @@
   <img src="https://img.shields.io/badge/platform-Armbian%20%7C%20Linux%20ARM-orange?style=flat-square"/>
   <img src="https://img.shields.io/badge/stack-nginx%20%2B%20fcgiwrap%20%2B%20Bash%20CGI-blue?style=flat-square"/>
   <img src="https://img.shields.io/badge/license-MIT-green?style=flat-square"/>
-  <img src="https://img.shields.io/badge/version-1.0.7.10-cyan?style=flat-square"/>
+  <img src="https://img.shields.io/badge/version-1.0.7.11-cyan?style=flat-square"/>
 </p>
 
 Веб-интерфейс для **[сервера автоматизации СА-02м](https://cyntron.ru/catalog/ustroystva_avtomatizatsii/servery_avtomatizatsii/)** производства [ЦИНТРОН](https://cyntron.ru) на базе процессорного модуля [A40i-2eth](https://cyntron.ru/catalog/ustroystva_avtomatizatsii/komplektuyushchie/7705/) (Allwinner A40i, Linux).
@@ -324,7 +324,7 @@ chmod +x install.sh scripts/*.sh etc/*.sh
 ════════════════════════════════════════
  Установка завершена!
  URL  : http://192.168.1.136:9999
- Логин: admin / cyntron
+ Логин: admin — заводской пароль (README, «Доступы по умолчанию»), хранится в /etc/sa02m_web.env — смените во вкладке «Управление»
 ════════════════════════════════════════
 
 [OK]  ✓ nginx работает
@@ -334,6 +334,7 @@ chmod +x install.sh scripts/*.sh etc/*.sh
 ```
 
 > Каждая строка выводится с меткой времени и уровнем `[OK]` / `[WARN]`.
+> Пароль в итоге не печатается — только откуда он взят (`--pass` или заводской) либо что логин и пароль не менялись: журнал установки виден в панели любой сессии.
 > Если какой-то сервис не запустился — будет `[WARN]  ✗ <сервис> не запущен!`
 
 Журнал установки сохраняется в `/var/log/sa02m_install.log`.
@@ -430,6 +431,8 @@ sudo ./install.sh [ПАРАМЕТРЫ]
                    Запоминается в /etc/sa02m_web_port.conf: повторный
                    запуск без --port, www-only и обновления его сохраняют
   --pass <pass>    Пароль пользователя admin   (по умолчанию: cyntron)
+                   Только при первой установке: если /etc/sa02m_web.env
+                   уже есть, пароль не меняется (смена — вкладка «Управление»)
   --refresh        Режим обновления: сторонние стеки (Node-RED, CODESYS,
                    MPLC, Docker) не ставятся и не включаются, состояние
                    служб сохраняется (docs/contracts/installer-refresh-policy.md)

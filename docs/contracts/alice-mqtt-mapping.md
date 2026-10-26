@@ -151,6 +151,21 @@ Validating tests: `opt/sa02m-alice/tests/test_auto_provision.py`.
   «Присутствие a» from any other id form (≤25 characters). Validating:
   `tests/test_auto_provision.py TestProvisionMtd`; sensor side:
   `docs/contracts/mtd-presence.md`.
+- Для MTD живой топик `target_distance` добавляет свойство
+  `devices.properties.float`, instance `target_distance`, unit
+  `unit.length.meter`, `cloud_only: true`. Мост уже публикует метры:
+  дополнительного масштаба нет, значение `0` допустимо. Свойство доступно
+  облаку, исключено из discovery, query, подписок и callback Алисы.
+  Единственная существующая привязка этого MQTT id типа
+  `devices.types.sensor.motion` с событием `motion` на `presence_status`
+  получает недостающее свойство под блокировкой документа и атомарной
+  записью после валидации; id, имя, комната и остальные настройки сохранены.
+  Привязки к нескольким MQTT id, несколько устройств с одним MQTT id и
+  явно заданные instance или топик расстояния не изменяются. Метаданные
+  канала и запись YAML без живого значения расстояния недостаточны.
+  Сбор retained-топиков после запуска и позднее значение расстояния
+  проходят тот же путь; ошибка сохранения оставляет работу для повтора.
+  Проверка: `tests/test_mtd_distance.py`.
 - A second pass is a no-op. Lights, Carel, sirens and other bindings stay.
 - After persist the in-process registry reloads (same `apply_reload` path
   as a CGI edit). The hub catalog is the next `alice_devices_list`.

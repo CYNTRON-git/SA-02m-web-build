@@ -300,6 +300,11 @@
       "dst": "/usr/local/lib/sa02m-web-port-lib.sh",
       "mode": "0644",
       "owner": "root:root"
+    },
+    "etc/sa02m-web-log-scrub-lib.sh": {
+      "dst": "/usr/local/lib/sa02m-web-log-scrub-lib.sh",
+      "mode": "0644",
+      "owner": "root:root"
     }
   },
   "systemd_flat_map": {
