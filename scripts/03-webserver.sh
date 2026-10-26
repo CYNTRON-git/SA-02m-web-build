@@ -442,6 +442,12 @@ if [ -f "$SCRIPT_DIR/../etc/sa02m-web-port-lib.sh" ]; then
     sa02m_atomic_install -m 644 "$SCRIPT_DIR/../etc/sa02m-web-port-lib.sh" /usr/local/lib/sa02m-web-port-lib.sh
     sed -i 's/\r$//' /usr/local/lib/sa02m-web-port-lib.sh
 fi
+# The update runner scrubs legacy password lines from served logs through it
+# (one home with install.sh); without it an OTA scrubs nothing.
+if [ -f "$SCRIPT_DIR/../etc/sa02m-web-log-scrub-lib.sh" ]; then
+    sa02m_atomic_install -m 644 "$SCRIPT_DIR/../etc/sa02m-web-log-scrub-lib.sh" /usr/local/lib/sa02m-web-log-scrub-lib.sh
+    sed -i 's/\r$//' /usr/local/lib/sa02m-web-log-scrub-lib.sh
+fi
 if [ -f "$SCRIPT_DIR/../etc/sa02m-repair-web-env.sh" ]; then
     sa02m_atomic_install -m 755 "$SCRIPT_DIR/../etc/sa02m-repair-web-env.sh" /usr/local/sbin/sa02m-repair-web-env
     sed -i 's/\r$//' /usr/local/sbin/sa02m-repair-web-env
@@ -716,22 +722,32 @@ for _wu_unit in sa02m-web-update-check.service sa02m-web-update-check.timer; do
     fi
 done
 if [ ! -f /etc/sa02m_web.env ]; then
-    if [ -f /usr/local/lib/sa02m-web-auth-lib.sh ]; then
-        # shellcheck disable=SC1091
-        . /usr/local/lib/sa02m-web-auth-lib.sh
-        # Store the initial password hashed (S5); web_auth_write picks PASS_HASH
-        # for a $6$ value. Fall back to plaintext only if hashing is unavailable.
-        _bootstrap_hash=$(web_auth_hash "${ADMIN_PASS}")
-        web_auth_write admin "${_bootstrap_hash:-$ADMIN_PASS}" > /tmp/sa02m_web.env.bootstrap
+    # Staged in a private temp, never a fixed /tmp name: under the default umask
+    # that left the hash (plaintext in the no-hasher fallback) world-readable
+    # until the copy (audit 2026-10-24 F8). Every line touching the password is
+    # allow-listed by the gate web-install-secret — none may log it.
+    if _web_env_tmp=$(umask 077 && mktemp); then
+        trap 'rm -f "$_web_env_tmp"' EXIT
+        if [ -f /usr/local/lib/sa02m-web-auth-lib.sh ]; then
+            # shellcheck disable=SC1091
+            . /usr/local/lib/sa02m-web-auth-lib.sh
+            # Store the initial password hashed (S5); web_auth_write picks PASS_HASH
+            # for a $6$ value. Fall back to plaintext only if hashing is unavailable.
+            _bootstrap_hash=$(web_auth_hash "${ADMIN_PASS}")
+            web_auth_write admin "${_bootstrap_hash:-$ADMIN_PASS}" > "$_web_env_tmp"
+        else
+            printf "SA02M_WEB_USER='admin'\nSA02M_WEB_PASS='%s'\n" "$(printf '%s' "${ADMIN_PASS}" | sed "s/'/'\\\\''/g")" > "$_web_env_tmp"
+        fi
+        if install -m 640 -o root -g www-data "$_web_env_tmp" /etc/sa02m_web.env; then
+            log INFO "Создан /etc/sa02m_web.env (логин admin)"
+        else
+            log ERR "/etc/sa02m_web.env не создан — вход в панель невозможен, см. $LOG_FILE"
+        fi
+        rm -f "$_web_env_tmp"
+        trap - EXIT
     else
-        {
-            echo "SA02M_WEB_USER='admin'"
-            printf "SA02M_WEB_PASS='%s'\n" "$(printf '%s' "${ADMIN_PASS}" | sed "s/'/'\\\\''/g")"
-        } > /tmp/sa02m_web.env.bootstrap
+        log ERR "mktemp не удался — /etc/sa02m_web.env не создан, вход в панель невозможен"
     fi
-    install -m 640 -o root -g www-data /tmp/sa02m_web.env.bootstrap /etc/sa02m_web.env
-    rm -f /tmp/sa02m_web.env.bootstrap
-    log INFO "Создан /etc/sa02m_web.env (логин admin)"
 fi
 if [ -x /usr/local/sbin/sa02m-repair-web-env ]; then
     /usr/local/sbin/sa02m-repair-web-env >> "$LOG_FILE" 2>&1 || \

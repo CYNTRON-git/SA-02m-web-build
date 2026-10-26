@@ -20,6 +20,33 @@ log() {
     echo    "[${ts}] [${level}] ${msg}" >> "$LOG_FILE" 2>/dev/null || true
 }
 
+# Installer summary for the panel credential: the FACT, never the value. Every
+# `log` line lands in $LOG_FILE, which the panel serves to any logged-in session
+# (log.cgi / log_export.cgi), so printing the password there leaked an
+# operator's --pass in plain text and, on --refresh, printed the default even
+# where it was not the board's password (audit 2026-10-24 F1). 03-webserver.sh
+# creates the env file only when absent, so «kept» vs «set» comes from whether
+# it existed before this run. Always returns 0: install.sh runs under set -e.
+# Gate: web-install-secret.
+sa02m_web_cred_summary() {  # $1=1 if the env file pre-dated this run  $2=1 if --pass was given  [$3=env path]
+    local existed=${1:-0} pass_given=${2:-0} env=${3:-/etc/sa02m_web.env}
+    if [ "$existed" = 1 ]; then
+        log OK " Логин и пароль панели не менялись (хранятся в $env)"
+        if [ "$pass_given" = 1 ]; then
+            log WARN " --pass не применён: $env уже есть — пароль меняется во вкладке «Управление»"
+        fi
+    elif [ -f "$env" ]; then
+        if [ "$pass_given" = 1 ]; then
+            log OK " Логин: admin — пароль задан из --pass (хранится в $env)"
+        else
+            log OK " Логин: admin — заводской пароль (README, «Доступы по умолчанию»), хранится в $env — смените во вкладке «Управление»"
+        fi
+    else
+        log WARN " Логин: $env не найден — вход в панель невозможен, см. $LOG_FILE"
+    fi
+    return 0
+}
+
 sa02m_hw_variant() {
     # Priority: env var → config file → default sa02m-1eth (no autodetect — A40i always has 2 MACs)
     case "${SA02M_HW_VARIANT:-}" in
@@ -811,6 +838,10 @@ source "$(dirname "${BASH_SOURCE[0]}")/../etc/sa02m-install-profile-lib.sh"
 # Harness: scripts/dev/test-web-port-persist.sh (row web-port-persist).
 # shellcheck source=../etc/sa02m-web-port-lib.sh
 source "$(dirname "${BASH_SOURCE[0]}")/../etc/sa02m-web-port-lib.sh"
+# ── Legacy password lines in served logs ────────────────────────────────────
+# One home, shared with the update runner: etc/sa02m-web-log-scrub-lib.sh.
+# shellcheck source=../etc/sa02m-web-log-scrub-lib.sh
+source "$(dirname "${BASH_SOURCE[0]}")/../etc/sa02m-web-log-scrub-lib.sh"
 SA02M_NGINX_SITE="${SA02M_NGINX_SITE:-/etc/nginx/sites-available/network_config}"
 
 # sa02m_web_port_persist <port> — save the panel port (install.sh --port).

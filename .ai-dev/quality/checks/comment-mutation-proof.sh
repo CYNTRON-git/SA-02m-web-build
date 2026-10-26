@@ -183,6 +183,13 @@ rs485-roster-consumer|www/network_config/cgi-bin/status.cgi|modules_frag=
 web-auth-behaviour|www/network_config/cgi-bin/login.cgi|web_login_check
 version-consistency|www/network_config/static/js/app.js|const APP_VERSION
 mqtt-install-secret|scripts/05-mqtt.sh|mosquitto_passwd
+web-install-secret|scripts/03-webserver.sh|_web_env_tmp=$(umask 077 && mktemp)
+web-install-secret|scripts/03-webserver.sh|web_auth_write admin "${_bootstrap_hash:-$ADMIN_PASS}"
+web-install-secret|install.sh|sa02m_web_cred_summary "$_WEB_ENV_EXISTED"
+web-install-secret|install.sh|done < <(sa02m_scrub_cred_banner_logs
+web-install-secret|etc/sa02m-update-runner.sh|scrub_cred_banner_logs || true
+web-install-secret|scripts/lib.sh|/../etc/sa02m-web-log-scrub-lib.sh"
+web-install-secret|etc/sa02m-web-log-scrub-lib.sh|/var/lib/sa02m-web-build/update.log /var/lib/sa02m-web-build/update.log.[0-9]*
 rtc-utc-convention|www/network_config/cgi-bin/lib_rtc.sh|--systohc --utc
 nodered-ctl-install|etc/sa02m-web-service-ctl.sh|nodered_guard_major_upgrade || return 1
 nodered-ctl-install|etc/sa02m-web-service-ctl.sh|atomic_install_unit "$_nr_unit" /etc/systemd/system/nodered.service
