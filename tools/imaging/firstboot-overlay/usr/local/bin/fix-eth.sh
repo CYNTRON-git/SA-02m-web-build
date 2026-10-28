@@ -272,7 +272,22 @@ recover_iface() {
             # mii-tool -r перезапускает autoneg через MDIO напрямую (независимо от ядра)
             mii-tool -r "$iface" 2>/dev/null || ethtool -r "$iface" 2>/dev/null || true
             sleep 3
+        elif [ "$admin_up" = "1" ]; then
+            # Admin UP and no full cycle due — the budget is spent (or, in
+            # theory, operstate is outside the cycle set with budget left:
+            # unreachable on a physical port, harmless): the IP101A under the
+            # generic PHY driver does not restart autoneg by itself when a
+            # partner appears after a cable-less boot, so a cable plugged after
+            # cycle 5 left the board off the LAN until reboot (bench 1.135
+            # 2026-10-28, docs/bugs/BUGLOG.md). One MDIO autoneg restart per
+            # pass, no down/up, no sleeps; the next carrier=1 pass resets the
+            # counter. mii-tool's stdout («restarting autonegotiation...») is
+            # silenced — it would be a third journal line every 30 s.
+            mii-tool -r "$iface" >/dev/null 2>&1 || ethtool -r "$iface" >/dev/null 2>&1 || true
+            log INFO "$iface: нет физического линка (carrier=0 operstate=${oper} cycles=${_cycle_count}), перезапуск автосогласования"
+            debug_iface_state "$iface"
         else
+            # Admin DOWN (ifup never ran, or the operator took the port down): leave it alone.
             log INFO "$iface: нет физического линка (carrier=0 operstate=${oper} cycles=${_cycle_count}), пропуск"
             debug_iface_state "$iface"
         fi
