@@ -5,6 +5,16 @@
 
 ---
 
+## [2026-10-29] branch: 1.0.7.16
+
+**Файл(ы):** `opt/sa02m-homeconnect/sa02m_homeconnect/status.py` (`StatusWriter.write_status`), `opt/sa02m-homeconnect/tests/test_status_contract.py`
+**Тип:** Гонка записи файлов состояния Home Connect; мигающий тест в CI
+**Описание:** CI ветки 1.0.7.13 (run 40929196076, `py-unit-homeconnect`) упал на `test_daemon.py::test_link_expired`: `status.json` уже сообщал `link_expired`, а `link.json` с кодом входа ещё существовал. На 1.0.7.12 тот же тест в тот же день прошёл; изменение 1.0.7.13 модуль не трогало.
+**Причина:** `write_status` сначала атомарно записывал `status.json` с новым состоянием и лишь потом вызывал `clear_link()`. Любой читатель, опрашивающий `status.json` (CGI `merged_status`, тесты), в это окно видит состояние, отличное от `awaiting_user`, при живом `link.json` — нарушение контракта `home-connect.md` §231 «только в `awaiting_user`». На загруженном раннере окно растягивается, и тест попадает в него.
+**Исправление:** `clear_link()` для любого состояния, кроме `awaiting_user`, выполняется до записи `status.json`, вызов после записи убран. Новый детерминированный тест фиксирует порядок (RED на прежнем коде, GREEN после — воспроизведено ревьюером на экспорте `HEAD` через `git show`). Вызывающие в `main.py` и CGI `api.py` от старого порядка не зависели (проверено по всем вызовам `clear_link`/`write_link`/`_link_view`). Три теста с тем же классом гонки держатся по построению.
+
+---
+
 ## [2026-10-29] branch: 1.0.7.19
 
 **Файл(ы):** `etc/sa02m-update-runner.sh` (оба `DST_RE`, `map_dst`), `opt/sa02m-update/lib/validate_package.py` (`_DST_PREFIX_RES`), `scripts/pack-offline-update.py` (`DST_PREFIX_RE`, `FIX_ETH_OTA_SINCE`/`TIERED_DSTS`, `build_deploy_list`, `resolve_min_updater`, флаг `--min-updater`), `scripts/offline-update-allowlist.txt`, `scripts/offline-update-deploy-map.json`, `scripts/update-www-only.sh`, гейты `.ai-dev/quality/checks/fix-eth-ota-delivery.sh` (новый), `ota-dst-allowlist-parity.sh`, `ota-deploy-mode-contract.sh`, `comment-mutation-proof.sh` (шесть случаев), тесты `opt/sa02m-update/tests/test_validate_package.py`
