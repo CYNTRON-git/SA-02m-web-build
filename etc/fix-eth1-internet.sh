@@ -3,7 +3,8 @@
 # fix-eth1-internet.sh — SA-02m-2: восстановление eth1 (GMAC) + интернет
 #
 # Применяет все накопленные фиксы из BUGLOG для работы второго Ethernet (eth1):
-#   1. DTB: GMAC okay + dc1sw regulator-always-on + syscon
+#   1. DTB: GMAC okay + dc1sw regulator-always-on + syscon + PHY eth0 под icplus
+#      (всё — штатным sa02m-dtb-patch.sh apply, с 1.0.7.14)
 #   2. threadirqs в bootargs (boot.scr) — защита от IRQ storm при PCA9536/I2C3
 #   3. eth1.conf: allow-hotplug + DHCP + metric 100 + post-up default route
 #   4. eth0.conf: metric 200 (eth1 DHCP выигрывает дефолтный маршрут)
@@ -56,7 +57,7 @@ fat_umount() {
 # ШАГ 1: DTB — GMAC enable + dc1sw always-on + syscon
 # =============================================================================
 step_dtb() {
-    log_step "ШАГ 1: DTB (GMAC / dc1sw)"
+    log_step "ШАГ 1: DTB (GMAC / dc1sw / PHY eth0)"
 
     # Проверяем текущее состояние через device-tree в procfs
     local gmac_status
@@ -64,117 +65,27 @@ step_dtb() {
 
     if [ "$gmac_status" = "okay" ]; then
         log_ok "GMAC уже включён в DTB (status=okay)"
+        return
+    fi
+    log_warn "GMAC статус в DTB: '${gmac_status}' — требуется патч"
+
+    # Один дом патча DTB с 1.0.7.14 — штатный инструмент (бэкап, проверка
+    # fdtget, атомарная запись на FAT, обе канонические копии, плюс узел PHY
+    # eth0). Прежняя inline-копия Python-патча здесь отставала от патчера и
+    # писала на FAT не атомарно. Коды: 3 — нет root/dtc, 4 — нет DTB на FAT,
+    # 5 — хотя бы одно имя не пропатчено (FAT для него не тронут).
+    local tool=/usr/local/sbin/sa02m-dtb-patch.sh rc
+    if [ ! -x "$tool" ]; then
+        log_err "Нет $tool — поставьте скрипты (install.sh --refresh); патч DTB пропущен"
+        return
+    fi
+    if "$tool" apply; then
+        log_ok "DTB пропатчен штатным инструментом (sa02m-dtb-patch.sh apply)"
+        REBOOT_NEEDED=1
+        CHANGED=1
     else
-        log_warn "GMAC статус в DTB: '${gmac_status}' — требуется патч"
-
-        # Проверяем наличие dtc
-        if ! command -v dtc >/dev/null 2>&1; then
-            log_warn "dtc не найден. Установите: apt install device-tree-compiler"
-            log_warn "Патч DTB пропущен. GMAC не будет работать без dtc."
-        else
-            local mounted
-            fat_mount && mounted=0 || mounted=1
-
-            local dtb_fat="${FAT_MNT}/sun8i-a40i-sk.dtb"
-            if [ ! -f "$dtb_fat" ]; then
-                log_err "DTB не найден: $dtb_fat"
-                fat_umount $mounted
-            else
-                log_info "Патч DTB: $dtb_fat"
-                cp "$dtb_fat" "/tmp/sun8i-a40i-sk.dtb.bak.$(date +%Y%m%d%H%M%S)"
-                cp "$dtb_fat" /tmp/src.dtb
-
-                # Декомпилируем
-                dtc -I dtb -O dts -o /tmp/patch.dts /tmp/src.dtb 2>/dev/null || {
-                    log_err "dtc: ошибка декомпиляции"
-                    fat_umount $mounted
-                    return
-                }
-
-                # Применяем патч (Python inline)
-                python3 <<'PYEOF'
-import re, sys
-
-with open("/tmp/patch.dts") as f:
-    s = f.read()
-
-changed = []
-
-# dc1sw: regulator-always-on для vcc-gmac-phy
-if "dc1sw {" in s:
-    parts = s.split("dc1sw {", 1)
-    head, rest = parts[0], parts[1]
-    body, tail = rest.split("};", 1)
-    if "regulator-always-on" not in body:
-        body = body.replace(
-            'regulator-name = "vcc-gmac-phy";',
-            'regulator-always-on;\n\t\t\t\t\t\tregulator-name = "vcc-gmac-phy";',
-            1,
-        )
-        changed.append("dc1sw: regulator-always-on добавлен")
-    s = head + "dc1sw {" + body + "};" + tail
-
-# i2c@1c2b800: должен быть okay
-node_start = s.find("i2c@1c2b800 {")
-if node_start >= 0:
-    node_end = s.find("};", node_start) + 2
-    node = s[node_start:node_end]
-    new_node = re.sub(r'status = "disabled"', 'status = "okay"', node, count=1)
-    if new_node != node:
-        changed.append("i2c@1c2b800: status okay")
-    s = s[:node_start] + new_node + s[node_end:]
-
-# ethernet@1c50000 (GMAC): status okay + syscon fix
-node_start = s.find("ethernet@1c50000 {")
-if node_start < 0:
-    print("ERROR: ethernet@1c50000 not found in DTS", file=sys.stderr)
-    sys.exit(1)
-node_end = s.find("};", node_start) + 2
-node = s[node_start:node_end]
-new_node = node
-new_node = re.sub(r'status = "disabled"', 'status = "okay"', new_node)
-new_node = re.sub(r'syscon = <0x[0-9a-f]+>', 'syscon = <0x02>', new_node)
-if new_node != node:
-    changed.append("ethernet@1c50000: GMAC okay + syscon=0x02")
-s = s[:node_start] + new_node + s[node_end:]
-
-with open("/tmp/patch.dts", "w") as f:
-    f.write(s)
-
-if changed:
-    print("DTB патч применён:")
-    for c in changed:
-        print(f"  {c}")
-else:
-    print("DTB уже корректен, изменений не требуется")
-PYEOF
-                local py_exit=$?
-
-                if [ $py_exit -ne 0 ]; then
-                    log_err "Ошибка Python-патча DTB"
-                    fat_umount $mounted
-                    return
-                fi
-
-                # Перекомпилируем
-                dtc -I dts -O dtb -o /tmp/patched.dtb /tmp/patch.dts 2>/dev/null || {
-                    log_err "dtc: ошибка компиляции патченного DTS"
-                    fat_umount $mounted
-                    return
-                }
-
-                # Сохраняем в каноническую копию
-                mkdir -p /usr/local/share/sa02m
-                cp /tmp/patched.dtb /usr/local/share/sa02m/sun8i-a40i-sk.dtb
-                # Записываем на FAT
-                cp /tmp/patched.dtb "$dtb_fat"
-                sync
-                fat_umount $mounted
-                log_ok "DTB пропатчен и записан на FAT (GMAC enabled)"
-                REBOOT_NEEDED=1
-                CHANGED=1
-            fi
-        fi
+        rc=$?
+        log_err "sa02m-dtb-patch.sh apply: код $rc (3 — нет dtc/root, 4 — нет DTB на FAT, 5 — ошибка патча); DTB не изменён"
     fi
 }
 

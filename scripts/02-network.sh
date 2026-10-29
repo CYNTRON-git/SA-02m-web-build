@@ -262,6 +262,21 @@ if [ -f "$ETC_DIR/systemd/sa02m-eth-coldboot.service" ]; then
         /etc/systemd/system/sa02m-eth-coldboot.service
 fi
 
+# ── DTB: драйвер PHY eth0 (sa02m-dtb-patch) ───────────────────────────────
+# Инструмент ставится, но НЕ запускается: загрузочный DTB на FAT правится
+# только руками (`sa02m-dtb-patch.sh check` / `apply` + перезагрузка —
+# docs/deployment.md «Пути деплоя»). Патчер (.py) ложится ДО своих
+# потребителей (.sh здесь и fix-eth1-internet.sh ниже): прерванный прогон
+# оставляет {новый патчер, старый потребитель}, а не наоборот.
+if [ -f "$ETC_DIR/../usr/local/sbin/sa02m-dtb-patch.py" ]; then
+    log INFO "Установка sa02m-dtb-patch.py"
+    sa02m_atomic_install -m 755 "$ETC_DIR/../usr/local/sbin/sa02m-dtb-patch.py"         /usr/local/sbin/sa02m-dtb-patch.py
+fi
+if [ -f "$ETC_DIR/../usr/local/sbin/sa02m-dtb-patch.sh" ]; then
+    log INFO "Установка sa02m-dtb-patch.sh"
+    sa02m_atomic_install -m 755 "$ETC_DIR/../usr/local/sbin/sa02m-dtb-patch.sh"         /usr/local/sbin/sa02m-dtb-patch.sh
+fi
+
 # ── Загрузка без DNS: ожидание carrier + пересборка резолвера ─────────────
 # Контракт: docs/contracts/boot-network-dns.md. Оба хелпера идемпотентны и
 # всегда выходят с кодом 0; drop-in'ы подключены через `ExecStartPre=-`, так
