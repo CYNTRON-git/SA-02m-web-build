@@ -46,6 +46,18 @@ dns_ensure() {
     "$DNS_ENSURE_BIN" "$1" >/dev/null 2>&1 || true
 }
 
+# ── Статические маршруты из конфига ────────────────────────────────────────
+# Строки `post-up ip route add …` выполняет только успешный ifup; упавший ifup
+# и link cycle ниже оставляют плату без них. Хелпер возвращает недостающие,
+# не выполняя строк конфига. Guard на -x: частичный деплой деградирует до
+# сегодняшнего поведения; timeout — хелпер синхронен внутри прохода сторожа.
+# Контракт: docs/contracts/boot-network-routes.md
+ROUTES_ENSURE_BIN=/usr/local/sbin/sa02m-routes-ensure.sh
+routes_ensure() {
+    [ -x "$ROUTES_ENSURE_BIN" ] || return 0
+    timeout 10 "$ROUTES_ENSURE_BIN" "$1" >/dev/null 2>&1 || true
+}
+
 rotate_log() {
     [ -f "$LOG_FILE" ] || return
     local size; size=$(stat -c%s "$LOG_FILE" 2>/dev/null || echo 0)
@@ -343,6 +355,7 @@ recover_iface() {
         # при уже поданной записи выходит после одного [ -e ].
         # Контракт: docs/contracts/boot-network-dns.md
         dns_ensure "$iface"
+        routes_ensure "$iface"
         check_connectivity "$iface"
         # Gratuitous ARP burst: каждую секунду 15с — перекрывает окно когда
         # Windows выходит из ARP FAILED (~15-20с от device offline).
@@ -400,6 +413,7 @@ recover_iface() {
         # «Кабель пришёл позже»: восстановление прошло, резолвер тоже должен
         # быть подтверждён — ifdown/ifup выше мог снова не дойти до if-up.d.
         dns_ensure "$iface"
+        routes_ensure "$iface"
         # Grat-ARP burst после восстановления IP (тот же механизм что и при has_ip)
         local grat_marker="${STATE_DIR}/${iface}.grat_arp_done"
         if [ ! -f "$grat_marker" ] && command -v python3 >/dev/null 2>&1 \

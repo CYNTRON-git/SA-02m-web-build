@@ -271,6 +271,14 @@ if [ -f "$ETC_DIR/../usr/local/sbin/sa02m-dns-ensure.sh" ]; then
     sa02m_atomic_install -m 755 "$ETC_DIR/../usr/local/sbin/sa02m-dns-ensure.sh" \
         /usr/local/sbin/sa02m-dns-ensure.sh
 fi
+# Статические маршруты из interfaces.d после неполного ifup / link cycle.
+# Ни юнита, ни запуска здесь: его зовут fix-eth.sh и sa02m-eth-coldboot.sh.
+# Контракт: docs/contracts/boot-network-routes.md
+if [ -f "$ETC_DIR/../usr/local/sbin/sa02m-routes-ensure.sh" ]; then
+    log INFO "Установка sa02m-routes-ensure.sh"
+    sa02m_atomic_install -m 755 "$ETC_DIR/../usr/local/sbin/sa02m-routes-ensure.sh" \
+        /usr/local/sbin/sa02m-routes-ensure.sh
+fi
 if [ -f "$ETC_DIR/../usr/local/sbin/sa02m-wait-carrier.sh" ]; then
     log INFO "Установка sa02m-wait-carrier.sh"
     sa02m_atomic_install -m 755 "$ETC_DIR/../usr/local/sbin/sa02m-wait-carrier.sh" \

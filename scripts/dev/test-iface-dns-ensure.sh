@@ -735,7 +735,7 @@ fi
 # real execution under a POSIX shell where one exists.
 
 # Layer 1 — static, runs on every host.
-POSIX_SCRIPTS="usr/local/sbin/sa02m-dns-ensure.sh usr/local/sbin/sa02m-wait-carrier.sh usr/local/sbin/sa02m-eth-coldboot.sh"
+POSIX_SCRIPTS="usr/local/sbin/sa02m-dns-ensure.sh usr/local/sbin/sa02m-wait-carrier.sh usr/local/sbin/sa02m-eth-coldboot.sh usr/local/sbin/sa02m-routes-ensure.sh"
 SPECIAL_RE='^[[:space:]]*(:|\.|eval|exec|export|readonly|set|shift|times|trap|unset)([[:space:]]+[^;&|]*)?[0-9]*[<>]'
 scanned=0; offenders=""
 for f in $POSIX_SCRIPTS; do
@@ -746,11 +746,11 @@ for f in $POSIX_SCRIPTS; do
         offenders="$offenders $f:$(grep -En "$SPECIAL_RE" "$f" | head -1 | cut -d: -f1)"
     fi
 done
-# Non-vacuous: the scan must have seen all three files AND must actually detect
+# Non-vacuous: the scan must have seen all four files AND must actually detect
 # a known-bad line, else a broken regex would "pass" everything forever.
 printf ': > "$x" 2>/dev/null || true\n' > "$T/badfixture.sh"
-if [ "$scanned" != 3 ]; then
-    bad "dialect: scanned $scanned/3 shipped POSIX scripts"
+if [ "$scanned" != 4 ]; then
+    bad "dialect: scanned $scanned/4 shipped POSIX scripts"
 elif ! grep -Eq "$SPECIAL_RE" "$T/badfixture.sh"; then
     bad "dialect: the scan's own regex no longer detects a known-bad line"
 elif [ -n "$offenders" ]; then
