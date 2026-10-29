@@ -284,8 +284,22 @@ if [ -f "$SCRIPT_DIR/../etc/sa02m-beeper-override.sh" ]; then
     sa02m_atomic_install -m 755 "$SCRIPT_DIR/../etc/sa02m-beeper-override.sh" /usr/local/sbin/sa02m-beeper-override.sh
 fi
 
-# USB / microSD: storage-mount (как в scripts/01-system.sh), чтобы веб «Автоформат» работал без полного install.sh
+# Static-IP watchdog (as in scripts/02-network.sh): the 1.0.7.12 late-cable fix
+# lives here and a www-only deploy must converge it too (gate fix-eth-ota-delivery).
+# Rename-over only — net-watchdog execs this path every 30 s, a truncating
+# install would hand it a 0-byte script.
 ETC_REPO="$SCRIPT_DIR/../etc"
+if [ -f "$ETC_REPO/fix-eth.sh" ]; then
+    if [ -f /usr/local/bin/fix-eth.sh ] && cmp -s "$ETC_REPO/fix-eth.sh" /usr/local/bin/fix-eth.sh; then
+        log INFO "fix-eth.sh без изменений (/usr/local/bin/fix-eth.sh)"
+    else
+        sa02m_atomic_install -m 755 "$ETC_REPO/fix-eth.sh" /usr/local/bin/fix-eth.sh \
+            && log OK "fix-eth.sh обновлён (/usr/local/bin/fix-eth.sh)" \
+            || log WARN "не удалось установить /usr/local/bin/fix-eth.sh"
+    fi
+fi
+
+# USB / microSD: storage-mount (как в scripts/01-system.sh), чтобы веб «Автоформат» работал без полного install.sh
 if [ -f "$ETC_REPO/storage-mount.sh" ] && [ -f "$ETC_REPO/sa02m-set-storage-auto-format" ]; then
     log INFO "Синхронизация storage-mount из $ETC_REPO"
     sa02m_atomic_install -m 755 "$ETC_REPO/storage-mount.sh" /usr/local/bin/storage-mount.sh

@@ -689,6 +689,7 @@ DST_RE = re.compile(
     r"etc/nginx/|etc/tmpfiles\.d/|etc/sudoers\.d/|"
     r"etc/default/sa02m-|"
     r"etc/sa02m-update/trusted-keys/|"
+    r"usr/local/bin/fix-eth\.sh$|"
     r"etc/dhcp/dhclient-exit-hooks\.d/eth1-default-route$)"
 )
 # Git-tracked MPLC plugins (firmware/mplc4/) → /opt/mplc4/<name>. Closed set —
@@ -724,6 +725,12 @@ def map_dst(rel: str):
     # never refreshes them and the licence card falls back to a log scrape.
     if rel.startswith("firmware/mplc4/") and name in MPLC_OTA_PLUGINS:
         return "/opt/mplc4/" + name
+    # The static-IP watchdog (02-network.sh installs it to /usr/local/bin) —
+    # the one exact /usr/local/bin path the allow-list admits (1.0.7.13); the
+    # 1.0.7.12 late-cable fix reached boards only by install.sh without it.
+    # Gate: fix-eth-ota-delivery.
+    if rel == "etc/fix-eth.sh":
+        return "/usr/local/bin/fix-eth.sh"
     # Helpers etc/sa02m-*.sh → /usr/local/sbin or lib
     if rel.startswith("etc/") and name.startswith("sa02m-"):
         if name.endswith("-lib.sh") or name in ("sa02m-web-build-lib.sh", "sa02m-web-auth-lib.sh", "sa02m-stacks-policy.sh"):
@@ -1050,6 +1057,7 @@ DST_RE = re.compile(
     r"etc/nginx/|etc/tmpfiles\.d/|etc/sudoers\.d/|"
     r"etc/default/sa02m-|"
     r"etc/sa02m-update/trusted-keys/|"
+    r"usr/local/bin/fix-eth\.sh$|"
     r"etc/dhcp/dhclient-exit-hooks\.d/eth1-default-route$)"
 )
 DEL_RE = re.compile(
