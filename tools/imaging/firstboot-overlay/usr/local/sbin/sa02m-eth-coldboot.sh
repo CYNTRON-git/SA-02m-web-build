@@ -15,6 +15,33 @@ dns_ensure() {
     "$DNS_ENSURE_BIN" "$1" >/dev/null 2>&1 || true
 }
 
+# Static-route belt. ifupdown runs `post-up ip route add …` lines only at the
+# end of a successful ifup, and the link cycles below flush every route; the
+# helper re-adds the declared ones without executing a conf line. Guarded on
+# -x so a partial deploy degrades to today; bounded by timeout because it runs
+# inline in this boot pass. Contract: docs/contracts/boot-network-routes.md
+#
+# Skipped while ifupdown is still bringing the interface up (an allow-hotplug
+# ifup@<if> can be mid-run here): adding the route before ifup's own
+# `post-up ip route add` (one without `|| true`) would make that ifup fail on
+# EEXIST and skip its later hooks. fix-eth.sh reaches its calls only past
+# iface_bootstrap_in_progress, the same gate; this is its coldboot mirror.
+# Both units are Type=oneshot, so ActiveState alone says "still running".
+ROUTES_ENSURE_BIN=/usr/local/sbin/sa02m-routes-ensure.sh
+ifup_in_progress() {
+    for _u in networking.service "ifup@$1.service"; do
+        case "$(timeout 5 systemctl show -p ActiveState --value "$_u" 2>/dev/null)" in
+            activating|deactivating) return 0 ;;
+        esac
+    done
+    return 1
+}
+routes_ensure() {
+    [ -x "$ROUTES_ENSURE_BIN" ] || return 0
+    ifup_in_progress "$1" && return 0
+    timeout 10 "$ROUTES_ENSURE_BIN" "$1" >/dev/null 2>&1 || true
+}
+
 # ── BOOTSTRAP SHIM — delete when the condition below is met ────────────────
 # WHY: sa02m-dns-ensure.service IS delivered by web update (the OTA allowlist
 # takes /etc/systemd/system/sa02m-*), but the updater only runs `systemctl
@@ -86,6 +113,7 @@ for IFACE in eth0 eth1; do
         # so on this path nothing else in the ladder ever runs — the resolver
         # belt has to be asserted here or not at all.
         dns_ensure "$IFACE"
+        routes_ensure "$IFACE"
         continue
     fi
 
@@ -111,6 +139,7 @@ for IFACE in eth0 eth1; do
         log "$IFACE: still no carrier after cold-boot fix"
     fi
     dns_ensure "$IFACE"
+    routes_ensure "$IFACE"
     systemctl start --no-block "fix-eth@${IFACE}.service" 2>/dev/null || true
 done
 exit 0
