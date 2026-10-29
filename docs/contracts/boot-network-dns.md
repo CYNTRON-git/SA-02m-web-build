@@ -62,6 +62,9 @@ SA-02m независимо от того, успел ли `ifup` доработ
 восстанавливать default-маршрут при `linkdown`); DNS-половину — нет. См.
 `docs/bugs/BUGLOG.md`, запись от 2026-08-21.
 
+Статические маршруты из строк `post-up`, пропускаемые тем же обрывом, —
+`docs/contracts/boot-network-routes.md`.
+
 ## 3. Механизм — две ступени резолвера
 
 `/usr/local/sbin/sa02m-dns-ensure.sh [<iface>|--all]`, идемпотентный, **всегда
