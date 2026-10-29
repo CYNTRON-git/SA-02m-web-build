@@ -8,6 +8,21 @@ entries are pruned (history lives in git); last prune 2026-10-24 (audit 2026-10-
 
 - [OPEN] 2026-10-29 **[MED] Same class as the 1.0.7.12 Carel fix, left outside its fence (review r1/r2 A2/A3): `DTVPoller.setup()` autodetect loop (5 × 3 s) still holds the port thread ≥15 s per silent DTV before the other devices' first poll (`bridge_dtv_ce.py`), and `DeviceLiveCache.flush_file` defaults an unknown device to `online=True` for the panel live cache on the paths that bypass availability (LED optional reads `_read_optional`, writeback echo) — a residual «online» for the panel until `STALE_S` = 90 s.** Fix on its own branch: one non-blocking init attempt at setup + retry from the poll cycle under the back-off (the F1 shape), and unknown ⇒ not-ok in the live cache until the first successful read (the F2 shape); RED-first tests in `test_device_availability.py`. Queued: session card «DTV setup без блокировки + live-cache unknown» proposed 2026-10-29 from the 1.0.7.12 session.
 - [OPEN] 2026-10-29 **[LOW] `opt/sa02m-modbus-mqtt/bridge_mr02m.py` is 1038 lines (review r2 A6)** — over the ~1000 default; `decompose` candidate (behaviour net = the 941-test bridge suite). Not started.
+- [OPEN] 2026-10-29 **[MED] Panel network save refuses on a board whose interfaces.d conf carries a hand-added
+  static route (1.0.7.15 follow-up, bench 1.135).** `etc/sa02m-iface-conf-write.sh` allows only the KLogic hook and
+  the installer default-route `post-up`; a conf with `post-up ip route add 192.168.10.0/24 via 192.168.1.100 …`
+  (the 1.135 Keenetic↔MikroTik route) makes every panel network save fail closed. Options (Operator decision):
+  (a) allow exactly the `sa02m-routes-ensure.sh` grammar (`docs/contracts/boot-network-routes.md` §3) in the
+  write helper — security review required (a stolen panel session could plant routes = traffic redirection);
+  (b) a panel-managed static-routes feature with its own validated store. Not started.
+- [OPEN] 2026-10-29 **[LOW] Route-belt leftovers (1.0.7.15 plan §4 / review round 3).** (1) A failed `ifup` also
+  skips the KLogic `post-up /home/klogic/adjust-<if>` hook — not covered by the belt (it runs a vendor binary,
+  must not be re-run blindly). (2) `etc/fix-eth1-internet.sh` (legacy one-shot fixer) embeds an old `fix-eth` copy
+  with neither the DNS nor the route belt. (3) Still silent in `sa02m-routes-ensure.sh`: a quoted object
+  (`ip 'route' add …`), `ip -batch <file>`, and line :124 matching the raw token instead of `base()`; name them in
+  contract §3 «Чего хелпер не видит» or route them through `base()`. (4) Helper 299 lines / harness 631 lines —
+  `decompose` if either keeps growing.
+
 - [OPEN] 2026-10-21 **[LOW] A long clip is always uploaded twice: the recogniser answers after the socket
   timeout (bench 1.135, RK3588 agent, series 8×30 s).** RK3588 needs 11–13 s to recognise a 30 s clip, more
   than `UPLOAD_TIMEOUT_S` = 10 s (audio-recorder.md §12). The first attempt times out, the second (10 s later)
@@ -122,7 +137,7 @@ entries are pruned (history lives in git); last prune 2026-10-24 (audit 2026-10-
 - [OPEN] 2026-09-16 **[MED] Retro-review owed for 1.0.6.46 (`1dfa503`), the one direct push to `main` (audit 2026-09-16 H1).** `1dfa503` (2026-09-10, 13 files incl. `bridge_fmb.py`/`bridge_mr02m.py`) landed with NO PR and no review stamp. The protection half of H1 is resolved: live `gh api …/branches/main/protection` on 2026-10-24 (audit F6) reads `contexts:["quality"]`, `strict:true`, `enforce_admins:true`, force pushes/deletions off (`.ai-dev/notes/ci-budget.md`). Still owed: a retroactive Reviewer pass over `1dfa503`'s diff.
 - [OPEN] 2026-09-16 **[MED] Audit M7: verification coverage** — no dependency-CVE row (pip deps installed unpinned `scripts/lib.sh:739-763`; Node-RED payload; frpc) — re-rank the 08-28 LOW item; 16 mutating/root-capable CGIs (cmd_exec, hw_set, kernel_ctrl, reboot, restart, web_creds, web_factory_reset, storage_format_set, mqtt_config, mqtt_ctrl, cpu_profile, gateway_ctrl, web_update_upload/cancel, ssh_debug, web_backup) have zero behavioural test references. **Operator decision owed:** add `pip-audit` / `npm audit --package-lock-only` rows, or record the accepted risk (1.0.6.49 plan: no row until decided). The CGI half now has a shape to reuse — `cgi-csrf-behaviour` covers two of the 16; the rest stay uncovered.
 - [OPEN] 2026-09-16 **[LOW] `tools/imaging/_run_reset_cloud.py` — keep or retire (Operator).** Tracked via the `.gitignore` exception (`:89-93`) since 1.0.5.64; used only by hand against the bench (audit L2).
-- [OPEN] 2026-09-16 **[LOW] The firstboot overlay carries the DNS-belt callers but not the belt.** `tools/imaging/firstboot-overlay/` has `sa02m-eth-coldboot.sh` and `fix-eth.sh` with `dns_ensure` (synced 1.0.6.49) but no `usr/local/sbin/sa02m-dns-ensure.sh`; `dns_ensure` guards on `-x`, so a clone flashed from a pre-1.0.6.6 image gets the guard, not the belt. Fix: add the helper to the overlay + its PAIRS row in `firstboot-overlay-parity` (audit M1 follow-up).
+- [OPEN] 2026-09-16 **[LOW] The firstboot overlay carries the DNS-belt callers but not the belt.** `tools/imaging/firstboot-overlay/` has `sa02m-eth-coldboot.sh` and `fix-eth.sh` with `dns_ensure` (synced 1.0.6.49) but no `usr/local/sbin/sa02m-dns-ensure.sh`; `dns_ensure` guards on `-x`, so a clone flashed from a pre-1.0.6.6 image gets the guard, not the belt. Fix: add the helper to the overlay + its PAIRS row in `firstboot-overlay-parity` (audit M1 follow-up). Since 1.0.7.15 the same applies to the route belt: the overlay callers carry `routes_ensure` (`-x`-guarded) but not `usr/local/sbin/sa02m-routes-ensure.sh` — add both helpers together.
 - [OPEN] 2026-09-16 **[HIGH] Rebuild the board kernel `6.1.0-rc6` with the upstream ext4 patch
   «ext4: fix bad checksum after online resize»** (Baokun Li, 2022-11-16, `fs/ext4/resize.c`
   `ext4_update_super`; Fixes: de394a86658f). The 1.0.6.47 `ensure_primary_sb_checksum()`
