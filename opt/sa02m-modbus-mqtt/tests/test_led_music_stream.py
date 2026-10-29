@@ -308,7 +308,7 @@ class TestFxAuxReadBack(unittest.TestCase):
         self.assertEqual(_errors(pub).get("fx_aux"), "r")
         self.assertNotIn("fx_aux", _published(pub))
         self.assertIn("text", _published(pub))
-        self.assertTrue(p._online)
+        self.assertIsNot(p._online, False)   # never flagged offline
 
     def test_a_read_straddling_a_restore_is_dropped(self):
         """A 455 read on the bus while the stop's raw restore landed is older

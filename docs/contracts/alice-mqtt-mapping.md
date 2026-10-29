@@ -854,10 +854,24 @@ capability and is never queued for later (§Broker reconnect).
 
 **Unreachable transition (one `device_state`).** When a catalog device
 crosses from reachable to `DEVICE_UNREACHABLE`, the client emits one
-`device_state` stub (`error_code` only) — on the MQTT `/meta/error` down-edge
-and at most once from the 30 s history snapshot. Already-down devices are
-not re-pushed every cadence. GPIO retained is unchanged. No extra
-`callback_state` flood. **The sweep is gated (1.0.6.39):** from the MQTT path
+`device_state` stub (`error_code` only) on the MQTT `/meta/error` down-edge —
+once per edge and per Socket.IO session (the edge map is reset at every
+connect). The snapshot path repeats the stub of every device still down on
+its own cadence (§Reconnect snapshot, §History snapshot — 1.0.7.12). Why a
+repeat (cloud repo `alice-gateway/cyntron_alice_gateway/controller/state_cache.py:330-453`,
+`hub.py:485-498, 855-882`, cloud repo commit `764f80b`, verified
+2026-10-29): the hub keeps
+`DEVICE_UNREACHABLE` in memory per device across our reconnects, but loses
+it on a hub restart, after 24 h without contact or on a re-binding — a
+device down through such an eviction read «Нет данных» forever, since the
+board never repeated the stub; and ANY real value for the device, from any
+origin — a snapshot or the board's answer to the hub's `alice_devices_query`
+poll (on demand, at most every `state_max_age_s` = 8 s) carrying cached
+values of a down device — clears the
+flag (the window F1/F2 of 1.0.7.12 close on the bridge side). A repeated
+stub is idempotent on the hub (`state_cache.py:413, 455-461` — a repeat is
+not a transition). GPIO retained is unchanged. No extra `callback_state`
+flood. **The sweep is gated (1.0.6.39):** from the MQTT path
 the transition sweep (a full `query_devices()`) runs only for an availability
 topic (`/devices/<id>/meta/error`, `<control>/meta/error`) — a value message,
 the retained storm included, never pays it; the snapshot / reload path always
@@ -907,13 +921,23 @@ later, irrelevant for the cloud's 8 s confirm window. Validating tests:
 first post-reconnect report leaves the board. Live MQTT still uses `offer`.
 Retained bursts stay cached-not-reported. A `query_devices()` entry with
 neither capabilities nor properties does not emit unless it is a
-`DEVICE_UNREACHABLE` stub from `take_unreachable_transitions` (one per
-down-edge). No `callback/discovery`. The same push runs once after a broker
-reconnect, `RETAINED_GRACE_S` after the re-subscribe (§Broker reconnect).
+`DEVICE_UNREACHABLE` stub — and the snapshot carries one for **every device
+down at that moment** (`unreachable_stubs`, from the same query), not only
+the edges this process once announced: a hub that restarted, evicted the
+device or had its flag cleared by a value (§Unreachable transition) is told
+every current outage again, and the connect snapshot is where a device
+already down at client start is first announced at all (1.0.7.12 — before,
+a stub went out once per process, and the retained `/meta/error=r` of the
+subscribe burst marked it announced before the sender was even started, so
+it never left). No `callback/discovery`. The same push runs once after a
+broker reconnect, `RETAINED_GRACE_S` after the re-subscribe (§Broker
+reconnect).
 
 **History snapshot.** While Socket.IO is connected **and the broker link is
 up** (§Broker reconnect — not from a frozen cache), the same
-`offer_snapshot` + `flush_now` runs from the MQTT cache: every
+`offer_snapshot` + `flush_now` runs from the MQTT cache — the live entries
+plus the stub of every device down at that tick (one per device per cadence,
+nothing once it answers): every
 `STATE_SNAPSHOT_S` (30 s) on the **cloud** profile (hub stale bound — do not
 lengthen), and every `STATE_SNAPSHOT_YANDEX_S` (60 s) on the **Yandex**
 profile so Station graphs get about one point per minute even when the
@@ -921,7 +945,13 @@ broker does not republish a steady reading. In-place document reload with
 added/removed topics also snapshots once. This is a cadence, not a replacement
 for live capability reports (0.75 s). The float `time_rate_s` of 300 s remains
 the floor between *MQTT-driven* reports of the same reading; the history
-snapshot bypasses it.
+snapshot bypasses it. Validating tests (the stub on every snapshot):
+`opt/sa02m-alice/tests/test_mqtt_reconnect_run.py` `TestUnreachableAcrossSessions`
+(both sessions' connect snapshots through `run()`), `test_state_sender.py`
+`test_emit_cache_snapshot_carries_the_stub_of_every_device_down` (connect +
+two cadences, none once the device answers), `test_device_registry.py`
+`test_unreachable_stubs_names_every_device_down_now` and
+`test_reset_announced_down_re_emits_the_stub`.
 
 **Gateway Callback belt.** The gateway throttles its Callback/state POSTs to
 Yandex at **30 POSTs per controller SN per 60 s** (gateway side,

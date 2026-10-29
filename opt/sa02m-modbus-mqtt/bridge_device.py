@@ -87,7 +87,11 @@ class DevicePoller:
         self._backoff_max_s  = float(cfg.get("backoff_max_s", 30.0))
         self._fail_count     = 0
         self._classic_ok_count = 0
-        self._online         = True
+        # None until the first read decides: the first success publishes the
+        # device-level "" (clearing a stale retained "r"), the threshold-th
+        # failure publishes "r". Only an explicit False is "offline" below —
+        # an unknown device is still written to and its failures still warn.
+        self._online: bool | None = None
         self._backoff_until  = 0.0
         # Последняя MQTT-запись по каналу: name → (value, monotonic ts).
         # Защищает свежий writeback от затирания устаревшим поллом (A2).
@@ -139,7 +143,7 @@ class DevicePoller:
 
     def _wb_offline_skip(self, name: str) -> bool:
         """A3: устройство offline (meta/error=r) — не долбить шину записями."""
-        if self._online:
+        if self._online is not False:
             return False
         now = time.monotonic()
         if now - self._wb_offline_log_t >= 10.0:
@@ -210,9 +214,12 @@ class DevicePoller:
         self._backoff_until = 0.0
         self._classic_ok_count = getattr(self, "_classic_ok_count", 0) + 1
         DeviceLiveCache.set_online(self.device_id, True)
-        if not self._online:
+        if self._online is not True:
+            # The first answer after a start (None) and a recovery (False)
+            # both publish: the former clears a stale retained "r".
+            if self._online is False:
+                self.log.info("device back online")
             self._online = True
-            self.log.info("device back online")
             self.pub.device_online(self.device_id, True)
 
     def mark_fail(self) -> None:
@@ -232,7 +239,7 @@ class DevicePoller:
                         self._backoff_max_s)
             self._backoff_until = time.monotonic() + delay
             DeviceLiveCache.set_online(self.device_id, False)
-            if self._online:
+            if self._online is not False:
                 self._online = False
                 self.log.warning("device offline after %d failed reads — "
                                   "backing off polling%s", self._fail_count,
@@ -248,7 +255,7 @@ class DevicePoller:
         devices on bench 1.135 wrote ~20 k such lines a day). The transition
         lines keep their levels; a recovery makes the next failure WARNING
         again."""
-        if self._online:
+        if self._online is not False:
             self.log.warning("%s: %s", label, exc)
         else:
             self.log.debug("%s: %s", label, exc)
@@ -264,7 +271,7 @@ class DevicePoller:
 
     def classic_ready_for_fmb(self, min_ok: int = 2) -> bool:
         """True after a few successful classic reads (safe to send 0x18)."""
-        return self._online and getattr(self, "_classic_ok_count", 0) >= min_ok
+        return self._online is True and getattr(self, "_classic_ok_count", 0) >= min_ok
 
     def in_backoff(self) -> bool:
         return time.monotonic() < self._backoff_until
@@ -400,7 +407,15 @@ class PortCycleScheduler:
                 self._log.debug("poll_io %s: %s", p.device_id, e)
         self._poll_idx = (self._poll_idx + 1) % n
         # Slow channels every slice (diag/uptime) — cheap when not due.
+        # Every slow branch is a bus read (uptime/diag/energy/text, the
+        # MR-02m late init), so a backed-off device is skipped here as
+        # poll_io skips it above (and as HdlcPortScheduler.run always
+        # did): without the gate a never-initialised MR-02m retried its
+        # init at a full read timeout on every slice with its 30 s
+        # back-off armed — 21 init reads in 20 slices (review 2026-10-29).
         for p in self._pollers:
+            if p.in_backoff():
+                continue
             try:
                 p.poll_slow_if_due(t0)
             except Exception as e:

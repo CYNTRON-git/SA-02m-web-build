@@ -70,6 +70,9 @@ class MR02mPoller(DevicePoller):
         # bench can name 16DO while the module is 6DO8DI).
         self._fmb_do = self._fmb_di = self._fmb_ao = self._fmb_ai = 0
         self._wb_ready = False
+        # (do, ao, ai) channel counts already subscribed for writeback —
+        # _setup_writeback adds only the delta (YAML at setup, HW on a late init).
+        self._wb_subscribed = (0, 0, 0)
 
     # --- Fast Modbus events (layout owned here; manager is device-agnostic) ---
 
@@ -920,12 +923,16 @@ class MR02mPoller(DevicePoller):
         # Counts from hardware after init, else YAML — same as FMB. A failed
         # 60-try init used to leave _do=0 and subscribe nothing, so /on
         # published by Alice never wrote a coil (bench COM3-10, 2026-09-10).
-        if self._wb_ready:
-            return
+        # Subscribes the DELTA over what is already subscribed: the YAML
+        # layout at setup, then — after a late init — the hardware channels
+        # the YAML layout lacked (YAML type 1 on a 6DO5DI2AO: ao_1/ao_2),
+        # never a channel twice. Channels the YAML over-declared stay
+        # subscribed (a write to them fails on the bus, as before).
         do, _di, ao, ai = self._layout_counts()
-        if do == 0 and ao == 0 and ai == 0:
+        had_do, had_ao, had_ai = self._wb_subscribed
+        if do <= had_do and ao <= had_ao and ai <= had_ai:
             return
-        for i in range(1, do + 1):
+        for i in range(had_do + 1, do + 1):
             def make_cb(ch: int):
                 def cb(client, userdata, msg):
                     # Retained /on при рестарте моста не переигрывается (A4):
@@ -943,7 +950,7 @@ class MR02mPoller(DevicePoller):
                 return cb
             self.pub.subscribe_writeback(self.device_id, f"do_{i}", make_cb(i))
 
-        for i in range(1, ao + 1):
+        for i in range(had_ao + 1, ao + 1):
             def make_ao_cb(ch: int):
                 def cb(client, userdata, msg):
                     # Retained /on не переигрывается при рестарте (A4).
@@ -959,7 +966,7 @@ class MR02mPoller(DevicePoller):
                 return cb
             self.pub.subscribe_writeback(self.device_id, f"ao_{i}", make_ao_cb(i))
 
-        for i in range(1, ai + 1):
+        for i in range(had_ai + 1, ai + 1):
             def make_ai_cb(ch: int):
                 def cb(client, userdata, msg):
                     # Retained /on не переигрывается при рестарте (A4).
@@ -975,16 +982,25 @@ class MR02mPoller(DevicePoller):
                         f"ai_type_{ch}", lambda c=ch, n=v: self._writeback_ai_type(c, n))
                 return cb
             self.pub.subscribe_writeback(self.device_id, f"ai_type_{i}", make_ai_cb(i))
+        self._wb_subscribed = (max(had_do, do), max(had_ao, ao), max(had_ai, ai))
         self._wb_ready = True
-        self.log.info("writeback subscribed do=%d ao=%d ai=%d", do, ao, ai)
+        self.log.info("writeback subscribed do=%d ao=%d ai=%d", *self._wb_subscribed)
 
     def setup(self) -> None:
-        for _ in range(60):
-            if self._stop.is_set():
-                return
-            if self._init_module():
-                break
-            time.sleep(5)
+        # ONE init attempt, no sleep: the port thread runs every poller's
+        # setup() before the first poll cycle, so the old retry loop here
+        # (60 x read timeout + 5 s per silent module) kept every other device
+        # on the port unpolled — two silent MR-02m on COM3 held the Carels'
+        # first poll, and their offline flag, back by 11 min after each bridge
+        # restart (bench 1.135, 2026-10-29). A failed init is retried from
+        # the poll cycle (poll_slow_if_due) under the normal back-off — the
+        # port slice skips a backed-off poller's slow branch too.
+        if self._stop.is_set():
+            return
+        self._init_module()
+        # Always, as before: YAML counts when the module was silent, so /on
+        # from Alice still reaches a coil (the 2026-09-10 case); a late init
+        # adds only the hardware channels the YAML layout lacked.
         self._setup_writeback()
 
     def poll_io(self) -> None:

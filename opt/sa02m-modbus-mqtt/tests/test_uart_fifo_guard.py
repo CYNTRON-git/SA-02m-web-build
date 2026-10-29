@@ -256,6 +256,7 @@ class TestModbusSerialSplitsLongReads(unittest.TestCase):
 class FakePub:
     def pub_control(self, *a, **k): pass
     def pub_error(self, *a, **k): pass
+    def device_online(self, *a, **k): pass   # the first answer reports it
     def pub_meta(self, *a, **k): pass
     def pub_control_meta(self, *a, **k): pass
     def pub_control_units(self, *a, **k): pass

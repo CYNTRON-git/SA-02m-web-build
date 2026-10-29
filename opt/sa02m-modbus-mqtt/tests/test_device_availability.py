@@ -1,12 +1,19 @@
 #!/usr/bin/env python3
-"""Device-level availability: stale retained meta/error clear at registration.
+"""Device-level availability: the stale retained meta/error across a restart.
 
 Regression net for the 1.0.5.63 fix — a device the bridge reports online must
-not carry a retained /devices/<id>/meta/error="r" left by a prior process.
-A healthy device never transitions, so without the register-time clear the
-stale "r" would never be cleared and the cloud watchdog floods on false
-incidents. The offline back-off machine must still assert "r" when a device is
-actually failing now.
+not carry a retained /devices/<id>/meta/error="r" left by a prior process —
+and for its 1.0.7.12 correction: the clear is published by the device's FIRST
+successful read, not at registration. Registration used to publish "" for
+every configured device, so a device that never answers (COM3 unplugged,
+bench 1.135, 2026-10-29) looked online for the whole gap until its first poll
+flagged it — and that first poll came 11 min after the restart, because
+MR02mPoller.setup() held the port thread for 60 x 5 s per silent module
+(TestSetupNeverBlocksThePort). A healthy device answers at its first poll, so
+the 1.0.5.63 guarantee holds within one poll of the restart; a silent one
+keeps the retained "r" and gets it re-asserted at offline_after_fails. Until
+the first answer a device is "unknown" and the bridge counters / the roster
+count it as offline.
 
 Also the back-off machine itself (1.0.7.12): a device that stays silent for
 hours must keep backing off — bench 1.135 (2026-10-29) ran into mark_fail()
@@ -23,6 +30,7 @@ from __future__ import annotations
 
 import sys
 import threading
+import time
 import types
 import unittest
 from pathlib import Path
@@ -82,30 +90,70 @@ def _make_publisher():
     return pub
 
 
-class TestDeviceAvailability(unittest.TestCase):
-    def test_registration_clears_stale_retained_error(self):
-        """Case 1: registering a device publishes meta/error="" exactly once —
-        clearing any stale retained "r" from a previous process."""
-        pub = _make_publisher()
-        pub.register_device("d1")
-        pub.pub_device_error.assert_called_once_with("d1", "")
+def _make_counting_publisher():
+    """_make_publisher with the REAL _publish_bridge_status and its publish
+    helpers mocked, so the devices_online / devices_total counters can be
+    read off pub_control."""
+    pub = _make_publisher()
+    pub._publish_bridge_status = types.MethodType(
+        bridge.MQTTPublisher._publish_bridge_status, pub)
+    pub._bridge_meta_done = True
+    pub.pub = mock.Mock()
+    pub.pub_control = mock.Mock()
+    return pub
 
-    def test_healthy_poll_does_not_republish(self):
-        """Case 2: a healthy poll (no online→offline flip) must not republish —
-        the clear fires once at registration, not on every poll (no per-poll
-        spam; pub_device_error has no dedup)."""
+
+def _counter(pub, name):
+    """Last value pub_control published for the bridge control `name`."""
+    vals = [c.args[2] for c in pub.pub_control.call_args_list
+            if c.args[:2] == ("sa02m-bridge", name)]
+    return vals[-1] if vals else None
+
+
+class TestDeviceAvailability(unittest.TestCase):
+    def test_registration_publishes_nothing_and_starts_unknown(self):
+        """Registration no longer clears the retained "r": a device that has
+        not answered yet is unknown, not online — the bench's silent
+        Carel/LED/MTD were shown online for 11 min by this clear."""
         pub = _make_publisher()
         pub.register_device("d1")
-        self.assertEqual(pub.pub_device_error.call_count, 1)
-        pub.device_online("d1", True)  # already online — no state change
-        self.assertEqual(pub.pub_device_error.call_count, 1)
+        pub.pub_device_error.assert_not_called()
+        self.assertIn("d1", pub._device_online)
+        self.assertIsNone(pub._device_online["d1"])
+
+    def test_first_successful_read_clears_stale_r_exactly_once(self):
+        """The 1.0.5.63 guarantee, moved to the first answer: a healthy device
+        answers at its first poll, so the stale retained "r" is cleared within
+        one poll of the restart — once, not on every healthy poll
+        (pub_device_error has no dedup)."""
+        pub = _make_publisher()
+        pub.register_device("d1")
+        p = bridge_device.DevicePoller({"id": "d1"}, pub)
+        self.assertIsNone(p._online)
+        for _ in range(3):
+            p.mark_ok()
+        pub.pub_device_error.assert_called_once_with("d1", "")
+        self.assertIs(pub._device_online["d1"], True)
+        self.assertIs(p._online, True)
+
+    def test_never_answering_device_keeps_the_retained_r(self):
+        """A device that never answers publishes no "" at all: the retained
+        "r" of the previous process stays, and the back-off machine re-asserts
+        it at offline_after_fails."""
+        pub = _make_publisher()
+        pub.register_device("d1")
+        p = bridge_device.DevicePoller({"id": "d1"}, pub)   # offline_after_fails=3
+        for _ in range(5):
+            p.mark_fail()
+        self.assertEqual(pub.pub_device_error.call_args_list,
+                         [mock.call("d1", "r")])
+        self.assertIs(pub._device_online["d1"], False)
 
     def test_going_offline_still_asserts_r(self):
-        """Case 3: a device that actually fails now still gets meta/error="r" —
-        the fix must not over-clear and hide a real offline device."""
+        """A device that actually fails now still gets meta/error="r" — the
+        unknown → offline transition publishes like online → offline did."""
         pub = _make_publisher()
         pub.register_device("d1")
-        pub.pub_device_error.reset_mock()
         pub.device_online("d1", False)
         pub.pub_device_error.assert_called_once_with("d1", "r")
 
@@ -119,13 +167,30 @@ class TestDeviceAvailability(unittest.TestCase):
         pub.device_online("d1", True)    # back online — transition fires
         pub.pub_device_error.assert_called_once_with("d1", "")
 
-    def test_availability_disabled_no_clear(self):
-        """With availability publishing disabled, registration publishes no
-        device-level error at all (guarded by self._availability)."""
+    def test_availability_disabled_publishes_nothing(self):
+        """With availability publishing disabled, neither registration nor the
+        first answer publishes a device-level error (guarded by
+        self._availability)."""
         pub = _make_publisher()
         pub._availability = False
         pub.register_device("d1")
+        pub.device_online("d1", True)
         pub.pub_device_error.assert_not_called()
+
+    def test_unknown_counts_as_offline_for_counters_and_roster(self):
+        """devices_online counts only devices that have answered; the roster
+        snapshot reports an unknown device as offline (bool contract,
+        docs/contracts/rs485-roster.md)."""
+        pub = _make_counting_publisher()
+        pub.register_device("d1")
+        pub.register_device("d2")
+        pub.announce_bridge()
+        self.assertEqual(_counter(pub, "devices_total"), "2")
+        self.assertEqual(_counter(pub, "devices_online"), "0")
+        self.assertEqual(pub.device_online_snapshot(), {"d1": False, "d2": False})
+        pub.device_online("d1", True)
+        self.assertEqual(_counter(pub, "devices_online"), "1")
+        self.assertEqual(pub.device_online_snapshot(), {"d1": True, "d2": False})
 
 
 class _RaisingPort:
@@ -133,8 +198,10 @@ class _RaisingPort:
 
     def __init__(self, exc=None):
         self.exc = exc or IOError("timeout")
+        self.reads = 0
 
     def _raise(self, *a, **k):
+        self.reads += 1
         raise self.exc
 
     read_coils = read_discrete_inputs = _raise
@@ -355,6 +422,185 @@ class TestPollFailLogLevel(unittest.TestCase):
             self._assert_levels(
                 p, run, ["power poll", "energy poll", "profile poll"],
                 ": OSError")
+
+
+class _SilentThenAnswersPort(_RaisingPort):
+    """Fails every read until armed, then answers the MR-02m module-type
+    read — a module plugged in after the bridge started."""
+
+    def __init__(self, module_type=1):
+        super().__init__(IOError("timeout"))
+        self.module_type = module_type
+        self.armed = False
+
+    def read_input_registers(self, addr, start, count):
+        if self.armed and start == 0 and count == 1:
+            self.reads += 1
+            return [self.module_type]
+        return self._raise()
+
+
+class _OtherDeviceOnThePort:
+    """The Carel behind the silent MR-02m: records its first poll_io and
+    stops the scheduler there."""
+
+    def __init__(self, on_first_poll):
+        self.device_id = "carel-COM3-1"
+        self.polls = 0
+        self._on_first_poll = on_first_poll
+
+    def in_backoff(self) -> bool:
+        return False
+
+    def setup(self) -> None:
+        pass
+
+    def clear_stale_control_errors(self) -> None:
+        pass
+
+    def poll_io(self) -> None:
+        self.polls += 1
+        if self.polls == 1:
+            self._on_first_poll()
+
+    def poll_slow_if_due(self, now: float) -> None:
+        pass
+
+    def stop(self) -> None:
+        pass
+
+
+def _mr02m(pub=None, **extra):
+    cfg = {"id": "mr02m-COM3-6", "port": "/dev/COMtest", "baudrate": 9600,
+           "address": 6, "module_type": 1, "offline_after_fails": 3}
+    cfg.update(extra)
+    return bridge_mr02m.MR02mPoller(cfg, pub if pub is not None else mock.Mock())
+
+
+class TestSetupNeverBlocksThePort(unittest.TestCase):
+    """MR02mPoller.setup() makes ONE init attempt and never sleeps: the port
+    thread runs every poller's setup() before the first poll cycle, and the
+    old 60 x (read timeout + 5 s) retry loop per silent module kept every
+    other device on the port unpolled — two silent MR-02m on COM3 delayed the
+    Carels' first poll (and their offline flag) by 11 min after each bridge
+    restart (bench 1.135, 2026-10-29). A failed init is retried from the poll
+    cycle (poll_slow_if_due) under the normal back-off."""
+
+    def test_setup_makes_one_init_attempt_and_never_sleeps(self):
+        p = _mr02m()
+        port = _RaisingPort()
+        p.get_port = lambda: port
+        with mock.patch.object(bridge_mr02m.time, "sleep") as sleep, \
+                mock.patch.object(bridge_device.DeviceLiveCache, "flush_file"):
+            p.setup()
+        sleep.assert_not_called()
+        self.assertEqual(port.reads, 1)
+        self.assertIsNone(p._mod_type)
+        # The 2026-09-10 guarantee stays: writeback is subscribed from the
+        # YAML counts even when the module is silent at startup.
+        self.assertTrue(p._wb_ready)
+
+    def test_init_from_the_poll_cycle_subscribes_writeback_once(self):
+        pub = mock.Mock()
+        p = _mr02m(pub)
+        port = _SilentThenAnswersPort(module_type=1)
+        p.get_port = lambda: port
+        with mock.patch.object(bridge_mr02m.time, "sleep"), \
+                mock.patch.object(bridge_device.DeviceLiveCache, "flush_file"):
+            p.setup()
+            self.assertEqual(port.reads, 1)
+            subscribed = pub.subscribe_writeback.call_count
+            self.assertEqual(subscribed, 6)           # YAML type 1 = 6 DO
+            port.armed = True
+            p.poll_slow_if_due(time.monotonic())      # init succeeds here
+            self.assertEqual(p._mod_type, 1)
+            self.assertEqual(pub.subscribe_writeback.call_count, subscribed)
+            reads = port.reads
+            p.poll_slow_if_due(time.monotonic())      # initialised: no re-init
+            self.assertEqual(port.reads, reads)
+
+    def test_late_init_subscribes_the_hw_channels_the_yaml_layout_lacked(self):
+        """YAML says type 1 (6DO8DI), the hardware is type 11 (6DO5DI2AO):
+        setup subscribes the YAML DO set; the late init adds ao_1/ao_2 and
+        re-subscribes nothing (the recorded bench mismatch class, 16DO YAML
+        on a 6DO8DI module — BUGLOG 2026-09-10)."""
+        pub = mock.Mock()
+        p = _mr02m(pub)                                   # YAML module_type 1
+        port = _SilentThenAnswersPort(module_type=11)
+        p.get_port = lambda: port
+        with mock.patch.object(bridge_mr02m.time, "sleep"), \
+                mock.patch.object(bridge_device.DeviceLiveCache, "flush_file"):
+            p.setup()
+            names = [c.args[1] for c in pub.subscribe_writeback.call_args_list]
+            self.assertEqual(names, ["do_%d" % i for i in range(1, 7)])
+            port.armed = True
+            p.poll_slow_if_due(time.monotonic())          # init succeeds: HW 11
+            self.assertEqual(p._mod_type, 11)
+            names = [c.args[1] for c in pub.subscribe_writeback.call_args_list]
+            self.assertEqual(names, ["do_%d" % i for i in range(1, 7)] + ["ao_1", "ao_2"])
+            p.poll_slow_if_due(time.monotonic())          # nothing more to add
+            self.assertEqual(pub.subscribe_writeback.call_count, 8)
+
+    def test_backed_off_silent_mr02m_does_not_retry_init_every_slice(self):
+        """The reviewer's probe (2026-10-29): a silent, never-initialised
+        MR-02m with its 30 s back-off armed made 21 init reads in 20 port
+        slices — the slow branch (where the late init lives) ran on every
+        slice regardless of in_backoff(). With the slice gated the retry
+        follows the normal back-off: ≤2 init reads over the window."""
+        clock = {"t": 1000.0}
+        reads = {"init": 0, "other": 0}
+
+        class _Silent:
+            def _r(self, addr, start, count):
+                clock["t"] += 1.3                      # the real read timeout
+                if start == 0 and count == 1:
+                    reads["init"] += 1
+                else:
+                    reads["other"] += 1
+                raise IOError("timeout")
+
+            read_input_registers = read_holding_registers = _r
+            read_coils = read_discrete_inputs = _r
+
+        mr = _mr02m()
+        mr.get_port = lambda: _Silent()
+        with mock.patch.object(bridge_device.time, "monotonic", lambda: clock["t"]), \
+                mock.patch.object(bridge_device.time, "sleep",
+                                  lambda s: clock.__setitem__("t", clock["t"] + s)), \
+                mock.patch.object(bridge_device.DeviceLiveCache, "flush_file"):
+            mr.setup()                                     # init read 1
+            sched = bridge_device.PortCycleScheduler("/dev/COMtest", 9600, [mr])
+            for _ in range(20):
+                sched._classic_slice(0.1, True)
+                clock["t"] += 0.05
+            self.assertIs(mr._online, False)
+            self.assertTrue(mr.in_backoff())
+        self.assertLessEqual(reads["init"], 2,
+                             "%d init reads over 20 slices with the back-off armed"
+                             % reads["init"])
+
+    def test_silent_mr02m_does_not_delay_the_other_devices_first_poll(self):
+        """Port level: a never-answering MR-02m first on the port, a Carel
+        second. time.sleep is a simulated clock; the Carel's first poll must
+        land before 5 simulated seconds (HEAD: 300 s of setup() sleeps)."""
+        mr = _mr02m()
+        mr.get_port = lambda: _RaisingPort()
+        holder = []
+        carel = _OtherDeviceOnThePort(on_first_poll=lambda: holder[0].stop())
+        sched = bridge_device.PortCycleScheduler("/dev/COMtest", 9600, [mr, carel])
+        holder.append(sched)
+        slept = {"s": 0.0}
+
+        def fake_sleep(s):
+            slept["s"] += float(s)
+
+        with mock.patch.object(bridge_device.time, "sleep", side_effect=fake_sleep), \
+                mock.patch.object(bridge_device.DeviceLiveCache, "flush_file"):
+            sched.run()
+        self.assertEqual(carel.polls, 1)
+        self.assertLess(slept["s"], 5.0,
+                        "the Carel's first poll waited %.1f simulated s on the "
+                        "silent MR-02m's setup()" % slept["s"])
 
 
 if __name__ == "__main__":

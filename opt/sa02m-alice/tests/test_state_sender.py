@@ -308,7 +308,7 @@ class TestHistorySnapshotCadence(unittest.TestCase):
             def query_devices(self):
                 return [{"id": "d1"}]
 
-            def take_unreachable_transitions(self):
+            def unreachable_stubs(self, entries=None):
                 return []
 
         sender = _Sender()
@@ -316,6 +316,53 @@ class TestHistorySnapshotCadence(unittest.TestCase):
         self.assertEqual(
             sender.order, [("offer", [{"id": "d1"}]), ("flush", None)]
         )
+
+    def test_emit_cache_snapshot_carries_the_stub_of_every_device_down(self):
+        """Every snapshot (connect, reload, the 30/60 s cadence) carries a
+        DEVICE_UNREACHABLE stub for each device down at that tick — not
+        only the first one after the down-edge — so a hub that learned
+        nothing across our reconnect (or dropped it) is told again; the
+        stubs stop with the first answered poll (1.0.7.12)."""
+        from sa02m_alice.client.device_registry import DeviceRegistry
+        from sa02m_alice.client.main import _emit_cache_snapshot
+
+        on_topic = "/devices/carel-COM3-2/controls/on"
+        doc = {
+            "rooms": [],
+            "devices": [{
+                "id": "uaria", "name": "Carel uAria",
+                "type": "devices.types.ventilation",
+                "capabilities": [{
+                    "type": "devices.capabilities.on_off", "mqtt": on_topic,
+                    "parameters": {"instance": "on"},
+                }],
+                "properties": [],
+            }],
+        }
+        reg = DeviceRegistry(doc)
+        reg.note_mqtt(on_topic, "1")
+        reg.note_mqtt("/devices/carel-COM3-2/meta/error", "r")
+        emitted = []
+        clock = {"t": 1000.0}
+        sender = StateSender(emitted.append, clock=lambda: clock["t"])
+        sender._stopped = False
+
+        def stubs_of(frame):
+            return [d["id"] for d in frame["payload"]["devices"]
+                    if d.get("error_code") == C.ERR_DEVICE_UNREACHABLE]
+
+        for tick in range(3):                      # connect + two cadences
+            clock["t"] += C.STATE_SNAPSHOT_S
+            _emit_cache_snapshot(sender, reg)
+            self.assertEqual(len(emitted), tick + 1, emitted)
+            self.assertEqual(emitted[-1]["origin"], C.ORIGIN_SNAPSHOT)
+            self.assertEqual(stubs_of(emitted[-1]), ["uaria"], "tick %d" % tick)
+        reg.note_mqtt("/devices/carel-COM3-2/meta/error", "")
+        clock["t"] += C.STATE_SNAPSHOT_S
+        _emit_cache_snapshot(sender, reg)
+        self.assertEqual(len(emitted), 4)
+        self.assertEqual(stubs_of(emitted[-1]), [])
+        self.assertEqual([d["id"] for d in emitted[-1]["payload"]["devices"]], ["uaria"])
 
 
 if __name__ == "__main__":

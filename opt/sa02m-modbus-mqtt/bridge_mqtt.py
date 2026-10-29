@@ -190,7 +190,7 @@ class MQTTPublisher:
         self._last_pub: dict[tuple[str, str], tuple[str, float]] = {}
 
         # Availability bookkeeping
-        self._device_online: dict[str, bool] = {}
+        self._device_online: dict[str, bool | None] = {}   # None = not answered yet
         self._poll_errors = 0
         self._bridge_meta_done = False
         # Последнее meta/error по каналу — не дублировать пустое «сброс ошибки» в MQTT.
@@ -395,22 +395,27 @@ class MQTTPublisher:
     # --- Availability registry -------------------------------------------------
 
     def register_device(self, device_id: str) -> None:
+        # Unknown (None) until the device answers — nothing is published here.
+        # A stale retained device-level meta/error="r" left by a prior
+        # process's shutdown()/LWT is cleared by the device's FIRST successful
+        # read (mark_ok → device_online(True) from None), which keeps the
+        # 1.0.5.63 guarantee — a healthy device answers at its first poll, so
+        # the retained tree never keeps lying offline while the bridge reports
+        # devices_online==total and the cloud watchdog floods — without the
+        # lie it used to tell for a silent device: clearing "r" at
+        # registration showed the unplugged Carel/LED/MTD on COM3 as online
+        # from the restart until their first poll flagged them (bench 1.135,
+        # 2026-10-29). A device that never answers keeps the retained "r" and
+        # gets it re-asserted by the back-off machine after
+        # offline_after_fails polls. Counters and the roster count unknown
+        # as offline.
         with self._lock:
-            self._device_online.setdefault(device_id, True)
-        # Clear any stale retained device-level meta/error="r" left by a prior
-        # process's shutdown()/LWT. Devices default online=True at startup, so a
-        # device that stays healthy across a restart never transitions and would
-        # never clear the stale "r" — the retained tree would keep lying offline
-        # while the bridge reports devices_online==total, flooding the cloud
-        # watchdog with false incidents (bench-confirmed). Published once per
-        # device at registration (no dedup in pub_device_error, but this fires
-        # exactly once per process); a genuinely-offline device re-asserts "r"
-        # via the back-off machine after offline_after_fails polls.
-        if self._availability:
-            self.pub_device_error(device_id, "")
+            self._device_online.setdefault(device_id, None)
 
     def device_online(self, device_id: str, online: bool) -> None:
-        """Update one device's online state; refresh bridge counters on change."""
+        """Update one device's online state; refresh bridge counters on change.
+        The first call after registration (unknown → online/offline) is a
+        change and publishes like a transition."""
         with self._lock:
             changed = self._device_online.get(device_id) != online
             self._device_online[device_id] = online
@@ -422,9 +427,10 @@ class MQTTPublisher:
             self._publish_bridge_status(online=True)
 
     def device_online_snapshot(self) -> dict:
-        """Copy of the per-device online map (device_id → bool) for the roster writer."""
+        """Copy of the per-device online map (device_id → bool) for the roster
+        writer; a device that has not answered yet reads False."""
         with self._lock:
-            return dict(self._device_online)
+            return {did: v is True for did, v in self._device_online.items()}
 
     def _publish_bridge_status(self, online: bool) -> None:
         if not self._availability:
@@ -441,7 +447,7 @@ class MQTTPublisher:
             self._bridge_meta_done = True
         with self._lock:
             total = len(self._device_online)
-            up = sum(1 for v in self._device_online.values() if v)
+            up = sum(1 for v in self._device_online.values() if v is True)  # unknown = offline
             errors = self._poll_errors
         self.pub(f"{DEVICE_BASE}/{self._bridge_id}/controls/connection",
                  "1" if online else "0", retain=True)
