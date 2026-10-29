@@ -6,6 +6,8 @@ entries are pruned (history lives in git); last prune 2026-10-24 (audit 2026-10-
 
 ## Open
 
+- [OPEN] 2026-10-29 **[MED] Same class as the 1.0.7.12 Carel fix, left outside its fence (review r1/r2 A2/A3): `DTVPoller.setup()` autodetect loop (5 × 3 s) still holds the port thread ≥15 s per silent DTV before the other devices' first poll (`bridge_dtv_ce.py`), and `DeviceLiveCache.flush_file` defaults an unknown device to `online=True` for the panel live cache on the paths that bypass availability (LED optional reads `_read_optional`, writeback echo) — a residual «online» for the panel until `STALE_S` = 90 s.** Fix on its own branch: one non-blocking init attempt at setup + retry from the poll cycle under the back-off (the F1 shape), and unknown ⇒ not-ok in the live cache until the first successful read (the F2 shape); RED-first tests in `test_device_availability.py`. Queued: session card «DTV setup без блокировки + live-cache unknown» proposed 2026-10-29 from the 1.0.7.12 session.
+- [OPEN] 2026-10-29 **[LOW] `opt/sa02m-modbus-mqtt/bridge_mr02m.py` is 1038 lines (review r2 A6)** — over the ~1000 default; `decompose` candidate (behaviour net = the 941-test bridge suite). Not started.
 - [OPEN] 2026-10-21 **[LOW] A long clip is always uploaded twice: the recogniser answers after the socket
   timeout (bench 1.135, RK3588 agent, series 8×30 s).** RK3588 needs 11–13 s to recognise a 30 s clip, more
   than `UPLOAD_TIMEOUT_S` = 10 s (audio-recorder.md §12). The first attempt times out, the second (10 s later)
