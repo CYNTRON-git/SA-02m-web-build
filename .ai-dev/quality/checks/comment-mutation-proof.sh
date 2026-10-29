@@ -102,6 +102,8 @@ ok()  { printf 'comment-mutation-proof: ok    %s\n' "$*"; }
 bad() { printf 'comment-mutation-proof: FAIL  %s\n' "$*"; fails=$((fails + 1)); }
 
 # gate id | file to mutate | literal text whose line gets commented out
+# (no backslash in a needle: `awk -v` below reads escapes, so `\.` becomes `.`
+#  and the case matches no live line — pin a backslash-free prefix of the line)
 CASES='
 mplc-ota-deploy-contract|scripts/offline-update-allowlist.txt|firmware/mplc4/mplc_cyntron.so
 mplc-project-deploy-contract|www/network_config/cgi-bin/mplc_project_deploy.cgi|web_csrf_require
@@ -249,6 +251,12 @@ i2c2-bus-recovery|etc/sa02m-pre-start.sh|sa02m_i2c2_gpio_recover || true
 ota-dst-allowlist-parity|opt/sa02m-update/lib/validate_package.py|re.compile(r"^/etc/nginx/"),
 ota-dst-allowlist-parity|scripts/pack-offline-update.py|r"etc/systemd/system/sa02m-|"
 ota-dst-allowlist-parity|etc/sa02m-update-runner.sh|r"etc/systemd/system/sa02m-|"
+ota-dst-allowlist-parity|opt/sa02m-update/lib/validate_package.py|re.compile(r"^/usr/local/bin/fix-eth
+ota-dst-allowlist-parity|scripts/pack-offline-update.py|r"usr/local/bin/fix-eth
+ota-dst-allowlist-parity|etc/sa02m-update-runner.sh|r"usr/local/bin/fix-eth
+fix-eth-ota-delivery|scripts/offline-update-allowlist.txt|etc/fix-eth.sh
+fix-eth-ota-delivery|etc/sa02m-update-runner.sh|if rel == "etc/fix-eth.sh":
+fix-eth-ota-delivery|scripts/update-www-only.sh|sa02m_atomic_install -m 755 "$ETC_REPO/fix-eth.sh" /usr/local/bin/fix-eth.sh
 journal-on-disk-policy|etc/systemd/sa02m-journald.conf|Storage=persistent
 journal-on-disk-policy|etc/systemd/sa02m-journald.conf|SyncIntervalSec=1m
 journal-on-disk-policy|etc/default/armbian-ramlog|ENABLED=false
