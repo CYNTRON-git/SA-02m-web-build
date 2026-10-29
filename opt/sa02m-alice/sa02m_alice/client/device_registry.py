@@ -102,6 +102,17 @@ def is_availability_topic(topic: str) -> bool:
     )
 
 
+def _unreachable_stub(did: str) -> Dict[str, Any]:
+    """The device_state entry that tells the hub a device is down: no
+    capabilities, no properties, the error code alone."""
+    return {
+        "id": did,
+        "capabilities": [],
+        "properties": [],
+        "error_code": C.ERR_DEVICE_UNREACHABLE,
+    }
+
+
 def _availability_topics_for(control_topic: str) -> Set[str]:
     """Poller availability topics that decide whether `control_topic` is live."""
     extra: Set[str] = set()
@@ -177,9 +188,13 @@ class DeviceRegistry:
         # dead module. Device-level `/devices/<id>/meta/error` is the
         # slave-offline flag.
         self._slave_live_ts: Dict[str, float] = {}
-        # Last announced down-edge per device id. A DEVICE_UNREACHABLE
-        # device_state is emitted once per transition, not on every 30 s
-        # snapshot — Yandex/cloud learn the loss without a flood.
+        # Down-edges announced to the CURRENT Socket.IO session, per device
+        # id: the per-message sweep (take_unreachable_transitions) emits a
+        # DEVICE_UNREACHABLE stub once per edge, not per MQTT message; the
+        # snapshot path (unreachable_stubs) repeats the stub of every device
+        # still down whenever a snapshot runs — connect, reload, the
+        # re-subscribe push, and the cadence (30 s cloud / 60 s Yandex);
+        # reset_announced_down() clears the map at every (re)connect.
         self._announced_down: Dict[str, bool] = {}
         self._rebuild_indexes()
         self._log_catalogue()
@@ -687,17 +702,51 @@ class DeviceRegistry:
                 was = self._announced_down.get(did, False)
                 if down and not was:
                     self._announced_down[did] = True
-                    out.append(
-                        {
-                            "id": did,
-                            "capabilities": [],
-                            "properties": [],
-                            "error_code": C.ERR_DEVICE_UNREACHABLE,
-                        }
-                    )
+                    out.append(_unreachable_stub(did))
                 elif not down:
                     self._announced_down[did] = False
         return out
+
+    def unreachable_stubs(
+        self, entries: Optional[List[Dict[str, Any]]] = None
+    ) -> List[Dict[str, Any]]:
+        """One DEVICE_UNREACHABLE stub per device down RIGHT NOW — every
+        call, not once per down-edge. The snapshot path (connect, reload, the
+        30/60 s cadence) carries these because the hub's flag is not durable:
+        it survives our reconnects but is lost on a hub restart, after 24 h
+        without contact or on a re-binding, and ANY value for the device —
+        a snapshot or a query answer carrying cached values of a down device
+        — clears it (cloud repo state_cache.py / hub.py, verified
+        2026-10-29; a repeat is idempotent there). And a stub the per-message
+        sweep marked announced while the sender was still stopped (the
+        retained burst lands before `sender.start()`) never left the board at
+        all — a device already down at client start was never announced
+        (bench 1.135, 2026-10-29). `entries` is the caller's own
+        `query_devices()` when it already has one (one catalogue walk per
+        snapshot, not two). Marks the devices announced, so the sweep does
+        not repeat them.
+        """
+        if entries is None:
+            entries = self.query_devices()
+        out: List[Dict[str, Any]] = []
+        with self._lock:
+            for entry in entries:
+                did = str(entry.get("id") or "")
+                if not did or self._scene_only(did):
+                    continue
+                down = str(entry.get("error_code") or "") == C.ERR_DEVICE_UNREACHABLE
+                self._announced_down[did] = down
+                if down:
+                    out.append(_unreachable_stub(did))
+        return out
+
+    def reset_announced_down(self) -> None:
+        """Forget which down-edges this process announced: called at every
+        Socket.IO (re)connect, because the announcement went to the session
+        that just died — the new one must hear a still-down device again,
+        from the per-message sweep as well as from the connect snapshot."""
+        with self._lock:
+            self._announced_down.clear()
 
     def apply_actions(
         self, devices_payload: List[Dict[str, Any]]

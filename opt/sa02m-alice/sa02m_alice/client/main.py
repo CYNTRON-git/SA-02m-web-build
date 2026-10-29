@@ -182,12 +182,23 @@ def _emit_cache_snapshot(
     restart (once its retained grace has elapsed), and the 30 s history
     cadence all share this: query is unrated, live `offer` is not. No-op if
     sender is unset or stopped (`offer_snapshot` already no-ops when stopped).
+
+    Every device down at this tick rides along as a DEVICE_UNREACHABLE stub
+    (`unreachable_stubs`, not the once-per-edge sweep). The hub does keep
+    the flag across our reconnects, but loses it on its own restart, after
+    24 h without contact or on a re-binding, and clears it on ANY value for
+    the device — a snapshot or a query answer carrying cached values of a
+    down device (cloud repo state_cache.py / hub.py, verified 2026-10-29); a
+    repeat is idempotent there. And the stub the sweep marked announced
+    during the retained burst never left (the sender starts after it), so
+    a device already down at client start was never announced at all
+    (1.0.7.12). One catalogue walk: the stubs come from the same query.
     """
     if sender is None:
         return
-    live = [d for d in registry.query_devices() if not d.get("error_code")]
-    sender.offer_snapshot(live)
-    stubs = registry.take_unreachable_transitions()
+    entries = registry.query_devices()
+    sender.offer_snapshot([d for d in entries if not d.get("error_code")])
+    stubs = registry.unreachable_stubs(entries)
     if stubs:
         sender.offer_snapshot(stubs)
     sender.flush_now()
@@ -714,6 +725,11 @@ def run(profile: str = C.PROFILE_YANDEX) -> int:
             time.sleep(1.0)
             ignore_retained["active"] = False
             sender.start()
+            # A new session heard none of the last one's down-edges — and
+            # the retained burst above ran the per-message sweep while the
+            # sender was still stopped, marking stubs announced that never
+            # left. Forget both before the connect snapshot.
+            registry.reset_announced_down()
             _emit_cache_snapshot(sender, registry)
             write_connected("Connected to %s" % label)
             # Watchdog loop. One os.stat per tick, beside the INI open+parse

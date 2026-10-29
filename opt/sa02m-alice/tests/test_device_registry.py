@@ -849,6 +849,43 @@ class TestCarelAhuUnreachable(unittest.TestCase):
         self.assertEqual(first[0]["error_code"], C.ERR_DEVICE_UNREACHABLE)
         self.assertEqual(reg.take_unreachable_transitions(), [])
 
+    def test_reset_announced_down_re_emits_the_stub(self):
+        """A new Socket.IO session knows nothing of the last one's stubs:
+        after reset_announced_down() the per-message sweep announces the
+        still-down device again (1.0.7.12)."""
+        reg = DeviceRegistry(CAREL_DOC)
+        reg.note_mqtt(CAREL_ON_TOPIC, "1")
+        reg.note_mqtt(CAREL_TEMP_TOPIC, "27.2")
+        reg.note_mqtt("/devices/carel-COM3-2/meta/error", "r")
+        self.assertEqual(len(reg.take_unreachable_transitions()), 1)
+        self.assertEqual(reg.take_unreachable_transitions(), [])
+        reg.reset_announced_down()
+        again = reg.take_unreachable_transitions()
+        self.assertEqual([(s["id"], s["error_code"]) for s in again],
+                         [("uaria", C.ERR_DEVICE_UNREACHABLE)])
+
+    def test_unreachable_stubs_names_every_device_down_now(self):
+        """The snapshot path carries the stub of every device down at that
+        tick — on every cadence while it is down, none once it answers — and
+        counts as the announcement for the per-message sweep."""
+        reg = DeviceRegistry(CAREL_DOC)
+        reg.note_mqtt(CAREL_ON_TOPIC, "1")
+        reg.note_mqtt(CAREL_TEMP_TOPIC, "27.2")
+        self.assertEqual(reg.unreachable_stubs(), [])
+        reg.note_mqtt("/devices/carel-COM3-2/meta/error", "r")
+        for _ in range(3):
+            stubs = reg.unreachable_stubs()
+            self.assertEqual([(s["id"], s["error_code"]) for s in stubs],
+                             [("uaria", C.ERR_DEVICE_UNREACHABLE)])
+            self.assertEqual(stubs[0]["capabilities"], [])
+            self.assertEqual(stubs[0]["properties"], [])
+        self.assertEqual(reg.take_unreachable_transitions(), [])
+        # The caller may hand in the query it already made (one sweep).
+        entries = reg.query_devices()
+        self.assertEqual([s["id"] for s in reg.unreachable_stubs(entries)], ["uaria"])
+        reg.note_mqtt("/devices/carel-COM3-2/meta/error", "")
+        self.assertEqual(reg.unreachable_stubs(), [])
+
     def test_gpio_retained_property_still_answers(self):
         """Board telemetry has no poll heartbeat — retained stays valid."""
         reg = DeviceRegistry(GPIO_SENSOR_DOC)

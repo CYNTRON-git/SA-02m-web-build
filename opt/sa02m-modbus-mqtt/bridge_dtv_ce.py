@@ -216,7 +216,7 @@ class DTVPoller(_SysChannelsMixin, DevicePoller):
                 self.pub.pub_control(self.device_id, ch_name, str(round(raw * scale, 3)))
                 self.pub.pub_error(self.device_id, ch_name, "")
         except Exception as e:
-            self.log.warning("sensor poll: %s", e)
+            self.log_poll_fail("sensor poll", e)
 
     def _poll_coils(self) -> None:
         try:
@@ -617,7 +617,7 @@ class CE02M3Poller(_SysChannelsMixin, DevicePoller):
         try:
             regs = self._read_power_input_block()
         except Exception as e:
-            self.log.warning("power poll: %s", e)
+            self.log_poll_fail("power poll", e)
             return
         lost = self._meter_link_check(not any(regs))
         self._set_meter_link(lost)

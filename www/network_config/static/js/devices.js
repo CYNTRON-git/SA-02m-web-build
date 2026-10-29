@@ -1,5 +1,5 @@
 /* Devices tab — live ДТВ / СЭ-02м-3 widgets + MR-02m analog cards + history modal / Excel / events */
-import { aiSensorLabel, aiUnitPrecision } from "./ai-sensors.js?v=1.0.7.11";
+import { aiSensorLabel, aiUnitPrecision } from "./ai-sensors.js?v=1.0.7.12";
 
 (function () {
   "use strict";
@@ -1667,6 +1667,11 @@ import { aiSensorLabel, aiUnitPrecision } from "./ai-sensors.js?v=1.0.7.11";
   }
 
   let lastRawDevices = null;
+  /** The last snapshot a SUCCESSFUL api/devices fetch rendered, and Date.now()
+      of that fetch — the base the failure path ages from (never the already
+      aged re-render, so repeated failures do not compound the age). */
+  let lastLiveDevices = null;
+  let lastLiveOkTs = 0;
 
   function ensureCards(list) {
     const grid = $("dev-grid");
@@ -1848,12 +1853,34 @@ import { aiSensorLabel, aiUnitPrecision } from "./ai-sensors.js?v=1.0.7.11";
       });
   }
 
+  /* A failed api/devices fetch (network error, non-2xx, aborted) used to be
+     swallowed, leaving every card with its last values and the green `online`
+     pill for as long as the API stayed unreachable — a frozen card that read
+     as live (bench 1.135, 2026-10-29). Once the last good fetch is older than
+     STALE_BORDER_S the last live snapshot is re-rendered with age_s advanced
+     by the elapsed time, so isAgeStale() flips the pill to `stale` and the
+     card gets `dev-stale` — the existing vocabulary. A later good fetch
+     overwrites it as usual. The 401 path is app.js's fetch wrapper, untouched. */
+  function markLiveFetchFailed() {
+    if (!lastLiveDevices || !lastLiveOkTs) return;
+    const elapsedS = (Date.now() - lastLiveOkTs) / 1000;
+    if (elapsedS <= STALE_BORDER_S) return;
+    ensureCards(
+      lastLiveDevices.map((d) => {
+        const age = Number(d.age_s);
+        return Object.assign({}, d, { age_s: (Number.isFinite(age) ? age : 0) + elapsedS });
+      })
+    );
+  }
+
   function refreshLive() {
     return fetchJson("api/devices")
       .then((data) => {
         if (!data || !data.ok) return;
         availableDevices = Array.isArray(data.available) ? data.available : [];
-        ensureCards(deviceList(data));
+        lastLiveDevices = deviceList(data);
+        lastLiveOkTs = Date.now();
+        ensureCards(lastLiveDevices);
         updateAddButton();
         const addModal = $("dev-add-modal");
         if (addModal && !addModal.hidden) renderAddList();
@@ -1867,7 +1894,7 @@ import { aiSensorLabel, aiUnitPrecision } from "./ai-sensors.js?v=1.0.7.11";
               : "Нет устройств ДТВ / СЭ-02м-3 / Carel / MR-02m / MTD262-MB в MQTT. Добавьте их на вкладке MQTT — виджеты появятся здесь автоматически.";
         }
       })
-      .catch(() => {})
+      .catch(markLiveFetchFailed)
       .then(() => refreshEvents());
   }
 

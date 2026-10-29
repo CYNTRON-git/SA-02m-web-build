@@ -70,6 +70,9 @@ class MR02mPoller(DevicePoller):
         # bench can name 16DO while the module is 6DO8DI).
         self._fmb_do = self._fmb_di = self._fmb_ao = self._fmb_ai = 0
         self._wb_ready = False
+        # (do, ao, ai) channel counts already subscribed for writeback —
+        # _setup_writeback adds only the delta (YAML at setup, HW on a late init).
+        self._wb_subscribed = (0, 0, 0)
 
     # --- Fast Modbus events (layout owned here; manager is device-agnostic) ---
 
@@ -201,9 +204,9 @@ class MR02mPoller(DevicePoller):
                     if attempt < MR02M_AI_READ_RETRIES - 1:
                         time.sleep(MODBUS_INTER_FRAME_DELAY_S)
             if last_err is not None:
-                self.log.warning(
-                    "AI block read @%d+%d: %s",
-                    MR02M_AI_HOLDING_BASE + off, n, last_err)
+                self.log_poll_fail(
+                    "AI block read @%d+%d" % (MR02M_AI_HOLDING_BASE + off, n),
+                    last_err)
             off += n
             if off < total:
                 time.sleep(MODBUS_INTER_FRAME_DELAY_S)
@@ -266,7 +269,7 @@ class MR02mPoller(DevicePoller):
             self._apply_configured_ai_sensor_types()
             return True
         except Exception as e:
-            self.log.error("init_module: %s", e)
+            self.log_poll_fail("init_module", e)
             return False
 
     def _apply_configured_ai_sensor_types(self) -> None:
@@ -398,7 +401,7 @@ class MR02mPoller(DevicePoller):
                         self._wb_publish_poll(f"do_{i}", str(v), t_read)
                         self.pub.pub_error(self.device_id, f"do_{i}", "")
             except Exception as e:
-                self.log.warning("DO read: %s", e)
+                self.log_poll_fail("DO read", e)
                 # Block-read miss is a bus/device event (write collision,
                 # Carel sharing the COM). Not a per-channel fault -- stamping
                 # every do_N with r made siblings look dead while uptime_s
@@ -414,7 +417,7 @@ class MR02mPoller(DevicePoller):
                         self.pub.pub_control(self.device_id, f"di_{i}", str(raw & 1))
                         self.pub.pub_error(self.device_id, f"di_{i}", "")
             except Exception as e:
-                self.log.warning("DI read: %s", e)
+                self.log_poll_fail("DI read", e)
         self._poll_di_counters()
         self._poll_di_press_counters()
 
@@ -439,7 +442,7 @@ class MR02mPoller(DevicePoller):
                 self.pub.pub_control(self.device_id, f"di_{i}_count", str(cnt))
                 self.pub.pub_error(self.device_id, f"di_{i}_count", "")
         except Exception as e:
-            self.log.warning("DI counters: %s", e)
+            self.log_poll_fail("DI counters", e)
 
     # (suffix, title_ru, title_en) — value controls per «Кнопка»-mode DI channel.
     _PRESS_CONTROLS = (
@@ -461,7 +464,7 @@ class MR02mPoller(DevicePoller):
             regs = self.read_holding_registers(
                 self.address, MR_REG_DI_MODE_BASE, self._di)
         except Exception as e:
-            self.log.warning("DI mode read: %s", e)
+            self.log_poll_fail("DI mode read", e)
             return
         self._press_disabled = False
         self._press_fails = 0
@@ -590,7 +593,7 @@ class MR02mPoller(DevicePoller):
                         self._wb_publish_poll(f"ao_{i}", str(v), t_read)
                         self.pub.pub_error(self.device_id, f"ao_{i}", "")
             else:
-                self.log.warning("AO read: %s", last_err)
+                self.log_poll_fail("AO read", last_err)
                 # Same as DO/DI: a failed AO block is not every ao_N dead.
 
     @staticmethod
@@ -920,12 +923,16 @@ class MR02mPoller(DevicePoller):
         # Counts from hardware after init, else YAML — same as FMB. A failed
         # 60-try init used to leave _do=0 and subscribe nothing, so /on
         # published by Alice never wrote a coil (bench COM3-10, 2026-09-10).
-        if self._wb_ready:
-            return
+        # Subscribes the DELTA over what is already subscribed: the YAML
+        # layout at setup, then — after a late init — the hardware channels
+        # the YAML layout lacked (YAML type 1 on a 6DO5DI2AO: ao_1/ao_2),
+        # never a channel twice. Channels the YAML over-declared stay
+        # subscribed (a write to them fails on the bus, as before).
         do, _di, ao, ai = self._layout_counts()
-        if do == 0 and ao == 0 and ai == 0:
+        had_do, had_ao, had_ai = self._wb_subscribed
+        if do <= had_do and ao <= had_ao and ai <= had_ai:
             return
-        for i in range(1, do + 1):
+        for i in range(had_do + 1, do + 1):
             def make_cb(ch: int):
                 def cb(client, userdata, msg):
                     # Retained /on при рестарте моста не переигрывается (A4):
@@ -943,7 +950,7 @@ class MR02mPoller(DevicePoller):
                 return cb
             self.pub.subscribe_writeback(self.device_id, f"do_{i}", make_cb(i))
 
-        for i in range(1, ao + 1):
+        for i in range(had_ao + 1, ao + 1):
             def make_ao_cb(ch: int):
                 def cb(client, userdata, msg):
                     # Retained /on не переигрывается при рестарте (A4).
@@ -959,7 +966,7 @@ class MR02mPoller(DevicePoller):
                 return cb
             self.pub.subscribe_writeback(self.device_id, f"ao_{i}", make_ao_cb(i))
 
-        for i in range(1, ai + 1):
+        for i in range(had_ai + 1, ai + 1):
             def make_ai_cb(ch: int):
                 def cb(client, userdata, msg):
                     # Retained /on не переигрывается при рестарте (A4).
@@ -975,16 +982,25 @@ class MR02mPoller(DevicePoller):
                         f"ai_type_{ch}", lambda c=ch, n=v: self._writeback_ai_type(c, n))
                 return cb
             self.pub.subscribe_writeback(self.device_id, f"ai_type_{i}", make_ai_cb(i))
+        self._wb_subscribed = (max(had_do, do), max(had_ao, ao), max(had_ai, ai))
         self._wb_ready = True
-        self.log.info("writeback subscribed do=%d ao=%d ai=%d", do, ao, ai)
+        self.log.info("writeback subscribed do=%d ao=%d ai=%d", *self._wb_subscribed)
 
     def setup(self) -> None:
-        for _ in range(60):
-            if self._stop.is_set():
-                return
-            if self._init_module():
-                break
-            time.sleep(5)
+        # ONE init attempt, no sleep: the port thread runs every poller's
+        # setup() before the first poll cycle, so the old retry loop here
+        # (60 x read timeout + 5 s per silent module) kept every other device
+        # on the port unpolled — two silent MR-02m on COM3 held the Carels'
+        # first poll, and their offline flag, back by 11 min after each bridge
+        # restart (bench 1.135, 2026-10-29). A failed init is retried from
+        # the poll cycle (poll_slow_if_due) under the normal back-off — the
+        # port slice skips a backed-off poller's slow branch too.
+        if self._stop.is_set():
+            return
+        self._init_module()
+        # Always, as before: YAML counts when the module was silent, so /on
+        # from Alice still reaches a coil (the 2026-09-10 case); a late init
+        # adds only the hardware channels the YAML layout lacked.
         self._setup_writeback()
 
     def poll_io(self) -> None:
