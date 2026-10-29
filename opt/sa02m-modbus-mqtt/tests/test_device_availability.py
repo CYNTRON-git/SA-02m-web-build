@@ -15,7 +15,9 @@ the threshold), which escaped BEFORE _backoff_until was set and turned every
 silent device into a full-rate poll with one WARNING per attempt (3 lines/s,
 23 % CPU). TestBackoffExponentCap pins the cap; TestPollFailLogLevel pins the
 log_poll_fail helper (WARNING while online, DEBUG once offline) and that the
-five per-attempt pollers route their failure line through it.
+per-attempt pollers route their failure line through it: LED, Carel, DTV
+sensor/power, MR-02m init / DO / DI / DI-counter / DI-mode / AI-block / AO
+reads, and the SPODES power / energy / profile polls.
 """
 from __future__ import annotations
 
@@ -28,6 +30,7 @@ from unittest import mock
 
 BRIDGE_DIR = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(BRIDGE_DIR))
+sys.path.insert(0, str(BRIDGE_DIR.parent / "sa02m-spodes"))   # SpodesPoller
 
 
 def _stub_missing(name: str, module: types.ModuleType) -> None:
@@ -60,6 +63,7 @@ import bridge_device  # noqa: E402
 import bridge_dtv_ce  # noqa: E402
 import bridge_led  # noqa: E402
 import bridge_mr02m  # noqa: E402
+import bridge_spodes  # noqa: E402
 from sa02m_carel import controls as cc  # noqa: E402
 
 
@@ -135,6 +139,21 @@ class _RaisingPort:
 
     read_coils = read_discrete_inputs = _raise
     read_holding_registers = read_input_registers = _raise
+
+
+class _InitThenRaisePort(_RaisingPort):
+    """Answers the MR-02m module-type read (Input 0) until armed, then fails
+    every read — an initialised module that stops answering."""
+
+    def __init__(self, module_type=1):
+        super().__init__(IOError("boom"))
+        self.module_type = module_type
+        self.armed = False
+
+    def read_input_registers(self, addr, start, count):
+        if not self.armed and start == 0 and count == 1:
+            return [self.module_type]
+        raise self.exc
 
 
 class TestBackoffExponentCap(unittest.TestCase):
@@ -253,6 +272,89 @@ class TestPollFailLogLevel(unittest.TestCase):
                         method()
                     self.assertEqual(_records(cm, label + ": boom"),
                                      [("DEBUG", label + ": boom")])
+
+    def _assert_levels(self, p, run, labels, suffix):
+        """run() while online logs every label at WARNING; after the offline
+        transition the same run() logs them at DEBUG."""
+        with self.assertLogs(p.log, level="DEBUG") as cm:
+            run()
+        for label in labels:
+            self.assertEqual(_records(cm, label + suffix),
+                             [("WARNING", label + suffix)], label)
+        p._fail_count = p._fail_threshold - 1
+        p.mark_fail()
+        self.assertFalse(p._online)
+        with self.assertLogs(p.log, level="DEBUG") as cm:
+            run()
+        for label in labels:
+            self.assertEqual(_records(cm, label + suffix),
+                             [("DEBUG", label + suffix)], label)
+
+    def test_mr02m_block_reads_after_init(self):
+        """A real, initialised DO6DI8 whose DO / DI / DI-counter / DI-mode
+        block reads then fail (the 1.135 COM3 case: mr02m-COM3-6/10)."""
+        p = bridge_mr02m.MR02mPoller(
+            {"id": "mr02m-COM3-6", "port": "/dev/COMtest", "baudrate": 9600,
+             "address": 6, "module_type": 1, "offline_after_fails": 100},
+            mock.Mock())
+        port = _InitThenRaisePort(module_type=1)
+        p.get_port = lambda: port
+        with mock.patch.object(bridge_device.DeviceLiveCache, "flush_file"):
+            self.assertTrue(p._init_module())
+            self.assertEqual((p._do, p._di), (6, 8))
+            port.armed = True
+
+            def run():
+                p._poll_do_di()          # DO read, DI read, DI counters
+                p._refresh_di_modes()    # DI mode read
+
+            self._assert_levels(
+                p, run, ["DO read", "DI read", "DI counters", "DI mode read"],
+                ": boom")
+
+    def test_mr02m_ai_ao_block_reads_after_init(self):
+        """A real, initialised AO6AI6 whose chunked AI holding block and AO
+        block reads then fail — poll_io's other half (_poll_ai_ao)."""
+        p = bridge_mr02m.MR02mPoller(
+            {"id": "mr02m-COM3-10", "port": "/dev/COMtest", "baudrate": 9600,
+             "address": 10, "module_type": 6, "offline_after_fails": 100},
+            mock.Mock())
+        port = _InitThenRaisePort(module_type=6)
+        p.get_port = lambda: port
+        with mock.patch.object(bridge_device.DeviceLiveCache, "flush_file"), \
+                mock.patch.object(bridge_mr02m.time, "sleep"):
+            self.assertTrue(p._init_module())
+            self.assertEqual((p._ai, p._ao), (6, 6))
+            port.armed = True
+            ai_label = "AI block read @%d+%d" % (
+                bridge_mr02m.MR02M_AI_HOLDING_BASE,
+                p._ai * bridge_mr02m.MR02M_AI_CHANNEL_STRIDE)   # one chunk
+            self._assert_levels(p, p._poll_ai_ao, [ai_label, "AO read"], ": boom")
+
+    def test_spodes_power_energy_profile_polls(self):
+        """The Mercury poller logs type(e).__name__, not the message — the
+        text stays exactly that through the helper."""
+        p = bridge_spodes.SpodesPoller(
+            {"id": "spodes-COM2-17", "type": "spodes", "port": "/dev/COM2",
+             "baudrate": 9600, "hdlc_address": 17, "association": "public",
+             "poll_power_s": 0, "offline_after_fails": 100},
+            mock.Mock())
+
+        def down():
+            raise IOError("down")
+
+        p._open = down
+
+        def run():
+            p._t_power = 0.0
+            p.poll_io()                  # power poll
+            p._poll_energy()             # energy poll
+            p._poll_profiles()           # profile poll
+
+        with mock.patch.object(bridge_device.DeviceLiveCache, "flush_file"):
+            self._assert_levels(
+                p, run, ["power poll", "energy poll", "profile poll"],
+                ": OSError")
 
 
 if __name__ == "__main__":

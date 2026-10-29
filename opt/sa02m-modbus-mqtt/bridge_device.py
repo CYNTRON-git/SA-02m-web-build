@@ -239,7 +239,7 @@ class DevicePoller:
                                   self._offline_where())
                 self.pub.device_online(self.device_id, False)
 
-    def log_poll_fail(self, label: str, exc: BaseException) -> None:
+    def log_poll_fail(self, label: str, exc: object) -> None:
         """The per-attempt failure line of a poller: WARNING while the device
         still counts as online (the failures leading to the offline
         transition), DEBUG once it is flagged offline — a dead device is

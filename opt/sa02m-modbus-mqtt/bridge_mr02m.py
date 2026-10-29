@@ -201,9 +201,9 @@ class MR02mPoller(DevicePoller):
                     if attempt < MR02M_AI_READ_RETRIES - 1:
                         time.sleep(MODBUS_INTER_FRAME_DELAY_S)
             if last_err is not None:
-                self.log.warning(
-                    "AI block read @%d+%d: %s",
-                    MR02M_AI_HOLDING_BASE + off, n, last_err)
+                self.log_poll_fail(
+                    "AI block read @%d+%d" % (MR02M_AI_HOLDING_BASE + off, n),
+                    last_err)
             off += n
             if off < total:
                 time.sleep(MODBUS_INTER_FRAME_DELAY_S)
@@ -398,7 +398,7 @@ class MR02mPoller(DevicePoller):
                         self._wb_publish_poll(f"do_{i}", str(v), t_read)
                         self.pub.pub_error(self.device_id, f"do_{i}", "")
             except Exception as e:
-                self.log.warning("DO read: %s", e)
+                self.log_poll_fail("DO read", e)
                 # Block-read miss is a bus/device event (write collision,
                 # Carel sharing the COM). Not a per-channel fault -- stamping
                 # every do_N with r made siblings look dead while uptime_s
@@ -414,7 +414,7 @@ class MR02mPoller(DevicePoller):
                         self.pub.pub_control(self.device_id, f"di_{i}", str(raw & 1))
                         self.pub.pub_error(self.device_id, f"di_{i}", "")
             except Exception as e:
-                self.log.warning("DI read: %s", e)
+                self.log_poll_fail("DI read", e)
         self._poll_di_counters()
         self._poll_di_press_counters()
 
@@ -439,7 +439,7 @@ class MR02mPoller(DevicePoller):
                 self.pub.pub_control(self.device_id, f"di_{i}_count", str(cnt))
                 self.pub.pub_error(self.device_id, f"di_{i}_count", "")
         except Exception as e:
-            self.log.warning("DI counters: %s", e)
+            self.log_poll_fail("DI counters", e)
 
     # (suffix, title_ru, title_en) — value controls per «Кнопка»-mode DI channel.
     _PRESS_CONTROLS = (
@@ -461,7 +461,7 @@ class MR02mPoller(DevicePoller):
             regs = self.read_holding_registers(
                 self.address, MR_REG_DI_MODE_BASE, self._di)
         except Exception as e:
-            self.log.warning("DI mode read: %s", e)
+            self.log_poll_fail("DI mode read", e)
             return
         self._press_disabled = False
         self._press_fails = 0
@@ -590,7 +590,7 @@ class MR02mPoller(DevicePoller):
                         self._wb_publish_poll(f"ao_{i}", str(v), t_read)
                         self.pub.pub_error(self.device_id, f"ao_{i}", "")
             else:
-                self.log.warning("AO read: %s", last_err)
+                self.log_poll_fail("AO read", last_err)
                 # Same as DO/DI: a failed AO block is not every ao_N dead.
 
     @staticmethod
