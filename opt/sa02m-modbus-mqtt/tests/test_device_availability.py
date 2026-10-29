@@ -26,7 +26,7 @@ per-attempt pollers route their failure line through it: LED, Carel, DTV
 sensor/power, MR-02m init / DO / DI / DI-counter / DI-mode / AI-block / AO
 reads, and the SPODES power / energy / profile polls.
 
-The two 1.0.7.12 residues (1.0.7.15): DTVPoller.setup() ran the sensor
+The two 1.0.7.12 residues (1.0.7.17): DTVPoller.setup() ran the sensor
 autodetect as a 5 x (read + sleep 3 s) loop on the port thread, so a DTV that
 answered «no sensors» (booting beside the bridge, or sensorless) held every
 other device on its port 15 s, and a DTV silent at start was assumed to carry
@@ -811,7 +811,7 @@ class TestDtvSetupNeverBlocksThePort(unittest.TestCase):
 class TestLiveCacheUnknownIsNotOk(unittest.TestCase):
     """DeviceLiveCache.flush_file: a device that has never answered a tracked
     read is written ``ok: false`` — the panel's «Устройства» card and the
-    MQTT tab prefetch read this file, and until 1.0.7.15 a never-answering
+    MQTT tab prefetch read this file, and until 1.0.7.17 a never-answering
     device sat there as ok until its third failed read."""
 
     def setUp(self):
