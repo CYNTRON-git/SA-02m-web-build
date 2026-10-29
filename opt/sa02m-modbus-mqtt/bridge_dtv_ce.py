@@ -26,6 +26,12 @@ DTV_CE_SYS_KEYS = ("uptime_s", "mcu_temp", "mcu_vdd")
 DTV_CE_SYS_CONTROLS = tuple(
     c for c in MR02M_SYS_CONTROLS if c[0] in DTV_CE_SYS_KEYS)
 
+# DTV sensor autodetect (a DTV configured without `sensors_present`): the
+# cadence and the bound of the original setup() loop — 5 x (read + sleep 3 s)
+# — kept, but run from the poll cycle instead of sleeping on the port thread.
+DTV_DETECT_RETRY_S = 3.0
+DTV_DETECT_EMPTY_FALLBACK = 5
+
 
 class _SysChannelsMixin:
     """`channels.sys[]` enabled/label, read the way MR02mPoller reads them.
@@ -154,33 +160,57 @@ class DTVPoller(_SysChannelsMixin, DevicePoller):
         # Optional explicit list of sensor names to poll
         explicit = cfg.get("sensors_present")
         if isinstance(explicit, list):
-            self._sensors_present = set(explicit)
+            # An explicit EMPTY list — what the panel writes when every sensor
+            # checkbox is unchecked (mqtt.js DTV_SENSORS) — means «all
+            # present», as the old setup() fallback made it; never autodetect.
+            self._sensors_present = (
+                set(explicit) or {v[0] for v in self.DTV_REGS.values()})
             self._autodetect = False
         else:
             self._autodetect = True
+        # Autodetect state: pending until a non-empty set is read (or the
+        # empty-answer bound falls back to «all present»). Retried from
+        # poll_io, never by sleeping in setup().
+        self._detect_pending = self._autodetect
+        self._t_detect = 0.0
+        self._detect_empty_answers = 0
 
-    def _autodetect_sensors(self) -> None:
-        """Read regs 1-30 once; mark those returning non-0x8000 as present."""
-        self._sensors_present = set()
+    def _try_autodetect(self) -> bool:
+        """ONE tracked read of Input 1..30; True once the sensor set is known.
+
+        Tracked (read_input_registers) so a silent DTV feeds the availability
+        machine and backs off like every other device. A read failure keeps
+        detection pending without counting an attempt — silent is not
+        sensorless, and a DTV unplugged at bridge start used to be assumed
+        to carry ALL sensors (every absent channel with meta and a permanent
+        «r» until the next restart). The old bound stays: five answers with
+        no sensor reported ⇒ «all present» (a sensorless unit, or one whose
+        sensors never come up)."""
         try:
             regs = self.read_input_registers(self.address, 1, 30)
-            for idx in range(30):
-                reg = idx + 1
-                if reg not in self.DTV_REGS:
-                    continue
-                if regs[idx] != 0x8000:
-                    self._sensors_present.add(self.DTV_REGS[reg][0])
-            self.log.info("Detected sensors: %s", sorted(self._sensors_present))
         except Exception as e:
-            self.log.warning("autodetect failed: %s — assuming all present", e)
-            self._sensors_present = {v[0] for v in self.DTV_REGS.values()}
+            self.log_poll_fail("autodetect", e)
+            return False
+        found = set()
+        for idx in range(30):
+            reg = idx + 1
+            if reg in self.DTV_REGS and regs[idx] != 0x8000:
+                found.add(self.DTV_REGS[reg][0])
+        if found:
+            self.log.info("Detected sensors: %s", sorted(found))
+        else:
+            self._detect_empty_answers += 1
+            if self._detect_empty_answers < DTV_DETECT_EMPTY_FALLBACK:
+                return False
+            self.log.warning("no sensors reported %d times — assuming all present",
+                             self._detect_empty_answers)
+            found = {v[0] for v in self.DTV_REGS.values()}
+        self._sensors_present = found
+        self._detect_pending = False
+        return True
 
-    def _publish_meta(self) -> None:
-        name = self.cfg.get(
-            "name",
-            f"DTV-RS-485 ({self.port_path.replace('/dev/','')} addr={self.address})"
-        )
-        self.publish_device_meta(name)
+    def _publish_sensor_meta(self) -> None:
+        """Control meta for the sensor channels of the detected set."""
         for ch_name, _, mqtt_type, units in self.DTV_REGS.values():
             # mcu_vdd/mcu_temp (123/124) are «Системные»: _publish_sys_meta.
             if ch_name not in self._sensors_present or ch_name in DTV_CE_SYS_KEYS:
@@ -188,6 +218,16 @@ class DTVPoller(_SysChannelsMixin, DevicePoller):
             self.pub.pub_control_meta(self.device_id, ch_name, "type", mqtt_type)
             self.pub.pub_control_meta(self.device_id, ch_name, "readonly", "1")
             self.pub.pub_control_units(self.device_id, ch_name, units)
+
+    def _publish_meta(self) -> None:
+        name = self.cfg.get(
+            "name",
+            f"DTV-RS-485 ({self.port_path.replace('/dev/','')} addr={self.address})"
+        )
+        self.publish_device_meta(name)
+        # Empty while detection is pending: the sensor meta follows at the
+        # first answer (poll_io), the coils and sys rows go out now.
+        self._publish_sensor_meta()
         for coil, (ch_name, _) in self.DTV_COILS.items():
             self.pub.pub_control_meta(self.device_id, ch_name, "type", "switch")
         self._publish_sys_meta()
@@ -260,7 +300,7 @@ class DTVPoller(_SysChannelsMixin, DevicePoller):
             # байт-в-байт с классическим поллом).
             ch_name, scale, _, _ = self.DTV_REGS[reg]
             if self._sensors_present and ch_name not in self._sensors_present:
-                return   # sensor known-absent; empty set = setup not run yet
+                return   # sensor known-absent; empty set = autodetect pending
             if val == 0x8000:   # sensor absent / error
                 self.pub.pub_error(self.device_id, ch_name, "r")
                 return
@@ -341,23 +381,40 @@ class DTVPoller(_SysChannelsMixin, DevicePoller):
             self.pub.subscribe_writeback(self.device_id, ch_name, make_cb(coil_num, ch_name))
 
     def setup(self) -> None:
-        if self._autodetect:
-            for _ in range(5):
-                if self._stop.is_set():
-                    return
-                self._autodetect_sensors()
-                if self._sensors_present:
-                    break
-                time.sleep(3)
-        if not self._sensors_present:
-            self._sensors_present = {v[0] for v in self.DTV_REGS.values()}
+        # ONE detect attempt, no sleep: the port thread runs every poller's
+        # setup() before the first poll cycle, so the old 5 x (read + 3 s)
+        # loop here held every other device on the port 15 s whenever a DTV
+        # answered «no sensors» (booting beside the bridge, or sensorless) —
+        # the DTV twin of the MR02mPoller.setup() case (bench 1.135,
+        # 2026-10-29). Detection continues from poll_io under the normal
+        # back-off; the port slice skips a backed-off poller there.
+        if self._stop.is_set():
+            return
+        if self._detect_pending:
+            self._t_detect = time.monotonic()
+            self._try_autodetect()
+        # Always, as before: device / coil / sys meta and the coil writeback,
+        # so /on from Alice reaches a DTV that was silent at bridge start
+        # (the 2026-09-10 MR guarantee). Sensor meta only once detected.
         self._publish_meta()
         self._setup_writeback()
 
     def poll_io(self) -> None:
+        now = time.monotonic()
+        if self._detect_pending:
+            if now - self._t_detect >= DTV_DETECT_RETRY_S:
+                self._t_detect = now
+                if self._try_autodetect():
+                    self._publish_sensor_meta()
+                    # The sensor meta exists only now, so the scheduler's
+                    # after-setup clear named none of these controls (the
+                    # MR-02m late-init pattern). Once: _detect_pending is
+                    # False from here on.
+                    self.clear_stale_control_errors()
+            if self._detect_pending:
+                return      # no sensor set yet — nothing to poll, as before
         # Honor poll_sensors_s — with FMB insurance the port cycle would
         # otherwise hammer FC04×30 every ≥500 ms and collide with events.
-        now = time.monotonic()
         interval = self._poll_sensors_s
         if self.fmb_covers_io():
             interval = max(interval, FMB_INSURANCE_POLL_S)

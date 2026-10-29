@@ -25,10 +25,22 @@ log_poll_fail helper (WARNING while online, DEBUG once offline) and that the
 per-attempt pollers route their failure line through it: LED, Carel, DTV
 sensor/power, MR-02m init / DO / DI / DI-counter / DI-mode / AI-block / AO
 reads, and the SPODES power / energy / profile polls.
+
+The two 1.0.7.12 residues (1.0.7.15): DTVPoller.setup() ran the sensor
+autodetect as a 5 x (read + sleep 3 s) loop on the port thread, so a DTV that
+answered «no sensors» (booting beside the bridge, or sensorless) held every
+other device on its port 15 s, and a DTV silent at start was assumed to carry
+ALL sensors until the next bridge restart (TestDtvSetupNeverBlocksThePort —
+one attempt at setup, the retries from the poll cycle, the old 5-empty-answers
+bound kept). And the panel live cache wrote ``ok: true`` for a device that had
+never answered a tracked read (TestLiveCacheUnknownIsNotOk — unknown is not ok,
+the same rule the counters and the roster already follow).
 """
 from __future__ import annotations
 
+import json
 import sys
+import tempfile
 import threading
 import time
 import types
@@ -70,6 +82,7 @@ import bridge_carel  # noqa: E402
 import bridge_device  # noqa: E402
 import bridge_dtv_ce  # noqa: E402
 import bridge_led  # noqa: E402
+import bridge_mqtt  # noqa: E402
 import bridge_mr02m  # noqa: E402
 import bridge_spodes  # noqa: E402
 from sa02m_carel import controls as cc  # noqa: E402
@@ -601,6 +614,258 @@ class TestSetupNeverBlocksThePort(unittest.TestCase):
         self.assertLess(slept["s"], 5.0,
                         "the Carel's first poll waited %.1f simulated s on the "
                         "silent MR-02m's setup()" % slept["s"])
+
+
+class _AllAbsentPort:
+    """A DTV that answers every read but reports no sensor (every Input 1..30
+    = 0x8000): a unit still booting beside the bridge, or a sensorless one.
+    `present` overrides single registers once the sensors come up."""
+
+    def __init__(self):
+        self.reads = 0
+        self.present: dict[int, int] = {}
+
+    def read_input_registers(self, addr, start, count):
+        self.reads += 1
+        return [self.present.get(start + i, 0x8000) for i in range(count)]
+
+    def read_holding_registers(self, addr, start, count):
+        self.reads += 1
+        return [0] * count
+
+    def read_coils(self, addr, start, count):
+        self.reads += 1
+        return [0] * count
+
+    read_discrete_inputs = read_coils
+
+
+def _dtv(pub=None, **extra):
+    """A DTV configured WITHOUT `sensors_present` — the autodetect path."""
+    cfg = {"id": "dtv-COM4-3", "type": "dtv", "port": "/dev/COMtest",
+           "baudrate": 9600, "address": 3, "offline_after_fails": 3}
+    cfg.update(extra)
+    return bridge_dtv_ce.DTVPoller(cfg, pub if pub is not None else mock.Mock())
+
+
+# The 28 sensor channels (Input 1..30 minus the «Системные» 123/124).
+_DTV_SENSOR_NAMES = frozenset(
+    v[0] for v in bridge_dtv_ce.DTVPoller.DTV_REGS.values()
+) - frozenset(bridge_dtv_ce.DTV_CE_SYS_KEYS)
+_DTV_ALL_NAMES = frozenset(v[0] for v in bridge_dtv_ce.DTVPoller.DTV_REGS.values())
+
+
+def _sensor_meta_names(pub) -> set[str]:
+    """Sensor channels the poller published control meta for."""
+    return {c.args[1] for c in pub.pub_control_meta.call_args_list
+            if c.args[1] in _DTV_SENSOR_NAMES}
+
+
+def _meta_names_so_far(pub):
+    """control_names() of a Mock publisher: every control given meta so far
+    (what the real MQTTPublisher answers after setup + a late detection)."""
+    return sorted({c.args[1] for c in pub.pub_control_meta.call_args_list})
+
+
+class TestDtvSetupNeverBlocksThePort(unittest.TestCase):
+    """DTVPoller.setup() makes ONE autodetect attempt and never sleeps: the
+    old 5 x (read + sleep 3 s) loop ran on the port thread before any other
+    device's first poll, so a DTV answering «no sensors» held its port 15 s
+    (and a DTV silent at start was assumed to carry ALL sensors until the
+    next restart). Detection is retried from poll_io every
+    DTV_DETECT_RETRY_S under the normal back-off; the old bound — five empty
+    answers ⇒ «all present» — is kept at the same wall time."""
+
+    def test_setup_makes_one_detect_attempt_and_never_sleeps(self):
+        pub = mock.Mock()
+        p = _dtv(pub)
+        port = _AllAbsentPort()
+        p.get_port = lambda: port
+        with mock.patch.object(bridge_dtv_ce.time, "sleep") as sleep, \
+                mock.patch.object(bridge_device.DeviceLiveCache, "flush_file"):
+            p.setup()
+        sleep.assert_not_called()
+        self.assertEqual(port.reads, 1)
+        self.assertTrue(p._detect_pending)
+        # The coil writeback is subscribed regardless (buzzer, leds): /on from
+        # Alice reaches a DTV that was still booting at bridge start.
+        self.assertEqual(pub.subscribe_writeback.call_count, 2)
+        self.assertEqual(_sensor_meta_names(pub), set())
+
+    def test_explicit_empty_list_means_all_present_without_a_detect_read(self):
+        """`sensors_present: []` — what the panel writes when every sensor
+        checkbox is unchecked (mqtt.js DTV_SENSORS) — meant «all 28 present»
+        on HEAD (the old setup() fallback) and must stay so: no autodetect,
+        no detect read, the full set from construction."""
+        pub = mock.Mock()
+        p = _dtv(pub, sensors_present=[])
+        port = _AllAbsentPort()
+        p.get_port = lambda: port
+        with mock.patch.object(bridge_dtv_ce.time, "sleep") as sleep, \
+                mock.patch.object(bridge_device.DeviceLiveCache, "flush_file"):
+            p.setup()
+        self.assertEqual(p._sensors_present, set(_DTV_ALL_NAMES))
+        self.assertFalse(p._detect_pending)
+        self.assertEqual(port.reads, 0)
+        sleep.assert_not_called()
+        self.assertEqual(_sensor_meta_names(pub), set(_DTV_SENSOR_NAMES))
+
+    def test_silent_dtv_defers_detection_instead_of_assuming_all(self):
+        pub = mock.Mock()
+        p = _dtv(pub)
+        port = _RaisingPort()
+        p.get_port = lambda: port
+        with mock.patch.object(bridge_dtv_ce.time, "sleep") as sleep, \
+                mock.patch.object(bridge_device.DeviceLiveCache, "flush_file"):
+            p.setup()
+        # A silent DTV used to get meta for every sensor channel at setup.
+        self.assertEqual(_sensor_meta_names(pub), set())
+        self.assertTrue(p._detect_pending)
+        self.assertEqual(p._sensors_present, set())
+        self.assertEqual(port.reads, 1)
+        sleep.assert_not_called()
+        self.assertEqual(pub.subscribe_writeback.call_count, 2)
+
+    def test_detection_from_the_poll_cycle_publishes_the_detected_set_once(self):
+        clock = {"t": 1000.0}
+        pub = mock.Mock()
+        pub.control_names.side_effect = lambda _d: _meta_names_so_far(pub)
+        p = _dtv(pub)
+        port = _AllAbsentPort()
+        p.get_port = lambda: port
+        with mock.patch.object(bridge_device.time, "monotonic", lambda: clock["t"]), \
+                mock.patch.object(bridge_device.time, "sleep"), \
+                mock.patch.object(bridge_device.DeviceLiveCache, "flush_file"):
+            p.setup()                                   # detect read 1: empty
+            self.assertEqual(port.reads, 1)
+            port.present = {3: 215, 7: 450}             # the sensors come up
+            clock["t"] = 1001.0
+            p.poll_io()                                 # not due: no read
+            self.assertEqual(port.reads, 1)
+            self.assertEqual(_sensor_meta_names(pub), set())
+            clock["t"] = 1004.0
+            p.poll_io()                                 # due: detected
+            self.assertFalse(p._detect_pending)
+            self.assertEqual(p._sensors_present, {"temp_hdc1080", "humidity_hdc1080"})
+            self.assertEqual(_sensor_meta_names(pub), {"temp_hdc1080", "humidity_hdc1080"})
+            # The late meta is cleared of a stale retained error the way the
+            # scheduler's after-setup clear did for the coils and sys rows.
+            self.assertEqual(pub.clear_control_errors.call_count, 1)
+            cleared = set(pub.clear_control_errors.call_args.args[1])
+            self.assertTrue({"temp_hdc1080", "humidity_hdc1080"} <= cleared, cleared)
+            meta_calls = pub.pub_control_meta.call_count
+            clock["t"] = 1015.0
+            p.poll_io()                                 # a plain sensor poll
+            self.assertEqual(pub.pub_control_meta.call_count, meta_calls)
+            self.assertEqual(pub.clear_control_errors.call_count, 1)
+
+    def test_five_empty_answers_fall_back_to_all_present(self):
+        clock = {"t": 1000.0}
+        pub = mock.Mock()
+        pub.control_names.side_effect = lambda _d: _meta_names_so_far(pub)
+        p = _dtv(pub)
+        port = _AllAbsentPort()
+        p.get_port = lambda: port
+        with mock.patch.object(bridge_device.time, "monotonic", lambda: clock["t"]), \
+                mock.patch.object(bridge_device.time, "sleep"), \
+                mock.patch.object(bridge_device.DeviceLiveCache, "flush_file"):
+            p.setup()                                   # empty answer 1
+            for n in (2, 3, 4):
+                clock["t"] = 1000.0 + 3.0 * (n - 1)
+                p.poll_io()
+                self.assertTrue(p._detect_pending, n)
+                self.assertEqual(p._detect_empty_answers, n)
+                self.assertEqual(port.reads, n)         # the detect read only
+                self.assertEqual(_sensor_meta_names(pub), set(), n)
+            clock["t"] = 1012.0
+            p.poll_io()                                 # empty answer 5: the bound
+        self.assertFalse(p._detect_pending)
+        self.assertEqual(p._sensors_present, set(_DTV_ALL_NAMES))
+        self.assertEqual(_sensor_meta_names(pub), set(_DTV_SENSOR_NAMES))
+        self.assertEqual(pub.clear_control_errors.call_count, 1)
+
+    def test_silent_dtv_does_not_delay_the_other_devices_first_poll(self):
+        """Port level: a DTV answering «no sensors» first on the port, a Carel
+        second. time.sleep is a simulated clock; the Carel's first poll must
+        land before 5 simulated seconds (HEAD: 5 x 3 s of setup() sleeps)."""
+        dtv = _dtv()
+        dtv.get_port = lambda: _AllAbsentPort()
+        holder = []
+        carel = _OtherDeviceOnThePort(on_first_poll=lambda: holder[0].stop())
+        sched = bridge_device.PortCycleScheduler("/dev/COMtest", 9600, [dtv, carel])
+        holder.append(sched)
+        slept = {"s": 0.0}
+
+        def fake_sleep(s):
+            slept["s"] += float(s)
+
+        with mock.patch.object(bridge_device.time, "sleep", side_effect=fake_sleep), \
+                mock.patch.object(bridge_device.DeviceLiveCache, "flush_file"):
+            sched.run()
+        self.assertEqual(carel.polls, 1)
+        self.assertLess(slept["s"], 5.0,
+                        "the Carel's first poll waited %.1f simulated s on the "
+                        "DTV's setup()" % slept["s"])
+
+
+class TestLiveCacheUnknownIsNotOk(unittest.TestCase):
+    """DeviceLiveCache.flush_file: a device that has never answered a tracked
+    read is written ``ok: false`` — the panel's «Устройства» card and the
+    MQTT tab prefetch read this file, and until 1.0.7.15 a never-answering
+    device sat there as ok until its third failed read."""
+
+    def setUp(self):
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        self.dir = Path(tmp.name)
+        for p in (
+                mock.patch.object(bridge_mqtt, "LIVE_CACHE_DIR", self.dir),
+                mock.patch.dict(bridge_mqtt.DeviceLiveCache._online, clear=True),
+                mock.patch.dict(bridge_mqtt.DeviceLiveCache._controls, clear=True),
+                mock.patch.dict(bridge_mqtt.DeviceLiveCache._units, clear=True),
+                mock.patch.dict(bridge_mqtt.DeviceLiveCache._errors, clear=True),
+                mock.patch.dict(bridge_mqtt.DeviceLiveCache._sensor_types, clear=True)):
+            p.start()
+            self.addCleanup(p.stop)
+
+    def _file(self, device_id: str) -> dict:
+        return json.loads((self.dir / f"{device_id}.json").read_text(encoding="utf-8"))
+
+    def test_never_answering_device_is_cached_not_ok(self):
+        bridge_mqtt.DeviceLiveCache.set_unit("d1", "temp_hdc1080", "°C")   # meta
+        bridge_mqtt.DeviceLiveCache.flush_file("d1")
+        self.assertIs(self._file("d1")["ok"], False)
+
+    def test_first_successful_read_turns_ok_true_and_offline_false_again(self):
+        pub = _make_publisher()
+        pub.register_device("d1")
+        p = bridge_device.DevicePoller({"id": "d1"}, pub)   # offline_after_fails=3
+        bridge_mqtt.DeviceLiveCache.set_unit("d1", "temp_hdc1080", "°C")
+        p.mark_ok()
+        bridge_mqtt.DeviceLiveCache.flush_file("d1")
+        self.assertIs(self._file("d1")["ok"], True)
+        for _ in range(3):
+            p.mark_fail()
+        bridge_mqtt.DeviceLiveCache.flush_file("d1")
+        self.assertIs(self._file("d1")["ok"], False)
+
+    def test_led_optional_block_path_before_any_tracked_read(self):
+        """An LED whose base read has not happened yet, but whose writeback
+        echo (_wb_done) already cached a control: the control is in the file
+        and the device is still not ok — a write is not a tracked read."""
+        pub = _make_publisher()
+        pub._unchanged_republish_s = 0.0
+        pub._last_pub = {}
+        pub._ctrl_errors = {}
+        pub.pub = mock.Mock()
+        pub.register_device("led-COM3-13")
+        led = bridge_led.LedPoller(
+            {"id": "led-COM3-13", "type": "led", "port": "/dev/COMtest",
+             "baudrate": 9600, "address": 13}, pub)
+        led._wb_done("power", "1")
+        data = self._file("led-COM3-13")
+        self.assertEqual(data["controls"], {"power": "1"})
+        self.assertIs(data["ok"], False)
 
 
 if __name__ == "__main__":

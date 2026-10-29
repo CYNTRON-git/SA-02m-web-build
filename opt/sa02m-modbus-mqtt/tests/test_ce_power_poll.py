@@ -254,9 +254,14 @@ class TestDtvFmbInsurance(unittest.TestCase):
 
     def _poller(self):
         pub = mock.Mock()
+        # Explicit list: since 1.0.7.15 a DTV without one polls nothing until
+        # its sensors are detected (poll_io); the insurance cadence pinned
+        # here is independent of detection, so the panel's common case is used.
         return bridge.DTVPoller({
             "id": "dtv-COM1-3", "type": "dtv",
             "port": "/dev/COM1", "address": 3,
+            "sensors_present": ["temp_hdc1080", "humidity_hdc1080",
+                                "light_pct", "presence"],
         }, pub)
 
     def test_insurance_rereads_event_channels_low_rate(self):
