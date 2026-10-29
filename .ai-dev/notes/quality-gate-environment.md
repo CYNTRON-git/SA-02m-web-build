@@ -51,6 +51,8 @@ header; another harness that reports neither still prints `PASS` — the
 | `alice-conf-homes` | whole row SKIP (exit 77) on `os.name == "nt"`: it retargets Linux paths and needs a symlink-capable host. PASS under WSL as root (audit 2026-10-24) | WSL / Linux CI |
 | `factory-reset-runner` | whole row SKIP (exit 77) on `os.name == "nt"`: it needs a POSIX host (`grp`, euid, the retargeted runner). PASS under WSL as root (audit 2026-10-24) | WSL / Linux CI |
 | `status-coordinator-projection` | whole row SKIP (exit 77) off Linux: «Linux /proc + AF_UNIX required» (the script's own guard). PASS under WSL (audit 2026-10-24) | WSL / Linux CI |
+| `dtb-patch-unit` | PARTIAL: U8 (the real `tools/imaging/boot/sun8i-a40i-sk.dtb` through `dtc` + `fdtget`) is a native unittest skip without `device-tree-compiler` — `OK (skipped=1)`, 7 passed, here (2026-10-29); U1–U7 run everywhere | Linux CI (installs `device-tree-compiler` since 1.0.7.14, `web-quality.yml`) |
+| `dtb-patch-tool` | whole row SKIP (exit 77) when no `python3` / `python` / `py -3` executes (the real patcher runs through a shim; the Store `python3` stub is not a working interpreter). With the real Python dir first on `PATH` it RUNS and PASSes here (T1–T12, git-bash, 2026-10-29) — `dtc`/`fdtget` are shims, none needed | any host with a python; Linux CI |
 
 When reporting results, say "skipped", never "passed". A reviewer that reports a
 skipped row as a pass is making a false claim about verification.
