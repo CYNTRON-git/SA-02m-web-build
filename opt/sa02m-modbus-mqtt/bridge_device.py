@@ -220,7 +220,16 @@ class DevicePoller:
         self._fail_count += 1
         if self._fail_count >= self._fail_threshold:
             over = self._fail_count - self._fail_threshold
-            delay = min(self._backoff_base_s * (2 ** over), self._backoff_max_s)
+            # The exponent is capped (as bridge_fmb._note_failed_pass does)
+            # because 2 ** over is an int that outgrows a float after ~1024
+            # failures past the threshold: bench 1.135, 2026-10-29, a device
+            # silent for ~8.5 h made this line raise OverflowError BEFORE
+            # _backoff_until was set, so the device was never backed off again
+            # — full-rate polls, 3 log lines/s, the bridge at 23 % CPU. 2^16 x
+            # the base is far above any backoff_max_s; the cap is a guard, not
+            # a tunable.
+            delay = min(self._backoff_base_s * (2 ** min(over, 16)),
+                        self._backoff_max_s)
             self._backoff_until = time.monotonic() + delay
             DeviceLiveCache.set_online(self.device_id, False)
             if self._online:
@@ -229,6 +238,20 @@ class DevicePoller:
                                   "backing off polling%s", self._fail_count,
                                   self._offline_where())
                 self.pub.device_online(self.device_id, False)
+
+    def log_poll_fail(self, label: str, exc: BaseException) -> None:
+        """The per-attempt failure line of a poller: WARNING while the device
+        still counts as online (the failures leading to the offline
+        transition), DEBUG once it is flagged offline — a dead device is
+        reported once by "device offline after N failed reads", not again on
+        every back-off retry (2/min/device at the 30 s cap; seven unplugged
+        devices on bench 1.135 wrote ~20 k such lines a day). The transition
+        lines keep their levels; a recovery makes the next failure WARNING
+        again."""
+        if self._online:
+            self.log.warning("%s: %s", label, exc)
+        else:
+            self.log.debug("%s: %s", label, exc)
 
     def _offline_where(self) -> str:
         """TCP only: name the endpoint and unit id — a device that answers

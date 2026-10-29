@@ -273,7 +273,7 @@ class LedPoller(DevicePoller):
             span = (lm.MB2WS_LOCK_GATED_LAST - lm.MB2WS_LOCK_GATED_FIRST) + 1
             base = self.read_holding_registers(a, lm.MB2WS_LOCK_GATED_FIRST, span)
         except Exception as e:
-            self.log.warning("led poll: %s", e)
+            self.log_poll_fail("led poll", e)
             return None
         out: dict = {"base": [int(v) & 0xFFFF for v in base]}
         out["pwm"] = self._read_optional(

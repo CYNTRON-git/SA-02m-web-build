@@ -266,7 +266,7 @@ class MR02mPoller(DevicePoller):
             self._apply_configured_ai_sensor_types()
             return True
         except Exception as e:
-            self.log.error("init_module: %s", e)
+            self.log_poll_fail("init_module", e)
             return False
 
     def _apply_configured_ai_sensor_types(self) -> None:
