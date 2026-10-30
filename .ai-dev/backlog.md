@@ -2,7 +2,7 @@
 
 Recorded findings and deferred work (`.ai-dev/procedures/backlog.md` owns the
 format). One status per finding: `- [OPEN|RESOLVED] <date> <item>`. Resolved
-entries are pruned (history lives in git); last prune 2026-10-30 (audit 2026-10-30 F5: the default-password honesty item removed — `docs/threat-model.md` §4 states the published default since 1.0.7.2; the 1.0.7.17 RESOLVED entry removed; the Alice threat-model item re-scoped to its residue; item A10 of the 1.0.6.53 advisories removed — the entry it pointed at is gone; the removed text is that commit's diff of this file).
+entries are pruned (history lives in git); last prune 2026-10-30 (audit 2026-10-30 F5: the default-password honesty item removed — `docs/threat-model.md` §4 states the published default since 1.0.7.2; the 1.0.7.17 RESOLVED entry removed; the Alice threat-model item re-scoped to its residue; the 1.0.6.53 review-advisories entry removed — its A10 pointed at a pruned entry and the line ref its A8 asked to fix no longer exists in `docs/deployment.md`; the removed text is in git history, in the diffs of this file).
 
 ## Open
 
@@ -135,9 +135,6 @@ entries are pruned (history lives in git); last prune 2026-10-30 (audit 2026-10-
   runner's health gate hard-codes `http://127.0.0.1:9999/login.html` (`etc/sa02m-update-runner.sh:857`),
   so a board installed with `--port N` fails the gate and rolls back EVERY OTA — the persisted port must
   feed the health probe too.
-- [OPEN] 2026-09-24 **[LOW] 1.0.6.53 review advisories left open.** A8: `docs/deployment.md` (nginx
-  lanes bullet) cites `11-devices.sh:94-101` for the `nginx -t` + reload, which sit at `:102-108` — cite
-  `:94-108`.
 
 - [OPEN] 2026-09-16 **[MED] Retro-review owed for 1.0.6.46 (`1dfa503`), the one direct push to `main` (audit 2026-09-16 H1).** `1dfa503` (2026-09-10, 13 files incl. `bridge_fmb.py`/`bridge_mr02m.py`) landed with NO PR and no review stamp. The protection half of H1 is resolved: live `gh api …/branches/main/protection` on 2026-10-24 (audit F6) reads `contexts:["quality"]`, `strict:true`, `enforce_admins:true`, force pushes/deletions off (`.ai-dev/notes/ci-budget.md`). Still owed: a retroactive Reviewer pass over `1dfa503`'s diff.
 - [OPEN] 2026-09-16 **[MED] Audit M7: verification coverage** — no dependency-CVE row (pip deps installed unpinned `scripts/lib.sh:739-763`; Node-RED payload; frpc) — re-rank the 08-28 LOW item; 16 mutating/root-capable CGIs (cmd_exec, hw_set, kernel_ctrl, reboot, restart, web_creds, web_factory_reset, storage_format_set, mqtt_config, mqtt_ctrl, cpu_profile, gateway_ctrl, web_update_upload/cancel, ssh_debug, web_backup) have zero behavioural test references. **Operator decision owed:** add `pip-audit` / `npm audit --package-lock-only` rows, or record the accepted risk (1.0.6.49 plan: no row until decided). The CGI half now has a shape to reuse — `cgi-csrf-behaviour` covers two of the 16; the rest stay uncovered.
