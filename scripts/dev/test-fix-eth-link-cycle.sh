@@ -44,9 +44,9 @@
 #       shim flips the sandbox carrier on `ip link set eth0 up`). The SAME
 #       pass must re-read carrier, log «линк появился после link cycle 1»,
 #       remove the counter and run the carrier-up path — `ip route add
-#       default via 192.168.1.1 dev eth0`. On a board the udev carrier=1
-#       start of fix-eth@ that would have done it is swallowed while this
-#       oneshot instance is still activating, and the routes the cycle's
+#       default via 192.168.1.1 dev eth0`. On a board nothing else reacts
+#       to link-up: a carrier change emits no uevent, so the carrier=1 udev
+#       rule never starts fix-eth@, and the routes the cycle's
 #       `ip link set down` flushed waited 65 s for net-watchdog (bench 1.135,
 #       2026-10-30; docs/bugs/BUGLOG.md).   <- RED on the 1.0.7.19 script
 #       (no route add, counter=1, no log line), GREEN after.

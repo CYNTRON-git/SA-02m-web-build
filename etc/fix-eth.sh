@@ -285,12 +285,13 @@ recover_iface() {
             mii-tool -r "$iface" 2>/dev/null || ethtool -r "$iface" 2>/dev/null || true
             sleep 3
             # A slow PHY can come up inside this ~6 s cycle (it did on the
-            # bench 1.135 cold boot of 2026-10-30, docs/bugs/BUGLOG.md). Its
-            # udev carrier=1 event then starts fix-eth@ while this oneshot
-            # instance is still activating, and systemd swallows that start —
-            # so nothing restored the routes the `ip link set down` above
-            # flushed until net-watchdog, 65 s later. Re-read carrier and
-            # continue into the carrier-up path in this same pass.
+            # bench 1.135 cold boot of 2026-10-30, docs/bugs/BUGLOG.md). A
+            # carrier change emits no uevent (udevadm monitor on 1.135), so
+            # the carrier=1 rule in 99-lan-recovery.rules never starts
+            # fix-eth@ and nothing reacts to link-up between net-watchdog
+            # passes — the routes the `ip link set down` above flushed came
+            # back 65 s later. Re-read carrier and continue into the
+            # carrier-up path in this same pass.
             carrier_up "$iface" && _link_after_cycle=1
         elif [ "$admin_up" = "1" ]; then
             # Admin UP and no full cycle due — the budget is spent (or, in
