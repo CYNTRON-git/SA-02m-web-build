@@ -197,7 +197,8 @@ sa02m-dns-ensure`). Это сознательно: плата, пишущая э
 1. **Файл доезжает** — определяется `DST_RE` в `etc/sa02m-update-runner.sh` (и
    его копией в `scripts/pack-offline-update.py`): разрешены
    `/usr/local/{sbin,lib,libexec}/` и `/etc/systemd/system/sa02m-` (совпадение
-   по префиксу).
+   по префиксу), а с 1.0.7.19 ещё один точный путь `/usr/local/bin/fix-eth.sh`
+   (ярусом — `docs/contracts/web-update.md`, «Ярусное назначение»).
 2. **Юнит включается** — определяется списком `services.enable` в манифесте.
    Апдейтер включает (`systemctl enable`) **только** то, что перечислено там
    (`etc/sa02m-update-runner.sh`, цикл «enabled after apply»). Доставки файла
@@ -247,7 +248,7 @@ sa02m-dns-ensure`). Это сознательно: плата, пишущая э
 | `/usr/local/sbin/sa02m-wait-carrier.sh` | **да** |
 | `/usr/local/sbin/sa02m-eth-coldboot.sh` | **да** |
 | `/etc/systemd/system/sa02m-dns-ensure.service` | **да** (префикс `sa02m-`) — и он же в `services.enable`, иначе юнит приехал бы мёртвым |
-| `fix-eth.sh` | нет — и причина не в `DST_RE`: репозиторный путь `etc/fix-eth.sh` вообще не отображается `map_dst` (тот берёт из `etc/` только `sa02m-*`), поэтому до проверки префикса дело не доходит |
+| `/usr/local/bin/fix-eth.sh` | **да, ярусом с 1.0.7.19** — `docs/contracts/web-update.md` («Ярусное назначение») |
 | оба drop-in'а `*.service.d/sa02m-carrier-wait.conf` | нет — каталог не начинается с `sa02m-` |
 
 Следствие, точно: **вся DNS-гарантия (§3) достигает поля по OTA** — ради этого

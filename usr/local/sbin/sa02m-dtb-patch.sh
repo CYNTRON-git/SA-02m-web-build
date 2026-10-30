@@ -21,13 +21,21 @@
 # Commands:
 #   check             read-only, no root, no mount: prints the running DT's EMAC
 #                     PHY compatible, phy_id and bound driver (sysfs uevent), the
-#                     GMAC PHY's where present. Exit 0 = ICPlus IP101A|IP101G,
-#                     1 = another driver (Generic PHY: only fix-eth's autoneg
-#                     restart covers a late cable), 2 = node/sysfs unreadable.
+#                     GMAC PHY's where present, and a ВНИМАНИЕ line for each live
+#                     PHY list that is not canonical (a string twice, or no
+#                     ethernet-phy-ieee802.3-c22 — a blob from the early patcher).
+#                     The warning never changes the exit code: 0 = ICPlus
+#                     IP101A|IP101G, 1 = another driver (Generic PHY), 2 =
+#                     node/sysfs unreadable. On a cold boot the link comes from
+#                     fix-eth's link cycles (down/up + autoneg restart), not from
+#                     the driver; under icplus the down/up did it and a lone
+#                     autoneg restart did not (bench 1.135, BUGLOG 2026-10-30).
 #   apply [--dry-run] root. For EVERY name of DTB_NAMES present on FAT,
 #                     independently: dtc decompile -> patcher -> (unchanged =>
 #                     "already-patched") -> dtc compile -> fdtget verify (EMAC
-#                     compatible[0], reset-deassert-us, GMAC icplus where the
+#                     compatible[0], reset-deassert-us, the EMAC list canonical
+#                     — no string twice, ethernet-phy-ieee802.3-c22 present —,
+#                     then GMAC icplus and the same canonical-list rule where the
 #                     node exists, size >= 16 KiB and within 8 KiB of the
 #                     original) -> backup to BACKUP_DIR/dtb-backup-<name>-<ts>
 #                     -> atomic write to FAT -> the same for each canonical copy
@@ -71,6 +79,7 @@ LOCK_DIR=/run/lock/sa02m-dtb-patch.d
 
 EMAC_ID_COMPAT=ethernet-phy-id0243.0c54
 GMAC_COMPAT=icplus,ip101a
+PHY_FALLBACK_COMPAT=ethernet-phy-ieee802.3-c22
 DEASSERT_US=500000
 SIZE_MIN=16384
 SIZE_SLACK=8192
@@ -100,8 +109,28 @@ phy_driver() {  # $1 = sysfs device dir
     printf '%s' "${d:-none}"
 }
 
+# What is wrong with a PHY compatible list, or nothing for a canonical one:
+# a token twice, or the generic c22 binding missing — the two shapes the
+# pre-1.0.7.21 patcher left on bench 1.135 (GMAC icplus,ip101a x4, EMAC id
+# only; docs/bugs/BUGLOG.md 2026-10-30). One home for verify_blob and check.
+list_defect() {  # $1 = the strings, space-separated (fdtget -ts / proc NULs as spaces)
+    local dup
+    dup=$(awk '{ for (i = 1; i <= NF; i++) if (seen[$i]++) { print $i; exit } }' <<<"$1")
+    [ -z "$dup" ] || { printf '%s повторён' "$dup"; return 0; }
+    [[ " $1 " == *" $PHY_FALLBACK_COMPAT "* ]] || printf 'нет %s' "$PHY_FALLBACK_COMPAT"
+}
+
+# check only warns: the exit code stays the driver verdict.
+warn_live_list() {  # $1 = eth0|eth1, $2 = the live strings
+    local bad
+    bad=$(list_defect "$2")
+    [ -z "$bad" ] && return 0
+    printf '%s PHY: ВНИМАНИЕ: список compatible не канонический: %s (%s) — так его портила ранняя версия патчера (BUGLOG 2026-10-30); исправление: %s apply, затем перезагрузка\n' \
+        "$1" "$bad" "${2% }" "$(basename "$0")"
+}
+
 cmd_check() {
-    local compat phy_id drv gmac
+    local compat phy_id drv gmac gproc
     if [ ! -r "$PROC_PHY/compatible" ] || [ ! -r "$SYS_PHY/phy_id" ] || [ ! -r "$SYS_PHY/uevent" ]; then
         echo "eth0 PHY: узел DTB или sysfs недоступен ($PROC_PHY, $SYS_PHY) — не SA-02m или загружен другой DTB"
         return 2
@@ -110,17 +139,23 @@ cmd_check() {
     phy_id=$(head -n 1 "$SYS_PHY/phy_id")
     drv=$(phy_driver "$SYS_PHY")
     printf 'eth0 PHY: compatible = %s\n' "$compat"
+    warn_live_list eth0 "$compat"
     printf 'eth0 PHY: phy_id = %s, driver = %s\n' "$phy_id" "$drv"
     gmac="$(dirname "$SYS_PHY")/stmmac-1:00"
     if [ -r "$gmac/phy_id" ]; then
         printf 'eth1 PHY: phy_id = %s, driver = %s\n' "$(head -n 1 "$gmac/phy_id")" "$(phy_driver "$gmac")"
+    fi
+    # The GMAC PHY node: PROC_PHY with its EMAC DT path swapped for the GMAC one.
+    gproc="${PROC_PHY%"$EMAC_PHY_PATH"}$GMAC_PHY_PATH"
+    if [ -r "$gproc/compatible" ]; then
+        warn_live_list eth1 "$(tr '\0' ' ' < "$gproc/compatible")"
     fi
     case "$drv" in
         "ICPlus IP101A"|"ICPlus IP101G")
             echo "eth0 PHY под драйвером icplus — OK"
             return 0 ;;
         *)
-            echo "eth0 PHY под драйвером «$drv», не icplus: линк после позднего кабеля держит только fix-eth (перезапуск автосогласования). Исправление: $(basename "$0") apply, затем перезагрузка"
+            echo "eth0 PHY под драйвером «$drv», не icplus. Исправление DTB: $(basename "$0") apply, затем перезагрузка — только если это разрешено в docs/deployment.md (строка «boot DTB»). Линк при холодной загрузке поднимают циклы fix-eth (перезапуск интерфейса и автосогласования), а не драйвер"
             return 1 ;;
     esac
 }
@@ -151,17 +186,22 @@ write_atomic() {  # $1 = src, $2 = dst
 # Every check reads the COMPILED blob through fdtget (what the kernel will see),
 # never the dts text. Any miss => the name fails and its FAT file stays as is.
 verify_blob() {  # $1 = new blob, $2 = original blob, $3 = name
-    local first deassert gcompat size osize delta
-    first=$(fdtget -ts "$1" "$EMAC_PHY_PATH" compatible 2>/dev/null | awk '{ print $1; exit }')
+    local ecompat first deassert gcompat bad size osize delta
+    ecompat=$(fdtget -ts "$1" "$EMAC_PHY_PATH" compatible 2>/dev/null)
+    first=$(awk '{ print $1; exit }' <<<"$ecompat")
     [ "$first" = "$EMAC_ID_COMPAT" ] || { report "$3" "failed: verify: EMAC compatible[0] = '${first:-}' (ожидался $EMAC_ID_COMPAT)"; return 1; }
     deassert=$(fdtget "$1" "$EMAC_PHY_PATH" reset-deassert-us 2>/dev/null | awk '{ print $1; exit }')
     [ "$deassert" = "$DEASSERT_US" ] || { report "$3" "failed: verify: EMAC reset-deassert-us = '${deassert:-}' (ожидалось $DEASSERT_US)"; return 1; }
+    bad=$(list_defect "$ecompat")
+    [ -z "$bad" ] || { report "$3" "failed: verify: EMAC compatible: $bad ('$ecompat')"; return 1; }
     if fdtget "$1" "$GMAC_PHY_PATH" compatible >/dev/null 2>&1; then
         gcompat=$(fdtget -ts "$1" "$GMAC_PHY_PATH" compatible 2>/dev/null)
         case " $gcompat " in
             *" $GMAC_COMPAT "*) ;;
             *) report "$3" "failed: verify: GMAC compatible без $GMAC_COMPAT ('${gcompat:-}')"; return 1 ;;
         esac
+        bad=$(list_defect "$gcompat")
+        [ -z "$bad" ] || { report "$3" "failed: verify: GMAC compatible: $bad ('$gcompat')"; return 1; }
     fi
     size=$(stat -c %s "$1" 2>/dev/null || echo 0)
     osize=$(stat -c %s "$2" 2>/dev/null || echo 0)
