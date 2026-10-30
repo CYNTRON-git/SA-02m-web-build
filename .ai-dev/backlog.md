@@ -2,12 +2,18 @@
 
 Recorded findings and deferred work (`.ai-dev/procedures/backlog.md` owns the
 format). One status per finding: `- [OPEN|RESOLVED] <date> <item>`. Resolved
-entries are pruned (history lives in git); last prune 2026-10-24 (audit 2026-10-24 F6: H2 billing lock, the 1.0.7.5 dashboard freshness flicker, the shipped CE CT write and one RESOLVED entry removed; the three module-size worklists folded into one; the removed text is that commit's diff of this file).
+entries are pruned (history lives in git); last prune 2026-10-30 (audit 2026-10-30 F5: the default-password honesty item removed — `docs/threat-model.md` §4 states the published default since 1.0.7.2; the 1.0.7.17 RESOLVED entry removed; the Alice threat-model item re-scoped to its residue; the 1.0.6.53 review-advisories entry removed — its A10 pointed at a pruned entry and the line ref its A8 asked to fix no longer exists in `docs/deployment.md`; the removed text is in git history, in the diffs of this file).
 
 ## Open
 
+- [OPEN] 2026-10-30 **[LOW] `etc/fix-eth1-internet.sh` builds the boot-FAT DTB through fixed, predictable
+  `/tmp` names (audit 2026-10-30 F1, LOW part).** The Operator-run root one-shot copies the FAT DTB to
+  `/tmp/src.dtb`, decompiles to `/tmp/patch.dts`, compiles `/tmp/patched.dtb` and copies that onto the boot FAT
+  and `/usr/local/share/sa02m/` (`:84-170`); `/tmp/boot.scr.txt` (`:230`) is the same shape. `/tmp` is shared
+  with every local service account (actor A2), so a pre-created or raced name can feed root a foreign DTB or
+  boot script. Fix: one `mktemp -d` work dir, or retire the script (see the «Route-belt leftovers» entry, item (2)).
+  Not started.
 - [RESOLVED] 2026-10-30 **[LOW] `sa02m-dtb-patch.sh` `verify_blob` does not catch the idempotency defect class (review of the eth0-PHY DTB change, round 1 advisory A3; BUGLOG 2026-10-30):** it checks only the EMAC first token, so a blob with a duplicated `icplus,ip101a` on the GMAC PHY or an EMAC list missing `ethernet-phy-ieee802.3-c22` (the bench 1.135 apply-#3 state, BUGLOG 2026-10-30) passes verification and is written to the FAT. Fix on its own branch (the DTB change's plan kept the `.sh` out of scope): after `fdtget -ts`, fail (exit 5, FAT untouched) when either PHY list has a duplicate token or lacks c22; RED-first case in `scripts/dev/test-dtb-patch-tool.sh` with the fdtget shim emitting the damaged lists. Fixed in 1.0.7.23: `verify_blob` refuses a duplicated string or a missing c22 in either PHY list (exit 5, FAT untouched), `check` warns on a non-canonical live list; T14–T16 RED-first (BUGLOG 2026-10-30, branch 1.0.7.23).
-- [RESOLVED] 2026-10-29 **[MED] Same class as the 1.0.7.12 Carel fix, left outside its fence (review r1/r2 A2/A3): `DTVPoller.setup()` autodetect loop (5 × 3 s) held the port thread while a DTV answered «no sensors» (a silent one broke out after one timeout but was assumed to carry ALL sensors), and `DeviceLiveCache.flush_file` defaulted an unknown device to `ok:true` in the panel live cache.** Fixed in 1.0.7.17 (branch `1.0.7.17`): one non-blocking detect attempt at setup + retry from `poll_io` every 3 s under the back-off, the «5 empty answers ⇒ all present» bound kept, an explicit empty `sensors_present: []` still = all; unknown ⇒ `ok:false` in the live cache until the first tracked read; RED-first tests `TestDtvSetupNeverBlocksThePort` / `TestLiveCacheUnknownIsNotOk` in `test_device_availability.py`.
 - [OPEN] 2026-10-29 **[LOW] `opt/sa02m-modbus-mqtt/bridge_mr02m.py` is 1038 lines (review r2 A6)** — over the ~1000 default; `decompose` candidate (behaviour net = the 941-test bridge suite). Not started.
 - [OPEN] 2026-10-29 **[MED] Panel network save refuses on a board whose interfaces.d conf carries a hand-added
   static route (1.0.7.18 follow-up, bench 1.135).** `etc/sa02m-iface-conf-write.sh` allows only the KLogic hook and
@@ -142,10 +148,6 @@ entries are pruned (history lives in git); last prune 2026-10-24 (audit 2026-10-
   runner's health gate hard-codes `http://127.0.0.1:9999/login.html` (`etc/sa02m-update-runner.sh:857`),
   so a board installed with `--port N` fails the gate and rolls back EVERY OTA — the persisted port must
   feed the health probe too.
-- [OPEN] 2026-09-24 **[LOW] 1.0.6.53 review advisories left open.** A8: `docs/deployment.md` (nginx
-  lanes bullet) cites `11-devices.sh:94-101` for the `nginx -t` + reload, which sit at `:102-108` — cite
-  `:94-108`. A10: the backlog entry «The GitHub-OTA runner never deploys the nginx site config» mixes
-  English and Russian (options (a)/(b)); make it one language (English, machine-facing backlog).
 
 - [OPEN] 2026-09-16 **[MED] Retro-review owed for 1.0.6.46 (`1dfa503`), the one direct push to `main` (audit 2026-09-16 H1).** `1dfa503` (2026-09-10, 13 files incl. `bridge_fmb.py`/`bridge_mr02m.py`) landed with NO PR and no review stamp. The protection half of H1 is resolved: live `gh api …/branches/main/protection` on 2026-10-24 (audit F6) reads `contexts:["quality"]`, `strict:true`, `enforce_admins:true`, force pushes/deletions off (`.ai-dev/notes/ci-budget.md`). Still owed: a retroactive Reviewer pass over `1dfa503`'s diff.
 - [OPEN] 2026-09-16 **[MED] Audit M7: verification coverage** — no dependency-CVE row (pip deps installed unpinned `scripts/lib.sh:739-763`; Node-RED payload; frpc) — re-rank the 08-28 LOW item; 16 mutating/root-capable CGIs (cmd_exec, hw_set, kernel_ctrl, reboot, restart, web_creds, web_factory_reset, storage_format_set, mqtt_config, mqtt_ctrl, cpu_profile, gateway_ctrl, web_update_upload/cancel, ssh_debug, web_backup) have zero behavioural test references. **Operator decision owed:** add `pip-audit` / `npm audit --package-lock-only` rows, or record the accepted risk (1.0.6.49 plan: no row until decided). The CGI half now has a shape to reuse — `cgi-csrf-behaviour` covers two of the 16; the rest stay uncovered.
@@ -436,17 +438,12 @@ entries are pruned (history lives in git); last prune 2026-10-24 (audit 2026-10-
   спецсимволов»); so the field help also says: a name meant to survive auto-add in the app is
   best kept punctuation-free and ≤ 25 chars — that limit lives in Yandex's UI, not its API.
 
-- [OPEN] 2026-08-26 **[HIGH] B2 honesty gap: the committed default password `cyntron`
-  is a threat-model omission (audit H1).** The constant lives in `install.sh:28`,
-  `create-sa02m-rootfs.sh:35`, `serial-restore-ssh.py:24`, `sa02m-check-perms.py:22`,
-  `pack-factory-defaults.py:228`; `docs/threat-model.md` names password-change as the
-  mitigation but never states the default is public. Amend the threat model (the
-  forced-change product feature is the separate 2026-07-14 entry).
-- [OPEN] 2026-08-26 **[MED] Threat model has no Alice section (audit M1).** The
-  1.0.6.14/15 surface — `/var/lib/sa02m-alice` www-data 0700 (device private key written
-  by the CGI), `/etc/sa02m-alice` 0770 group-write, the argument-unrestricted sudoers
-  trigger with enable/disable/restart verbs, the CGI nudges — is homed only in review
-  stamps that ship-beat deletion removes. Give it a durable home.
+- [OPEN] 2026-08-26 **[MED] Threat model: the Alice client still has no §3 trust boundary (audit M1,
+  re-scoped by audit 2026-10-30 F5).** Actor A6, the `controller_unlink` row, the `/etc/sa02m-alice`
+  root-script row and the config-API row in §4 cover the rest of the original item, and the sudoers trigger
+  is now verb-enumerated (`etc/sudoers.d/sa02m-alice`). Residue: `/var/lib/sa02m-alice` (www-data 0700,
+  the device private key written by the CGI) and the outbound mTLS channel to `alice.cyntron.ru` are named
+  in no §3 boundary subsection, unlike cloud, HomeKit, Home Connect, audio and vPLC. Add one.
 - [OPEN] 2026-09-23 **[LOW] Known limit: the delivering GitHub OTA on a ≤1.0.6.51 board still
   freezes at 85 %.** `self_reexec_before_deploy` copies the INSTALLED runner and execs the copy,
   so the whole delivering apply (health gate included) runs under the OLD code and dies at
