@@ -32,7 +32,7 @@ entries are pruned (history lives in git); last prune 2026-10-24 (audit 2026-10-
   `test_a_deep_chain_slipped_in_through_the_sandbox_ends_within_budget` (`RecursionError … while encoding a
   JSON object`, 1 of 331 — the Windows CPython recursion budget is the suspect; same single error on a pristine
   `git archive origin/1.0.7.12` extract, 2026-10-29). All reproduced by the
-  Builder, the Reviewer and the Orchestrator on throwaway pristine extracts; none touches a 1.0.7.14 file. Fix: add them to the
+  Builder, the Reviewer and the Orchestrator on throwaway pristine extracts; none touches a file of the eth0-PHY DTB change. Fix: add them to the
   FAIL table with the cause, or make the cases SKIP (exit 77) off Linux the way `status-coordinator-projection`
   does. CI (Linux) is green on both.
 
