@@ -271,6 +271,13 @@ if [ -f "$SCRIPT_DIR/../etc/sa02m-repair-web-env.sh" ]; then
     sed -i 's/\r$//' /usr/local/sbin/sa02m-repair-web-env
     /usr/local/sbin/sa02m-repair-web-env 2>/dev/null || true
 fi
+# web_creds.cgi pipes the new credentials to this helper on stdin; an older
+# helper reads the retired /tmp staging file instead (audit 2026-10-30 F1), so
+# it ships with the panel (docs/deployment.md, privileged helpers).
+if [ -f "$SCRIPT_DIR/../etc/sa02m-commit-web-env.sh" ]; then
+    sa02m_atomic_install -m 755 "$SCRIPT_DIR/../etc/sa02m-commit-web-env.sh" /usr/local/sbin/sa02m-commit-web-env
+    sed -i 's/\r$//' /usr/local/sbin/sa02m-commit-web-env
+fi
 if [ -f "$SCRIPT_DIR/../etc/sa02m-web-reboot.sh" ]; then
     sa02m_atomic_install -m 755 "$SCRIPT_DIR/../etc/sa02m-web-reboot.sh" /usr/local/sbin/sa02m-web-reboot.sh
 fi

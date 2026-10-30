@@ -253,6 +253,10 @@ install-profile|scripts/update-www-only.sh|log INFO "/etc/sudoers.d/$_sud: мо�
 install-profile|etc/sa02m-web-update-apply.sh|exec "$RUNNER" apply
 install-profile|www/network_config/cgi-bin/sa02m_agent_api.cgi|echo '"'"'{"ok":true,"state":"not_installed"
 i2c2-bus-recovery|etc/sa02m-pre-start.sh|sa02m_i2c2_gpio_recover || true
+web-creds-commit|etc/sa02m-commit-web-env.sh|-le "$MAX_BYTES"
+web-creds-commit|www/network_config/cgi-bin/web_creds.cgi|sudo -n /usr/local/sbin/sa02m-commit-web-env
+sudoers-pin-contract|scripts/update-www-only.sh|sa02m_atomic_install -m 755 "$SCRIPT_DIR/../etc/sa02m-commit-web-env.sh"
+sudoers-pin-contract|scripts/03-webserver.sh|sa02m_atomic_install -m 755 "$SCRIPT_DIR/../etc/sa02m-commit-web-env.sh"
 ota-dst-allowlist-parity|opt/sa02m-update/lib/validate_package.py|re.compile(r"^/etc/nginx/"),
 ota-dst-allowlist-parity|scripts/pack-offline-update.py|r"etc/systemd/system/sa02m-|"
 ota-dst-allowlist-parity|etc/sa02m-update-runner.sh|r"etc/systemd/system/sa02m-|"
