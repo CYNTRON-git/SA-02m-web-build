@@ -39,6 +39,17 @@
 #   C4  admin DOWN (flags=0x1002), budget spent — and budget unspent: nothing
 #       is touched (no ip link set, no mii-tool, no ethtool), «пропуск».
 #   C5  mii-tool not installed, budget spent: `ethtool -r eth0` instead.
+#   C6  carrier=0 at entry, admin UP, budget unspent, address present, no
+#       default route; the link comes up DURING the link cycle (the `ip`
+#       shim flips the sandbox carrier on `ip link set eth0 up`). The SAME
+#       pass must re-read carrier, log «линк появился после link cycle 1»,
+#       remove the counter and run the carrier-up path — `ip route add
+#       default via 192.168.1.1 dev eth0`. On a board the udev carrier=1
+#       start of fix-eth@ that would have done it is swallowed while this
+#       oneshot instance is still activating, and the routes the cycle's
+#       `ip link set down` flushed waited 65 s for net-watchdog (bench 1.135,
+#       2026-10-30; docs/bugs/BUGLOG.md).   <- RED on the 1.0.7.19 script
+#       (no route add, counter=1, no log line), GREEN after.
 #
 # Non-vacuous: a failed or over-wide retarget, a leftover real root on an
 # executable line, a missing script, or a shim that was never invoked across
@@ -52,6 +63,11 @@
 #   witness; C1, C3, C4 pass. Commenting the exhausted-branch `mii-tool -r`
 #   line out of a copy gives the same 4 FAIL (registered in
 #   comment-mutation-proof). The override never edits the real tree.
+#   C6, against the 1.0.7.19 script (`git show b68f8aca:etc/fix-eth.sh`):
+#   1 FAIL — «C6: linkset=2 route_add=0 counter=1 log_line=0» (the pass
+#   returns after the cycle; C1-C5 pass). Commenting the
+#   `carrier_up "$iface" && _link_after_cycle=1` line out of a copy gives the
+#   same single C6 FAIL (registered in comment-mutation-proof).
 #
 # Off-board only: /usr/local/{bin,sbin} helpers the script probes with -x / -f
 # (sa02m-eth0-led.sh, sa02m-dns-ensure.sh, sa02m-routes-ensure.sh,
@@ -116,15 +132,21 @@ fi
 # ── PATH shims ─────────────────────────────────────────────────────────────
 # `ip` answers `addr show` / `route show` from per-interface state files
 # (.addr / .routes next to the sysfs stand-ins); every other form is recorded
-# and succeeds. `mii-tool -r` prints what the real one prints on stdout, so
+# and succeeds; `ip link set <iface> up` also brings that iface's sandbox
+# carrier to 1 while $FLIP names it (C6 only — empty otherwise, so C1 keeps
+# carrier 0 through its cycles). `mii-tool -r` prints what the real one prints on stdout, so
 # the «silenced on the exhausted path» rule is observable. `ping` always
 # fails (a gateway that never answered is the isolated-LAN case, logged once
 # and not an outage). `systemctl` reports every unit inactive/dead, so the
 # carrier-up path does not believe ifupdown is still running. `sleep` is a
 # recorded no-op: C1 would otherwise wait 25 real seconds.
+FLIP="$T/carrier-flip"             # C6: holds an iface name; its carrier goes 1 on `ip link set <iface> up`
 cat > "$BIN/ip" <<SHIM
 #!/bin/bash
 echo "ip \$*" | tee -a "$CALLS_ALL" >> "$CALLS"
+if [ "\$1 \$2 \$4" = "link set up" ] && [ -s "$FLIP" ] && [ "\$3" = "\$(cat "$FLIP")" ]; then
+    printf '1\n' > "$SYS/\$3/carrier"
+fi
 for _a; do _last=\$_a; done
 case "\$*" in
   "-4 addr show dev "*) [ -f "$SYS/\$_last/.addr" ] && cat "$SYS/\$_last/.addr" ;;
@@ -275,6 +297,26 @@ if [ "$(n_mii)" = 0 ] && [ "$(n_ethtool)" = 1 ] && [ "$(n_linkset)" = 0 ] \
     ok "C5: with mii-tool absent the exhausted pass falls back to ethtool -r"
 else
     bad "C5: mii=$(n_mii) ethtool=$(n_ethtool) linkset=$(n_linkset): $(grep -F 'eth0:' "$OUT" | head -1)"
+fi
+
+# ═══ C6: link comes up during the cycle — routes restored in the same pass ══
+# (mii-tool is absent since C5, so this cycle restarts autoneg via ethtool -r;
+#  the flip rides `ip link set eth0 up`, which runs either way.)
+seed eth0 0 0x1003 down
+printf '    inet 192.168.1.135/24 brd 192.168.1.255 scope global eth0\n' > "$SYS/eth0/.addr"
+rm -f "$COUNTER"
+printf 'eth0\n' > "$FLIP"
+run_pass eth0
+c6_carrier=$(cat "$SYS/eth0/carrier")
+: > "$FLIP"
+[ "$c6_carrier" = 1 ] || bad "C6: fixture — the ip shim never flipped carrier to 1 (no \`ip link set eth0 up\`?), the case tested nothing"
+if [ "$(n_calls '^ip link set eth0 down$')" = 1 ] && [ "$(n_calls '^ip link set eth0 up$')" = 1 ] \
+   && [ "$(n_calls '^ip route add default via 192\.168\.1\.1 dev eth0$')" = 1 ] \
+   && [ "$(counter)" = none ] \
+   && grep -Fq 'линк появился после link cycle 1' "$OUT"; then
+    ok "C6: link up during cycle 1 — same pass logs it, removes the counter and restores the default route"
+else
+    bad "C6: linkset=$(n_linkset) route_add=$(n_calls '^ip route add default via 192\.168\.1\.1 dev eth0$') counter=$(counter) log_line=$(grep -c 'линк появился после link cycle' "$OUT"): $(grep -F 'eth0:' "$OUT" | tail -1)"
 fi
 
 # ── harness non-vacuity ────────────────────────────────────────────────────

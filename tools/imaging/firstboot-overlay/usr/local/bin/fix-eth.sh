@@ -259,7 +259,7 @@ recover_iface() {
     #    Stuck PHY with cable often shows operstate=dormant|unknown (admin UP),
     #    not only "down" — gating on down alone skipped recovery until re-plug.
     if ! carrier_up "$iface"; then
-        local oper flags admin_up=0
+        local oper flags admin_up=0 _link_after_cycle=0
         oper=$(cat "/sys/class/net/${iface}/operstate" 2>/dev/null || echo unknown)
         flags=$(cat "/sys/class/net/${iface}/flags" 2>/dev/null || echo 0)
         # IFF_UP = 0x1
@@ -284,6 +284,14 @@ recover_iface() {
             # mii-tool -r перезапускает autoneg через MDIO напрямую (независимо от ядра)
             mii-tool -r "$iface" 2>/dev/null || ethtool -r "$iface" 2>/dev/null || true
             sleep 3
+            # A slow PHY can come up inside this ~6 s cycle (it did on the
+            # bench 1.135 cold boot of 2026-10-30, docs/bugs/BUGLOG.md). Its
+            # udev carrier=1 event then starts fix-eth@ while this oneshot
+            # instance is still activating, and systemd swallows that start —
+            # so nothing restored the routes the `ip link set down` above
+            # flushed until net-watchdog, 65 s later. Re-read carrier and
+            # continue into the carrier-up path in this same pass.
+            carrier_up "$iface" && _link_after_cycle=1
         elif [ "$admin_up" = "1" ]; then
             # Admin UP and no full cycle due — the budget is spent (or, in
             # theory, operstate is outside the cycle set with budget left:
@@ -303,8 +311,12 @@ recover_iface() {
             log INFO "$iface: нет физического линка (carrier=0 operstate=${oper} cycles=${_cycle_count}), пропуск"
             debug_iface_state "$iface"
         fi
-        [ -x /usr/local/bin/sa02m-eth0-led.sh ] && /usr/local/bin/sa02m-eth0-led.sh || true
-        return 0
+        if [ "$_link_after_cycle" = "1" ]; then
+            log INFO "$iface: линк появился после link cycle ${_cycle_count}"
+        else
+            [ -x /usr/local/bin/sa02m-eth0-led.sh ] && /usr/local/bin/sa02m-eth0-led.sh || true
+            return 0
+        fi
     fi
 
     # Carrier есть — перевзводим бюджет link cycle. Счётчик ограничивает только
