@@ -41,6 +41,7 @@
 | **offline full update** | плата **< 1.0.5.60** (старый updater, `.sa02m` не примется) или любой разрыв `etc/`/`opt/` с текущим релизом, без интернета | полный архив `origin/<ref>` (какой `<ref>` — Предусловия «Полного деплоя») в `/tmp` платы + `scripts/offline-full-update.sh` — «Офлайн-вариант» в разделе «Полный деплой» (запускает `install.sh --refresh`) |
 | ~~self-upgrade bridge~~ **(ОТМЕНЁН — не использовать)** | плата **< 1.0.5.75** без интернета/по SSH | **вместо моста — «offline full update» выше.** Мост переписывал боевые version-ветки force-push'ем и ОТКЛОНЁН: `docs/decisions/no-force-push-version-branches.md` |
 | **vendor-payload** | доставка/обновление опционального стека (Node-RED) вне релиза веб-интерфейса | процедура «Доставка vendor-payload Node-RED» ниже |
+| **boot DTB (драйвер PHY eth0)** | плата, у которой `sa02m-dtb-patch.sh check` показывает `Generic PHY` (с 1.0.7.21 — каждая плата до первого патча; `docs/bugs/BUGLOG.md` 2026-10-29) | **руками на плате:** `apt install device-tree-compiler`, `sa02m-dtb-patch.sh apply` (root; бэкап в `/root/dtb-backup-*`, проверка до записи, атомарная замена на FAT), перезагрузка, `check` снова. **Не несут никогда:** OTA, офлайн-пакет `.sa02m`, `update-www-only.sh` — FAT-раздел и `/usr/local/sbin` вне их карт; `install.sh --refresh` ставит инструмент, но **не запускает** его. Образ: мастер патчится до снятия («Подготовка золотого образа», шаг перед 0). Откат — бэкап обратно на FAT (консоль, либо стенд FEL / `autorun-repair-rootfs.sh`, §12) |
 
 ### Что из 1.0.6.52 действует уже в доставляющем OTA (плата на ≤ 1.0.6.51)
 
@@ -1131,6 +1132,15 @@ mosquitto_pub -h <плата> -p 1884 -u mqttuser -P '<пароль>' \
   удаления скачать файлы шага 1 на машину оператора: с затёртого мастера
   восстановить их будет уже неоткуда.
 
+### DTB — драйвер PHY eth0 (до шага 0)
+
+`sa02m-dtb-patch.sh check`; при `Generic PHY` — `apt install device-tree-compiler`,
+`sa02m-dtb-patch.sh apply`, перезагрузка, `check` снова (ожидается `ICPlus IP101A`
+или `ICPlus IP101G`; `docs/bugs/BUGLOG.md` 2026-10-29). Без этого клоны уедут с PHY
+eth0 под `Generic PHY`. `dtc` после `apply` на мастере не нужен; `cleanup-donor.sh`
+пакеты apt не удаляет — при первом прогоне решить, оставлять ли
+`device-tree-compiler` в образе (`apt purge device-tree-compiler`, если нет).
+
 ### 0. Отключить запись истории в текущей сессии
 
 Первой же командой процедуры (до шага 1):
@@ -1417,6 +1427,8 @@ enabled-служба `regen-ssh-host-keys` на первом старте кло
       **по этому измерению**, а не «на глаз»; потолок — 120 с, дальше скрипт
       обрежет сам. Пять обычных холодных загрузок с кабелем — покрытие
       регрессий, а не доказательство.
+- [ ] `sa02m-dtb-patch.sh check` → `ICPlus IP101A` или `IP101G` (exit 0), не
+      `Generic PHY` (шаг «DTB — драйвер PHY eth0»).
 - [ ] `/opt/mplc4/server/mplc.key` отсутствует.
 - [ ] alice device-сертификаты отсутствуют, `ca.crt.pem` на месте.
 - [ ] `sa02m-alice-devices.conf` — пустой документ (`"rooms": []`,

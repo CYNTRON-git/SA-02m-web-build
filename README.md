@@ -4,7 +4,7 @@
   <img src="https://img.shields.io/badge/platform-Armbian%20%7C%20Linux%20ARM-orange?style=flat-square"/>
   <img src="https://img.shields.io/badge/stack-nginx%20%2B%20fcgiwrap%20%2B%20Bash%20CGI-blue?style=flat-square"/>
   <img src="https://img.shields.io/badge/license-MIT-green?style=flat-square"/>
-  <img src="https://img.shields.io/badge/version-1.0.7.20-cyan?style=flat-square"/>
+  <img src="https://img.shields.io/badge/version-1.0.7.21-cyan?style=flat-square"/>
 </p>
 
 Веб-интерфейс для **[сервера автоматизации СА-02м](https://cyntron.ru/catalog/ustroystva_avtomatizatsii/servery_avtomatizatsii/)** производства [ЦИНТРОН](https://cyntron.ru) на базе процессорного модуля [A40i-2eth](https://cyntron.ru/catalog/ustroystva_avtomatizatsii/komplektuyushchie/7705/) (Allwinner A40i, Linux).
@@ -1028,6 +1028,8 @@ scp output/images/sun8i-a40i-nano2e-none-sk.dtb root@192.168.1.136:/boot/dtb/
 
 ssh root@192.168.1.136 reboot
 ```
+
+На развёрнутой плате живой DTB лежит на FAT-разделе eMMC (`/dev/mmcblk2p1`, имя `sun8i-a40i-sk.dtb`), а не в `/boot/dtb/`; исправление драйвера PHY eth0 (1.0.7.21) ставится инструментом `sa02m-dtb-patch.sh` — `docs/deployment.md` «Пути деплоя», — а не копированием dtb в `/boot/dtb/`.
 
 #### Способ 4 — тиражирование компактного образа SA-02m (web)
 
