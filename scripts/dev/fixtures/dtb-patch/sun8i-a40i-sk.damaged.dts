@@ -3,7 +3,8 @@
 /* SA-02m fixture: bench 1.135 decompile (dtc 1.7.0) of the boot blob,
  * trimmed to the nodes the patcher touches; every kept node is a byte-exact
  * copy. dtc 1.7 writes a string list as ONE literal with \0 escapes.
- * d2.dts: after THREE applies of the pre-fix patcher (the damaged state found on
+ * d2.dts (a bench copy, not in the tree): after THREE applies of the pre-fix
+ * patcher (the damaged state found on
  * the bench before the first merge of this change; BUGLOG 2026-10-30). */
 
 / {

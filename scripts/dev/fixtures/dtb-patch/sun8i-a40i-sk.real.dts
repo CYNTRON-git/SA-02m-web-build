@@ -3,7 +3,7 @@
 /* SA-02m fixture: bench 1.135 decompile (dtc 1.7.0) of the ORIGINAL boot blob,
  * trimmed to the nodes the patcher touches; every kept node is a byte-exact
  * copy. dtc 1.7 writes a string list as ONE literal with \0 escapes.
- * d0.dts: before any apply. */
+ * d0.dts (a bench copy, not in the tree): before any apply. */
 
 / {
 	#address-cells = <0x01>;

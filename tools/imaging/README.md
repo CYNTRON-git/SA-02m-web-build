@@ -196,7 +196,7 @@ sh /mnt/autorun.sh
 `icplus` не привязывается. Чинится **только** первой строкой `compatible` вида
 `ethernet-phy-id0243.0c54` в узле `/soc/mdio@1c0b080/ethernet-phy@0` — строка
 производителя (`icplus,ip101a`, как у eth1) не привязывает ничего: phylib выбирает
-драйвер по ID. Подробности — `docs/bugs/BUGLOG.md` 2026-10-29, `CHANGELOG.md` 1.0.7.14.
+драйвер по ID. Подробности — `docs/bugs/BUGLOG.md` 2026-10-29, `CHANGELOG.md` 1.0.7.21.
 
 - **На плате** (донор, стенд, любая развёрнутая): `apt install device-tree-compiler`, затем
   `sa02m-dtb-patch.sh check` (без root; показывает драйвер PHY eth0) и

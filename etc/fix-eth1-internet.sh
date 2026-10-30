@@ -4,7 +4,7 @@
 #
 # Применяет все накопленные фиксы из BUGLOG для работы второго Ethernet (eth1):
 #   1. DTB: GMAC okay + dc1sw regulator-always-on + syscon + PHY eth0 под icplus
-#      (всё — штатным sa02m-dtb-patch.sh apply, с 1.0.7.14)
+#      (всё — штатным sa02m-dtb-patch.sh apply, с 1.0.7.21)
 #   2. threadirqs в bootargs (boot.scr) — защита от IRQ storm при PCA9536/I2C3
 #   3. eth1.conf: allow-hotplug + DHCP + metric 100 + post-up default route
 #   4. eth0.conf: metric 200 (eth1 DHCP выигрывает дефолтный маршрут)
@@ -69,7 +69,7 @@ step_dtb() {
     fi
     log_warn "GMAC статус в DTB: '${gmac_status}' — требуется патч"
 
-    # Один дом патча DTB с 1.0.7.14 — штатный инструмент (бэкап, проверка
+    # Один дом патча DTB с 1.0.7.21 — штатный инструмент (бэкап, проверка
     # fdtget, атомарная запись на FAT, обе канонические копии, плюс узел PHY
     # eth0). Прежняя inline-копия Python-патча здесь отставала от патчера и
     # писала на FAT не атомарно. Коды: 3 — нет root/dtc, 4 — нет DTB на FAT,

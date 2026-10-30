@@ -62,7 +62,8 @@ never a skip; every case asserts on the patched text, not on the exit code
 alone.
 
 RED/GREEN for U9/U10 (2026-10-30, the pre-fix patcher — the defect was found on
-bench 1.135 before the first merge of this change; BUGLOG 2026-10-30), as observed: U9 FAIL at its first assertion — run 1 reported the GMAC
+bench 1.135 before the first merge of this change; BUGLOG 2026-10-30), as
+observed: U9 FAIL at its first assertion — run 1 reported the GMAC
 change too (`ethernet@1c50000/mdio/ethernet-phy@0: compatible icplus,ip101a
 first`) and wrote `"icplus,ip101a", "icplus,ip101a\0ethernet-phy-ieee802.3-c22"`
 (the `\0` literal was not `icplus,ip101a`); the id\0c22 sub-case is the step the
