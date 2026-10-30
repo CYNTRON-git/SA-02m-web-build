@@ -221,10 +221,12 @@ coldboot обёртка проверяет то же самое (`ifup_in_progre
 |---|---|---|---|
 | `/usr/local/sbin/sa02m-routes-ensure.sh` | **да** (`usr/local/sbin/` → 0755) | да (`scripts/02-network.sh`) | да (установщик выполняется при сборке) |
 | `/usr/local/sbin/sa02m-eth-coldboot.sh` | **да** | да | да + оверлей первой загрузки |
-| `/usr/local/bin/fix-eth.sh` | **нет** (`map_dst` берёт из `etc/` только `sa02m-*`) | да | да + оверлей первой загрузки |
+| `/usr/local/bin/fix-eth.sh` | **ярусно, с 1.0.7.19**: обновлением, следующим за тем, что поставило runner 1.0.7.19; `.sa02m` — только пакет с `--min-updater` ≥ 1.0.7.19 (`docs/contracts/web-update.md`, `docs/OFFLINE_UPDATE_PACKAGE_V1.md`) | да | да + оверлей первой загрузки |
 
-Плата, обновлённая только по воздуху, получает проход на загрузке (coldboot), но
-не 30-секундный ремонт после link cycle — он приходит с `install.sh --refresh`.
+Плата, обновлённая только по воздуху, сразу получает проход на загрузке
+(coldboot), а 30-секундный ремонт после link cycle — когда до неё дойдёт новый
+`fix-eth.sh`: следующим «Обновлением веб» после того, что поставило runner
+1.0.7.19, либо сразу через `install.sh --refresh`.
 **`--refresh` запускать без `--ip`**: с `--ip` установщик перезаписывает
 `eth0.conf` и стирает строку маршрута, добавленную вручную
 (`docs/contracts/installer-refresh-policy.md`).
@@ -252,10 +254,11 @@ coldboot обёртка проверяет то же самое (`ifup_in_progre
 
 Только после слияния, по слову Оператора и по `docs/deployment.md`:
 
-1. Развернуть: «Обновление веб» до этой версии, затем `sudo ./install.sh --refresh`
-   **без `--ip`** (или `scripts/offline-full-update.sh`) — «Режим обновления» в
-   `docs/deployment.md`. Перезагрузка не нужна: `net-watchdog` запустит новый
-   `fix-eth.sh` на следующем проходе.
+1. Развернуть: «Обновление веб» до этой версии или новее, затем
+   `sudo ./install.sh --refresh` **без `--ip`** (или `scripts/offline-full-update.sh`)
+   — «Режим обновления» в `docs/deployment.md`; `--refresh` ставит `fix-eth.sh`
+   сразу, не дожидаясь следующего обновления (§7). Перезагрузка не нужна:
+   `net-watchdog` запустит новый `fix-eth.sh` на следующем проходе.
 2. `ip route show 192.168.10.0/24` → `via 192.168.1.100 dev eth0` в пределах 30 с,
    если маршрута не было; `journalctl -b -t sa02m-routes-ensure` — одна строка
    `added` (или ни одной, если маршрут был).

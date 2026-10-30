@@ -247,7 +247,7 @@ sa02m-dns-ensure`). Это сознательно: плата, пишущая э
 | `/usr/local/sbin/sa02m-wait-carrier.sh` | **да** |
 | `/usr/local/sbin/sa02m-eth-coldboot.sh` | **да** |
 | `/etc/systemd/system/sa02m-dns-ensure.service` | **да** (префикс `sa02m-`) — и он же в `services.enable`, иначе юнит приехал бы мёртвым |
-| `fix-eth.sh` | нет — и причина не в `DST_RE`: репозиторный путь `etc/fix-eth.sh` вообще не отображается `map_dst` (тот берёт из `etc/` только `sa02m-*`), поэтому до проверки префикса дело не доходит |
+| `/usr/local/bin/fix-eth.sh` | **ярусно, с 1.0.7.19** — точный путь в списке назначений обновления (`map_dst` отображает `etc/fix-eth.sh` отдельно); приезжает обновлением, следующим за тем, что поставило runner 1.0.7.19, офлайн-пакетом — только с `--min-updater` ≥ 1.0.7.19 (`docs/contracts/web-update.md`) |
 | оба drop-in'а `*.service.d/sa02m-carrier-wait.conf` | нет — каталог не начинается с `sa02m-` |
 
 Следствие, точно: **вся DNS-гарантия (§3) достигает поля по OTA** — ради этого
