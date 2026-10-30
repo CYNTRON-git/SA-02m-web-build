@@ -68,10 +68,10 @@ SERVICES_OPTIONAL_KEYS = ("enable", "restart_if_active", "restart_if_changed")
 # allow-list refuses fails the WHOLE package (E_COMPAT dst not allowlisted) —
 # so a tiered destination rides the pack only when the advertised min_updater
 # is at/above its tier; below it the entry is dropped with a stderr note.
-# `--min-updater 1.0.7.13` (or later) turns the tier on without a code edit;
+# `--min-updater 1.0.7.19` (or later) turns the tier on without a code edit;
 # an older board then refuses such a pack up front with the honest
 # `E_COMPAT updater < min_updater`. Gate: fix-eth-ota-delivery.
-FIX_ETH_OTA_SINCE = "1.0.7.13"
+FIX_ETH_OTA_SINCE = "1.0.7.19"
 TIERED_DSTS = {"/usr/local/bin/fix-eth.sh": FIX_ETH_OTA_SINCE}
 # Wire footer is 21 bytes (plan text "+20" was a miscount of the 19-byte magic).
 FOOTER_MAGIC = b"SA02M_UPDATE_END_V1"

@@ -23,7 +23,7 @@
 #   (d) the packer, imported: map_deploy_entry() → that dst at 0755; its
 #       DST_PREFIX_RE accepts it; build_deploy_list() with a min_updater BELOW
 #       FIX_ETH_OTA_SINCE drops the entry and names it on stderr, AT the tier
-#       keeps it; FIX_ETH_OTA_SINCE == 1.0.7.13 (the first runner whose
+#       keeps it; FIX_ETH_OTA_SINCE == 1.0.7.19 (the first runner whose
 #       allow-list admits the path — an older board fails the whole pack with
 #       `dst not allowlisted`, so the packer must not ship it below the tier);
 #   (e) scripts/02-network.sh and scripts/update-www-only.sh land the file
@@ -92,7 +92,7 @@ SRC = os.environ["SRC"]
 DMAP, RUNNER, PACKER = os.environ["DMAP"], os.environ["RUNNER"], os.environ["PACKER"]
 DST = "/usr/local/bin/fix-eth.sh"
 NEAR = "/usr/local/bin/anything"
-TIER = "1.0.7.13"
+TIER = "1.0.7.19"
 fails = 0
 def ok(m): print(f"{ROW}: ok    {m}")
 def bad(m):
@@ -195,7 +195,7 @@ if pk is not None:
         else:
             bad(f"(d) packer FIX_ETH_OTA_SINCE is {since!r}, want {TIER!r}")
         files = [SRC, "www/network_config/VERSION"]
-        prev = "1.0.7.12"
+        prev = "1.0.7.18"
         err = io.StringIO()
         with contextlib.redirect_stderr(err):
             below = pk.build_deploy_list(files, dm, min_updater=prev)

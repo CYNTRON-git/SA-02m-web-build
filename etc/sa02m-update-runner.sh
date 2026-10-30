@@ -726,7 +726,7 @@ def map_dst(rel: str):
     if rel.startswith("firmware/mplc4/") and name in MPLC_OTA_PLUGINS:
         return "/opt/mplc4/" + name
     # The static-IP watchdog (02-network.sh installs it to /usr/local/bin) —
-    # the one exact /usr/local/bin path the allow-list admits (1.0.7.13); the
+    # the one exact /usr/local/bin path the allow-list admits (1.0.7.19); the
     # 1.0.7.12 late-cable fix reached boards only by install.sh without it.
     # Gate: fix-eth-ota-delivery.
     if rel == "etc/fix-eth.sh":

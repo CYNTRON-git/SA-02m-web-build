@@ -284,7 +284,7 @@ class TestManifestAndPackage(unittest.TestCase):
         self.assertEqual(bool(pack.frozen_services_note()), not pack.emit_optional_service_keys(pack.MIN_UPDATER))
 
     def test_fix_eth_destination_is_exact(self) -> None:
-        # 1.0.7.13: /usr/local/bin is admitted for ONE exact path — the
+        # 1.0.7.19: /usr/local/bin is admitted for ONE exact path — the
         # late-cable watchdog fix (etc/fix-eth.sh) — so a web OTA / signed pack
         # can deliver it (1.0.7.12 shipped it reachable only by install.sh).
         # Decision D1 of the plan: exact path, never the directory — the near
@@ -307,7 +307,7 @@ class TestManifestAndPackage(unittest.TestCase):
         # first runner whose allow-list admits the path; below it the entry is
         # dropped with a stderr note naming the file and the threshold.
         pack = self._load_packer()
-        self.assertEqual(pack.FIX_ETH_OTA_SINCE, "1.0.7.13")
+        self.assertEqual(pack.FIX_ETH_OTA_SINCE, "1.0.7.19")
         self.assertEqual(pack.TIERED_DSTS, {"/usr/local/bin/fix-eth.sh": pack.FIX_ETH_OTA_SINCE})
         mapping = pack.load_deploy_map()
         entry = pack.map_deploy_entry("etc/fix-eth.sh", mapping)
@@ -321,13 +321,13 @@ class TestManifestAndPackage(unittest.TestCase):
         files = ["etc/fix-eth.sh", "www/network_config/VERSION"]
         err = io.StringIO()
         with contextlib.redirect_stderr(err):
-            below = pack.build_deploy_list(files, mapping, min_updater="1.0.7.12")
+            below = pack.build_deploy_list(files, mapping, min_updater="1.0.7.18")
         self.assertEqual([d["dst"] for d in below], ["/var/www/network_config/VERSION"])
         note = err.getvalue()
         self.assertIn("etc/fix-eth.sh", note)
-        self.assertIn("1.0.7.13", note)
+        self.assertIn("1.0.7.19", note)
 
-        for at_or_above in ("1.0.7.13", "1.0.7.14", "1.0.8.0"):
+        for at_or_above in ("1.0.7.19", "1.0.7.20", "1.0.8.0"):
             err = io.StringIO()
             with contextlib.redirect_stderr(err):
                 kept = pack.build_deploy_list(files, mapping, min_updater=at_or_above)
@@ -358,7 +358,7 @@ class TestManifestAndPackage(unittest.TestCase):
             parts.append(0)
         parts[-1] += 1
         above_tree = ".".join(str(x) for x in parts)
-        for bad in ("1.0.7.4", "1.0.5.60", above_tree, "1.0", "abc", "1.0.7.13-rc1", ""):
+        for bad in ("1.0.7.4", "1.0.5.60", above_tree, "1.0", "abc", "1.0.7.19-rc1", ""):
             err = io.StringIO()
             with contextlib.redirect_stderr(err), self.assertRaises(SystemExit, msg=repr(bad)):
                 pack.resolve_min_updater(bad)

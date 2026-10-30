@@ -30,7 +30,7 @@
 #      /usr/local/bin/anything, the dhcp hook with a suffix …) refused. Parity
 #      alone would pass four homes that drifted wide together; the probes pin
 #      the safe set. /usr/local/bin is admitted for ONE exact path since
-#      1.0.7.13 — /usr/local/bin/fix-eth.sh (the late-cable watchdog fix) — and
+#      1.0.7.19 — /usr/local/bin/fix-eth.sh (the late-cable watchdog fix) — and
 #      its near misses (`.bak`, a sub-path, any other name) stay refused.
 # NON-VACUOUS: exactly two runner blocks, >=10 alternatives per home, and every
 # home answering every probe — a home that stops parsing FAILS.

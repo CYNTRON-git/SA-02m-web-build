@@ -310,7 +310,7 @@
       "dst": "/usr/local/bin/fix-eth.sh",
       "mode": "0755",
       "owner": "root:root",
-      "note": "The only /usr/local/bin path the allow-list admits (exact, 1.0.7.13). Tiered: the packer drops it unless min_updater >= FIX_ETH_OTA_SINCE - an older runner fails the whole pack on an unlisted dst."
+      "note": "The only /usr/local/bin path the allow-list admits (exact, 1.0.7.19). Tiered: the packer drops it unless min_updater >= FIX_ETH_OTA_SINCE - an older runner fails the whole pack on an unlisted dst."
     }
   },
   "systemd_flat_map": {
