@@ -12,7 +12,7 @@ entries are pruned (history lives in git); last prune 2026-10-24 (audit 2026-10-
 - [RESOLVED] 2026-10-29 **[MED] Panel network save refuses on a board whose interfaces.d conf carries a hand-added
   static route (1.0.7.18 follow-up, bench 1.135).** `etc/sa02m-iface-conf-write.sh` allowed only the KLogic hook and
   the installer default-route `post-up`, so a conf with `post-up ip route add 192.168.10.0/24 via 192.168.1.100 …`
-  made every panel network save fail closed. Fixed on branch `feature/iface-conf-preserve-route` (Operator chose
+  made every panel network save fail closed. Fixed in 1.0.7.24 (Operator chose
   2026-10-30 a narrowed (a)): the helper admits a route line in a fixed-order subset of the
   `boot-network-routes.md` §3 grammar ONLY when the byte-identical line is already in the current live destination
   — a save can carry a root-written route, never plant one (`ethernet-iface-naming.md` §5.4). Review r1 on the same
