@@ -562,7 +562,7 @@ seed_phy "Generic PHY" 0x00000000
 run_tool check
 if [ "$RC" = 1 ] && grep -Fq 'Generic PHY' "$OUT" && grep -Fq 'fix-eth' "$OUT" && grep -Fq 'phy_id = 0x00000000' "$OUT" \
    && [ "$(n_calls '^id')" = 0 ] && [ "$(n_calls '^mount')" = 0 ]; then
-    ok "T10: check under Generic PHY: exit 1, names fix-eth as the only belt, no root/mount consulted"
+    ok "T10: check under Generic PHY: exit 1, names fix-eth as what raises the link, no root/mount consulted"
 else
     bad "T10: generic — rc=$RC id=$(n_calls '^id') — $(head -3 "$OUT" | tr '\n' '|')"
 fi

@@ -25,9 +25,11 @@
 #                     PHY list that is not canonical (a string twice, or no
 #                     ethernet-phy-ieee802.3-c22 — a blob from the early patcher).
 #                     The warning never changes the exit code: 0 = ICPlus
-#                     IP101A|IP101G, 1 = another driver (Generic PHY: only
-#                     fix-eth's autoneg restart covers a late cable), 2 =
-#                     node/sysfs unreadable.
+#                     IP101A|IP101G, 1 = another driver (Generic PHY), 2 =
+#                     node/sysfs unreadable. The driver does not bring the link
+#                     up by itself under either: on a cold boot the interface
+#                     down/up of fix-eth's link cycles does (bench 1.135, BUGLOG
+#                     2026-10-30); a lone autoneg restart did not under icplus.
 #   apply [--dry-run] root. For EVERY name of DTB_NAMES present on FAT,
 #                     independently: dtc decompile -> patcher -> (unchanged =>
 #                     "already-patched") -> dtc compile -> fdtget verify (EMAC
@@ -153,7 +155,7 @@ cmd_check() {
             echo "eth0 PHY под драйвером icplus — OK"
             return 0 ;;
         *)
-            echo "eth0 PHY под драйвером «$drv», не icplus: линк после позднего кабеля держит только fix-eth (перезапуск автосогласования). Исправление: $(basename "$0") apply, затем перезагрузка"
+            echo "eth0 PHY под драйвером «$drv», не icplus. Исправление DTB: $(basename "$0") apply, затем перезагрузка. Линк при холодной загрузке поднимает не драйвер, а перезапуск интерфейса в циклах fix-eth"
             return 1 ;;
     esac
 }
