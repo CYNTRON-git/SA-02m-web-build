@@ -105,6 +105,7 @@ py -3 scripts/pack-offline-update.py
 | `--signing-key PATH` | Private key PEM |
 | `SA02M_UPDATE_SIGNING_KEY` | Same as `--signing-key` |
 | `--skip-validate` | Skip import of `opt/sa02m-update/lib/validate_package.py` |
+| `--min-updater X.Y.Z[.W]` | Advertised `min_updater` instead of `MIN_UPDATER` (1.0.7.5): not below it, not above the tree `VERSION` — otherwise the packer refuses. Turns the tiered destinations on (below) |
 
 Жёсткие отказы packer:
 
@@ -116,6 +117,30 @@ py -3 scripts/pack-offline-update.py
 
 Allowlist путей overlay: `scripts/offline-update-allowlist.txt`.
 Таблица src→dst (CI/review + packer): `scripts/offline-update-deploy-map.json`.
+
+### Допустимые назначения (`deploy[].dst`) и ярусный путь
+
+Назначение принимается по префиксу (`/var/www/network_config/`,
+`/usr/local/{sbin,lib,libexec}/`, `/opt/sa02m-*/`, `/etc/systemd/system/sa02m-`,
+`/etc/nginx/`, `/etc/tmpfiles.d/`, `/etc/sudoers.d/`, `/etc/default/sa02m-`,
+`/etc/sa02m-update/trusted-keys/`), по закрытому списку плагинов
+`/opt/mplc4/*.so` и по **точному пути** `/usr/local/bin/fix-eth.sh` (с 1.0.7.19 —
+сторож статического IP; каталог `/usr/local/bin/` целиком не открыт, соседи
+сторожа пакетом не доставляются). Список один и тот же в четырёх местах
+(runner ×2, packer, валидатор) — гейт `ota-dst-allowlist-parity`.
+
+Пакет применяет runner, **уже стоящий на плате**, и одно назначение, которого его
+список не знает, отклоняет весь пакет (`E_COMPAT dst not allowlisted`). Поэтому
+`/usr/local/bin/fix-eth.sh` — **ярусное** назначение (`TIERED_DSTS` в
+`scripts/pack-offline-update.py`, порог `FIX_ETH_OTA_SINCE = 1.0.7.19`): packer
+кладёт `etc/fix-eth.sh` в `deploy[]` только когда объявленный `min_updater` ≥
+порога; при `min_updater` по умолчанию (1.0.7.5) файл из пакета выбрасывается с
+заметкой в stderr (`note: etc/fix-eth.sh -> /usr/local/bin/fix-eth.sh dropped: …`),
+и такой пакет ставится на любую плату ≥ 1.0.7.5 как раньше — без сторожа.
+Пакет с `--min-updater 1.0.7.19` (или новее) несёт сторож, а плата с runner
+≤ 1.0.7.18 отклоняет его **до** раскладки с честным `E_COMPAT updater <
+min_updater` — не с вводящим в заблуждение «dst not allowlisted». Гейт
+`fix-eth-ota-delivery`.
 
 ---
 

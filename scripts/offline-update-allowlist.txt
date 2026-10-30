@@ -11,6 +11,7 @@
 #   /etc/tmpfiles.d/
 #   /etc/sudoers.d/
 #   /etc/sa02m-update/trusted-keys/
+#   /usr/local/bin/fix-eth.sh  (exact path, tiered — see the helpers block)
 #
 # Explicitly excluded from packaging (do not add):
 #   .git, tools/, docs/, .ai-dev/, install.sh, scripts/0*.sh,
@@ -43,6 +44,10 @@ etc/sa02m-failure-monitor.sh
 etc/sa02m-web-backup.sh
 # Install profile reader (→ /usr/local/lib; the runner filters OTA by it)
 etc/sa02m-install-profile-lib.sh
+# Static-IP watchdog (→ /usr/local/bin, the one exact path admitted there).
+# TIERED: the packer ships it only when min_updater >= FIX_ETH_OTA_SINCE
+# (pack-offline-update.py) — an older runner refuses the whole pack on the dst.
+etc/fix-eth.sh
 
 # Site config template (packer renders __PORT__/__WEB_ROOT__ before sealing)
 etc/nginx/network_config.conf

@@ -27,8 +27,11 @@
 #   2. PROBES — every home's COMPILED predicate must give the pinned verdict on
 #      a table of live paths: each allowed root accepted, and the near misses
 #      (another /opt/mplc4 file, a plugin with a suffix, /etc/default/grub,
-#      /usr/local/bin, the dhcp hook with a suffix …) refused. Parity alone would
-#      pass four homes that drifted wide together; the probes pin the safe set.
+#      /usr/local/bin/anything, the dhcp hook with a suffix …) refused. Parity
+#      alone would pass four homes that drifted wide together; the probes pin
+#      the safe set. /usr/local/bin is admitted for ONE exact path since
+#      1.0.7.19 — /usr/local/bin/fix-eth.sh (the late-cable watchdog fix) — and
+#      its near misses (`.bak`, a sub-path, any other name) stay refused.
 # NON-VACUOUS: exactly two runner blocks, >=10 alternatives per home, and every
 # home answering every probe — a home that stops parsing FAILS.
 # Mutation cases (comment-mutation-proof): one alternative line commented out in
@@ -203,6 +206,7 @@ ACCEPT = [
     "/etc/default/sa02m-watchdog",
     "/etc/sa02m-update/trusted-keys/release.pem",
     "/etc/dhcp/dhclient-exit-hooks.d/eth1-default-route",
+    "/usr/local/bin/fix-eth.sh",
 ]
 REFUSE = [
     "/opt/mplc4/start_mplc4.sh",
@@ -213,6 +217,8 @@ REFUSE = [
     "/etc/passwd",
     "/etc/systemd/system/getty@.service",
     "/usr/local/bin/anything",
+    "/usr/local/bin/fix-eth.sh.bak",
+    "/usr/local/bin/x/fix-eth.sh",
     "/opt/other/x",
     "/var/www/html/index.html",
     "/etc/dhcp/dhclient-exit-hooks.d/eth1-default-route.bak",

@@ -83,6 +83,8 @@ _DST_PREFIX_RES = (
     re.compile(r"^/etc/sudoers\.d/"),
     re.compile(r"^/etc/default/sa02m-"),
     re.compile(r"^/etc/sa02m-update/trusted-keys/"),
+    # Exact path only (1.0.7.19): the static-IP watchdog; never the directory.
+    re.compile(r"^/usr/local/bin/fix-eth\.sh$"),
     re.compile(r"^/etc/dhcp/dhclient-exit-hooks\.d/eth1-default-route$"),
 )
 

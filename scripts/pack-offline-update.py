@@ -62,6 +62,17 @@ SERVICES_OPTIONAL_SINCE = "1.0.6.37"
 # The keys the freeze withholds — named once so the pack-time note and the
 # tests read the same list as build_services_block().
 SERVICES_OPTIONAL_KEYS = ("enable", "restart_if_active", "restart_if_changed")
+# First runner/validator whose destination allow-list admits
+# /usr/local/bin/fix-eth.sh (the 1.0.7.12 late-cable watchdog fix). A pack is
+# applied by the runner ALREADY on the board, and one deploy[] dst its
+# allow-list refuses fails the WHOLE package (E_COMPAT dst not allowlisted) —
+# so a tiered destination rides the pack only when the advertised min_updater
+# is at/above its tier; below it the entry is dropped with a stderr note.
+# `--min-updater 1.0.7.19` (or later) turns the tier on without a code edit;
+# an older board then refuses such a pack up front with the honest
+# `E_COMPAT updater < min_updater`. Gate: fix-eth-ota-delivery.
+FIX_ETH_OTA_SINCE = "1.0.7.19"
+TIERED_DSTS = {"/usr/local/bin/fix-eth.sh": FIX_ETH_OTA_SINCE}
 # Wire footer is 21 bytes (plan text "+20" was a miscount of the 19-byte magic).
 FOOTER_MAGIC = b"SA02M_UPDATE_END_V1"
 FOOTER = FOOTER_MAGIC + b"\0\0"
@@ -77,6 +88,7 @@ DST_PREFIX_RE = re.compile(
     r"etc/nginx/|etc/tmpfiles\.d/|etc/sudoers\.d/|"
     r"etc/default/sa02m-|"
     r"etc/sa02m-update/trusted-keys/|"
+    r"usr/local/bin/fix-eth\.sh$|"
     r"etc/dhcp/dhclient-exit-hooks\.d/eth1-default-route$)"
 )
 
@@ -87,6 +99,7 @@ DST_PREFIX_RE = re.compile(
 #   etc/systemd/sa02m-*   → /etc/systemd/system/<basename>
 #   etc/nginx/network_config.conf → /etc/nginx/sites-available/network_config (rendered)
 #   etc/sa02m-*.sh helpers → /usr/local/{sbin,lib}/… (see etc_helper_renames)
+#   etc/fix-eth.sh        → /usr/local/bin/fix-eth.sh (tiered: FIX_ETH_OTA_SINCE)
 #   etc/sudoers.d/*, etc/tmpfiles.d/*, etc/sa02m-update/trusted-keys/* → /etc/…
 
 
@@ -394,7 +407,9 @@ def map_deploy_entry(rel: str, deploy_map: dict[str, Any]) -> dict[str, str] | N
     return None
 
 
-def build_deploy_list(overlay_files: list[str], deploy_map: dict[str, Any]) -> list[dict[str, str]]:
+def build_deploy_list(
+    overlay_files: list[str], deploy_map: dict[str, Any], min_updater: str = MIN_UPDATER
+) -> list[dict[str, str]]:
     deploy: list[dict[str, str]] = []
     skipped: list[str] = []
     for rel in overlay_files:
@@ -407,6 +422,15 @@ def build_deploy_list(overlay_files: list[str], deploy_map: dict[str, Any]) -> l
             continue
         if not DST_PREFIX_RE.match(entry["dst"]):
             _die(f"deploy dst not allowlisted by §2.2 regex: {entry['dst']} (src={rel})")
+        tier = TIERED_DSTS.get(entry["dst"])
+        if tier and semver_key(min_updater) < semver_key(tier):
+            print(
+                f"note: {rel} -> {entry['dst']} dropped: min_updater={min_updater} < {tier} "
+                f"(an older updater refuses the whole pack on that dst; build with "
+                f"--min-updater {tier} to ship it)",
+                file=sys.stderr,
+            )
+            continue
         deploy.append(entry)
     if skipped:
         print(
@@ -530,6 +554,25 @@ def emit_optional_service_keys(min_updater: str) -> bool:
     return semver_key(min_updater) >= semver_key(SERVICES_OPTIONAL_SINCE)
 
 
+def resolve_min_updater(arg: str | None) -> str:
+    """The min_updater this pack advertises: --min-updater, else MIN_UPDATER.
+
+    Bounded both ways: never below MIN_UPDATER (the floor the packer promises
+    its manifest shape for) and never above the tree's VERSION (a pack cannot
+    demand a runner newer than the one it carries).
+    """
+    if arg is None:
+        return MIN_UPDATER
+    if not VERSION_RE.match(arg):
+        _die(f"--min-updater {arg!r}: not a version X.Y.Z[.W]")
+    if semver_key(arg) < semver_key(MIN_UPDATER):
+        _die(f"--min-updater {arg} is below the packer floor MIN_UPDATER={MIN_UPDATER}")
+    tree = read_version()
+    if semver_key(arg) > semver_key(tree):
+        _die(f"--min-updater {arg} is above this tree's VERSION {tree}")
+    return arg
+
+
 def frozen_services_note(min_updater: str = MIN_UPDATER) -> str:
     """One line for stderr when the pack ships a frozen v1 services block.
 
@@ -628,6 +671,7 @@ def build_manifest(
     payload_gz: bytes,
     uncompressed_size: int,
     deploy: list[dict[str, str]],
+    min_updater: str = MIN_UPDATER,
 ) -> dict[str, Any]:
     digest = hashlib.sha256(payload_gz).hexdigest()
     unc_max = max(134217728, uncompressed_size * 2)
@@ -640,7 +684,7 @@ def build_manifest(
         "repo_commit": commit,
         "built_at": datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
         "signing_key_id": key_id,
-        "min_updater": MIN_UPDATER,
+        "min_updater": min_updater,
         "min_version": MIN_VERSION,
         "payload": {
             "size": len(payload_gz),
@@ -666,7 +710,7 @@ def build_manifest(
             "free_bytes_multiplier": 3,
         },
         "deploy": deploy,
-        "services": build_services_block(MIN_UPDATER),
+        "services": build_services_block(min_updater),
         "delete": [],
         "migrations": [],
     }
@@ -746,11 +790,22 @@ def main() -> int:
         action="store_true",
         help="Allow packing with a dirty git worktree (bench/CI only; not for release)",
     )
+    ap.add_argument(
+        "--min-updater",
+        default=None,
+        metavar="X.Y.Z[.W]",
+        help=(
+            f"Advertise this min_updater instead of {MIN_UPDATER} (>= it, <= the tree VERSION). "
+            f"At/above {FIX_ETH_OTA_SINCE} the pack also carries /usr/local/bin/fix-eth.sh; "
+            "a board with an older updater refuses such a pack up front (E_COMPAT)"
+        ),
+    )
     args = ap.parse_args()
 
+    min_updater = resolve_min_updater(args.min_updater)
     # Before any gate: a pack that dies on a dirty tree still tells the release
     # engineer what the services block would have withheld.
-    note = frozen_services_note(MIN_UPDATER)
+    note = frozen_services_note(min_updater)
     if note:
         print(note, file=sys.stderr)
 
@@ -787,7 +842,7 @@ def main() -> int:
         if first != version:
             _die(f"payload VERSION {first!r} != pack version {version!r}")
 
-        deploy = build_deploy_list(overlay_files, deploy_map)
+        deploy = build_deploy_list(overlay_files, deploy_map, min_updater)
         payload_gz, unc_size = make_payload_tar_gz(overlay, overlay_files)
         manifest = build_manifest(
             version=version,
@@ -796,6 +851,7 @@ def main() -> int:
             payload_gz=payload_gz,
             uncompressed_size=unc_size,
             deploy=deploy,
+            min_updater=min_updater,
         )
         sig = sign_manifest(manifest, key_path, openssl)
 

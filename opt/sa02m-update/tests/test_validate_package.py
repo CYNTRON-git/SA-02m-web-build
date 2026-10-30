@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import base64
+import contextlib
 import hashlib
 import io
 import json
@@ -281,6 +282,102 @@ class TestManifestAndPackage(unittest.TestCase):
         self.assertEqual(pack.frozen_services_note(pack.SERVICES_OPTIONAL_SINCE), "")
         # The production call prints exactly what the module's MIN_UPDATER earns.
         self.assertEqual(bool(pack.frozen_services_note()), not pack.emit_optional_service_keys(pack.MIN_UPDATER))
+
+    def test_fix_eth_destination_is_exact(self) -> None:
+        # 1.0.7.19: /usr/local/bin is admitted for ONE exact path — the
+        # late-cable watchdog fix (etc/fix-eth.sh) — so a web OTA / signed pack
+        # can deliver it (1.0.7.12 shipped it reachable only by install.sh).
+        # Decision D1 of the plan: exact path, never the directory — the near
+        # misses stay refused by every home (ota-dst-allowlist-parity pins the
+        # other three; this is the validator's own verdict).
+        self.assertTrue(vp.dst_allowed("/usr/local/bin/fix-eth.sh"))
+        for near in (
+            "/usr/local/bin/fix-eth.sh.bak",
+            "/usr/local/bin/anything",
+            "/usr/local/bin/x/fix-eth.sh",
+            "/usr/local/bin/",
+        ):
+            self.assertFalse(vp.dst_allowed(near), near)
+
+    def test_packer_fix_eth_tier_rule(self) -> None:
+        # D2: an offline pack is applied by the runner ALREADY on the board, and
+        # a deploy[] dst its allow-list refuses fails the whole package
+        # (E_COMPAT dst not allowlisted). So etc/fix-eth.sh rides the pack only
+        # when the advertised min_updater is at/above FIX_ETH_OTA_SINCE, the
+        # first runner whose allow-list admits the path; below it the entry is
+        # dropped with a stderr note naming the file and the threshold.
+        pack = self._load_packer()
+        self.assertEqual(pack.FIX_ETH_OTA_SINCE, "1.0.7.19")
+        self.assertEqual(pack.TIERED_DSTS, {"/usr/local/bin/fix-eth.sh": pack.FIX_ETH_OTA_SINCE})
+        mapping = pack.load_deploy_map()
+        entry = pack.map_deploy_entry("etc/fix-eth.sh", mapping)
+        self.assertIsNotNone(entry)
+        self.assertEqual(entry["dst"], "/usr/local/bin/fix-eth.sh")
+        self.assertEqual(entry["mode"], "0755")
+        self.assertEqual(entry["owner"], "root:root")
+        self.assertTrue((_REPO / "etc" / "fix-eth.sh").is_file())
+        self.assertTrue(any(pack.path_matches("etc/fix-eth.sh", pat) for pat in pack.load_allowlist_patterns()))
+
+        files = ["etc/fix-eth.sh", "www/network_config/VERSION"]
+        err = io.StringIO()
+        with contextlib.redirect_stderr(err):
+            below = pack.build_deploy_list(files, mapping, min_updater="1.0.7.18")
+        self.assertEqual([d["dst"] for d in below], ["/var/www/network_config/VERSION"])
+        note = err.getvalue()
+        self.assertIn("etc/fix-eth.sh", note)
+        self.assertIn("1.0.7.19", note)
+
+        for at_or_above in ("1.0.7.19", "1.0.7.20", "1.0.8.0"):
+            err = io.StringIO()
+            with contextlib.redirect_stderr(err):
+                kept = pack.build_deploy_list(files, mapping, min_updater=at_or_above)
+            self.assertIn("/usr/local/bin/fix-eth.sh", [d["dst"] for d in kept], at_or_above)
+            self.assertNotIn("etc/fix-eth.sh", err.getvalue(), at_or_above)
+
+        # The production site: no argument ⇒ the module's MIN_UPDATER decides.
+        err = io.StringIO()
+        with contextlib.redirect_stderr(err):
+            default = pack.build_deploy_list(files, mapping)
+        tier_on = pack.semver_key(pack.MIN_UPDATER) >= pack.semver_key(pack.FIX_ETH_OTA_SINCE)
+        self.assertEqual("/usr/local/bin/fix-eth.sh" in [d["dst"] for d in default], tier_on)
+
+    def test_packer_min_updater_flag(self) -> None:
+        # --min-updater lets the release engineer build a pack for boards
+        # already on >= FIX_ETH_OTA_SINCE without a code edit; an older board
+        # then refuses it up front with the honest E_COMPAT updater <
+        # min_updater. The value is bounded: semver shape, >= MIN_UPDATER (the
+        # floor the packer promises), <= the tree's VERSION (a pack cannot
+        # demand a runner newer than the one it carries).
+        pack = self._load_packer()
+        repo_version = pack.read_version()
+        self.assertEqual(pack.resolve_min_updater(None), pack.MIN_UPDATER)
+        self.assertEqual(pack.resolve_min_updater(pack.MIN_UPDATER), pack.MIN_UPDATER)
+        self.assertEqual(pack.resolve_min_updater(repo_version), repo_version)
+        parts = [int(x) for x in repo_version.split(".")]
+        while len(parts) < 4:
+            parts.append(0)
+        parts[-1] += 1
+        above_tree = ".".join(str(x) for x in parts)
+        for bad in ("1.0.7.4", "1.0.5.60", above_tree, "1.0", "abc", "1.0.7.19-rc1", ""):
+            err = io.StringIO()
+            with contextlib.redirect_stderr(err), self.assertRaises(SystemExit, msg=repr(bad)):
+                pack.resolve_min_updater(bad)
+            self.assertTrue(err.getvalue().strip(), repr(bad))
+
+        # The resolved value reaches the manifest and its services block —
+        # build_manifest no longer reads the module constant alone.
+        manifest = pack.build_manifest(
+            version="9.9.9.9",
+            commit="a" * 40,
+            key_id="release-2026-08",
+            payload_gz=b"x",
+            uncompressed_size=1,
+            deploy=[],
+            min_updater=repo_version,
+        )
+        self.assertEqual(manifest["min_updater"], repo_version)
+        self.assertEqual(manifest["services"], pack.build_services_block(repo_version))
+        self.assertEqual(pack.frozen_services_note(repo_version), "")
 
     def test_runner_reports_the_deployed_version_not_a_stamp(self) -> None:
         # D2: the advertised min_updater (packer MIN_UPDATER) and the version a
