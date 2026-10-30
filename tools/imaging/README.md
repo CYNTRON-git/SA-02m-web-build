@@ -199,7 +199,7 @@ sh /mnt/autorun.sh
 драйвер по ID. Подробности — `docs/bugs/BUGLOG.md` 2026-10-29, `CHANGELOG.md` 1.0.7.21.
 
 - **Сейчас придержано** (решение оператора 30.10.2026): `apply` — только на стенде, не на донорах
-  и рабочих платах, пока не проверен поздний кабель под `icplus` (`docs/deployment.md`, строка
+  и рабочих платах, до решения оператора по итогам опыта с поздним кабелем (`docs/deployment.md`, строка
   «boot DTB»; `docs/bugs/BUGLOG.md` 2026-10-30).
 - **На плате** (когда запрет снят): `apt install device-tree-compiler`, затем
   `sa02m-dtb-patch.sh check` (без root; показывает драйвер PHY eth0) и
