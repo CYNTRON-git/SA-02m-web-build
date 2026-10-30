@@ -17,7 +17,9 @@
 # sed-retargeted into the sandbox; there is deliberately NO env seam in the
 # shipped script. The sandbox FAT holds dts TEXT under the .dtb names, padded
 # to a blob-like size, so the `dtc` shim is a copy both ways (compile pads,
-# decompile strips the pad), the REAL patcher runs through a `python3` shim
+# decompile strips the pad — and with DTC_NUL_FORM=1 re-joins every
+# multi-string `compatible` into ONE literal with \0 escapes, the text dtc 1.7
+# hands the patcher on the board), the REAL patcher runs through a `python3` shim
 # that execs the first working host interpreter (python3 | python | py -3;
 # none => exit 77 SKIP, never PASS), and `fdtget` answers from the text with
 # awk (FDTGET_LIE=1 makes it lie about the EMAC `compatible` only). `mount`, `umount`,
@@ -49,17 +51,28 @@
 #       ICPlus IP101G -> exit 0; node missing -> exit 2; `id` never consulted.
 #   T11 dtc absent (shim removed, host masked): exit 3, no mount.
 #   T12 harness non-vacuity: every shim invoked at least once across the run.
+#   T13 (runs before T11) the real dtc 1.7 text form: FAT seeded with the bench
+#       1.135 original blob trimmed (sun8i-a40i-sk.real.dts), decompile in the
+#       one-literal `\0` form; apply #1 `patched` (EMAC only, both PHY lists in
+#       canon through fdtget), apply #2 and #3 «уже исправлен», one backup, no
+#       write. T2 never saw this form (copy-both-ways shim): the bench defect of
+#       2026-10-29 — three `patched`, GMAC list x4, c22 lost — passed T1–T12.
 #
 # Non-vacuous: a failed or over-wide retarget, a leftover real root on an
-# executable line, a missing tool/patcher/fixture, or a shim never invoked
-# FAILS rather than passing on zero matches.
+# executable line, a missing tool/patcher/fixture, a real fixture that lost
+# the `\0` form, or a shim never invoked FAILS rather than passing on zero
+# matches.
 #
 # Drive-to-failure recipe (commit body + comment-mutation-proof): comment the
 # `[ "$first" = "$EMAC_ID_COMPAT" ]` verify line out of a copy -> T4 writes the
 # blob fdtget lied about (FAT changed, exit 0) -> RED; comment the
 # `mv -f "$tmp" "$2"` line of write_atomic out -> T1 RED (live file not
 # replaced, `.new` left behind). DTB_TOOL_SRC=<path> re-points the harness at
-# such a copy; the real tree is never edited.
+# such a copy, DTB_PATCHER_SRC=<path> at another patcher (the pre-fix patcher
+# that split on quoted literals only — the defect found on bench 1.135 before
+# the first merge of this change, BUGLOG 2026-10-30: T13 RED — apply #1 prepends
+# a second `icplus,ip101a`, apply #2 and #3 `patched` again with a backup each);
+# the real tree is never edited.
 #
 # Run: bash scripts/dev/test-dtb-patch-tool.sh
 # ═══════════════════════════════════════════════════════════════════════════
@@ -67,9 +80,11 @@ set -u
 cd "$(dirname "${BASH_SOURCE[0]}")/../.." || exit 1
 
 SRC=${DTB_TOOL_SRC:-usr/local/sbin/sa02m-dtb-patch.sh}
-PATCHER_SRC=usr/local/sbin/sa02m-dtb-patch.py
+PATCHER_SRC=${DTB_PATCHER_SRC:-usr/local/sbin/sa02m-dtb-patch.py}
 FIXTURE=scripts/dev/fixtures/dtb-patch/sun8i-a40i-sk.pre.dts
+REAL_FIXTURE=scripts/dev/fixtures/dtb-patch/sun8i-a40i-sk.real.dts   # bench 1.135 decompile, dtc 1.7 form (T13)
 ID_STR=ethernet-phy-id0243.0c54
+C22=ethernet-phy-ieee802.3-c22
 
 fails=0
 ok()  { printf 'ok    %s\n' "$1"; }
@@ -78,7 +93,11 @@ bad() { printf 'FAIL  %s\n' "$1"; fails=$((fails + 1)); }
 [ -s "$SRC" ] || { echo "FAIL  missing or empty: $SRC"; exit 1; }
 [ -s "$PATCHER_SRC" ] || { echo "FAIL  missing or empty: $PATCHER_SRC"; exit 1; }
 [ -s "$FIXTURE" ] || { echo "FAIL  missing or empty: $FIXTURE"; exit 1; }
+[ -s "$REAL_FIXTURE" ] || { echo "FAIL  missing or empty: $REAL_FIXTURE"; exit 1; }
 grep -Fq "$ID_STR" "$FIXTURE" && { echo "FAIL  fixture already carries $ID_STR — it must be the PRE-patch text"; exit 1; }
+grep -Fq "$ID_STR" "$REAL_FIXTURE" && { echo "FAIL  real fixture already carries $ID_STR — it must be the PRE-patch text"; exit 1; }
+# T13 exists for the one-literal form; a fixture rewritten into `"a", "b"` would make it hollow.
+grep -Fq 'compatible = "icplus,ip101a\0'"$C22"'";' "$REAL_FIXTURE" || { echo "FAIL  real fixture lost the dtc 1.7 one-literal form on the GMAC PHY node"; exit 1; }
 # shellcheck source=scripts/dev/lib_path_mask.sh
 . scripts/dev/lib_path_mask.sh || { echo "FAIL  scripts/dev/lib_path_mask.sh not loadable"; exit 1; }
 
@@ -165,6 +184,11 @@ case "\${DTC_FAIL:-}" in
 esac
 if [ "\$ifmt" = dtb ]; then
   awk '{ l[NR] = \$0 } END { n = NR; while (n > 0 && l[n] == "") n--; for (i = 1; i <= n; i++) print l[i] }' "\$in" > "\$out"
+  # DTC_NUL_FORM=1: decompile as dtc >= 1.7 does — a multi-string compatible
+  # comes back as ONE literal with \\0 between the strings (T13).
+  if [ "\${DTC_NUL_FORM:-0}" = 1 ]; then
+    sed -i -E -e '/^[[:space:]]*compatible = /{' -e ':a' -e 's/",[[:space:]]*"/\\\\0/' -e 'ta' -e '}' "\$out"
+  fi
 else
   cp "\$in" "\$out"
   if [ "\${DTC_FAIL:-}" != short ]; then yes '' | head -n $PAD_LINES >> "\$out"; fi
@@ -201,7 +225,7 @@ BEGIN { n = split(substr(path, 2), comp, "/"); idx = 0; depth = 0; found = 0 }
 END { exit found ? 0 : 1 }' "$f") || exit 1
 val=${val%;}
 case "$val" in
-  '"'*) echo "$val" | sed 's/", *"/ /g; s/"//g' ;;
+  '"'*) echo "$val" | sed 's/", *"/ /g; s/\\0/ /g; s/"//g' ;;   # both text forms print as real fdtget -ts does
   '<'*) v=${val#<}; v=${v%>}; printf '%d\n' "$v" ;;
   *) echo "$val" ;;
 esac
@@ -247,12 +271,13 @@ command -v dtc | grep -Fq "$BIN/dtc" || { echo "FAIL  the dtc shim is not first 
 command -v python3 | grep -Fq "$BIN/python3" || { echo "FAIL  the python3 shim is not first on PATH"; exit 1; }
 
 # ── fixtures and helpers ───────────────────────────────────────────────────
-blob() {   # $1 = output path, [$2 = model tag] — the fixture text, padded like a compiled blob
+blob() {   # $1 = output path, [$2 = model tag], [$3 = source fixture] — the fixture text, padded like a compiled blob
+    local src=${3:-$FIXTURE}
     if [ -n "${2:-}" ]; then
-        sed "s/^\(\tmodel = \".*\)\";$/\1 [$2]\";/" "$FIXTURE" > "$1"
+        sed "s/^\(\tmodel = \".*\)\";$/\1 [$2]\";/" "$src" > "$1"
         grep -Fq "[$2]" "$1" || { echo "FAIL  fixture model tag not applied: $2"; exit 1; }
     else
-        cp "$FIXTURE" "$1"
+        cp "$src" "$1"
     fi
     yes '' | head -n "$PAD_LINES" >> "$1"
 }
@@ -389,6 +414,51 @@ if [ "$RC" = 0 ] && cmp -s "$FAT/$NAME" "$T/seed.blob" && cmp -s "$CANON1/$NAME"
 else
     bad "T9: rc=$RC unchanged=$(cmp -s "$FAT/$NAME" "$T/seed.blob" && echo y || echo n) backups=$(n_backups) — $(head -2 "$OUT" | tr '\n' '|')"
 fi
+
+# ═══ T13: the real dtc 1.7 text form — idempotent through the full cycle ═══
+# Placed before T11 (which removes the dtc shim). Seed = the bench's original
+# blob trimmed (REAL_FIXTURE: GMAC already `"icplus,ip101a\0…c22"`), and the
+# dtc shim's decompile re-joins every multi-string compatible into ONE literal
+# with \0 escapes, as dtc 1.7.0 does on the board. T2 never saw this form —
+# its shim is a copy both ways, so the `"a", "b"` text the patcher wrote came
+# straight back and the second apply was a no-op for the wrong reason; on the
+# bench (2026-10-29) the same tool reported `patched` three times, grew the
+# GMAC list to four `icplus,ip101a` and lost c22 on the EMAC node.
+reset_sandbox
+blob "$FAT/$NAME" "" "$REAL_FIXTURE"
+cp "$FAT/$NAME" "$T/seed.blob"
+DTC_NUL_FORM=1 run_tool apply
+emac13=$(fdtget -ts "$FAT/$NAME" /soc/mdio@1c0b080/ethernet-phy@0 compatible)
+gmac13=$(fdtget -ts "$FAT/$NAME" /soc/ethernet@1c50000/mdio/ethernet-phy@0 compatible)
+if [ "$RC" = 0 ] && [ "$(n_backups)" = 1 ] && grep -Fq "$NAME: patched:" "$OUT" && grep -Fq 'перезагрузка' "$OUT" \
+   && [ "$emac13" = "$ID_STR $C22" ] && [ "$gmac13" = "icplus,ip101a $C22" ] \
+   && ! grep -Fq 'ethernet@1c50000' "$OUT" && ! cmp -s "$FAT/$NAME" "$T/seed.blob"; then
+    ok "T13: apply #1 on the dtc 1.7 form patches the EMAC node only (GMAC left as is), both lists in canon"
+else
+    bad "T13: apply #1 rc=$RC backups=$(n_backups) emac='$emac13' gmac='$gmac13' — $(head -2 "$OUT" | tr '\n' '|')"
+fi
+cp "$FAT/$NAME" "$T/after13.blob"
+# The shim's own non-vacuity: what the decompile hands the patcher on passes 2/3
+# must carry the two-byte `\0` sequence on the EMAC line (the patcher wrote the
+# comma form). If the re-join sed stopped working, passes 2/3 would pass on the
+# comma form for the wrong reason — so this check fails the case.
+# Called by path, not through PATH lookup: a hashed `dtc` would survive T11's
+# `rm -f "$BIN/dtc"` in this shell and make its "dtc absent" guard trip.
+DTC_NUL_FORM=1 "$BIN/dtc" -I dtb -O dts -q -o "$T/t13.dts" "$FAT/$NAME"
+if grep -Fq "compatible = \"$ID_STR\\0$C22\";" "$T/t13.dts"; then
+    ok "T13: the shim's decompile re-joins the patched EMAC list into one \\0 literal"
+else
+    bad "T13: the shim's decompile does not carry the \\0 form — $(grep -F "$ID_STR" "$T/t13.dts" | head -1)"
+fi
+for pass in 2 3; do
+    DTC_NUL_FORM=1 run_tool apply
+    if [ "$RC" = 0 ] && [ "$(n_backups)" = 1 ] && cmp -s "$FAT/$NAME" "$T/after13.blob" \
+       && grep -Fq 'уже исправлен' "$OUT" && ! grep -Fq 'перезагрузка' "$OUT" && [ ! -e "$FAT/.$NAME.new" ]; then
+        ok "T13: apply #$pass on the dtc 1.7 form writes nothing, no new backup, «уже исправлен»"
+    else
+        bad "T13: apply #$pass rc=$RC backups=$(n_backups) same=$(cmp -s "$FAT/$NAME" "$T/after13.blob" && echo y || echo n) — $(head -2 "$OUT" | tr '\n' '|')"
+    fi
+done
 
 # ═══ T10: check on proc/sysfs fixtures ═════════════════════════════════════
 seed_phy() {   # $1 driver, $2 phy_id
