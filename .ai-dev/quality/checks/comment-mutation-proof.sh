@@ -198,6 +198,8 @@ nodered-ctl-install|etc/sa02m-web-service-ctl.sh|atomic_install_unit "$_nr_unit"
 iface-dns-ensure|etc/fix-eth.sh|dns_ensure "$iface"
 iface-routes-ensure|etc/fix-eth.sh|routes_ensure "$iface"
 fix-eth-link-cycle|etc/fix-eth.sh|mii-tool -r "$iface" >/dev/null 2>&1
+dtb-patch-unit|usr/local/sbin/sa02m-dtb-patch.py|_patch_phy(phy_text, EMAC_PHY_ID_COMPAT,
+dtb-patch-tool|usr/local/sbin/sa02m-dtb-patch.sh|[ "$first" = "$EMAC_ID_COMPAT" ]
 uboot-bootscr-format|tools/imaging/make-image.sh|run_firstboot_patch "$RAW_IMG" ||
 storage-automount-decision|etc/storage-mount.sh|mount -t ntfs3 -o rw,noatime
 storage-automount-decision|etc/storage-mount.sh|label_fits_exfat "${LABEL}" || return 1

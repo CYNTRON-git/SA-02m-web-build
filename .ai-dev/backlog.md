@@ -6,6 +6,7 @@ entries are pruned (history lives in git); last prune 2026-10-24 (audit 2026-10-
 
 ## Open
 
+- [OPEN] 2026-10-30 **[LOW] `sa02m-dtb-patch.sh` `verify_blob` does not catch the idempotency defect class (review of the eth0-PHY DTB change, round 1 advisory A3; BUGLOG 2026-10-30):** it checks only the EMAC first token, so a blob with a duplicated `icplus,ip101a` on the GMAC PHY or an EMAC list missing `ethernet-phy-ieee802.3-c22` (the bench 1.135 apply-#3 state, BUGLOG 2026-10-30) passes verification and is written to the FAT. Fix on its own branch (the DTB change's plan kept the `.sh` out of scope): after `fdtget -ts`, fail (exit 5, FAT untouched) when either PHY list has a duplicate token or lacks c22; RED-first case in `scripts/dev/test-dtb-patch-tool.sh` with the fdtget shim emitting the damaged lists. Not started.
 - [RESOLVED] 2026-10-29 **[MED] Same class as the 1.0.7.12 Carel fix, left outside its fence (review r1/r2 A2/A3): `DTVPoller.setup()` autodetect loop (5 × 3 s) held the port thread while a DTV answered «no sensors» (a silent one broke out after one timeout but was assumed to carry ALL sensors), and `DeviceLiveCache.flush_file` defaulted an unknown device to `ok:true` in the panel live cache.** Fixed in 1.0.7.17 (branch `1.0.7.17`): one non-blocking detect attempt at setup + retry from `poll_io` every 3 s under the back-off, the «5 empty answers ⇒ all present» bound kept, an explicit empty `sensors_present: []` still = all; unknown ⇒ `ok:false` in the live cache until the first tracked read; RED-first tests `TestDtvSetupNeverBlocksThePort` / `TestLiveCacheUnknownIsNotOk` in `test_device_availability.py`.
 - [OPEN] 2026-10-29 **[LOW] `opt/sa02m-modbus-mqtt/bridge_mr02m.py` is 1038 lines (review r2 A6)** — over the ~1000 default; `decompose` candidate (behaviour net = the 941-test bridge suite). Not started.
 - [OPEN] 2026-10-29 **[MED] Panel network save refuses on a board whose interfaces.d conf carries a hand-added
@@ -22,6 +23,18 @@ entries are pruned (history lives in git); last prune 2026-10-24 (audit 2026-10-
   (`ip 'route' add …`), `ip -batch <file>`, and line :124 matching the raw token instead of `base()`; name them in
   contract §3 «Чего хелпер не видит» or route them through `base()`. (4) Helper 299 lines / harness 631 lines —
   `decompose` if either keeps growing.
+- [OPEN] 2026-10-29 **[LOW] `.ai-dev/notes/quality-gate-environment.md` FAIL table misses two rows that fail
+  alone on a pristine HEAD on the Windows workstation (the eth0-PHY DTB change review, advisory 4; a third found at its
+  1.0.7.14 ship gate):** `web-install-secret`
+  (16 cases: POSIX 0600 modes, `os.O_NOFOLLOW`, pwrite/fsync injection, scrub cases — MSYS modes) and
+  `py-unit-alice` `test_atomic_commit_concurrent_writers_and_save_failure` (1 of 910; the env note lists
+  py-unit-alice only under «transient (host load)», but this case is RED alone), and `py-unit-rules`
+  `test_a_deep_chain_slipped_in_through_the_sandbox_ends_within_budget` (`RecursionError … while encoding a
+  JSON object`, 1 of 331 — the Windows CPython recursion budget is the suspect; same single error on a pristine
+  `git archive origin/1.0.7.12` extract, 2026-10-29). All reproduced by the
+  Builder, the Reviewer and the Orchestrator on throwaway pristine extracts; none touches a file of the eth0-PHY DTB change. Fix: add them to the
+  FAIL table with the cause, or make the cases SKIP (exit 77) off Linux the way `status-coordinator-projection`
+  does. CI (Linux) is green on both.
 
 - [OPEN] 2026-10-21 **[LOW] A long clip is always uploaded twice: the recogniser answers after the socket
   timeout (bench 1.135, RK3588 agent, series 8×30 s).** RK3588 needs 11–13 s to recognise a 30 s clip, more
