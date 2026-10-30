@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Patch a decompiled SA-02m boot DTB (dts text) so every PHY binds its own driver.
+r"""Patch a decompiled SA-02m boot DTB (dts text) so every PHY binds its own driver.
 
 What it patches (text-level, node-targeted; everything else in the blob is kept
 byte-for-byte, so blobs that differ elsewhere — the rtc/usb0_vbus fdtput edits on
@@ -26,14 +26,31 @@ after the reset deassert + reset-deassert-us sleep, when the PHY is awake. The G
 PHY keeps `icplus,ip101a` as today (its ID read succeeds; forcing an ID there would
 fabricate a PHY on a board whose GMAC PHY is not populated).
 
+Text forms of a string list. dtc >= 1.7 (the board's 1.7.0, CI's) decompiles a
+multi-string property as ONE literal with `\0` escapes —
+`compatible = "icplus,ip101a\0ethernet-phy-ieee802.3-c22";` — while older dtc wrote
+`"icplus,ip101a", "ethernet-phy-ieee802.3-c22"`; both compile to the same bytes.
+Every rule here runs on the CANONICAL list (quoted literals split on `\0`), and
+a node whose list is already right is returned byte-for-byte: a form is never
+rewritten for its own sake, so the on-board cycle (dtc decompile -> patch -> dtc
+compile -> decompile again) is a fixed point and the wrapper's `cmp` reads
+«already patched». A rewrite emits the `"a", "b"` form. A PHY node whose list
+lacks `ethernet-phy-ieee802.3-c22` gets it appended — the self-heal for a blob
+damaged by the earlier quoted-literal split (found on bench 1.135 before the
+first merge of this change; the record is docs/bugs/BUGLOG.md 2026-10-30).
+
 On-device caller: /usr/local/sbin/sa02m-dtb-patch.sh (dtc decompile -> this ->
 dtc compile -> fdtget verify -> atomic FAT write). Tests: scripts/dev/test-dtb-patch.py
-(quality row dtb-patch-unit); fixture scripts/dev/fixtures/dtb-patch/sun8i-a40i-sk.pre.dts.
+(quality row dtb-patch-unit); fixtures scripts/dev/fixtures/dtb-patch/ — the hand-written
+sun8i-a40i-sk.pre.dts, and the bench 1.135 decompiles trimmed to these nodes:
+sun8i-a40i-sk.real.dts (the original blob, dtc 1.7 form) and sun8i-a40i-sk.damaged.dts
+(after three applies of the pre-fix patcher).
 
 CLI: sa02m-dtb-patch.py [--in PATH] [--out PATH]   (both default /tmp/patch.dts — the
 legacy call shape). Prints one line per change, or `unchanged`. Exit 0 = ok,
 1 = a required node is missing (not an SA-02m DTB), 2 = usage / IO error.
-Idempotent: patching the output again changes nothing. Stdlib only, Python 3.10+.
+Idempotent: patching the output again — in either text form — changes nothing.
+Stdlib only, Python 3.10+.
 """
 import argparse
 import re
@@ -41,8 +58,11 @@ import sys
 
 EMAC_PHY_ID_COMPAT = "ethernet-phy-id0243.0c54"   # IC+ IP101A rev 4 (mii-tool -v / BUGLOG 2026-10-28)
 GMAC_PHY_COMPAT = "icplus,ip101a"
+PHY_FALLBACK_COMPAT = "ethernet-phy-ieee802.3-c22"  # the generic PHY binding; appended only when a PHY node's list lacks it
 RESET_DEASSERT = "<0x7a120>"                      # 500000 us, dtc's lowercase hex idiom
 LEGACY_PATH = "/tmp/patch.dts"
+_ID_PREFIX = "ethernet-phy-id"
+_DTS_NUL = "\\0"                                  # dtc's escape between the strings of ONE literal
 
 _COMPAT_RE = re.compile(r'compatible = ((?:"[^"]*"(?:,\s*)?)+);')
 _DEASSERT_RE = re.compile(r"reset-deassert-us = <(0x[0-9a-fA-F]+|\d+)>;")
@@ -128,21 +148,51 @@ def _sub_own(node_text, regex, repl):
     return node_text[: m.start()] + repl(m) + node_text[m.end():]
 
 
-def set_compatible_first(node_text, first):
+def _compat_strings(value):
+    """Canonical string list of a `compatible` value, whatever text form dtc
+    chose: every quoted literal, each split on the dts `\\0` escape. dtc >= 1.7
+    (the board's 1.7.0, CI's) decompiles a multi-string property as ONE literal,
+    `"a\\0b"`; older dtc wrote `"a", "b"`; both compile to the same bytes. The
+    split is not escape-aware: an escaped backslash followed by a zero (`\\\\0`
+    in dts) is split too, and a rewrite would then emit invalid dts. A
+    conformant `compatible` cannot contain a backslash at all, and the case
+    fails closed — dtc refuses the text, the wrapper exits 5, the FAT is
+    untouched. Other escapes (`\\x41`, `\\\\`) pass through unchanged."""
+    out = []
+    for lit in re.findall(r'"([^"]*)"', value):
+        out.extend(lit.split(_DTS_NUL))
+    return out
+
+
+def compatible_strings(node_text):
+    """The node's OWN `compatible` as a canonical list; None when it has none."""
+    m = _own_prop(node_text, _COMPAT_RE)
+    return None if m is None else _compat_strings(m.group(1))
+
+
+def set_compatible_first(node_text, first, ensure=()):
     """Rewrite the node's own `compatible` so `first` leads. Existing strings
     follow in order; a duplicate of `first` is dropped, and when `first` is an
     `ethernet-phy-id…` override any OTHER id-form entry is dropped too (two IDs
-    would be a lie; only the first one is read). Unchanged text when nothing
-    is to do, so a caller detects a change by comparison."""
+    would be a lie; only the first one is read). Every string of `ensure` that
+    the list lacks is appended (the PHY fallback a damaged list lost). The
+    rules run on the CANONICAL list (`_compat_strings`), never on the text
+    form: the text is returned UNCHANGED when the list is already right — a
+    `"a\\0b"` literal is never re-formed just to look different, so a dtc cycle
+    (compile, decompile, patch) is a fixed point and the caller's byte
+    comparison means «already patched». A rewrite emits the `"a", "b"` form."""
     m = _own_prop(node_text, _COMPAT_RE)
     if m is None:
         return node_text
-    strings = re.findall(r'"([^"]*)"', m.group(1))
+    strings = _compat_strings(m.group(1))
     rest = [
         s for s in strings
-        if s != first and not (first.startswith("ethernet-phy-id") and s.startswith("ethernet-phy-id"))
+        if s != first and not (first.startswith(_ID_PREFIX) and s.startswith(_ID_PREFIX))
     ]
     new = [first] + rest
+    for s in ensure:
+        if s not in new:
+            new.append(s)
     if new == strings:
         return node_text
     line = "compatible = " + ", ".join(f'"{s}"' for s in new) + ";"
@@ -158,11 +208,16 @@ def _replace_span(text, span, new_node):
 
 
 def _patch_phy(phy_text, first, label, changes):
-    """One PHY node: `first` leads compatible, deassert pinned; changes named by `label`."""
+    """One PHY node: `first` leads compatible, the c22 fallback present, deassert
+    pinned; changes named by `label`."""
     before = phy_text
-    phy_text = set_compatible_first(phy_text, first)
+    was = compatible_strings(phy_text) or []
+    phy_text = set_compatible_first(phy_text, first, ensure=(PHY_FALLBACK_COMPAT,))
     if phy_text != before:
-        changes.append(f"{label}: compatible {first} first")
+        if was[:1] == [first] and PHY_FALLBACK_COMPAT not in was:
+            changes.append(f"{label}: compatible {PHY_FALLBACK_COMPAT} appended")
+        else:
+            changes.append(f"{label}: compatible {first} first")
     before = phy_text
     phy_text = set_deassert(phy_text)
     if phy_text != before:
