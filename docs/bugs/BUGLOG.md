@@ -5,6 +5,16 @@
 
 ---
 
+## [2026-10-30] branch: 1.0.7.22
+
+**Файл(ы):** `etc/fix-eth.sh` (`recover_iface`, ветка без carrier, полный link cycle), его копия `tools/imaging/firstboot-overlay/usr/local/bin/fix-eth.sh`, `scripts/dev/test-fix-eth-link-cycle.sh` (случай C6), `.ai-dev/quality/tools.json` (текст строки `fix-eth-link-cycle`), `.ai-dev/quality/checks/comment-mutation-proof.sh` (один случай), `docs/contracts/boot-network-routes.md` (§1)
+**Тип:** Маршруты не восстанавливаются ~65 с после линка, поднявшегося во время link cycle — нарушение границы ≤ 60 с контракта `boot-network-routes.md` §9
+**Описание:** Стенд 192.168.1.135, 30.10.2026, холодная загрузка 1.0.7.19 с медленным автосогласованием eth0: маршрут `192.168.10.0/24` и маршрут по умолчанию отсутствовали 65 с после появления линка. Журнал (монотонное время): 54.55 coldboot добавил 192.168.10.0/24 (carrier ещё 0); 54.80 старт `fix-eth@eth0` №2; 55.52 carrier=0 → link cycle 2/5, `ip link set down` сбросил все маршруты eth0; 58.35 `mii-tool -r`, `sleep 3`; 60.44 ядро: eth0 Link is Up → udev `change carrier=1` → `systemctl --no-block start fix-eth@eth0`; 61.43 `fix-eth@eth0` №2 завершился; 125.69 первый проход `net-watchdog` (STARTUP_DELAY=60) вернул оба маршрута.
+**Причина:** Запуск из udev на 60.44 пришёл, пока oneshot-экземпляр `fix-eth@eth0` ещё был `activating`, и systemd его поглотил; сам скрипт после link cycle carrier не перечитывал и выходил по ветке «нет линка». Событие carrier, которое должно было запустить восстановление, терялось ровно тогда, когда приходило во время цикла — самой долгой части прохода (~6 с), которая и идёт на загрузке при медленном PHY. Для маршрута по умолчанию — с появления лестницы link cycle; пояс маршрутов 1.0.7.18 это унаследовал.
+**Исправление:** После последнего `sleep 3` полного link cycle — одна строка `carrier_up "$iface" && _link_after_cycle=1`; при `1` скрипт пишет «линк появился после link cycle N» и не выходит, а продолжает в существующую ветку «carrier есть» (сброс счётчика, проверка bootstrap, маршрут по умолчанию, `dns_ensure`, `routes_ensure`, связь, grat-ARP, светодиод) — код этой ветки не дублирован. При `0` — прежний выход. Ветка исчерпанного бюджета и admin-DOWN не тронуты. Случай C6 гейта `fix-eth-link-cycle` на скрипте 1.0.7.19 RED (`route_add=0 counter=1 log_line=0`), после — GREEN; комментирование новой строки делает C6 красным (случай в `comment-mutation-proof`). Остаточное окно (линк между перепроверкой и выходом юнита) названо в контракте §1. На железе не проверено: холодные перезагрузки 1.135 ×2 запланированы после сборки.
+
+---
+
 ## [2026-10-30] branch: 1.0.7.21
 
 **Файл(ы):** `usr/local/sbin/sa02m-dtb-patch.py` (`set_compatible_first`, `_compat_strings`, `compatible_strings`, `_patch_phy`), `scripts/dev/test-dtb-patch.py` (U8 расширен, U9/U10 новые), `scripts/dev/test-dtb-patch-tool.sh` (T13, `DTC_NUL_FORM`, `DTB_PATCHER_SRC`, `fdtget`-заглушка понимает `\0`), `scripts/dev/fixtures/dtb-patch/sun8i-a40i-sk.real.dts`, `sun8i-a40i-sk.damaged.dts` (новые — расшифровки со стенда 1.135, обрезанные до нужных узлов), `.ai-dev/quality/tools.json` (строки `dtb-patch-unit`, `dtb-patch-tool`), `CHANGELOG.md`. Не тронут: `usr/local/sbin/sa02m-dtb-patch.sh` (его сравнение `cmp` «уже исправлен» верно, как только патчер оставляет верный текст без изменений).
