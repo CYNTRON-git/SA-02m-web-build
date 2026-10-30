@@ -7,8 +7,10 @@ import os
 import stat
 import tempfile
 import unittest
+from unittest import mock
 
 from sa02m_homeconnect import constants as C
+from sa02m_homeconnect import status as status_module
 from sa02m_homeconnect.status import LINK_KEYS, STATUS_KEYS, StatusWriter
 
 
@@ -52,6 +54,36 @@ class StatusWriterTest(unittest.TestCase):
         self.assertEqual(stat.S_IMODE(os.stat(self.w.link_path).st_mode), 0o640)
         self.w.write_status(C.STATE_CONNECTING, enabled=True)
         self.assertFalse(os.path.exists(self.w.link_path))
+
+    def test_link_gone_before_status_leaves_awaiting_user(self) -> None:
+        """§231 holds at every instant, not only at rest: a reader that sees the
+        new state in status.json must not find link.json beside it. Observed by
+        ordering, not raced — record whether the link exists at the moment the
+        status file is written (CI run 40929196076 hit the window)."""
+        view = {"user_code": "ABCD-1234", "verification_uri": "https://api.home-connect.com/v",
+                "verification_uri_complete": "", "expires_at": 1}
+        real_atomic_write = status_module.atomic_write
+        seen = {}
+
+        def recording_atomic_write(path, data, **kw):
+            if path == self.w.status_path:
+                seen["link_present"] = os.path.exists(self.w.link_path)
+            real_atomic_write(path, data, **kw)
+
+        self.w.write_status(C.STATE_AWAITING_USER, enabled=True)
+        self.w.write_link(view)
+        with mock.patch.object(status_module, "atomic_write", recording_atomic_write):
+            self.w.write_status(C.STATE_LINK_EXPIRED, enabled=True)
+        self.assertFalse(seen["link_present"],
+                         "link.json still present at the moment status.json left awaiting_user")
+        self.assertFalse(os.path.exists(self.w.link_path))
+
+        # awaiting_user keeps an existing link: the status write alone never removes it.
+        self.w.write_link(view)
+        with mock.patch.object(status_module, "atomic_write", recording_atomic_write):
+            self.w.write_status(C.STATE_AWAITING_USER, enabled=True)
+        self.assertTrue(seen["link_present"])
+        self.assertTrue(os.path.exists(self.w.link_path))
 
     def test_inventory_mode_and_keys(self) -> None:
         self.w.write_inventory([{"device_id": "hc-x", "name": "N", "type": "Oven", "brand": "B",
