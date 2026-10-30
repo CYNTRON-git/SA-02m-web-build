@@ -54,9 +54,10 @@
 #   comment-mutation-proof). The override never edits the real tree.
 #
 # Off-board only: /usr/local/{bin,sbin} helpers the script probes with -x / -f
-# (sa02m-eth0-led.sh, sa02m-dns-ensure.sh, sa02m-grat-arp.py) are NOT
-# retargeted — absent on CI and dev hosts they are skipped, but on a board the
-# harness would drive the real LED/DNS helpers. Do not run it on a board.
+# (sa02m-eth0-led.sh, sa02m-dns-ensure.sh, sa02m-routes-ensure.sh,
+# sa02m-grat-arp.py) are NOT retargeted — absent on CI and dev hosts they are
+# skipped, but on a board the harness would drive the real LED/DNS/route
+# helpers. Do not run it on a board.
 #
 # Run: bash scripts/dev/test-fix-eth-link-cycle.sh   (stdlib bash only, no deps)
 # ═══════════════════════════════════════════════════════════════════════════

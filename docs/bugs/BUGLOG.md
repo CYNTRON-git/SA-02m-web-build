@@ -5,6 +5,16 @@
 
 ---
 
+## [2026-10-29] branch: 1.0.7.18
+
+**Файл(ы):** `usr/local/sbin/sa02m-routes-ensure.sh` (новый), `etc/fix-eth.sh` (обёртка `routes_ensure`, два вызова), `usr/local/sbin/sa02m-eth-coldboot.sh` (обёртка, два вызова), их копии в `tools/imaging/firstboot-overlay/`, `scripts/02-network.sh` (установка помощника), `scripts/dev/test-iface-routes-ensure.sh` (новый), `scripts/dev/test-iface-dns-ensure.sh` (скан диалекта — 4 файла), `.ai-dev/quality/tools.json` (строка `iface-routes-ensure`), `.ai-dev/quality/checks/comment-mutation-proof.sh` (один случай), `docs/contracts/boot-network-routes.md` (новый)
+**Тип:** Статический маршрут из конфига интерфейса пропадает после перезагрузки / переподключения кабеля — молчаливая потеря связности с подсетью за шлюзом
+**Описание:** Стенд 192.168.1.135, 29.10.2026: после перезагрузки в таблице маршрутов только `default via 192.168.1.1 dev eth0 onlink` (флаг `onlink` — маршрут вернул `inet-failover.sh`) и подключённая /24; маршрута `192.168.10.0/24 via 192.168.1.100`, заданного в `eth0.conf` строкой `post-up ip route add … dev eth0 || true`, нет. Клиенты из 192.168.10.x сутки не видели MQTT-брокер; плата пинговалась и отдавала панель.
+**Причина:** Строки `post-up` выполняет только успешный `ifup`. (1) При позднем carrier `ifup` обрывается на шаге `gateway` до стадии `post-up` (цепочка — `docs/contracts/boot-network-dns.md` §2). (2) Link cycle в `fix-eth.sh` / `sa02m-eth-coldboot.sh` сбрасывает все маршруты устройства. Лестница восстановления возвращала только маршрут по умолчанию (с 1.0.3.27) и резолвер (с 1.0.6.6); пути, который заново применяет объявленные в конфиге маршруты, не было.
+**Исправление:** Помощник `sa02m-routes-ensure.sh` (один `awk` разбирает конфиг, строки не выполняются; строгая грамматика `ip route add|replace <dst> via <IPv4> [dev <этот if>] [metric] [onlink]`, включая сокращения `ip r`/`ip ro` и `-f inet`; непонятая строка маршрута — в том числе обёрнутая в другую команду (`sleep 5 && ip route add …`, `sh -c "ip route add …"`) — не применяется, а попадает в журнал; маршрут, который добавляет вызываемый строкой скрипт, хелпер не видит; маршрут по умолчанию и существующие маршруты не трогаются; `ip -4 route add` только при пустом `show exact`, `EEXIST` гасит гонку; журнал раз за загрузку на непонятые строки и на неудачное добавление). Вызывается рядом с `dns_ensure` на обеих ветках `fix-eth.sh` и обеих ветках coldboot через обёртку с `-x`-guard и `timeout 10` (в coldboot — ещё и пропуск, пока `networking`/`ifup@<if>` в `activating`); установщик ставит его 0755. Гейт `iface-routes-ensure` + случай в `comment-mutation-proof`. На железе не проверено (контракт §8–9).
+
+---
+
 ## [2026-10-29] branch: 1.0.7.17
 
 **Файл(ы):** `opt/sa02m-modbus-mqtt/bridge_dtv_ce.py` (`DTVPoller.setup`, `_try_autodetect`, `_publish_sensor_meta`, `poll_io`), `bridge_mqtt.py` (`DeviceLiveCache.flush_file`), `opt/sa02m-modbus-mqtt/tests/test_device_availability.py`, `tests/test_ce_power_poll.py` (фикстура)
