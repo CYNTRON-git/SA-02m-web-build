@@ -198,10 +198,7 @@ sh /mnt/autorun.sh
 производителя (`icplus,ip101a`, как у eth1) не привязывает ничего: phylib выбирает
 драйвер по ID. Подробности — `docs/bugs/BUGLOG.md` 2026-10-29, `CHANGELOG.md` 1.0.7.21.
 
-- **Сейчас придержано** (решение оператора 30.10.2026): `apply` — только на стенде, не на донорах
-  и рабочих платах, до решения оператора по итогам опыта с поздним кабелем (`docs/deployment.md`, строка
-  «boot DTB»; `docs/bugs/BUGLOG.md` 2026-10-30).
-- **На плате** (когда запрет снят): `apt install device-tree-compiler`, затем
+- **На плате** (донор, стенд, любая развёрнутая): `apt install device-tree-compiler`, затем
   `sa02m-dtb-patch.sh check` (без root; показывает драйвер PHY eth0) и
   `sa02m-dtb-patch.sh apply` (root; для каждого имени DTB на FAT — бэкап в
   `/root/dtb-backup-<имя>-<дата>`, проверка `fdtget` до записи, атомарная замена,
