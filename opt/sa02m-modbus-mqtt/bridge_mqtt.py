@@ -34,7 +34,9 @@ class DeviceLiveCache:
     _units: dict[str, dict[str, str]] = {}
     _errors: dict[str, dict[str, str]] = {}
     _sensor_types: dict[str, dict[str, str]] = {}
-    _online: dict[str, bool] = {}
+    # Absent until the device's first tracked read decides (mark_ok → True,
+    # the offline transition → False): unknown is written as not ok below.
+    _online: dict[str, bool | None] = {}
 
     @classmethod
     def set_online(cls, device_id: str, online: bool) -> None:
@@ -92,7 +94,7 @@ class DeviceLiveCache:
             units = dict(cls._units.get(device_id, {}))
             errors = dict(cls._errors.get(device_id, {}))
             sensor_types = dict(cls._sensor_types.get(device_id, {}))
-            online = bool(cls._online.get(device_id, True))
+            online = cls._online.get(device_id)
         if not controls and not units and not sensor_types:
             return
         try:
@@ -100,7 +102,16 @@ class DeviceLiveCache:
             path = LIVE_CACHE_DIR / f"{device_id}.json"
             tmp = path.with_suffix(".json.tmp")
             payload = {
-                "ok": online,
+                # Unknown (never answered a tracked read) is NOT ok: the
+                # 1.0.7.12 rule the bridge counters and the roster already
+                # follow. The old `True` default let the raw readers of this
+                # file (mqtt_live.cgi -> the MQTT tab's prefetchDeviceLive,
+                # or a `cat` of it) take a device unplugged at bridge start
+                # for a live one until its third failed read (bench 1.135,
+                # 2026-10-29) — and every writer flushes, a writeback echo or
+                # an FMB event included. The «Устройства» card was never
+                # fooled: it also requires non-empty controls.
+                "ok": online is True,
                 "device": device_id,
                 "source": "cache",
                 "controls": controls,
