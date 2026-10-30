@@ -24,7 +24,7 @@ entries are pruned (history lives in git); last prune 2026-10-24 (audit 2026-10-
   contract §3 «Чего хелпер не видит» or route them through `base()`. (4) Helper 299 lines / harness 631 lines —
   `decompose` if either keeps growing.
 - [OPEN] 2026-10-29 **[LOW] `.ai-dev/notes/quality-gate-environment.md` FAIL table misses two rows that fail
-  alone on a pristine HEAD on the Windows workstation (1.0.7.14 review, advisory 4; a third found at the
+  alone on a pristine HEAD on the Windows workstation (the eth0-PHY DTB change review, advisory 4; a third found at its
   1.0.7.14 ship gate):** `web-install-secret`
   (16 cases: POSIX 0600 modes, `os.O_NOFOLLOW`, pwrite/fsync injection, scrub cases — MSYS modes) and
   `py-unit-alice` `test_atomic_commit_concurrent_writers_and_save_failure` (1 of 910; the env note lists
