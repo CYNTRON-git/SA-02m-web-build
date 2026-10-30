@@ -114,6 +114,14 @@ ota-deploy-mode-contract|etc/sa02m-update-runner.sh|mode = deploy_mode(rel, dst)
 imaging-samefile-guard|tools/imaging/make-image.sh|-ef "$FINAL_IMG_KEEP"
 installer-svc-policy-gate|install.sh|Установка завершена
 iface-naming-contract|scripts/02-network.sh|install -m 755 "$ETC_DIR/sa02m-iface-canonical.sh"
+iface-conf-write|etc/sa02m-iface-conf-write.sh|$ROUTE_RE ]] && line_in_current
+iface-conf-write|www/network_config/cgi-bin/apply.cgi|net_conf_write_refused "$(lan_iface_conf eth0)"
+iface-conf-write|www/network_config/cgi-bin/apply.cgi|net_conf_write_refused "$(lan_iface_conf eth1)"
+iface-conf-write|etc/sa02m-iface-conf-write.sh|end0) _dif='end0|eth0' ;;
+iface-conf-write|etc/sa02m-iface-conf-write.sh|end1) _dif='end1|eth1' ;;
+iface-conf-write|www/network_config/cgi-bin/apply.cgi|NET_APPLY_DEFERRED=1
+js-unit-apply-save-result|www/network_config/static/js/app/forms.js|if (refusal) { toast(refusal
+js-unit-apply-save-result|www/network_config/static/js/app/forms.js|if (deferred) { configLoaded = false;
 nodered-pin-consistency|scripts/dev/build-nodered-payload.sh|--omit=optional
 watchdog-cap|scripts/01-system.sh|install -m 644 "$ETC_REPO/systemd/sa02m-watchdog.conf"
 telemetry-device-id-contract|opt/sa02m-modbus-mqtt/sa02m_telemetry.py|self._clear_legacy_retained()
