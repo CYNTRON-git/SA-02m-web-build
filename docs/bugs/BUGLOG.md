@@ -5,7 +5,7 @@
 
 ---
 
-## [2026-10-29] branch: 1.0.7.16
+## [2026-10-29] branch: 1.0.7.20
 
 **Файл(ы):** `opt/sa02m-homeconnect/sa02m_homeconnect/status.py` (`StatusWriter.write_status`), `opt/sa02m-homeconnect/tests/test_status_contract.py`
 **Тип:** Гонка записи файлов состояния Home Connect; мигающий тест в CI
