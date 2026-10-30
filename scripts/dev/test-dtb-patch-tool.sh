@@ -57,6 +57,19 @@
 #       canon through fdtget), apply #2 and #3 «уже исправлен», one backup, no
 #       write. T2 never saw this form (copy-both-ways shim): the bench defect of
 #       2026-10-29 — three `patched`, GMAC list x4, c22 lost — passed T1–T12.
+#   T14 (before T11) verify refuses a duplicated string: a STUB patcher (the
+#       harness writes it; DTB_STUB picks the shape) puts a second
+#       `icplus,ip101a` in the GMAC list -> «failed: verify: GMAC compatible:
+#       icplus,ip101a повторён», FAT unchanged, no backup, exit 5. Control
+#       first: the stub's `canon` shape is `patched` (so the refusal is the
+#       list check, not a broken stub). The real patcher is canonical now, so
+#       only a misbehaving patcher can drive this guard.
+#   T15 (before T11) the stub writes the EMAC list as the id only -> «failed:
+#       verify: EMAC compatible: нет …c22», FAT unchanged, no backup, exit 5.
+#   T16 check on NUL-separated proc lists: eth0 id-only + eth1 icplus x4 under
+#       ICPlus -> a ВНИМАНИЕ line for each, exit 0; a duplicated eth0 string
+#       under Generic PHY -> the warning, exit 1 (unchanged); canonical lists
+#       on both nodes -> no warning. T1/T13 stay the canonical-blob controls.
 #
 # Non-vacuous: a failed or over-wide retarget, a leftover real root on an
 # executable line, a missing tool/patcher/fixture, a real fixture that lost
@@ -67,7 +80,9 @@
 # `[ "$first" = "$EMAC_ID_COMPAT" ]` verify line out of a copy -> T4 writes the
 # blob fdtget lied about (FAT changed, exit 0) -> RED; comment the
 # `mv -f "$tmp" "$2"` line of write_atomic out -> T1 RED (live file not
-# replaced, `.new` left behind). DTB_TOOL_SRC=<path> re-points the harness at
+# replaced, `.new` left behind); comment list_defect's duplicate line out ->
+# T14 and T16 RED, its c22 line -> T15 and T16 RED; the tool before the list
+# check (f70db73c) -> T14, T15, T16 RED (observed 2026-10-30). DTB_TOOL_SRC=<path> re-points the harness at
 # such a copy, DTB_PATCHER_SRC=<path> at another patcher (the pre-fix patcher
 # that split on quoted literals only — the defect found on bench 1.135 before
 # the first merge of this change, BUGLOG 2026-10-30: T13 RED — apply #1 prepends
@@ -124,7 +139,10 @@ FATDEV="$T/fatdev"              # FAT_DEV (a token the mount shim records)
 CANON1="$T/canon"               # /usr/local/share/sa02m
 CANON2="$T/canon/kernel"        # /usr/local/share/sa02m/kernel
 BACKUP="$T/backup"              # /root
-PROC="$T/procphy"               # PROC_PHY
+# PROC_PHY keeps the real DT path as its tail: `check` finds the GMAC PHY node
+# by swapping that tail for GMAC_PHY_PATH (GPROC below), as on the board.
+PROC="$T/dt/soc/mdio@1c0b080/ethernet-phy@0"            # PROC_PHY
+GPROC="$T/dt/soc/ethernet@1c50000/mdio/ethernet-phy@0"  # the GMAC PHY node check derives
 SYSP="$T/sysphy/1c0b080.mdio-mii:00"   # SYS_PHY
 PATCHER="$T/sa02m-dtb-patch.py"
 LOCK="$T/lockdir"
@@ -265,6 +283,40 @@ echo "id \$*" | tee -a "$CALLS_ALL" >> "$CALLS"
 echo "\${ID_UID:-0}"
 SHIM
 chmod +x "$BIN"/*
+# A STUB patcher for T14/T15 — the list shapes the pre-1.0.7.21 patcher wrote on
+# bench 1.135 (BUGLOG 2026-10-30), on purpose. The real patcher is canonical
+# now, so the verify guard can only be driven by a patcher that misbehaves —
+# which is the independence the guard exists for. Input = the REAL_FIXTURE text
+# (dtc 1.7 `\0` form); DTB_STUB selects the shape. A seed it does not recognise
+# exits 1 (the tool then reports «patcher rc=1», which no T14/T15 assertion
+# accepts), and `canon` is the stub's own positive control.
+cat > "$T/stub-patcher.py" <<'STUB'
+import os
+import sys
+
+args = sys.argv[1:]
+src = args[args.index("--in") + 1]
+dst = args[args.index("--out") + 1]
+NUL = "\\0"   # the two-character escape dtc 1.7 writes between list strings
+C22 = "ethernet-phy-ieee802.3-c22"
+ID = "ethernet-phy-id0243.0c54"
+GMAC = "icplus,ip101a"
+emac_new = {"canon": ID + NUL + C22, "dup": ID + NUL + C22, "noc22": ID}
+mode = os.environ.get("DTB_STUB", "")
+with open(src, encoding="utf-8", newline="") as f:
+    text = f.read()
+emac_old = 'compatible = "' + C22 + '";'
+gmac_old = 'compatible = "' + GMAC + NUL + C22 + '";'
+if mode not in emac_new or text.count(emac_old) != 1 or text.count(gmac_old) != 1:
+    sys.stderr.write("stub patcher: unknown DTB_STUB or unexpected seed\n")
+    sys.exit(1)
+text = text.replace(emac_old, 'compatible = "' + emac_new[mode] + '";')
+if mode == "dup":   # the apply-#1 shape: a second icplus,ip101a in front
+    text = text.replace(gmac_old, 'compatible = "' + GMAC + NUL + GMAC + NUL + C22 + '";')
+with open(dst, "w", encoding="utf-8", newline="") as f:
+    f.write(text)
+print("stub " + mode)
+STUB
 MASKED=$(path_without "$T/mask" dtc fdtget) || { echo "FAIL  path_without could not mask a host dtc/fdtget"; exit 1; }
 PATH="$BIN:$MASKED"; export PATH
 command -v dtc | grep -Fq "$BIN/dtc" || { echo "FAIL  the dtc shim is not first on PATH"; exit 1; }
@@ -460,6 +512,45 @@ for pass in 2 3; do
     fi
 done
 
+# ═══ T14/T15: verify refuses a non-canonical list (stub patcher) ═══════════
+# Placed before T11. The stub replaces the sandbox patcher; the real one is put
+# back after T15. Control first: the stub's canonical shape must still be
+# `patched`, so a T14/T15 refusal is the list check and not a broken stub.
+cp "$T/stub-patcher.py" "$PATCHER"
+reset_sandbox
+blob "$FAT/$NAME" "" "$REAL_FIXTURE"
+DTC_NUL_FORM=1 DTB_STUB=canon run_tool apply
+emac14=$(fdtget -ts "$FAT/$NAME" /soc/mdio@1c0b080/ethernet-phy@0 compatible)
+gmac14=$(fdtget -ts "$FAT/$NAME" /soc/ethernet@1c50000/mdio/ethernet-phy@0 compatible)
+if [ "$RC" = 0 ] && [ "$(n_backups)" = 1 ] && grep -Fq "$NAME: patched: stub canon" "$OUT" && ! grep -Fq 'failed' "$OUT" \
+   && [ "$emac14" = "$ID_STR $C22" ] && [ "$gmac14" = "icplus,ip101a $C22" ]; then
+    ok "T14: control — the stub's canonical lists pass verify (\`patched\`, one backup)"
+else
+    bad "T14: control rc=$RC backups=$(n_backups) emac='$emac14' gmac='$gmac14' — $(head -2 "$OUT" | tr '\n' '|')"
+fi
+# T14: GMAC `icplus,ip101a` twice (the bench apply-#1 shape), EMAC canonical.
+reset_sandbox
+blob "$FAT/$NAME" "" "$REAL_FIXTURE"; cp "$FAT/$NAME" "$T/seed.blob"
+DTC_NUL_FORM=1 DTB_STUB=dup run_tool apply
+if [ "$RC" = 5 ] && cmp -s "$FAT/$NAME" "$T/seed.blob" && [ "$(n_backups)" = 0 ] && [ ! -e "$FAT/.$NAME.new" ] \
+   && grep -Fq "$NAME: failed: verify: GMAC compatible: icplus,ip101a повторён" "$OUT" \
+   && ! grep -Fq 'EMAC compatible' "$OUT" && ! grep -Fq 'перезагрузка' "$OUT"; then
+    ok "T14: a duplicated icplus,ip101a in the GMAC list fails verify: named, FAT untouched, no backup, exit 5"
+else
+    bad "T14: rc=$RC unchanged=$(cmp -s "$FAT/$NAME" "$T/seed.blob" && echo y || echo n) backups=$(n_backups) — $(head -2 "$OUT" | tr '\n' '|')"
+fi
+# T15: EMAC list = the id only, c22 dropped (the bench apply-#2/#3 shape).
+reset_sandbox
+blob "$FAT/$NAME" "" "$REAL_FIXTURE"; cp "$FAT/$NAME" "$T/seed.blob"
+DTC_NUL_FORM=1 DTB_STUB=noc22 run_tool apply
+if [ "$RC" = 5 ] && cmp -s "$FAT/$NAME" "$T/seed.blob" && [ "$(n_backups)" = 0 ] && [ ! -e "$FAT/.$NAME.new" ] \
+   && grep -Fq "$NAME: failed: verify: EMAC compatible: нет $C22" "$OUT" && ! grep -Fq 'перезагрузка' "$OUT"; then
+    ok "T15: an EMAC list without $C22 fails verify: named, FAT untouched, no backup, exit 5"
+else
+    bad "T15: rc=$RC unchanged=$(cmp -s "$FAT/$NAME" "$T/seed.blob" && echo y || echo n) backups=$(n_backups) — $(head -2 "$OUT" | tr '\n' '|')"
+fi
+cp "$PATCHER_SRC" "$PATCHER"
+
 # ═══ T10: check on proc/sysfs fixtures ═════════════════════════════════════
 seed_phy() {   # $1 driver, $2 phy_id
     mkdir -p "$PROC" "$SYSP"
@@ -494,6 +585,41 @@ if [ "$RC" = 2 ]; then
 else
     bad "T10: missing node — rc=$RC — $(head -2 "$OUT" | tr '\n' '|')"
 fi
+
+# ═══ T16: check warns on a non-canonical LIVE list, exit code unchanged ════
+# The proc files carry what the kernel exposes: strings NUL-separated.
+seed_phy "ICPlus IP101A" 0x02430c54
+mkdir -p "$GPROC"
+printf 'ethernet-phy-id0243.0c54\0' > "$PROC/compatible"
+printf 'icplus,ip101a\0icplus,ip101a\0icplus,ip101a\0icplus,ip101a\0ethernet-phy-ieee802.3-c22\0' > "$GPROC/compatible"
+run_tool check
+if [ "$RC" = 0 ] && grep -Fq 'под драйвером icplus — OK' "$OUT" \
+   && grep -Fq "eth0 PHY: ВНИМАНИЕ: список compatible не канонический: нет $C22" "$OUT" \
+   && grep -Fq 'eth1 PHY: ВНИМАНИЕ: список compatible не канонический: icplus,ip101a повторён' "$OUT"; then
+    ok "T16: check names the bench-damaged live lists (eth0 without c22, eth1 icplus x4), exit 0 under icplus"
+else
+    bad "T16: damaged/icplus — rc=$RC — $(tr '\n' '|' < "$OUT")"
+fi
+seed_phy "Generic PHY" 0x00000000
+printf 'ethernet-phy-ieee802.3-c22\0ethernet-phy-ieee802.3-c22\0' > "$PROC/compatible"
+printf 'icplus,ip101a\0ethernet-phy-ieee802.3-c22\0' > "$GPROC/compatible"
+run_tool check
+if [ "$RC" = 1 ] && grep -Fq 'fix-eth' "$OUT" \
+   && grep -Fq "eth0 PHY: ВНИМАНИЕ: список compatible не канонический: $C22 повторён" "$OUT" \
+   && ! grep -Fq 'eth1 PHY: ВНИМАНИЕ' "$OUT"; then
+    ok "T16: check under Generic PHY with a duplicated eth0 token: the warning, exit 1 as before"
+else
+    bad "T16: damaged/generic — rc=$RC — $(tr '\n' '|' < "$OUT")"
+fi
+seed_phy "ICPlus IP101A" 0x02430c54
+printf 'ethernet-phy-id0243.0c54\0ethernet-phy-ieee802.3-c22\0' > "$PROC/compatible"
+run_tool check
+if [ "$RC" = 0 ] && [ -s "$GPROC/compatible" ] && ! grep -Fq 'ВНИМАНИЕ' "$OUT" && grep -Fq 'под драйвером icplus — OK' "$OUT"; then
+    ok "T16: control — canonical live lists on both PHY nodes: no warning, exit 0"
+else
+    bad "T16: canonical — rc=$RC — $(tr '\n' '|' < "$OUT")"
+fi
+rm -rf "$T/dt"
 
 # ═══ T11: dtc absent -> exit 3 before any mount ════════════════════════════
 reset_sandbox
