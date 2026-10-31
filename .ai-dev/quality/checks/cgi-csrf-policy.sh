@@ -124,7 +124,7 @@ sa02m_homekit_api.cgi|TRIG_OUT=$(timeout 11 sudo -n /usr/local/sbin/sa02m-homeki
 services_ctrl.cgi|nohup sudo -n "$CTL" "$ACTION" "$SID"
 storage_format_set.cgi|sudo -n /usr/local/sbin/sa02m-set-storage-auto-format "$VAL"
 variant.cgi|sudo /usr/local/sbin/sa02m-apply-variant.sh "$VARIANT"
-web_creds.cgi|sudo /usr/local/sbin/sa02m-commit-web-env
+web_creds.cgi|sudo -n /usr/local/sbin/sa02m-commit-web-env
 web_factory_reset.cgi|sudo -n /usr/local/libexec/sa02m-update-control factory-reset SA02M-RESET true
 web_update_apply.cgi|web_update_control apply "$CONFIRM"
 web_update_cancel.cgi|web_update_control cancel

@@ -1372,6 +1372,26 @@ PIN_CARRIERS = [
     "etc/sa02m-web-update-apply.sh",
 ]
 GUARDED_HELPER_SRCS = [rel for rel, _m, _c in HELPER_GUARDS if rel.startswith("usr/local/sbin/")]
+# Helpers shipped from etc/ under another name whose in-helper validation is the
+# fix in the same sense: repo source -> granted path. Explicit, not every etc/
+# grant: www-only does not deliver every granted helper today, and widening the
+# rule to all of them is a scope decision, not a gate edit.
+#   sa02m-commit-web-env: the new panel credentials arrive on stdin only; the
+#   closure of the shared-/tmp staging plant (audit 2026-10-30 F1) lives in the
+#   helper, so a path shipping the new web_creds.cgi without it leaves F1 open.
+# These are matched STRICTLY: one live install line must name both the source
+# basename and the granted path. The basename alone is hollow here — the
+# `if [ -f ".../<src>" ]` guard above the install line carries it too, so a
+# commented-out install stayed GREEN (measured 2026-10-30). The usr/local/sbin
+# set keeps the basename match: www-only delivers several through a name loop.
+ETC_GUARDED_HELPERS = [
+    ("etc/sa02m-commit-web-env.sh", "/usr/local/sbin/sa02m-commit-web-env"),
+]
+for src, _dst in ETC_GUARDED_HELPERS:
+    if read(src) is None:
+        bad("PIN WITHOUT HELPER: etc-sourced helper %s is gone from the tree — re-point ETC_GUARDED_HELPERS, do not drop the entry" % src)
+PIN_PAIRS = ([(src, "/" + src, False) for src in GUARDED_HELPER_SRCS]
+             + [(src, dst, True) for src, dst in ETC_GUARDED_HELPERS])
 carrier_text = {}
 for rel in PIN_CARRIERS:
     t = read(rel)
@@ -1396,9 +1416,8 @@ for carrier in PIN_CARRIERS:
     if not re.search(r"www/network_config|WEB_ROOT", text):
         bad("%s no longer looks like a panel-deploying path (no www/network_config / WEB_ROOT reference) — this assertion has stopped watching it; update the carrier list, do not delete the check" % carrier)
         continue
-    for src in GUARDED_HELPER_SRCS:
+    for src, dst, strict in PIN_PAIRS:
         base = os.path.basename(src)
-        dst = "/" + src
         grants = sorted(
             os.path.basename(f) for f in tree_files
             if f.startswith("etc/sudoers.d/") and dst in (read(f) or "")
@@ -1425,12 +1444,17 @@ for carrier in PIN_CARRIERS:
             else:
                 bad("PIN WITHOUT HELPER: shared handoff/map/source missing for %s -> %s" % (src, dst))
             continue
-        if re.search(r"(?<![\w-])%s(?![\w.-])" % re.escape(base), text):
+        if strict:
+            pat = (r"(?m)^[^\n]*(?<![\w-])(sa02m_atomic_install|install)\s[^\n]*(?<![\w-])%s(?![\w.-])[^\n]*%s(?![\w.-])"
+                   % (re.escape(base), re.escape(dst)))
+        else:
+            pat = r"(?<![\w-])%s(?![\w.-])" % re.escape(base)
+        if re.search(pat, text):
             ok("%s deploys the panel AND delivers %s (granted by sudoers.d/%s)"
                % (carrier, base, ",".join(grants)))
             checked_pin += 1
         else:
-            bad("PIN WITHOUT HELPER: %s replaces the panel's CGI tree but never delivers %s, which sudoers.d/%s grants at %s — a board updated only through that path runs the NEW CGI against the OLD, trust-the-caller helper while reporting the new version (the in-helper argv validation IS the fix; the pin is only defence in depth)"
+            bad("PIN WITHOUT HELPER: %s replaces the panel's CGI tree but never delivers %s, which sudoers.d/%s grants at %s — a board updated only through that path runs the NEW CGI against the OLD, trust-the-caller helper while reporting the new version (the in-helper validation IS the fix; the pin is only defence in depth)"
                 % (carrier, base, ",".join(grants), dst))
 if checked_pin:
     ok("every panel-deploying path also delivers the privileged helpers the panel calls (%d pairings checked)" % checked_pin)

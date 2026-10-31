@@ -1,8 +1,12 @@
 # -*- coding: utf-8 -*-
 """Run an existing CGI with a service session the daemon minted.
 
-The CGI contract is unchanged. apply.cgi answers 302, not JSON: that status
-and Location are returned as fields, not parsed as a document.
+The CGI contract is unchanged. A JSON body is parsed first, whatever the
+status. apply.cgi answers a live-applied save with a 302 and no body: that
+status and Location are returned as fields, not parsed as a document. Its other
+outcomes are 200 JSON and pass through as such: a refusal (`ok:false`), or
+saved but not applied live (`ok:true, applied:false, reason`)
+(docs/contracts/ethernet-iface-naming.md §5.4).
 """
 
 import json

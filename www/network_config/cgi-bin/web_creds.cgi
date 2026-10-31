@@ -63,11 +63,13 @@ web_auth_verify "$CUR" "$CUR_STORED" || json_err "wrong_password"
 # Store the NEW password hashed (S5); fall back to plaintext only if no hasher
 # is available on the device (best-effort, never a lockout).
 NEW_HASH=$(web_auth_hash "$NEWP")
-web_auth_write "$NEWU" "${NEW_HASH:-$NEWP}" > /tmp/sa02m_web.env.new
-chmod 600 /tmp/sa02m_web.env.new
-
-if ! sudo /usr/local/sbin/sa02m-commit-web-env 2>/dev/null; then
-  rm -f /tmp/sa02m_web.env.new
+# The new file goes to the root helper on STDIN, never through a file in the
+# shared temp dir another local account could pre-create (audit 2026-10-30 F1).
+web_auth_write "$NEWU" "${NEW_HASH:-$NEWP}" | timeout 10 sudo -n /usr/local/sbin/sa02m-commit-web-env 2>/dev/null
+COMMIT_RC=("${PIPESTATUS[@]}")
+# Saved only when BOTH halves succeeded; anything else (a timeout's 124, a
+# missing pipeline) is save_failed.
+if [ "${#COMMIT_RC[@]}" -ne 2 ] || [ "${COMMIT_RC[0]}" -ne 0 ] || [ "${COMMIT_RC[1]}" -ne 0 ]; then
   json_err "save_failed"
 fi
 
