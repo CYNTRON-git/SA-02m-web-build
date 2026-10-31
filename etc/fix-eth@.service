@@ -1,13 +1,18 @@
 [Unit]
 Description=SA-02m network recovery for %I
 Documentation=file:/usr/local/bin/fix-eth.sh
-# After=networking.service: the canonical rename (sa02m-iface-canonical) emits
-# a udev add event carrying the NEW name mid-boot, so 99-lan-recovery.rules
-# starts this instance exactly while networking's own `ifup -a` is configuring
-# the same interface — the two race and one loses with "RTNETLINK: File exists",
-# failing networking.service. Recovery must never precede initial bring-up.
+# After=networking.service: recovery must never precede initial bring-up. An
+# instance running while networking's own `ifup -a` configures the same
+# interface would race it, and the loser fails with "RTNETLINK: File exists",
+# failing networking.service. What would start such an instance mid-boot is
+# not established: a same-boot canonical rename (sa02m-iface-canonical) is a
+# `move` uevent, which 99-lan-recovery.rules (add/bind) does not match.
 # Ordering ONLY (deliberately no Wants=): post-boot, networking has no active
-# job, so cable-replug recovery latency is unchanged.
+# job, so a later start of this unit is not delayed. For eth0, udev starts it
+# only on interface add/bind (eth0 emits no carrier uevent — measured); the
+# eth1 `change` lines in 99-lan-recovery.rules are unverified. An eth0 link
+# that appears later is picked up by the net-watchdog pass or by fix-eth.sh's
+# re-check after its link cycle.
 After=network.target networking.service sys-subsystem-net-devices-%i.device
 BindsTo=sys-subsystem-net-devices-%i.device
 Conflicts=shutdown.target reboot.target halt.target

@@ -4,7 +4,7 @@
   <img src="https://img.shields.io/badge/platform-Armbian%20%7C%20Linux%20ARM-orange?style=flat-square"/>
   <img src="https://img.shields.io/badge/stack-nginx%20%2B%20fcgiwrap%20%2B%20Bash%20CGI-blue?style=flat-square"/>
   <img src="https://img.shields.io/badge/license-MIT-green?style=flat-square"/>
-  <img src="https://img.shields.io/badge/version-1.0.7.24-cyan?style=flat-square"/>
+  <img src="https://img.shields.io/badge/version-1.0.7.25-cyan?style=flat-square"/>
 </p>
 
 Веб-интерфейс для **[сервера автоматизации СА-02м](https://cyntron.ru/catalog/ustroystva_avtomatizatsii/servery_avtomatizatsii/)** производства [ЦИНТРОН](https://cyntron.ru) на базе процессорного модуля [A40i-2eth](https://cyntron.ru/catalog/ustroystva_avtomatizatsii/komplektuyushchie/7705/) (Allwinner A40i, Linux).
@@ -1784,10 +1784,10 @@ cat /sys/kernel/debug/pinctrl/*/pins | grep -i "PH14"
 ### Архитектура
 
 ```
-Физическое событие (кабель)
+Появление интерфейса (add/bind; для eth0 — только оно)
     │
     ▼
-udev (99-lan-recovery.rules)         ─ реактивная защита
+udev (99-lan-recovery.rules)         ─ старт при появлении интерфейса (для eth0 — не при линке; строки eth1 на линк не проверены)
     │  --no-block
     ▼
 fix-eth.service  ──→  fix-eth.sh     ─ восстановление
@@ -1798,7 +1798,7 @@ fix-eth.service  ──→  fix-eth.sh     ─ восстановление
                            │
                        ifdown / ifup
 
-net-watchdog.service ──→ net-watchdog.sh  ─ активная защита (каждые 30 с)
+net-watchdog.service ──→ net-watchdog.sh  ─ активная защита (каждые 30 с; линк, поднявшийся между проходами, подхватывает она)
     │  (Restart=always)       │
     └──────────────────────────── вызывает fix-eth.sh для каждого iface
 ```

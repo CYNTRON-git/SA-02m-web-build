@@ -46,7 +46,8 @@ while true; do
         "$FAILOVER_SCRIPT"
     fi
 
-    # 3. eth0_link LED — udev change на carrier=0 ненадёжен, держим в sync здесь.
+    # 3. Link LEDs: eth0 emits no carrier uevent on the current kernel, so LED
+    #    sync is a poll — sa02m-eth0-led-poll (1-2 s) and here, once per pass.
     if [ -x /usr/local/bin/sa02m-eth0-led.sh ]; then
         /usr/local/bin/sa02m-eth0-led.sh || true
     fi
