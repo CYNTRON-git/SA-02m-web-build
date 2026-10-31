@@ -265,16 +265,18 @@ fi
 # ── DTB: драйвер PHY eth0 (sa02m-dtb-patch) ───────────────────────────────
 # Инструмент ставится, но НЕ запускается: загрузочный DTB на FAT правится
 # только руками (`sa02m-dtb-patch.sh check` / `apply` + перезагрузка —
-# docs/deployment.md «Пути деплоя»). Патчер (.py) ложится ДО своих
-# потребителей (.sh здесь и fix-eth1-internet.sh ниже): прерванный прогон
-# оставляет {новый патчер, старый потребитель}, а не наоборот.
-if [ -f "$ETC_DIR/../usr/local/sbin/sa02m-dtb-patch.py" ]; then
-    log INFO "Установка sa02m-dtb-patch.py"
-    sa02m_atomic_install -m 755 "$ETC_DIR/../usr/local/sbin/sa02m-dtb-patch.py"         /usr/local/sbin/sa02m-dtb-patch.py
-fi
+# docs/deployment.md «Пути деплоя»). Блоб правится через fdtget/fdtput
+# (device-tree-compiler); текстового патчера sa02m-dtb-patch.py больше нет.
 if [ -f "$ETC_DIR/../usr/local/sbin/sa02m-dtb-patch.sh" ]; then
     log INFO "Установка sa02m-dtb-patch.sh"
     sa02m_atomic_install -m 755 "$ETC_DIR/../usr/local/sbin/sa02m-dtb-patch.sh"         /usr/local/sbin/sa02m-dtb-patch.sh
+fi
+# Старый текстовый патчер (до 1.0.7.26) убирается ПОСЛЕ установки нового .sh:
+# прерванный прогон оставляет {старый .py, новый .sh}, и новый .sh его не зовёт.
+# Повторный прогон: файла нет — ничего не делает.
+if [ -e /usr/local/sbin/sa02m-dtb-patch.py ]; then
+    log INFO "Удаление устаревшего /usr/local/sbin/sa02m-dtb-patch.py (DTB правится через fdtput)"
+    rm -f /usr/local/sbin/sa02m-dtb-patch.py
 fi
 
 # ── Загрузка без DNS: ожидание carrier + пересборка резолвера ─────────────
