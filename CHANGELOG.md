@@ -5,6 +5,11 @@
 
 ---
 
+## Unreleased — typed equipment bindings
+
+- Add opt-in per-range scaling for 4TO6DI fan percentages (40–100%) and incandescent dimming (0–100%). Separate DO power preserves the AO setpoint; query, event, command and rules conversions share logical units.
+- Add channel-binding presets with distinct DO/AO selection and keep existing raw AO/LED mappings unchanged. Firmware version assignment and physical rollout remain separate.
+
 ## 1.0.7.23 - Инструмент DTB не пишет на FAT список PHY с дублями или без c22 (октябрь 2026)
 
 ### Сеть / системные скрипты

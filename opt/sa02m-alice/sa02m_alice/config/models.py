@@ -454,6 +454,12 @@ def _validate_mqtt_item(item: Dict[str, Any], kind: str) -> Tuple[Optional[Dict[
             if value in seen_modes:
                 return None, "duplicate mode value: %s" % value
             seen_modes.add(value)
+    if "range_scale" in item:
+        from ..client.capability_values import valid_range_scale
+        if t != "devices.capabilities.range" or not valid_range_scale(item["range_scale"]):
+            return None, "invalid range_scale"
+        if item.get("carel_family"):
+            return None, "range_scale conflicts with carel_family"
     if "mode_map" in item:
         from ..client.capability_values import valid_mode_map
         if t != "devices.capabilities.mode" or not valid_mode_map(item["mode_map"], (item.get("parameters") or {}).get("modes")):
