@@ -9,13 +9,24 @@ entries are pruned (history lives in git); last prune 2026-10-24 (audit 2026-10-
 - [RESOLVED] 2026-10-30 **[LOW] `sa02m-dtb-patch.sh` `verify_blob` does not catch the idempotency defect class (review of the eth0-PHY DTB change, round 1 advisory A3; BUGLOG 2026-10-30):** it checks only the EMAC first token, so a blob with a duplicated `icplus,ip101a` on the GMAC PHY or an EMAC list missing `ethernet-phy-ieee802.3-c22` (the bench 1.135 apply-#3 state, BUGLOG 2026-10-30) passes verification and is written to the FAT. Fix on its own branch (the DTB change's plan kept the `.sh` out of scope): after `fdtget -ts`, fail (exit 5, FAT untouched) when either PHY list has a duplicate token or lacks c22; RED-first case in `scripts/dev/test-dtb-patch-tool.sh` with the fdtget shim emitting the damaged lists. Fixed in 1.0.7.23: `verify_blob` refuses a duplicated string or a missing c22 in either PHY list (exit 5, FAT untouched), `check` warns on a non-canonical live list; T14–T16 RED-first (BUGLOG 2026-10-30, branch 1.0.7.23).
 - [RESOLVED] 2026-10-29 **[MED] Same class as the 1.0.7.12 Carel fix, left outside its fence (review r1/r2 A2/A3): `DTVPoller.setup()` autodetect loop (5 × 3 s) held the port thread while a DTV answered «no sensors» (a silent one broke out after one timeout but was assumed to carry ALL sensors), and `DeviceLiveCache.flush_file` defaulted an unknown device to `ok:true` in the panel live cache.** Fixed in 1.0.7.17 (branch `1.0.7.17`): one non-blocking detect attempt at setup + retry from `poll_io` every 3 s under the back-off, the «5 empty answers ⇒ all present» bound kept, an explicit empty `sensors_present: []` still = all; unknown ⇒ `ok:false` in the live cache until the first tracked read; RED-first tests `TestDtvSetupNeverBlocksThePort` / `TestLiveCacheUnknownIsNotOk` in `test_device_availability.py`.
 - [OPEN] 2026-10-29 **[LOW] `opt/sa02m-modbus-mqtt/bridge_mr02m.py` is 1038 lines (review r2 A6)** — over the ~1000 default; `decompose` candidate (behaviour net = the 941-test bridge suite). Not started.
-- [OPEN] 2026-10-29 **[MED] Panel network save refuses on a board whose interfaces.d conf carries a hand-added
-  static route (1.0.7.18 follow-up, bench 1.135).** `etc/sa02m-iface-conf-write.sh` allows only the KLogic hook and
-  the installer default-route `post-up`; a conf with `post-up ip route add 192.168.10.0/24 via 192.168.1.100 …`
-  (the 1.135 Keenetic↔MikroTik route) makes every panel network save fail closed. Options (Operator decision):
-  (a) allow exactly the `sa02m-routes-ensure.sh` grammar (`docs/contracts/boot-network-routes.md` §3) in the
-  write helper — security review required (a stolen panel session could plant routes = traffic redirection);
-  (b) a panel-managed static-routes feature with its own validated store. Not started.
+- [RESOLVED] 2026-10-29 **[MED] Panel network save refuses on a board whose interfaces.d conf carries a hand-added
+  static route (1.0.7.18 follow-up, bench 1.135).** `etc/sa02m-iface-conf-write.sh` allowed only the KLogic hook and
+  the installer default-route `post-up`, so a conf with `post-up ip route add 192.168.10.0/24 via 192.168.1.100 …`
+  made every panel network save fail closed. Fixed in 1.0.7.24 (Operator chose
+  2026-10-30 a narrowed (a)): the helper admits a route line in a fixed-order subset of the
+  `boot-network-routes.md` §3 grammar ONLY when the byte-identical line is already in the current live destination
+  — a save can carry a root-written route, never plant one (`ethernet-iface-naming.md` §5.4). Review r1 on the same
+  branch also closed: a refused canonical write now refuses the WHOLE save (no legacy mirror, no live apply,
+  `{"ok":false,"error":"conf_write_refused"}`, an error toast instead of «сохранено» — it used to be silent, F1/F4);
+  `forms.js` stops reading apply.cgi's JSON refusals (incl. `invalid input`) as success; the helper's control-char
+  guard no longer pipes into `grep -q` under pipefail (F3). Review r2 (R2-1, Operator «Разрешить + страховка»): a
+  legacy end0/end1 conf also admits its canonical `dev eth0/eth1`, and a refused mirror after a written canonical
+  conf skips the live apply and answers `{"ok":true,"applied":false,"reason":"reboot_required"}` (warning toast
+  «…применятся только после перезагрузки устройства»). Review r3: the end1→eth1 half is pinned (W11c), and
+  `.toast.warn` finally has a style (it rendered as white on a blur — unreadable in the light theme for every warn
+  toast since 1.0.5.46; now the themed warn-button tokens, AA both themes). RED-first harnesses `scripts/dev/test-iface-conf-write.sh`
+  (row `iface-conf-write`) and `scripts/dev/test-apply-save-result.mjs` (row `js-unit-apply-save-result`). On-board
+  check on 1.135 pending rollout.
 - [OPEN] 2026-10-29 **[LOW] Route-belt leftovers (1.0.7.18 plan §4 / review round 3).** (1) A failed `ifup` also
   skips the KLogic `post-up /home/klogic/adjust-<if>` hook — not covered by the belt (it runs a vendor binary,
   must not be re-run blindly). (2) `etc/fix-eth1-internet.sh` (legacy one-shot fixer) embeds an old `fix-eth` copy

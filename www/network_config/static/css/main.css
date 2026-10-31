@@ -3180,6 +3180,9 @@ html[data-theme="light"] .homeconnect-verify-link { color: var(--cyan-hover); }
 .toast.success { background: #0f2a0f; border-color: #1e4a1e; color: var(--green); }
 .toast.error   { background: #2a0f0f; border-color: #4a1e1e; color: var(--red); }
 .toast.info    { background: rgba(44,44,46,.95); border-color: var(--border-md); color: var(--text); }
+/* Opaque, themed warn-button tokens: --yellow on --warn-btn-bg =
+   11.6:1 dark, 4.74:1 light (WCAG AA). */
+.toast.warn    { background: var(--warn-btn-bg); border-color: var(--warn-btn-border); color: var(--yellow); }
 @keyframes toastIn { from { opacity: 0; transform: translateX(16px) scale(.94); } to { opacity: 1; transform: translateX(0) scale(1); } }
 
 /* ── Login page ──────────────────────────────────────────────────────────── */
