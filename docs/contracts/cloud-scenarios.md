@@ -50,7 +50,7 @@ When present:
 }
 ```
 
-`rules_engine` is `sa02m_rules.store.RULES_ENGINE` (currently **3**). It
+`rules_engine` is `sa02m_rules.store.RULES_ENGINE` (currently **4**). It
 also rides every successful `alice_devices_scenarios` response so the hub
 cache does not wait for the next list.
 
@@ -587,7 +587,7 @@ newer) and rejected at run time with `last_error="unknown template"`.
 ### Logic templates (this engine)
 
 `switch_light`, `motion_light`, `circadian`, `thermostat`,
-`humidity_fan`, `co2_ventilation`, `humidifier`, `away_home`
+`humidity_fan`, `co2_ventilation`, `air_quality_ventilation`, `humidifier`, `away_home`
 (`sa02m_rules/logic_templates.py`). Cloud catalog ids that are not in
 this tuple stay in the store and do not run.
 
@@ -687,3 +687,38 @@ refresh, restart the whole set — otherwise a cloud push silently drops
 OTA/offline from **this** release emit the restart set; the **next**
 update after 1.0.6.37 is the first one that actually consumes it
 (previous runner applies the pack).
+
+### Room-air logic (engine 4)
+
+`air_quality_ventilation` requires engine4; typed per-instance actions retain
+minimum engine3. Its catalog and parameter contract live in cloud
+`docs/contracts/scenario-templates.md`. Sensor slots read logical `co2`,
+`humidity`, `tvoc`; DTV TVOC is converted from mg/m³ to µg/m³ by its existing
+property scale1000, never treated as an IAQ index. Fan writes use logical
+`fan_speed` percentages through the capability binding (including explicit
+4TO6DI range_scale0.1), and separate `on_off` power.
+
+Float properties use the same declared scale as the Alice/UI converter;
+raw MQTT aliases keep their original units. A finite payload that becomes
+non-finite after scaling is unknown. Receipt callbacks refresh sensor age
+even when its value is unchanged, without manufacturing a state edge.
+
+The engine tracks fresh reports per configured sensor/property. Any high
+reading sustained for boost_delay_s starts boost; every configured reading
+must be fresh and below its lower threshold for settle_s before the original
+fan power and speed are restored. Missing, non-finite and stale readings pause
+transitions instead of being interpreted as clean air. Manual actor changes
+pause that fan and discard its old restore snapshot. Optional smoke sensors
+or a fan fault inhibit comfort writes and discard saved restores. Status
+controls are boost, sensor_stale, inhibited and invalid_params. The engine
+also checks bounds before this template writes, including direct board-side
+configuration that did not pass the cloud wizard.
+
+Motion-light timing starts after all sensor inputs clear. Repeated unchanged
+clear reports do not extend the timer; fresh motion cancels it. Night fixtures
+receive the configured brightness before power. A daytime-only rejection
+never arms a timer against an unrelated manually lit fixture. Direct manual
+power/brightness changes pause automation just like the configured wall switch.
+Logic templates consume the converter's shared event vocabulary, including
+motion `detected` / `not_detected`. Thermostat window interlocks accept the
+declared `open` property (`opened` / `closed`) and retain legacy `contact` input.

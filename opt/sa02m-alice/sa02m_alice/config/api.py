@@ -961,7 +961,7 @@ def _listed_groups(doc: Dict[str, Any]) -> list:
             if isinstance(item, str) and item:
                 ids.append(item)
         row = {"id": str(g["id"]), "name": str(g.get("name") or ""), "device_ids": ids}
-        if g.get("icon") in ("light", "ahu"):
+        if g.get("icon") in C.GROUP_ICONS:
             row["icon"] = g["icon"]
         out.append(row)
     return out
@@ -1033,9 +1033,9 @@ def apply_groups(body: Dict[str, Any]) -> Dict[str, Any]:
         # set when the body carries a valid one, preserved from the stored group
         # when the body omits it — same upsert rule as `device_ids`.
         icon = body.get("icon")
-        if icon in ("light", "ahu"):
+        if icon in C.GROUP_ICONS:
             row["icon"] = icon
-        elif existing and existing.get("icon") in ("light", "ahu"):
+        elif existing and existing.get("icon") in C.GROUP_ICONS:
             row["icon"] = existing["icon"]
         if existing is None:
             groups.append(row)

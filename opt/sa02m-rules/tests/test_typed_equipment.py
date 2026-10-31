@@ -111,7 +111,7 @@ class TypedEquipment(unittest.TestCase):
         self.app.engine.run_scene("comfort")
         writes = [(c.args[0], c.args[1]) for c in self.client.publish.call_args_list if c.args[0].endswith("/on")]
         self.assertEqual(writes, [("/devices/unit/controls/thermostat/on", "1"), ("/devices/unit/controls/hsv/on", "#0000FF")])
-        self.assertEqual(store.RULES_ENGINE, 3)
+        self.assertEqual(store.RULES_ENGINE, 4)
 
     def test_saved_numeric_string_scene_remains_compatible(self):
         from sa02m_rules import store

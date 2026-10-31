@@ -448,7 +448,7 @@ class DeviceRegistry:
                     ids = [str(x) for x in raw if x]
                 row: Dict[str, Any] = {"id": str(gid), "name": str((group or {}).get("name") or ""),
                                        "device_ids": ids}
-                if (group or {}).get("icon") in ("light", "ahu"):
+                if (group or {}).get("icon") in C.GROUP_ICONS:
                     row["icon"] = str(group["icon"])
                 out.append(row)
             return out

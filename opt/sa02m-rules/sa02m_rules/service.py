@@ -387,7 +387,7 @@ class RulesApp:
         for device, key in mapped or ():
             binding = self._index.bindings.get((device, key))
             converted = capability_binding.read(binding, raw) if binding else value
-            if converted is None:
+            if converted is None or non_finite(converted):
                 self.engine.forget_state(device, key)
             else:
                 self.engine.on_state(device, key, converted)

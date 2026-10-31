@@ -42,8 +42,9 @@ def write(binding, value, current_raw=None):
 def read(binding, raw):
     if converters is None:
         return None
-    if binding.get("type") == "devices.properties.event":
-        block = converters.property_mqtt_to_yandex(binding["type"], raw, binding.get("parameters"))
+    if binding.get("type") in ("devices.properties.event", "devices.properties.float"):
+        block = converters.property_mqtt_to_yandex(
+            binding["type"], raw, binding.get("parameters"), scale=binding.get("scale", 1.0))
         return (block or {}).get("state", {}).get("value")
     block = converters.capability_mqtt_to_yandex(
         binding.get("type", ""), raw, binding.get("parameters"),

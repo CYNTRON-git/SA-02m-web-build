@@ -232,7 +232,7 @@ def validate_group(group: Dict[str, Any]) -> Tuple[Optional[Dict[str, Any]], Opt
                 ids.append(s)
         out["device_ids"] = ids
     icon = group.get("icon")
-    if icon in ("light", "ahu"):
+    if icon in C.GROUP_ICONS:
         out["icon"] = icon
     return out, None
 

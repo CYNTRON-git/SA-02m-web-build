@@ -34,7 +34,7 @@ Key = Tuple[str, str]
 #: these are aliased: a sensor name a template READS (`temperature`,
 #: `humidity`, `co2`, …) must never resolve to a setpoint/target capability
 #: of the same instance — a thermostat would regulate on its own setpoint.
-WRITE_ALIASES = ("brightness", "temperature_k")
+WRITE_ALIASES = ("brightness", "temperature_k", "fan_speed")
 
 
 def devices_path() -> str:
@@ -187,7 +187,7 @@ def load_index(path: Optional[str] = None) -> DeviceIndex:
             if not topic or not inst:
                 continue
             ix.prop_topics[(did, inst)] = topic
-            if prop.get("type") == "devices.properties.event":
+            if prop.get("type") in ("devices.properties.event", "devices.properties.float"):
                 ix.bindings[(did, inst)] = copy.deepcopy(prop)
             ix._add_topic(topic, (did, inst))
     return ix
