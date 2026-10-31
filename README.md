@@ -1784,10 +1784,10 @@ cat /sys/kernel/debug/pinctrl/*/pins | grep -i "PH14"
 ### Архитектура
 
 ```
-Физическое событие (кабель)
+Появление интерфейса (add/bind; для eth0 — только оно)
     │
     ▼
-udev (99-lan-recovery.rules)         ─ реактивная защита
+udev (99-lan-recovery.rules)         ─ старт при появлении интерфейса (для eth0 — не при линке; строки eth1 на линк не проверены)
     │  --no-block
     ▼
 fix-eth.service  ──→  fix-eth.sh     ─ восстановление
@@ -1798,7 +1798,7 @@ fix-eth.service  ──→  fix-eth.sh     ─ восстановление
                            │
                        ifdown / ifup
 
-net-watchdog.service ──→ net-watchdog.sh  ─ активная защита (каждые 30 с)
+net-watchdog.service ──→ net-watchdog.sh  ─ активная защита (каждые 30 с; линк, поднявшийся между проходами, подхватывает она)
     │  (Restart=always)       │
     └──────────────────────────── вызывает fix-eth.sh для каждого iface
 ```
