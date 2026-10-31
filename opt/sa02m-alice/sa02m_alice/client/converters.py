@@ -2,6 +2,9 @@
 
 from __future__ import annotations
 
+import colorsys
+from . import capability_values
+
 from typing import Any, Dict, Optional, Tuple
 
 from ..common import carel_import
@@ -134,9 +137,13 @@ def yandex_to_range(
         return None, C.ERR_INVALID_ACTION
     value = state.get("value")
     relative = bool(state.get("relative"))
+    if isinstance(value, bool):
+        return None, C.ERR_INVALID_VALUE
     try:
         num = float(value)
-    except (TypeError, ValueError):
+    except (TypeError, ValueError, OverflowError):
+        return None, C.ERR_INVALID_VALUE
+    if capability_values.number(num) is None:
         return None, C.ERR_INVALID_VALUE
     span = yandex_brightness_span(params) if yandex else None
     if span is not None:
@@ -258,28 +265,34 @@ def mqtt_to_event_property(
     }
 
 
-def mqtt_to_color_setting(raw: str, parameters: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
+def mqtt_to_color_setting(raw: str, parameters: Optional[Dict[str, Any]] = None) -> Optional[Dict[str, Any]]:
     params = parameters or {}
-    instance = params.get("instance", "rgb")
-    s = (raw or "").strip()
-    if instance == "temperature_k":
-        try:
-            value: Any = int(float(s))
-        except (TypeError, ValueError):
-            value = 0
-    else:
-        # Accept decimal int or #RRGGBB
-        if s.startswith("#") and len(s) == 7:
-            value = int(s[1:], 16)
+    if not isinstance(params, dict) or not isinstance(raw, str):
+        return None
+    instance = params.get("instance") or params.get("color_model") or "rgb"
+    text = raw.strip()
+    try:
+        if instance in ("rgb", "hsv") and text.startswith("#"):
+            if len(text) != 7:
+                return None
+            value = int(text[1:], 16)
         else:
-            try:
-                value = int(float(s))
-            except (TypeError, ValueError):
-                value = 0
-    return {
-        "type": "devices.capabilities.color_setting",
-        "state": {"instance": instance, "value": value},
-    }
+            numeric = float(text)
+            if capability_values.number(numeric) is None or not numeric.is_integer():
+                return None
+            value = int(numeric)
+    except (TypeError, ValueError, OverflowError):
+        return None
+    if instance == "hsv":
+        if not 0 <= value <= 0xFFFFFF:
+            return None
+        h, sat, val = colorsys.rgb_to_hsv(((value >> 16) & 255) / 255.,
+                                         ((value >> 8) & 255) / 255., (value & 255) / 255.)
+        value = {"h": round(h * 360, 3), "s": round(sat * 100, 3), "v": round(val * 100, 3)}
+    state = {"instance": instance, "value": value}
+    if not capability_values.valid_value("color_setting", state, dict(params, instance=instance)):
+        return None
+    return {"type": "devices.capabilities.color_setting", "state": state}
 
 
 # Yandex colour temperature is an integer kelvin in this window. Anything
@@ -377,8 +390,8 @@ def yandex_color_setting_parameters(
     if model in ("rgb", "hsv"):
         return {"color_model": model}
     instance = str(parameters.get("instance") or "")
-    if instance == "rgb":
-        return {"color_model": "rgb"}
+    if instance in ("rgb", "hsv"):
+        return {"color_model": instance}
     if instance == "temperature_k":
         window = parameters.get("temperature_k")
         if isinstance(window, dict):
@@ -400,6 +413,11 @@ def yandex_to_color_setting(state: Dict[str, Any]) -> Tuple[Optional[str], Optio
     # bool is an int subclass; int(True) is 1 and must not become a colour.
     if isinstance(value, bool):
         return None, C.ERR_INVALID_VALUE
+    if instance == "hsv":
+        if not capability_values.valid_value("color_setting", state, {"instance": "hsv"}):
+            return None, C.ERR_INVALID_VALUE
+        rgb = colorsys.hsv_to_rgb(value["h"] / 360., value["s"] / 100., value["v"] / 100.)
+        return "#%02X%02X%02X" % tuple(int(round(c * 255)) for c in rgb), None
     if instance == "temperature_k":
         try:
             kelvin = int(value)
@@ -423,15 +441,21 @@ def yandex_to_color_setting(state: Dict[str, Any]) -> Tuple[Optional[str], Optio
 
 def mqtt_to_mode(
     raw: str, parameters: Optional[Dict[str, Any]] = None, *,
-    family: Optional[str] = None,
+    family: Optional[str] = None, mode_map: Optional[Dict[str, str]] = None,
 ) -> Optional[Dict[str, Any]]:
     """Bus payload → the mode name Yandex shows.
 
-    The whole mapping belongs to `sa02m_carel.carel_fan` (one home, derived
-    from the register map). Nothing is invented here: an unknown family, a
+    Carel mappings belong to `sa02m_carel.carel_fan` (derived from the
+    register map); other devices require an explicit mode_map. An unknown family, a
     missing package or an unreadable payload yields NO block, the same "omit
     rather than fabricate" rule the float converter follows.
     """
+    if mode_map is not None:
+        params = parameters or {}
+        if not capability_values.valid_mode_map(mode_map, params.get("modes")):
+            return None
+        value = next((k for k, v in mode_map.items() if v == raw), None)
+        return {"type": "devices.capabilities.mode", "state": {"instance": params.get("instance"), "value": value}} if value else None
     carel_fan = carel_import.carel_fan()
     if carel_fan is None:
         return None
@@ -449,7 +473,7 @@ def mqtt_to_mode(
 def yandex_to_mode(
     state: Dict[str, Any], *,
     parameters: Optional[Dict[str, Any]] = None,
-    family: Optional[str] = None,
+    family: Optional[str] = None, mode_map: Optional[Dict[str, str]] = None,
 ) -> Tuple[Optional[str], Optional[str]]:
     """Mode name → the bus payload. Return (mqtt_payload, error_code).
 
@@ -465,11 +489,21 @@ def yandex_to_mode(
     instance = str(params.get("instance") or "fan_speed")
     if str(state.get("instance") or instance) != instance:
         return None, C.ERR_INVALID_ACTION
+    if mode_map is not None:
+        if not capability_values.valid_mode_map(mode_map, params.get("modes")):
+            return None, C.ERR_INVALID_ACTION
+        value = state.get("value")
+        if not isinstance(value, str) or value not in mode_map:
+            return None, C.ERR_INVALID_VALUE
+        return mode_map[value], None
     carel_fan = carel_import.carel_fan()
     if carel_fan is None or not carel_fan.modes_for(family):
         return None, C.ERR_INVALID_ACTION
     value = state.get("value")
     if not isinstance(value, str):
+        return None, C.ERR_INVALID_VALUE
+    modes = params.get("modes")
+    if isinstance(modes, list) and value not in [m.get("value") for m in modes if isinstance(m, dict)]:
         return None, C.ERR_INVALID_VALUE
     payload = carel_fan.payload_for_mode(family, value)
     if payload is None:
@@ -484,16 +518,21 @@ def capability_mqtt_to_yandex(
     inverted: bool = False,
     *,
     family: Optional[str] = None,
+    mode_map: Optional[Dict[str, str]] = None,
     yandex: bool = False,
 ) -> Optional[Dict[str, Any]]:
     """`family` is KEYWORD-ONLY on purpose: `inverted` is passed positionally
     at every existing call site, and a positional family would bind to it."""
+    if cap_type == "devices.capabilities.toggle":
+        if str(raw).strip() not in ("0", "1"):
+            return None
+        return {"type": cap_type, "state": {"instance": (parameters or {}).get("instance"), "value": apply_on_off_inversion(str(raw).strip() == "1", inverted)}}
     if cap_type.endswith("on_off") or cap_type == "devices.capabilities.on_off":
         return mqtt_to_on_off(raw, parameters, inverted=inverted)
     if cap_type.endswith("range") or cap_type == "devices.capabilities.range":
         return mqtt_to_range(raw, parameters, yandex=yandex)
     if cap_type.endswith("mode") or cap_type == "devices.capabilities.mode":
-        return mqtt_to_mode(raw, parameters, family=family)
+        return mqtt_to_mode(raw, parameters, family=family, mode_map=mode_map)
     if cap_type.endswith("color_setting") or cap_type == "devices.capabilities.color_setting":
         return mqtt_to_color_setting(raw, parameters)
     return None
@@ -517,8 +556,16 @@ def capability_yandex_to_mqtt(
     parameters: Optional[Dict[str, Any]] = None,
     inverted: bool = False,
     family: Optional[str] = None,
+    mode_map: Optional[Dict[str, str]] = None,
     yandex: bool = False,
+    strict: bool = False,
 ) -> Tuple[Optional[str], Optional[str]]:
+    if strict and not capability_values.valid_value(cap_type.rsplit(".", 1)[-1], state, parameters or {}):
+        return None, C.ERR_INVALID_VALUE
+    if cap_type == "devices.capabilities.toggle":
+        if not capability_values.valid_value("toggle", state, parameters or {}):
+            return None, C.ERR_INVALID_VALUE
+        return ("1" if apply_on_off_inversion(state["value"], inverted) else "0"), None
     if cap_type.endswith("on_off") or cap_type == "devices.capabilities.on_off":
         return yandex_to_on_off(state, inverted=inverted)
     if cap_type.endswith("range") or cap_type == "devices.capabilities.range":
@@ -526,7 +573,7 @@ def capability_yandex_to_mqtt(
             state, current_raw=current_raw, parameters=parameters, yandex=yandex
         )
     if cap_type.endswith("mode") or cap_type == "devices.capabilities.mode":
-        return yandex_to_mode(state, parameters=parameters, family=family)
+        return yandex_to_mode(state, parameters=parameters, family=family, mode_map=mode_map)
     if cap_type.endswith("color_setting") or cap_type == "devices.capabilities.color_setting":
         return yandex_to_color_setting(state)
     return None, C.ERR_INVALID_ACTION
