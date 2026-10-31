@@ -20,6 +20,7 @@ Keys, per Alice device id:
 """
 from __future__ import annotations
 
+import copy
 import json
 import os
 from typing import Any, Dict, List, Optional, Set, Tuple
@@ -65,6 +66,7 @@ class DeviceIndex:
         self.loaded = False
         self.cap_topics: Dict[Key, str] = {}
         self.prop_topics: Dict[Key, str] = {}
+        self.bindings: Dict[Key, Dict[str, Any]] = {}
         #: topic → every (device, key) a state message on it updates.
         self.topic_keys: Dict[str, List[Key]] = {}
         self.readonly: Set[Key] = set()
@@ -86,6 +88,8 @@ class DeviceIndex:
             return None, "unknown_target"
         short = cap_short(cap)
         if isinstance(instance, str) and instance:
+            if (device, state_key(short, instance)) in self.ambiguous:
+                return None, "ambiguous_target"
             topic = self.cap_topics.get((device, state_key(short, instance)))
             return (topic, "") if topic else (None, "unknown_target")
         topic = self.cap_topics.get((device, short))
@@ -165,7 +169,13 @@ def load_index(path: Optional[str] = None) -> DeviceIndex:
                 if short not in types:
                     types.append(short)
             for key in keys:
+                if (did, key) in ix.bindings or (did, key) in ix.ambiguous:
+                    ix.ambiguous.add((did, key))
+                    ix.cap_topics.pop((did, key), None)
+                    ix.bindings.pop((did, key), None)
+                    continue
                 ix.cap_topics[(did, key)] = topic
+                ix.bindings[(did, key)] = copy.deepcopy(cap)
                 ix._add_topic(topic, (did, key))
                 if cap.get("writable") is False:
                     ix.readonly.add((did, key))
@@ -177,6 +187,8 @@ def load_index(path: Optional[str] = None) -> DeviceIndex:
             if not topic or not inst:
                 continue
             ix.prop_topics[(did, inst)] = topic
+            if prop.get("type") == "devices.properties.event":
+                ix.bindings[(did, inst)] = copy.deepcopy(prop)
             ix._add_topic(topic, (did, inst))
     return ix
 
