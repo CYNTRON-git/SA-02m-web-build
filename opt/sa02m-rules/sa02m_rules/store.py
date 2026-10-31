@@ -66,7 +66,7 @@ ACTIONS_MAX = 20
 HTTP_PER_RUN_MAX = 8
 #: Engine version reported to the cloud (control view `rules_engine`):
 #: 2 = end events, edge operators, day/night presets, button/every/presence.
-RULES_ENGINE = 2
+RULES_ENGINE = 3
 TYPES = ("block", "code", "logic", "scene")
 TRIGGER_KINDS = ("state", "time", "sun", "boot", "every", "button", "presence")
 ACTION_KINDS = ("set", "toggle", "ramp", "delay", "scenario", "scene",

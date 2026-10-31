@@ -16,7 +16,7 @@ import time
 from collections import deque
 from typing import Any, Callable, Deque, Dict, List, Optional, Set, Tuple
 
-from sa02m_rules import http_guard
+from sa02m_rules import http_guard, capability_binding
 from sa02m_rules.device_index import state_key
 from sa02m_rules.store import (
     CAP_RE, EDGE_OPS, EVENT_OPS, GESTURES, HOME_MODES, ID_RE, LEVEL_OPS,
@@ -55,6 +55,9 @@ def _raw_num(v: Any) -> Optional[float]:
             return math.inf if v > 0 else -math.inf
     if isinstance(v, str):
         s = v.strip().lower()
+        event = capability_binding.event_number(s)
+        if event is not None:
+            return event
         if s in ("1", "on", "true", "yes"):
             return 1.0
         if s in ("0", "off", "false", "no"):

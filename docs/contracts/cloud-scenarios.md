@@ -2,7 +2,7 @@
 
 Board-side contract for the cloud-profile Socket.IO catalogue
 (rename / rooms / groups / scenarios) and the on-board engine
-`sa02m-rules` (`rules_engine=2`). Human overview of Alice/cloud
+`sa02m-rules` (`rules_engine=3`). Human overview of Alice/cloud
 transport: `docs/ALICE_INTEGRATION.md`. MQTT mapping of field
 devices: `docs/contracts/alice-mqtt-mapping.md`. Gateway event
 names that live in the **cloud** repo (`docs/contracts/alice-gateway.md`)
@@ -46,11 +46,11 @@ When present:
   "scenario_runs": [],
   "scenario_notify": [],
   "scenario_library": "",
-  "rules_engine": 2
+  "rules_engine": 3
 }
 ```
 
-`rules_engine` is `sa02m_rules.store.RULES_ENGINE` (currently **2**). It
+`rules_engine` is `sa02m_rules.store.RULES_ENGINE` (currently **3**). It
 also rides every successful `alice_devices_scenarios` response so the hub
 cache does not wait for the next list.
 
@@ -319,6 +319,38 @@ can never drop a board-written tick.
 `/devices/<device>/controls/<cap>/on` (без `instance`) остаётся только для
 устройства, которого в документе нет совсем, и для любого устройства, пока
 документ не читается.
+
+### Типизированная запись: движок 3
+
+`RulesApp.pub` для объявленного умения сохраняет исходную декларацию, `inverted`,
+`carel_family` и `mode_map` из DeviceIndex. Перед MQTT использует общий
+`sa02m_alice.client.converters.capability_yandex_to_mqtt`: режимы становятся
+строками шины, RGB/HSV — hex, Kelvin — числом, toggle — `1`/`0`.
+Неизвестный instance, read-only, неверный тип значения и выход за объявленные
+границы не публикуются и дают ошибку запуска. Старый `on_off` 0/1 нормализуется
+в boolean; конечные числовые строки старых range-сцен преобразуются в число
+до проверки границ, decimal RGB/Kelvin и RGB `#RRGGBB` также сохраняются.
+Сырые неописанные цели сохраняют прежний контракт выше.
+У прямого Yandex/cloud dispatcher сохраняется прежнее ограничение range
+до границ; сценарии проверяют абсолютное значение строго до converter.
+
+Декларированные capability-ключи в зеркале хранят логические значения converter,
+например `mode|thermostat: "cool"`, а сырой MQTT alias остаётся исходным.
+События properties получают объявленные enum (`dry`/`leak`, `closed`/`opened`,
+`not_detected`/`detected`). Числовые условия старых правил 0/1 продолжают
+сопоставляться с clear/active состояниями по словарю общего converter.
+Непригодный отчёт цвета, режима или toggle делает mapped значение неизвестным.
+У `on_off` сохраняется прежняя интерпретация MQTT truthy/falsy; она не становится
+строгой проверкой enum в этом обновлении. При совпадении raw alias и mapped
+ключа владелец значения — mapped converter: один отчёт не создаёт два перехода.
+
+Маркер 3 означает также точный выбор type + instance в прямых командах.
+Для этого обновляются **оба пакета**, `sa02m-alice` и `sa02m-rules`, и затем
+перезапускаются их сервисы. До установки companion облако оставляет повторные
+типы capability и новые типизированные действия недоступными для записи.
+Сама публикация облачной версии не обновляет контроллер и не подтверждает
+работу конкретного физического MQTT-драйвера. Проверки на mock MQTT не заменяют
+приёмку оборудования после отдельно разрешённого firmware rollout.
 
 Логические шаблоны называют записываемое умение именем его `instance`.
 Такое имя-псевдоним есть только у умений, которые шаблоны ЗАПИСЫВАЮТ, —

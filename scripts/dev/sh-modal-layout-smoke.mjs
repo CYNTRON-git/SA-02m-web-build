@@ -1120,6 +1120,10 @@ async function runPhase3Editor(browser, base, theme, vp) {
     if (/format=inventory/.test(url)) {
       return r.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify(P3_INVENTORY) });
     }
+    if (/sa02m_alice_api\.cgi/.test(url) && saved.some(d => d.name.startsWith('triac_'))) {
+      const extras = saved.filter(d => d.name.startsWith('triac_')).map(d => ({...d, id: d.name}));
+      return r.fulfill({status: 200, contentType: 'application/json', body: JSON.stringify({...ALICE, devices: {rooms: ROOMS, devices: [...DEVICES, ...extras]}})});
+    }
     return r.fulfill({ status: 200, contentType: 'application/json', body: stubBody(url) });
   });
   await page.goto(`${base}/index.html`, { waitUntil: 'load' });
@@ -1231,6 +1235,31 @@ async function runPhase3Editor(browser, base, theme, vp) {
     && rng.parameters.unit === 'unit.temperature.celsius'
     && JSON.stringify(rng.parameters.range) === JSON.stringify({ min: 5, max: 35, precision: 0.5 }),
     `${tag}: the thermostat setpoint saves a 5–35 °C range (${JSON.stringify(rng)})`);
+
+  for (const [preset, instance, min] of [['triac_fan', 'fan_speed', 40], ['triac_light', 'brightness', 0]]) {
+    await page.evaluate(() => window.shCancelEdit());
+    await page.locator('#sh-preset-' + preset.replace('_', '-')).click();
+    const shown = await page.locator('#sh-preset-hint').innerText();
+    check(shown.includes('DO') && shown.includes('AO'), `${tag}: ${preset} explains independent channel bindings`);
+    await page.evaluate(() => [...document.querySelectorAll('#sh-rows .sh-row-topic')].forEach((el, i) => {
+      el.value = '/devices/triac/controls/' + (i ? 'ao_1' : 'do_1');
+    }));
+    await page.fill('#sh-dev-name', preset);
+    const expected = saved.length + 1;
+    await page.click('#sh-dev-save');
+    check(await waitSave(expected), `${tag}: ${preset} submits a document`);
+    const doc = saved[expected - 1];
+    const level = doc && doc.capabilities.find(c => c.type === 'devices.capabilities.range');
+    const power = doc && doc.capabilities.find(c => c.type === 'devices.capabilities.on_off');
+    check(!!level && level.range_scale === 0.1 && level.parameters.instance === instance
+      && level.parameters.range.min === min && level.parameters.range.max === 100
+      && level.mqtt.endsWith('/ao_1') && power && power.mqtt.endsWith('/do_1'),
+      `${tag}: ${preset} saves scaled AO and separate DO (${JSON.stringify(doc)})`);
+    check(instance !== 'fan_speed' || level.cloud_only === true, `${tag}: fan speed is cloud-only`);
+    await page.locator('.sh-dev-row[data-id="' + preset + '"] [data-act=edit]').click();
+    const kind = await kindOf(1);
+    check(kind === (instance === 'fan_speed' ? 'triac_fan' : 'triac_brightness'), `${tag}: ${preset} retains its scale on edit`);
+  }
 
   check(errors.length === 0, `${tag}: no page errors (${errors.join(' | ')})`);
   await ctx.close();
