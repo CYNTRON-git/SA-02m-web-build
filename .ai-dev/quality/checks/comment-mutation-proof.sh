@@ -122,6 +122,8 @@ iface-conf-write|etc/sa02m-iface-conf-write.sh|end1) _dif=
 iface-conf-write|www/network_config/cgi-bin/apply.cgi|NET_APPLY_DEFERRED=1
 js-unit-apply-save-result|www/network_config/static/js/app/forms.js|if (refusal) { toast(refusal
 js-unit-apply-save-result|www/network_config/static/js/app/forms.js|if (deferred) { configLoaded = false;
+iface-naming-contract|etc/99-lan-recovery.rules|ACTION=="add", SUBSYSTEM=="net", KERNEL=="eth0"
+iface-naming-contract|etc/99-lan-recovery.rules|ACTION=="bind", SUBSYSTEM=="net", KERNEL=="eth0"
 nodered-pin-consistency|scripts/dev/build-nodered-payload.sh|--omit=optional
 watchdog-cap|scripts/01-system.sh|install -m 644 "$ETC_REPO/systemd/sa02m-watchdog.conf"
 telemetry-device-id-contract|opt/sa02m-modbus-mqtt/sa02m_telemetry.py|self._clear_legacy_retained()
