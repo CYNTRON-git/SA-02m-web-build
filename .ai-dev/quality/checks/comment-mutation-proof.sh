@@ -114,6 +114,14 @@ ota-deploy-mode-contract|etc/sa02m-update-runner.sh|mode = deploy_mode(rel, dst)
 imaging-samefile-guard|tools/imaging/make-image.sh|-ef "$FINAL_IMG_KEEP"
 installer-svc-policy-gate|install.sh|Установка завершена
 iface-naming-contract|scripts/02-network.sh|install -m 755 "$ETC_DIR/sa02m-iface-canonical.sh"
+iface-conf-write|etc/sa02m-iface-conf-write.sh|$ROUTE_RE ]] && line_in_current
+iface-conf-write|www/network_config/cgi-bin/apply.cgi|net_conf_write_refused "$(lan_iface_conf eth0)"
+iface-conf-write|www/network_config/cgi-bin/apply.cgi|net_conf_write_refused "$(lan_iface_conf eth1)"
+iface-conf-write|etc/sa02m-iface-conf-write.sh|end0) _dif=
+iface-conf-write|etc/sa02m-iface-conf-write.sh|end1) _dif=
+iface-conf-write|www/network_config/cgi-bin/apply.cgi|NET_APPLY_DEFERRED=1
+js-unit-apply-save-result|www/network_config/static/js/app/forms.js|if (refusal) { toast(refusal
+js-unit-apply-save-result|www/network_config/static/js/app/forms.js|if (deferred) { configLoaded = false;
 nodered-pin-consistency|scripts/dev/build-nodered-payload.sh|--omit=optional
 watchdog-cap|scripts/01-system.sh|install -m 644 "$ETC_REPO/systemd/sa02m-watchdog.conf"
 telemetry-device-id-contract|opt/sa02m-modbus-mqtt/sa02m_telemetry.py|self._clear_legacy_retained()
@@ -253,6 +261,10 @@ install-profile|scripts/update-www-only.sh|log INFO "/etc/sudoers.d/$_sud: мо�
 install-profile|etc/sa02m-web-update-apply.sh|exec "$RUNNER" apply
 install-profile|www/network_config/cgi-bin/sa02m_agent_api.cgi|echo '"'"'{"ok":true,"state":"not_installed"
 i2c2-bus-recovery|etc/sa02m-pre-start.sh|sa02m_i2c2_gpio_recover || true
+web-creds-commit|etc/sa02m-commit-web-env.sh|-le "$MAX_BYTES"
+web-creds-commit|www/network_config/cgi-bin/web_creds.cgi|sudo -n /usr/local/sbin/sa02m-commit-web-env
+sudoers-pin-contract|scripts/update-www-only.sh|sa02m_atomic_install -m 755 "$SCRIPT_DIR/../etc/sa02m-commit-web-env.sh"
+sudoers-pin-contract|scripts/03-webserver.sh|sa02m_atomic_install -m 755 "$SCRIPT_DIR/../etc/sa02m-commit-web-env.sh"
 ota-dst-allowlist-parity|opt/sa02m-update/lib/validate_package.py|re.compile(r"^/etc/nginx/"),
 ota-dst-allowlist-parity|scripts/pack-offline-update.py|r"etc/systemd/system/sa02m-|"
 ota-dst-allowlist-parity|etc/sa02m-update-runner.sh|r"etc/systemd/system/sa02m-|"
