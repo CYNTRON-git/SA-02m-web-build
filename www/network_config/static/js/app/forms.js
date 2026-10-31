@@ -275,6 +275,30 @@ function parseApplyRedirect(response) {
   return { kind: 'ok' };
 }
 
+/**
+ * apply.cgi refuses some saves with HTTP 200 + a JSON body instead of the 302
+ * (a refused conf write, an invalid field). Text for that refusal, or '' when
+ * the body is not a refusal.
+ */
+function applyRefusalText(j) {
+  if (!j || typeof j !== 'object') return '';
+  if (j.ok !== false && typeof j.error !== 'string') return '';
+  if (j.error === 'conf_write_refused') {
+    return 'Сетевые настройки не сохранены: устройство отклонило конфиг интерфейса. Ничего не применено; подробности — в /var/log/sa02m_install.log.';
+  }
+  return 'Настройки не применены: устройство отклонило запрос.';
+}
+
+/**
+ * apply.cgi saved the conf but did not apply it live (`applied:false`, e.g. the
+ * legacy-name mirror was refused in the interface-rename window). Text for that
+ * warning, or '' when the body is not such an answer.
+ */
+function applyDeferredText(j) {
+  if (!j || typeof j !== 'object' || j.ok !== true || j.applied !== false) return '';
+  return 'Сетевые настройки сохранены, но применятся только после перезагрузки устройства.';
+}
+
 /** Network apply may drop TCP (status 0 / fetch reject) when IP changes — not an error. */
 function isNetApplyForm(form) {
   return !!(form && form.querySelector('input[name="net_iface"]'));
@@ -307,6 +331,20 @@ function submitForm(form, onSuccess) {
       if (!r.ok && r.status !== 302 && r.status !== 301) {
         toast('Ошибка сервера: ' + r.status, 'error');
         return;
+      }
+      // A 200 is never the success 302: read the body before calling it done.
+      // A non-JSON 200 (a proxy that followed the redirect) stays a success.
+      if (r.status === 200) {
+        return r.json().then((j) => {
+          // E_CSRF: nothing was saved, and the fetch guard (app.js) already
+          // told the user why — no second toast, no success toast either.
+          if (j && j.error_code === 'E_CSRF') return;
+          const refusal = applyRefusalText(j);
+          if (refusal) { toast(refusal, 'error', 9000); return; }
+          const deferred = applyDeferredText(j);
+          if (deferred) { configLoaded = false; toast(deferred, 'warn', 9000); return; }
+          finishOk();
+        }, () => finishOk());
       }
       const pr = parseApplyRedirect(r);
       if (pr.kind === 'error_time') {
