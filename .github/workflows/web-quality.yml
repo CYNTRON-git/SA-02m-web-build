@@ -55,8 +55,8 @@ jobs:
         run: |
           /usr/bin/python3 -c 'import sys; v = sys.version_info[:2]; sys.exit(0 if v == (3, 12) else "requirements.lock x86_64 wheels are cp312; runner python3 is %d.%d" % v)'
           sudo apt-get update -qq
-          # device-tree-compiler (dtc + fdtget): dtb-patch-unit's real-blob round trip (U8)
-          # runs here instead of a native unittest skip (PARTIAL on a box without dtc).
+          # device-tree-compiler (dtc + fdtget + fdtput): dtb-fdtput-real runs the boot-DTB edit
+          # on the real tools here (a whole-row SKIP on a box without them = FAIL under QUALITY_STRICT).
           sudo apt-get install -y --no-install-recommends python3-venv python3-cffi-backend device-tree-compiler
           /usr/bin/python3 -m venv --system-site-packages "$RUNNER_TEMP/hk-venv"
           "$RUNNER_TEMP/hk-venv/bin/pip" install --quiet --no-deps -r opt/sa02m-homekit/requirements.lock

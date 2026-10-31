@@ -1139,8 +1139,9 @@ mosquitto_pub -h <плата> -p 1884 -u mqttuser -P '<пароль>' \
 `sa02m-dtb-patch.sh check`; при `Generic PHY` — `apt install device-tree-compiler`,
 `sa02m-dtb-patch.sh apply`, перезагрузка, `check` снова (ожидается `ICPlus IP101A`
 или `ICPlus IP101G`; `docs/bugs/BUGLOG.md` 2026-10-29). Без этого клоны уедут с PHY
-eth0 под `Generic PHY`. `dtc` после `apply` на мастере не нужен; `cleanup-donor.sh`
-пакеты apt не удаляет — при первом прогоне решить, оставлять ли
+eth0 под `Generic PHY`. `fdtget`/`fdtput` (пакет `device-tree-compiler`) после
+`apply` на мастере не нужны; `cleanup-donor.sh` пакеты apt не удаляет — при
+первом прогоне решить, оставлять ли
 `device-tree-compiler` в образе (`apt purge device-tree-compiler`, если нет).
 
 ### 0. Отключить запись истории в текущей сессии
