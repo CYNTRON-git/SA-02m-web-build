@@ -52,7 +52,7 @@ Armbian 26.5.1 noble, ядро 6.1.0-rc6-rt4), по **одному прогон�
 | `netplan.io` | установлен, `armbian-default.yaml` есть | образ Armbian |
 | `ifplugd` | не установлен | — |
 | Загрузка | `boot.scr` на FAT без оверлеев | `etc/boot.cmd.sa02m.min`, контракт `docs/contracts/uboot-boot-script.md` §3 |
-| Сброс PHY | `reset-gpios` (PH12), `reset-assert-us`, `reset-deassert-us` — на узле PHY | `scripts/dev/fixtures/dtb-patch/sun8i-a40i-sk.real.dts:127-129` |
+| Сброс PHY | `reset-gpios` (PH12), `reset-assert-us`, `reset-deassert-us` — на узле PHY | `scripts/dev/fixtures/dtb-patch/golden-asis.sorted.dts:956-958` (дерево после патча; свойства сброса патч не трогает) |
 
 Обходы ifupdown для eth0 на `main` — 1374 строки: `etc/fix-eth.sh` (468),
 `etc/net-watchdog.sh` (55), `usr/local/sbin/sa02m-eth-coldboot.sh` (145),
@@ -109,6 +109,10 @@ unbind/rebind, `reset-deassert-us` 200 → 500 мс — серия попыто�
    умеет ли он создать пустое свойство и поставить все восемь свойств, включая
    `disabled` в дочерних узлах GMAC; если да — дубли и потеря строки станут
    невозможны по построению.
+   **Статус: выполнено в 1.0.7.26** — `fdtput` умеет все восемь правок, включая
+   пустое свойство; патчер на тексте удалён, инструмент правит blob через
+   `fdtget`/`fdtput` (`usr/local/sbin/sa02m-dtb-patch.sh`, `dtb_edit`;
+   `CHANGELOG.md` 1.0.7.26, `docs/bugs/BUGLOG.md` 2026-10-31).
 5. **Заменить `net-watchdog`, `sa02m-wait-carrier`, `sa02m-routes-ensure` и
    `sa02m-dns-ensure` на `ifplugd`** при сохранении ifupdown. Цена: `ifplugd` при
    пропаже линка делает `ifdown`, и статический адрес исчезает, пока кабель
