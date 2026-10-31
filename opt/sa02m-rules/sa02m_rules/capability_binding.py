@@ -35,6 +35,7 @@ def write(binding, value, current_raw=None):
         typ, {"instance": instance, "value": value},
         parameters=binding.get("parameters"), current_raw=current_raw,
         family=binding.get("carel_family"), mode_map=binding.get("mode_map"),
+        range_scale=binding.get("range_scale", 1.0),
         inverted=binding.get("inverted") is True, strict=True)
 
 
@@ -47,6 +48,7 @@ def read(binding, raw):
     block = converters.capability_mqtt_to_yandex(
         binding.get("type", ""), raw, binding.get("parameters"),
         family=binding.get("carel_family"), mode_map=binding.get("mode_map"),
+        range_scale=binding.get("range_scale", 1.0),
         inverted=binding.get("inverted") is True)
     return (block or {}).get("state", {}).get("value")
 

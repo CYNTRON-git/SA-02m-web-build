@@ -102,6 +102,7 @@ def mqtt_to_range(
     parameters: Optional[Dict[str, Any]] = None,
     *,
     yandex: bool = False,
+    range_scale: float = 1.0,
 ) -> Optional[Dict[str, Any]]:
     params = parameters or {}
     instance = params.get("instance", "brightness")
@@ -110,6 +111,11 @@ def mqtt_to_range(
     except (TypeError, ValueError):
         # Same "omit rather than fabricate" rule as the float property: a
         # garbled setpoint/brightness shown as 0 would read as a real value.
+        return None
+    if not capability_values.valid_range_scale(range_scale):
+        return None
+    value *= range_scale
+    if capability_values.number(value) is None:
         return None
     if yandex:
         span = yandex_brightness_span(params)
@@ -127,11 +133,14 @@ def yandex_to_range(
     parameters: Optional[Dict[str, Any]] = None,
     *,
     yandex: bool = False,
+    range_scale: float = 1.0,
 ) -> Tuple[Optional[str], Optional[str]]:
     """Absolute or relative range → MQTT string."""
     if not isinstance(state, dict):
         return None, C.ERR_INVALID_VALUE
     params = parameters or {}
+    if not capability_values.valid_range_scale(range_scale):
+        return None, C.ERR_INVALID_VALUE
     instance = params.get("instance", "brightness")
     if state.get("instance", instance) != instance:
         return None, C.ERR_INVALID_ACTION
@@ -150,14 +159,14 @@ def yandex_to_range(
         lo_s, hi_s = span
         if relative:
             try:
-                base_raw = float(str(current_raw).strip()) if current_raw is not None else lo_s
+                base_raw = float(str(current_raw).strip()) * range_scale if current_raw is not None else lo_s
             except (TypeError, ValueError):
                 base_raw = lo_s
             num = _stored_to_percent(base_raw, lo_s, hi_s) + num
         num = _percent_to_stored(num, lo_s, hi_s)
     elif relative:
         try:
-            base = float(str(current_raw).strip()) if current_raw is not None else 0.0
+            base = float(str(current_raw).strip()) * range_scale if current_raw is not None else 0.0
         except (TypeError, ValueError):
             base = 0.0
         num = base + num
@@ -173,6 +182,9 @@ def yandex_to_range(
             num = min(float(hi), num)
         except (TypeError, ValueError):
             pass
+    num /= range_scale
+    if capability_values.number(num) is None:
+        return None, C.ERR_INVALID_VALUE
     # Prefer int when whole
     if abs(num - round(num)) < 1e-9:
         return str(int(round(num))), None
@@ -520,6 +532,7 @@ def capability_mqtt_to_yandex(
     family: Optional[str] = None,
     mode_map: Optional[Dict[str, str]] = None,
     yandex: bool = False,
+    range_scale: float = 1.0,
 ) -> Optional[Dict[str, Any]]:
     """`family` is KEYWORD-ONLY on purpose: `inverted` is passed positionally
     at every existing call site, and a positional family would bind to it."""
@@ -530,7 +543,7 @@ def capability_mqtt_to_yandex(
     if cap_type.endswith("on_off") or cap_type == "devices.capabilities.on_off":
         return mqtt_to_on_off(raw, parameters, inverted=inverted)
     if cap_type.endswith("range") or cap_type == "devices.capabilities.range":
-        return mqtt_to_range(raw, parameters, yandex=yandex)
+        return mqtt_to_range(raw, parameters, yandex=yandex, range_scale=range_scale)
     if cap_type.endswith("mode") or cap_type == "devices.capabilities.mode":
         return mqtt_to_mode(raw, parameters, family=family, mode_map=mode_map)
     if cap_type.endswith("color_setting") or cap_type == "devices.capabilities.color_setting":
@@ -559,6 +572,7 @@ def capability_yandex_to_mqtt(
     mode_map: Optional[Dict[str, str]] = None,
     yandex: bool = False,
     strict: bool = False,
+    range_scale: float = 1.0,
 ) -> Tuple[Optional[str], Optional[str]]:
     if strict and not capability_values.valid_value(cap_type.rsplit(".", 1)[-1], state, parameters or {}):
         return None, C.ERR_INVALID_VALUE
@@ -570,7 +584,8 @@ def capability_yandex_to_mqtt(
         return yandex_to_on_off(state, inverted=inverted)
     if cap_type.endswith("range") or cap_type == "devices.capabilities.range":
         return yandex_to_range(
-            state, current_raw=current_raw, parameters=parameters, yandex=yandex
+            state, current_raw=current_raw, parameters=parameters, yandex=yandex,
+            range_scale=range_scale
         )
     if cap_type.endswith("mode") or cap_type == "devices.capabilities.mode":
         return yandex_to_mode(state, parameters=parameters, family=family, mode_map=mode_map)

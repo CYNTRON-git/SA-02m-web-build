@@ -27,6 +27,11 @@ def number(value):
         return None
 
 
+def valid_range_scale(value):
+    factor = number(value)
+    return factor is not None and 1e-6 <= factor <= 1e6
+
+
 def valid_mode_map(mapping, modes):
     values = [m.get("value") for m in modes if isinstance(m, dict)] if isinstance(modes, list) else []
     return (isinstance(mapping, dict) and bool(values) and set(mapping) == set(values)

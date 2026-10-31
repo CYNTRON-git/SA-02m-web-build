@@ -9,7 +9,7 @@ from unittest.mock import Mock, patch
 OPT = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", ".."))
 for package in ("sa02m-alice", "sa02m-rules"):
     sys.path.insert(0, os.path.join(OPT, package))
-from sa02m_rules import service
+from sa02m_rules import service, capability_binding
 from sa02m_alice.client import converters
 
 P = "devices.capabilities."
@@ -21,6 +21,15 @@ def item(kind, instance, **extra):
                 parameters=params, **extra)
 
 class TypedEquipment(unittest.TestCase):
+    def test_triac_percent_binding_uses_same_inverse_and_read(self):
+        binding = item("range", "fan_speed", range_scale=.1,
+                       parameters={"range": {"min": 40, "max": 100}})
+        self.assertEqual(capability_binding.write(binding, 40), ("400", None))
+        self.assertEqual(capability_binding.write(binding, "75"), ("750", None))
+        self.assertEqual(capability_binding.read(binding, "750"), 75)
+        for value in (0, 39, 101, True):
+            self.assertIsNone(capability_binding.write(binding, value)[0])
+
     def setUp(self):
         self.tmp = tempfile.TemporaryDirectory()
         self.addCleanup(self.tmp.cleanup)
