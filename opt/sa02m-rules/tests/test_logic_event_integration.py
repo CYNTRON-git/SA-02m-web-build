@@ -5,7 +5,10 @@ import tempfile
 import unittest
 from unittest.mock import Mock, patch
 
-from test_typed_equipment import service
+if __package__:
+    from .test_typed_equipment import service
+else:  # direct file / standalone discovery
+    from test_typed_equipment import service
 from sa02m_rules import store
 
 

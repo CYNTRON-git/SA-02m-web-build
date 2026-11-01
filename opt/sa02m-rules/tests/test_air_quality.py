@@ -1,7 +1,10 @@
 """Observable room-air and low-glare motion behavior on the real logic classes."""
 import unittest
 
-from test_logic_templates import FakeRt
+if __package__:
+    from .test_logic_templates import FakeRt
+else:  # direct file / standalone discovery
+    from test_logic_templates import FakeRt
 from sa02m_rules.logic_templates import AirQualityVentilation, MotionLight
 
 
@@ -165,7 +168,10 @@ class AirBindingIntegration(unittest.TestCase):
         import os
         import tempfile
         from unittest.mock import Mock, patch
-        from test_typed_equipment import service
+        if __package__:
+            from .test_typed_equipment import service
+        else:
+            from test_typed_equipment import service
         from sa02m_rules import store
         with tempfile.TemporaryDirectory() as folder:
             devices = os.path.join(folder, "devices.json")
