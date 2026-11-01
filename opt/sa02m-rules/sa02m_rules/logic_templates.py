@@ -15,6 +15,8 @@ from __future__ import annotations
 import math
 from typing import Any, Dict, List, Optional, Tuple
 
+from . import capability_binding
+
 _MOTION_CAPS = ("motion",)
 _HUMIDITY_CAP = "humidity"
 _CO2_CAP = "co2"
@@ -51,9 +53,12 @@ def _truthy(v: Any) -> bool:
     if isinstance(v, bool):
         return v
     if isinstance(v, (int, float)):
-        return v >= 0.5
+        number = _reading(v)
+        return number is not None and number >= 0.5
     if isinstance(v, str):
-        return v.strip().lower() in ("1", "on", "true", "yes")
+        value = v.strip().lower()
+        event = capability_binding.event_number(value)
+        return event >= 0.5 if event is not None else value in ("1", "on", "true", "yes")
     return False
 
 
@@ -76,6 +81,10 @@ class LogicBase:
         pass
 
     def on_state(self, device: str, cap: str, value: Any, prev: Any) -> None:
+        pass
+
+    def on_observation(self, device: str, cap: str, value: Any) -> None:
+        """Telemetry receipt, including unchanged values; never a state edge."""
         pass
 
     def on_button(self, device: str, input_name: str, gesture: str) -> None:
@@ -199,11 +208,22 @@ class MotionLight(LogicBase):
     def __init__(self, rt: Any, params: Dict[str, Any]) -> None:
         super().__init__(rt, params)
         self._blocked_until = 0.0
+        self._lit = False
+        self._applied: Dict[Tuple[str, str], Any] = {}
 
     def _blocked(self) -> bool:
         return self.rt.now() < self._blocked_until
 
     def on_state(self, device: str, cap: str, value: Any, prev: Any) -> None:
+        if device in _ids(self.p, "lights") and cap in ("on_off", "brightness") \
+                and prev is not None and value != prev \
+                and value != self._applied.get((device, cap)):
+            minutes = _num(self.p.get("manual_block_min"), 60)
+            self._blocked_until = self.rt.now() + minutes * 60.0
+            self._cancel("off")
+            self._lit = False
+            self._sched(minutes * 60.0, "unblock")
+            return
         if device == self.p.get("wall_switch") and cap == "on_off" \
                 and prev is not None and _truthy(value) != _truthy(prev):
             minutes = _num(self.p.get("manual_block_min"), 60)
@@ -213,6 +233,8 @@ class MotionLight(LogicBase):
             return
         if device not in _ids(self.p, "sensors") or cap not in _MOTION_CAPS:
             return
+        if prev is not None and _truthy(value) == _truthy(prev):
+            return  # steady sensor publications must not restart the off timer
         if _truthy(value):
             self._motion()
         else:
@@ -232,9 +254,15 @@ class MotionLight(LogicBase):
             return
         bri = int(_num(self.p.get("night_brightness"), 20)) if night else None
         for light in _ids(self.p, "lights"):
+            if bri is not None:
+                self._applied[(light, "brightness")] = bri
+            self._applied[(light, "on_off")] = 1
             self._light_on(light, bri)
+        self._lit = True
 
     def _cleared(self) -> None:
+        if not self._lit or any(_truthy(self.rt.get(d, "motion")) for d in _ids(self.p, "sensors")):
+            return
         self._sched(max(1.0, _num(self.p.get("off_s"), 120)), "off")
 
     def on_timer(self, key: str) -> None:
@@ -242,7 +270,9 @@ class MotionLight(LogicBase):
             if self._blocked():
                 return  # manual override: leave the lights as the user set
             for light in _ids(self.p, "lights"):
+                self._applied[(light, "on_off")] = 0
                 self._off(light)
+            self._lit = False
         elif key == "unblock":
             self._blocked_until = 0.0
             self.rt.publish_status("blocked_by_switch", 0)
@@ -354,7 +384,7 @@ class Thermostat(LogicBase):
         if device in _ids(self.p, "sensors") and cap == _TEMPERATURE_CAP:
             self._last_sensor_ts = self.rt.now()
             self._evaluate()
-        elif device == self.p.get("window") and cap == _CONTACT_CAP:
+        elif device == self.p.get("window") and cap in (_CONTACT_CAP, "open"):
             self._evaluate()
 
     def on_timer(self, key: str) -> None:
@@ -396,8 +426,11 @@ class Thermostat(LogicBase):
 
     def _evaluate(self) -> None:
         window = self.p.get("window")
+        opened = self.rt.get(window, "open") if isinstance(window, str) and window else None
+        if opened is None and isinstance(window, str) and window:
+            opened = self.rt.get(window, _CONTACT_CAP)  # legacy raw contact binding
         if isinstance(window, str) and window \
-                and _truthy(self.rt.get(window, _CONTACT_CAP)):
+                and _truthy(opened):
             self._force_off()  # window open — pause heating/cooling
             return
         temp = self._temp()
@@ -531,6 +564,143 @@ class Co2Ventilation(LogicBase):
                 self.rt.set(d, "on_off", 0)
 
 
+class AirQualityVentilation(LogicBase):
+    """Room ventilation with independent pollutant thresholds and timed release.
+
+    Every configured reading must be fresh before returning to baseline. Missing
+    readings never mean clean air. Saved power/speed values are restored after
+    normalization; a physical/manual change pauses this rule for that fan.
+    """
+
+    SIGNALS = (("co2_sensors", "co2", "on_ppm", "off_ppm", 1000, 800),
+               ("humidity_sensors", "humidity", "on_rh", "off_rh", 65, 55),
+               ("voc_sensors", "tvoc", "on_voc", "off_voc", 500, 300))
+
+    def __init__(self, rt: Any, params: Dict[str, Any]) -> None:
+        super().__init__(rt, params)
+        self._fresh: Dict[Tuple[str, str], float] = {}
+        self._active = False
+        self._high_since: Optional[float] = None
+        self._low_since: Optional[float] = None
+        self._saved: Dict[str, Tuple[Any, Any]] = {}
+        self._applied: Dict[Tuple[str, str], Any] = {}
+        self._paused: Dict[str, float] = {}
+        bounds = {"boost_speed": (40, 100, 90), "boost_delay_s": (0, 300, 15),
+                  "settle_s": (10, 1800, 120), "stale_s": (30, 3600, 600),
+                  "manual_block_min": (5, 720, 5),
+                  "on_ppm": (400, 5000, 1000), "off_ppm": (300, 4900, 800),
+                  "on_rh": (20, 95, 65), "off_rh": (10, 90, 55),
+                  "on_voc": (1, 10000, 500), "off_voc": (0, 9999, 300)}
+        self._valid = bool(_ids(self.p, "fans")) and any(_ids(self.p, row[0]) for row in self.SIGNALS)
+        for slot in [row[0] for row in self.SIGNALS] + ["fans", "smoke_sensors"]:
+            value = self.p.get(slot, [])
+            self._valid = self._valid and isinstance(value, list) and len(value) <= 32 \
+                and all(isinstance(d, str) and d for d in value)
+        for key, (lo, hi, default) in bounds.items():
+            value = self.p.get(key, default)
+            parsed = _reading(value)
+            self._valid = self._valid and isinstance(value, (int, float)) and not isinstance(value, bool) \
+                and parsed is not None and lo <= parsed <= hi
+        for _, _, on, off, default_on, default_off in self.SIGNALS:
+            upper, lower = self.p.get(on, default_on), self.p.get(off, default_off)
+            self._valid = self._valid and isinstance(upper, (int, float)) and isinstance(lower, (int, float)) \
+                and not isinstance(upper, bool) and not isinstance(lower, bool) \
+                and _reading(upper) is not None and _reading(lower) is not None and float(lower) < float(upper)
+
+    def on_boot(self) -> None:
+        self._sched(2, "eval")
+
+    def on_observation(self, device: str, cap: str, value: Any) -> None:
+        for slot, signal, *_ in self.SIGNALS:
+            if device in _ids(self.p, slot) and cap == signal:
+                if _reading(value) is not None and not isinstance(value, bool):
+                    self._fresh[(device, cap)] = self.rt.now()
+                else:
+                    self._fresh.pop((device, cap), None)
+
+    def on_state(self, device: str, cap: str, value: Any, prev: Any) -> None:
+        if (device in _ids(self.p, "smoke_sensors") and cap == "smoke") \
+                or (device in _ids(self.p, "fans") and cap == "fault"):
+            self._evaluate()
+            return
+        for slot, signal, *_ in self.SIGNALS:
+            if device in _ids(self.p, slot) and cap == signal:
+                self.on_observation(device, cap, value)
+                self._evaluate()
+                return
+        if device in _ids(self.p, "fans") and cap in ("on_off", "fan_speed") \
+                and prev is not None and value != prev \
+                and value != self._applied.get((device, cap)):
+            self._paused[device] = self.rt.now() + _num(self.p.get("manual_block_min"), 5) * 60
+            self._saved.pop(device, None)
+
+    def on_timer(self, key: str) -> None:
+        if key == "eval":
+            self._sched(2, "eval")
+            self._evaluate()
+
+    def _write(self, device: str, cap: str, value: Any) -> None:
+        if self._applied.get((device, cap)) == value and self.rt.get(device, cap) == value:
+            return
+        if self.rt.set(device, cap, value):
+            self._applied[(device, cap)] = value
+
+    def _evaluate(self) -> None:
+        now, readings = self.rt.now(), []
+        if not self._valid:
+            self.rt.publish_status("invalid_params", 1)
+            return
+        def alarm(value: Any) -> bool:
+            return _truthy(value) or value in ("detected", "alarm", "fault")
+        if any(alarm(self.rt.get(d, "smoke")) for d in _ids(self.p, "smoke_sensors")) \
+                or any(alarm(self.rt.get(d, "fault")) for d in _ids(self.p, "fans")):
+            self._high_since = self._low_since = None
+            self._active = False
+            self._saved.clear()
+            self.rt.publish_status("inhibited", 1)
+            return
+        self.rt.publish_status("inhibited", 0)
+        stale_s = _num(self.p.get("stale_s"), 600)
+        for slot, cap, on, off, default_on, default_off in self.SIGNALS:
+            for did in _ids(self.p, slot):
+                value = _reading(self.rt.get(did, cap))
+                fresh = self._fresh.get((did, cap))
+                if value is None or fresh is None or now - fresh > stale_s:
+                    self._high_since = self._low_since = None
+                    self.rt.publish_status("sensor_stale", 1)
+                    return
+                readings.append((value, _num(self.p.get(on), default_on),
+                                 _num(self.p.get(off), default_off)))
+        if not readings:
+            return
+        self.rt.publish_status("sensor_stale", 0)
+        high = any(v >= on for v, on, _ in readings)
+        low = all(v <= off for v, _, off in readings)
+        self._high_since = (now if self._high_since is None else self._high_since) if high else None
+        self._low_since = (now if self._low_since is None else self._low_since) if low else None
+        if not self._active and high and now - self._high_since >= _num(self.p.get("boost_delay_s"), 15):
+            self._active = True
+        elif self._active and low and now - self._low_since >= _num(self.p.get("settle_s"), 120):
+            self._active = False
+        for did in _ids(self.p, "fans"):
+            if now < self._paused.get(did, 0):
+                continue
+            if self._active:
+                if did not in self._saved:
+                    power, speed = self.rt.get(did, "on_off"), self.rt.get(did, "fan_speed")
+                    if power is None or _reading(speed) is None:
+                        continue
+                    self._saved[did] = (power, speed)
+                speed = max(_num(self.p.get("boost_speed"), 90), float(self._saved[did][1]))
+                self._write(did, "fan_speed", speed)
+                self._write(did, "on_off", 1)
+            elif did in self._saved:
+                power, speed = self._saved.pop(did)
+                self._write(did, "fan_speed", speed)
+                self._write(did, "on_off", power)
+        self.rt.publish_status("boost", int(self._active))
+
+
 class Humidifier(LogicBase):
     """Увлажнитель по датчику: hold target_rh with hysteresis."""
 
@@ -606,6 +776,7 @@ LOGIC_CLASSES = {
     "thermostat": Thermostat,
     "humidity_fan": HumidityFan,
     "co2_ventilation": Co2Ventilation,
+    "air_quality_ventilation": AirQualityVentilation,
     "humidifier": Humidifier,
     "away_home": AwayHome,
 }

@@ -89,6 +89,7 @@ ORIGIN_SNAPSHOT = "snapshot"
 # Device-document tile icons (config/models.py allow-list; the ids are shared
 # with the cloud control page's sprite).
 DEVICE_ICONS = ("bulb", "fan", "socket", "relay", "pump", "valve", "siren", "generic")
+GROUP_ICONS = ("light", "ahu", "master", "floor", "climate", "cover", "socket")
 
 # Yandex action/query error codes
 ERR_DEVICE_UNREACHABLE = "DEVICE_UNREACHABLE"

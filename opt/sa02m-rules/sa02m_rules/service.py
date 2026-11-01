@@ -41,6 +41,7 @@ if _HERE not in sys.path:
 from sa02m_rules.device_index import (  # noqa: F401
     DeviceIndex, cap_short, devices_path, load_index, load_mqtt_index, state_key)
 from sa02m_rules.engine import Engine, non_finite
+from sa02m_rules import capability_binding
 from sa02m_rules.store import CAP_RE, DEFAULT_PATH, ID_RE, load
 
 MQTT_HOST = os.environ.get("SA02M_MQTT_HOST", "127.0.0.1")
@@ -220,7 +221,7 @@ class RulesApp:
             return None
         key = state_key(short, instance)
         if (device, key) in self._index.readonly:
-            return None
+            return "read only"
         topic, reason = self.target_topic(str(device), short, instance)
         if not topic:
             LOG.warning("publish refused: %s/%s%s — %s", device, short,
@@ -229,6 +230,11 @@ class RulesApp:
         payload = "1" if value in (True, 1, "1", "on", "true") else (
             "0" if value in (False, 0, "0", "off", "false") else str(value)
         )
+        binding = self._index.bindings.get((device, key))
+        if binding is not None:
+            payload, error = capability_binding.write(binding, value)
+            if error or payload is None:
+                return "invalid capability value"
         self._publish(topic + "/on", payload, retain=False)
         self.state.setdefault(device, {})[key] = value
         return None
@@ -370,12 +376,21 @@ class RulesApp:
         # document binds only as a PROPERTY (a DI as an `open`/`button`
         # event) still reaches it. A capability topic mirrors the raw name
         # without dispatch, as it always has.
-        if mapped and any(k in self._index.cap_topics for k in mapped):
-            self.engine.alias_state(parts[1], parts[3], value)
-        else:
-            self.engine.on_state(parts[1], parts[3], value)
+        # One key has one representation: a typed key may coincide with the
+        # MQTT alias. Writing raw then typed there fabricates a change on
+        # every report (0 -> not_detected, or active-low 0 -> True).
+        if (parts[1], parts[3]) not in (mapped or ()):
+            if mapped and any(k in self._index.cap_topics for k in mapped):
+                self.engine.alias_state(parts[1], parts[3], value)
+            else:
+                self.engine.on_state(parts[1], parts[3], value)
         for device, key in mapped or ():
-            self.engine.on_state(device, key, value)
+            binding = self._index.bindings.get((device, key))
+            converted = capability_binding.read(binding, raw) if binding else value
+            if converted is None or non_finite(converted):
+                self.engine.forget_state(device, key)
+            else:
+                self.engine.on_state(device, key, converted)
 
     def reload(self) -> None:
         self.reload_index()

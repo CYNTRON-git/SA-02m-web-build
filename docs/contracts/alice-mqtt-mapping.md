@@ -427,7 +427,7 @@ sends only a bool `split` and omits `parameters` when nothing is left, so
 `instance` never reaches Yandex (1.0.6.51); the cloud profile sends the stored
 `parameters` unchanged. Validating: `tests/test_discovery_on_off.py`.
 A `color_setting` stored as `{"instance": "rgb"}` is sent to Yandex as
-`{"color_model": "rgb"}` (no `instance`; `hsv` is not added). A stored
+`{"color_model": "rgb"}` (no `instance`; an explicitly stored HSV instance uses `color_model: hsv`). A stored
 `temperature_k` window is sent as `temperature_k` `{min, max}`. A brightness
 range whose `max` is above 100 (the LED channel is 0…255, stored either with
 `unit.percent` or with no unit) is sent as `unit.percent` with `range`
@@ -1165,3 +1165,81 @@ stripped (that is Yandex policy). Validating:
 - Copying `wb-mqtt-alice` source (MIT-WB).
 - Storing Yandex OAuth tokens on the controller.
 - On-device Home Assistant.
+
+
+### Типизированные команды оборудования (движок 3)
+
+Прямой dispatcher выбирает декларацию по **type + instance**; неизвестная или
+повторённая точная пара не публикуется. Поэтому две `range` одного устройства
+(например, температура и влажность) используют собственные MQTT-топики.
+Режимы, RGB/HSV, Kelvin и toggle доступны только через явные декларации;
+`writable: false` запрещает команду.
+
+`color_setting` принимает `parameters.instance: hsv` наряду с `rgb` и
+`temperature_k`. HSV — объект ровно `{h,s,v}`: конечные числа, h 0…360,
+s/v 0…100, логические значения запрещены. На RGB-шину передаётся `#RRGGBB`,
+обратный RGB-отчёт преобразуется в HSV. Это альтернативное представление
+существующего RGB-канала, а не новый физический драйвер. Kelvin остаётся
+целым числом 2700…6500; преобразование физического CCT-канала остаётся в LED
+bridge. `toggle` требует стандартный instance (`backlight`, `controls_locked`,
+`ionization`, `keep_warm`, `mute`, `oscillation`, `pause`), строго boolean на
+входе, MQTT `1`/`0` на выходе; другие значения телеметрии пропускаются как
+неизвестные.
+
+Режим Carel использует существующий `carel_family` и его каноническую карту.
+Для другого оборудования интегратор задаёт **item-level** `mode_map`, рядом
+с `mqtt`, не внутри публичного `parameters`:
+
+```json
+{"type":"devices.capabilities.mode",
+ "mqtt":"/devices/hvac/controls/mode",
+ "parameters":{"instance":"thermostat","modes":[{"value":"heat"},{"value":"cool"}]},
+ "mode_map":{"heat":"1","cool":"2"}}
+```
+
+Числа в примере условные: реальные строки берутся из документации конкретного
+MQTT-драйвера. Ключи карты в точности совпадают с объявленными modes; значения —
+различные непустые строки до 128 символов без управляющих символов. Карта
+работает в обе стороны, не отправляется Яндексу и не совмещается с
+`carel_family`. Без карты и без поддерживаемого семейства режим отклоняется.
+Поддержанные instance режима: `fan_speed`, `thermostat`, `swing`, `program`;
+разрешённые значения задаёт `config.models.MODE_INSTANCES`, ограниченный
+[словарём функций Яндекса](https://yandex.ru/dev/dialogs/smart-home/doc/ru/concepts/mode-instance).
+
+Сценарии используют этот же converter; условия rollout и совместимость
+описаны в [контракте сценариев](cloud-scenarios.md#типизированная-запись-движок-3).
+
+### Процентные каналы 4TO6DI
+
+Модуль объявляет отдельные DO1–DO4 для включения и AO1–AO4 с сырым
+регистром 0…1000 для уровня (`bridge_mr02m.py`). Значение AO не становится
+скоростью вентилятора автоматически: назначение задаётся для конкретного канала.
+
+Форма привязок предлагает «Вытяжка 4TO6DI» и «Свет 4TO6DI». Оба шаблона
+создают отдельный on_off на DO и range на AO **того же канала**; каналы выбирает
+интегратор. Вытяжка: fan_speed 40…100%, cloud_only. Лампа накаливания:
+brightness 0…100%. Выключение пишет только DO=0, не обнуляет AO; включение
+DO=1 сохраняет ранее заданный уровень. Первую рабочую уставку вентилятора
+необходимо задать перед включением при пусконаладке: шаблон сам на шину не пишет.
+
+Необязательный item-level `range_scale` хранится рядом с `mqtt`:
+
+```json
+{"type":"devices.capabilities.range","mqtt":"/devices/triac/controls/ao_1",
+ "range_scale":0.1,"cloud_only":true,
+ "parameters":{"instance":"fan_speed","unit":"unit.percent",
+ "range":{"min":40,"max":100,"precision":1}}}
+```
+
+Формула чтения: logical = raw × range_scale. Запись: raw = logical /
+range_scale, после проверки логических границ. 40% → `400`, 100% → `1000`.
+Коэффициент конечный, 1e-6…1e6, положительный; допускается только для range
+и не совмещается с carel_family. Отсутствие означает1, старые LED0…255 и
+обычные AO сохраняют формат. Скалирование общее для query, событий, прямой
+команды и типизированных сценариев движка3; относительная команда считает
+приращение в логических единицах. Discovery не раскрывает range_scale.
+Для целочисленных регистров интегратор выбирает шаг, дающий целое raw;
+шаблоны используют1%, то есть10 отсчётов регистра.
+
+Это программная поддержка будущего обновления контроллера; физическое
+оборудование данным изменением не перепрошивается и не проверяется.
