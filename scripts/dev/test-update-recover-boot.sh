@@ -86,6 +86,11 @@
 #   Round 7: R11 — the caller's ERROR line after a rollback names its real
 #   outcome («rollback incomplete» over stage=error, «rolled back» otherwise).
 #   RED on 8e21bee: R11a logged «(rolled back)» over stage=error.
+#   1.0.7.27: N1-N3, R6, Mb, Mf — the imaging hold stops sa02m-link-monitor
+#   (it starts fix-eth@ on link-up) and every give-back (cleanup, boot recover,
+#   the remedy) starts it only where `is-enabled --quiet` succeeds (the shim
+#   answers from $T/enabled.rc; absent = enabled). RED on the 1.0.7.26 runner
+#   and remedy: 5 FAIL (R6, N1, N2, N3, Mb).
 #
 # Run: bash scripts/dev/test-update-recover-boot.sh   (bash + python3 + coreutils)
 # ═══════════════════════════════════════════════════════════════════════════
@@ -209,6 +214,7 @@ printf 'systemctl %s\n' "$*" >> "$CALLS"
 case "${1:-}" in
     start) [ "${2:-}" = "--no-block" ] && exit "$(cat "${START_RC_FILE:-/dev/null}" 2>/dev/null || echo 0)"; exit 0 ;;
     is-active) exit 1 ;;
+    is-enabled) rc=$(cat "${ENABLED_RC_FILE:-/dev/null}" 2>/dev/null); exit "${rc:-0}" ;;
     *) exit 0 ;;
 esac
 SH
@@ -230,7 +236,7 @@ printf '#!/bin/bash\nexit 0\n' > "$T/bin/nginx"
 printf '#!/bin/bash\nexit 0\n' > "$T/bin/sync"
 chmod 755 "$T/bin/"*
 PATH="$T/bin:$PATH"
-export START_RC_FILE="$T/start.rc" RUN_RC_FILE="$T/run.rc" WDT_VALUE_FILE="$T/wdt.value"
+export START_RC_FILE="$T/start.rc" RUN_RC_FILE="$T/run.rc" WDT_VALUE_FILE="$T/wdt.value" ENABLED_RC_FILE="$T/enabled.rc"
 printf '0\n' > "$T/start.rc"; printf '0\n' > "$T/run.rc"; printf '15000000\n' > "$T/wdt.value"
 
 # shellcheck disable=SC1090
@@ -261,6 +267,7 @@ write_txn() {  # $1=stage $2=files_done $3=files_total [$4... extra key=value]
 reset_run() {
     : > "$CALLS"; : > "$LOG"; rm -f "$T/commit.marker" "$IMAGING_LOCK"
     printf '0\n' > "$T/start.rc"; printf '0\n' > "$T/run.rc"; printf '15000000\n' > "$T/wdt.value"
+    rm -f "$T/enabled.rc"
     IMAGING_HELD=0; RUNTIME_WDT_PREV=""; RUNNER_CONTEXT=""
 }
 called()      { grep -qxF "$1" "$CALLS" 2>/dev/null; }
@@ -318,7 +325,7 @@ run_recover
 # own TimeoutStartSec=300 and was SIGKILLed mid-rollback (stage rolling_back,
 # imaging lock + watchdog 0 left behind). At boot every unit starts from the
 # restored files anyway: a boot-context rollback restarts NOTHING.
-unit_restarts() { grep -E '^systemctl (restart|start|reload) ' "$CALLS" 2>/dev/null | grep -v 'net-watchdog'; }   # the hold's own start (--no-block) is not a restart set
+unit_restarts() { grep -E '^systemctl (restart|start|reload) ' "$CALLS" 2>/dev/null | grep -vE 'net-watchdog|sa02m-link-monitor'; }   # the hold's own starts (--no-block) are not a restart set
 if [ -n "$(unit_restarts)" ]; then
     bad "R3 boot-context rollback issued restarts (each bounded 60 s — enough to hit recover's 300 s timeout): $(unit_restarts | tr '\n' ';')"
 else
@@ -447,6 +454,8 @@ run_recover
 called_re '^busctl set-property .* RuntimeWatchdogUSec t 15000000$' && ok "R6 watchdog restored to 15000000 from the policy (no field in the old transaction)" \
     || bad "R6 watchdog NOT restored: $(grep busctl "$CALLS" | tr '\n' ';')"
 called_re '^systemctl start (--no-block )?net-watchdog$' && ok "R6 net-watchdog started again (--no-block: recover runs before the network is up)" || bad "R6 net-watchdog not started"
+called_re '^systemctl is-enabled --quiet sa02m-link-monitor$' && called_re '^systemctl start --no-block sa02m-link-monitor$' \
+    && ok "R6 sa02m-link-monitor given back (enabled → started, --no-block)" || bad "R6 sa02m-link-monitor not given back: $(grep link-monitor "$CALLS" | tr '\n' ';')"
 called_re '^systemctl (restart|start|reload) (nginx|fcgiwrap|sa02m-rules)' && bad "R6 restarts issued from boot context: $(grep -E 'restart|reload' "$CALLS" | tr '\n' ';')" \
     || ok "R6 no unit restarts from boot context"
 
@@ -607,6 +616,29 @@ printf '[Manager]\nRuntimeWatchdogSec=15s\n' > "$SA02M_WATCHDOG_POLICY_FILE"
 called_re '^busctl set-property .* RuntimeWatchdogUSec t 15000000$' && ok "W3 …and the end of that apply restores 15000000" \
     || bad "W3 the end of the apply left the watchdog at 0: $(grep busctl "$CALLS" | tr '\n' ';')"
 
+# ── N: the imaging hold and sa02m-link-monitor (1.0.7.27) ─────────────────────
+# The monitor starts fix-eth@ on link-up, which must not run mid-update: the
+# hold stops it with net-watchdog, cleanup gives it back ONLY where the unit is
+# enabled — an OTA-only board carries the unit file but no enablement, and the
+# hold must never widen it into a running service.
+echo "── N: imaging hold vs sa02m-link-monitor ──"
+reset_run
+write_txn applying 0 3
+( set -euo pipefail; install_imaging_lock ) >/dev/null 2>&1
+called "systemctl stop sa02m-link-monitor" && ok "N1 install_imaging_lock stops sa02m-link-monitor" \
+    || bad "N1 the hold left sa02m-link-monitor running: $(grep -E 'stop' "$CALLS" | tr '\n' ';')"
+: > "$CALLS"
+( set -euo pipefail; IMAGING_HELD=1; cleanup_imaging_lock ) >/dev/null 2>&1
+called "systemctl start --no-block sa02m-link-monitor" && ok "N2 cleanup starts it again where it is enabled" \
+    || bad "N2 cleanup did not give the monitor back: $(tr '\n' ';' < "$CALLS")"
+reset_run; printf '1\n' > "$T/enabled.rc"
+date -Iseconds > "$IMAGING_LOCK"
+( set -euo pipefail; IMAGING_HELD=1; cleanup_imaging_lock ) >/dev/null 2>&1
+called_re '^systemctl is-enabled --quiet sa02m-link-monitor$' && ! called_re '^systemctl start .*sa02m-link-monitor' \
+    && ok "N3 not enabled (OTA-only board) → enablement consulted, monitor NOT started" \
+    || bad "N3 cleanup on a not-enabled monitor: $(grep link-monitor "$CALLS" | tr '\n' ';')"
+rm -f "$T/enabled.rc"
+
 # ── M: scripts/sa02m-update-remedy.sh — the field entry point for R8 ─────────
 # Driven with a FAKE runner (records argv; carries the `cmd_reclaim() {` marker
 # or not), a pgrep shim (rc from $T/pgrep.rc: 0 = a runner is alive), the
@@ -649,6 +681,7 @@ grep -q '^runner reclaim$' "$CALLS" && ok "Mb runner ≥ 1.0.6.52 → \`runner r
 called_re '^busctl set-property .* RuntimeWatchdogUSec t 15000000$' && ok "Mb watchdog set to the policy value explicitly" || bad "Mb watchdog not set: $(grep busctl "$CALLS" | tr '\n' ';')"
 [ ! -f "$IMAGING_LOCK" ] && ok "Mb leftover imaging lock removed" || bad "Mb imaging lock still present"
 called "systemctl start net-watchdog" && called "systemctl start sa02m-flasher" && ok "Mb net-watchdog + sa02m-flasher started" || bad "Mb units not started: $(grep start "$CALLS" | tr '\n' ';')"
+called "systemctl start sa02m-link-monitor" && ok "Mb sa02m-link-monitor started (enabled)" || bad "Mb sa02m-link-monitor not started: $(grep link-monitor "$CALLS" | tr '\n' ';')"
 grep -q '^after:' "$T/remedy.out" && ok "Mb prints the after: line" || bad "Mb no after: line: $(tail -3 "$T/remedy.out" | tr '\n' ';')"
 # Mc old runner (no reclaim) on a stuck stage → recover at runtime
 write_fake_runner without; write_json_txn rolling_back; date -Iseconds > "$IMAGING_LOCK"
@@ -668,6 +701,14 @@ run_remedy
 [ -f "$IMAGING_LOCK" ] && ! called_re '^busctl set-property' && ! called "systemctl start sa02m-flasher" \
     && ok "Me the remedy stopped: lock kept, watchdog not armed, flasher not started" \
     || bad "Me the remedy went on after a refused reclaim: lock $([ -f "$IMAGING_LOCK" ] && echo kept || echo removed), calls: $(grep -E 'busctl set|start' "$CALLS" | tr '\n' ';')"
+# Mf monitor not enabled (OTA-only board) → the remedy does not start it
+printf '1\n' > "$T/pgrep.rc"; write_fake_runner with; write_json_txn rolled_back
+date -Iseconds > "$IMAGING_LOCK"; printf '1\n' > "$T/enabled.rc"
+run_remedy
+rm -f "$T/enabled.rc"
+called "systemctl start net-watchdog" && ! called_re '^systemctl start .*sa02m-link-monitor' \
+    && ok "Mf monitor not enabled → net-watchdog started, sa02m-link-monitor left off" \
+    || bad "Mf calls: $(grep -E 'start|is-enabled' "$CALLS" | tr '\n' ';')"
 rm -f "$STATEDIR/transaction.json" "$T/bin/pgrep"
 
 # ── U: the units and the installer/packer lists (static, comment-stripped) ──
