@@ -789,6 +789,8 @@ install_imaging_lock() {
   date -Iseconds >"$IMAGING_LOCK"
   sync
   systemctl stop net-watchdog sa02m-watchdog-feed 2>/dev/null || true
+  # The link monitor starts fix-eth@ on link-up, which must not run mid-reset.
+  timeout 10 systemctl stop sa02m-link-monitor 2>/dev/null || true
   local now=""
   RUNTIME_WDT_PREV=$(sa02m_runtime_watchdog_usec 2>/dev/null) || RUNTIME_WDT_PREV=""
   if [ -n "$RUNTIME_WDT_PREV" ] && [ "$RUNTIME_WDT_PREV" != 0 ]; then
@@ -817,6 +819,8 @@ cleanup_imaging_lock() {
     RUNTIME_WDT_PREV=""
   fi
   systemctl start net-watchdog 2>/dev/null || true
+  # Given back only where enabled: an OTA-only board has the unit file, not the enablement.
+  systemctl is-enabled --quiet sa02m-link-monitor 2>/dev/null && systemctl start sa02m-link-monitor 2>/dev/null || true
   systemctl start sa02m-watchdog-feed 2>/dev/null || true
   rm -f "$IMAGING_LOCK"
   IMAGING_HELD=0

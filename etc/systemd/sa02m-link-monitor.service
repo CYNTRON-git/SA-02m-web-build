@@ -1,0 +1,31 @@
+[Unit]
+Description=SA-02m Ethernet link-up reaction (netlink -> fix-eth@)
+Documentation=file:/usr/local/sbin/sa02m-link-monitor.sh
+# Starts fix-eth@<if>.service within seconds of a carrier rising edge seen on
+# netlink — eth0 emits no udev event on carrier change, so without this the
+# routes/DNS after a plugged cable wait for the next net-watchdog pass (30 s).
+# Contract: docs/contracts/boot-network-routes.md §1.
+# Early on purpose: it only queues fix-eth@ jobs, and fix-eth@ itself is
+# ordered After=networking.service, so a boot-time edge never runs recovery
+# ahead of the initial bring-up.
+# Failure mode: if this unit is dead, never enabled (a board that received
+# the files only by OTA, which enables no new unit) or restarting (`ip
+# monitor` ended -> exit 1 -> restart in 5 s, an edge inside that gap is
+# missed), nothing is lost but speed — net-watchdog's 30 s pass still runs
+# fix-eth.sh.
+After=network-pre.target
+
+[Service]
+Type=simple
+ExecStart=/usr/local/sbin/sa02m-link-monitor.sh
+Restart=always
+RestartSec=5
+# An idle listener: SIGTERM ends it at once; the bound keeps an update hold
+# (which stops this unit) from waiting on it.
+TimeoutStopSec=5
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=sa02m-link-monitor
+
+[Install]
+WantedBy=multi-user.target

@@ -209,6 +209,18 @@ iface-dns-ensure|etc/fix-eth.sh|dns_ensure "$iface"
 iface-routes-ensure|etc/fix-eth.sh|routes_ensure "$iface"
 fix-eth-link-cycle|etc/fix-eth.sh|mii-tool -r "$iface" >/dev/null 2>&1
 fix-eth-link-cycle|etc/fix-eth.sh|carrier_up "$iface" && _link_after_cycle=1
+link-monitor|usr/local/sbin/sa02m-link-monitor.sh|systemctl --no-block start "fix-eth@${1}.service"
+link-monitor|scripts/02-network.sh|sa02m_svc_apply sa02m-link-monitor.service infra start
+link-monitor|etc/sa02m-factory-reset-runner.sh|timeout 10 systemctl stop sa02m-link-monitor 2>/dev/null || true
+link-monitor|usr/local/sbin/sa02m-link-monitor.sh|kill -0 "$pid" 2>/dev/null && {
+link-monitor|usr/local/sbin/sa02m-link-monitor.sh|BUSY_WAIT_MAX=60
+link-monitor|usr/local/sbin/sa02m-link-monitor.sh|-lt "$MIN_START_INTERVAL" ] && {
+link-monitor|etc/fix-eth@.service|StartLimitBurst=10
+link-monitor|etc/systemd/sa02m-link-monitor.service|TimeoutStopSec=5
+link-monitor|etc/sa02m-factory-reset-runner.sh|systemctl is-enabled --quiet sa02m-link-monitor
+update-recover-boot|etc/sa02m-update-runner.sh|_systemctl_bounded 10 stop sa02m-link-monitor || true
+update-recover-boot|etc/sa02m-update-runner.sh|_systemctl_bounded 10 is-enabled --quiet sa02m-link-monitor
+update-recover-boot|scripts/sa02m-update-remedy.sh|systemctl is-enabled --quiet sa02m-link-monitor
 dtb-fdtput-real|usr/local/sbin/sa02m-dtb-patch.sh|patch_phy "$EMAC_PHY_PATH" "$EMAC_ID_COMPAT"
 dtb-fdtput-real|usr/local/sbin/sa02m-dtb-patch.sh|fdtput "$f" "$DC1SW_PATH" regulator-always-on
 dtb-patch-tool|usr/local/sbin/sa02m-dtb-patch.sh|[ "$first" = "$EMAC_ID_COMPAT" ]
