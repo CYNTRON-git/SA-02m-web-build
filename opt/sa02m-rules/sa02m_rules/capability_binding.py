@@ -31,6 +31,11 @@ def write(binding, value, current_raw=None):
                 value = int(text[1:], 16) if instance == "rgb" and len(text) == 7 and text.startswith("#") else int(text)
         except (ValueError, OverflowError):
             return None, "invalid capability value"
+    if typ == "devices.capabilities.color_setting" and instance == "temperature_k" \
+            and isinstance(value, float) and capability_values.number(value) is not None:
+        # A ramp/transition step is fractional (engine rounds to 0.01); Kelvin
+        # is whole on the bus, so round here and let the strict window decide.
+        value = int(round(value))
     return converters.capability_yandex_to_mqtt(
         typ, {"instance": instance, "value": value},
         parameters=binding.get("parameters"), current_raw=current_raw,

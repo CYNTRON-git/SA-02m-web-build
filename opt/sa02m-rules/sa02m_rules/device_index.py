@@ -171,6 +171,13 @@ def load_index(path: Optional[str] = None) -> DeviceIndex:
             for key in keys:
                 if (did, key) in ix.bindings or (did, key) in ix.ambiguous:
                     ix.ambiguous.add((did, key))
+                    # The first holder's inbound mirror goes too: a refused
+                    # key must not keep reading a value it cannot write.
+                    first = ix.cap_topics.get((did, key))
+                    if first and (did, key) in ix.topic_keys.get(first, ()):
+                        ix.topic_keys[first].remove((did, key))
+                        if not ix.topic_keys[first]:
+                            del ix.topic_keys[first]
                     ix.cap_topics.pop((did, key), None)
                     ix.bindings.pop((did, key), None)
                     continue

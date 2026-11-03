@@ -116,6 +116,59 @@ class AirQualityTests(unittest.TestCase):
             self.assertEqual(rt.status["invalid_params"], 1)
 
 
+class AirQualityFanKinds(unittest.TestCase):
+    """Review engine4-port B2: a relay-only fan is boosted by power alone, and
+    `boost` claims only what was actually written."""
+
+    def make(self, caps, **state):
+        rt = FakeRt()
+        rt.caps["fan"] = caps
+        for cap, value in state.items():
+            rt.feed("fan", cap, value)
+        inst = AirQualityVentilation(rt, {"fans": ["fan"], "co2_sensors": ["co2"],
+                                          "boost_delay_s": 0, "settle_s": 10})
+        return inst, rt
+
+    @staticmethod
+    def co2(inst, rt, ppm):
+        inst.on_state("co2", "co2", ppm, rt.feed("co2", "co2", ppm))
+
+    def test_on_off_only_fan_is_switched_and_restored(self):
+        inst, rt = self.make(("on_off",), on_off=0)
+        self.co2(inst, rt, 1400)
+        self.assertEqual(rt.writes, [("fan", "on_off", 1)])
+        self.assertEqual(rt.status["boost"], 1)
+        self.co2(inst, rt, 600)
+        rt.clock[0] += 11
+        inst.on_timer("eval")
+        self.assertEqual(rt.writes[-1], ("fan", "on_off", 0))
+        self.assertEqual(rt.status["boost"], 0)
+
+    def test_speed_reported_late_is_the_original_and_gets_boosted(self):
+        inst, rt = self.make(("on_off", "fan_speed"), on_off=0)
+        self.co2(inst, rt, 1400)
+        self.assertEqual(rt.writes, [("fan", "on_off", 1)])
+        inst.on_state("fan", "fan_speed", 45, rt.feed("fan", "fan_speed", 45))
+        rt.clock[0] += 2
+        inst.on_timer("eval")
+        self.assertIn(("fan", "fan_speed", 90.0), rt.writes)
+        self.co2(inst, rt, 600)
+        rt.clock[0] += 11
+        inst.on_timer("eval")
+        self.assertEqual(rt.writes[-2:], [("fan", "fan_speed", 45), ("fan", "on_off", 0)])
+
+    def test_boost_status_is_not_claimed_when_nothing_was_written(self):
+        inst, rt = self.make(("on_off", "fan_speed"))  # power never reported
+        self.co2(inst, rt, 1400)
+        self.assertEqual(rt.writes, [])
+        self.assertEqual(rt.status["boost"], 0)
+        refused = self.make(("on_off",), on_off=0)
+        inst, rt = refused
+        rt.set = lambda device, cap, value: False  # every write refused
+        self.co2(inst, rt, 1400)
+        self.assertEqual(rt.status["boost"], 0)
+
+
 class NightMotionTests(unittest.TestCase):
     def test_two_sensors_retrigger_and_steady_clear_does_not_extend_timer(self):
         rt = FakeRt()

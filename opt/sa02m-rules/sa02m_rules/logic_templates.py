@@ -49,6 +49,16 @@ def _num(v: Any, default: float) -> float:
     return default if f is None else f
 
 
+def _scalar(v: Any) -> bool:
+    """A restorable actor value from the state file: a finite number, a bool
+    or a short string — what the state mirror holds for a power/speed."""
+    if isinstance(v, bool):
+        return True
+    if isinstance(v, (int, float)):
+        return _reading(v) is not None
+    return isinstance(v, str) and len(v) <= 64
+
+
 def _truthy(v: Any) -> bool:
     if isinstance(v, bool):
         return v
@@ -67,6 +77,7 @@ class LogicBase:
         self.rt = rt
         self.p = params if isinstance(params, dict) else {}
         self._keys: set = set()
+        self._save_now = False
 
     def _sched(self, delay_s: float, key: str) -> None:
         self._keys.add(key)
@@ -95,6 +106,25 @@ class LogicBase:
 
     def status(self) -> Dict[str, Any]:
         return {}
+
+    # ── runtime state across a restart (engine → store.save_logic_state) ──
+    def export_state(self) -> Optional[Dict[str, Any]]:
+        """JSON-able state that must survive a service restart, or None when
+        there is nothing to remember (a template that keeps none, or a fresh
+        instance's state): only what the template needs to undo its own
+        action later (a restore snapshot, «I switched this on»)."""
+        return None
+
+    def restore_state(self, state: Dict[str, Any]) -> bool:
+        """Adopt an `export_state` of the same template; False when `state`
+        is not valid — the caller then starts this instance fresh."""
+        return False
+
+    def take_save_now(self) -> bool:
+        """True once after a change that must reach disk at once rather than
+        on the engine's batched cadence."""
+        urgent, self._save_now = self._save_now, False
+        return urgent
 
     # ── write helpers ──────────────────────────────────────────────────
     def _light_on(self, device: str, brightness: Optional[int] = None) -> None:
@@ -214,6 +244,13 @@ class MotionLight(LogicBase):
     def _blocked(self) -> bool:
         return self.rt.now() < self._blocked_until
 
+    def on_boot(self) -> None:
+        # Restored lit: a motion source that does not re-send its state after
+        # a restart would otherwise leave the light on, so the off timer starts
+        # from the restore — but only when no sensor in the mirror shows motion
+        # (after a same-template edit a steady motion=1 sends no new edge).
+        self._cleared()
+
     def on_state(self, device: str, cap: str, value: Any, prev: Any) -> None:
         if device in _ids(self.p, "lights") and cap in ("on_off", "brightness") \
                 and prev is not None and value != prev \
@@ -263,6 +300,7 @@ class MotionLight(LogicBase):
     def _cleared(self) -> None:
         if not self._lit or any(_truthy(self.rt.get(d, "motion")) for d in _ids(self.p, "sensors")):
             return
+        self._cancel("off")  # one pending switch-off, counted from this clear
         self._sched(max(1.0, _num(self.p.get("off_s"), 120)), "off")
 
     def on_timer(self, key: str) -> None:
@@ -279,6 +317,18 @@ class MotionLight(LogicBase):
 
     def status(self) -> Dict[str, Any]:
         return {"blocked_by_switch": 1 if self._blocked() else 0}
+
+    def export_state(self) -> Optional[Dict[str, Any]]:
+        # `_lit` gates the switch-off: lost on a restart, lights this
+        # template lit would never be switched off by it.
+        return {"lit": True} if self._lit else None
+
+    def restore_state(self, state: Dict[str, Any]) -> bool:
+        lit = state.get("lit")
+        if not isinstance(lit, bool):
+            return False
+        self._lit = lit
+        return True
 
 
 class Circadian(LogicBase):
@@ -365,7 +415,67 @@ class Circadian(LogicBase):
         self._paused_until[device] = self.rt.now() + minutes * 60.0
 
 
-class Thermostat(LogicBase):
+class SwitchedByMe(LogicBase):
+    """A threshold template that owns one «switched on by me» flag (`_on`):
+    it switches its actors only on a threshold crossing, so a flag lost on a
+    restart left an actor it had switched on running with no switch-off (and,
+    for the thermostat, no window / safe-off interlock). The flag survives a
+    restart (export/restore) and is reconciled with the actors: while it is
+    restored as on, each actor's first report decides — one report «on»
+    keeps it, «off» from every actor clears it (switched off while the
+    service was down, so the next crossing switches it on again)."""
+
+    def __init__(self, rt: Any, params: Dict[str, Any]) -> None:
+        super().__init__(rt, params)
+        self._reconcile: set = set()
+        self._on = False
+
+    @property
+    def _on(self) -> bool:
+        return self.__on
+
+    @_on.setter
+    def _on(self, value: bool) -> None:
+        # Any decision of the template itself ends the reconciliation.
+        if value and not getattr(self, "_SwitchedByMe__on", False):
+            # A switch-on is saved at once: a crash inside the batched
+            # cadence must not leave an actor this rule switched on unowned.
+            self._save_now = True
+        self.__on = value
+        self._reconcile = set()
+
+    def _actor_ids(self) -> List[str]:
+        return []
+
+    def _reconcile_report(self, device: str, cap: str, value: Any) -> None:
+        if cap != "on_off" or device not in self._reconcile:
+            return
+        if _truthy(value):
+            self._reconcile = set()  # an actor is on: the flag stands
+            return
+        self._reconcile.discard(device)
+        if not self._reconcile:
+            self._on = False
+
+    def export_state(self) -> Optional[Dict[str, Any]]:
+        return {"on": True} if self._on else None
+
+    def restore_state(self, state: Dict[str, Any]) -> bool:
+        on = state.get("on")
+        if not isinstance(on, bool):
+            return False
+        self._on = on
+        if on:
+            self._reconcile = set(self._actor_ids())
+            # Same-template edit: the mirror already holds the reports.
+            for device in sorted(self._reconcile):
+                value = self.rt.get(device, "on_off")
+                if value is not None:
+                    self._reconcile_report(device, "on_off", value)
+        return True
+
+
+class Thermostat(SwitchedByMe):
     """Термостат день/ночь: hysteresis, day/night setpoints, min on/off
     relay protection, safe-off on a stale sensor, window-open pause."""
 
@@ -373,14 +483,17 @@ class Thermostat(LogicBase):
 
     def __init__(self, rt: Any, params: Dict[str, Any]) -> None:
         super().__init__(rt, params)
-        self._on = False
         self._last_switch = 0.0
         self._last_sensor_ts = 0.0
+
+    def _actor_ids(self) -> List[str]:
+        return self._actors()
 
     def on_boot(self) -> None:
         self._sched(5.0, "eval")
 
     def on_state(self, device: str, cap: str, value: Any, prev: Any) -> None:
+        self._reconcile_report(device, cap, value)
         if device in _ids(self.p, "sensors") and cap == _TEMPERATURE_CAP:
             self._last_sensor_ts = self.rt.now()
             self._evaluate()
@@ -463,20 +576,38 @@ class Thermostat(LogicBase):
         return {"rule_enabled": 1, "heating": 1 if self._on else 0}
 
 
-class HumidityFan(LogicBase):
+class HumidityFan(SwitchedByMe):
     """Вентиляция по влажности: on at on_rh, off at off_rh, max run time,
     quiet hours. (overrun_min has no light slot in catalog v1 — see report.)"""
 
     def __init__(self, rt: Any, params: Dict[str, Any]) -> None:
         super().__init__(rt, params)
-        self._on = False
         self._on_since = 0.0
         self._cooldown = False
+
+    def _actor_ids(self) -> List[str]:
+        return _ids(self.p, "fans")
+
+    def export_state(self) -> Optional[Dict[str, Any]]:
+        # on_since: max_run_min counts from the original switch-on.
+        if not (self._on or self._cooldown):
+            return None
+        return {"on": self._on, "on_since": self._on_since, "cooldown": self._cooldown}
+
+    def restore_state(self, state: Dict[str, Any]) -> bool:
+        since, cooldown = state.get("on_since"), state.get("cooldown")
+        if isinstance(since, bool) or _reading(since) is None or not isinstance(cooldown, bool):
+            return False
+        if not super().restore_state(state):
+            return False
+        self._on_since, self._cooldown = float(since), cooldown
+        return True
 
     def on_boot(self) -> None:
         self._sched(5.0, "eval")
 
     def on_state(self, device: str, cap: str, value: Any, prev: Any) -> None:
+        self._reconcile_report(device, cap, value)
         if device in _ids(self.p, "sensors") and cap == _HUMIDITY_CAP:
             self._evaluate()
 
@@ -527,14 +658,14 @@ class HumidityFan(LogicBase):
                 self._set(True)
 
 
-class Co2Ventilation(LogicBase):
+class Co2Ventilation(SwitchedByMe):
     """Проветривание по CO₂: on at on_ppm, off at off_ppm, quiet hours."""
 
-    def __init__(self, rt: Any, params: Dict[str, Any]) -> None:
-        super().__init__(rt, params)
-        self._on = False
+    def _actor_ids(self) -> List[str]:
+        return _ids(self.p, "fans")
 
     def on_state(self, device: str, cap: str, value: Any, prev: Any) -> None:
+        self._reconcile_report(device, cap, value)
         if device in _ids(self.p, "sensors") and cap == _CO2_CAP:
             self._evaluate()
 
@@ -639,11 +770,53 @@ class AirQualityVentilation(LogicBase):
             self._sched(2, "eval")
             self._evaluate()
 
-    def _write(self, device: str, cap: str, value: Any) -> None:
+    def export_state(self) -> Optional[Dict[str, Any]]:
+        # Freshness and the high/low clocks are NOT kept: after a restart every
+        # reading must be fresh again before any transition (fail safe).
+        if not (self._active or self._saved or self._paused):
+            return None
+        return {"active": self._active,
+                "saved": {did: [power, speed] for did, (power, speed) in self._saved.items()},
+                "paused": dict(self._paused)}
+
+    def restore_state(self, state: Dict[str, Any]) -> bool:
+        active, saved, paused = state.get("active"), state.get("saved"), state.get("paused")
+        if not isinstance(active, bool) or not isinstance(saved, dict) \
+                or not isinstance(paused, dict):
+            return False
+        fans = set(_ids(self.p, "fans"))
+        out_saved: Dict[str, Tuple[Any, Any]] = {}
+        for did, pair in saved.items():
+            if not isinstance(pair, list) or len(pair) != 2:
+                return False
+            power, speed = pair
+            if not _scalar(power) or (speed is not None and (
+                    isinstance(speed, bool) or _reading(speed) is None)):
+                return False
+            if did in fans:  # a fan an edit removed is no longer this rule's
+                out_saved[did] = (power, speed)
+        out_paused: Dict[str, float] = {}
+        for did, until in paused.items():
+            if isinstance(until, bool) or _reading(until) is None:
+                return False
+            if did in fans:
+                out_paused[did] = float(until)
+        self._active, self._saved, self._paused = active, out_saved, out_paused
+        return True
+
+    def _write(self, device: str, cap: str, value: Any) -> bool:
+        """True when the actor holds `value` — written now or already there."""
         if self._applied.get((device, cap)) == value and self.rt.get(device, cap) == value:
-            return
+            return True
         if self.rt.set(device, cap, value):
             self._applied[(device, cap)] = value
+            return True
+        return False
+
+    def _speed(self, device: str) -> Any:
+        """The fan's reported speed as stored in the mirror, or None."""
+        speed = self.rt.get(device, "fan_speed")
+        return speed if _reading(speed) is not None and not isinstance(speed, bool) else None
 
     def _evaluate(self) -> None:
         now, readings = self.rt.now(), []
@@ -682,33 +855,44 @@ class AirQualityVentilation(LogicBase):
             self._active = True
         elif self._active and low and now - self._low_since >= _num(self.p.get("settle_s"), 120):
             self._active = False
+        boosted = False
         for did in _ids(self.p, "fans"):
             if now < self._paused.get(did, 0):
                 continue
             if self._active:
                 if did not in self._saved:
-                    power, speed = self.rt.get(did, "on_off"), self.rt.get(did, "fan_speed")
-                    if power is None or _reading(speed) is None:
-                        continue
-                    self._saved[did] = (power, speed)
-                speed = max(_num(self.p.get("boost_speed"), 90), float(self._saved[did][1]))
-                self._write(did, "fan_speed", speed)
-                self._write(did, "on_off", 1)
+                    power = self.rt.get(did, "on_off")
+                    if power is None:
+                        continue  # no restorable power state: never touched
+                    self._saved[did] = (power, self._speed(did))
+                power, speed = self._saved[did]
+                if speed is None:
+                    # A relay-only fan, or a speed not reported yet. This rule
+                    # never wrote the speed, so a report now IS the original.
+                    speed = self._speed(did)
+                    if speed is not None:
+                        self._saved[did] = (power, speed)
+                if speed is not None:
+                    self._write(did, "fan_speed",
+                                max(_num(self.p.get("boost_speed"), 90), float(speed)))
+                boosted = self._write(did, "on_off", 1) or boosted
             elif did in self._saved:
                 power, speed = self._saved.pop(did)
-                self._write(did, "fan_speed", speed)
+                if speed is not None:
+                    self._write(did, "fan_speed", speed)
                 self._write(did, "on_off", power)
-        self.rt.publish_status("boost", int(self._active))
+        # Claims only what was written: active with no fan switched on is 0.
+        self.rt.publish_status("boost", int(boosted))
 
 
-class Humidifier(LogicBase):
+class Humidifier(SwitchedByMe):
     """Увлажнитель по датчику: hold target_rh with hysteresis."""
 
-    def __init__(self, rt: Any, params: Dict[str, Any]) -> None:
-        super().__init__(rt, params)
-        self._on = False
+    def _actor_ids(self) -> List[str]:
+        return _ids(self.p, "humidifiers")
 
     def on_state(self, device: str, cap: str, value: Any, prev: Any) -> None:
+        self._reconcile_report(device, cap, value)
         if device not in _ids(self.p, "sensors") or cap != _HUMIDITY_CAP:
             return
         rh = _reading(value)
@@ -758,6 +942,19 @@ class AwayHome(LogicBase):
         self.rt.set_home_mode("away")
         if self.p.get("notify") is not False:
             self.rt.notify("Режим «не дома»: свет и розетки выключены")
+
+    def export_state(self) -> Optional[Dict[str, Any]]:
+        # The restore list of «Я дома»: the home mode itself is persisted in
+        # the document's vars, this list was not.
+        return {"turned_off": list(self._turned_off)} if self._turned_off else None
+
+    def restore_state(self, state: Dict[str, Any]) -> bool:
+        ids = state.get("turned_off")
+        if not isinstance(ids, list) or not all(isinstance(d, str) and d for d in ids):
+            return False
+        mine = set(_ids(self.p, "lights") + _ids(self.p, "outlets"))
+        self._turned_off = [d for d in ids if d in mine]
+        return True
 
     def _arrive(self) -> None:
         self.rt.set_home_mode("home")

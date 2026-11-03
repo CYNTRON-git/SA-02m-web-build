@@ -233,6 +233,9 @@ class RulesApp:
         binding = self._index.bindings.get((device, key))
         if binding is not None:
             payload, error = capability_binding.write(binding, value)
+            if error == "converter unavailable":
+                # A torn install (no /opt/sa02m-alice): say so, not «bad value».
+                return error
             if error or payload is None:
                 return "invalid capability value"
         self._publish(topic + "/on", payload, retain=False)
@@ -426,8 +429,11 @@ class RulesApp:
         self._step("on_boot", self.engine.on_boot)
 
     def stop(self) -> None:
-        """Shutdown: the buffered run records reach the journal."""
+        """Shutdown: the buffered run records reach the journal, and pending
+        logic-template state reaches logic_state.json (an OTA restart is
+        exactly when it is needed next)."""
         self.engine.flush_runs()
+        self.engine.flush_logic_state()
 
 
 def main() -> int:

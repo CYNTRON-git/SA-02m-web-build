@@ -187,6 +187,92 @@ class TypedEquipment(unittest.TestCase):
         self.assertEqual(self.app.pub("unit", "range", 22, "temperature"), "ambiguous target")
         self.client.publish.assert_not_called()
 
+    def scenario(self, row):
+        from sa02m_rules import store
+        with patch.dict(os.environ, {"SA02M_ALICE_DEVICES": self.path}):
+            result = store.apply_command(row, self.app.path)
+        self.assertTrue(result["ok"], result)
+        self.app.reload()
+        self.client.reset_mock()
+
+    def on_writes(self):
+        return [(c.args[0], c.args[1]) for c in self.client.publish.call_args_list
+                if c.args[0].endswith("/on")]
+
+    def test_kelvin_transition_steps_are_whole_kelvin(self):
+        """Review B6: a ramp's fractional steps used to be refused one by one
+        by the strict int check, silently (no run to journal into)."""
+        self.app._apply_message("/devices/unit/controls/temperature_k", "2700")
+        self.scenario({"id": "warm", "name": "Warm", "enabled": True, "type": "scene",
+                       "action": [{"kind": "set", "device": "unit", "cap": "color_setting",
+                                   "instance": "temperature_k", "value": 4000,
+                                   "transition_s": 6}]})
+        clock = [10000.0]
+        self.app.engine._now = lambda: clock[0]
+        self.app.engine.run_scene("warm")
+        for _ in range(4):
+            clock[0] += 2
+            self.app.engine.tick()
+        self.assertEqual(self.on_writes(), [("/devices/unit/controls/temperature_k/on", "3133"),
+                                            ("/devices/unit/controls/temperature_k/on", "3567"),
+                                            ("/devices/unit/controls/temperature_k/on", "4000")])
+        self.assertEqual(capability_binding.write(item("color_setting", "temperature_k"), 3500.0),
+                         ("3500", None))
+        for bad in (float("nan"), True, 9000.0):
+            self.assertIsNone(capability_binding.write(item("color_setting", "temperature_k"), bad)[0])
+
+    def test_refused_transition_step_is_journaled(self):
+        self.app._apply_message("/devices/unit/controls/humidity", "40")
+        self.scenario({"id": "dry", "name": "Dry", "enabled": True, "type": "scene",
+                       "action": [{"kind": "set", "device": "unit", "cap": "range",
+                                   "instance": "humidity", "value": 90, "transition_s": 4}]})
+        clock = [10000.0]
+        self.app.engine._now = lambda: clock[0]
+        self.app.engine.run_scene("dry")
+        for _ in range(3):
+            clock[0] += 2
+            self.app.engine.tick()
+        # 40 -> 65 is inside 30..80; 90 is not — refused, journaled, ramp over.
+        self.assertEqual(self.on_writes(), [("/devices/unit/controls/humidity/on", "65")])
+        last = self.app.engine._scenario("dry")
+        self.assertEqual(last["last_error"], "ramp refused: invalid capability value")
+        self.assertFalse(self.app.engine.doc["runs"][-1]["ok"])
+
+    def test_engine_toggle_action_drives_a_toggle_capability(self):
+        self.app._apply_message("/devices/unit/controls/oscillation", "0")
+        self.scenario({"id": "swing", "name": "Swing", "enabled": True, "type": "block",
+                       "action": [{"kind": "toggle", "device": "unit", "cap": "toggle",
+                                   "instance": "oscillation"}]})
+        self.app.engine.run_now("swing")
+        self.assertEqual(self.on_writes(), [("/devices/unit/controls/oscillation/on", "1")])
+        self.assertEqual(self.app.engine._scenario("swing")["last_error"], "")
+        self.client.reset_mock()
+        self.app.engine.run_now("swing")
+        self.assertEqual(self.on_writes(), [("/devices/unit/controls/oscillation/on", "0")])
+
+    def test_ambiguous_key_leaves_no_topic_mirror(self):
+        """Review A2: a refused duplicate key kept its inbound mirror entry."""
+        from sa02m_rules.device_index import load_index
+        other = dict(self.caps[1], mqtt="/devices/unit/controls/temperature_b")
+        with open(self.path, "w", encoding="utf-8") as f:
+            json.dump({"devices": [{"id": "unit", "capabilities": [self.caps[1], other]}]}, f)
+        ix = load_index(self.path)
+        for topic in ("/devices/unit/controls/temperature", "/devices/unit/controls/temperature_b"):
+            self.assertNotIn(("unit", "range|temperature"), ix.topic_keys.get(topic, []))
+        self.app._index = ix
+        self.app._apply_message("/devices/unit/controls/temperature", "22")
+        self.assertNotIn("range|temperature", self.app.state.get("unit", {}))
+
+    def test_missing_alice_package_is_named(self):
+        """Review A3: a torn install reported every declared write as an
+        invalid value, hiding the cause."""
+        with patch.object(capability_binding, "converters", None):
+            self.assertEqual(self.app.pub("unit", "range", 22, "temperature"),
+                             "converter unavailable")
+        self.assertEqual(self.app.pub("unit", "range", 50, "temperature"),
+                         "invalid capability value")
+        self.client.publish.assert_not_called()
+
     def test_carel_uses_existing_family_mapping(self):
         expected, error = converters.capability_yandex_to_mqtt(P + "mode", {"instance": "fan_speed", "value": "low"}, parameters=self.caps[0]["parameters"], family="uaria")
         self.assertIsNone(error)
