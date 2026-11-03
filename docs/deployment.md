@@ -1141,10 +1141,12 @@ mosquitto_pub -h <плата> -p 1884 -u mqttuser -P '<пароль>' \
 `sa02m-dtb-patch.sh check`; при `Generic PHY` — `apt install device-tree-compiler`,
 `sa02m-dtb-patch.sh apply`, перезагрузка, `check` снова (ожидается `ICPlus IP101A`
 или `ICPlus IP101G`; `docs/bugs/BUGLOG.md` 2026-10-29). Без этого клоны уедут с PHY
-eth0 под `Generic PHY`. `fdtget`/`fdtput` (пакет `device-tree-compiler`) после
-`apply` на мастере не нужны; `cleanup-donor.sh` пакеты apt не удаляет — при
-первом прогоне решить, оставлять ли
-`device-tree-compiler` в образе (`apt purge device-tree-compiler`, если нет).
+eth0 под `Generic PHY`. Пакет `device-tree-compiler` в образе **остаётся**:
+от него зависит пакет платы Armbian (`armbian-bsp-cli-bananapim2ultra-current`),
+поэтому `apt purge device-tree-compiler` удаляет и пакет платы, а с ним
+`/etc/armbian-release` и остальные файлы платы (стенд 1.136, 2026-11-03). Возврат:
+сначала `apt-get install device-tree-compiler`, затем `dpkg -i` той же версии
+пакета платы (`.deb` из `/var/cache/apt/archives` другой платы).
 
 ### 0. Отключить запись истории в текущей сессии
 
@@ -1378,7 +1380,27 @@ rm -f  /root/install-*.log /root/apt-*.log
 rm -f  /var/lib/sa02m-stand/*.db
 ```
 
-**Оставить** `.ssh`, `.zshrc`, `.oh-my-zsh`. **НЕ удалять** `.so` и
+**Ключи root — из образа убрать** (решение Оператора 2026-11-03):
+`authorized_keys` дал бы владельцу ключа root на каждом клоне, а приватный ключ
+в `/root/.ssh` был бы одинаковым на всех клонах. Сначала скопировать их
+off-device (как шаг 1), затем:
+
+```
+rm -f /root/.ssh/authorized_keys /root/.ssh/known_hosts
+ls -A /root/.ssh   # каждый оставшийся приватный ключ — тоже скопировать и удалить
+```
+
+`known_hosts` перечисляет хосты, к которым ходил мастер, — клонам он не нужен.
+Сам каталог `.ssh` остаётся. Текущую сессию удаление не обрывает (ключ
+проверяется только при новом входе); дальше доступ к мастеру — по паролю, поэтому
+до выхода проверить вход по паролю из второй сессии. `make-image.sh` пробует
+ключ `sa02m_sa02`; на таком мастере ключ не подойдёт, и ssh/scp спросят пароль
+на каждом вызове. Чтобы пароль брался из `tools/sa02m-device.env` через
+`sshpass`, у оператора не должно быть ключа ни в `~/.ssh/sa02m_sa02`, ни в
+`private/.ssh/` репозитория (скрипт копирует его оттуда; выбор `SSH_AUTH` в
+`tools/imaging/make-image.sh`).
+
+**Оставить** `.zshrc`, `.oh-my-zsh`. **НЕ удалять** `.so` и
 установочные файлы. `/var/lib/sa02m-stand/*.db` — история устройств стенда, на
 мастере не нужна. Проверка: `ls -a /root` — только рабочие dotfiles, без
 деплой-архивов и логов.
@@ -1395,13 +1417,16 @@ find /var/log -type f -name '*.log' -exec truncate -s 0 {} +
 : > /var/log/btmp
 : > /var/log/lastlog
 cat /dev/null > ~/.bash_history
+cat /dev/null > ~/.zsh_history
 history -c
 ```
 
-Очистка `.bash_history` — **последнее действие с данными** (после неё в сессии
-не выполняют новых команд, кроме проверок). Благодаря `unset HISTFILE` из шага 0
-интерактивная сессия не перезапишет файл при logout, поэтому пустым он и уедет в
-образ. Проверка: `journalctl --disk-usage` минимален; `~/.bash_history` пуст.
+Очистка истории (`.bash_history` и `.zsh_history`) — **последнее действие с
+данными** (после неё в сессии не выполняют новых команд, кроме проверок). Благодаря
+`unset HISTFILE` из шага 0 интерактивная сессия не перезапишет файлы при logout,
+поэтому пустыми они и уедут в образ (`history -c` под zsh выдаёт ошибку — это
+безвредно). Проверка: `journalctl --disk-usage` минимален; `~/.bash_history` и
+`~/.zsh_history` пусты.
 
 ### 9. Идентичность клона
 
@@ -1447,7 +1472,8 @@ enabled-служба `regen-ssh-host-keys` на первом старте кло
 - [ ] `enrolled = false` и пустой `device_id` в `agent.conf`.
 - [ ] в `sa02m-modbus-mqtt.yaml` — `devices: []` (0 устройств).
 - [ ] `stat -c %s /etc/machine-id` = `0`.
-- [ ] `~/.bash_history` пуст.
+- [ ] `~/.bash_history` и `~/.zsh_history` пусты.
+- [ ] в `/root/.ssh` нет `authorized_keys`, `known_hosts` и приватных ключей (шаг 7).
 - [ ] локальные `.preimage`-копии удалены (`sa02m-modbus-mqtt.yaml.preimage`
       нет; `agent.conf` на плате не бэкапилась — её off-device копия в шаге 1).
 - [ ] установочные файлы НА МЕСТЕ: systemd-юниты, `/opt/*`, `start_mplc4.sh`,
