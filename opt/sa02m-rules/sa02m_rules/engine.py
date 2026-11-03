@@ -16,7 +16,7 @@ import time
 from collections import deque
 from typing import Any, Callable, Deque, Dict, List, Optional, Set, Tuple
 
-from sa02m_rules import http_guard
+from sa02m_rules import http_guard, capability_binding
 from sa02m_rules.device_index import state_key
 from sa02m_rules.store import (
     CAP_RE, EDGE_OPS, EVENT_OPS, GESTURES, HOME_MODES, ID_RE, LEVEL_OPS,
@@ -55,6 +55,9 @@ def _raw_num(v: Any) -> Optional[float]:
             return math.inf if v > 0 else -math.inf
     if isinstance(v, str):
         s = v.strip().lower()
+        event = capability_binding.event_number(s)
+        if event is not None:
+            return event
         if s in ("1", "on", "true", "yes"):
             return 1.0
         if s in ("0", "off", "false", "no"):
@@ -605,11 +608,15 @@ class Engine:
         # engine already wrote is still the first observation.
         observed = (device, cap) in self._observed
         self._observed.add((device, cap))
+        logic_cap = self._logic_cap(device, cap)
+        for inst in list(self._logic.values()):
+            on_observation = getattr(inst, "on_observation", None)
+            if on_observation is not None:
+                on_observation(device, logic_cap, value)
         if prev == value:
             return
         self._for_s_touch(device, cap, value)
         self._button_state(device, cap, value, prev)
-        logic_cap = self._logic_cap(device, cap)
         for inst in list(self._logic.values()):
             inst.on_state(device, logic_cap, value, prev)
         self._dispatch({"kind": "state", "device": device, "cap": cap,

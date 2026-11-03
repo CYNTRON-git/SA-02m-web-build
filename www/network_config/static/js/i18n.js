@@ -15,6 +15,12 @@
   const attrOriginal = new WeakMap();
 
   const DICT = {
+    'Вытяжка 4TO6DI': '4TO6DI exhaust fan',
+    'Свет 4TO6DI': '4TO6DI light',
+    'Вытяжка 4TO6DI, %': '4TO6DI fan speed, %',
+    'Яркость 4TO6DI, %': '4TO6DI brightness, %',
+    '4TO6DI: включение — DO канала, скорость — AO того же канала. Рабочая скорость 40–100%; выключение отдельной кнопкой сохраняет уставку. Управление скоростью доступно в облаке.': '4TO6DI: power uses the channel DO, speed uses the same channel AO. Operating speed is 40–100%; a separate power switch preserves the setpoint. Speed control is available in the cloud.',
+    '4TO6DI: включение — DO канала, яркость — AO того же канала. Шкала 0–100% соответствует регистру 0–1000; выключение не меняет уставку яркости.': '4TO6DI: power uses the channel DO, brightness uses the same channel AO. The 0–100% scale maps to register 0–1000; switching off preserves the brightness setpoint.',
     'СА-02м — Панель управления': 'SA-02m Control Panel',
     'ЦИНТРОН': 'CYNTRON',
     'Версия веб-интерфейса': 'Web interface version',

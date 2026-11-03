@@ -11,7 +11,7 @@ from typing import Any, Callable, Dict, Iterable, List, Optional, Set, Tuple
 from ..common import constants as C
 from ..common.config_store import load_devices
 from ..config import ahu_status, device_types, scene_devices, topics
-from . import converters
+from . import converters, capability_values
 
 log = logging.getLogger("sa02m_alice.registry")
 
@@ -448,7 +448,7 @@ class DeviceRegistry:
                     ids = [str(x) for x in raw if x]
                 row: Dict[str, Any] = {"id": str(gid), "name": str((group or {}).get("name") or ""),
                                        "device_ids": ids}
-                if (group or {}).get("icon") in ("light", "ahu"):
+                if (group or {}).get("icon") in C.GROUP_ICONS:
                     row["icon"] = str(group["icon"])
                 out.append(row)
             return out
@@ -624,6 +624,8 @@ class DeviceRegistry:
                         str(item.get("type") or ""), raw, item.get("parameters"),
                         _item_inverted(item),
                         family=_item_carel_family(item),
+                        mode_map=item.get("mode_map"),
+                        range_scale=item.get("range_scale", 1.0),
                         yandex=self._profile == C.PROFILE_YANDEX,
                     )
                     if block:
@@ -775,16 +777,13 @@ class DeviceRegistry:
                         )
                     results.append({"id": did, "capabilities": cap_results})
                     continue
-                by_type = {
-                    str(c.get("type")): c
-                    for c in (dev.get("capabilities") or [])
-                    if isinstance(c, dict)
-                }
                 for cap in d.get("capabilities") or []:
                     if not isinstance(cap, dict):
                         continue
                     ctype = str(cap.get("type") or "")
-                    local = by_type.get(ctype)
+                    requested = cap.get("state") if isinstance(cap.get("state"), dict) else {}
+                    instance = requested.get("instance") or ("on" if ctype == "devices.capabilities.on_off" else "rgb" if ctype == "devices.capabilities.color_setting" else "")
+                    local = capability_values.select(dev.get("capabilities") or [], ctype, instance)
                     if not local:
                         cap_results.append(
                             {
@@ -846,6 +845,9 @@ class DeviceRegistry:
                         parameters=local.get("parameters"),
                         inverted=_item_inverted(local),
                         family=_item_carel_family(local),
+                        mode_map=local.get("mode_map"),
+                        range_scale=local.get("range_scale", 1.0),
+                        strict="range_scale" in local and not (cap.get("state") or {}).get("relative"),
                         yandex=self._profile == C.PROFILE_YANDEX,
                     )
                     if err or payload is None:
@@ -896,6 +898,8 @@ class DeviceRegistry:
                         str(item.get("type") or ""), raw, item.get("parameters"),
                         _item_inverted(item),
                         family=_item_carel_family(item),
+                        mode_map=item.get("mode_map"),
+                        range_scale=item.get("range_scale", 1.0),
                         yandex=self._profile == C.PROFILE_YANDEX,
                     )
                     if block:

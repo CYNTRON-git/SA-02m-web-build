@@ -110,6 +110,9 @@ CLOUD_ONLY_FLOAT_INSTANCES = {
 # rejected item costs: carel-ahu.md §6). The advisory-list rule is what makes
 # that unlikely here, not the width of this set. Widen deliberately.
 MODE_INSTANCES = {
+    "thermostat": frozenset(("auto", "heat", "cool", "dry", "fan_only")),
+    "swing": frozenset(("auto", "stationary", "vertical", "horizontal")),
+    "program": frozenset(("auto", "eco", "normal", "turbo", "quiet")),
     "fan_speed": frozenset(
         ("auto", "quiet", "low", "medium", "high", "turbo")),
 }
@@ -229,7 +232,7 @@ def validate_group(group: Dict[str, Any]) -> Tuple[Optional[Dict[str, Any]], Opt
                 ids.append(s)
         out["device_ids"] = ids
     icon = group.get("icon")
-    if icon in ("light", "ahu"):
+    if icon in C.GROUP_ICONS:
         out["icon"] = icon
     return out, None
 
@@ -370,6 +373,8 @@ def _validate_mqtt_item(item: Dict[str, Any], kind: str) -> Tuple[Optional[Dict[
     mqtt = str(item.get("mqtt") or "").strip()
     if not mqtt or not _MQTT_RE.match(mqtt):
         return None, "invalid mqtt topic"
+    if "parameters" in item and not isinstance(item["parameters"], dict):
+        return None, "invalid parameters"
     if "cloud_only" in item and not isinstance(item["cloud_only"], bool):
         # Strict bool: a stray "false" string must never widen an allow-list.
         return None, "invalid %s cloud_only" % kind
@@ -417,8 +422,12 @@ def _validate_mqtt_item(item: Dict[str, Any], kind: str) -> Tuple[Optional[Dict[
         if not isinstance(params, dict):
             return None, "color_setting capability requires parameters"
         instance = str(params.get("instance") or "")
-        if instance not in ("rgb", "temperature_k"):
+        if instance not in ("rgb", "hsv", "temperature_k"):
             return None, "invalid color_setting instance"
+    elif t == "devices.capabilities.toggle":
+        params = item.get("parameters")
+        if not isinstance(params, dict) or params.get("instance") not in ("backlight", "controls_locked", "ionization", "keep_warm", "mute", "oscillation", "pause"):
+            return None, "invalid toggle capability instance"
     elif t == "devices.capabilities.mode":
         # Shaped like the range branch above, and for the same reason: the
         # parameters reach Yandex verbatim, so a mode with no values is a
@@ -430,6 +439,8 @@ def _validate_mqtt_item(item: Dict[str, Any], kind: str) -> Tuple[Optional[Dict[
         allowed = MODE_INSTANCES.get(instance)
         if allowed is None:
             return None, "invalid mode capability instance"
+        if instance != "fan_speed" and "mode_map" not in item:
+            return None, "mode capability requires mode_map"
         modes = params.get("modes")
         if not isinstance(modes, list) or not modes:
             return None, "mode capability requires a non-empty parameters.modes"
@@ -443,6 +454,18 @@ def _validate_mqtt_item(item: Dict[str, Any], kind: str) -> Tuple[Optional[Dict[
             if value in seen_modes:
                 return None, "duplicate mode value: %s" % value
             seen_modes.add(value)
+    if "range_scale" in item:
+        from ..client.capability_values import valid_range_scale
+        if t != "devices.capabilities.range" or not valid_range_scale(item["range_scale"]):
+            return None, "invalid range_scale"
+        if item.get("carel_family"):
+            return None, "range_scale conflicts with carel_family"
+    if "mode_map" in item:
+        from ..client.capability_values import valid_mode_map
+        if t != "devices.capabilities.mode" or not valid_mode_map(item["mode_map"], (item.get("parameters") or {}).get("modes")):
+            return None, "invalid mode_map"
+        if item.get("carel_family"):
+            return None, "mode_map conflicts with carel_family"
     err = _validate_inverted(item, kind)
     if err:
         return None, err

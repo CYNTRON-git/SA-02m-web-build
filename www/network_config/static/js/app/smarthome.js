@@ -376,6 +376,8 @@ const SH_KINDS = {
   // is rgb only — the strip's `white` is a separate PWM channel and its
   // `temperature` is an NTC in °C, so neither is a colour temperature.
   brightness:  { kindOf: 'range', instance: 'brightness', range: { min: 0, max: 255, precision: 1 }, type: 'devices.types.light' },
+  triac_fan: { kindOf: 'range', instance: 'fan_speed', unit: 'unit.percent', range: { min: 40, max: 100, precision: 1 }, rangeScale: 0.1, cloudOnly: true, type: 'devices.types.ventilation.fan' },
+  triac_brightness: { kindOf: 'range', instance: 'brightness', unit: 'unit.percent', range: { min: 0, max: 100, precision: 1 }, rangeScale: 0.1, type: 'devices.types.light' },
   color:       { kindOf: 'color', instance: 'rgb', type: 'devices.types.light' },
   // Curtain / valve position, «на 50 %». The on/off row is a separate kind
   // (`switch`) on one command topic; two reverse outputs are not one switch.
@@ -410,6 +412,8 @@ const SH_KIND_LABELS = {
   unit_status: 'Статус установки (текст)',
   alarm: 'Авария',
   brightness: 'Яркость',
+  triac_fan: 'Вытяжка 4TO6DI, %',
+  triac_brightness: 'Яркость 4TO6DI, %',
   color: 'Цвет',
   open_pct: 'Положение, %',
 };
@@ -451,6 +455,7 @@ function shKindForItem(item) {
     const specRange = spec.kindOf === 'range';
     const isEvent = spec.kindOf === 'event';
     if (specRange !== isRange) continue;
+    if (isRange && (spec.rangeScale || 1) !== (item.range_scale == null ? 1 : item.range_scale)) continue;
     if (spec.instance !== inst || isEvent !== wantEvent) continue;
     // temperature is claimed by two kinds — a plain climate sensor and the
     // unit's supply-air reading. They write the same item, so the first match
@@ -488,13 +493,16 @@ function shMakeManagedItem(kind, topic, inverted) {
     // Brightness is 0…255 with no unit. Every older range kind has one, and
     // omitting the key keeps those documents byte-identical.
     if (spec.unit) parameters.unit = spec.unit;
-    return {
+    const item = {
       type: 'devices.capabilities.range',
       mqtt: topic,
       retrievable: true,
       reportable: true,
       parameters: parameters,
     };
+    if (spec.rangeScale) item.range_scale = spec.rangeScale;
+    if (spec.cloudOnly) item.cloud_only = true;
+    return item;
   }
   if (!spec || spec.kindOf === 'cap') {
     const cap = {
@@ -880,6 +888,8 @@ function shApplyLedTopic(row, topic) {
 }
 
 const SH_PRESETS = {
+  triac_fan: { type: 'devices.types.ventilation.fan', rows: ['switch', 'triac_fan'], hint: '4TO6DI: включение — DO канала, скорость — AO того же канала. Рабочая скорость 40–100%; выключение отдельной кнопкой сохраняет уставку. Управление скоростью доступно в облаке.' },
+  triac_light: { type: 'devices.types.light', rows: ['switch', 'triac_brightness'], hint: '4TO6DI: включение — DO канала, яркость — AO того же канала. Шкала 0–100% соответствует регистру 0–1000; выключение не меняет уставку яркости.' },
   light: { type: 'devices.types.light', rows: ['switch', 'brightness', 'color'], hint: '' },
   curtain: {
     type: 'devices.types.openable.curtain',
