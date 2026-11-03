@@ -25,10 +25,11 @@ Listeners: the AF_UNIX socket /run/sa02m-devices/api.sock (0660 root:www-data �
 nginx and every other www-data process can connect; the session check above is
 what holds for all of them) and, governed by STAND_API_TCP_COMPAT=auto|0|1, the
 loopback TCP port 127.0.0.1:8765. `auto` keeps TCP open only while the LIVE
-nginx site file does not name the socket — an OTA-only board, whose old site
-file still proxies to the literal port (GitHub-OTA does not carry the site
-file — docs/deployment.md); an unreadable site file also keeps it open (we
-cannot tell). That listener serves only such a board: the shipped upstream
+nginx site file does not name the socket — a board whose live site file
+predates the socket upstream and has not been re-rendered yet still proxies to
+the literal port (which deploy paths deliver the site file, and when:
+docs/deployment.md); an unreadable site file also keeps it open (we cannot
+tell). That listener serves only such a board: the shipped upstream
 names the socket and nothing else (no TCP backup — Operator decision
 2026-09-29), so a socket that cannot be bound does NOT open TCP — it would
 serve nobody. A bind failure never exits the process — an exit would fail the
@@ -118,7 +119,7 @@ def tcp_compat_decision(mode: str | None, site_text: str | None) -> tuple[bool, 
             continue
         if SOCKET_UPSTREAM_MARK in s:
             return False, "TCP compat: off — nginx site file targets " + SOCKET_UPSTREAM_MARK
-    return True, "TCP compat: on — nginx site file still targets 127.0.0.1:8765 (GitHub-OTA does not carry it)"
+    return True, "TCP compat: on — nginx site file still targets 127.0.0.1:8765 (not re-rendered yet)"
 
 
 if _HAVE_AF_UNIX:
