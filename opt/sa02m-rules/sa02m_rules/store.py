@@ -65,8 +65,11 @@ ACTIONS_MAX = 20
 #: never sent.
 HTTP_PER_RUN_MAX = 8
 #: Engine version reported to the cloud (control view `rules_engine`):
-#: 2 = end events, edge operators, day/night presets, button/every/presence.
-RULES_ENGINE = 2
+#: 2 = end events, edge operators, day/night presets, button/every/presence;
+#: 3 = typed writes through the Alice converters (type + instance);
+#: 4 = the `air_quality_ventilation` logic template
+#: (contract cloud-scenarios.md, «List snapshot» / «Типизированная запись»).
+RULES_ENGINE = 4
 TYPES = ("block", "code", "logic", "scene")
 TRIGGER_KINDS = ("state", "time", "sun", "boot", "every", "button", "presence")
 ACTION_KINDS = ("set", "toggle", "ramp", "delay", "scenario", "scene",
@@ -87,7 +90,7 @@ HOME_MODES = ("home", "away", "night", "holiday")
 #: with last_error="unknown template".
 LOGIC_TEMPLATES = (
     "switch_light", "motion_light", "circadian", "thermostat",
-    "humidity_fan", "co2_ventilation", "humidifier", "away_home",
+    "humidity_fan", "co2_ventilation", "air_quality_ventilation", "humidifier", "away_home",
 )
 
 
@@ -122,7 +125,9 @@ def _atomic_write(path: str, data: str) -> None:
         # on the first save.
         os.chmod(tmp, 0o644)
         os.replace(tmp, path)
-    except Exception:
+    except BaseException:
+        # BaseException: the SIGTERM SystemExit can land inside fsync; the
+        # temp file is ours either way and must not be left in the store dir.
         try:
             os.unlink(tmp)
         except OSError:
@@ -146,6 +151,54 @@ def journal_path(path: str = DEFAULT_PATH) -> str:
     exactly that directory (ProtectSystem=strict), so the journal needs no
     second writable tree."""
     return os.path.join(os.path.dirname(path) or ".", JOURNAL_NAME)
+
+
+# ── logic-template runtime state ────────────────────────────────────────
+LOGIC_STATE_NAME = "logic_state.json"
+LOGIC_STATE_VERSION = 1
+
+
+def logic_state_path(path: str = DEFAULT_PATH) -> str:
+    """`logic_state.json` beside the document, in the unit's one writable
+    tree (same reason as `journal_path`)."""
+    return os.path.join(os.path.dirname(path) or ".", LOGIC_STATE_NAME)
+
+
+def read_logic_state(path: str = DEFAULT_PATH) -> Dict[str, Dict[str, Any]]:
+    """{sid: {"template", "state"}} as the engine last wrote it; {} when the
+    file is absent. Fail safe: a file that cannot be read or is not this
+    shape is ignored WHOLE and logged — the templates start fresh, the
+    engine never stops on it. A malformed single entry is dropped alone."""
+    lpath = logic_state_path(path)
+    try:
+        with open(lpath, encoding="utf-8") as fh:
+            data = json.load(fh)
+    except FileNotFoundError:
+        return {}
+    except (OSError, ValueError, RecursionError) as exc:
+        LOG.warning("logic state %s ignored: %s", lpath, type(exc).__name__)
+        return {}
+    if not isinstance(data, dict) or data.get("version") != LOGIC_STATE_VERSION \
+            or not isinstance(data.get("scenarios"), dict):
+        LOG.warning("logic state %s ignored: not a version %d state file",
+                    lpath, LOGIC_STATE_VERSION)
+        return {}
+    out: Dict[str, Dict[str, Any]] = {}
+    for sid, entry in data["scenarios"].items():
+        if isinstance(entry, dict) and isinstance(entry.get("template"), str) \
+                and isinstance(entry.get("state"), dict):
+            out[sid] = {"template": entry["template"], "state": entry["state"]}
+        else:
+            LOG.warning("logic state of %r ignored: malformed entry", sid)
+    return out
+
+
+def save_logic_state(entries: Dict[str, Dict[str, Any]], path: str = DEFAULT_PATH) -> None:
+    """Atomic like the document; raises OSError / ValueError (a non-finite
+    number) — the engine keeps its copy and retries."""
+    _atomic_write(logic_state_path(path), json.dumps(
+        {"version": LOGIC_STATE_VERSION, "scenarios": entries},
+        ensure_ascii=False, sort_keys=True, allow_nan=False, separators=(",", ":")))
 
 
 def empty_journal() -> Dict[str, Any]:
