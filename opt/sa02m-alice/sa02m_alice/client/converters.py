@@ -117,6 +117,11 @@ def mqtt_to_range(
     value *= range_scale
     if capability_values.number(value) is None:
         return None
+    if range_scale != 1.0:
+        # 333 × 0.1 is 33.300000000000004 in binary floats: drop the noise
+        # past 12 significant digits so the cloud and the scenario mirror see
+        # 33.3. Unscaled reads stay exactly as parsed.
+        value = float("%.12g" % value)
     if yandex:
         span = yandex_brightness_span(params)
         if span is not None:

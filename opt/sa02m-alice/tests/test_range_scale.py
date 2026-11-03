@@ -72,6 +72,22 @@ class RangeScale(unittest.TestCase):
         for raw in ("nan", "inf", "garbled"):
             self.assertIsNone(converters.mqtt_to_range(raw, params, range_scale=.1))
 
+    def test_scaled_read_carries_no_float_noise(self):
+        """Review A1: raw 333 × 0.1 was reported as 33.300000000000004 to the
+        cloud and the scenario mirror."""
+        params = fixture("brightness", 0)["capabilities"][1]["parameters"]
+        for raw, logical in (("333", 33.3), ("1", 0.1), ("7", 0.7), ("999", 99.9), ("1000", 100)):
+            value = converters.capability_mqtt_to_yandex(P + "range", raw, params, range_scale=.1)["state"]["value"]
+            self.assertEqual(value, logical)
+            self.assertEqual(repr(value), repr(float(logical)))
+        reg = DeviceRegistry({"devices": [fixture("brightness", 0)]}, profile=C.PROFILE_CLOUD)
+        reg.note_mqtt(AO, "333")
+        blocks = reg.state_blocks_for_topic(AO)
+        self.assertEqual(blocks[0]["capabilities"][0]["state"]["value"], 33.3)
+        # Unscaled reads stay byte-identical to before.
+        self.assertEqual(converters.mqtt_to_range("0.30000000000000004", {"instance": "brightness"})["state"]["value"],
+                         0.30000000000000004)
+
 
 if __name__ == "__main__":
     unittest.main()
