@@ -2,7 +2,7 @@
 
 Board-side contract for the cloud-profile Socket.IO catalogue
 (rename / rooms / groups / scenarios) and the on-board engine
-`sa02m-rules` (`rules_engine=3`). Human overview of Alice/cloud
+`sa02m-rules` (`rules_engine=4`). Human overview of Alice/cloud
 transport: `docs/ALICE_INTEGRATION.md`. MQTT mapping of field
 devices: `docs/contracts/alice-mqtt-mapping.md`. Gateway event
 names that live in the **cloud** repo (`docs/contracts/alice-gateway.md`)
@@ -46,13 +46,16 @@ When present:
   "scenario_runs": [],
   "scenario_notify": [],
   "scenario_library": "",
-  "rules_engine": 3
+  "rules_engine": 4
 }
 ```
 
 `rules_engine` is `sa02m_rules.store.RULES_ENGINE` (currently **4**). It
 also rides every successful `alice_devices_scenarios` response so the hub
-cache does not wait for the next list.
+cache does not wait for the next list. Маркеры: **3** — типизированная
+запись через converter Алисы (§«Типизированная запись: движок 3»); **4** —
+шаблон `air_quality_ventilation` (§«Room-air logic (engine 4)»). Значение
+только растёт: облако включает новое по `>=`.
 
 ### Rooms
 
@@ -64,8 +67,12 @@ clears `room_id` on remaining devices.
 ### Groups
 
 Membership lives **only** on the group (`device_ids`). Delete drops the
-group, never the devices. `icon` is `light` | `ahu` when sent; omitted
-preserves the stored value. Unknown device ids → `not_found`.
+group, never the devices. `icon` is one of `light` | `ahu` | `master` |
+`floor` | `climate` | `cover` | `socket` when sent (one home:
+`sa02m_alice.common.constants.GROUP_ICONS`; any other value is not stored);
+omitted preserves the stored value. Unknown device ids → `not_found`. The
+board stores the group and its icon only — what a group means for the home
+(rooms of equipment, the control page) is the cloud's (`CYNTRON-git/cloud#172`).
 
 ### Rename
 
@@ -333,6 +340,41 @@ can never drop a board-written tick.
 Сырые неописанные цели сохраняют прежний контракт выше.
 У прямого Yandex/cloud dispatcher сохраняется прежнее ограничение range
 до границ; сценарии проверяют абсолютное значение строго до converter.
+Kelvin на шине целый: дробный шаг плавного перехода (`transition_s`,
+`ramp` — движок округляет шаги до 0,01) адаптер округляет до целого Kelvin,
+и уже это значение проходит строгую проверку окна. Действие `toggle` движка
+на умение `devices.capabilities.toggle` пишет boolean (converter требует
+строгий boolean); на любые другие цели — по-прежнему 0/1. Шаг плавного
+перехода, который цель отклонила (вне границ, read-only, неизвестная цель),
+пишется в журнал запуска (`last_error` = `ramp refused: <причина>`), и
+оставшиеся шаги этого перехода не отправляются; переполненное окно записи
+(8 за 10 с) по-прежнему только пропускает шаг. Если пакет `sa02m-alice` не
+установлен или не импортируется (порванная установка), объявленная запись
+отклоняется с причиной `converter unavailable`, а не `invalid capability value`.
+
+**Совместимость сохранённых сценариев (1.0.7.28).** Новая семантика действует
+для **всех** сценариев, в том числе сохранённых до обновления; режима
+совместимости нет. Что меняется для цели, объявленной в документе устройств:
+
+1. **Инверсия.** У привязки `inverted: true` запись сценария и зеркало
+   состояния теперь проходят через инверсию, как у прямого управления Алисы.
+   Сцена, которая раньше писала `1` в реле с активным низким уровнем и
+   получала физическое «выкл», теперь получает физическое «вкл».
+2. **Единицы порогов.** Объявленные `devices.properties.float` в зеркале —
+   в единицах после `scale` (как видит Алиса и панель): давление ×7,50062
+   (гПа → мм рт. ст.), TVOC ×1000 (мг/м³ → мкг/м³). Порог условия или
+   триггера, записанный в «сырых» единицах шины, теперь сравнивается с
+   преобразованным значением. Сырое имя контрола MQTT (`device`/`cap` = имя
+   устройства и контрола шины) по-прежнему хранит исходные единицы.
+3. **Запись вне границ не отправляется.** Абсолютное значение вне объявленных
+   `range` / окна Kelvin / списка режимов отклоняется (ошибка запуска), а не
+   публикуется как раньше.
+
+Что проверить интегратору **до** обновления: сценарии, пишущие в реле с
+`inverted: true` (развернуть значение действия); пороги по давлению и TVOC
+(перевести в мм рт. ст. и мкг/м³); значения действий за пределами объявленных
+границ (поправить действие или границы привязки). Сырые неописанные цели не
+меняются.
 
 Декларированные capability-ключи в зеркале хранят логические значения converter,
 например `mode|thermostat: "cool"`, а сырой MQTT alias остаётся исходным.
@@ -354,7 +396,9 @@ can never drop a board-written tick.
 
 Логические шаблоны называют записываемое умение именем его `instance`.
 Такое имя-псевдоним есть только у умений, которые шаблоны ЗАПИСЫВАЮТ, —
-`brightness` и `temperature_k` (`device_index.WRITE_ALIASES`): имя указывает
+`brightness`, `temperature_k` и `fan_speed` (`device_index.WRITE_ALIASES`;
+`fan_speed` пишет `air_quality_ventilation` в `range` с `parameters.instance:
+fan_speed`, в том числе 4TO6DI с `range_scale`): имя указывает
 на умение `<тип>|<instance>`, если этот `instance` носит ровно одно умение
 устройства и у устройства нет умения-типа или свойства с тем же именем
 (свойство всегда важнее). Так память яркости и диммирование `switch_light`
@@ -369,7 +413,8 @@ can never drop a board-written tick.
 `<тип>|<instance>` для умения с `instance` и `instance` свойства
 (`temperature`, `motion`, …). Триггер/условие `state` с `instance` реагирует
 только на своё умение; неоднозначный тип без `instance` не срабатывает
-никогда. Свойство адресуется `cap` = его `instance` (так облако и собирает
+никогда. Точная пара, объявленная дважды (`ambiguous_target`), не хранит и
+значения: её отчёты в зеркало под этим ключом не попадают. Свойство адресуется `cap` = его `instance` (так облако и собирает
 триггеры по датчикам). Топик, привязанный в документе только как свойство,
 вдобавок доходит до сырого пути — `device`/`cap` = имя устройства и контрола
 MQTT: на нём работают счётчики кнопок `di_N_*`, классификатор фронтов `di_N`
@@ -602,6 +647,133 @@ this tuple stay in the store and do not run.
 выключатель (жесты `di_N`, в том числе при `auto`): одиночное
 нажатие переключает группу, двойное выключает, долгое — диммирование.
 
+### Room-air logic (engine 4)
+
+`air_quality_ventilation` requires engine 4; typed per-instance actions retain
+minimum engine 3. Its catalog and parameter contract live in cloud
+`docs/contracts/scenario-templates.md`. Sensor slots read logical `co2`,
+`humidity`, `tvoc`; DTV TVOC is converted from mg/m³ to µg/m³ by its existing
+property `scale: 1000`, never treated as an IAQ index. Fan writes use logical
+`fan_speed` percentages through the capability binding (including explicit
+4TO6DI `range_scale: 0.1`), and separate `on_off` power.
+
+Float properties use the same declared scale as the Alice/UI converter;
+raw MQTT aliases keep their original units. A finite payload that becomes
+non-finite after scaling is unknown. Receipt callbacks refresh sensor age
+even when its value is unchanged, without manufacturing a state edge.
+
+The engine tracks fresh reports per configured sensor/property. Any high
+reading sustained for boost_delay_s starts boost; every configured reading
+must be fresh and below its lower threshold for settle_s before the original
+fan power and speed are restored — also after a service restart or a
+same-template edit (§«Состояние шаблонов между перезапусками»). Missing, non-finite and stale readings pause
+transitions instead of being interpreted as clean air. Manual actor changes
+pause that fan and discard its old restore snapshot. Optional smoke sensors
+or a fan fault inhibit comfort writes and discard saved restores. Status
+controls are boost, sensor_stale, inhibited and invalid_params. The engine
+also checks bounds before this template writes, including direct board-side
+configuration that did not pass the cloud wizard.
+
+Вентилятор без умения скорости (только реле `on_off`) или со скоростью, о
+которой ещё не было отчёта, форсируется одним включением: снимок хранит
+питание, а скорость — когда она известна; скорость, пришедшая позже, и есть
+исходная (шаблон её не писал), с этого момента пишется и форсированная
+скорость. Восстановление пишет только то, что было в снимке. Вентилятор, чьё
+питание неизвестно, не трогается. `boost` = 1, только пока хотя бы один
+вентилятор этим правилом действительно включён (запись принята или значение
+уже на месте); активное правило без единой принятой записи — `boost` = 0.
+
+Motion-light timing starts after all sensor inputs clear. Repeated unchanged
+clear reports do not extend the timer; fresh motion cancels it. Night fixtures
+receive the configured brightness before power. A daytime-only rejection
+never arms a timer against an unrelated manually lit fixture. Direct manual
+power/brightness changes pause automation just like the configured wall switch.
+Logic templates consume the converter's shared event vocabulary, including
+motion `detected` / `not_detected`. Thermostat window interlocks accept the
+declared `open` property (`opened` / `closed`) and retain legacy `contact` input.
+
+### Состояние шаблонов между перезапусками
+
+`sa02m-rules` перезапускается при каждом обновлении (`etc/sa02m-update-runner.sh`).
+Состояние, которое нужно шаблону, чтобы потом отменить собственное действие,
+хранится на диске: `/etc/sa02m-rules/logic_state.json` рядом со store
+(`store.logic_state_path`; дерево `ReadWritePaths` единственное доступное на
+запись). Что хранится:
+
+- `air_quality_ventilation` — активность форсирования, снимок
+  питания/скорости каждого вентилятора и паузы ручного приоритета;
+- `motion_light` — «свет включён этим правилом». При создании экземпляра
+  со светом «включён» таймер выключения взводится заново (`off_s` от старта),
+  **только если ни один датчик в зеркале не показывает движение** — то же
+  условие, что у отчёта «движения нет»: источник, который после перезапуска
+  своё состояние не присылает, свет выключит, а правка параметров при уже
+  известном «движение есть» свет в занятой комнате не гасит (таймер начнётся,
+  когда движение пропадёт). Отчёт «движение есть» таймер снимает, как обычно;
+- `away_home` — список выключенного уходом («Я дома» включает его обратно);
+- `thermostat`, `humidity_fan`, `co2_ventilation`, `humidifier` — флаг
+  «включено этим правилом» (у `humidity_fan` ещё момент включения, от которого
+  считается `max_run_min`, и пауза после него). Эти шаблоны переключают актор
+  только на пересечении порога, поэтому без флага актор, включённый до
+  перезапуска, ими не выключался, а у термостата не действовали блокировки по
+  окну и по устаревшему датчику.
+
+**Сверка флага с актором.** Восстановленный флаг «включено» сверяется с первым
+отчётом каждого актора после старта (`on_off`): хотя бы один отчёт «включено» —
+флаг остаётся, и правило выключит актор, когда сработает условие выключения
+или блокировка; «выключено» от всех акторов — флаг снимается (актор
+выключили, пока служба стояла), и следующее пересечение порога включит его
+снова. Пока сверка не закончена, флаг остаётся «включено». Последствие: актор
+без отчёта о состоянии (нет топика состояния) держит флаг «включено» до
+решения самого правила: если такой актор на деле выключен, правило не включит
+его, пока не выполнится условие выключения (термостат — пока в комнате не
+станет теплее уставки с гистерезисом). Любое
+переключение самим правилом сверку заканчивает. При правке параметров того же
+шаблона сверка берёт уже известные значения из зеркала. Правка, меняющая
+акторы термостата (`heaters`/`coolers` или режим `heat`↔`cool`), переносит флаг
+на новый набор акторов; убранные правкой акторы остаются как есть. Термостат,
+восстановленный «включённым», у которого первый отчёт температуры приходит
+позже первой оценки (5 с после старта), выключает актор по устаревшему датчику
+(`safe_off`) и включает снова после отчёта и `min_off_s` — один лишний цикл
+реле на перезапуск при медленном брокере, в безопасную сторону.
+
+Свежесть показаний и часы задержек `air_quality_ventilation` не хранятся:
+после старта каждое показание снова должно стать свежим, прежде чем шаблон
+что-то переключит. Сроки пауз ручного приоритета и момент включения
+`humidity_fan` — время по часам платы (`time.time`): плата, чьи часы после
+загрузки отстают до синхронизации NTP, держит такую паузу дольше, пока часы
+не догонят.
+
+Запись атомарная (tmp + fsync + rename; временный файл удаляется и при
+прерывании, в том числе по SIGTERM). Изменения копятся и пишутся с той же
+каденцией, что журнал запусков: через `RUNS_FLUSH_S` после первого
+несохранённого изменения, при каждом принятии документа и при остановке
+службы (`RulesApp.stop()`, SIGTERM). Исключение — включение актора пороговым
+шаблоном (флаг «включено этим правилом» становится истинным): оно пишется
+сразу. Шаблон без состояния, которое стоит помнить (свежий экземпляр), записи
+не имеет. **Что может потерять сбой** (аварийное завершение, не штатная
+остановка): прочие изменения последних `RUNS_FLUSH_S` секунд. Последствия:
+снятие флага «включено» (актор выключен правилом) теряется — после старта
+правило снова считает актор своим и сверяет его с отчётом; снимок
+`air_quality_ventilation`, взятый в эти секунды, теряется — после старта
+форсирование начнётся заново и снимет уже форсированное состояние как
+исходное; свет по движению, включённый в эти секунды, правилом не выключится
+до следующего движения; список «не дома» теряется. Чтение — при создании экземпляра: после перезапуска службы
+и после правки сценария, если у того же `id` тот же `template` (правка
+параметров). Другой шаблон под тем же `id`, выключение (`enabled: false`) и
+удаление сценария удаляют его запись: новое создание начинает с чистого
+состояния. Выключение или удаление правила **не возвращает** акторы: форсированный
+вентилятор, включённый свет или нагреватель остаются как есть (так было и
+до 1.0.7.28). Вентилятор (`air_quality_ventilation`) или свет/розетка
+(`away_home`), убранные правкой из параметров, из снимка выпадают.
+**Отказ безопасен:** нечитаемый, повреждённый или чужой по формату файл
+игнорируется целиком, неверная запись одного сценария — только она; в обоих
+случаях предупреждение в журнале службы (`journalctl -u sa02m-rules`), шаблон
+стартует с чистого состояния, служба не падает. Неудачная запись (диск
+только для чтения, нет места) оставляет состояние в памяти и повторяется
+раз в `RUNS_FLUSH_S`.
+Проверка: `opt/sa02m-rules/tests/test_logic_persistence.py` (строка реестра
+`py-unit-rules`).
+
 ---
 
 ## MQTT mirror
@@ -673,7 +845,7 @@ Residuals, named — each leaves the flag reading «up» while no command runs:
 
 Unit (`etc/systemd/system/sa02m-rules.service`): `User=root`,
 `NoNewPrivileges`, `ProtectHome`, `PrivateTmp`, `ProtectSystem=strict` with
-`ReadWritePaths=/etc/sa02m-rules` (the store — document and journal — is the
+`ReadWritePaths=/etc/sa02m-rules` (the store — document, journal and logic-template state — is the
 only writable tree),
 `MemoryMax=32M`; pinned by `test_security.py::UnitHardeningTests`. No
 `WatchdogSec=` — the daemon does not link systemd, the time bound on
@@ -687,38 +859,3 @@ refresh, restart the whole set — otherwise a cloud push silently drops
 OTA/offline from **this** release emit the restart set; the **next**
 update after 1.0.6.37 is the first one that actually consumes it
 (previous runner applies the pack).
-
-### Room-air logic (engine 4)
-
-`air_quality_ventilation` requires engine4; typed per-instance actions retain
-minimum engine3. Its catalog and parameter contract live in cloud
-`docs/contracts/scenario-templates.md`. Sensor slots read logical `co2`,
-`humidity`, `tvoc`; DTV TVOC is converted from mg/m³ to µg/m³ by its existing
-property scale1000, never treated as an IAQ index. Fan writes use logical
-`fan_speed` percentages through the capability binding (including explicit
-4TO6DI range_scale0.1), and separate `on_off` power.
-
-Float properties use the same declared scale as the Alice/UI converter;
-raw MQTT aliases keep their original units. A finite payload that becomes
-non-finite after scaling is unknown. Receipt callbacks refresh sensor age
-even when its value is unchanged, without manufacturing a state edge.
-
-The engine tracks fresh reports per configured sensor/property. Any high
-reading sustained for boost_delay_s starts boost; every configured reading
-must be fresh and below its lower threshold for settle_s before the original
-fan power and speed are restored. Missing, non-finite and stale readings pause
-transitions instead of being interpreted as clean air. Manual actor changes
-pause that fan and discard its old restore snapshot. Optional smoke sensors
-or a fan fault inhibit comfort writes and discard saved restores. Status
-controls are boost, sensor_stale, inhibited and invalid_params. The engine
-also checks bounds before this template writes, including direct board-side
-configuration that did not pass the cloud wizard.
-
-Motion-light timing starts after all sensor inputs clear. Repeated unchanged
-clear reports do not extend the timer; fresh motion cancels it. Night fixtures
-receive the configured brightness before power. A daytime-only rejection
-never arms a timer against an unrelated manually lit fixture. Direct manual
-power/brightness changes pause automation just like the configured wall switch.
-Logic templates consume the converter's shared event vocabulary, including
-motion `detected` / `not_detected`. Thermostat window interlocks accept the
-declared `open` property (`opened` / `closed`) and retain legacy `contact` input.
