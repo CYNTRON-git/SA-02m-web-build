@@ -199,6 +199,21 @@ if [ -f "$ETC_DIR/net-watchdog.service" ]; then
     sa02m_atomic_install -m 644 "$ETC_DIR/net-watchdog.service" /etc/systemd/system/net-watchdog.service
 fi
 
+# Реакция на подъём линка по netlink (`ip monitor link`) — fix-eth@ стартует
+# за секунды, net-watchdog остаётся страховкой. Контракт:
+# docs/contracts/boot-network-routes.md §1.
+if [ -f "$ETC_DIR/../usr/local/sbin/sa02m-link-monitor.sh" ]; then
+    log INFO "Установка sa02m-link-monitor.sh"
+    sa02m_atomic_install -m 755 "$ETC_DIR/../usr/local/sbin/sa02m-link-monitor.sh" \
+        /usr/local/sbin/sa02m-link-monitor.sh
+fi
+
+if [ -f "$ETC_DIR/systemd/sa02m-link-monitor.service" ]; then
+    log INFO "Установка sa02m-link-monitor.service"
+    sa02m_atomic_install -m 644 "$ETC_DIR/systemd/sa02m-link-monitor.service" \
+        /etc/systemd/system/sa02m-link-monitor.service
+fi
+
 if [ -f "$ETC_DIR/sa02m-eth0-led-poll.sh" ]; then
     log INFO "Установка sa02m-eth0-led-poll.sh"
     sa02m_atomic_install -m 755 "$ETC_DIR/sa02m-eth0-led-poll.sh" /usr/local/bin/sa02m-eth0-led-poll.sh
@@ -265,16 +280,18 @@ fi
 # ── DTB: драйвер PHY eth0 (sa02m-dtb-patch) ───────────────────────────────
 # Инструмент ставится, но НЕ запускается: загрузочный DTB на FAT правится
 # только руками (`sa02m-dtb-patch.sh check` / `apply` + перезагрузка —
-# docs/deployment.md «Пути деплоя»). Патчер (.py) ложится ДО своих
-# потребителей (.sh здесь и fix-eth1-internet.sh ниже): прерванный прогон
-# оставляет {новый патчер, старый потребитель}, а не наоборот.
-if [ -f "$ETC_DIR/../usr/local/sbin/sa02m-dtb-patch.py" ]; then
-    log INFO "Установка sa02m-dtb-patch.py"
-    sa02m_atomic_install -m 755 "$ETC_DIR/../usr/local/sbin/sa02m-dtb-patch.py"         /usr/local/sbin/sa02m-dtb-patch.py
-fi
+# docs/deployment.md «Пути деплоя»). Блоб правится через fdtget/fdtput
+# (device-tree-compiler); текстового патчера sa02m-dtb-patch.py больше нет.
 if [ -f "$ETC_DIR/../usr/local/sbin/sa02m-dtb-patch.sh" ]; then
     log INFO "Установка sa02m-dtb-patch.sh"
     sa02m_atomic_install -m 755 "$ETC_DIR/../usr/local/sbin/sa02m-dtb-patch.sh"         /usr/local/sbin/sa02m-dtb-patch.sh
+fi
+# Старый текстовый патчер (до 1.0.7.26) убирается ПОСЛЕ установки нового .sh:
+# прерванный прогон оставляет {старый .py, новый .sh}, и новый .sh его не зовёт.
+# Повторный прогон: файла нет — ничего не делает.
+if [ -e /usr/local/sbin/sa02m-dtb-patch.py ]; then
+    log INFO "Удаление устаревшего /usr/local/sbin/sa02m-dtb-patch.py (DTB правится через fdtput)"
+    rm -f /usr/local/sbin/sa02m-dtb-patch.py
 fi
 
 # ── Загрузка без DNS: ожидание carrier + пересборка резолвера ─────────────
@@ -385,6 +402,9 @@ sa02m_svc_apply networking.service infra start
 # infra: enabled + unmasked in every mode (a stale /dev/null mask from
 # imaging / old 01-system is repaired by the helper).
 sa02m_svc_apply net-watchdog.service infra start
+# start restart: a re-run (--refresh) restarts a running monitor so a changed
+# script takes effect (an idle listener — the restart costs one 5 s gap at most).
+sa02m_svc_apply sa02m-link-monitor.service infra start restart
 # Prefer unified eth0/eth1 coldboot; keep eth1 unit installed but disabled to
 # avoid double ethtool -r on LAN1.
 sa02m_svc_apply sa02m-eth-coldboot.service infra start

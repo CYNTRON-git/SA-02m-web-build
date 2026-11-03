@@ -105,7 +105,9 @@ sa02m-dns-ensure`). Это сознательно: плата, пишущая э
 условны, и условия не наши:
 
 - у `fix-eth.sh` есть ранние `return 0` (нет carrier; идёт bootstrap ifupdown),
-  и он вообще не выполняется, если `net-watchdog.service` выключен;
+  а его запускают `net-watchdog.service` (проход раз в 30 с) и
+  `sa02m-link-monitor.service` (`fix-eth@` на подъёме линка, с 1.0.7.27 —
+  `boot-network-routes.md` §1): выключены оба — он не выполняется;
 - `sa02m-eth-coldboot.service` несёт `ConditionPathExists=…/eth0.conf` и может
   быть выключен оператором;
 - оба зовут ступень из своей ветки, то есть работают ровно настолько, насколько

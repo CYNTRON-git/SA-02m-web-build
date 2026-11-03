@@ -30,6 +30,9 @@ Armbian 26.5.1 noble, ядро 6.1.0-rc6-rt4), по **одному прогон�
    (`etc/99-lan-recovery.rules:17`) на стенде не срабатывает: при смене линка ядро
    не шлёт событий udev для сети (`docs/bugs/BUGLOG.md`, запись 1.0.7.22). Строки
    eth1 того же вида (`:28-29`) не измерялись — на стенде один Ethernet.
+   *Дополнение 2026-10-31:* правила `change` для eth0 удалены в 1.0.7.25;
+   номера строк выше — по дереву a0766ee6. Строки eth1 (`ACTION=="change"`,
+   `KERNEL=="eth1"`) остались и по-прежнему не измерены.
    Остаётся опрос `net-watchdog` раз в 30 с со стартом через 60 с
    (`etc/net-watchdog.sh:9,28`). Штатные средства, которые реагируют на линк сами,
    — `ifplugd` (для ifupdown) или `systemd-networkd`.
@@ -49,7 +52,7 @@ Armbian 26.5.1 noble, ядро 6.1.0-rc6-rt4), по **одному прогон�
 | `netplan.io` | установлен, `armbian-default.yaml` есть | образ Armbian |
 | `ifplugd` | не установлен | — |
 | Загрузка | `boot.scr` на FAT без оверлеев | `etc/boot.cmd.sa02m.min`, контракт `docs/contracts/uboot-boot-script.md` §3 |
-| Сброс PHY | `reset-gpios` (PH12), `reset-assert-us`, `reset-deassert-us` — на узле PHY | `scripts/dev/fixtures/dtb-patch/sun8i-a40i-sk.real.dts:127-129` |
+| Сброс PHY | `reset-gpios` (PH12), `reset-assert-us`, `reset-deassert-us` — на узле PHY | `scripts/dev/fixtures/dtb-patch/golden-asis.sorted.dts:956-958` (дерево после патча; свойства сброса патч не трогает) |
 
 Обходы ifupdown для eth0 на `main` — 1374 строки: `etc/fix-eth.sh` (468),
 `etc/net-watchdog.sh` (55), `usr/local/sbin/sa02m-eth-coldboot.sh` (145),
@@ -91,15 +94,25 @@ unbind/rebind, `reset-deassert-us` 200 → 500 мс — серия попыто�
    `ip link down/up` не вызывает `phy_device_reset()`. В 1.0.7.23 (eth0) тот же
    перезапуск линк поднимает. Если причина найдётся и линк будет появляться без
    перезапуска интерфейса, станут не нужны этот перезапуск и правка 1.0.7.22.
+   *Дополнение 2026-10-31:* опыты по сбросу PHY и шине MDIO —
+   `docs/bugs/BUGLOG.md`, запись 1.0.7.25 «исследование по рекомендации 2»;
+   причина по-прежнему не установлена.
 3. **Убрать мёртвые правила eth0** — строки `ACTION=="change"` на `:17` и `:23`
    и комментарий над ними `:15-16` в `etc/99-lan-recovery.rules` (найдено в
    1.0.7.22). Строки eth1 (`:28-29`) — после замера на SA-02m-2. Пока правила
    есть, код выглядит так, будто на линк реагирует udev; индикатор eth0 при этом
    держит в синхронизации `net-watchdog` (`etc/net-watchdog.sh:49-52`).
+   *Дополнение 2026-10-31:* для eth0 выполнено в 1.0.7.25 (строки и
+   комментарий удалены, гейт `iface-naming-contract` не даёт их вернуть).
+   Строки eth1 оставлены до замера на SA-02m-2.
 4. **Проверить замену разбора текста в патчере DTB на `fdtput`:** сначала —
    умеет ли он создать пустое свойство и поставить все восемь свойств, включая
    `disabled` в дочерних узлах GMAC; если да — дубли и потеря строки станут
    невозможны по построению.
+   **Статус: выполнено в 1.0.7.26** — `fdtput` умеет все восемь правок, включая
+   пустое свойство; патчер на тексте удалён, инструмент правит blob через
+   `fdtget`/`fdtput` (`usr/local/sbin/sa02m-dtb-patch.sh`, `dtb_edit`;
+   `CHANGELOG.md` 1.0.7.26, `docs/bugs/BUGLOG.md` 2026-10-31).
 5. **Заменить `net-watchdog`, `sa02m-wait-carrier`, `sa02m-routes-ensure` и
    `sa02m-dns-ensure` на `ifplugd`** при сохранении ifupdown. Цена: `ifplugd` при
    пропаже линка делает `ifdown`, и статический адрес исчезает, пока кабель
@@ -111,13 +124,24 @@ unbind/rebind, `reset-deassert-us` 200 → 500 мс — серия попыто�
    (`:49-52`). Обеим нужен новый дом, иначе переход молча отключит
    переключение на модем и индикатор. Перезапуск интерфейса из корня 1 остаётся
    отдельной задачей.
-6. **Оценить переход на `systemd-networkd`** (стандарт Armbian). Цена высокая:
+   *Дополнение 2026-11-02:* Оператор выбрал не `ifplugd` и не ожидание
+   networkd, а `ip monitor link` (iproute2, есть на каждой плате). Netlink на
+   стенде 1.135 сообщил `LOWER_UP` через 2,2 с после `ip link set eth0 up`. В
+   1.0.7.27 `sa02m-link-monitor.service` на фронте carrier запускает
+   `fix-eth@<if>` — `docs/contracts/boot-network-routes.md` §1. `net-watchdog`,
+   `sa02m-wait-carrier`, `sa02m-routes-ensure` и `sa02m-dns-ensure` не
+   заменены: монитор только сокращает ожидание, сторож остаётся страховкой и
+   домом `inet-failover` и индикатора. Проверка на стенде после слияния ещё не
+   выполнена.
+6. **Оценить переход на `systemd-networkd`** (на стенде штатный стек образа —
+   NetworkManager через netplan; см. оценку ниже). Цена высокая:
    по умолчанию networkd не настраивает статический адрес без линка и снимает
    конфигурацию при его потере (`ConfigureWithoutCarrier=`, `IgnoreCarrierLoss=`
    — нужно задать явно для контроллера со статическим IP); панель пишет
    `interfaces.d` (`www/network_config/cgi-bin/apply.cgi`,
    `etc/sa02m-iface-conf-write.sh`); совместимость с KLogic; обновление парка.
-   Нужно отдельное решение Оператора.
+   Нужно отдельное решение Оператора. Оценка с ценой и вариантами —
+   [network-stack-networkd.md](network-stack-networkd.md).
 
 Перенос правки DTB в `boot.scr` (`fdt set` или `fdt apply`) не рекомендуется
 без отдельного решения: он меняет загрузочный скрипт, который охраняет

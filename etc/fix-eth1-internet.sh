@@ -15,7 +15,7 @@
 #   9. udev: unbind i2c-2 при IRQ storm от PCA9536
 #
 # Запуск: bash /tmp/fix-eth1-internet.sh
-# Требует: root, dtc (apt install device-tree-compiler), mkimage (apt install u-boot-tools)
+# Требует: root, fdtget/fdtput (apt install device-tree-compiler), mkimage (apt install u-boot-tools)
 # =============================================================================
 
 set -uo pipefail
@@ -72,7 +72,7 @@ step_dtb() {
     # Один дом патча DTB с 1.0.7.21 — штатный инструмент (бэкап, проверка
     # fdtget, атомарная запись на FAT, обе канонические копии, плюс узел PHY
     # eth0). Прежняя inline-копия Python-патча здесь отставала от патчера и
-    # писала на FAT не атомарно. Коды: 3 — нет root/dtc, 4 — нет DTB на FAT,
+    # писала на FAT не атомарно. Коды: 3 — нет root/fdtget/fdtput, 4 — нет DTB на FAT,
     # 5 — хотя бы одно имя не пропатчено (FAT для него не тронут).
     local tool=/usr/local/sbin/sa02m-dtb-patch.sh rc
     if [ ! -x "$tool" ]; then
@@ -85,7 +85,7 @@ step_dtb() {
         CHANGED=1
     else
         rc=$?
-        log_err "sa02m-dtb-patch.sh apply: код $rc (3 — нет dtc/root, 4 — нет DTB на FAT, 5 — ошибка патча); DTB не изменён"
+        log_err "sa02m-dtb-patch.sh apply: код $rc (3 — нет fdtget/fdtput/root, 4 — нет DTB на FAT, 5 — ошибка патча); DTB не изменён"
     fi
 }
 

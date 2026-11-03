@@ -417,6 +417,8 @@ install_imaging_lock() {
     date -Iseconds >"$IMAGING_LOCK"
     sync
     systemctl stop net-watchdog sa02m-watchdog-feed 2>/dev/null || true
+    # The link monitor starts fix-eth@ on link-up, which must not run mid-update.
+    _systemctl_bounded 10 stop sa02m-link-monitor || true
     local now=""
     # A value reloaded from the transaction (load_runtime_wdt_prev) wins: the
     # manager already reads 0 once a hold is in force, and "held off 0" would
@@ -480,6 +482,8 @@ cleanup_imaging_lock() {
     # --no-block: at boot (recover, DefaultDependencies=no) the network is not
     # up yet and a blocking start would sit inside recover's own timeout.
     _systemctl_bounded 20 start --no-block net-watchdog || true
+    # Given back only where enabled: an OTA-only board has the unit file, not the enablement.
+    _systemctl_bounded 10 is-enabled --quiet sa02m-link-monitor && _systemctl_bounded 20 start --no-block sa02m-link-monitor || true
     # sa02m-watchdog-feed is optional; leave stopped if it was inactive.
     rm -f "$IMAGING_LOCK"
     IMAGING_HELD=0

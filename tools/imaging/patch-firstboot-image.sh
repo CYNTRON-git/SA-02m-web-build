@@ -390,6 +390,9 @@ install -m 644 "$ETC/fix-eth@.service"               "$mnt/etc/systemd/system/fi
 
 install -m 755 "$ETC/net-watchdog.sh"                 "$mnt/usr/local/bin/net-watchdog.sh"
 install -m 644 "$ETC/net-watchdog.service"            "$mnt/etc/systemd/system/net-watchdog.service"
+install -m 755 "$SBIN_SRC/sa02m-link-monitor.sh"      "$mnt/usr/local/sbin/sa02m-link-monitor.sh"
+install -m 644 "$ETC/systemd/sa02m-link-monitor.service" \
+    "$mnt/etc/systemd/system/sa02m-link-monitor.service"
 
 install -m 755 "$ETC/sa02m-userspace-watchdog.sh"     "$mnt/usr/local/sbin/sa02m-userspace-watchdog"
 install -m 644 "$ETC/systemd/sa02m-userspace-watchdog.service" \
@@ -436,7 +439,7 @@ sed -i 's/^RuntimeWatchdogSec=/#RuntimeWatchdogSec=/' \
     "$mnt/etc/systemd/system.conf" 2>/dev/null || true
 
 # ── Drop permanent /dev/null masks that destroy /etc unit files ───────────
-for u in sa02m-userspace-watchdog sa02m-failure-monitor net-watchdog \
+for u in sa02m-userspace-watchdog sa02m-failure-monitor net-watchdog sa02m-link-monitor \
          sa02m-eth-coldboot sa02m-rootfs-expand; do
     if [ -L "$mnt/etc/systemd/system/${u}.service" ]; then
         tgt=$(readlink "$mnt/etc/systemd/system/${u}.service" 2>/dev/null || true)
@@ -456,7 +459,7 @@ ln -sfn /dev/null "$mnt/etc/systemd/system/armbian-resize-filesystem.service"
 rm -f "$mnt/etc/systemd/system/basic.target.wants/armbian-resize-filesystem.service" \
       "$mnt/lib/systemd/system/basic.target.wants/armbian-resize-filesystem.service" 2>/dev/null || true
 
-for u in net-watchdog sa02m-userspace-watchdog sa02m-failure-monitor sa02m-eth-coldboot; do
+for u in net-watchdog sa02m-link-monitor sa02m-userspace-watchdog sa02m-failure-monitor sa02m-eth-coldboot; do
     ln -sfn "/etc/systemd/system/${u}.service" \
         "$mnt/etc/systemd/system/multi-user.target.wants/${u}.service"
 done

@@ -4,7 +4,7 @@
   <img src="https://img.shields.io/badge/platform-Armbian%20%7C%20Linux%20ARM-orange?style=flat-square"/>
   <img src="https://img.shields.io/badge/stack-nginx%20%2B%20fcgiwrap%20%2B%20Bash%20CGI-blue?style=flat-square"/>
   <img src="https://img.shields.io/badge/license-MIT-green?style=flat-square"/>
-  <img src="https://img.shields.io/badge/version-1.0.7.24-cyan?style=flat-square"/>
+  <img src="https://img.shields.io/badge/version-1.0.7.27-cyan?style=flat-square"/>
 </p>
 
 Веб-интерфейс для **[сервера автоматизации СА-02м](https://cyntron.ru/catalog/ustroystva_avtomatizatsii/servery_avtomatizatsii/)** производства [ЦИНТРОН](https://cyntron.ru) на базе процессорного модуля [A40i-2eth](https://cyntron.ru/catalog/ustroystva_avtomatizatsii/komplektuyushchie/7705/) (Allwinner A40i, Linux).
@@ -1784,21 +1784,25 @@ cat /sys/kernel/debug/pinctrl/*/pins | grep -i "PH14"
 ### Архитектура
 
 ```
-Физическое событие (кабель)
+Появление интерфейса (add/bind; для eth0 — только оно)
     │
     ▼
-udev (99-lan-recovery.rules)         ─ реактивная защита
+udev (99-lan-recovery.rules)         ─ старт при появлении интерфейса (для eth0 — не при линке; строки eth1 на линк не проверены)
     │  --no-block
     ▼
 fix-eth.service  ──→  fix-eth.sh     ─ восстановление
-                           │
-                       /sys/class/net/ethX/carrier
-                       ip -4 addr show
-                       ping (шлюз / custom / skip)
-                           │
-                       ifdown / ifup
+    ▲                      │
+    │                  /sys/class/net/ethX/carrier
+    │                  ip -4 addr show
+    │                  ping (шлюз / custom / skip)
+    │                      │
+    │                  ifdown / ifup
+    │  start fix-eth@ethX (фронт LOWER_UP)
+    │
+sa02m-link-monitor.service ──→ sa02m-link-monitor.sh  ─ подъём линка по netlink (ip -o monitor link), за секунды
+                                  (Restart=always; файлы приходят и «Обновлением веб», включает — только установщик)
 
-net-watchdog.service ──→ net-watchdog.sh  ─ активная защита (каждые 30 с)
+net-watchdog.service ──→ net-watchdog.sh  ─ страховка (каждые 30 с; линк, который монитор пропустил, подхватывает она)
     │  (Restart=always)       │
     └──────────────────────────── вызывает fix-eth.sh для каждого iface
 ```
@@ -1837,6 +1841,9 @@ journalctl -u fix-eth.service -f
 # Журнал постоянного мониторинга
 journalctl -u net-watchdog.service -f
 
+# Реакция на подъём линка (netlink)
+journalctl -t sa02m-link-monitor -f
+
 # Файловый лог
 tail -f /var/log/fix-eth.log
 ```
@@ -1854,6 +1861,8 @@ tail -f /var/log/fix-eth.log
 | net-watchdog.sh | `/usr/local/bin/net-watchdog.sh` |
 | fix-eth.service | `/etc/systemd/system/fix-eth.service` |
 | net-watchdog.service | `/etc/systemd/system/net-watchdog.service` |
+| sa02m-link-monitor.sh | `/usr/local/sbin/sa02m-link-monitor.sh` |
+| sa02m-link-monitor.service | `/etc/systemd/system/sa02m-link-monitor.service` |
 | udev правила | `/etc/udev/rules.d/99-lan-recovery.rules` |
 | nginx конфиг | `/etc/nginx/sites-available/network_config` |
 | GPIO конфиг | `/etc/sa02m_hw.conf` |

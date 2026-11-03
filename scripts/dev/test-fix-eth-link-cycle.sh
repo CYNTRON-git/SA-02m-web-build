@@ -45,10 +45,10 @@
 #       pass must re-read carrier, log «линк появился после link cycle 1»,
 #       remove the counter and run the carrier-up path — `ip route add
 #       default via 192.168.1.1 dev eth0`. On a board nothing else reacts
-#       to link-up: a carrier change emits no uevent, so the carrier=1 udev
-#       rule never starts fix-eth@, and the routes the cycle's
-#       `ip link set down` flushed waited 65 s for net-watchdog (bench 1.135,
-#       2026-10-30; docs/bugs/BUGLOG.md).   <- RED on the 1.0.7.19 script
+#       to link-up: a carrier change emits no uevent, so the eth0 carrier=1
+#       udev rule never started fix-eth@ (removed in 1.0.7.25), and the
+#       routes the cycle's `ip link set down` flushed waited 65 s for
+#       net-watchdog (bench 1.135, 2026-10-30; docs/bugs/BUGLOG.md).   <- RED on the 1.0.7.19 script
 #       (no route add, counter=1, no log line), GREEN after.
 #
 # Non-vacuous: a failed or over-wide retarget, a leftover real root on an
