@@ -266,12 +266,18 @@ URL выше, сверив sha256).
 
 ## Ручная загрузка на боевое устройство
 
+Отпечаток host-ключа платы здесь не закрепляется: стендовую плату переливают
+золотым образом, и её host-ключ создаётся заново при каждом переливе
+(`regen-ssh-host-keys` на первом старте клона — `docs/deployment.md`,
+«Подготовка золотого образа», шаг 9). Отпечаток Оператор подтверждает при
+первом подключении к плате и подставляет в `$hk`.
+
 Если vendor-payload не запечён в rootfs, но нужно поставить CODESYS/MPLC
 на уже прошитое устройство:
 
 ```powershell
 # 1. Скопировать payload на устройство:
-$hk = "SHA256:STw9vh3ohLieuJLXlsa/feL2UEHi/o4juXymYFKyuuA"
+$hk = "SHA256:<отпечаток, подтверждённый Оператором при первом подключении>"
 & "C:\Program Files\PuTTY\plink.exe" -batch -ssh root@192.168.1.136 -pw cyntron -hostkey $hk `
     "mkdir -p /opt/vendor-installers/codesys /opt/vendor-installers/mplc4"
 & "C:\Program Files\PuTTY\pscp.exe" -batch -pw cyntron -hostkey $hk -r `
