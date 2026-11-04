@@ -330,11 +330,24 @@ def cmd_restore(src, dest):
         os.close(sfd)
 
 
+def indent_of(line):
+    """configparser's indent level of a line: the offset of its first
+    non-whitespace character (Unicode whitespace, like its NONSPACECRE)."""
+    m = re.search(r"\S", line)
+    return m.start() if m else len(line)
+
+
 def cmd_force_key(dest, key, value):
     """`key = value` on every line that sets `key` in an INI conf, rewritten
     through a new file (never sed -i: that reads through a planted symlink).
-    Both readers are configparser, which takes the key in any case and `:` as
-    well as `=` — every spelling they honour is forced."""
+    Every reader is configparser, read the way the daemons read it (text mode:
+    a line ends at \\n, \\r\\n or \\r). It takes the key in any case, with
+    Unicode whitespace around it and `:` as well as `=`, and it goes on reading
+    the VALUE over every following line indented deeper than the key line,
+    blank and comment lines in between included. So every spelling it honours
+    is forced, and the continuation lines of a forced key are dropped: kept,
+    they would become the value (a planted `  https://…` under a forced-empty
+    upload_url is read as the upload destination)."""
     target, st = target_of(dest)
     if st is None:
         return
@@ -349,8 +362,18 @@ def cmd_force_key(dest, key, value):
     finally:
         os.close(fd)
     text = data.decode("utf-8", "surrogateescape")
-    pat = re.compile(r"^[ \t\r\f\v]*" + re.escape(key) + r"[ \t\r\f\v]*[=:].*$", re.M | re.I)
-    new = pat.sub(f"{key} = {value}", text)
+    parts = re.split(r"(\r\n|\r|\n)", text)
+    pat = re.compile(r"\s*" + re.escape(key) + r"\s*[=:]", re.I)
+    out, level = [], None
+    for line, end in zip(parts[0::2], parts[1::2] + [""]):
+        s = line.strip()
+        if s and not s.startswith(("#", ";")):
+            if level is not None and indent_of(line) > level: continue  # the forced value's continuation: dropped
+            level = None
+        if pat.match(line):
+            line, level = f"{key} = {value}", indent_of(line)
+        out.append(line + end)
+    new = "".join(out)
     if new == text:
         return
     body = new.encode("utf-8", "surrogateescape")
@@ -1403,6 +1426,33 @@ erase_rules_history() {
   done
 }
 
+# The belt behind force-key: the conf read the way the recorder reads it
+# (sa02m_audio.config.load — configparser, interpolation off, section
+# [recorder], the value stripped) must hold no upload destination. A spelling
+# the rewrite missed fails the reset here, BEFORE the token goes. Where the
+# daemon itself would upload nothing (no file, no section, a conf it cannot
+# parse or decode) this answers "cleared" too; it never follows a symlink.
+audio_url_cleared() {
+  python3 -I -c '
+import configparser, os, sys
+try:
+    fd = os.open(sys.argv[1], os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK | os.O_CLOEXEC)
+except FileNotFoundError:
+    sys.exit(0)
+with os.fdopen(fd, encoding="utf-8") as f:
+    try:
+        text = f.read()
+    except UnicodeDecodeError:
+        sys.exit(0)
+cfg = configparser.ConfigParser(interpolation=None)
+try:
+    cfg.read_string(text)
+except configparser.Error:
+    sys.exit(0)
+sys.exit(1 if cfg.has_section("recorder") and cfg["recorder"].get("upload_url", "").strip() else 0)
+' "$AU_CONF" 2>/dev/null
+}
+
 # Phase 2 only — the recorder is verified down. The ORDER is the safety
 # property: the destination goes first. A crash between the two leaves a token
 # with no URL (no upload); the other order leaves the URL with no token, and
@@ -1411,6 +1461,7 @@ erase_rules_history() {
 erase_audio_upload() {
   local out
   out=$(fr_safe force-key "$AU_CONF" upload_url "" 2>&1) || fail E_APPLY "audio upload destination not cleared: $out"
+  audio_url_cleared || fail E_APPLY "audio upload destination still set after the rewrite — the token is kept"
   out=$(fr_safe remove-name "$AU_DIR" "$AU_TOKEN_NAME" 2>&1) || fail E_APPLY "audio upload token not erased: $out"
   # remove-name passes over a name it cannot unlink (a directory planted
   # since phase 1): this check is what makes that failure visible.
