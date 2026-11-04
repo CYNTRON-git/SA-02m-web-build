@@ -347,7 +347,8 @@ def cmd_force_key(dest, key, value):
     blank and comment lines in between included. So every spelling it honours
     is forced, and the continuation lines of a forced key are dropped: kept,
     they would become the value (a planted `  https://…` under a forced-empty
-    upload_url is read as the upload destination)."""
+    upload_url is read as the upload destination). The forced line keeps the
+    key line's indentation, so the lines after it keep their meaning."""
     target, st = target_of(dest)
     if st is None:
         return
@@ -370,8 +371,10 @@ def cmd_force_key(dest, key, value):
         if s and not s.startswith(("#", ";")):
             if level is not None and indent_of(line) > level: continue  # the forced value's continuation: dropped
             level = None
+        # The key line keeps its own indentation: moved to column 0, a next
+        # line indented less than it (but more than 0) would become the value.
         if pat.match(line):
-            line, level = f"{key} = {value}", indent_of(line)
+            line, level = line[:indent_of(line)] + f"{key} = {value}", indent_of(line)
         out.append(line + end)
     new = "".join(out)
     if new == text:
@@ -1430,26 +1433,34 @@ erase_rules_history() {
 # [recorder], the value stripped) must hold no upload destination. A spelling
 # the rewrite missed fails the reset here, BEFORE the token goes. Where the
 # daemon itself would upload nothing (no file, no section, a conf it cannot
-# parse or decode) this answers "cleared" too; it never follows a symlink.
+# parse or decode) this answers "cleared" too; it never follows a symlink. A
+# conf it cannot read answers "set" (fail safe) and the reason goes to the log.
 audio_url_cleared() {
-  python3 -I -c '
+  local err rc=0
+  err=$(python3 -I -c '
 import configparser, os, sys
 try:
     fd = os.open(sys.argv[1], os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK | os.O_CLOEXEC)
 except FileNotFoundError:
     sys.exit(0)
-with os.fdopen(fd, encoding="utf-8") as f:
-    try:
+except OSError as e:
+    sys.exit("cannot open it: %s" % (e.strerror or e))
+try:
+    with os.fdopen(fd, encoding="utf-8") as f:
         text = f.read()
-    except UnicodeDecodeError:
-        sys.exit(0)
+except UnicodeDecodeError:
+    sys.exit(0)
+except OSError as e:
+    sys.exit("cannot read it: %s" % (e.strerror or e))
 cfg = configparser.ConfigParser(interpolation=None)
 try:
     cfg.read_string(text)
 except configparser.Error:
     sys.exit(0)
 sys.exit(1 if cfg.has_section("recorder") and cfg["recorder"].get("upload_url", "").strip() else 0)
-' "$AU_CONF" 2>/dev/null
+' "$AU_CONF" 2>&1 >/dev/null) || rc=$?
+  [ -z "$err" ] || log "WARN audio: reading $AU_CONF back after the rewrite: ${err:0:300}"
+  return "$rc"
 }
 
 # Phase 2 only — the recorder is verified down. The ORDER is the safety
@@ -1460,7 +1471,7 @@ sys.exit(1 if cfg.has_section("recorder") and cfg["recorder"].get("upload_url", 
 erase_audio_upload() {
   local out
   out=$(fr_safe force-key "$AU_CONF" upload_url "" 2>&1) || fail E_APPLY "audio upload destination not cleared: $out"
-  audio_url_cleared || fail E_APPLY "audio upload destination still set after the rewrite — the token is kept"
+  audio_url_cleared || fail E_APPLY "audio upload destination still set after the rewrite (or the conf unreadable — see the log) — the token is kept"
   out=$(fr_safe remove-name "$AU_DIR" "$AU_TOKEN_NAME" 2>&1) || fail E_APPLY "audio upload token not erased: $out"
   # remove-name passes over a name it cannot unlink (a directory planted
   # since phase 1): this check is what makes that failure visible.
