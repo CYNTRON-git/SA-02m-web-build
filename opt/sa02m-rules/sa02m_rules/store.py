@@ -11,6 +11,7 @@ fsync per second).
 """
 from __future__ import annotations
 
+import hashlib
 import json
 import logging
 import math
@@ -156,6 +157,7 @@ def journal_path(path: str = DEFAULT_PATH) -> str:
 # ── logic-template runtime state ────────────────────────────────────────
 LOGIC_STATE_NAME = "logic_state.json"
 LOGIC_STATE_VERSION = 1
+MACHINE_ID_PATH = os.environ.get("SA02M_MACHINE_ID_PATH", "/etc/machine-id")
 
 
 def logic_state_path(path: str = DEFAULT_PATH) -> str:
@@ -164,11 +166,32 @@ def logic_state_path(path: str = DEFAULT_PATH) -> str:
     return os.path.join(os.path.dirname(path) or ".", LOGIC_STATE_NAME)
 
 
+def machine_stamp() -> str:
+    """The board the state file belongs to: sha256 of /etc/machine-id (the
+    id itself is not copied out — machine-id(5) treats it as confidential),
+    or "" when there is none. A clone captured with the machine-id reset
+    boots with its own, so it does not adopt the donor's snapshot; a donor
+    whose machine-id was already truncated for capture stamped "", which
+    matches no board that has a machine-id (a board without one accepts its
+    own ""). A capture with `--no-id-reset` (tools/imaging/make-image.sh,
+    test snapshots) keeps the donor's machine-id: the stamp matches, and only
+    the golden procedure's manual step 2d (docs/deployment.md) covers it —
+    the limit the HomeKit binding records in patch-firstboot-image.sh."""
+    try:
+        with open(MACHINE_ID_PATH, encoding="utf-8") as fh:
+            text = fh.read().strip()
+    except (OSError, ValueError):
+        return ""
+    return hashlib.sha256(text.encode("utf-8")).hexdigest() if text else ""
+
+
 def read_logic_state(path: str = DEFAULT_PATH) -> Dict[str, Dict[str, Any]]:
     """{sid: {"template", "state"}} as the engine last wrote it; {} when the
-    file is absent. Fail safe: a file that cannot be read or is not this
-    shape is ignored WHOLE and logged — the templates start fresh, the
-    engine never stops on it. A malformed single entry is dropped alone."""
+    file is absent. Fail safe: a file that cannot be read, is not this
+    shape, or was written on another board (its `machine` stamp is not this
+    board's — absent included) is ignored WHOLE and logged — the templates
+    start fresh, the engine never stops on it. A malformed single entry is
+    dropped alone."""
     lpath = logic_state_path(path)
     try:
         with open(lpath, encoding="utf-8") as fh:
@@ -182,6 +205,12 @@ def read_logic_state(path: str = DEFAULT_PATH) -> Dict[str, Dict[str, Any]]:
             or not isinstance(data.get("scenarios"), dict):
         LOG.warning("logic state %s ignored: not a version %d state file",
                     lpath, LOGIC_STATE_VERSION)
+        return {}
+    stamp = data.get("machine")
+    if not isinstance(stamp, str) or stamp != machine_stamp():
+        LOG.warning("logic state %s ignored: written on another board "
+                    "(machine-id stamp %s)", lpath,
+                    "absent" if not isinstance(stamp, str) else "differs")
         return {}
     out: Dict[str, Dict[str, Any]] = {}
     for sid, entry in data["scenarios"].items():
@@ -197,7 +226,7 @@ def save_logic_state(entries: Dict[str, Dict[str, Any]], path: str = DEFAULT_PAT
     """Atomic like the document; raises OSError / ValueError (a non-finite
     number) — the engine keeps its copy and retries."""
     _atomic_write(logic_state_path(path), json.dumps(
-        {"version": LOGIC_STATE_VERSION, "scenarios": entries},
+        {"version": LOGIC_STATE_VERSION, "machine": machine_stamp(), "scenarios": entries},
         ensure_ascii=False, sort_keys=True, allow_nan=False, separators=(",", ":")))
 
 

@@ -1282,6 +1282,48 @@ rm -f /run/sa02m-audio/*
 площадки пайплайна снятия образа (`docs/contracts/image-identity-reset.md` §8)
 этот шаг пока не делают — пункт в бэклоге.
 
+### 2d. Сценарии — опустошить документ, удалить журнал, состояние шаблонов и список хостов HTTP
+
+Сценарии мастера ссылаются на его устройства и на адреса его HTTP-действий,
+журнал запусков (`runs.json`) и состояние шаблонов (`logic_state.json`) — его
+история, список разрешённых хостов HTTP (`http-allow.json`) — разрешения под
+его сеть; клонам не нужно ничего из этого. Документ сценариев опустошается так
+же, как список устройств в шаге 4. Служба остаётся включённой и запущенной:
+
+```
+systemctl stop sa02m-rules
+printf '%s\n' '{"scenarios":[],"library":"","vars":{}}' > /etc/sa02m-rules/scenarios.json
+chmod 0644 /etc/sa02m-rules/scenarios.json
+rm -f /etc/sa02m-rules/runs.json /etc/sa02m-rules/logic_state.json /etc/sa02m-rules/.rules-*
+rm -f /etc/sa02m-rules/http-allow.json
+systemctl start sa02m-rules
+```
+
+Остановка — до очистки: останавливаясь, служба записывает на диск журнал и
+состояние шаблонов из памяти. Пустой документ — та форма, в которой его пишет
+сам store (`store.save(store.empty_doc())` в `opt/sa02m-rules/sa02m_rules/store.py`):
+без `runs`/`notify_queue`, иначе первый старт примет его за документ старого
+формата и перенесёт их в новый `runs.json`. `.rules-*` — временные файлы
+прерванной записи.
+
+`http-allow.json` установщик не создаёт (`scripts/06b-rules.sh` кладёт в
+каталог только `scenarios.json`), поэтому заводское состояние — файла нет.
+Служба его не пересоздаёт, а отсутствующий файл читает как пустой список
+(`allowed_hosts()` в `opt/sa02m-rules/sa02m_rules/http_guard.py`, при каждом
+HTTP-действии): цели, которые запрещает политика, снова запрещены, адреса LAN
+разрешены, как и без списка.
+
+Если шаг пропущен, состояние шаблонов донора клон не подхватит, только если при
+съёмке сброшен `machine-id` (шаг 9): файл привязан к `machine-id` платы,
+записавшей его (`docs/contracts/cloud-scenarios.md`, «Состояние шаблонов между
+перезапусками»). Снимок с `--no-id-reset` (`tools/imaging/make-image.sh`, только
+тестовые) сохраняет `machine-id` донора — тогда этот шаг единственная защита.
+Документ сценариев, журнал и список хостов такой привязки не имеют.
+
+Проверка: `systemctl is-active sa02m-rules` = `active`, `is-enabled` = `enabled`;
+`cat /etc/sa02m-rules/scenarios.json` → `{"scenarios":[],"library":"","vars":{}}`;
+`runs.json`, `logic_state.json` и `http-allow.json` нет. **Только вручную**, как шаг 2c.
+
 ### 3. Облако — отвязать
 
 ```
@@ -1362,7 +1404,7 @@ systemctl start mplc4
 
 | Службы | Состояние |
 |---|---|
-| mplc4, mosquitto, nginx, sa02m-flasher, sa02m-modbus-mqtt, sa02m-devices-api | running + enabled |
+| mplc4, mosquitto, nginx, sa02m-flasher, sa02m-modbus-mqtt, sa02m-devices-api, sa02m-rules (шаг 2d) | running + enabled |
 | docker (+ docker.socket), nodered, klogic, codesyscontrol, codemeter (+ webadmin/logger), sa02m-alice-client, sa02m-cloud-agent/-frpc/-heartbeat, sa02m-homekit (если установлен, шаг 2a) | stopped + disabled |
 | regen-ssh-host-keys, sa02m-rootfs-expand | enabled (helper'ы первого старта клона) |
 
@@ -1470,6 +1512,9 @@ enabled-служба `regen-ssh-host-keys` на первом старте кло
 - [ ] Home Connect: пользователя `sa02m-homeconnect` нет, либо (шаг 2b)
       `/var/lib/sa02m-homeconnect` пуст, `enabled = false`, служба `disabled`.
 - [ ] `enrolled = false` и пустой `device_id` в `agent.conf`.
+- [ ] сценарии (шаг 2d): `/etc/sa02m-rules/scenarios.json` — пустой документ,
+      `runs.json`, `logic_state.json` и `http-allow.json` нет, `sa02m-rules`
+      запущена и `enabled`.
 - [ ] в `sa02m-modbus-mqtt.yaml` — `devices: []` (0 устройств).
 - [ ] `stat -c %s /etc/machine-id` = `0`.
 - [ ] `~/.bash_history` и `~/.zsh_history` пусты.

@@ -325,11 +325,14 @@ class Engine:
         # after the first unsaved change — a flapping motion rule must not
         # fsync per transition, audit A16), at every adopt and at shutdown
         # (RulesApp.stop); a change the template marks urgent (a threshold
-        # rule switching an actor on) is saved at once. A failed save is
-        # retried and never stops the engine.
+        # rule switching an actor on) is saved at once — at most once per
+        # RUNS_FLUSH_S, a later one inside that window rides the cadence (a
+        # rule flapping on/off must not fsync per switch-on). A failed save
+        # is retried and never stops the engine.
         self._logic_saved: Dict[str, Dict[str, Any]] = read_logic_state(path)
         self._logic_state_dirty = False
         self._logic_state_dirty_since = 0.0
+        self._logic_urgent_at: Optional[float] = None
         self._logic_state_retry_at = 0.0
         self._logic_state_failing = False
         self._tpl_state: Dict[str, Dict[str, Any]] = {}
@@ -574,7 +577,10 @@ class Engine:
             self._logic_saved[sid] = entry
         self._mark_logic_dirty()
         if urgent:
-            self.flush_logic_state()
+            now = self._now()
+            if self._logic_urgent_at is None or now - self._logic_urgent_at >= RUNS_FLUSH_S:
+                self._logic_urgent_at = now
+                self.flush_logic_state()
 
     def _mark_logic_dirty(self) -> None:
         if not self._logic_state_dirty:
