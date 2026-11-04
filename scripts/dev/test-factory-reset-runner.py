@@ -3,7 +3,9 @@
 (etc/sa02m-factory-reset-runner.sh) takes the backup it promises, keeps
 secrets out of its log, never follows a name somebody else planted, and erases
 the HomeKit bridge's pairings and the Home Connect sign-in (Operator decision
-Q-F). Quality row `factory-reset-runner`.
+Q-F), the previous owner's scenario run history and template state, and the
+audio upload token and destination (Operator decision 2026-11-04). Quality row
+`factory-reset-runner`.
 
 Why it exists — the runner is root and works in directories others can write:
   * /etc/sa02m-alice is root:www-data 0771 (any panel session plants any name
@@ -42,6 +44,14 @@ temp name swapped between mkstemp and rename).
      nothing reset, no partial archive left
   B4 an old log holding a backup stream is truncated, made 0600, and the log
      says so
+  D0 the defaults layout a full install leaves (1.0.5.66/, current/, lists/,
+     templates/ and the artifact on the top level, no folder named after the
+     running version — bench 1.135): the reset completes from 1.0.5.66/, never
+     from a non-version name `sort -V` puts last (templates/); the running
+     version is read from the seeded VERSION, so no folder may match it
+  D1 no defaults folder holds templates/: E_INTERNAL «factory defaults not
+     installed» is recorded (load_lists used to die under `set -e` with the
+     transaction left at «validating»)
   S1/S2 a symlinked log / lock: the victim is untouched
   S3 a transaction id with `../` is refused; nothing is created outside
   S4 a symlinked transaction.json: the victim's JSON never lands in the
@@ -71,6 +81,9 @@ temp name swapped between mkstemp and rename).
      only after the reversible part verified)
   H7 no trusted package template: `enabled = false` forced, the rest kept
   H7b the same with the key spelled `Enabled:` (configparser reads it): forced
+  H7c/H7d the same with a continuation line under `enabled` (dropped with the
+     forced key) and with `enabled<NO-BREAK SPACE>=` (configparser takes Unicode
+     whitespace around a key): the daemon's own config.load reads disabled
   C1 Home Connect: conf → the package's render() of the defaults 0640 FIRST
      (the unit was stopped with the conf already disabled, so the daemon
      removes its retained topics), stopped while the tokens still existed,
@@ -83,6 +96,7 @@ temp name swapped between mkstemp and rename).
   C6 a reset failing its own verify keeps the sign-in (checked in H6's run)
   C7 no trusted package template: `enabled = false` forced, the Client ID
      kept, the state dir still erased
+  C7c/C7d the H7c/H7d spellings for the Home Connect conf
   O1 a Home Connect client that will not stop: E_APPLY and NOTHING erased —
      the HomeKit pairing store and setup code intact, both confs rolled back
      (every unit whose state goes is verified down before any erase; the
@@ -94,6 +108,51 @@ temp name swapped between mkstemp and rename).
      before the reset — and only after its conf is back
   O4 the same rollback with the bridge INACTIVE before the reset leaves it
      stopped (only units the reset found active are started again)
+  R  the scenario engine (Operator decision 2026-11-04: run history and
+     template state go, scenarios stay — docs/contracts/cloud-scenarios.md
+     «Сброс к заводским настройкам»):
+  R1 a clean reset: runs.json == store.empty_journal() (0644), logic_state.json
+     and http-allow.json removed, scenarios.json byte-identical; the engine
+     stopped while the previous owner's state still existed and started again
+     after the erase; no run/notify/template byte in the log, the rollback
+     journal or the pre-reset backup
+  R2 an engine inactive before the reset: erased, never started
+  R3 an engine that will not stop: E_APPLY, NOTHING erased (rules, HomeKit,
+     Home Connect, audio), configs rolled back, HomeKit and Home Connect
+     started again
+  R4 engine not installed: done, its unit untouched (shares M5's run)
+  R5 a pre-1.0.6.41 document still carrying runs/notify, no runs.json: the
+     REAL store.load() shows none of them after the reset
+  R6 the runner's paths and empty journal equal sa02m_rules.store /
+     http_guard / sa02m_audio.constants (the runner cannot import them)
+  R7 the engine will not start after the erase: done, a WARN line
+  R8 the engine started by hand inside the window and wrote template state
+     back: stopped again, erased again, done
+  R9 a symlinked runs.json: the link replaced by the empty journal, the
+     target untouched
+  M  the audio recorder's upload credential (docs/contracts/audio-recorder.md
+     §19): M1 token removed, the REAL config.load() gives upload_url "" and
+     enabled still True, every other conf line, mode and owner kept, stopped
+     while the token existed and started after, recordings / events.jsonl /
+     voice-allow.json kept, no token or URL byte in the log, the rollback
+     journal or the backup (shares R1's run); M2 a symlinked token: the link
+     goes, the target stays; M3 a directory planted as the token: E_APPLY in
+     phase 1, nothing erased; M4 a symlinked conf: E_APPLY, victim untouched,
+     nothing erased; M5 not installed: done, its unit untouched; M6 a recorder
+     that will not stop: E_APPLY, nothing erased, the stopped units started
+     again; M7 `Upload_URL:` spelling forced to empty; M8/M8b a continuation
+     line under upload_url (directly, or after a blank line and a comment):
+     the REAL config.load() reads upload_url "" after the reset (it read the
+     continuation as the URL — review round 1, F1); M9 `upload_url<NO-BREAK
+     SPACE>=` forced too; M8c/M8d the forced line keeps the key line's
+     indentation, so a less-indented next line stays its own option and an
+     indented-throughout conf keeps every other option's value (review round
+     2, F2); M10 the runner's belt audio_url_cleared agrees with config.load
+     on every spelling, never follows a symlink, counts an unreadable conf as
+     set; M11 a URL saved right after the rewrite (a shim on the audio
+     upload_url force-key call only), before the re-read: E_APPLY, the token
+     kept (the belt's call — commented out, the run completes with the
+     racer's URL and no token)
   T  the runner's trusted-path resolver is byte-identical to the block in
      etc/sa02m-web-backup.sh (a third twin; no root script can import another)
   P  the embedded helper compiles
@@ -103,7 +162,13 @@ recorded in the commit that adds this harness. C1-C7 RED observed 2026-09-28
 on the runner at HEAD d7d9c4a (no Home Connect step): see the commit body.
 O1 RED observed 2026-09-28 on the runner at HEAD f81855e (pairings erased
 before the Home Connect stop was verified); O3 RED 2026-09-28 on the two-phase
-runner without the rollback restart: see the commit body.
+runner without the rollback restart: see the commit body. D0 against the
+1.0.7.29 runner (10b7597a): the harness alone is committed first, its CI RED
+(the bundle resolved to templates/, E_INTERNAL) recorded in the body of the
+resolver fix that follows it. R1-R8 / M1-M7 likewise: the cases are committed
+alone against the runner without the erase, their CI RED recorded in the body
+of the runner commit. H7c/H7d, C7c/C7d, M8/M8b/M9 and M10 likewise, ahead
+of the force-key fix (review round 1, F1).
 
 Run: python3 scripts/dev/test-factory-reset-runner.py   (python3 + bash;
 root or not — CI runs non-root; FACTORY_SRC=<file> runs another runner copy)
@@ -122,6 +187,7 @@ import tarfile
 import tempfile
 import uuid
 from pathlib import Path
+from posixpath import basename as posixbase, dirname as posixdir, join as posixjoin
 
 ROOT = Path(__file__).resolve().parents[2]
 FACTORY = Path(os.environ.get("FACTORY_SRC") or ROOT / "etc/sa02m-factory-reset-runner.sh")
@@ -130,6 +196,10 @@ DEFAULTS = ROOT / "etc/sa02m-factory-defaults"
 HK_PKG = ROOT / "opt/sa02m-homekit/sa02m_homekit"
 HK_SEED = ROOT / "etc/sa02m-homekit/sa02m-homekit.conf"
 HC_PKG = ROOT / "opt/sa02m-homeconnect/sa02m_homeconnect"
+RULES_PKG = ROOT / "opt/sa02m-rules/sa02m_rules"
+AUDIO_PKG = ROOT / "opt/sa02m-audio/sa02m_audio"
+RULES_UNIT_FILE = ROOT / "etc/systemd/system/sa02m-rules.service"
+AUDIO_UNIT_FILE = ROOT / "etc/systemd/system/sa02m-audio.service"
 if os.name == "nt":
     print("SKIP  factory-reset-runner needs a POSIX host (grp, euid, the retargeted runner)")
     raise SystemExit(77)
@@ -157,11 +227,55 @@ def check(cond: bool, good: str, fail: str) -> None:
     (ok if cond else bad)(good if cond else fail)
 
 
-for p in (FACTORY, BACKUP, DEFAULTS, HK_PKG, HK_SEED, HC_PKG):
+for p in (FACTORY, BACKUP, DEFAULTS, HK_PKG, HK_SEED, HC_PKG, RULES_PKG, AUDIO_PKG, RULES_UNIT_FILE,
+          AUDIO_UNIT_FILE):
     if not p.exists():
         bad(f"missing input {p} (non-vacuity)")
 if fails:
     sys.exit(1)
+
+
+def module_py(pkg: Path, env_prefix: str, code: str, *args: str) -> subprocess.CompletedProcess:
+    """`code` run against the repo's own package (its env overrides stripped,
+    so the production defaults are what it sees)."""
+    env = {k: v for k, v in os.environ.items() if not k.startswith(env_prefix)}
+    env["PYTHONPATH"] = str(pkg.parent)
+    return subprocess.run([sys.executable, "-c", code, *args], env=env, capture_output=True, text=True, timeout=30)
+
+
+# The store's own names and empty journal, and the recorder's own paths: the
+# one homes the runner's constants must equal (R6), read from the packages.
+_r_rules = module_py(RULES_PKG, "SA02M_RULES_", (
+    "import json, os, sys; from sa02m_rules import store, http_guard;"
+    "sys.stdout.write(json.dumps({'dir': os.path.dirname(store.DEFAULT_PATH), 'doc': os.path.basename(store.DEFAULT_PATH),"
+    " 'journal': store.JOURNAL_NAME, 'logic': store.LOGIC_STATE_NAME, 'empty': store.empty_journal(),"
+    " 'allow': http_guard.DEFAULT_ALLOW_PATH}))"))
+_r_audio = module_py(AUDIO_PKG, "SA02M_AUDIO_", (
+    "import json, sys; from sa02m_audio import constants as C, config;"
+    "sys.stdout.write(json.dumps({'etc': C.ETC_DIR, 'conf': C.CONF_FILE, 'token': C.TOKEN_FILE,"
+    " 'seed': config.render(config.RecorderConfig(enabled=True, upload_url='https://donor.example/upload'))}))"))
+try:
+    RULES = json.loads(_r_rules.stdout)
+    AUDIO = json.loads(_r_audio.stdout)
+except ValueError:
+    bad(f"the rules / audio packages cannot be read (rc={_r_rules.returncode}/{_r_audio.returncode}): "
+        f"{_r_rules.stderr[-200:]!r} {_r_audio.stderr[-200:]!r}")
+    sys.exit(1)
+RULES_EMPTY = RULES["empty"]
+# The previous owner's state the reset must erase — each carries a marker the
+# log / rollback journal / backup scans look for.
+DONOR_JOURNAL = {"runs": [{"ts": 1.0, "id": "s1", "name": "s1", "error": "DONOR-RUN", "ok": False,
+                           "source": "scenario"}],
+                 "notify_queue": [{"ts": 1.0, "text": "DONOR-NOTE"}],
+                 "last": {"s1": {"last_run": 1.0, "last_error": "DONOR-RUN"}}}
+DONOR_LOGIC = {"version": 1, "machine": "", "scenarios": {"s1": {"template": "thermostat",
+                                                                "state": {"note": "DONOR-LOGIC"}}}}
+RULES_SCENARIO = {"id": "s1", "name": "s1", "enabled": True, "type": "block",
+                  "trigger": [{"kind": "state", "device": "lamp", "cap": "on_off", "op": "changed"}],
+                  "condition": {}, "action": [{"kind": "set", "device": "led", "cap": "on_off", "value": 1}]}
+DONOR_TOKEN = "DONOR-TOKEN-" + "x7" * 16
+RULES_NEEDLES = (b"DONOR-RUN", b"DONOR-NOTE", b"DONOR-LOGIC")
+AUDIO_NEEDLES = (DONOR_TOKEN.encode(), b"donor.example")
 
 # The Home Connect template: the package's own render() of the defaults (the
 # 06d seed and the factory reset both come from this one home).
@@ -241,6 +355,27 @@ class Sandbox:
           "[account]\nenabled = true\nclient_id = INTEGRATOR_APP_1\nvendor_client_id = \nhost = simulator\n"
           "link_requested_at = 0\n\n[control]\nmode = off\n", 0o660)
         w("run/sa02m-homeconnect/link.json", '{"user_code": "DONR-1234"}\n', 0o640)
+        # The scenario engine's store (0755 root:root on the board,
+        # scripts/06b-rules.sh) and the recorder's conf dir (2750
+        # www-data:sa02m-audio, scripts/15-audio.sh — www-data plants any name
+        # there), as a board that has run scenarios and uploaded clips.
+        self.rules = self.etc / "sa02m-rules"
+        self.audio = self.etc / "sa02m-audio"
+        self.au_conf = self.audio / "sa02m-audio.conf"
+        self.au_token = self.audio / "upload.token"
+        for d, m in ((self.rules, 0o755), (self.audio, 0o770)):
+            d.mkdir(parents=True)
+            os.chmod(d, m)
+        w("etc/sa02m-rules/scenarios.json",
+          json.dumps({"scenarios": [RULES_SCENARIO], "library": "", "vars": {}}, separators=(",", ":")), 0o644)
+        w("etc/sa02m-rules/runs.json", json.dumps(DONOR_JOURNAL), 0o644)
+        w("etc/sa02m-rules/logic_state.json", json.dumps(DONOR_LOGIC), 0o644)
+        w("etc/sa02m-rules/http-allow.json", '{"hosts": ["donor-nas.local"]}\n', 0o644)
+        w("etc/sa02m-audio/sa02m-audio.conf", AUDIO["seed"], 0o640)
+        w("etc/sa02m-audio/upload.token", DONOR_TOKEN + "\n", 0o640)
+        w("etc/sa02m-audio/voice-allow.json", '{"commands": []}\n', 0o640)
+        w("var/lib/sa02m-audio/rec/a.wav", "RIFF-clip\n", 0o640)
+        w("var/lib/sa02m-audio/events.jsonl", '{"event": "record"}\n', 0o640)
         # Factory defaults bundle, lists retargeted like the runner.
         cur = sb / "usr/share/sa02m-factory-defaults/current"
         shutil.copytree(DEFAULTS / "templates", cur / "templates")
@@ -282,6 +417,17 @@ case "$1" in
           "{self.hc_conf}" 2>/dev/null && echo "hc-stop:conf-enabled" >> "{sb}/systemctl.log"
       [ -e "{sb}/hc-stuck" ] || echo inactive > "{sb}/hc-state"
     fi
+    # The engine and the recorder: records whether the previous owner's state
+    # was still there when the unit was stopped (stop BEFORE erase).
+    if [ "${{2:-}}" = sa02m-rules.service ]; then
+      grep -q DONOR-RUN "{self.rules}/runs.json" 2>/dev/null && echo "rules-stop:runs-donor" >> "{sb}/systemctl.log"
+      [ -e "{self.rules}/logic_state.json" ] && echo "rules-stop:logic-present" >> "{sb}/systemctl.log"
+      [ -e "{sb}/rules-stuck" ] || echo inactive > "{sb}/rules-state"
+    fi
+    if [ "${{2:-}}" = sa02m-audio.service ]; then
+      [ -e "{self.au_token}" ] && echo "audio-stop:token-present" >> "{sb}/systemctl.log"
+      [ -e "{sb}/audio-stuck" ] || echo inactive > "{sb}/audio-state"
+    fi
     exit 0 ;;
   start)
     # Records whether the unit's own conf (enabled = true, the sandbox seed) is
@@ -293,11 +439,45 @@ case "$1" in
     if [ "${{2:-}}" = sa02m-homeconnect.service ]; then
       echo active > "{sb}/hc-state"
     fi
+    # ...and whether the erase was already done when it came back.
+    if [ "${{2:-}}" = sa02m-rules.service ]; then
+      [ -e "{sb}/rules-nostart" ] && exit 1
+      if ! grep -q DONOR "{self.rules}/runs.json" 2>/dev/null && [ ! -e "{self.rules}/logic_state.json" ]; then
+        echo "start:rules-runs-empty" >> "{sb}/systemctl.log"
+      fi
+      echo active > "{sb}/rules-state"
+    fi
+    if [ "${{2:-}}" = sa02m-audio.service ]; then
+      if [ ! -e "{self.au_token}" ] && ! grep -q donor.example "{self.au_conf}" 2>/dev/null; then
+        echo "start:audio-token-gone-url-empty" >> "{sb}/systemctl.log"
+      fi
+      echo active > "{sb}/audio-state"
+    fi
     exit 0 ;;
   is-active)
     case "${{2:-}}" in
+      sa02m-homekit.service) st=$(cat "{sb}/hk-state" 2>/dev/null || echo active) ;;
       sa02m-homeconnect.service) st=$(cat "{sb}/hc-state" 2>/dev/null || echo active) ;;
-      *) st=$(cat "{sb}/hk-state" 2>/dev/null || echo active) ;;
+      sa02m-rules.service)
+        # rules-answers: one answer per call, consumed in order (R8); an
+        # `active-replant` answer is the engine started by hand mid-reset,
+        # which writes the previous owner's template state back.
+        q="{sb}/rules-answers"
+        if [ -s "$q" ]; then
+          st=$(head -n 1 "$q")
+          tail -n +2 "$q" > "$q.next"
+          mv "$q.next" "$q"
+          if [ "$st" = active-replant ]; then
+            st=active
+            echo '{{"version": 1, "scenarios": {{"s1": {{"template": "thermostat", "state": {{"note": "DONOR-LOGIC"}}}}}}}}' \
+                > "{self.rules}/logic_state.json"
+            echo "rules-replanted" >> "{sb}/systemctl.log"
+          fi
+        else
+          st=$(cat "{sb}/rules-state" 2>/dev/null || echo active)
+        fi ;;
+      sa02m-audio.service) st=$(cat "{sb}/audio-state" 2>/dev/null || echo active) ;;
+      *) st=inactive ;;
     esac
     echo "$st"
     [ "$st" = active ] && exit 0 || exit 3 ;;
@@ -481,6 +661,55 @@ for tag, body, what in (("b2", "#!/bin/sh\nprintf '\\037\\213partial'\nexit 1\n"
           f"{tag.upper()} {what}: rc={rc} htpasswd_reset={s.htpasswd_reset()} left={left} ({s.why()})")
     s.cleanup()
 
+# ── D0 the defaults layout a full install leaves ────────────────────────────
+# scripts/03-webserver.sh copies etc/sa02m-factory-defaults/ twice: into
+# current/ and onto the top level. The top level then holds 1.0.5.66/, current/,
+# lists/, templates/ and the .sa02m-defaults artifact, with no folder named
+# after the running web version (bench 1.135, 2026-11-04). `sort -V` puts
+# `templates` after every version number, so the runner took templates/ as the
+# bundle and every web reset on such a board stopped with E_INTERNAL.
+print("── D0. the installer's defaults layout ──")
+s = Sandbox("d0")
+droot = s.sb / "usr/share/sa02m-factory-defaults"
+shutil.rmtree(droot)
+shutil.copytree(DEFAULTS, droot / "current")
+shutil.copytree(DEFAULTS, droot, dirs_exist_ok=True)
+for lst in droot.rglob("*.list"):
+    lst.write_text(retarget(lst.read_text(encoding="utf-8"), s.sb), encoding="utf-8")
+top = sorted(p.name for p in droot.iterdir() if p.is_dir())
+running = (s.sb / "var/www/network_config/VERSION").read_text(encoding="utf-8").strip()
+if top != ["1.0.5.66", "current", "lists", "templates"] or not running or running in top:
+    bad(f"D0 the sandbox is not the installer's layout, or a folder matches the running version {running!r} "
+        f"(non-vacuity — the case must reach the version-name filter): {top}")
+else:
+    rc = s.run()
+    bundle = str(s.txn().get("defaults_bundle") or "")
+    check(rc == 0 and s.done() and bundle.endswith("/1.0.5.66"),
+          "D0 installer layout (1.0.5.66/, current/, lists/, templates/, no folder for the running version): "
+          "the reset completes from the versioned bundle",
+          f"D0 rc={rc} defaults_bundle={bundle!r} ({s.why()})")
+s.cleanup()
+
+# D1 — no candidate holds templates/ (only lists/ on the top level, no
+# /etc/sa02m-factory-defaults): refused with the error recorded. Without the
+# refusal in load_lists, `set -e` ended the run there and the transaction
+# stayed at «validating» for the panel.
+s = Sandbox("d1")
+droot = s.sb / "usr/share/sa02m-factory-defaults"
+shutil.rmtree(droot)
+(droot / "lists").mkdir(parents=True)
+for lst in ("wipe.list", "preserve.list"):
+    (droot / "lists" / lst).write_text(retarget((DEFAULTS / "lists" / lst).read_text(encoding="utf-8"), s.sb),
+                                      encoding="utf-8")
+rc = s.run()
+t = s.txn()
+check(rc != 0 and t.get("stage") == "error" and t.get("error_code") == "E_INTERNAL"
+      and t.get("error_message") == "factory defaults not installed" and not s.htpasswd_reset()
+      and not (s.etc / "sa02m-factory-defaults").exists(),
+      "D1 no defaults folder holds templates/: E_INTERNAL «factory defaults not installed» recorded, nothing reset",
+      f"D1 rc={rc} ({s.why()})")
+s.cleanup()
+
 s = Sandbox("b4")
 reach_late_steps(s)
 s.log.write_bytes(b"2026-01-01 old line\n" + gzip.compress(b"SECRET-HT stream") + b"\n")
@@ -657,6 +886,14 @@ else:
         except Exception as e:  # noqa: BLE001
             bad(f"U1 could not exercise fr_safe: {e!r}")
 
+def daemon_enabled(pkg: Path, prefix: str, mod: str, conf: Path):
+    """`enabled` as the module's own config.load() reads the sandbox conf."""
+    r = module_py(pkg, prefix, (
+        f"import sys; from {mod} import config;"
+        "sys.stdout.write('1' if config.load(sys.argv[1]).enabled else '0')"), str(conf))
+    return {"0": False, "1": True}.get(r.stdout.strip(), f"error: {r.stderr[-200:]}")
+
+
 # ── H. HomeKit (Q-F: factory reset ERASES the pairings) ─────────────────────
 print("── H. HomeKit bridge clear-list ──")
 s = Sandbox("h1")
@@ -774,6 +1011,37 @@ body = s.hk_conf.read_bytes() if s.hk_conf.is_file() else b""
 check(rc == 0 and b"true" not in body and b"enabled = false" in body.lower() and b"interface = eth1" in body,
       "H7b no package template, `Enabled: true` spelling: forced to false too",
       f"H7b rc={rc} conf={body!r} ({s.why()})")
+s.cleanup()
+
+# H7c/H7d — `enabled = false` is forced with the configparser reader in mind:
+# the daemon goes on reading a value over every following line indented
+# deeper than its key (blank and comment lines between included), and takes
+# Unicode whitespace around the key. A forced value that starts with `false`
+# can never read true, so H7c pins the mechanism (no continuation left under
+# the forced key) rather than an exploit; H7d — a NO-BREAK SPACE before `=`,
+# which the old ASCII-only key pattern did not match — is one.
+s = Sandbox("h7c")
+reach_late_steps(s)
+shutil.rmtree(s.sb / "opt/sa02m-homekit")
+s.hk_conf.write_text("[bridge]\nenabled = true\n  on\ninterface = eth1\n", encoding="utf-8")
+rc = s.run()
+body = s.hk_conf.read_bytes() if s.hk_conf.is_file() else b""
+en = daemon_enabled(HK_PKG, "SA02M_HOMEKIT_", "sa02m_homekit", s.hk_conf)
+check(rc == 0 and en is False and b"  on" not in body and b"enabled = false\ninterface = eth1" in body,
+      "H7c no package template, a continuation line under `enabled`: dropped with the forced key, the daemon reads disabled",
+      f"H7c rc={rc} daemon enabled={en} conf={body!r} ({s.why()})")
+s.cleanup()
+
+s = Sandbox("h7d")
+reach_late_steps(s)
+shutil.rmtree(s.sb / "opt/sa02m-homekit")
+s.hk_conf.write_text("[bridge]\nenabled\u00a0= true\ninterface = eth1\n", encoding="utf-8")
+rc = s.run()
+body = s.hk_conf.read_bytes() if s.hk_conf.is_file() else b""
+en = daemon_enabled(HK_PKG, "SA02M_HOMEKIT_", "sa02m_homekit", s.hk_conf)
+check(rc == 0 and en is False and b"interface = eth1" in body,
+      "H7d no package template, `enabled<NO-BREAK SPACE>= true` (configparser reads it): forced, the daemon reads disabled",
+      f"H7d rc={rc} daemon enabled={en} conf={body!r} ({s.why()})")
 s.cleanup()
 
 # ── C. Home Connect (Q-F: factory reset ERASES the sign-in) ─────────────────
@@ -897,6 +1165,491 @@ check(rc == 0 and b"enabled = false" in body and b"client_id = INTEGRATOR_APP_1"
       "C7 no package template: enabled = false forced, the Client ID kept, the state dir still erased",
       f"C7 rc={rc} conf={body!r} ({s.why()})")
 s.cleanup()
+
+# C7c/C7d — the same two spellings for the Home Connect conf (see H7c/H7d).
+for tag, conf_text, what in (
+        ("c7c", "[account]\nenabled = true\n  on\nclient_id = INTEGRATOR_APP_1\n",
+         "a continuation line under `enabled`: dropped with the forced key"),
+        ("c7d", "[account]\nenabled\u00a0= true\nclient_id = INTEGRATOR_APP_1\n",
+         "`enabled<NO-BREAK SPACE>= true`: forced")):
+    s = Sandbox(tag)
+    reach_late_steps(s)
+    shutil.rmtree(s.sb / "opt/sa02m-homeconnect")
+    s.hc_conf.write_text(conf_text, encoding="utf-8")
+    rc = s.run()
+    body = s.hc_conf.read_bytes() if s.hc_conf.is_file() else b""
+    en = daemon_enabled(HC_PKG, "SA02M_HOMECONNECT_", "sa02m_homeconnect", s.hc_conf)
+    check(rc == 0 and en is False and b"  on" not in body and b"client_id = INTEGRATOR_APP_1" in body,
+          f"{tag.upper()} no package template, {what}; the daemon reads disabled, the Client ID kept",
+          f"{tag.upper()} rc={rc} daemon enabled={en} conf={body!r} ({s.why()})")
+    s.cleanup()
+
+# ── R / M. the scenario engine's run history and the recorder's upload ──────
+# Operator decision 2026-11-04: runs.json, logic_state.json, http-allow.json and
+# the audio upload token + destination go; scenarios.json stays
+# (docs/contracts/cloud-scenarios.md «Сброс к заводским настройкам»,
+# audio-recorder.md §19).
+def donor_leaks(sbx: Sandbox, needles) -> list[str]:
+    """Where the previous owner's bytes survive a reset that reported done:
+    the log, the rollback journal (kept on the board), the pre-reset backup."""
+    hits = []
+    if sbx.log.is_file() and any(n in sbx.log.read_bytes() for n in needles):
+        hits.append("log")
+    rb = sbx.state / "rollback"
+    for p in (rb.rglob("*") if rb.is_dir() else []):
+        if p.is_file() and not p.is_symlink() and any(n in p.read_bytes() for n in needles):
+            hits.append(str(p.relative_to(sbx.sb)))
+    bp = sbx.txn().get("backup_path")
+    if not bp or not Path(bp).is_file():
+        hits.append(f"no backup to scan ({bp!r}) — non-vacuity")
+    else:
+        try:
+            with tarfile.open(bp, "r:gz") as tar:
+                for m in tar.getmembers():
+                    f = tar.extractfile(m) if m.isfile() else None
+                    if f is not None and any(n in f.read() for n in needles):
+                        hits.append(f"backup:{m.name}")
+        except (tarfile.TarError, OSError) as e:
+            hits.append(f"backup unreadable: {e}")
+    return hits
+
+
+def rules_view(sbx: Sandbox) -> dict:
+    """The REAL sa02m_rules.store.load() of the sandbox store — what the
+    engine, the cloud channel and the agent API read after the reset."""
+    r = module_py(RULES_PKG, "SA02M_RULES_", (
+        "import json, sys; from sa02m_rules import store;"
+        "d = store.load(sys.argv[1]);"
+        "sys.stdout.write(json.dumps({'runs': d['runs'], 'notify': d['notify_queue']}))"),
+        str(sbx.rules / "scenarios.json"))
+    return {"error": r.stderr[-300:]} if r.returncode else json.loads(r.stdout)
+
+
+def audio_view(sbx: Sandbox) -> dict:
+    """The REAL sa02m_audio.config.load() of the sandbox conf."""
+    r = module_py(AUDIO_PKG, "SA02M_AUDIO_", (
+        "import json, sys; from sa02m_audio import config;"
+        "c = config.load(sys.argv[1]);"
+        "sys.stdout.write(json.dumps({'upload_url': c.upload_url, 'enabled': c.enabled, 'warnings': c.warnings}))"),
+        str(sbx.au_conf))
+    return {"error": r.stderr[-300:]} if r.returncode else json.loads(r.stdout)
+
+
+def unit_state(sbx: Sandbox, name: str) -> str:
+    p = sbx.sb / f"{name}-state"
+    return p.read_text(encoding="utf-8").strip() if p.exists() else "?"
+
+
+def rules_erased(sbx: Sandbox) -> tuple[bool, str]:
+    runs = sbx.rules / RULES["journal"]
+    try:
+        jr = json.loads(runs.read_text(encoding="utf-8")) if runs.is_file() and not runs.is_symlink() else None
+    except ValueError:
+        jr = "<not JSON>"
+    logic = (sbx.rules / RULES["logic"]).exists() or (sbx.rules / RULES["logic"]).is_symlink()
+    allow = (sbx.rules / "http-allow.json").exists() or (sbx.rules / "http-allow.json").is_symlink()
+    return jr == RULES_EMPTY and not logic and not allow, f"runs.json={jr!r} logic_state={logic} http-allow={allow}"
+
+
+def nothing_erased(sbx: Sandbox) -> tuple[bool, str]:
+    """Every owner store the reset erases is as seeded (a phase-1 refusal)."""
+    state = {
+        "rules runs": b"DONOR-RUN" in (sbx.rules / "runs.json").read_bytes() if (sbx.rules / "runs.json").is_file() else False,
+        "rules logic": (sbx.rules / "logic_state.json").is_file(),
+        "rules allow": (sbx.rules / "http-allow.json").is_file(),
+        "homekit store": (sbx.hk_var / "state.json").exists(),
+        "homeconnect tokens": (sbx.hc_var / "tokens.json").exists(),
+        "audio token": sbx.au_token.exists() or sbx.au_token.is_symlink(),
+        "audio url": sbx.au_conf.is_file() and not sbx.au_conf.is_symlink()
+        and b"donor.example" in sbx.au_conf.read_bytes(),
+    }
+    lost = [k for k, v in state.items() if not v]
+    return not lost, f"erased: {lost}"
+
+
+print("── R/M. scenario run history and the recorder's upload ──")
+# R6 — the runner cannot import the packages (it runs standalone as root), so
+# its paths and the empty journal are pinned to their one homes here.
+r6 = []
+for pat_, want, what in (
+        (r"^RULES_DIR=(\S+)$", RULES["dir"], "RULES_DIR vs dirname(store.DEFAULT_PATH)"),
+        (r"^AU_DIR=(\S+)$", AUDIO["etc"], "AU_DIR vs sa02m_audio.constants.ETC_DIR")):
+    m_ = re.search(pat_, RUNNER_TXT, re.M)
+    if not m_ or m_.group(1) != want:
+        r6.append(f"{what}: runner {m_.group(1) if m_ else 'NOT FOUND'!r} != {want!r}")
+m_ = re.search(r"^RULES_EMPTY_JOURNAL='(.*)'$", RUNNER_TXT, re.M)
+try:
+    if not m_ or json.loads(m_.group(1)) != RULES_EMPTY:
+        r6.append(f"RULES_EMPTY_JOURNAL {m_.group(1) if m_ else 'NOT FOUND'!r} != store.empty_journal() {RULES_EMPTY!r}")
+except ValueError:
+    r6.append(f"RULES_EMPTY_JOURNAL is not JSON: {m_.group(1)!r}")
+m_ = re.search(r"^AU_CONF=\$AU_DIR/(\S+)$", RUNNER_TXT, re.M)
+if not m_ or posixjoin(AUDIO["etc"], m_.group(1)) != AUDIO["conf"]:
+    r6.append(f"AU_CONF {m_.group(1) if m_ else 'NOT FOUND'!r} != constants.CONF_FILE {AUDIO['conf']!r}")
+m_ = re.search(r"^AU_TOKEN_NAME=(\S+)$", RUNNER_TXT, re.M)
+if not m_ or posixjoin(AUDIO["etc"], m_.group(1)) != AUDIO["token"]:
+    r6.append(f"AU_TOKEN_NAME {m_.group(1) if m_ else 'NOT FOUND'!r} != constants.TOKEN_FILE {AUDIO['token']!r}")
+for needle in (f'"$RULES_DIR/{RULES["journal"]}"', f'remove-name "$RULES_DIR" {RULES["logic"]}',
+               f'remove-name "$RULES_DIR" {posixbase(RULES["allow"])}', 'RULES_UNIT=sa02m-rules.service',
+               'AU_UNIT=sa02m-audio.service'):
+    if needle not in RUNNER_TXT:
+        r6.append(f"runner line {needle!r} not found")
+if posixdir(RULES["allow"]) != RULES["dir"]:
+    r6.append(f"http_guard.DEFAULT_ALLOW_PATH {RULES['allow']!r} is not in the store dir {RULES['dir']!r}")
+check(not r6, "R6 the runner's store/recorder paths and empty journal equal sa02m_rules.store / http_guard / "
+      "sa02m_audio.constants (and both unit files exist)", "R6 parity: " + "; ".join(r6))
+
+# R1 + M1 — one clean reset.
+s = Sandbox("rm1")
+reach_late_steps(s)
+doc_before = (s.rules / "scenarios.json").read_bytes()
+conf_before = s.au_conf.read_bytes()
+conf_st = os.lstat(s.au_conf)
+rc = s.run()
+erased, why_r = rules_erased(s)
+runs_mode = stat.S_IMODE(os.lstat(s.rules / "runs.json").st_mode) if (s.rules / "runs.json").is_file() else None
+check(rc == 0 and s.done() and erased and runs_mode == 0o644,
+      "R1a runs.json == store.empty_journal() (0644), logic_state.json and http-allow.json removed",
+      f"R1a rc={rc} {why_r} mode={runs_mode} ({s.why()})")
+check((s.rules / "scenarios.json").read_bytes() == doc_before, "R1b scenarios.json byte-identical (scenarios stay)",
+      "R1b scenarios.json changed by the reset")
+sl = s.systemctl_log()
+check("stop sa02m-rules.service" in sl and "rules-stop:runs-donor" in sl and "rules-stop:logic-present" in sl,
+      "R1c the engine was stopped while the previous owner's journal and template state still existed",
+      f"R1c systemctl calls: {sl.splitlines()}")
+check("start sa02m-rules.service" in sl and "start:rules-runs-empty" in sl and unit_state(s, "rules") == "active",
+      "R1d the engine (active before) is started again, after the erase",
+      f"R1d state={unit_state(s, 'rules')} systemctl calls: {sl.splitlines()}")
+leaks = donor_leaks(s, RULES_NEEDLES)
+check(not leaks, "R1e no run/notify/template bytes in the log, the rollback journal or the pre-reset backup",
+      f"R1e the previous owner's scenario state survives in: {leaks}")
+token_gone = not s.au_token.exists() and not s.au_token.is_symlink()
+av = audio_view(s)
+check(rc == 0 and token_gone and av.get("upload_url") == "" and av.get("enabled") is True,
+      "M1a upload.token removed; the real config.load() gives upload_url == \"\" and enabled still True",
+      f"M1a rc={rc} token_gone={token_gone} config={av}")
+after = s.au_conf.read_bytes().splitlines() if s.au_conf.is_file() else []
+before_l = conf_before.splitlines()
+others_kept = len(after) == len(before_l) and all(
+    a == b or (b.startswith(b"upload_url") and a == b"upload_url = ") for a, b in zip(after, before_l))
+st2 = os.lstat(s.au_conf) if s.au_conf.exists() else None
+check(others_kept and st2 is not None and stat.S_IMODE(st2.st_mode) == stat.S_IMODE(conf_st.st_mode)
+      and (st2.st_uid, st2.st_gid) == (conf_st.st_uid, conf_st.st_gid),
+      "M1b every other conf line byte-identical, mode and owner kept",
+      f"M1b conf before={before_l} after={after} mode/owner kept={st2 is not None and stat.S_IMODE(st2.st_mode) == stat.S_IMODE(conf_st.st_mode)}")
+check("stop sa02m-audio.service" in sl and "audio-stop:token-present" in sl
+      and "start sa02m-audio.service" in sl and "start:audio-token-gone-url-empty" in sl,
+      "M1c the recorder stopped while the token existed, started again after the erase",
+      f"M1c systemctl calls: {sl.splitlines()}")
+kept = [p for p in ("var/lib/sa02m-audio/rec/a.wav", "var/lib/sa02m-audio/events.jsonl",
+                    "etc/sa02m-audio/voice-allow.json") if (s.sb / p).is_file()]
+check(len(kept) == 3, "M1d recordings, events.jsonl and voice-allow.json stay (decision F3: recordings out of scope)",
+      f"M1d kept only {kept}")
+leaks = donor_leaks(s, AUDIO_NEEDLES)
+check(not leaks, "M1e no token or upload URL bytes in the log, the rollback journal or the pre-reset backup",
+      f"M1e the upload credential survives in: {leaks}")
+s.cleanup()
+
+s = Sandbox("r2")
+reach_late_steps(s)
+(s.sb / "rules-state").write_text("inactive\n", encoding="utf-8")
+rc = s.run()
+erased, why_r = rules_erased(s)
+sl = s.systemctl_log()
+check(rc == 0 and s.done() and erased and "start sa02m-rules.service" not in sl,
+      "R2 an engine inactive before the reset: erased, never started",
+      f"R2 rc={rc} {why_r} systemctl={sl.splitlines()} ({s.why()})")
+s.cleanup()
+
+s = Sandbox("r3")
+reach_late_steps(s)
+(s.sb / "rules-stuck").write_text("1", encoding="utf-8")
+rc = s.run()
+intact, why_n = nothing_erased(s)
+sl = s.systemctl_log()
+check(rc != 0 and s.txn().get("error_code") == "E_APPLY" and intact and not s.htpasswd_reset(),
+      "R3a an engine that will not stop: E_APPLY, NOTHING erased (rules, HomeKit, Home Connect, audio), configs rolled back",
+      f"R3a rc={rc} {why_n} htpasswd_reset={s.htpasswd_reset()} ({s.why()})")
+check("start sa02m-homekit.service" in sl and "start sa02m-homeconnect.service" in sl
+      and "sa02m-audio" not in sl,
+      "R3b the rollback starts HomeKit AND Home Connect again (both active before); the recorder was never stopped",
+      f"R3b systemctl calls: {sl.splitlines()}")
+s.cleanup()
+
+# R4 + M5 — neither installed.
+s = Sandbox("rm-none")
+reach_late_steps(s)
+shutil.rmtree(s.rules)
+shutil.rmtree(s.audio)
+rc = s.run()
+sl = s.systemctl_log()
+check(rc == 0 and s.done() and "sa02m-rules" not in sl,
+      "R4 scenario engine not installed: done, its unit untouched",
+      f"R4 rc={rc} systemctl={sl.splitlines()} ({s.why()})")
+check(rc == 0 and s.done() and "sa02m-audio" not in sl,
+      "M5 recorder not installed: done, its unit untouched",
+      f"M5 rc={rc} systemctl={sl.splitlines()} ({s.why()})")
+s.cleanup()
+
+# R5 — a document from before 1.0.6.41 still carrying runs/notify/last_* and no
+# runs.json: without a journal present the engine would migrate them back.
+s = Sandbox("r5")
+reach_late_steps(s)
+legacy = {"scenarios": [dict(RULES_SCENARIO, last_run=1.0, last_error="DONOR-RUN")], "library": "", "vars": {},
+          "runs": DONOR_JOURNAL["runs"], "notify_queue": DONOR_JOURNAL["notify_queue"]}
+(s.rules / "scenarios.json").write_text(json.dumps(legacy), encoding="utf-8")
+(s.rules / "runs.json").unlink()
+doc_before = (s.rules / "scenarios.json").read_bytes()
+rc = s.run()
+view = rules_view(s)
+check(rc == 0 and s.done() and "error" not in view and not view.get("runs") and not view.get("notify")
+      and (s.rules / "scenarios.json").read_bytes() == doc_before,
+      "R5 legacy document, no runs.json: the real store.load() shows no previous run or notify; the document unchanged",
+      f"R5 rc={rc} view={view} ({s.why()})")
+s.cleanup()
+
+s = Sandbox("r7")
+reach_late_steps(s)
+(s.sb / "rules-nostart").write_text("1", encoding="utf-8")
+rc = s.run()
+erased, why_r = rules_erased(s)
+log_txt = s.log.read_text(encoding="utf-8", errors="replace") if s.log.is_file() else ""
+check(rc == 0 and s.done() and erased
+      and "WARN sa02m-rules.service was active before the reset and did not start again" in log_txt,
+      "R7 the engine will not start after the erase: done, erase kept, a WARN line says to start it by hand",
+      f"R7 rc={rc} {why_r} ({s.why()})")
+s.cleanup()
+
+s = Sandbox("r8")
+reach_late_steps(s)
+(s.sb / "rules-answers").write_text("active\ninactive\nactive-replant\ninactive\n", encoding="utf-8")
+rc = s.run()
+erased, why_r = rules_erased(s)
+sl = s.systemctl_log()
+log_txt = s.log.read_text(encoding="utf-8", errors="replace") if s.log.is_file() else ""
+check(rc == 0 and s.done() and erased and "rules-replanted" in sl
+      and "sa02m-rules.service was started during the reset" in log_txt and "start sa02m-rules.service" in sl,
+      "R8 an engine started by hand inside the window (it wrote template state back): stopped, erased again, done",
+      f"R8 rc={rc} {why_r} systemctl={sl.splitlines()} ({s.why()})")
+s.cleanup()
+
+# R9 — runs.json is a symlink (only root can plant one in the 0755 store dir;
+# the reset still never writes through it): the link goes, the empty journal
+# is written in its place, the target is untouched.
+s = Sandbox("r9")
+reach_late_steps(s)
+v = victim(s.sb, "runs-victim.json", json.dumps(DONOR_JOURNAL).encode())
+before = snap(v)
+(s.rules / "runs.json").unlink()
+os.symlink(v, s.rules / "runs.json")
+rc = s.run()
+erased, why_r = rules_erased(s)
+check(rc == 0 and s.done() and erased and not (s.rules / "runs.json").is_symlink() and snap(v) == before,
+      "R9 a symlinked runs.json: the link replaced by the empty journal, its target untouched",
+      f"R9 rc={rc} {why_r} link left={(s.rules / 'runs.json').is_symlink()} victim changed={snap(v) != before} "
+      f"({s.why()})")
+s.cleanup()
+
+s = Sandbox("m2")
+reach_late_steps(s)
+v = victim(s.sb, "token-victim", b"VICTIM-TOKEN\n")
+before = snap(v)
+s.au_token.unlink()
+os.symlink(v, s.au_token)
+rc = s.run()
+check(rc == 0 and s.done() and not s.au_token.is_symlink() and not s.au_token.exists() and snap(v) == before,
+      "M2 a symlinked upload.token: the link removed, its target untouched",
+      f"M2 rc={rc} link left={s.au_token.is_symlink()} victim changed={snap(v) != before} ({s.why()})")
+s.cleanup()
+
+s = Sandbox("m3")
+reach_late_steps(s)
+s.au_token.unlink()
+s.au_token.mkdir()
+(s.au_token / "inside").write_text("x\n", encoding="utf-8")
+rc = s.run()
+tok_dir = s.au_token.is_dir() and (s.au_token / "inside").is_file()
+state_ok = (s.rules / "runs.json").is_file() and b"DONOR-RUN" in (s.rules / "runs.json").read_bytes() \
+    and (s.hk_var / "state.json").exists() and b"donor.example" in s.au_conf.read_bytes()
+check(rc != 0 and s.txn().get("error_code") == "E_APPLY" and tok_dir and state_ok and not s.htpasswd_reset(),
+      "M3 upload.token is a directory: E_APPLY in phase 1, nothing erased anywhere",
+      f"M3 rc={rc} token dir kept={tok_dir} nothing erased={state_ok} ({s.why()})")
+s.cleanup()
+
+s = Sandbox("m4")
+reach_late_steps(s)
+v = victim(s.sb, "conf-victim", b"[recorder]\nupload_url = https://victim.example/x\n")
+before = snap(v)
+s.au_conf.unlink()
+os.symlink(v, s.au_conf)
+rc = s.run()
+check(rc != 0 and s.txn().get("error_code") == "E_APPLY" and snap(v) == before and s.au_token.is_file()
+      and (s.hk_var / "state.json").exists() and b"DONOR-RUN" in (s.rules / "runs.json").read_bytes(),
+      "M4 a symlinked sa02m-audio.conf: E_APPLY, the victim untouched, the token and every store intact",
+      f"M4 rc={rc} victim changed={snap(v) != before} token={s.au_token.is_file()} ({s.why()})")
+s.cleanup()
+
+s = Sandbox("m6")
+reach_late_steps(s)
+(s.sb / "audio-stuck").write_text("1", encoding="utf-8")
+rc = s.run()
+intact, why_n = nothing_erased(s)
+sl = s.systemctl_log()
+check(rc != 0 and s.txn().get("error_code") == "E_APPLY" and intact
+      and "start sa02m-rules.service" in sl and "start sa02m-homekit.service" in sl,
+      "M6 a recorder that will not stop: E_APPLY, nothing erased, the units it stopped started again",
+      f"M6 rc={rc} {why_n} systemctl={sl.splitlines()} ({s.why()})")
+s.cleanup()
+
+s = Sandbox("m7")
+reach_late_steps(s)
+s.au_conf.write_text("[recorder]\nenabled = true\nUpload_URL: https://donor.example/upload\n", encoding="utf-8")
+rc = s.run()
+av = audio_view(s)
+body = s.au_conf.read_bytes() if s.au_conf.is_file() else b""
+check(rc == 0 and av.get("upload_url") == "" and b"donor.example" not in body,
+      "M7 the key spelled `Upload_URL:` (configparser reads it): forced to empty too",
+      f"M7 rc={rc} config={av} conf={body!r} ({s.why()})")
+s.cleanup()
+
+# M8/M8b/M9 — the destination must be gone as the DAEMON reads it
+# (sa02m_audio.config.load: configparser, the value stripped). Forcing only the
+# `upload_url` line left a planted continuation line as the whole value: the
+# daemon read it as the URL and, with the token removed, would send the next
+# clip there unauthenticated (review round 1, F1). /etc/sa02m-audio is
+# www-data's own, so any panel session can plant such a line.
+URL_LINE = "upload_url = https://donor.example/upload\n"
+for tag, conf_text, what in (
+        ("m8", AUDIO["seed"].replace(URL_LINE, URL_LINE + "  https://donor2.example/x\n"),
+         "a continuation line under upload_url"),
+        ("m8b", AUDIO["seed"].replace(URL_LINE, URL_LINE + "\n# kept\n\thttps://donor2.example/x\n"),
+         "a blank line, a comment, then a tab-indented continuation"),
+        ("m9", AUDIO["seed"].replace(URL_LINE, "upload_url\u00a0= https://donor2.example/upload\n"),
+         "`upload_url<NO-BREAK SPACE>=` (configparser reads it)")):
+    s = Sandbox(tag)
+    reach_late_steps(s)
+    if conf_text == AUDIO["seed"]:
+        bad(f"{tag.upper()} the seed has no `{URL_LINE.strip()}` line to plant against (non-vacuity)")
+        s.cleanup()
+        continue
+    s.au_conf.write_text(conf_text, encoding="utf-8")
+    rc = s.run()
+    av = audio_view(s)
+    body = s.au_conf.read_bytes() if s.au_conf.is_file() else b""
+    check(rc == 0 and s.done() and av.get("upload_url") == "" and b"donor2" not in body
+          and not s.au_token.exists() and av.get("enabled") is True,
+          f"{tag.upper()} {what}: the real config.load() gives upload_url \"\" after the reset, the token removed",
+          f"{tag.upper()} rc={rc} config={av} conf={body!r} ({s.why()})")
+    s.cleanup()
+
+# M8c/M8d — the forced line keeps the key line's own indentation. Written at
+# column 0 (review round 2, F2), a following line indented less than the
+# original key line but more than 0 became the forced value (M8c), and in a
+# conf indented throughout every option after the key did (M8d: delete_after_upload
+# lost its meaning and the value read non-empty).
+s = Sandbox("m8c")
+reach_late_steps(s)
+s.au_conf.write_text("[recorder]\n  upload_url = https://donor.example/upload\n https://donor2.example/x\n",
+                     encoding="utf-8")
+rc = s.run()
+av = audio_view(s)
+check(rc == 0 and s.done() and av.get("upload_url") == "" and not s.au_token.exists(),
+      "M8c a line indented less than the key line but more than 0: still its own option after the rewrite, "
+      "the real config.load() gives upload_url \"\", the token removed",
+      f"M8c rc={rc} config={av} conf={s.au_conf.read_bytes() if s.au_conf.is_file() else b''!r} ({s.why()})")
+s.cleanup()
+
+s = Sandbox("m8d")
+reach_late_steps(s)
+s.au_conf.write_text("[recorder]\n  enabled = true\n  upload_url = https://donor.example/upload\n"
+                     "  storage = emmc\n  delete_after_upload = false\n", encoding="utf-8")
+rc = s.run()
+r = module_py(AUDIO_PKG, "SA02M_AUDIO_", (
+    "import json, sys; from sa02m_audio import config; c = config.load(sys.argv[1]);"
+    "sys.stdout.write(json.dumps([c.upload_url, c.enabled, c.storage, c.delete_after_upload, c.warnings]))"),
+    str(s.au_conf))
+got = json.loads(r.stdout) if r.returncode == 0 else r.stderr[-200:]
+check(rc == 0 and s.done() and got == ["", True, "emmc", False, []],
+      "M8d a conf indented throughout: after the rewrite upload_url is \"\" and every other option keeps its value "
+      "(enabled, storage, delete_after_upload = false), no warning",
+      f"M8d rc={rc} config.load=[upload_url, enabled, storage, delete_after_upload, warnings]={got!r} ({s.why()})")
+s.cleanup()
+
+# M11 — the belt is reached by what the rewrite cannot see: a URL written into
+# the conf right AFTER force-key ran (a panel session saving the recorder card
+# while the reset works — /etc/sa02m-audio is www-data's own and the CGI writes
+# it with the recorder stopped). Modelled by a python3 shim on the ONE call
+# `fr_safe force-key <the audio conf> upload_url ""`: the real call runs, then
+# the URL is saved into the forced line, before anything else of the runner
+# runs. The reset must refuse and keep the token: a URL with no token would go
+# out unauthenticated (audio-recorder.md §19). Without the belt's call the run
+# completes with the racer's URL and no token.
+s = Sandbox("m11")
+reach_late_steps(s)
+real_py = shutil.which("python3") or sys.executable
+s.shim("python3", f"""#!/bin/bash
+# python3 -I -B -c "$FR_SAFE_PY" force-key <dest> <key> <value>
+if [ "${{2:-}}" = -B ] && [ "${{5:-}}" = force-key ] && [ "${{6:-}}" = "{s.au_conf}" ] && [ "${{7:-}}" = upload_url ]; then
+  "{real_py}" "$@"
+  rc=$?
+  sed -i 's|^upload_url = $|upload_url = https://racer.example/u|' "{s.au_conf}"
+  echo raced >> "{s.sb}/m11-raced"
+  exit "$rc"
+fi
+exec "{real_py}" "$@"
+""")
+rc = s.run()
+t = s.txn()
+raced = (s.sb / "m11-raced").read_text(encoding="utf-8").count("raced") if (s.sb / "m11-raced").exists() else 0
+conf_url = b"racer.example" in s.au_conf.read_bytes() if s.au_conf.is_file() else False
+check(raced == 1 and rc != 0 and t.get("error_code") == "E_APPLY" and "still set" in str(t.get("error_message"))
+      and s.au_token.is_file(),
+      "M11 a URL saved right after the rewrite, before the re-read: E_APPLY, the token kept (the belt, audio_url_cleared)",
+      f"M11 shim fired {raced}x (want 1: the audio upload_url force-key only), rc={rc}, racer URL in the conf={conf_url}, "
+      f"token kept={s.au_token.is_file()} ({s.why()})")
+s.cleanup()
+
+# M10 — the belt behind force-key: the runner's audio_url_cleared (the
+# daemon's own reading of the conf) decides "no destination" exactly where
+# config.load would find none, and never follows a symlink. Extracted from the
+# SHIPPED runner and run by bash, like G.
+mb = re.search(r"^audio_url_cleared\(\) \{\n.*?^\}\n", RUNNER_TXT, re.S | re.M)
+if not mb:
+    bad("M10 audio_url_cleared() not found in the runner (non-vacuity)")
+else:
+    with tempfile.TemporaryDirectory(prefix="frr-m10-") as td:
+        tdp = Path(td)
+        url_conf = tdp / "url.conf"
+        url_conf.write_text("[recorder]\nupload_url = https://donor.example/u\n", encoding="utf-8")
+        link = tdp / "link.conf"
+        os.symlink(url_conf, link)
+        probes = (
+            ("url", url_conf, 1),
+            ("nbsp", "[recorder]\nUpload_URL\u00a0: https://donor.example/u\n", 1),
+            ("continuation", "[recorder]\nupload_url = \n  https://donor.example/u\n", 1),
+            ("empty", "[recorder]\nenabled = true\nupload_url = \n", 0),
+            ("no-section", "[other]\nupload_url = https://donor.example/u\n", 0),
+            ("unparsable", "[recorder]\nupload_url = a\nupload_url = b\n", 0),
+            ("absent", tdp / "missing.conf", 0),
+            ("symlink-to-a-URL-conf", link, 1),
+            ("a-directory", tdp, 1),
+        )
+        wrong = []
+        for name, conf, want in probes:
+            if isinstance(conf, str):
+                path = tdp / f"{name}.conf"
+                path.write_text(conf, encoding="utf-8")
+                conf = path
+            r = subprocess.run(["bash", "-c", "log() { :; }\n" + mb.group(0) + 'AU_CONF="$1"; audio_url_cleared', "m10",
+                                str(conf)],
+                               stdout=subprocess.PIPE, stderr=subprocess.STDOUT, timeout=30)
+            got = 0 if r.returncode == 0 else 1
+            if got != want:
+                wrong.append(f"{name}: rc={r.returncode} want {'cleared' if want == 0 else 'still set'}")
+        check(not wrong, "M10 audio_url_cleared agrees with config.load: a URL in any spelling or a continuation "
+              "is still set; empty, no section, unparsable (the daemon uploads nothing) or absent is cleared; "
+              "a symlink is never followed and an unreadable conf (a directory) counts as set",
+              "M10 " + "; ".join(wrong))
 
 # ── T. the resolver twin ────────────────────────────────────────────────────
 print("── T. trusted-path resolver ──")
