@@ -41,9 +41,33 @@ HC_VAR_DIR=/var/lib/sa02m-homeconnect
 HC_RUN_DIR=/run/sa02m-homeconnect
 HC_CONF=/etc/sa02m-homeconnect/sa02m-homeconnect.conf
 HC_PKG_DIR=/opt/sa02m-homeconnect
+# Scenario engine: the previous owner's run history, notify queue, per-scenario
+# last run/error and logic-template state go; scenarios.json (the scenarios,
+# library, vars) stays (Operator decision 2026-11-04; home of the list:
+# docs/contracts/cloud-scenarios.md «Сброс к заводским настройкам»). Paths and
+# the empty journal are pinned to sa02m_rules.store by the harness (R6).
+RULES_UNIT=sa02m-rules.service
+RULES_DIR=/etc/sa02m-rules
+# One home: sa02m_rules.store.empty_journal(). Written, not deleted: with no
+# runs.json at all the engine's migrate_journal would copy the runs of a
+# never-migrated pre-1.0.6.41 document back into a new one.
+RULES_EMPTY_JOURNAL='{"runs":[],"notify_queue":[],"last":{}}'
+# Audio recorder: the upload bearer token and the upload destination go, the
+# rest of its conf stays (home: docs/contracts/audio-recorder.md §19). The dir
+# is www-data's own (2750 www-data:sa02m-audio): every op goes through fr_safe.
+AU_UNIT=sa02m-audio.service
+AU_DIR=/etc/sa02m-audio
+AU_CONF=$AU_DIR/sa02m-audio.conf
+AU_TOKEN_NAME=upload.token
 # Units phase 1 of erase_owner_state found ACTIVE before it stopped them — the
 # ones a rollback starts again (restart_stopped_units).
 RESTART_UNITS=()
+# The subset stopped only for the erase: started again on success too
+# (resume_quiesced_units). HomeKit / Home Connect stay off on success (Q-F).
+RESUME_UNITS=()
+# Every unit stopped only for the erase, active before or not — phase 3
+# re-checks each is still down before it reports the erase done.
+QUIESCED_UNITS=()
 
 SELF="${BASH_SOURCE[0]:-$0}"
 CMD="${1:-run}"
@@ -306,11 +330,25 @@ def cmd_restore(src, dest):
         os.close(sfd)
 
 
+def indent_of(line):
+    """configparser's indent level of a line: the offset of its first
+    non-whitespace character (Unicode whitespace, like its NONSPACECRE)."""
+    m = re.search(r"\S", line)
+    return m.start() if m else len(line)
+
+
 def cmd_force_key(dest, key, value):
     """`key = value` on every line that sets `key` in an INI conf, rewritten
     through a new file (never sed -i: that reads through a planted symlink).
-    Both readers are configparser, which takes the key in any case and `:` as
-    well as `=` — every spelling they honour is forced."""
+    Every reader is configparser, read the way the daemons read it (text mode:
+    a line ends at \\n, \\r\\n or \\r). It takes the key in any case, with
+    Unicode whitespace around it and `:` as well as `=`, and it goes on reading
+    the VALUE over every following line indented deeper than the key line,
+    blank and comment lines in between included. So every spelling it honours
+    is forced, and the continuation lines of a forced key are dropped: kept,
+    they would become the value (a planted `  https://…` under a forced-empty
+    upload_url is read as the upload destination). The forced line keeps the
+    key line's indentation, so the lines after it keep their meaning."""
     target, st = target_of(dest)
     if st is None:
         return
@@ -325,8 +363,20 @@ def cmd_force_key(dest, key, value):
     finally:
         os.close(fd)
     text = data.decode("utf-8", "surrogateescape")
-    pat = re.compile(r"^[ \t\r\f\v]*" + re.escape(key) + r"[ \t\r\f\v]*[=:].*$", re.M | re.I)
-    new = pat.sub(f"{key} = {value}", text)
+    parts = re.split(r"(\r\n|\r|\n)", text)
+    pat = re.compile(r"\s*" + re.escape(key) + r"\s*[=:]", re.I)
+    out, level = [], None
+    for line, end in zip(parts[0::2], parts[1::2] + [""]):
+        s = line.strip()
+        if s and not s.startswith(("#", ";")):
+            if level is not None and indent_of(line) > level: continue  # the forced value's continuation: dropped
+            level = None
+        # The key line keeps its own indentation: moved to column 0, a next
+        # line indented less than it (but more than 0) would become the value.
+        if pat.match(line):
+            line, level = line[:indent_of(line)] + f"{key} = {value}", indent_of(line)
+        out.append(line + end)
+    new = "".join(out)
     if new == text:
         return
     body = new.encode("utf-8", "surrogateescape")
@@ -918,7 +968,9 @@ fail() {
 # --- preserve / wipe lists ---------------------------------------------------
 load_lists() {
   local ver_dir wipe_f preserve_f
-  ver_dir=$(resolve_defaults_dir)
+  # Same refusal run_reset gives a moment later; without it `set -e` ended the
+  # run here with the transaction left at «validating».
+  ver_dir=$(resolve_defaults_dir) || fail E_INTERNAL "factory defaults not installed"
   wipe_f="$ver_dir/lists/wipe.list"
   preserve_f="$ver_dir/lists/preserve.list"
   if [ ! -f "$wipe_f" ]; then
@@ -981,22 +1033,23 @@ is_wipe_allowed() {
   return 1
 }
 
+# A full install (scripts/03-webserver.sh) leaves current/ AND a copy on the
+# top level: 1.0.5.66/, current/, lists/, templates/ side by side, with no
+# folder named after the running version. `sort -V` puts any name after every
+# version number, so only a version-named folder may win the "highest" pick —
+# taking templates/ ended every web reset on such a board at «templates
+# missing» (bench 1.135, 2026-11-04). Each candidate must hold templates/.
 resolve_defaults_dir() {
-  local ver bundled
+  local ver="" bundled="" cand
   ver=$(tr -d '\r' </var/www/network_config/VERSION 2>/dev/null | grep -E '^[0-9]+(\.[0-9]+){1,3}$' | head -1 || true)
-  if [ -n "$ver" ] && [ -d "$DEFAULTS_ROOT/$ver" ]; then
-    printf '%s\n' "$DEFAULTS_ROOT/$ver"
-    return 0
-  fi
-  bundled=$(ls -1d "$DEFAULTS_ROOT"/*/ 2>/dev/null | sort -V | tail -1 || true)
-  if [ -n "$bundled" ]; then
-    printf '%s\n' "${bundled%/}"
-    return 0
-  fi
-  if [ -d /etc/sa02m-factory-defaults/templates ]; then
-    printf '%s\n' /etc/sa02m-factory-defaults
-    return 0
-  fi
+  bundled=$(ls -1 "$DEFAULTS_ROOT" 2>/dev/null | grep -E '^[0-9]+(\.[0-9]+){1,3}$' | sort -V | tail -1 || true)
+  for cand in ${ver:+"$DEFAULTS_ROOT/$ver"} ${bundled:+"$DEFAULTS_ROOT/$bundled"} \
+              "$DEFAULTS_ROOT/current" "$DEFAULTS_ROOT" /etc/sa02m-factory-defaults; do
+    if [ -d "$cand/templates" ]; then
+      printf '%s\n' "$cand"
+      return 0
+    fi
+  done
   return 1
 }
 
@@ -1190,6 +1243,10 @@ MAP
 # A rollback (fail / the ERR trap) starts again every unit phase 1 found active
 # (restart_stopped_units) — its state was read before the conf reset, because a
 # daemon polling its conf would exit on the template before we looked.
+# The scenario engine and the audio recorder join the same two phases (stop
+# only — their confs stay, and nothing of theirs is copied into the rollback
+# journal, which stays on the board after a successful reset); phase 3
+# (resume_quiesced_units) starts them again on success when they were running.
 unit_stopped() {
   local st
   st=$(timeout 10 systemctl is-active "$1" 2>/dev/null) || true
@@ -1280,22 +1337,200 @@ wipe_agent_api_identity() {
   fi
 }
 
+rules_installed() {
+  [ -e "$RULES_DIR" ] || [ -L "$RULES_DIR" ]
+}
+
+audio_installed() {
+  [ -e "$AU_DIR" ] || [ -L "$AU_DIR" ]
+}
+
+# Did phase 1 find $1 active (remember_if_active recorded it)?
+was_active() {
+  local u
+  for u in "${RESTART_UNITS[@]}"; do
+    [ "$u" = "$1" ] && return 0
+  done
+  return 1
+}
+
+# A name phase 2 removes or replaces: absent, a regular file, or a symlink (the
+# link itself goes, never its target). Anything else — a directory planted in
+# its place — is refused here, before anything is erased.
+erasable_name() {
+  [ -L "$1" ] || [ ! -e "$1" ] || [ -f "$1" ]
+}
+
+# Phase 1 for a unit stopped only for the erase: remembered for the rollback
+# and, when it was running, for the start again on success.
+quiesce_for_erase() {
+  remember_if_active "$1"
+  if was_active "$1"; then RESUME_UNITS+=("$1"); fi
+  QUIESCED_UNITS+=("$1")
+}
+
+# The engine rewrites runs.json and logic_state.json from memory when it stops
+# (RulesApp.stop flushes both), so it is stopped and verified down first.
+quiesce_rules() {
+  local f
+  quiesce_for_erase "$RULES_UNIT"
+  for f in runs.json logic_state.json http-allow.json; do
+    erasable_name "$RULES_DIR/$f" || fail E_APPLY "$RULES_DIR/$f is not a file — nothing was erased"
+  done
+  timeout 20 systemctl stop "$RULES_UNIT" >/dev/null 2>&1 || true
+  unit_stopped "$RULES_UNIT" || fail E_APPLY "scenario engine did not stop — nothing was erased"
+}
+
+quiesce_audio() {
+  quiesce_for_erase "$AU_UNIT"
+  erasable_name "$AU_DIR/$AU_TOKEN_NAME" || fail E_APPLY "$AU_DIR/$AU_TOKEN_NAME is not a file — nothing was erased"
+  # fr_safe force-key refuses these too; refused here, nothing is erased yet.
+  if [ -L "$AU_CONF" ] || { [ -e "$AU_CONF" ] && [ ! -f "$AU_CONF" ]; }; then
+    fail E_APPLY "$AU_CONF is a symlink or not a regular file — nothing was erased"
+  fi
+  timeout 20 systemctl stop "$AU_UNIT" >/dev/null 2>&1 || true
+  unit_stopped "$AU_UNIT" || fail E_APPLY "audio recorder did not stop — nothing was erased"
+}
+
+rules_erased() {
+  [ ! -e "$RULES_DIR/logic_state.json" ] && [ ! -L "$RULES_DIR/logic_state.json" ] \
+    && [ ! -e "$RULES_DIR/http-allow.json" ] && [ ! -L "$RULES_DIR/http-allow.json" ] \
+    && python3 -I -c '
+import json, os, sys
+with os.fdopen(os.open(sys.argv[1], os.O_RDONLY | os.O_NOFOLLOW), encoding="utf-8") as f:
+    sys.exit(0 if json.load(f) == json.loads(sys.argv[2]) else 1)
+' "$RULES_DIR/runs.json" "$RULES_EMPTY_JOURNAL" 2>/dev/null
+}
+
+# Phase 2 only — the engine is verified down. runs.json is REPLACED by the
+# empty journal (always, also when it was absent); logic_state.json and
+# http-allow.json are removed. Then verified: a cloud `ack_notify` is a
+# read-modify-write of runs.json from another process, so one mismatch gets
+# one more pass before the reset gives up.
+erase_rules_history() {
+  local src="$JOURNAL_DIR/rules-empty-journal.json" out try
+  # Outside $JOURNAL_DIR/files: a rollback never "restores" it.
+  printf '%s\n' "$RULES_EMPTY_JOURNAL" >"$src"
+  for try in 1 2; do
+    # A symlinked runs.json goes first: fr_safe install never writes through one.
+    if [ -L "$RULES_DIR/runs.json" ]; then out=$(fr_safe remove-name "$RULES_DIR" runs.json 2>&1) || fail E_APPLY "scenario run journal not erased: $out"; fi
+    out=$(fr_safe install "$src" "$RULES_DIR/runs.json" 0644 root:root 2>&1) || fail E_APPLY "scenario run journal not erased: $out"
+    [ -z "$out" ] || log "rules: $out"
+    out=$(fr_safe remove-name "$RULES_DIR" logic_state.json 2>&1) || fail E_APPLY "scenario template state not erased: $out"
+    [ -z "$out" ] || log "rules: $out"
+    out=$(fr_safe remove-name "$RULES_DIR" http-allow.json 2>&1) || fail E_APPLY "scenario HTTP host allow-list not erased: $out"
+    [ -z "$out" ] || log "rules: $out"
+    if rules_erased; then
+      log "rules: run journal emptied, template state and HTTP host allow-list removed; scenarios kept (docs/contracts/cloud-scenarios.md «Сброс к заводским настройкам»)"
+      return 0
+    fi
+    [ "$try" = 1 ] || fail E_APPLY "scenario run history changed under the reset — run the reset again"
+  done
+}
+
+# The belt behind force-key: the conf read the way the recorder reads it
+# (sa02m_audio.config.load — configparser, interpolation off, section
+# [recorder], the value stripped) must hold no upload destination. A spelling
+# the rewrite missed fails the reset here, BEFORE the token goes. Where the
+# daemon itself would upload nothing (no file, no section, a conf it cannot
+# parse or decode) this answers "cleared" too; it never follows a symlink. A
+# conf it cannot read answers "set" (fail safe) and the reason goes to the log.
+audio_url_cleared() {
+  local err rc=0
+  err=$(python3 -I -c '
+import configparser, os, sys
+try:
+    fd = os.open(sys.argv[1], os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK | os.O_CLOEXEC)
+except FileNotFoundError:
+    sys.exit(0)
+except OSError as e:
+    sys.exit("cannot open it: %s" % (e.strerror or e))
+try:
+    with os.fdopen(fd, encoding="utf-8") as f:
+        text = f.read()
+except UnicodeDecodeError:
+    sys.exit(0)
+except OSError as e:
+    sys.exit("cannot read it: %s" % (e.strerror or e))
+cfg = configparser.ConfigParser(interpolation=None)
+try:
+    cfg.read_string(text)
+except configparser.Error:
+    sys.exit(0)
+sys.exit(1 if cfg.has_section("recorder") and cfg["recorder"].get("upload_url", "").strip() else 0)
+' "$AU_CONF" 2>&1 >/dev/null) || rc=$?
+  [ -z "$err" ] || log "WARN audio: reading $AU_CONF back after the rewrite: ${err:0:300}"
+  return "$rc"
+}
+
+# Phase 2 only — the recorder is verified down. The ORDER is the safety
+# property: the destination goes first. A crash between the two leaves a token
+# with no URL (no upload); the other order leaves the URL with no token, and
+# the daemon reads a missing token as "none set" and sends the next clip to the
+# previous owner's endpoint unauthenticated.
+erase_audio_upload() {
+  local out
+  out=$(fr_safe force-key "$AU_CONF" upload_url "" 2>&1) || fail E_APPLY "audio upload destination not cleared: $out"
+  audio_url_cleared || fail E_APPLY "audio upload destination still set after the rewrite (or the conf unreadable — see the log) — the token is kept"
+  out=$(fr_safe remove-name "$AU_DIR" "$AU_TOKEN_NAME" 2>&1) || fail E_APPLY "audio upload token not erased: $out"
+  # remove-name passes over a name it cannot unlink (a directory planted
+  # since phase 1): this check is what makes that failure visible.
+  if [ -e "$AU_DIR/$AU_TOKEN_NAME" ] || [ -L "$AU_DIR/$AU_TOKEN_NAME" ]; then
+    fail E_APPLY "audio upload token not erased"
+  fi
+  log "audio: upload destination cleared, upload token removed (docs/contracts/audio-recorder.md §19)"
+}
+
+# Phase 3, success path only. A unit stopped for the erase that runs again —
+# a panel session can start it by hand (services_ctrl.cgi) while the reset
+# works — may hold the previous owner's state and write it back: it is stopped
+# and erased once more; still running -> E_APPLY. Then every such unit that was
+# active before the reset is started again — best effort, as in
+# restart_stopped_units: a start failure is logged, never fails a reset whose
+# erase is done.
+resume_quiesced_units() {
+  local u
+  for u in "${QUIESCED_UNITS[@]}"; do
+    unit_stopped "$u" && continue
+    log "WARN $u was started during the reset — stopping it and erasing again"
+    timeout 20 systemctl stop "$u" >/dev/null 2>&1 || true
+    unit_stopped "$u" || fail E_APPLY "$u was started during the reset"
+    case "$u" in
+      "$RULES_UNIT") erase_rules_history ;;
+      "$AU_UNIT") erase_audio_upload ;;
+    esac
+  done
+  for u in "${RESUME_UNITS[@]}"; do
+    if timeout 20 systemctl start "$u" >/dev/null 2>&1; then
+      log "started $u again (it was active before the reset)"
+    else
+      log "WARN $u was active before the reset and did not start again — start it by hand"
+    fi
+  done
+  RESUME_UNITS=()
+}
+
 # Every stop is verified inside its quiesce_* (fail exits), so reaching the
 # erase calls means every installed unit whose state goes is down. HomeKit is
 # quiesced first so a bridge that will not stop leaves Home Connect running.
 erase_owner_state() {
-  local hk=0 hc=0
+  local hk=0 hc=0 ru=0 au=0
   if homekit_installed; then hk=1; else log "homekit: bridge not installed — nothing to erase"; fi
   if homeconnect_installed; then hc=1; else log "homeconnect: client not installed — nothing to erase"; fi
+  if rules_installed; then ru=1; else log "rules: scenario engine not installed — nothing to erase"; fi
+  if audio_installed; then au=1; else log "audio: recorder not installed — nothing to erase"; fi
   if [ "$hk" = 1 ]; then quiesce_homekit; fi
   if [ "$hc" = 1 ]; then quiesce_homeconnect; fi
-  if [ "$hk" = 1 ]; then
-    wipe_homekit_pairings
-  fi
-  if [ "$hc" = 1 ]; then
-    wipe_homeconnect_signin
-  fi
+  if [ "$ru" = 1 ]; then quiesce_rules; fi
+  if [ "$au" = 1 ]; then quiesce_audio; fi
+  # One line per call: commenting a call out (comment-mutation-proof) must
+  # leave a script that still parses — an empty `then` is a syntax error.
+  if [ "$hk" = 1 ]; then wipe_homekit_pairings; fi
+  if [ "$hc" = 1 ]; then wipe_homeconnect_signin; fi
+  if [ "$ru" = 1 ]; then erase_rules_history; fi
+  if [ "$au" = 1 ]; then erase_audio_upload; fi
   wipe_agent_api_identity
+  resume_quiesced_units
 }
 
 verify_reset() {

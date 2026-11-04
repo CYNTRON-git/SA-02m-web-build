@@ -316,7 +316,7 @@ alice-conf-homes|etc/sa02m-restore-backup.sh|re.compile(r"^/etc/sa02m-homekit/sa
 alice-conf-homes|etc/sa02m-restore-backup.sh|"/etc/sa02m-homekit": (0o2750
 installer-order|install.sh|sa02m_run_module 06c-homekit.sh
 installer-svc-policy-gate|scripts/06c-homekit.sh|sa02m_svc_capture "$UNIT"
-factory-reset-runner|etc/sa02m-factory-reset-runner.sh|  wipe_homekit_pairings
+factory-reset-runner|etc/sa02m-factory-reset-runner.sh|then wipe_homekit_pairings; fi
 factory-reset-runner|etc/sa02m-factory-reset-runner.sh|fr_safe verify-backup "$out"
 factory-reset-runner|etc/sa02m-factory-reset-runner.sh|!= (ours.st_dev, ours.st_ino): drop_swapped(target)
 factory-reset-runner|etc/sa02m-factory-reset-runner.sh|if foreign: drop_foreign(pfd, dreal, name, lst, kind)
@@ -339,13 +339,28 @@ alice-conf-homes|etc/sa02m-restore-backup.sh|"/etc/sa02m-homeconnect": (0o2750
 alice-conf-homes|scripts/06d-homeconnect.sh|os.fchmod(fd, 0o640)
 installer-order|install.sh|sa02m_run_module 06d-homeconnect.sh
 installer-svc-policy-gate|scripts/06d-homeconnect.sh|sa02m_svc_capture "$UNIT"
-factory-reset-runner|etc/sa02m-factory-reset-runner.sh|  wipe_homeconnect_signin
+factory-reset-runner|etc/sa02m-factory-reset-runner.sh|then wipe_homeconnect_signin; fi
 factory-reset-runner|etc/sa02m-factory-reset-runner.sh|systemctl stop "$HC_UNIT"
 factory-reset-runner|etc/sa02m-factory-reset-runner.sh|fr_safe remove-name "$HC_RUN_DIR" link.json
 factory-reset-runner|etc/sa02m-factory-reset-runner.sh|unit_stopped "$HK_UNIT" || fail E_APPLY
 factory-reset-runner|etc/sa02m-factory-reset-runner.sh|unit_stopped "$HC_UNIT" || fail E_APPLY
 factory-reset-runner|etc/sa02m-factory-reset-runner.sh|  restart_stopped_units
 factory-reset-runner|etc/sa02m-factory-reset-runner.sh|remember_if_active "$HK_UNIT"
+factory-reset-runner|etc/sa02m-factory-reset-runner.sh|remember_if_active "$HC_UNIT"
+factory-reset-runner|etc/sa02m-factory-reset-runner.sh|bundled=$(ls -1 "$DEFAULTS_ROOT" 2>/dev/null | grep -E
+factory-reset-runner|etc/sa02m-factory-reset-runner.sh|then erase_rules_history; fi
+factory-reset-runner|etc/sa02m-factory-reset-runner.sh|then erase_audio_upload; fi
+factory-reset-runner|etc/sa02m-factory-reset-runner.sh|systemctl stop "$RULES_UNIT"
+factory-reset-runner|etc/sa02m-factory-reset-runner.sh|unit_stopped "$RULES_UNIT" || fail E_APPLY
+factory-reset-runner|etc/sa02m-factory-reset-runner.sh|systemctl stop "$AU_UNIT"
+factory-reset-runner|etc/sa02m-factory-reset-runner.sh|unit_stopped "$AU_UNIT" || fail E_APPLY
+factory-reset-runner|etc/sa02m-factory-reset-runner.sh|fr_safe force-key "$AU_CONF" upload_url ""
+factory-reset-runner|etc/sa02m-factory-reset-runner.sh|fr_safe remove-name "$AU_DIR" "$AU_TOKEN_NAME"
+factory-reset-runner|etc/sa02m-factory-reset-runner.sh|  resume_quiesced_units
+factory-reset-runner|etc/sa02m-factory-reset-runner.sh|if level is not None and indent_of(line) > level: continue
+factory-reset-runner|etc/sa02m-factory-reset-runner.sh|audio_url_cleared || fail E_APPLY
+factory-reset-runner|etc/sa02m-factory-reset-runner.sh|then out=$(fr_safe remove-name "$RULES_DIR" runs.json
+factory-reset-runner|etc/sa02m-factory-reset-runner.sh|ver_dir=$(resolve_defaults_dir) || fail E_INTERNAL
 daemon-least-privilege|scripts/06c-homekit.sh|if gpasswd -d "$HK_USER" www-data >>"$LOG_FILE" 2>&1; then
 daemon-least-privilege|etc/systemd/system/sa02m-homeconnect.service|ExecStartPre=-+/usr/local/sbin/sa02m-daemon-access.sh apply homeconnect
 daemon-least-privilege|scripts/06c-homekit.sh|HK_ACCESS_OUT=$(timeout 120 /usr/local/sbin/sa02m-daemon-access.sh apply homekit 2>&1) || hk_access_rc=$?
