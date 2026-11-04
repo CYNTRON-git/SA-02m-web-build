@@ -935,6 +935,7 @@
     'Сеть будет сброшена к заводским настройкам — возможна потеря доступа по текущему IP.': 'Network will be reset to factory defaults — you may lose access on the current IP.',
     'Пароль веб-доступа станет admin / cyntron.': 'Web password will become admin / cyntron.',
     'Сопоставления MQTT/шлюза будут сброшены.': 'MQTT/gateway mappings will be cleared.',
+    'Удаляются сопряжения HomeKit, вход Home Connect, журнал запусков сценариев и адрес отправки записей звука; сами сценарии сохраняются.': 'HomeKit pairings, the Home Connect sign-in, the scenario run history and the audio upload address are erased; the scenarios themselves are kept.',
     'Перед продолжением обязательно скачайте резервную копию.': 'Download a backup before continuing.',
     'Резервная копия скачана. Можно продолжить.': 'Backup downloaded. You may continue.',
     'Введите SA02M-RESET для подтверждения': 'Type SA02M-RESET to confirm',
