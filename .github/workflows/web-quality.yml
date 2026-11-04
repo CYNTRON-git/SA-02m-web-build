@@ -27,7 +27,10 @@ permissions:
 
 jobs:
   quality:
-    runs-on: ubuntu-latest
+    # ubuntu-24.04, not ubuntu-latest: the HomeKit venv below needs the system python3
+    # to be 3.12 (requirements.lock carries cp312 wheels); ubuntu-latest moved to a 3.14
+    # image on 2026-11-04 and that step failed by name. Bump together with the lock.
+    runs-on: ubuntu-24.04
     # Every row's tool is installed below on purpose, so here a SKIP (or a row
     # that skipped part of its checks) means a broken install step: the runner
     # turns both into a FAIL (strict mode — .ai-dev/quality/run.mjs header).
