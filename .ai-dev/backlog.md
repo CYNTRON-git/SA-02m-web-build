@@ -6,8 +6,22 @@ entries are pruned (history lives in git); last prune 2026-10-30 (audit 2026-10-
 
 ## Open
 
-- [OPEN] 2026-11-03 **[LOW] 1.0.7.28 round-4 review advisories, queued to the Orchestrator as a fixup right after 1.0.7.28 ships (own branch, together with the gold-image `/etc/sa02m-rules` item below):** (A2, a small regression vs 1.0.7.27) a same-template edit of a motion-light rule during a wall-switch block switches the light off after `off_s`, because `_lit` is persisted but `_blocked_until` is not — persist the block like the air-quality pauses (wall clock) or state the loss; (A1) the urgent save of a switch-on has no rate limit (with `min_off_s=0` or CO₂ `on_ppm == off_ppm`, one fsync per switch-on) — fall back to the batched cadence when the last urgent save was < `RUNS_FLUSH_S` ago; (A3) «switch-offs stay batched» is claimed by the contract and the `py-unit-rules` text but no test pins it (a mutation making every flag change urgent stays green); (A4) `opt/sa02m-rules/tests/test_logic_persistence.py` class `Round3` and docstrings cite review rounds / plan files deleted at ship, and the registry text names «round-1/round-2 trees» no commit holds — rename to what is tested. Evidence: the 1.0.7.28 round-4 reviewer probes (`probe_r4*.py`, `mutate_r4.py`, session scratchpad). Size note: `engine.py` 1452 lines, `logic_templates.py` 986 — `decompose` candidates.
-- [OPEN] 2026-11-03 **[MED] The gold-image pipeline cleans nothing in `/etc/sa02m-rules` (1.0.7.28 Builder, side note):** `runs.json` (the donor's scenario run journal) already rides into every clone, and from 1.0.7.28 so would `logic_state.json` (persisted air-quality / motion-light / away-home state, `opt/sa02m-rules/sa02m_rules/store.py`) — a clone would restore the donor's «previous mode» snapshot. 1.136 (2026-11-03, ready for capture, still 1.0.7.27) checked clean: `scenarios.json` and `runs.json` empty, no state file. Fix (queued to the Orchestrator right after 1.0.7.28 ships, own branch): add the two runtime files to `docs/deployment.md` «Подготовка золотого образа» and to the image-identity-reset sites (`docs/contracts/image-identity-reset.md`), keeping `scenarios.json` as configuration.
+- [OPEN] 2026-11-03 **[LOW] 1.0.7.28 round-4 review advisories, queued to the Orchestrator as a fixup right after 1.0.7.28 ships (own branch, together with the gold-image `/etc/sa02m-rules` item below):** (A2, a small regression vs 1.0.7.27) a same-template edit of a motion-light rule during a wall-switch block switches the light off after `off_s`, because `_lit` is persisted but `_blocked_until` is not — persist the block like the air-quality pauses (wall clock) or state the loss; (A1) the urgent save of a switch-on has no rate limit (with `min_off_s=0` or CO₂ `on_ppm == off_ppm`, one fsync per switch-on) — fall back to the batched cadence when the last urgent save was < `RUNS_FLUSH_S` ago; (A3) «switch-offs stay batched» is claimed by the contract and the `py-unit-rules` text but no test pins it (a mutation making every flag change urgent stays green); (A4) `opt/sa02m-rules/tests/test_logic_persistence.py` class `Round3` and docstrings cite review rounds / plan files deleted at ship, and the registry text names «round-1/round-2 trees» no commit holds — rename to what is tested. Evidence: the 1.0.7.28 round-4 reviewer probes (`probe_r4*.py`, `mutate_r4.py`, session scratchpad). **Taken into 1.0.7.29** (plan A–B, 2026-11-04).
+- [OPEN] 2026-11-03 **[MED] The gold-image pipeline cleans nothing in `/etc/sa02m-rules` (1.0.7.28 Builder, side note):** `runs.json` (the donor's scenario run journal) already rides into every clone, and from 1.0.7.28 so would `logic_state.json` (persisted air-quality / motion-light / away-home state, `opt/sa02m-rules/sa02m_rules/store.py`) — a clone would restore the donor's «previous mode» snapshot. 1.136 (2026-11-03, ready for capture, still 1.0.7.27) checked clean: `scenarios.json` and `runs.json` empty, no state file. Fix (queued to the Orchestrator right after 1.0.7.28 ships, own branch): add the two runtime files to `docs/deployment.md` «Подготовка золотого образа» and to the image-identity-reset sites (`docs/contracts/image-identity-reset.md`), keeping `scenarios.json` as configuration. **Split 2026-11-04:** the golden-image half is in 1.0.7.29 (`docs/deployment.md` step 2d — `scenarios.json` emptied, `runs.json`/`logic_state.json`/`http-allow.json` removed; Operator decision) and `logic_state.json` is bound to the board (sha256 of machine-id). The factory-reset half is **deferred to 1.0.7.30** (`.ai-dev/plans/factory-reset-owner-state-1.0.7.30.md`): Operator 2026-11-04 — wipe `runs.json`, `logic_state.json`, `http-allow.json`, the audio `upload.token` AND `upload_url`; scenarios stay. The image pipeline sites (`image-identity-reset.md`) are deliberately NOT extended (audit 2026-11-04 §13). Also found there (Planner, confirmed on 1.135): the reset's `resolve_defaults_dir` picks `templates/` on a fully installed board (`sort -V | tail -1` over a directory with no folder named after the running version) — the reset likely stops early today; first commit of 1.0.7.30.
+
+- [OPEN] 2026-11-04 **[LOW] Stale pinned host keys for bench 1.136 contradict the new «no pinned key» rule of `docs/vendor-integrations.md` (1.0.7.29 review A3).** `docs/AGENTS_SSH_AND_DEVICE_ACCESS.md:61,84` and the defaults in `tools/ssh/sa02m-remote.ps1:14`, `tools/ssh/sa02m_remote.py:58` still carry an old 1.136 fingerprint; a re-imaged board regenerates its key (`regen-ssh-host-keys`). Replace with the rule / an explicit `--hostkey` argument; own small branch.
+
+- [OPEN] 2026-11-04 **[LOW] `mqtt_templates.cgi` has no behavioural test (audit 2026-11-04 C3; `template-device.md:288-294`, audit 2026-09-08 F17).** Checked only by bash syntax. Add a `web-auth-behaviour`-style harness (unauth → error JSON, GET → catalogue shape) and name it in `covers`.
+
+- [OPEN] 2026-11-04 **[LOW] agent-api ↔ devices `api.py` request grammar unpinned (audit 2026-11-04 C4).** `py-unit-agent-api` pins the range/group enums but not the request keys `handle_history`/`handle_summary` accept in `sa02m_devices/api.py`; a renamed key re-runs only `py-unit-devices`. Pin the key set agent-side (read from `api.py`) and add `api.py` to `covers`.
+
+- [OPEN] 2026-11-04 **[LOW] `opt/sa02m-update/lib/transaction.py:146-149` swallows a failed directory fsync after `os.replace` with no log (audit 2026-11-04 S2).** On the board's `commit=600` root fs a lost rename is then invisible — log it (durability, see the HIGH `commit=600` entry).
+
+- [OPEN] 2026-11-04 **[LOW] `scripts/lib.sh:951` `pip3 install --help | grep -q -- '--break-system-packages'` under `pipefail` is the quality-gate-rigor shape (f) in installer code (audit 2026-11-04 S3).** Latent while pip's help fits a pipe buffer; capture-then-match.
+
+- [OPEN] 2026-11-04 **[LOW, process] Squash-merge subjects must be English and ≤72 chars (invariant 5, `git-commits.md`); `8ce9bbde`, `e2325852`, `8166f392`, `95b46e77` are Russian and longer (audit 2026-11-04 I1).** The Orchestrator sets the subject at merge (`gh pr merge --squash --subject "<type>(<scope>): …"`); PR titles may stay Russian. History is not rewritten.
+
+- [OPEN] 2026-11-04 **[LOW, ci] GitHub `ubuntu-latest` moved to a 3.14 system Python (2026-11-04); the HomeKit venv step needs 3.12 (cp312 wheels in `requirements.lock`).** Pinned to `ubuntu-24.04` the same day (own PR). Residue: when the 24.04 image is retired, rebuild the lock for the new Python or install 3.12 via `actions/setup-python` with system site-packages dropped.
 - [OPEN] 2026-10-30 **[LOW] `etc/fix-eth1-internet.sh` builds the boot-FAT DTB through fixed, predictable
   `/tmp` names (audit 2026-10-30 F1, LOW part).** The Operator-run root one-shot copies the FAT DTB to
   `/tmp/src.dtb`, decompiles to `/tmp/patch.dts`, compiles `/tmp/patched.dtb` and copies that onto the boot FAT
@@ -15,26 +29,6 @@ entries are pruned (history lives in git); last prune 2026-10-30 (audit 2026-10-
   with every local service account (actor A2), so a pre-created or raced name can feed root a foreign DTB or
   boot script. Fix: one `mktemp -d` work dir, or retire the script (see the «Route-belt leftovers» entry, item (2)).
   Not started.
-- [RESOLVED] 2026-10-30 **[LOW] `sa02m-dtb-patch.sh` `verify_blob` does not catch the idempotency defect class (review of the eth0-PHY DTB change, round 1 advisory A3; BUGLOG 2026-10-30):** it checks only the EMAC first token, so a blob with a duplicated `icplus,ip101a` on the GMAC PHY or an EMAC list missing `ethernet-phy-ieee802.3-c22` (the bench 1.135 apply-#3 state, BUGLOG 2026-10-30) passes verification and is written to the FAT. Fix on its own branch (the DTB change's plan kept the `.sh` out of scope): after `fdtget -ts`, fail (exit 5, FAT untouched) when either PHY list has a duplicate token or lacks c22; RED-first case in `scripts/dev/test-dtb-patch-tool.sh` with the fdtget shim emitting the damaged lists. Fixed in 1.0.7.23: `verify_blob` refuses a duplicated string or a missing c22 in either PHY list (exit 5, FAT untouched), `check` warns on a non-canonical live list; T14–T16 RED-first (BUGLOG 2026-10-30, branch 1.0.7.23).
-- [OPEN] 2026-10-29 **[LOW] `opt/sa02m-modbus-mqtt/bridge_mr02m.py` is 1038 lines (review r2 A6)** — over the ~1000 default; `decompose` candidate (behaviour net = the 941-test bridge suite). Not started.
-- [RESOLVED] 2026-10-29 **[MED] Panel network save refuses on a board whose interfaces.d conf carries a hand-added
-  static route (1.0.7.18 follow-up, bench 1.135).** `etc/sa02m-iface-conf-write.sh` allowed only the KLogic hook and
-  the installer default-route `post-up`, so a conf with `post-up ip route add 192.168.10.0/24 via 192.168.1.100 …`
-  made every panel network save fail closed. Fixed in 1.0.7.24 (Operator chose
-  2026-10-30 a narrowed (a)): the helper admits a route line in a fixed-order subset of the
-  `boot-network-routes.md` §3 grammar ONLY when the byte-identical line is already in the current live destination
-  — a save can carry a root-written route, never plant one (`ethernet-iface-naming.md` §5.4). Review r1 on the same
-  branch also closed: a refused canonical write now refuses the WHOLE save (no legacy mirror, no live apply,
-  `{"ok":false,"error":"conf_write_refused"}`, an error toast instead of «сохранено» — it used to be silent, F1/F4);
-  `forms.js` stops reading apply.cgi's JSON refusals (incl. `invalid input`) as success; the helper's control-char
-  guard no longer pipes into `grep -q` under pipefail (F3). Review r2 (R2-1, Operator «Разрешить + страховка»): a
-  legacy end0/end1 conf also admits its canonical `dev eth0/eth1`, and a refused mirror after a written canonical
-  conf skips the live apply and answers `{"ok":true,"applied":false,"reason":"reboot_required"}` (warning toast
-  «…применятся только после перезагрузки устройства»). Review r3: the end1→eth1 half is pinned (W11c), and
-  `.toast.warn` finally has a style (it rendered as white on a blur — unreadable in the light theme for every warn
-  toast since 1.0.5.46; now the themed warn-button tokens, AA both themes). RED-first harnesses `scripts/dev/test-iface-conf-write.sh`
-  (row `iface-conf-write`) and `scripts/dev/test-apply-save-result.mjs` (row `js-unit-apply-save-result`). On-board
-  check on 1.135 pending rollout.
 - [OPEN] 2026-10-29 **[LOW] Route-belt leftovers (1.0.7.18 plan §4 / review round 3).** (1) A failed `ifup` also
   skips the KLogic `post-up /home/klogic/adjust-<if>` hook — not covered by the belt (it runs a vendor binary,
   must not be re-run blindly). (2) `etc/fix-eth1-internet.sh` (legacy one-shot fixer) embeds an old `fix-eth` copy
@@ -42,19 +36,6 @@ entries are pruned (history lives in git); last prune 2026-10-30 (audit 2026-10-
   (`ip 'route' add …`), `ip -batch <file>`, and line :124 matching the raw token instead of `base()`; name them in
   contract §3 «Чего хелпер не видит» or route them through `base()`. (4) Helper 299 lines / harness 631 lines —
   `decompose` if either keeps growing.
-- [OPEN] 2026-10-29 **[LOW] `.ai-dev/notes/quality-gate-environment.md` FAIL table misses two rows that fail
-  alone on a pristine HEAD on the Windows workstation (the eth0-PHY DTB change review, advisory 4; a third found at its
-  1.0.7.14 ship gate):** `web-install-secret`
-  (16 cases: POSIX 0600 modes, `os.O_NOFOLLOW`, pwrite/fsync injection, scrub cases — MSYS modes) and
-  `py-unit-alice` `test_atomic_commit_concurrent_writers_and_save_failure` (1 of 910; the env note lists
-  py-unit-alice only under «transient (host load)», but this case is RED alone), and `py-unit-rules`
-  `test_a_deep_chain_slipped_in_through_the_sandbox_ends_within_budget` (`RecursionError … while encoding a
-  JSON object`, 1 of 331 — the Windows CPython recursion budget is the suspect; same single error on a pristine
-  `git archive origin/1.0.7.12` extract, 2026-10-29). All reproduced by the
-  Builder, the Reviewer and the Orchestrator on throwaway pristine extracts; none touches a file of the eth0-PHY DTB change. Fix: add them to the
-  FAIL table with the cause, or make the cases SKIP (exit 77) off Linux the way `status-coordinator-projection`
-  does. CI (Linux) is green on both.
-
 - [OPEN] 2026-10-21 **[LOW] A long clip is always uploaded twice: the recogniser answers after the socket
   timeout (bench 1.135, RK3588 agent, series 8×30 s).** RK3588 needs 11–13 s to recognise a 30 s clip, more
   than `UPLOAD_TIMEOUT_S` = 10 s (audio-recorder.md §12). The first attempt times out, the second (10 s later)
@@ -92,14 +73,6 @@ entries are pruned (history lives in git); last prune 2026-10-30 (audit 2026-10-
   ci-linux-green (PATH masking via scripts/dev/lib_path_mask.sh; sandboxed CGI copy). Other `scripts/dev/`
   harnesses that remove a stand-in and rely on `command -v` failing, or run a shipped CGI whose side
   effects are real on a writable host, were not swept. The CI runner has passwordless sudo.
-- [OPEN] 2026-09-30 **[LOW] `opt/sa02m-alice/sa02m_alice/client/main.py` is 912 lines (1.0.6.66 review A4).**
-  A `decompose` candidate (reconnect/push loop, session lifecycle, status file).
-- [OPEN] 2026-09-29 **[LOW] A partial section skip reads as a row PASS (1.0.6.62 review A3).**
-  `test-web-update-launcher-guard.sh` runs L1–L7 everywhere but L8–L11 only where `flock(1)` exists; on
-  git-bash the row prints «PASS (all checks; SKIPPED here: L8–L11 (no flock))» and the runner counts it as
-  a PASS. The runner has two verdicts for a skip (whole-row exit 77) and none for a partial one. Fix
-  direction: a third runner verdict (e.g. exit 78 = PASS-with-skips, printed and summarised apart), or
-  split L8–L11 into its own row that exits 77 where `flock` is absent.
 - [OPEN] 2026-09-29 **[LOW] Children spawned while the update lock fd 9 is held inherit it (1.0.6.62
   review A7).** In practice they cannot outlive the runner's re-take of the lock after `exec`; recorded so
   a later long-lived child (a background helper started from the launcher) is checked against it.
@@ -108,14 +81,11 @@ entries are pruned (history lives in git); last prune 2026-10-30 (audit 2026-10-
   history paragraph («L9 was first built with the holder's pid…») that amends the «6 FAIL» record to 7
   instead of superseding it; the RED record already lives in commit `58306526`'s body. Fold into one
   current paragraph.
-- [OPEN] 2026-09-29 **[LOW] `run.mjs --touched main` diffs two-dot `main..HEAD` (1.0.6.62 review A9,
-  1.0.6.64 builder).** Once `main` moves past a branch's base, the selection includes main's own changes:
-  it errs to more rows but misreports the branch's scope (81 files / 68 rows vs the true 6 files). Fix:
-  resolve `--touched <ref>` against `git merge-base <ref> HEAD` (the `...` set) and print the base it used.
 - [OPEN] 2026-09-29 **[LOW] One transient `comment-mutation-proof` baseline failure (1.0.6.62 review
   A10).** Under host load from parallel agents the review beat once printed «mqtt-set-contract is not green
   on an unmutated tree»; three direct runs and a full re-run («ALL OK — 68 comment-out mutation(s)») were
   green. Watch for a recurrence; then read the baseline run's time budget like the 2026-09-24 flakes.
+  **Recurrence 2026-11-03** (audit 2026-11-04 Q1): the full review beat on the 1.0.7.28 tree printed «mqtt-tcp-probe-contract is not green on an unmutated tree» under the parallel Builder/Reviewer load; the row passed in the build beat and 3/3 alone — same host-load class. Catalogued in the env note by 1.0.7.29 (plan D3).
 - [OPEN] 2026-09-29 **[LOW] The offline update's `confirm_version` stage check still lists six stages
   (1.0.6.62).** Online «Применить» now refuses on every non-terminal stage (G7); the offline path's own
   stage check was not widened, because the launcher's lock already covers it. Recorded so a change to the
@@ -150,17 +120,6 @@ entries are pruned (history lives in git); last prune 2026-10-30 (audit 2026-10-
   only** (`etc/mosquitto/10listeners.conf:8`, LAN goes to 1884 with auth). Other rows cite the same
   premise (grep `1883` in that file). Still worded so on `main` at 1.0.7.1. Pending: a docs fix
   on its own branch.
-
-- [OPEN] 2026-09-24 **[MED] `install.sh --port N` is not persisted — the next re-render resets nginx to
-  9999.** `scripts/03-webserver.sh:12` and `scripts/11-devices.sh:18` default `PORT` to 9999 and render
-  `etc/nginx/network_config.conf` with it; `scripts/update-www-only.sh` never sets it, and nothing saves
-  the port chosen at install time. A board installed with `--port N` is switched back to 9999 by the
-  next www-only deploy (or refresh without `--port`). Found by the 1.0.6.53 fixup review (round 5),
-  verified by grep. Fix direction: persist the port (e.g. `/etc/sa02m_web.env` `SA02M_WEB_PORT`) at
-  install and read it in both renderers; harness case. OTA consequence (audit 2026-09-28 L4): the
-  runner's health gate hard-codes `http://127.0.0.1:9999/login.html` (`etc/sa02m-update-runner.sh:857`),
-  so a board installed with `--port N` fails the gate and rolls back EVERY OTA — the persisted port must
-  feed the health probe too.
 
 - [OPEN] 2026-09-16 **[MED] Retro-review owed for 1.0.6.46 (`1dfa503`), the one direct push to `main` (audit 2026-09-16 H1).** `1dfa503` (2026-09-10, 13 files incl. `bridge_fmb.py`/`bridge_mr02m.py`) landed with NO PR and no review stamp. The protection half of H1 is resolved: live `gh api …/branches/main/protection` on 2026-10-24 (audit F6) reads `contexts:["quality"]`, `strict:true`, `enforce_admins:true`, force pushes/deletions off (`.ai-dev/notes/ci-budget.md`). Still owed: a retroactive Reviewer pass over `1dfa503`'s diff.
 - [OPEN] 2026-09-16 **[MED] Audit M7: verification coverage** — no dependency-CVE row (pip deps installed unpinned `scripts/lib.sh:739-763`; Node-RED payload; frpc) — re-rank the 08-28 LOW item; 16 mutating/root-capable CGIs (cmd_exec, hw_set, kernel_ctrl, reboot, restart, web_creds, web_factory_reset, storage_format_set, mqtt_config, mqtt_ctrl, cpu_profile, gateway_ctrl, web_update_upload/cancel, ssh_debug, web_backup) have zero behavioural test references. **Operator decision owed:** add `pip-audit` / `npm audit --package-lock-only` rows, or record the accepted risk (1.0.6.49 plan: no row until decided). The CGI half now has a shape to reuse — `cgi-csrf-behaviour` covers two of the 16; the rest stay uncovered.
@@ -227,22 +186,6 @@ entries are pruned (history lives in git); last prune 2026-10-30 (audit 2026-10-
   converters, the «Умный дом» window, `docs/contracts/alice-mqtt-mapping.md`, and
   `led-mb2ws.md` where it applies. Design and evidence: the 1.0.6.51 plan's F-C5(b); the plan
   is transient, so re-derive.
-- [OPEN] 2026-09-23 **[MED] Armbian's log hooks move the journal to RAM every 15 min and
-  truncate it — the repo's `Storage=persistent` promise does not hold for `journalctl -b -1`.**
-  `etc/systemd/sa02m-journald.conf` (installed by `scripts/01-system.sh`) promises the journal
-  survives a reboot. Measured on 1.135: `armbian-ramlog.service` is DISABLED and `/var/log` is on
-  the eMMC (ext4), but the cron hook `armbian-truncate-logs` still runs every 15 min, calls
-  `journalctl --relinquish-var` (journal goes volatile to `/run/log/journal`, `RuntimeMaxUse=16M`);
-  it truncates and vacuums only at ≥75 % disk use (1.135 is at 64 %). The persistent journal is
-  written back only at the midnight flush (logrotate's `armbian-ramlog write`). Result: the
-  journal loses the middle of the day under a noisy bus (gaps 22 Sep 00:00→18:37, 23 Sep
-  00:00→06:00), and a power cut loses the day FROM THE JOURNAL VIEW. The text `/var/log/syslog`
-  on the eMMC still has every line (5,196 lines for 22 Sep 12:00), so the data is not lost. Only
-  the `journalctl -b -1` post-mortem the drop-in advertises is. (First filed 2026-09-23 as [HIGH]
-  «RAM-only until midnight, a power cut loses the day»; that premise was wrong. Corrected the
-  same day by the 1.0.6.51 planner's measurement and re-checked by the orchestrator.) Fix in
-  1.0.6.51 (Operator decision A-1: Armbian hooks off, journal persistent, 1-min sync; reaches a
-  board only via a full install or the next golden image, not OTA).
 - [OPEN] 2026-09-09 **[MED] An Alice «включи» is answered DONE while `sa02m-rules` is down.**
   The registry publishes `/devices/sa02m-rules-<sid>/controls/run/on` and reports success;
   with the engine stopped the publish is simply lost and the user gets «сделано» for a
@@ -658,6 +601,7 @@ entries are pruned (history lives in git); last prune 2026-10-30 (audit 2026-10-
   product's published default, `README.md:211`) — this accepted-risk record now
   names those homes too. The fourth copy, `.cursor/rules/sa02m_agent_ssh.mdc`,
   is cut in 1.0.6.39 (pointer only).
+  **Widened 2026-11-04 (audit S1, incomplete-enumeration shape):** the same default is spelled, as a fallback or a test fixture, in `install.sh:5,47`, `scripts/03-webserver.sh:18`, `tools/debian-rootfs/create-sa02m-rootfs.sh:35`, `tools/deploy/sa02m_deploy.py:92`, `tools/imaging/{capture-image-win.py:222, capture-image.ps1:66, run-cleanup-donor.py:69, serial-restore-ssh.py:24, wait-donor.sh:19, stand/postflash-monitor.py:208}`, `tools/sa02m_common.py:14`, `tools/ssh/{sa02m-check-perms.py:22, sa02m-remote.ps1:13, sa02m_remote.py:16,55}`, `tools/update/hw_acceptance_update.py:520`, the factory-defaults `password_hint` (`scripts/pack-factory-defaults.py:228`, the packed manifest), `.ai-dev/quality/checks/web-install-secret.sh:119,121` and `scripts/dev/test-web-auth.sh:343` (fixtures), `i18n.js:936` (the UI string). Record only — the KEEP decision stands for all of them; a change to the default edits every home.
 - [OPEN] 2026-08-06 **[LOW] Bulk Russian code comments in shell scripts, against
   invariant 5.** `PROTOCOL.md` invariant 5 puts code comments on the
   machine-facing axis — always English; `docLanguage: ru` reaches only `docs/`
@@ -855,13 +799,7 @@ entries are pruned (history lives in git); last prune 2026-10-30 (audit 2026-10-
   reset).** Closed parts of the 2026-09-09 8D are recorded in `docs/bugs/bench-136-reset.md` (D5 step F —
   the install lock — shipped in 1.0.6.51). Standing rule: no further install on 1.136 without a serial
   console attached; the next step is a console capture across one reset.
-- [OPEN] 2026-09-28 **[LOW] Quality follow-ups from 1.0.6.58.** (1) A CI strict mode: a SKIP should be a
-  FAIL where the environment is supposed to have the tool (e.g. an env var set in `web-quality.yml`).
-  (2) A gate requiring every row a contract cites to carry that contract in its `covers` — stops the audit
-  L7 class recurring. (3) Upgrade risk: the ai-dev installer ships its own template of
-  `.ai-dev/quality/run.mjs`; an upgrade that overwrites it would drop this project's runner fixes (the
-  SKIP verdict, the `--touched` union) — check `.ai-dev/procedures/upgrade.md` handling before the next
-  tooling bump.
+- [OPEN] 2026-09-28 **[LOW] Quality follow-ups from 1.0.6.58.** (1) A gate requiring every row a contract cites to carry that contract in its `covers` — stops the audit L7/C1 class recurring (1.0.7.29 fixes the 19 pairs over 16 rows the 2026-11-04 audit listed — the run-note says 20, a miscount; the gate is what prevents the next 20). (2) Upgrade risk: the ai-dev installer ships its own template of `.ai-dev/quality/run.mjs`; an upgrade that overwrites it would drop this project's runner fixes (the SKIP verdict, the `--touched` union) — check `.ai-dev/procedures/upgrade.md` handling before the next tooling bump. (The CI strict mode of the original item (1) shipped — `web-quality.yml` `QUALITY_STRICT`.)
 - [OPEN] 2026-09-29 **[LOW] Review advisories left open at the 1.0.6.61 ship.** MP-02 template
   (`opt/sa02m-modbus-mqtt/templates/`): (1) the fan_mode / operator-window semantics are told in three
   places (`config-mp02-ahu.json` `_comment`, `templates/README.md`, the test comment) and already word the
@@ -1048,7 +986,7 @@ entries are pruned (history lives in git); last prune 2026-10-30 (audit 2026-10-
 
 - [OPEN] 2026-10-07 **[LOW] vPLC asks for a bridge device type for Wilo SK712 drainage cabinets (Modbus RTU).** Their adapter is written against a proposed control set (vPLC `vplc/docs/UNITS_API.md` §5.4: `tank_level`, `pump1_run/pump2_run/pump1_alarm/pump2_alarm`, `overflow`, `manual`, frequency/hours, `ack`). SA-02m has no SK712 type; the cheapest path is a `type: template` descriptor in the shared devices catalogue (`CYNTRON-git/devices`, `docs/contracts/template-device.md`) — control names are then the descriptor's channel names, so agree the names in the descriptor, not in the bridge. Needs the SK712 Modbus map (not in any declared sibling). Nothing built; recorded from the vPLC session's message.
 
-- [OPEN] 2026-10-14 **[LOW] Stale remote branches — delete on the Operator's word (audit 2026-10-14 C-7/C-8, re-listed by audit 2026-10-24).** The local half is done: 0 plans + 1 stamp in the main checkout (`clk32-recovery`, its branch still open), `git worktree list` = the main checkout only; the one stale local branch is `1.0.7.10` (squash-merged, deletable locally). Left on `origin`, all non-version: `chore/backlog-2026-10-08`, `ci-linux-green`, `claude/audit-project-no-vplc-bf164f`, `claude/home-connect-homekit-integration-4llog3`, `claude/karel-controller-integration-847728`, `claude/side-findings-fixes-4llog3`, `replay/{backlog-2026-10-08,com-overrun,devices-value-clip,harness-sweep,mr-ai-type,mtd-scan-fix,rules-mqtt-overflow,template-poller-pult}` (replayed and merged), `wip/beeper-override-no-exec`, `wip/integrate-1.0.6.34-leftovers`. Keep every `origin/<version>` branch (the version record) and `origin/1.0.7.10` in particular (see the 2026-10-24 squash-body entry).
+- [OPEN] 2026-10-14 **[LOW] Stale remote branches (audit 2026-10-14 C-7/C-8; re-listed 2026-10-24 and 2026-11-04 G2).** 2026-11-04 state: 183 branches on `origin` — 132 with a MERGED or CLOSED PR, 48 with no PR (≈42 version branches of the pre-PR era 1.0.1…1.0.7.4 plus `claude/home-connect-…`, `claude/side-findings-…`, `docs-230`, `docs-238`, `wip/beeper-override-no-exec`, `wip/integrate-1.0.6.34-leftovers`). Deleting version branches is OTA-safe: `resolve_web_build_branch` ignores bare version pins and defaults to `main` (`etc/sa02m-web-build-lib.sh:57-75`). **Operator 2026-11-04: delete the merged+closed set, keep the 48 without a PR and `origin/1.0.7.10`** — executed by the Orchestrator the same day (result in the ship relay). Residue: the 48 no-PR branches — Operator's word when wanted. Local half: the agent worktrees/branches/stashes the audit §12 lists are the Operator's to delete (the classifier refuses destructive local git in-session).
 - [OPEN] 2026-10-08 **[LOW, flasher UX]** A CE-02m-3 wired to the panel through its EXTERNAL (top) RS-485 connector
   cannot be flashed from the panel: that connector is the meter's AUX port (USART1) and the shared bootloader
   listens on USART2 (end-face bus) only; CE app ≤ 1.0.7.10 even ACKs reg 129 on AUX without resetting (fixed on
@@ -1104,8 +1042,9 @@ entries are pruned (history lives in git); last prune 2026-10-30 (audit 2026-10-
   9. Watch list (cohesive or single-purpose for now): `flash_protocol.py` 2517 (three drivers), `device_config.py` 2302, `app/smarthome.js` 2301, `led_mb2ws.py` 1957, `sa02m_telemetry.py` 1835, `etc/sa02m-web-service-ctl.sh` 1755 (the Node-RED block), `scanner.py` 1735, `alice/config/api.py` 1705, `flasher/runner.py` 1686, `rules/engine.py` 1323, `rules/store.py` 1185, `device_history_db.py` (ranges/schema/write/query), `bridge_mqtt.py` (the `/meta` blob cluster → `bridge_meta.py`, covered by `test_meta_blob.py`); gate files `ui-layout.mjs` 1577, `sudoers-pin-contract.sh` 1513.
   10. **Operator decision owed:** `main.css` 6990 L has reached the «re-judge at 7k» trigger — split vs accept (sectioned, one token root; a split costs one link tag plus a `?v=`/`&r=` bust per file on the no-build stack).
   Already done, do not re-raise: `modbus_mqtt_bridge.py` (3422 L → 298, split into `bridge_*.py`), `app.js` (F10, a ~389 L core + the `app/` cluster).
+  **Update 2026-11-04 (audit §9, M1/M2):** 54 shipped non-test files over 800 L (was 55). Deltas: `devices.js` 4190→4242, `etc/sa02m-update-runner.sh` 3213→3248, `main.css` 6990→6993 (the 7k Operator decision still owed), `rules/engine.py` 1323→1452, `rules/store.py` 1185→1238, `scripts/lib.sh` 1568→1599; newly over 800: `rules/logic_templates.py` 986, `bridge_mr02m.py` 1038 (review r2 A6, folded here), `bridge_dtv_ce.py` 1006, `alice/client/main.py` 951 (1.0.6.66 A4, folded here). **Correction (M1):** the «already done: `app.js` ~389 L» line above is wrong — `app.js` is 975 L and was 975 at `d9ad2c8a`; re-listed. Additions by cohesion: (a) `rules/engine.py` — the logic-state persistence cluster (`_persist_logic`, `_mark_logic_dirty`, `_persist_all_logic`, `flush_logic_state`) → `logic_persist.py` beside `store.py`, pinned by `py-unit-rules` + `test_logic_persistence.py`; (b) `rules/logic_templates.py` — one module per template family (threshold `SwitchedByMe` family, `motion_light`, `away_home`, `air_quality_ventilation`) → a `logic/` package; (c) `app.js` — re-judge against the F10 core-vs-`app/` boundary; (d) `bridge_mr02m.py` / `bridge_dtv_ce.py` — split by function code / register map, net = the bridge suite; (e) `alice/client/main.py` — reconnect/push loop, session lifecycle, status file.
 - [OPEN] 2026-10-24 **[LOW] Keep `origin/1.0.7.10` — it holds the verification records the squash lacks (audit 2026-10-24 F5).** The squash `d9ad2c8a` (295 files) carries a two-line body without the three `git-commits.md` sections; the RED/GREEN records `quality-gate-rigor.md` «Record the mutation» requires live only on `origin/1.0.7.10` (69 commits) and PR #217. Every earlier squash on `main` (`64dcf148`, `4e4779e8`, `dff2c0d2`) concatenates the per-commit bodies — restore that step at the next squash.
-- [OPEN] 2026-10-24 **[LOW] Three contracts are in no quality row's `covers` and named by no row (audit 2026-10-24 F7).** `docs/contracts/gateway-transport.md` (run by `py-unit-gateway` → `test_transport_lifecycle.py`, named at `:79`), `port-ownership.md` (`port-coordinator`; `py-unit` → `test_poll_intent_refusal.py`), `status-polling.md` (`status-reliability`, `status-reliability-browser`, `status-cache-metadata`, `status-coordinator-projection`) — an edit to one selects no row under `--touched`. Shape (c) inside the last: `scripts/dev/test-status-reliability.mjs:163` `BENCH_TTL_S` copies the per-part TTLs of `status.cgi:2702-2737`, but `status-reliability` covers only `static/js/` and its own script, so a TTL change in `status.cgi` neither re-runs nor fails it. Fix: name each contract (and `status.cgi` for `status-reliability`) in the rows' `covers`, or derive the TTLs from `status.cgi`.
+- [OPEN] 2026-10-24 **[LOW] `status-reliability` copies the per-part TTLs of `status.cgi` but does not cover it (audit 2026-10-24 F7 residue; the three uncovered contracts of the original entry were named in `covers` by #232).** `scripts/dev/test-status-reliability.mjs:163` `BENCH_TTL_S` copies `status.cgi:2702-2737`, so a TTL change there neither re-runs nor fails the row. **In 1.0.7.29** (plan C: `status.cgi` added to the row's `covers`); the deeper fix — derive the TTLs from `status.cgi` — stays open after that.
 - [OPEN] 2026-10-24 **[LOW, security] Dead `/etc/nginx/.htpasswd` rewritten on every install (audit 2026-10-24 F9).** `scripts/03-webserver.sh:24-29` writes `admin:<apr1 hash of ADMIN_PASS>` on every run and nothing reads it (no `auth_basic` under `etc/nginx/`) — a dead file holding a password hash, reset to the default on `--refresh`. Fix: stop writing it and remove it on install (the installer is the upgrade path).
 - [OPEN] 2026-10-24 **[LOW] `sa02m-domain.md` tab table misses three cards (audit 2026-10-24 F10).** «Subsystems behind the tabs» (`docs/agent-rules/sa02m-domain.md:80-89`) claims to be the one home for tab ↔ frontend ↔ backend but has no row for HomeKit (`app/homekit.js`), Home Connect (`app/homeconnect.js`) or the agent API (`app/agentapi.js`) and their CGIs.
 - [OPEN] 2026-10-24 **[LOW, product — Operator] `docs/product.md` §6 predates six shipped capabilities (audit 2026-10-24 F11).** `:61-73` (last touched 2026-09-29) lists seven value items and nothing about the audio recorder and light music (1.0.7.4 / 1.0.7.10), HomeKit, Home Connect, the LED strip or the agent API. Offer the Operator a product-discovery update; the brief is not written without them.
