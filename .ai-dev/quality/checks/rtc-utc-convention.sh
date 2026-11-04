@@ -3,11 +3,19 @@
 #
 # NOT exempt from comment-mutation-proof, and the reason it used to give was
 # wrong: the sweep's fail-IF-PRESENT half is only pin 1. Pins 2-4 are
-# presence-FLOORED (HWCLOCK_MIN_SITES, I2C_WRITE_MIN_FNS, DATE_SET_MIN_SITES),
+# presence-FLOORED (HWCLOCK_FILE_FLOORS, I2C_WRITE_MIN_FNS, DATE_SET_MIN_SITES),
 # and the awk pass skips comment lines — so commenting the `--systohc --utc`
-# write sites out of lib_rtc.sh drops the resolved count below the floor and
-# this gate goes RED. That is now a registered case in comment-mutation-proof,
-# not a claim (review Q8, 1.0.6.24).
+# write sites out of lib_rtc.sh drops that file's resolved count below its
+# floor and this gate goes RED. That is a registered case in
+# comment-mutation-proof, not a claim (review Q8, 1.0.6.24).
+#
+# The hwclock floor is PER FLOORED FILE (the pinned caller lib_rtc.sh and the
+# convention home sa02m-pre-start.sh), not tree-wide. It used to be one count
+# (>=6) over the whole open-world sweep, which measured the wrong population:
+# PR #244 added two `hwclock --show --utc` sites under tools/, the total stayed
+# >=6 with a lib_rtc.sh write site commented out, and comment-mutation-proof
+# reported this gate hollow (CI run 41792809752). A site added anywhere else
+# must never be able to pay for a site lost from a floored file.
 #
 # Convention home (rationale + the divergence it caused): the comment block in
 # etc/sa02m-pre-start.sh at the DS3231 I2C load. In one line: the battery-backed
@@ -96,12 +104,17 @@ FILES=(
 # why docs/ and .ai-dev/ are absent).
 SWEEP_ROOTS=(etc scripts tools opt www install.sh)
 
-# Non-vacuity floors. At the time of writing: 4 hwclock accesses in lib_rtc.sh
-# (--show x2, --systohc x2) + 2 in sa02m-pre-start.sh (--show, -s); 2 I2C write
-# functions (DS3231, PCF8563); 1 chip-sourced `date -s` (the pre-start load).
-# Dropping below a floor means the sites moved — update this gate deliberately
-# rather than letting it pass on a shrinking set.
-HWCLOCK_MIN_SITES=6
+# Non-vacuity floors. Dropping below a floor means the sites moved — update
+# this gate deliberately rather than letting it pass on a shrinking set.
+# hwclock: one floor per floored file ("<path>:<min>", min a positive integer;
+# the table itself is guarded — fewer than 2 entries or a malformed one FAILS),
+# judged on that file's own resolved count; sites in other swept files are still
+# judged for --utc but count toward no floor. 2 I2C write functions (DS3231, PCF8563); 1 chip-sourced
+# `date -s` (the pre-start load).
+HWCLOCK_FILE_FLOORS=(
+    "$RTC_LIB:4"          # --show x2, --systohc x2
+    "$CONVENTION_HOME:2"  # --show, -s
+)
 I2C_WRITE_MIN_FNS=2
 DATE_SET_MIN_SITES=1
 
@@ -190,19 +203,38 @@ for f in "${hwc_files[@]:-}"; do
     ' "$f")
 done
 
-if [ "$hwc_sites" -lt "$HWCLOCK_MIN_SITES" ]; then
-    fail "only $hwc_sites hwclock chip access(es) resolved across ${#hwc_files[@]} file(s) — expected >=${HWCLOCK_MIN_SITES}; the call sites moved or the variable resolution drifted, update this gate"
-elif [ "$fails" -ne "$fails_before_pin2" ]; then
-    note "$hwc_sites hwclock chip access(es) checked; $((fails - fails_before_pin2)) without an explicit UTC frame (above)"
-else
-    pass "$hwc_sites hwclock chip access(es) across ${#hwc_files[@]} swept file(s) carry --utc"
+bad_sites=$((fails - fails_before_pin2))
+# Each floored file must still resolve at least its own floor — a file that
+# drops below means a site was removed or commented out, or the variable
+# resolution broke, never that the code got safer. A missing file resolves 0.
+# The floor table is itself non-vacuous: emptied or malformed, it would judge
+# nothing and pass, so it FAILS by name instead.
+floors_short=0
+floors_seen=""
+if [ "${#HWCLOCK_FILE_FLOORS[@]}" -lt 2 ]; then
+    fail "HWCLOCK_FILE_FLOORS holds ${#HWCLOCK_FILE_FLOORS[@]} entr(y/ies) — expected >=2 (lib_rtc.sh + sa02m-pre-start.sh); an emptied floor table judges nothing, restore it"
+    floors_short=$((floors_short + 1))
 fi
-# Both known callers must still contribute — a file that stops matching means
-# the variable resolution broke, not that the code got safer.
-for f in "$RTC_LIB" "$CONVENTION_HOME"; do
-    [ "${hwc_per_file["$f"]:-0}" -gt 0 ] \
-        || fail "$f contributed 0 hwclock access(es) — it is a known caller; the resolution or the file drifted, update this gate"
+for e in ${HWCLOCK_FILE_FLOORS[@]+"${HWCLOCK_FILE_FLOORS[@]}"}; do
+    if ! [[ $e =~ ^[^:]+:[1-9][0-9]*$ ]]; then
+        fail "HWCLOCK_FILE_FLOORS entry '$e' is malformed — expected <path>:<positive integer>; a broken entry judges nothing, fix it"
+        floors_short=$((floors_short + 1))
+        continue
+    fi
+    f=${e%:*}
+    min=${e##*:}
+    got=${hwc_per_file["$f"]:-0}
+    if [ "$got" -lt "$min" ]; then
+        fail "$f resolves $got hwclock chip access(es) — its floor is >=$min; a site was removed or commented out, or the variable resolution drifted (sites in other files do not count toward this floor), update this gate deliberately"
+        floors_short=$((floors_short + 1))
+    fi
+    floors_seen="${floors_seen:+$floors_seen, }${f##*/} $got>=$min"
 done
+if [ "$bad_sites" -ne 0 ]; then
+    note "$hwc_sites hwclock chip access(es) checked; $bad_sites without an explicit UTC frame (above)"
+elif [ "$floors_short" -eq 0 ]; then
+    pass "$hwc_sites hwclock chip access(es) across ${#hwc_files[@]} swept file(s) carry --utc; floored files at their floors ($floors_seen)"
+fi
 
 # ── 3. I2C chip writes derive their timestamp with `date -u` ───────────────
 # Open-world over the roots: a new write_<chip>_i2c_datetime in a new file is

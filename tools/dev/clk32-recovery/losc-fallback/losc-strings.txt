@@ -1,0 +1,335 @@
+Python 3.12.3
+== <module> (line 1) args=()
+   "sa02m-losc-fallback - on an A40i/R40 board whose RTC 32.768 kHz crystal is\ndead, feed the timer block's 32 kHz input (SYS_32K) from the CCU internal RC\nwith its auto-calibration on, so the hardware watchdog - and with it reboot,\nreboot -f and panic reset - has a clock again.\n\nHardware status: the calibrated switch, done by hand, restored reboot and the\nunfed-watchdog reset on the faulty ben
+   0
+   29491200
+   4096
+   784
+   788
+   3072
+   3120
+   3124
+   3128
+   3216
+   3220
+   380239872
+   256
+   31
+   3
+   1
+   5295
+   2
+   4
+   5
+   6
+   8
+   10
+   12
+   14
+   16
+   32768
+   43690
+   1.02
+   16000
+   34406
+   1.1
+   100
+   0.1
+   30000000
+   0.03
+   1.0
+   0.01
+   1000000
+   'the 32 kHz crystal counts; nothing written'
+   'found the timer input on the RC at an unsafe rate; put back on the crystal, which counts'
+   'timer 32 kHz input moved to the calibrated CCU RC at a watchdog-safe rate'
+   'timer 32 kHz input already on the CCU RC at a safe rate; nothing written'
+   'not an R40/A40i board; nothing done'
+   '/dev/mem cannot be mapped; nothing done'
+   'another instance holds the lock; nothing done'
+   'Timer2 is in use; refusing to measure'
+   'Timer2 does not count OSC24M correctly; its LOSC reading cannot be trusted'
+   'Timer2 sees no LOSC but the watchdog runs; switching would serve nothing'
+   'the rate could not be measured reliably; nothing written'
+   'stopped by a signal before reaching a result; sys32k/cali are the registers as left'
+   'cannot take the lock file; nothing done'
+   'unexpected error before any write; nothing changed'
+   'REVERT FAILED: the registers did not read back as found'
+   'switch not kept; SYS_32K back to LOSC, calibration as found'
+   ' - the crystal measured dead, so no working reset is expected'
+   'Paths'
+   'compatible lock state boot_id'
+   '/proc/device-tree/compatible'
+   '/run/sa02m-losc-fallback.lock'
+   '/run/sa02m-losc-fallback.json'
+   '/proc/sys/kernel/random/boot_id'
+   'MeasurementError'
+   'Interrupted'
+   'Result'
+   'MemBackend'
+   'Clock'
+   '_Held'
+   '_Run'
+   '__main__'
+   names: __doc__, json, os, signal, sys, time, collections, namedtuple, PAGE_BASE, PAGE_SIZE, SYS32K, INTOSC_CALI, TMR_IRQ_EN, T2_CTRL, T2_INTV, T2_CUR, WDT_CTRL, WDT_MODE, SYS32K_KEY, SYS32K_SRC_LOSC, SYS32K_DIV_MASK, SYS32K_FIELDS, CALI_MASK, CALI_ON, SRC_LOSC, SRC_OSC24M, WDT_PING, WDT_MODE_EN, WDT_SLOT_S, NOMINAL_HZ, SAFE_MAX_HZ, MARGIN, RC_MIN_HZ, FAST_BAND_HZ, COARSE_GUARD, DEAD_HZ, NOMINAL_BAND, OSC_MIN_HZ, OSC_MAX_HZ, GLITCH_MAX_HZ, AGREE_TOL, SWITCH_DIV, CALI_SETTLE_S, PLAN_LOSC, PLAN_OSC, PLAN_COARSE, PLAN_VERIFY, RELOAD_SETTLE_S, BRACKET_MAX_NS, MEASURE_ATTEMPTS, WDT_POLL_S, WDT_POLL_STEP_S,
+  == MeasurementError (line 122) args=()
+     'MeasurementError'
+     'A rate could not be read: args[0] is "preempted" or "disagree".'
+     names: __name__, __module__, __qualname__, __doc__
+  == Interrupted (line 126) args=()
+     'Interrupted'
+     'SIGTERM/SIGINT: unwinds through the revert path like an exception.'
+     names: __name__, __module__, __qualname__, __doc__
+  == Result (line 130) args=()
+     'Result'
+     names: __name__, __module__, __qualname__, __init__, property, line
+    == Result.__init__ (line 131) args=('self', 'outcome', 'reason', 'fields', 'state')
+       0
+       names: outcome, reason, items, fields, state, EXIT_CODE, get, exit_code, LEVEL, level
+    == Result.line (line 138) args=('self',)
+       '<%d>outcome=%s'
+       'reason='
+       '='
+       'reverted'
+       'losc_hz'
+       ''
+       ' '
+       ' — '
+       names: level, outcome, reason, append, FIELD_ORDER, tuple, fields, _fmt, SENTENCE, get, REVERT_SENTENCE, DEAD_HZ, REVERT_DEAD_SUFFIX, join
+      == Result.line.<locals>.<genexpr> (line 143) args=('.0',)
+         names: FIELD_ORDER
+  == _fmt (line 153) args=('v',)
+     ','
+     names: isinstance, list, join, str
+    == _fmt.<locals>.<genexpr> (line 155) args=('.0',)
+       names: _fmt_step
+  == _fmt_step (line 159) args=('x',)
+     'One window: `~` coarse, `!` discarded (glitch / disagreeing), `x` preempted.'
+     'hz'
+     'x'
+     'window'
+     'coarse'
+     '~'
+     ''
+     'used'
+     '!'
+     names: str
+  == _safe (line 165) args=('rate',)
+     names: MARGIN, SAFE_MAX_HZ
+  == MemBackend (line 170) args=()
+     'MemBackend'
+     names: __name__, __module__, __qualname__, __init__, rd, wr
+    == MemBackend.__init__ (line 171) args=('self', 'path')
+       0
+       'I'
+       4
+       'unsigned int is not 32 bits on this host'
+       names: mmap, os, open, O_RDWR, O_SYNC, PAGE_SIZE, MAP_SHARED, PROT_READ, PROT_WRITE, PAGE_BASE, _map, close, memoryview, cast, _words, itemsize, OSError
+    == MemBackend.rd (line 186) args=('self', 'off')
+       2
+       names: _words
+    == MemBackend.wr (line 189) args=('self', 'off', 'val')
+       4294967295
+       2
+       names: _words
+  == Clock (line 193) args=()
+     'Clock'
+     names: __name__, __module__, __qualname__, staticmethod, now_ns, sleep
+    == Clock.now_ns (line 194) args=()
+       names: time, monotonic_ns
+    == Clock.sleep (line 198) args=('seconds',)
+       names: time, sleep
+  == _Held (line 203) args=()
+     '_Held'
+     names: __name__, __module__, __qualname__, __init__, release
+    == _Held.__init__ (line 204) args=('self', 'fd')
+       names: fd
+    == _Held.release (line 207) args=('self',)
+       names: os, close, fd
+  == flock_lock (line 211) args=('path',)
+     'The lock handle, or None when another instance holds it.'
+     0
+     'O_NOFOLLOW'
+     'O_CLOEXEC'
+     384
+     names: fcntl, os, open, O_RDWR, O_CREAT, getattr, flock, LOCK_EX, LOCK_NB, BlockingIOError, close, _Held
+  == write_state (line 223) args=('path', 'state')
+     'tmp + rename in the same (root-only) directory: a reader sees old or new.'
+     '.tmp'
+     'O_NOFOLLOW'
+     0
+     420
+     'fchmod'
+     '\n'
+     'ascii'
+     names: os, open, O_WRONLY, O_CREAT, O_TRUNC, getattr, hasattr, fchmod, write, json, dumps, encode, close, replace
+  == _read (line 236) args=('path',)
+     'rb'
+     names: open, read, OSError
+  == _is_r40 (line 244) args=('path',)
+     b'allwinner,sun8i-r40'
+     b'\x00'
+     names: _read, split
+  == _install_signal_handlers (line 249) args=()
+     names: signal, SIGTERM, SIGINT, ValueError, OSError
+    == _install_signal_handlers.<locals>.handler (line 252) args=('signum', 'frame')
+       names: append, Interrupted
+  == _restore_signal_handlers (line 267) args=('prev',)
+     names: items, signal, ValueError, OSError, TypeError
+  == _Run (line 276) args=()
+     '_Run'
+     names: __name__, __module__, __qualname__, __init__, measure, rate, _record, wdt_enabled, ping, wdt_restart_clears, wdt_fields, revert, _revert_once, done, execute, probe, switch, engage, already_switched, prior_by
+    == _Run.__init__ (line 277) args=('self', 'hw', 'clock', 'paths', 'boot_id')
+       0
+       names: hw, clock, paths, boot_id, f, steps, orig_div, orig_cali, decided
+    == _Run.measure (line 286) args=('self', 'src', 'window')
+       0
+       4294967295
+       2
+       3
+       2000000000.0
+       -3
+       'preempted'
+       names: hw, clock, rd, T2_CTRL, T2_INTV, range, MEASURE_ATTEMPTS, wr, sleep, RELOAD_SETTLE_S, now_ns, T2_CUR, BRACKET_MAX_NS, MeasurementError
+    == _Run.rate (line 315) args=('self', 'src', 'plan', 'record')
+       'Mean of the windows agreeing with the median of several windows.\n        MeasurementError("preempted") when too few windows could be read at all,\n        ("disagree") when the readable ones do not agree.'
+       'preempted'
+       'disagree'
+       2
+       names: range, append, measure, MeasurementError, sorted, len, _record, max, AGREE_TOL, DEAD_HZ, abs, sum
+      == _Run.rate.<locals>.<genexpr> (line 327) args=('.0',)
+         names: GLITCH_MAX_HZ
+    == _Run._record (line 342) args=('self', 'window', 'marks', 'centre')
+       0
+       1
+       names: GLITCH_MAX_HZ, abs, steps, append, SWITCH_DIV, int, round
+    == _Run.wdt_enabled (line 352) args=('self',)
+       names: bool, hw, rd, WDT_MODE, WDT_MODE_EN
+    == _Run.ping (line 355) args=('self',)
+       names: wdt_enabled, hw, wr, WDT_CTRL, WDT_PING
+    == _Run.wdt_restart_clears (line 359) args=('self',)
+       0.0
+       1
+       names: ping, WDT_POLL_S, clock, sleep, WDT_POLL_STEP_S, hw, rd, WDT_CTRL
+    == _Run.wdt_fields (line 369) args=('self', 'rate')
+       3
+       15
+       'wdt_interval_s'
+       0
+       1
+       'wdt_timeout_eff_s'
+       names: hw, rd, WDT_MODE, WDT_SLOT_S, get, f, round, NOMINAL_HZ
+    == _Run.revert (line 377) args=('self',)
+       names: _revert_once, Interrupted
+    == _Run._revert_once (line 385) args=('self',)
+       'SYS_32K back to LOSC with the divider found, then the calibration\n        bits back to what was found - the RC is deselected before it loses lock.'
+       names: ping, hw, wr, SYS32K, SYS32K_KEY, SYS32K_SRC_LOSC, orig_div, rd, SYS32K_FIELDS, INTOSC_CALI, CALI_MASK, orig_cali
+    == _Run.done (line 398) args=('self', 'outcome', 'reason')
+       'steps'
+       '0x%08x'
+       'sys32k'
+       'cali'
+       names: steps, f, hw, rd, SYS32K, INTOSC_CALI, Result
+    == _Run.execute (line 406) args=('self',)
+       1
+       4
+       'anomalous'
+       'timer2-busy'
+       'measurement-error'
+       'interrupted'
+       names: hw, rd, T2_CTRL, TMR_IRQ_EN, done, SYS32K, SYS32K_DIV_MASK, orig_div, INTOSC_CALI, orig_cali, SYS32K_SRC_LOSC, already_switched, probe, MeasurementError, Interrupted, decided
+    == _Run.probe (line 426) args=('self',)
+       'losc_hz'
+       'nominal'
+       'off-nominal'
+       'band'
+       'healthy'
+       'osc_hz'
+       'anomalous'
+       'timer2-unreliable'
+       'wdt-alive'
+       names: rate, SRC_LOSC, PLAN_LOSC, int, round, f, DEAD_HZ, abs, NOMINAL_HZ, NOMINAL_BAND, done, SRC_OSC24M, PLAN_OSC, OSC_MIN_HZ, OSC_MAX_HZ, wdt_enabled, wdt_restart_clears, switch
+    == _Run.switch (line 441) args=('self',)
+       'exception'
+       0
+       'preempted'
+       'measurement-error'
+       'rc-unstable'
+       'interrupted'
+       'reverted'
+       names: engage, MeasurementError, args, Interrupted, Exception, revert, decided, done
+    == _Run.engage (line 463) args=('self',)
+       'None when switched at a safe, verified rate; else the revert reason.\n        Calibration goes on first, so the RC is never selected uncalibrated.'
+       'ccu-write-ignored'
+       'coarse'
+       'rc_hz'
+       'rc-too-fast'
+       'precise'
+       'rc-not-counting'
+       'rc-too-slow'
+       'divider'
+       'band'
+       'wdt-not-following'
+       'yes'
+       'wdt_restart_clears'
+       'wdt-disabled'
+       names: hw, wr, INTOSC_CALI, orig_cali, CALI_MASK, CALI_ON, clock, sleep, CALI_SETTLE_S, ping, SYS32K, SYS32K_KEY, SWITCH_DIV, rd, SYS32K_FIELDS, rate, SRC_LOSC, PLAN_COARSE, SAFE_MAX_HZ, COARSE_GUARD, int, round, f, PLAN_VERIFY, DEAD_HZ, RC_MIN_HZ, _safe, _band, wdt_fields, wdt_enabled, wdt_restart_clears
+    == _Run.already_switched (line 496) args=('self', 'reg')
+       'divider'
+       'precise'
+       0
+       'preempted'
+       'rc_hz'
+       'band'
+       'by'
+       'rc-unstable'
+       'rc-not-counting'
+       'rc-too-slow'
+       'rc-too-fast'
+       'reverted'
+       'wdt_timeout_eff_s'
+       'losc_hz'
+       'nominal'
+       'off-nominal'
+       names: SYS32K_DIV_MASK, f, rate, SRC_LOSC, PLAN_VERIFY, MeasurementError, args, int, round, wdt_fields, RC_MIN_HZ, _safe, _band, prior_by, decided, done, DEAD_HZ, revert, pop, PLAN_LOSC, abs, NOMINAL_HZ, NOMINAL_BAND
+    == _Run.prior_by (line 538) args=('self',)
+       'utf-8'
+       'boot_id'
+       'unknown'
+       'outcome'
+       'switched'
+       'already-switched'
+       'by'
+       'this-helper'
+       names: _read, paths, state, json, loads, decode, ValueError, UnicodeDecodeError, isinstance, dict, boot_id, get
+  == _band (line 552) args=('rate',)
+     'fast-safe'
+     1
+     'slow'
+     'nominal'
+     names: FAST_BAND_HZ, NOMINAL_HZ, NOMINAL_BAND
+  == _state (line 560) args=('result', 'boot_id')
+     1
+     names: outcome, reason, STATE_KEYS, fields, get
+  == run (line 567) args=('backend_factory', 'clock', 'paths', 'lock')
+     'One run of the fallback. Never raises; the Result carries line, exit code, state.'
+     'anomalous'
+     'interrupted'
+     names: _install_signal_handlers, _run, flock_lock, _restore_signal_handlers, Interrupted, Result
+  == _run (line 578) args=('backend_factory', 'clock', 'paths', 'lock')
+     'unsupported'
+     'not-r40'
+     'no-devmem'
+     'internal-error'
+     'lock-failed'
+     'busy'
+     'ascii'
+     'replace'
+     'exception'
+     names: _is_r40, compatible, Result, OSError, ValueError, lock, _read, boot_id, decode, strip, _Run, execute, Exception, _state, state, release
+  == main (line 604) args=()
+     'unwritten'
+     'state'
+     '\n'
+     'utf-8'
+     names: run, MemBackend, Clock, DEFAULT_PATHS, state, write_state, OSError, fields, sys, stdout, buffer, write, line, encode, flush, exit_code
