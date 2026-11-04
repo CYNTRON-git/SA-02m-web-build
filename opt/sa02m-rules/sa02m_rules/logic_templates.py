@@ -250,6 +250,8 @@ class MotionLight(LogicBase):
         # from the restore — but only when no sensor in the mirror shows motion
         # (after a same-template edit a steady motion=1 sends no new edge).
         self._cleared()
+        if self._blocked():  # a restored manual block ends on its own clock
+            self._sched(self._blocked_until - self.rt.now(), "unblock")
 
     def on_state(self, device: str, cap: str, value: Any, prev: Any) -> None:
         if device in _ids(self.p, "lights") and cap in ("on_off", "brightness") \
@@ -320,14 +322,23 @@ class MotionLight(LogicBase):
 
     def export_state(self) -> Optional[Dict[str, Any]]:
         # `_lit` gates the switch-off: lost on a restart, lights this
-        # template lit would never be switched off by it.
-        return {"lit": True} if self._lit else None
+        # template lit would never be switched off by it. The manual block
+        # (wall switch / a hand change) is wall-clock time like the
+        # air-quality pause: lost on an edit or a restart, the re-armed off
+        # timer would switch off a light the user took over.
+        blocked = self._blocked()
+        if not (self._lit or blocked):
+            return None
+        state: Dict[str, Any] = {"lit": self._lit}
+        if blocked:
+            state["blocked_until"] = self._blocked_until
+        return state
 
     def restore_state(self, state: Dict[str, Any]) -> bool:
-        lit = state.get("lit")
-        if not isinstance(lit, bool):
+        lit, until = state.get("lit"), state.get("blocked_until", 0.0)
+        if not isinstance(lit, bool) or isinstance(until, bool) or _reading(until) is None:
             return False
-        self._lit = lit
+        self._lit, self._blocked_until = lit, float(until)
         return True
 
 
