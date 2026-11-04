@@ -41,9 +41,33 @@ HC_VAR_DIR=/var/lib/sa02m-homeconnect
 HC_RUN_DIR=/run/sa02m-homeconnect
 HC_CONF=/etc/sa02m-homeconnect/sa02m-homeconnect.conf
 HC_PKG_DIR=/opt/sa02m-homeconnect
+# Scenario engine: the previous owner's run history, notify queue, per-scenario
+# last run/error and logic-template state go; scenarios.json (the scenarios,
+# library, vars) stays (Operator decision 2026-11-04; home of the list:
+# docs/contracts/cloud-scenarios.md «Сброс к заводским настройкам»). Paths and
+# the empty journal are pinned to sa02m_rules.store by the harness (R6).
+RULES_UNIT=sa02m-rules.service
+RULES_DIR=/etc/sa02m-rules
+# One home: sa02m_rules.store.empty_journal(). Written, not deleted: with no
+# runs.json at all the engine's migrate_journal would copy the runs of a
+# never-migrated pre-1.0.6.41 document back into a new one.
+RULES_EMPTY_JOURNAL='{"runs":[],"notify_queue":[],"last":{}}'
+# Audio recorder: the upload bearer token and the upload destination go, the
+# rest of its conf stays (home: docs/contracts/audio-recorder.md §19). The dir
+# is www-data's own (2750 www-data:sa02m-audio): every op goes through fr_safe.
+AU_UNIT=sa02m-audio.service
+AU_DIR=/etc/sa02m-audio
+AU_CONF=$AU_DIR/sa02m-audio.conf
+AU_TOKEN_NAME=upload.token
 # Units phase 1 of erase_owner_state found ACTIVE before it stopped them — the
 # ones a rollback starts again (restart_stopped_units).
 RESTART_UNITS=()
+# The subset stopped only for the erase: started again on success too
+# (resume_quiesced_units). HomeKit / Home Connect stay off on success (Q-F).
+RESUME_UNITS=()
+# Every unit stopped only for the erase, active before or not — phase 3
+# re-checks each is still down before it reports the erase done.
+QUIESCED_UNITS=()
 
 SELF="${BASH_SOURCE[0]:-$0}"
 CMD="${1:-run}"
@@ -1193,6 +1217,10 @@ MAP
 # A rollback (fail / the ERR trap) starts again every unit phase 1 found active
 # (restart_stopped_units) — its state was read before the conf reset, because a
 # daemon polling its conf would exit on the template before we looked.
+# The scenario engine and the audio recorder join the same two phases (stop
+# only — their confs stay, and nothing of theirs is copied into the rollback
+# journal, which stays on the board after a successful reset); phase 3
+# (resume_quiesced_units) starts them again on success when they were running.
 unit_stopped() {
   local st
   st=$(timeout 10 systemctl is-active "$1" 2>/dev/null) || true
@@ -1283,22 +1311,165 @@ wipe_agent_api_identity() {
   fi
 }
 
+rules_installed() {
+  [ -e "$RULES_DIR" ] || [ -L "$RULES_DIR" ]
+}
+
+audio_installed() {
+  [ -e "$AU_DIR" ] || [ -L "$AU_DIR" ]
+}
+
+# Did phase 1 find $1 active (remember_if_active recorded it)?
+was_active() {
+  local u
+  for u in "${RESTART_UNITS[@]}"; do
+    [ "$u" = "$1" ] && return 0
+  done
+  return 1
+}
+
+# A name phase 2 removes or replaces: absent, a regular file, or a symlink (the
+# link itself goes, never its target). Anything else — a directory planted in
+# its place — is refused here, before anything is erased.
+erasable_name() {
+  [ -L "$1" ] || [ ! -e "$1" ] || [ -f "$1" ]
+}
+
+# Phase 1 for a unit stopped only for the erase: remembered for the rollback
+# and, when it was running, for the start again on success.
+quiesce_for_erase() {
+  remember_if_active "$1"
+  if was_active "$1"; then RESUME_UNITS+=("$1"); fi
+  QUIESCED_UNITS+=("$1")
+}
+
+# The engine rewrites runs.json and logic_state.json from memory when it stops
+# (RulesApp.stop flushes both), so it is stopped and verified down first.
+quiesce_rules() {
+  local f
+  quiesce_for_erase "$RULES_UNIT"
+  for f in runs.json logic_state.json http-allow.json; do
+    erasable_name "$RULES_DIR/$f" || fail E_APPLY "$RULES_DIR/$f is not a file — nothing was erased"
+  done
+  timeout 20 systemctl stop "$RULES_UNIT" >/dev/null 2>&1 || true
+  unit_stopped "$RULES_UNIT" || fail E_APPLY "scenario engine did not stop — nothing was erased"
+}
+
+quiesce_audio() {
+  quiesce_for_erase "$AU_UNIT"
+  erasable_name "$AU_DIR/$AU_TOKEN_NAME" || fail E_APPLY "$AU_DIR/$AU_TOKEN_NAME is not a file — nothing was erased"
+  # fr_safe force-key refuses these too; refused here, nothing is erased yet.
+  if [ -L "$AU_CONF" ] || { [ -e "$AU_CONF" ] && [ ! -f "$AU_CONF" ]; }; then
+    fail E_APPLY "$AU_CONF is a symlink or not a regular file — nothing was erased"
+  fi
+  timeout 20 systemctl stop "$AU_UNIT" >/dev/null 2>&1 || true
+  unit_stopped "$AU_UNIT" || fail E_APPLY "audio recorder did not stop — nothing was erased"
+}
+
+rules_erased() {
+  [ ! -e "$RULES_DIR/logic_state.json" ] && [ ! -L "$RULES_DIR/logic_state.json" ] \
+    && [ ! -e "$RULES_DIR/http-allow.json" ] && [ ! -L "$RULES_DIR/http-allow.json" ] \
+    && python3 -I -c '
+import json, os, sys
+with os.fdopen(os.open(sys.argv[1], os.O_RDONLY | os.O_NOFOLLOW), encoding="utf-8") as f:
+    sys.exit(0 if json.load(f) == json.loads(sys.argv[2]) else 1)
+' "$RULES_DIR/runs.json" "$RULES_EMPTY_JOURNAL" 2>/dev/null
+}
+
+# Phase 2 only — the engine is verified down. runs.json is REPLACED by the
+# empty journal (always, also when it was absent); logic_state.json and
+# http-allow.json are removed. Then verified: a cloud `ack_notify` is a
+# read-modify-write of runs.json from another process, so one mismatch gets
+# one more pass before the reset gives up.
+erase_rules_history() {
+  local src="$JOURNAL_DIR/rules-empty-journal.json" out try
+  # Outside $JOURNAL_DIR/files: a rollback never "restores" it.
+  printf '%s\n' "$RULES_EMPTY_JOURNAL" >"$src"
+  for try in 1 2; do
+    if [ -L "$RULES_DIR/runs.json" ]; then
+      out=$(fr_safe remove-name "$RULES_DIR" runs.json 2>&1) || fail E_APPLY "scenario run journal not erased: $out"
+    fi
+    out=$(fr_safe install "$src" "$RULES_DIR/runs.json" 0644 root:root 2>&1) || fail E_APPLY "scenario run journal not erased: $out"
+    [ -z "$out" ] || log "rules: $out"
+    out=$(fr_safe remove-name "$RULES_DIR" logic_state.json 2>&1) || fail E_APPLY "scenario template state not erased: $out"
+    [ -z "$out" ] || log "rules: $out"
+    out=$(fr_safe remove-name "$RULES_DIR" http-allow.json 2>&1) || fail E_APPLY "scenario HTTP host allow-list not erased: $out"
+    [ -z "$out" ] || log "rules: $out"
+    if rules_erased; then
+      log "rules: run journal emptied, template state and HTTP host allow-list removed; scenarios kept (docs/contracts/cloud-scenarios.md «Сброс к заводским настройкам»)"
+      return 0
+    fi
+    [ "$try" = 1 ] || fail E_APPLY "scenario run history changed under the reset — run the reset again"
+  done
+}
+
+# Phase 2 only — the recorder is verified down. The ORDER is the safety
+# property: the destination goes first. A crash between the two leaves a token
+# with no URL (no upload); the other order leaves the URL with no token, and
+# the daemon reads a missing token as "none set" and sends the next clip to the
+# previous owner's endpoint unauthenticated.
+erase_audio_upload() {
+  local out
+  out=$(fr_safe force-key "$AU_CONF" upload_url "" 2>&1) || fail E_APPLY "audio upload destination not cleared: $out"
+  out=$(fr_safe remove-name "$AU_DIR" "$AU_TOKEN_NAME" 2>&1) || fail E_APPLY "audio upload token not erased: $out"
+  # remove-name passes over a name it cannot unlink (a directory planted
+  # since phase 1): this check is what makes that failure visible.
+  if [ -e "$AU_DIR/$AU_TOKEN_NAME" ] || [ -L "$AU_DIR/$AU_TOKEN_NAME" ]; then
+    fail E_APPLY "audio upload token not erased"
+  fi
+  log "audio: upload destination cleared, upload token removed (docs/contracts/audio-recorder.md §19)"
+}
+
+# Phase 3, success path only. A unit stopped for the erase that runs again —
+# a panel session can start it by hand (services_ctrl.cgi) while the reset
+# works — may hold the previous owner's state and write it back: it is stopped
+# and erased once more; still running -> E_APPLY. Then every such unit that was
+# active before the reset is started again — best effort, as in
+# restart_stopped_units: a start failure is logged, never fails a reset whose
+# erase is done.
+resume_quiesced_units() {
+  local u
+  for u in "${QUIESCED_UNITS[@]}"; do
+    unit_stopped "$u" && continue
+    log "WARN $u was started during the reset — stopping it and erasing again"
+    timeout 20 systemctl stop "$u" >/dev/null 2>&1 || true
+    unit_stopped "$u" || fail E_APPLY "$u was started during the reset"
+    case "$u" in
+      "$RULES_UNIT") erase_rules_history ;;
+      "$AU_UNIT") erase_audio_upload ;;
+    esac
+  done
+  for u in "${RESUME_UNITS[@]}"; do
+    if timeout 20 systemctl start "$u" >/dev/null 2>&1; then
+      log "started $u again (it was active before the reset)"
+    else
+      log "WARN $u was active before the reset and did not start again — start it by hand"
+    fi
+  done
+  RESUME_UNITS=()
+}
+
 # Every stop is verified inside its quiesce_* (fail exits), so reaching the
 # erase calls means every installed unit whose state goes is down. HomeKit is
 # quiesced first so a bridge that will not stop leaves Home Connect running.
 erase_owner_state() {
-  local hk=0 hc=0
+  local hk=0 hc=0 ru=0 au=0
   if homekit_installed; then hk=1; else log "homekit: bridge not installed — nothing to erase"; fi
   if homeconnect_installed; then hc=1; else log "homeconnect: client not installed — nothing to erase"; fi
+  if rules_installed; then ru=1; else log "rules: scenario engine not installed — nothing to erase"; fi
+  if audio_installed; then au=1; else log "audio: recorder not installed — nothing to erase"; fi
   if [ "$hk" = 1 ]; then quiesce_homekit; fi
   if [ "$hc" = 1 ]; then quiesce_homeconnect; fi
-  if [ "$hk" = 1 ]; then
-    wipe_homekit_pairings
-  fi
-  if [ "$hc" = 1 ]; then
-    wipe_homeconnect_signin
-  fi
+  if [ "$ru" = 1 ]; then quiesce_rules; fi
+  if [ "$au" = 1 ]; then quiesce_audio; fi
+  # One line per call: commenting a call out (comment-mutation-proof) must
+  # leave a script that still parses — an empty `then` is a syntax error.
+  if [ "$hk" = 1 ]; then wipe_homekit_pairings; fi
+  if [ "$hc" = 1 ]; then wipe_homeconnect_signin; fi
+  if [ "$ru" = 1 ]; then erase_rules_history; fi
+  if [ "$au" = 1 ]; then erase_audio_upload; fi
   wipe_agent_api_identity
+  resume_quiesced_units
 }
 
 verify_reset() {

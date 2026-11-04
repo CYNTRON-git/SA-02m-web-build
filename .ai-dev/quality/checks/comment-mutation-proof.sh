@@ -316,7 +316,7 @@ alice-conf-homes|etc/sa02m-restore-backup.sh|re.compile(r"^/etc/sa02m-homekit/sa
 alice-conf-homes|etc/sa02m-restore-backup.sh|"/etc/sa02m-homekit": (0o2750
 installer-order|install.sh|sa02m_run_module 06c-homekit.sh
 installer-svc-policy-gate|scripts/06c-homekit.sh|sa02m_svc_capture "$UNIT"
-factory-reset-runner|etc/sa02m-factory-reset-runner.sh|  wipe_homekit_pairings
+factory-reset-runner|etc/sa02m-factory-reset-runner.sh|then wipe_homekit_pairings; fi
 factory-reset-runner|etc/sa02m-factory-reset-runner.sh|fr_safe verify-backup "$out"
 factory-reset-runner|etc/sa02m-factory-reset-runner.sh|!= (ours.st_dev, ours.st_ino): drop_swapped(target)
 factory-reset-runner|etc/sa02m-factory-reset-runner.sh|if foreign: drop_foreign(pfd, dreal, name, lst, kind)
@@ -339,7 +339,7 @@ alice-conf-homes|etc/sa02m-restore-backup.sh|"/etc/sa02m-homeconnect": (0o2750
 alice-conf-homes|scripts/06d-homeconnect.sh|os.fchmod(fd, 0o640)
 installer-order|install.sh|sa02m_run_module 06d-homeconnect.sh
 installer-svc-policy-gate|scripts/06d-homeconnect.sh|sa02m_svc_capture "$UNIT"
-factory-reset-runner|etc/sa02m-factory-reset-runner.sh|  wipe_homeconnect_signin
+factory-reset-runner|etc/sa02m-factory-reset-runner.sh|then wipe_homeconnect_signin; fi
 factory-reset-runner|etc/sa02m-factory-reset-runner.sh|systemctl stop "$HC_UNIT"
 factory-reset-runner|etc/sa02m-factory-reset-runner.sh|fr_safe remove-name "$HC_RUN_DIR" link.json
 factory-reset-runner|etc/sa02m-factory-reset-runner.sh|unit_stopped "$HK_UNIT" || fail E_APPLY
