@@ -918,7 +918,9 @@ fail() {
 # --- preserve / wipe lists ---------------------------------------------------
 load_lists() {
   local ver_dir wipe_f preserve_f
-  ver_dir=$(resolve_defaults_dir)
+  # Same refusal run_reset gives a moment later; without it `set -e` ended the
+  # run here with the transaction left at «validating».
+  ver_dir=$(resolve_defaults_dir) || fail E_INTERNAL "factory defaults not installed"
   wipe_f="$ver_dir/lists/wipe.list"
   preserve_f="$ver_dir/lists/preserve.list"
   if [ ! -f "$wipe_f" ]; then
@@ -981,22 +983,23 @@ is_wipe_allowed() {
   return 1
 }
 
+# A full install (scripts/03-webserver.sh) leaves current/ AND a copy on the
+# top level: 1.0.5.66/, current/, lists/, templates/ side by side, with no
+# folder named after the running version. `sort -V` puts any name after every
+# version number, so only a version-named folder may win the "highest" pick —
+# taking templates/ ended every web reset on such a board at «templates
+# missing» (bench 1.135, 2026-11-04). Each candidate must hold templates/.
 resolve_defaults_dir() {
-  local ver bundled
+  local ver="" bundled="" cand
   ver=$(tr -d '\r' </var/www/network_config/VERSION 2>/dev/null | grep -E '^[0-9]+(\.[0-9]+){1,3}$' | head -1 || true)
-  if [ -n "$ver" ] && [ -d "$DEFAULTS_ROOT/$ver" ]; then
-    printf '%s\n' "$DEFAULTS_ROOT/$ver"
-    return 0
-  fi
-  bundled=$(ls -1d "$DEFAULTS_ROOT"/*/ 2>/dev/null | sort -V | tail -1 || true)
-  if [ -n "$bundled" ]; then
-    printf '%s\n' "${bundled%/}"
-    return 0
-  fi
-  if [ -d /etc/sa02m-factory-defaults/templates ]; then
-    printf '%s\n' /etc/sa02m-factory-defaults
-    return 0
-  fi
+  bundled=$(ls -1 "$DEFAULTS_ROOT" 2>/dev/null | grep -E '^[0-9]+(\.[0-9]+){1,3}$' | sort -V | tail -1 || true)
+  for cand in ${ver:+"$DEFAULTS_ROOT/$ver"} ${bundled:+"$DEFAULTS_ROOT/$bundled"} \
+              "$DEFAULTS_ROOT/current" "$DEFAULTS_ROOT" /etc/sa02m-factory-defaults; do
+    if [ -d "$cand/templates" ]; then
+      printf '%s\n' "$cand"
+      return 0
+    fi
+  done
   return 1
 }
 
