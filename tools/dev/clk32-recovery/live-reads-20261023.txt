@@ -1,0 +1,66 @@
+Read-only observations taken on 2026-10-23 during the recovery session, over SSH.
+Transcribed from that session's command output; the commands are given so they
+can be repeated. Nothing was written to either board.
+
+== Registers (python3, mmap of /dev/mem with PROT_READ, page 0x01C20000)
+
+board A: MAC 02:53:ce:20:92:4c, machine-id 6f7b9576576044329644c94501eaff2c
+         (dead crystal; on 192.168.1.136 until ~17:20, then disconnected)
+board B: 192.168.1.135, MAC 02:53:d2:07:07:58 (healthy)
+
+register              board A     board B
+LOSC_CTRL  0x01C20400 00000000    00000001
+LOSC_AUTO_SWT_STA 0404 00000004    00000001
+CCU 0x01C20310        00000100    00000100
+CCU 0x01C20314        00000000    00000000
+0x01C20C94            0000005b    0000005b
+
+board C: MAC 02:53:4e:1c:79:58, machine-id 597af708f5e747a98bbc4f55c80bf9b0
+         (on 192.168.1.136 from ~17:20; web 1.0.7.10)
+LOSC_CTRL 00000001, LOSC_AUTO_SWT_STA 00000001, 0x310 00000100,
+0x314 00000000, WDT 0x01C20C90 00000000, 0x01C20C94 0000005b
+
+== U-Boot area, boards A and B
+dd if=/dev/mmcblk2 bs=1k skip=8 count=1016 | md5sum
+  -> 0fd75d831f74811db701e44a3a84c702 on both
+  strings: "U-Boot 2022.04 (May 29 2025 - 18:34:57 +0300) Allwinner Technology"
+
+== Board A, persistence check
+FAT /dev/mmcblk2p1 mounted read-only: boot.scr 261 bytes (2026-09-24):
+  setenv bootargs root=/dev/mmcblk2p2 rootwait threadirqs; fatload zImage +
+  sun8i-a40i-sk.dtb; bootz
+grep over /etc /usr/local /usr/lib/systemd /lib/systemd /opt for
+  0x01C20310|16AA|SYS_32K|axp221|i2cset .. 0x34|clk32|osc32|LOSC -> no file
+/usr/lib/systemd/system-shutdown/ and /lib/systemd/system-shutdown/ : no entries listed
+/etc/systemd/system.conf.d/ : sa02m-timeouts.conf, sa02m-watchdog.conf only
+  (no zz-bench-rebootwdt.conf from the 2026-10-21 trial)
+/root/wdt-time.py: 1171 bytes, every byte a blank or NUL
+/root file mtimes (board clock): clk32-probe.py, regs.py 10-22 11:06;
+  rc-cali.py 14:26, rc-cali2.py 14:27, wdt-time.py 14:28, wdt-time.log 14:29,
+  switch-cali.py 14:30
+kernel log of the 2026-10-22 boots inspected: "axp20x-i2c 0-0034: AXP20x variant AXP221 found"
+
+== Board C (192.168.1.136 from ~17:20), install traces
+/proc/cmdline: root=/dev/mmcblk2p2 rootwait threadirqs watchdog.stop_on_reboot=0
+/root (board clock, 2026-10-22): install-offline-1.0.7.5.{log,wrapper.log,svc-before}
+  12:16-12:26; install-offline-1.0.7.10.{log,wrapper.log,svc-before} 13:10-13:20;
+  etc-backup-20261022-121622.tgz, etc-backup-20261022-130956.tgz,
+  www-backup-20261022-121622.tgz, www-backup-20261022-130956.tgz,
+  boot.scr.min215 (15:45), bootscr-backup-20261022/, kernel-backup-20261022/
+install-offline-1.0.7.10.wrapper.log, first lines:
+  [13:09:56] Установлено: 1.0.7.5 -> цель: 1.0.7.10 (дерево: /tmp/sa02m-upd)
+  [13:20:09] install.sh завершился, rc=0; post-checks PASS, VERSION 1.0.7.10
+/tmp is tmpfs (findmnt); no offline package found on the rootfs
+app.js: const APP_VERSION = '1.0.7.10';
+/opt/sa02m-audio/sa02m_audio/: lightmusic.py, lightshow.py, mixer.py present;
+  "capture_gain" occurs in api.py (3), config.py (11), constants.py (1),
+  mixer.py (2), service.py (4)
+No *losc* / *clk32* file anywhere on the rootfs.
+/root/boot.scr.min215 (grep -a -o "setenv bootargs[^;]*"):
+  setenv bootargs root=/dev/mmcblk2p2 rootwait threadirqs watchdog.stop_on_reboot=0
+install-offline-1.0.7.10.log line 116:
+  [2026-10-22 13:17:27] [INFO] Нет .git в /tmp/sa02m-upd/scripts/.. (штатно для
+  git-archive деплоя) — deployed_commit по APP_VERSION
+Snapshot taken from board C (tar of the deployed trees, see the
+workstation-loss note): 949 entries, including opt/sa02m-*/tests/ for 19
+packages; md5 85ab1d1476e3e90e00145f887187f6d7.

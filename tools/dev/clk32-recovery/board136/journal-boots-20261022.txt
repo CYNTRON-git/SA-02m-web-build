@@ -1,0 +1,400 @@
+6f7b9576576044329644c94501eaff2c
+02:53:ce:20:92:4c
+IDX BOOT ID                          FIRST ENTRY                 LAST ENTRY
+-10 228a310b708242ccbb50b187e5571a47 Thu 2026-10-22 14:28:40 MSK Thu 2026-10-22 14:32:31 MSK
+ -9 a352ae610d9f44c0a5574749c75fc0fe Thu 2026-10-22 14:32:06 MSK Thu 2026-10-22 14:33:15 MSK
+ -8 900eada0b4c942d1bf6f8f15b5131287 Thu 2026-10-22 14:33:25 MSK Thu 2026-10-22 14:33:57 MSK
+ -7 13072132a8fe4b5db3ecee18660cce52 Thu 2026-10-22 14:34:07 MSK Thu 2026-10-22 14:41:27 MSK
+ -6 9d5cae6ba54d48cc93f941cc7deb4f54 Thu 2026-10-22 14:40:18 MSK Thu 2026-10-22 15:43:45 MSK
+ -5 d86324546bac4f6ebf75817e84705ab3 Thu 2026-10-22 15:16:52 MSK Thu 2026-10-22 16:18:03 MSK
+ -4 1ff272502c504c5b9013db3691d96a9b Thu 2026-10-22 16:17:23 MSK Thu 2026-10-22 16:18:51 MSK
+ -3 1c1cde20c5d347ffa5f1f902da95dd4a Thu 2026-10-22 16:23:41 MSK Thu 2026-10-22 16:23:43 MSK
+ -2 ee966d7a23e54222bb2de479b3eefdb7 Thu 2026-10-22 16:23:41 MSK Thu 2026-10-22 16:23:43 MSK
+ -1 5a845db3e72744a0adf6323c11162fa5 Thu 2026-10-22 16:23:20 MSK Thu 2026-10-22 16:25:07 MSK
+  0 2c113189bda9462c8c43133540cb6050 Thu 2026-10-22 16:24:02 MSK Fri 2026-10-23 17:19:21 MSK
+окт 22 14:28:40.405961 SA-02m kernel: sun6i-rtc 1c20400.rtc: registered as rtc0
+окт 22 14:28:40.412091 SA-02m kernel: sun6i-rtc 1c20400.rtc: setting system clock to 2026-10-22T11:28:32 UTC (1792668512)
+окт 22 14:28:40.414585 SA-02m kernel: sun6i-rtc 1c20400.rtc: RTC enabled
+окт 22 14:28:40.418127 SA-02m kernel: sunxi-wdt 1c20c90.watchdog: Watchdog enabled (timeout=16 sec, nowayout=0)
+окт 22 14:28:40.652173 SA-02m systemd[1]: Using hardware watchdog 'sunxi-wdt', version 0, device /dev/watchdog0
+окт 22 14:28:41.112736 SA-02m systemd-journald[188]: File /var/log/journal/6f7b9576576044329644c94501eaff2c/system.journal corrupted or uncleanly shut down, renaming and replacing.
+окт 22 14:28:41.644496 SA-02m sa02m-pre-start[339]: i2c-2: unbinding 1c2b800.i2c to stop IRQ storm
+окт 22 14:28:41.825099 SA-02m sa02m-pre-start[356]: i2c-2: SDA stuck low — GPIO recovery (9 SCL pulses)
+окт 22 14:28:41.904113 SA-02m sa02m-pre-start[369]: i2c-2: driver rebound via mv64xxx_i2c
+окт 22 14:28:44.026242 SA-02m kernel: i2c i2c-2: mv64xxx: I2C bus locked, block: 1, time_left: 0
+окт 22 14:28:46.106258 SA-02m kernel: i2c i2c-2: mv64xxx: I2C bus locked, block: 1, time_left: 0
+окт 22 14:28:46.105929 SA-02m sa02m-pre-start[1089]: i2c-2: PCA9536 boot indication failed
+окт 22 14:28:46.160524 SA-02m sa02m-pre-start[1099]: REBOOT REASON: unexpected — no clean-shutdown marker
+окт 22 14:28:59.669227 SA-02m systemd[1]: Started sa02m-userspace-watchdog.service - SA-02m userspace watchdog (forces reboot on persistent userspace failures).
+окт 22 14:28:59.760237 SA-02m sa02m-userspace-watchdog[1749]: [2026-10-22 14:28:59] userspace watchdog started; interval=10s threshold=60 grace=180s
+окт 22 14:29:46.903967 SA-02m systemd[1]: Started net-watchdog.service - SA-02m network interface watchdog.
+окт 22 14:29:52.012412 SA-02m kernel: i2c i2c-2: mv64xxx: I2C bus locked, block: 1, time_left: 0
+окт 22 14:30:24.242436 SA-02m kernel: i2c i2c-2: mv64xxx: I2C bus locked, block: 1, time_left: 0
+окт 22 14:30:56.492488 SA-02m kernel: i2c i2c-2: mv64xxx: I2C bus locked, block: 1, time_left: 0
+окт 22 14:31:28.725840 SA-02m kernel: i2c i2c-2: mv64xxx: I2C bus locked, block: 1, time_left: 0
+окт 22 14:32:00.962610 SA-02m kernel: i2c i2c-2: mv64xxx: I2C bus locked, block: 1, time_left: 0
+окт 22 14:32:26.095357 SA-02m systemd[1]: Stopping net-watchdog.service - SA-02m network interface watchdog...
+окт 22 14:32:26.149761 SA-02m systemd[1]: Stopping sa02m-userspace-watchdog.service - SA-02m userspace watchdog (forces reboot on persistent userspace failures)...
+окт 22 14:32:26.393121 SA-02m systemd[1]: sa02m-userspace-watchdog.service: Deactivated successfully.
+окт 22 14:32:26.402963 SA-02m systemd[1]: Stopped sa02m-userspace-watchdog.service - SA-02m userspace watchdog (forces reboot on persistent userspace failures).
+окт 22 14:32:26.404832 SA-02m systemd[1]: sa02m-userspace-watchdog.service: Consumed 1.013s CPU time.
+окт 22 14:32:26.407883 SA-02m systemd[1]: net-watchdog.service: Deactivated successfully.
+окт 22 14:32:26.409061 SA-02m systemd[1]: Stopped net-watchdog.service - SA-02m network interface watchdog.
+окт 22 14:32:26.410612 SA-02m systemd[1]: net-watchdog.service: Consumed 2.401s CPU time.
+окт 22 14:32:31.820474 SA-02m systemd-journald[188]: Journal stopped
+-- Boot a352ae610d9f44c0a5574749c75fc0fe --
+окт 22 14:32:06.330412 SA-02m kernel: sun6i-rtc 1c20400.rtc: registered as rtc0
+окт 22 14:32:06.332374 SA-02m kernel: sun6i-rtc 1c20400.rtc: setting system clock to 2026-10-22T11:31:58 UTC (1792668718)
+окт 22 14:32:06.334114 SA-02m kernel: sun6i-rtc 1c20400.rtc: RTC enabled
+окт 22 14:32:06.336404 SA-02m kernel: sunxi-wdt 1c20c90.watchdog: Watchdog enabled (timeout=16 sec, nowayout=0)
+окт 22 14:32:06.601380 SA-02m systemd[1]: Using hardware watchdog 'sunxi-wdt', version 0, device /dev/watchdog0
+окт 22 14:32:07.732874 SA-02m sa02m-pre-start[352]: i2c-2: unbinding 1c2b800.i2c to stop IRQ storm
+окт 22 14:32:07.932622 SA-02m sa02m-pre-start[357]: i2c-2: SDA stuck low — GPIO recovery (9 SCL pulses)
+окт 22 14:32:08.017142 SA-02m sa02m-pre-start[371]: i2c-2: driver rebound via mv64xxx_i2c
+окт 22 14:32:10.128728 SA-02m kernel: i2c i2c-2: mv64xxx: I2C bus locked, block: 1, time_left: 0
+окт 22 14:32:12.269476 SA-02m kernel: i2c i2c-2: mv64xxx: I2C bus locked, block: 1, time_left: 0
+окт 22 14:32:12.271452 SA-02m sa02m-pre-start[1091]: i2c-2: PCA9536 boot indication failed
+окт 22 14:32:12.330707 SA-02m sa02m-pre-start[1101]: REBOOT REASON: unexpected — no clean-shutdown marker
+окт 22 14:32:25.680674 SA-02m systemd[1]: Started sa02m-userspace-watchdog.service - SA-02m userspace watchdog (forces reboot on persistent userspace failures).
+окт 22 14:32:26.110504 SA-02m sa02m-userspace-watchdog[1770]: [2026-10-22 14:32:26] userspace watchdog started; interval=10s threshold=60 grace=180s
+окт 22 14:33:08.238606 SA-02m systemd[1]: Stopping sa02m-userspace-watchdog.service - SA-02m userspace watchdog (forces reboot on persistent userspace failures)...
+окт 22 14:33:08.468471 SA-02m systemd[1]: sa02m-userspace-watchdog.service: Deactivated successfully.
+окт 22 14:33:08.469659 SA-02m systemd[1]: Stopped sa02m-userspace-watchdog.service - SA-02m userspace watchdog (forces reboot on persistent userspace failures).
+окт 22 14:33:15.194383 SA-02m systemd-journald[188]: Journal stopped
+-- Boot 900eada0b4c942d1bf6f8f15b5131287 --
+окт 22 14:33:25.332575 SA-02m kernel: sun6i-rtc 1c20400.rtc: registered as rtc0
+окт 22 14:33:25.334795 SA-02m kernel: sun6i-rtc 1c20400.rtc: setting system clock to 2026-10-22T11:33:17 UTC (1792668797)
+окт 22 14:33:25.336034 SA-02m kernel: sun6i-rtc 1c20400.rtc: RTC enabled
+окт 22 14:33:25.338163 SA-02m kernel: sunxi-wdt 1c20c90.watchdog: Watchdog enabled (timeout=16 sec, nowayout=0)
+окт 22 14:33:25.595058 SA-02m systemd[1]: Using hardware watchdog 'sunxi-wdt', version 0, device /dev/watchdog0
+окт 22 14:33:26.654020 SA-02m sa02m-pre-start[351]: i2c-2: unbinding 1c2b800.i2c to stop IRQ storm
+окт 22 14:33:26.834185 SA-02m sa02m-pre-start[361]: i2c-2: SDA stuck low — GPIO recovery (9 SCL pulses)
+окт 22 14:33:26.915807 SA-02m sa02m-pre-start[374]: i2c-2: driver rebound via mv64xxx_i2c
+окт 22 14:33:29.031656 SA-02m kernel: i2c i2c-2: mv64xxx: I2C bus locked, block: 1, time_left: 0
+окт 22 14:33:31.109331 SA-02m kernel: i2c i2c-2: mv64xxx: I2C bus locked, block: 1, time_left: 0
+окт 22 14:33:31.111057 SA-02m sa02m-pre-start[1074]: i2c-2: PCA9536 boot indication failed
+окт 22 14:33:31.158128 SA-02m sa02m-pre-start[1085]: REBOOT REASON: unexpected — no clean-shutdown marker
+окт 22 14:33:44.651751 SA-02m systemd[1]: Started sa02m-userspace-watchdog.service - SA-02m userspace watchdog (forces reboot on persistent userspace failures).
+окт 22 14:33:44.781138 SA-02m sa02m-userspace-watchdog[1799]: [2026-10-22 14:33:44] userspace watchdog started; interval=10s threshold=60 grace=180s
+окт 22 14:33:50.687522 SA-02m systemd[1]: Stopping sa02m-userspace-watchdog.service - SA-02m userspace watchdog (forces reboot on persistent userspace failures)...
+окт 22 14:33:51.070584 SA-02m systemd[1]: sa02m-userspace-watchdog.service: Deactivated successfully.
+окт 22 14:33:51.071645 SA-02m systemd[1]: Stopped sa02m-userspace-watchdog.service - SA-02m userspace watchdog (forces reboot on persistent userspace failures).
+окт 22 14:33:57.368137 SA-02m systemd-journald[190]: Journal stopped
+-- Boot 13072132a8fe4b5db3ecee18660cce52 --
+окт 22 14:34:07.285708 SA-02m kernel: sun6i-rtc 1c20400.rtc: registered as rtc0
+окт 22 14:34:07.287212 SA-02m kernel: sun6i-rtc 1c20400.rtc: setting system clock to 2026-10-22T11:33:59 UTC (1792668839)
+окт 22 14:34:07.288757 SA-02m kernel: sun6i-rtc 1c20400.rtc: RTC enabled
+окт 22 14:34:07.291111 SA-02m kernel: sunxi-wdt 1c20c90.watchdog: Watchdog enabled (timeout=16 sec, nowayout=0)
+окт 22 14:34:07.574623 SA-02m systemd[1]: Using hardware watchdog 'sunxi-wdt', version 0, device /dev/watchdog0
+окт 22 14:34:08.540881 SA-02m sa02m-pre-start[340]: i2c-2: unbinding 1c2b800.i2c to stop IRQ storm
+окт 22 14:34:08.728530 SA-02m sa02m-pre-start[358]: i2c-2: SDA stuck low — GPIO recovery (9 SCL pulses)
+окт 22 14:34:08.825376 SA-02m sa02m-pre-start[372]: i2c-2: driver rebound via mv64xxx_i2c
+окт 22 14:34:10.948780 SA-02m kernel: i2c i2c-2: mv64xxx: I2C bus locked, block: 1, time_left: 0
+окт 22 14:34:13.028994 SA-02m kernel: i2c i2c-2: mv64xxx: I2C bus locked, block: 1, time_left: 0
+окт 22 14:34:13.033592 SA-02m sa02m-pre-start[1099]: i2c-2: PCA9536 boot indication failed
+окт 22 14:34:13.057753 SA-02m sa02m-pre-start[1106]: REBOOT REASON: unexpected — no clean-shutdown marker
+окт 22 14:34:26.531047 SA-02m systemd[1]: Started sa02m-userspace-watchdog.service - SA-02m userspace watchdog (forces reboot on persistent userspace failures).
+окт 22 14:34:26.639941 SA-02m sa02m-userspace-watchdog[1783]: [2026-10-22 14:34:26] userspace watchdog started; interval=10s threshold=60 grace=180s
+окт 22 14:34:35.298577 SA-02m systemd[1]: Started net-watchdog.service - SA-02m network interface watchdog.
+окт 22 14:34:40.737633 SA-02m kernel: i2c i2c-2: mv64xxx: I2C bus locked, block: 1, time_left: 0
+окт 22 14:35:12.977605 SA-02m kernel: i2c i2c-2: mv64xxx: I2C bus locked, block: 1, time_left: 0
+окт 22 14:35:45.217587 SA-02m kernel: i2c i2c-2: mv64xxx: I2C bus locked, block: 1, time_left: 0
+окт 22 14:36:17.457616 SA-02m kernel: i2c i2c-2: mv64xxx: I2C bus locked, block: 1, time_left: 0
+окт 22 14:36:49.697784 SA-02m kernel: i2c i2c-2: mv64xxx: I2C bus locked, block: 1, time_left: 0
+окт 22 14:37:21.938153 SA-02m kernel: i2c i2c-2: mv64xxx: I2C bus locked, block: 1, time_left: 0
+окт 22 14:37:54.177610 SA-02m kernel: i2c i2c-2: mv64xxx: I2C bus locked, block: 1, time_left: 0
+окт 22 14:38:26.421121 SA-02m kernel: i2c i2c-2: mv64xxx: I2C bus locked, block: 1, time_left: 0
+окт 22 14:38:58.657638 SA-02m kernel: i2c i2c-2: mv64xxx: I2C bus locked, block: 1, time_left: 0
+окт 22 14:39:30.908437 SA-02m kernel: i2c i2c-2: mv64xxx: I2C bus locked, block: 1, time_left: 0
+окт 22 14:40:03.138700 SA-02m kernel: i2c i2c-2: mv64xxx: I2C bus locked, block: 1, time_left: 0
+окт 22 14:40:35.376453 SA-02m kernel: i2c i2c-2: mv64xxx: I2C bus locked, block: 1, time_left: 0
+окт 22 14:41:07.622460 SA-02m kernel: i2c i2c-2: mv64xxx: I2C bus locked, block: 1, time_left: 0
+окт 22 14:41:26.567666 SA-02m kernel: watchdog: watchdog0: watchdog did not stop!
+-- Boot 9d5cae6ba54d48cc93f941cc7deb4f54 --
+окт 22 14:40:18.434520 SA-02m kernel: sun6i-rtc 1c20400.rtc: registered as rtc0
+окт 22 14:40:18.437350 SA-02m kernel: sun6i-rtc 1c20400.rtc: setting system clock to 2026-10-22T11:40:10 UTC (1792669210)
+окт 22 14:40:18.443806 SA-02m kernel: sun6i-rtc 1c20400.rtc: RTC enabled
+окт 22 14:40:18.447679 SA-02m kernel: sunxi-wdt 1c20c90.watchdog: Watchdog enabled (timeout=16 sec, nowayout=0)
+окт 22 14:40:18.685973 SA-02m systemd[1]: Using hardware watchdog 'sunxi-wdt', version 0, device /dev/watchdog0
+окт 22 14:40:19.045285 SA-02m systemd-journald[188]: File /var/log/journal/6f7b9576576044329644c94501eaff2c/system.journal corrupted or uncleanly shut down, renaming and replacing.
+окт 22 14:40:19.676922 SA-02m sa02m-pre-start[340]: i2c-2: unbinding 1c2b800.i2c to stop IRQ storm
+окт 22 14:40:19.854369 SA-02m sa02m-pre-start[355]: i2c-2: SDA stuck low — GPIO recovery (9 SCL pulses)
+окт 22 14:40:19.970370 SA-02m sa02m-pre-start[369]: i2c-2: driver rebound via mv64xxx_i2c
+окт 22 14:40:22.106355 SA-02m kernel: i2c i2c-2: mv64xxx: I2C bus locked, block: 1, time_left: 0
+окт 22 14:40:24.186338 SA-02m kernel: i2c i2c-2: mv64xxx: I2C bus locked, block: 1, time_left: 0
+окт 22 14:40:24.189929 SA-02m sa02m-pre-start[1094]: i2c-2: PCA9536 boot indication failed
+окт 22 14:40:24.223215 SA-02m sa02m-pre-start[1106]: REBOOT REASON: unexpected — no clean-shutdown marker
+окт 22 14:40:37.648906 SA-02m systemd[1]: Started sa02m-userspace-watchdog.service - SA-02m userspace watchdog (forces reboot on persistent userspace failures).
+окт 22 14:40:37.987622 SA-02m sa02m-userspace-watchdog[1773]: [2026-10-22 14:40:37] userspace watchdog started; interval=10s threshold=60 grace=180s
+окт 22 14:42:19.584922 SA-02m systemd[1]: Started net-watchdog.service - SA-02m network interface watchdog.
+окт 22 14:42:24.873874 SA-02m kernel: i2c i2c-2: mv64xxx: I2C bus locked, block: 1, time_left: 0
+окт 22 14:42:57.116057 SA-02m kernel: i2c i2c-2: mv64xxx: I2C bus locked, block: 1, time_left: 0
+окт 22 14:43:29.353631 SA-02m kernel: i2c i2c-2: mv64xxx: I2C bus locked, block: 1, time_left: 0
+окт 22 14:44:01.603426 SA-02m kernel: i2c i2c-2: mv64xxx: I2C bus locked, block: 1, time_left: 0
+окт 22 14:44:33.834616 SA-02m kernel: i2c i2c-2: mv64xxx: I2C bus locked, block: 1, time_left: 0
+окт 22 14:45:06.073633 SA-02m kernel: i2c i2c-2: mv64xxx: I2C bus locked, block: 1, time_left: 0
+окт 22 14:45:38.313404 SA-02m kernel: i2c i2c-2: mv64xxx: I2C bus locked, block: 1, time_left: 0
+окт 22 14:46:10.553410 SA-02m kernel: i2c i2c-2: mv64xxx: I2C bus locked, block: 1, time_left: 0
+окт 22 14:46:42.803965 SA-02m kernel: i2c i2c-2: mv64xxx: I2C bus locked, block: 1, time_left: 0
+окт 22 14:47:15.035961 SA-02m kernel: i2c i2c-2: mv64xxx: I2C bus locked, block: 1, time_left: 0
+окт 22 14:47:47.277724 SA-02m kernel: i2c i2c-2: mv64xxx: I2C bus locked, block: 1, time_left: 0
+окт 22 14:48:19.513550 SA-02m kernel: i2c i2c-2: mv64xxx: I2C bus locked, block: 1, time_left: 0
+окт 22 14:48:51.753417 SA-02m kernel: i2c i2c-2: mv64xxx: I2C bus locked, block: 1, time_left: 0
+окт 22 14:49:23.992617 SA-02m kernel: i2c i2c-2: mv64xxx: I2C bus locked, block: 1, time_left: 0
+окт 22 14:49:56.243109 SA-02m kernel: i2c i2c-2: mv64xxx: I2C bus locked, block: 1, time_left: 0
+окт 22 14:50:28.475578 SA-02m kernel: i2c i2c-2: mv64xxx: I2C bus locked, block: 1, time_left: 0
+окт 22 14:51:00.713398 SA-02m kernel: i2c i2c-2: mv64xxx: I2C bus locked, block: 1, time_left: 0
+окт 22 14:51:32.963573 SA-02m kernel: i2c i2c-2: mv64xxx: I2C bus locked, block: 1, time_left: 0
+окт 22 14:52:05.203455 SA-02m kernel: i2c i2c-2: mv64xxx: I2C bus locked, block: 1, time_left: 0
+окт 22 14:52:37.433456 SA-02m kernel: i2c i2c-2: mv64xxx: I2C bus locked, block: 1, time_left: 0
+окт 22 14:53:09.675431 SA-02m kernel: i2c i2c-2: mv64xxx: I2C bus locked, block: 1, time_left: 0
+окт 22 14:53:41.913486 SA-02m kernel: i2c i2c-2: mv64xxx: I2C bus locked, block: 1, time_left: 0
+окт 22 14:54:14.153495 SA-02m kernel: i2c i2c-2: mv64xxx: I2C bus locked, block: 1, time_left: 0
+окт 22 14:54:46.393447 SA-02m kernel: i2c i2c-2: mv64xxx: I2C bus locked, block: 1, time_left: 0
+окт 22 14:55:18.644470 SA-02m kernel: i2c i2c-2: mv64xxx: I2C bus locked, block: 1, time_left: 0
+окт 22 14:55:50.883608 SA-02m kernel: i2c i2c-2: mv64xxx: I2C bus locked, block: 1, time_left: 0
+окт 22 14:56:23.123432 SA-02m kernel: i2c i2c-2: mv64xxx: I2C bus locked, block: 1, time_left: 0
+окт 22 14:56:55.353702 SA-02m kernel: i2c i2c-2: mv64xxx: I2C bus locked, block: 1, time_left: 0
+окт 22 14:57:27.593444 SA-02m kernel: i2c i2c-2: mv64xxx: I2C bus locked, block: 1, time_left: 0
+окт 22 14:57:59.833576 SA-02m kernel: i2c i2c-2: mv64xxx: I2C bus locked, block: 1, time_left: 0
+окт 22 14:58:32.083659 SA-02m kernel: i2c i2c-2: mv64xxx: I2C bus locked, block: 1, time_left: 0
+окт 22 14:59:04.326898 SA-02m kernel: i2c i2c-2: mv64xxx: I2C bus locked, block: 1, time_left: 0
+окт 22 14:59:36.633547 SA-02m kernel: i2c i2c-2: mv64xxx: I2C bus locked, block: 1, time_left: 0
+окт 22 15:00:08.883632 SA-02m kernel: i2c i2c-2: mv64xxx: I2C bus locked, block: 1, time_left: 0
+окт 22 15:00:41.120573 SA-02m kernel: i2c i2c-2: mv64xxx: I2C bus locked, block: 1, time_left: 0
+окт 22 15:01:13.353497 SA-02m kernel: i2c i2c-2: mv64xxx: I2C bus locked, block: 1, time_left: 0
+окт 22 15:01:45.593467 SA-02m kernel: i2c i2c-2: mv64xxx: I2C bus locked, block: 1, time_left: 0
+окт 22 15:02:17.833438 SA-02m kernel: i2c i2c-2: mv64xxx: I2C bus locked, block: 1, time_left: 0
+окт 22 15:02:50.073515 SA-02m kernel: i2c i2c-2: mv64xxx: I2C bus locked, block: 1, time_left: 0
+окт 22 15:03:22.304338 SA-02m kernel: i2c i2c-2: mv64xxx: I2C bus locked, block: 1, time_left: 0
+окт 22 15:03:54.553511 SA-02m kernel: i2c i2c-2: mv64xxx: I2C bus locked, block: 1, time_left: 0
+окт 22 15:04:26.793436 SA-02m kernel: i2c i2c-2: mv64xxx: I2C bus locked, block: 1, time_left: 0
+окт 22 15:04:59.033522 SA-02m kernel: i2c i2c-2: mv64xxx: I2C bus locked, block: 1, time_left: 0
+окт 22 15:05:31.273984 SA-02m kernel: i2c i2c-2: mv64xxx: I2C bus locked, block: 1, time_left: 0
+окт 22 15:06:03.517301 SA-02m kernel: i2c i2c-2: mv64xxx: I2C bus locked, block: 1, time_left: 0
+окт 22 15:06:35.771742 SA-02m kernel: i2c i2c-2: mv64xxx: I2C bus locked, block: 1, time_left: 0
+окт 22 15:07:08.073648 SA-02m kernel: i2c i2c-2: mv64xxx: I2C bus locked, block: 1, time_left: 0
+окт 22 15:07:40.313413 SA-02m kernel: i2c i2c-2: mv64xxx: I2C bus locked, block: 1, time_left: 0
+окт 22 15:08:12.556432 SA-02m kernel: i2c i2c-2: mv64xxx: I2C bus locked, block: 1, time_left: 0
+окт 22 15:08:44.808092 SA-02m kernel: i2c i2c-2: mv64xxx: I2C bus locked, block: 1, time_left: 0
+окт 22 15:09:17.035106 SA-02m kernel: i2c i2c-2: mv64xxx: I2C bus locked, block: 1, time_left: 0
+окт 22 15:09:49.276373 SA-02m kernel: i2c i2c-2: mv64xxx: I2C bus locked, block: 1, time_left: 0
+окт 22 15:10:21.513462 SA-02m kernel: i2c i2c-2: mv64xxx: I2C bus locked, block: 1, time_left: 0
+окт 22 15:10:53.755191 SA-02m kernel: i2c i2c-2: mv64xxx: I2C bus locked, block: 1, time_left: 0
+окт 22 15:11:26.003434 SA-02m kernel: i2c i2c-2: mv64xxx: I2C bus locked, block: 1, time_left: 0
+окт 22 15:11:58.233492 SA-02m kernel: i2c i2c-2: mv64xxx: I2C bus locked, block: 1, time_left: 0
+окт 22 15:12:30.473493 SA-02m kernel: i2c i2c-2: mv64xxx: I2C bus locked, block: 1, time_left: 0
+окт 22 15:13:02.713453 SA-02m kernel: i2c i2c-2: mv64xxx: I2C bus locked, block: 1, time_left: 0
+окт 22 15:13:34.967571 SA-02m kernel: i2c i2c-2: mv64xxx: I2C bus locked, block: 1, time_left: 0
+окт 22 15:14:07.203498 SA-02m kernel: i2c i2c-2: mv64xxx: I2C bus locked, block: 1, time_left: 0
+окт 22 15:14:39.435081 SA-02m kernel: i2c i2c-2: mv64xxx: I2C bus locked, block: 1, time_left: 0
+окт 22 15:15:11.683526 SA-02m kernel: i2c i2c-2: mv64xxx: I2C bus locked, block: 1, time_left: 0
+окт 22 15:15:44.005646 SA-02m kernel: i2c i2c-2: mv64xxx: I2C bus locked, block: 1, time_left: 0
+окт 22 15:16:16.233439 SA-02m kernel: i2c i2c-2: mv64xxx: I2C bus locked, block: 1, time_left: 0
+окт 22 15:16:48.479967 SA-02m kernel: i2c i2c-2: mv64xxx: I2C bus locked, block: 1, time_left: 0
+окт 22 15:17:20.713499 SA-02m kernel: i2c i2c-2: mv64xxx: I2C bus locked, block: 1, time_left: 0
+окт 22 15:17:52.952903 SA-02m kernel: i2c i2c-2: mv64xxx: I2C bus locked, block: 1, time_left: 0
+окт 22 15:18:25.193519 SA-02m kernel: i2c i2c-2: mv64xxx: I2C bus locked, block: 1, time_left: 0
+окт 22 15:18:57.433437 SA-02m kernel: i2c i2c-2: mv64xxx: I2C bus locked, block: 1, time_left: 0
+окт 22 15:19:29.673445 SA-02m kernel: i2c i2c-2: mv64xxx: I2C bus locked, block: 1, time_left: 0
+окт 22 15:20:01.910615 SA-02m kernel: i2c i2c-2: mv64xxx: I2C bus locked, block: 1, time_left: 0
+окт 22 15:20:34.162311 SA-02m kernel: i2c i2c-2: mv64xxx: I2C bus locked, block: 1, time_left: 0
+окт 22 15:21:06.393545 SA-02m kernel: i2c i2c-2: mv64xxx: I2C bus locked, block: 1, time_left: 0
+окт 22 15:21:38.643434 SA-02m kernel: i2c i2c-2: mv64xxx: I2C bus locked, block: 1, time_left: 0
+окт 22 15:22:10.885231 SA-02m kernel: i2c i2c-2: mv64xxx: I2C bus locked, block: 1, time_left: 0
+окт 22 15:22:43.104009 SA-02m kernel: i2c i2c-2: mv64xxx: I2C bus locked, block: 1, time_left: 0
+окт 22 15:23:15.353476 SA-02m kernel: i2c i2c-2: mv64xxx: I2C bus locked, block: 1, time_left: 0
+окт 22 15:23:47.593431 SA-02m kernel: i2c i2c-2: mv64xxx: I2C bus locked, block: 1, time_left: 0
+окт 22 15:24:19.836803 SA-02m kernel: i2c i2c-2: mv64xxx: I2C bus locked, block: 1, time_left: 0
+окт 22 15:24:52.073498 SA-02m kernel: i2c i2c-2: mv64xxx: I2C bus locked, block: 1, time_left: 0
+окт 22 15:25:24.323999 SA-02m kernel: i2c i2c-2: mv64xxx: I2C bus locked, block: 1, time_left: 0
+окт 22 15:25:56.553717 SA-02m kernel: i2c i2c-2: mv64xxx: I2C bus locked, block: 1, time_left: 0
+окт 22 15:26:28.793442 SA-02m kernel: i2c i2c-2: mv64xxx: I2C bus locked, block: 1, time_left: 0
+окт 22 15:27:01.033469 SA-02m kernel: i2c i2c-2: mv64xxx: I2C bus locked, block: 1, time_left: 0
+окт 22 15:27:33.363478 SA-02m kernel: i2c i2c-2: mv64xxx: I2C bus locked, block: 1, time_left: 0
+окт 22 15:28:05.593433 SA-02m kernel: i2c i2c-2: mv64xxx: I2C bus locked, block: 1, time_left: 0
+окт 22 15:28:37.833449 SA-02m kernel: i2c i2c-2: mv64xxx: I2C bus locked, block: 1, time_left: 0
+окт 22 15:29:10.073460 SA-02m kernel: i2c i2c-2: mv64xxx: I2C bus locked, block: 1, time_left: 0
+окт 22 15:29:42.313558 SA-02m kernel: i2c i2c-2: mv64xxx: I2C bus locked, block: 1, time_left: 0
+окт 22 15:30:14.553672 SA-02m kernel: i2c i2c-2: mv64xxx: I2C bus locked, block: 1, time_left: 0
+окт 22 15:30:46.803483 SA-02m kernel: i2c i2c-2: mv64xxx: I2C bus locked, block: 1, time_left: 0
+окт 22 15:31:19.033494 SA-02m kernel: i2c i2c-2: mv64xxx: I2C bus locked, block: 1, time_left: 0
+окт 22 15:31:51.276217 SA-02m kernel: i2c i2c-2: mv64xxx: I2C bus locked, block: 1, time_left: 0
+окт 22 15:32:23.513460 SA-02m kernel: i2c i2c-2: mv64xxx: I2C bus locked, block: 1, time_left: 0
+окт 22 15:32:55.753476 SA-02m kernel: i2c i2c-2: mv64xxx: I2C bus locked, block: 1, time_left: 0
+окт 22 15:33:27.987167 SA-02m kernel: i2c i2c-2: mv64xxx: I2C bus locked, block: 1, time_left: 0
+окт 22 15:34:00.233396 SA-02m kernel: i2c i2c-2: mv64xxx: I2C bus locked, block: 1, time_left: 0
+окт 22 15:34:32.473546 SA-02m kernel: i2c i2c-2: mv64xxx: I2C bus locked, block: 1, time_left: 0
+окт 22 15:35:04.713492 SA-02m kernel: i2c i2c-2: mv64xxx: I2C bus locked, block: 1, time_left: 0
+окт 22 15:35:37.044274 SA-02m kernel: i2c i2c-2: mv64xxx: I2C bus locked, block: 1, time_left: 0
+окт 22 15:36:09.276217 SA-02m kernel: i2c i2c-2: mv64xxx: I2C bus locked, block: 1, time_left: 0
+окт 22 15:36:41.503593 SA-02m kernel: i2c i2c-2: mv64xxx: I2C bus locked, block: 1, time_left: 0
+окт 22 15:37:13.753498 SA-02m kernel: i2c i2c-2: mv64xxx: I2C bus locked, block: 1, time_left: 0
+окт 22 15:37:45.993657 SA-02m kernel: i2c i2c-2: mv64xxx: I2C bus locked, block: 1, time_left: 0
+окт 22 15:38:18.233744 SA-02m kernel: i2c i2c-2: mv64xxx: I2C bus locked, block: 1, time_left: 0
+окт 22 15:38:50.473489 SA-02m kernel: i2c i2c-2: mv64xxx: I2C bus locked, block: 1, time_left: 0
+окт 22 15:39:22.713400 SA-02m kernel: i2c i2c-2: mv64xxx: I2C bus locked, block: 1, time_left: 0
+окт 22 15:39:54.953418 SA-02m kernel: i2c i2c-2: mv64xxx: I2C bus locked, block: 1, time_left: 0
+окт 22 15:40:27.195058 SA-02m kernel: i2c i2c-2: mv64xxx: I2C bus locked, block: 1, time_left: 0
+окт 22 15:40:59.424046 SA-02m kernel: i2c i2c-2: mv64xxx: I2C bus locked, block: 1, time_left: 0
+окт 22 15:41:31.673578 SA-02m kernel: i2c i2c-2: mv64xxx: I2C bus locked, block: 1, time_left: 0
+окт 22 15:42:03.913965 SA-02m kernel: i2c i2c-2: mv64xxx: I2C bus locked, block: 1, time_left: 0
+окт 22 15:42:36.153427 SA-02m kernel: i2c i2c-2: mv64xxx: I2C bus locked, block: 1, time_left: 0
+окт 22 15:43:08.393827 SA-02m kernel: i2c i2c-2: mv64xxx: I2C bus locked, block: 1, time_left: 0
+окт 22 15:43:40.648322 SA-02m kernel: i2c i2c-2: mv64xxx: I2C bus locked, block: 1, time_left: 0
+-- Boot d86324546bac4f6ebf75817e84705ab3 --
+окт 22 15:16:52.843582 SA-02m sa02m-pre-start[344]: i2c-2: unbinding 1c2b800.i2c to stop IRQ storm
+окт 22 15:16:53.073083 SA-02m sa02m-pre-start[361]: i2c-2: SDA stuck low — GPIO recovery (9 SCL pulses)
+окт 22 15:16:53.182118 SA-02m sa02m-pre-start[375]: i2c-2: driver rebound via mv64xxx_i2c
+окт 22 15:16:55.274757 SA-02m kernel: i2c i2c-2: mv64xxx: I2C bus locked, block: 1, time_left: 0
+окт 22 15:16:57.353846 SA-02m sa02m-pre-start[1128]: i2c-2: PCA9536 boot indication failed
+окт 22 15:16:57.355879 SA-02m kernel: i2c i2c-2: mv64xxx: I2C bus locked, block: 1, time_left: 0
+окт 22 15:16:57.379875 SA-02m sa02m-pre-start[1133]: REBOOT REASON: unexpected — no clean-shutdown marker
+окт 22 15:17:11.036815 SA-02m systemd[1]: Started sa02m-userspace-watchdog.service - SA-02m userspace watchdog (forces reboot on persistent userspace failures).
+окт 22 15:17:11.261062 SA-02m sa02m-userspace-watchdog[1813]: [2026-10-22 15:17:11] userspace watchdog started; interval=10s threshold=60 grace=180s
+окт 22 16:14:05.503313 SA-02m systemd[1]: Started net-watchdog.service - SA-02m network interface watchdog.
+окт 22 16:14:11.040977 SA-02m kernel: i2c i2c-2: mv64xxx: I2C bus locked, block: 1, time_left: 0
+окт 22 16:14:43.280806 SA-02m kernel: i2c i2c-2: mv64xxx: I2C bus locked, block: 1, time_left: 0
+окт 22 16:15:15.520873 SA-02m kernel: i2c i2c-2: mv64xxx: I2C bus locked, block: 1, time_left: 0
+окт 22 16:15:47.760807 SA-02m kernel: i2c i2c-2: mv64xxx: I2C bus locked, block: 1, time_left: 0
+окт 22 16:16:20.000851 SA-02m kernel: i2c i2c-2: mv64xxx: I2C bus locked, block: 1, time_left: 0
+окт 22 16:16:52.240785 SA-02m kernel: i2c i2c-2: mv64xxx: I2C bus locked, block: 1, time_left: 0
+окт 22 16:17:24.480811 SA-02m kernel: i2c i2c-2: mv64xxx: I2C bus locked, block: 1, time_left: 0
+окт 22 16:17:56.720793 SA-02m kernel: i2c i2c-2: mv64xxx: I2C bus locked, block: 1, time_left: 0
+окт 22 16:17:57.575585 SA-02m systemd[1]: Stopping net-watchdog.service - SA-02m network interface watchdog...
+окт 22 16:17:57.633429 SA-02m systemd[1]: Stopping sa02m-userspace-watchdog.service - SA-02m userspace watchdog (forces reboot on persistent userspace failures)...
+окт 22 16:17:57.868827 SA-02m systemd[1]: sa02m-userspace-watchdog.service: Deactivated successfully.
+окт 22 16:17:57.870055 SA-02m systemd[1]: Stopped sa02m-userspace-watchdog.service - SA-02m userspace watchdog (forces reboot on persistent userspace failures).
+окт 22 16:17:57.872128 SA-02m systemd[1]: sa02m-userspace-watchdog.service: Consumed 4.573s CPU time.
+окт 22 16:17:57.875209 SA-02m systemd[1]: net-watchdog.service: Deactivated successfully.
+окт 22 16:17:57.878307 SA-02m systemd[1]: Stopped net-watchdog.service - SA-02m network interface watchdog.
+окт 22 16:17:57.880088 SA-02m systemd[1]: net-watchdog.service: Consumed 2.954s CPU time.
+окт 22 16:18:03.064061 SA-02m systemd-journald[191]: Journal stopped
+-- Boot 1ff272502c504c5b9013db3691d96a9b --
+окт 22 16:17:23.257111 SA-02m kernel: sun6i-rtc 1c20400.rtc: registered as rtc0
+окт 22 16:17:23.259130 SA-02m kernel: sun6i-rtc 1c20400.rtc: setting system clock to 2026-10-22T13:17:14 UTC (1792675034)
+окт 22 16:17:23.260705 SA-02m kernel: sun6i-rtc 1c20400.rtc: RTC enabled
+окт 22 16:17:23.263345 SA-02m kernel: sunxi-wdt 1c20c90.watchdog: Watchdog enabled (timeout=16 sec, nowayout=0)
+окт 22 16:17:23.452982 SA-02m systemd[1]: Using hardware watchdog 'sunxi-wdt', version 0, device /dev/watchdog0
+окт 22 16:17:24.472612 SA-02m sa02m-pre-start[343]: i2c-2: unbinding 1c2b800.i2c to stop IRQ storm
+окт 22 16:17:24.656388 SA-02m sa02m-pre-start[357]: i2c-2: SDA stuck low — GPIO recovery (9 SCL pulses)
+окт 22 16:17:24.745785 SA-02m sa02m-pre-start[371]: i2c-2: driver rebound via mv64xxx_i2c
+окт 22 16:17:26.828321 SA-02m kernel: i2c i2c-2: mv64xxx: I2C bus locked, block: 1, time_left: 0
+окт 22 16:17:28.908026 SA-02m kernel: i2c i2c-2: mv64xxx: I2C bus locked, block: 1, time_left: 0
+окт 22 16:17:28.909535 SA-02m sa02m-pre-start[1089]: i2c-2: PCA9536 boot indication failed
+окт 22 16:17:28.996039 SA-02m sa02m-pre-start[1103]: REBOOT REASON: unexpected — no clean-shutdown marker
+окт 22 16:17:42.880361 SA-02m systemd[1]: Started sa02m-userspace-watchdog.service - SA-02m userspace watchdog (forces reboot on persistent userspace failures).
+окт 22 16:17:42.978917 SA-02m sa02m-userspace-watchdog[1819]: [2026-10-22 16:17:42] userspace watchdog started; interval=10s threshold=60 grace=180s
+окт 22 16:18:41.133112 SA-02m systemd[1]: Started net-watchdog.service - SA-02m network interface watchdog.
+окт 22 16:18:44.530296 SA-02m systemd[1]: Stopping net-watchdog.service - SA-02m network interface watchdog...
+окт 22 16:18:44.601637 SA-02m systemd[1]: Stopping sa02m-userspace-watchdog.service - SA-02m userspace watchdog (forces reboot on persistent userspace failures)...
+окт 22 16:18:44.850098 SA-02m systemd[1]: sa02m-userspace-watchdog.service: Deactivated successfully.
+окт 22 16:18:44.858513 SA-02m systemd[1]: Stopped sa02m-userspace-watchdog.service - SA-02m userspace watchdog (forces reboot on persistent userspace failures).
+окт 22 16:18:44.863826 SA-02m systemd[1]: net-watchdog.service: Deactivated successfully.
+окт 22 16:18:44.864979 SA-02m systemd[1]: Stopped net-watchdog.service - SA-02m network interface watchdog.
+окт 22 16:18:47.081541 SA-02m kernel: i2c i2c-2: mv64xxx: I2C bus locked, block: 1, time_left: 0
+окт 22 16:18:51.254294 SA-02m systemd-journald[187]: Journal stopped
+-- Boot 1c1cde20c5d347ffa5f1f902da95dd4a --
+окт 22 16:23:41.800109 SA-02m sa02m-pre-start[346]: i2c-2: unbinding 1c2b800.i2c to stop IRQ storm
+окт 22 16:23:42.034938 SA-02m sa02m-pre-start[359]: i2c-2: SDA stuck low — GPIO recovery (9 SCL pulses)
+окт 22 16:23:42.139634 SA-02m sa02m-pre-start[373]: i2c-2: driver rebound via mv64xxx_i2c
+-- Boot ee966d7a23e54222bb2de479b3eefdb7 --
+окт 22 16:23:41.215958 SA-02m systemd-journald[188]: File /var/log/journal/6f7b9576576044329644c94501eaff2c/system.journal corrupted or uncleanly shut down, renaming and replacing.
+окт 22 16:23:41.756388 SA-02m sa02m-pre-start[338]: i2c-2: unbinding 1c2b800.i2c to stop IRQ storm
+окт 22 16:23:41.937851 SA-02m sa02m-pre-start[358]: i2c-2: SDA stuck low — GPIO recovery (9 SCL pulses)
+окт 22 16:23:42.111847 SA-02m sa02m-pre-start[372]: i2c-2: driver rebound via mv64xxx_i2c
+-- Boot 5a845db3e72744a0adf6323c11162fa5 --
+окт 22 16:23:20.317014 SA-02m kernel: sun6i-rtc 1c20400.rtc: registered as rtc0
+окт 22 16:23:20.318473 SA-02m kernel: sun6i-rtc 1c20400.rtc: setting system clock to 2026-10-22T13:23:12 UTC (1792675392)
+окт 22 16:23:20.320515 SA-02m kernel: sun6i-rtc 1c20400.rtc: RTC enabled
+окт 22 16:23:20.326444 SA-02m kernel: sunxi-wdt 1c20c90.watchdog: Watchdog enabled (timeout=16 sec, nowayout=0)
+окт 22 16:23:20.531443 SA-02m systemd[1]: Using hardware watchdog 'sunxi-wdt', version 0, device /dev/watchdog0
+окт 22 16:23:21.511851 SA-02m sa02m-pre-start[338]: i2c-2: unbinding 1c2b800.i2c to stop IRQ storm
+окт 22 16:23:21.701351 SA-02m sa02m-pre-start[357]: i2c-2: SDA stuck low — GPIO recovery (9 SCL pulses)
+окт 22 16:23:21.796012 SA-02m sa02m-pre-start[370]: i2c-2: driver rebound via mv64xxx_i2c
+окт 22 16:23:23.870254 SA-02m kernel: i2c i2c-2: mv64xxx: I2C bus locked, block: 1, time_left: 0
+окт 22 16:23:25.949291 SA-02m sa02m-pre-start[1083]: i2c-2: PCA9536 boot indication failed
+окт 22 16:23:25.957675 SA-02m kernel: i2c i2c-2: mv64xxx: I2C bus locked, block: 1, time_left: 0
+окт 22 16:23:25.974385 SA-02m sa02m-pre-start[1090]: REBOOT REASON: unexpected — no clean-shutdown marker
+окт 22 16:23:39.442074 SA-02m systemd[1]: Started sa02m-userspace-watchdog.service - SA-02m userspace watchdog (forces reboot on persistent userspace failures).
+окт 22 16:23:39.578038 SA-02m sa02m-userspace-watchdog[1736]: [2026-10-22 16:23:39] userspace watchdog started; interval=10s threshold=60 grace=180s
+окт 22 16:24:59.008416 SA-02m systemd[1]: Started net-watchdog.service - SA-02m network interface watchdog.
+окт 22 16:25:01.033442 SA-02m systemd[1]: Stopping net-watchdog.service - SA-02m network interface watchdog...
+окт 22 16:25:01.090214 SA-02m systemd[1]: Stopping sa02m-userspace-watchdog.service - SA-02m userspace watchdog (forces reboot on persistent userspace failures)...
+окт 22 16:25:01.301469 SA-02m systemd[1]: sa02m-userspace-watchdog.service: Deactivated successfully.
+окт 22 16:25:01.302821 SA-02m systemd[1]: Stopped sa02m-userspace-watchdog.service - SA-02m userspace watchdog (forces reboot on persistent userspace failures).
+окт 22 16:25:01.308296 SA-02m systemd[1]: net-watchdog.service: Deactivated successfully.
+окт 22 16:25:01.309372 SA-02m systemd[1]: Stopped net-watchdog.service - SA-02m network interface watchdog.
+окт 22 16:25:07.465801 SA-02m systemd-journald[187]: Journal stopped
+-- Boot 2c113189bda9462c8c43133540cb6050 --
+окт 22 16:24:02.244775 SA-02m systemd-journald[189]: File /var/log/journal/6f7b9576576044329644c94501eaff2c/system.journal corrupted or uncleanly shut down, renaming and replacing.
+окт 22 16:24:02.826906 SA-02m sa02m-pre-start[347]: i2c-2: unbinding 1c2b800.i2c to stop IRQ storm
+окт 22 16:24:03.017822 SA-02m sa02m-pre-start[358]: i2c-2: SDA stuck low — GPIO recovery (9 SCL pulses)
+окт 22 16:24:03.139877 SA-02m sa02m-pre-start[372]: i2c-2: driver rebound via mv64xxx_i2c
+окт 22 16:24:05.273417 SA-02m kernel: i2c i2c-2: mv64xxx: I2C bus locked, block: 1, time_left: 0
+окт 22 16:24:07.352494 SA-02m sa02m-pre-start[1111]: i2c-2: PCA9536 boot indication failed
+окт 22 16:24:07.354613 SA-02m kernel: i2c i2c-2: mv64xxx: I2C bus locked, block: 1, time_left: 0
+окт 22 16:24:07.390527 SA-02m sa02m-pre-start[1118]: REBOOT REASON: unexpected — no clean-shutdown marker
+окт 22 16:24:21.015765 SA-02m systemd[1]: Started sa02m-userspace-watchdog.service - SA-02m userspace watchdog (forces reboot on persistent userspace failures).
+окт 22 16:24:21.145512 SA-02m sa02m-userspace-watchdog[1791]: [2026-10-22 16:24:21] userspace watchdog started; interval=10s threshold=60 grace=180s
+окт 23 16:47:33.547003 SA-02m systemd[1]: Started net-watchdog.service - SA-02m network interface watchdog.
+окт 23 16:47:38.895378 SA-02m kernel: i2c i2c-2: mv64xxx: I2C bus locked, block: 1, time_left: 0
+окт 23 16:48:11.125612 SA-02m kernel: i2c i2c-2: mv64xxx: I2C bus locked, block: 1, time_left: 0
+окт 23 16:48:43.365630 SA-02m kernel: i2c i2c-2: mv64xxx: I2C bus locked, block: 1, time_left: 0
+окт 23 16:49:15.605410 SA-02m kernel: i2c i2c-2: mv64xxx: I2C bus locked, block: 1, time_left: 0
+окт 23 16:49:47.845424 SA-02m kernel: i2c i2c-2: mv64xxx: I2C bus locked, block: 1, time_left: 0
+окт 23 16:50:20.085401 SA-02m kernel: i2c i2c-2: mv64xxx: I2C bus locked, block: 1, time_left: 0
+окт 23 16:50:52.325379 SA-02m kernel: i2c i2c-2: mv64xxx: I2C bus locked, block: 1, time_left: 0
+окт 23 16:51:24.565419 SA-02m kernel: i2c i2c-2: mv64xxx: I2C bus locked, block: 1, time_left: 0
+окт 23 16:51:56.805694 SA-02m kernel: i2c i2c-2: mv64xxx: I2C bus locked, block: 1, time_left: 0
+окт 23 16:52:29.051867 SA-02m kernel: i2c i2c-2: mv64xxx: I2C bus locked, block: 1, time_left: 0
+окт 23 16:53:01.375408 SA-02m kernel: i2c i2c-2: mv64xxx: I2C bus locked, block: 1, time_left: 0
+окт 23 16:53:33.606217 SA-02m kernel: i2c i2c-2: mv64xxx: I2C bus locked, block: 1, time_left: 0
+окт 23 16:54:05.855494 SA-02m kernel: i2c i2c-2: mv64xxx: I2C bus locked, block: 1, time_left: 0
+окт 23 16:54:38.097209 SA-02m kernel: i2c i2c-2: mv64xxx: I2C bus locked, block: 1, time_left: 0
+окт 23 16:55:10.325441 SA-02m kernel: i2c i2c-2: mv64xxx: I2C bus locked, block: 1, time_left: 0
+окт 23 16:55:42.581057 SA-02m kernel: i2c i2c-2: mv64xxx: I2C bus locked, block: 1, time_left: 0
+окт 23 16:56:14.805613 SA-02m kernel: i2c i2c-2: mv64xxx: I2C bus locked, block: 1, time_left: 0
+окт 23 16:56:47.048397 SA-02m kernel: i2c i2c-2: mv64xxx: I2C bus locked, block: 1, time_left: 0
+окт 23 16:57:19.285418 SA-02m kernel: i2c i2c-2: mv64xxx: I2C bus locked, block: 1, time_left: 0
+окт 23 16:57:51.615508 SA-02m kernel: i2c i2c-2: mv64xxx: I2C bus locked, block: 1, time_left: 0
+окт 23 16:58:23.842640 SA-02m kernel: i2c i2c-2: mv64xxx: I2C bus locked, block: 1, time_left: 0
+окт 23 16:58:56.165432 SA-02m kernel: i2c i2c-2: mv64xxx: I2C bus locked, block: 1, time_left: 0
+окт 23 16:59:28.406097 SA-02m kernel: i2c i2c-2: mv64xxx: I2C bus locked, block: 1, time_left: 0
+окт 23 17:00:00.647551 SA-02m kernel: i2c i2c-2: mv64xxx: I2C bus locked, block: 1, time_left: 0
+окт 23 17:00:32.885856 SA-02m kernel: i2c i2c-2: mv64xxx: I2C bus locked, block: 1, time_left: 0
+окт 23 17:01:05.129148 SA-02m kernel: i2c i2c-2: mv64xxx: I2C bus locked, block: 1, time_left: 0
+окт 23 17:01:37.375675 SA-02m kernel: i2c i2c-2: mv64xxx: I2C bus locked, block: 1, time_left: 0
+окт 23 17:02:09.605460 SA-02m kernel: i2c i2c-2: mv64xxx: I2C bus locked, block: 1, time_left: 0
+окт 23 17:02:41.869263 SA-02m kernel: i2c i2c-2: mv64xxx: I2C bus locked, block: 1, time_left: 0
+окт 23 17:03:14.096056 SA-02m kernel: i2c i2c-2: mv64xxx: I2C bus locked, block: 1, time_left: 0
+окт 23 17:03:46.331926 SA-02m kernel: i2c i2c-2: mv64xxx: I2C bus locked, block: 1, time_left: 0
+окт 23 17:04:18.568693 SA-02m kernel: i2c i2c-2: mv64xxx: I2C bus locked, block: 1, time_left: 0
+окт 23 17:04:50.805695 SA-02m kernel: i2c i2c-2: mv64xxx: I2C bus locked, block: 1, time_left: 0
+окт 23 17:05:23.066032 SA-02m kernel: i2c i2c-2: mv64xxx: I2C bus locked, block: 1, time_left: 0
+окт 23 17:05:55.375421 SA-02m kernel: i2c i2c-2: mv64xxx: I2C bus locked, block: 1, time_left: 0
+окт 23 17:06:27.607608 SA-02m kernel: i2c i2c-2: mv64xxx: I2C bus locked, block: 1, time_left: 0
+окт 23 17:06:59.845450 SA-02m kernel: i2c i2c-2: mv64xxx: I2C bus locked, block: 1, time_left: 0
+окт 23 17:07:32.095515 SA-02m kernel: i2c i2c-2: mv64xxx: I2C bus locked, block: 1, time_left: 0
+окт 23 17:08:04.405479 SA-02m kernel: i2c i2c-2: mv64xxx: I2C bus locked, block: 1, time_left: 0
+окт 23 17:08:36.645423 SA-02m kernel: i2c i2c-2: mv64xxx: I2C bus locked, block: 1, time_left: 0
+окт 23 17:09:08.895413 SA-02m kernel: i2c i2c-2: mv64xxx: I2C bus locked, block: 1, time_left: 0
+окт 23 17:09:41.215999 SA-02m kernel: i2c i2c-2: mv64xxx: I2C bus locked, block: 1, time_left: 0
+окт 23 17:10:13.446430 SA-02m kernel: i2c i2c-2: mv64xxx: I2C bus locked, block: 1, time_left: 0
+окт 23 17:10:45.685429 SA-02m kernel: i2c i2c-2: mv64xxx: I2C bus locked, block: 1, time_left: 0
+окт 23 17:11:17.925400 SA-02m kernel: i2c i2c-2: mv64xxx: I2C bus locked, block: 1, time_left: 0
+окт 23 17:11:50.167986 SA-02m kernel: i2c i2c-2: mv64xxx: I2C bus locked, block: 1, time_left: 0
+окт 23 17:12:22.486016 SA-02m kernel: i2c i2c-2: mv64xxx: I2C bus locked, block: 1, time_left: 0
+окт 23 17:12:54.728634 SA-02m kernel: i2c i2c-2: mv64xxx: I2C bus locked, block: 1, time_left: 0
+окт 23 17:13:26.965510 SA-02m kernel: i2c i2c-2: mv64xxx: I2C bus locked, block: 1, time_left: 0
+окт 23 17:13:59.285442 SA-02m kernel: i2c i2c-2: mv64xxx: I2C bus locked, block: 1, time_left: 0
+окт 23 17:14:31.525405 SA-02m kernel: i2c i2c-2: mv64xxx: I2C bus locked, block: 1, time_left: 0
+окт 23 17:15:03.766377 SA-02m kernel: i2c i2c-2: mv64xxx: I2C bus locked, block: 1, time_left: 0
+окт 23 17:15:36.015432 SA-02m kernel: i2c i2c-2: mv64xxx: I2C bus locked, block: 1, time_left: 0
+окт 23 17:16:08.245433 SA-02m kernel: i2c i2c-2: mv64xxx: I2C bus locked, block: 1, time_left: 0
+окт 23 17:16:40.488080 SA-02m kernel: i2c i2c-2: mv64xxx: I2C bus locked, block: 1, time_left: 0
+окт 23 17:17:12.726560 SA-02m kernel: i2c i2c-2: mv64xxx: I2C bus locked, block: 1, time_left: 0
+окт 23 17:17:44.965617 SA-02m kernel: i2c i2c-2: mv64xxx: I2C bus locked, block: 1, time_left: 0
+окт 23 17:18:17.205540 SA-02m kernel: i2c i2c-2: mv64xxx: I2C bus locked, block: 1, time_left: 0
+окт 23 17:18:49.440952 SA-02m kernel: i2c i2c-2: mv64xxx: I2C bus locked, block: 1, time_left: 0
+окт 23 17:19:21.765402 SA-02m kernel: i2c i2c-2: mv64xxx: I2C bus locked, block: 1, time_left: 0
