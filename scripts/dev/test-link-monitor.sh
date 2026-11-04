@@ -22,7 +22,8 @@
 # board means `ip monitor` died; the script must then exit non-zero (systemd
 # restarts it). `systemctl is-active` answers from a per-unit busy counter
 # (`activating` while it is > 0, decremented per call; `inactive` after);
-# `sleep` is a recorded no-op so the bounded busy-wait costs no real time;
+# `sleep` is a recorded shim that costs no real second, so the bounded
+# busy-wait runs without real waiting;
 # /proc/uptime is retargeted to a sandbox file that the `systemctl is-active`
 # shim advances by a per-case step on every call (default 10000 s, step 0) —
 # the monitor asks is-active once per rising edge, before it reads the clock,
@@ -32,6 +33,24 @@
 # root, no device, no systemd, no python — bash + coreutils only, so it runs
 # in Windows git-bash as well as on Linux CI. There is deliberately NO env
 # seam in the shipped script — the retarget is the test's job.
+#
+# What synchronises what (the busy cases L6, L9, L10 run the monitor's
+# foreground and its background waiter concurrently; nothing here may depend
+# on which of the two the host schedules first):
+#   - is-active calls are serialised by an O_EXCL lock file in the shim, so
+#     the busy counter and the uptime stand-in are never read half-written
+#     and never lose a decrement (the spin is bounded at LOCK_MAX=3 s of the
+#     shim's clock, under the monitor's `timeout 5` per call);
+#   - the waiter's first `sleep` blocks until the foreground has logged
+#     «ip monitor завершился» (all canned lines handled), so every edge of a
+#     case meets the pass still busy and the waiter still alive;
+#   - the busy-wait is bounded by COUNT: the sleep shim kills the waiter past
+#     SLEEP_CAP=120 waits (2 × BUSY_WAIT_MAX). The `timeout` wall bound
+#     (RUN_CAP=300 s) is only a last resort for a hang that passes through no
+#     shim. A gate, count or lock fault is recorded (SHIM-FAULT) and FAILS the
+#     case. Wall bounds that remain: GATE_MAX=60 s and the monitor's own
+#     `timeout 5` per is-active call — host load can still turn a busy case
+#     RED, only past those far higher thresholds.
 #
 # Cases (each = one run of the monitor over one canned line set):
 #   L1  eth0 has a conf, carrier=0 at start; a NO-CARRIER line then a
@@ -81,8 +100,9 @@
 #
 # Non-vacuous: a missing script, a failed retarget, a real root left on an
 # executable line, a shim never invoked across the run, `ip` invoked with
-# anything but `-o monitor link`, or a run that hangs (bounded by `timeout`)
-# FAILS rather than passing on zero matches.
+# anything but `-o monitor link`, a run that hangs (bounded by `timeout`), or
+# a shim fault (the sleep gate never opened, the wait count cap hit, the
+# is-active lock never freed) FAILS rather than passing on zero matches.
 #
 # Drive-to-failure (how this harness was proven a real ratchet):
 #   RED on the 1.0.7.26 tree (script absent): «FAIL missing or empty».
@@ -101,8 +121,9 @@
 #   15 s skipped, start=0 — observed by hand after round 4, re-observed in review round 5). Not expressible as a comment-out, recorded by hand: with
 #   BUSY_WAIT_MAX=999999 review round 1 saw the harness GREEN (L9 did not
 #   exist — its finding F1); after L9 was added the Builder observed L9 RED
-#   (hang into the 60 s bound, 143 waits, no give-up line) and review round 2
-#   re-observed it. Each L8
+#   (then: hang into the old 60 s wall bound, 143 waits, no give-up line) and
+#   review round 2 re-observed it; since the count bound it is RED on the count
+#   (the waiter killed at wait 121, no give-up line). Each L8
 #   pin turns L8 RED when commented out (the installer's `infra start
 #   restart`, the unit's TimeoutStopSec=5, fix-eth@'s StartLimitBurst=10, the
 #   factory-reset runner's two lines). The comment-out cases are registered in
@@ -160,27 +181,84 @@ SHIM
 # answer consumed per call), `inactive` (rc 3, as systemd) otherwise. The
 # answer is recorded, so L6 can prove the start came after an `inactive`.
 # Every is-active first advances the sandbox uptime by $ST/uptime.step.
+# The foreground (edge-time check) and the deferred waiter both call it, so
+# the read-modify-write runs under an O_EXCL lock file. Unserialised (the shim
+# before 2026-11-04), a two-caller stress on one counter lost decrements in
+# every run (reproduced in review); in two of its five runs (Windows
+# git-bash, 2026-11-04) it also answered one spurious `inactive` with the
+# counter still positive — a read landing in the other call's truncate saw ""
+# (NOT reproduced in review's sample). In L10 a spurious `inactive` is a fresh
+# start where «уже ожидает» is due (foreground) or a waiter that starts early
+# so the next edge queues a second one (waiter): consistent with the flakes
+# seen (CI start=3 and start=2, one Windows run start=2 queued=2), which the
+# sleep gate below closes by the other route as well. The lock spin is bounded
+# by the shim's own clock at LOCK_MAX=3 s, under the monitor's `timeout 5` on
+# every is-active call — so a lock that is never freed is recorded as
+# SHIM-FAULT and fails the case, instead of the call being killed silently
+# and read as «not busy». State is read with builtins, records are plain
+# appends — every fork here is paid on each busy-wait iteration.
+LOCK_MAX=3
 cat > "$BIN/systemctl" <<SHIM
 #!/bin/bash
+rec() { echo "\$1" >> "$CALLS"; echo "\$1" >> "$CALLS_ALL"; }
 if [ "\${1:-}" = is-active ]; then
-    read -r _u _ < "$ST/uptime"; _st=\$(cat "$ST/uptime.step" 2>/dev/null || echo 0)
+    owned=0; trap '[ "\$owned" = 1 ] && rm -f "$ST/is-active.lock"' EXIT; trap 'exit 143' TERM INT HUP
+    set -C
+    until { : > "$ST/is-active.lock"; } 2>/dev/null && owned=1; do
+        [ "\$SECONDS" -lt $LOCK_MAX ] || { rec "SHIM-FAULT is-active lock not freed within ${LOCK_MAX}s"; break; }
+    done
+    set +C
+    _u=0; _st=0; n=0
+    { read -r _u _ < "$ST/uptime"; } 2>/dev/null
+    { read -r _st < "$ST/uptime.step"; } 2>/dev/null
     printf '%s.00 0.00\n' "\$(( \${_u%%.*} + _st ))" > "$ST/uptime"
-    f="$ST/busy.\$2"; n=0
-    [ -f "\$f" ] && n=\$(cat "\$f")
-    if [ "\$n" -gt 0 ]; then
-        echo \$((n - 1)) > "\$f"
-        echo "systemctl \$* -> activating" | tee -a "$CALLS_ALL" >> "$CALLS"
+    f="$ST/busy.\$2"
+    { read -r n < "\$f"; } 2>/dev/null
+    if [ "\${n:-0}" -gt 0 ]; then
+        echo "\$((n - 1))" > "\$f"
+        rec "systemctl \$* -> activating"
         echo activating; exit 0
     fi
-    echo "systemctl \$* -> inactive" | tee -a "$CALLS_ALL" >> "$CALLS"
+    rec "systemctl \$* -> inactive"
     echo inactive; exit 3
 fi
-echo "systemctl \$*" | tee -a "$CALLS_ALL" >> "$CALLS"
+rec "systemctl \$*"
 exit 0
 SHIM
+# sleep: no real time, but two synchronisation duties (only the deferred
+# waiter calls it). GATE — it does not return until the monitor's foreground
+# has drained every canned line, observed as its «ip monitor завершился» line
+# in $OUT: every edge of a case is then handled while the pass is still busy,
+# unless the host stalls the foreground past GATE_MAX (without it a waiter that runs ahead drains
+# the busy counter before the foreground reaches the later edges, and those
+# start fresh — reproduced by feeding L10's last edges late: start=3 queued=1
+# waiting=2, the CI signature). The hold is bounded by GATE_MAX seconds of
+# the shim's own clock (bash SECONDS), well under RUN_CAP: the foreground needs
+# a few seconds for its handful of lines even on a loaded host.
+# COUNT BOUND — past $SLEEP_CAP waits (2 × the monitor's BUSY_WAIT_MAX) it
+# kills its caller, the waiter: a runaway busy-wait is cut by its iteration
+# count, not by the wall clock. Either fault is recorded as SHIM-FAULT and
+# FAILS the case (exit_ok).
+REAL_SLEEP=$(command -v sleep) || { echo "FAIL  no real sleep for the gate poll"; exit 1; }
+SLEEP_CAP=120
+GATE_MAX=60
 cat > "$BIN/sleep" <<SHIM
 #!/bin/bash
-echo "sleep \$*" | tee -a "$CALLS_ALL" >> "$CALLS"
+rec() { echo "\$1" >> "$CALLS"; echo "\$1" >> "$CALLS_ALL"; }
+rec "sleep \$*"
+while [ ! -f "$ST/fg-eof" ]; do
+    while IFS= read -r l; do
+        [[ \$l == "ip monitor завершился"* ]] && { : > "$ST/fg-eof"; break; }
+    done 2>/dev/null < "$OUT"
+    [ -f "$ST/fg-eof" ] && break
+    [ "\$SECONDS" -lt $GATE_MAX ] || { rec "SHIM-FAULT sleep gate: the foreground never logged the end of ip monitor within ${GATE_MAX}s"; : > "$ST/fg-eof"; break; }
+    "$REAL_SLEEP" 0.05
+done
+n=0; { read -r n < "$ST/sleeps"; } 2>/dev/null; n=\$((n + 1)); echo "\$n" > "$ST/sleeps"
+if [ "\$n" -gt $SLEEP_CAP ]; then
+    rec "SHIM-FAULT sleep cap: the waiter was killed at wait \$n (> $SLEEP_CAP)"
+    kill -TERM "\$PPID" 2>/dev/null
+fi
 exit 0
 SHIM
 # `date` — a TRAP, not a clock: it answers `+%s` from a sandbox wall clock
@@ -212,16 +290,25 @@ conf()    { printf 'auto %s\niface %s inet static\n    address 192.168.1.135/24\
 carrier() { mkdir -p "$SYS/$1"; printf '%s\n' "$2" > "$SYS/$1/carrier"; }
 clock_step() { printf '%s\n' "$1" > "$ST/uptime.step"; }   # seconds the sandbox uptime advances per is-active
 wall_step()  { printf '%s\n' "$1" > "$ST/clock.step"; }    # seconds the date trap's wall clock moves per read
+# Last-resort wall bound for a hang that passes through no shim. The busy-wait
+# is bounded by count (the sleep shim's SLEEP_CAP), not by this, so L9/L10 no
+# longer race a wall bound with their 60 iterations. Two wall bounds remain in
+# the busy cases, both far above what the work needs: GATE_MAX=60 s for the
+# foreground's few lines, and the monitor's own `timeout 5` on each is-active
+# call (a call the host stalls that long reads as «not busy» and changes the
+# counts). Host load can still turn them RED, only past those thresholds.
+RUN_CAP=300
 run_mon() {   # the monitor over $LINES; bounded so a hang FAILS instead of blocking
-    timeout 60 "$MON" < /dev/null > "$OUT" 2>&1
+    timeout "$RUN_CAP" "$MON" < /dev/null > "$OUT" 2>&1
     RC=$?
 }
 # `grep -c` prints 0 AND exits 1 on no match; `|| true` keeps that single 0.
 n_calls() { grep -c -E "$1" "$CALLS" 2>/dev/null || true; }
 n_start() { n_calls "^systemctl .*start fix-eth@$1\\.service\$"; }
 n_start_any() { n_calls '^systemctl .*start fix-eth@'; }
-exit_ok() {   # $1 case: the monitor must exit non-zero (not 124 = hung) when ip monitor ends
-    if [ "$RC" = 124 ]; then bad "$1: the monitor hung (killed by timeout 60) — $(tail -2 "$OUT" | tr '\n' ' ')"
+exit_ok() {   # $1 case: the monitor must exit non-zero (not 124 = hung) when ip monitor ends; no shim fault
+    if grep -q '^SHIM-FAULT' "$CALLS"; then bad "$1: $(grep '^SHIM-FAULT' "$CALLS" | tr '\n' ' ')"; fi
+    if [ "$RC" = 124 ]; then bad "$1: the monitor hung (killed by timeout $RUN_CAP) — $(tail -2 "$OUT" | tr '\n' ' ')"
     elif [ "$RC" = 0 ]; then bad "$1: the monitor exited 0 when \`ip monitor\` ended — systemd would not restart it"
     fi
 }
@@ -317,7 +404,8 @@ fi
 # The contract's «до 60 с»: the deferred start waits at most BUSY_WAIT_MAX
 # one-second steps, then logs the give-up and starts nothing (net-watchdog's
 # pass is the fallback). 200 busy answers outlast the limit; an unbounded wait
-# would start after them (or hang into the 60 s run bound) — both FAIL.
+# runs into the sleep shim's count bound (killed at wait 121, no give-up line)
+# — it FAILS on the count, not on a wall-clock race.
 reset_case; conf eth0; carrier eth0 0
 printf '200\n' > "$ST/busy.fix-eth@eth0.service"
 up eth0 2 > "$LINES"
@@ -334,8 +422,10 @@ fi
 # start, the next four find it waiting and only log; exactly one start
 # follows. Without the one-job-per-interface guard every edge spawns its own
 # waiter and each of them starts a pass.
-# 58 busy answers (≤ BUSY_WAIT_MAX, so the waiter still starts): wide margin
-# for the foreground to see all five edges while the pass is still running.
+# 58 busy answers (≤ BUSY_WAIT_MAX, so the waiter still starts). The waiter
+# cannot run ahead: the sleep shim's gate holds its first wait until the
+# foreground has logged the end of the canned lines, so all five edges see the
+# pass still busy and the waiter alive — by construction, not by a margin.
 reset_case; conf eth0; carrier eth0 0; clock_step 61
 printf '58\n' > "$ST/busy.fix-eth@eth0.service"
 { up eth0 2; down eth0 2; up eth0 2; down eth0 2; up eth0 2; down eth0 2; up eth0 2; down eth0 2; up eth0 2; } > "$LINES"
