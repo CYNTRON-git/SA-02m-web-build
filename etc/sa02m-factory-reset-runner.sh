@@ -1409,9 +1409,8 @@ erase_rules_history() {
   # Outside $JOURNAL_DIR/files: a rollback never "restores" it.
   printf '%s\n' "$RULES_EMPTY_JOURNAL" >"$src"
   for try in 1 2; do
-    if [ -L "$RULES_DIR/runs.json" ]; then
-      out=$(fr_safe remove-name "$RULES_DIR" runs.json 2>&1) || fail E_APPLY "scenario run journal not erased: $out"
-    fi
+    # A symlinked runs.json goes first: fr_safe install never writes through one.
+    if [ -L "$RULES_DIR/runs.json" ]; then out=$(fr_safe remove-name "$RULES_DIR" runs.json 2>&1) || fail E_APPLY "scenario run journal not erased: $out"; fi
     out=$(fr_safe install "$src" "$RULES_DIR/runs.json" 0644 root:root 2>&1) || fail E_APPLY "scenario run journal not erased: $out"
     [ -z "$out" ] || log "rules: $out"
     out=$(fr_safe remove-name "$RULES_DIR" logic_state.json 2>&1) || fail E_APPLY "scenario template state not erased: $out"
