@@ -9,8 +9,9 @@ pass. The registry itself is the one home for *what* each row checks
 2026-10-29, `main` at `9bf0ab60`): git-bash 5.2 (MSYS), Node 24, a native
 Python 3.12.10 whose `python3.exe` is a hand-made copy of `python.exe`, `gh`.
 It has **no WSL distro** (`wsl.exe` answers «not installed»), **no Cygwin, no
-`flock`, no `visudo`, no `shellcheck`**. The full build beat there is 149 rows:
-117 PASS, 6 PARTIAL, 12 SKIP, 14 FAIL — every FAIL is in the FAIL table below
+`flock`, no `visudo`, no `shellcheck`**. The full build beat there is 159 rows
+(the 1.0.7.28 ship run, 2026-11-03): 127 PASS, 6 PARTIAL, 12 SKIP, 14 FAIL — the
+same 14 FAILs as on 2026-10-29, every one in the FAIL table below
 with its cause (one is marked «not traced»); CI on Linux is green on the same code. Rows below that say
 «Cygwin's `flock` on `PATH` (the former box)» were measured on the box before
 2026-10-28; on the current box those rows take their no-`flock` branch.
@@ -102,7 +103,7 @@ either:
 | `py-unit-alice` | 910 tests, 1 deterministic failure: `test_mtd_distance.test_atomic_commit_concurrent_writers_and_save_failure` — `Lists differ: [1, 1] != [0, 1]` (2026-10-29, default and `PYTHONUTF8=1`; under `PYTHONIOENCODING=utf-8` the same test ends in an ERROR, `PermissionError [WinError 5]` from `os.replace` in the racing writers; the cp1251 console adds nine `--- Logging error ---` blocks on the `→` in a log line, which print but fail no test) | `devices_lock` (`sa02m_alice/common/config_store.py`) is a no-op without `fcntl` by design («Windows dev box»), so two concurrent `commit_provision` calls both append. A Linux-only test with no skip guard, so it FAILs instead of SKIPping; PASS under WSL |
 | `py-unit-rules` | 331 tests, 1 error: `RecursionError: maximum recursion depth exceeded while encoding a JSON object` at `json.dumps(bucket, allow_nan=False)` in `test_non_finite_consumers.VarsSweepBoundTests.test_a_deep_chain_slipped_in_through_the_sandbox_ends_within_budget` (2026-10-29, same under all three encoding settings) | **cause not traced.** Linux CI is green on the same tree; that a Windows CPython 3.12.10 recursion/stack difference is the reason is a guess, not an established fact — re-run under Linux before calling it a host artifact |
 | `web-install-secret` (1.0.7.11, `9bf0ab60`) | 16 failures (2026-10-29): 12 in group E (the log scrub), where the scrub's `python3` heredoc dies with `AttributeError: module 'os' has no attribute 'O_NOFOLLOW'` and every later E assert follows from the unscrubbed log; 4 in group C («… staging mode is not 0600»). Group E also prints two SKIPs (foreign owner needs root; `ln -s` makes no symlink) | Windows CPython has no `os.O_NOFOLLOW`; MSYS cannot represent a 0600 mode (the same mode model as the `sudoers-pin-contract` row). rc=0 under Linux CI |
-| transient (host load) | `py-unit-alice` broker-restart timing (`test_mqtt_link_broker` — red in 1 of 3 sequential runs on 2026-10-29),  `telemetry-device-id-contract`, `no-absolute-api-paths`, `iface-dns-ensure` wait budgets, `install-atomic` 9c - seen RED once each with 4-6 parallel agent runs on the box, PASS alone | not environment, not a defect: contention; re-run alone before filing |
+| transient (host load) | `py-unit-alice` broker-restart timing (`test_mqtt_link_broker` — red in 1 of 3 sequential runs on 2026-10-29),  `telemetry-device-id-contract`, `no-absolute-api-paths`, `iface-dns-ensure` wait budgets, `install-atomic` 9c - seen RED once each with 4-6 parallel agent runs on the box, PASS alone; `mqtt-tcp-probe-contract` in the review beat's `comment-mutation-proof` («not green on an unmutated tree», the 1.0.7.28 ship run 2026-11-03 — the same row PASSed in that run's build beat and ran 14/14 green alone 3 of 3) — the class first seen on `mqtt-set-contract` (backlog), recurring on another row | not environment, not a defect: contention; re-run alone before filing |
 
 ### The console code page — what `PYTHONUTF8=1` fixes and what it does not
 
@@ -152,7 +153,10 @@ mutation.
   turns a gate's inner SKIP into a FAIL instead of a SKIP — conservative (never
   a false green), at the price of a red review beat on Windows. Neither is a
   protection gap, so neither is backlogged. The run ended `8 FAILURE(S)` — these
-  three plus the five «not green» rows above — and nothing else; had a Linux run left a case green,
+  three plus the five «not green» rows above — and nothing else (the 1.0.7.28
+  ship run, 2026-11-03, ended `9 FAILURE(S)`: the ninth was the
+  `mqtt-tcp-probe-contract` host-load transient — the transient row of the FAIL
+  table); had a Linux run left a case green,
   that would be the defect to route.
 
 ## `nginx -t` runs only on the board

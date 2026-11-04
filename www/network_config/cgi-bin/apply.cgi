@@ -40,7 +40,7 @@ get_f() {
 # Reject the whole request with a JSON error (network fields are attacker-
 # controlled and are written into /etc/network/interfaces.d as root — an
 # unvalidated newline injects an ifupdown pre-up hook, RCE). Never proceed to
-# the sudo tee below on a bad value.
+# the root conf write below (sa02m-iface-conf-write.sh) on a bad value.
 reject_bad_input() {
     echo "Content-type: application/json"; echo ""
     printf '{"error":"invalid input: %s"}\n' "$1"

@@ -4,7 +4,7 @@ edit (contract cloud-scenarios.md «Room-air logic», «Состояние ша�
 `sa02m-rules` restarts on every OTA (etc/sa02m-update-runner.sh); before the
 state file a boosted fan stayed boosted, a re-boost snapshotted the boosted
 state as the «original», lights lit by motion were never switched off and
-«Я дома» restored nothing (review engine4-port B1)."""
+«Я дома» restored nothing."""
 from __future__ import annotations
 
 import json
@@ -168,9 +168,11 @@ class FailSafe(unittest.TestCase):
                       {"active": True, "saved": {}, "paused": {"fan": "soon"}},
                       {"active": True, "saved": {"fan": [0, float("nan")]}, "paused": {}}):
             with self.subTest(state=state):
+                # This board's stamp: the entry, not the binding, is what is refused.
                 self.assert_fresh_start(json.dumps(
-                    {"version": 1, "scenarios": {"air": {"template": "air_quality_ventilation",
-                                                         "state": state}}}))
+                    {"version": 1, "machine": store.machine_stamp(),
+                     "scenarios": {"air": {"template": "air_quality_ventilation",
+                                           "state": state}}}))
 
     def test_unwritable_state_never_stops_the_engine(self):
         h = Harness(self, [air_row()])
@@ -242,7 +244,7 @@ THRESHOLD = (
 
 
 class ThresholdTemplatesRestart(unittest.TestCase):
-    """Review round 2, R2-B1: the «switched on by me» flag of the threshold
+    """The «switched on by me» flag of the threshold
     templates survives a restart, reconciled with the actor's first report."""
 
     def switched_on(self, template, params, actor, on_reading):
@@ -312,7 +314,7 @@ class ThresholdTemplatesRestart(unittest.TestCase):
         self.assertEqual(h.pubs, [(actor, "on_off", 0)])
 
     def test_another_template_under_the_same_id_starts_fresh(self):
-        """Review round 2, A3: co2_ventilation and humidifier export the same
+        """co2_ventilation and humidifier export the same
         shape ({"on": …}); only the identity check keeps one from adopting the
         other's flag."""
         h = Harness(self, [logic_row("rule", "co2_ventilation",
@@ -328,7 +330,7 @@ class ThresholdTemplatesRestart(unittest.TestCase):
 
 class MotionLightOffTimer(unittest.TestCase):
     def test_restored_lit_light_goes_off_without_a_motion_report(self):
-        """Review round 2, A4: a non-retained motion source sends nothing after
+        """A non-retained motion source sends nothing after
         the restart; the restored light must still go off after off_s."""
         row = {"id": "ml", "name": "Motion", "enabled": True, "type": "logic",
                "template": "motion_light", "params": {"sensors": ["pir"], "lights": ["lamp"],
@@ -351,7 +353,7 @@ class MotionLightOffTimer(unittest.TestCase):
 
 
 class SaveCadence(unittest.TestCase):
-    """Review round 2, A1/A2: saves coalesce on the RUNS_FLUSH_S cadence and
+    """Saves coalesce on the RUNS_FLUSH_S cadence and
     the service stop saves what is pending."""
 
     ROW = {"id": "away", "name": "Away", "enabled": True, "type": "logic",
@@ -410,15 +412,17 @@ class SaveCadence(unittest.TestCase):
         self.assertEqual([n for n in os.listdir(td.name) if n.startswith(".rules-")], [])
 
 
-class Round3(unittest.TestCase):
-    """Review round 3: R3-B1, R3-B2, the immediate save of a switch-on, X4, X8."""
+class EditsCadenceAndSwitchOn(unittest.TestCase):
+    """A same-template edit with live inputs (motion present, actors already
+    reported), the save cadence under continuous change, the immediate save
+    of a switch-on, and the humidity-fan max-run pause across a restart."""
 
     ML = {"id": "ml", "name": "Motion", "enabled": True, "type": "logic",
           "template": "motion_light", "params": {"sensors": ["pir"], "lights": ["lamp"],
                                                  "off_s": 30}}
 
     def test_same_template_edit_with_motion_present_keeps_the_light_on(self):
-        """R3-B1: an edit re-creates the instance with motion=1 already in the
+        """An edit re-creates the instance with motion=1 already in the
         mirror; a steady sensor sends no new edge, so a timer armed at boot
         would switch an occupied room dark (contract: timing starts after all
         sensor inputs clear)."""
@@ -437,7 +441,7 @@ class Round3(unittest.TestCase):
         self.assertEqual(h.pubs[-1], ("lamp", "on_off", 0))
 
     def test_saves_follow_the_cadence_while_the_state_keeps_changing(self):
-        """R3-B2: one change per second. No save before RUNS_FLUSH_S after the
+        """One change per second. No save before RUNS_FLUSH_S after the
         first unsaved change (not every tick), one when it is reached, and a
         rule that never stops changing is still saved every RUNS_FLUSH_S (the
         clock does not restart on every change)."""
@@ -467,7 +471,7 @@ class Round3(unittest.TestCase):
         self.assertEqual(seen[2 * flush_s - 1], 2, "a rule changing every second is never saved")
 
     def test_a_switch_on_is_saved_at_once(self):
-        """Orchestrator call (round 3): a crash inside the cadence window after
+        """A crash inside the cadence window after
         a thermostat switched a heater on must not leave the heater unowned."""
         template, params, actor, on_reading, off_reading = THRESHOLD[0]
         h = Harness(self, [logic_row("rule", template, params)])
@@ -480,7 +484,7 @@ class Round3(unittest.TestCase):
         self.assertEqual(h.pubs, [(actor, "on_off", 0)])
 
     def test_same_template_edit_reconciles_with_known_actor_states(self):
-        """X4: after an edit the actors' reports are already in the mirror; a
+        """After an edit the actors' reports are already in the mirror; a
         fan switched off by hand meanwhile clears the flag, so the next
         crossing switches it on again."""
         params = {"sensors": ["c"], "fans": ["vent"], "on_ppm": 1000, "off_ppm": 700}
@@ -496,7 +500,7 @@ class Round3(unittest.TestCase):
         self.assertEqual(h.pubs, [("vent", "on_off", 1)])
 
     def test_humidity_fan_pause_after_max_run_survives_a_restart(self):
-        """X8: after max_run_min the fan stays off until humidity really drops
+        """After max_run_min the fan stays off until humidity really drops
         (cooldown) — also across a restart, when the rule is no longer «on»."""
         template, params, actor, on_reading, _off = THRESHOLD[1]
         h = Harness(self, [logic_row("rule", template, dict(params, max_run_min=30))])
@@ -512,6 +516,215 @@ class Round3(unittest.TestCase):
         e.on_state("rh", "humidity", 50)
         e.on_state("rh", "humidity", 70)
         self.assertEqual(h.pubs, [(actor, "on_off", 1)])
+
+
+def machine_id_file(test, content):
+    """Retarget the board's machine-id (store.MACHINE_ID_PATH) to a temp file
+    holding `content`; returns its path so a test can rewrite it."""
+    from unittest.mock import patch
+    td = tempfile.TemporaryDirectory()
+    test.addCleanup(td.cleanup)
+    path = os.path.join(td.name, "machine-id")
+    with open(path, "w", encoding="utf-8") as fh:
+        fh.write(content)
+    patcher = patch.object(store, "MACHINE_ID_PATH", path, create=True)
+    patcher.start()
+    test.addCleanup(patcher.stop)
+    return path
+
+
+class MachineBinding(unittest.TestCase):
+    """The state file is bound to the board that wrote it (/etc/machine-id):
+    a clone captured with the machine-id reset does not restore the donor's
+    snapshot (contract cloud-scenarios.md «Состояние шаблонов»; a
+    `--no-id-reset` capture keeps the donor's id and is out of reach here)."""
+
+    def boosted(self):
+        h = Harness(self, [air_row()])
+        h.e.on_state("fan", "on_off", 0)
+        h.e.on_state("fan", "fan_speed", 45)
+        h.e.on_state("co2", "co2", 1400)
+        h.pubs.clear()
+        return h
+
+    def assert_fresh(self, e):
+        inst = e._logic["air"]
+        self.assertIs(inst._active, False)
+        self.assertEqual(inst._saved, {})
+
+    def test_the_file_carries_the_stamp_of_the_board(self):
+        import hashlib
+        machine_id_file(self, "0123456789abcdef0123456789abcdef\n")
+        h = self.boosted()
+        h.e.flush_logic_state()
+        self.assertEqual(h.state_file().get("machine"),
+                         hashlib.sha256(b"0123456789abcdef0123456789abcdef").hexdigest())
+
+    def test_the_same_board_restores_its_state(self):
+        machine_id_file(self, "board-a\n")
+        h = self.boosted()
+        e = h.restart()
+        self.assertIs(e._logic["air"]._active, True)
+        self.assertEqual(e._logic["air"]._saved, {"fan": (0, 45)})
+
+    def test_a_file_written_by_another_board_is_ignored_and_logged(self):
+        mid = machine_id_file(self, "donor\n")
+        h = self.boosted()
+        h.e.flush_logic_state()
+        with open(mid, "w", encoding="utf-8") as fh:
+            fh.write("clone\n")  # the same file, read on a clone of the donor
+        with self.assertLogs("sa02m-rules", "WARNING"):
+            e = h.restart()
+        self.assert_fresh(e)
+
+    def test_a_file_written_under_an_empty_machine_id_is_ignored_on_the_clone(self):
+        mid = machine_id_file(self, "")  # the donor's machine-id truncated for capture
+        h = self.boosted()
+        h.e.flush_logic_state()
+        self.assertEqual(h.state_file().get("machine"), "")
+        with open(mid, "w", encoding="utf-8") as fh:
+            fh.write("clone\n")  # first boot of the clone generated its own
+        with self.assertLogs("sa02m-rules", "WARNING"):
+            e = h.restart()
+        self.assert_fresh(e)
+
+    def test_an_unstamped_file_is_ignored_and_logged(self):
+        machine_id_file(self, "board-a\n")
+        h = Harness(self, [air_row()])
+        with open(store.logic_state_path(h.path), "w", encoding="utf-8") as fh:
+            json.dump({"version": 1, "scenarios": {"air": {
+                "template": "air_quality_ventilation",
+                "state": {"active": True, "saved": {"fan": [0, 45]}, "paused": {}}}}}, fh)
+        with self.assertLogs("sa02m-rules", "WARNING"):
+            h.e = e = h._engine()  # the file as found: nothing flushed over it
+        self.assert_fresh(e)
+
+
+class MotionLightBlock(unittest.TestCase):
+    """A wall-switch (manual) block is kept across a same-template edit and a
+    restart: the restored «lit» re-arms the off timer, which must still find
+    the light blocked rather than switch off a light the user took over."""
+
+    ROW = {"id": "ml", "name": "Motion", "enabled": True, "type": "logic",
+           "template": "motion_light",
+           "params": {"sensors": ["pir"], "lights": ["lamp"], "off_s": 30,
+                      "wall_switch": "ws", "manual_block_min": 60}}
+
+    def blocked(self):
+        h = Harness(self, [self.ROW])
+        h.e.on_state("ws", "on_off", 0)
+        h.e.on_state("pir", "motion", 0)
+        h.e.on_state("pir", "motion", 1)
+        self.assertIn(("lamp", "on_off", 1), h.pubs)
+        h.e.on_state("ws", "on_off", 1)  # the user takes over at the wall switch
+        h.e.on_state("pir", "motion", 0)
+        h.pubs.clear()
+        return h
+
+    def test_an_edit_during_the_block_keeps_it(self):
+        h = self.blocked()
+        row = dict(self.ROW, params=dict(self.ROW["params"], off_s=40))
+        store.save({"scenarios": [row], "library": "", "vars": {}}, h.path)
+        h.e.adopt(store.load(h.path))
+        h.advance(45)
+        self.assertNotIn(("lamp", "on_off", 0), h.pubs,
+                         "an edit dropped the wall-switch block")
+
+    def test_a_restart_during_the_block_keeps_it_until_it_expires(self):
+        h = self.blocked()
+        e = h.restart()
+        self.assertEqual(e._logic["ml"].status(), {"blocked_by_switch": 1})
+        h.advance(31)
+        self.assertNotIn(("lamp", "on_off", 0), h.pubs,
+                         "a restart dropped the wall-switch block")
+        h.advance(60 * 60)
+        self.assertEqual(e._logic["ml"].status(), {"blocked_by_switch": 0})
+
+    def test_a_restored_block_publishes_its_end(self):
+        h = self.blocked()
+        e = h.restart()
+        published = []
+        e._pub_state_fn = lambda d, c, v: published.append((d, c, v))
+        h.advance(60 * 60 + 1)
+        self.assertIn(("sa02m-rules-ml", "blocked_by_switch", 0), published,
+                      "the restored block never re-armed its unblock timer")
+
+    def test_a_hand_change_block_survives_a_restart_though_the_light_is_off(self):
+        h = Harness(self, [self.ROW])
+        h.e.on_state("lamp", "on_off", 0)
+        h.e.on_state("pir", "motion", 0)
+        h.e.on_state("pir", "motion", 1)
+        self.assertIn(("lamp", "on_off", 1), h.pubs)
+        h.e.on_state("lamp", "on_off", 0)  # switched off by hand: blocked, not lit
+        self.assertIs(h.e._logic["ml"]._lit, False)
+        h.pubs.clear()
+        e = h.restart()
+        e.on_state("pir", "motion", 0)
+        e.on_state("pir", "motion", 1)
+        self.assertNotIn(("lamp", "on_off", 1), h.pubs,
+                         "a restart dropped the block of a light switched off by hand")
+
+    def test_an_invalid_block_end_is_ignored_and_logged(self):
+        for until in (True, float("nan"), "soon", [1]):
+            with self.subTest(until=until):
+                h = Harness(self, [self.ROW])
+                with open(store.logic_state_path(h.path), "w", encoding="utf-8") as fh:
+                    json.dump({"version": 1, "machine": store.machine_stamp(),
+                               "scenarios": {"ml": {"template": "motion_light",
+                                                    "state": {"lit": True, "blocked_until": until}}}}, fh)
+                with self.assertLogs("sa02m-rules", "WARNING"):
+                    h.e = e = h._engine()
+                self.assertIs(e._logic["ml"]._lit, False)
+                self.assertEqual(e._logic["ml"]._blocked_until, 0.0)
+
+
+class UrgentSaves(unittest.TestCase):
+    """A threshold switch-on is saved at once, but at most once per
+    RUNS_FLUSH_S (a rule flapping on/off must not fsync per switch-on); a
+    switch-off rides the batched cadence."""
+
+    @staticmethod
+    def co2(sid, sensor, fan):
+        return logic_row(sid, "co2_ventilation",
+                         {"sensors": [sensor], "fans": [fan], "on_ppm": 1000, "off_ppm": 700})
+
+    def counting(self, h):
+        from unittest.mock import patch
+        real = engine.save_logic_state
+        calls = []
+
+        def count(*args):
+            calls.append(h.clock[0])
+            return real(*args)
+
+        patcher = patch.object(engine, "save_logic_state", side_effect=count)
+        patcher.start()
+        self.addCleanup(patcher.stop)
+        return calls
+
+    def test_two_switch_ons_a_second_apart_are_one_immediate_save(self):
+        h = Harness(self, [self.co2("r1", "c1", "v1"), self.co2("r2", "c2", "v2")])
+        calls = self.counting(h)
+        h.e.on_state("c1", "co2", 1200)
+        self.assertEqual(len(calls), 1, "the first switch-on is saved at once")
+        h.advance(1)
+        h.e.on_state("c2", "co2", 1200)
+        self.assertEqual(len(calls), 1, "a second urgent save inside RUNS_FLUSH_S")
+        h.advance(store.RUNS_FLUSH_S)
+        self.assertEqual(len(calls), 2, "the throttled switch-on rides the cadence")
+        self.assertEqual(sorted(h.state_file()["scenarios"]), ["r1", "r2"])
+
+    def test_a_switch_off_is_not_saved_at_once(self):
+        h = Harness(self, [self.co2("rule", "c", "vent")])
+        h.e.on_state("c", "co2", 1200)
+        h.advance(store.RUNS_FLUSH_S + 1)  # past the urgent-save window
+        calls = self.counting(h)
+        h.e.on_state("c", "co2", 600)
+        self.assertIn(("vent", "on_off", 0), h.pubs)
+        self.assertEqual(calls, [], "a switch-off was saved at once")
+        h.advance(store.RUNS_FLUSH_S)
+        self.assertEqual(len(calls), 1)
+        self.assertNotIn("rule", h.state_file()["scenarios"])
 
 
 if __name__ == "__main__":
