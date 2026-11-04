@@ -9,6 +9,14 @@ Machine-facing имена (footer, ключи JSON, команды) — на а�
 
 ---
 
+## Совместимость доставки
+
+Текущий упаковщик выставляет `min_updater=1.0.7.5`: старые установки сначала
+проходят `install.sh --refresh` из проверенной версии. Контроллер, блокировки,
+асинхронное применение, отмена и безопасная миграция state имеют единственный
+контракт в [contracts/web-update.md](contracts/web-update.md). Наличие файла
+пакета или HTTP 202 не означает успешного обновления.
+
 ## Что это
 
 Подписанный файл полной поставки веб-интерфейса и сопутствующих overlay-путей
@@ -97,6 +105,7 @@ py -3 scripts/pack-offline-update.py
 | `--signing-key PATH` | Private key PEM |
 | `SA02M_UPDATE_SIGNING_KEY` | Same as `--signing-key` |
 | `--skip-validate` | Skip import of `opt/sa02m-update/lib/validate_package.py` |
+| `--min-updater X.Y.Z[.W]` | Advertised `min_updater` instead of `MIN_UPDATER` (1.0.7.5): not below it, not above the tree `VERSION` — otherwise the packer refuses. Turns the tiered destinations on (below) |
 
 Жёсткие отказы packer:
 
@@ -108,6 +117,30 @@ py -3 scripts/pack-offline-update.py
 
 Allowlist путей overlay: `scripts/offline-update-allowlist.txt`.
 Таблица src→dst (CI/review + packer): `scripts/offline-update-deploy-map.json`.
+
+### Допустимые назначения (`deploy[].dst`) и ярусный путь
+
+Назначение принимается по префиксу (`/var/www/network_config/`,
+`/usr/local/{sbin,lib,libexec}/`, `/opt/sa02m-*/`, `/etc/systemd/system/sa02m-`,
+`/etc/nginx/`, `/etc/tmpfiles.d/`, `/etc/sudoers.d/`, `/etc/default/sa02m-`,
+`/etc/sa02m-update/trusted-keys/`), по закрытому списку плагинов
+`/opt/mplc4/*.so` и по **точному пути** `/usr/local/bin/fix-eth.sh` (с 1.0.7.19 —
+сторож статического IP; каталог `/usr/local/bin/` целиком не открыт, соседи
+сторожа пакетом не доставляются). Список один и тот же в четырёх местах
+(runner ×2, packer, валидатор) — гейт `ota-dst-allowlist-parity`.
+
+Пакет применяет runner, **уже стоящий на плате**, и одно назначение, которого его
+список не знает, отклоняет весь пакет (`E_COMPAT dst not allowlisted`). Поэтому
+`/usr/local/bin/fix-eth.sh` — **ярусное** назначение (`TIERED_DSTS` в
+`scripts/pack-offline-update.py`, порог `FIX_ETH_OTA_SINCE = 1.0.7.19`): packer
+кладёт `etc/fix-eth.sh` в `deploy[]` только когда объявленный `min_updater` ≥
+порога; при `min_updater` по умолчанию (1.0.7.5) файл из пакета выбрасывается с
+заметкой в stderr (`note: etc/fix-eth.sh -> /usr/local/bin/fix-eth.sh dropped: …`),
+и такой пакет ставится на любую плату ≥ 1.0.7.5 как раньше — без сторожа.
+Пакет с `--min-updater 1.0.7.19` (или новее) несёт сторож, а плата с runner
+≤ 1.0.7.18 отклоняет его **до** раскладки с честным `E_COMPAT updater <
+min_updater` — не с вводящим в заблуждение «dst not allowlisted». Гейт
+`fix-eth-ota-delivery`.
 
 ---
 
@@ -137,29 +170,13 @@ manifest **нет** — константа runner `PRESERVE_PATHS`.
 
 Совместимость ключей: неизвестный ключ старый валидатор отклоняет
 (`additionalProperties: false` — осознанная позиция forward-compat).
-Пакер **не пишет** `enable` / `restart_if_*`, пока `MIN_UPDATER` < 1.0.6.37
-(замороженный v1: только обязательные ключи) — иначе валидаторы релизов
-**1.0.5.69–1.0.6.36** отвергают пакет с `E_MANIFEST` (runner < 1.0.5.69
-валидатора не имеет и проверку пропускает; `opt/sa02m-update/` и runner
-родились в одном коммите `b9f3ad4` = 1.0.5.69 — окно названо в комментарии
-`validate_package.py`, это его единственный дом). `sa02m-rules` остаётся в
-обязательном `restart[]` (старый runner его исполняет). Условные рестарты
-Alice/моста и `enable[]` пакер начнёт писать после поднятия `MIN_UPDATER` до
-валидатора, который эти ключи принимает — и пакер печатает об этом одну строку
-в stderr при каждой сборке (`note: services block is frozen v1 …`, 1.0.6.39).
-Пока это так, оффлайн-пакет **не включает ни одного юнита**: `sa02m-dns-ensure.service`
-на обновлённой оффлайн плате включает одноразовый bootstrap-шим в
-`sa02m-eth-coldboot.sh` (`docs/contracts/boot-network-dns.md`).
-Поднять `MIN_UPDATER` стало возможно с 1.0.6.39: runner сообщает
-`UPDATER_VERSION` из развёрнутого файла `VERSION`, а не штампом `1.0.5.66`
-(до этого любое поднятие порога отвергало бы пакет на **каждой** плате с
-`E_COMPAT`). Поднимать — только когда весь парк, который нужно обновлять,
-уже на ≥ 1.0.6.39.
-Онлайн-генератор в `etc/sa02m-update-runner.sh` по-прежнему пишет полный
-набор: манифест собирается уже установленным runner'ом на плате.
-Ключ `enable` генераторы пишут с 1.0.5.69, а валидатор научился принимать его
-только в 1.0.6.37 — оффлайн-пакеты релизов 1.0.5.69–1.0.6.36 (до заморозки
-пакера) отклонялись на плате с `E_MANIFEST`.
+Текущий пакер требует `min_updater=1.0.7.5` и пишет полный набор
+`enable` / `restart_if_*`. Обновление применяет установленный runner;
+поэтому старым установкам сначала требуется полный `install.sh --refresh`
+из проверенного checkout. Матрица перехода и capability gate находятся в
+[контракте обновления](contracts/web-update.md). Генератор сохраняет ветвь
+замороженного v1 для явно старого порога в тестах совместимости; этот режим
+не является поддерживаемым способом доставки текущего релиза старым платам.
 
 Gates на устройстве до backup: версия payload `VERSION` == `manifest.version`;
 semver installed ≥ `min_version`, runner ≥ `min_updater`, target > installed;

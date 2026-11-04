@@ -2,7 +2,7 @@
 
 Board-side contract for the cloud-profile Socket.IO catalogue
 (rename / rooms / groups / scenarios) and the on-board engine
-`sa02m-rules` (`rules_engine=2`). Human overview of Alice/cloud
+`sa02m-rules` (`rules_engine=4`). Human overview of Alice/cloud
 transport: `docs/ALICE_INTEGRATION.md`. MQTT mapping of field
 devices: `docs/contracts/alice-mqtt-mapping.md`. Gateway event
 names that live in the **cloud** repo (`docs/contracts/alice-gateway.md`)
@@ -46,13 +46,16 @@ When present:
   "scenario_runs": [],
   "scenario_notify": [],
   "scenario_library": "",
-  "rules_engine": 2
+  "rules_engine": 4
 }
 ```
 
-`rules_engine` is `sa02m_rules.store.RULES_ENGINE` (currently **2**). It
+`rules_engine` is `sa02m_rules.store.RULES_ENGINE` (currently **4**). It
 also rides every successful `alice_devices_scenarios` response so the hub
-cache does not wait for the next list.
+cache does not wait for the next list. Маркеры: **3** — типизированная
+запись через converter Алисы (§«Типизированная запись: движок 3»); **4** —
+шаблон `air_quality_ventilation` (§«Room-air logic (engine 4)»). Значение
+только растёт: облако включает новое по `>=`.
 
 ### Rooms
 
@@ -64,8 +67,12 @@ clears `room_id` on remaining devices.
 ### Groups
 
 Membership lives **only** on the group (`device_ids`). Delete drops the
-group, never the devices. `icon` is `light` | `ahu` when sent; omitted
-preserves the stored value. Unknown device ids → `not_found`.
+group, never the devices. `icon` is one of `light` | `ahu` | `master` |
+`floor` | `climate` | `cover` | `socket` when sent (one home:
+`sa02m_alice.common.constants.GROUP_ICONS`; any other value is not stored);
+omitted preserves the stored value. Unknown device ids → `not_found`. The
+board stores the group and its icon only — what a group means for the home
+(rooms of equipment, the control page) is the cloud's (`CYNTRON-git/cloud#172`).
 
 ### Rename
 
@@ -84,12 +91,9 @@ past 64 answers `too_many`; `MAX_WRITES=8` direct write actions
 (`set`/`toggle`/`ramp`) per row — a row with more answers
 `too_many_writes` (the engine's per-run cap is the **same constant**, so a
 stored row can never half-apply; nested `scenario`/`scene` children count
-toward the run's cap); `params` ≤ 4096 UTF-8 bytes of compact JSON as
-stored: NaN, ±Infinity and integers past float range inside `params` are
-stored as `null` (the template then uses its default) and the bound is judged
-after that; an oversize `params` is not stored and the answer names it in
-`dropped` as `{"part": "params", "index": null, "reason": "too_large"}`
-(§«Проверка при сохранении»); a `last_run` the client sends is never stored or
+toward the run's cap); `params` — size bound, normalisation and the
+`too_large` answer: §«Проверка при сохранении» (one home); a `last_run` the
+client sends is never stored or
 echoed (it is the board's own record), so the store and every answer stay
 strict JSON; a row saved again by `id` — single, `upsert` or `replace` — keeps
 the board's `last_run` / `last_error`; `runs` 50; `notify_queue` 20.
@@ -219,11 +223,14 @@ can never drop a board-written tick.
 `index` — позиция элемента в присланном списке (для условий — в списке
 `all`/`any`; `null` для целого поля); `reason` — код из таблиц ниже.
 
-`params` больше 4096 байт UTF-8 в компактном JSON (после замены NaN,
-±Infinity и чисел вне диапазона на `null`) не сохраняется, а ответ называет
-это: `{"part": "params", "index": null, "reason": "too_large"}`. Сохранение не
-отменяется — шаблон работает на значениях по умолчанию, и редактор должен
-показать это автору.
+`params` — объект; NaN, ±Infinity и числа вне диапазона `float` внутри него
+сохраняются как `null` (шаблон берёт значение по умолчанию). `params` больше
+4096 байт UTF-8 в компактном JSON после этой замены, а также вложенный глубже
+предела рекурсии интерпретатора (порядка 1000 уровней — такой объект нельзя
+обработать, даже если он укладывается в 4096 байт), не сохраняется, а ответ
+называет это: `{"part": "params", "index": null, "reason": "too_large"}`.
+Сохранение не отменяется — шаблон работает на значениях по умолчанию, и
+редактор должен показать это автору.
 
 Общие причины: `not_object` — элемент не объект; `unknown_kind` — неизвестный
 `kind`; `over_limit` — первый элемент сверх лимита строки (триггеров 8,
@@ -320,9 +327,78 @@ can never drop a board-written tick.
 устройства, которого в документе нет совсем, и для любого устройства, пока
 документ не читается.
 
+### Типизированная запись: движок 3
+
+`RulesApp.pub` для объявленного умения сохраняет исходную декларацию, `inverted`,
+`carel_family` и `mode_map` из DeviceIndex. Перед MQTT использует общий
+`sa02m_alice.client.converters.capability_yandex_to_mqtt`: режимы становятся
+строками шины, RGB/HSV — hex, Kelvin — числом, toggle — `1`/`0`.
+Неизвестный instance, read-only, неверный тип значения и выход за объявленные
+границы не публикуются и дают ошибку запуска. Старый `on_off` 0/1 нормализуется
+в boolean; конечные числовые строки старых range-сцен преобразуются в число
+до проверки границ, decimal RGB/Kelvin и RGB `#RRGGBB` также сохраняются.
+Сырые неописанные цели сохраняют прежний контракт выше.
+У прямого Yandex/cloud dispatcher сохраняется прежнее ограничение range
+до границ; сценарии проверяют абсолютное значение строго до converter.
+Kelvin на шине целый: дробный шаг плавного перехода (`transition_s`,
+`ramp` — движок округляет шаги до 0,01) адаптер округляет до целого Kelvin,
+и уже это значение проходит строгую проверку окна. Действие `toggle` движка
+на умение `devices.capabilities.toggle` пишет boolean (converter требует
+строгий boolean); на любые другие цели — по-прежнему 0/1. Шаг плавного
+перехода, который цель отклонила (вне границ, read-only, неизвестная цель),
+пишется в журнал запуска (`last_error` = `ramp refused: <причина>`), и
+оставшиеся шаги этого перехода не отправляются; переполненное окно записи
+(8 за 10 с) по-прежнему только пропускает шаг. Если пакет `sa02m-alice` не
+установлен или не импортируется (порванная установка), объявленная запись
+отклоняется с причиной `converter unavailable`, а не `invalid capability value`.
+
+**Совместимость сохранённых сценариев (1.0.7.28).** Новая семантика действует
+для **всех** сценариев, в том числе сохранённых до обновления; режима
+совместимости нет. Что меняется для цели, объявленной в документе устройств:
+
+1. **Инверсия.** У привязки `inverted: true` запись сценария и зеркало
+   состояния теперь проходят через инверсию, как у прямого управления Алисы.
+   Сцена, которая раньше писала `1` в реле с активным низким уровнем и
+   получала физическое «выкл», теперь получает физическое «вкл».
+2. **Единицы порогов.** Объявленные `devices.properties.float` в зеркале —
+   в единицах после `scale` (как видит Алиса и панель): давление ×7,50062
+   (гПа → мм рт. ст.), TVOC ×1000 (мг/м³ → мкг/м³). Порог условия или
+   триггера, записанный в «сырых» единицах шины, теперь сравнивается с
+   преобразованным значением. Сырое имя контрола MQTT (`device`/`cap` = имя
+   устройства и контрола шины) по-прежнему хранит исходные единицы.
+3. **Запись вне границ не отправляется.** Абсолютное значение вне объявленных
+   `range` / окна Kelvin / списка режимов отклоняется (ошибка запуска), а не
+   публикуется как раньше.
+
+Что проверить интегратору **до** обновления: сценарии, пишущие в реле с
+`inverted: true` (развернуть значение действия); пороги по давлению и TVOC
+(перевести в мм рт. ст. и мкг/м³); значения действий за пределами объявленных
+границ (поправить действие или границы привязки). Сырые неописанные цели не
+меняются.
+
+Декларированные capability-ключи в зеркале хранят логические значения converter,
+например `mode|thermostat: "cool"`, а сырой MQTT alias остаётся исходным.
+События properties получают объявленные enum (`dry`/`leak`, `closed`/`opened`,
+`not_detected`/`detected`). Числовые условия старых правил 0/1 продолжают
+сопоставляться с clear/active состояниями по словарю общего converter.
+Непригодный отчёт цвета, режима или toggle делает mapped значение неизвестным.
+У `on_off` сохраняется прежняя интерпретация MQTT truthy/falsy; она не становится
+строгой проверкой enum в этом обновлении. При совпадении raw alias и mapped
+ключа владелец значения — mapped converter: один отчёт не создаёт два перехода.
+
+Маркер 3 означает также точный выбор type + instance в прямых командах.
+Для этого обновляются **оба пакета**, `sa02m-alice` и `sa02m-rules`, и затем
+перезапускаются их сервисы. До установки companion облако оставляет повторные
+типы capability и новые типизированные действия недоступными для записи.
+Сама публикация облачной версии не обновляет контроллер и не подтверждает
+работу конкретного физического MQTT-драйвера. Проверки на mock MQTT не заменяют
+приёмку оборудования после отдельно разрешённого firmware rollout.
+
 Логические шаблоны называют записываемое умение именем его `instance`.
 Такое имя-псевдоним есть только у умений, которые шаблоны ЗАПИСЫВАЮТ, —
-`brightness` и `temperature_k` (`device_index.WRITE_ALIASES`): имя указывает
+`brightness`, `temperature_k` и `fan_speed` (`device_index.WRITE_ALIASES`;
+`fan_speed` пишет `air_quality_ventilation` в `range` с `parameters.instance:
+fan_speed`, в том числе 4TO6DI с `range_scale`): имя указывает
 на умение `<тип>|<instance>`, если этот `instance` носит ровно одно умение
 устройства и у устройства нет умения-типа или свойства с тем же именем
 (свойство всегда важнее). Так память яркости и диммирование `switch_light`
@@ -337,7 +413,8 @@ can never drop a board-written tick.
 `<тип>|<instance>` для умения с `instance` и `instance` свойства
 (`temperature`, `motion`, …). Триггер/условие `state` с `instance` реагирует
 только на своё умение; неоднозначный тип без `instance` не срабатывает
-никогда. Свойство адресуется `cap` = его `instance` (так облако и собирает
+никогда. Точная пара, объявленная дважды (`ambiguous_target`), не хранит и
+значения: её отчёты в зеркало под этим ключом не попадают. Свойство адресуется `cap` = его `instance` (так облако и собирает
 триггеры по датчикам). Топик, привязанный в документе только как свойство,
 вдобавок доходит до сырого пути — `device`/`cap` = имя устройства и контрола
 MQTT: на нём работают счётчики кнопок `di_N_*`, классификатор фронтов `di_N`
@@ -431,11 +508,13 @@ MQTT-сообщения, в шаге `tick()` (перечитывание док
 статуса шаблонов, запуск по `.run`) или в `on_boot()` записывается в журнал
 службы и не завершает процесс: при первом отказе — с трассировкой, дальше —
 выборочно. Строку сценария, которую нельзя взвести, движок выключает целиком
-до изменения этой строки в документе: её не запускают ни таймеры, ни триггеры
-состояния, `boot`, кнопок и присутствия, ни ручной запуск (`run_now`, команда
-сцены, вызов дочерним сценарием), а `last_error="not armed: …"` остаётся
-видимым. Остальные строки взводятся — и при горячей перезагрузке документа, и
-при старте. `SIGTERM` по-прежнему останавливает службу. Тест: `opt/sa02m-rules/tests/test_loop_guards.py`.
+до изменения этой строки в документе: её не запускают ни таймеры, ни
+часовые триггеры (`time`, `sun`), ни триггеры состояния, `boot`, кнопок и
+присутствия, ни ручной запуск (`run_now`, команда сцены, вызов дочерним
+сценарием), а `last_error="not armed: …"` остаётся видимым. Остальные строки
+взводятся — и при горячей перезагрузке документа, и при старте. `SIGTERM`
+по-прежнему останавливает службу. Тест:
+`opt/sa02m-rules/tests/test_loop_guards.py`.
 
 **Пробел деградации, названный:** служба остаётся `active`, даже когда шаг
 отказывает постоянно (например, `engine.tick` на сохранённом триггере `sun` с
@@ -526,10 +605,16 @@ and a few builtins. Bound by the `RUN_S` deadline above. Empty
 
 `Vars` хранит только конечные числа. `Vars.set` со значением, в котором есть
 `NaN` или `±Infinity` (на любой глубине), отказывает исключением — не
-пойманное телом, оно становится ошибкой прогона — и ничего не сохраняет. Такое значение, попавшее в `Vars` изменением уже сохранённого
-объекта (например, `Vars.get('l').append(math.nan)`), хранится как `None`, а
-прогон завершается ошибкой; документ с `Vars` на диске остаётся строгим JSON,
-в том числе при сохранении посреди прогона (`Vars.home_mode`). Тест:
+пойманное телом, оно становится ошибкой прогона — и ничего не сохраняет.
+Такое значение, попавшее в `Vars` изменением уже сохранённого объекта
+(например, `Vars.get('l').append(math.nan)`), хранится как `None`, а прогон
+завершается ошибкой; документ с `Vars` на диске остаётся строгим JSON, в том
+числе при сохранении посреди прогона (`Vars.home_mode`). Размер значения
+ограничен `VARS_NODE_MAX` узлами (`code_runner.py`): большее `Vars.set`
+отклоняет, а проверка при сохранении отбрасывает (хранится `None`) с ошибкой
+прогона. Проверка — один линейный проход; дедлайн `RUN_S` её не покрывает
+(она идёт после тела и на пути сохранения движка), поэтому её стоимость
+ограничена размером значения, а не временем. Тест:
 `opt/sa02m-rules/tests/test_non_finite_consumers.py`.
 
 The shared `library` and the scenario body execute in **one** namespace, so
@@ -547,7 +632,7 @@ newer) and rejected at run time with `last_error="unknown template"`.
 ### Logic templates (this engine)
 
 `switch_light`, `motion_light`, `circadian`, `thermostat`,
-`humidity_fan`, `co2_ventilation`, `humidifier`, `away_home`
+`humidity_fan`, `co2_ventilation`, `air_quality_ventilation`, `humidifier`, `away_home`
 (`sa02m_rules/logic_templates.py`). Cloud catalog ids that are not in
 this tuple stay in the store and do not run.
 
@@ -561,6 +646,133 @@ this tuple stay in the store and do not run.
 (снимок MQTT) и повтор того же значения ничего не делают. Кнопочный
 выключатель (жесты `di_N`, в том числе при `auto`): одиночное
 нажатие переключает группу, двойное выключает, долгое — диммирование.
+
+### Room-air logic (engine 4)
+
+`air_quality_ventilation` requires engine 4; typed per-instance actions retain
+minimum engine 3. Its catalog and parameter contract live in cloud
+`docs/contracts/scenario-templates.md`. Sensor slots read logical `co2`,
+`humidity`, `tvoc`; DTV TVOC is converted from mg/m³ to µg/m³ by its existing
+property `scale: 1000`, never treated as an IAQ index. Fan writes use logical
+`fan_speed` percentages through the capability binding (including explicit
+4TO6DI `range_scale: 0.1`), and separate `on_off` power.
+
+Float properties use the same declared scale as the Alice/UI converter;
+raw MQTT aliases keep their original units. A finite payload that becomes
+non-finite after scaling is unknown. Receipt callbacks refresh sensor age
+even when its value is unchanged, without manufacturing a state edge.
+
+The engine tracks fresh reports per configured sensor/property. Any high
+reading sustained for boost_delay_s starts boost; every configured reading
+must be fresh and below its lower threshold for settle_s before the original
+fan power and speed are restored — also after a service restart or a
+same-template edit (§«Состояние шаблонов между перезапусками»). Missing, non-finite and stale readings pause
+transitions instead of being interpreted as clean air. Manual actor changes
+pause that fan and discard its old restore snapshot. Optional smoke sensors
+or a fan fault inhibit comfort writes and discard saved restores. Status
+controls are boost, sensor_stale, inhibited and invalid_params. The engine
+also checks bounds before this template writes, including direct board-side
+configuration that did not pass the cloud wizard.
+
+Вентилятор без умения скорости (только реле `on_off`) или со скоростью, о
+которой ещё не было отчёта, форсируется одним включением: снимок хранит
+питание, а скорость — когда она известна; скорость, пришедшая позже, и есть
+исходная (шаблон её не писал), с этого момента пишется и форсированная
+скорость. Восстановление пишет только то, что было в снимке. Вентилятор, чьё
+питание неизвестно, не трогается. `boost` = 1, только пока хотя бы один
+вентилятор этим правилом действительно включён (запись принята или значение
+уже на месте); активное правило без единой принятой записи — `boost` = 0.
+
+Motion-light timing starts after all sensor inputs clear. Repeated unchanged
+clear reports do not extend the timer; fresh motion cancels it. Night fixtures
+receive the configured brightness before power. A daytime-only rejection
+never arms a timer against an unrelated manually lit fixture. Direct manual
+power/brightness changes pause automation just like the configured wall switch.
+Logic templates consume the converter's shared event vocabulary, including
+motion `detected` / `not_detected`. Thermostat window interlocks accept the
+declared `open` property (`opened` / `closed`) and retain legacy `contact` input.
+
+### Состояние шаблонов между перезапусками
+
+`sa02m-rules` перезапускается при каждом обновлении (`etc/sa02m-update-runner.sh`).
+Состояние, которое нужно шаблону, чтобы потом отменить собственное действие,
+хранится на диске: `/etc/sa02m-rules/logic_state.json` рядом со store
+(`store.logic_state_path`; дерево `ReadWritePaths` единственное доступное на
+запись). Что хранится:
+
+- `air_quality_ventilation` — активность форсирования, снимок
+  питания/скорости каждого вентилятора и паузы ручного приоритета;
+- `motion_light` — «свет включён этим правилом». При создании экземпляра
+  со светом «включён» таймер выключения взводится заново (`off_s` от старта),
+  **только если ни один датчик в зеркале не показывает движение** — то же
+  условие, что у отчёта «движения нет»: источник, который после перезапуска
+  своё состояние не присылает, свет выключит, а правка параметров при уже
+  известном «движение есть» свет в занятой комнате не гасит (таймер начнётся,
+  когда движение пропадёт). Отчёт «движение есть» таймер снимает, как обычно;
+- `away_home` — список выключенного уходом («Я дома» включает его обратно);
+- `thermostat`, `humidity_fan`, `co2_ventilation`, `humidifier` — флаг
+  «включено этим правилом» (у `humidity_fan` ещё момент включения, от которого
+  считается `max_run_min`, и пауза после него). Эти шаблоны переключают актор
+  только на пересечении порога, поэтому без флага актор, включённый до
+  перезапуска, ими не выключался, а у термостата не действовали блокировки по
+  окну и по устаревшему датчику.
+
+**Сверка флага с актором.** Восстановленный флаг «включено» сверяется с первым
+отчётом каждого актора после старта (`on_off`): хотя бы один отчёт «включено» —
+флаг остаётся, и правило выключит актор, когда сработает условие выключения
+или блокировка; «выключено» от всех акторов — флаг снимается (актор
+выключили, пока служба стояла), и следующее пересечение порога включит его
+снова. Пока сверка не закончена, флаг остаётся «включено». Последствие: актор
+без отчёта о состоянии (нет топика состояния) держит флаг «включено» до
+решения самого правила: если такой актор на деле выключен, правило не включит
+его, пока не выполнится условие выключения (термостат — пока в комнате не
+станет теплее уставки с гистерезисом). Любое
+переключение самим правилом сверку заканчивает. При правке параметров того же
+шаблона сверка берёт уже известные значения из зеркала. Правка, меняющая
+акторы термостата (`heaters`/`coolers` или режим `heat`↔`cool`), переносит флаг
+на новый набор акторов; убранные правкой акторы остаются как есть. Термостат,
+восстановленный «включённым», у которого первый отчёт температуры приходит
+позже первой оценки (5 с после старта), выключает актор по устаревшему датчику
+(`safe_off`) и включает снова после отчёта и `min_off_s` — один лишний цикл
+реле на перезапуск при медленном брокере, в безопасную сторону.
+
+Свежесть показаний и часы задержек `air_quality_ventilation` не хранятся:
+после старта каждое показание снова должно стать свежим, прежде чем шаблон
+что-то переключит. Сроки пауз ручного приоритета и момент включения
+`humidity_fan` — время по часам платы (`time.time`): плата, чьи часы после
+загрузки отстают до синхронизации NTP, держит такую паузу дольше, пока часы
+не догонят.
+
+Запись атомарная (tmp + fsync + rename; временный файл удаляется и при
+прерывании, в том числе по SIGTERM). Изменения копятся и пишутся с той же
+каденцией, что журнал запусков: через `RUNS_FLUSH_S` после первого
+несохранённого изменения, при каждом принятии документа и при остановке
+службы (`RulesApp.stop()`, SIGTERM). Исключение — включение актора пороговым
+шаблоном (флаг «включено этим правилом» становится истинным): оно пишется
+сразу. Шаблон без состояния, которое стоит помнить (свежий экземпляр), записи
+не имеет. **Что может потерять сбой** (аварийное завершение, не штатная
+остановка): прочие изменения последних `RUNS_FLUSH_S` секунд. Последствия:
+снятие флага «включено» (актор выключен правилом) теряется — после старта
+правило снова считает актор своим и сверяет его с отчётом; снимок
+`air_quality_ventilation`, взятый в эти секунды, теряется — после старта
+форсирование начнётся заново и снимет уже форсированное состояние как
+исходное; свет по движению, включённый в эти секунды, правилом не выключится
+до следующего движения; список «не дома» теряется. Чтение — при создании экземпляра: после перезапуска службы
+и после правки сценария, если у того же `id` тот же `template` (правка
+параметров). Другой шаблон под тем же `id`, выключение (`enabled: false`) и
+удаление сценария удаляют его запись: новое создание начинает с чистого
+состояния. Выключение или удаление правила **не возвращает** акторы: форсированный
+вентилятор, включённый свет или нагреватель остаются как есть (так было и
+до 1.0.7.28). Вентилятор (`air_quality_ventilation`) или свет/розетка
+(`away_home`), убранные правкой из параметров, из снимка выпадают.
+**Отказ безопасен:** нечитаемый, повреждённый или чужой по формату файл
+игнорируется целиком, неверная запись одного сценария — только она; в обоих
+случаях предупреждение в журнале службы (`journalctl -u sa02m-rules`), шаблон
+стартует с чистого состояния, служба не падает. Неудачная запись (диск
+только для чтения, нет места) оставляет состояние в памяти и повторяется
+раз в `RUNS_FLUSH_S`.
+Проверка: `opt/sa02m-rules/tests/test_logic_persistence.py` (строка реестра
+`py-unit-rules`).
 
 ---
 
@@ -596,11 +808,36 @@ means off. `RulesApp.pub` **refuses** to publish any `/on` under
 `sa02m-rules-*`, so a stored action naming a scenario device cannot command
 the engine through the broker.
 
-**Availability gap, stated:** with `sa02m-rules` down, a `run/on` publish
-lands on the broker, nobody consumes it, and the caller (Alice) has already
-been told `DONE`. An LWT-backed `/devices/sa02m-rules-<id>/meta/error` is the
-fix; the device-level error flag is already honoured by the Alice registry,
-so the hook exists and only the publisher is missing.
+**Availability — `/devices/sa02m-rules/meta/error`.** With the engine down a
+`run/on` publish lands on the broker and nobody consumes it (no retain), so the
+engine publishes ONE retained device-level flag, the bridge/telemetry pattern
+(`docs/MQTT_TOPICS.md` «Last Will»): one flag for the whole engine, not one per
+scene, because MQTT allows one will per connection. `sa02m-rules` carries no
+dash, so it is never a scenario device.
+
+| When | Payload (retained, QoS 1) |
+|---|---|
+| crash, kill, lost socket — the will, armed before `connect()` | `r` |
+| every accepted CONNACK, **after** the command subscription went out | `""` |
+| graceful stop (SIGTERM), before the network loop stops | `r` |
+
+The reader is the Alice registry: while the flag is non-empty a scene switch
+answers `ERROR / DEVICE_UNREACHABLE` and publishes nothing
+(`alice-mqtt-mapping.md` §Scene devices). Validating:
+`tests/test_availability.py` (through `main()`: will before connect, online
+after the subscribe and only on CONNACK rc 0, offline on SIGTERM; arming and
+marks fail-soft — the flag is advisory, running scenarios is the job).
+Residuals, named — each leaves the flag reading «up» while no command runs:
+
+- **No flag at all** reads as up. An engine that has not connected since the
+  broker lost its retained store (the image-prep step erases `mosquitto.db`)
+  leaves none.
+- **Engine died while the broker was down**: the will has no broker to fire
+  on, and the restarted broker serves the last retained `""`.
+- **Session, not execution**: the flag says the engine's MQTT session is
+  alive. An engine whose main loop is stuck (one long C call inside a `code`
+  scenario) still reads as up; the command waits in its bounded inbox
+  (`INBOX_MAX`) and runs late, or is dropped when that is full.
 
 ---
 
@@ -608,7 +845,7 @@ so the hook exists and only the publisher is missing.
 
 Unit (`etc/systemd/system/sa02m-rules.service`): `User=root`,
 `NoNewPrivileges`, `ProtectHome`, `PrivateTmp`, `ProtectSystem=strict` with
-`ReadWritePaths=/etc/sa02m-rules` (the store — document and journal — is the
+`ReadWritePaths=/etc/sa02m-rules` (the store — document, journal and logic-template state — is the
 only writable tree),
 `MemoryMax=32M`; pinned by `test_security.py::UnitHardeningTests`. No
 `WatchdogSec=` — the daemon does not link systemd, the time bound on

@@ -119,6 +119,15 @@ def _capturing_publisher():
     pub._dev_meta = {}
     pub._dev_meta_pub = {}
     pub._ctrl_errors = {}
+    # The availability registry the first answer reports into (1.0.7.12),
+    # with device-level publishing ON: the meter answers, so the only
+    # /devices/<id>/meta/error this net may ever see is the one "" of the
+    # first answer — never an "r" (pinned below).
+    pub._device_online = {}
+    pub._availability = True
+    pub._poll_errors = 0
+    pub._bridge_id = "sa02m-bridge"
+    pub._bridge_meta_done = True
     sent: list[tuple[str, str]] = []
     pub.pub = lambda topic, payload, retain=None: sent.append((topic, payload))
     return pub, sent
@@ -172,9 +181,10 @@ class TestPowerPollLinkLost(_Base):
         errs = _errors(sent)
         self.assertEqual(set(errs), _measurements(p))
         self.assertEqual(set(errs.values()), {"r"})
-        # The meter answers: no device-level error.
-        self.assertFalse([t for t, _ in sent
-                          if t == f"/devices/{DEV}/meta/error"])
+        # The meter answers: never a device-level "r" — exactly the one ""
+        # of its first answer (the stale-retained clear, 1.0.7.12).
+        self.assertEqual([v for t, v in sent
+                          if t == f"/devices/{DEV}/meta/error"], [""])
 
     def test_recovery_clears_the_error_and_publishes_values(self):
         meter = _FakeMeter(link=False)

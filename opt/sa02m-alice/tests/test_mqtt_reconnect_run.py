@@ -505,6 +505,49 @@ class TestColdStartBrokerRefusal(_RunHarness):
         self.assertIn("MQTT broker 127.0.0.1:1883", message)
 
 
+class TestUnreachableAcrossSessions(_RunHarness):
+    """A device that is down when a Socket.IO session starts is told to THAT
+    session (1.0.7.12). Before: the down-edge was announced once per process
+    (`_announced_down`), and the retained `/meta/error=r` of the subscribe
+    burst arrived before the sender was started, so the stub was marked
+    announced while nothing left the board — the hub never heard of the
+    outage, and a reconnect (26 in 2.3 h on the bench WAN) never repeated it."""
+
+    ERR_TOPIC = "/devices/mr02m-COM3-10/meta/error"
+
+    @staticmethod
+    def _stub_frames(sio):
+        return [d for e, d in sio.emits
+                if e == C.EVT_DEVICE_STATE and d.get("origin") == C.ORIGIN_SNAPSHOT
+                and any(dev.get("error_code") == C.ERR_DEVICE_UNREACHABLE
+                        for dev in d["payload"]["devices"])]
+
+    def test_every_session_connect_snapshot_carries_the_stub(self):
+        def script(n, clock):
+            if n == 1:
+                # The retained burst of the initial subscribe: the switch's
+                # last value and the bridge's retained offline flag.
+                self.paho().deliver(DO_TOPIC, "1", retain=True)
+                self.paho().deliver(self.ERR_TOPIC, "r", retain=True)
+            elif n == 3:
+                self.sio().connected = False     # the gateway dropped us
+            elif n >= 6:
+                client_main._stop.set()
+
+        self.assertEqual(self.run_client(script), 0)
+        self.assertEqual(len(_LiveSio.instances), 2, "expected one reconnect")
+        first, second = _LiveSio.instances
+        self.assertEqual(len(self._stub_frames(first)), 1,
+                         "the first session's connect snapshot carried no stub: %r"
+                         % first.emits)
+        self.assertEqual(len(self._stub_frames(second)), 1,
+                         "the reconnect snapshot did not repeat the stub: %r"
+                         % second.emits)
+        self.assertEqual(
+            [dev["id"] for dev in self._stub_frames(second)[0]["payload"]["devices"]],
+            ["sw1"])
+
+
 class TestResubscribeThroughRunCloud(TestResubscribeThroughRun):
     """Review A3: the same run() path on `--profile cloud` (sa02m-cloud-control)
     — no auto-provision watch topics, its own status file, its own client id,

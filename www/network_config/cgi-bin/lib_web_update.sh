@@ -21,16 +21,23 @@
 #   /var/lib/sa02m-update/runner/<txn>/runner; a reused pid never matches),
 #   OR the legacy launcher (sa02m-web-update-apply — the clone/handoff phase,
 #   before the runner has taken its own lock) is alive on ITS lock pid,
-#   OR sa02m-update.service / sa02m-update-verify.service has ActiveState
-#   active|activating|reloading (both are oneshot: `activating` IS their
-#   running state, which is why `is-active --quiet` cannot be used here),
+#   OR sa02m-update.service / sa02m-update-download.service /
+#   sa02m-update-verify.service has ActiveState active|activating|reloading
+#   (all three are oneshot: `activating` IS their running state, which is why
+#   `is-active --quiet` cannot be used here; the download unit is the online
+#   path's home since 1.0.7.5 — the launcher exec's the runner inside it and
+#   no transient unit appears, so without it an online apply read «stale»
+#   120 s into its health gate and the reboot was permitted — review B3),
 #   OR a transient sa02m-update-apply-<txn8>.service (the cgroup escape,
 #   etc/sa02m-update-runner.sh escape_foreign_cgroup) is running.
 # `systemctl` absent ⇒ that half is false. Every systemctl call is bounded.
 #
 # The same test lives once more, root-side, in etc/sa02m-web-update-apply.sh
 # (the launcher must not source a www-data-writable file) — keep the two in
-# step. Harness: scripts/dev/test-web-update-apply-guard.sh sections G and R.
+# step, with ONE deliberate difference: the launcher's copy does not count
+# sa02m-update-download.service, because the launcher IS that unit (it would
+# refuse itself); a manual launcher run beside it is refused by its
+# launch.lock. Harness: scripts/dev/test-web-update-apply-guard.sh sections G and R.
 
 WEB_UPD_STATEDIR="${SA02M_UPDATE_STATEDIR:-/var/lib/sa02m-update}"
 WEB_UPD_TXN_FILE="$WEB_UPD_STATEDIR/transaction.json"
@@ -60,11 +67,11 @@ web_upd_runner_alive() {
   _web_upd_pid_cmdline_matches "$WEB_UPD_STATEDIR/update.lock" '*sa02m-update-runner*' '*/sa02m-update/runner/*' && return 0
   _web_upd_pid_cmdline_matches "$WEB_UPD_LEGACY_STATEDIR/update.lock" '*sa02m-web-update-apply*' && return 0
   if command -v systemctl >/dev/null 2>&1; then
-    # Both units are Type=oneshot: ActiveState is `activating` for the whole run
-    # of their ExecStart, so `is-active --quiet` (rc 3) would never fire for
+    # All three units are Type=oneshot: ActiveState is `activating` for the whole
+    # run of their ExecStart, so `is-active --quiet` (rc 3) would never fire for
     # them — read the state and accept the running forms.
     local u st
-    for u in sa02m-update.service sa02m-update-verify.service; do
+    for u in sa02m-update.service sa02m-update-download.service sa02m-update-verify.service; do
       st=$(timeout 5 systemctl show -p ActiveState --value "$u" 2>/dev/null) || st=""
       case "${st%%[[:space:]]*}" in active|activating|reloading) return 0 ;; esac
     done

@@ -271,7 +271,10 @@ class TestOptionalBlocks(unittest.TestCase):
         p.poll_io()
         self.assertTrue(p._online)
         self.assertEqual(p._fail_count, 0)
-        self.assertEqual(pub.device_online.call_args_list, [])
+        # The answered blocks publish the first-answer online transition
+        # (1.0.7.12); the blind ones never publish an offline one.
+        self.assertEqual([c.args[1] for c in pub.device_online.call_args_list],
+                         [True])
         for name in ("color", "white", "temperature", "vled", "pwm_mode"):
             self.assertEqual(_errors(pub)[name], "r")
 
@@ -704,8 +707,13 @@ class TestSetup(unittest.TestCase):
             self.assertEqual(meta[name]["readonly"], "1" if readonly else "0")
 
     def test_every_writable_control_is_subscribed(self):
+        """The inventory's writables plus the light-music side channel
+        (led-mb2ws.md §4 «Поток светомузыки») — and nothing else."""
         subscribed = {c.args[1] for c in self.pub.subscribe_writeback.call_args_list}
-        self.assertEqual(subscribed, set(lc.writable_names()))
+        self.assertEqual(
+            subscribed,
+            set(lc.writable_names()) | set(bridge_led.STREAM_CONTROLS)
+            | {bridge_led.FX_AUX_CONTROL})
 
     def test_no_readonly_control_is_subscribed(self):
         subscribed = {c.args[1] for c in self.pub.subscribe_writeback.call_args_list}

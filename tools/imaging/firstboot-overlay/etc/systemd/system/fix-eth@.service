@@ -1,18 +1,33 @@
 [Unit]
 Description=SA-02m network recovery for %I
 Documentation=file:/usr/local/bin/fix-eth.sh
-# After=networking.service: the canonical rename (sa02m-iface-canonical) emits
-# a udev add event carrying the NEW name mid-boot, so 99-lan-recovery.rules
-# starts this instance exactly while networking's own `ifup -a` is configuring
-# the same interface — the two race and one loses with "RTNETLINK: File exists",
-# failing networking.service. Recovery must never precede initial bring-up.
+# After=networking.service: recovery must never precede initial bring-up. An
+# instance running while networking's own `ifup -a` configures the same
+# interface would race it, and the loser fails with "RTNETLINK: File exists",
+# failing networking.service. What would start such an instance mid-boot is
+# not established: a same-boot canonical rename (sa02m-iface-canonical) is a
+# `move` uevent, which 99-lan-recovery.rules (add/bind) does not match.
 # Ordering ONLY (deliberately no Wants=): post-boot, networking has no active
-# job, so cable-replug recovery latency is unchanged.
+# job, so a later start of this unit is not delayed. For eth0, udev starts it
+# only on interface add/bind (eth0 emits no carrier uevent — measured); the
+# eth1 `change` lines in 99-lan-recovery.rules are unverified. An eth0 link
+# that appears later is started by sa02m-link-monitor (netlink carrier edge),
+# with the net-watchdog pass and fix-eth.sh's re-check after its link cycle as
+# the fallbacks.
 After=network.target networking.service sys-subsystem-net-devices-%i.device
 BindsTo=sys-subsystem-net-devices-%i.device
 Conflicts=shutdown.target reboot.target halt.target
 StartLimitIntervalSec=60
-StartLimitBurst=3
+# 10, not 3: on a slow-PHY cold boot udev add, coldboot and a link-monitor
+# edge can each start this unit, and an edge that fix-eth's own link cycle
+# raises mid-pass adds a deferred pass when the running pass was not started
+# by the monitor within the last 60 s; a start-limit hit leaves the unit in
+# `systemctl --failed`. The rate is bounded elsewhere: MAX_LINK_CYCLES caps the
+# carrier=0 cycles, a pass that finds an IP never bounces the link, and the
+# monitor starts at most once per 60 s of uptime per interface — that, not
+# fix-eth.sh's RECOVER_COOLDOWN (it spaces only overlapping or killed passes),
+# breaks a failed ifdown/ifup re-triggering itself. This is the last resort.
+StartLimitBurst=10
 
 [Service]
 Type=oneshot

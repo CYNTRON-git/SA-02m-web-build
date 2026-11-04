@@ -3,7 +3,7 @@ Description=SA-02m update power-loss recovery
 Documentation=file:///usr/local/libexec/sa02m-update-runner
 DefaultDependencies=no
 After=local-fs.target
-Before=nginx.service fcgiwrap.service multi-user.target
+Before=nginx.service fcgiwrap.service multi-user.target sa02m-port-coordinator.service sa02m-flasher.service sa02m-modbus-mqtt.service sa02m-serial-gateway.service
 Conflicts=sa02m-update.service
 
 [Service]

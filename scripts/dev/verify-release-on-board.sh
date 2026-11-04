@@ -5,12 +5,13 @@
 # verified 1.0.6.41 on bench 1.135/1.136 (web-diagnostic-tools.md standing
 # rule 4: a recipe worth keeping lands in scripts/ + a catalog row).
 #
-# It is NOT a quality-registry row and must not become one: every check reads
-# the running system (/var/www, systemd, the live sa02m-rules daemon, the
+# It is NOT a quality-registry row and must not become one: the checks require
+# the installed system (/var/www, systemd, installed scenario components, the
 # archive DB), so in CI it could only skip — and a check that passes because it
 # tested nothing is the defect quality-gate-rigor.md exists to stop. Its bash
 # is covered by the `shellcheck` row (review beat, CI-authoritative), which
-# sweeps scripts/dev/; its BEHAVIOUR is only ever proven on a board.
+# sweeps scripts/dev/. Fixture isolation is also tested locally; deployed
+# composition still requires the board run.
 #
 # Non-vacuity: off a board (no /var/www/network_config) it EXITS 2 without
 # printing a single PASS, so a wrong invocation can never read as green. Every
@@ -81,28 +82,11 @@ tally() {
     fi
 }
 
-# Everything this harness creates on the board is torn down here, on ANY exit —
-# a finished run, a Ctrl-C, a python block that dies. Without it an interrupt
-# leaves the counting listener bound to :9998 and the harness's own scenario
-# rows in the operator's store. Idempotent, and silent when there is nothing to
-# undo, so it is safe to run before anything has been created.
-LPID=""; LDIR=""
-cleanup() {
-    [ -n "$LPID" ] && kill "$LPID" 2>/dev/null
-    [ -n "$LDIR" ] && rm -rf "$LDIR"
-    [ -d /opt/sa02m-rules ] || return 0
-    python3 - <<'CLEAN' 2>/dev/null || true
-import sys
-sys.path.insert(0, "/opt/sa02m-rules")
-try:
-    from sa02m_rules import store
-    for sid in ("vtmo", "vcap", "vscn"):
-        store.apply_command({"id": sid, "delete": True}, store.DEFAULT_PATH)
-except Exception:
-    pass
-CLEAN
-}
-trap cleanup EXIT INT TERM
+# Mutating checks below use private stores and one in-process loopback listener.
+# SIGKILL may leave a private temporary directory, never live scenario rows or
+# a detached listener. The Python worker watches this shell's process identity.
+VERIFY_OWNER_PID=$$
+VERIFY_OWNER_START=$(awk '{print $22}' "/proc/$$/stat")
 
 LANIP=$(ip -4 addr show scope global 2>/dev/null | grep -oE 'inet [0-9.]+' | awk '{print $2}' | head -1)
 echo "== board $(hostname) ${LANIP:-<no LAN address>} — verifying $VER =="
@@ -143,177 +127,170 @@ if [ -z "$Z" ]; then ok "3 no 0-byte unit fragment under /etc/systemd/system"; e
 RS=$(tr -d '\r\n ' < /var/lib/sa02m-update/runner.version 2>/dev/null)
 if [ "$RS" = "$VER" ]; then ok "4 runner.version stamp = $VER"; else no "4 runner.version = '$RS' (expected $VER)"; fi
 
-# 5 + 6 + 7 + 8 the scenario sandbox, against the LIVE daemon.
-# A throwaway LAN listener so the per-run HTTP cap is counted at the far end,
-# not inferred from the error message alone.
+# 5–9 execute INSTALLED components in an isolated store, not the live daemon.
+# Live service readiness is check 2. No MQTT publisher or production store is used.
 if [ ! -d /opt/sa02m-rules ]; then
-    skip "5-8 scenario sandbox: /opt/sa02m-rules is not installed on this board"
+    skip "5-9 isolated scenario components: /opt/sa02m-rules is not installed"
 else
-    LOG=/tmp/verify-listener.log
-    rm -f "$LOG"
-    # The listener exists only to COUNT the sandbox's outbound requests, so it
-    # serves an empty throwaway directory. Without --directory it would serve
-    # the invoking shell's cwd — under the documented
-    # `ssh root@<board> 'bash …'` form that is /root, unauthenticated, on the
-    # LAN, for the life of the run. The trap is what makes «only for the life
-    # of the run» true: an interrupt or an early exit must not leave the port
-    # open, and the scenario rows below must not be left on the board.
-    LDIR=$(mktemp -d)
-    setsid python3 -m http.server 9998 --bind 0.0.0.0 --directory "$LDIR" \
-        > "$LOG" 2>&1 < /dev/null &
-    LPID=$!
-    sleep 2
-    OUT=$(python3 - "${LANIP:-127.0.0.1}" <<'PY'
-import sys, os, json, time
-sys.path.insert(0, "/opt/sa02m-rules")
-from sa02m_rules import store, http_guard
-
-LAN = sys.argv[1]
-P = store.DEFAULT_PATH
-CAP = store.HTTP_PER_RUN_MAX  # one home: store.charge_http
-
-def cmd(b):
-    return store.apply_command(b, P)
-
-def row(sid):
-    d = store.load(P)
-    return next((s for s in d["scenarios"] if s.get("id") == sid), None)
-
-def mk(sid, name, code):
-    return cmd({"id": sid, "name": name, "type": "code",
-                "enabled": True, "code": code}).get("ok")
-
-# The journal keeps the newest RUNS_MAX records, so on a board that has run
-# scenarios for a while it is FULL and its length never grows — counting
-# entries turned check 7 into a false FAIL (bench 1.135, 2026-09-24). The new
-# record is found by the scenario id and a timestamp at or after run_now.
-def journal_has(sid, t0):
-    j = store.journal_path(P)
-    if not os.path.exists(j):
-        return False
-    try:
-        runs = json.load(open(j)).get("runs") or []
-    except Exception:
-        return False
-    return any(r.get("id") == sid and float(r.get("ts") or 0) >= t0 - 1 for r in runs)
-
-def run(sid, wait=45):
-    mt0 = os.path.getmtime(P)
-    before = (row(sid) or {}).get("last_run")
-    t0 = time.time()
-    cmd({"id": sid, "run_now": True})
-    while time.time() - t0 < wait:
-        r = row(sid)
-        if r and r.get("last_run") and r.get("last_run") != before:
-            break
-        time.sleep(1)
-    time.sleep(7)  # the runs journal flushes on a 5 s cadence
-    return row(sid), os.path.getmtime(P) == mt0, journal_has(sid, t0)
-
-made = []
-try:
-    mk("vtmo", "verify timeout", "while True:\n    pass\n")
-    made.append("vtmo")
-    r, mt_same, found = run("vtmo")
-    err = (r or {}).get("last_error", "")
-    alive = os.system("systemctl is-active --quiet sa02m-rules") == 0
-    print(("PASS" if (err == "timeout" and alive) else "FAIL") +
-          " 5 sandbox deadline: last_error=%r daemon_active=%s" % (err, alive))
-    print(("PASS" if (mt_same and found) else "FAIL") +
-          " 7 runs journal holds this run (id vtmo, ts >= run_now)=%s, scenarios.json mtime unchanged=%s" % (found, mt_same))
-
-    cases = [("http://127.0.0.1:9/x", False, "loopback"),
-             ("http://[2002:7f00:1::]:9/x", False, "6to4 wrapping 127.0.0.1"),
-             ("http://[::ffff:127.0.0.1]:9/x", False, "ipv4-mapped loopback"),
-             ("http://169.254.169.254/x", False, "link-local metadata"),
-             ("http://%s:9999/x" % LAN, True, "own LAN address")]
-    bad = []
-    for url, allow, label in cases:
-        refused = http_guard.check_url(url, resolve=True)
-        if bool(refused) == allow:
-            bad.append("%s -> %s" % (label, refused or "ALLOWED"))
-    print(("PASS" if not bad else "FAIL") + " 6 http target policy (5 cases): " +
-          ("loopback/6to4/mapped/link-local refused, LAN allowed"
-           if not bad else "; ".join(bad)))
-
-    # No try/except in the scenario: the sandbox exposes no builtins, so the
-    # request past the cap raises HttpRefused and it lands in last_error —
-    # that IS the assertion.
-    code = ("for i in range(%d):\n"
-            "    Http.get('http://%s:9998/p' + str(i))\n" % (CAP * 2 + 4, LAN))
-    mk("vcap", "verify http cap", code)
-    made.append("vcap")
-    r, _, _ = run("vcap", wait=60)
-    err = (r or {}).get("last_error", "")
-    print(("PASS" if "cap" in err else "FAIL") +
-          " 8 http per-run cap: last_error=%r (the listener below must read %d hits)"
-          % (err, CAP))
-    print("INFO 8-cap %d" % CAP)
-finally:
-    for sid in made:
-        cmd({"id": sid, "delete": True})
-PY
-)
-    printf '%s\n' "$OUT"
-    tally "$OUT" 4 "checks 5-8 (scenario sandbox)"
-    kill "$LPID" 2>/dev/null
-    rm -rf "$LDIR"
-
-    CAP=$(printf '%s\n' "$OUT" | sed -n 's/^INFO 8-cap //p' | head -1)
-    HITS=$(grep -c 'GET /p[0-9]' "$LOG" 2>/dev/null | tr -d '\r\n')
-    if [ -z "$CAP" ]; then
-        skip "8b listener hit count: the sandbox block did not report the cap"
-    elif [ "$HITS" = "$CAP" ]; then
-        ok "8b listener received exactly $CAP requests before the cap"
-    else
-        no "8b listener received $HITS requests (expected $CAP)"
-    fi
-fi
-
-# 9 a scenario exposed to Alice becomes a virtual device
-if [ ! -d /opt/sa02m-alice ]; then
-    skip "9 exposed scene: /opt/sa02m-alice is not installed on this board"
-else
-    OUT=$(python3 - <<'PY'
+    OUT=$(python3 - "$VERIFY_OWNER_PID" "$VERIFY_OWNER_START" <<'ISOLATED_FIXTURES'
+# BEGIN ISOLATED FIXTURES
+import contextlib
+import http.server
+import json
+import os
+from pathlib import Path
+import select
+import signal
 import sys
-sys.path.insert(0, "/opt/sa02m-alice")
+import tempfile
+import threading
+import time
+import uuid
+
 sys.path.insert(0, "/opt/sa02m-rules")
-try:
-    from sa02m_alice.config import scene_devices
-    from sa02m_rules import store
-    P = store.DEFAULT_PATH
-    ROOMS = [{"id": "r1", "name": "verify room"}]
-    BOARD = scene_devices.board_key()
+sys.path.insert(0, "/opt/sa02m-alice")
 
-    def proj():
-        return scene_devices.exposed_scene_devices(
-            scene_devices.load_rules_doc(), ROOMS, BOARD)
 
-    base = len(proj())
-    store.apply_command({"id": "vscn", "name": "verify scene", "type": "scene",
-                         "enabled": True, "alice_expose": True,
-                         "captured_from": {"room_id": "r1"},
-                         "action": [{"kind": "scenario", "id": "vscn2"}]}, P)
-    devs = proj()
-    mine = [d for d in devs if str(d.get("id", "")).endswith("-vscn")]
-    d = mine[0] if mine else {}
-    good = (len(devs) == base + 1
-            and d.get("type") == scene_devices.SCENE_DEVICE_TYPE
-            and str(d.get("id", "")).startswith(scene_devices.SCENE_ID_PREFIX)
-            and d.get("room_id") == "r1"
-            and (d.get("capabilities") or [{}])[0].get("mqtt")
-            == scene_devices.scene_run_topic("vscn"))
-    print(("PASS" if good else "FAIL") +
-          " 9 an exposed scene becomes a device: id=%r type=%r room_id=%r topic=%r (%d -> %d)"
-          % (d.get("id"), d.get("type"), d.get("room_id"),
-             (d.get("capabilities") or [{}])[0].get("mqtt"), base, len(devs)))
-    store.apply_command({"id": "vscn", "delete": True}, P)
-except Exception as e:
-    print("FAIL 9 scene_devices: %r" % (e,))
-PY
+def watch_parent(pid, start_ticks):
+    """A parent-owned lifetime, including SIGKILL; no finally assumption."""
+    fd = os.pidfd_open(pid)
+    try:
+        fields = Path('/proc/%d/stat' % pid).read_text().rsplit(')', 1)[1].split()
+        if fields[19] != start_ticks:
+            raise RuntimeError('verification parent identity changed')
+    except BaseException:
+        os.close(fd)
+        raise
+    def wait():
+        select.select([fd], [], [])
+        os._exit(125)
+    threading.Thread(target=wait, daemon=True).start()
+    return fd
+
+
+@contextlib.contextmanager
+def private_environment(values):
+    previous = {key: os.environ.get(key) for key in values}
+    os.environ.update(values)
+    try:
+        yield
+    finally:
+        for key, value in previous.items():
+            if value is None:
+                os.environ.pop(key, None)
+            else:
+                os.environ[key] = value
+
+
+def run_fixture_checks(phase=lambda *_args: None):
+    from sa02m_rules import store, engine, http_guard
+    def verdict(number, passed, message):
+        print(('PASS' if passed else 'FAIL') + ' ' + str(number) + ' isolated ' + message, flush=True)
+
+    with tempfile.TemporaryDirectory(prefix='sa02m-release-check-') as directory:
+        root = Path(directory)
+        path = str(root / 'scenarios.json')
+        devices = root / 'devices.json'
+        devices.write_text(json.dumps({'devices': [{'id': 'fixture-device', 'type': 'devices.types.light',
+            'capabilities': [{'type': 'devices.capabilities.on_off', 'mqtt': '/devices/fixture/controls/on'}]}]}))
+        allow = root / 'http-allow.json'
+        allow.write_text('{"hosts":[]}')
+        with private_environment({'SA02M_ALICE_DEVICES': str(devices), 'SA02M_RULES_HTTP_ALLOW': str(allow),
+                                  'no_proxy': '127.0.0.1', 'NO_PROXY': '127.0.0.1'}):
+            store.save(store.empty_doc(), path)
+            phase('store', directory)
+            def command(body):
+                result = store.apply_command(body, path)
+                if not result.get('ok'):
+                    raise RuntimeError('fixture command refused: %r' % result)
+                return result
+            def publish(*_args):
+                raise RuntimeError('verification fixture attempted a device write')
+            command({'id': 'vtmo', 'name': 'verify timeout', 'type': 'code', 'enabled': True,
+                     'code': 'while True:\n    pass\n'})
+            runtime = engine.Engine(publish, path, pub_state=lambda *_args: None)
+            before = Path(path).read_bytes(), Path(path).stat().st_mtime_ns
+            started = time.time()
+            record = runtime.run_now('vtmo') or {}
+            verdict(5, record.get('error') == 'timeout', 'sandbox deadline: error=%r' % record.get('error'))
+            journal = json.loads(Path(store.journal_path(path)).read_text())
+            found = any(r.get('id') == 'vtmo' and r.get('ts', 0) >= started - 1 for r in journal.get('runs', []))
+            unchanged = before == (Path(path).read_bytes(), Path(path).stat().st_mtime_ns)
+            verdict(7, found and unchanged, 'runs journal retains run; scenario bytes/mtime unchanged=%s' % unchanged)
+
+            cases = [('http://127.0.0.1:9/x', False), ('http://[2002:7f00:1::]:9/x', False),
+                     ('http://[::ffff:127.0.0.1]:9/x', False), ('http://169.254.169.254/x', False),
+                     ('http://192.168.1.135:9999/x', True)]
+            verdict(6, all(bool(http_guard.check_url(url, resolve=True)) != allowed for url, allowed in cases),
+                    'default HTTP policy (5 literal-address checks; no network request)')
+
+            token = uuid.uuid4().hex
+            hits = []
+            class Counter(http.server.BaseHTTPRequestHandler):
+                def do_GET(self):
+                    if not self.path.startswith('/' + token + '/'):
+                        self.send_error(404)
+                        return
+                    hits.append(self.path)
+                    self.send_response(200)
+                    self.send_header('Content-Length', '0')
+                    self.end_headers()
+                def log_message(self, *_args):
+                    pass
+            server = http.server.HTTPServer(('127.0.0.1', 0), Counter)
+            listener = threading.Thread(target=lambda: server.serve_forever(poll_interval=0.05), daemon=True)
+            listener.start()
+            try:
+                port = server.server_address[1]
+                phase('listener', port)
+                # A private allow-list permits only our loopback listener for the cap test.
+                allow.write_text('{"hosts":["127.0.0.1"]}')
+                cap = store.HTTP_PER_RUN_MAX
+                code = "for i in range(%d):\n    Http.get('http://127.0.0.1:%d/%s/' + str(i))\n" % (cap * 2 + 4, port, token)
+                command({'id': 'vcap', 'name': 'verify HTTP cap', 'type': 'code', 'enabled': True, 'code': code})
+                runtime = engine.Engine(publish, path, pub_state=lambda *_args: None)
+                record = runtime.run_now('vcap') or {}
+                verdict(8, 'cap' in record.get('error', ''), 'HTTP per-run cap: error=%r' % record.get('error'))
+                verdict('8b', len(hits) == cap, 'loopback listener received %d requests (expected %d)' % (len(hits), cap))
+            finally:
+                server.shutdown()
+                server.server_close()
+                listener.join(timeout=1)
+
+            try:
+                from sa02m_alice.config import scene_devices
+            except ImportError:
+                print('SKIP 9 isolated scene projection: Alice component not installed', flush=True)
+            else:
+                rooms = [{'id': 'r1', 'name': 'verify room'}]
+                board = 'fixture-board'
+                def project():
+                    return scene_devices.exposed_scene_devices(scene_devices.load_rules_doc(path), rooms, board)
+                before = len(project())
+                command({'id': 'vscn', 'name': 'verify scene', 'type': 'scene', 'enabled': True,
+                         'alice_expose': True, 'captured_from': {'room_id': 'r1'},
+                         'action': [{'kind': 'set', 'device': 'fixture-device', 'cap': 'on_off', 'value': True}]})
+                devices = project()
+                mine = next((d for d in devices if str(d.get('id', '')).endswith('-vscn')), {})
+                good = (len(devices) == before + 1 and mine.get('type') == scene_devices.SCENE_DEVICE_TYPE
+                        and mine.get('room_id') == 'r1' and (mine.get('capabilities') or [{}])[0].get('mqtt')
+                        == scene_devices.scene_run_topic('vscn'))
+                verdict(9, good, 'stored scene projects to virtual device (never executed)')
+            phase('complete', directory)
+
+
+if __name__ == '__main__':
+    owner = watch_parent(int(sys.argv[1]), sys.argv[2])
+    def cancelled(_signum, _frame):
+        raise SystemExit(130)
+    signal.signal(signal.SIGINT, cancelled)
+    signal.signal(signal.SIGTERM, cancelled)
+    run_fixture_checks()
+# END ISOLATED FIXTURES
+ISOLATED_FIXTURES
 )
     printf '%s\n' "$OUT"
-    tally "$OUT" 1 "check 9 (scene as an Alice device)"
+    tally "$OUT" 6 "checks 5-9 (isolated installed components)"
 fi
 
 # 10 the Carel archive is wide, the rollback copy is there, a read is quick
@@ -373,24 +350,47 @@ else
     no "12 empty served asset(s): $(printf '%s' "$ZW" | tr '\n' ' ')"
 fi
 
-# 13 the offline-update post-checks of THIS version, when one was run here.
-# The wrapper (scripts/offline-full-update.sh) prints its PASS/FAIL table to
-# stdout and, with --log PATH, appends it there; the runbooks run it
-# `--unattended --log /root/install-offline-<ver>.wrapper.log`
-# (docs/deployment.md «Офлайн-вариант»), so that file is the record. The log
-# accumulates across re-runs: the LAST «ИТОГ:» line is the verdict. An
-# interactive run keeps its table on the terminal only — nothing to read.
-# (Until 1.0.6.54 this read /root/offline-<ver>.out, which nothing writes: a
-# check that could only ever SKIP.)
-OUTF=/root/install-offline-$VER.wrapper.log
-if [ ! -f "$OUTF" ]; then
-    skip "13 offline update post-checks: $OUTF absent (no --log'ged offline update of $VER here; an interactive run keeps its table on the terminal only)"
+# 13 the offline-update post-checks of the INSTALLED tree, when that install
+# was --log'ged here. The wrapper (scripts/offline-full-update.sh) prints its
+# PASS/FAIL table to stdout and, with --log PATH, appends it there; the
+# runbooks name that file /root/install-offline-<ver>[-<sha7>].wrapper.log
+# (docs/deployment.md «Офлайн-вариант»; the -<sha7> follows the archive name).
+# The log accumulates across re-runs: the LAST «ИТОГ:» line is the verdict.
+# Several logs of this version may sit in /root: the NEWEST by mtime is judged
+# and named. It counts only if it was last written no earlier than the newest
+# delivery of the tree — otherwise it is the table of an EARLIER install (bench
+# 136, 2026-10-24: a 2026-10-22 log PASSed a later install it never saw) and
+# the check SKIPs, as for an absent log: nothing here records THIS install.
+# The delivery anchor is the newer mtime of runner.version — every install
+# site writes it with `install` (fresh mtime), inside install.sh before the
+# wrapper appends its table — and the deployed VERSION, which a pscp www-only
+# copy moves without stamping. `-<ver>-*` and not `-<ver>*`: 1.0.7.1 must not
+# pick up 1.0.7.10's log. An interactive run keeps its table on the terminal
+# only — nothing to read. (Until 1.0.6.54 this read /root/offline-<ver>.out,
+# which nothing writes: a check that could only ever SKIP.)
+mtime_of() { date -r "$1" '+%F %T' 2>/dev/null || echo 'mtime unread'; }
+OUTF=""
+for f in "/root/install-offline-$VER.wrapper.log" /root/install-offline-"$VER"-*.wrapper.log; do
+    [ -f "$f" ] || continue
+    if [ -z "$OUTF" ] || [ "$f" -nt "$OUTF" ]; then OUTF=$f; fi
+done
+ANCHOR=""
+for f in /var/lib/sa02m-update/runner.version "$WEB_ROOT/VERSION"; do
+    [ -f "$f" ] || continue
+    if [ -z "$ANCHOR" ] || [ "$f" -nt "$ANCHOR" ]; then ANCHOR=$f; fi
+done
+if [ -z "$OUTF" ]; then
+    skip "13 offline update post-checks: no /root/install-offline-${VER}[-<sha7>].wrapper.log (no --log'ged offline update of $VER here; an interactive run keeps its table on the terminal only)"
+elif [ -z "$ANCHOR" ]; then
+    skip "13 offline update post-checks: $OUTF ($(mtime_of "$OUTF")) found, but neither runner.version nor VERSION is readable — cannot tell whether it describes the installed tree"
+elif [ "$OUTF" -ot "$ANCHOR" ]; then
+    skip "13 offline update post-checks: newest log $OUTF ($(mtime_of "$OUTF")) is older than $ANCHOR ($(mtime_of "$ANCHOR")) — it records an earlier install, not the tree on this board"
 else
     VERDICT=$(grep -E 'ИТОГ: (PASS|FAIL)' "$OUTF" 2>/dev/null | tail -1)
     case "$VERDICT" in
-        *'ИТОГ: PASS'*) ok "13 offline update post-checks: ${VERDICT#*ИТОГ: }" ;;
-        *'ИТОГ: FAIL'*) no "13 offline update post-checks: ${VERDICT#*ИТОГ: }" ;;
-        *) no "13 offline update post-checks: $OUTF has no «ИТОГ:» line (the wrapper is still running or died before its table)" ;;
+        *'ИТОГ: PASS'*) ok "13 offline update post-checks ($OUTF, $(mtime_of "$OUTF")): ${VERDICT#*ИТОГ: }" ;;
+        *'ИТОГ: FAIL'*) no "13 offline update post-checks ($OUTF, $(mtime_of "$OUTF")): ${VERDICT#*ИТОГ: }" ;;
+        *) no "13 offline update post-checks: $OUTF ($(mtime_of "$OUTF")) has no «ИТОГ:» line (the wrapper is still running or died before its table)" ;;
     esac
 fi
 

@@ -4,7 +4,7 @@
   <img src="https://img.shields.io/badge/platform-Armbian%20%7C%20Linux%20ARM-orange?style=flat-square"/>
   <img src="https://img.shields.io/badge/stack-nginx%20%2B%20fcgiwrap%20%2B%20Bash%20CGI-blue?style=flat-square"/>
   <img src="https://img.shields.io/badge/license-MIT-green?style=flat-square"/>
-  <img src="https://img.shields.io/badge/version-1.0.7.3-cyan?style=flat-square"/>
+  <img src="https://img.shields.io/badge/version-1.0.7.28-cyan?style=flat-square"/>
 </p>
 
 Веб-интерфейс для **[сервера автоматизации СА-02м](https://cyntron.ru/catalog/ustroystva_avtomatizatsii/servery_avtomatizatsii/)** производства [ЦИНТРОН](https://cyntron.ru) на базе процессорного модуля [A40i-2eth](https://cyntron.ru/catalog/ustroystva_avtomatizatsii/komplektuyushchie/7705/) (Allwinner A40i, Linux).
@@ -46,7 +46,7 @@ echo 'SA02M_HW_VARIANT=sa02m-2eth' > /etc/sa02m_hw_variant.conf
 
 ## Содержание
 
-- [Возможности](#возможности) — в т.ч. [Устройства](#устройства-дтв--сэ-02м-3--ai-каналы-mr-02м--carel--led), [Яндекс Алиса](#яндекс-алиса), [Apple HomeKit](#apple-homekit), [Home Connect](#home-connect-бытовые-приборы-bsh), [Облако](#облако-удалённый-доступ), [Сценарии](#сценарии-на-плате)
+- [Возможности](#возможности) — в т.ч. [Устройства](#устройства-дтв--сэ-02м-3--ai-каналы-mr-02м--carel--led), [Яндекс Алиса](#яндекс-алиса), [Apple HomeKit](#apple-homekit), [Home Connect](#home-connect-бытовые-приборы-bsh), [Запись звука](#запись-звука-usb-микрофон), [Облако](#облако-удалённый-доступ), [Сценарии](#сценарии-на-плате)
 - [Скриншоты](#скриншоты)
 - [Требования](#требования)
 - [Установка на СА-02м](#установка-на-са-02м)
@@ -163,8 +163,13 @@ echo 'SA02M_HW_VARIANT=sa02m-2eth' > /etc/sa02m_hw_variant.conf
 - **Карточка «Home Connect»** во вкладке «Управление»: Client ID своего приложения BSH, включение, вход в аккаунт владельца по коду/QR с телефона, счёт запросов к облаку (лимит BSH — 1000 в сутки), «Отключить аккаунт».
 - **Необязательная установка**, в заводской образ не входит: `install.sh --with-homeconnect`; нужен интернет на плате. С российского IP облако BSH на стенде не ответило (соединение открывается, ответа нет). Подробности: `docs/HOME_CONNECT_INTEGRATION.md`, контракт `docs/contracts/home-connect.md`.
 
+### Запись звука (USB-микрофон)
+- **Служба `sa02m-audio`** записывает по команде MQTT один ограниченный клип (WAV 16 кГц, моно, до 30 с) с USB-микрофона — для будущего распознавания речи или журнала звука. Команды и состояние — устройство `/devices/sa02m-audio/…`; сценарий записывает обычным действием `set sa02m-audio/record`.
+- **Карточка «Запись звука»** во вкладке «Управление → Система»: включение, «Записать N с», список записей с прослушиванием, скачиванием и удалением, выбор носителя (внутренняя память по умолчанию; USB/SD — с предупреждением, что записи на съёмном носителе может прочитать любой), лимиты хранения, необязательная отправка каждой записи на ваш URL.
+- Ставится на **каждую** плату и **выключена** по умолчанию. С внешнего порта MQTT 1884 прямая команда записи запрещена. Контракт: `docs/contracts/audio-recorder.md`; микрофон и драйвер — `docs/usb-audio-microphone.md`.
+
 ### Сценарии на плате
-- **Служба `sa02m-rules`** — движок сценариев на контроллере (`rules_engine=2`): расписание, пороги, кнопки MR-02м (`di_N_short/long/double`), присутствие, сцены, end off/restore. Store `/etc/sa02m-rules/scenarios.json`.
+- **Служба `sa02m-rules`** — движок сценариев на контроллере (версия — `rules_engine`, `docs/contracts/cloud-scenarios.md`): расписание, пороги, кнопки MR-02м (`di_N_short/long/double`), присутствие, сцены, end off/restore. Store `/etc/sa02m-rules/scenarios.json`.
 - Ставится `scripts/06b-rules.sh` вместе с `install.sh` (отключить: `SA02M_SKIP_RULES=1`). Редактирование — из облака (`alice_devices_scenarios`), не отдельной вкладкой панели.
 - **Сцена голосом (с 1.0.6.41)** — сцена, помеченная «в Алису» в облачном редакторе, появляется в «Доме с Алисой» отдельным выключателем: «Алиса, включи <сцена>» запускает её, «выключи» гасит включённые ею выходы. На карточке «Умный дом» такие сцены видны строками только для чтения. Подробности: `docs/ALICE_INTEGRATION.md`, контракт `docs/contracts/alice-mqtt-mapping.md`.
 - После обновления файлов `/opt/sa02m-*` нужны рестарты `sa02m-rules` и активного Alice-семейства, иначе push сценария работает на старом коде (`docs/deployment.md`).
@@ -301,6 +306,7 @@ chmod +x install.sh scripts/*.sh etc/*.sh
 | `06-gateway.sh` | RS-485→Ethernet шлюз, gateway CGI, systemd unit | `SA02M_SKIP_GATEWAY=1` |
 | `06-alice.sh` | Яндекс Алиса: `opt/sa02m-alice`, обе службы **выключены** по умолчанию | `SA02M_SKIP_ALICE=1` |
 | `06b-rules.sh` | Сценарии на плате: `opt/sa02m-rules`, `sa02m-rules.service` | `SA02M_SKIP_RULES=1` |
+| `15-audio.sh` | Запись звука с USB-микрофона: `opt/sa02m-audio`, служба **выключена**, ставится на каждую плату; запрет команды записи с порта 1884 в ACL | `SA02M_SKIP_AUDIO=1` |
 | `13-agent-api.sh` | API для ИИ-агентов: `opt/sa02m-agent-api`, служба **выключена** | `SA02M_SKIP_AGENT_API=1`; насовсем, и для OTA — `--skip-module AGENT_API` (`docs/deployment.md` «Неполная установка») |
 | `06c-homekit.sh` | Мост Apple HomeKit: `opt/sa02m-homekit` + venv, служба **выключена**; ставится **только** с `--with-homekit` / `SA02M_WITH_HOMEKIT=1` (уже установленный — обновляется) | `SA02M_SKIP_HOMEKIT=1` |
 | `06d-homeconnect.sh` | Клиент BSH Home Connect (только чтение): `opt/sa02m-homeconnect`, без pip, служба **выключена**; ставится **только** с `--with-homeconnect` / `SA02M_WITH_HOMECONNECT=1` (уже установленный — обновляется) | `SA02M_SKIP_HOMECONNECT=1` |
@@ -318,7 +324,7 @@ chmod +x install.sh scripts/*.sh etc/*.sh
 ════════════════════════════════════════
  Установка завершена!
  URL  : http://192.168.1.136:9999
- Логин: admin / cyntron
+ Логин: admin — заводской пароль (README, «Доступы по умолчанию»), хранится в /etc/sa02m_web.env — смените во вкладке «Управление»
 ════════════════════════════════════════
 
 [OK]  ✓ nginx работает
@@ -328,6 +334,7 @@ chmod +x install.sh scripts/*.sh etc/*.sh
 ```
 
 > Каждая строка выводится с меткой времени и уровнем `[OK]` / `[WARN]`.
+> Пароль в итоге не печатается — только откуда он взят (`--pass` или заводской) либо что логин и пароль не менялись: журнал установки виден в панели любой сессии.
 > Если какой-то сервис не запустился — будет `[WARN]  ✗ <сервис> не запущен!`
 
 Журнал установки сохраняется в `/var/log/sa02m_install.log`.
@@ -420,8 +427,12 @@ sudo ./install.sh [ПАРАМЕТРЫ]
   --ip   <addr>    IP-адрес eth0              (по умолчанию: зависит от --variant)
   --mask <mask>    Маска подсети               (по умолчанию: 255.255.255.0)
   --gw   <gw>      Шлюз по умолчанию          (по умолчанию: зависит от --variant)
-  --port <port>    Порт nginx                  (по умолчанию: 9999)
+  --port <port>    Порт nginx (1..65535)       (по умолчанию: 9999)
+                   Запоминается в /etc/sa02m_web_port.conf: повторный
+                   запуск без --port, www-only и обновления его сохраняют
   --pass <pass>    Пароль пользователя admin   (по умолчанию: cyntron)
+                   Только при первой установке: если /etc/sa02m_web.env
+                   уже есть, пароль не меняется (смена — вкладка «Управление»)
   --refresh        Режим обновления: сторонние стеки (Node-RED, CODESYS,
                    MPLC, Docker) не ставятся и не включаются, состояние
                    служб сохраняется (docs/contracts/installer-refresh-policy.md)
@@ -1017,6 +1028,8 @@ scp output/images/sun8i-a40i-nano2e-none-sk.dtb root@192.168.1.136:/boot/dtb/
 
 ssh root@192.168.1.136 reboot
 ```
+
+На развёрнутой плате живой DTB лежит на FAT-разделе eMMC (`/dev/mmcblk2p1`, имя `sun8i-a40i-sk.dtb`), а не в `/boot/dtb/`; исправление драйвера PHY eth0 (1.0.7.21) ставится инструментом `sa02m-dtb-patch.sh` — `docs/deployment.md` «Пути деплоя», — а не копированием dtb в `/boot/dtb/`.
 
 #### Способ 4 — тиражирование компактного образа SA-02m (web)
 
@@ -1771,21 +1784,25 @@ cat /sys/kernel/debug/pinctrl/*/pins | grep -i "PH14"
 ### Архитектура
 
 ```
-Физическое событие (кабель)
+Появление интерфейса (add/bind; для eth0 — только оно)
     │
     ▼
-udev (99-lan-recovery.rules)         ─ реактивная защита
+udev (99-lan-recovery.rules)         ─ старт при появлении интерфейса (для eth0 — не при линке; строки eth1 на линк не проверены)
     │  --no-block
     ▼
 fix-eth.service  ──→  fix-eth.sh     ─ восстановление
-                           │
-                       /sys/class/net/ethX/carrier
-                       ip -4 addr show
-                       ping (шлюз / custom / skip)
-                           │
-                       ifdown / ifup
+    ▲                      │
+    │                  /sys/class/net/ethX/carrier
+    │                  ip -4 addr show
+    │                  ping (шлюз / custom / skip)
+    │                      │
+    │                  ifdown / ifup
+    │  start fix-eth@ethX (фронт LOWER_UP)
+    │
+sa02m-link-monitor.service ──→ sa02m-link-monitor.sh  ─ подъём линка по netlink (ip -o monitor link), за секунды
+                                  (Restart=always; файлы приходят и «Обновлением веб», включает — только установщик)
 
-net-watchdog.service ──→ net-watchdog.sh  ─ активная защита (каждые 30 с)
+net-watchdog.service ──→ net-watchdog.sh  ─ страховка (каждые 30 с; линк, который монитор пропустил, подхватывает она)
     │  (Restart=always)       │
     └──────────────────────────── вызывает fix-eth.sh для каждого iface
 ```
@@ -1824,6 +1841,9 @@ journalctl -u fix-eth.service -f
 # Журнал постоянного мониторинга
 journalctl -u net-watchdog.service -f
 
+# Реакция на подъём линка (netlink)
+journalctl -t sa02m-link-monitor -f
+
 # Файловый лог
 tail -f /var/log/fix-eth.log
 ```
@@ -1841,6 +1861,8 @@ tail -f /var/log/fix-eth.log
 | net-watchdog.sh | `/usr/local/bin/net-watchdog.sh` |
 | fix-eth.service | `/etc/systemd/system/fix-eth.service` |
 | net-watchdog.service | `/etc/systemd/system/net-watchdog.service` |
+| sa02m-link-monitor.sh | `/usr/local/sbin/sa02m-link-monitor.sh` |
+| sa02m-link-monitor.service | `/etc/systemd/system/sa02m-link-monitor.service` |
 | udev правила | `/etc/udev/rules.d/99-lan-recovery.rules` |
 | nginx конфиг | `/etc/nginx/sites-available/network_config` |
 | GPIO конфиг | `/etc/sa02m_hw.conf` |

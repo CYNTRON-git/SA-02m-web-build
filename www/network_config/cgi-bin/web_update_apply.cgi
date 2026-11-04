@@ -2,12 +2,13 @@
 # Web update apply / status (legacy GitHub OTA + offline file transaction).
 # GET: transaction fields + legacy.status/log for status.js (plan §2.10 / §6.1),
 #      plus runner_alive / stale (1.0.6.52 — a dead runner is reported, not polled forever).
-# POST without confirm_version: legacy sa02m-web-update-apply (BC for status.js). CSRF required (launches a root GitHub OTA).
-# POST with confirm_version: CSRF + write transaction → systemctl start sa02m-update.service.
+# POST: authenticated/CSRF checked request to the fixed root controller;
+# empty body selects GitHub, confirm_version selects the uploaded package.
 # shellcheck disable=SC1091
 . "$(dirname "$0")/lib_web_auth.sh"
 # shellcheck disable=SC1091
 . "$(dirname "$0")/lib_web_update.sh"
+. "$(dirname "$0")/lib_web_update_control.sh"
 
 # Env-overridable ONLY for the harness (scripts/dev/test-web-update-apply-guard.sh);
 # the same variable name etc/sa02m-update-runner.sh honours. nginx/fcgiwrap set nothing.
@@ -28,7 +29,7 @@ WEB_UPD_STALE_AFTER_S=120
 # The stages during which a transaction is «in progress» — one home for the
 # GET status mapping and the POST launch verdict below (both python snippets
 # receive it as an argument).
-WEB_UPD_RUNNING_STAGES="uploaded validating backing_up applying verifying committing rolling_back confirmed wipe apply verify"
+WEB_UPD_RUNNING_STAGES="validating backing_up applying verifying committing rolling_back confirmed wipe apply verify"
 
 METHOD="${REQUEST_METHOD:-GET}"
 
@@ -103,7 +104,7 @@ sys.path.insert(0, "/opt/sa02m-update")
 txn = None
 try:
     from lib import transaction as txnmod
-    txn = txnmod.load(statedir)
+    txn = txnmod.load_transaction(statedir)
 except Exception:
     p = statedir / "transaction.json"
     if p.is_file():
@@ -231,6 +232,11 @@ if [ "$METHOD" = "GET" ]; then
 fi
 
 # ── POST ───────────────────────────────────────────────────────────────────
+if [ "$METHOD" != POST ]; then
+  _json_headers
+  printf '{"ok":false,"error":"method_not_allowed"}\n'
+  exit 0
+fi
 TMP_BODY=$(mktemp /tmp/sa02m-web-upd-body.XXXXXX)
 trap 'rm -f "$TMP_BODY"' EXIT
 CL=$(printf '%s' "${CONTENT_LENGTH:-}" | tr -cd '0-9')
@@ -243,23 +249,27 @@ if [ -n "$CL" ] && [ "$CL" -gt 0 ] 2>/dev/null; then
   dd bs=1 count="$CL" 2>/dev/null >"$TMP_BODY" || true
 fi
 
-CONFIRM=$(python3 - "$TMP_BODY" <<'PY' 2>/dev/null || true
+CONFIRM=""
+if [ -s "$TMP_BODY" ]; then
+CONFIRM=$(python3 - "$TMP_BODY" <<'PY' 2>/dev/null
 import json, sys
 from pathlib import Path
-p = Path(sys.argv[1])
-raw = p.read_text(encoding="utf-8", errors="replace").strip() if p.is_file() else ""
+raw = Path(sys.argv[1]).read_text(encoding="utf-8").strip()
 if not raw:
     print("")
-    raise SystemExit
-try:
+else:
     d = json.loads(raw)
-except Exception:
-    print("")
-    raise SystemExit
-print(str(d.get("confirm_version") or "").strip())
+    if not isinstance(d, dict) or set(d) != {"confirm_version"} or not isinstance(d["confirm_version"], str) or not d["confirm_version"]:
+        raise SystemExit(1)
+    print(d["confirm_version"])
 PY
-)
+) || {
+  _json_headers
+  printf '{"ok":false,"error_code":"E_REQUEST","error_message":"invalid apply request"}\n'
+  exit 0
+}
 
+fi
 if [ -n "$CONFIRM" ]; then
   # Offline file apply — CSRF required (headers not yet sent).
   if ! web_csrf_validate; then
@@ -276,136 +286,14 @@ if [ -n "$CONFIRM" ]; then
       ;;
   esac
 
-  if [ ! -f "$PACKAGE" ]; then
-    _json_headers
-    printf '{"ok":false,"error_code":"E_TAR","error_message":"package.sa02m absent"}\n'
-    exit 0
-  fi
-
-  mkdir -p "$STATEDIR/incoming" 2>/dev/null || true
-
-  (
-    flock -n 9 || {
-      printf 'Content-type: application/json; charset=UTF-8\r\n'
-      printf 'Cache-Control: no-cache\r\n\r\n'
-      printf '{"ok":false,"error_code":"E_LOCK","error_message":"update busy"}\n'
-      exit 0
-    }
-
-    python3 - "$STATEDIR" "$CONFIRM" "$PACKAGE" <<'PY'
-import json, os, subprocess, sys, uuid
-from pathlib import Path
-
-statedir = Path(sys.argv[1])
-confirm = sys.argv[2]
-package = sys.argv[3]
-sys.path.insert(0, "/opt/sa02m-update")
-
-try:
-    from lib import transaction as txnmod
-except Exception as e:
-    sys.stdout.write("Content-type: application/json; charset=UTF-8\r\n")
-    sys.stdout.write("Cache-Control: no-cache\r\n\r\n")
-    sys.stdout.write(json.dumps({"ok": False, "error_code": "E_CMD", "error_message": str(e)}) + "\n")
-    sys.exit(0)
-
-installed = None
-vf = Path("/var/www/network_config/VERSION")
-if vf.is_file():
-    for line in vf.read_text(encoding="utf-8", errors="replace").splitlines():
-        line = line.strip()
-        if line and all(c.isdigit() or c == "." for c in line):
-            installed = line
-            break
-
-existing = txnmod.load(statedir)
-if existing:
-    st = str(existing.get("stage") or "")
-    if st in {"validating", "backing_up", "applying", "verifying", "committing", "rolling_back"}:
-        sys.stdout.write("Content-type: application/json; charset=UTF-8\r\n")
-        sys.stdout.write("Cache-Control: no-cache\r\n\r\n")
-        sys.stdout.write(json.dumps({
-            "ok": False,
-            "error_code": "E_LOCK",
-            "error_message": f"busy stage={st}",
-            "transaction_id": existing.get("id"),
-        }, ensure_ascii=False) + "\n")
-        sys.exit(0)
-
-txn = txnmod.new_transaction(
-    operation="update",
-    source="file",
-    package_path=package,
-    target_version=confirm,
-    previous_version=installed,
-    signature_ok=True,
-)
-txn["stage"] = "validating"
-txn["id"] = str(uuid.uuid4())
-
-def persist(t):
-    try:
-        txnmod.save(t, statedir)
-        return True
-    except OSError:
-        data = json.dumps(t, ensure_ascii=False, indent=2, sort_keys=True) + "\n"
-        r = subprocess.run(
-            ["sudo", "-n", "/usr/bin/tee", str(statedir / "transaction.json")],
-            input=data.encode("utf-8"),
-            stdout=subprocess.DEVNULL,
-            stderr=subprocess.DEVNULL,
-            check=False,
-        )
-        return r.returncode == 0
-
-def emit(status_line, obj):
-    if status_line:
-        sys.stdout.write(status_line + "\r\n")
-    sys.stdout.write("Content-type: application/json; charset=UTF-8\r\n")
-    sys.stdout.write("Cache-Control: no-cache\r\n\r\n")
-    sys.stdout.write(json.dumps(obj, ensure_ascii=False) + "\n")
-
-if not persist(txn):
-    emit(None, {"ok": False, "error_code": "E_INTERNAL", "error_message": "cannot write transaction.json"})
-    sys.exit(0)
-
-subprocess.run(
-    ["sudo", "-n", "/usr/bin/systemctl", "reset-failed", "sa02m-update.service"],
-    stdout=subprocess.DEVNULL,
-    stderr=subprocess.DEVNULL,
-    check=False,
-)
-r = subprocess.run(
-    ["sudo", "-n", "/usr/bin/systemctl", "start", "sa02m-update.service"],
-    stdout=subprocess.PIPE,
-    stderr=subprocess.PIPE,
-    check=False,
-)
-if r.returncode != 0:
-    err = (r.stderr or r.stdout or b"").decode("utf-8", "replace").strip() or "systemctl start failed"
-    txn["stage"] = "error"
-    txn["result"] = "failed"
-    txn["error_code"] = "E_CMD"
-    txn["error_message"] = err
-    persist(txn)
-    emit(None, {"ok": False, "error_code": "E_CMD", "error_message": err, "transaction_id": txn["id"]})
-    sys.exit(0)
-
-emit("Status: 202 Accepted", {
-    "ok": True,
-    "transaction_id": txn["id"],
-    "status": "running",
-    "stage": "validating",
-    "legacy": {"status": "running"},
-})
-PY
-  ) 9>"$CGI_LOCK"
+  web_update_control apply "$CONFIRM"
   exit 0
 fi
 
 # ── Legacy GitHub OTA (status.js BC — empty/no confirm_version) ───
-# CSRF required: this path launches a full root update from GitHub via
-# `sudo -n sa02m-web-update-apply`. The policy (docs/decisions/selective-csrf-policy.md)
+# CSRF required: this path launches a full root update from GitHub through the
+# fixed root controller (`web_update_control online` → `sudo -n sa02m-update-control`,
+# which starts sa02m-update-download.service). The policy (docs/decisions/selective-csrf-policy.md)
 # and the threat model both say every session-authed mutating endpoint carries the
 # token; until 1.0.6.24 this one was marked "no CSRF" and did not (audit M6). The web
 # UI already sends X-SA02M-CSRF here (app/status.js withCsrfHeaders()). Checked BEFORE
@@ -483,45 +371,9 @@ case "$guard_rc" in
     ;;
 esac
 
-_json_headers
-
-# «Уже выполняется» is judged by the ONE liveness home (lib_web_update.sh), not
-# only by the legacy launcher lock: once the launcher has exec'd the runner that
-# lock is gone, and until 1.0.6.62 a second helper was launched on top of a live
-# runner — its clone ended 30–60 s later in a handoff over the live transaction
-# (audit 2026-09-28 M1; the launcher-side guard is etc/sa02m-web-update-apply.sh).
-# The answer is the «running» body the panel already handles; a dead runner does
-# not block (re-apply is a recovery path). Harness: test-web-update-apply-guard.sh P.
 if _legacy_running || web_upd_runner_alive; then
-  log_tail=$(_legacy_log_tail)
-  log_tail="${log_tail%\\n}"
-  printf '{"ok":true,"status":"running","log":"%s","legacy":{"status":"running"}}\n' "$log_tail"
+  _json_headers
+  printf '{"ok":true,"status":"running","legacy":{"status":"running"}}\n'
   exit 0
 fi
-
-if ! command -v sudo >/dev/null 2>&1; then
-  printf '{"ok":false,"status":"error","log":"sudo не найден","error_code":"E_CMD"}\n'
-  exit 0
-fi
-
-nohup sudo -n /usr/local/sbin/sa02m-web-update-apply >/dev/null 2>&1 &
-sleep 1
-
-# The verdict after the launch — contract «POST — ответ после запуска»
-# (docs/contracts/web-update.md): «running» when the launcher is alive (its
-# legacy lock — the clone phase — or its lock pid + cmdline), the runner it
-# exec'd is alive (lib_web_update.sh: runner lock pid + cmdline, units), or the
-# transaction it wrote is at a running stage and fresh. Until 1.0.6.53 this was
-# «legacy lock still present OR kill -0 $!»: a fast clone (a local git server,
-# bench 2026-09-23) let the launcher drop its lock and exec the runner inside
-# the 1 s, and kill -0 on the setuid sudo→root child answers EPERM to www-data,
-# so a good launch was reported as «error» — and written into update_status,
-# a file the LAUNCHER owns (etc/sa02m-web-update-apply.sh), so the next GET
-# replayed the false verdict. The CGI writes no status file any more.
-if [ -f "$LEGACY_LOCKFILE" ] || _legacy_running || web_upd_runner_alive || _txn_running_fresh; then
-  printf '{"ok":true,"status":"running","log":"Обновление запущено...","legacy":{"status":"running"}}\n'
-else
-  log_tail=$(_legacy_log_tail)
-  log_tail="${log_tail%\\n}"
-  printf '{"ok":false,"status":"error","log":"%s","legacy":{"status":"error"}}\n' "$log_tail"
-fi
+web_update_control online

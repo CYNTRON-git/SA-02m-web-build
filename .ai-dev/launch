@@ -7,4 +7,12 @@
 # routing` and src/adapter/README.md `### The launcher`.
 #   ./.ai-dev/launch [claude args…]   normal launch (direct, or through the proxy)
 #   ./.ai-dev/launch --proxy          foreground proxy only — prints the URL, no claude
+#   ./.ai-dev/launch --opencode      launch OpenCode without the Claude router
+#   ./.ai-dev/launch --codex         launch Codex without the Claude router
+# Explicit selectors keep the installed adapters independent of the default.
+case "${1-}" in
+  --opencode) shift; exec opencode "$@" ;;
+  --codex) shift; exec codex "$@" ;;
+  --claude) shift ;;
+esac
 exec node ".ai-dev/tooling/src/adapter/router-launch.mjs" "$@"

@@ -15,6 +15,7 @@ listed in `/etc/sa02m-modbus-mqtt.yaml`, or at least one live
 
 from __future__ import annotations
 
+import copy
 import logging
 import os
 import re
@@ -401,6 +402,8 @@ def build_mtd(mqtt_id: str, present: Optional[Iterable[str]] = None) -> Optional
     props: List[Dict[str, Any]] = [_motion_prop(mqtt_id, _MTD_MOTION)]
     if _has(names, _MTD_LUX):
         props.append(_float_prop(mqtt_id, _MTD_LUX, "illumination", "unit.illumination.lux", None))
+    if _has_mtd_distance(mqtt_id, present):
+        props.append(_mtd_distance_prop(mqtt_id))
     return {
         "id": models.new_id(),
         "name": mtd_name(mqtt_id),
@@ -408,6 +411,44 @@ def build_mtd(mqtt_id: str, present: Optional[Iterable[str]] = None) -> Optional
         "capabilities": [],
         "properties": props,
     }
+
+
+def _has_mtd_distance(mid: str, present: Optional[Iterable[str]]) -> bool:
+    # Control metadata alone is not evidence of a published distance value.
+    return present is not None and any(
+        topic in ("target_distance", "/devices/%s/controls/target_distance" % mid)
+        for topic in present)
+
+
+def _mtd_distance_prop(mid: str) -> Dict[str, Any]:
+    prop = _float_prop(mid, "target_distance", "target_distance", "unit.length.meter", None)
+    prop["cloud_only"] = True
+    return prop
+
+
+def _mtd_distance_target(doc: Dict[str, Any], mid: str) -> Optional[Dict[str, Any]]:
+    """Identify one existing presence binding without replacing operator settings."""
+    if not is_mtd_id(mid):
+        return None
+    matches = [dev for dev in doc.get("devices") or []
+               if mid in mapped_mqtt_ids({"devices": [dev]})]
+    if len(matches) != 1:
+        return None
+    dev = matches[0]
+    if (dev.get("type") != "devices.types.sensor.motion"
+            or mapped_mqtt_ids({"devices": [dev]}) != {mid}):
+        return None
+    props = dev.get("properties") or []
+    base = "/devices/%s/controls/" % mid
+    items = props + (dev.get("capabilities") or [])
+    if any(item.get("parameters", {}).get("instance") == "target_distance"
+           or item.get("mqtt") == base + "target_distance" for item in items):
+        return None
+    if any(item.get("type") == "devices.properties.event"
+           and item.get("parameters", {}).get("instance") == "motion"
+           and item.get("mqtt") == base + _MTD_MOTION for item in props):
+        return dev
+    return None
 
 
 def provision(
@@ -423,13 +464,27 @@ def provision(
     `present_topics` None is the old meta-only path and now adds nothing
     unless `mqtt_id` is in `yaml_ids` (then the full candidate set is
     used). A set/list filters to controls that exist on that slave.
-    Returns (doc, added) — `doc` is mutated; `added` is empty on a no-op.
+    Returns (doc, changed) — `doc` is mutated; the list is empty on a no-op.
+    An existing unambiguous MTD binding may gain its cloud distance property.
     """
-    if not mqtt_id or already_mapped(doc, mqtt_id):
+    if not mqtt_id:
         return doc, []
     yids = set(yaml_ids or ())
     if not may_provision(mqtt_id, present_topics, meta_name=meta_name, yaml_ids=yids):
         return doc, []
+    if already_mapped(doc, mqtt_id):
+        target = _mtd_distance_target(doc, mqtt_id)
+        if target is None or not _has_mtd_distance(mqtt_id, present_topics):
+            return doc, []
+        prop = _mtd_distance_prop(mqtt_id)
+        candidate = copy.deepcopy(target)
+        candidate["properties"].append(prop)
+        out, err = models.validate_device(candidate)
+        if err or out is None:
+            log.error("auto-provision rejected distance for %s: %s", mqtt_id, err)
+            return doc, []
+        target["properties"].append(prop)
+        return doc, [target]
     present = present_topics
     if mqtt_id in yids and not live_control_names(mqtt_id, present_topics):
         present = None
@@ -531,7 +586,8 @@ class AutoProvisioner:
             and self._mapped_cache[0] == stamp
         ):
             return mid in self._mapped_cache[1]
-        ids = mapped_mqtt_ids(self._load())
+        doc = self._load()
+        ids = {mid for mid in mapped_mqtt_ids(doc) if _mtd_distance_target(doc, mid) is None}
         self._mapped_cache = (stamp, ids) if stamp is not None else None
         return mid in ids
 
@@ -569,6 +625,12 @@ class AutoProvisioner:
         if not m:
             return None
         mid = m.group(1)
+        # A retained distance may arrive after the initial settle window.
+        if (mid not in self._pending and mid not in self._done
+                and is_mtd_id(mid) and m.group(2) == "target_distance"
+                and not self._is_mapped(mid)):
+            self._pending[mid] = {"controls": set(), "first": self._clock(),
+                                  "last": self._clock(), "name": ""}
         if mid not in self._pending:
             return None
         rec = self._pending[mid]
@@ -590,23 +652,20 @@ class AutoProvisioner:
             return False
         # One critical section per commit: load, append, save — the CGI
         # and the Socket.IO handlers write the same file (config_store).
-        with devices_lock():
-            doc = self._load()
+        with devices_lock(self._path):
+            # Keep the current document and pending work intact if persistence fails.
+            doc = copy.deepcopy(self._load())
             yids = set(self._yaml_ids() or ())
             changed = False
             for mid in ready:
-                rec = self._pending.pop(mid, None)
+                rec = self._pending.get(mid)
                 if rec is None:
-                    continue
-                if already_mapped(doc, mid):
-                    self._done.add(mid)
                     continue
                 controls = rec["controls"]
                 name = rec.get("name") or None
                 if not may_provision(
                     mid, controls or None, meta_name=name, yaml_ids=yids
                 ):
-                    self._done.add(mid)
                     continue
                 present: Optional[Set[str]]
                 if mid in yids and not controls:
@@ -618,14 +677,15 @@ class AutoProvisioner:
                 )
                 if added:
                     changed = True
-                    self._done.add(mid)
                     log.info(
                         "auto-provisioned %s → %d device(s)",
                         mid,
                         len(added),
                     )
-                else:
-                    self._done.add(mid)
             if changed:
                 self._save(doc)
+            for mid in ready:
+                self._pending.pop(mid, None)
+                if _mtd_distance_target(doc, mid) is None:
+                    self._done.add(mid)
         return changed

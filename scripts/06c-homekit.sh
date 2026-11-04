@@ -162,7 +162,7 @@ if ! id -u "$HK_USER" >/dev/null 2>&1; then
         exit 0
     fi
 fi
-# Upgrade: a board installed before 1.0.6.57's least-privilege change has the
+# Upgrade: a board installed before 1.0.7.0's least-privilege change has the
 # account in www-data — take it out (the running bridge picks the new groups up
 # at the restart `sa02m_svc_apply` does below).
 _hk_groups=$(id -nG "$HK_USER" 2>/dev/null) || _hk_groups=""

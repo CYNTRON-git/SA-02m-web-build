@@ -53,8 +53,10 @@ CMD="${1:-run}"
 # /etc/sa02m-alice is root:www-data 0771 and /etc/sa02m-homekit and
 # /etc/sa02m-homeconnect are www-data's own (any panel session plants any name
 # there through cmd_exec.cgi), /var/lib/sa02m-homekit and /var/lib/sa02m-homeconnect belong to
-# their daemons, and $STATEDIR is 0775 root:www-data (tmpfiles)
-# until prepare-statedir takes it. So nothing here chowns, chmods, seds or
+# their daemons, and $STATEDIR was 0775 root:www-data (tmpfiles) until
+# prepare-statedir took it — since 1.0.7.5 it is 0755 root:root and only the
+# root controller writes there (the take/release is a no-op on such a board,
+# kept for a pre-bootstrap 0775 dir). So nothing here chowns, chmods, seds or
 # copies BY NAME into those directories: every such write goes through fr_safe
 # — mkstemp (O_EXCL|O_NOFOLLOW) in the directory, owner/mode on the fd, fsync,
 # rename over; a symlinked or non-regular dest, or a symlink/foreign directory
@@ -523,8 +525,10 @@ def scrub_log(fd, where):
 
 
 def cmd_prepare_statedir(statedir, logfile, lockfile, txnfile):
-    """The state dir is group-writable for the CGI (tmpfiles 0775 root:www-data)
-    until this runner takes it: fchmod 0755 first, so from here on no name in
+    """Until 1.0.7.4 the state dir was group-writable for the CGI (tmpfiles 0775
+    root:www-data); since 1.0.7.5 it is 0755 root:root and the fixed root
+    controller is its only writer. Still fchmod 0755 first (a pre-bootstrap dir
+    may be 0775), so from here on no name in
     it can be created, renamed or swapped by anybody else; then every name the
     runner opens by path is checked once. rc 3: the dir itself is unusable;
     rc 4: an entry in it is not the runner's own."""
@@ -649,10 +653,12 @@ PY
 fr_safe() { python3 -I -B -c "$FR_SAFE_PY" "$@"; }
 
 # prepare-statedir takes group write off $STATEDIR for the run, so nothing can
-# be planted in it while root works there; the CGI needs it back afterwards to
-# queue the next job (etc/tmpfiles.d/sa02m-update.conf: 0775 root:www-data, the
-# factory CGI mkstemps transaction.json there). release_statedir gives the mode
-# back on exit. It is read before the lock and carried across the self-copy
+# be planted in it while root works there; release_statedir gives the recorded
+# mode back on exit. Since 1.0.7.5 the dir is 0755 root:root
+# (etc/tmpfiles.d/sa02m-update.conf) and the CGI queues nothing there — the fixed
+# root controller (sa02m-update-control) reserves the transaction — so on a
+# bootstrapped board both steps are no-ops; they still matter for a pre-bootstrap
+# 0775 dir. The mode is read before the lock and carried across the self-copy
 # re-exec, which would otherwise read the already-locked 0755 and keep it.
 if [ "${SA02M_FACTORY_REEXEC:-}" = 1 ]; then
   STATEDIR_MODE=${SA02M_FACTORY_STATEDIR_MODE:-}
@@ -783,6 +789,8 @@ install_imaging_lock() {
   date -Iseconds >"$IMAGING_LOCK"
   sync
   systemctl stop net-watchdog sa02m-watchdog-feed 2>/dev/null || true
+  # The link monitor starts fix-eth@ on link-up, which must not run mid-reset.
+  timeout 10 systemctl stop sa02m-link-monitor 2>/dev/null || true
   local now=""
   RUNTIME_WDT_PREV=$(sa02m_runtime_watchdog_usec 2>/dev/null) || RUNTIME_WDT_PREV=""
   if [ -n "$RUNTIME_WDT_PREV" ] && [ "$RUNTIME_WDT_PREV" != 0 ]; then
@@ -811,6 +819,8 @@ cleanup_imaging_lock() {
     RUNTIME_WDT_PREV=""
   fi
   systemctl start net-watchdog 2>/dev/null || true
+  # Given back only where enabled: an OTA-only board has the unit file, not the enablement.
+  systemctl is-enabled --quiet sa02m-link-monitor 2>/dev/null && systemctl start sa02m-link-monitor 2>/dev/null || true
   systemctl start sa02m-watchdog-feed 2>/dev/null || true
   rm -f "$IMAGING_LOCK"
   IMAGING_HELD=0
@@ -1332,7 +1342,7 @@ run_reset() {
 
   # flock
   exec 9>"$LOCKFILE"
-  if ! flock -n 9; then
+  if ! flock -w 15 9; then
     fail E_LOCK "another update/reset holds $LOCKFILE"
   fi
   printf '%s\n' "$$" >&9

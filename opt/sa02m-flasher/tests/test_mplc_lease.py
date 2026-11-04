@@ -2,7 +2,7 @@
 from __future__ import annotations
 
 import unittest
-from unittest.mock import patch
+from unittest.mock import MagicMock, patch
 
 from sa02m_flasher import mplc_lease
 
@@ -36,34 +36,39 @@ class TestMplcLease(unittest.TestCase):
         ):
             self.assertFalse(mplc_lease.is_port_poll_free("/dev/COM4"))
 
-    def test_port_lease_quick_path_skips_stop(self) -> None:
-        with (
-            patch.object(mplc_lease, "is_port_poll_free", return_value=True),
-            patch.object(mplc_lease, "port_occupants", return_value=[]),
-            patch.object(mplc_lease, "is_service_active") as active_mock,
-            patch.object(mplc_lease, "stop_service") as stop_mock,
-            patch.object(mplc_lease, "start_service") as start_mock,
-        ):
-            with mplc_lease.port_lease("/dev/COM4", ["mplc.service", "sa02m-modbus-mqtt.service"]):
+    def test_empty_fuser_still_requires_broker(self) -> None:
+        # The old quick path skipped exclusion; the new contract never does.
+        factory = MagicMock()
+        context = factory.return_value
+        context.__enter__.return_value.status = {"lease": {"services": []}}
+        with patch.object(mplc_lease, "_lease_type", return_value=factory), \
+                patch.object(mplc_lease, "is_port_poll_free", return_value=True), \
+                patch.object(mplc_lease, "stop_service") as stop:
+            with mplc_lease.port_lease("/dev/COM4", ["mplc.service"]):
                 pass
-        active_mock.assert_not_called()
-        stop_mock.assert_not_called()
-        start_mock.assert_not_called()
+        factory.assert_called_once_with("/dev/COM4", "flasher")
+        context.__exit__.assert_called_once()
+        stop.assert_not_called()
 
-    def test_port_lease_slow_path_stops_active(self) -> None:
-        with (
-            patch.object(mplc_lease, "is_port_poll_free", return_value=False),
-            patch.object(mplc_lease, "wait_port_poll_free", return_value=True),
-            patch.object(mplc_lease, "port_occupants", return_value=[]),
-            patch.object(mplc_lease, "resolve_service_name", return_value="mplc4.service"),
-            patch.object(mplc_lease, "is_service_active", return_value=True),
-            patch.object(mplc_lease, "stop_service", return_value=True) as stop_mock,
-            patch.object(mplc_lease, "start_service", return_value=True) as start_mock,
-        ):
-            with mplc_lease.port_lease("/dev/COM4", ["mplc.service"]) as stopped:
-                self.assertEqual(stopped, ["mplc4.service"])
-        stop_mock.assert_called_once_with("mplc4.service")
-        start_mock.assert_called_once_with("mplc4.service")
+    def test_broker_scope_released_on_operation_exception(self) -> None:
+        factory = MagicMock()
+        context = factory.return_value
+        context.__enter__.return_value.status = {"lease": {"services": ["mplc4.service"]}}
+        with patch.object(mplc_lease, "_lease_type", return_value=factory):
+            with self.assertRaisesRegex(ValueError, "operation failed"):
+                with mplc_lease.port_lease("/dev/COM4", ["arbitrary.service"]) as scope:
+                    self.assertEqual(scope, ["mplc4.service"])
+                    raise ValueError("operation failed")
+        context.__exit__.assert_called_once()
+        self.assertIs(context.__exit__.call_args.args[0], ValueError)
+
+    def test_missing_broker_fails_closed(self) -> None:
+        factory = MagicMock()
+        factory.return_value.__enter__.side_effect = RuntimeError("unavailable")
+        with patch.object(mplc_lease, "_lease_type", return_value=factory):
+            with self.assertRaisesRegex(RuntimeError, "unavailable"):
+                with mplc_lease.port_lease("/dev/COM4", []):
+                    self.fail("operation ran without coordinator")
 
 
 if __name__ == "__main__":

@@ -102,6 +102,8 @@ ok()  { printf 'comment-mutation-proof: ok    %s\n' "$*"; }
 bad() { printf 'comment-mutation-proof: FAIL  %s\n' "$*"; fails=$((fails + 1)); }
 
 # gate id | file to mutate | literal text whose line gets commented out
+# (no backslash in a needle: `awk -v` below reads escapes, so `\.` becomes `.`
+#  and the case matches no live line — pin a backslash-free prefix of the line)
 CASES='
 mplc-ota-deploy-contract|scripts/offline-update-allowlist.txt|firmware/mplc4/mplc_cyntron.so
 mplc-project-deploy-contract|www/network_config/cgi-bin/mplc_project_deploy.cgi|web_csrf_require
@@ -112,6 +114,16 @@ ota-deploy-mode-contract|etc/sa02m-update-runner.sh|mode = deploy_mode(rel, dst)
 imaging-samefile-guard|tools/imaging/make-image.sh|-ef "$FINAL_IMG_KEEP"
 installer-svc-policy-gate|install.sh|Установка завершена
 iface-naming-contract|scripts/02-network.sh|install -m 755 "$ETC_DIR/sa02m-iface-canonical.sh"
+iface-conf-write|etc/sa02m-iface-conf-write.sh|$ROUTE_RE ]] && line_in_current
+iface-conf-write|www/network_config/cgi-bin/apply.cgi|net_conf_write_refused "$(lan_iface_conf eth0)"
+iface-conf-write|www/network_config/cgi-bin/apply.cgi|net_conf_write_refused "$(lan_iface_conf eth1)"
+iface-conf-write|etc/sa02m-iface-conf-write.sh|end0) _dif=
+iface-conf-write|etc/sa02m-iface-conf-write.sh|end1) _dif=
+iface-conf-write|www/network_config/cgi-bin/apply.cgi|NET_APPLY_DEFERRED=1
+js-unit-apply-save-result|www/network_config/static/js/app/forms.js|if (refusal) { toast(refusal
+js-unit-apply-save-result|www/network_config/static/js/app/forms.js|if (deferred) { configLoaded = false;
+iface-naming-contract|etc/99-lan-recovery.rules|ACTION=="add", SUBSYSTEM=="net", KERNEL=="eth0"
+iface-naming-contract|etc/99-lan-recovery.rules|ACTION=="bind", SUBSYSTEM=="net", KERNEL=="eth0"
 nodered-pin-consistency|scripts/dev/build-nodered-payload.sh|--omit=optional
 watchdog-cap|scripts/01-system.sh|install -m 644 "$ETC_REPO/systemd/sa02m-watchdog.conf"
 telemetry-device-id-contract|opt/sa02m-modbus-mqtt/sa02m_telemetry.py|self._clear_legacy_retained()
@@ -137,6 +149,17 @@ mqtt-tcp-probe-contract|www/network_config/cgi-bin/mqtt_tcp_probe.cgi|web_csrf_v
 mqtt-set-contract|www/network_config/cgi-bin/mqtt_set.cgi|timeout 5 mosquitto_pub
 mqtt-set-contract|www/network_config/cgi-bin/mqtt_set.cgi|web_csrf_validate
 web-update-csrf-contract|www/network_config/cgi-bin/web_update_apply.cgi|web_csrf_validate
+web-update-csrf-contract|www/network_config/cgi-bin/lib_web_update_control.sh|out=$(sudo -n /usr/local/libexec/sa02m-update-control
+web-update-csrf-contract|etc/sa02m-update-control.sh|exec /usr/bin/python3 -I -c
+sudoers-pin-contract|etc/sudoers.d/sa02m-www|/usr/local/libexec/sa02m-update-control,
+sudoers-pin-contract|etc/sa02m-web-update-apply.sh|exec "$RUNNER" apply
+sudoers-pin-contract|scripts/lib.sh|if chmod 0440 "$_p" 2>/dev/null; then
+sudoers-pin-contract|etc/sa02m-update-runner.sh|if chmod 0440 "$_path" 2>/dev/null; then
+sudoers-pin-contract|etc/sa02m-update-runner.sh|_now=$(stat -c
+unit-shutdown-semantics|etc/sa02m-shutdown-marker.service|Conflicts=shutdown.target
+unit-shutdown-semantics|scripts/01-system.sh|sa02m_atomic_install -m 644 "$ETC_REPO/sa02m-shutdown-marker.service"
+unit-shutdown-semantics|scripts/01-system.sh|sa02m_svc_apply sa02m-shutdown-marker.service infra start
+unit-shutdown-semantics|etc/sa02m-pre-start.sh|SA02M_CLEAN_MARKER=/var/lib/sa02m-clean-shutdown
 i18n-dict-contract|www/network_config/static/js/i18n.js|'"'"'Сеть'"'"': '"'"'Network'"'"',
 no-eschtml-in-attr|www/network_config/static/js/app.js|function escAttr(
 sh-model-schema|.ai-dev/quality/checks/sh-model-schema.sh|negatives.append(("point missing required
@@ -172,10 +195,39 @@ rs485-roster-consumer|www/network_config/cgi-bin/status.cgi|modules_frag=
 web-auth-behaviour|www/network_config/cgi-bin/login.cgi|web_login_check
 version-consistency|www/network_config/static/js/app.js|const APP_VERSION
 mqtt-install-secret|scripts/05-mqtt.sh|mosquitto_passwd
+web-install-secret|scripts/03-webserver.sh|_web_env_tmp=$(umask 077 && mktemp)
+web-install-secret|scripts/03-webserver.sh|web_auth_write admin "${_bootstrap_hash:-$ADMIN_PASS}"
+web-install-secret|install.sh|sa02m_web_cred_summary "$_WEB_ENV_EXISTED"
+web-install-secret|install.sh|done < <(sa02m_scrub_cred_banner_logs
+web-install-secret|etc/sa02m-update-runner.sh|scrub_cred_banner_logs || true
+web-install-secret|scripts/lib.sh|/../etc/sa02m-web-log-scrub-lib.sh"
+web-install-secret|etc/sa02m-web-log-scrub-lib.sh|/var/lib/sa02m-web-build/update.log /var/lib/sa02m-web-build/update.log.[0-9]*
 rtc-utc-convention|www/network_config/cgi-bin/lib_rtc.sh|--systohc --utc
 nodered-ctl-install|etc/sa02m-web-service-ctl.sh|nodered_guard_major_upgrade || return 1
 nodered-ctl-install|etc/sa02m-web-service-ctl.sh|atomic_install_unit "$_nr_unit" /etc/systemd/system/nodered.service
 iface-dns-ensure|etc/fix-eth.sh|dns_ensure "$iface"
+iface-routes-ensure|etc/fix-eth.sh|routes_ensure "$iface"
+fix-eth-link-cycle|etc/fix-eth.sh|mii-tool -r "$iface" >/dev/null 2>&1
+fix-eth-link-cycle|etc/fix-eth.sh|carrier_up "$iface" && _link_after_cycle=1
+link-monitor|usr/local/sbin/sa02m-link-monitor.sh|systemctl --no-block start "fix-eth@${1}.service"
+link-monitor|scripts/02-network.sh|sa02m_svc_apply sa02m-link-monitor.service infra start
+link-monitor|etc/sa02m-factory-reset-runner.sh|timeout 10 systemctl stop sa02m-link-monitor 2>/dev/null || true
+link-monitor|usr/local/sbin/sa02m-link-monitor.sh|kill -0 "$pid" 2>/dev/null && {
+link-monitor|usr/local/sbin/sa02m-link-monitor.sh|BUSY_WAIT_MAX=60
+link-monitor|usr/local/sbin/sa02m-link-monitor.sh|-lt "$MIN_START_INTERVAL" ] && {
+link-monitor|etc/fix-eth@.service|StartLimitBurst=10
+link-monitor|etc/systemd/sa02m-link-monitor.service|TimeoutStopSec=5
+link-monitor|etc/sa02m-factory-reset-runner.sh|systemctl is-enabled --quiet sa02m-link-monitor
+update-recover-boot|etc/sa02m-update-runner.sh|_systemctl_bounded 10 stop sa02m-link-monitor || true
+update-recover-boot|etc/sa02m-update-runner.sh|_systemctl_bounded 10 is-enabled --quiet sa02m-link-monitor
+update-recover-boot|scripts/sa02m-update-remedy.sh|systemctl is-enabled --quiet sa02m-link-monitor
+dtb-fdtput-real|usr/local/sbin/sa02m-dtb-patch.sh|patch_phy "$EMAC_PHY_PATH" "$EMAC_ID_COMPAT"
+dtb-fdtput-real|usr/local/sbin/sa02m-dtb-patch.sh|fdtput "$f" "$DC1SW_PATH" regulator-always-on
+dtb-patch-tool|usr/local/sbin/sa02m-dtb-patch.sh|[ "$first" = "$EMAC_ID_COMPAT" ]
+dtb-patch-tool|usr/local/sbin/sa02m-dtb-patch.sh|[ -z "$dup" ] || { printf
+dtb-patch-tool|usr/local/sbin/sa02m-dtb-patch.sh|[[ " $1 " == *" $PHY_FALLBACK_COMPAT "* ]]
+dtb-patch-tool|usr/local/sbin/sa02m-dtb-patch.sh|patch_phy "$EMAC_PHY_PATH" "$EMAC_ID_COMPAT"
+dtb-patch-tool|usr/local/sbin/sa02m-dtb-patch.sh|CANON+=("$s")
 uboot-bootscr-format|tools/imaging/make-image.sh|run_firstboot_patch "$RAW_IMG" ||
 storage-automount-decision|etc/storage-mount.sh|mount -t ntfs3 -o rw,noatime
 storage-automount-decision|etc/storage-mount.sh|label_fits_exfat "${LABEL}" || return 1
@@ -185,6 +237,8 @@ firstboot-sb-csum|etc/sa02m-rootfs-expand.sh|sync_files "$RESULT" "$DONE" "$LOG"
 cgi-csrf-policy|www/network_config/cgi-bin/mqtt_scan.cgi|web_csrf_validate
 cgi-csrf-policy|www/network_config/cgi-bin/web_update_check.cgi|web_csrf_require
 cgi-csrf-policy|www/network_config/cgi-bin/services_ctrl.cgi|web_csrf_require
+cgi-csrf-policy|www/network_config/cgi-bin/web_update_cancel.cgi|web_csrf_require
+board-verifier-safety|scripts/dev/verify-release-on-board.sh|verdict(7, found and unchanged,
 firstboot-overlay-parity|tools/imaging/firstboot-overlay/usr/local/bin/fix-eth.sh|dns_ensure "$iface"
 firstboot-sb-csum|etc/sa02m-rootfs-expand.sh|rm -f "$RESULT.tmp"
 update-recover-boot|etc/systemd/sa02m-update-verify.service|ExecStart=/usr/local/libexec/sa02m-update-runner verify
@@ -221,11 +275,22 @@ install-profile|etc/sa02m-update-runner.sh|prepare_profile_excludes "$txn"
 install-profile|etc/sa02m-update-runner.sh|skipped.append(fields[1])
 install-profile|scripts/update-www-only.sh|log INFO "/usr/local/sbin/$_h: модуль пропущен профилем установки"
 install-profile|scripts/update-www-only.sh|log INFO "/etc/sudoers.d/$_sud: модуль пропущен профилем установки"
-install-profile|etc/sa02m-web-update-apply.sh|log "$tgt: модуль пропущен профилем установки"
+install-profile|etc/sa02m-web-update-apply.sh|exec "$RUNNER" apply
 install-profile|www/network_config/cgi-bin/sa02m_agent_api.cgi|echo '"'"'{"ok":true,"state":"not_installed"
+i2c2-bus-recovery|etc/sa02m-pre-start.sh|sa02m_i2c2_gpio_recover || true
+web-creds-commit|etc/sa02m-commit-web-env.sh|-le "$MAX_BYTES"
+web-creds-commit|www/network_config/cgi-bin/web_creds.cgi|sudo -n /usr/local/sbin/sa02m-commit-web-env
+sudoers-pin-contract|scripts/update-www-only.sh|sa02m_atomic_install -m 755 "$SCRIPT_DIR/../etc/sa02m-commit-web-env.sh"
+sudoers-pin-contract|scripts/03-webserver.sh|sa02m_atomic_install -m 755 "$SCRIPT_DIR/../etc/sa02m-commit-web-env.sh"
 ota-dst-allowlist-parity|opt/sa02m-update/lib/validate_package.py|re.compile(r"^/etc/nginx/"),
 ota-dst-allowlist-parity|scripts/pack-offline-update.py|r"etc/systemd/system/sa02m-|"
 ota-dst-allowlist-parity|etc/sa02m-update-runner.sh|r"etc/systemd/system/sa02m-|"
+ota-dst-allowlist-parity|opt/sa02m-update/lib/validate_package.py|re.compile(r"^/usr/local/bin/fix-eth
+ota-dst-allowlist-parity|scripts/pack-offline-update.py|r"usr/local/bin/fix-eth
+ota-dst-allowlist-parity|etc/sa02m-update-runner.sh|r"usr/local/bin/fix-eth
+fix-eth-ota-delivery|scripts/offline-update-allowlist.txt|etc/fix-eth.sh
+fix-eth-ota-delivery|etc/sa02m-update-runner.sh|if rel == "etc/fix-eth.sh":
+fix-eth-ota-delivery|scripts/update-www-only.sh|sa02m_atomic_install -m 755 "$ETC_REPO/fix-eth.sh" /usr/local/bin/fix-eth.sh
 journal-on-disk-policy|etc/systemd/sa02m-journald.conf|Storage=persistent
 journal-on-disk-policy|etc/systemd/sa02m-journald.conf|SyncIntervalSec=1m
 journal-on-disk-policy|etc/default/armbian-ramlog|ENABLED=false
@@ -236,6 +301,8 @@ cgi-csrf-policy|opt/sa02m-devices/sa02m_devices/api.py|check_csrf(
 js-post-csrf-headers|www/network_config/static/js/devices.js|? withCsrfHeaders({ "Content-Type": "application/json" })
 websession-parity|opt/sa02m-devices/sa02m_devices/websession.py|def check_csrf(
 devices-api-upstream|etc/nginx/network_config.conf|server unix:/run/sa02m-devices/api.sock;
+devices-api-upstream|opt/sa02m-devices/sa02m_devices/stand_socket_group.py|def when_ready(server):
+devices-api-upstream|etc/systemd/system/sa02m-stand-api.service.d/20-devices-socket-group.conf|Environment=GUNICORN_CMD_ARGS=--config=/opt/sa02m-devices/sa02m_devices/stand_socket_group.py
 homekit-trigger|usr/local/sbin/sa02m-homekit-web-trigger.sh|hk_write_disabled_status "$since"
 homekit-trigger|usr/local/sbin/sa02m-homekit-web-trigger.sh|rm -f -- "$VAR_DIR/state.json" 2>/dev/null || true
 homekit-trigger|usr/local/sbin/sa02m-homekit-web-trigger.sh|out=${out//[^[:print:]]/ }
@@ -290,6 +357,25 @@ daemon-access-effect|usr/local/sbin/sa02m-daemon-access.sh|probe yes "$DAEMON" r
 daemon-access-effect|usr/local/sbin/sa02m-daemon-access.sh|ops+=("f:$CONF:0640:$WEB_UID:$DAEMON_GID:${WEB_GID:-x},$DAEMON_GID")
 daemon-access-effect|usr/local/sbin/sa02m-daemon-access.sh|os.fchown(fd, uid, gid)
 spodes-no-gpl|opt/sa02m-modbus-mqtt/bridge_bus.py|"mixed_framing"
+audio-trigger|usr/local/sbin/sa02m-audio-web-trigger.sh|timeout 10 systemctl stop "$UNIT" >/dev/null 2>&1 || true
+audio-trigger|usr/local/sbin/sa02m-audio-web-trigger.sh|au_log "conf read of $CONF gave no 0/1 answer
+audio-cgi|www/network_config/cgi-bin/sa02m_audio_api.cgi|TRIG_OUT=$(timeout 11 sudo -n /usr/local/sbin/sa02m-audio-web-trigger.sh "$VERB" 2>/dev/null) || TRIG_RC=$?
+audio-cgi|www/network_config/cgi-bin/sa02m_audio_api.cgi|au_audit "publish ${TOPIC##*/controls/}=$PAYLOAD result=$DONE"
+cgi-csrf-policy|www/network_config/cgi-bin/sa02m_audio_api.cgi|web_csrf_validate
+sudoers-pin-contract|etc/sudoers.d/sa02m-audio|/usr/local/sbin/sa02m-audio-web-trigger.sh restart
+installer-order|install.sh|sa02m_run_module 15-audio.sh
+installer-svc-policy-gate|scripts/15-audio.sh|sa02m_svc_capture "$UNIT"
+daemon-least-privilege|etc/systemd/system/sa02m-audio.service|SupplementaryGroups=audio
+daemon-access-effect|usr/local/sbin/sa02m-daemon-access.sh|probe no "$WEB_USER" w "$d"
+mqtt-acl-audio|etc/mosquitto/acl_default.conf|topic deny /devices/sa02m-audio/controls/+/on
+mqtt-acl-audio|scripts/15-audio.sh|au_acl_migrate /etc/mosquitto/acl/default.conf
+daemon-access-effect|usr/local/sbin/sa02m-daemon-access.sh|EXTRA_FILES="/etc/sa02m-audio/upload.token /etc/sa02m-audio/voice-allow.json"
+devices-python-api-contract|opt/sa02m-devices/sa02m_devices/device_history_db.py|custom_range_key,
+web-port-persist|install.sh|sa02m_web_port_persist "$_ARG_PORT" || exit 2
+web-port-persist|scripts/lib.sh|port=$(sa02m_web_port_effective)
+web-port-persist|scripts/11-devices.sh|&& sa02m_render_nginx_site "$ETC_DIR/nginx/network_config.conf" "$WEB_ROOT"; then
+web-port-persist|etc/sa02m-update-runner.sh|if ! localize_staged_package_port "$txn"; then
+web-port-persist|etc/sa02m-web-port-lib.sh|[ "$1" -le 65535 ]
 '
 
 command -v git >/dev/null 2>&1 || { echo "comment-mutation-proof: FAIL — git is required to build the pristine copy"; exit 1; }
@@ -383,7 +469,9 @@ gate_cmd() {  # $1 = gate id ; prints the row's run command, empty when unknown
 run_gate() {  # $1 = gate id ; returns the gate's exit status
     local cmd="${ROW_RUN[$1]:-}"
     [ -n "$cmd" ] || return 2
-    ( cd "$TREE" && bash -c "$cmd" ) >/dev/null 2>&1
+    # The runner's per-row QUALITY_SKIP_LOG is THIS row's: a gate run here must
+    # not write its skips into it (run.mjs header, PARTIAL).
+    ( unset QUALITY_SKIP_LOG; cd "$TREE" && bash -c "$cmd" ) >/dev/null 2>&1
 }
 
 # The token a developer would actually use to disable a line in THIS file type.

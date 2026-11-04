@@ -427,6 +427,9 @@ HW_LOCK_POLL_S = 0.02
 # the point where the broker drops us: 1.5 × the 60 s keepalive passed to
 # connect(). Shipped values cost ≈22 s; a conf past this is named at startup.
 HW_COMMAND_BUDGET_S = 90.0
+# A read that keeps failing is logged when it starts, summarized at most this
+# often while it lasts, and once when it ends — not once per 30 s poll.
+HW_READ_FAIL_SUMMARY_S = 600
 
 # ── The one channel that pre-empts a busy bus (1.0.6.43) ────────────────────
 # The Operator's decision, not an agent's: a cloud/Alice «beep» takes the same
@@ -1082,6 +1085,42 @@ class HwProfile:
         return _hw_parse_mask(raw)
 
 
+class _HwReadFailureLog:
+    """The journal's view of a run of failed poll reads.
+
+    One WARN when reads start failing, a summary at most every
+    HW_READ_FAIL_SUMMARY_S while they keep failing (carrying the count, so the
+    rate limit loses nothing measurable), one INFO when a read answers again.
+    A board whose bus is dead for hours (1.136, 2026-09-30: i2c-2 SDA stuck
+    low from boot) otherwise wrote the same WARN on every 30 s poll."""
+
+    def __init__(self):
+        self._since: float | None = None
+        self._failures = 0
+        self._last_line_at = 0.0
+
+    def note(self, why: str) -> None:
+        now = time.monotonic()
+        if why:
+            if self._since is None:
+                self._since, self._failures, self._last_line_at = now, 1, now
+                log.warning("HW state not published this cycle: %s — while it "
+                            "persists this is summarized every %d min", why,
+                            HW_READ_FAIL_SUMMARY_S // 60)
+                return
+            self._failures += 1
+            if now - self._last_line_at >= HW_READ_FAIL_SUMMARY_S:
+                self._last_line_at = now
+                log.warning("HW state still not published: %s — %d failed polls "
+                            "over %.0f min", why, self._failures,
+                            (now - self._since) / 60)
+            return
+        if self._since is not None:
+            log.info("HW state published again after %d failed polls over "
+                     "%.0f min", self._failures, (now - self._since) / 60)
+            self._since, self._failures = None, 0
+
+
 class PCA9536Control:
     """The PCA9536 output port, driven per an :class:`HwProfile`.
 
@@ -1103,6 +1142,8 @@ class PCA9536Control:
         # life of the process — init_hw() runs once, and MPLC4 already running
         # when this service starts is the normal case, not the exception.
         self._direction_applied = False
+        # How the poll's read outcomes reach the journal (see the class).
+        self.read_log = _HwReadFailureLog()
 
     @property
     def profile(self) -> HwProfile:
@@ -1475,7 +1516,7 @@ class TelemetryClient:
         try:
             os.fchmod(fd, INSTANCE_LOCK_MODE)
         except (OSError, AttributeError) as exc:
-            log.warning("instance lock not narrowed to %o (%s): %s",
+            log.warning("instance lock not narrowed to %04o (%s): %s",
                         INSTANCE_LOCK_MODE, path, exc)
         try:
             fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
@@ -1644,8 +1685,7 @@ class TelemetryClient:
         # than reported as 0.
         if self._hw:
             levels, why = self._hw.read_channels()
-            if why:
-                log.warning("HW state not published this cycle: %s", why)
+            self._hw.read_log.note(why)
             for ctrl, level in levels.items():
                 self._pub(f"controls/{ctrl}", str(level))
 

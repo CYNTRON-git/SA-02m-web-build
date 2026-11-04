@@ -39,6 +39,8 @@ STAGES: Set[str] = {
 
 RESULTS: Set[str] = {"pending", "success", "failed", "rolled_back", "cancelled"}
 SOURCES: Set[str] = {"file", "github"}
+FACTORY_STAGES = STAGES | {"confirmed", "wipe", "apply", "verify"}
+
 OPERATIONS: Set[str] = {"update", "factory_reset"}
 
 # Cancel allowed until backing_up inclusive (§2.10).
@@ -66,9 +68,9 @@ def default_transaction(
 ) -> Dict[str, Any]:
     if operation not in OPERATIONS:
         raise PackageError("E_INTERNAL", f"invalid operation: {operation}")
-    if source not in SOURCES:
+    if source not in (SOURCES | {"web"} if operation == "factory_reset" else SOURCES):
         raise PackageError("E_INTERNAL", f"invalid source: {source}")
-    if stage not in STAGES:
+    if stage not in (FACTORY_STAGES if operation == "factory_reset" else STAGES):
         raise PackageError("E_INTERNAL", f"invalid stage: {stage}")
     now = utc_now_iso()
     return {
@@ -101,13 +103,13 @@ def validate_transaction(obj: Any) -> Dict[str, Any]:
         raise PackageError("E_INTERNAL", "transaction must be object")
     if obj.get("schema_version") != 1:
         raise PackageError("E_INTERNAL", "transaction.schema_version must be 1")
-    if obj.get("stage") not in STAGES:
+    if obj.get("stage") not in (FACTORY_STAGES if obj.get("operation") == "factory_reset" else STAGES):
         raise PackageError("E_INTERNAL", f"invalid stage: {obj.get('stage')!r}")
     if obj.get("result") not in RESULTS:
         raise PackageError("E_INTERNAL", f"invalid result: {obj.get('result')!r}")
     if obj.get("operation") not in OPERATIONS:
         raise PackageError("E_INTERNAL", f"invalid operation: {obj.get('operation')!r}")
-    if obj.get("source") not in SOURCES:
+    if obj.get("source") not in (SOURCES | {"web"} if obj.get("operation") == "factory_reset" else SOURCES):
         raise PackageError("E_INTERNAL", f"invalid source: {obj.get('source')!r}")
     return obj
 
@@ -185,9 +187,9 @@ def update_stage(
     files_total: Optional[int] = None,
     **fields: Any,
 ) -> Dict[str, Any]:
-    if stage not in STAGES:
-        raise PackageError("E_INTERNAL", f"invalid stage: {stage}")
     txn = load_transaction(statedir)
+    if stage not in (FACTORY_STAGES if txn and txn.get("operation") == "factory_reset" else STAGES):
+        raise PackageError("E_INTERNAL", f"invalid stage: {stage}")
     if txn is None:
         txn = default_transaction(stage=stage)
     txn["stage"] = stage

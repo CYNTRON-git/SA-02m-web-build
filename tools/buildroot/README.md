@@ -44,6 +44,7 @@
 |----------|------|
 | VM VMware | `D:\SK-A40i-SODIMM\Linux\SK-A40i_Linux_build_machine\lubuntu64.vmx` |
 | Логин VM | `user` / `123456` (SSH: `192.168.150.128`, VMnet1) |
+| VirtualBox-вариант (ПК Оператора, 2026-10) | VM «A40-i», диск `E:\SK-A40i_Linux_build_machine\lubuntu64.vmdk`, NAT: `ssh -p 2222 user@127.0.0.1` |
 | Buildroot | `/home/user/src/buildroot-2022.08.8-sk-a40i` |
 | RT патч A40i | `patch-6.1-rc6-rt4.patch.gz` ([Сборка ядра на ВМ.txt](file:///C:/Users/admin/YandexDisk/ЦИНТРОН/Сборка%20линукс/Linux%20RT/Сборка%20ядра%20на%20ВМ.txt)) |
 
@@ -111,6 +112,7 @@ bash /root/prepare-rt-docker-kernel.sh build-kernel
 ```bash
 # RT (CODESYS / PREEMPT_RT)
 md5sum output/images/zImage
+cp output/images/zImage /tmp/zImage.rt   # SMP-сборка ниже перезапишет output/images/zImage
 tar -czf /tmp/modules-rt4-docker.tgz -C output/target/lib/modules 6.1.0-rc6-rt4
 
 # SMP (без RT, Docker netfilter) — когда нужен переключатель в веб:
@@ -122,10 +124,14 @@ tar -czf /tmp/modules-smp-docker.tgz -C output/target/lib/modules 6.1.0-rc6
 На устройстве (после scp):
 
 ```bash
-sa02m-kernel-deploy.sh install-rt /path/zImage [/path/modules-rt4.tgz]
-sa02m-kernel-deploy.sh install-smp /path/zImage.smp [/path/modules-smp.tgz]
+sa02m-kernel-deploy.sh install-rt /path/zImage.rt [/path/modules-rt4-docker.tgz]
+sa02m-kernel-deploy.sh install-smp /path/zImage.smp [/path/modules-smp-docker.tgz]
 sa02m-kernel-select.sh init
 ```
+
+`install-rt`/`install-smp` сами запускают `depmod -a <версия>` после
+распаковки модулей — без актуального индекса udev не подгрузит драйверы горячего
+подключения (USB-модем, USB-микрофон: `docs/usb-audio-microphone.md`).
 
 ## Откат
 

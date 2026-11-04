@@ -84,10 +84,19 @@ const statusFailures = {
   rs485: 0
 };
 const statusPauseUntil = { main: 0, rs485: 0 };
+/** Request timeout per part — the ONE home (statusRequestTimeout reads it, the
+ *  freshness deadline below is derived from it). Body-inclusive: the clock runs
+ *  from the request start to the end of r.json(). A value must cover the part's
+ *  real worst-case build on the A40i with margin, or every cache expiry turns
+ *  into a false «Ошибка обновления»: a cold `services` build is ~9 s (audit
+ *  p95 8.5 s, bench 136 2026-10-21 9.3 s) and a cold `main` ~14 s, so both get
+ *  20 s; the fast parts keep their short values. The cost of a long timeout is
+ *  paid only while a request really hangs (single-flight queue). */
 const STATUS_TIMEOUT_MS = {
   priority: 3000,
-  /** Координатор force-refresh (staggered burst всех part=*). */
-  main: 6000,
+  /** part=main is no longer requested by the client (fetchStatusMain fans out
+   *  per part); kept for the CGI's cold-build figure should a caller return. */
+  main: 20000,
   rs485: 10000,
   storage: 6000,
   time: 4000,
@@ -95,7 +104,10 @@ const STATUS_TIMEOUT_MS = {
   network: 5000,
   load: 3000,
   system: 4000,
-  services: 8000,
+  services: 20000,
+  /** The init one-shot (fetchServicesFast) skips the CTL list and is best-effort:
+   *  it must not hold the queue for the full services budget. */
+  services_fast: 8000,
   hardware: 10000
 };
 /** Интервалы опроса и минимальный зазор между запросами одной части (клиентский rate-limit). */
@@ -138,6 +150,7 @@ function activeBackgroundParts() {
 const STATUS_BLOCKS_FETCH_TIMEOUT_MS = 4000;
 
 function fetchStatusBlocksConfig(onReady) {
+  const generation = _statusPollGeneration;
   const ctrl = new AbortController();
   const timer = setTimeout(function () {
     try { ctrl.abort(); } catch (_) {}
@@ -149,7 +162,7 @@ function fetchStatusBlocksConfig(onReady) {
   })
     .then(function (r) { return r.ok ? r.json() : null; })
     .then(function (j) {
-      if (j && typeof j === 'object' && !j.error) _statusBlocksConfig = j;
+      if (generation === _statusPollGeneration && j && typeof j === 'object' && !j.error) _statusBlocksConfig = j;
     })
     .catch(function () { /* keep null → default enable all except time */ })
     .finally(function () {
@@ -163,6 +176,8 @@ let _statusPollTimers = { priority: null, rs485: null, bootstrap: null };
 let _statusInitTimeouts = [];
 let _statusFetchQueue = [];
 let _statusFetchInFlight = false;
+let _statusSlot = null;
+let _statusPreviousPart = null;
 let _statusQueuePumpTimer = null;
 let _statusLastGlobalFetchMs = 0;
 let _statusLastHeavyStartMs = 0;
@@ -204,7 +219,11 @@ function pumpStatusFetchQueue() {
     _statusQueuePumpTimer = setTimeout(pumpStatusFetchQueue, STATUS_GLOBAL_MIN_GAP_MS - sinceGlobal);
     return;
   }
-  const item = _statusFetchQueue.shift();
+  // Prefer overdue metrics, but always give an older background request a turn
+  // after priority. Deduplication bounds the queue to one entry per part.
+  const duePriority = _statusFetchQueue.findIndex(function (v) { return v.part === 'priority' && v.at <= now; });
+  const pick = duePriority >= 0 && _statusPreviousPart !== 'priority' ? duePriority : 0;
+  const item = _statusFetchQueue.splice(pick, 1)[0];
   if (isHeavyStatusPart(item.part)) {
     const sinceHeavy = now - _statusLastHeavyStartMs;
     if (sinceHeavy < STATUS_HEAVY_MIN_GAP_MS) {
@@ -216,12 +235,17 @@ function pumpStatusFetchQueue() {
     }
     _statusLastHeavyStartMs = now;
   }
+  const slot = {};
+  _statusSlot = slot;
+  _statusPreviousPart = item.part;
   _statusFetchInFlight = true;
   _statusLastGlobalFetchMs = now;
   let released = false;
   const release = function () {
     if (released) return;
     released = true;
+    if (_statusSlot !== slot) return;
+    _statusSlot = null;
     _statusFetchInFlight = false;
     if (_statusQueuePumpTimer) clearTimeout(_statusQueuePumpTimer);
     _statusQueuePumpTimer = setTimeout(pumpStatusFetchQueue, STATUS_GLOBAL_MIN_GAP_MS);
@@ -241,10 +265,8 @@ BACKGROUND_STATUS_PARTS.forEach(function (p) {
 });
 let _statusLifecycleBound = false;
 
-function statusRequestTimeout(part, queueWaitMs) {
-  const base = STATUS_TIMEOUT_MS[part] || 3500;
-  const extra = Math.max(0, queueWaitMs || 0);
-  return Math.min(base + extra, base * 2);
+function statusRequestTimeout(part, _queueWaitMs) {
+  return STATUS_TIMEOUT_MS[part] || 3500;
 }
 
 function isBenignStatusFetchError(e, timedOut) {
@@ -297,6 +319,7 @@ function teardownStatusPolling() {
   mainBundleRefreshQueued = false;
   rs485RefreshQueued = false;
   statusMainRoundBusy = false;
+  _statusSlot = null;
   _statusFetchInFlight = false;
 }
 
@@ -321,15 +344,18 @@ function statusFetchJson(part, url, timeoutMs, gen, onTimeout) {
     cache: 'no-store',
     credentials: 'same-origin',
     signal: ctrl.signal
+  }).then(function (r) {
+    if (!r.ok) throw new Error('HTTP ' + r.status);
+    return r.json();
+  }).then(function (d) {
+    if (gen !== _statusPollGeneration || ctrl.signal.aborted) {
+      throw Object.assign(new DOMException('Stale poll', 'AbortError'), { stale: true });
+    }
+    if (!d || d.error) throw new Error(d && d.error || 'Invalid status');
+    return d;
   }).finally(function () {
     clearTimeout(timer);
     if (_statusFetchAbort[part] === ctrl) _statusFetchAbort[part] = null;
-  }).then(function (r) {
-    if (gen !== _statusPollGeneration) {
-      throw Object.assign(new DOMException('Stale poll', 'AbortError'), { stale: true });
-    }
-    if (!r.ok) throw new Error('HTTP ' + r.status);
-    return r.json();
   });
 }
 
@@ -439,6 +465,7 @@ function initStatusPolling() {
       if (!shouldFetchBackgroundPart(p)) backgroundLoaded[p] = true;
     });
     if (!isStatusBlockEnabled('rs485')) backgroundLoaded.rs485 = true;
+    _statusPollTimers.freshness = setInterval(renderStatusFreshness, 1000);
     startPriorityPollTimer(gen);
     startAllBackgroundPartPollTimers(gen);
     startRs485PollTimer(gen);
@@ -471,37 +498,100 @@ function setStatusPartPause(part, ms) {
   statusPauseUntil[part] = Date.now() + ms;
 }
 
+const statusFreshness = {};
+/* Dashboard names for the freshness banner: a part id is a wire name, not a
+   label the Operator knows. Keys: priority, rs485 and BACKGROUND_STATUS_PARTS. */
+const STATUS_PART_LABELS = {
+  priority: 'CPU, температура, ОЗУ, диск', rs485: 'RS-485', storage: 'Накопители', time: 'Время',
+  uptime: 'Uptime', network: 'Сеть', load: 'Нагрузка', system: 'Система', services: 'Службы', hardware: 'Оборудование'
+};
+function statusPartLabel(part) {
+  return statusText(STATUS_PART_LABELS[part] || part);
+}
+/* Freshness deadline = source TTL (`_status_meta.ttl_s`, status.cgi's cache table
+   is its one home) + the poll-side deadline derived from the scheduler tables
+   above — never a constant. With one request in flight at a time
+   (scheduleStatusFetch) a part's next successful poll lags its 6/12 s timer by
+   the whole queue: on bench 136 (2026-10-21, no fault) the background set
+   cycled every 23–30 s and rs485 every 18–23 s, and the old «ttl + 2 periods»
+   flagged healthy parts «Данные устарели» between two HTTP 200s on every cycle.
+   The bound used here is the queue's own guarantee, not a measurement: one
+   slot per queued part (dedupe), each slot at most its timeout plus the global
+   gap (a heavy slot at least the heavy gap), background parts FIFO with a due
+   priority allowed between any two slots, priority itself waiting for the
+   request in flight plus one background slot (it jumps the FIFO, never twice
+   in a row). Loose by design: the banner is a warning floor, not a speed SLA
+   (docs/contracts/status-polling.md); a request that fails or times out is
+   reported at once through noteStatusFailure, the deadline only covers silence.
+   A part never fetched this page load has no entry and is neither. */
+function statusPartPeriodMs(part) {
+  if (STATUS_POLL_INTERVAL_MS[part]) return STATUS_POLL_INTERVAL_MS[part];
+  return HEAVY_STATUS_PARTS.indexOf(part) >= 0 ? HEAVY_PART_PERIOD_MS : LIGHT_PART_PERIOD_MS;
+}
+/** Longest time one request of `part` can hold the single-flight slot. */
+function statusSlotMs(part) {
+  const timeout = STATUS_TIMEOUT_MS[part] || 3500;
+  return Math.max(timeout, isHeavyStatusPart(part) ? STATUS_HEAVY_MIN_GAP_MS : 0) + STATUS_GLOBAL_MIN_GAP_MS;
+}
+const _statusPollDeadlineMs = {};
+function statusPollDeadlineMs(part) {
+  if (_statusPollDeadlineMs[part]) return _statusPollDeadlineMs[part];
+  const polled = ['priority', 'rs485'].concat(BACKGROUND_STATUS_PARTS);
+  const others = polled.filter(function (p) { return p !== part && p !== 'priority'; });
+  const slots = others.map(statusSlotMs);
+  const wait = part === 'priority'
+    ? 2 * Math.max.apply(null, slots)
+    : slots.reduce(function (sum, ms) { return sum + ms; }, 0) + (others.length + 1) * statusSlotMs('priority');
+  _statusPollDeadlineMs[part] = statusPartPeriodMs(part) + wait + statusSlotMs(part);
+  return _statusPollDeadlineMs[part];
+}
+function statusStaleAfter(part, ttlMs) {
+  return (ttlMs || 0) + statusPollDeadlineMs(part);
+}
+/* Runs every second: a part turns stale only once its deadline has passed and
+   turns fresh only through noteStatusSuccess (a new record), so a tick can never
+   flip it back — no flapping inside a period by construction. The banner is
+   written only when its text changes (no per-tick layout work). */
+function renderStatusFreshness() {
+  const now = Date.now();
+  const issues = [];
+  Object.keys(statusFreshness).forEach(function (part) {
+    if (!isStatusBlockEnabled(part)) return;
+    const f = statusFreshness[part];
+    const age = f.sourceAgeMs == null || now < f.receivedAt ? null : f.sourceAgeMs + now - f.receivedAt;
+    const state = f.error ? 'error' : age == null ? 'unknown' : age > statusStaleAfter(part, f.ttlMs) ? 'stale' : 'fresh';
+    f.state = state;
+    if (state !== 'fresh') issues.push(statusPartLabel(part) + ': ' + statusText(state === 'error' ? 'Ошибка обновления' : state === 'stale' ? 'Данные устарели' : 'Возраст данных неизвестен'));
+  });
+  const el = document.getElementById('dashboard-poll-alert');
+  if (!el) return;
+  const text = issues.join('; ');
+  const display = text ? 'block' : 'none';
+  if (el.textContent !== text) el.textContent = text;
+  if (el.style.display !== display) el.style.display = display;
+}
+function statusText(text) {
+  return window.sa02mI18n ? window.sa02mI18n.t(text) : text;
+}
 function noteStatusFailure(part, err) {
   statusFailures[part] = (statusFailures[part] || 0) + 1;
-  const isTimeout = err && err.name === 'AbortError';
-  const needPauseMain = part === 'main' && statusFailures[part] >= 5;
-  const needPauseBg = BACKGROUND_STATUS_PARTS.indexOf(part) >= 0 && statusFailures[part] >= 5;
-  const needPauseRs = part === 'rs485' && statusFailures[part] >= 3;
-  if (needPauseMain || needPauseBg) {
-    setStatusPartPause('main', 25000);
-    BACKGROUND_STATUS_PARTS.forEach(function (p) { setStatusPartPause(p, 25000); });
-    const el = document.getElementById('dashboard-poll-alert');
-    if (el) {
-      el.style.display = 'block';
-      el.textContent = isTimeout
-        ? 'Обновление основных виджетов приостановлено: несколько таймаутов ответа status.cgi. Проверьте нагрузку и nginx/fastcgi.'
-        : 'Обновление основных виджетов приостановлено из-за ошибок ответа status.cgi.';
-    }
-  } else if (needPauseRs) {
-    setStatusPartPause(part, 25000);
-  }
+  const f = statusFreshness[part] || (statusFreshness[part] = { sourceAgeMs: null, receivedAt: Date.now() });
+  f.error = String(err && err.message || 'Request failed');
+  if (statusFailures[part] >= 5) setStatusPartPause(part, 25000);
+  renderStatusFreshness();
 }
-
-function noteStatusSuccess(part) {
+function noteStatusSuccess(part, data) {
   statusFailures[part] = 0;
-  if (part === 'main' || part === 'rs485' || BACKGROUND_STATUS_PARTS.indexOf(part) >= 0) {
-    statusPauseUntil[part] = 0;
-    if (part !== 'rs485') {
-      statusFailures.main = 0;
-      statusPauseUntil.main = 0;
-      hideDashboardPollAlert();
-    }
+  statusPauseUntil[part] = 0;
+  if (part !== 'main') {
+    const meta = data && data._status_meta;
+    statusFreshness[part] = {
+      receivedAt: Date.now(), error: null,
+      sourceAgeMs: meta && Number.isFinite(meta.age_s) && meta.age_s >= 0 ? meta.age_s * 1000 : null,
+      ttlMs: meta && Number.isFinite(meta.ttl_s) && meta.ttl_s >= 0 ? meta.ttl_s * 1000 : 0
+    };
   }
+  renderStatusFreshness();
 }
 
 function cssVar(name) {
@@ -897,12 +987,26 @@ function toggleStorageAutoFormat() {
 }
 
 function fetchWithTimeout(url, options, timeoutMs) {
-  const ms = timeoutMs || 12000;
   const c = new AbortController();
-  const t = setTimeout(function () { c.abort(); }, ms);
-  return fetch(url, Object.assign({}, options || {}, { signal: c.signal })).finally(function () {
+  const outer = options && options.signal;
+  const abort = function () { c.abort(); };
+  if (outer) {
+    if (outer.aborted) c.abort();
+    else outer.addEventListener('abort', abort, { once: true });
+  }
+  const cleanup = function () {
     clearTimeout(t);
-  });
+    if (outer) outer.removeEventListener('abort', abort);
+  };
+  const t = setTimeout(function () { c.abort(); cleanup(); }, timeoutMs || 12000);
+  return fetch(url, Object.assign({}, options || {}, { signal: c.signal })).then(function (r) {
+    ['json', 'text', 'blob', 'arrayBuffer', 'formData'].forEach(function (name) {
+      if (typeof r[name] !== 'function') return;
+      const read = r[name].bind(r);
+      r[name] = function () { return read().finally(cleanup); };
+    });
+    return r;
+  }, function (e) { cleanup(); throw e; });
 }
 
 function setStorageAutoFormat(enabled) {
@@ -966,8 +1070,34 @@ function applyCachedBackgroundPartsI18n() {
   });
 }
 
+function portCoordinatorLines(snapshot) {
+  if (!snapshot) return [];
+  const lines = [];
+  if (!snapshot.available) lines.push(statusText('Координатор портов недоступен'));
+  const purposes = { gateway: 'Шлюз', scan: 'Поиск', flasher: 'Настройка устройств' };
+  (Array.isArray(snapshot.leases) ? snapshot.leases : []).forEach(function (lease) {
+    let text = String(lease.port || '') + ': ' + statusText(purposes[lease.purpose] || 'Операция с портом');
+    if (lease.phase !== 'owned') text += ' · ' + statusText(lease.phase === 'recovering' ? 'Восстановление' : 'Подготовка');
+    if (Array.isArray(lease.services) && lease.services.length) text += ' · ' + statusText('Приостановлены целиком') + ': ' + lease.services.join(', ');
+    lines.push(text);
+  });
+  Object.entries(snapshot.services || {}).forEach(function (entry) {
+    const unit = entry[0], state = entry[1];
+    lines.push(unit + ': ' + statusText(state.phase === 'restore_failed' ? 'Ошибка восстановления службы' : state.phase === 'stopping' ? 'Останавливается' : 'Приостановлено'));
+  });
+  return lines;
+}
+function renderPortCoordinator(snapshot) {
+  const el = document.getElementById('port-operation-status');
+  if (!el) return;
+  const lines = portCoordinatorLines(snapshot);
+  el.textContent = lines.join('; ');
+  el.style.display = lines.length ? 'block' : 'none';
+}
+
 function applyServicesStatus(d) {
   _lastServicesStatus = d;
+  renderPortCoordinator(d.port_coordinator);
   renderServicesDynamic(d);
   applyVplcNavLink(d);
 }
@@ -984,7 +1114,8 @@ function applyServicesStatus(d) {
 function applyVplcNavLink(d) {
   const link = document.getElementById('nav-vplc');
   if (!link || !d || typeof d.svc_vplc_ui !== 'string' || d.svc_vplc_ui === 'unknown') return;
-  link.hidden = !svcStateIsActive(d.svc_vplc_ui);
+  // Navigation remains reachable during startup; the readiness badge is separate.
+  link.hidden = !(svcStateIsActive(d.svc_vplc_ui) || normSvcState(d.svc_vplc_ui) === 'activating');
 }
 
 window.refreshMainStatusI18n = function () {
@@ -1121,7 +1252,7 @@ function fetchPriorityPart(_part, persist = true) {
         if (d.error) return;
         applyPriorityStatus(d);
         if (persist) ['cpu', 'temp', 'ram', 'disk'].forEach((part) => writePriorityWarmupPart(part, d));
-        noteStatusSuccess('priority');
+        noteStatusSuccess('priority', d);
       })
       .catch((e) => {
         if (gen !== _statusPollGeneration) return;
@@ -1129,7 +1260,7 @@ function fetchPriorityPart(_part, persist = true) {
         noteStatusFailure('priority', e);
       })
       .finally(() => {
-        widgetBusy.priority = false;
+        if (gen === _statusPollGeneration) widgetBusy.priority = false;
         release();
       });
   });
@@ -1201,7 +1332,7 @@ function fetchBackgroundPart(part, applyFn, force, onDone) {
           apply(d);
         }
         backgroundLoaded[part] = true;
-        noteStatusSuccess(part);
+        noteStatusSuccess(part, d);
       })
       .catch((e) => {
         if (gen !== _statusPollGeneration) return;
@@ -1216,6 +1347,7 @@ function fetchBackgroundPart(part, applyFn, force, onDone) {
         }
       })
       .finally(() => {
+        if (gen !== _statusPollGeneration) { release(); return; }
         backgroundBusy[part] = false;
         if (part === 'rs485' && rs485RefreshQueued) {
           rs485RefreshQueued = false;
@@ -1248,7 +1380,7 @@ function fetchServicesFast(gen) {
     }
     const url = 'cgi-bin/status.cgi?part=services&fast=1';
     const queueWaitMs = meta && meta.queueWaitMs ? meta.queueWaitMs : 0;
-    statusFetchJson('services_fast', url, statusRequestTimeout('services', queueWaitMs), gen, function () {})
+    statusFetchJson('services_fast', url, statusRequestTimeout('services_fast', queueWaitMs), gen, function () {})
       .then(function (d) {
         if (gen !== _statusPollGeneration || !d || d.error || backgroundLoaded.services) return;
         _lastPartStatus.services = d;
@@ -1266,10 +1398,12 @@ function fetchStatusMain(force) {
   }
   if (!canFetchStatusPart('main', !!force)) return;
   statusMainRoundBusy = true;
+  const generation = _statusPollGeneration;
   _statusLastFetchMs.main = Date.now();
   let pending = 0;
   let roundHadFailure = false;
   const finishPart = function (failed) {
+    if (generation !== _statusPollGeneration) return;
     if (failed) roundHadFailure = true;
     pending -= 1;
     if (pending > 0) return;
@@ -1285,6 +1419,7 @@ function fetchStatusMain(force) {
     pending += 1;
     const phase = BACKGROUND_PART_PHASE_MS[part] || 0;
     const launch = function () {
+      if (generation !== _statusPollGeneration) return;
       fetchBackgroundPart(part, null, !!force, finishPart);
     };
     if (phase === 0) {
@@ -1388,6 +1523,12 @@ function webUpdOnlineApplyAllowed(j) {
 function webUpdApplyRefusal(j) {
   if (!j || j.ok !== false) return null;
   const code = String(j.error_code || '');
+  const recovery = {
+    E_BOOTSTRAP_REQUIRED: 'Перед обновлением выполните install.sh --refresh из проверенной версии',
+    E_RECOVERY_REQUIRED: 'Сначала восстановите незавершённое обновление',
+    E_BUSY: 'Порт занят другой операцией — дождитесь её завершения'
+  };
+  if (recovery[code]) return { status: recovery[code], tone: 'is-err', canApply: false };
   if (code === 'E_NO_UPDATE') {
     return { status: 'Обновлений нет', tone: 'is-ok', canApply: false };
   }
@@ -1575,6 +1716,7 @@ function _webUpdLegacyStatus(j) {
 
 function _webUpdStageText(j) {
   if (!j || typeof j !== 'object') return '';
+  if (j.cancel_requested && !_webUpdIsTerminal(j)) return 'Отмена запрошена — ожидается завершение операции';
   var stage = String(j.stage || '').trim();
   if (j.stale === true) {
     // The CGI saw no live runner for the transaction (docs/contracts/web-update.md
@@ -1870,6 +2012,8 @@ function applyOfflineUpdate() {
     .then(function (r) { return r.json().then(function (j) { return { r: r, j: j }; }); })
     .then(function (x) {
       var j = x.j || {};
+      var refusal = webUpdApplyRefusal(j);
+      if (refusal) { _webUpdFinishRefused(refusal, j.log); return; }
       if (x.r.status === 202 || j.ok === true || _webUpdIsBusy(j) ||
           _webUpdLegacyStatus(j) === 'running' || _webUpdLegacyStatus(j) === 'idle') {
         _webUpdStartPolling();

@@ -41,6 +41,7 @@ if _HERE not in sys.path:
 from sa02m_rules.device_index import (  # noqa: F401
     DeviceIndex, cap_short, devices_path, load_index, load_mqtt_index, state_key)
 from sa02m_rules.engine import Engine, non_finite
+from sa02m_rules import capability_binding
 from sa02m_rules.store import CAP_RE, DEFAULT_PATH, ID_RE, load
 
 MQTT_HOST = os.environ.get("SA02M_MQTT_HOST", "127.0.0.1")
@@ -63,12 +64,52 @@ RUN_CONTROL = "run"
 #: are rare (a voice phrase, a button), and the inbox is bounded either way.
 SUBSCRIPTIONS = ("/devices/+/controls/+", "/devices/+/controls/+/on")
 
+#: Engine availability (contract cloud-scenarios.md §MQTT mirror): ONE
+#: retained device-level flag for the whole engine, because MQTT allows one
+#: will per connection — the bridge/telemetry pattern. `"r"` = down (the will,
+#: and a graceful stop), `""` = listening. The Alice registry refuses a scene
+#: command while it is set; its mirror of this topic is
+#: `sa02m_alice.config.scene_devices.ENGINE_AVAILABILITY_TOPIC`. `sa02m-rules`
+#: has no dash, so it is never a scenario device `sa02m-rules-<sid>`.
+AVAILABILITY_TOPIC = "/devices/sa02m-rules/meta/error"
+OFFLINE = "r"
+
 
 def subscribe_all(client: Any) -> None:
     """One home for the subscription set, so `on_connect` cannot drift from
     what `_apply_message` knows how to handle."""
     for topic in SUBSCRIPTIONS:
         client.subscribe(topic, qos=1)
+
+
+def arm_availability(client: Any) -> None:
+    """The will — before `connect()`, which is when paho sends it. Fail-soft:
+    the flag is advisory, running scenarios is the job."""
+    try:
+        client.will_set(AVAILABILITY_TOPIC, OFFLINE, qos=1, retain=True)
+    except Exception as exc:
+        LOG.error("availability will not armed: %s", exc)
+
+
+def _mark(client: Any, payload: str) -> None:
+    try:
+        client.publish(AVAILABILITY_TOPIC, payload, qos=1, retain=True)
+    except Exception as exc:
+        LOG.warning("availability mark %r refused: %s", payload, exc)
+
+
+def announce_online(client: Any) -> None:
+    """Clear the flag. Called AFTER `subscribe_all` on the same connection, so
+    a reader that sees it clear sends its command to a subscribed engine."""
+    _mark(client, "")
+
+
+def announce_offline(client: Any) -> None:
+    """Graceful stop. Not waited for: `main()` never sends DISCONNECT, so the
+    broker fires the will when the process exits even if this mark is still
+    queued. It is here for the day someone adds a `disconnect()`, which
+    discards the will."""
+    _mark(client, OFFLINE)
 
 
 def _geo() -> tuple:
@@ -180,7 +221,7 @@ class RulesApp:
             return None
         key = state_key(short, instance)
         if (device, key) in self._index.readonly:
-            return None
+            return "read only"
         topic, reason = self.target_topic(str(device), short, instance)
         if not topic:
             LOG.warning("publish refused: %s/%s%s — %s", device, short,
@@ -189,6 +230,14 @@ class RulesApp:
         payload = "1" if value in (True, 1, "1", "on", "true") else (
             "0" if value in (False, 0, "0", "off", "false") else str(value)
         )
+        binding = self._index.bindings.get((device, key))
+        if binding is not None:
+            payload, error = capability_binding.write(binding, value)
+            if error == "converter unavailable":
+                # A torn install (no /opt/sa02m-alice): say so, not «bad value».
+                return error
+            if error or payload is None:
+                return "invalid capability value"
         self._publish(topic + "/on", payload, retain=False)
         self.state.setdefault(device, {})[key] = value
         return None
@@ -330,12 +379,21 @@ class RulesApp:
         # document binds only as a PROPERTY (a DI as an `open`/`button`
         # event) still reaches it. A capability topic mirrors the raw name
         # without dispatch, as it always has.
-        if mapped and any(k in self._index.cap_topics for k in mapped):
-            self.engine.alias_state(parts[1], parts[3], value)
-        else:
-            self.engine.on_state(parts[1], parts[3], value)
+        # One key has one representation: a typed key may coincide with the
+        # MQTT alias. Writing raw then typed there fabricates a change on
+        # every report (0 -> not_detected, or active-low 0 -> True).
+        if (parts[1], parts[3]) not in (mapped or ()):
+            if mapped and any(k in self._index.cap_topics for k in mapped):
+                self.engine.alias_state(parts[1], parts[3], value)
+            else:
+                self.engine.on_state(parts[1], parts[3], value)
         for device, key in mapped or ():
-            self.engine.on_state(device, key, value)
+            binding = self._index.bindings.get((device, key))
+            converted = capability_binding.read(binding, raw) if binding else value
+            if converted is None or non_finite(converted):
+                self.engine.forget_state(device, key)
+            else:
+                self.engine.on_state(device, key, converted)
 
     def reload(self) -> None:
         self.reload_index()
@@ -371,8 +429,11 @@ class RulesApp:
         self._step("on_boot", self.engine.on_boot)
 
     def stop(self) -> None:
-        """Shutdown: the buffered run records reach the journal."""
+        """Shutdown: the buffered run records reach the journal, and pending
+        logic-template state reaches logic_state.json (an OTA restart is
+        exactly when it is needed next)."""
         self.engine.flush_runs()
+        self.engine.flush_logic_state()
 
 
 def main() -> int:
@@ -392,9 +453,12 @@ def main() -> int:
     def on_connect(c, _u, _f, rc):
         LOG.info("mqtt rc=%s", rc)
         subscribe_all(c)
+        if int(getattr(rc, "value", rc) or 0) == 0:
+            announce_online(c)
 
     client.on_connect = on_connect
     client.on_message = app.on_message
+    arm_availability(client)
     client.connect(MQTT_HOST, MQTT_PORT, 30)
     client.loop_start()
     app.boot()
@@ -411,6 +475,7 @@ def main() -> int:
         pass
     finally:
         app.stop()
+        announce_offline(client)
     client.loop_stop()
     return 0
 

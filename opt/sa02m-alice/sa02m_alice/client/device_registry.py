@@ -11,7 +11,7 @@ from typing import Any, Callable, Dict, Iterable, List, Optional, Set, Tuple
 from ..common import constants as C
 from ..common.config_store import load_devices
 from ..config import ahu_status, device_types, scene_devices, topics
-from . import converters
+from . import converters, capability_values
 
 log = logging.getLogger("sa02m_alice.registry")
 
@@ -102,6 +102,17 @@ def is_availability_topic(topic: str) -> bool:
     )
 
 
+def _unreachable_stub(did: str) -> Dict[str, Any]:
+    """The device_state entry that tells the hub a device is down: no
+    capabilities, no properties, the error code alone."""
+    return {
+        "id": did,
+        "capabilities": [],
+        "properties": [],
+        "error_code": C.ERR_DEVICE_UNREACHABLE,
+    }
+
+
 def _availability_topics_for(control_topic: str) -> Set[str]:
     """Poller availability topics that decide whether `control_topic` is live."""
     extra: Set[str] = set()
@@ -113,6 +124,10 @@ def _availability_topics_for(control_topic: str) -> Set[str]:
         extra.add("%s%s/meta/error" % (_DEVICES_PREFIX, mid))
         if "-COM" in mid:
             extra.add("%s%s%s" % (_DEVICES_PREFIX, mid, _UPTIME_SUFFIX))
+    if scene_devices.is_virtual_scene_topic(control_topic):
+        # The executor of a scene command is the engine, whose one LWT flag
+        # is not keyed by scene.
+        extra.add(scene_devices.ENGINE_AVAILABILITY_TOPIC)
     return extra
 
 
@@ -173,9 +188,13 @@ class DeviceRegistry:
         # dead module. Device-level `/devices/<id>/meta/error` is the
         # slave-offline flag.
         self._slave_live_ts: Dict[str, float] = {}
-        # Last announced down-edge per device id. A DEVICE_UNREACHABLE
-        # device_state is emitted once per transition, not on every 30 s
-        # snapshot — Yandex/cloud learn the loss without a flood.
+        # Down-edges announced to the CURRENT Socket.IO session, per device
+        # id: the per-message sweep (take_unreachable_transitions) emits a
+        # DEVICE_UNREACHABLE stub once per edge, not per MQTT message; the
+        # snapshot path (unreachable_stubs) repeats the stub of every device
+        # still down whenever a snapshot runs — connect, reload, the
+        # re-subscribe push, and the cadence (30 s cloud / 60 s Yandex);
+        # reset_announced_down() clears the map at every (re)connect.
         self._announced_down: Dict[str, bool] = {}
         self._rebuild_indexes()
         self._log_catalogue()
@@ -282,8 +301,24 @@ class DeviceRegistry:
             return catalog | extra
 
     def _slave_down(self, topic: str) -> bool:
+        """The device-level `/meta/error` flag behind `topic` is set. For a
+        scene command topic that is ALSO the engine's own flag: with
+        `sa02m-rules` down nobody consumes `run/on`, and a DONE would be a lie
+        (docs/contracts/alice-mqtt-mapping.md §Scene devices)."""
         mid = _mqtt_device_id(topic)
-        return bool(mid and (self._device_error.get(mid) or "").strip())
+        if mid and (self._device_error.get(mid) or "").strip():
+            return True
+        return bool(
+            scene_devices.is_virtual_scene_topic(topic)
+            and (self._device_error.get(scene_devices.ENGINE_DEVICE_ID) or "").strip()
+        )
+
+    def _scene_only(self, did: str) -> bool:
+        """Every capability of `did` is a scenario command topic (a scene
+        switch from `scene_devices`). Caller holds the lock."""
+        dev = self._devices_by_id.get(did)
+        topics = [str(i.get("mqtt") or "") for i in self._items(dev, "capabilities")] if dev else []
+        return bool(topics) and all(scene_devices.is_virtual_scene_topic(t) for t in topics)
 
     def _note_slave_live(self, topic: str) -> None:
         mid = _mqtt_device_id(topic)
@@ -413,7 +448,7 @@ class DeviceRegistry:
                     ids = [str(x) for x in raw if x]
                 row: Dict[str, Any] = {"id": str(gid), "name": str((group or {}).get("name") or ""),
                                        "device_ids": ids}
-                if (group or {}).get("icon") in ("light", "ahu"):
+                if (group or {}).get("icon") in C.GROUP_ICONS:
                     row["icon"] = str(group["icon"])
                 out.append(row)
             return out
@@ -589,6 +624,8 @@ class DeviceRegistry:
                         str(item.get("type") or ""), raw, item.get("parameters"),
                         _item_inverted(item),
                         family=_item_carel_family(item),
+                        mode_map=item.get("mode_map"),
+                        range_scale=item.get("range_scale", 1.0),
                         yandex=self._profile == C.PROFILE_YANDEX,
                     )
                     if block:
@@ -657,23 +694,61 @@ class DeviceRegistry:
         with self._lock:
             for entry in entries:
                 did = str(entry.get("id") or "")
-                if not did:
+                if not did or self._scene_only(did):
+                    # A scene switch is never pushed a state (contract §Scene
+                    # devices): it never reports, so nothing would ever clear
+                    # a pushed DOWN. Its action and query answer the engine's
+                    # flag on demand instead.
                     continue
                 down = str(entry.get("error_code") or "") == C.ERR_DEVICE_UNREACHABLE
                 was = self._announced_down.get(did, False)
                 if down and not was:
                     self._announced_down[did] = True
-                    out.append(
-                        {
-                            "id": did,
-                            "capabilities": [],
-                            "properties": [],
-                            "error_code": C.ERR_DEVICE_UNREACHABLE,
-                        }
-                    )
+                    out.append(_unreachable_stub(did))
                 elif not down:
                     self._announced_down[did] = False
         return out
+
+    def unreachable_stubs(
+        self, entries: Optional[List[Dict[str, Any]]] = None
+    ) -> List[Dict[str, Any]]:
+        """One DEVICE_UNREACHABLE stub per device down RIGHT NOW — every
+        call, not once per down-edge. The snapshot path (connect, reload, the
+        30/60 s cadence) carries these because the hub's flag is not durable:
+        it survives our reconnects but is lost on a hub restart, after 24 h
+        without contact or on a re-binding, and ANY value for the device —
+        a snapshot or a query answer carrying cached values of a down device
+        — clears it (cloud repo state_cache.py / hub.py, verified
+        2026-10-29; a repeat is idempotent there). And a stub the per-message
+        sweep marked announced while the sender was still stopped (the
+        retained burst lands before `sender.start()`) never left the board at
+        all — a device already down at client start was never announced
+        (bench 1.135, 2026-10-29). `entries` is the caller's own
+        `query_devices()` when it already has one (one catalogue walk per
+        snapshot, not two). Marks the devices announced, so the sweep does
+        not repeat them.
+        """
+        if entries is None:
+            entries = self.query_devices()
+        out: List[Dict[str, Any]] = []
+        with self._lock:
+            for entry in entries:
+                did = str(entry.get("id") or "")
+                if not did or self._scene_only(did):
+                    continue
+                down = str(entry.get("error_code") or "") == C.ERR_DEVICE_UNREACHABLE
+                self._announced_down[did] = down
+                if down:
+                    out.append(_unreachable_stub(did))
+        return out
+
+    def reset_announced_down(self) -> None:
+        """Forget which down-edges this process announced: called at every
+        Socket.IO (re)connect, because the announcement went to the session
+        that just died — the new one must hear a still-down device again,
+        from the per-message sweep as well as from the connect snapshot."""
+        with self._lock:
+            self._announced_down.clear()
 
     def apply_actions(
         self, devices_payload: List[Dict[str, Any]]
@@ -702,16 +777,13 @@ class DeviceRegistry:
                         )
                     results.append({"id": did, "capabilities": cap_results})
                     continue
-                by_type = {
-                    str(c.get("type")): c
-                    for c in (dev.get("capabilities") or [])
-                    if isinstance(c, dict)
-                }
                 for cap in d.get("capabilities") or []:
                     if not isinstance(cap, dict):
                         continue
                     ctype = str(cap.get("type") or "")
-                    local = by_type.get(ctype)
+                    requested = cap.get("state") if isinstance(cap.get("state"), dict) else {}
+                    instance = requested.get("instance") or ("on" if ctype == "devices.capabilities.on_off" else "rgb" if ctype == "devices.capabilities.color_setting" else "")
+                    local = capability_values.select(dev.get("capabilities") or [], ctype, instance)
                     if not local:
                         cap_results.append(
                             {
@@ -773,6 +845,9 @@ class DeviceRegistry:
                         parameters=local.get("parameters"),
                         inverted=_item_inverted(local),
                         family=_item_carel_family(local),
+                        mode_map=local.get("mode_map"),
+                        range_scale=local.get("range_scale", 1.0),
+                        strict="range_scale" in local and not (cap.get("state") or {}).get("relative"),
                         yandex=self._profile == C.PROFILE_YANDEX,
                     )
                     if err or payload is None:
@@ -823,6 +898,8 @@ class DeviceRegistry:
                         str(item.get("type") or ""), raw, item.get("parameters"),
                         _item_inverted(item),
                         family=_item_carel_family(item),
+                        mode_map=item.get("mode_map"),
+                        range_scale=item.get("range_scale", 1.0),
                         yandex=self._profile == C.PROFILE_YANDEX,
                     )
                     if block:

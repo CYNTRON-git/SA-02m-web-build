@@ -438,9 +438,11 @@ class TestTemplateOverTcpEqualsRtu(_Isolated):
 
         seq_rtu, seq_tcp = _calls(pub_rtu), _calls(pub_tcp)
         self.assertEqual(seq_rtu, seq_tcp)
-        # And the sequence is the one G-TCP promises, not merely equal.
+        # And the sequence is the one G-TCP promises, not merely equal: the
+        # first answer (unknown → online, 1.0.7.12), offline, back online.
         online = [c for c in seq_tcp if c[0] == "device_online"]
-        self.assertEqual(online, [("device_online", "dev", False),
+        self.assertEqual(online, [("device_online", "dev", True),
+                                  ("device_online", "dev", False),
                                   ("device_online", "dev", True)])
         values = {c[2]: c[3] for c in seq_tcp if c[0] == "pub_control"}
         self.assertEqual(values["supply_temp"], "-5.5")

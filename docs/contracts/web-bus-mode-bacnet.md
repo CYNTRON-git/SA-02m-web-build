@@ -88,8 +88,10 @@ Modbus (заводской дефолт) · `2` BACnet MS/TP. Значения �
 
 ## Маршруты (демон, за nginx `/api/flasher/*`)
 
-Все за той же session-аутентификацией и той же port-lease (flock + stop/restore
-managed-services + `flasher_busy`-гейтинг), что scan/flash/device_config.
+Все за той же session-аутентификацией и той же арендой UART координатора портов
+(`docs/contracts/port-ownership.md`: kernel-блокировка по устройству, пауза MQTT
+на этом COM, остановка назначенных служб, `flasher_busy`-гейтинг кнопок), что
+scan/flash/device_config.
 
 | Маршрут | Тип | Тело | Ответ |
 |---|---|---|---|

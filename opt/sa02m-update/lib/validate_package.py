@@ -63,6 +63,10 @@ PRESERVE_PATHS: Tuple[str, ...] = (
     # budget (docs/contracts/home-connect.md §12).
     "/etc/sa02m-homeconnect/",
     "/var/lib/sa02m-homeconnect/",
+    # Audio recorder: the operator's conf + upload token and the recordings
+    # (docs/contracts/audio-recorder.md §19).
+    "/etc/sa02m-audio/",
+    "/var/lib/sa02m-audio/",
 )
 
 # One of four copies of the destination allow-list (runner x2, packer, validator);
@@ -79,6 +83,8 @@ _DST_PREFIX_RES = (
     re.compile(r"^/etc/sudoers\.d/"),
     re.compile(r"^/etc/default/sa02m-"),
     re.compile(r"^/etc/sa02m-update/trusted-keys/"),
+    # Exact path only (1.0.7.19): the static-IP watchdog; never the directory.
+    re.compile(r"^/usr/local/bin/fix-eth\.sh$"),
     re.compile(r"^/etc/dhcp/dhclient-exit-hooks\.d/eth1-default-route$"),
 )
 

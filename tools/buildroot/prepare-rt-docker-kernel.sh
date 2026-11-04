@@ -60,7 +60,7 @@ cmd_check() {
         verify_rt_patch_applied || true
         log "linux-custom exists — kernel version in .config:"
         grep '^CONFIG_LOCALVERSION=' "$LINUX_DIR/.config" 2>/dev/null || true
-        grep -E '^CONFIG_PREEMPT_RT|^CONFIG_OVERLAY_FS|^CONFIG_ICPLUS_PHY|^CONFIG_RTC_DRV_DS3231|^CONFIG_USB_SERIAL_OPTION' \
+        grep -E '^CONFIG_PREEMPT_RT|^CONFIG_OVERLAY_FS|^CONFIG_ICPLUS_PHY|^CONFIG_RTC_DRV_DS3231|^CONFIG_USB_SERIAL_OPTION|^CONFIG_SND_USB' \
             "$LINUX_DIR/.config" 2>/dev/null || true
     else
         log "linux-custom not extracted yet — first 'make' will download sources"
@@ -146,24 +146,29 @@ apply_smp_kconfig_snippets() {
     apply_docker_netfilter_kconfig
     apply_sa02m_boot_kconfig
     apply_usb_modem_kconfig
+    apply_usb_audio_kconfig
 
     make ARCH=arm olddefconfig
     apply_sa02m_boot_kconfig
     apply_docker_netfilter_kconfig
     apply_usb_modem_kconfig
+    apply_usb_audio_kconfig
     make ARCH=arm olddefconfig
     apply_sa02m_boot_kconfig
     apply_docker_netfilter_kconfig
     apply_usb_modem_kconfig
+    apply_usb_audio_kconfig
 
     verify_sa02m_smp_boot_kconfig || return 1
     verify_docker_netfilter_kconfig || return 1
     verify_usb_modem_kconfig || return 1
+    verify_usb_audio_kconfig || return 1
     kconfig_finalize_noninteractive smp || return 1
     verify_sa02m_smp_boot_kconfig || return 1
     verify_docker_netfilter_kconfig || return 1
     verify_usb_modem_kconfig || return 1
-    log "SMP Kconfig snippets applied (ARCH_SUNXI + Docker NAT + USB modem, no PREEMPT_RT)."
+    verify_usb_audio_kconfig || return 1
+    log "SMP Kconfig snippets applied (ARCH_SUNXI + Docker NAT + USB modem + USB audio, no PREEMPT_RT)."
 }
 
 apply_kconfig_snippets() {
@@ -199,27 +204,32 @@ apply_kconfig_snippets() {
 
     apply_sa02m_boot_kconfig
 
-    # USB modem — one home: apply_usb_modem_kconfig (re-applied per pass).
+    # USB modem / USB audio — one home each: apply_usb_{modem,audio}_kconfig (re-applied per pass).
     apply_usb_modem_kconfig
+    apply_usb_audio_kconfig
 
     make ARCH=arm olddefconfig
-    # olddefconfig may drop sunxi/netfilter/usb-modem — force again and reconcile.
+    # olddefconfig may drop sunxi/netfilter/usb-modem/usb-audio — force again and reconcile.
     apply_sa02m_boot_kconfig
     apply_docker_netfilter_kconfig
     apply_usb_modem_kconfig
+    apply_usb_audio_kconfig
     make ARCH=arm olddefconfig
     apply_sa02m_boot_kconfig
     apply_docker_netfilter_kconfig
     apply_usb_modem_kconfig
+    apply_usb_audio_kconfig
 
     verify_sa02m_boot_kconfig || return 1
     verify_docker_netfilter_kconfig || return 1
     verify_usb_modem_kconfig || return 1
+    verify_usb_audio_kconfig || return 1
     kconfig_finalize_noninteractive rt || return 1
     verify_sa02m_boot_kconfig || return 1
     verify_docker_netfilter_kconfig || return 1
     verify_usb_modem_kconfig || return 1
-    log "Kconfig snippets applied (ARCH_SUNXI + PREEMPT_RT + NAT + USB modem verified)."
+    verify_usb_audio_kconfig || return 1
+    log "Kconfig snippets applied (ARCH_SUNXI + PREEMPT_RT + NAT + USB modem + USB audio verified)."
 }
 
 apply_docker_netfilter_kconfig() {
@@ -301,6 +311,67 @@ verify_usb_modem_kconfig() {
     [ "$missing" -eq 0 ]
 }
 
+# USB Audio Class set (USB microphone for LED light-music scenarios —
+# docs/usb-audio-microphone.md). Same discipline as the modem set: re-applied
+# after EVERY olddefconfig/syncconfig pass. Gates first, outermost to innermost
+# (6.1-rc6 sound/Kconfig + sound/usb/Kconfig): menuconfig SOUND → menuconfig SND
+# → menuconfig SND_USB (bool, `if SND_USB && USB`) — without the gates the
+# SND_USB_AUDIO=m line is an orphan the next pass silently drops.
+# SND_USB_AUDIO selects SND_HWDEP / SND_RAWMIDI / SND_PCM. There is NO
+# SND_USBMIDI_LIB symbol on this line: snd-usbmidi-lib.ko is a Makefile object
+# built with SND_USB_AUDIO, so it is checked as an artifact
+# (verify_usb_audio_modules), not as a Kconfig symbol.
+apply_usb_audio_kconfig() {
+    local sym
+    for sym in SOUND SND SND_USB; do
+        ./scripts/config --enable "$sym" || log "WARN: could not enable CONFIG_${sym}"
+    done
+    ./scripts/config --module SND_USB_AUDIO || log "WARN: could not set CONFIG_SND_USB_AUDIO=m"
+}
+
+verify_usb_audio_kconfig() {
+    local missing=0 sym val cfg="$LINUX_DIR/.config"
+    for sym in SOUND SND SND_PCM SND_HWDEP SND_RAWMIDI SND_USB SND_USB_AUDIO; do
+        val=$(grep "^CONFIG_${sym}=" "$cfg" 2>/dev/null || true)
+        case "$val" in
+            *=y|*=m) ;;
+            *) log "ERROR: missing USB-audio CONFIG_${sym} (got: ${val:-unset})" >&2; missing=1 ;;
+        esac
+    done
+    [ "$missing" -eq 0 ]
+}
+
+# Artifact truth after `make linux`: a verified .config is not proof the
+# modules landed (the modem set passed its kconfig verify while usbnet.ko was
+# absent from the modules tgz). Both .ko must be in the target tree that the
+# modules tgz is packed from (tools/buildroot/README.md «После сборки на VM»)
+# AND newer than the marker touched right before `make linux` — a `make linux`
+# that skipped its install step (a stale buildroot stamp) leaves the previous
+# build's tree in place, and those .ko must not count as this build's output.
+# (modules_install itself copies with plain cp, so a real install is always
+# newer than the marker.)
+USB_AUDIO_BUILD_MARK="$BR_DIR/output/.sa02m-usb-audio-build-mark"
+
+mark_usb_audio_build() {
+    mkdir -p "$(dirname "$USB_AUDIO_BUILD_MARK")"
+    touch "$USB_AUDIO_BUILD_MARK"
+}
+
+verify_usb_audio_modules() {
+    local ver=$1 mod_dir="$BR_DIR/output/target/lib/modules/$1" missing=0 ko
+    [ -d "$mod_dir" ] || { log "ERROR: no module tree $mod_dir after make linux" >&2; return 1; }
+    [ -f "$USB_AUDIO_BUILD_MARK" ] || { log "ERROR: build marker $USB_AUDIO_BUILD_MARK missing" >&2; return 1; }
+    for ko in snd-usb-audio snd-usbmidi-lib; do
+        if [ -z "$(find "$mod_dir" \( -name "${ko}.ko" -o -name "${ko}.ko.gz" -o -name "${ko}.ko.xz" -o -name "${ko}.ko.zst" \) \
+                -newer "$USB_AUDIO_BUILD_MARK" -print -quit)" ]; then
+            log "ERROR: ${ko}.ko missing from $mod_dir or not rebuilt by this make linux (USB microphone will not bind)" >&2
+            missing=1
+        fi
+    done
+    [ "$missing" -eq 0 ] || return 1
+    log "USB-audio modules present in $mod_dir (snd-usb-audio, snd-usbmidi-lib)"
+}
+
 # olddefconfig/syncconfig must not block on NEW symbols when buildroot runs make linux.
 kconfig_finalize_noninteractive() {
     local profile=${1:-smp}
@@ -315,6 +386,7 @@ kconfig_finalize_noninteractive() {
     apply_sa02m_boot_kconfig
     apply_docker_netfilter_kconfig
     apply_usb_modem_kconfig
+    apply_usb_audio_kconfig
     if [ "$profile" = rt ]; then
         ./scripts/config --set-val PREEMPT_RT y 2>/dev/null || true
         ./scripts/config --set-str LOCALVERSION "" 2>/dev/null || true
@@ -326,10 +398,12 @@ kconfig_finalize_noninteractive() {
     apply_sa02m_boot_kconfig
     apply_docker_netfilter_kconfig
     apply_usb_modem_kconfig
+    apply_usb_audio_kconfig
     yes '' | make ARCH=arm syncconfig >/dev/null
     apply_sa02m_boot_kconfig
     apply_docker_netfilter_kconfig
     apply_usb_modem_kconfig
+    apply_usb_audio_kconfig
     # The trio above wrote raw =y/=m lines into an already-synced .config —
     # UNSYNCED truth. One final olddefconfig resolves dependencies so this
     # function RETURNS a dependency-resolved config: the profile verifies
@@ -376,7 +450,9 @@ cmd_build_kernel_smp_only() {
     log "linux build + install..."
     rm -f ./output/build/linux-custom/.stamp_{built,installed,target_installed,images_installed}
     rm -rf ./output/target/lib/modules/6.1.0-rc6
+    mark_usb_audio_build
     make linux
+    verify_usb_audio_modules 6.1.0-rc6 || return 1
     log "SMP artifacts:"
     ls -la output/images/zImage output/images/*.dtb 2>/dev/null || true
     find output/target/lib/modules -maxdepth 1 -type d -name '6.1*' 2>/dev/null || true
@@ -411,7 +487,9 @@ cmd_build_kernel_only() {
     kconfig_finalize_noninteractive rt || return 1
     log "linux build + install..."
     rm -f ./output/build/linux-custom/.stamp_{built,installed,target_installed,images_installed}
+    mark_usb_audio_build
     make linux
+    verify_usb_audio_modules 6.1.0-rc6-rt4 || return 1
     log "Artifacts:"
     ls -la output/images/zImage output/images/*.dtb 2>/dev/null || true
     find output/target/lib/modules -maxdepth 1 -type d -name '6.1*' 2>/dev/null || true

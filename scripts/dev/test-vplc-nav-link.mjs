@@ -58,6 +58,7 @@ try {
     extractFn(app, 'normSvcState', 'app.js'),
     extractFn(app, 'svcStateIsActive', 'app.js'),
     extractFn(status, 'applyVplcNavLink', 'app/status.js'),
+    extractFn(status, 'renderPortCoordinator', 'app/status.js'),
     extractFn(status, 'applyServicesStatus', 'app/status.js'),
     'return { applyVplcNavLink, applyServicesStatus };',
   ].join('\n'));

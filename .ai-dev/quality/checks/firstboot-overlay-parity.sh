@@ -33,7 +33,7 @@ set -uo pipefail
 cd "$(dirname "${BASH_SOURCE[0]}")/../../.." || exit 1
 
 OVL=tools/imaging/firstboot-overlay
-PAIR_FLOOR=15
+PAIR_FLOOR=17
 fails=0
 ok()  { printf 'firstboot-overlay-parity: ok    %s\n' "$*"; }
 bad() { printf 'firstboot-overlay-parity: FAIL  %s\n' "$*"; fails=$((fails + 1)); }
@@ -46,11 +46,13 @@ usr/local/sbin/sa02m-rootfs-expand.sh|etc/sa02m-rootfs-expand.sh
 usr/local/sbin/sa02m-failure-monitor|etc/sa02m-failure-monitor.sh
 usr/local/sbin/sa02m-userspace-watchdog|etc/sa02m-userspace-watchdog.sh
 usr/local/bin/net-watchdog.sh|etc/net-watchdog.sh
+usr/local/sbin/sa02m-link-monitor.sh|usr/local/sbin/sa02m-link-monitor.sh
 etc/sa02m_failure_monitor.conf|etc/sa02m_failure_monitor.conf
 etc/sa02m_userspace_watchdog.conf|etc/sa02m_userspace_watchdog.conf
 etc/systemd/system.conf.d/sa02m-watchdog.conf|etc/systemd/sa02m-watchdog.conf
 etc/systemd/system/fix-eth@.service|etc/fix-eth@.service
 etc/systemd/system/net-watchdog.service|etc/net-watchdog.service
+etc/systemd/system/sa02m-link-monitor.service|etc/systemd/sa02m-link-monitor.service
 etc/systemd/system/sa02m-eth-coldboot.service|etc/systemd/sa02m-eth-coldboot.service
 etc/systemd/system/sa02m-failure-monitor.service|etc/sa02m-failure-monitor.service
 etc/systemd/system/sa02m-rootfs-expand.service|etc/systemd/sa02m-rootfs-expand.service

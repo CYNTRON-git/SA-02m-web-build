@@ -228,6 +228,32 @@ if stripped_matches etc/99-lan-recovery.rules 'KERNEL=="end'; then
 else
     pass "99-lan-recovery.rules carries no end* lines"
 fi
+# ...and must carry no live eth0 `change` rule: on eth0 (sun4i-emac) a carrier
+# change emits no uevent (udevadm monitor, bench 1.135, current 6.1 kernel
+# image, 2026-10-30), so such a line is dead text that reads as a reactive
+# link-up trigger — the false premise behind the 1.0.7.22 explanation
+# (docs/bugs/BUGLOG.md). This pin is fail-IF-PRESENT: its mutation is
+# re-adding the line (RED on the pre-removal file), not commenting one out.
+# Non-vacuity: the eth0 add and bind lines must still be live, so a deleted
+# or wholly commented-out file cannot pass the absence check.
+# Shapes: any ACTION value containing `change` (also `change|add`), and any
+# KERNEL value that can match eth0 — `eth0…`, or a glob right after `eth`
+# (`eth*`, `eth?`, `eth[01]`). A glob like `eth[1]` also trips it: fail-safe
+# toward more rigor. The eth1 change lines (unmeasured) stay unmatched.
+# Out of scope, deliberately NOT caught: an ACTION=="change" rule with no
+# KERNEL key at all, and a negated KERNEL!="eth1" (both would match eth0).
+CHG_ETH0='ACTION=="[^"]*change[^"]*".*KERNEL=="eth(0|[*?[])|KERNEL=="eth(0|[*?[])[^"]*".*ACTION=="[^"]*change'
+if stripped_matches etc/99-lan-recovery.rules "$CHG_ETH0"; then
+    fail "99-lan-recovery.rules carries a live eth0 ACTION==\"change\" rule — carrier changes on eth0 emit no uevent, so it never fires and misstates how link-up is recovered (net-watchdog poll + fix-eth.sh re-check)"
+else
+    pass "99-lan-recovery.rules carries no eth0 change rule"
+fi
+if stripped_has etc/99-lan-recovery.rules 'ACTION=="add", SUBSYSTEM=="net", KERNEL=="eth0", RUN+="/usr/bin/systemctl --no-block start fix-eth@eth0.service"' \
+   && stripped_has etc/99-lan-recovery.rules 'ACTION=="bind", SUBSYSTEM=="net", KERNEL=="eth0", RUN+="/usr/bin/systemctl --no-block start fix-eth@eth0.service"'; then
+    pass "99-lan-recovery.rules keeps the eth0 add/bind fix-eth@ starts (non-vacuity of the change-rule check)"
+else
+    fail "etc/99-lan-recovery.rules lost a live eth0 add/bind fix-eth@eth0 start — the interface-appearance trigger is gone (and the change-rule absence check above is vacuous)"
+fi
 # fix-eth.sh: an exhausted per-boot link-cycle budget must re-arm on
 # carrier-up (bench 2026-07-29/30 night: eth1 logged "cycles=5, пропуск" for
 # hours and recovery never resumed until reboot).

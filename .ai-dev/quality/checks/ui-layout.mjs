@@ -328,9 +328,9 @@ const CONTRAST_WHITELIST = [
   { match: '#cloud-btn-ctrl', floor: 1.25,
     reason: '«Управление из облака» button (on the «Умный дом» card as #sh-btn-cloud from 1.0.6.26, moved onto the «Облако» card in 1.0.6.29) while it cannot act: the harness stubs the CGI with {} so the status payload carries no cloud_control block, and cloud.js cloudRenderControl sets btn.disabled=true (the same lock a not-cloud-enrolled board gets) → .btn:disabled opacity .4 (main.css) — WCAG 1.4.3 disabled-control exemption, the .kernel-apply-inline case. The ENABLED button is the standard btn-primary pair. floor 1.25 ratchets the measured worst (1.29 light / 3.08 dark).' },
   { match: '#homeconnect-btn-enable', floor: 1.25,
-    reason: '«Home Connect» card «Включить» (added with the read-only BSH client, 1.0.6.57 branch) while the board gives no usable status answer: the harness stubs the CGI with {} (no ok:true), so app/homeconnect.js hcRenderUnavailable draws the button as a btn-primary «Включить» and hcSetButtonsDisabled sets btn.disabled=true (nothing is sent blind to a board that is not answering; the markup ships it disabled too) → .btn:disabled opacity .4 (main.css) — WCAG 1.4.3 disabled-control exemption, the #homekit-btn-enable / #cloud-btn-ctrl case. The ENABLED button is the standard btn-primary / btn-danger pair. floor 1.25 ratchets the measured worst (1.29 light / 3.08 dark, 2026-09-28).' },
+    reason: '«Home Connect» card «Включить» (added with the read-only BSH client, 1.0.7.0 branch) while the board gives no usable status answer: the harness stubs the CGI with {} (no ok:true), so app/homeconnect.js hcRenderUnavailable draws the button as a btn-primary «Включить» and hcSetButtonsDisabled sets btn.disabled=true (nothing is sent blind to a board that is not answering; the markup ships it disabled too) → .btn:disabled opacity .4 (main.css) — WCAG 1.4.3 disabled-control exemption, the #homekit-btn-enable / #cloud-btn-ctrl case. The ENABLED button is the standard btn-primary / btn-danger pair. floor 1.25 ratchets the measured worst (1.29 light / 3.08 dark, 2026-09-28).' },
   { match: '#homekit-btn-enable', floor: 1.25,
-    reason: '«Apple HomeKit» card «Включить» (added 1.0.6.57) while the board gives no usable status answer: the harness stubs the CGI with {} (no ok:true), so app/homekit.js hkRenderUnavailable draws the button as a btn-primary «Включить» and hkSetButtonsDisabled sets btn.disabled=true (nothing is sent blind to a board that is not answering; the markup ships it disabled too) → .btn:disabled opacity .4 (main.css) — WCAG 1.4.3 disabled-control exemption, the #cloud-btn-ctrl case. The ENABLED button is the standard btn-primary / btn-danger pair. floor 1.25 ratchets the measured worst (1.29 light / 3.08 dark).' },
+    reason: '«Apple HomeKit» card «Включить» (added 1.0.7.0) while the board gives no usable status answer: the harness stubs the CGI with {} (no ok:true), so app/homekit.js hkRenderUnavailable draws the button as a btn-primary «Включить» and hkSetButtonsDisabled sets btn.disabled=true (nothing is sent blind to a board that is not answering; the markup ships it disabled too) → .btn:disabled opacity .4 (main.css) — WCAG 1.4.3 disabled-control exemption, the #cloud-btn-ctrl case. The ENABLED button is the standard btn-primary / btn-danger pair. floor 1.25 ratchets the measured worst (1.29 light / 3.08 dark).' },
   { match: '.kernel-refresh-inline', floor: 2.0,
     reason: 'Kernel «Обновить загрузочное ядро» (added 1.0.5.59) when the running kernel artifact is not valid: renderKernelControl (app/services.js) sets btn.disabled=true → .btn:disabled opacity .4 (main.css). Same disabled-control case as the sibling .kernel-apply-inline above (WCAG 1.4.3 exemption); the ENABLED button is --text on --bg-panel ≈ 12:1. floor 2.0 ratchets the measured worst (2.46 light / 3.40 dark).' },
   { match: '#web-upd-apply-btn', floor: 1.7,
@@ -378,6 +378,37 @@ function safeStaticPath(urlPath) {
   return existsSync(abs) && statSync(abs).isFile() ? abs : null;
 }
 
+const AUDIO_STATUS = {
+  ok: true, state: 'idle', installed: true, enabled: true, live: true, mic: 'present',
+  mic_device: 'plughw:CARD=Microphone,DEV=0', medium: 'usb', medium_state: 'ok',
+  media: {}, recording: null, last_file: '20261015T120500Z-0a1b2d', last_status: 'ok',
+  last_duration_ms: 10000, last_size: 320044, last_peak_dbfs: -12, last_upload: 'unavailable', token_set: true,
+  rate_used: 2, rate_max: 60, present: ['emmc', 'usb'],
+  clips: [
+    { id: '20261015T120500Z-0a1b2d', medium: 'usb', size: 320044, ts: 1760530000, duration_ms: 10000, peak_dbfs: -12, upload: 'unavailable' },
+    { id: '20261015T120000Z-0a1b2c', medium: 'emmc', size: 960044, ts: 1760529700, duration_ms: 30000, peak_dbfs: -3, upload: 'failed' },
+    { id: '20261014T235959Z-ffffff', medium: 'emmc', size: 64044, ts: 1760486399 },
+  ],
+  events: [
+    { ts: 1760529700, event: 'start', id: '20261015T120000Z-0a1b2c', medium: 'emmc', seconds: 30, detail: 'plughw:CARD=Microphone,DEV=0', source: 'mqtt' },
+    { ts: 1760530010, event: 'end', id: '20261015T120500Z-0a1b2d', medium: 'usb', status: 'ok', detail: '10000 ms, 320044 B, peak -12 dBFS' },
+  ],
+  conf: { enabled: true, storage: 'usb', device: 'auto', default_duration_s: 10, max_duration_s: 30,
+    keep_files: 50, keep_mb: 32, keep_hours: 24, delete_after_upload: true,
+    upload_url: 'https://192.168.1.10/sa02m-audio/upload',
+    light_music_target: 'led_kitchen_ceiling', light_music_style: 'equalizer', light_music_rate_hz: 8,
+    capture_gain: 12 },
+  bounds: { max_duration_s: [2, 30], default_duration_s: [2, 30], keep_files: [1, 50], keep_hours: [1, 168],
+    keep_mb: { emmc: [1, 256], usb: [1, 4096], sdcard: [1, 4096] }, light_music_rate_hz: [1, 10] },
+  removable: ['usb', 'sdcard'],
+  // 1.0.7.10: the light-music line and switch row in their longest state
+  // («лента недоступна» / «strip unavailable», switch on), a strip list, and
+  // the mic-gain row (inside the closed settings <details>: present, not measured).
+  light_music: true, light_music_state: 'strip_offline', light_music_update_hz: 0,
+  light_music_styles: ['level', 'color', 'equalizer'], led_devices: ['led_kitchen_ceiling', 'strip_1'],
+  mic_gain: { state: 'applied', want: 12, applied: 12, min: 0, max: 31, db: '18.75', control: 'Mic' },
+};
+
 // CGI stub body. Default is `{}` — enough for the auth wrapper to see a 200
 // (never a 401) and for the guarded apply*Status() functions to no-op. The one
 // endpoint that MUST carry real data is services_ctrl.cgi: the app auto-fetches
@@ -392,6 +423,10 @@ function cgiBody(url) {
   // The «Устройства» tab (devices.js) polls the devices API, not a CGI: feed it
   // the worst-case card set (j), and an empty events journal.
   const path = url.split('?')[0];
+  // The «Запись звука» card (app/audio.js) in its fullest state: live, a
+  // removable medium selected (the persistent warning note), clips on two
+  // media, events with a long detail — measured, not left at «не отвечает».
+  if (path === '/cgi-bin/sa02m_audio_api.cgi') return JSON.stringify(AUDIO_STATUS);
   if (path === '/api/devices') return JSON.stringify(DEVICES_LIVE);
   if (path === '/api/devices/events') return JSON.stringify({ ok: true, events: [] });
   return '{}';
@@ -461,11 +496,9 @@ const MANAGEMENT_SERVICES = {
 // winter setpoint stepper row is shown. «Сезон» is a value run (fit, EN and
 // layout-jump checks); the stepper is not — the fit pass skips it and the
 // layout-jump pass leaves its number in place, so it is rendered, not measured.
-// The MTD presence card is NOT in the fixture: its settings tiles clip at the
-// 1101 px three-card width and its «да» has no EN entry — pre-existing defects
-// outside this check's fix, to be gated together with their fix.
 const DEVICES_LIVE = {
   ok: true,
+  mtd: [{id:'mtdx62-COM2-1',kind:'mtd',label:'MTD262-MB',ok:true,age_s:1,presence:1,illuminance_lux:1234.5,target_distance_m:7.99,detection_distance_m:8.00,detection_shielding_m:1.00,admission_delay_s:9.99,departure_delay_s:120,trigger_sensitivity:9,maintain_sensitivity:9,entrance_reduction_m:0.50}],
   available: [],
   carel: [{ id: 'carel-COM3-1', kind: 'carel', label: 'Carel c.pCOmini № 1', ok: true, age_s: 2,
     plant_state_text: 'Остановлена', supply_temp: -12.3, return_water_temp: 34.2, setpoint: 21.5,

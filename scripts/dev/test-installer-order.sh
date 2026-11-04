@@ -37,6 +37,11 @@
 # 05-mqtt.sh — 6a goes RED; move the package rsync in scripts/06d-homeconnect.sh
 # below the conf seed — 6b goes RED; install the CGI before the trigger — 6c.
 #
+# Case 8 (audio recorder): move the 15-audio block above 06b-rules.sh in
+# install.sh — 8a RED; the package rsync below the conf seed in
+# scripts/15-audio.sh — 8b; the CGI before the trigger + sudoers — 8c; the unit
+# before the access helper its ExecStartPre runs — 8d.
+#
 # Run: bash scripts/dev/test-installer-order.sh   (bash + sed + grep)
 # ═══════════════════════════════════════════════════════════════════════════
 set -u
@@ -48,7 +53,7 @@ declare -F stripped_first_line >/dev/null || { echo "FAIL  lib_check.sh lacks st
 fails=0
 ok()  { printf 'ok    %s\n' "$1"; }
 bad() { printf 'FAIL  %s\n' "$1"; fails=$((fails + 1)); }
-for f in scripts/05-mqtt.sh scripts/04-flasher.sh scripts/06-alice.sh scripts/06d-homeconnect.sh install.sh; do
+for f in scripts/05-mqtt.sh scripts/04-flasher.sh scripts/06-alice.sh scripts/06d-homeconnect.sh scripts/15-audio.sh install.sh; do
     [ -f "$f" ] || { echo "FAIL  missing $f"; exit 1; }
 done
 
@@ -147,6 +152,20 @@ if [ -n "$(stripped_first_line scripts/04-flasher.sh 'sa02m_install_spodes_pkg')
 else
     ok "7b 04-flasher.sh does not install the SPODES package"
 fi
+
+echo "── 8. audio recorder: dependencies land before their consumers ──"
+# The recorder's upload path imports sa02m_rules.http_guard (8a, module
+# order); inside 15-audio the conf seed is rendered BY the installed package
+# (8b); the helper + sudoers precede the CGI that calls them (8c); the access
+# helper precedes the unit whose ExecStartPre runs it (8d).
+order_pin install.sh "8a 06b-rules.sh → 15-audio.sh" \
+    '^[[:space:]]*sa02m_run_module 06b-rules\.sh' '^[[:space:]]*sa02m_run_module 15-audio\.sh'
+order_pin scripts/15-audio.sh "8b package rsync → conf seed" \
+    '^[[:space:]]*rsync ' '^python3 -I -B - "\$INSTALL_DIR"'
+order_pin scripts/15-audio.sh "8c trigger + sudoers → CGI" \
+    '^[[:space:]]*sa02m_install_sudoers ' '"\$WEB_CGI/sa02m_audio_api\.cgi"'
+order_pin scripts/15-audio.sh "8d access helper → unit" \
+    '/usr/local/sbin/sa02m-daemon-access\.sh" /usr/local/sbin/sa02m-daemon-access\.sh' '"\$UNIT_SRC/sa02m-audio\.service"'
 
 echo ""
 if [ "$fails" -eq 0 ]; then

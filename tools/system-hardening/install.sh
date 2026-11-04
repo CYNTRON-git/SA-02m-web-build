@@ -15,7 +15,7 @@
 # Что делает:
 #   1. Останавливает и маскирует старый sa02m-watchdog-feed (bash-петля).
 #   2. Кладёт drop-in /etc/systemd/system.conf.d/sa02m-watchdog.conf
-#      (RuntimeWatchdogSec=15s, RebootWatchdogSec=0) → PID1 владеет HW WDT.
+#      (RuntimeWatchdogSec=15s, RebootWatchdogSec=16s) → PID1 владеет HW WDT.
 #   3. Ставит /usr/local/sbin/sa02m-userspace-watchdog (health-checks).
 #   4. Активирует sa02m-userspace-watchdog.service (forces reboot при сбоях).
 #   5. Активирует sa02m-failure-monitor.service (логирование, без reboot).
@@ -70,12 +70,13 @@ else
     # Fallback только для stdin-режима (`ssh … "bash -s" < install.sh`), когда
     # репо на устройстве нет. Значения обязаны совпадать с эталоном
     # etc/systemd/sa02m-watchdog.conf (там же обоснование: cap 16s у sun4i-wdt,
-    # RebootWatchdogSec=0 против hardware reset медленного выключения);
+    # RebootWatchdogSec=16s — взведён на кэп, чтобы зависшая перезагрузка
+    # сбрасывалась сторожем);
     # совпадение стережёт .ai-dev/quality/checks/watchdog-cap.sh.
     cat > /etc/systemd/system.conf.d/sa02m-watchdog.conf <<'EOF'
 [Manager]
 RuntimeWatchdogSec=15s
-RebootWatchdogSec=0
+RebootWatchdogSec=16s
 EOF
 fi
 
@@ -140,5 +141,5 @@ echo "Watchdog config (file):"
 sed 's/^/    /' /etc/systemd/system.conf.d/sa02m-watchdog.conf
 
 echo
-echo "Готово. RuntimeWatchdogSec=15s/RebootWatchdogSec=0 применятся"
+echo "Готово. RuntimeWatchdogSec=15s/RebootWatchdogSec=16s применятся"
 echo "полностью после следующего reboot (PID1 уже владеет /dev/watchdog)."

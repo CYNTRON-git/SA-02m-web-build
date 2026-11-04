@@ -1010,7 +1010,7 @@
     if (!port.exists) setBadge('flasher-poller-badge', 'Нет линии', 'unk');
     else if (port.active_services == null) setBadge('flasher-poller-badge', 'Проверка опроса', 'unk');
     else if (port.active_services.length) setBadge('flasher-poller-badge', 'Опрос активен', 'unk');
-    else if (port.released_services && port.released_services.length) setBadge('flasher-poller-badge', 'Опрос освобождён', 'ok');
+    else if (port.reserved || (port.released_services && port.released_services.length)) setBadge('flasher-poller-badge', 'Опрос освобождён', 'ok');
     else if (port.busy_pids != null && port.busy_pids.length) setBadge('flasher-poller-badge', 'Опрос не определён', 'unk');
     else setBadge('flasher-poller-badge', 'Опрос не активен', 'ok');
 
@@ -1029,6 +1029,9 @@
     if (port.released_services && port.released_services.length) {
       bits.push('Опрос вручную освобождён: ' + port.released_services.map(unitUiLabel).join(', ') + '.');
     }
+    // The manual reserve pauses MQTT on the line even when no whole service is
+    // configured for it — the state must be visible, or it is forgotten.
+    if (port.reserved) bits.push('Порт зарезервирован вручную: опрос MQTT на нём приостановлен.');
     if (port.busy_pids && port.busy_pids.length) {
       bits.push('Порт удерживают PID ' + port.busy_pids.join(', ') + '.' +
         (port.active_services && port.active_services.length

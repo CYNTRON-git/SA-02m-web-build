@@ -39,7 +39,7 @@ class StatusWriterTests(unittest.TestCase):
         self.w.write_status(C.STATE_DISABLED)
         self.assertEqual(stat.S_IMODE(os.stat(self.w.status_path).st_mode), 0o644)
 
-    def test_setup_and_projection_are_0640_group_www_data(self):
+    def test_setup_and_projection_are_0640_with_the_group_the_writer_can_set(self):
         self._setup()
         self.w.write_projection({"accessories": [], "skipped": [], "skipped_total": 0})
         try:

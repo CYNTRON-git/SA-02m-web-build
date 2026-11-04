@@ -5,7 +5,7 @@ Documentation=file:///usr/local/libexec/sa02m-update-runner
 # when a complete-but-unverified tree is found at boot. Recover is ordered
 # Before=nginx fcgiwrap, so the health gate cannot run there; it runs here,
 # after the web stack, and rolls back only on a real failure.
-After=sa02m-update-recover.service nginx.service fcgiwrap.service sa02m-devices-api.service network.target
+After=sa02m-update-recover.service nginx.service fcgiwrap.service sa02m-devices-api.service network.target sa02m-port-coordinator.service sa02m-flasher.service sa02m-modbus-mqtt.service sa02m-serial-gateway.service
 Conflicts=sa02m-update.service
 
 [Service]

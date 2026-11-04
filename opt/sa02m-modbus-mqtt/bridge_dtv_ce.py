@@ -13,10 +13,57 @@ import time
 
 from bridge_device import DevicePoller
 from bridge_fmb import FMB_INSURANCE_POLL_S
-from bridge_mqtt import DeviceLiveCache, MQTTPublisher
+from bridge_mqtt import DeviceLiveCache, MQTTPublisher, _make_title
+from bridge_mr02m_map import MR02M_SYS_CONTROLS
 from bridge_serial import (
     FMB_EVT_COIL, FMB_EVT_INPUT, MODBUS_INTER_FRAME_DELAY_S,
 )
+
+# The MQTT tab's «Системные» rows for DTV and CE (mqtt.js DTV_SYS_VARS /
+# CE02M3_SYS_VARS). Same input registers and scales as on MR-02m (105/106
+# uptime, 123 VDD, 124 temp), so type/units/default title come from the MR table.
+DTV_CE_SYS_KEYS = ("uptime_s", "mcu_temp", "mcu_vdd")
+DTV_CE_SYS_CONTROLS = tuple(
+    c for c in MR02M_SYS_CONTROLS if c[0] in DTV_CE_SYS_KEYS)
+
+# DTV sensor autodetect (a DTV configured without `sensors_present`): the
+# cadence and the bound of the original setup() loop — 5 x (read + sleep 3 s)
+# — kept, but run from the poll cycle instead of sleeping on the port thread.
+DTV_DETECT_RETRY_S = 3.0
+DTV_DETECT_EMPTY_FALLBACK = 5
+
+
+class _SysChannelsMixin:
+    """`channels.sys[]` enabled/label, read the way MR02mPoller reads them.
+
+    Publication and the CE uptime health-read exception are specified in
+    docs/MQTT_TOPICS.md, the DTV/CE system-channel contract.
+    """
+
+    cfg: dict
+
+    def _sys_ch_cfg(self, key: str) -> dict:
+        channels = self.cfg.get("channels") or {}
+        for e in channels.get("sys") or []:
+            if isinstance(e, dict) and str(e.get("key", "")) == str(key):
+                return e
+        return {}
+
+    def _sys_enabled(self, key: str) -> bool:
+        return self._sys_ch_cfg(key).get("enabled", True)
+
+    def _publish_sys_meta(self) -> None:
+        for name, ctype, units, title in DTV_CE_SYS_CONTROLS:
+            if not self._sys_enabled(name):
+                continue
+            self.pub.pub_control_meta(self.device_id, name, "type", ctype)
+            self.pub.pub_control_meta(self.device_id, name, "readonly", "1")
+            if units:
+                self.pub.pub_control_units(self.device_id, name, units)
+            # MQTT tab «Системные» label (yaml channels.sys[].label).
+            label = str(self._sys_ch_cfg(name).get("label") or "").strip()
+            self.pub.pub_control_meta(
+                self.device_id, name, "title", _make_title(label or title, ""))
 
 
 # CE-02m-3 energy counters (Input 580-611). The unit is the firmware's
@@ -56,7 +103,7 @@ def _energy_wh(raw: int, k_x1000: float,
 
 
 # ── cyntron-dtv (RTU-Sensor) poller ───────────────────────────────────────────
-class DTVPoller(DevicePoller):
+class DTVPoller(_SysChannelsMixin, DevicePoller):
     # All input registers 1-30 plus MCU diagnostics 123-124
     DTV_REGS: dict[int, tuple[str, float, str, str]] = {
         1:   ("temp_ds18b20",        0.1,   "temperature",  "°C"),
@@ -113,26 +160,64 @@ class DTVPoller(DevicePoller):
         # Optional explicit list of sensor names to poll
         explicit = cfg.get("sensors_present")
         if isinstance(explicit, list):
-            self._sensors_present = set(explicit)
+            # An explicit EMPTY list — what the panel writes when every sensor
+            # checkbox is unchecked (mqtt.js DTV_SENSORS) — means «all
+            # present», as the old setup() fallback made it; never autodetect.
+            self._sensors_present = (
+                set(explicit) or {v[0] for v in self.DTV_REGS.values()})
             self._autodetect = False
         else:
             self._autodetect = True
+        # Autodetect state: pending until a non-empty set is read (or the
+        # empty-answer bound falls back to «all present»). Retried from
+        # poll_io, never by sleeping in setup().
+        self._detect_pending = self._autodetect
+        self._t_detect = 0.0
+        self._detect_empty_answers = 0
 
-    def _autodetect_sensors(self) -> None:
-        """Read regs 1-30 once; mark those returning non-0x8000 as present."""
-        self._sensors_present = set()
+    def _try_autodetect(self) -> bool:
+        """ONE tracked read of Input 1..30; True once the sensor set is known.
+
+        Tracked (read_input_registers) so a silent DTV feeds the availability
+        machine and backs off like every other device. A read failure keeps
+        detection pending without counting an attempt — silent is not
+        sensorless, and a DTV unplugged at bridge start used to be assumed
+        to carry ALL sensors (every absent channel with meta and a permanent
+        «r» until the next restart). The old bound stays: five answers with
+        no sensor reported ⇒ «all present» (a sensorless unit, or one whose
+        sensors never come up)."""
         try:
             regs = self.read_input_registers(self.address, 1, 30)
-            for idx in range(30):
-                reg = idx + 1
-                if reg not in self.DTV_REGS:
-                    continue
-                if regs[idx] != 0x8000:
-                    self._sensors_present.add(self.DTV_REGS[reg][0])
-            self.log.info("Detected sensors: %s", sorted(self._sensors_present))
         except Exception as e:
-            self.log.warning("autodetect failed: %s — assuming all present", e)
-            self._sensors_present = {v[0] for v in self.DTV_REGS.values()}
+            self.log_poll_fail("autodetect", e)
+            return False
+        found = set()
+        for idx in range(30):
+            reg = idx + 1
+            if reg in self.DTV_REGS and regs[idx] != 0x8000:
+                found.add(self.DTV_REGS[reg][0])
+        if found:
+            self.log.info("Detected sensors: %s", sorted(found))
+        else:
+            self._detect_empty_answers += 1
+            if self._detect_empty_answers < DTV_DETECT_EMPTY_FALLBACK:
+                return False
+            self.log.warning("no sensors reported %d times — assuming all present",
+                             self._detect_empty_answers)
+            found = {v[0] for v in self.DTV_REGS.values()}
+        self._sensors_present = found
+        self._detect_pending = False
+        return True
+
+    def _publish_sensor_meta(self) -> None:
+        """Control meta for the sensor channels of the detected set."""
+        for ch_name, _, mqtt_type, units in self.DTV_REGS.values():
+            # mcu_vdd/mcu_temp (123/124) are «Системные»: _publish_sys_meta.
+            if ch_name not in self._sensors_present or ch_name in DTV_CE_SYS_KEYS:
+                continue
+            self.pub.pub_control_meta(self.device_id, ch_name, "type", mqtt_type)
+            self.pub.pub_control_meta(self.device_id, ch_name, "readonly", "1")
+            self.pub.pub_control_units(self.device_id, ch_name, units)
 
     def _publish_meta(self) -> None:
         name = self.cfg.get(
@@ -140,14 +225,12 @@ class DTVPoller(DevicePoller):
             f"DTV-RS-485 ({self.port_path.replace('/dev/','')} addr={self.address})"
         )
         self.publish_device_meta(name)
-        for ch_name, _, mqtt_type, units in self.DTV_REGS.values():
-            if ch_name not in self._sensors_present:
-                continue
-            self.pub.pub_control_meta(self.device_id, ch_name, "type", mqtt_type)
-            self.pub.pub_control_meta(self.device_id, ch_name, "readonly", "1")
-            self.pub.pub_control_units(self.device_id, ch_name, units)
+        # Empty while detection is pending: the sensor meta follows at the
+        # first answer (poll_io), the coils and sys rows go out now.
+        self._publish_sensor_meta()
         for coil, (ch_name, _) in self.DTV_COILS.items():
             self.pub.pub_control_meta(self.device_id, ch_name, "type", "switch")
+        self._publish_sys_meta()
 
     def _poll_sensors(self, *, from_reg: int = 1, upto_reg: int = 30) -> None:
         # Bulk read regs from_reg..upto_reg (hot path truncates to 1..24 when
@@ -173,7 +256,7 @@ class DTVPoller(DevicePoller):
                 self.pub.pub_control(self.device_id, ch_name, str(round(raw * scale, 3)))
                 self.pub.pub_error(self.device_id, ch_name, "")
         except Exception as e:
-            self.log.warning("sensor poll: %s", e)
+            self.log_poll_fail("sensor poll", e)
 
     def _poll_coils(self) -> None:
         try:
@@ -217,7 +300,7 @@ class DTVPoller(DevicePoller):
             # байт-в-байт с классическим поллом).
             ch_name, scale, _, _ = self.DTV_REGS[reg]
             if self._sensors_present and ch_name not in self._sensors_present:
-                return   # sensor known-absent; empty set = setup not run yet
+                return   # sensor known-absent; empty set = autodetect pending
             if val == 0x8000:   # sensor absent / error
                 self.pub.pub_error(self.device_id, ch_name, "r")
                 return
@@ -230,6 +313,8 @@ class DTVPoller(DevicePoller):
         self.log.debug("FMB event ignored type=%02X reg=%d", evt_type, reg)
 
     def _poll_uptime(self) -> None:
+        if not self._sys_enabled("uptime_s"):
+            return
         try:
             r = self.read_input_registers(self.address, 105, 2)
             self.pub.pub_control(self.device_id, "uptime_s", str(r[0] | (r[1] << 16)))
@@ -239,6 +324,8 @@ class DTVPoller(DevicePoller):
     def _poll_diag(self) -> None:
         for reg, (ch_name, scale, _, _) in [(k, v) for k, v in self.DTV_REGS.items()
                                              if k in (123, 124)]:
+            if not self._sys_enabled(ch_name):
+                continue
             try:
                 r = self.read_input_registers(self.address, reg, 1)
                 raw = r[0]
@@ -294,23 +381,40 @@ class DTVPoller(DevicePoller):
             self.pub.subscribe_writeback(self.device_id, ch_name, make_cb(coil_num, ch_name))
 
     def setup(self) -> None:
-        if self._autodetect:
-            for _ in range(5):
-                if self._stop.is_set():
-                    return
-                self._autodetect_sensors()
-                if self._sensors_present:
-                    break
-                time.sleep(3)
-        if not self._sensors_present:
-            self._sensors_present = {v[0] for v in self.DTV_REGS.values()}
+        # ONE detect attempt, no sleep: the port thread runs every poller's
+        # setup() before the first poll cycle, so the old 5 x (read + 3 s)
+        # loop here held every other device on the port 15 s whenever a DTV
+        # answered «no sensors» (booting beside the bridge, or sensorless) —
+        # the DTV twin of the MR02mPoller.setup() case (bench 1.135,
+        # 2026-10-29). Detection continues from poll_io under the normal
+        # back-off; the port slice skips a backed-off poller there.
+        if self._stop.is_set():
+            return
+        if self._detect_pending:
+            self._t_detect = time.monotonic()
+            self._try_autodetect()
+        # Always, as before: device / coil / sys meta and the coil writeback,
+        # so /on from Alice reaches a DTV that was silent at bridge start
+        # (the 2026-09-10 MR guarantee). Sensor meta only once detected.
         self._publish_meta()
         self._setup_writeback()
 
     def poll_io(self) -> None:
+        now = time.monotonic()
+        if self._detect_pending:
+            if now - self._t_detect >= DTV_DETECT_RETRY_S:
+                self._t_detect = now
+                if self._try_autodetect():
+                    self._publish_sensor_meta()
+                    # The sensor meta exists only now, so the scheduler's
+                    # after-setup clear named none of these controls (the
+                    # MR-02m late-init pattern). Once: _detect_pending is
+                    # False from here on.
+                    self.clear_stale_control_errors()
+            if self._detect_pending:
+                return      # no sensor set yet — nothing to poll, as before
         # Honor poll_sensors_s — with FMB insurance the port cycle would
         # otherwise hammer FC04×30 every ≥500 ms and collide with events.
-        now = time.monotonic()
         interval = self._poll_sensors_s
         if self.fmb_covers_io():
             interval = max(interval, FMB_INSURANCE_POLL_S)
@@ -354,7 +458,7 @@ class DTVPoller(DevicePoller):
 
 
 # ── CE-02m-3 (3-phase energy meter) poller ────────────────────────────────────
-class CE02M3Poller(DevicePoller):
+class CE02M3Poller(_SysChannelsMixin, DevicePoller):
 
     def __init__(self, cfg: dict, pub: MQTTPublisher):
         super().__init__(cfg, pub)
@@ -374,7 +478,9 @@ class CE02M3Poller(DevicePoller):
         self._t_uptime       = 0.0
         ch = cfg.get("channels_enabled", {})
         self._en_volt  = ch.get("voltages", True)
-        self._en_lvolt = ch.get("line_voltages", True)
+        # The MQTT tab's «Напряжения» key covers Uab/Ubc/Uca too; the yaml-only
+        # `line_voltages` can still turn the line voltages off on their own.
+        self._en_lvolt = self._en_volt and ch.get("line_voltages", True)
         self._en_curr  = ch.get("currents", True)
         self._en_pact  = ch.get("power_active", True)
         self._en_preac = ch.get("power_reactive", True)
@@ -459,10 +565,12 @@ class CE02M3Poller(DevicePoller):
         self.publish_device_meta(name)
         # Every control is a measurement: readonly. Meta only for a control the
         # polls publish (tests/test_ce02m3_meta.py — no orphan meta).
-        diag = [("uptime_s", "s"), ("mcu_vdd", "V"), ("mcu_temp", "°C")]
-        for n, unit in self._power_controls() + self._energy_controls() + diag:
+        for n, unit in self._power_controls() + self._energy_controls():
             self.pub.pub_control_meta(self.device_id, n, "readonly", "1")
             self.pub.pub_control_units(self.device_id, n, unit)
+        self._publish_sys_meta()
+        if self._sys_enabled("uptime_s"):
+            self.pub.pub_control_units(self.device_id, "uptime_s", "s")
         # Device CT K×1000 (holding 557..559); not applied to MQTT currents
         self.pub.pub_control_meta(self.device_id, "ct_ratio_x1000", "readonly", "1")
         self.pub.pub_control(self.device_id, "ct_ratio_x1000", str(self._ct_ratio_x1000))
@@ -566,7 +674,7 @@ class CE02M3Poller(DevicePoller):
         try:
             regs = self._read_power_input_block()
         except Exception as e:
-            self.log.warning("power poll: %s", e)
+            self.log_poll_fail("power poll", e)
             return
         lost = self._meter_link_check(not any(regs))
         self._set_meter_link(lost)
@@ -802,17 +910,25 @@ class CE02M3Poller(DevicePoller):
                           self._uptime_last, uptime)
             self.fmb_firmware_invalidate()
         self._uptime_last = uptime
-        self.pub.pub_control(self.device_id, "uptime_s", str(uptime))
+        if self._sys_enabled("uptime_s"):
+            self.pub.pub_control(self.device_id, "uptime_s", str(uptime))
 
     def _poll_diag(self) -> None:
+        vdd_on = self._sys_enabled("mcu_vdd")
+        temp_on = self._sys_enabled("mcu_temp")
+        if not (vdd_on or temp_on):
+            return
         try:
             # Same scale as MR-02m / DTV: reg 123 ×0.01 V, reg 124 ×0.1 °C.
             r = self.read_input_registers(self.address, 123, 2)
-            self.pub.pub_control(self.device_id, "mcu_vdd", str(round(r[0] * 0.01, 2)))
-            self.pub.pub_control(
-                self.device_id, "mcu_temp",
-                str(round(self._s16(r[1]) * 0.1, 1)),
-            )
+            if vdd_on:
+                self.pub.pub_control(
+                    self.device_id, "mcu_vdd", str(round(r[0] * 0.01, 2)))
+            if temp_on:
+                self.pub.pub_control(
+                    self.device_id, "mcu_temp",
+                    str(round(self._s16(r[1]) * 0.1, 1)),
+                )
         except Exception:
             pass
 

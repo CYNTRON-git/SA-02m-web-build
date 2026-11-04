@@ -3,7 +3,9 @@
 from __future__ import annotations
 
 import random
+import sys
 import unittest
+from unittest import mock
 
 from sa02m_homekit import constants as C
 from sa02m_homekit import identity, setup_payload
@@ -67,9 +69,14 @@ class QrTests(unittest.TestCase):
         self.assertTrue(all(len(r) == len(rows) and set(r) <= {"0", "1"} for r in rows))
         self.assertIn("1", "".join(rows))
 
-    @unittest.skipIf(_deps.HAVE_SEGNO, "segno present — the absent path is proven where it is absent")
     def test_without_segno_returns_none(self):
-        self.assertIsNone(setup_payload.qr_matrix("X-HM://0000000000000"))
+        # segno is made absent in-process (a None entry in sys.modules makes
+        # `import segno` raise ImportError), so the absent branch runs on every
+        # interpreter, the venv/CI one with segno installed included.
+        with mock.patch.dict(sys.modules, {"segno": None}):
+            with self.assertRaises(ImportError):
+                import segno  # noqa: F401 - the precondition: segno is absent here
+            self.assertIsNone(setup_payload.qr_matrix("X-HM://0000000000000"))
 
 
 if __name__ == "__main__":

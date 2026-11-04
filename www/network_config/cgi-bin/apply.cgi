@@ -47,6 +47,18 @@ reject_bad_input() {
     exit 0
 }
 
+# The canonical conf write was refused by sa02m-iface-conf-write.sh (a foreign
+# line its content guard does not admit — docs/contracts/ethernet-iface-naming.md
+# §5.4). Nothing was written or scheduled: answer the save as failed, before any
+# header, and stop — no time/zone step, no live apply. $1 = the refused conf.
+net_conf_write_refused() {
+    echo "$(date '+%Y-%m-%d %H:%M:%S') apply.cgi: $1 write refused by sa02m-iface-conf-write — network save NOT applied" \
+        >> /var/log/sa02m_install.log 2>&1
+    echo "Content-type: application/json"; echo ""
+    echo '{"ok":false,"error":"conf_write_refused"}'
+    exit 0
+}
+
 # ── Foreign-stanza preservation ────────────────────────────────────────────
 # The panel regenerates an interfaces.d conf from the form on every save, and
 # until now that DELETED every line it did not itself write — including the
@@ -244,10 +256,13 @@ write_lan_pair() {
     conf_scan_source "$src_conf" "$src_if"
 
     # Canonical conf — always, whatever the board is called today. This is what
-    # survives the boot-time rename.
+    # survives the boot-time rename. A refused write stops the WHOLE save
+    # (Operator, 2026-10-30): no legacy mirror, no retire, no bounce. Writing
+    # the mirror anyway would apply settings live that the canonical conf does
+    # not carry, and the next boot (the rename) would silently revert them.
     conf_backup "$canon_conf"
     conf_assemble "$hdr $canon" "iface $canon inet $inet" "$@"
-    write_iface_conf "$canon_conf" "${CONF_LINES[@]}"
+    write_iface_conf "$canon_conf" "${CONF_LINES[@]}" || return 1
 
     if [ -d "/sys/class/net/$legacy" ]; then
         # DUAL-CONF window: the rename happens at the next boot, so the legacy
@@ -255,14 +270,24 @@ write_lan_pair() {
         # content under `allow-hotplug` (NOT `auto`) so that once the rename
         # succeeds `ifup -a` ignores this stanza and networking.service stays
         # clean, and bounce the interface that is really up.
+        # A refused mirror (canonical already written): bouncing the live port
+        # would re-apply its OLD conf while the save reads as «applied» — so no
+        # bounce, and the answer says the settings take effect after the reboot
+        # (Operator, 2026-10-30; NET_APPLY_DEFERRED, read at the response).
         conf_backup "$legacy_conf"
         conf_assemble "allow-hotplug $legacy" "iface $legacy inet $inet" "$@"
-        write_iface_conf "$legacy_conf" "${CONF_LINES[@]}"
-        schedule_iface_apply "$legacy"
+        if write_iface_conf "$legacy_conf" "${CONF_LINES[@]}"; then
+            schedule_iface_apply "$legacy"
+        else
+            NET_APPLY_DEFERRED=1
+            echo "$(date '+%Y-%m-%d %H:%M:%S') apply.cgi: mirror $legacy_conf write refused by sa02m-iface-conf-write — $canon_conf saved, live apply skipped (takes effect after reboot)" \
+                >> /var/log/sa02m_install.log 2>&1
+        fi
     else
         lan_conf_retire "$legacy_conf" "$canon"
         schedule_iface_apply "$canon"
     fi
+    return 0
 }
 
 # Write an interfaces.d conf from a list of complete lines.
@@ -302,6 +327,7 @@ DATETIME=$(printf '%s' "${DATETIME:-}" | sed 's/^[[:space:]]*//;s/[[:space:]]*$/
 REDIRECT="applied"
 timezone_failed=0
 time_ok=0
+NET_APPLY_DEFERRED=0   # 1 = conf saved, live apply skipped (write_lan_pair)
 # Interfaces to bounce after HTTP response (space-separated).
 # Suffix ":down" = ifdown only (conf removed). Bare name = ifdown+ifup.
 # Background via nohup — bare (...)& dies with fcgiwrap when CGI exits.
@@ -388,10 +414,12 @@ if [ "$SKIP_NETWORK" != "1" ] && [ "$NET_IFACE" = "eth0" ]; then
         MANAGED0=("    address $IP" "    netmask $NETMASK")
         [ -n "$GATEWAY" ] && MANAGED0+=("    gateway $GATEWAY")
         [ -n "$DNS" ]     && MANAGED0+=("    dns-nameservers $DNS")
-        write_lan_pair eth0 end0 "$IF0" "$CONF0" auto static "${MANAGED0[@]}"
+        write_lan_pair eth0 end0 "$IF0" "$CONF0" auto static "${MANAGED0[@]}" \
+            || net_conf_write_refused "$(lan_iface_conf eth0)"
         echo "$(date '+%Y-%m-%d %H:%M:%S') eth0.conf updated IP=$IP (merged from ${CONF0})" >> /var/log/sa02m_install.log 2>&1
     else
-        write_lan_pair eth0 end0 "$IF0" "$CONF0" auto dhcp
+        write_lan_pair eth0 end0 "$IF0" "$CONF0" auto dhcp \
+            || net_conf_write_refused "$(lan_iface_conf eth0)"
         echo "$(date '+%Y-%m-%d %H:%M:%S') eth0.conf set to dhcp (merged from ${CONF0})" >> /var/log/sa02m_install.log 2>&1
     fi
 fi
@@ -407,12 +435,14 @@ if [ "$SKIP_NETWORK" != "1" ] && [ "$NET_IFACE" = "eth1" ]; then
         MANAGED1=("    address $IP_ETH1" "    netmask $NETMASK_ETH1")
         [ -n "$GATEWAY_ETH1" ] && MANAGED1+=("    gateway $GATEWAY_ETH1")
         [ -n "$DNS_ETH1" ]     && MANAGED1+=("    dns-nameservers $DNS_ETH1")
-        write_lan_pair eth1 end1 "$IF1" "$CONF1" allow-hotplug static "${MANAGED1[@]}"
+        write_lan_pair eth1 end1 "$IF1" "$CONF1" allow-hotplug static "${MANAGED1[@]}" \
+            || net_conf_write_refused "$(lan_iface_conf eth1)"
         echo "$(date '+%Y-%m-%d %H:%M:%S') eth1.conf updated IP=$IP_ETH1 (merged from ${CONF1})" >> /var/log/sa02m_install.log 2>&1
     else
         # Match installer default: allow-hotplug + dhcp + metric 100. Default
         # route comes from dhclient exit-hook (ensure below), not a hard-coded GW.
-        write_lan_pair eth1 end1 "$IF1" "$CONF1" allow-hotplug dhcp "    metric 100"
+        write_lan_pair eth1 end1 "$IF1" "$CONF1" allow-hotplug dhcp "    metric 100" \
+            || net_conf_write_refused "$(lan_iface_conf eth1)"
         echo "$(date '+%Y-%m-%d %H:%M:%S') eth1.conf set to dhcp (merged from ${CONF1})" >> /var/log/sa02m_install.log 2>&1
         # OTA-only boards may lack the installer hook; www-data cannot write
         # /etc/dhcp — pinned helper (fixed content, no args). Best-effort.
@@ -481,6 +511,16 @@ fi
 # Schedule background bounce before headers — response must reach the browser
 # first; ifdown drops the TCP session when the IP changes.
 apply_ifaces_live
+
+# Saved but not applied live (a refused legacy mirror, write_lan_pair): a JSON
+# answer, never the «applied» 302. `ok` = the save landed; `applied:false` +
+# `reason` = it takes effect at the next boot; `status` = the time/zone outcome
+# from the same vocabulary as the 302 (a fixed token set, never request text).
+if [ "$NET_APPLY_DEFERRED" = "1" ]; then
+    echo "Content-type: application/json"; echo ""
+    printf '{"ok":true,"applied":false,"reason":"reboot_required","status":"%s"}\n' "$REDIRECT"
+    exit 0
+fi
 
 echo "Status: 302 Found"
 echo "Content-type: text/html"

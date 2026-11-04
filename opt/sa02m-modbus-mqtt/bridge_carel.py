@@ -202,7 +202,7 @@ class CarelPoller(DevicePoller):
                 return self._read_uaria()
             return self._read_crst()
         except Exception as e:
-            self.log.warning("carel poll: %s", e)
+            self.log_poll_fail("carel poll", e)
             return None
 
     def _read_crst(self) -> dict:

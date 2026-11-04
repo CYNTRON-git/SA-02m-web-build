@@ -1,0 +1,23 @@
+{
+  "default_agent": "ai-dev",
+  "instructions": [
+    ".ai-dev/PROTOCOL.md"
+  ],
+  "permission": {
+    "edit": "allow",
+    "bash": "allow",
+    "webfetch": "allow",
+    "question": "allow"
+  },
+  "agent": {
+    "build": {
+      "disable": true
+    },
+    "plan": {
+      "disable": true
+    }
+  },
+  "plugin": [
+    "./plugins/ai-dev.mjs"
+  ]
+}

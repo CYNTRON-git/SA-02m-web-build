@@ -446,8 +446,8 @@ class TestWaitTimeoutIsTyped(unittest.TestCase):
             self.skipTest(
                 "python-socketio is NOT installed on this host — the "
                 "wait-timeout wording hint (_SIO_WAIT_TIMEOUT_MARK) is "
-                "unpinned here; CI installs no socketio either, so run this "
-                "on the board or after `pip install python-socketio`")
+                "unpinned here; CI installs it (web-quality.yml), so run this "
+                "on the board, in CI or after `pip install python-socketio`")
         source = inspect.getsource(socketio.Client.connect).lower()
         self.assertIn(_SIO_WAIT_TIMEOUT_MARK, source,
                       "python-socketio reworded its wait_timeout error; "

@@ -1,20 +1,10 @@
 # -*- coding: utf-8 -*-
-"""
-Остановка служб, занимающих RS-485, на время сканирования/прошивки и гарантированное
-восстановление по окончании (в том числе при аварийном завершении — см. signals в service.py,
-ExecStopPost в systemd unit и глобальный _restore_all_on_exit()).
-
-Используются команды:
-  systemctl is-active <svc>
-  systemctl stop      <svc>
-  systemctl start     <svc>
-  fuser /dev/<port>
-
-Запуск — через sudo (правила в /etc/sudoers.d/sa02m-flasher, минимальный whitelist).
-"""
+"""Flasher ownership adapter; durable recovery belongs to sa02m_ports broker."""
 from __future__ import annotations
 
 import atexit
+import json
+import sys
 import logging
 import shutil
 import subprocess
@@ -26,7 +16,9 @@ from typing import Iterable, Iterator, List, Optional, Set
 
 log = logging.getLogger(__name__)
 
-_LEASE_LOCK = threading.Lock()
+_LEASE_LOCK = threading.RLock()
+_MANUAL_LEASES = {}
+_MANUAL_USERS = {}
 _STOPPED_SERVICES: Set[str] = set()   # учёт глобально остановленных служб (для восстановления)
 
 
@@ -425,145 +417,112 @@ def wait_port_poll_free(device_path: str, timeout_s: float = 4.0) -> bool:
     return is_port_poll_free(device_path)
 
 
+def _lease_type():
+    package = Path(__file__).resolve().parents[2] / "sa02m-port-coordinator"
+    if str(package) not in sys.path:
+        sys.path.insert(0, str(package))
+    from sa02m_ports import Lease
+    return Lease
+
+
+COORDINATOR_STATUS = Path("/run/sa02m-port-coordinator/status.json")
+
+
+def configured_scope(device_path: str) -> List[str]:
+    """Whole services the coordinator stops for this UART — read from its public
+    snapshot (`configured_scopes`, docs/contracts/port-ownership.md). Display
+    only: the broker enforces the scope, this never widens it. [] when the
+    broker is down or the file is unreadable."""
+    try:
+        scopes = json.loads(COORDINATOR_STATUS.read_text(encoding="utf-8")).get("configured_scopes")
+        units = (scopes or {}).get(device_path) or []
+        return [u for u in units if isinstance(u, str)]
+    except (OSError, ValueError, AttributeError):
+        return []
+
+
+def is_reserved(device_path: str) -> bool:
+    """True while the manual «release ports» lease on this UART is held."""
+    with _LEASE_LOCK:
+        return device_path in _MANUAL_LEASES
+
+
+def released_services_for(device_path: str) -> List[str]:
+    with _LEASE_LOCK:
+        lease = _MANUAL_LEASES.get(device_path)
+        if lease is None:
+            return []
+        return sorted(lease.status.get("lease", {}).get("services", []))
+
+
 def released_services() -> List[str]:
     with _LEASE_LOCK:
-        return sorted(_STOPPED_SERVICES)
+        return sorted({service for lease in _MANUAL_LEASES.values()
+                       for service in lease.status.get("lease", {}).get("services", [])})
 
 
 def release_pollers(services_to_stop: Iterable[str]) -> dict:
-    stopped_now: List[str] = []
-    already_released: List[str] = []
-    inactive: List[str] = []
-    missing: List[str] = []
-    failed: List[str] = []
-
+    """Legacy manual button reserves all present COMs through the same broker."""
+    acquired, failed = [], []
     with _LEASE_LOCK:
-        for svc in list(services_to_stop):
-            actual = resolve_service_name(svc)
-            if not actual:
-                missing.append(svc)
+        for number in range(1, 6):
+            port = "/dev/COM%d" % number
+            if port in _MANUAL_LEASES or not Path(port).exists():
                 continue
-            if actual in _STOPPED_SERVICES:
-                already_released.append(actual)
-                continue
-            if not is_service_active(actual):
-                inactive.append(actual)
-                continue
-            if stop_service(actual):
-                _STOPPED_SERVICES.add(actual)
-                stopped_now.append(actual)
-            else:
-                failed.append(actual)
-
-    return {
-        "stopped_now": stopped_now,
-        "already_released": already_released,
-        "inactive": inactive,
-        "missing": missing,
-        "failed": failed,
-    }
+            try:
+                lease = _lease_type()(port, "flasher")
+                lease.__enter__()
+                _MANUAL_LEASES[port] = lease
+                acquired.append(port)
+            except Exception as exc:
+                failed.append(str(exc))
+        return {"stopped_now": released_services(), "already_released": [],
+                "inactive": [], "missing": [], "failed": failed,
+                "reserved_ports": acquired}
 
 
 def restore_pollers(services_to_start: Iterable[str]) -> dict:
-    restarted: List[str] = []
-    already_running: List[str] = []
-    not_released: List[str] = []
-    missing: List[str] = []
-    failed: List[str] = []
-
+    failed, restored = [], []
     with _LEASE_LOCK:
-        for svc in list(services_to_start):
-            actual = resolve_service_name(svc)
-            if not actual:
-                missing.append(svc)
+        for port, lease in list(_MANUAL_LEASES.items()):
+            if _MANUAL_USERS.get(port, 0):
+                failed.append(port + ": operation active")
                 continue
-            if actual not in _STOPPED_SERVICES:
-                if is_service_active(actual):
-                    already_running.append(actual)
-                else:
-                    not_released.append(actual)
-                continue
-            if start_service(actual):
-                _STOPPED_SERVICES.discard(actual)
-                restarted.append(actual)
-            else:
-                failed.append(actual)
-
-    return {
-        "restarted": restarted,
-        "already_running": already_running,
-        "not_released": not_released,
-        "missing": missing,
-        "failed": failed,
-    }
+            try:
+                lease.close()
+                restored.append(port)
+            except Exception as exc:
+                failed.append(str(exc))
+            finally:
+                # Broker owns any failed restoration, not this connection.
+                del _MANUAL_LEASES[port]
+    return {"restarted": restored, "already_running": [], "not_released": [],
+            "missing": [], "failed": failed}
 
 
 @contextmanager
-def port_lease(
-    device_path: str,
-    services_to_stop: Iterable[str],
-    *,
-    require_free: bool = True,
-    preserve_released: bool = False,
-) -> Iterator[List[str]]:
-    """
-    Контекст-менеджер: останавливает указанные службы, проверяет освобождение порта,
-    возвращает список фактически остановленных служб (для логов), по выходу — запускает их обратно.
-
-    Безопасен при вложении (если одна служба уже в _STOPPED_SERVICES — не трогает её повторно).
-
-    Быстрый путь: если fuser пуст и опросчики (MPLC/MQTT) не держат этот порт — не вызываем
-    systemctl stop/start глобальных служб (экономит ~3–4 с на каждом скане).
-    """
-    device = str(device_path)
-    stopped_now: List[str] = []
-    preserved: Set[str] = set()
-    if preserve_released:
-        with _LEASE_LOCK:
-            preserved = set(_STOPPED_SERVICES)
-    poll_free = False
+def port_lease(device_path: str, services_to_stop: Iterable[str], *,
+               require_free: bool = True, preserve_released: bool = False) -> Iterator[List[str]]:
+    """Acquire configured scope; caller service lists cannot widen privileges."""
     with _LEASE_LOCK:
-        poll_free = is_port_poll_free(device)
-        if poll_free:
-            log.debug("port_lease: быстрый путь для %s (порт не удерживается опросчиками)", device)
-        else:
-            for svc in list(services_to_stop):
-                actual = resolve_service_name(svc)
-                if not actual:
-                    continue
-                if actual in _STOPPED_SERVICES:
-                    continue
-                if is_service_active(actual):
-                    if stop_service(actual):
-                        _STOPPED_SERVICES.add(actual)
-                        stopped_now.append(actual)
-    try:
-        if require_free and not wait_port_poll_free(device):
-            pids = port_occupants(device)
-            if pids:
-                raise PortBusyError(device, pids)
-        yield list(stopped_now)
-    finally:
-        with _LEASE_LOCK:
-            for svc in reversed(stopped_now):
-                if preserve_released and svc in preserved:
-                    continue
-                try:
-                    start_service(svc)
-                finally:
-                    _STOPPED_SERVICES.discard(svc)
+        manual = _MANUAL_LEASES.get(device_path)
+        if manual:
+            if _MANUAL_USERS.get(device_path, 0):
+                raise PortBusyError(device_path, ["another flasher operation"])
+            _MANUAL_USERS[device_path] = _MANUAL_USERS.get(device_path, 0) + 1
+    if manual:
+        try:
+            yield list(manual.status.get("lease", {}).get("services", []))
+        finally:
+            with _LEASE_LOCK:
+                _MANUAL_USERS[device_path] -= 1
+        return
+    with _lease_type()(device_path, "flasher") as lease:
+        yield list(lease.status.get("lease", {}).get("services", []))
 
 
 def _restore_all_on_exit() -> None:
-    """Страховочное восстановление для atexit и сигнал-хэндлеров service.py."""
-    with _LEASE_LOCK:
-        remaining = list(_STOPPED_SERVICES)
-        _STOPPED_SERVICES.clear()
-    for svc in reversed(remaining):
-        try:
-            start_service(svc)
-        except Exception:
-            log.exception("Не удалось восстановить службу %s при завершении", svc)
+    restore_pollers(())
 
 
 atexit.register(_restore_all_on_exit)

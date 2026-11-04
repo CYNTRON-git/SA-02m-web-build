@@ -25,6 +25,11 @@ DEVICE_ID_FILE="${SA02M_DEVICE_ID_FILE:-/etc/machine-id}"
 # only. /var/lib/sa02m-homeconnect/ is never archived — it holds the OAuth
 # refresh token of the owner's BSH account (docs/contracts/home-connect.md P4,
 # §12); a restored board signs in anew.
+# Audio recorder: nothing is archived — not /var/lib/sa02m-audio/ (the
+# recordings: speech of people on site, and the audit events), not the upload
+# token in /etc/sa02m-audio/, and never a clip on a removable medium
+# (docs/contracts/audio-recorder.md §19). Leaving them out of this allow-list
+# is the whole guarantee; a restored board starts with the recorder off.
 collect_paths() {
   local p
   # Explicit files

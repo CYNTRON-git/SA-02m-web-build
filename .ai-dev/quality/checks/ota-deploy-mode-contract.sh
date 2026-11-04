@@ -50,6 +50,7 @@ cases = [
     ('etc/sudoers.d/sa02m-www', '/etc/sudoers.d/sa02m-www', '0644'),
     ('www/network_config/cgi-bin/apply.cgi', '/var/www/network_config/cgi-bin/apply.cgi', '0755'),
     ('firmware/mplc4/mplc_cyntron.so', '/opt/mplc4/mplc_cyntron.so', '0755'),
+    ('etc/fix-eth.sh', '/usr/local/bin/fix-eth.sh', '0755'),
 ]
 for rel, dst, want in cases:
     got = deploy_mode(rel, dst)
@@ -57,7 +58,7 @@ for rel, dst, want in cases:
         raise SystemExit(f'{rel} -> {dst}: got {got}, want {want}')
 print('ok')
 " >/dev/null 2>&1 \
-    && pass "deploy_mode: sbin helpers 0755, conf/sudoers 0644, cgi/so 0755" \
+    && pass "deploy_mode: sbin/bin helpers 0755, conf/sudoers 0644, cgi/so 0755" \
     || fail "deploy_mode cases failed (extension-less sbin helpers must be 0755)"
 
 python3 -c "

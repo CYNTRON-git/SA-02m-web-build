@@ -31,13 +31,18 @@
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+if [ "${SA02M_INSTALL_GUARDED:-0}" != 1 ]; then
+    exec python3 "$SCRIPT_DIR/scripts/install-maintenance.py" "$SCRIPT_DIR/install.sh" "$@"
+fi
 export LOG_FILE="/var/log/sa02m_install.log"
 
 # ── Parse arguments ────────────────────────────────────────────────────────
 export NETMASK="255.255.255.0"
 export DNS_SERVERS="77.88.8.8 77.88.8.1"
 export NET_IFACE="eth0"
-export PORT="9999"
+# Panel port: set by --port only; its home is /etc/sa02m_web_port.conf
+# (etc/sa02m-web-port-lib.sh). Resolved after lib.sh is sourced.
+_ARG_PORT=""
 export WEB_ROOT="/var/www/network_config"
 export ADMIN_PASS="cyntron"
 export SA02M_SERIAL_PROFILE=""
@@ -54,6 +59,9 @@ export SA02M_SKIP_GW_REPAIR="${SA02M_SKIP_GW_REPAIR:-0}"
 # IP_ADDRESS and GATEWAY are resolved after lib.sh is sourced (variant-aware defaults)
 _ARG_IP=""
 _ARG_GW=""
+# --pass given on this run: the summary reports it as applied or ignored (it
+# applies only when /etc/sa02m_web.env is absent — scripts/03-webserver.sh).
+_ARG_PASS_SET=0
 # Install profile flags, validated after lib.sh is sourced (sa02m_profile_apply_cli).
 _PROFILE_SKIP=""
 _PROFILE_KEEP=""
@@ -63,8 +71,8 @@ while [[ $# -gt 0 ]]; do
         --ip)      _ARG_IP="$2";             shift 2 ;;
         --mask)    NETMASK="$2";             shift 2 ;;
         --gw)      _ARG_GW="$2";             shift 2 ;;
-        --port)    PORT="$2";                shift 2 ;;
-        --pass)    ADMIN_PASS="$2";          shift 2 ;;
+        --port)    _ARG_PORT="$2";           shift 2 ;;
+        --pass)    ADMIN_PASS="$2"; _ARG_PASS_SET=1; shift 2 ;;
         --serial-profile) SA02M_SERIAL_PROFILE="$2"; shift 2 ;;
         --variant) SA02M_HW_VARIANT="$2";   shift 2 ;;
         --canonical-iface-now) SA02M_CANONICAL_IFACE_NOW="1"; shift ;;
@@ -111,6 +119,18 @@ esac
 # not carry. An unknown ID writes nothing and stops the run. One home:
 # etc/sa02m-install-profile-lib.sh.
 sa02m_profile_apply_cli "$_PROFILE_SKIP" "$_PROFILE_KEEP" || exit 2
+# Panel port: --port is saved (validated — garbage exits 2 before anything is
+# touched) so every later re-render keeps it; without --port the saved port is
+# used (a board installed with --port before it was saved is carried over once
+# from its live site), else the default 9999. The modules render nginx from the
+# file, not from this variable (scripts/lib.sh sa02m_render_nginx_site).
+if [ -n "$_ARG_PORT" ]; then
+    sa02m_web_port_persist "$_ARG_PORT" || exit 2
+else
+    sa02m_web_port_migrate
+fi
+export PORT
+PORT=$(sa02m_web_port_effective)
 
 # Migration: create /etc/sa02m_stacks.conf from live state ONLY if absent (an
 # operator decision is never overwritten; never under a rootfs build — the
@@ -122,6 +142,17 @@ if [ -z "${SA02M_ROOTFS_BUILD:-}" ]; then
         log OK "$_stacks_mig"
     fi
 fi
+
+# Erase the web password from summary lines earlier installers wrote into the
+# panel-served logs (audit 2026-10-24 F1; etc/sa02m-web-log-scrub-lib.sh, the
+# home shared with the update runner). Before any module, so a failed run
+# still scrubs; idempotent, never fatal, logs the file — never its lines.
+while IFS= read -r _scrubbed; do
+    case "$_scrubbed" in
+        'scrub error:'*) log WARN "$_scrubbed" ;;
+        *) log INFO "Журнал: из старой строки итога установки удалён пароль панели ($_scrubbed)" ;;
+    esac
+done < <(sa02m_scrub_cred_banner_logs 2>&1)
 
 # Persist variant if explicitly provided, then resolve IP/GW defaults
 if [ -n "$SA02M_HW_VARIANT" ]; then
@@ -136,6 +167,11 @@ export GATEWAY="${_ARG_GW:-$(sa02m_default_gw)}"
 # factory default and make it unreachable.
 export IP_EXPLICIT=$([ -n "$_ARG_IP" ] && echo 1 || echo 0)
 HW_VARIANT=$(sa02m_hw_variant)
+# Whether the panel credential pre-dates this run, read before 03-webserver.sh
+# may create it: the summary reports «kept» or «set» from this and the --pass
+# flag, never from the value (audit 2026-10-24 F1; scripts/lib.sh
+# sa02m_web_cred_summary).
+_WEB_ENV_EXISTED=$([ -f /etc/sa02m_web.env ] && echo 1 || echo 0)
 
 echo ""
 # Derive the banner version from the shipped web VERSION file (single source),
@@ -245,6 +281,7 @@ sa02m_run_module() {
 sa02m_run_module 01-system.sh
 sa02m_run_module 02-network.sh
 sa02m_run_module 03-webserver.sh
+sa02m_run_module 03a-port-coordinator.sh
 sa02m_run_module 04-flasher.sh
 sa02m_run_module 05-cloud-agent.sh
 # Bus-free RS-485 module-roster aggregator (reads flasher scan cache + MQTT bridge).
@@ -280,6 +317,13 @@ fi
 if [ "${SA02M_SKIP_RULES:-0}" != "1" ] && [ -f "$SCRIPT_DIR/scripts/06b-rules.sh" ]; then
     log INFO "──── Опциональный стек: сценарии (sa02m-rules) ────"
     sa02m_run_module 06b-rules.sh || log WARN "06b-rules.sh завершился с ошибкой"
+fi
+# On-command audio recorder — on EVERY board, shipped off (Operator decision
+# F6; docs/contracts/audio-recorder.md). After 06b-rules.sh: its upload path
+# imports sa02m_rules.http_guard (shared dependency before its consumer).
+if [ "${SA02M_SKIP_AUDIO:-0}" != "1" ] && [ -f "$SCRIPT_DIR/scripts/15-audio.sh" ]; then
+    log INFO "──── Запись звука по команде (sa02m-audio, служба выключена) ────"
+    sa02m_run_module 15-audio.sh || log WARN "15-audio.sh завершился с ошибкой"
 fi
 if [ "${SA02M_SKIP_AGENT_API:-0}" != "1" ] && [ -f "$SCRIPT_DIR/scripts/13-agent-api.sh" ]; then
     log INFO "──── API для ИИ-агентов (sa02m-agent-api, служба выключена) ────"
@@ -409,7 +453,7 @@ echo ""
 log OK "════════════════════════════════════════"
 log OK " Установка завершена!"
 log OK " URL  : http://${IP_ADDRESS}:${PORT}"
-log OK " Логин: admin / ${ADMIN_PASS}"
+sa02m_web_cred_summary "$_WEB_ENV_EXISTED" "$_ARG_PASS_SET"
 log OK "════════════════════════════════════════"
 echo ""
 

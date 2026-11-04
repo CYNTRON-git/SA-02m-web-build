@@ -181,7 +181,7 @@ class SpodesPoller(DevicePoller):
         except Exception as e:
             self._drop()
             self.mark_fail()
-            self.log.warning("power poll: %s", type(e).__name__)
+            self.log_poll_fail("power poll", type(e).__name__)
 
     def poll_slow_if_due(self, now: float) -> None:
         if now - self._t_energy >= self._poll_energy_s:
@@ -205,7 +205,7 @@ class SpodesPoller(DevicePoller):
         except Exception as e:
             self._drop()
             self.mark_fail()
-            self.log.warning("energy poll: %s", type(e).__name__)
+            self.log_poll_fail("energy poll", type(e).__name__)
 
     def _poll_profiles(self) -> None:
         """Slow path. The stack caps each exchange at PROFILE_BUDGET_S."""
@@ -216,7 +216,7 @@ class SpodesPoller(DevicePoller):
             load = profiles.read_load_profile(session, start, end)
             events = profiles.read_event_log(session, start, end)
         except Exception as e:
-            self.log.warning("profile poll: %s", type(e).__name__)
+            self.log_poll_fail("profile poll", type(e).__name__)
             return
         self._write_rows("profile", load)
         self._write_rows("events", events)

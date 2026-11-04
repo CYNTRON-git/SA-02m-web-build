@@ -190,6 +190,27 @@ class VarsStrictTests(unittest.TestCase):
             on_disk = json.loads(fh.read(), parse_constant=refuse)
         self.assertEqual(on_disk["vars"]["x"], {"k": [None]})
 
+    def test_set_refuses_a_nan_inside_a_nested_tuple(self):
+        """Any depth includes a tuple inside a list inside a tuple (review
+        round 3, A-R3-2): refused, not scrubbed-with-error."""
+        bucket = {}
+        rec = self.run_body("Vars.set('k', [(1, (math.nan,))])", bucket)
+        self.assertFalse(rec["ok"])
+        self.assertNotIn("k", bucket)  # RED under M17: stored as [[1, [None]]]
+
+    def test_a_tuple_over_a_fixed_list_keeps_its_identity(self):
+        """Only a non-finite value reachable through tuples alone rebuilds
+        a tuple; a list inside the tuple is fixed in place, so the tuple —
+        and every reference to it — stays a tuple (R3-1 semantics)."""
+        bucket = {}
+        rec = self.run_body("inner = [1]\nt = (inner, 2)\n"
+                            "Vars.set('t', t)\nVars.set('u', t)\n"
+                            "inner.append(math.nan)", bucket)
+        self.assertIs(type(bucket["t"]), tuple)
+        self.assertIs(bucket["t"], bucket["u"])
+        self.assertEqual(bucket["t"][0], [1, None])
+        self.assertFalse(rec["ok"])
+
     def test_a_cyclic_value_does_not_hang_the_sweep(self):
         bucket = {}
         rec = self.run_body("l = [1]\nl.append(l)\nVars.set('c', l)", bucket)
@@ -258,6 +279,82 @@ class SandboxNamespaceTests(unittest.TestCase):
         # The real flag is `_`-prefixed: the AST walk refuses touching it.
         self.assertEqual(code_runner._walk_ok(
             code_runner.ast.parse("Vars._scrubbed = False")), "banned attr")
+
+
+class VarsSweepBoundTests(unittest.TestCase):
+    """The Vars scrub is linear and capped (review round 3, R3-1): a chain
+    of D nested tuples with a NaN at the bottom took O(D²) on a4a9278a
+    (D=8000: 25.8 s, after the RUN_S deadline), which a code body can build
+    in milliseconds — a way to hang the single-threaded engine past every
+    deadline mechanism. Now: one walk, a node cap, and a value past the cap
+    is dropped or refused with a run error."""
+
+    D = 8000  # past the default recursion limit too — the walk must iterate
+
+    def setUp(self):
+        td = tempfile.TemporaryDirectory()
+        self.addCleanup(td.cleanup)
+        self.path = os.path.join(td.name, "sa02m-rules-code.json")
+
+    @staticmethod
+    def _chain(depth):
+        t = (math.nan,)
+        for _ in range(depth):
+            t = (t,)
+        return t
+
+    def test_a_deep_nan_chain_is_scrubbed_in_linear_time(self):
+        import time
+        bucket = {"k": [self._chain(self.D)]}
+        t0 = time.perf_counter()
+        reason = code_runner.scrub_vars(bucket)  # RED on a4a9278a: ~26 s
+        self.assertLess(time.perf_counter() - t0, 5.0)
+        self.assertIn("finite", reason)
+        node, depth = bucket["k"][0], 0
+        while isinstance(node, list):
+            node, depth = node[0], depth + 1
+        self.assertEqual((node, depth), (None, self.D + 1))
+
+    def test_a_deep_chain_slipped_in_through_the_sandbox_ends_within_budget(self):
+        import os, tempfile, time
+        td = tempfile.TemporaryDirectory()
+        self.addCleanup(td.cleanup)
+        body = ("Vars.set('k', [0])\nt = (math.nan,)\n"
+                "for i in range(%d):\n    t = (t,)\nVars.get('k')[0] = t\n" % self.D)
+        bucket = {}
+        t0 = time.perf_counter()
+        rec = code_runner.run_code({"id": "c", "name": "c", "code": body},
+                                   "", {}, lambda *_a: None, 1.0, 55.0, 37.0,
+                                   {"notify_queue": [], "runs": []},
+                                   os.path.join(td.name, "x.json"), bucket,
+                                   budget_s=2.0)
+        self.assertLess(time.perf_counter() - t0, 6.0)  # RED on a4a9278a: ~26 s
+        self.assertFalse(rec["ok"])
+        json.dumps(bucket, allow_nan=False)
+
+    def test_a_value_past_the_node_cap_is_refused_by_set_and_dropped_by_the_sweep(self):
+        cap = code_runner.VARS_NODE_MAX
+        bucket = {}
+        rec = VarsStrictTests.run_body(self, "Vars.set('k', [0] * %d)" % (cap + 1), bucket)
+        self.assertFalse(rec["ok"])
+        self.assertIn("too large", rec["error"])
+        self.assertNotIn("k", bucket)
+        bucket = {}
+        rec = VarsStrictTests.run_body(
+            self, "Vars.set('k', [0])\nVars.set('ok', 1)\n"
+                  "Vars.get('k').extend([0] * %d)" % (cap + 1), bucket)
+        self.assertFalse(rec["ok"])
+        self.assertIn("too large", rec["error"])
+        self.assertIsNone(bucket["k"])
+        self.assertEqual(bucket["ok"], 1)
+
+    def test_a_value_at_the_node_cap_is_kept(self):
+        cap = code_runner.VARS_NODE_MAX
+        bucket = {}
+        rec = VarsStrictTests.run_body(self, "Vars.set('k', [0] * %d)" % (cap - 1), bucket)
+        self.assertTrue(rec["ok"], rec.get("error"))
+        self.assertEqual(len(bucket["k"]), cap - 1)
+
 
 
 if __name__ == "__main__":

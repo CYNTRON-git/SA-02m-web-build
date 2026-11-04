@@ -53,8 +53,44 @@ sa02m_pca9536_boot_indication() {
   logp "i2c-2: PCA9536 boot indication (beep + 3x blue blink)"
 }
 
+# I2C bus clear (NXP UM10204 §3.1.16), run with the controller unbound: a slave
+# cut off mid-byte by an unclean reset keeps SDA low and every later transfer
+# times out («mv64xxx: I2C bus locked»). Clock SCL until the slave lets SDA go
+# (at most 9 pulses), then generate a STOP. HIGH is never driven: it is the
+# line RELEASED — `gpioget` requests it as an input and the pull-up raises it,
+# which is the open-drain behaviour the bus expects and cannot fight a slave.
+# Until 2026-09-30 this loop called `gpioset …=0` nine times and never let SCL
+# rise, so no clock reached the slave and the bus stayed dead for the whole
+# boot (1.136: every PCA9536 read failed for hours). Tested by
+# scripts/dev/test-i2c2-recovery.sh with a simulated slave.
+sa02m_i2c2_gpio_recover() {
+  local i sda
+  sda=$(gpioget 0 "$I2C2_SDA_LINE" 2>/dev/null || echo "1")
+  [ "$sda" = "0" ] || return 0
+  logp "i2c-2: SDA stuck low — GPIO bus clear (up to 9 SCL pulses + STOP)"
+  for i in 1 2 3 4 5 6 7 8 9; do
+    gpioset 0 "${I2C2_SCL_LINE}=0" 2>/dev/null || true
+    gpioget 0 "$I2C2_SCL_LINE" >/dev/null 2>&1 || true         # release: rises
+    sda=$(gpioget 0 "$I2C2_SDA_LINE" 2>/dev/null || echo "0")
+    [ "$sda" = "1" ] && break
+  done
+  # STOP: SDA low while SCL is low, SCL released, then SDA released (rising
+  # SDA with SCL high). Both lines end released — never left driven low.
+  gpioset 0 "${I2C2_SCL_LINE}=0" 2>/dev/null || true
+  gpioset 0 "${I2C2_SDA_LINE}=0" 2>/dev/null || true
+  gpioget 0 "$I2C2_SCL_LINE" >/dev/null 2>&1 || true
+  gpioget 0 "$I2C2_SDA_LINE" >/dev/null 2>&1 || true
+  sda=$(gpioget 0 "$I2C2_SDA_LINE" 2>/dev/null || echo "0")
+  if [ "$sda" = "1" ]; then
+    logp "i2c-2: SDA released after ${i} SCL pulse(s) + STOP"
+  else
+    logp "i2c-2: SDA still low after 9 SCL pulses + STOP — the bus stays down until power is cut"
+    return 1
+  fi
+}
+
 sa02m_i2c2_recover_and_init() {
-  local drv try sda_val i
+  local drv try
 
   for drv in /sys/bus/platform/drivers/mv64xxx_i2c \
              /sys/bus/platform/drivers/i2c-sunxi; do
@@ -65,14 +101,8 @@ sa02m_i2c2_recover_and_init() {
   done
   sleep 0.15
 
-  if command -v gpioset >/dev/null 2>&1; then
-    sda_val=$(gpioget 0 $I2C2_SDA_LINE 2>/dev/null || echo "1")
-    if [ "$sda_val" = "0" ]; then
-      logp "i2c-2: SDA stuck low — GPIO recovery (9 SCL pulses)"
-      for i in 1 2 3 4 5 6 7 8 9; do
-        gpioset 0 ${I2C2_SCL_LINE}=0 2>/dev/null || true
-      done
-    fi
+  if command -v gpioset >/dev/null 2>&1 && command -v gpioget >/dev/null 2>&1; then
+    sa02m_i2c2_gpio_recover || true
   fi
 
   touch /run/sa02m-i2c2-recovered

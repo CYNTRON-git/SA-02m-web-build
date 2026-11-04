@@ -9,8 +9,12 @@
 # so `command -v` found the real binary there — a RED on Linux only, and on a
 # root host a real `fsfreeze -f /`. With the mask the harness alone decides.
 # Directories without CMD pass through untouched, so on a host lacking CMD the
-# result is $PATH itself. MASKDIR is single-use: a second call into the same
-# MASKDIR that needs a mirror fails (non-zero, empty output) rather than reuse it.
+# result is $PATH itself. On MSYS/git-bash a `CMD.exe` IS `CMD` (stat and
+# command lookup both fall back to the .exe), so the mirror drops the Windows
+# .exe twin as well — a mirror that kept `python3.exe` left `command -v
+# python3` resolving through it (2026-10-28). MASKDIR is single-use: a second
+# call into the same MASKDIR that needs a mirror fails (non-zero, empty output)
+# rather than reuse it.
 path_without() {
     local maskdir="$1" d c out="" n=0 hit
     shift
@@ -32,7 +36,7 @@ path_without() {
             mkdir -- "$maskdir/$n" 2>/dev/null || { echo "path_without: $maskdir/$n exists — refusing to reuse a mirror (one fresh MASKDIR per call)" >&2; return 1; }
             local -a skip=()
             local abs
-            for c in "$@"; do skip+=( ! -name "$c" ); done
+            for c in "$@"; do skip+=( ! -name "$c" ! -name "$c.exe" ); done
             # Absolute, so a relative PATH entry's mirror links do not dangle.
             # CDPATH emptied for this cd: a relative entry would otherwise be
             # looked up in CDPATH first (mirroring the wrong directory) and cd

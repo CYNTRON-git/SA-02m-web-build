@@ -16,11 +16,12 @@ import time
 from collections import deque
 from typing import Any, Callable, Deque, Dict, List, Optional, Set, Tuple
 
-from sa02m_rules import http_guard
-from sa02m_rules.device_index import state_key
+from sa02m_rules import http_guard, capability_binding
+from sa02m_rules.device_index import cap_short, state_key
 from sa02m_rules.store import (
     CAP_RE, EDGE_OPS, EVENT_OPS, GESTURES, HOME_MODES, ID_RE, LEVEL_OPS,
-    MAX_WRITES, Journal, charge_http, load, migrate_journal, save)
+    MAX_WRITES, RUNS_FLUSH_S, Journal, charge_http, load, migrate_journal,
+    read_logic_state, save, save_logic_state)
 
 LOG = logging.getLogger("sa02m-rules")
 Pub = Callable[[str, str, Any], None]
@@ -55,6 +56,9 @@ def _raw_num(v: Any) -> Optional[float]:
             return math.inf if v > 0 else -math.inf
     if isinstance(v, str):
         s = v.strip().lower()
+        event = capability_binding.event_number(s)
+        if event is not None:
+            return event
         if s in ("1", "on", "true", "yes"):
             return 1.0
         if s in ("0", "off", "false", "no"):
@@ -313,6 +317,21 @@ class Engine:
         self._for_s_index: Dict[Tuple[str, str], List[Tuple[str, int, Dict[str, Any]]]] = {}
         self._last_tick: Dict[str, Any] = {}
         self._logic: Dict[str, Any] = {}
+        self._logic_names: Dict[str, str] = {}
+        # Logic-template runtime state as last saved (store.read_logic_state):
+        # restored into an instance of the SAME template for the same id — a
+        # restart, or an edit that re-creates it — and dropped with the
+        # instance. A change is saved on the journal's cadence (RUNS_FLUSH_S
+        # after the first unsaved change — a flapping motion rule must not
+        # fsync per transition, audit A16), at every adopt and at shutdown
+        # (RulesApp.stop); a change the template marks urgent (a threshold
+        # rule switching an actor on) is saved at once. A failed save is
+        # retried and never stops the engine.
+        self._logic_saved: Dict[str, Dict[str, Any]] = read_logic_state(path)
+        self._logic_state_dirty = False
+        self._logic_state_dirty_since = 0.0
+        self._logic_state_retry_at = 0.0
+        self._logic_state_failing = False
         self._tpl_state: Dict[str, Dict[str, Any]] = {}
         self._caps_provider: Optional[Callable[[str], Tuple[str, ...]]] = None
         self._alias_provider: Optional[Callable[[str, str], Tuple[str, str]]] = None
@@ -466,13 +485,24 @@ class Engine:
             self._trig_prev = {k: v for k, v in self._trig_prev.items()
                                if k[0] != sid}
         self._rebuild_for_s_index()
+        # Disabled, deleted, unarmed or no longer a known template: the rule
+        # stops owning its actors, and a later re-creation starts fresh.
+        for sid in [sid for sid in self._logic_saved if self._logic.get(sid) is None]:
+            del self._logic_saved[sid]
+            self._mark_logic_dirty()
+        self._persist_all_logic()  # a restore may have narrowed an entry
+        self.flush_logic_state()
 
     def _inactive(self, s: Dict[str, Any]) -> bool:
-        """Disabled, or a row _adopt could not arm — never run either way."""
-        sid = s.get("id")
+        """Disabled, or a row _adopt could not arm — never run either way.
+        Any hashable id (a hand-edited file may carry an int) is looked up
+        alike; an unhashable one was never keyed by _adopt to begin with."""
         if s.get("enabled") is False:
             return True
-        return isinstance(sid, str) and sid in self._unarmed
+        try:
+            return s.get("id") in self._unarmed
+        except TypeError:
+            return False
 
     @staticmethod
     def _same_runtime(a: Dict[str, Any], b: Dict[str, Any]) -> bool:
@@ -496,14 +526,83 @@ class Engine:
 
     def _make_logic(self, s: Dict[str, Any]) -> Any:
         from sa02m_rules.logic_templates import make_logic
-        inst = make_logic(str(s.get("template") or ""),
-                          LogicRuntime(self, s["id"]),
+        sid, name = s["id"], str(s.get("template") or "")
+        inst = make_logic(name, LogicRuntime(self, sid),
                           s.get("params") if isinstance(s.get("params"), dict) else {})
         if inst is None:
             self.journal.set_last(s, s.get("last_run"), "unknown template")
         else:
+            self._logic_names[sid] = name
+            self._restore_logic(sid, name, inst)
             inst.on_boot()
         return inst
+
+    # ── logic-template state across restarts (store.save_logic_state) ──
+    def _restore_logic(self, sid: str, name: str, inst: Any) -> None:
+        entry = self._logic_saved.get(sid)
+        if entry is None:
+            return
+        ok = False
+        if entry.get("template") == name:
+            try:
+                ok = inst.restore_state(entry.get("state")) is True
+            except Exception:
+                ok = False
+            if not ok:
+                LOG.warning("logic state of %r ignored: not a valid %s state", sid, name)
+        # A different template under this id is a new identity: nothing carried.
+        if not ok:
+            del self._logic_saved[sid]
+            self._mark_logic_dirty()
+
+    def _persist_logic(self, sid: str) -> None:
+        """Record `sid`'s exported state when it changed, and save."""
+        inst = self._logic.get(sid)
+        try:
+            state = inst.export_state() if inst is not None else None
+            urgent = inst.take_save_now() if inst is not None else False
+        except Exception:
+            LOG.exception("logic state of %r not exported", sid)
+            return
+        if state is None:
+            if self._logic_saved.pop(sid, None) is None:
+                return
+        else:
+            entry = {"template": self._logic_names.get(sid, ""), "state": state}
+            if self._logic_saved.get(sid) == entry:
+                return
+            self._logic_saved[sid] = entry
+        self._mark_logic_dirty()
+        if urgent:
+            self.flush_logic_state()
+
+    def _mark_logic_dirty(self) -> None:
+        if not self._logic_state_dirty:
+            self._logic_state_dirty_since = self._now()
+        self._logic_state_dirty = True
+
+    def _persist_all_logic(self) -> None:
+        for sid in list(self._logic):
+            self._persist_logic(sid)
+
+    def flush_logic_state(self) -> bool:
+        """Save the logic state when it changed; True when nothing is left."""
+        if not self._logic_state_dirty:
+            return True
+        try:
+            save_logic_state(self._logic_saved, self.path)
+        except (OSError, ValueError) as exc:
+            if not self._logic_state_failing:
+                LOG.warning("logic state not saved (%s): kept in memory, retried",
+                            type(exc).__name__)
+            self._logic_state_failing = True
+            self._logic_state_retry_at = self._now() + RUNS_FLUSH_S
+            return False
+        if self._logic_state_failing:
+            LOG.info("logic state saved again")
+        self._logic_state_failing = False
+        self._logic_state_dirty = False
+        return True
 
     # ── template state mirror (cloud debugging) ────────────────────────
     def _publish_tpl_state(self, sid: str, control: str, value: Any) -> None:
@@ -528,8 +627,10 @@ class Engine:
         # The one engine-side document save: scenarios.json stays strict JSON
         # whatever a sandbox run left in Vars (code_runner scrubs the same
         # way at run end; this covers every other caller of the save).
-        from sa02m_rules.code_runner import non_finite_inside
-        non_finite_inside(self.doc["vars"], fix=True)
+        from sa02m_rules.code_runner import scrub_vars
+        reason = scrub_vars(self.doc["vars"])
+        if reason:
+            LOG.warning("vars scrubbed before save: %s", reason)
         save(self.doc, self.path)
         # leave: home/night → away/holiday; arrive: away/holiday → home.
         # night is «home, asleep» — entering it is not an arrival event.
@@ -599,13 +700,18 @@ class Engine:
         # engine already wrote is still the first observation.
         observed = (device, cap) in self._observed
         self._observed.add((device, cap))
+        logic_cap = self._logic_cap(device, cap)
+        for inst in list(self._logic.values()):
+            on_observation = getattr(inst, "on_observation", None)
+            if on_observation is not None:
+                on_observation(device, logic_cap, value)
         if prev == value:
             return
         self._for_s_touch(device, cap, value)
         self._button_state(device, cap, value, prev)
-        logic_cap = self._logic_cap(device, cap)
         for inst in list(self._logic.values()):
             inst.on_state(device, logic_cap, value, prev)
+        self._persist_all_logic()
         self._dispatch({"kind": "state", "device": device, "cap": cap,
                         "value": value, "prev": prev, "observed": observed})
 
@@ -860,6 +966,7 @@ class Engine:
                         "input": input_name, "gesture": gesture})
         for inst in list(self._logic.values()):
             inst.on_button(device, input_name, gesture)
+        self._persist_all_logic()
 
     # ── for_s condition tracking ───────────────────────────────────────
     def _rebuild_for_s_index(self) -> None:
@@ -972,6 +1079,9 @@ class Engine:
             self._fire_timer(due, kind, key, payload)
         self._scan_clock_triggers(now)
         self._flush_if_due()
+        if self._logic_state_dirty and now >= self._logic_state_retry_at \
+                and now - self._logic_state_dirty_since >= RUNS_FLUSH_S:
+            self.flush_logic_state()
 
     def _fire_timer(self, due: float, kind: str, key: str, payload: Any) -> None:
         if kind == "every":
@@ -1013,6 +1123,7 @@ class Engine:
             inst = self._logic.get(sid)
             if inst is not None:
                 inst.on_timer(lkey)
+                self._persist_logic(sid)
 
     def _scan_clock_triggers(self, now: float) -> None:
         for s in list(self.doc.get("scenarios") or []):
@@ -1163,10 +1274,13 @@ class Engine:
             if run.writes >= MAX_WRITES:
                 run.error = "write cap"
                 return None
-            cur = state_get(self.state, act.get("device"),
-                            state_key(str(act.get("cap") or "on_off"), inst))
-            self._write(act.get("device"), str(act.get("cap") or "on_off"),
-                        0 if _truthy(cur) else 1, run, instance=inst)
+            cap = str(act.get("cap") or "on_off")
+            cur = state_get(self.state, act.get("device"), state_key(cap, inst))
+            # A `devices.capabilities.toggle` takes a strict boolean (the
+            # Alice converter); every other target keeps the 0/1 it always got.
+            value: Any = ((not _truthy(cur)) if cap_short(cap) == "toggle"
+                          else (0 if _truthy(cur) else 1))
+            self._write(act.get("device"), cap, value, run, instance=inst)
             run.writes += 1
         elif kind == "ramp":
             if run.writes >= MAX_WRITES:
@@ -1256,7 +1370,8 @@ class Engine:
         self._schedule(seconds / steps, "ramp", key,
                        {"device": device, "cap": cap, "instance": instance,
                         "from": start, "to": to, "i": 0, "n": steps,
-                        "dt": seconds / steps})
+                        "dt": seconds / steps,
+                        "sid": run.sid if run is not None else None})
 
     def _ramp_step(self, key: str, payload: Dict[str, Any], due: float) -> None:
         payload["i"] += 1
@@ -1269,12 +1384,32 @@ class Engine:
             value = int(round(value))
         else:
             value = round(value, 2)
-        self._write(payload["device"], payload["cap"], value, None,
-                    from_ramp=True, instance=payload.get("instance") or "")
+        # A probe run catches the refusal reason; a step has no run of its own.
+        probe = _Run(str(payload.get("sid") or ""), "", (), "ramp")
+        written = self._write(payload["device"], payload["cap"], value, probe,
+                              from_ramp=True, instance=payload.get("instance") or "")
+        if not written and probe.error and probe.error != "write cap":
+            # The target refused the value (out of its window, read-only, …):
+            # journaled, never silent, and the rest of the ramp is not sent —
+            # the steps after it would be refused one by one. A full write
+            # window keeps the old behaviour: that step is skipped, the ramp goes on.
+            self._ramp_refused(payload.get("sid"), probe.error)
+            return
         if i < n:
             # Due-relative, not fire-relative: a late tick must not stretch
             # the ramp (a 1 Hz service tick can lag under load).
             self._schedule_at(due + payload["dt"], "ramp", key, payload)
+
+    def _ramp_refused(self, sid: Any, reason: str) -> None:
+        s = self._scenario(sid) if sid else None
+        rec = {"ts": self._now(), "id": str(sid or ""),
+               "name": str((s or {}).get("name") or sid or ""),
+               "error": "ramp refused: %s" % reason, "ok": False, "source": "ramp"}
+        if s is not None:
+            self._journal(s, rec)
+        else:
+            self.journal.append_run(self.doc, rec)
+            self._flush_if_due()
 
     # ── end event ──────────────────────────────────────────────────────
     def _end_fire(self, payload: Dict[str, Any]) -> None:

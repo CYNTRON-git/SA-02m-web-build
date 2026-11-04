@@ -166,6 +166,24 @@ HC_BINDABLE_CONTROLS: Tuple[Tuple[str, str, str], ...] = (
 )
 HC_CONTROL_TITLES: Dict[str, str] = {name: title for name, title, _g in HC_BINDABLE_CONTROLS}
 
+# The on-board audio recorder (docs/contracts/audio-recorder.md §2, §22): its
+# one bindable control is the light-music switch — `light_music/on` takes
+# `1`/`0`, the state is retained `0`/`1`, so an `on_off` binding carries it
+# honestly. Nothing else of the recorder is offered (`record` stays reachable
+# from scenarios, not the picker). Conscious copy of sa02m_audio.constants (DEVICE_ID,
+# the switch row, the conf path — this tree cannot import that package),
+# pinned equal by tests/test_inventory_audio.py.
+AUDIO_DEVICE_ID = "sa02m-audio"
+AUDIO_CONTROLS: Tuple[Tuple[str, str], ...] = (
+    ("light_music", "Светомузыка"),
+)
+AUDIO_WRITABLE = frozenset({"light_music"})
+# Installed ⇔ the package's seeded conf exists (scripts/15-audio.sh seeds it on
+# every install, enabled or not). Presence only — the file is never opened.
+AUDIO_ETC_ENV = "SA02M_AUDIO_ETC"
+AUDIO_ETC_DEFAULT = "/etc/sa02m-audio"
+AUDIO_CONF_BASENAME = "sa02m-audio.conf"
+
 LIVE_CACHE_DIR_ENV = "SA02M_MQTT_LIVE_CACHE"
 LIVE_CACHE_DIR_DEFAULT = "/run/sa02m-modbus-mqtt"
 ROSTER_BASENAME = "_roster.json"
@@ -508,6 +526,32 @@ def _controller_entry() -> Dict[str, Any]:
     }
 
 
+def _audio_installed() -> bool:
+    etc = os.environ.get(AUDIO_ETC_ENV) or AUDIO_ETC_DEFAULT
+    return os.path.isfile(os.path.join(etc, AUDIO_CONF_BASENAME))
+
+
+def _audio_entry() -> Optional[Dict[str, Any]]:
+    """The recorder's light-music switch, or None while sa02m-audio is not
+    installed (offering a topic no daemon serves binds a dead switch)."""
+    if not _audio_installed():
+        return None
+    return {
+        "id": AUDIO_DEVICE_ID,
+        "name": "Запись звука",
+        "type": "audio",
+        "model": "",
+        "model_ru": "",
+        "model_source": "",
+        "yaml_model": "",
+        "port": "",
+        "address": None,
+        "channels": _named_channels(
+            AUDIO_DEVICE_ID, [name for name, _t in AUDIO_CONTROLS], AUDIO_WRITABLE,
+            dict(AUDIO_CONTROLS)),
+    }
+
+
 def _hc_inventory_path() -> str:
     return os.environ.get(HC_INVENTORY_ENV) or HC_INVENTORY_DEFAULT
 
@@ -589,9 +633,12 @@ def _homeconnect_entries() -> List[Dict[str, Any]]:
 
 
 def _device_sort_key(entry: Dict[str, Any]) -> Tuple[int, str, int, str]:
-    """Controller last, Home Connect appliances just before it; the rest by COM
-    port then address, as on the MQTT tab."""
+    """Controller last, the audio recorder just before it, Home Connect
+    appliances before that; the rest by COM port then address, as on the MQTT
+    tab."""
     if entry.get("type") == "controller":
+        return (3, "", 0, entry.get("id") or "")
+    if entry.get("type") == "audio":
         return (2, "", 0, entry.get("id") or "")
     if entry.get("type") == "homeconnect":
         return (1, "", 0, entry.get("id") or "")
@@ -625,6 +672,9 @@ def build_mqtt_inventory() -> Dict[str, Any]:
     # on a fresh board (the guarantee list_mqtt_topics has carried since
     # 1.0.6.22 — the topics are DERIVED from the live device id).
     devices.extend(_homeconnect_entries())
+    audio = _audio_entry()
+    if audio:
+        devices.append(audio)
     devices.append(_controller_entry())
     devices.sort(key=_device_sort_key)
     return {

@@ -56,9 +56,11 @@ detail (queue functions, the apply-map).
 `app/status.js` polls `status.cgi?part=<name>` on a rolling scheduler (the
 scheduler and every `apply*Status` live there since the F10 split, not in
 `app.js`) — parts:
-`priority` (CPU/temp/RAM/swap/disk, 6 s), `main` (6 s), `rs485` (12 s), and the
+`priority` (CPU/temp/RAM/swap/disk, 6 s), `rs485` (12 s), and the
 background set `storage,time,uptime,network,load,system,services,hardware`
-(phase-shifted). Facts that bite:
+(phase-shifted). `fetchStatusMain` coordinates those split parts; it does not
+request `part=main`. Queueing and freshness are specified in
+`docs/contracts/status-polling.md`. Facts that bite:
 
 - Each part has its own `apply*Status()` function; UI ids are contract between
   `index.html` and `app.js` — renaming an id in one place is a finding.
@@ -84,12 +86,20 @@ background set `storage,time,uptime,network,load,system,services,hardware`
 | Устройства RS-485 (flasher) | `flasher.js` (reconnect state via `sessionStorage`, irreversible-flash guard) | `flasher` daemon HTTP + CGI | `sa02m-flasher.service` (Python), MR-02m/DTV/CE-02m-3/Carel/LED, MTD presence sensor (settings window, `docs/contracts/mtd-presence.md`). LED settings window backend exists; the flasher tab UI is not drawn yet. Bus-mode/BACnet ops (register 122 selector, MS/TP verify, in-band recover — 1.0.5.65) run as daemon jobs under the same COM lease; contract `docs/contracts/web-bus-mode-bacnet.md`, firmware seam in the sibling MR-02m/DTV `bus-protocol.md`. |
 | Шлюз RS-485 | `gateway.js` (builds its own DOM; COM1..COM5 sub-nav dots) | `gateway_*.cgi` | `sa02m-gateway.yaml` (Modbus TCP / RTU-over-TCP / transparent) |
 | Управление (+ карточки «Яндекс Алиса», «Облако», «Умный дом») | `app/services.js`, `app/misc.js`, `app/alice.js`, `app/smarthome.js`, `cloud.js` | `services_ctrl.cgi`, `kernel_ctrl.cgi`, `cpu_profile.cgi`, `web_update_*.cgi`, `web_creds.cgi`, `sa02m_alice_*.cgi`, `cloud.cgi` | systemd + SysV (mplc4, codesys), `sa02m-kernel-select.sh` (RT/SMP zImage swap → reboot), `sa02m-cpu-profile.sh` (CPU profiles SMP-only). Cloud-profile catalogue + on-board scenarios: `sa02m-cloud-control` + `sa02m-rules` (`docs/contracts/cloud-scenarios.md`). |
+| Управление → Система: «Запись звука» | `app/audio.js` | `sa02m_audio_api.cgi` | `sa02m-audio` (on every board, off by default): one bounded WAV per MQTT `record/on`, eMMC or a removable medium, optional upload to the Operator's URL. Contract: `docs/contracts/audio-recorder.md`. |
 
-Port-sharing invariant: RS-485 lines are shared between MPLC4 polling, the
-MQTT bridge, and the flasher — the flasher takes a **port lease**
-(stop/restore units via `MPLC_STOP_SERVICES`); `flasher_busy` gates MPLC/MQTT
-start buttons. Any change to who opens a COM port must respect that lease
-protocol (CHANGELOG 1.0.3.35 documents the prior regressions).
+The USB microphone has a **mic lease** (`flock` on `/run/lock/sa02m-mic.lock`,
+held while the device is open): every opener of the mic takes it — the
+protocol's one home is `docs/contracts/audio-recorder.md` §11.
+
+RS-485 ownership — the MQTT / whole-service pauses, the manual operations and
+the recovery after a failure — has one contract:
+[port-ownership.md](../contracts/port-ownership.md). Every managed UART open
+and every state change of an assigned service goes through it. The legacy
+flasher key `MPLC_STOP_SERVICES` sets no coordinator policy; the coordinator's
+own configuration (`/etc/sa02m/port-coordinator.json`) is authoritative. The UI
+and `/health` report state; neither is by itself an atomic permission to start
+a service.
 
 ## Version discipline (the contract)
 

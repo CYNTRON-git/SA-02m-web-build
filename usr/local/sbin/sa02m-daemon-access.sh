@@ -1,9 +1,10 @@
 #!/bin/bash
-# sa02m-daemon-access.sh check|apply homekit|homeconnect
+# sa02m-daemon-access.sh check|apply homekit|homeconnect|audio
 #
-# The least-privilege grant of the HomeKit bridge / Home Connect client, and
-# the PROOF that it works. Contracts: docs/contracts/homekit-bridge.md §13,
-# docs/contracts/home-connect.md §11; threat model docs/threat-model.md §3.
+# The least-privilege grant of the HomeKit bridge / Home Connect client / audio
+# recorder, and the PROOF that it works. Contracts:
+# docs/contracts/homekit-bridge.md §13, docs/contracts/home-connect.md §11,
+# docs/contracts/audio-recorder.md §13; threat model docs/threat-model.md §3.
 #
 # Neither daemon is in group www-data (that group reads the panel credentials,
 # the gateway YAML and every Alice conf). Read is granted by plain Unix groups
@@ -16,6 +17,13 @@
 #     0640 — a group of exactly www-data and sa02m-homekit, set up by
 #     scripts/06c-homekit.sh — and /etc/sa02m-alice carries o+x (traverse, no
 #     listing; the other Alice confs stay unreadable to the bridge).
+#   * audio only: the panel READS the recorder's store — /var/lib/sa02m-audio
+#     and its rec/ are sa02m-audio:www-data 2750 (setgid: every clip and
+#     events.jsonl is group www-data, the daemon is NOT in that group); tmp/
+#     (the .part of a running recording) is the daemon's alone, 0700. So for
+#     this kind www-data must list the store and rec/, must NOT write either,
+#     and must NOT enter tmp/ — where the other kinds keep www-data out of
+#     their state dir altogether.
 #
 #   apply  heal, then check. Dirs: the `d` lines of the package's OWN tmpfiles
 #          conf (/opt/…/tmpfiles.d — the one home of the dir modes, current
@@ -38,8 +46,8 @@
 # (one Russian line per failure naming the path, owner:group and mode), 2 on
 # bad usage. A failed run never prints the success line.
 #
-# Callers: scripts/06c-homekit.sh and scripts/06d-homeconnect.sh as their LAST
-# step (fatal), and each unit's `ExecStartPre=-+` (every start, non-fatal: the
+# Callers: scripts/06c-homekit.sh, scripts/06d-homeconnect.sh and
+# scripts/15-audio.sh as their LAST step (fatal), and each unit's `ExecStartPre=-+` (every start, non-fatal: the
 # daemon then reports `conf_unreadable` on the card and these lines are in its
 # journal). Harness: scripts/dev/test-daemon-access.sh runs this file with its
 # absolute paths re-pointed into a sandbox and `id`/`getent` as PATH shims.
@@ -51,6 +59,9 @@ WEB_USER=www-data
 DEVDOC_GROUP=
 ALICE_DIR=
 DEVDOC=
+WEB_READ_DIRS=
+PRIVATE_DIRS=
+EXTRA_FILES=
 case "$KIND" in
     homekit)
         DAEMON=sa02m-homekit
@@ -74,13 +85,30 @@ case "$KIND" in
         PKG_TMPFILES=/opt/sa02m-homeconnect/tmpfiles.d/sa02m-homeconnect.conf
         DENY_READ="/etc/sa02m_web.env /etc/sa02m-alice/sa02m-alice-devices.conf"
         ;;
+    audio)
+        DAEMON=sa02m-audio
+        CONF_DIR=/etc/sa02m-audio
+        CONF=/etc/sa02m-audio/sa02m-audio.conf
+        VAR_DIR=/var/lib/sa02m-audio
+        RUN_DIR=/run/sa02m-audio
+        PKG_TMPFILES=/opt/sa02m-audio/tmpfiles.d/sa02m-audio.conf
+        # The panel lists and downloads clips: it reads these, writes none.
+        WEB_READ_DIRS="/var/lib/sa02m-audio /var/lib/sa02m-audio/rec"
+        # The .part of a running recording: the daemon's alone.
+        PRIVATE_DIRS="/var/lib/sa02m-audio/tmp"
+        # The upload token and the voice allow list: the conf's shape
+        # (www-data:<daemon> 0640) — the panel / the Operator write them, the
+        # daemon reads them. Each is optional: an absent one is skipped.
+        EXTRA_FILES="/etc/sa02m-audio/upload.token /etc/sa02m-audio/voice-allow.json"
+        DENY_READ="/etc/sa02m_web.env /etc/sa02m-alice/sa02m-alice-devices.conf"
+        ;;
     *)
-        echo "usage: $0 check|apply homekit|homeconnect" >&2
+        echo "usage: $0 check|apply homekit|homeconnect|audio" >&2
         exit 2 ;;
 esac
 case "$VERB" in
     check|apply) ;;
-    *) echo "usage: $0 check|apply homekit|homeconnect" >&2; exit 2 ;;
+    *) echo "usage: $0 check|apply homekit|homeconnect|audio" >&2; exit 2 ;;
 esac
 
 fails=0
@@ -119,8 +147,8 @@ if [ "$VERB" = apply ]; then
     if [ -f "$PKG_TMPFILES" ]; then
         while read -r typ path mode user group _rest; do
             [ "$typ" = d ] || continue
-            case "$path" in
-                "$CONF_DIR"|"$VAR_DIR"|"$RUN_DIR") ;;
+            case " $CONF_DIR $VAR_DIR $RUN_DIR $WEB_READ_DIRS $PRIVATE_DIRS " in
+                *" $path "*) ;;
                 *) continue ;;
             esac
             u=$(uid_of "$user") && g=$(group_gid "$group") \
@@ -133,6 +161,9 @@ if [ "$VERB" = apply ]; then
     # f:path:mode:uid:gid:root-gids — the last field is the owner rule (see
     # the python below): root-owned files are taken only with one of these groups.
     ops+=("f:$CONF:0640:$WEB_UID:$DAEMON_GID:${WEB_GID:-x},$DAEMON_GID")
+    for f in $EXTRA_FILES; do
+        ops+=("f:$f:0640:$WEB_UID:$DAEMON_GID:${WEB_GID:-x},$DAEMON_GID")
+    done
     if [ -n "$DEVDOC" ]; then
         # Traverse only; the mode's home is etc/tmpfiles.d/sa02m-alice.conf —
         # ensured here too so an Alice copy older than that line cannot cut
@@ -302,7 +333,22 @@ probe yes "$DAEMON" w "$VAR_DIR"
 probe yes "$DAEMON" w "$RUN_DIR"
 probe yes "$WEB_USER" r "$CONF"
 probe yes "$WEB_USER" w "$CONF_DIR"
-probe no "$WEB_USER" x "$VAR_DIR"
+for f in $EXTRA_FILES; do
+    probe yes "$DAEMON" r "$f"
+done
+if [ -n "$WEB_READ_DIRS" ]; then
+    for d in $WEB_READ_DIRS; do
+        probe yes "$DAEMON" w "$d"
+        probe yes "$WEB_USER" r "$d"
+        probe no "$WEB_USER" w "$d"
+    done
+    for d in $PRIVATE_DIRS; do
+        probe yes "$DAEMON" w "$d"
+        probe no "$WEB_USER" x "$d"
+    done
+else
+    probe no "$WEB_USER" x "$VAR_DIR"
+fi
 if [ -n "$DEVDOC" ]; then
     probe yes "$DAEMON" r "$DEVDOC"
     probe yes "$WEB_USER" r "$DEVDOC"

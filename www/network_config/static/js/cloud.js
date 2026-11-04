@@ -284,8 +284,8 @@ function cloudCtrlRefreshSoon() {
   const again = function () {
     if (typeof window.sa02mAliceRefresh === 'function') window.sa02mAliceRefresh();
   };
-  setTimeout(again, 2000);
-  setTimeout(again, 6000);
+  _cloudFollowupTimers.forEach(clearTimeout);
+  _cloudFollowupTimers = [setTimeout(again, 2000), setTimeout(again, 6000)];
 }
 
 // The shared Alice pipeline is app/alice.js's; the handles are read lazily so a
@@ -430,15 +430,41 @@ function cloudRenderStatus(d) {
   cloudApplyReachability(d);
 }
 
-async function cloudRefreshStatus() {
-  if (!$('cloud-card')) return;
-  try {
-    const r = await fetch('cgi-bin/cloud.cgi', { cache: 'no-store', credentials: 'same-origin' });
-    const d = await r.json();
+let _cloudTabActive = false;
+let _cloudStatusPending = null;
+let _cloudStatusController = null;
+let _cloudStatusSeq = 0;
+let _cloudFollowupTimers = [];
+function cloudRefreshLater(ms) {
+  if (!_cloudTabActive) return;
+  const timer = setTimeout(function () {
+    _cloudFollowupTimers = _cloudFollowupTimers.filter(function (t) { return t !== timer; });
+    if (_cloudTabActive) cloudRefreshStatus();
+  }, ms);
+  _cloudFollowupTimers.push(timer);
+}
+function cloudRefreshStatus() {
+  if (!_cloudTabActive || !$('cloud-card')) return Promise.resolve(null);
+  if (_cloudStatusPending) return _cloudStatusPending;
+  const seq = ++_cloudStatusSeq;
+  const controller = new AbortController();
+  _cloudStatusController = controller;
+  const pending = fetchWithTimeout('cgi-bin/cloud.cgi', {
+    cache: 'no-store', credentials: 'same-origin', signal: controller.signal
+  }, 10000).then(function (r) { return r.json(); }).then(function (d) {
+    if (seq !== _cloudStatusSeq || controller.signal.aborted) return null;
+    if (d && d.error === 'unauthorized') return null;
     cloudRenderStatus(d);
-  } catch (e) {
-    cloudSetBadgeEl($('cloud-conn-state'), 'Ошибка', 'err');
-  }
+    return d;
+  }).catch(function () {
+    if (seq === _cloudStatusSeq) cloudSetBadgeEl($('cloud-conn-state'), 'Ошибка', 'err');
+    return null;
+  }).finally(function () {
+    if (_cloudStatusPending === pending) _cloudStatusPending = null;
+    if (_cloudStatusController === controller) _cloudStatusController = null;
+  });
+  _cloudStatusPending = pending;
+  return pending;
 }
 
 window.cloudCopyPairCode = function cloudCopyPairCode() {
@@ -498,8 +524,8 @@ window.cloudStartPairing = async function cloudStartPairing() {
     const d = await cloudPostAction({ action: 'pair' });
     if (d.ok) {
       cloudSetMsg(uiT('Запрошен код сопряжения — появится здесь через несколько секунд'), true);
-      setTimeout(cloudRefreshStatus, 2000);
-      setTimeout(cloudRefreshStatus, 5000);
+      cloudRefreshLater(2000);
+      cloudRefreshLater(5000);
     } else {
       cloudSetMsg(d.error || uiT('Ошибка'), false);
     }
@@ -518,7 +544,7 @@ window.cloudCancelPairing = async function cloudCancelPairing() {
     await cloudPostAction({ action: 'cancel' });
     cloudSetMsg(uiT('Сопряжение отменено'), true);
   } catch (e) { /* ignore */ }
-  setTimeout(cloudRefreshStatus, 1500);
+  cloudRefreshLater(1500);
 };
 
 window.cloudToggleAgent = async function cloudToggleAgent() {
@@ -537,8 +563,8 @@ window.cloudToggleAgent = async function cloudToggleAgent() {
           : uiT('Агент включён'),
         true
       );
-      setTimeout(cloudRefreshStatus, 800);
-      setTimeout(cloudRefreshStatus, 2500);
+      cloudRefreshLater(800);
+      cloudRefreshLater(2500);
     } else {
       cloudSetMsg(d.error || uiT('Ошибка'), false);
       btn.disabled = false;
@@ -579,9 +605,9 @@ window.cloudActivate = async function cloudActivate() {
     if (d.ok) {
       cloudSetMsg(d.message || uiT('Активация запущена'), true);
       if (tokenEl) tokenEl.value = '';
-      setTimeout(cloudRefreshStatus, 3000);
-      setTimeout(cloudRefreshStatus, 8000);
-      setTimeout(cloudRefreshStatus, 15000);
+      cloudRefreshLater(3000);
+      cloudRefreshLater(8000);
+      cloudRefreshLater(15000);
     } else {
       cloudSetMsg(d.error || uiT('Ошибка'), false);
     }
@@ -596,12 +622,21 @@ window.cloudActivate = async function cloudActivate() {
 };
 
 window.cloudTabInit = function cloudTabInit() {
+  _cloudTabActive = true;
   cloudRefreshStatus();
   if (_cloudPollTimer) clearInterval(_cloudPollTimer);
   _cloudPollTimer = setInterval(cloudRefreshStatus, 5000);
 };
 
 window.cloudTabDestroy = function cloudTabDestroy() {
+  _cloudTabActive = false;
+  ++_cloudStatusSeq;
+  if (_cloudStatusController) _cloudStatusController.abort();
+  _cloudStatusController = null;
+  _cloudStatusPending = null;
+  _cloudFollowupTimers.forEach(clearTimeout);
+  _cloudFollowupTimers = [];
+  clearTimeout(_cloudCopyToastTimer);
   if (_cloudPollTimer) {
     clearInterval(_cloudPollTimer);
     _cloudPollTimer = null;

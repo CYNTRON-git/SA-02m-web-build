@@ -29,6 +29,10 @@
 #      mirror still links the second CMD and ln cannot replace an existing link,
 #      so reusing the slot left the host binary visible. The second call must
 #      refuse (non-zero, empty output) or return a PATH where that CMD is hidden.
+#   P9 the Windows .exe twin: a dir carrying CMD and CMD.exe is mirrored with
+#      NEITHER (host-independent, RED on the unfixed lib on Linux too); P9b the
+#      .exe-only dir — mirrored without the twin where stat falls back to .exe
+#      (MSYS), passed through verbatim elsewhere; CMD never resolves.
 #
 # Comment-mutation: the lib's load-bearing lines (the mirror substitution, the
 # single-use slot creation and the absolute-dir resolution) are cased in
@@ -41,6 +45,10 @@
 # RED, observed 2026-10-14 against the lib before the single-use slot (mkdir -p
 # on the mirror slot): P8 FAILs — the second call returned 0 and the CMD it was
 # asked to hide resolved through the first call's mirror.
+# RED, observed 2026-10-28 (git-bash) against the lib before the .exe-twin skip:
+# P9 FAILs (mirror/CMD.exe PRESENT, CMD VISIBLE through the mirror) and P9b
+# FAILs (CMD VISIBLE); the symptom it came from: fix-eth-link-cycle's python3
+# mask assertion RED with a real Python312 first on PATH.
 #
 # Run: bash scripts/dev/test-path-mask.sh   (bash + coreutils + findutils)
 set -u
@@ -178,6 +186,43 @@ if resolves "$IN" "$C2"; then
     fi
 else
     bad "P8 fixture CMD does not resolve on the UNMASKED path — the reuse case would be vacuous"
+fi
+
+# ── P9 ──
+# The Windows .exe twin. On MSYS/git-bash `[ -e dir/CMD ]` and `command -v CMD`
+# both fall back to `CMD.exe`, so a mirror built with only `! -name CMD` still
+# carried `python3.exe` and the masked python3 resolved through it
+# (2026-10-28, a real Python312 first on PATH). The fixture carries BOTH names
+# so the dir is a hit on every host: the no-.exe-in-mirror assertion is then
+# host-independent and RED on the unfixed lib on Linux too, where `command -v`
+# would never resolve the .exe and could not see the hole.
+mkcmd "$T/host9" "$C1" host9-cmd1
+mkcmd "$T/host9" "$C1.exe" host9-exe
+mkcmd "$T/host9" "$SIB" host9-sibling
+IN="$T/host9:$REAL_PATH"
+OUT=$(PATH="$IN"; path_without "$T/m9" "$C1"); rc=$?
+IFS=: read -r -a o <<< "$OUT"
+if [ "$rc" = 0 ] && [ "${o[0]}" != "$T/host9" ] && [ ! -e "${o[0]}/$C1.exe" ] && [ ! -L "${o[0]}/$C1.exe" ] \
+   && ! resolves "$OUT" "$C1" && [ "$(runs "$OUT" "$SIB")" = host9-sibling ]; then
+    ok "P9 the .exe twin of CMD is dropped from the mirror too (sibling kept)"
+else
+    bad "P9 .exe twin leaked: rc=$rc, mirror/$C1.exe $([ -e "${o[0]}/$C1.exe" ] && echo PRESENT || echo absent), $C1 $(resolves "$OUT" "$C1" && echo "VISIBLE ($(PATH="$OUT"; command -v "$C1"))" || echo hidden)"
+fi
+# P9b — the real shape (python3.exe with no `python3`): a hit only where the
+# shell's stat falls back to .exe (MSYS); elsewhere the dir is not a hit and
+# passes through verbatim, and CMD does not resolve either way.
+mkcmd "$T/host9b" "$C1.exe" host9b-exe
+IN="$T/host9b:$REAL_PATH"
+OUT=$(PATH="$IN"; path_without "$T/m9b" "$C1"); rc=$?
+IFS=: read -r -a o <<< "$OUT"
+if [ "$rc" != 0 ] || resolves "$OUT" "$C1"; then
+    bad "P9b .exe-only dir: rc=$rc, $C1 $(resolves "$OUT" "$C1" && echo "VISIBLE ($(PATH="$OUT"; command -v "$C1"))" || echo hidden)"
+elif [ -e "$T/host9b/$C1" ]; then   # MSYS: stat sees CMD through the .exe → the dir must be mirrored without it
+    if [ "${o[0]}" != "$T/host9b" ] && [ ! -e "${o[0]}/$C1.exe" ]; then ok "P9b (.exe fallback host) the .exe-only dir is mirrored without the twin"
+    else bad "P9b (.exe fallback host) .exe-only dir not masked: entry '${o[0]}'"; fi
+else                                 # Linux: no fallback, nothing to hide — verbatim
+    [ "${o[0]}" = "$T/host9b" ] && ok "P9b (no .exe fallback on this host) the .exe-only dir passes through verbatim, CMD unresolvable" \
+                                || bad "P9b (no .exe fallback) dir without CMD was rewritten: '${o[0]}'"
 fi
 
 echo "---"

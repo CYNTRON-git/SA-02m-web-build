@@ -7,23 +7,29 @@
 #              что вызывает дедлок (udev сам заблокирован).
 #   Используем template-unit fix-eth@.service, чтобы надёжно передать имя
 #   интерфейса через instance (%I) и не зависеть от окружения udev/systemd.
+#
+# eth0 emits no uevent on a carrier change (measured, see the eth1 note
+# below), so there are no udev link rules for eth0: its rules fire only when
+# the interface APPEARS (add/bind). Recovery after an eth0 link-up is the
+# net-watchdog poll (fix-eth.sh every 30 s) and fix-eth.sh's carrier re-check
+# after its own link cycle (1.0.7.22). The eth1 `change` lines are unverified.
+# Contract: docs/contracts/boot-network-routes.md §1.
 # ═══════════════════════════════════════════════════════════════════════════
 
 # eth0 — основной интерфейс
 ACTION=="add", SUBSYSTEM=="net", KERNEL=="eth0", RUN+="/usr/bin/systemctl --no-block start fix-eth@eth0.service"
 ACTION=="bind", SUBSYSTEM=="net", KERNEL=="eth0", RUN+="/usr/bin/systemctl --no-block start fix-eth@eth0.service"
-# При boot PHY может подняться с задержкой или после краткого link flap.
-# Ловим carrier=1, чтобы восстановление шло сразу при реальном link-up.
-ACTION=="change", SUBSYSTEM=="net", KERNEL=="eth0", ATTR{carrier}=="1", RUN+="/usr/bin/systemctl --no-block start fix-eth@eth0.service"
-# Link LEDs: platform gpio-led — яркость по carrier (netdev trigger недоступен).
-# ВНИМАНИЕ: ATTR{carrier}=="0" не работает — при link-down ядро возвращает EINVAL
-# вместо "0", поэтому условие никогда не совпадает. Запускаем скрипт на любое
-# change-событие; скрипт сам читает carrier (с fallback 0 при ошибке).
-# sa02m-1eth: eth0_link←eth0; sa02m-2eth: eth0_link←eth1, eth1_link←eth0.
-ACTION=="change", SUBSYSTEM=="net", KERNEL=="eth0", RUN+="/usr/local/bin/sa02m-eth0-led.sh"
 
 # eth1 — второй интерфейс (если сконфигурирован)
 ACTION=="add", SUBSYSTEM=="net", KERNEL=="eth1", RUN+="/usr/bin/systemctl --no-block start fix-eth@eth1.service"
 ACTION=="bind", SUBSYSTEM=="net", KERNEL=="eth1", RUN+="/usr/bin/systemctl --no-block start fix-eth@eth1.service"
+# eth1 `change` lines: UNVERIFIED. On eth0 (SA-02m, sun4i-emac) a carrier
+# change emits no uevent on the current 6.1 kernel image (udevadm monitor,
+# bench 1.135, 2026-10-30), so the same eth0 lines never ran and were removed
+# (docs/bugs/BUGLOG.md). eth1 (dwmac-sun8i, SA-02m-2 only) has not been
+# measured — the bench has one Ethernet — so these stay until it is. The link
+# LEDs do not depend on them: sa02m-eth0-led-poll syncs them within 1-2 s and
+# net-watchdog.sh once per pass.
+# sa02m-eth0-led.sh mapping — sa02m-1eth: eth0_link←eth0; sa02m-2eth: eth0_link←eth1, eth1_link←eth0.
 ACTION=="change", SUBSYSTEM=="net", KERNEL=="eth1", ATTR{carrier}=="1", RUN+="/usr/bin/systemctl --no-block start fix-eth@eth1.service"
 ACTION=="change", SUBSYSTEM=="net", KERNEL=="eth1", RUN+="/usr/local/bin/sa02m-eth0-led.sh"

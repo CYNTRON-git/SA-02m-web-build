@@ -146,6 +146,7 @@ class TestFifoSafeReadRegs(unittest.TestCase):
             PARITY_NONE="N", STOPBITS_ONE=1,
             Serial=lambda **kw: OverrunUart())
         with mock.patch.object(bridge_serial, "serial", fake_serial), \
+                mock.patch.object(bridge_serial, "_port_client", return_value=(mock.Mock(), mock.Mock())), \
                 mock.patch.object(bridge_serial, "uart_line_index",
                                   lambda _p: None), \
                 mock.patch.object(bridge_serial, "_unresolved_builtin_uart",
@@ -255,6 +256,7 @@ class TestModbusSerialSplitsLongReads(unittest.TestCase):
 class FakePub:
     def pub_control(self, *a, **k): pass
     def pub_error(self, *a, **k): pass
+    def device_online(self, *a, **k): pass   # the first answer reports it
     def pub_meta(self, *a, **k): pass
     def pub_control_meta(self, *a, **k): pass
     def pub_control_units(self, *a, **k): pass

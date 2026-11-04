@@ -73,6 +73,7 @@ def open_port(
         stopbits=STOP_MAP.get(stopbits, serial.STOPBITS_TWO),
         timeout=0.05,
         write_timeout=2.0,
+        exclusive=True,
     )
 
 

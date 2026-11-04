@@ -46,6 +46,18 @@ dns_ensure() {
     "$DNS_ENSURE_BIN" "$1" >/dev/null 2>&1 || true
 }
 
+# ── Статические маршруты из конфига ────────────────────────────────────────
+# Строки `post-up ip route add …` выполняет только успешный ifup; упавший ifup
+# и link cycle ниже оставляют плату без них. Хелпер возвращает недостающие,
+# не выполняя строк конфига. Guard на -x: частичный деплой деградирует до
+# сегодняшнего поведения; timeout — хелпер синхронен внутри прохода сторожа.
+# Контракт: docs/contracts/boot-network-routes.md
+ROUTES_ENSURE_BIN=/usr/local/sbin/sa02m-routes-ensure.sh
+routes_ensure() {
+    [ -x "$ROUTES_ENSURE_BIN" ] || return 0
+    timeout 10 "$ROUTES_ENSURE_BIN" "$1" >/dev/null 2>&1 || true
+}
+
 rotate_log() {
     [ -f "$LOG_FILE" ] || return
     local size; size=$(stat -c%s "$LOG_FILE" 2>/dev/null || echo 0)
@@ -247,7 +259,7 @@ recover_iface() {
     #    Stuck PHY with cable often shows operstate=dormant|unknown (admin UP),
     #    not only "down" — gating on down alone skipped recovery until re-plug.
     if ! carrier_up "$iface"; then
-        local oper flags admin_up=0
+        local oper flags admin_up=0 _link_after_cycle=0
         oper=$(cat "/sys/class/net/${iface}/operstate" 2>/dev/null || echo unknown)
         flags=$(cat "/sys/class/net/${iface}/flags" 2>/dev/null || echo 0)
         # IFF_UP = 0x1
@@ -272,12 +284,40 @@ recover_iface() {
             # mii-tool -r перезапускает autoneg через MDIO напрямую (независимо от ядра)
             mii-tool -r "$iface" 2>/dev/null || ethtool -r "$iface" 2>/dev/null || true
             sleep 3
+            # A slow PHY can come up inside this ~6 s cycle (it did on the
+            # bench 1.135 cold boot of 2026-10-30, docs/bugs/BUGLOG.md). A
+            # carrier change emits no uevent (udevadm monitor on 1.135; the
+            # eth0 carrier=1 rule that never fired is gone from
+            # 99-lan-recovery.rules), so nothing reacts to link-up between
+            # net-watchdog passes — the routes the `ip link set down` above
+            # flushed came back 65 s later. Re-read carrier and continue into
+            # the carrier-up path in this same pass.
+            carrier_up "$iface" && _link_after_cycle=1
+        elif [ "$admin_up" = "1" ]; then
+            # Admin UP and no full cycle due — the budget is spent (or, in
+            # theory, operstate is outside the cycle set with budget left:
+            # unreachable on a physical port, harmless): the IP101A under the
+            # generic PHY driver does not restart autoneg by itself when a
+            # partner appears after a cable-less boot, so a cable plugged after
+            # cycle 5 left the board off the LAN until reboot (bench 1.135
+            # 2026-10-28, docs/bugs/BUGLOG.md). One MDIO autoneg restart per
+            # pass, no down/up, no sleeps; the next carrier=1 pass resets the
+            # counter. mii-tool's stdout («restarting autonegotiation...») is
+            # silenced — it would be a third journal line every 30 s.
+            mii-tool -r "$iface" >/dev/null 2>&1 || ethtool -r "$iface" >/dev/null 2>&1 || true
+            log INFO "$iface: нет физического линка (carrier=0 operstate=${oper} cycles=${_cycle_count}), перезапуск автосогласования"
+            debug_iface_state "$iface"
         else
+            # Admin DOWN (ifup never ran, or the operator took the port down): leave it alone.
             log INFO "$iface: нет физического линка (carrier=0 operstate=${oper} cycles=${_cycle_count}), пропуск"
             debug_iface_state "$iface"
         fi
-        [ -x /usr/local/bin/sa02m-eth0-led.sh ] && /usr/local/bin/sa02m-eth0-led.sh || true
-        return 0
+        if [ "$_link_after_cycle" = "1" ]; then
+            log INFO "$iface: линк появился после link cycle ${_cycle_count}"
+        else
+            [ -x /usr/local/bin/sa02m-eth0-led.sh ] && /usr/local/bin/sa02m-eth0-led.sh || true
+            return 0
+        fi
     fi
 
     # Carrier есть — перевзводим бюджет link cycle. Счётчик ограничивает только
@@ -328,6 +368,7 @@ recover_iface() {
         # при уже поданной записи выходит после одного [ -e ].
         # Контракт: docs/contracts/boot-network-dns.md
         dns_ensure "$iface"
+        routes_ensure "$iface"
         check_connectivity "$iface"
         # Gratuitous ARP burst: каждую секунду 15с — перекрывает окно когда
         # Windows выходит из ARP FAILED (~15-20с от device offline).
@@ -385,6 +426,7 @@ recover_iface() {
         # «Кабель пришёл позже»: восстановление прошло, резолвер тоже должен
         # быть подтверждён — ifdown/ifup выше мог снова не дойти до if-up.d.
         dns_ensure "$iface"
+        routes_ensure "$iface"
         # Grat-ARP burst после восстановления IP (тот же механизм что и при has_ip)
         local grat_marker="${STATE_DIR}/${iface}.grat_arp_done"
         if [ ! -f "$grat_marker" ] && command -v python3 >/dev/null 2>&1 \

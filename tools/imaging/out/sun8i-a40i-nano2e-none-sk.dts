@@ -145,12 +145,15 @@
 &emac_mdio {
 	status = "okay";
 	phy2: ethernet-phy@0 {
-		compatible = "ethernet-phy-ieee802.3-c22";
+		/* IC+ IP101A (PHY ID 0x02430c54). The id-form string goes FIRST: the ID is read
+		 * over MDIO while PH12 still holds the PHY in reset (answers 0x0000 -> "Generic PHY"),
+		 * and a vendor string such as "icplus,ip101a" binds nothing (phylib matches by ID). */
+		compatible = "ethernet-phy-id0243.0c54", "ethernet-phy-ieee802.3-c22";
 		reg = <0>;
 
 		reset-gpios = <PIN_PH 12 GPIO_ACTIVE_LOW>;
 		reset-assert-us = <10000>;
-		reset-deassert-us = <100000>;
+		reset-deassert-us = <500000>;
 
 		icplus,select-rx-error;
 		status = "okay";
@@ -173,8 +176,9 @@
 
 &gmac_mdio {
 	phy1: ethernet-phy@0 {
-		/* IC+ IP101A (PHY ID 0x02430c54); icplus driver required for full init.
-		 * Fallback to generic IEEE 802.3-c22 until CONFIG_IP101_PHY is in kernel. */
+		/* IC+ IP101A (PHY ID 0x02430c54); CONFIG_ICPLUS_PHY=y since 2026-06-03 and the
+		 * ID read succeeds here (most likely because U-Boot already drove PH13 for its own
+		 * network use), so the vendor string is cosmetic. */
 		compatible = "icplus,ip101a", "ethernet-phy-ieee802.3-c22";
 		reg = <0>;
 

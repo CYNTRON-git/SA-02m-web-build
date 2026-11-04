@@ -202,7 +202,7 @@ apply_firstboot_wiring() {
     ln -sf /dev/null "$root/etc/systemd/system/armbian-resize-filesystem.service"
     rm -f "$root/etc/systemd/system/basic.target.wants/armbian-resize-filesystem.service" 2>/dev/null || true
 
-    for u in net-watchdog sa02m-userspace-watchdog sa02m-failure-monitor sa02m-eth-coldboot; do
+    for u in net-watchdog sa02m-link-monitor sa02m-userspace-watchdog sa02m-failure-monitor sa02m-eth-coldboot; do
         if [ -L "$root/etc/systemd/system/${u}.service" ]; then
             tgt=$(readlink "$root/etc/systemd/system/${u}.service" 2>/dev/null || true)
             [ "$tgt" = "/dev/null" ] && rm -f "$root/etc/systemd/system/${u}.service"
@@ -217,7 +217,7 @@ apply_firstboot_wiring() {
     # Значения обязаны совпадать с эталоном etc/systemd/sa02m-watchdog.conf
     # (репо на носителе нет — отсюда копия); стережёт
     # .ai-dev/quality/checks/watchdog-cap.sh.
-    printf '%s\n' '[Manager]' 'RuntimeWatchdogSec=15s' 'RebootWatchdogSec=0' \
+    printf '%s\n' '[Manager]' 'RuntimeWatchdogSec=15s' 'RebootWatchdogSec=16s' \
         > "$root/etc/systemd/system.conf.d/sa02m-watchdog.conf"
     if [ -f "$root/etc/systemd/system.conf" ]; then
         sed -i 's/^RuntimeWatchdogSec=/#RuntimeWatchdogSec=/' \

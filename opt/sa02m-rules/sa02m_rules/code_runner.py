@@ -243,15 +243,98 @@ class Http:
         return "http %s" % status
 
 
-def non_finite_inside(root: Any, fix: bool) -> bool:
-    """True when a NaN/±Infinity float sits anywhere inside `root` (dicts,
-    lists, tuples; cycles visited once). With `fix`, each one is replaced by
-    None in place; a tuple is rebuilt as a list ONLY when it holds one (at
-    any depth), since a tuple cannot be changed in place — every other value,
-    tuples included, is left exactly as it was."""
+#: Nodes (container slots) one Vars value may hold. The scrub below is one
+#: linear walk, but it runs OUTSIDE the RUN_S deadline — after the body, and
+#: on the engine's own save path, where no deadline exists at all — so its
+#: cost is bounded by size, not by time: a value past the cap is refused by
+#: Vars.set and dropped by the scrub, with a run error either way. Far above
+#: any legitimate scenario state (32 keys, persisted into scenarios.json).
+VARS_NODE_MAX = 100_000
+
+
+class VarsTooLarge(ValueError):
+    """A Vars value with more than VARS_NODE_MAX nodes."""
+
+
+def _spend(budget: list) -> None:
+    budget[0] -= 1
+    if budget[0] < 0:
+        raise VarsTooLarge()
+
+
+def _tuple_flags(top: tuple, flags: Dict[int, bool], mutables: list,
+                 budget: list) -> None:
+    """Post-order over the tuple-only subtree of `top`: flags[id(t)] is True
+    when a non-finite float is reachable from `t` through tuples alone —
+    the only case that forces a rebuild, since a tuple cannot be edited in
+    place. Lists/dicts met on the way are handed to the outer walk. Each
+    tuple is visited once (shared ones too); tuples cannot form cycles."""
+    stack = [(top, False)]
+    while stack:
+        node, done = stack.pop()
+        if done:
+            hit = False
+            for v in node:
+                if isinstance(v, float):
+                    hit = hit or not math.isfinite(v)
+                elif isinstance(v, tuple):
+                    hit = hit or flags[id(v)]
+            flags[id(node)] = hit
+            continue
+        if id(node) in flags:
+            continue
+        stack.append((node, True))
+        for v in node:
+            _spend(budget)
+            if isinstance(v, tuple):
+                if id(v) not in flags:
+                    stack.append((v, False))
+            elif isinstance(v, (list, dict)):
+                mutables.append(v)
+
+
+def _rebuild(top: tuple, flags: Dict[int, bool], built: Dict[int, list]) -> list:
+    """A flagged tuple as a list: non-finite floats become None, flagged
+    nested tuples are rebuilt too (a shared one once), everything else —
+    an unflagged tuple included — is kept as the very same object."""
+    stack = [(top, False)]
+    while stack:
+        node, done = stack.pop()
+        if done:
+            out: list = []
+            for v in node:
+                if isinstance(v, float) and not math.isfinite(v):
+                    out.append(None)
+                elif isinstance(v, tuple) and flags.get(id(v)):
+                    out.append(built[id(v)])
+                else:
+                    out.append(v)
+            built[id(node)] = out
+            continue
+        if id(node) in built:
+            continue
+        stack.append((node, True))
+        for v in node:
+            if isinstance(v, tuple) and flags.get(id(v)) and id(v) not in built:
+                stack.append((v, False))
+    return built[id(top)]
+
+
+def non_finite_inside(root: Any, fix: bool, budget: int = VARS_NODE_MAX) -> bool:
+    """True when a NaN/±Infinity float sits anywhere inside `root` — a list
+    or dict; nested dicts, lists and tuples; a cycle is visited once. ONE
+    linear walk over at most `budget` nodes (VarsTooLarge past it): every
+    container is entered once, every tuple judged once. With `fix`, each such
+    float is replaced by None in place; a tuple is rebuilt as a list only when
+    a non-finite float is reachable from it through tuples alone — a list or
+    dict inside a tuple is fixed in place and the tuple keeps its identity —
+    and every other value is left exactly as it was."""
     if isinstance(root, float):
         return not math.isfinite(root)
     found = False
+    left = [budget]
+    flags: Dict[int, bool] = {}
+    built: Dict[int, list] = {}
     stack, seen = [root], set()
     while stack:
         cur = stack.pop()
@@ -260,27 +343,51 @@ def non_finite_inside(root: Any, fix: bool) -> bool:
         seen.add(id(cur))
         if isinstance(cur, dict):
             slots = list(cur.items())
-        elif isinstance(cur, (list, tuple)):
+        elif isinstance(cur, list):
             slots = list(enumerate(cur))
         else:
             continue
         for k, v in slots:
+            _spend(left)
             if isinstance(v, float) and not math.isfinite(v):
                 found = True
                 if not fix:
                     return True
                 cur[k] = None
             elif isinstance(v, tuple):
-                if fix and non_finite_inside(v, fix=False):
+                mutables: list = []
+                _tuple_flags(v, flags, mutables, left)
+                stack.extend(mutables)
+                if flags[id(v)]:
                     found = True
-                    as_list = list(v)
-                    cur[k] = as_list
-                    stack.append(as_list)
-                elif not fix:
-                    stack.append(v)
+                    if not fix:
+                        return True
+                    cur[k] = _rebuild(v, flags, built)
             elif isinstance(v, (dict, list)):
                 stack.append(v)
     return found
+
+
+def scrub_vars(bucket: Dict[str, Any]) -> str:
+    """Make `bucket` strict-JSON-safe in one pass: NaN/±Infinity → None
+    (non_finite_inside, fix=True); a value past VARS_NODE_MAX is dropped
+    (stored as None). Returns the run-error text, "" when nothing changed."""
+    scrubbed = dropped = False
+    for key in list(bucket):
+        holder = [bucket[key]]  # a root tuple / float has no parent to edit
+        try:
+            if non_finite_inside(holder, fix=True):
+                scrubbed = True
+                bucket[key] = holder[0]
+        except VarsTooLarge:
+            bucket[key] = None
+            dropped = True
+    parts = []
+    if scrubbed:
+        parts.append("Vars: NaN/Infinity is not a finite number (stored as None)")
+    if dropped:
+        parts.append("Vars: value too large (dropped)")
+    return "; ".join(parts)
 
 
 class Vars:
@@ -289,9 +396,8 @@ class Vars:
     def __init__(self, bucket: Dict[str, Any], on_home_mode: Optional[Callable] = None):
         self._b = bucket
         self._on_home_mode = on_home_mode
-        #: A NaN/Infinity was scrubbed to None (run_code journals it).
-        #: `_`-prefixed: the AST walk bans the body from touching it.
-        self._scrubbed = False
+        #: The run-error text of a scrub done mid-run (run_code journals it).
+        self._scrubbed = ""
 
     def get(self, key: str, default: Any = None) -> Any:
         return self._b.get(str(key), default)
@@ -299,7 +405,11 @@ class Vars:
     def set(self, key: str, value: Any) -> None:
         # Vars persist with the document: NaN/Infinity would make that JSON
         # non-strict. Refused here, where the author gets a run error.
-        if non_finite_inside(value, fix=False):
+        try:
+            bad = non_finite_inside([value], fix=False)
+        except VarsTooLarge:
+            raise ValueError("Vars.set: value too large") from None
+        if bad:
             raise ValueError("Vars.set: NaN/Infinity is not a finite number")
         if len(self._b) >= 32 and str(key) not in self._b:
             return
@@ -319,8 +429,9 @@ class Vars:
         if self._on_home_mode is not None:
             # The engine SAVES the document here, mid-run: scrub first, so
             # a value slipped in by mutation never reaches scenarios.json.
-            if non_finite_inside(self._b, fix=True):
-                self._scrubbed = True
+            reason = scrub_vars(self._b)
+            if reason:
+                self._scrubbed = reason
             self._on_home_mode(mode)  # engine validates + fires presence
         else:
             self._b["home_mode"] = mode
@@ -396,9 +507,9 @@ def run_code(s: Dict[str, Any], library: str, state: Dict[str, Dict[str, Any]],
             # Vars.get hands out the stored object: an in-place append of a
             # NaN bypasses Vars.set. Scrubbed at the mid-run save
             # (Vars.home_mode) and here, before the engine keeps the bucket.
-            scrubbed = non_finite_inside(vars_bucket, fix=True)
-            if (scrubbed or vars_api._scrubbed) and not err:
-                err = "Vars: NaN/Infinity is not a finite number (stored as None)"
+            reason = scrub_vars(vars_bucket) or vars_api._scrubbed
+            if reason and not err:
+                err = reason
     rec = {"ts": now, "id": s.get("id"), "name": s.get("name"), "error": err, "ok": not err}
     s["last_run"] = now
     s["last_error"] = err

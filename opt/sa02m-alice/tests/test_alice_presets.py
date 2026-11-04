@@ -236,7 +236,7 @@ class TestLampAndCurtainDocuments(unittest.TestCase):
             "capabilities": [{
                 "type": "devices.capabilities.color_setting",
                 "mqtt": COLOR,
-                "parameters": {"instance": "hsv"},
+                "parameters": {"instance": "xy"},
             }],
             "properties": [],
         })

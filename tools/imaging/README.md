@@ -184,7 +184,35 @@ sh /mnt/autorun.sh
 | [`publish-image.sh`](publish-image.sh) | хост | `*.img.xz` → `stand-data/images/current.img.xz` |
 | [`prepare-fel-usb.sh`](prepare-fel-usb.sh) | хост | опциональная USB без полного образа |
 | [`boot/fetch-boot-artifacts.py`](boot/fetch-boot-artifacts.py) | хост | zImage/DTB с донора |
+| [`out/sun8i-a40i-nano2e-none-sk.dts`](out/sun8i-a40i-nano2e-none-sk.dts) | справочно | исходный dts для сборки ядра («Способ 3» в корневом README): узел PHY eth0 с `ethernet-phy-id0243.0c54`, как в DTB плат после `sa02m-dtb-patch.sh`; никакой код его не читает |
 | [`manifest.example.json`](manifest.example.json) | — | справочный шаблон (make-image пишет `.manifest.json`) |
+
+---
+
+## DTB: драйвер PHY eth0
+
+На каждой плате PHY порта eth0 (IC+ IP101A) загружается под `Generic PHY`: ядро читает
+его ID, пока микросхема ещё удерживается в сбросе, получает `0x00000000`, и драйвер
+`icplus` не привязывается. Чинится **только** первой строкой `compatible` вида
+`ethernet-phy-id0243.0c54` в узле `/soc/mdio@1c0b080/ethernet-phy@0` — строка
+производителя (`icplus,ip101a`, как у eth1) не привязывает ничего: phylib выбирает
+драйвер по ID. Подробности — `docs/bugs/BUGLOG.md` 2026-10-29, `CHANGELOG.md` 1.0.7.21.
+
+- **На плате** (донор, стенд, любая развёрнутая): `apt install device-tree-compiler`, затем
+  `sa02m-dtb-patch.sh check` (без root; показывает драйвер PHY eth0) и
+  `sa02m-dtb-patch.sh apply` (root; для каждого имени DTB на FAT — бэкап в
+  `/root/dtb-backup-<имя>-<дата>`, проверка `fdtget` до записи, атомарная замена,
+  канонические копии), перезагрузка, `check` снова. Инструмент (`/usr/local/sbin/`) ставит
+  `install.sh` / `--refresh`; сам он **никогда** не запускается автоматически. Образ несёт
+  исправление, только если донор пропатчен **до** снятия (`docs/deployment.md`,
+  «Подготовка золотого образа»).
+- Справочный исходник для сборки ядра: `out/sun8i-a40i-nano2e-none-sk.dts` (узел `phy2`) —
+  то же содержимое.
+- **Стенд сетевой установки:** `boot/sun8i-a40i-sk.dtb` снят с донора **до** патча и пока
+  прежний. После того как донор (1.136) пропатчен и проверен —
+  `py -3 tools/imaging/boot/fetch-boot-artifacts.py` и закоммитить обновлённый blob; до этого
+  платы, залитые со стенда, загружаются со старым DTB и получают исправление тем же
+  `apply` руками.
 
 ---
 

@@ -54,7 +54,7 @@ so the picker works with no gateway and no bus. Rules:
   is the truth;
 - the board's own four controls are always offered, so the picker is never
   empty on a fresh board;
-- **Home Connect appliances** (1.0.6.57) come from
+- **Home Connect appliances** (1.0.7.0) come from
   `/run/sa02m-homeconnect/inventory.json` (`docs/contracts/home-connect.md`
   §6; env `SA02M_HOMECONNECT_INVENTORY`). The file belongs to another uid, so
   the reader is a boundary: size > 64 KiB (`HC_INVENTORY_MAX_BYTES`, read at
@@ -67,10 +67,39 @@ so the picker works with no gateway and no bus. Rules:
   `remaining_s` / `progress_pct` wait for a numeric binding kind), all
   `rw: "r"`;
   topics are built from the validated id and a table name only. An appliance
-  sorts after every COM device and before the controller; a disconnected one
-  is still offered (bindability is not liveness), one with nothing bindable is
-  not. Validating: `tests/test_inventory_homeconnect.py`, case 8 of
+  sorts after every COM device and before the audio recorder and the
+  controller; a disconnected one is still offered (bindability is not
+  liveness), one with nothing bindable is not. Validating:
+  `tests/test_inventory_homeconnect.py`, case 8 of
   `scripts/dev/test-alice-topics-cgi.sh`.
+- **The on-board audio recorder** (1.0.7.10; `docs/contracts/audio-recorder.md`
+  §2, §22) is offered **only where `sa02m-audio` is installed**: the marker is
+  a regular file `sa02m-audio.conf` in `/etc/sa02m-audio` (env
+  `SA02M_AUDIO_ETC`), which `scripts/15-audio.sh` seeds on every install,
+  enabled or not; presence only, the file is never opened. Absent ⇒ no entry
+  (a topic no daemon serves would bind a switch that never answers). The entry
+  is `id: sa02m-audio`, `type: "audio"`, name «Запись звука», with exactly
+  **one** channel in the `other` group: `light_music`, title «Светомузыка»,
+  `rw: "rw"`, topic `/devices/sa02m-audio/controls/light_music` (its command
+  `…/light_music/on` takes `1`/`0`, its state is a retained `0`/`1` — an
+  `on_off` binding carries it). No other recorder control is offered
+  (`record` stays reachable from scenarios, not the picker). The id, the
+  switch and the conf path are a copy of `sa02m_audio.constants` and the
+  installer's seed call (`AUDIO_*` in `inventory.py`). It sorts after Home
+  Connect and just before the controller. Like the controller, it does **not**
+  count as a configured device: with no yaml device the flat list still falls
+  back to `_roster.json` (`topics.py: list_mqtt_topics`). The LED strip's
+  light-music stream controls (`music_level`, `music_color`, `fx_aux`) are
+  never offered, even when the strip's live cache carries them — they are not
+  in the `LED_*` table. Validating: `tests/test_inventory_audio.py` — absent
+  marker, a directory in its place, and the marker read from the env dir offer
+  nothing; installed offers exactly the one channel above and the flat list
+  carries its topic; order Home Connect → recorder → controller; the roster
+  fallback still runs with the recorder installed; the three stream controls
+  stay out of `LED_*` and out of a live-cached strip's channels; the copied
+  id, switch row (`switch`, writable, a command control) and conf path equal
+  their homes in `opt/sa02m-audio/sa02m_audio/constants.py`, and
+  `scripts/15-audio.sh` has exactly one seed call for the marker.
 
 **Budget and shape (1.0.6.39).** The CGI wraps its python in `timeout` at
 `TOPICS_CGI_TIMEOUT_S` (15 s, `constants.py`; shell default
@@ -122,6 +151,21 @@ Validating tests: `opt/sa02m-alice/tests/test_auto_provision.py`.
   «Присутствие a» from any other id form (≤25 characters). Validating:
   `tests/test_auto_provision.py TestProvisionMtd`; sensor side:
   `docs/contracts/mtd-presence.md`.
+- Для MTD живой топик `target_distance` добавляет свойство
+  `devices.properties.float`, instance `target_distance`, unit
+  `unit.length.meter`, `cloud_only: true`. Мост уже публикует метры:
+  дополнительного масштаба нет, значение `0` допустимо. Свойство доступно
+  облаку, исключено из discovery, query, подписок и callback Алисы.
+  Единственная существующая привязка этого MQTT id типа
+  `devices.types.sensor.motion` с событием `motion` на `presence_status`
+  получает недостающее свойство под блокировкой документа и атомарной
+  записью после валидации; id, имя, комната и остальные настройки сохранены.
+  Привязки к нескольким MQTT id, несколько устройств с одним MQTT id и
+  явно заданные instance или топик расстояния не изменяются. Метаданные
+  канала и запись YAML без живого значения расстояния недостаточны.
+  Сбор retained-топиков после запуска и позднее значение расстояния
+  проходят тот же путь; ошибка сохранения оставляет работу для повтора.
+  Проверка: `tests/test_mtd_distance.py`.
 - A second pass is a no-op. Lights, Carel, sirens and other bindings stay.
 - After persist the in-process registry reloads (same `apply_reload` path
   as a CGI edit). The hub catalog is the next `alice_devices_list`.
@@ -190,7 +234,7 @@ prefixes are named here:
 The HomeKit bridge (`sa02m-homekit`, `docs/contracts/homekit-bridge.md`) reads
 the same document through `DeviceRegistry` and never writes it.
 
-**Top-level `homekit_scenes`** (1.0.6.57): the scenario ids ticked «Показывать в
+**Top-level `homekit_scenes`** (1.0.7.0): the scenario ids ticked «Показывать в
 HomeKit» on the «Умный дом» card — a list of `_ID_RE` strings, de-duplicated,
 ≤ 64 (`models.validate_homekit_scenes`, `HOMEKIT_SCENES_MAX` = the store's
 `SCENARIOS_MAX`). Absent ⇒ no scene is in HomeKit. Its ONE writer is the
@@ -242,17 +286,27 @@ the Yandex account as a switch. Projection home:
 - **`retrievable`/`reportable` false, `split` true.** The board cannot know
   whether a scene is currently «on» — it fired once and the room may have
   been changed by hand since. So the switch never claims a state: `query`
-  answers `{id, capabilities: [], properties: []}` with **no `error_code`**,
-  and no `device_state` is ever emitted for it. Alice renders «включить» /
-  «выключить» rather than a toggle whose position we would have to invent.
+  answers `{id, capabilities: [], properties: []}` with **no `error_code`**
+  while the engine is up, and no `device_state` is ever emitted for it — not
+  even the unreachable stub (§Error codes): the switch never reports, so
+  nothing would ever clear a pushed DOWN in the app. Alice renders
+  «включить» / «выключить» rather than a toggle whose position we would have
+  to invent.
 - **Never `DEVICE_UNREACHABLE` for silence.** A command topic has no poller
   behind it and nothing republishes it, so the freshness rules that decide a
   Modbus coil is dead do not apply: neither the unreachable-transition sweep
   nor the action path may refuse a scene for a topic that was never seen or
-  has aged past `STATUS_STALE_S`. The device-level flag
-  `/devices/sa02m-rules-<sid>/meta/error` **is** still honoured — the hook for
-  a future rules-service availability signal (the gap named in
-  `cloud-scenarios.md` §MQTT mirror).
+  has aged past `STATUS_STALE_S`.
+- **Down while the engine is down.** The executor of every scene command is
+  `sa02m-rules`; its availability flag `/devices/sa02m-rules/meta/error`
+  (`cloud-scenarios.md` §MQTT mirror) is subscribed whenever a scene is
+  exposed. While it is non-empty every scene switch is down, answered on
+  demand: an action answers `ERROR / DEVICE_UNREACHABLE` and publishes
+  **nothing**, `query` answers `DEVICE_UNREACHABLE`; the transition sweep
+  pushes nothing for it (above). The per-scene
+  `/devices/sa02m-rules-<sid>/meta/error` is honoured the same way. No flag
+  seen ⇒ up (the `/meta/error` semantics); the residuals of that are the
+  engine contract's.
 - **Board-keyed id.** `<board>` is the controller serial (else machine-id[:16],
   else `sa02m`), sanitised to the id charset and bounded to 24 chars: two
   SA-02m under ONE Yandex account both mint scenario `s1` and would otherwise
@@ -270,8 +324,15 @@ the Yandex account as a switch. Projection home:
   place — a store write that does not change the projection (a run journal
   flush, a `vars` edit) costs no rebuild.
 - **Action.** `on` / `off` publish `"1"` / `"0"` to
-  `…/controls/run/on`, no retain, and answer `DONE` as any device does; what
-  the engine then executes is `cloud-scenarios.md` §MQTT mirror.
+  `…/controls/run/on`, no retain, and answer `DONE` as any device does — unless
+  the engine is down (above); what the engine then executes is
+  `cloud-scenarios.md` §MQTT mirror. `DONE` means «handed to a listening
+  engine», not «the scene ran»: there is no acknowledgement round-trip.
+
+Validating, engine availability: `tests/test_scene_devices.py`
+`EngineAvailabilityTests` (registry + the Socket.IO action handler, and the
+topic's parity with the engine's constant); the publisher side is
+`opt/sa02m-rules/tests/test_availability.py`.
 
 ### Device type (`type`)
 
@@ -317,7 +378,7 @@ not conjure one.
 Validating: `tests/test_cloud_control_api.py::TestUpsertDeviceRooms`,
 `::TestUpsertRoomMembership`, `tests/test_models.py::TestRoomId`.
 
-### Tile fields (`alice_visible`, `icon`, `homekit_visible`) — 1.0.6.26 / 1.0.6.57
+### Tile fields (`alice_visible`, `icon`, `homekit_visible`) — 1.0.6.26 / 1.0.7.0
 
 Two optional device-level keys beside `room_id`, validated by
 `config/models.py::validate_device`:
@@ -334,7 +395,7 @@ Two optional device-level keys beside `room_id`, validated by
   control page; the ids match that page's sprite and the board's own
   `#sh-icons`. Never forwarded to Yandex.
 - `homekit_visible` (bool; **absent ⇒ hidden** — the opposite default of
-  `alice_visible`, on purpose; 1.0.6.57). Read only by the HomeKit bridge:
+  `alice_visible`, on purpose; 1.0.7.0). Read only by the HomeKit bridge:
   a device reaches Apple Home only while this is `true`
   (`docs/contracts/homekit-bridge.md` §2 — the exposure rule, its skip reason
   `hidden`, and what the bridge does with it live there). A non-bool value is
@@ -366,7 +427,7 @@ sends only a bool `split` and omits `parameters` when nothing is left, so
 `instance` never reaches Yandex (1.0.6.51); the cloud profile sends the stored
 `parameters` unchanged. Validating: `tests/test_discovery_on_off.py`.
 A `color_setting` stored as `{"instance": "rgb"}` is sent to Yandex as
-`{"color_model": "rgb"}` (no `instance`; `hsv` is not added). A stored
+`{"color_model": "rgb"}` (no `instance`; an explicitly stored HSV instance uses `color_model: hsv`). A stored
 `temperature_k` window is sent as `temperature_k` `{min, max}`. A brightness
 range whose `max` is above 100 (the LED channel is 0…255, stored either with
 `unit.percent` or with no unit) is sent as `unit.percent` with `range`
@@ -499,7 +560,7 @@ leak a non-Yandex field to the platform.
 - In use: kPa → mmHg `7.50062` (DTV pressure), mg/m³ → µg/m³ `1000` (TVOC),
   Wh → kWh `0.001` (CE `electricity_meter`).
 
-### CO₂ threshold (`co2_alarm_ppm`, item level, never sent to Yandex) — 1.0.6.57
+### CO₂ threshold (`co2_alarm_ppm`, item level, never sent to Yandex) — 1.0.7.0
 
 The HomeKit bridge's `CarbonDioxideDetected` threshold (`homekit-bridge.md`
 §3, row M15) sits beside `mqtt` on the `devices.properties.float`
@@ -601,6 +662,87 @@ sides carry the same value, exactly as before.
 Validating tests: `opt/sa02m-alice/tests/test_models.py`,
 `test_converters.py`, `test_device_registry.py`, `test_reload_watch.py`,
 `test_state_sender.py`, `test_topics_inventory.py`.
+
+### Типизированные команды оборудования (движок 3)
+
+Прямой dispatcher выбирает декларацию по **type + instance**; неизвестная или
+повторённая точная пара не публикуется. Поэтому две `range` одного устройства
+(например, температура и влажность) используют собственные MQTT-топики.
+Режимы, RGB/HSV, Kelvin и toggle доступны только через явные декларации;
+`writable: false` запрещает команду.
+
+`color_setting` принимает `parameters.instance: hsv` наряду с `rgb` и
+`temperature_k`. HSV — объект ровно `{h,s,v}`: конечные числа, h 0…360,
+s/v 0…100, логические значения запрещены. На RGB-шину передаётся `#RRGGBB`,
+обратный RGB-отчёт преобразуется в HSV. Это альтернативное представление
+существующего RGB-канала, а не новый физический драйвер. Kelvin остаётся
+целым числом 2700…6500; преобразование физического CCT-канала остаётся в LED
+bridge. `toggle` требует стандартный instance (`backlight`, `controls_locked`,
+`ionization`, `keep_warm`, `mute`, `oscillation`, `pause`), строго boolean на
+входе, MQTT `1`/`0` на выходе; другие значения телеметрии пропускаются как
+неизвестные.
+
+Режим Carel использует существующий `carel_family` и его каноническую карту.
+Для другого оборудования интегратор задаёт **item-level** `mode_map`, рядом
+с `mqtt`, не внутри публичного `parameters`:
+
+```json
+{"type":"devices.capabilities.mode",
+ "mqtt":"/devices/hvac/controls/mode",
+ "parameters":{"instance":"thermostat","modes":[{"value":"heat"},{"value":"cool"}]},
+ "mode_map":{"heat":"1","cool":"2"}}
+```
+
+Числа в примере условные: реальные строки берутся из документации конкретного
+MQTT-драйвера. Ключи карты в точности совпадают с объявленными modes; значения —
+различные непустые строки до 128 символов без управляющих символов. Карта
+работает в обе стороны, не отправляется Яндексу и не совмещается с
+`carel_family`. Без карты и без поддерживаемого семейства режим отклоняется.
+Поддержанные instance режима: `fan_speed`, `thermostat`, `swing`, `program`;
+разрешённые значения задаёт `config.models.MODE_INSTANCES`, ограниченный
+[словарём функций Яндекса](https://yandex.ru/dev/dialogs/smart-home/doc/ru/concepts/mode-instance).
+
+Сценарии используют этот же converter; условия rollout и совместимость
+описаны в [контракте сценариев](cloud-scenarios.md#типизированная-запись-движок-3).
+
+### Процентные каналы 4TO6DI
+
+Модуль объявляет отдельные DO1–DO4 для включения и AO1–AO4 с сырым
+регистром 0…1000 для уровня (`bridge_mr02m.py`). Значение AO не становится
+скоростью вентилятора автоматически: назначение задаётся для конкретного канала.
+
+Форма привязок предлагает «Вытяжка 4TO6DI» и «Свет 4TO6DI». Оба шаблона
+создают отдельный on_off на DO и range на AO **того же канала**; каналы выбирает
+интегратор. Вытяжка: fan_speed 40…100%, cloud_only. Лампа накаливания:
+brightness 0…100%. Выключение пишет только DO=0, не обнуляет AO; включение
+DO=1 сохраняет ранее заданный уровень. Первую рабочую уставку вентилятора
+необходимо задать перед включением при пусконаладке: шаблон сам на шину не пишет.
+
+Необязательный item-level `range_scale` хранится рядом с `mqtt`:
+
+```json
+{"type":"devices.capabilities.range","mqtt":"/devices/triac/controls/ao_1",
+ "range_scale":0.1,"cloud_only":true,
+ "parameters":{"instance":"fan_speed","unit":"unit.percent",
+ "range":{"min":40,"max":100,"precision":1}}}
+```
+
+Формула чтения: logical = raw × range_scale. Запись: raw = logical /
+range_scale, после проверки логических границ. 40% → `400`, 100% → `1000`.
+Коэффициент конечный, 1e-6…1e6, положительный; допускается только для range
+и не совмещается с carel_family. Отсутствие означает `1`, старые LED 0…255 и
+обычные AO сохраняют формат. Скалирование общее для query, событий, прямой
+команды и типизированных сценариев движка 3; относительная команда считает
+приращение в логических единицах. Discovery не раскрывает range_scale.
+Прочитанное значение очищается от шума двоичной арифметики (до 12 значащих
+цифр): raw `333` при 0,1 — это `33.3`, а не `33.300000000000004`. Запись на шаг
+`precision` не округляется: значение между шагами проходит как есть
+(25,5 % при `precision: 1` — raw `255`, 33,33 % — raw `333.3`). Для целочисленных
+регистров интегратор выбирает шаг, дающий целое raw; шаблоны используют 1 %,
+то есть 10 отсчётов регистра.
+
+Это программная поддержка будущего обновления контроллера; физическое
+оборудование данным изменением не перепрошивается и не проверяется.
 
 ### Binding edits apply without a restart (1.0.6.19)
 
@@ -704,7 +846,10 @@ profiles**: the re-subscribe, the re-subscribe after a drop before the first
 CONNACK, one snapshot after the grace and none while deaf — including a drop
 inside the grace — the refused command, the status keys),
 `tests/test_mqtt_link.py` (the link in isolation, including a CONNACK landing
-mid-pass),
+mid-pass, a topic the library refuses inside one live session — the pass is
+re-run — and the lock discipline: two real threads forced into the
+interleaving where a `connected.set()` moved below the lock would leave the
+link up and unsubscribed),
 `tests/test_mqtt_link_broker.py` (the real paho against a mini broker — the
 library's callback arity, its own re-dial, retained re-delivery, a broker that
 closes every socket before CONNACK while the initial pass runs, the wire; it
@@ -781,17 +926,33 @@ Modbus coil unless the **slave** is down; a per-channel `r` does not refuse
 the command (Yandex scenario: switch + socket on one module in one burst).
 A **scene device** (`/devices/sa02m-rules-…`) is outside all of this: it
 carries no readable state and its silence is never `DEVICE_UNREACHABLE`
-(§Scene devices) — only the device-level `/meta/error` flag can take one
-down. A command the **broker** cannot take — the client's MQTT link is down
+(§Scene devices) — only a device-level flag can take one down: its own
+`/devices/sa02m-rules-<sid>/meta/error`, or the engine's
+`/devices/sa02m-rules/meta/error`; and it is never sent the unreachable stub
+below — it answers down on action and query only. A command the **broker** cannot take — the client's MQTT link is down
 or the library refuses the publish — is `ERROR / DEVICE_UNREACHABLE` for that
 capability and is never queued for later (§Broker reconnect).
 
 **Unreachable transition (one `device_state`).** When a catalog device
 crosses from reachable to `DEVICE_UNREACHABLE`, the client emits one
-`device_state` stub (`error_code` only) — on the MQTT `/meta/error` down-edge
-and at most once from the 30 s history snapshot. Already-down devices are
-not re-pushed every cadence. GPIO retained is unchanged. No extra
-`callback_state` flood. **The sweep is gated (1.0.6.39):** from the MQTT path
+`device_state` stub (`error_code` only) on the MQTT `/meta/error` down-edge —
+once per edge and per Socket.IO session (the edge map is reset at every
+connect). The snapshot path repeats the stub of every device still down on
+its own cadence (§Reconnect snapshot, §History snapshot — 1.0.7.12). Why a
+repeat (cloud repo `alice-gateway/cyntron_alice_gateway/controller/state_cache.py:330-453`,
+`hub.py:485-498, 855-882`, cloud repo commit `764f80b`, verified
+2026-10-29): the hub keeps
+`DEVICE_UNREACHABLE` in memory per device across our reconnects, but loses
+it on a hub restart, after 24 h without contact or on a re-binding — a
+device down through such an eviction read «Нет данных» forever, since the
+board never repeated the stub; and ANY real value for the device, from any
+origin — a snapshot or the board's answer to the hub's `alice_devices_query`
+poll (on demand, at most every `state_max_age_s` = 8 s) carrying cached
+values of a down device — clears the
+flag (the window F1/F2 of 1.0.7.12 close on the bridge side). A repeated
+stub is idempotent on the hub (`state_cache.py:413, 455-461` — a repeat is
+not a transition). GPIO retained is unchanged. No extra `callback_state`
+flood. **The sweep is gated (1.0.6.39):** from the MQTT path
 the transition sweep (a full `query_devices()`) runs only for an availability
 topic (`/devices/<id>/meta/error`, `<control>/meta/error`) — a value message,
 the retained storm included, never pays it; the snapshot / reload path always
@@ -841,13 +1002,23 @@ later, irrelevant for the cloud's 8 s confirm window. Validating tests:
 first post-reconnect report leaves the board. Live MQTT still uses `offer`.
 Retained bursts stay cached-not-reported. A `query_devices()` entry with
 neither capabilities nor properties does not emit unless it is a
-`DEVICE_UNREACHABLE` stub from `take_unreachable_transitions` (one per
-down-edge). No `callback/discovery`. The same push runs once after a broker
-reconnect, `RETAINED_GRACE_S` after the re-subscribe (§Broker reconnect).
+`DEVICE_UNREACHABLE` stub — and the snapshot carries one for **every device
+down at that moment** (`unreachable_stubs`, from the same query), not only
+the edges this process once announced: a hub that restarted, evicted the
+device or had its flag cleared by a value (§Unreachable transition) is told
+every current outage again, and the connect snapshot is where a device
+already down at client start is first announced at all (1.0.7.12 — before,
+a stub went out once per process, and the retained `/meta/error=r` of the
+subscribe burst marked it announced before the sender was even started, so
+it never left). No `callback/discovery`. The same push runs once after a
+broker reconnect, `RETAINED_GRACE_S` after the re-subscribe (§Broker
+reconnect).
 
 **History snapshot.** While Socket.IO is connected **and the broker link is
 up** (§Broker reconnect — not from a frozen cache), the same
-`offer_snapshot` + `flush_now` runs from the MQTT cache: every
+`offer_snapshot` + `flush_now` runs from the MQTT cache — the live entries
+plus the stub of every device down at that tick (one per device per cadence,
+nothing once it answers): every
 `STATE_SNAPSHOT_S` (30 s) on the **cloud** profile (hub stale bound — do not
 lengthen), and every `STATE_SNAPSHOT_YANDEX_S` (60 s) on the **Yandex**
 profile so Station graphs get about one point per minute even when the
@@ -855,7 +1026,13 @@ broker does not republish a steady reading. In-place document reload with
 added/removed topics also snapshots once. This is a cadence, not a replacement
 for live capability reports (0.75 s). The float `time_rate_s` of 300 s remains
 the floor between *MQTT-driven* reports of the same reading; the history
-snapshot bypasses it.
+snapshot bypasses it. Validating tests (the stub on every snapshot):
+`opt/sa02m-alice/tests/test_mqtt_reconnect_run.py` `TestUnreachableAcrossSessions`
+(both sessions' connect snapshots through `run()`), `test_state_sender.py`
+`test_emit_cache_snapshot_carries_the_stub_of_every_device_down` (connect +
+two cadences, none once the device answers), `test_device_registry.py`
+`test_unreachable_stubs_names_every_device_down_now` and
+`test_reset_announced_down_re_emits_the_stub`.
 
 **Gateway Callback belt.** The gateway throttles its Callback/state POSTs to
 Yandex at **30 POSTs per controller SN per 60 s** (gateway side,
@@ -1048,7 +1225,7 @@ Validating tests: `opt/sa02m-alice/tests/test_cloud_profile.py`,
 the trigger verbs by `scripts/dev/test-alice-reload-handshake.sh` and the
 sudoers pin by `.ai-dev/quality/checks/sudoers-pin-contract.sh`.
 
-### Catalogue profiles other than `yandex` / `cloud` (1.0.6.57)
+### Catalogue profiles other than `yandex` / `cloud` (1.0.7.0)
 
 A `DeviceRegistry` built with any other profile — today only `homekit`
 (`constants.PROFILE_HOMEKIT`), the HomeKit bridge's

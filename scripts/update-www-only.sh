@@ -7,8 +7,12 @@
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+if [ "${SA02M_INSTALL_GUARDED:-0}" != 1 ]; then
+    exec python3 "$SCRIPT_DIR/install-maintenance.py" --require-coordinator "$SCRIPT_DIR/update-www-only.sh" "$@"
+fi
 source "$SCRIPT_DIR/lib.sh"
 check_root
+bash "$SCRIPT_DIR/../etc/sa02m-update-state-migrate.sh" || exit 1
 
 : "${WEB_ROOT:=/var/www/network_config}"
 WWW_DIR="$SCRIPT_DIR/../www/network_config"
@@ -170,6 +174,24 @@ if [ -f "$REPO_ETC/sa02m-update-runner.sh" ]; then
     log OK "sa02m-update-runner установлен"
     sa02m_stamp_runner_version "$REPO_ROOT/www/network_config/VERSION" || true
 fi
+# The runner reads the saved panel port through this lib (health probe, offline
+# pack site file); same destination as 03-webserver.sh.
+if [ -f "$REPO_ETC/sa02m-web-port-lib.sh" ]; then
+    sa02m_atomic_install -m 644 "$REPO_ETC/sa02m-web-port-lib.sh" /usr/local/lib/sa02m-web-port-lib.sh
+    sed -i 's/\r$//' /usr/local/lib/sa02m-web-port-lib.sh
+fi
+# The runner scrubs legacy password lines from served logs through this lib;
+# same destination as 03-webserver.sh.
+if [ -f "$REPO_ETC/sa02m-web-log-scrub-lib.sh" ]; then
+    sa02m_atomic_install -m 644 "$REPO_ETC/sa02m-web-log-scrub-lib.sh" /usr/local/lib/sa02m-web-log-scrub-lib.sh
+    sed -i 's/\r$//' /usr/local/lib/sa02m-web-log-scrub-lib.sh
+fi
+if [ -f "$REPO_ETC/sa02m-update-control.sh" ]; then
+    sa02m_atomic_install -m 755 "$REPO_ETC/sa02m-update-control.sh" /usr/local/libexec/sa02m-update-control
+fi
+if [ -f "$REPO_ETC/sa02m-stacks-policy.sh" ]; then
+    sa02m_atomic_install -m 644 "$REPO_ETC/sa02m-stacks-policy.sh" /usr/local/lib/sa02m-stacks-policy.sh
+fi
 if [ -f "$REPO_ETC/sa02m-update-inspect.sh" ]; then
     sa02m_atomic_install -m 755 "$REPO_ETC/sa02m-update-inspect.sh" /usr/local/libexec/sa02m-update-inspect
     sed -i 's/\r$//' /usr/local/libexec/sa02m-update-inspect
@@ -221,7 +243,7 @@ if [ -f "$REPO_ETC/tmpfiles.d/sa02m-alice.conf" ]; then
     fi
 fi
 _upd_daemon_reload=0
-for _upd_unit in sa02m-update.service sa02m-update-recover.service sa02m-update-verify.service sa02m-factory-reset.service; do
+for _upd_unit in sa02m-update.service sa02m-update-download.service sa02m-update-recover.service sa02m-update-verify.service sa02m-factory-reset.service; do
     if [ -f "$SYSTEMD_SRC/$_upd_unit" ]; then
         sa02m_atomic_install -m 644 "$SYSTEMD_SRC/$_upd_unit" "/etc/systemd/system/$_upd_unit"
         sed -i 's/\r$//' "/etc/systemd/system/$_upd_unit"
@@ -249,6 +271,13 @@ if [ -f "$SCRIPT_DIR/../etc/sa02m-repair-web-env.sh" ]; then
     sed -i 's/\r$//' /usr/local/sbin/sa02m-repair-web-env
     /usr/local/sbin/sa02m-repair-web-env 2>/dev/null || true
 fi
+# web_creds.cgi pipes the new credentials to this helper on stdin; an older
+# helper reads the retired /tmp staging file instead (audit 2026-10-30 F1), so
+# it ships with the panel (docs/deployment.md, privileged helpers).
+if [ -f "$SCRIPT_DIR/../etc/sa02m-commit-web-env.sh" ]; then
+    sa02m_atomic_install -m 755 "$SCRIPT_DIR/../etc/sa02m-commit-web-env.sh" /usr/local/sbin/sa02m-commit-web-env
+    sed -i 's/\r$//' /usr/local/sbin/sa02m-commit-web-env
+fi
 if [ -f "$SCRIPT_DIR/../etc/sa02m-web-reboot.sh" ]; then
     sa02m_atomic_install -m 755 "$SCRIPT_DIR/../etc/sa02m-web-reboot.sh" /usr/local/sbin/sa02m-web-reboot.sh
 fi
@@ -262,8 +291,22 @@ if [ -f "$SCRIPT_DIR/../etc/sa02m-beeper-override.sh" ]; then
     sa02m_atomic_install -m 755 "$SCRIPT_DIR/../etc/sa02m-beeper-override.sh" /usr/local/sbin/sa02m-beeper-override.sh
 fi
 
-# USB / microSD: storage-mount (как в scripts/01-system.sh), чтобы веб «Автоформат» работал без полного install.sh
+# Static-IP watchdog (as in scripts/02-network.sh): the 1.0.7.12 late-cable fix
+# lives here and a www-only deploy must converge it too (gate fix-eth-ota-delivery).
+# Rename-over only — net-watchdog execs this path every 30 s, a truncating
+# install would hand it a 0-byte script.
 ETC_REPO="$SCRIPT_DIR/../etc"
+if [ -f "$ETC_REPO/fix-eth.sh" ]; then
+    if [ -f /usr/local/bin/fix-eth.sh ] && cmp -s "$ETC_REPO/fix-eth.sh" /usr/local/bin/fix-eth.sh; then
+        log INFO "fix-eth.sh без изменений (/usr/local/bin/fix-eth.sh)"
+    else
+        sa02m_atomic_install -m 755 "$ETC_REPO/fix-eth.sh" /usr/local/bin/fix-eth.sh \
+            && log OK "fix-eth.sh обновлён (/usr/local/bin/fix-eth.sh)" \
+            || log WARN "не удалось установить /usr/local/bin/fix-eth.sh"
+    fi
+fi
+
+# USB / microSD: storage-mount (как в scripts/01-system.sh), чтобы веб «Автоформат» работал без полного install.sh
 if [ -f "$ETC_REPO/storage-mount.sh" ] && [ -f "$ETC_REPO/sa02m-set-storage-auto-format" ]; then
     log INFO "Синхронизация storage-mount из $ETC_REPO"
     sa02m_atomic_install -m 755 "$ETC_REPO/storage-mount.sh" /usr/local/bin/storage-mount.sh

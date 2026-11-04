@@ -91,11 +91,15 @@ class StatusWriter:
             "last_event_ts": int(last_event_ts),
         }
         self._ensure_dir()
+        # Link first, status second: contract §231 (link.json only in awaiting_user)
+        # must hold at every instant — a reader polling status.json otherwise sees
+        # the new state with the stale sign-in code still beside it (CI run
+        # 40929196076 hit that window).
+        if state != C.STATE_AWAITING_USER:
+            self.clear_link()
         atomic_write(self.status_path, json.dumps(payload, ensure_ascii=False) + "\n",
                      mode=0o644, durable=False)
         self.last = payload
-        if state != C.STATE_AWAITING_USER:
-            self.clear_link()
         return payload
 
     def write_link(self, view: Dict[str, Any]) -> None:

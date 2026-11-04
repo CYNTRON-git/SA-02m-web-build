@@ -34,7 +34,8 @@
 #   2. RuntimeWatchdogUSec ← the policy (RuntimeWatchdogSec=15s → 15000000),
 #      explicitly, whatever the runner reported.
 #   3. leftover /run/sa02m-imaging.lock removed (again: only with no live runner).
-#   4. net-watchdog + sa02m-flasher started (the imaging lock stopped them).
+#   4. net-watchdog + sa02m-flasher started (the imaging lock stopped them);
+#      sa02m-link-monitor too, but only where it is enabled.
 # Expected output and when to run it: docs/deployment.md «Пути деплоя» →
 # «Ремонт застрявшего обновления без перезагрузки».
 #
@@ -115,6 +116,8 @@ else
 fi
 if ! runner_alive; then rm -f "$LOCK"; fi
 systemctl start net-watchdog 2>/dev/null || true
+# The hold stopped the link monitor too; given back only where enabled (never widened).
+systemctl is-enabled --quiet sa02m-link-monitor 2>/dev/null && systemctl start sa02m-link-monitor 2>/dev/null || true
 systemctl start sa02m-flasher 2>/dev/null || true
 sleep 2
 echo "after:  stage=$(st) lock=$(lock_state) watchdog=$(wd) net-watchdog=$(act net-watchdog) flasher=$(act sa02m-flasher) nginx=$(act nginx) fcgiwrap=$(act fcgiwrap) VERSION=$(tail -1 "$VERSION_FILE" 2>/dev/null | tr -d '\r')"

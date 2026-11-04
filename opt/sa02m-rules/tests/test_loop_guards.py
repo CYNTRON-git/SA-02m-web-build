@@ -310,6 +310,102 @@ class AdoptGuardTests(unittest.TestCase):
         e.on_state("m", "v", 6)
         self.assertEqual(pubs, [("led", "on_off", 1)])
 
+    # ── every entry point of an unarmed row (review round 3, R3-2) ──────
+    def _engine(self, rows, pubs, clock):
+        from sa02m_rules import engine as eng
+        self._save(rows)
+        with self.assertLogs("sa02m-rules", level="WARNING"):
+            return eng.Engine(lambda d, c, v: pubs.append((d, c, v)), self.path,
+                              now=lambda: clock[0], pub_state=lambda *_a: None)
+
+    @staticmethod
+    def _bad(sid, extra_trigger, action, **more):
+        row = {"id": sid, "name": sid, "enabled": True, "type": "block",
+               "trigger": [{"kind": "every", "minutes": "abc"}, extra_trigger],
+               "condition": {}, "action": action}
+        row.update(more)
+        return row
+
+    def test_an_unarmed_row_is_skipped_by_its_time_trigger(self):
+        """The clock scan (`time` / `sun`) reads the same guard as dispatch:
+        a healthy row on the same minute runs, the unarmed one does not."""
+        import time as _t
+        lt = _t.localtime(1_000_000)
+        at_1230 = _t.mktime((lt.tm_year, lt.tm_mon, lt.tm_mday, 12, 30, 0, 0, 0, -1))
+        clock = [at_1230]
+        pubs = []
+        bad = self._bad("b", {"kind": "time", "at": "12:30"},
+                        [{"kind": "set", "device": "led_b", "cap": "on_off", "value": 1}])
+        good = {"id": "c", "name": "c", "enabled": True, "type": "block",
+                "trigger": [{"kind": "time", "at": "12:30"}], "condition": {},
+                "action": [{"kind": "set", "device": "led_c", "cap": "on_off", "value": 1}]}
+        e = self._engine([bad, good], pubs, clock)
+        e.tick()
+        self.assertEqual(pubs, [("led_c", "on_off", 1)])  # RED under M7
+
+    def test_an_unarmed_scene_answers_neither_voice_verb(self):
+        """`run_scene` / `run_off` go through `_live_scene`: an unarmed scene
+        is not a live scene (the LAN command control gets a no-op)."""
+        clock = [1000.0]
+        pubs = []
+        bad = self._bad("sc", {"kind": "boot"},
+                        [{"kind": "set", "device": "led", "cap": "on_off", "value": 1}],
+                        type="scene")
+        good = {"id": "ok", "name": "ok", "enabled": True, "type": "scene",
+                "trigger": [], "condition": {},
+                "action": [{"kind": "set", "device": "led2", "cap": "on_off", "value": 1}]}
+        e = self._engine([bad, good], pubs, clock)
+        self.assertIsNone(e.run_scene("sc"))   # RED under M9
+        self.assertIsNone(e.run_off("sc"))
+        self.assertEqual(pubs, [])
+        self.assertIsNotNone(e.run_scene("ok"))
+        self.assertEqual(pubs, [("led2", "on_off", 1)])
+
+    def test_a_parent_skips_an_unarmed_child_scenario_and_scene(self):
+        """A `scenario` / `scene` action on an unarmed row is a skipped
+        child, like a disabled one; the parent's own actions still run."""
+        clock = [1000.0]
+        pubs = []
+        bad_block = self._bad("b", {"kind": "boot"},
+                              [{"kind": "set", "device": "led_b", "cap": "on_off", "value": 1}])
+        bad_scene = self._bad("sc", {"kind": "boot"},
+                              [{"kind": "set", "device": "led_sc", "cap": "on_off", "value": 1}],
+                              type="scene")
+        parent = {"id": "p", "name": "p", "enabled": True, "type": "block",
+                  "trigger": [], "condition": {},
+                  "action": [{"kind": "scenario", "id": "b"},
+                             {"kind": "scene", "id": "sc"},
+                             {"kind": "set", "device": "led_p", "cap": "on_off", "value": 1}]}
+        e = self._engine([bad_block, bad_scene, parent], pubs, clock)
+        rec = e.run_now("p")
+        self.assertEqual(pubs, [("led_p", "on_off", 1)])  # RED under M10
+        self.assertTrue(rec["ok"], rec)
+
+    def test_an_unarmed_row_with_a_non_string_id_is_still_off(self):
+        """A hand-edited document may carry `"id": 5` (only `validate_row`
+        requires a string). The guard treats every hashable id alike
+        (review round 3, A-R3-1)."""
+        clock = [1000.0]
+        pubs = []
+        bad = self._bad(5, {"kind": "state", "device": "m", "cap": "v",
+                            "op": ">", "value": 1},
+                        [{"kind": "set", "device": "led", "cap": "on_off", "value": 1}])
+        e = self._engine([bad], pubs, clock)
+        self.assertIn(5, e._unarmed)
+        e.on_state("m", "v", 5)
+        self.assertEqual(pubs, [])  # RED on a4a9278a: led/on_off=1
+
+    def test_deleting_an_unarmed_row_forgets_it(self):
+        """Bookkeeping only: the unarmed set never holds a row the document
+        no longer has (a re-added row is judged afresh by its own arm)."""
+        clock = [1000.0]
+        pubs = []
+        bad = self._bad("b", {"kind": "boot"}, [])
+        e = self._engine([bad], pubs, clock)
+        self.assertIn("b", e._unarmed)
+        e.adopt({"scenarios": [], "library": "", "vars": {}})
+        self.assertNotIn("b", e._unarmed)  # RED under M12
+
     def test_a_non_object_condition_does_not_stop_the_index(self):
         """_rebuild_for_s_index read `condition.get` on any shape."""
         bad = _every("d", 1)
@@ -322,6 +418,88 @@ class AdoptGuardTests(unittest.TestCase):
         app = rules_service.RulesApp(_Client(), self.path)  # RED: AttributeError
         self.assertIn(("m", "v"), app.engine._for_s_index)
         self.assertIn("c:every:0", _armed(app.engine))
+
+
+def _block(sid, action, **more):
+    row = {"id": sid, "name": sid, "enabled": True, "type": "block",
+           "trigger": [], "condition": {}, "action": action}
+    row.update(more)
+    return row
+
+
+class CancelByOwnerTests(unittest.TestCase):
+    """Editing or deleting `a` cancels every timer `a` owns — `a:cont`,
+    `a:end`, `a:logic:<k>` — and none of `a:b`'s, whose keys all start with
+    `a:` (review round 3, R3-2: the cont/end/logic branches of _timer_owner
+    each need a pin of their own)."""
+
+    def setUp(self):
+        self.td = tempfile.TemporaryDirectory()
+        self.addCleanup(self.td.cleanup)
+        self.path = os.path.join(self.td.name, "scenarios.json")
+        self.clock = [1000.0]
+        self.pubs = []
+
+    def _engine(self, rows):
+        from sa02m_rules import engine as eng
+        store.save({"scenarios": rows, "runs": [], "notify_queue": [],
+                    "library": "", "vars": {}}, self.path)
+        return eng.Engine(lambda d, c, v: self.pubs.append((d, c, v)), self.path,
+                          now=lambda: self.clock[0], pub_state=lambda *_a: None)
+
+    def _tick(self, e, seconds):
+        for _ in range(int(seconds)):
+            self.clock[0] += 1
+            e.tick()
+
+    def test_deleting_a_cancels_its_suspended_run_not_a_b_s(self):
+        """`cont`: a run suspended in a `delay` belongs to the row that
+        started it; deleting that row must stop its later writes."""
+        rows = [_block(sid, [{"kind": "set", "device": "led_" + tag, "cap": "on_off", "value": 1},
+                             {"kind": "delay", "seconds": 100},
+                             {"kind": "set", "device": "led_" + tag, "cap": "on_off", "value": 0}])
+                for sid, tag in (("a", "a"), ("a:b", "ab"))]
+        e = self._engine(rows)
+        e.run_now("a")
+        e.run_now("a:b")
+        self.assertEqual(_armed(e), {"a:cont", "a:b:cont"})
+        e.adopt({"scenarios": [rows[1]], "library": "", "vars": {}})  # delete a
+        self.assertEqual(_armed(e), {"a:b:cont"})  # RED under M2 / M1
+        self.pubs.clear()
+        self._tick(e, 101)
+        self.assertEqual(self.pubs, [("led_ab", "on_off", 0)])
+
+    def test_editing_a_cancels_its_end_timer_not_a_b_s(self):
+        """`end`: the auto-off armed by a's run is a's; an edit of `a`
+        resets it, `a:b`'s auto-off still fires."""
+        rows = [_block(sid, [{"kind": "set", "device": "led_" + tag, "cap": "on_off", "value": 1}],
+                       end={"after_s": 60, "mode": "off"})
+                for sid, tag in (("a", "a"), ("a:b", "ab"))]
+        e = self._engine(rows)
+        e.run_now("a")
+        e.run_now("a:b")
+        self.assertEqual(_armed(e), {"a:end", "a:b:end"})
+        edited = _block("a", [{"kind": "notify", "text": "changed"}],
+                        end={"after_s": 60, "mode": "off"})
+        e.adopt({"scenarios": [edited, rows[1]], "library": "", "vars": {}})
+        self.assertEqual(_armed(e), {"a:b:end"})  # RED under M3 / M1
+        self.pubs.clear()
+        self._tick(e, 61)
+        self.assertEqual(self.pubs, [("led_ab", "on_off", 0)])
+
+    def test_deleting_a_cancels_its_logic_timer_not_a_b_s(self):
+        """`logic`: a template instance's own timers (`<sid>:logic:<k>`)."""
+        def logic(sid):
+            return {"id": sid, "name": sid, "enabled": True, "type": "logic",
+                    "template": "thermostat", "trigger": [], "condition": {},
+                    "action": [], "params": {"sensors": ["t"], "heaters": ["h"]}}
+        rows = [logic("a"), logic("a:b")]
+        e = self._engine(rows)
+        self.assertEqual(_armed(e), {"a:logic:eval", "a:b:logic:eval"})
+        e.adopt({"scenarios": [rows[1]], "library": "", "vars": {}})
+        self.assertEqual(_armed(e), {"a:b:logic:eval"})  # RED under M4 / M1
+        self.assertNotIn("a", e._logic)
+        self.assertIn("a:b", e._logic)
 
 
 if __name__ == "__main__":

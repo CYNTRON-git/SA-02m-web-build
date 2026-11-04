@@ -182,6 +182,11 @@ if [ "$(stat -c '%a' "$_probe.dst" 2>/dev/null)" != "755" ]; then
     exit 77
 fi
 
+# This file isolates filesystem rollback; UART restoration is covered by
+# test-update-control-boundaries.py.
+restore_port_consumers() { return 0; }
+_systemctl_bounded() { shift; systemctl "$@"; }
+txn_has_key() { return 1; }
 fails=0
 ok()  { printf 'ok    %s\n' "$1"; }
 bad() { printf 'FAIL  %s\n' "$1"; fails=$((fails + 1)); }

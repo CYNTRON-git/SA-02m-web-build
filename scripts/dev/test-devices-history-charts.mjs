@@ -23,9 +23,13 @@
      local midnight.
    • bucketAvgPoints — average power per bucket (Pa/Pb/Pc/PΣ each).
    • bucketEnergyDeltaPoints — ΔE per bucket from the counter: monotonic sums, a
-     counter reset rebases (no negative bar), a one-sample dip is a glitch (no
-     spike on recovery), a gap leaves an empty bucket and its spanning increment
-     undrawn.
+     drop becomes a baseline that counts nothing (no negative bar), a return to
+     the pre-drop level counts only the rise above it (a one- or two-sample dip
+     is no spike), an upward spike that falls back is skipped, a gap leaves an
+     empty bucket and its spanning increment undrawn.
+   • sumBarsBetween — the energy measure card sums the buckets between the marks.
+   • chartUnitLabel — backend units shown in Russian for every metric kind, with
+     a DICT entry back to EN.
    • barGroupSlots — the side-by-side grouping of the visible series inside one
      bucket (ordered, non-overlapping, inside the bucket).
    • barYDomain — bars rise from zero, grid lines on round values.
@@ -62,6 +66,12 @@ function load(name, deps) {
   const names = Object.keys(deps || {});
   const vals = names.map((k) => deps[k]);
   return new Function(...names, extractFn(SRC, name) + '\nreturn ' + name + ';')(...vals);
+}
+
+// A helper added after the first RED is loaded where it is used: a missing one is
+// one FAIL line, not an abort of every other section.
+function tryLoad(name, deps) {
+  try { return load(name, deps); } catch (e) { return null; }
 }
 
 let failures = 0;
@@ -226,6 +236,87 @@ console.log('# energy: ΔE per bucket from the counter');
   eq(day[1][0], midnight, 'day 2 starts at local midnight');
 }
 
+console.log('# energy: reset recovery and upward spike (review advisory 1)');
+{
+  // Two consecutive low samples are a reset: the first low reading is the new
+  // baseline and counts nothing; when the counter comes back to the pre-drop
+  // level only the rise ABOVE that level counts — never the whole counter.
+  const back = bucketEnergyDeltaPoints(
+    [[T, 100.0], [T + MIN, 100.2], [T + 2 * MIN, 0.1], [T + 3 * MIN, 0.3], [T + 4 * MIN, 100.3]], 300);
+  close(Math.round(back[0][1] * 1e9) / 1e9, 0.5, 'two-sample dip then recovery: 0.2 + 0 (baseline) + 0.2 + 0.1 above the pre-drop level');
+  // A single upward spike that returns to the old level is a glitch: no consumption.
+  const spike = bucketEnergyDeltaPoints(
+    [[T, 100.0], [T + MIN, 100.1], [T + 2 * MIN, 99999], [T + 3 * MIN, 100.2], [T + 4 * MIN, 100.3]], 300);
+  close(Math.round(spike[0][1] * 1e9) / 1e9, 0.3, 'upward spike returning to the old level draws no bar height (0.1 + 0.1 + 0.1)');
+  const spikeNext = bucketEnergyDeltaPoints(
+    [[T, 100.0], [T + 4 * MIN, 99999], [T + 5 * MIN, 100.1], [T + 6 * MIN, 100.2]], 300);
+  check(spikeNext.every((p) => p[1] < 1), 'a spike alone in its bucket leaves no giant bar in either bucket');
+  check(back.concat(spike, spikeNext).every((p) => p[1] >= 0), 'never negative');
+}
+
+console.log('# measure card on energy bars: consumption between the marks (review B1)');
+{
+  const sumBarsBetween = tryLoad('sumBarsBetween');
+  check(!!sumBarsBetween, 'sumBarsBetween() exists in devices.js');
+  if (sumBarsBetween) {
+    const DAY = 24 * HOUR;
+    const d0 = new Date(2026, 8, 25).getTime();
+    const bars = [0, 1, 2, 3, 4, 5].map((i) => [d0 + i * DAY, 4.6, d0 + (i + 1) * DAY]);
+    const r = sumBarsBetween(bars, d0 + DAY, d0 + 4 * DAY);
+    close(Math.round(r.sum * 1e9) / 1e9, 18.4, 'marks on day 2 and day 5 → 4 buckets inclusive × 4.6 = 18.4 kWh (was «Δ 0.0»)');
+    eq(r.n, 4, 'four buckets summed');
+    eq(r.t0, d0 + DAY, 'interval starts at the first bucket start');
+    eq(r.t1, d0 + 5 * DAY, 'interval ends at the last bucket end');
+    const rev = sumBarsBetween(bars, d0 + 4 * DAY, d0 + DAY);
+    close(Math.round(rev.sum * 1e9) / 1e9, 18.4, 'mark order does not matter (B before A)');
+    const one = sumBarsBetween(bars, d0 + 2 * DAY + 5, d0 + 2 * DAY + 9);
+    close(one.sum, 4.6, 'both marks in one bucket → that bucket');
+    const gap = sumBarsBetween([[d0, 1, d0 + DAY], [d0 + 3 * DAY, 2, d0 + 4 * DAY]], d0, d0 + 3 * DAY);
+    close(gap.sum, 3, 'an empty (gap) bucket adds nothing');
+    const none = sumBarsBetween(bars, d0 + 10 * DAY, d0 + 11 * DAY);
+    eq(none.n, 0, 'no bars between the marks → n 0');
+    check(bars.every(() => true) && r.sum >= 0, 'a sum of non-negative bars is never negative');
+  }
+}
+
+console.log('# chart units: backend unit → RU display unit, every metric kind');
+{
+  // The map is the SHIPPED const, brace-extracted like the functions.
+  const mapSrc = (SRC.match(/const CHART_UNIT_RU = (\{[\s\S]*?\n {2}\});/) || [])[1];
+  check(!!mapSrc, 'CHART_UNIT_RU found in devices.js');
+  const chartUnitLabel = mapSrc ? tryLoad('chartUnitLabel', { CHART_UNIT_RU: new Function('return ' + mapSrc)() }) : null;
+  check(!!chartUnitLabel, 'chartUnitLabel() exists in devices.js');
+  if (chartUnitLabel) {
+    const I18N = readFileSync(join(HERE, '..', '..', 'www', 'network_config', 'static', 'js', 'i18n.js'), 'utf8');
+    const METRICS_PY = readFileSync(join(HERE, '..', '..', 'opt', 'sa02m-devices', 'sa02m_devices', 'history_metrics.py'), 'utf8');
+    const AI_JS = readFileSync(join(HERE, '..', '..', 'www', 'network_config', 'static', 'js', 'ai-sensors.js'), 'utf8');
+    const backend = new Set();
+    for (const m of METRICS_PY.matchAll(/"unit":\s*"([^"]*)"/g)) if (m[1]) backend.add(m[1]);
+    check(backend.size >= 8, 'history_metrics.py units parsed (' + backend.size + ', floor 8 — non-vacuous)');
+    const aiBlock = (AI_JS.match(/const AI_UNIT_PRECISION = \{([\s\S]*?)\};/) || [])[1] || '';
+    const mr = new Set();
+    for (const m of aiBlock.matchAll(/'([^']+)':/g)) mr.add(m[1]);
+    check(mr.size >= 20, 'MR-02m WB units parsed from ai-sensors.js (' + mr.size + ', floor 20 — non-vacuous)');
+    // Language-neutral symbols stay as sent; everything else shows its Russian unit.
+    const NEUTRAL = new Set(['°C', '°F', '%', '%, RH', 'ppm', 'ppb', 'IAQ']);
+    for (const u of [...backend, ...mr]) {
+      const ru = chartUnitLabel(u);
+      if (NEUTRAL.has(u)) { eq(ru, u, 'neutral unit «' + u + '» unchanged'); continue; }
+      check(/[А-Яа-яЁё]/.test(ru), '«' + u + '» shows a Russian unit (got «' + ru + '»)');
+      check(I18N.indexOf("'" + ru + "':") >= 0, 'DICT translates «' + ru + '» back for EN');
+    }
+    eq(chartUnitLabel('kWh'), 'кВт·ч', 'kWh → кВт·ч (matches the «За период» side panel)');
+    eq(chartUnitLabel('W'), 'Вт', 'W → Вт');
+    eq(chartUnitLabel('V'), 'В', 'V → В');
+    eq(chartUnitLabel('A'), 'А', 'A → А');
+    eq(chartUnitLabel('Hz'), 'Гц', 'Hz → Гц');
+    eq(chartUnitLabel('мм рт.ст.'), 'мм рт.ст.', 'an already-Russian unit passes through');
+    eq(chartUnitLabel(''), '', 'no unit → empty');
+    eq(chartUnitLabel('furlong'), 'furlong', 'an unknown unit passes through unchanged');
+    check(I18N.indexOf("'Расход':") >= 0, 'DICT has the measure-card label «Расход»');
+  }
+}
+
 console.log('# line series → bar series');
 {
   const toBarSeries = load('toBarSeries', { bucketEnergyDeltaPoints, bucketAvgPoints });
@@ -328,6 +419,41 @@ console.log('# status note i18n');
   eq(barStepLabel('delta', 300), 'расход за 5 мин', 'energy note wording');
   eq(barStepLabel('avg', 86400), 'среднее за сутки', 'power note wording');
   check(I18N.indexOf("'Скрыть с графика':") >= 0 && I18N.indexOf("'Показать на графике':") >= 0, 'DICT has both legend toggle hints');
+}
+
+console.log('# TVOC display scale');
+{
+  const value = tryLoad('tvocDisplayValue');
+  const display = tryLoad('historyDisplayMetric', { tvocDisplayValue: value });
+  const flatten = load('flattenMetricSeries', { historyDisplayMetric: display });
+  const raw = { metric: 'tvoc_mg_m3', unit: 'mg/m³', label: 'TVOC', series: [
+    { field: 'tvoc_zmod', label: 'ZMOD4410', points: [[1, 0.16], [2, 0], [3, 0.25]] },
+  ] };
+  const before = JSON.stringify(raw);
+  const plotted = flatten([raw]);
+  eq(plotted[0].unit, 'µg/m³', 'overview uses micrograms');
+  eq(JSON.stringify(plotted[0].points), '[[1,160],[2,0],[3,250]]', 'overview scales 0.16 to 160 and keeps zero');
+  eq(JSON.stringify(raw), before, 'overview does not mutate canonical API points or units');
+  eq(JSON.stringify(flatten([raw])), JSON.stringify(plotted), 're-render scales the original response exactly once');
+  const html = load('buildDtvMetricsHtml', { escapeHtml: (s) => s })();
+  check(html.includes('мкг/м³') && html.includes('ZMOD4410'), 'KPI microgram unit keeps sensor caption');
+  if (!value || !display) {
+    check(false, 'TVOC display conversion helpers exist');
+  } else {
+    eq(value(0.16), 160, 'KPI conversion uses the same factor as history');
+    eq(value(0), 0, 'KPI zero is not missing');
+    for (const invalid of [null, undefined, '', ' ', 'invalid', Infinity, false]) {
+      eq(value(invalid), null, 'missing/nonfinite/nonnumeric TVOC stays missing');
+    }
+    const single = display(raw, raw.metric);
+    eq(JSON.stringify(single.series[0].points), JSON.stringify(plotted[0].points), 'single-metric and overview history share scale');
+    eq(single.unit, 'µg/m³', 'single-metric history unit agrees');
+    eq(load('tipDecimalsFor', { aiUnitPrecision: () => 2 })('µg/m³', 'tvoc_mg_m3'), 0, 'tooltip and legend use integer micrograms');
+    const invalidHistory = { series: [{ points: [[1, null], [2, 'invalid'], [3, 0]] }] };
+    eq(JSON.stringify(display(invalidHistory, 'tvoc_mg_m3').series[0].points), '[[3,0]]', 'invalid history does not become a zero sample');
+    const temperature = { metric: 'room_temp', unit: '°C', series: [{ points: [[1, 23.4]] }] };
+    eq(display(temperature, 'room_temp'), temperature, 'other metrics are unchanged');
+  }
 }
 
 if (failures) {

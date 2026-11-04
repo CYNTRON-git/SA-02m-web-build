@@ -8,12 +8,13 @@ after the socket drops (nothing here calls `reconnect()`), retained values
 re-arriving flagged `retain` after the re-subscribe and landing in the handler
 inside the grace window, and a QoS 1 command on the wire.
 
-Skips LOUDLY when paho is not importable: CI installs none, so the runner
-reports this file as a skip there — never a pass — and it runs where the
-library is (the dev box, paho 2.1.0; the board). The mini broker speaks just
-enough MQTT: CONNECT→CONNACK, SUBSCRIBE→SUBACK plus one retained PUBLISH per
-subscribed topic that has one, UNSUBSCRIBE→UNSUBACK, PINGREQ→PINGRESP, QoS 1
-PUBLISH→PUBACK, DISCONNECT; `close_all()` is the broker restart.
+Skips LOUDLY when paho is not importable — never a pass. CI installs paho-mqtt
+for this (web-quality.yml), and its QUALITY_STRICT turns a skip here into a
+FAIL of the row; it also runs on the dev box (paho 2.1.0) and the board. The
+mini broker speaks just enough MQTT: CONNECT→CONNACK, SUBSCRIBE→SUBACK plus one
+retained PUBLISH per subscribed topic that has one, UNSUBSCRIBE→UNSUBACK,
+PINGREQ→PINGRESP, QoS 1 PUBLISH→PUBACK, DISCONNECT; `close_all()` is the broker
+restart.
 """
 
 from __future__ import annotations

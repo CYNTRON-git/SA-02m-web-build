@@ -13,7 +13,7 @@ behaviour — see "Network access control" below):
 
 Config:  /etc/sa02m-gateway.yaml  (env SA02M_GATEWAY_CONFIG to override)
 Status:  /run/sa02m-gateway/status.json  (updated every 5 s)
-Lock:    /var/lock/sa02m-gateway-{port}.lock
+Lock:    shared physical-UART lease from sa02m-port-coordinator
 Systemd: sd_notify READY=1 / WATCHDOG=1
 """
 
@@ -214,6 +214,160 @@ def _append_crc(data: bytes) -> bytes:
 def _check_crc(data: bytes) -> bool:
     return len(data) >= 4 and _crc16(data[:-2]) == struct.unpack('<H', data[-2:])[0]
 
+
+class RtuFramingError(ValueError):
+    """A TCP byte stream cannot safely be forwarded as an RTU request."""
+
+
+def _request_pdu_length(data: bytes) -> int:
+    """Deterministic request PDU length; zero means more header bytes needed."""
+    if not data:
+        return 0
+    fc = data[0]
+    if fc in (1, 2, 3, 4, 5, 6):
+        return 5
+    if fc in (7, 11, 12, 17):
+        return 1
+    if fc == 22:
+        return 7
+    if fc == 24:
+        return 3
+    if fc in (15, 16):
+        if len(data) < 6:
+            return 0
+        count = int.from_bytes(data[3:5], "big")
+        expected = (count + 7) // 8 if fc == 15 else count * 2
+        if not 1 <= count <= (1968 if fc == 15 else 123) or data[5] != expected:
+            raise RtuFramingError("Invalid RTU write quantity/byte count")
+        return 6 + data[5]
+    if fc in (20, 21):
+        if len(data) < 2:
+            return 0
+        if not 7 <= data[1] <= (245 if fc == 20 else 251):
+            raise RtuFramingError("Invalid RTU file-record byte count")
+        return 2 + data[1]
+    if fc == 23:
+        if len(data) < 10:
+            return 0
+        count = int.from_bytes(data[7:9], "big")
+        if not 1 <= count <= 121 or data[9] != count * 2:
+            raise RtuFramingError("Invalid RTU read/write byte count")
+        return 10 + data[9]
+    if fc == 43:
+        if len(data) < 2:
+            return 0
+        if data[1] == 14:
+            return 4
+    # Diagnostics includes variable-length return-query-data; its boundary
+    # cannot be inferred from TCP packet boundaries or an inter-byte delay.
+    raise RtuFramingError(f"Unsupported or ambiguous RTU function 0x{fc:02x}; use transparent mode")
+
+
+def _rtu_request_length(data: bytes) -> int:
+    if not data:
+        return 0
+    offset = 1
+    if data[0] == 0xFD:
+        if len(data) < 3:
+            return 0
+        if data[1] != 0x46:
+            raise RtuFramingError("Unsupported FastModbus function")
+        if data[2] in (1, 2, 4):
+            return 5
+        if data[2] != 8:
+            raise RtuFramingError("Unsupported FastModbus command; use transparent mode")
+        offset = 7
+    elif data[0] > 247:
+        raise RtuFramingError("Invalid RTU unit address")
+    length = _request_pdu_length(data[offset:])
+    return offset + length + 2 if length else 0
+
+
+async def _read_rtu_request(reader):
+    # readexactly leaves subsequent requests in StreamReader; no TCP read or
+    # silence boundary becomes an accidental UART transaction.
+    data = await asyncio.wait_for(reader.readexactly(1), timeout=30.0)
+    try:
+        async with asyncio.timeout(5.0):
+            while not (length := _rtu_request_length(data)):
+                data += await reader.readexactly(1)
+            if length > 262:
+                raise RtuFramingError("RTU request exceeds maximum frame size")
+            data += await reader.readexactly(length - len(data))
+    except asyncio.IncompleteReadError as exc:
+        raise RtuFramingError("Incomplete RTU request") from exc
+    if not _check_crc(data):
+        raise RtuFramingError("Invalid RTU request CRC")
+    return data
+
+
+async def _drain_on_cancel(future):
+    """Cancellation must not outlive an executor operation or teardown task."""
+    cancelled = False
+    while True:
+        try:
+            result = await asyncio.shield(future)
+            break
+        except asyncio.CancelledError:
+            if future.cancelled():
+                raise
+            cancelled = True
+        except BaseException:
+            if cancelled:
+                raise asyncio.CancelledError from None
+            raise
+    if cancelled:
+        raise asyncio.CancelledError
+    return result
+
+
+class _GatewayLifecycle:
+    def _init_lifecycle(self):
+        self._handlers = {}
+        self._stopping = False
+        self._stop_task = None
+        self._rx_task = None
+
+    def _accept_client(self, reader, writer):
+        if self._stopping:
+            writer.close()
+            return
+        task = asyncio.create_task(self._handle_client(reader, writer))
+        self._handlers[task] = writer
+        task.add_done_callback(lambda done: self._handlers.pop(done, None))
+
+    async def _io(self, function, *args):
+        future = asyncio.get_running_loop().run_in_executor(self._executor, function, *args)
+        return await _drain_on_cancel(future)
+
+    async def stop(self):
+        if self._stop_task is None:
+            self._stopping = True
+            self._stop_task = asyncio.create_task(self._stop_all())
+        await _drain_on_cancel(self._stop_task)
+
+    async def _stop_all(self):
+        # close() prevents new accepts before taking the handler snapshot.
+        server, self._server = self._server, None
+        if server:
+            server.close()
+        tasks = list(self._handlers)
+        for writer in list(self._handlers.values()):
+            writer.close()
+        if self._rx_task is not None:
+            tasks.append(self._rx_task)
+        for task in tasks:
+            task.cancel()
+        await asyncio.gather(*tasks, return_exceptions=True)
+        self._handlers.clear()
+        self._rx_task = None
+        if server:
+            try:
+                await server.wait_closed()
+            except Exception as exc:
+                self._stats.errors += 1
+                self._stats.last_error = str(exc)
+
 # ── MBAP helpers ──────────────────────────────────────────────────────────────
 
 MBAP_LEN = 6  # bytes in Modbus TCP header
@@ -406,10 +560,7 @@ class SerialWorker:
 
     def close(self):
         if self._ser and self._ser.is_open:
-            try:
-                self._ser.close()
-            except Exception:
-                pass
+            self._ser.close()
 
     # 2.5 s, not 1.0: bootloader flash-write ACKs on long by-serial FC16 frames
     # can exceed 1 s; the MBAP client's own deadline still governs overall.
@@ -516,36 +667,57 @@ class PortStats:
 # ── Lock file ─────────────────────────────────────────────────────────────────
 
 class PortLock:
-    def __init__(self, port_name: str):
-        self._path = LOCK_DIR / f"sa02m-gateway-{port_name}.lock"
-        self._fd: int | None = None
+    """Broker-owned scope plus a transferred kernel lock descriptor.
 
-    def acquire(self) -> bool:
-        try:
-            fd = os.open(str(self._path), os.O_CREAT | os.O_WRONLY, 0o644)
-            fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
-            os.write(fd, str(os.getpid()).encode())
-            self._fd = fd
-            return True
-        except (OSError, BlockingIOError):
-            return False
+    At boot `After=sa02m-port-coordinator.service` orders us behind the broker,
+    but a lease is only answerable once its control socket listens, so an
+    outage (socket absent / refused / silent) is retried for a bounded window
+    before the port is declared failed. A refusal is final: the conflict is
+    real and GatewayDaemon retries nothing until SIGHUP.
+    """
+
+    RETRIES = 10
+    RETRY_DELAY = 0.5
+
+    def __init__(self, port_name: str, socket_path: str | None = None):
+        self.port_name = port_name
+        self.socket_path = socket_path
+        self._lease = None
+        self.error = ""
+
+    def acquire(self):
+        package = str(Path(__file__).resolve().parent.parent / "sa02m-port-coordinator")
+        if package not in sys.path:
+            sys.path.insert(0, package)
+        from sa02m_ports import CoordinatorUnavailable, Lease
+        for attempt in range(self.RETRIES + 1):
+            device = "/dev/" + self.port_name
+            lease = (Lease(device, "gateway") if self.socket_path is None
+                     else Lease(device, "gateway", self.socket_path))
+            try:
+                lease.__enter__()
+            except CoordinatorUnavailable as exc:
+                self.error = str(exc)
+                if attempt >= self.RETRIES:
+                    return False
+                time.sleep(self.RETRY_DELAY)
+            except Exception as exc:
+                self.error = str(exc)
+                return False
+            else:
+                self._lease = lease
+                self.error = ""
+                return True
+        return False
 
     def release(self):
-        if self._fd is not None:
-            try:
-                fcntl.flock(self._fd, fcntl.LOCK_UN)
-                os.close(self._fd)
-            except OSError:
-                pass
-            try:
-                self._path.unlink(missing_ok=True)
-            except OSError:
-                pass
-            self._fd = None
+        if self._lease is not None:
+            lease, self._lease = self._lease, None
+            lease.close()
 
 # ── Modbus TCP gateway ────────────────────────────────────────────────────────
 
-class ModbusTcpGateway:
+class ModbusTcpGateway(_GatewayLifecycle):
     """Modbus TCP server: MBAP ↔ RTU, one in-flight request per port."""
 
     def __init__(self, port_name: str, cfg: dict,
@@ -560,24 +732,18 @@ class ModbusTcpGateway:
         self._bind        = _parse_bind(cfg.get('bind'))
         self._allow       = _parse_allow_from(cfg.get('allow_from'))
         self._server      = None
+        self._init_lifecycle()
         self._req_lock    = asyncio.Lock()  # one RTU exchange at a time
 
     async def start(self):
         self._server = await asyncio.start_server(
-            self._handle_client, self._bind, self._tcp_port,
+            self._accept_client, self._bind, self._tcp_port,
+            limit=1024,
             reuse_address=True,
         )
         log.info("[%s] Modbus TCP server on %s:%d (%s)", self.port_name,
                  self._bind, self._tcp_port,
                  _access_summary(self._bind, self._allow))
-
-    async def stop(self):
-        if self._server:
-            self._server.close()
-            try:
-                await self._server.wait_closed()
-            except Exception:
-                pass
 
     async def _handle_client(self,
                               reader: asyncio.StreamReader,
@@ -599,13 +765,12 @@ class ModbusTcpGateway:
             self._stats.tcp_clients -= 1
             try:
                 writer.close()
-                await writer.wait_closed()
+                await asyncio.wait_for(writer.wait_closed(), timeout=1.0)
             except Exception:
                 pass
             log.info("[%s] Modbus TCP disconnect %s", self.port_name, peer)
 
     async def _client_loop(self, reader, writer):
-        loop = asyncio.get_event_loop()
         while True:
             # Read MBAP header (6 bytes)
             try:
@@ -655,8 +820,8 @@ class ModbusTcpGateway:
 
                 try:
                     rtu_resp = await asyncio.wait_for(
-                        loop.run_in_executor(
-                            self._executor, self._worker.exchange, rtu_req,
+                        self._io(
+                            self._worker.exchange, rtu_req,
                             2.5 if len(rtu_req) > 200 else 1.0,
                         ),
                         timeout=3.5,
@@ -664,46 +829,46 @@ class ModbusTcpGateway:
                 except asyncio.TimeoutError:
                     rtu_resp = b''
 
-                if not rtu_resp:
-                    # Modbus exception: gateway target device failed to respond (11)
-                    writer.write(_build_mbap_response(
-                        tid, unit_id, bytes([fc | 0x80, 0x0B])
-                    ))
-                    await writer.drain()
-                    self._stats.errors += 1
-                    self._stats.last_error = f"RTU timeout ({self.port_name})"
-                    continue
-
-                # Strip Fast Modbus arbitration prefix byte 0xFF (now also
-                # stripped in _extract_rtu_response; kept here as a harmless
-                # belt-and-braces for the framed reply). Note: raw-RTU clients
-                # (e.g. the PC flasher's serial-over-TCP, fast-scan) must use the
-                # transparent or rtu_over_tcp mode — modbus_tcp needs an MBAP
-                # header and cannot carry a raw FD 46 fast-modbus frame.
-                while rtu_resp and rtu_resp[0] == 0xFF:
-                    rtu_resp = rtu_resp[1:]
-
-                if not _check_crc(rtu_resp):
-                    log.debug("[%s] bad CRC in RTU response", self.port_name)
-                    writer.write(_build_mbap_response(
-                        tid, unit_id, bytes([fc | 0x80, 0x0A])  # exception 10
-                    ))
-                    await writer.drain()
-                    self._stats.errors += 1
-                    continue
-
-                self._stats.bytes_rx += len(rtu_resp)
-                self._stats.requests += 1
-
-                # RTU response → MBAP (strip 2-byte CRC)
-                resp_unit = rtu_resp[0]
-                resp_pdu  = rtu_resp[1:-2]
-                writer.write(_build_mbap_response(tid, resp_unit, resp_pdu))
+            if not rtu_resp:
+                # Modbus exception: gateway target device failed to respond (11)
+                writer.write(_build_mbap_response(
+                    tid, unit_id, bytes([fc | 0x80, 0x0B])
+                ))
                 await writer.drain()
+                self._stats.errors += 1
+                self._stats.last_error = f"RTU timeout ({self.port_name})"
+                continue
+
+            # Strip Fast Modbus arbitration prefix byte 0xFF (now also
+            # stripped in _extract_rtu_response; kept here as a harmless
+            # belt-and-braces for the framed reply). Note: raw-RTU clients
+            # (e.g. the PC flasher's serial-over-TCP, fast-scan) must use the
+            # transparent or rtu_over_tcp mode — modbus_tcp needs an MBAP
+            # header and cannot carry a raw FD 46 fast-modbus frame.
+            while rtu_resp and rtu_resp[0] == 0xFF:
+                rtu_resp = rtu_resp[1:]
+
+            if not _check_crc(rtu_resp):
+                log.debug("[%s] bad CRC in RTU response", self.port_name)
+                writer.write(_build_mbap_response(
+                    tid, unit_id, bytes([fc | 0x80, 0x0A])  # exception 10
+                ))
+                await writer.drain()
+                self._stats.errors += 1
+                continue
+
+            self._stats.bytes_rx += len(rtu_resp)
+            self._stats.requests += 1
+
+            # RTU response → MBAP (strip 2-byte CRC)
+            resp_unit = rtu_resp[0]
+            resp_pdu  = rtu_resp[1:-2]
+            writer.write(_build_mbap_response(tid, resp_unit, resp_pdu))
+            await writer.drain()
 
 # ── RTU over TCP gateway ──────────────────────────────────────────────────────
 
-class RtuOverTcpGateway:
+class RtuOverTcpGateway(_GatewayLifecycle):
     """Raw RTU bytes over TCP (no MBAP header). Queue-based serialisation."""
 
     def __init__(self, port_name: str, cfg: dict,
@@ -717,24 +882,18 @@ class RtuOverTcpGateway:
         self._bind     = _parse_bind(cfg.get('bind'))
         self._allow    = _parse_allow_from(cfg.get('allow_from'))
         self._server   = None
+        self._init_lifecycle()
         self._lock     = asyncio.Lock()
 
     async def start(self):
         self._server = await asyncio.start_server(
-            self._handle_client, self._bind, self._tcp_port,
+            self._accept_client, self._bind, self._tcp_port,
+            limit=1024,
             reuse_address=True,
         )
         log.info("[%s] RTU-over-TCP server on %s:%d (%s)", self.port_name,
                  self._bind, self._tcp_port,
                  _access_summary(self._bind, self._allow))
-
-    async def stop(self):
-        if self._server:
-            self._server.close()
-            try:
-                await self._server.wait_closed()
-            except Exception:
-                pass
 
     async def _handle_client(self, reader, writer):
         if _refuse_peer(self.port_name, self._allow, self._stats, writer):
@@ -742,13 +901,14 @@ class RtuOverTcpGateway:
         peer = writer.get_extra_info('peername')
         log.info("[%s] RTU-over-TCP connect from %s", self.port_name, peer)
         self._stats.tcp_clients += 1
-        loop = asyncio.get_event_loop()
         try:
             while True:
                 try:
-                    data = await asyncio.wait_for(reader.read(512), timeout=30.0)
+                    data = await _read_rtu_request(reader)
                 except asyncio.TimeoutError:
-                    continue
+                    self._stats.errors += 1
+                    self._stats.last_error = "RTU request read timeout"
+                    break
                 if not data:
                     break
 
@@ -756,19 +916,20 @@ class RtuOverTcpGateway:
                     self._stats.bytes_tx += len(data)
                     try:
                         resp = await asyncio.wait_for(
-                            loop.run_in_executor(
-                                self._executor, self._worker.exchange, data
+                            self._io(
+                                self._worker.exchange, data,
+                                2.5 if len(data) > 200 else 1.0,
                             ),
                             timeout=3.0,
                         )
                     except asyncio.TimeoutError:
                         resp = b''
 
-                    if resp:
-                        self._stats.bytes_rx += len(resp)
-                        self._stats.requests += 1
-                        writer.write(resp)
-                        await writer.drain()
+                if resp:
+                    self._stats.bytes_rx += len(resp)
+                    self._stats.requests += 1
+                    writer.write(resp)
+                    await writer.drain()
         except (ConnectionResetError, asyncio.IncompleteReadError, BrokenPipeError):
             pass
         except Exception as exc:
@@ -778,13 +939,13 @@ class RtuOverTcpGateway:
             self._stats.tcp_clients -= 1
             try:
                 writer.close()
-                await writer.wait_closed()
+                await asyncio.wait_for(writer.wait_closed(), timeout=1.0)
             except Exception:
                 pass
 
 # ── Transparent gateway ───────────────────────────────────────────────────────
 
-class TransparentGateway:
+class TransparentGateway(_GatewayLifecycle):
     """Raw bytes bidirectional bridge; RS-485 RX fan-out to all TCP clients."""
 
     def __init__(self, port_name: str, cfg: dict,
@@ -798,6 +959,7 @@ class TransparentGateway:
         self._bind      = _parse_bind(cfg.get('bind'))
         self._allow     = _parse_allow_from(cfg.get('allow_from'))
         self._server    = None
+        self._init_lifecycle()
         self._clients: set[asyncio.StreamWriter] = set()
         self._cli_lock  = asyncio.Lock()
         self._stop_evt  = asyncio.Event()
@@ -805,29 +967,14 @@ class TransparentGateway:
     async def start(self):
         self._stop_evt.clear()
         self._server = await asyncio.start_server(
-            self._handle_client, self._bind, self._tcp_port,
+            self._accept_client, self._bind, self._tcp_port,
+            limit=1024,
             reuse_address=True,
         )
-        asyncio.create_task(self._serial_read_loop(), name=f"ser-rx-{self.port_name}")
+        self._rx_task = asyncio.create_task(self._serial_read_loop(), name=f"ser-rx-{self.port_name}")
         log.info("[%s] Transparent server on %s:%d (%s)", self.port_name,
                  self._bind, self._tcp_port,
                  _access_summary(self._bind, self._allow))
-
-    async def stop(self):
-        self._stop_evt.set()
-        if self._server:
-            self._server.close()
-            try:
-                await self._server.wait_closed()
-            except Exception:
-                pass
-        async with self._cli_lock:
-            for w in list(self._clients):
-                try:
-                    w.close()
-                except Exception:
-                    pass
-            self._clients.clear()
 
     async def _handle_client(self, reader, writer):
         if _refuse_peer(self.port_name, self._allow, self._stats, writer):
@@ -837,7 +984,6 @@ class TransparentGateway:
         async with self._cli_lock:
             self._clients.add(writer)
         self._stats.tcp_clients += 1
-        loop = asyncio.get_event_loop()
         try:
             while not self._stop_evt.is_set():
                 try:
@@ -847,9 +993,7 @@ class TransparentGateway:
                 if not data:
                     break
                 self._stats.bytes_tx += len(data)
-                await loop.run_in_executor(
-                    self._executor, self._worker.write_raw, data
-                )
+                await self._io(self._worker.write_raw, data)
         except (ConnectionResetError, asyncio.IncompleteReadError, BrokenPipeError):
             pass
         except Exception as exc:
@@ -861,18 +1005,15 @@ class TransparentGateway:
             self._stats.tcp_clients -= 1
             try:
                 writer.close()
-                await writer.wait_closed()
+                await asyncio.wait_for(writer.wait_closed(), timeout=1.0)
             except Exception:
                 pass
 
     async def _serial_read_loop(self):
         """Poll serial RX and fan-out to all connected TCP clients."""
-        loop = asyncio.get_event_loop()
         while not self._stop_evt.is_set():
             try:
-                data = await loop.run_in_executor(
-                    self._executor, self._worker.read_pending
-                )
+                data = await self._io(self._worker.read_pending)
                 if data:
                     self._stats.bytes_rx += len(data)
                     async with self._cli_lock:
@@ -910,67 +1051,89 @@ class PortGateway:
         self._lock     = PortLock(port_name)
         self._worker: SerialWorker | None = None
         self._gw = None
+        self._state_lock = asyncio.Lock()
+        self._stop_task = None
         self.stats     = PortStats()
 
+    async def _io(self, function, *args):
+        return await _drain_on_cancel(
+            asyncio.get_running_loop().run_in_executor(self._executor, function, *args))
+
     async def start(self) -> bool:
-        if not self.enabled or self.mode not in self._GATEWAY_CLASSES:
-            return False
+        async with self._state_lock:
+            if self._gw is not None:
+                return True
+            if self._worker is not None:
+                raise RuntimeError("Previous UART teardown is incomplete")
+            self._stop_task = None
+            if not self.enabled or self.mode not in self._GATEWAY_CLASSES:
+                return False
+            # Invalid access policy must never acquire a physical UART lease.
+            try:
+                _parse_bind(self._cfg.get('bind'))
+                _parse_allow_from(self._cfg.get('allow_from'))
+            except AccessConfigError as exc:
+                self._record_error(exc)
+                return False
 
-        # Access config FIRST — before the RS-485 lock. A refused port must not
-        # take the line away from MPLC4 / the MQTT bridge on its way to failing
-        # (the port-lease invariant), and one bad allow_from entry must fail its
-        # own port only, never the daemon or the other four.
-        try:
-            _parse_bind(self._cfg.get('bind'))
-            _parse_allow_from(self._cfg.get('allow_from'))
-        except AccessConfigError as exc:
-            log.error("[%s] refusing to start: %s", self.port_name, exc)
-            self.stats.last_error = str(exc)
-            self.stats.errors    += 1
-            return False
+            gateway = None
+            try:
+                if not await self._io(self._lock.acquire):
+                    self._record_error(self._lock.error or "Port is busy")
+                    return False
+                self._worker = SerialWorker(self.port_name, self._cfg)
+                await self._io(self._worker.open)
+                cls = self._GATEWAY_CLASSES[self.mode]
+                gateway = cls(self.port_name, self._cfg,
+                              self._worker, self.stats, self._executor)
+                await gateway.start()
+                self._gw = gateway
+                self.stats.last_error = ""
+                return True
+            except BaseException as exc:
+                self._gw = None
+                self._record_error(exc)
+                # Includes cancellation while acquiring/opening: those threads
+                # are drained by _io before cleanup can release the lease.
+                await _drain_on_cancel(asyncio.create_task(self._cleanup(gateway)))
+                if isinstance(exc, asyncio.CancelledError):
+                    raise
+                if not isinstance(exc, Exception):
+                    raise
+                return False
 
-        if not self._lock.acquire():
-            log.warning("[%s] locked by another process — skipped", self.port_name)
-            self.stats.last_error = "Порт занят другим процессом"
-            return False
+    def _record_error(self, exc):
+        self.stats.errors += 1
+        self.stats.last_error = str(exc) or "Gateway operation cancelled"
+        log.error("[%s] %s", self.port_name, self.stats.last_error)
 
-        try:
-            self._worker = SerialWorker(self.port_name, self._cfg)
-            self._worker.open()
-        except Exception as exc:
-            log.error("[%s] serial open failed: %s", self.port_name, exc)
-            self.stats.last_error = str(exc)
-            self.stats.errors    += 1
-            self._lock.release()
-            return False
-
-        try:
-            cls     = self._GATEWAY_CLASSES[self.mode]
-            self._gw = cls(self.port_name, self._cfg,
-                           self._worker, self.stats, self._executor)
-            await self._gw.start()
-            return True
-        except Exception as exc:
-            log.error("[%s] gateway start failed: %s", self.port_name, exc)
-            self.stats.last_error = str(exc)
-            self.stats.errors    += 1
-            self._teardown()
-            return False
+    async def _cleanup(self, gateway):
+        if gateway is not None:
+            await gateway.stop()
+        if self._worker is not None:
+            # A close failure retains the worker and lease: transferring UART
+            # ownership while the descriptor is still open is unsafe.
+            await self._io(self._worker.close)
+            self._worker = None
+        await self._io(self._lock.release)
 
     async def stop(self):
-        if self._gw:
-            try:
-                await self._gw.stop()
-            except Exception:
-                pass
-            self._gw = None
-        self._teardown()
+        if self._stop_task is None:
+            self._stop_task = asyncio.create_task(self._stop())
+        try:
+            await _drain_on_cancel(self._stop_task)
+        except Exception:
+            self._stop_task = None
+            raise
 
-    def _teardown(self):
-        if self._worker:
-            self._worker.close()
-            self._worker = None
-        self._lock.release()
+    async def _stop(self):
+        async with self._state_lock:
+            gateway, self._gw = self._gw, None
+            try:
+                await self._cleanup(gateway)
+            except Exception as exc:
+                self._record_error(exc)
+                raise
 
     def is_running(self) -> bool:
         return self._gw is not None
@@ -1034,17 +1197,20 @@ class GatewayDaemon:
             if not isinstance(port_cfg, dict):
                 continue
             pg = PortGateway(port_name, port_cfg, self._executor)
+            self._ports[port_name] = pg
             ok = await pg.start()
             if ok:
                 log.info("[%s] mode=%s  tcp_port=%s",
                          port_name,
                          port_cfg.get('mode'),
                          port_cfg.get('tcp_port'))
-            self._ports[port_name] = pg
 
     async def _stop_ports(self):
-        for pg in list(self._ports.values()):
-            await pg.stop()
+        results = await asyncio.gather(
+            *(pg.stop() for pg in self._ports.values()), return_exceptions=True)
+        errors = [result for result in results if isinstance(result, Exception)]
+        if errors:
+            raise ExceptionGroup("Gateway ports failed to stop", errors)
         self._ports.clear()
 
     async def run(self):
@@ -1054,55 +1220,59 @@ class GatewayDaemon:
             log.error("Cannot load config %s: %s", self._config_path, exc)
             sys.exit(1)
 
-        await self._start_ports(cfg)
+        try:
+            await self._start_ports(cfg)
 
-        _sd_notify("READY=1")
-        running = sum(1 for pg in self._ports.values() if pg.is_running())
-        log.info("Gateway daemon ready — %d/%d port(s) active",
-                 running, len(self._ports))
+            _sd_notify("READY=1")
+            running = sum(1 for pg in self._ports.values() if pg.is_running())
+            log.info("Gateway daemon ready — %d/%d port(s) active",
+                     running, len(self._ports))
 
-        loop = asyncio.get_event_loop()
-        loop.add_signal_handler(
-            signal.SIGHUP,  lambda: setattr(self, '_reload_flag', True))
-        loop.add_signal_handler(
-            signal.SIGTERM, lambda: setattr(self, '_stop_flag',   True))
-        loop.add_signal_handler(
-            signal.SIGINT,  lambda: setattr(self, '_stop_flag',   True))
+            loop = asyncio.get_event_loop()
+            loop.add_signal_handler(
+                signal.SIGHUP,  lambda: setattr(self, '_reload_flag', True))
+            loop.add_signal_handler(
+                signal.SIGTERM, lambda: setattr(self, '_stop_flag',   True))
+            loop.add_signal_handler(
+                signal.SIGINT,  lambda: setattr(self, '_stop_flag',   True))
 
-        wd_interval  = 10.0
-        last_wd      = time.monotonic()
-        last_status  = 0.0
+            wd_interval  = 10.0
+            last_wd      = time.monotonic()
+            last_status  = 0.0
 
-        while not self._stop_flag:
-            now = time.monotonic()
+            while not self._stop_flag:
+                now = time.monotonic()
 
-            if self._reload_flag:
-                self._reload_flag = False
-                log.info("SIGHUP — reloading config…")
-                await self._stop_ports()
-                try:
-                    cfg = self._load_config()
-                    await self._start_ports(cfg)
-                    running = sum(1 for pg in self._ports.values() if pg.is_running())
-                    log.info("Config reloaded — %d/%d port(s) active",
-                             running, len(self._ports))
-                except Exception as exc:
-                    log.error("Reload failed: %s", exc)
+                if self._reload_flag:
+                    self._reload_flag = False
+                    log.info("SIGHUP — reloading config…")
+                    await self._stop_ports()
+                    try:
+                        cfg = self._load_config()
+                        await self._start_ports(cfg)
+                        running = sum(1 for pg in self._ports.values() if pg.is_running())
+                        log.info("Config reloaded — %d/%d port(s) active",
+                                 running, len(self._ports))
+                    except Exception as exc:
+                        log.error("Reload failed: %s", exc)
 
-            if now - last_status >= 5.0:
+                if now - last_status >= 5.0:
+                    _write_status(self._ports)
+                    last_status = now
+
+                if now - last_wd >= wd_interval:
+                    _sd_notify("WATCHDOG=1")
+                    last_wd = now
+
+                await asyncio.sleep(0.5)
+
+        finally:
+            log.info("Shutting down...")
+            try:
+                await _drain_on_cancel(asyncio.create_task(self._stop_ports()))
+            finally:
                 _write_status(self._ports)
-                last_status = now
-
-            if now - last_wd >= wd_interval:
-                _sd_notify("WATCHDOG=1")
-                last_wd = now
-
-            await asyncio.sleep(0.5)
-
-        log.info("Shutting down…")
-        await self._stop_ports()
-        _write_status(self._ports)
-        self._executor.shutdown(wait=False)
+                self._executor.shutdown(wait=True)
 
 # ── Entry point ────────────────────────────────────────────────────────────────
 

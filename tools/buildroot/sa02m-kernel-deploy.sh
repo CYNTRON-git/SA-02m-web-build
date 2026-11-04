@@ -42,6 +42,14 @@ install_modules_tgz() {
     [ -f "$tgz" ] || { log "WARN: modules archive missing: $tgz"; return 0; }
     tar -xzf "$tgz" -C /lib/modules
     log "extracted modules to /lib/modules/$ver from $tgz"
+    # Rebuild modules.dep/modules.alias on the board for THIS version: udev
+    # autoloads hot-plug drivers (snd-usb-audio for a USB microphone,
+    # qmi_wwan/option for a modem) only through modules.alias, and the
+    # Buildroot `make linux` path does not guarantee the tarball carries a
+    # current index. No modules-load.d entry by design — docs/usb-audio-microphone.md.
+    [ -d "/lib/modules/$ver" ] || { log "ERROR: /lib/modules/$ver absent after extracting $tgz"; return 1; }
+    depmod -a "$ver" || { log "ERROR: depmod -a $ver failed — hot-plug drivers will not autoload"; return 1; }
+    log "depmod -a $ver done"
 }
 
 mirror_fat() {

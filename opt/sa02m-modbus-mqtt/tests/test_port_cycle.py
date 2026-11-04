@@ -181,12 +181,21 @@ class TestClassicSlice(unittest.TestCase):
         self._sched(pollers2)._classic_slice(0.0, False)
         self.assertEqual(sum(p.io_count for p in pollers2), 0)
 
-    def test_poll_slow_runs_for_every_poller_every_slice(self):
-        # Even a zero-budget slice that reads nothing serves the slow channels.
+    def test_poll_slow_runs_for_every_poller_every_slice_unless_backed_off(self):
+        # Even a zero-budget slice that reads nothing serves the slow channels
+        # — of the pollers NOT in back-off. Every slow branch is a bus read
+        # (uptime/diag/energy/text, the MR-02m late init), so a backed-off
+        # device is skipped here exactly as poll_io skips it (and as
+        # HdlcPortScheduler always did): a never-initialised MR-02m used to
+        # retry its init at a full read timeout on every slice with a 30 s
+        # back-off armed (review 2026-10-29, 21 init reads in 20 slices).
         pollers = [FakePoller(f"p{i}") for i in range(3)]
         pollers[1].backoff = True
         self._sched(pollers)._classic_slice(0.0, False)
-        self.assertEqual([p.slow_count for p in pollers], [1, 1, 1])
+        self.assertEqual([p.slow_count for p in pollers], [1, 0, 1])
+        pollers[1].backoff = False
+        self._sched(pollers)._classic_slice(0.0, False)
+        self.assertEqual([p.slow_count for p in pollers], [2, 1, 2])
 
     def test_raising_poll_io_is_swallowed_loop_survives(self):
         p0, p1 = FakePoller("p0", raises=True), FakePoller("p1")

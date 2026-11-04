@@ -297,21 +297,6 @@ def _guard_no_active_flasher_job(ctx: ServiceContext, *, port: str = "") -> None
         raise RuntimeError(f"Порт {port} занят активной задачей")
 
 
-def _compute_mplc_lists(cfg: FlasherConfig) -> Tuple[List[str], List[str]]:
-    """Один проход MPLC на весь ответ /ports (не дублировать на каждый порт)."""
-    active_services: List[str] = []
-    for svc in cfg.mplc_stop_services:
-        actual = mplc_lease.active_service_name(svc)
-        if actual and actual not in active_services:
-            active_services.append(actual)
-    released = set(mplc_lease.released_services())
-    released_services: List[str] = []
-    for svc in cfg.mplc_stop_services:
-        actual = mplc_lease.resolve_service_name(svc)
-        if actual and actual in released and actual not in released_services:
-            released_services.append(actual)
-    return active_services, released_services
-
 
 class Handler(BaseHTTPRequestHandler):
     server_version = f"SA02M-Flasher/{__version__}"
@@ -455,7 +440,6 @@ class Handler(BaseHTTPRequestHandler):
         key: str,
         *,
         quick: bool = False,
-        mplc_lists: Optional[Tuple[List[str], List[str]]] = None,
     ) -> Dict[str, Any]:
         cfg = ctx.cfg
         if key not in cfg.ports_map:
@@ -464,7 +448,12 @@ class Handler(BaseHTTPRequestHandler):
         label = cfg.ports_labels.get(key, key)
         exists = os.path.exists(device_path)
         active_job = ctx.jobs.active_job_on_port(key)
-        managed = [_unit_display_name(s) for s in cfg.mplc_stop_services]
+        # What a lease on this line pauses: the coordinator's configured scope
+        # for the port (its status.json is the one home — never the legacy
+        # MPLC_STOP_SERVICES list) plus the per-port MQTT pause.
+        managed = [_unit_display_name(s) for s in mplc_lease.configured_scope(device_path)]
+        managed.append(_unit_display_name("sa02m-modbus-mqtt.service"))
+        reserved = mplc_lease.is_reserved(device_path)
 
         if quick:
             return {
@@ -476,15 +465,13 @@ class Handler(BaseHTTPRequestHandler):
                 "active_job": active_job,
                 "mplc_active": False,
                 "managed_services": managed,
+                "reserved": reserved,
                 "active_services": None,
                 "released_services": None,
             }
 
         occupants: List[str] = port_occupants(device_path) if exists else []
         port_labels: List[str] = port_poll_service_labels(device_path) if exists else []
-        if mplc_lists is None:
-            mplc_lists = _compute_mplc_lists(cfg)
-        active_raw, released_raw = mplc_lists
         if port_labels:
             active_services = [_unit_display_name(l) for l in port_labels]
         else:
@@ -499,8 +486,9 @@ class Handler(BaseHTTPRequestHandler):
             "active_job": active_job,
             "mplc_active": mplc_on_port,
             "managed_services": managed,
+            "reserved": reserved,
             "active_services": active_services,
-            "released_services": [_unit_display_name(a) for a in released_raw],
+            "released_services": [_unit_display_name(a) for a in mplc_lease.released_services_for(device_path)],
         }
 
     def _handle_status(self, ctx: ServiceContext) -> None:
@@ -517,20 +505,10 @@ class Handler(BaseHTTPRequestHandler):
     def _handle_ports(self, ctx: ServiceContext, q: Dict[str, List[str]]) -> None:
         cfg = ctx.cfg
         quick = _truthy_query(q, "quick") or _truthy_query(q, "lite")
-        mplc_lists: Optional[Tuple[List[str], List[str]]] = None
-        if not quick:
-            mplc_lists = _compute_mplc_lists(cfg)
         ports: list = []
-        for key, device_path in cfg.ports_map.items():
-            _ = device_path
-            ports.append(self._describe_port(ctx, key, quick=quick, mplc_lists=mplc_lists))
-        _send_json(
-            self,
-            {
-                "ports": ports,
-                "mplc_services": [_unit_display_name(s) for s in cfg.mplc_stop_services],
-            },
-        )
+        for key in cfg.ports_map:
+            ports.append(self._describe_port(ctx, key, quick=quick))
+        _send_json(self, {"ports": ports})
 
     def _handle_ports_release(self, ctx: ServiceContext) -> None:
         data = _read_json_body(self)

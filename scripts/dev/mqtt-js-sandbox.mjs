@@ -1,16 +1,18 @@
 // Test helper, not a registry row: asserts nothing itself.
 /* ═══════════════════════════════════════════════════════════════════════════
-   Shared loader for the mqtt.js unit tests (test-mqtt-scan-type.mjs): the
-   SHIPPED static/js/mqtt.js evaluated whole in a vm context over a minimal
-   fake DOM, so a test drives the real functions (beginScanResults,
-   appendScanDevice, addDeviceFromScan, …) — never a re-typed copy. mqtt.js is
-   an ES module only for its `import` statements; each is replaced by stub
-   bindings, the rest runs as a classic script (its top level is declarations
-   plus `window.*` shims — no DOM access at load).
+   Shared loader for the mqtt.js unit tests (test-mqtt-scan-type.mjs,
+   test-mqtt-mtd.mjs): the SHIPPED static/js/mqtt.js evaluated whole in a vm
+   context over a minimal fake DOM, so a test drives the real functions
+   (renderScanResults, addDeviceFromScan, makeDeviceId, …) — never a re-typed
+   copy. mqtt.js is an ES module only for its `import` statements; each is
+   replaced by bindings to the REAL imported module (loaded here once, aliases
+   honoured — `import { a as b }` binds b to a), the rest runs as a classic
+   script (its top level is declarations plus `window.*` shims — no DOM access
+   at load).
    Stdlib-only (node:vm), same posture as the other js-unit rows.
    ═══════════════════════════════════════════════════════════════════════════ */
 import { readFileSync } from 'node:fs';
-import { fileURLToPath } from 'node:url';
+import { fileURLToPath, pathToFileURL } from 'node:url';
 import { dirname, join } from 'node:path';
 import vm from 'node:vm';
 
@@ -18,6 +20,15 @@ const HERE = dirname(fileURLToPath(import.meta.url));
 export const ROOT = join(HERE, '..', '..');
 export const MQTT_JS = join(ROOT, 'www', 'network_config', 'static', 'js', 'mqtt.js');
 export const I18N_JS = join(ROOT, 'www', 'network_config', 'static', 'js', 'i18n.js');
+
+// Every `import { … } from '<spec>'` statement of mqtt.js (single- or
+// multi-line), and the real module behind each, loaded once for all tests.
+const IMPORT_RE = /^import\s*\{([^}]*)\}\s*from\s*['"]([^'"]+)['"];?[ \t]*$/gm;
+const IMPORTS = [];
+for (const m of readFileSync(MQTT_JS, 'utf8').matchAll(IMPORT_RE)) {
+  const file = join(dirname(MQTT_JS), m[2].replace(/\?.*$/, ''));
+  IMPORTS.push({ stmt: m[0], names: m[1], mod: await import(pathToFileURL(file).href) });
+}
 
 class Text {
   constructor(t) { this.nodeType = 3; this._t = String(t); this.parent = null; }
@@ -124,14 +135,16 @@ export class El {
  *  (uiT returns the Russian source). */
 export function loadMqttJs({ ids = {}, lang = 'ru' } = {}) {
   let src = readFileSync(MQTT_JS, 'utf8');
-  const importRe = /^import\s*\{([^}]*)\}\s*from\s*['"][^'"]+['"];?\s*$/gm;
-  if (!importRe.test(src)) throw new Error('mqtt.js: expected an import line to stub');
-  // `a as b` binds b. A multi-line import keeps its line count, so a vm stack
-  // trace still names the shipped file's line.
-  src = src.replace(importRe, (m, names) =>
-    names.split(',').map((n) => n.trim()).filter(Boolean)
-      .map((n) => `const ${n.split(/\s+as\s+/).pop()} = {};`).join(' ')
-      + '\n'.repeat((m.match(/\n/g) || []).length));
+  if (!IMPORTS.length) throw new Error('mqtt.js: expected an import statement to bind');
+  IMPORTS.forEach((imp, i) => {
+    if (!src.includes(imp.stmt)) throw new Error('mqtt.js changed under the sandbox: ' + imp.stmt);
+    const binds = imp.names.split(',').map((n) => n.trim()).filter(Boolean).map((n) => {
+      const [name, alias] = n.split(/\s+as\s+/);
+      if (!(name in imp.mod)) throw new Error('mqtt.js imports a missing export: ' + name);
+      return `const ${alias || name} = __mqttImports[${i}][${JSON.stringify(name)}];`;
+    });
+    src = src.replace(imp.stmt, binds.join(' ') + '\n'.repeat((imp.stmt.match(/\n/g) || []).length));
+  });
   const registry = Object.assign({}, ids);
   const document = {
     createElement: (t) => new El(t),
@@ -154,6 +167,7 @@ export function loadMqttJs({ ids = {}, lang = 'ru' } = {}) {
     fetch: () => Promise.reject(new Error('no network in tests')),
     confirm: () => true, alert() {}, prompt: () => null,
     URLSearchParams, Promise, Math, JSON, Number, String, Object, Array, Set, Map,
+    __mqttImports: IMPORTS.map((imp) => imp.mod),
   };
   vm.createContext(ctx);
   if (lang === 'en') {

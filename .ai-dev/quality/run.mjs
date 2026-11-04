@@ -15,12 +15,13 @@
 // a row WITHOUT `covers` always runs (fail-safe — an undeclared-scope tool is
 // never silently dropped). No --touched flag = current full-run behaviour
 // (this stays the ship-gate invocation). The touched set is the UNION of the
-// committed <base>..HEAD diff and the working tree (staged + unstaged +
-// untracked) — see computeTouchedFiles(); a Builder's uncommitted handback is
-// exactly what the pre-handback invocation has to look at.
+// committed diff since the merge-base of <base> and HEAD, and the working tree
+// (staged + unstaged + untracked) — see computeTouchedFiles(); a Builder's
+// uncommitted handback is exactly what the pre-handback invocation has to look
+// at. The CLI prints the base it resolved.
 //
-// Exit codes: 0 = every matched row passed or SKIPPED (or no rows matched, or no
-//                 registry);
+// Exit codes: 0 = every matched row passed, was PARTIAL or SKIPPED (or no rows
+//                 matched, or no registry);
 //             non-zero = a row failed, a bad beat arg, or a malformed registry.
 //
 // Row verdicts: a row's exit 0 is PASS; exit SKIP_EXIT (77, the automake
@@ -32,20 +33,48 @@
 // Before this, a row's only way to skip was exit 0, which printed PASS (audit
 // 2026-09-24 L1). Which rows skip where: .ai-dev/notes/quality-gate-environment.md.
 //
+// PARTIAL — a row that ran but skipped PART of its checks here. Every row gets a
+// fresh, empty file named by QUALITY_SKIP_LOG in its environment; a harness that
+// skips a section appends one line per skipped check (shell harnesses source
+// .ai-dev/quality/checks/lib_skip.sh). Exit 0 with a non-empty log is PARTIAL:
+// printed with what was skipped, counted apart from the passes, named in the
+// summary, beat green (1.0.6.62 review A3). Exit codes stay as they are — a
+// gate's status is also read directly (comment-mutation-proof), where a new
+// non-zero "green" would read as RED. A harness that has not opted in still
+// reads PASS on a partial run; which ones have: the note above. A row that
+// Native unittest "OK (skipped=N)" summaries are also collected from the
+// command output. Output is spooled to a per-row file and replayed on completion;
+// an unreadable evidence file fails the row. A missing optional skip log is empty.
+// A row that itself runs other gates unsets QUALITY_SKIP_LOG for them, or their skips
+// would land in its own log.
+//
+// Strict mode — QUALITY_STRICT set to anything but ""/0/false/no/off (see
+// isStrict()): a SKIP and a PARTIAL are FAILs. CI sets it (web-quality.yml),
+// because there every row's tool is installed on purpose and a skip means a
+// broken install step; locally it is absent and a skip stays a skip.
+//
 // Security: the executed commands come ONLY from the tracked, reviewed
 // tools.json (first-party, changes through git). The <beat> arg is used SOLELY
 // as an equality filter (row.beat === beat) and is NEVER interpolated into a
 // command — a hostile arg cannot reach a shell.
 
 import fs from "node:fs";
+import os from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
-import { execSync } from "node:child_process";
+import { execFileSync, execSync } from "node:child_process";
 
 const BEATS = ["build", "review", "ship"];
 
 // The exit status a row returns for a documented environment skip (above).
 export const SKIP_EXIT = 77;
+
+// Strict mode from an environment object (header). An unrecognised non-empty
+// value is strict: a typo in CI must not quietly turn the floor off.
+export function isStrict(env) {
+  const v = String((env && env.QUALITY_STRICT) ?? "").trim().toLowerCase();
+  return v !== "" && !["0", "false", "no", "off"].includes(v);
+}
 
 // Resolve the tools.json path: prefer `<root>/src/quality/tools.json` (the
 // project's real tools), fall back to the co-located file beside this runner
@@ -132,10 +161,19 @@ export function fileMatchesCovers(files, covers) {
   return false;
 }
 
-// The committed half of the touched set: `<base>..HEAD`, with the same base
-// resolution the runner has always used (explicit base → origin/main →
-// merge-base against origin/main or main). Returns [] when nothing resolves —
-// the caller decides what an empty result means.
+function gitOut(root, args) {
+  return execFileSync("git", args, { cwd: root, stdio: "pipe", encoding: "utf8" });
+}
+
+// The committed half of the touched set: `$(git merge-base <ref> HEAD)..HEAD` —
+// what THIS branch committed since it left <ref>, i.e. git's `<ref>...HEAD`.
+// Candidates, first with a non-empty diff wins: the explicit base, then
+// origin/main, then main. It used to diff two-dot `<ref>..HEAD`, which compares
+// the two trees: once <ref> moved on, everything <ref> changed since the fork
+// counted as touched (81 files / 68 rows against the branch's true 6 files —
+// 1.0.6.62 review A9). The old merge-base fallback also went through a shell
+// with `2>/dev/null ||`, which cmd.exe cannot run, so on Windows it never
+// resolved; git is called argv-style here, no shell.
 //
 // `-z` for the same reason workingTreeFiles() carries it (below): without it
 // git QUOTES any path holding a non-ASCII byte or a control character
@@ -146,38 +184,42 @@ export function fileMatchesCovers(files, covers) {
 // tracked path carries such a byte) and fail-OPEN when it bites, which is
 // exactly why it is not left to be found later.
 function diffNamesZ(root, range) {
-  const out = execSync(`git diff --name-only -z ${range}`, { cwd: root, stdio: "pipe", encoding: "utf8" });
-  return out.split("\0").filter(Boolean);
+  return gitOut(root, ["diff", "--name-only", "-z", range]).split("\0").filter(Boolean);
+}
+
+function mergeBaseOf(root, ref) {
+  try {
+    return gitOut(root, ["merge-base", ref, "HEAD"]).trim() || null;
+  } catch {
+    return null; // ref missing, or no common history
+  }
+}
+
+// Returns { files, ref, mergeBase }: the files, and the candidate ref + its
+// merge-base that produced them. When no candidate yields a file, ref/mergeBase
+// name the first one that RESOLVED (null when none did), so the caller can say
+// which base came back empty.
+export function committedTouchedDiff(root, base) {
+  // A ref starting with "-" would be read by git as an option.
+  const candidates = [...new Set([base, "origin/main", "main"])].filter((r) => r && !r.startsWith("-"));
+  let first = null;
+  for (const ref of candidates) {
+    const mergeBase = mergeBaseOf(root, ref);
+    if (!mergeBase) continue;
+    if (!first) first = { ref, mergeBase };
+    let files;
+    try {
+      files = diffNamesZ(root, `${mergeBase}..HEAD`);
+    } catch {
+      continue; // diff failed — try the next candidate
+    }
+    if (files.length) return { files, ref, mergeBase };
+  }
+  return { files: [], ref: first ? first.ref : null, mergeBase: first ? first.mergeBase : null };
 }
 
 export function committedTouchedFiles(root, base) {
-  const candidates = [];
-  if (base) candidates.push(base);
-  if (!base) candidates.push("origin/main");
-
-  for (const ref of candidates) {
-    try {
-      const files = diffNamesZ(root, `${ref}..HEAD`);
-      if (files.length) return files;
-    } catch {
-      // ref missing or diff failed — try the next resolution step
-    }
-  }
-
-  try {
-    const mergeBase = execSync(
-      `git merge-base HEAD origin/main 2>/dev/null || git merge-base HEAD main 2>/dev/null || echo ""`,
-      { cwd: root, stdio: "pipe", encoding: "utf8", shell: true }
-    ).trim();
-    if (mergeBase) {
-      const files = diffNamesZ(root, `${mergeBase}..HEAD`);
-      if (files.length) return files;
-    }
-  } catch {
-    // no merge-base either
-  }
-
-  return [];
+  return committedTouchedDiff(root, base).files;
 }
 
 // The working-tree half: staged + unstaged + untracked, from
@@ -218,9 +260,11 @@ export function workingTreeFiles(root) {
 }
 
 // Compute the touched-file set from git: the UNION of the committed diff
-// (`<base>..HEAD`) and the working tree (staged + unstaged + untracked).
-// Returns an array of project-root-relative paths, or `null` when no git / no
-// file resolves — caller degrades to full run.
+// (since the merge-base — committedTouchedDiff()) and the working tree (staged +
+// unstaged + untracked). Returns an array of project-root-relative paths, or
+// `null` when no git / no file resolves — caller degrades to full run. An
+// optional `meta` object receives { ref, mergeBase, committedCount } of the
+// committed half.
 //
 // The union is the point. The working tree used to be a LAST RESORT, reached
 // only when the committed diff came back empty; on any branch carrying a
@@ -229,7 +273,7 @@ export function workingTreeFiles(root) {
 // green having never looked at the new work (found 2026-08-28, hollow-ratchet
 // audit). Both halves are real edits a beat must check, so both are read every
 // time; the direction is fail-safe (it can only make MORE rows run).
-export function computeTouchedFiles(root, base) {
+export function computeTouchedFiles(root, base, meta) {
   try {
     const topLevel = execSync("git rev-parse --show-toplevel", { cwd: root, stdio: "pipe", encoding: "utf8" }).trim();
     if (!topLevel) return null;
@@ -237,8 +281,14 @@ export function computeTouchedFiles(root, base) {
     return null; // no git at all
   }
 
+  const committed = committedTouchedDiff(root, base);
+  if (meta && typeof meta === "object") {
+    meta.ref = committed.ref;
+    meta.mergeBase = committed.mergeBase;
+    meta.committedCount = committed.files.length;
+  }
   const files = new Set();
-  for (const f of committedTouchedFiles(root, base)) files.add(f);
+  for (const f of committed.files) files.add(f);
   for (const f of workingTreeFiles(root)) files.add(f);
 
   if (files.size === 0) return null; // nothing resolved — degrade to full
@@ -274,7 +324,8 @@ export function filterByScope(rows, touchedFiles) {
 // `touchedFiles` (optional array of project-root-relative paths) enables
 // scope mode — rows with a `covers` field run only if a touched file matches
 // one of its globs; rows without `covers` always run (fail-safe).
-export function run(beat, root, registryPath, touchedFiles) {
+// `opts.strict` (boolean) overrides the QUALITY_STRICT environment reading.
+export function run(beat, root, registryPath, touchedFiles, opts) {
   if (!BEATS.includes(beat)) {
     console.error(`run.mjs: unknown beat "${beat}" — expected one of ${BEATS.join(" | ")}`);
     return 2;
@@ -315,34 +366,101 @@ export function run(beat, root, registryPath, touchedFiles) {
     if (notSelected > 0) console.log(`run.mjs: ${notSelected} tool(s) not selected (scope — not touched; not an environment SKIP)`);
   }
 
+  const strict = opts && typeof opts.strict === "boolean" ? opts.strict : isStrict(process.env);
+  if (strict) console.log("run.mjs: QUALITY_STRICT — a SKIP or a PARTIAL is a FAIL in this run");
+
   let failed = 0;
   const skipped = [];
-  for (const row of rows) {
-    if (typeof row.run !== "string" || !row.run) {
-      console.error(`FAIL  ${row.id ?? "<no id>"} — row has no runnable "run" command`);
-      failed++;
-      continue;
-    }
-    try {
-      execSync(row.run, { cwd: root, stdio: "inherit" });
-      console.log(`PASS  ${row.id}`);
-    } catch (e) {
-      if (e && e.status === SKIP_EXIT) {
-        console.log(`SKIP  ${row.id}`);
-        skipped.push(row.id);
+  const partial = [];
+  // One fresh skip log per row (header, PARTIAL). Forward slashes: the path is
+  // handed to git-bash as well as read back here.
+  const skipDir = fs.mkdtempSync(path.join(os.tmpdir(), "quality-skip-"));
+  try {
+    rows.forEach((row, i) => {
+      if (typeof row.run !== "string" || !row.run) {
+        console.error(`FAIL  ${row.id ?? "<no id>"} — row has no runnable "run" command`);
+        failed++;
+        return;
+      }
+      const skipLog = path.join(skipDir, `${i}.log`).replace(/\\/g, "/");
+      let status = 0;
+      const outputLog = path.join(skipDir, `${i}.output`);
+      const fd = fs.openSync(outputLog, "w");
+      try {
+        execSync(row.run, { cwd: root, stdio: ["inherit", fd, fd], env: { ...process.env, QUALITY_SKIP_LOG: skipLog } });
+      } catch (e) {
+        status = e && typeof e.status === "number" ? e.status : null;
+      } finally {
+        fs.closeSync(fd);
+      }
+      let skippedChecks;
+      try {
+        const output = fs.readFileSync(outputLog, "utf8");
+        process.stdout.write(output);
+        skippedChecks = readSkipLog(skipLog);
+        // unittest reports skips on stderr, independently of our side channel.
+        for (const match of output.matchAll(/^OK \([^\r\n]*?skipped=(\d+)[^\r\n]*\)\s*$/gm)) {
+          if (Number(match[1])) skippedChecks.push(`${match[1]} unittest tests skipped`);
+        }
+      } catch (e) {
+        console.error(`FAIL  ${row.id} - cannot read verification evidence: ${e.message}`);
+        failed++;
+        return;
+      }
+      if (status === 0 && skippedChecks.length === 0) {
+        console.log(`PASS  ${row.id}`);
+      } else if (status === 0) {
+        const what = summariseSkips(skippedChecks);
+        if (strict) {
+          console.log(`FAIL  ${row.id} — ${skippedChecks.length} check(s) skipped under QUALITY_STRICT: ${what}`);
+          failed++;
+        } else {
+          console.log(`PARTIAL  ${row.id} — ${skippedChecks.length} check(s) skipped here, not verified: ${what}`);
+          partial.push(`${row.id}: ${skippedChecks.length}`);
+        }
+      } else if (status === SKIP_EXIT) {
+        if (strict) {
+          console.log(`FAIL  ${row.id} — SKIP under QUALITY_STRICT (this environment is supposed to run it)`);
+          failed++;
+        } else {
+          console.log(`SKIP  ${row.id}`);
+          skipped.push(row.id);
+        }
       } else {
         console.log(`FAIL  ${row.id}`);
         failed++;
       }
-    }
+    });
+  } finally {
+    fs.rmSync(skipDir, { recursive: true, force: true });
   }
 
-  const passed = rows.length - failed - skipped.length;
+  const passed = rows.length - failed - skipped.length - partial.length;
+  const partialNote = partial.length
+    ? ` — ${partial.length} PARTIAL, passed with check(s) skipped here (${partial.join(", ")})`
+    : "";
   const skipNote = skipped.length
     ? ` — ${skipped.length} SKIPPED, not verified here (${skipped.join(", ")})`
     : "";
-  console.log(`\n${beat}: ${passed}/${rows.length} passed${skipNote}${failed ? ` — ${failed} FAILED` : ""}`);
+  console.log(`\n${beat}: ${passed}/${rows.length} passed${partialNote}${skipNote}${failed ? ` — ${failed} FAILED` : ""}`);
   return failed ? 1 : 0;
+}
+
+// The non-empty lines a row appended to its QUALITY_SKIP_LOG ([] when none).
+function readSkipLog(file) {
+  let text;
+  try {
+    text = fs.readFileSync(file, "utf8");
+  } catch (e) {
+    if (e.code === "ENOENT") return []; // the row never wrote it
+    throw e;
+  }
+  return text.split(/\r?\n/).map((l) => l.trim()).filter(Boolean);
+}
+
+function summariseSkips(lines) {
+  const shown = lines.slice(0, 5).join("; ");
+  return lines.length > 5 ? `${shown}; … (+${lines.length - 5} more)` : shown;
 }
 
 // Self-locate the project root from this script's path: src/quality/run.mjs ⇒
@@ -352,8 +470,55 @@ function projectRoot() {
   return path.resolve(here, "..", "..");
 }
 
+// Synchronous replacement for process.stdout/stderr.write, used by the CLI
+// only (the self-test captures output by patching these methods in-process).
+// console.log/error call stream.write, so they follow. Terminals keep node's
+// own writer: it converts to the Windows console code page, raw bytes would
+// not, and a terminal is not where output was lost. EAGAIN appears when the
+// descriptor is non-blocking and the reader is slow: wait and retry. EPIPE
+// means the reader is gone (`| head`): stop writing to that stream, as a CLI
+// on a closed pipe does, without turning the row being replayed into a FAIL.
+const closedFds = new Set();
+function writeAllSync(fd, chunk, encoding) {
+  if (closedFds.has(fd)) return;
+  const buf = Buffer.isBuffer(chunk) ? chunk
+    : ArrayBuffer.isView(chunk) ? Buffer.from(chunk.buffer, chunk.byteOffset, chunk.byteLength)
+    : Buffer.from(String(chunk), typeof encoding === "string" ? encoding : "utf8");
+  const pause = new Int32Array(new SharedArrayBuffer(4));
+  let off = 0;
+  while (off < buf.length) {
+    try {
+      off += fs.writeSync(fd, buf, off, buf.length - off);
+    } catch (e) {
+      if (e.code === "EPIPE") { closedFds.add(fd); return; }
+      if (e.code !== "EAGAIN") throw e;
+      Atomics.wait(pause, 0, 0, 5);
+    }
+  }
+}
+
+function installSyncStdio() {
+  for (const [stream, fd] of [[process.stdout, 1], [process.stderr, 2]]) {
+    if (stream.isTTY) continue;
+    if (stream._handle && typeof stream._handle.setBlocking === "function") stream._handle.setBlocking(true);
+    stream.write = (chunk, encoding, cb) => {
+      writeAllSync(fd, chunk, encoding);
+      const done = typeof encoding === "function" ? encoding : cb;
+      if (typeof done === "function") done();
+      return true;
+    };
+  }
+}
+
 // CLI entry — only when invoked directly, not when imported by the self-test.
 if (process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
+  // On a pipe (CI, git hooks, `| tee`) node queues large writes and completes
+  // them on the event loop, which the rows' execSync keep blocked: verdicts
+  // arrived only after the whole run, and process.exit() or a kill dropped
+  // them (#216 CI: the log stopped mid-word ~64 KB into a row, no PASS/FAIL).
+  // Non-terminal stdout/stderr writes of the CLI go straight to the
+  // descriptor instead, so each line is delivered when the row ends, in order.
+  installSyncStdio();
   const beat = process.argv[2];
   if (!beat) {
     console.error(`Usage: node src/quality/run.mjs <${BEATS.join("|")}> [--touched [<base>]]`);
@@ -367,11 +532,16 @@ if (process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.me
     const base = process.argv[touchedIdx + 1] && !process.argv[touchedIdx + 1].startsWith("-")
       ? process.argv[touchedIdx + 1]
       : null;
-    touchedFiles = computeTouchedFiles(projectRoot(), base);
+    const meta = {};
+    touchedFiles = computeTouchedFiles(projectRoot(), base, meta);
     if (touchedFiles === null) {
       console.log("run.mjs: --touched: no git / no base resolved — degrading to full run");
+    } else if (meta.mergeBase) {
+      console.log(`run.mjs: --touched: committed half = ${meta.mergeBase.slice(0, 12)}..HEAD (merge-base of ${meta.ref} and HEAD; ${meta.committedCount} file(s)) + working tree`);
+    } else {
+      console.log(`run.mjs: --touched: no base resolved (${base ? base + ", " : ""}origin/main, main) — working tree only`);
     }
   }
 
-  process.exit(run(beat, projectRoot(), null, touchedFiles));
+  process.exitCode = run(beat, projectRoot(), null, touchedFiles);
 }

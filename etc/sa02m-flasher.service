@@ -1,7 +1,8 @@
 [Unit]
 Description=SA-02m RS-485 scanner and MR-02m firmware flasher
 Documentation=https://github.com/CYNTRON-git/SA-02m-web-build
-After=network.target
+After=network.target sa02m-port-coordinator.service
+Wants=sa02m-port-coordinator.service
 # fcgiwrap и nginx обращаются к сокету демона — но не являются жёсткой зависимостью.
 Wants=fcgiwrap.service
 
@@ -14,8 +15,6 @@ WorkingDirectory=/opt/sa02m-flasher
 Environment=PYTHONUNBUFFERED=1
 Environment=PYTHONPATH=/opt/sa02m-flasher
 ExecStart=/usr/bin/python3 -m sa02m_flasher.service --config /etc/sa02m_flasher.conf
-# При любом останове — гарантированно запустить mplc обратно, если демон остановил его и не успел восстановить.
-ExecStopPost=+/bin/sh -c 'for unit in mplc.service mplc4.service; do state=$(/bin/systemctl show -p LoadState --value "$unit" 2>/dev/null || true); [ "$state" = "not-found" ] || /bin/systemctl start "$unit" || true; done'
 Restart=on-failure
 RestartSec=3
 RuntimeDirectory=sa02m-flasher
@@ -26,9 +25,11 @@ ReadWritePaths=/var/lib/sa02m-flasher /var/log/sa02m-flasher /run/sa02m-flasher 
 ProtectSystem=strict
 ProtectHome=yes
 PrivateTmp=yes
-# NoNewPrivileges=yes несовместим с sudo (mplc_lease → systemctl/fuser через sudoers).
-# Ограничение привилегий выполняется через sudoers.d/sa02m-flasher (NOPASSWD на
-# конкретные команды: systemctl start|stop|is-active mplc.service, fuser /dev/COM*).
+# NoNewPrivileges=yes несовместим с sudo: sudoers.d/sa02m-flasher (systemctl,
+# fuser) ещё нужен mplc_lease для ОТОБРАЖЕНИЯ состояния линии в /ports
+# (active_service_name, port_occupants). Сама аренда UART, пауза MQTT и
+# остановка/восстановление служб идут через сокет координатора портов
+# (docs/contracts/port-ownership.md), а не через systemctl/fuser отсюда.
 NoNewPrivileges=no
 ProtectKernelTunables=yes
 ProtectKernelModules=yes
