@@ -1,15 +1,18 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
-"""Capture SA-02m eMMC image over Windows SSH (paramiko), then PiShrink in WSL.
+"""Capture SA-02m eMMC image over Windows SSH (paramiko), then finalize in WSL.
 
 Use when WSL cannot reach the donor LAN IP. Pipeline matches make-image.sh:
-cleanup → stream-after-cleanup (zerofill + id reset + dd) → pishrink → xz.
+cleanup → stream-after-cleanup (zerofill + id reset + dd, sha256 of the stream)
+→ verify sha256 of the WSL copy → PiShrink → patch-firstboot-image.sh → xz.
 """
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 import os
+import re
 import subprocess
 import sys
 import time
@@ -22,6 +25,7 @@ EMMC_BYTES = 7818182656
 REPO = Path(__file__).resolve().parents[2]
 IMAGING = Path(__file__).resolve().parent
 ENV_FILE = REPO / "tools" / "sa02m-device.env"
+PATCH_SCRIPT_REL = "tools/imaging/patch-firstboot-image.sh"
 
 
 def load_env() -> dict[str, str]:
@@ -104,8 +108,12 @@ def stream_image(client: paramiko.SSHClient, script: Path, out_img: Path, args: 
     stdin.channel.shutdown_write()
 
     written = 0
+    digest = hashlib.sha256()
     last_report = time.time()
     out_img.parent.mkdir(parents=True, exist_ok=True)
+    sidecar = sha256_sidecar(out_img)
+    # A sidecar must only ever describe a size-checked stream of THIS run.
+    sidecar.unlink(missing_ok=True)
     with out_img.open("wb") as out:
         while True:
             if stderr.channel.recv_stderr_ready():
@@ -116,6 +124,7 @@ def stream_image(client: paramiko.SSHClient, script: Path, out_img: Path, args: 
             chunk = stdout.channel.recv(1024 * 1024)
             if chunk:
                 out.write(chunk)
+                digest.update(chunk)
                 written += len(chunk)
                 now = time.time()
                 if now - last_report >= 10:
@@ -135,6 +144,7 @@ def stream_image(client: paramiko.SSHClient, script: Path, out_img: Path, args: 
             if not chunk:
                 break
             out.write(chunk)
+            digest.update(chunk)
             written += len(chunk)
         while stderr.channel.recv_stderr_ready():
             err = stderr.channel.recv_stderr(65536)
@@ -148,63 +158,100 @@ def stream_image(client: paramiko.SSHClient, script: Path, out_img: Path, args: 
     print(f"[stream] done: {written} bytes, ssh_rc={code}", flush=True)
     if written != EMMC_BYTES:
         raise SystemExit(f"raw size {written} != expected {EMMC_BYTES}")
+    line = f"{digest.hexdigest()}  {out_img.name}\n"
+    sidecar.write_text(line, encoding="utf-8", newline="\n")
+    print(f"[stream] sha256: {line.strip()}", flush=True)
 
 
-def finalize_wsl(raw_img: Path, name: str, out_dir: Path) -> None:
-    wsl_img = subprocess.check_output(["wsl", "-e", "wslpath", "-a", str(raw_img)], text=True).strip()
-    wsl_out = subprocess.check_output(["wsl", "-e", "wslpath", "-a", str(out_dir)], text=True).strip()
-    wsl_repo = subprocess.check_output(["wsl", "-e", "wslpath", "-a", str(REPO)], text=True).strip()
-    script = f"""
+def sha256_sidecar(path: Path) -> Path:
+    return path.with_name(path.name + ".sha256")
+
+
+def read_raw_sha256(raw_img: Path) -> str:
+    """Expected sha256 of the raw stream, from its sha256sum-format sidecar."""
+    sidecar = sha256_sidecar(raw_img)
+    try:
+        text = sidecar.read_text(encoding="utf-8")
+    except OSError as exc:
+        raise SystemExit(f"raw sha256 sidecar unreadable: {sidecar} ({exc})")
+    m = re.fullmatch(r"([0-9a-f]{64}) [ *](.+)\n?", text)
+    if not m or m.group(2) != raw_img.name:
+        raise SystemExit(f"raw sha256 sidecar malformed: {sidecar}")
+    return m.group(1)
+
+
+# Values arrive as positional parameters ($1..$5), never interpolated into the
+# text: a ' in --name or in a path used to break out of the old '...' literals.
+FINALIZE_SCRIPT = r"""
 set -euo pipefail
-IMG='{wsl_img}'
-OUT='{wsl_out}'
-NAME='{name}'
-REPO='{wsl_repo}'
-WORK=$(mktemp -d /tmp/sa02m-finalize-XXXXXX)
+IMG=$1 OUT=$2 NAME=$3 REPO=$4 RAW_SHA=$5
+PATCH="$REPO/tools/imaging/patch-firstboot-image.sh"
+die() { echo "[finalize] FATAL: $*" >&2; exit 1; }
+
+echo "[finalize] preflight"
+for t in pishrink.sh xz sha256sum python3 losetup; do
+  command -v "$t" >/dev/null 2>&1 || die "$t not found in WSL"
+done
+[ -r "$PATCH" ] || die "patch script not readable: $PATCH"
+
+# Native fs for a multi-GiB work copy (not drvfs, not a tmpfs /tmp).
+WORK=$(mktemp -d /var/tmp/sa02m-finalize-XXXXXX)
 trap 'rm -rf "$WORK"' EXIT
+
+echo "[finalize] copy raw + verify sha256"
 cp -f "$IMG" "$WORK/$NAME.img"
+printf '%s  %s\n' "$RAW_SHA" "$NAME.img" > "$WORK/raw.sha256"
+( cd "$WORK" && sha256sum -c raw.sha256 ) || die "sha256 of the WSL copy != the stream's"
+
+echo "[finalize] PiShrink"
 sudo pishrink.sh -a -v "$WORK/$NAME.img"
-loop=$(sudo losetup --partscan -f --show "$WORK/$NAME.img" 2>/dev/null || true)
-if [ -n "$loop" ]; then
-  mnt=$(mktemp -d /tmp/sa02m-patch-XXXXXX)
-  rootpart="${{loop}}p2"
-  for i in 1 2 3 4 5 6 8 10; do [ -b "$rootpart" ] && break; sleep 1; done
-  if sudo mount "$rootpart" "$mnt" 2>/dev/null; then
-    sudo cp -f "$REPO/etc/systemd/sa02m-userspace-watchdog.service" "$mnt/etc/systemd/system/" 2>/dev/null || true
-    sudo cp -f "$REPO/etc/net-watchdog.service" "$mnt/etc/systemd/system/" 2>/dev/null || true
-    sudo cp -f "$REPO/etc/sa02m-failure-monitor.service" "$mnt/etc/systemd/system/" 2>/dev/null || true
-    sudo install -d "$mnt/etc/systemd/system.conf.d"
-    sudo cp -f "$REPO/etc/systemd/sa02m-watchdog.conf" "$mnt/etc/systemd/system.conf.d/" 2>/dev/null || true
-    sudo sed -i 's/^RuntimeWatchdogSec=/#RuntimeWatchdogSec=/' "$mnt/etc/systemd/system.conf" 2>/dev/null || true
-    sudo rm -f "$mnt/var/lib/sa02m-rootfs-expand.done"
-    sudo umount "$mnt"
-  fi
-  sudo losetup -d "$loop" 2>/dev/null || true
-  rm -rf "$mnt"
-fi
+
+# Unconditional and fatal, as in make-image.sh: canonical boot.scr, first-boot
+# wiring and the image-identity wipe + check (docs/contracts/image-identity-reset.md
+# site 3). Through bash: the file is tracked mode 644.
+echo "[finalize] patch-firstboot-image.sh"
+sudo bash "$REPO/tools/imaging/patch-firstboot-image.sh" "$WORK/$NAME.img"
+
+echo "[finalize] publish + xz"
 cp -f "$WORK/$NAME.img" "$OUT/$NAME.img"
 xz -T0 -9e -v -c "$WORK/$NAME.img" > "$OUT/$NAME.img.xz"
 ( cd "$OUT" && sha256sum "$NAME.img" > "$NAME.img.sha256" && sha256sum "$NAME.img.xz" > "$NAME.img.xz.sha256" )
 ls -lh "$OUT/$NAME.img" "$OUT/$NAME.img.xz"
 """
-    print("[finalize] PiShrink + xz in WSL", flush=True)
-    subprocess.check_call(["wsl", "-e", "bash", "-lc", script])
+
+
+def finalize_wsl(
+    raw_img: Path, name: str, out_dir: Path, source_ip: str, *, cleanup: bool, zerofill: bool, id_reset: bool
+) -> None:
+    raw_sha = read_raw_sha256(raw_img)
+    wsl_img = subprocess.check_output(["wsl", "-e", "wslpath", "-a", str(raw_img)], text=True).strip()
+    wsl_out = subprocess.check_output(["wsl", "-e", "wslpath", "-a", str(out_dir)], text=True).strip()
+    wsl_repo = subprocess.check_output(["wsl", "-e", "wslpath", "-a", str(REPO)], text=True).strip()
+    print("[finalize] sha256 verify + PiShrink + patch-firstboot-image.sh + xz in WSL", flush=True)
+    subprocess.check_call(
+        ["wsl", "-e", "bash", "-lc", FINALIZE_SCRIPT, "_", wsl_img, wsl_out, name, wsl_repo, raw_sha]
+    )
 
     xz_path = out_dir / f"{name}.img.xz"
     img_path = out_dir / f"{name}.img"
     doc = {
         "image_name": xz_path.name,
         "image_sha256": (out_dir / f"{name}.img.xz.sha256").read_text(encoding="utf-8").split()[0],
+        "img_name": img_path.name,
         "img_sha256": (out_dir / f"{name}.img.sha256").read_text(encoding="utf-8").split()[0],
+        "raw_sha256": raw_sha,
         "created_at": datetime.now(timezone.utc).replace(microsecond=0).isoformat().replace("+00:00", "Z"),
         "pipeline": {
             "tool": "capture-image-win.py",
             "pishrink": True,
-            "cleanup": True,
-            "id_reset_in_stream": True,
+            "patch_firstboot": True,
+            "patch_script": PATCH_SCRIPT_REL,
+            "cleanup": cleanup,
+            "zerofill": zerofill,
+            "id_reset_in_stream": id_reset,
         },
         "source_device": {
-            "ip": "192.168.1.136",
+            "ip": source_ip,
             "emmc_device": "/dev/mmcblk2",
             "emmc_size_gib": 7.28,
         },
@@ -277,7 +324,15 @@ echo WATCHDOGS_OFF
             pass
 
     print("[3/4] finalize in WSL", flush=True)
-    finalize_wsl(raw_img, args.name, out_dir)
+    finalize_wsl(
+        raw_img,
+        args.name,
+        out_dir,
+        args.ip,
+        cleanup=not args.no_cleanup,
+        zerofill=not args.no_zerofill,
+        id_reset=not args.no_id_reset,
+    )
 
     print("[4/4] reboot donor (best effort)", flush=True)
     try:
