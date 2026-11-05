@@ -170,6 +170,7 @@ sh /mnt/autorun.sh
 | [`fix-donor-after-abort.sh`](fix-donor-after-abort.sh) | донор (ssh/serial) | после прерванного снятия: kill dd, machine-id, ssh keys, сервисы |
 | [`restore-donor-ssh.sh`](restore-donor-ssh.sh) | донор | обёртка над `fix-donor-after-abort.sh` |
 | [`make-image.sh`](make-image.sh) | хост WSL2 | cleanup → stream по ssh → PiShrink → manifest |
+| [`capture-image-win.py`](capture-image-win.py) | хост Windows + WSL2 | снятие по SSH из Windows (paramiko), когда WSL не видит донора; финализация в WSL как у `make-image.sh`: проверка sha256 сырого снимка → PiShrink → [`patch-firstboot-image.sh`](patch-firstboot-image.sh) (безусловно, ошибка фатальна) → xz → manifest. Тесты — строка `py-unit-imaging` |
 | [`prepare-flash-media.sh`](prepare-flash-media.sh) | хост | упаковка USB для flash-receiver |
 | [`prepare-imageusb.sh`](prepare-imageusb.sh) | хост | распаковка .img.xz → .img для ImageUSB (Windows) |
 | [`flash-receiver.sh`](flash-receiver.sh) | приёмник | sha256 → `xz -dc \| dd /dev/mmcblk2` → reboot |
