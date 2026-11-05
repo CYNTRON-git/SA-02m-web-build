@@ -8,8 +8,8 @@ pass. The registry itself is the one home for *what* each row checks
 **The current Windows box** (re-provisioned 2026-10-28; every «measured» for the current box below is
 2026-10-29, `main` at `9bf0ab60`): git-bash 5.2 (MSYS), Node 24, a native
 Python 3.12.10 whose `python3.exe` is a hand-made copy of `python.exe`, `gh`.
-It has **no WSL distro** (`wsl.exe` answers «not installed»), **no Cygwin, no
-`flock`, no `visudo`, no `shellcheck`**. The full build beat there is 159 rows
+It has a WSL2 distro again since 2026-11-05 (the WSL section below), and
+**no Cygwin, no `flock`, no `visudo`, no `shellcheck`** on the Windows side. The full build beat there is 159 rows
 (the 1.0.7.28 ship run, 2026-11-03): 127 PASS, 6 PARTIAL, 12 SKIP, 14 FAIL — the
 same 14 FAILs as on 2026-10-29, every one in the FAIL table below
 with its cause (one is marked «not traced»); CI on Linux is green on the same code. Rows below that say
@@ -33,7 +33,7 @@ header; another harness that reports neither still prints `PASS` — the
 
 | Row | Skips when | Real authority |
 |---|---|---|
-| `shellcheck` | `shellcheck` not on `PATH` (whole row SKIP — review beat; measured 2026-10-29: `checks/shellcheck.sh` prints «skipped (not installed here; CI/Linux runs it)» and exits 77). The current box has no WSL either, so not even the «evidence only» WSL run below exists; a skipped `shellcheck` is the whole local answer | Linux CI |
+| `shellcheck` | `shellcheck` not on `PATH` (whole row SKIP — review beat; measured 2026-10-29: `checks/shellcheck.sh` prints «skipped (not installed here; CI/Linux runs it)» and exits 77). The current box's WSL distro has no `shellcheck` either (2026-11-05), so not even the «evidence only» WSL run below exists; a skipped `shellcheck` is the whole local answer | Linux CI |
 | `py-unit-*` (pytest-suite.sh), `sh-model-schema` | pytest / a listed dep / `jsonschema` not importable by the first working `python3`/`python`/`py` (whole row SKIP) | Linux CI (`web-quality.yml` installs them) |
 | `py-unit-agent-api` | `test_devices_ops.DevicesSocket` (the fake devices daemon on AF_UNIX that checks the agent's panel-session cookie): Windows CPython has no `socket.AF_UNIX` — native unittest skips make the row PARTIAL | WSL / Linux CI |
 | `update-deploy-skip` | the mode probe: git-bash cannot represent POSIX modes (whole row SKIP — the live one on a Windows box); also no `python3` | WSL / Linux CI |
@@ -55,6 +55,7 @@ header; another harness that reports neither still prints `PASS` — the
 | `audio-trigger` | no `flock` on `PATH`: whole row SKIP (exit 77), never a pass (1.0.7.4). With Cygwin's `flock` on `PATH` (the former box, 2026-10-23) the row RUNS and FAILs — every helper call answers `busy` (the same MSYS-fd-under-Cygwin-`flock` suspect as `install-profile` P6l below), so `comment-mutation-proof` reports its case «not green on an unmutated tree»; on the current box it SKIPs (measured) | WSL / Linux CI |
 | `sudoers-pin-contract` | two cases print SKIP and the row still exits 0: sandbox (c), the iface-conf-write symlink refusal (git-bash cannot create a real symlink, `ln -s` copies), and 8c/8d, the 0440 root:root normalisation and the runner's read-back (MSYS maps a mode onto the DOS read-only attribute: `chmod 0440` reads back **444**, `0644` reads back 644 — measured 2026-10-29; the gate's probe wants exactly 440 and SKIPs). Because 8c/8d cannot run, `comment-mutation-proof`'s three cases on the `if chmod 0440 …` / `_now=$(stat -c` lines (`scripts/lib.sh`, `etc/sa02m-update-runner.sh`) cannot go RED here and FAIL — host-dependent, not a hollow gate: «Reading the proof's FAILs» below. On Linux 8c/8d run as any user: as non-root (CI) the chown to root is modelled, never skipped; GREEN under WSL as root and as `nobody` (2026-10-23) | WSL / Linux CI |
 | `install-maintenance`, `update-control-boundaries` | whole row SKIP (exit 77): Windows CPython has no `fcntl` (the wrapper's and the controller's flock idiom). Neither needs root since 1.0.7.10 — each suite rebinds its owner constant to the running uid (`install-maintenance`: `JOURNAL_OWNER_UID`, plus an `install -o/-g` stub in the 03a fixture; `update-control-boundaries`: the state owner). `install-maintenance`: 18 OK under WSL as root and as `nobody`; `update-control-boundaries`: 15 OK as root and as `nobody` (both 2026-10-23) | WSL / Linux CI |
+| `py-unit-imaging` | PARTIAL: the 3 execution cases (the generated WSL finalize script run under a POSIX bash with PATH stubs) skip — git-bash has no `/var/tmp`, and a `bash` that resolves to WSL's `bash.exe` cannot see the process's paths; the other 17 pass. 20/20 OK under WSL python3 3.14.4 without paramiko (the stub path), 2026-11-05 | WSL / Linux CI |
 | `py-unit-update` | PARTIAL: `tests/test_control_cgi.py` (HTTP → real Bash CGI → controller) skips as a module without `fcntl` and writes one QUALITY_SKIP_LOG line — 25 passed + 1 skipped here, 36 passed under WSL (2026-10-21) | WSL / Linux CI |
 | `board-verifier-safety` | whole row SKIP (exit 77) off Linux — the script guards itself (`sys.platform`, `/proc`; it needs `/proc`, `os.pidfd_open`, `select` on pipes) and writes the skip-log line; the row's `run` is the plain python call | WSL / Linux CI |
 | `status-reliability-browser` | whole row SKIP (exit 77) when `playwright` is not resolvable from `scripts/dev` — the guard is in the row's `run` (the script imports playwright unconditionally); with `npm run ui-layout:install` done it RUNS here and under WSL (PASS on both, 2026-10-20/21) | Linux CI (installs the harness) |
@@ -243,18 +244,21 @@ only ever contained the code under test. It was a **latent hazard**, not a live
 wrong result: the first future case added below a definition would have inherited
 a stub it never asked for.
 
-### WSL — gone on the current box; a Linux host, not a CI replica, where it exists
+### WSL — a Linux host, not a CI replica
 
-Since 2026-10-28 the box has **no WSL distro**: `wsl.exe -l -v` answers that the
-Windows Subsystem for Linux is not installed (measured 2026-10-29). Every «under
-WSL» result in this note is from the former box and is history until a distro is
-reinstalled; the rest of this section describes that distro.
+The current box has WSL2 distro `Ubuntu` (measured 2026-11-05): Ubuntu 26.04.1
+LTS, python3 3.14.4, util-linux `flock`, runs as root; **no Node, no
+shellcheck, no paramiko**. It was absent from 2026-10-28 (`wsl.exe` answered «not
+installed», 2026-10-29), so an «under WSL» result dated before 2026-10-28 is from
+the former box's distro (also `Ubuntu` 26.04; audit 2026-10-24: Node v22.22.1,
+python 3.14.4, shellcheck 0.11.0, root), and none exists between the two dates.
+`wsl -d Ubuntu-24.04` fails with `WSL_E_DISTRO_NOT_FOUND`; use `wsl -d Ubuntu`.
+It differs from CI's `ubuntu-latest` (Node 20, non-root runner, the
+0.9.0-family shellcheck), so a WSL green is Linux evidence, not CI proof.
 
-The distro was `Ubuntu` (Ubuntu 26.04 LTS) — `wsl -d Ubuntu-24.04` fails with
-`WSL_E_DISTRO_NOT_FOUND`; use `wsl -d Ubuntu`. Measured by audit 2026-10-24:
-native Node v22.22.1, python 3.14.4, util-linux `flock`, shellcheck 0.11.0,
-runs as root. It differs from CI's `ubuntu-latest` (Node 20, non-root runner,
-the 0.9.0-family shellcheck), so a WSL green is Linux evidence, not CI proof.
+From git-bash, set `MSYS_NO_PATHCONV=1` before `wsl -e bash -c '…' _ /mnt/c/…`:
+MSYS otherwise rewrites the POSIX argv path into `C:/Program Files/Git/mnt/c/…`
+and the WSL side cannot `cd` to it (2026-11-05).
 
 Two traps from the earlier distro still apply to how the beat is run: put
 `/usr/bin` first on PATH so a Windows `node.exe` symlink (the old
@@ -276,8 +280,8 @@ the 0.9.0 family (e.g. a separate `Ubuntu-24.04` WSL install with
 `apt-get install -y shellcheck`), reached through a `shellcheck` shim on `PATH`
 that forwards to it — WSL inherits the Windows working directory, so relative
 paths pass straight through. Keep the shim in the session scratchpad; it is a
-dev-box convenience, not a repo artifact. The current box has no WSL, so this
-route first needs a distro installed.
+dev-box convenience, not a repo artifact. The current box's distro has no
+`shellcheck` package, so this route first needs one installed.
 
 **Never shim a newer binary (`npx`, or the 0.11.0 WSL package) onto `PATH` to
 make the row report PASS.** That converts an honest skip into a false green on
