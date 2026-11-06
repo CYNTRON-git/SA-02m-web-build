@@ -511,8 +511,8 @@ etc/systemd/sa02m-link-monitor.service|Restart=always
 etc/systemd/sa02m-link-monitor.service|WantedBy=multi-user.target
 etc/systemd/sa02m-link-monitor.service|TimeoutStopSec=5
 etc/fix-eth@.service|StartLimitBurst=10
-etc/sa02m-factory-reset-runner.sh|timeout 10 systemctl stop sa02m-link-monitor 2>/dev/null || true
-etc/sa02m-factory-reset-runner.sh|systemctl is-enabled --quiet sa02m-link-monitor 2>/dev/null && systemctl start sa02m-link-monitor 2>/dev/null || true
+etc/sa02m-factory-reset-runner.sh|reset_control 10 systemctl stop sa02m-link-monitor 2>/dev/null || true
+etc/sa02m-factory-reset-runner.sh|reset_control 10 systemctl is-enabled --quiet sa02m-link-monitor 2>/dev/null && reset_control 20 systemctl start sa02m-link-monitor 2>/dev/null || true
 PINS
 else
     bad "L8: .ai-dev/quality/checks/lib_check.sh could not be sourced — the wiring was NOT verified (a skip is not a pass)"

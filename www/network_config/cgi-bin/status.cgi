@@ -56,14 +56,8 @@ fi
 
 HW_CONF="/etc/sa02m_hw.conf"
 . "$SCRIPT_DIR/lib_hw.sh"
-HW_VARIANT=""
-_hw_variant_conf="/etc/sa02m_hw_variant.conf"
-if [ -f "$_hw_variant_conf" ]; then
-    _v=$(grep -E '^SA02M_HW_VARIANT=' "$_hw_variant_conf" 2>/dev/null | head -n1 | cut -d= -f2 | tr -d '[:space:]')
-    case "$_v" in
-        sa02m-1eth|sa02m-2eth) HW_VARIANT=$_v ;;
-    esac
-fi
+SA02M_HW_VARIANT_SNAPSHOT=$(sa02m_hw_variant)
+HW_VARIANT=$SA02M_HW_VARIANT_SNAPSHOT
 STATUS_BLOCKS_CONF="${STATUS_BLOCKS_CONF:-/etc/sa02m_status_blocks.conf}"
 [ -f "$STATUS_BLOCKS_CONF" ] && . "$STATUS_BLOCKS_CONF" 2>/dev/null || true
 
@@ -2058,7 +2052,6 @@ gather_hardware_metrics() {
 
     sa02m_hw_collect_metrics
     sa02m_hw_metrics_cache_save
-    [ "${HW_VARIANT:-}" = "sa02m-2eth" ] && HW_DO=null
 }
 
 gather_main_metrics() {
@@ -2725,7 +2718,7 @@ case "$STATUS_PART" in
         fi
         ;;
     hardware)
-        cache_print_or_build "${CACHE_DIR}/hardware.json" 10 build_hardware_json
+        cache_print_or_build "${CACHE_DIR}/hardware.${HW_VARIANT}.json" 10 build_hardware_json
         ;;
     priority)
         status_emit_live build_priority_json

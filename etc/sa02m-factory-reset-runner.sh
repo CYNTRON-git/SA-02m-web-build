@@ -807,7 +807,7 @@ iso_now() { date -u +%Y-%m-%dT%H:%M:%SZ; }
 sa02m_runtime_watchdog_usec() {   # prints RuntimeWatchdogUSec in µs; rc=1 when unreadable
     local v=""
     command -v busctl >/dev/null 2>&1 || return 1
-    v=$(busctl get-property org.freedesktop.systemd1 /org/freedesktop/systemd1 \
+    v=$(timeout -k 2s 10s busctl get-property org.freedesktop.systemd1 /org/freedesktop/systemd1 \
             org.freedesktop.systemd1.Manager RuntimeWatchdogUSec 2>/dev/null) || return 1
     v=${v##* }                      # "t 15000000" → "15000000"
     case "$v" in ''|*[!0-9]*) return 1 ;; esac
@@ -822,12 +822,12 @@ sa02m_runtime_watchdog_set() {
     case "$want" in ''|*[!0-9]*) return 2 ;; esac
     now=$(sa02m_runtime_watchdog_usec) || return 1
     if [ "$now" != "$want" ] && command -v busctl >/dev/null 2>&1; then
-        busctl set-property org.freedesktop.systemd1 /org/freedesktop/systemd1 \
+        timeout -k 2s 10s busctl set-property org.freedesktop.systemd1 /org/freedesktop/systemd1 \
             org.freedesktop.systemd1.Manager RuntimeWatchdogUSec t "$want" >/dev/null 2>&1 || true
         now=$(sa02m_runtime_watchdog_usec) || return 1
     fi
     if [ "$now" != "$want" ] && command -v systemctl >/dev/null 2>&1; then
-        systemctl set-property --runtime Manager "RuntimeWatchdogSec=${want}us" >/dev/null 2>&1 || true
+        timeout -k 2s 10s systemctl set-property --runtime Manager "RuntimeWatchdogSec=${want}us" >/dev/null 2>&1 || true
         now=$(sa02m_runtime_watchdog_usec) || return 1
     fi
     printf '%s\n' "$now"
@@ -835,12 +835,33 @@ sa02m_runtime_watchdog_set() {
 }
 # ── END sa02m-runtime-watchdog ─────────────────────────────────────────────
 
+reset_control() {
+  local budget=$1 rc
+  shift
+  if timeout -k 2s "${budget}s" "$@"; then
+    return 0
+  else
+    rc=$?
+  fi
+  case "$rc" in
+    124|137) log "WARNING: control command timed out (${budget}s + 2s kill grace): $* (rc=$rc)" ;;
+    *)
+      # Inactive/disabled are normal query results; their timeout is not.
+      case "${1:-}:${2:-}" in
+        systemctl:is-active|systemctl:is-enabled) ;;
+        *) log "WARNING: control command failed: $* (rc=$rc)" ;;
+      esac
+      ;;
+  esac
+  return "$rc"
+}
+
 install_imaging_lock() {
   date -Iseconds >"$IMAGING_LOCK"
   sync
-  systemctl stop net-watchdog sa02m-watchdog-feed 2>/dev/null || true
+  reset_control 20 systemctl stop net-watchdog sa02m-watchdog-feed 2>/dev/null || true
   # The link monitor starts fix-eth@ on link-up, which must not run mid-reset.
-  timeout 10 systemctl stop sa02m-link-monitor 2>/dev/null || true
+  reset_control 10 systemctl stop sa02m-link-monitor 2>/dev/null || true
   local now=""
   RUNTIME_WDT_PREV=$(sa02m_runtime_watchdog_usec 2>/dev/null) || RUNTIME_WDT_PREV=""
   if [ -n "$RUNTIME_WDT_PREV" ] && [ "$RUNTIME_WDT_PREV" != 0 ]; then
@@ -868,10 +889,10 @@ cleanup_imaging_lock() {
     fi
     RUNTIME_WDT_PREV=""
   fi
-  systemctl start net-watchdog 2>/dev/null || true
+  reset_control 20 systemctl start net-watchdog 2>/dev/null || true
   # Given back only where enabled: an OTA-only board has the unit file, not the enablement.
-  systemctl is-enabled --quiet sa02m-link-monitor 2>/dev/null && systemctl start sa02m-link-monitor 2>/dev/null || true
-  systemctl start sa02m-watchdog-feed 2>/dev/null || true
+  reset_control 10 systemctl is-enabled --quiet sa02m-link-monitor 2>/dev/null && reset_control 20 systemctl start sa02m-link-monitor 2>/dev/null || true
+  reset_control 20 systemctl start sa02m-watchdog-feed 2>/dev/null || true
   rm -f "$IMAGING_LOCK"
   IMAGING_HELD=0
   log "imaging lock cleared; runtime watchdog $wdt"
@@ -1138,7 +1159,7 @@ rollback_from_journal() {
 restart_stopped_units() {
   local u
   for u in "${RESTART_UNITS[@]}"; do
-    if timeout 20 systemctl start "$u" >/dev/null 2>&1; then
+    if reset_control 20 systemctl start "$u" >/dev/null 2>&1; then
       log "rollback: started $u again (it was active before the reset)"
     else
       log "WARN rollback: $u was active before the reset and did not start again — start it by hand"
@@ -1249,7 +1270,7 @@ MAP
 # (resume_quiesced_units) starts them again on success when they were running.
 unit_stopped() {
   local st
-  st=$(timeout 10 systemctl is-active "$1" 2>/dev/null) || true
+  st=$(reset_control 10 systemctl is-active "$1" 2>/dev/null) || true
   case "$st" in
     inactive|failed) return 0 ;;
     *) return 1 ;;
@@ -1258,7 +1279,7 @@ unit_stopped() {
 
 remember_if_active() {
   local st
-  st=$(timeout 10 systemctl is-active "$1" 2>/dev/null) || true
+  st=$(reset_control 10 systemctl is-active "$1" 2>/dev/null) || true
   case "$st" in
     active|activating|reloading) RESTART_UNITS+=("$1") ;;
   esac
@@ -1280,7 +1301,7 @@ quiesce_homekit() {
     out=$(fr_safe hk-reset-conf "$HK_CONF" "$HK_PKG_DIR" www-data:sa02m-homekit 2>&1) || fail E_APPLY "HomeKit conf not reset: $out"
     [ -z "$out" ] || log "homekit: $out"
   fi
-  timeout 20 systemctl stop "$HK_UNIT" >/dev/null 2>&1 || true
+  reset_control 20 systemctl stop "$HK_UNIT" >/dev/null 2>&1 || true
   unit_stopped "$HK_UNIT" || fail E_APPLY "HomeKit bridge did not stop — nothing was erased"
 }
 
@@ -1294,7 +1315,7 @@ quiesce_homeconnect() {
     out=$(fr_safe hc-reset-conf "$HC_CONF" "$HC_PKG_DIR" www-data:sa02m-homeconnect 2>&1) || fail E_APPLY "Home Connect conf not reset: $out"
     [ -z "$out" ] || log "homeconnect: $out"
   fi
-  timeout 20 systemctl stop "$HC_UNIT" >/dev/null 2>&1 || true
+  reset_control 20 systemctl stop "$HC_UNIT" >/dev/null 2>&1 || true
   unit_stopped "$HC_UNIT" || fail E_APPLY "Home Connect client did not stop — nothing was erased"
 }
 
@@ -1377,7 +1398,7 @@ quiesce_rules() {
   for f in runs.json logic_state.json http-allow.json; do
     erasable_name "$RULES_DIR/$f" || fail E_APPLY "$RULES_DIR/$f is not a file — nothing was erased"
   done
-  timeout 20 systemctl stop "$RULES_UNIT" >/dev/null 2>&1 || true
+  reset_control 20 systemctl stop "$RULES_UNIT" >/dev/null 2>&1 || true
   unit_stopped "$RULES_UNIT" || fail E_APPLY "scenario engine did not stop — nothing was erased"
 }
 
@@ -1388,7 +1409,7 @@ quiesce_audio() {
   if [ -L "$AU_CONF" ] || { [ -e "$AU_CONF" ] && [ ! -f "$AU_CONF" ]; }; then
     fail E_APPLY "$AU_CONF is a symlink or not a regular file — nothing was erased"
   fi
-  timeout 20 systemctl stop "$AU_UNIT" >/dev/null 2>&1 || true
+  reset_control 20 systemctl stop "$AU_UNIT" >/dev/null 2>&1 || true
   unit_stopped "$AU_UNIT" || fail E_APPLY "audio recorder did not stop — nothing was erased"
 }
 
@@ -1493,7 +1514,7 @@ resume_quiesced_units() {
   for u in "${QUIESCED_UNITS[@]}"; do
     unit_stopped "$u" && continue
     log "WARN $u was started during the reset — stopping it and erasing again"
-    timeout 20 systemctl stop "$u" >/dev/null 2>&1 || true
+    reset_control 20 systemctl stop "$u" >/dev/null 2>&1 || true
     unit_stopped "$u" || fail E_APPLY "$u was started during the reset"
     case "$u" in
       "$RULES_UNIT") erase_rules_history ;;
@@ -1501,7 +1522,7 @@ resume_quiesced_units() {
     esac
   done
   for u in "${RESUME_UNITS[@]}"; do
-    if timeout 20 systemctl start "$u" >/dev/null 2>&1; then
+    if reset_control 20 systemctl start "$u" >/dev/null 2>&1; then
       log "started $u again (it was active before the reset)"
     else
       log "WARN $u was active before the reset and did not start again — start it by hand"
@@ -1677,10 +1698,10 @@ PY
   trap - ERR
 
   # Reload services that consume configs (best-effort)
-  systemctl reload sa02m-serial-gateway 2>/dev/null || true
-  systemctl restart sa02m-modbus-mqtt 2>/dev/null || true
+  reset_control 20 systemctl reload sa02m-serial-gateway 2>/dev/null || true
+  reset_control 20 systemctl restart sa02m-modbus-mqtt 2>/dev/null || true
   if command -v nginx >/dev/null 2>&1; then
-    nginx -t >/dev/null 2>&1 && systemctl reload nginx 2>/dev/null || true
+    reset_control 10 nginx -t >/dev/null 2>&1 && reset_control 20 systemctl reload nginx 2>/dev/null || true
   fi
 
   cleanup_imaging_lock

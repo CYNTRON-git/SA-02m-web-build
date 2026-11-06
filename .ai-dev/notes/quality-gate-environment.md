@@ -5,7 +5,110 @@ tell the truth on which machine, so a session does not mistake a skip for a
 pass. The registry itself is the one home for *what* each row checks
 (`.ai-dev/quality/tools.json`); this file only records *where it actually runs*.
 
-**The current Windows box** (re-provisioned 2026-10-28; every «measured» for the current box below is
+## Current host setup — measured 2026-11-06
+
+Release preparation on `1.0.7.31`, continuing `codex/audit-20261106`, has the required Python dependencies
+and a working Chromium on both Windows and WSL. Installation, import checks and
+browser launch are established. They do not turn earlier FAIL, SKIP or PARTIAL
+results into passes or establish a combined build/review result.
+The [audit](../../docs/audits/2026-11-06-project-and-bench.md) owns the findings
+and final verification totals; this note owns the environment.
+
+| Host | Measured setup and limits |
+|---|---|
+| Windows native | Python 3.12.10; `pip --user` packages `pytest`, `pyserial`, `pyyaml`, `cryptography`, `jsonschema`, `paho-mqtt`, `python-socketio[client]`, `openpyxl`. Imports and `pip check` pass. Chromium build 1228 actually launches with `PLAYWRIGHT_BROWSERS_PATH=C:/Users/perev/AppData/Local/ms-playwright`. These installs do not provide Linux `fcntl`, PTYs, `/proc`, POSIX permissions or Unix socket composition. |
+| WSL `Ubuntu` | Ubuntu 26.04.1; default Python 3.14.4 is retained. The isolated `/opt/sa02m-dev-tools/test-venv` uses Python 3.12.16, the CI Python dependencies and HomeKit dependencies from the hash-pinned lock. Imports and `pip check` pass. Select this interpreter through `PATH` and `SA02M_HOMEKIT_TEST_PY`; keep test temporary files on Linux under `/tmp`. |
+| WSL tools | Linux Node 22.22.1; ShellCheck 0.10.0 in `/usr/local/bin`; util-linux `flock`; GCC 15.2, CMake, Ninja and SQLite development files. Linux Chromium build 1228 actually launches. CI is pinned to Ubuntu 24.04 and Node 20 in `.github/workflows/web-quality.yml`; this WSL installation is not an identical runner. |
+| WSL sudoers parser | Ubuntu 26's `sudo-rs` 0.2.13 rejected 4 of the 10 board sudoers drop-ins. The C implementation's `visudo.ws` 1.9.17p2 parses all 10: `.tmp/audit-20261106/sudoers-visudo-c.log`. The test venv's `bin/visudo` and `bin/sudo` symlinks select it; system alternatives remain unchanged. No board sudoers or gate was changed to accommodate the host parser. |
+| WSL DTB tools | DTC 1.7.2 changes string-list rendering and produced three golden-text differences in `test-dtb-fdtput.sh`. The official Ubuntu Noble `device-tree-compiler` 1.7.0-2build1 package was extracted into `/opt/sa02m-dev-tools/dtc-1.7.0`. The test venv's `bin/` selects its `dtc`, `fdtget`, `fdtput`, `fdtdump` and `fdtoverlay`; the unchanged real-tool gate passes (`.tmp/audit-20261106/dtb-fdtput-ci.log`). Package source: [Ubuntu Noble device-tree-compiler](https://packages.ubuntu.com/noble/device-tree-compiler). |
+| WSL timeout | Host `/usr/bin/timeout` is uutils 0.8.0; its process-group behavior left a TERM-resistant descendant alive in the reset/watchdog fixtures. GNU timeout 9.4 from the signed Noble `coreutils` 9.4-3ubuntu6.3 package is extracted under `/opt/sa02m-dev-tools/gnu-coreutils-noble` and selected by the test-venv's `bin/timeout` symlink. The system executable/alternatives are unchanged. Preserve the original failing logs; GNU-based results are recorded separately in the audit. |
+| WSL hardware parser fixtures | The real CGI and unreadable-file cases require Linux Bash/POSIX permissions; under root the inaccessible-file checks run as `nobody` using `runuser`. The raw-byte parity matrix uses the existing Bash/Python runtime only, with no new `iconv` or parser executable dependency. Counts and post-review RED/GREEN evidence belong to the audit. |
+| WSL vPLC native SDKs | libmodbus 3.1.11, Paho MQTT 1.3.15, SQLite development files and pinned open62541 v1.4.6 in `/opt/sa02m-dev-tools/open62541-v1.4.6`. The sibling's configured `runtime/build/native-all-transports` includes the native transports and `modbus_mp02`. Relinking with the custom SDK requires `LIBRARY_PATH` and `LD_LIBRARY_PATH` to include its `lib/` directory. Native/sanitizer/packaging results and their review scope belong to the audit; SDK presence is not ARM execution. |
+| WSL ARM container build | Podman 5.7.0 with crun/overlay; nftables is required for the default container networking. Actual `ubuntu:24.04` startup and Noble ARM cross-build completed. The official archive/security endpoints timed out on this host; an explicitly selected `ru.archive.ubuntu.com` mirror retained mandatory signed apt verification. The minimal image lacks CA certificates: signed HTTP apt bootstraps `ca-certificates`, followed by HTTPS ARM repositories. No TLS/signature bypass or host apt source change was used. The audit records the preflight artifact separately from final commit/package provenance and target acceptance. |
+| Optional isolated quality container | Noble userspace with copied source/manifests, private PID/IPC, network none, 3 GiB RAM, 512 processes, 512 MiB shm, eight CPUs, no host mounts or extra capabilities. The disposable container's real non-root/sudo path exercised the repaired factory-reset fixture; host accounts and sudoers were unchanged. Default container root could not inspect another UID's `/proc/<pid>/fd` in service composition. The optional full registry was not launched; the coordinator ended this attempt without adding `CAP_SYS_PTRACE`. Failed probes and separate successful cases remain distinct evidence in the audit. This WSL-kernel container is not an identical CI VM. |
+
+WSL runs as root by default, while CI runs as a non-root user with passwordless
+sudo. Alice's permission-refusal case skips under root; the separate full
+`nobody` runs and exact counts are recorded in the audit
+(`.tmp/audit-20261106/alice-nonroot.log`). The new service-operation composition
+test uses root directly or passwordless `sudo -n`; absence of both is an honest
+skip, not a successful test. Privilege-dependent results must name the user.
+
+Recheck the Windows dependencies and actual browser launch from PowerShell at
+the repository root:
+
+```powershell
+$env:PYTHONUTF8 = '1'
+$env:PLAYWRIGHT_BROWSERS_PATH = 'C:/Users/perev/AppData/Local/ms-playwright'
+python -c "import pytest, serial, yaml, cryptography, jsonschema, paho.mqtt.client, socketio, openpyxl"
+python -m pip check
+node --input-type=module -e "import {chromium} from './scripts/dev/node_modules/playwright/index.mjs'; const browser = await chromium.launch({headless:true}); console.log(await browser.version()); await browser.close();"
+```
+
+For Linux checks, enter `wsl.exe -d Ubuntu`, then run from the mounted checkout.
+Select the isolated tools before the system tools; do not inherit a Windows
+`node.exe` or use DrvFS for test temporary directories. Redirect the gate log
+inside WSL so a broken stdout relay does not truncate the evidence.
+`scripts/dev/node_modules` is now an ordinary shared-workspace directory readable
+from WSL; no `NODE_PATH` is needed. Root's Linux browser cache is
+`/root/.cache/ms-playwright`; do not reuse the Windows browser cache path:
+
+```bash
+cd /mnt/c/Users/perev/Downloads/SA-02m-web-build
+export PATH=/opt/sa02m-dev-tools/test-venv/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin
+export SA02M_HOMEKIT_TEST_PY=/opt/sa02m-dev-tools/test-venv/bin/python
+export PYTHONUTF8=1
+export TMPDIR=/tmp
+export CACHE_BUST_R_NO_FETCH=1
+unset PLAYWRIGHT_BROWSERS_PATH
+python -m pip check
+python -c 'import pytest, serial, yaml, cryptography, jsonschema, paho.mqtt.client, socketio, openpyxl, pyhap.accessory_driver, segno'
+node --version
+shellcheck --version
+visudo --version
+dtc --version
+timeout --version
+node --input-type=module -e "import {chromium} from './scripts/dev/node_modules/playwright/index.mjs'; const browser = await chromium.launch({headless:true}); console.log(await browser.version()); await browser.close();"
+bash .ai-dev/quality/checks/sudoers-visudo.sh
+bash scripts/dev/test-dtb-fdtput.sh
+QUALITY_STRICT=1 node .ai-dev/quality/run.mjs build --touched > .tmp/audit-20261106/build-recheck.log 2>&1
+```
+
+The last command is a reproduction command, not a recorded final result. Full
+CI runs `build` and `review` without `--touched`. A strict root run can still
+expose privilege-dependent skips; repeat the affected suite as non-root and
+record it separately rather than suppressing a skip or changing a gate.
+
+Two additional host traps were measured during this audit. `cache-bust-r`'s
+`timeout 25 git fetch` group entered stopped state (`T`) waiting for an SSH
+terminal prompt, so the timeout did not finish it. Only that audit-owned process
+group was terminated. The supported `CACHE_BUST_R_NO_FETCH=1` mode used the
+existing `origin/main`: 34 asset URLs compared, three changed `&r` values passed
+(`.tmp/audit-20261106/cache-bust-local.log`). This is evidence against that local
+ref, not a fresh remote comparison. A root-owned temporary parent with mode
+`0700` also blocked synthetic foreign-UID traversal in `daemon-access-effect`
+(27 failed cases). Use `/tmp`, as above, or deliberately provide traversal on
+the test parent; do not put a multi-UID test under an opaque private parent.
+The unchanged gate passed after correcting the audit-owned parent's traversal
+and using `TMPDIR=/tmp` (`.tmp/audit-20261106/daemon-access-linux.log`).
+These are causes of failures in the original strict run; separate focused
+reruns do not change that run's recorded result.
+
+The configured all-transport vPLC build can be rechecked from that sibling
+repository with `cmake --build runtime/build/native-all-transports` and
+`ctest --test-dir runtime/build/native-all-transports --output-on-failure`.
+Its empty-config smoke, current native/sanitizer counts, actual ARM preflight
+and review status are recorded in the linked audit. The signed Noble container
+build is distinct from the Ubuntu 26 native SDK build, and neither establishes
+acceptance of a newly installed binary on the board.
+
+## Historical host measurements
+
+The dated observations below retain the original host context. References to
+the “current box”, missing tools or WSL setup in these older sections describe
+their stated measurement dates; the 2026-11-06 setup above supersedes them.
+
+**Windows box as measured 2026-10-29** (re-provisioned 2026-10-28; every «measured» for this box below is
 2026-10-29, `main` at `9bf0ab60`): git-bash 5.2 (MSYS), Node 24, a native
 Python 3.12.10 whose `python3.exe` is a hand-made copy of `python.exe`, `gh`.
 It has a WSL2 distro again since 2026-11-05 (the WSL section below), and

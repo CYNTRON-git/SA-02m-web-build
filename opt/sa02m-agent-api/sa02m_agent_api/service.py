@@ -358,20 +358,17 @@ class App:
         if path == "/api/v1/events" and method == "GET":
             if not principal.allows("read"):
                 return 403, {"ok": False, "error": "forbidden", "need": "read"}
-            q = self.bus.subscribe()
+            q = self.bus.subscribe(principal.token_id)
             if q is None:
                 return 503, {"ok": False, "error": "busy"}
             return ("sse", q)
         m = JOB_EVENTS_RE.match(path)
         if m and method == "GET":
-            job = self.jobs.get(m.group(1), principal.token_id)
-            if not job:
+            found, q = self.jobs.subscribe(m.group(1), principal.token_id)
+            if not found:
                 return 404, {"ok": False, "error": "not_found"}
-            q = self.bus.subscribe()
             if q is None:
                 return 503, {"ok": False, "error": "busy"}
-            q.put_nowait({"event": "state", "job_id": job["id"], "status": job["status"],
-                          "result": job["result"]})
             return ("sse", q)
         m = JOB_RE.match(path)
         if m and method == "GET":

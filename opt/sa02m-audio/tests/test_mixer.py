@@ -95,6 +95,16 @@ BOUNDED_PREFIX = [C.TIMEOUT, "-k", str(C.AMIXER_KILL_AFTER_S), str(C.AMIXER_TIME
 
 
 class ParseAndPickTest(unittest.TestCase):
+    def test_card_arg_requires_a_whole_card_id(self):
+        for card_id in ("M", "Mic_09", "a" * 32):
+            with self.subTest(card_id=card_id):
+                card = types.SimpleNamespace(index=4, id=card_id)
+                self.assertEqual(mixer.card_arg(card), card_id)
+        for card_id in ("", "a" * 33, "Mic-Pro", "Mic\n", "Mic\r", "Mic\r\n", "Mic\0"):
+            with self.subTest(card_id=card_id):
+                card = types.SimpleNamespace(index=4, id=card_id)
+                self.assertEqual(mixer.card_arg(card), "4")
+
     def test_bench_mic_parses_with_its_live_range_and_db(self):
         text = ("Simple mixer control 'Mic',0\n"
                 "  Capabilities: cvolume cvolume-joined cswitch cswitch-joined\n"

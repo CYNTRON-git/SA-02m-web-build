@@ -255,7 +255,9 @@ class DevicePoller:
         devices on bench 1.135 wrote ~20 k such lines a day). The transition
         lines keep their levels; a recovery makes the next failure WARNING
         again."""
-        if self._online is not False:
+        if isinstance(exc, bridge_serial.ScanHold):
+            self.log.debug("%s: scan hold", label)
+        elif self._online is not False:
             self.log.warning("%s: %s", label, exc)
         else:
             self.log.debug("%s: %s", label, exc)
@@ -282,6 +284,8 @@ class DevicePoller:
             res = fn(*args)
             self.mark_ok()
             return res
+        except bridge_serial.ScanHold:
+            raise
         except Exception:
             self.mark_fail()
             raise
@@ -346,6 +350,24 @@ def _clear_stale_errors(p, log) -> None:
         log.debug("clear stale errors %s: %s", p.device_id, e)
 
 
+def _setup_pollers(pollers, stop, hold, log) -> None:
+    for p in pollers:
+        while not stop.is_set():
+            if hold.is_set():
+                stop.wait(0.05)
+                continue
+            try:
+                p.setup()
+            except bridge_serial.ScanHold:
+                # Retry only the interrupted setup after the reservation ends.
+                stop.wait(0.05)
+                continue
+            except Exception as e:
+                log.error("setup %s: %s", p.device_id, e)
+            _clear_stale_errors(p, log)
+            break
+
+
 # ── Port cycle (wb-mqtt-serial TSerialClientRegisterAndEventsReader) ─────────
 class PortCycleScheduler:
     """One thread per port:baud — interleaved EVENTS + POLLING (TimeBalancer).
@@ -392,6 +414,8 @@ class PortCycleScheduler:
         for i in range(n):
             if self._stop.is_set():
                 break
+            if self._scan_hold.is_set():
+                raise bridge_serial.ScanHold()
             elapsed = time.monotonic() - t0
             if elapsed >= budget_s and (did_bus or not read_at_least_one):
                 break
@@ -403,6 +427,8 @@ class PortCycleScheduler:
                 p.poll_io()
                 if time.monotonic() - before >= 0.005:
                     did_bus = True
+            except bridge_serial.ScanHold:
+                raise
             except Exception as e:
                 self._log.debug("poll_io %s: %s", p.device_id, e)
         self._poll_idx = (self._poll_idx + 1) % n
@@ -414,24 +440,23 @@ class PortCycleScheduler:
         # init at a full read timeout on every slice with its 30 s
         # back-off armed — 21 init reads in 20 slices (review 2026-10-29).
         for p in self._pollers:
+            if self._stop.is_set():
+                break
+            if self._scan_hold.is_set():
+                raise bridge_serial.ScanHold()
             if p.in_backoff():
                 continue
             try:
                 p.poll_slow_if_due(t0)
+            except bridge_serial.ScanHold:
+                raise
             except Exception as e:
                 self._log.debug("poll_slow %s: %s", p.device_id, e)
         return did_bus
 
     def run(self) -> None:
         time.sleep(0.5)
-        for p in self._pollers:
-            if self._stop.is_set():
-                return
-            try:
-                p.setup()
-            except Exception as e:
-                self._log.error("setup %s: %s", p.device_id, e)
-            _clear_stale_errors(p, self._log)
+        _setup_pollers(self._pollers, self._stop, self._scan_hold, self._log)
 
         # Classic warmup before any FC46 0x18 — configure_events goes only to
         # a slave that already answers classic reads. Not the fix for the CE
@@ -440,17 +465,24 @@ class PortCycleScheduler:
             for p in self._pollers:
                 if self._stop.is_set():
                     break
+                if self._scan_hold.is_set():
+                    break
                 try:
                     if not p.in_backoff():
                         p.poll_io()
+                except bridge_serial.ScanHold:
+                    break
                 except Exception as e:
                     self._log.debug("warmup poll %s: %s", p.device_id, e)
             time.sleep(0.3)
 
         if self._fmb is not None and self._fmb.has_devices():
-            if not self._stop.is_set():
+            if not self._stop.is_set() and not self._scan_hold.is_set():
                 # Ready devices now; others via retry_unconfigured / only_ready.
-                self._fmb.configure_all(only_ready=True)
+                try:
+                    self._fmb.configure_all(only_ready=True)
+                except bridge_serial.ScanHold:
+                    pass  # Still eligible for retry_unconfigured after release.
 
         has_fmb = self._fmb is not None and self._fmb.has_configured()
         self._log.info(
@@ -486,6 +518,9 @@ class PortCycleScheduler:
                     and not has_fmb and now >= next_fmb_retry):
                 try:
                     has_fmb = self._fmb.retry_unconfigured()
+                except bridge_serial.ScanHold:
+                    self._stop.wait(0.05)
+                    continue
                 except Exception as e:
                     self._log.debug("FMB configure retry: %s", e)
                 next_fmb_retry = now + (5.0 if has_fmb else 15.0)
@@ -518,6 +553,9 @@ class PortCycleScheduler:
                 try:
                     self._fmb.reconfigure_pending()
                     burst_silent = self._fmb.event_burst()
+                except bridge_serial.ScanHold:
+                    self._stop.wait(0.05)
+                    continue
                 except Exception as e:
                     self._log.debug("events: %s", e)
                     burst_silent = 1
@@ -541,7 +579,11 @@ class PortCycleScheduler:
                 # POLLING task (Low) — Force if balancing threshold hit or no FMB.
                 read_at_least_one = force_poll or not has_fmb
                 t0 = time.monotonic()
-                did = self._classic_slice(FMB_MAX_POLL_TIME_S, read_at_least_one)
+                try:
+                    did = self._classic_slice(FMB_MAX_POLL_TIME_S, read_at_least_one)
+                except bridge_serial.ScanHold:
+                    self._stop.wait(0.05)
+                    continue
                 spent = time.monotonic() - t0
                 if force_poll:
                     high_time_accum = 0.0
@@ -594,32 +636,40 @@ class HdlcPortScheduler:
             p.stop()
 
     def run(self) -> None:
-        for p in self._pollers:
-            if self._stop.is_set():
-                return
-            try:
-                p.setup()
-            except Exception as e:
-                self._log.error("setup %s: %s", p.device_id, e)
-            _clear_stale_errors(p, self._log)
+        _setup_pollers(self._pollers, self._stop, self._scan_hold, self._log)
         while not self._stop.is_set():
             if self._scan_hold.is_set():
                 if self._stop.wait(0.05):
                     return
                 continue
             now = time.monotonic()
+            interrupted = False
             for p in self._pollers:
                 if self._stop.is_set():
                     return
+                if self._scan_hold.is_set():
+                    interrupted = True
+                    break
                 if p.in_backoff():
                     continue
                 try:
                     p.poll_io()
+                except bridge_serial.ScanHold:
+                    interrupted = True
+                    break
                 except Exception as e:
                     self._log.debug("poll_io %s: %s", p.device_id, e)
+                if self._stop.is_set():
+                    return
+                if self._scan_hold.is_set():
+                    interrupted = True
+                    break
                 try:
                     p.poll_slow_if_due(now)
+                except bridge_serial.ScanHold:
+                    interrupted = True
+                    break
                 except Exception as e:
                     self._log.debug("poll_slow %s: %s", p.device_id, e)
-            if self._stop.wait(0.2):
+            if self._stop.wait(0.05 if interrupted else 0.2):
                 return

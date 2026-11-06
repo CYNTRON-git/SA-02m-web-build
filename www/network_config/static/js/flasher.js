@@ -42,6 +42,9 @@
     configNetworkDirty: false,
     configBodyKey: '',
     configPortReleased: false,
+    configReservedPort: '',
+    portRecoveryError: '',
+    portRestorePending: false,
     scanArbitrationActive: false,
   };
 
@@ -416,12 +419,26 @@
     }
   }
 
+  function reconcilePortRestoration() {
+    if (state.ports.some(p => p.restore_pending)) {
+      state.portRestorePending = true;
+    } else if (state.portRestorePending && state.ports.length && state.ports.every(p => p.coordinator_available === true)) {
+      state.portRestorePending = false;
+      state.portRecoveryError = '';
+      if (!state.ports.some(p => p.reserved)) {
+        state.configPortReleased = false;
+        state.configReservedPort = '';
+      }
+    }
+  }
+
   async function loadPorts() {
     try {
       try {
         const quick = await apiGet('/ports?quick=1');
         if (quick && (quick.ports || []).length) {
           state.ports = quick.ports;
+          reconcilePortRestoration();
           updateGlobalBusyFromPorts();
           renderPortSelect();
           updatePortHint();
@@ -431,6 +448,7 @@
       }
       const data = await apiGet('/ports');
       state.ports = data.ports || [];
+      reconcilePortRestoration();
       updateGlobalBusyFromPorts();
       renderPortSelect();
       updatePortHint();
@@ -911,7 +929,7 @@
     const flashRunning = state.flashPending || !!state.flashJobId;
     const globalBusy = isFlasherOperationActive();
     const jobBusy = !!(port && port.active_job) || globalBusy;
-    const releasedServices = port && port.released_services ? port.released_services : [];
+    const hasReservations = state.ports.some(p => p.reserved || p.restore_pending || (p.released_services && p.released_services.length));
     const managedN = port && Array.isArray(port.managed_services) ? port.managed_services.length : 0;
     const selectedDevices = selectedDevicesForFlash();
     const anyChecked = selectedDevices.length > 0;
@@ -940,7 +958,7 @@
     }
     const canStopPollers = !!(port && port.exists && managedN);
     $('flasher-release-port-btn').disabled = !canStopPollers || scanRunning || flashRunning || jobBusy || state.portActionBusy;
-    $('flasher-restore-port-btn').disabled = !port || scanRunning || flashRunning || jobBusy || state.portActionBusy || !releasedServices.length;
+    $('flasher-restore-port-btn').disabled = !port || scanRunning || flashRunning || jobBusy || state.portActionBusy || !(hasReservations || state.configPortReleased);
     const flashBtn = $('flasher-flash-btn');
     if (flashBtn) {
       const canCancelFlash = !!(state.flashJobId && !state.flashPending && !state.flashIrreversible);
@@ -993,6 +1011,7 @@
   function updatePortHint() {
     const port = currentPort();
     const hint = $('flasher-port-hint');
+    const recovering = state.ports.filter(p => p.restore_pending);
     if (!port) {
       setBadge('flasher-port-badge', 'Нет данных', 'unk');
       setBadge('flasher-poller-badge', 'Опрос не оценён', 'unk');
@@ -1008,6 +1027,7 @@
     else setBadge('flasher-port-badge', 'Порт свободен', 'ok');
 
     if (!port.exists) setBadge('flasher-poller-badge', 'Нет линии', 'unk');
+    else if (port.restore_pending) setBadge('flasher-poller-badge', uiT('Восстановление ожидается'), 'err');
     else if (port.active_services == null) setBadge('flasher-poller-badge', 'Проверка опроса', 'unk');
     else if (port.active_services.length) setBadge('flasher-poller-badge', 'Опрос активен', 'unk');
     else if (port.reserved || (port.released_services && port.released_services.length)) setBadge('flasher-poller-badge', 'Опрос освобождён', 'ok');
@@ -1016,7 +1036,7 @@
 
     const pendingDetails =
       port.exists && (port.busy_pids == null || port.active_services == null);
-    if (pendingDetails) {
+    if (pendingDetails && !recovering.length) {
       hint.textContent = 'Проверка порта и опроса';
       syncActionButtons();
       return;
@@ -1024,7 +1044,12 @@
 
     const bits = [];
     if (port.active_services && port.active_services.length) {
-      bits.push('Линию сейчас опрашивают: ' + port.active_services.map(unitUiLabel).join(', ') + '. При сканировании опрос будет остановлен автоматически; кнопка «Остановить опрос» делает это вручную.');
+      bits.push(uiT('Линию сейчас занимают: ') + port.active_services.map(unitUiLabel).join(', ') + '.');
+      if (port.active_services.includes('RS-485 Gateway')) {
+        bits.push(uiT('Освободите линию во вкладке «Шлюз RS-485», затем повторите.'));
+      } else {
+        bits.push(uiT('Автоматически приостанавливается только MQTT и явно назначенные порту службы.'));
+      }
     }
     if (port.released_services && port.released_services.length) {
       bits.push('Опрос вручную освобождён: ' + port.released_services.map(unitUiLabel).join(', ') + '.');
@@ -1036,10 +1061,20 @@
       bits.push('Порт удерживают PID ' + port.busy_pids.join(', ') + '.' +
         (port.active_services && port.active_services.length
           ? ' Если это не служба опроса, освободите процесс вручную.'
-          : ' systemd не сообщает об активном unit опроса — порт может держать другой процесс; при необходимости проверьте systemctl status и fuser на устройстве.'));
+          : ' ' + uiT('Владелец не распознан по командной строке процесса. Проверьте его на устройстве.')));
     }
     if (port.active_job) bits.push('На линии выполняется активная задача, дождитесь её завершения.');
     if (!port.exists) bits.push('Устройство порта не найдено в системе.');
+    const reserved = state.ports.filter(p => p.reserved).map(p => p.key);
+    if (reserved.length) bits.push(uiT('Ручной резерв: ') + reserved.join(', ') + '. ' + uiT('Кнопка «Вернуть опрос» снимает все ручные резервы.'));
+    recovering.forEach(p => {
+      bits.push(uiT('Ожидается восстановление опроса: ') + p.key +
+        ((p.restore_services || []).length ? ' (' + p.restore_services.map(unitUiLabel).join(', ') + ')' : '') +
+        (p.restore_error ? ' — ' + p.restore_error : '') + '.');
+    });
+    if (recovering.length && recovering.every(p => p.coordinator_available === true)) bits.push(uiT('Координатор повторяет восстановление автоматически. «Вернуть опрос» проверяет результат.'));
+    if (recovering.some(p => p.coordinator_available === false)) bits.push(uiT('Координатор недоступен; восстановление не подтверждено.'));
+    if (state.portRecoveryError) bits.push(state.portRecoveryError);
     if (!bits.length) bits.push('Линия готова к сканированию и прошивке.');
     hint.textContent = bits.join(' ');
     syncActionButtons();
@@ -1778,18 +1813,16 @@
       try {
         const res = await apiPost('/ports/release', { port: portKey });
         const busy = res && res.port && Array.isArray(res.port.busy_pids) && res.port.busy_pids.length > 0;
-        const mqttStopped = res && (
-          (Array.isArray(res.stopped_now) && res.stopped_now.some(s => /modbus-mqtt|mqtt/i.test(String(s)))) ||
-          (Array.isArray(res.already_released) && res.already_released.some(s => /modbus-mqtt|mqtt/i.test(String(s)))) ||
-          (Array.isArray(res.inactive) && res.inactive.some(s => /modbus-mqtt|mqtt/i.test(String(s))))
-        );
-        if ((res && res.ok && !busy) || (!busy && mqttStopped)) {
+        if (res && res.ok && !busy && res.port && res.port.reserved) {
           state.configPortReleased = true;
+          state.configReservedPort = portKey;
+          state.portRecoveryError = '';
+          await loadPorts();
           return;
         }
-        lastMsg = busy
-          ? `Порт ${portKey} занят (PID ${res.port.busy_pids.join(', ')}). Остановите MQTT/MPLC4 и повторите.`
-          : `Не удалось освободить ${portKey} для настройки (MQTT/MPLC4).`;
+        lastMsg = portReleaseFailure(res);
+        // A partial batch is final: retries cannot preempt the known owner.
+        if (res && res.failed && res.failed.length) break;
       } catch (err) {
         lastMsg = 'Освобождение порта для настройки: ' + (err && err.message ? err.message : String(err));
       }
@@ -1799,22 +1832,31 @@
     }
     // Порт всё ещё занят после нескольких попыток — только теперь это реальная ошибка.
     if (lastMsg) {
+      state.portRecoveryError = lastMsg;
+      await loadPorts();
       setConfigBanner(lastMsg, 'error');
+      cancelInlineStatusAutoClear('flasher-config-banner');
       toast(lastMsg, 'warn');
     }
   }
 
   async function _autoRestorePortForConfig() {
     if (!state.configPortReleased) return;
-    const portKey = $('flasher-port').value;
+    const portKey = state.configReservedPort || $('flasher-port').value;
     if (!portKey) return;
-    state.configPortReleased = false;
     // Сохраняем промис, чтобы следующий _autoReleasePortForConfig мог его дождаться.
     const p = (async () => {
       try {
-        await apiPost('/ports/restore', { port: portKey });
-        await loadPorts();
-      } catch (_) {}
+        const res = await apiPost('/ports/restore', { port: portKey });
+        if (!res.ok || (res.failed && res.failed.length) || (res.pending_restores && res.pending_restores.length)) throw new Error((res.failed || []).join(', ') || res.error || uiT('Восстановление опроса не подтверждено.'));
+        state.configPortReleased = false;
+        state.configReservedPort = '';
+        state.portRecoveryError = '';
+      } catch (err) {
+        state.portRecoveryError = uiT('Восстановление опроса: ') + err.message + ' ' + uiT('Повторите кнопкой «Вернуть опрос».');
+        toast(state.portRecoveryError, 'error');
+      }
+      await loadPorts();
       if (_portOpPromise === p) _portOpPromise = null;
     })();
     _portOpPromise = p;
@@ -1826,6 +1868,10 @@
     const el = configModalEl('flasher-config-banner');
     if (!el) return;
     const key = 'flasher-config-banner';
+    if (state.portRecoveryError) {
+      text = text && text !== state.portRecoveryError ? text + ' ' + state.portRecoveryError : state.portRecoveryError;
+      type = 'error';
+    }
     if (!text) {
       cancelInlineStatusAutoClear(key);
       el.hidden = true;
@@ -1836,7 +1882,8 @@
     el.hidden = false;
     el.textContent = text;
     el.className = 'flasher-config-banner' + (type === 'error' ? ' is-error' : '');
-    scheduleInlineStatusAutoClear(key, () => setConfigBanner(''));
+    if (state.portRecoveryError) cancelInlineStatusAutoClear(key);
+    else scheduleInlineStatusAutoClear(key, () => setConfigBanner(''));
   }
 
   function setConfigBusy(busy) {
@@ -5902,8 +5949,15 @@
     syncActionButtons();
   }
 
-  /** @returns {Promise<boolean>} true when a poller was actually stopped (or was
-      already stopped in the daemon session) — the signal to chain a re-scan. */
+  function portReleaseFailure(res) {
+    const retained = (res && (res.manual_reserved_ports || res.reserved_ports)) || [];
+    const reason = (res && res.failed && res.failed.length)
+      ? res.failed.join(', ') : (res && res.error) || uiT('Порт не зарезервирован.');
+    return uiT('Освобождение RS-485: ') + reason + (retained.length
+      ? '. ' + uiT('Сохранён ручной резерв: ') + retained.join(', ') + '. ' + uiT('Кнопка «Вернуть опрос» снимает все ручные резервы.') : '');
+  }
+
+  /** True only after a successful batch reserved the selected port. */
   async function releasePortPollers() {
     const port = currentPort();
     if (!port) return false;
@@ -5912,25 +5966,14 @@
     let didStop = false;
     try {
       const res = await apiPost('/ports/release', { port: port.key });
-      const lab = (a) => (a || []).map(unitUiLabel).join(', ');
-      if (res.failed && res.failed.length) {
-        throw new Error('не удалось остановить: ' + lab(res.failed));
-      }
-      const stopped = res.stopped_now || [];
-      const already = res.already_released || [];
-      const inactive = res.inactive || [];
-      didStop = stopped.length > 0 || already.length > 0;
-      if (stopped.length) {
-        toast('Службы опроса остановлены: ' + lab(stopped), 'success');
-      } else if (already.length) {
-        toast('Уже были остановлены ранее (сессия демона): ' + lab(already), 'info');
-      } else if (inactive.length) {
-        toast('Службы не были в состоянии active (ничего не останавливали): ' + lab(inactive), 'info');
-      } else {
-        toast('Нет служб для остановки по текущей конфигурации', 'info');
-      }
+      if (!res.ok || (res.failed && res.failed.length)) throw new Error(portReleaseFailure(res));
+      didStop = !!(res.port && res.port.reserved);
+      if (!didStop) throw new Error(portReleaseFailure(res));
+      state.portRecoveryError = '';
+      toast(uiT('Порты зарезервированы: ') + (res.manual_reserved_ports || res.reserved_ports || [port.key]).join(', '), 'success');
     } catch (err) {
-      toast('Освобождение RS-485: ' + err.message, 'error');
+      state.portRecoveryError = err.message;
+      toast(err.message, 'error');
     } finally {
       state.portActionBusy = false;
       await loadPorts();
@@ -5946,16 +5989,20 @@
     try {
       const res = await apiPost('/ports/restore', { port: port.key });
       const lab = (a) => (a || []).map(unitUiLabel).join(', ');
-      if (res.failed && res.failed.length) {
-        throw new Error('не удалось запустить: ' + lab(res.failed));
+      if (!res.ok || (res.failed && res.failed.length) || (res.pending_restores && res.pending_restores.length)) {
+        throw new Error(lab(res.failed) || res.error || uiT('Восстановление опроса не подтверждено.'));
       }
+      state.configPortReleased = false;
+      state.configReservedPort = '';
+      state.portRecoveryError = '';
       if (res.restarted && res.restarted.length) {
         toast('Опрос восстановлен: ' + lab(res.restarted), 'success');
       } else {
         toast('Штатный опрос уже работает или не был освобождён вручную', 'info');
       }
     } catch (err) {
-      toast('Восстановление опроса: ' + err.message, 'error');
+      state.portRecoveryError = uiT('Восстановление опроса: ') + err.message;
+      toast(state.portRecoveryError, 'error');
     } finally {
       state.portActionBusy = false;
       await loadPorts();

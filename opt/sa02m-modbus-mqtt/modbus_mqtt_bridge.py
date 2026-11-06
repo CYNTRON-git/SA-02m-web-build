@@ -409,7 +409,7 @@ def main() -> None:
     # is active, and scans normally when it is not.
     try:
         import bridge_scan_lease
-        bridge_scan_lease.serve()
+        bridge_scan_lease.serve(scheduler_provider=lambda: _port_schedulers)
     except Exception:
         log.exception("scan lease server did not start")
 

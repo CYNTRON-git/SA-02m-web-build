@@ -454,6 +454,7 @@ class Handler(BaseHTTPRequestHandler):
         managed = [_unit_display_name(s) for s in mplc_lease.configured_scope(device_path)]
         managed.append(_unit_display_name("sa02m-modbus-mqtt.service"))
         reserved = mplc_lease.is_reserved(device_path)
+        restoration = mplc_lease.restoration_status(device_path)
 
         if quick:
             return {
@@ -468,6 +469,7 @@ class Handler(BaseHTTPRequestHandler):
                 "reserved": reserved,
                 "active_services": None,
                 "released_services": None,
+                **restoration,
             }
 
         occupants: List[str] = port_occupants(device_path) if exists else []
@@ -489,6 +491,7 @@ class Handler(BaseHTTPRequestHandler):
             "reserved": reserved,
             "active_services": active_services,
             "released_services": [_unit_display_name(a) for a in mplc_lease.released_services_for(device_path)],
+            **restoration,
         }
 
     def _handle_status(self, ctx: ServiceContext) -> None:
@@ -515,19 +518,20 @@ class Handler(BaseHTTPRequestHandler):
         port = str(data.get("port") or "").strip()
         if not port:
             raise ValueError("Поле 'port' обязательно")
+        if port not in ctx.cfg.ports_map:
+            raise ValueError(f"Неизвестный порт: {port}")
         _guard_no_active_flasher_job(ctx, port=port)
         result = mplc_lease.release_pollers(ctx.cfg.mplc_stop_services)
         port_info = self._describe_port(ctx, port)
-        busy = bool(port_info.get("busy_pids"))
-        released = bool(result.get("stopped_now") or result.get("already_released"))
-        ok = not result["failed"] or (released and not busy)
-        _send_json(self, {"ok": ok, "port": port_info, **result})
+        _send_json(self, {"ok": not result["failed"], "port": port_info, **result})
 
     def _handle_ports_restore(self, ctx: ServiceContext) -> None:
         data = _read_json_body(self)
         port = str(data.get("port") or "").strip()
         if not port:
             raise ValueError("Поле 'port' обязательно")
+        if port not in ctx.cfg.ports_map:
+            raise ValueError(f"Неизвестный порт: {port}")
         _guard_no_active_flasher_job(ctx, port=port)
         result = mplc_lease.restore_pollers(ctx.cfg.mplc_stop_services)
         _send_json(self, {"ok": not result["failed"], "port": self._describe_port(ctx, port), **result})

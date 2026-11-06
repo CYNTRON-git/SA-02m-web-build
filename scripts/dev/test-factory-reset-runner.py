@@ -64,7 +64,8 @@ temp name swapped between mkstemp and rename).
      read through (the old `sed -i` copied the victim into the group-writable dir)
   A3 the temp name swapped for a symlink right after it is staged (an
      `install` shim that wins the race every time): the victim's owner stays
-     put. Observing an owner change needs root — non-root: SKIP, not a pass
+     put. Observing an owner change needs root; non-root uses real sudo when
+     available, otherwise records the omitted assertion as a partial run
   U1 fr_safe replace_with with the temp swapped after mkstemp: refused, the
      victim untouched, the planted link not left at the destination
   H1 HomeKit: conf → the installer's seed bytes 0640 FIRST, the unit stopped
@@ -179,6 +180,7 @@ import gzip
 import json
 import os
 import re
+import signal
 import shutil
 import stat
 import subprocess
@@ -207,6 +209,7 @@ if os.name == "nt":
 IS_ROOT = getattr(os, "geteuid", lambda: 1)() == 0
 
 fails = 0
+skips = 0
 
 
 def ok(msg: str) -> None:
@@ -220,7 +223,46 @@ def bad(msg: str) -> None:
 
 
 def skip(msg: str) -> None:
+    global skips
+    skips += 1
     print("SKIP  " + msg)
+    ledger = os.environ.get("QUALITY_SKIP_LOG")
+    if ledger:
+        try:
+            with open(ledger, "a", encoding="utf-8") as output:
+                output.write(msg + "\n")
+        except OSError as error:
+            bad(f"cannot record omitted assertion in QUALITY_SKIP_LOG: {error}")
+
+
+if not IS_ROOT:
+    if os.environ.get("SA02M_FACTORY_ROOT_CHILD") == "1":
+        bad("sudo re-execution did not obtain root; ownership assertions cannot run")
+        sys.exit(1)
+    sudo = shutil.which("sudo")
+    try:
+        probe = subprocess.run([sudo, "-n", "id", "-u"], stdin=subprocess.DEVNULL,
+                               capture_output=True, text=True, timeout=10) if sudo else None
+    except (OSError, subprocess.SubprocessError):
+        probe = None
+    if probe is not None and probe.returncode == 0 and probe.stdout.strip() == "0":
+        timeout = shutil.which("timeout")
+        if not timeout:
+            bad("privileged fixture requires timeout for bounded sudo re-execution")
+            sys.exit(1)
+        inherited = [f"{key}={os.environ[key]}" for key in
+                     ("PATH", "TMPDIR", "FACTORY_SRC", "QUALITY_SKIP_LOG", "PYTHONUTF8")
+                     if key in os.environ]
+        command = [sudo, "-n", "--", "/usr/bin/env", *inherited,
+                   "SA02M_FACTORY_ROOT_CHILD=1", timeout, "--kill-after=5s", "600s",
+                   sys.executable, str(Path(__file__).resolve()), *sys.argv[1:]]
+        print("factory-reset-runner: re-executing the complete fixture as root via sudo", flush=True)
+        try:
+            result = subprocess.run(command, stdin=subprocess.DEVNULL, timeout=620)
+        except (OSError, subprocess.SubprocessError) as error:
+            bad(f"privileged fixture execution failed: {error}")
+            sys.exit(1)
+        sys.exit(result.returncode)
 
 
 def check(cond: bool, good: str, fail: str) -> None:
@@ -580,6 +622,112 @@ def reach_late_steps(sbx: Sandbox) -> None:
     (on 485f385 B1a/B1c–B1e still fail for their own reasons)."""
     for n in ("eth0.conf", "eth1.conf"):
         (sbx.cur / "templates/etc/network/interfaces.d" / n).unlink(missing_ok=True)
+
+
+def timeout_cases() -> None:
+    """Real reset composition, one TERM-resistant control command at a time."""
+    real_timeout = shutil.which("timeout")
+    if not real_timeout:
+        bad("W GNU timeout is required")
+        return
+    cases = (
+        ("systemctl", "stop net-watchdog sa02m-watchdog-feed", 20),
+        ("systemctl", "stop sa02m-link-monitor", 10),
+        ("systemctl", "start net-watchdog", 20),
+        ("systemctl", "is-enabled --quiet sa02m-link-monitor", 10),
+        ("systemctl", "start sa02m-link-monitor", 20),
+        ("systemctl", "start sa02m-watchdog-feed", 20),
+        ("systemctl", "reload sa02m-serial-gateway", 20),
+        ("systemctl", "restart sa02m-modbus-mqtt", 20),
+        ("nginx", "-t", 10),
+        ("systemctl", "reload nginx", 20),
+    )
+    for index, (tool, arguments, budget) in enumerate(cases, 1):
+        s = Sandbox("W%d" % index)
+        process = None
+        try:
+            reach_late_steps(s)
+            s.shim("nginx", "#!/bin/sh\nexit 0\n")
+            shim = s.sb / "bin" / tool
+            original = shim.read_text(encoding="utf-8")
+            hanging = f'''if [ "$*" = '{arguments}' ]; then
+  echo reached > '{s.sb}/reached'
+  echo $$ >> '{s.sb}/hanging-pids'
+  trap '' TERM
+  sleep 300 &
+  echo $! >> '{s.sb}/hanging-pids'
+  wait
+fi
+'''
+            shim.write_text(original.replace("\n", "\n" + hanging, 1), encoding="utf-8")
+            s.shim("timeout", f'''#!/bin/bash
+printf '%s\\n' "$*" >> '{s.sb}/timeout.log'
+original=("$@")
+grace=()
+if [ "${{1:-}}" = -k ]; then
+  [ "${{2:-}}" = 2s ] || exit 97
+  grace=(-k 0.15s)
+  shift 2
+fi
+budget=${{1:-}}; shift
+case "${{1:-}}" in
+  systemctl|busctl|nginx) case "$budget" in 10|10s|20|20s) ;; *) exit 98 ;; esac ;;
+  *) exec '{real_timeout}' "${{original[@]}}" ;;
+esac
+exec '{real_timeout}' "${{grace[@]}}" 0.15s "$@"
+''')
+            env = dict(os.environ, PATH=f"{s.sb}/bin:{os.environ.get('PATH', '/usr/bin:/bin')}",
+                       SA02M_UPDATE_STATEDIR=str(s.state), SA02M_FACTORY_DEFAULTS_ROOT=str(s.cur.parent),
+                       SA02M_WEB_BACKUP=str(s.backup), SA02M_WEB_VERSION_FILE=str(s.sb / "var/www/network_config/VERSION"),
+                       SA02M_DEVICE_ID_FILE=str(s.etc / "machine-id"))
+            for name in ("SA02M_FACTORY_LOG", "SA02M_UPDATE_LOCK"):
+                env.pop(name, None)
+            process = subprocess.Popen(["bash", str(s.runner), "run"], env=env,
+                                       stdout=subprocess.PIPE, stderr=subprocess.STDOUT, start_new_session=True)
+            def kill_owned_groups():
+                groups = {process.pid}
+                pid_file = s.sb / "hanging-pids"
+                if pid_file.exists():
+                    for pid in map(int, pid_file.read_text().split()):
+                        try:
+                            if os.getsid(pid) == process.pid:
+                                groups.add(os.getpgid(pid))
+                        except ProcessLookupError:
+                            pass
+                for group in groups:
+                    try:
+                        os.killpg(group, signal.SIGKILL)
+                    except ProcessLookupError:
+                        pass
+            supervised = False
+            try:
+                output, _ = process.communicate(timeout=8)
+            except subprocess.TimeoutExpired:
+                supervised = True
+                kill_owned_groups()
+                output, _ = process.communicate(timeout=3)
+            s.out = output.decode("utf-8", "replace")
+            calls = (s.sb / "timeout.log").read_text() if (s.sb / "timeout.log").exists() else ""
+            bound = any(line in calls.splitlines() for line in (
+                f"-k 2s {budget} {tool} {arguments}", f"-k 2s {budget}s {tool} {arguments}"))
+            log_text = s.log.read_text() if s.log.exists() else ""
+            running = []
+            pid_file = s.sb / "hanging-pids"
+            if pid_file.exists():
+                for pid in pid_file.read_text().split():
+                    stat_file = Path("/proc") / pid / "stat"
+                    if stat_file.exists() and stat_file.read_text().split(") ", 1)[1].split()[0] != "Z":
+                        running.append(pid)
+            complete = process.returncode == 0 and s.done() and not (s.sb / "run/sa02m-imaging.lock").exists()
+            warned = "WARNING:" in log_text and arguments in log_text
+            check((s.sb / "reached").exists() and bound and not supervised and complete and warned and not running,
+                  f"W{index} {tool} {arguments}: {budget}s + kill grace; warning, journal and cleanup reached; no child survives",
+                  f"W{index} {tool} {arguments}: reached={(s.sb / 'reached').exists()} bounded={bound} "
+                  f"supervisor={supervised} complete={complete} warning={warned} survivors={running} ({s.why()})")
+        finally:
+            if process is not None:
+                kill_owned_groups()
+            s.cleanup()
 
 
 # ── G. the lists' basename glob (the SHIPPED path_matches_glob, run by bash) ─
@@ -1661,8 +1809,14 @@ if a and b:
 else:
     bad(f"T resolver block missing (runner={bool(a)}, backup={bool(b)})")
 
+print("── W. bounded reset control commands ──")
+timeout_cases()
+
 print()
 if fails:
     print(f"factory-reset-runner: {fails} FAIL")
     sys.exit(1)
-print("factory-reset-runner: ALL OK")
+if skips:
+    print(f"factory-reset-runner: PARTIAL — {skips} assertion(s) not executed")
+else:
+    print("factory-reset-runner: ALL OK")

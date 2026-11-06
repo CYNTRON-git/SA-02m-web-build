@@ -190,7 +190,9 @@ class FakeExpander:
     def get(self, bus: int, addr: int, reg: int, timeout_s=None):
         self.reads.append((bus, addr, reg))
         self.timeouts.append(timeout_s)
-        self.timeline.append("read")
+        # Direction is now read/verified on commands as well as output data;
+        # name it separately so the original output RMW sequence stays exact.
+        self.timeline.append("read" if reg == REG_OUT else "read-dir")
         if not self.readable:
             return None
         return self.regs.get(reg)
@@ -416,7 +418,7 @@ class TestTheLockBracketsTheWholeReadModifyWrite(LockTestCase):
         self.send(stub, "do", b"1")
 
         self.assertEqual(
-            self.timeline, ["lock", "read", "write", "read", "unlock"],
+            self.timeline, ["lock", "read-dir", "read", "write", "read", "unlock"],
             "the read-modify-write AND its read-back must run inside ONE held "
             "lock: the read, the write and the verify of the same byte cannot "
             "be separable by another owner",
@@ -452,7 +454,17 @@ class TestTheLockBracketsTheWholeReadModifyWrite(LockTestCase):
         self.write_conf()
         stub = self.make_client()
         tel.TelemetryClient.init_hw(stub)
-        self.assertEqual(self.timeline, ["lock", "write-dir", "unlock"])
+        self.assertEqual(self.timeline, ["lock", "read-dir", "write-dir", "read-dir", "unlock"])
+
+    def test_direction_repair_and_output_write_share_the_lock(self):
+        stub = self.ready_client()
+        self.exp.regs[REG_DIR] = 0xFF
+        self.send(stub, "do", b"1")
+        self.assertEqual(self.timeline,
+                         ["lock", "read-dir", "write-dir", "read-dir",
+                          "read", "write", "read", "unlock"])
+        self.assertEqual(self.exp.regs[REG_DIR], 0xF0)
+        self.assertEqual(stub.published, [("controls/do", "1")])
 
 
 class TestASecondHolderIsNotOverridden(LockTestCase):
@@ -1101,7 +1113,7 @@ class TestAPublishedStateIsAMeasuredState(LockTestCase):
             self.assertEqual(stub.published, [],
                              "a pin that did not move was published as moved")
 
-        self.assertEqual(self.timeline, ["lock", "read", "write", "read", "unlock"],
+        self.assertEqual(self.timeline, ["lock", "read-dir", "read", "write", "read", "unlock"],
                          "the read-back must sit inside the same lock bracket")
         joined = " ".join(caught.output)
         self.assertIn("reads back 0x", joined,
@@ -1122,7 +1134,7 @@ class TestAPublishedStateIsAMeasuredState(LockTestCase):
         self.assertTrue(any("read-back" in line for line in caught.output),
                         f"the refusal must say the read-back went unanswered: "
                         f"{caught.output}")
-        self.assertEqual(self.timeline, ["lock", "read", "write", "read", "unlock"])
+        self.assertEqual(self.timeline, ["lock", "read-dir", "read", "write", "read", "unlock"])
 
     def test_a_write_that_reads_back_is_accepted_and_published(self):
         """Non-vacuity for the two refusals: the same path with a port that
@@ -1371,12 +1383,11 @@ class TestDeferredDirectionRegister(LockTestCase):
         self.timeline.clear()
         self.send(stub, "do", b"1")
 
-        # The trailing "read" is the 1.0.6.68 read-back of the output port
-        # (the same move as the timeline pin in
-        # TestTheLockBracketsTheWholeReadModifyWrite); the direction write
-        # itself stays unverified, as lib_hw.sh's is.
+        # Both direction reconciliation and the output RMW/readback must fit
+        # inside one lock bracket, including after deferred initialization.
         self.assertEqual(self.timeline,
-                         ["lock", "write-dir", "read", "write", "read", "unlock"])
+                         ["lock", "read-dir", "write-dir", "read-dir",
+                          "read", "write", "read", "unlock"])
 
     def test_a_real_io_failure_at_init_still_disables_control(self):
         """The pre-existing behaviour, unchanged: an expander that will not
@@ -1475,7 +1486,7 @@ class TestTheI2cTimeoutComesFromTheConf(LockTestCase):
 
         self.send(stub, "do", b"1")
 
-        bus_ops = [t for t in self.timeline if t in ("read", "write")]
+        bus_ops = [t for t in self.timeline if t in ("read", "read-dir", "write", "write-dir")]
         self.assertTrue(bus_ops, "no expander call was recorded at all")
         self.assertEqual(len(self.exp.timeouts), len(bus_ops))
         self.assertEqual(set(self.exp.timeouts), {2.5},
@@ -1488,8 +1499,8 @@ class TestTheI2cTimeoutComesFromTheConf(LockTestCase):
 
         tel.TelemetryClient.init_hw(stub)
 
-        self.assertEqual(self.timeline, ["lock", "write-dir", "unlock"])
-        self.assertEqual(self.exp.timeouts, [2.5])
+        self.assertEqual(self.timeline, ["lock", "read-dir", "write-dir", "read-dir", "unlock"])
+        self.assertEqual(self.exp.timeouts, [2.5, 2.5, 2.5])
 
     def test_an_unusable_timeout_refuses_every_bus_operation_by_name(self):
         """T4d. banana / 0 / -1: refused, the WARN names the key, nothing

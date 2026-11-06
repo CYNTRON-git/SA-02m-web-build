@@ -54,7 +54,7 @@
 # the owned-only release or the handler's restore call turns 12 RED — each pin
 # FAILS when its line is missing).
 #
-# Run: bash scripts/dev/test-watchdog-hold.sh   (bash + sed + coreutils)
+# Run: bash scripts/dev/test-watchdog-hold.sh   (bash + Python 3 + GNU coreutils)
 # ═══════════════════════════════════════════════════════════════════════════
 set -u
 cd "$(dirname "${BASH_SOURCE[0]}")/../.." || exit 1
@@ -301,6 +301,117 @@ if . .ai-dev/quality/checks/lib_check.sh 2>/dev/null && declare -F stripped_firs
 else
     bad "8–12 cannot source .ai-dev/quality/checks/lib_check.sh — the wiring pins did NOT run (a skip is not a pass)"
 fi
+
+echo "── 13. hung watchdog read/write/fallback are bounded, including restore ──"
+python3 - "$LIB" <<'PY'
+import os
+from pathlib import Path
+import re
+import shutil
+import signal
+import subprocess
+import sys
+import tempfile
+
+text = Path(sys.argv[1]).read_text(encoding="utf-8")
+match = re.search(r"^# ── BEGIN sa02m-runtime-watchdog.*?^# ── END sa02m-runtime-watchdog[^\n]*", text, re.M | re.S)
+if not match:
+    raise SystemExit("FAIL 13 shared watchdog block missing")
+# PATH already contains this shell harness's manager shims. Its timeout is real.
+real_timeout = shutil.which("timeout")
+if not real_timeout:
+    raise SystemExit("FAIL 13 GNU timeout missing")
+failures = 0
+for restoring in (False, True):
+    for kind in ("get", "set", "readback", "fallback"):
+        want, current = (15000000, 0) if restoring else (0, 15000000)
+        label = "13 %s %s" % ("restore" if restoring else "hold", kind)
+        with tempfile.TemporaryDirectory(prefix="watchdog-bound-") as directory:
+            root = Path(directory)
+            process = None
+            (root / "count").write_text("0")
+            hang = f"""echo reached > '{root}/reached'
+echo $$ >> '{root}/pids'
+trap '' TERM
+sleep 300 &
+echo $! >> '{root}/pids'
+wait
+"""
+            manager = f"""#!/bin/bash
+echo "$0 $*" >> '{root}/calls'
+if [ "$1" = get-property ]; then
+  count=$(cat '{root}/count'); count=$((count + 1)); echo "$count" > '{root}/count'
+  if [ '{kind}' = get ] || {{ [ '{kind}' = readback ] && [ "$count" -eq 2 ]; }}; then
+    {hang}
+  fi
+  echo 't {current}'
+elif [ "$1" = set-property ]; then
+  if {{ [ '{kind}' = set ] && [ "${{0##*/}}" = busctl ]; }} || {{ [ '{kind}' = fallback ] && [ "${{0##*/}}" = systemctl ]; }}; then
+    {hang}
+  fi
+fi
+exit 0
+"""
+            for tool in ("busctl", "systemctl"):
+                (root / tool).write_text(manager)
+                (root / tool).chmod(0o755)
+            (root / "timeout").write_text(f"""#!/bin/bash
+echo "$*" >> '{root}/bounds'
+grace=()
+if [ "${{1:-}}" = -k ]; then
+  [ "${{2:-}}" = 2s ] || exit 97
+  grace=(-k 0.15s)
+  shift 2
+fi
+[ "${{1:-}}" = 10s ] || exit 98
+shift
+exec '{real_timeout}' "${{grace[@]}}" 0.15s "$@"
+""")
+            (root / "timeout").chmod(0o755)
+            script = match[0] + f'\nvalue=$(sa02m_runtime_watchdog_set {want}); rc=$?\nprintf "%s:%s\\n" "$rc" "$value"\n'
+            try:
+                process = subprocess.Popen(["bash", "-c", script], env=dict(os.environ, PATH=str(root) + ":" + os.environ["PATH"]),
+                                           stdout=subprocess.PIPE, stderr=subprocess.PIPE, start_new_session=True)
+                def kill_owned_groups():
+                    groups = {process.pid}
+                    if (root / "pids").exists():
+                        for pid in map(int, (root / "pids").read_text().split()):
+                            try:
+                                if os.getsid(pid) == process.pid:
+                                    groups.add(os.getpgid(pid))
+                            except ProcessLookupError:
+                                pass
+                    for group in groups:
+                        try:
+                            os.killpg(group, signal.SIGKILL)
+                        except ProcessLookupError:
+                            pass
+                supervised = False
+                try:
+                    out, _ = process.communicate(timeout=3)
+                except subprocess.TimeoutExpired:
+                    supervised = True
+                    kill_owned_groups()
+                    out, _ = process.communicate(timeout=2)
+                expected = "1:" if kind in ("get", "readback") else "1:%d" % current
+                bounds = (root / "bounds").read_text().splitlines() if (root / "bounds").exists() else []
+                calls = (root / "calls").read_text().splitlines() if (root / "calls").exists() else []
+                bounded = bool(bounds) and len(bounds) == len(calls) and all(b.startswith("-k 2s 10s ") for b in bounds)
+                alive = []
+                if (root / "pids").exists():
+                    for pid in (root / "pids").read_text().split():
+                        stat = Path("/proc") / pid / "stat"
+                        if stat.exists() and stat.read_text().split(") ", 1)[1].split()[0] != "Z":
+                            alive.append(pid)
+                passed = (root / "reached").exists() and not supervised and bounded and out.decode().strip() == expected and not alive
+                print(("ok    " if passed else "FAIL  ") + label + f": bounded={bounded} supervisor={supervised} result={out!r} survivors={alive}")
+                failures += not passed
+            finally:
+                if process is not None:
+                    kill_owned_groups()
+raise SystemExit(bool(failures))
+PY
+[ "$?" -eq 0 ] || bad "13 hung watchdog command matrix"
 
 echo ""
 if [ "$fails" -eq 0 ]; then

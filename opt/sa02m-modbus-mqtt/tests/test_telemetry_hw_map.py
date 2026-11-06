@@ -224,6 +224,75 @@ class HwTestCase(unittest.TestCase):
         cb(None, None, _Msg(f"/devices/SA-02m/controls/{ctrl}/on", payload))
 
 
+class TestCommandPayloadGrammar(HwTestCase):
+    def setUp(self):
+        super().setUp()
+        self.write_conf()
+        self.stub = self.make_client()
+        self.hw = self.init_hw(self.stub)
+
+    def test_zero_and_one_drive_each_channel_and_publish_logical_state(self):
+        for ctrl, bit in (("do", SHIPPED_BIT_DO), ("beeper", SHIPPED_BIT_BEEPER),
+                          ("alarm_led", SHIPPED_BIT_ALARM_LED)):
+            cb = tel.TelemetryClient._make_hw_cb(self.stub, ctrl)
+            for payload, expected in ((b"1", ALL_OFF & ~(1 << bit)), (b"0", ALL_OFF)):
+                with self.subTest(ctrl=ctrl, payload=payload):
+                    self.exp.writes.clear()
+                    self.stub.published.clear()
+                    cb(None, None, _Msg("unused", payload))
+                    self.assertEqual(self.exp.regs[REG_OUT], expected)
+                    self.assertEqual(self.exp.out_writes, [expected])
+                    self.assertEqual(self.stub.published,
+                                     [(f"controls/{ctrl}", payload.decode())])
+
+    def test_invalid_payload_has_no_hardware_or_publication_side_effect(self):
+        bad_payloads = (b"", b" \t\r\n", b"garbage", b"2", b"-1", b"1.0",
+                        b"false", b"False", b"true", b"1\x00", b"\xff",
+                        b"1\xff", b"untrusted\n" * 1024)
+        for ctrl in ("do", "beeper", "alarm_led"):
+            cb = tel.TelemetryClient._make_hw_cb(self.stub, ctrl)
+            for initial in (b"0", b"1"):
+                cb(None, None, _Msg("unused", initial))
+                before = dict(self.exp.regs)
+                for payload in bad_payloads:
+                    with self.subTest(ctrl=ctrl, initial=initial, payload=payload[:32]):
+                        self.exp.writes.clear()
+                        self.exp.reads.clear()
+                        self.stub.published.clear()
+                        with mock.patch.object(self.hw, "set_channel", wraps=self.hw.set_channel) as drive:
+                            with self.assertLogs(tel.log, level="WARNING") as logs:
+                                cb(None, None, _Msg("unused", payload))
+                        drive.assert_not_called()
+                        self.assertEqual(self.exp.regs, before)
+                        self.assertEqual(self.exp.writes, [])
+                        self.assertEqual(self.exp.reads, [])
+                        self.assertEqual(self.stub.published, [])
+                        self.assertEqual(len(logs.records), 1)
+                        reason = ("invalid UTF-8" if b"\xff" in payload else "expected 0 or 1")
+                        self.assertEqual(logs.records[0].getMessage(),
+                                         f"HW {ctrl} command dropped: {reason}")
+
+    def test_rejected_payload_does_not_break_the_next_command(self):
+        cb = tel.TelemetryClient._make_hw_cb(self.stub, "do")
+        for payload in (b"\xff", b"bad"):
+            with self.assertLogs(tel.log, level="WARNING"):
+                cb(None, None, _Msg("unused", payload))
+        self.exp.writes.clear()
+        cb(None, None, _Msg("unused", b"1"))
+        self.assertEqual(self.exp.out_writes, [ALL_OFF & ~(1 << SHIPPED_BIT_DO)])
+        self.assertEqual(self.stub.published, [("controls/do", "1")])
+
+    def test_surrounding_whitespace_and_retained_commands_keep_their_semantics(self):
+        cb = tel.TelemetryClient._make_hw_cb(self.stub, "do")
+        for payload, state in ((b" \t1\r\n", "1"), (b"\t0\n", "0")):
+            with self.subTest(payload=payload):
+                self.stub.published.clear()
+                cb(None, None, _Msg("unused", payload, retain=True))
+                self.assertEqual(self.exp.regs[REG_OUT] & (1 << SHIPPED_BIT_DO),
+                                 0 if state == "1" else (1 << SHIPPED_BIT_DO))
+                self.assertEqual(self.stub.published, [("controls/do", state)])
+
+
 class TestCommandsLandOnTheConfiguredBit(HwTestCase):
     """The headline defect: which physical pin a command reaches."""
 
@@ -492,6 +561,86 @@ class TestTheNoRealBusGuardFires(HwTestCase):
         self.assertIsNot(tel._i2cget, REAL_I2CGET)
         self.assertIsNot(tel._i2cset, REAL_I2CSET)
         self.assertIsNone(tel._i2cget(2, 0x41, 0x99))   # unknown reg, no raise
+
+
+class TestDirectionReconciledOnEveryCommand(HwTestCase):
+    def setUp(self):
+        super().setUp()
+        self.write_conf()
+        self.stub = self.make_client()
+        self.hw = self.init_hw(self.stub)
+        self.exp.reads.clear()
+        self.exp.writes.clear()
+
+    def test_external_reset_is_reconciled_without_changing_other_latches(self):
+        self.exp.regs[REG_DIR] = 0xFF
+        self.exp.regs[REG_OUT] = 0xAB
+        self.send(self.stub, "do", b"1")
+        self.assertEqual(self.exp.regs, {REG_DIR: 0xF0, REG_OUT: 0xA9})
+        self.assertEqual([(reg, value) for _, _, reg, value in self.exp.writes],
+                         [(REG_DIR, 0xF0), (REG_OUT, 0xA9)])
+        self.assertEqual([reg for _, _, reg in self.exp.reads],
+                         [REG_DIR, REG_DIR, REG_OUT, REG_OUT])
+        self.assertEqual(self.stub.published, [("controls/do", "1")])
+
+    def test_correct_direction_is_read_without_rewriting_it(self):
+        self.send(self.stub, "beeper", b"1")
+        self.assertEqual([reg for _, _, reg in self.exp.reads],
+                         [REG_DIR, REG_OUT, REG_OUT])
+        self.assertEqual([reg for _, _, reg, _ in self.exp.writes], [REG_OUT])
+        self.assertEqual(self.stub.published, [("controls/beeper", "1")])
+
+    def test_direction_failures_refuse_output_and_publication(self):
+        for fault in ("read", "write", "readback", "mismatch"):
+            with self.subTest(fault=fault):
+                self.exp.regs = {REG_DIR: 0xFF, REG_OUT: 0xAB}
+                self.exp.reads.clear()
+                self.exp.writes.clear()
+                self.stub.published.clear()
+                direction_reads = 0
+
+                def get(bus, addr, reg, timeout_s=None):
+                    nonlocal direction_reads
+                    result = self.exp.get(bus, addr, reg, timeout_s)
+                    if reg == REG_DIR:
+                        direction_reads += 1
+                        if fault == "read" or (fault == "readback" and direction_reads == 2):
+                            return None
+                    return result
+
+                def put(bus, addr, reg, value, timeout_s=None):
+                    if reg == REG_DIR and fault == "write":
+                        self.exp.writes.append((bus, addr, reg, value))
+                        return False
+                    result = self.exp.set(bus, addr, reg, value, timeout_s)
+                    if reg == REG_DIR and fault == "mismatch":
+                        self.exp.regs[REG_DIR] = 0xFF
+                    return result
+
+                with mock.patch.object(tel, "_i2cget", get), mock.patch.object(tel, "_i2cset", put):
+                    with self.assertLogs(tel.log, level="WARNING") as logs:
+                        self.send(self.stub, "do", b"1")
+                self.assertTrue(any("direction register" in line for line in logs.output))
+                self.assertEqual(self.exp.regs[REG_OUT], 0xAB)
+                self.assertEqual(self.exp.out_writes, [])
+                self.assertNotIn(REG_OUT, [reg for _, _, reg in self.exp.reads])
+                self.assertEqual(self.stub.published, [])
+
+    def test_failed_direction_read_can_recover_on_the_next_command(self):
+        self.exp.regs[REG_DIR] = 0xFF
+        with mock.patch.object(tel, "_i2cget", return_value=None):
+            accepted, why = self.hw.set_channel("do", True)
+        self.assertFalse(accepted)
+        self.assertIn("direction register", why)
+        self.assertEqual(self.hw.set_channel("do", True), (True, ""))
+        self.assertEqual(self.exp.regs[REG_DIR], 0xF0)
+
+    def test_passive_read_does_not_reconcile_direction(self):
+        self.exp.regs[REG_DIR] = 0xFF
+        self.assertEqual(self.hw.read_channels(), ({"do": 0, "beeper": 0, "alarm_led": 0}, ""))
+        self.assertEqual(self.exp.regs[REG_DIR], 0xFF)
+        self.assertEqual(self.exp.writes, [])
+        self.assertEqual([reg for _, _, reg in self.exp.reads], [REG_OUT])
 
 
 class TestTheDirectionRegisterFollowsTheConf(HwTestCase):

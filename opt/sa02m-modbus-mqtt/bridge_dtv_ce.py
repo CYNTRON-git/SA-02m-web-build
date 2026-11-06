@@ -9,6 +9,8 @@ audits).
 
 from __future__ import annotations
 
+from bridge_serial import ScanHold
+
 import time
 
 from bridge_device import DevicePoller
@@ -188,6 +190,8 @@ class DTVPoller(_SysChannelsMixin, DevicePoller):
         sensors never come up)."""
         try:
             regs = self.read_input_registers(self.address, 1, 30)
+        except ScanHold:
+            raise
         except Exception as e:
             self.log_poll_fail("autodetect", e)
             return False
@@ -255,6 +259,8 @@ class DTVPoller(_SysChannelsMixin, DevicePoller):
                     raw -= 0x10000
                 self.pub.pub_control(self.device_id, ch_name, str(round(raw * scale, 3)))
                 self.pub.pub_error(self.device_id, ch_name, "")
+        except ScanHold:
+            raise
         except Exception as e:
             self.log_poll_fail("sensor poll", e)
 
@@ -265,6 +271,8 @@ class DTVPoller(_SysChannelsMixin, DevicePoller):
             for coil_num, (ch_name, _) in self.DTV_COILS.items():
                 self._wb_publish_poll(
                     ch_name, str(coils[coil_num - 1]), t_read)
+        except ScanHold:
+            raise
         except Exception:
             pass
 
@@ -318,6 +326,8 @@ class DTVPoller(_SysChannelsMixin, DevicePoller):
         try:
             r = self.read_input_registers(self.address, 105, 2)
             self.pub.pub_control(self.device_id, "uptime_s", str(r[0] | (r[1] << 16)))
+        except ScanHold:
+            raise
         except Exception:
             pass
 
@@ -332,6 +342,8 @@ class DTVPoller(_SysChannelsMixin, DevicePoller):
                 if raw >= 0x8000:
                     raw -= 0x10000
                 self.pub.pub_control(self.device_id, ch_name, str(round(raw * scale, 2)))
+            except ScanHold:
+                raise
             except Exception:
                 pass
 
@@ -346,6 +358,8 @@ class DTVPoller(_SysChannelsMixin, DevicePoller):
         try:
             r = self.read_holding_registers(self.address, 6, 1)
             self.pub.pub_control(self.device_id, "ext_temp_mode", str(int(r[0]) & 0xFFFF))
+        except ScanHold:
+            raise
         except Exception:
             pass
 
@@ -591,6 +605,8 @@ class CE02M3Poller(_SysChannelsMixin, DevicePoller):
         try:
             cycles = int(self.read_input_registers(
                 self.address, CE_PQS_CYCLES_REG, 1)[0]) & 0xFFFF
+        except ScanHold:
+            raise
         except Exception as e:
             self.log.debug("cycle counter read (IR%d): %s", CE_PQS_CYCLES_REG, e)
             return True     # fail closed: the zeros stay unpublished
@@ -654,6 +670,8 @@ class CE02M3Poller(_SysChannelsMixin, DevicePoller):
                     part = port.read_input_registers(self.address, start, n)
                     last_err = None
                     break
+                except ScanHold:
+                    raise
                 except Exception as e:
                     last_err = e
                     if attempt < 2:
@@ -673,6 +691,8 @@ class CE02M3Poller(_SysChannelsMixin, DevicePoller):
         # Regs 500-547: 48 registers (chunked — see _read_power_input_block)
         try:
             regs = self._read_power_input_block()
+        except ScanHold:
+            raise
         except Exception as e:
             self.log_poll_fail("power poll", e)
             return
@@ -801,6 +821,8 @@ class CE02M3Poller(_SysChannelsMixin, DevicePoller):
                        for v in k):
                 raise ValueError("CT ratio out of range: %s" % (k,))
             self._ct_k_x1000 = k
+        except ScanHold:
+            raise
         except Exception as e:
             self._ct_k_x1000 = None
             self.log.debug("CT ratio read (HR%d x3): %s", CE_CT_RATIO_REG, e)
@@ -867,6 +889,8 @@ class CE02M3Poller(_SysChannelsMixin, DevicePoller):
                 self.pub.pub_control(self.device_id, name,
                                      f"{_energy_wh(val, k[3], units):.3f}")
             self._energy_batch_done("totals")
+        except ScanHold:
+            raise
         except Exception as e:
             self.log.debug("energy poll: %s", e)
 
@@ -879,6 +903,8 @@ class CE02M3Poller(_SysChannelsMixin, DevicePoller):
                     self.pub.pub_control(self.device_id, f"energy_active_import_{ph}",
                                          f"{_energy_wh(val, k[i], units):.3f}")
                 self._energy_batch_done("phases")
+            except ScanHold:
+                raise
             except Exception as e:
                 self.log.debug("per-phase energy poll: %s", e)
 
@@ -899,6 +925,8 @@ class CE02M3Poller(_SysChannelsMixin, DevicePoller):
         try:
             r = self.read_input_registers(self.address, 105, 2)
             uptime = (int(r[0]) & 0xFFFF) | ((int(r[1]) & 0xFFFF) << 16)
+        except ScanHold:
+            raise
         except Exception as e:
             self.log.debug("uptime poll: %s", e)
             return
@@ -929,6 +957,8 @@ class CE02M3Poller(_SysChannelsMixin, DevicePoller):
                     self.device_id, "mcu_temp",
                     str(round(self._s16(r[1]) * 0.1, 1)),
                 )
+        except ScanHold:
+            raise
         except Exception:
             pass
 
@@ -947,6 +977,8 @@ class CE02M3Poller(_SysChannelsMixin, DevicePoller):
             self._fw_read_warned = False
             self.log.info("firmware %s",
                           ".".join(str(v) for v in self._fw_version))
+        except ScanHold:
+            raise
         except Exception as e:
             self._fw_version = None
             # The energy poll retries this every cycle while it is unknown:

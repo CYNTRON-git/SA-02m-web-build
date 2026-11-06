@@ -5,6 +5,26 @@
 
 ---
 
+## 1.0.7.31 - Repair port recovery, service control and hardware state (November 2026)
+
+### Ports and services
+
+- Preserve partial manual COM reservations and pending poll restoration across refreshes. Identify gateway/vPLC owners and report restoration failures until the coordinator confirms recovery.
+- Correlate service commands with their own atomic results and keep action buttons disabled while the current operation is pending. Remove the arrow beside the vPLC navigation link.
+- Treat intentional scan holds as polling pauses, preserving device availability and already acknowledged configuration ranges.
+
+### Hardware and data
+
+- Make hardware status reads passive. Verify output direction after explicit commands, reject unavailable DO channels using the current board variant, and invalidate incompatible cached/retained state.
+- Accept only valid binary MQTT output commands, including strict UTF-8 handling.
+- Isolate Agent API job events by owner and job, with an atomic initial snapshot/subscription. Add the MR history window index and classify immediate TCP resets consistently.
+
+### Reliability
+
+- Reject trailing newlines in audio identifiers and credentials. Give recordings of at least 20 seconds a 15-second upload socket timeout and schedule sequential retries from monotonic queue-admission deadlines.
+- Bound factory-reset service/watchdog operations. Bound console capture memory, temporary output and pipe waits; apply command kill grace and show incomplete capture separately from the command exit status.
+- Add behavioral regressions and browser state matrices. The dated audit records verification evidence and hardware acceptance limits; the separately packaged vPLC runtime fix is not included in the web overlay.
+
 ## 1.0.7.30 - Сброс настроек стирает историю сценариев и токен отправки записей (ноябрь 2026)
 
 ### Сброс настроек

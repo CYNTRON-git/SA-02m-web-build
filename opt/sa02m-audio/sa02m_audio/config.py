@@ -271,7 +271,7 @@ def save(conf: RecorderConfig, path: Optional[str] = None) -> None:
 
 # ── the upload token (a secret; contract §Передача) ───────────────────────
 def valid_token(value: object) -> bool:
-    return isinstance(value, str) and bool(_TOKEN_RE.match(value))
+    return isinstance(value, str) and bool(_TOKEN_RE.fullmatch(value))
 
 
 def read_token(path: Optional[str] = None) -> Optional[str]:

@@ -50,12 +50,30 @@ sc_run_slow() {
 
 emit_result() {
     _json=$1
+    if [ -n "${SA02M_SVC_OPERATION_ID:-}" ]; then
+        _json=$(printf '%s\n' "$_json" | python3 -I -c 'import json,sys
+d=json.load(sys.stdin)
+d.update(id=sys.argv[1], action=sys.argv[2], op_id=sys.argv[3])
+print(json.dumps(d))' "$ID" "$ACTION" "$SA02M_SVC_OPERATION_ID") || return 1
+    fi
     printf '%s\n' "$_json"
     if [ -n "${SVC_RESULT_FILE:-}" ]; then
-        mkdir -p "$RESULT_DIR" 2>/dev/null || true
-        printf '%s\n' "$_json" >"$SVC_RESULT_FILE" 2>/dev/null || true
-        chmod 644 "$SVC_RESULT_FILE" 2>/dev/null || true
+        publish_result "$_json"
     fi
+}
+
+publish_result() {
+    mkdir -p "$RESULT_DIR" || return 1
+    _result_tmp=$(mktemp "${SVC_RESULT_FILE}.XXXXXX") || return 1
+    if ! { printf '%s\n' "$1" >"$_result_tmp" && chmod 644 "$_result_tmp" && mv -f "$_result_tmp" "$SVC_RESULT_FILE"; }; then
+        rm -f "$_result_tmp"
+        return 1
+    fi
+}
+
+begin_result() {
+    SVC_RESULT_FILE="${RESULT_DIR}/$1.json"
+    emit_result "$(printf '{"ok":true,"pending":true,"id":"%s","action":"%s"}' "$1" "$2")" >/dev/null
 }
 
 # atomic_install_unit SRC DST [MODE=0644] — land a file on a LIVE path as
@@ -769,10 +787,20 @@ EOF
 }
 
 validate_id() {
+    [ "${#1}" -le 64 ] || return 1
     case "$1" in
         ''|*[!a-zA-Z0-9_-]*) return 1 ;;
     esac
     return 0
+}
+
+service_id_known() {
+    while IFS='|' read -r _known_id _known_label _known_units; do
+        [ "$_known_id" = "$1" ] && return 0
+    done <<SVC_IDS
+$SERVICE_DEFS
+SVC_IDS
+    return 1
 }
 
 # Only these three runtimes carry install/uninstall (local .deb / vendor
@@ -798,10 +826,7 @@ cmd_stop() {
         return 1
     fi
     _u=$_found_unit
-    SVC_RESULT_FILE="${RESULT_DIR}/${_id}.json"
-    mkdir -p "$RESULT_DIR" 2>/dev/null || true
-    printf '{"ok":true,"pending":true,"id":"%s","action":"stop"}\n' "$_id" >"$SVC_RESULT_FILE" 2>/dev/null || true
-    chmod 644 "$SVC_RESULT_FILE" 2>/dev/null || true
+    begin_result "$_id" stop || return 1
     echo "$(date '+%Y-%m-%d %H:%M:%S') sa02m-web-service-ctl: stop ${_id} (${_u})" >>"$LOG" 2>&1
     if [ "$_id" = "codesys" ] && [ -x /etc/init.d/codesyscontrol ]; then
         /etc/init.d/codesyscontrol stop >>"$LOG" 2>&1 || true
@@ -882,10 +907,7 @@ cmd_start() {
             ;;
     esac
     _u=$_found_unit
-    SVC_RESULT_FILE="${RESULT_DIR}/${_id}.json"
-    mkdir -p "$RESULT_DIR" 2>/dev/null || true
-    printf '{"ok":true,"pending":true,"id":"%s","action":"start"}\n' "$_id" >"$SVC_RESULT_FILE" 2>/dev/null || true
-    chmod 644 "$SVC_RESULT_FILE" 2>/dev/null || true
+    begin_result "$_id" start || return 1
     echo "$(date '+%Y-%m-%d %H:%M:%S') sa02m-web-service-ctl: start ${_id} (${_u:-init.d})" >>"$LOG" 2>&1
     # codesys: start = RUNTIME ONLY (kernel-conditional service policy) — no
     # codesys_rc_enable, and no `systemctl enable` on the SysV-generated unit
@@ -1652,10 +1674,7 @@ cmd_install() {
         emit_result '{"ok":false,"error":"not_installable","id":"'"$_id"'"}'
         return 1
     fi
-    SVC_RESULT_FILE="${RESULT_DIR}/${_id}.json"
-    mkdir -p "$RESULT_DIR" 2>/dev/null || true
-    printf '{"ok":true,"pending":true,"id":"%s","action":"install"}\n' "$_id" >"$SVC_RESULT_FILE" 2>/dev/null || true
-    chmod 644 "$SVC_RESULT_FILE" 2>/dev/null || true
+    begin_result "$_id" install || return 1
     echo "$(date '+%Y-%m-%d %H:%M:%S') sa02m-web-service-ctl: install ${_id}" >>"$LOG" 2>&1
     case "$_id" in
         codesys) codesys_install ;;
@@ -1674,10 +1693,7 @@ cmd_uninstall() {
         emit_result '{"ok":false,"error":"not_installable","id":"'"$_id"'"}'
         return 1
     fi
-    SVC_RESULT_FILE="${RESULT_DIR}/${_id}.json"
-    mkdir -p "$RESULT_DIR" 2>/dev/null || true
-    printf '{"ok":true,"pending":true,"id":"%s","action":"uninstall"}\n' "$_id" >"$SVC_RESULT_FILE" 2>/dev/null || true
-    chmod 644 "$SVC_RESULT_FILE" 2>/dev/null || true
+    begin_result "$_id" uninstall || return 1
     echo "$(date '+%Y-%m-%d %H:%M:%S') sa02m-web-service-ctl: uninstall ${_id}" >>"$LOG" 2>&1
     case "$_id" in
         codesys) codesys_uninstall ;;
@@ -1691,6 +1707,21 @@ cmd_uninstall() {
 
 ACTION=${1:-}
 ID=${2:-}
+SA02M_SVC_OPERATION_ID=${3:-${SA02M_SVC_OPERATION_ID:-}}
+case "$SA02M_SVC_OPERATION_ID" in
+    *[!a-f0-9]*) printf '{"ok":false,"error":"invalid_operation"}\n'; exit 1 ;;
+esac
+if [ -n "$SA02M_SVC_OPERATION_ID" ] && [ "${#SA02M_SVC_OPERATION_ID}" -ne 32 ]; then
+    printf '{"ok":false,"error":"invalid_operation"}\n'; exit 1
+fi
+export SA02M_SVC_OPERATION_ID
+case "$ACTION" in
+    start|stop|install|uninstall)
+        validate_id "$ID" || { printf '{"ok":false,"error":"invalid_id"}\n'; exit 1; }
+        service_id_known "$ID" || { emit_result '{"ok":false,"error":"unknown_service"}'; exit 1; }
+        begin_result "$ID" "$ACTION" || exit 1
+        ;;
+esac
 
 # The root broker serializes the entire helper operation against UART leases.
 # The inherited fd is checked by inode; a UI flag or snapshot is not authority.

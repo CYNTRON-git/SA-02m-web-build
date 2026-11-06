@@ -14,6 +14,8 @@ class body is otherwise byte-identical to the monolith.
 
 from __future__ import annotations
 
+from bridge_serial import ScanHold
+
 import sys
 import time
 import threading
@@ -257,6 +259,8 @@ class FastModbusEventPortManager:
             return None
         try:
             fw = getter()
+        except ScanHold:
+            raise
         except Exception as e:
             # A getter that raises is a poller bug, not a device answer: the
             # "firmware unknown" line alone would hide it. Once per
@@ -284,6 +288,9 @@ class FastModbusEventPortManager:
                 # ACK: [addr][0x46][0x18][mask_len][mask…][CRC] — mask_len
                 # depends on count; leading 0xFF arbitration noise possible.
                 resp = ser.fmb_send_recv(frame, 5, 48, 0.4)
+            except ScanHold:
+                dev["configure_interrupted"] = True
+                raise
             except Exception as e:
                 return False, f" ({e})"
             if requested is not None:
@@ -306,7 +313,7 @@ class FastModbusEventPortManager:
             return not dev["pending"]
         still_pending: list[tuple[int, int, int]] = []
         wb_confirmed = False
-        for (evt_type, start_reg, count) in dev["pending"]:
+        for (evt_type, start_reg, count) in list(dev["pending"]):
             ok = False
             err = ""
             used = ""
@@ -322,6 +329,8 @@ class FastModbusEventPortManager:
                     used = contract
                     break
             if ok:
+                # Preserve each real ACK even if a later range is paused.
+                dev["pending"].remove((evt_type, start_reg, count))
                 dev["configured"] = True
                 wb_confirmed = wb_confirmed or used == "wb"
                 # The handshake is the authoritative generation signal: from
@@ -341,6 +350,7 @@ class FastModbusEventPortManager:
                     "rejected%s — classic polling covers this range",
                     addr, evt_type, start_reg, count, err)
         dev["pending"] = still_pending
+        dev.pop("configure_interrupted", None)
         if (wb_confirmed and dev.get("type") == "ce02m3"
                 and dev.get("fw") is not None
                 and dev["fw"] >= CE_FMB_POWER_EVENTS_FW):
@@ -677,6 +687,8 @@ class FastModbusEventPortManager:
                     poller.set_fmb_io_covered(True)
                     try:
                         poller.poll_io()
+                    except ScanHold:
+                        raise
                     except Exception as e:
                         self._log.debug("post-configure poll %s: %s",
                                         poller.device_id, e)
@@ -697,7 +709,8 @@ class FastModbusEventPortManager:
         now = time.monotonic()
         ser = None
         for addr, dev in self._devices.items():
-            if dev["configured"] or not dev.get("pending"):
+            if ((dev["configured"] and not dev.get("configure_interrupted"))
+                    or not dev.get("pending")):
                 continue
             # A rebooted-then-silent device must not burn the 0.4 s configure
             # timeout per range under the port lock on every ~50 ms event

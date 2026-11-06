@@ -11,6 +11,8 @@ The protocol lives in sa02m_spodes (installed to /opt/sa02m-spodes).
 
 from __future__ import annotations
 
+from bridge_serial import ScanHold
+
 import json
 import os
 import sys
@@ -178,6 +180,8 @@ class SpodesPoller(DevicePoller):
                     self.pub.pub_control_units(self.device_id, cname, unit)
             self.mark_ok()
             DeviceLiveCache.flush_file(self.device_id)
+        except ScanHold:
+            raise
         except Exception as e:
             self._drop()
             self.mark_fail()
@@ -202,6 +206,8 @@ class SpodesPoller(DevicePoller):
             if energy:
                 self.mark_ok()
                 DeviceLiveCache.flush_file(self.device_id)
+        except ScanHold:
+            raise
         except Exception as e:
             self._drop()
             self.mark_fail()
@@ -215,6 +221,8 @@ class SpodesPoller(DevicePoller):
             session = self._open()
             load = profiles.read_load_profile(session, start, end)
             events = profiles.read_event_log(session, start, end)
+        except ScanHold:
+            raise
         except Exception as e:
             self.log_poll_fail("profile poll", type(e).__name__)
             return

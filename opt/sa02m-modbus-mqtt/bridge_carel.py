@@ -23,6 +23,8 @@ No action in this module maps to it.
 """
 from __future__ import annotations
 
+from bridge_serial import ScanHold
+
 import os
 import sys
 import threading
@@ -113,6 +115,8 @@ class CarelPoller(DevicePoller):
         """
         try:
             payload = self.get_port().report_slave_id(self.address)
+        except ScanHold:
+            raise
         except Exception as e:  # pragma: no cover - transport specific
             self.log.debug("carel FC17: %s", e)
             return
@@ -201,6 +205,8 @@ class CarelPoller(DevicePoller):
             if self.family == cc.FAMILY_UARIA:
                 return self._read_uaria()
             return self._read_crst()
+        except ScanHold:
+            raise
         except Exception as e:
             self.log_poll_fail("carel poll", e)
             return None
@@ -247,6 +253,8 @@ class CarelPoller(DevicePoller):
         try:
             regs = self.read_input_registers(addr, 301, 17)
             return [regs[a - 301] for a in ca.IR_ALARM_PACKS]
+        except ScanHold:
+            raise
         except Exception:
             regs = self.read_input_registers(addr, 301, 10)
             return [regs[a - 301] if a - 301 < len(regs) else 0

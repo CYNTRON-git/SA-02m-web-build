@@ -60,6 +60,16 @@ class AlsaTest(unittest.TestCase):
         self.cards(" 4 [Mic-Pro        ]: USB-Audio - Something\n", capture=(4,))
         self.assertEqual(alsa.resolve("auto", self.dir)[0], "plughw:4,0")
 
+    def test_device_name_requires_a_whole_card_id(self):
+        for card_id in ("M", "Mic_09", "a" * 32):
+            with self.subTest(card_id=card_id):
+                card = alsa.Card(4, card_id, "USB-Audio", "Mic")
+                self.assertEqual(alsa.device_name(card), "plughw:CARD=%s,DEV=0" % card_id)
+        for card_id in ("", "a" * 33, "Mic-Pro", "Mic\n", "Mic\r", "Mic\r\n", "Mic\0"):
+            with self.subTest(card_id=card_id):
+                card = alsa.Card(4, card_id, "USB-Audio", "Mic")
+                self.assertEqual(alsa.device_name(card), "plughw:4,0")
+
     def test_explicit_device_needs_some_capture_card(self):
         self.cards(BENCH_CARDS, capture=(1,))
         self.assertEqual(alsa.resolve("hw:1,0", self.dir)[0], "hw:1,0")

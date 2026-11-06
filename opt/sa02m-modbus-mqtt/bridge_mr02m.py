@@ -9,6 +9,8 @@ audits).
 
 from __future__ import annotations
 
+from bridge_serial import ScanHold
+
 import json as _json
 import os
 import threading
@@ -199,6 +201,8 @@ class MR02mPoller(DevicePoller):
                         block[off + i] = int(v) & 0xFFFF
                     last_err = None
                     break
+                except ScanHold:
+                    raise
                 except Exception as e:
                     last_err = e
                     if attempt < MR02M_AI_READ_RETRIES - 1:
@@ -268,6 +272,8 @@ class MR02mPoller(DevicePoller):
             self._publish_channel_meta()
             self._apply_configured_ai_sensor_types()
             return True
+        except ScanHold:
+            raise
         except Exception as e:
             self.log_poll_fail("init_module", e)
             return False
@@ -304,6 +310,8 @@ class MR02mPoller(DevicePoller):
                         break
                     self.log.warning("AI%d sensor_type verify %d != %d (try %d)",
                                      i, verify, st, attempt + 1)
+                except ScanHold:
+                    raise
                 except Exception as e:
                     if attempt >= 3:
                         self.log.warning("AI%d sensor_type write %d: %s", i, st, e)
@@ -400,6 +408,8 @@ class MR02mPoller(DevicePoller):
                     if self._ch_enabled("do", i):
                         self._wb_publish_poll(f"do_{i}", str(v), t_read)
                         self.pub.pub_error(self.device_id, f"do_{i}", "")
+            except ScanHold:
+                raise
             except Exception as e:
                 self.log_poll_fail("DO read", e)
                 # Block-read miss is a bus/device event (write collision,
@@ -416,6 +426,8 @@ class MR02mPoller(DevicePoller):
                     if self._ch_enabled("di", i):
                         self.pub.pub_control(self.device_id, f"di_{i}", str(raw & 1))
                         self.pub.pub_error(self.device_id, f"di_{i}", "")
+            except ScanHold:
+                raise
             except Exception as e:
                 self.log_poll_fail("DI read", e)
         self._poll_di_counters()
@@ -441,6 +453,8 @@ class MR02mPoller(DevicePoller):
                        | (int(regs[off]) & 0xFFFF))
                 self.pub.pub_control(self.device_id, f"di_{i}_count", str(cnt))
                 self.pub.pub_error(self.device_id, f"di_{i}_count", "")
+        except ScanHold:
+            raise
         except Exception as e:
             self.log_poll_fail("DI counters", e)
 
@@ -463,6 +477,8 @@ class MR02mPoller(DevicePoller):
         try:
             regs = self.read_holding_registers(
                 self.address, MR_REG_DI_MODE_BASE, self._di)
+        except ScanHold:
+            raise
         except Exception as e:
             self.log_poll_fail("DI mode read", e)
             return
@@ -499,6 +515,8 @@ class MR02mPoller(DevicePoller):
                 self.address, MR_INP_DI_LONG_CNT_BASE, max_ch)
             doubles = self.read_input_registers(
                 self.address, MR_INP_DI_DOUBLE_CNT_BASE, max_ch)
+        except ScanHold:
+            raise
         except Exception as e:
             self._press_fails += 1
             if self._press_fails >= 3:
@@ -583,6 +601,8 @@ class MR02mPoller(DevicePoller):
                     regs = self.read_holding_registers(self.address, 33, self._ao)
                     last_err = None
                     break
+                except ScanHold:
+                    raise
                 except Exception as e:
                     last_err = e
                     if attempt < 2:
@@ -608,6 +628,8 @@ class MR02mPoller(DevicePoller):
             r = self.read_input_registers(self.address, MR_INP_MCU_UPTIME_LO, 2)
             self.pub.pub_control(
                 self.device_id, "uptime_s", str(r[0] | (r[1] << 16)))
+        except ScanHold:
+            raise
         except Exception:
             pass
 
@@ -618,6 +640,8 @@ class MR02mPoller(DevicePoller):
                 r = self.read_input_registers(self.address, 270, 2)
                 self.pub.pub_control(
                     self.device_id, "serial", str(r[0] | (r[1] << 16)))
+            except ScanHold:
+                raise
             except Exception:
                 pass
         if self._sys_enabled("mcu_vdd") or self._sys_enabled("mcu_temp"):
@@ -632,6 +656,8 @@ class MR02mPoller(DevicePoller):
                     self.pub.pub_control(
                         self.device_id, "mcu_temp",
                         str(round(self._s16_word(pt[1]) / 10.0, 1)))
+            except ScanHold:
+                raise
             except Exception:
                 pass
         if self._sys_enabled("op_days"):
@@ -640,6 +666,8 @@ class MR02mPoller(DevicePoller):
                     self.address, MR_MCU_HOLD_OP_DAYS, 1)[0]
                 self.pub.pub_control(
                     self.device_id, "op_days", str(int(days) & 0xFFFF))
+            except ScanHold:
+                raise
             except Exception:
                 pass
         if any(self._sys_enabled(k) for k in (
@@ -665,6 +693,8 @@ class MR02mPoller(DevicePoller):
                 if len(diag) >= 6 and self._sys_enabled("fw_updates"):
                     fw = (int(diag[5]) & 0xFFFF) << 16 | (int(diag[4]) & 0xFFFF)
                     self.pub.pub_control(self.device_id, "fw_updates", str(fw))
+            except ScanHold:
+                raise
             except Exception:
                 pass
 

@@ -185,6 +185,7 @@ function usbPowerReset() {
       }
       if (btn) btn.disabled = false;
       if (j.error === 'reset_busy') setHwBlockStatus('Сброс USB уже выполняется', 'warn');
+      else if (j.error === 'channel_unavailable') setHwBlockStatus('Канал недоступен для этого варианта устройства. Проверьте выбранный вариант.', 'error');
       else if (j.error === 'gpio_not_configured') setHwBlockStatus('Канал не настроен в /etc/sa02m_hw.conf', 'error');
       else if (j.error === 'i2c_busy') setHwBlockStatus('Шина I2C занята другой службой', 'error');
       else if (j.error === 'i2c_tools_missing') setHwBlockStatus('На устройстве нет i2c-tools', 'error');
@@ -232,6 +233,7 @@ function setHw(channel, value, opts) {
         fetchStatusMain(true);
         if (!quiet) setHwBlockStatus('Применено', 'success');
       }
+      else if (j.error === 'channel_unavailable') setHwBlockStatus('Канал недоступен для этого варианта устройства. Проверьте выбранный вариант.', 'error');
       else if (j.error === 'gpio_not_configured') setHwBlockStatus('Канал не настроен в /etc/sa02m_hw.conf', 'error');
       else if (j.error === 'i2c_busy') setHwBlockStatus('Шина I2C занята другой службой', 'error');
       else if (j.error === 'i2c_tools_missing') setHwBlockStatus('На устройстве нет i2c-tools', 'error');

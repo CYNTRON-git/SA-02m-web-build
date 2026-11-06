@@ -39,6 +39,8 @@ marks the device offline.
 """
 from __future__ import annotations
 
+from bridge_serial import ScanHold
+
 import os
 import re
 import sys
@@ -262,6 +264,8 @@ class LedPoller(DevicePoller):
               else port.read_holding_registers)
         try:
             return fn(self.address, start, count)
+        except ScanHold:
+            raise
         except Exception as e:
             self.log.debug("led optional block %s %d+%d: %s", kind, start, count, e)
             return None
@@ -272,6 +276,8 @@ class LedPoller(DevicePoller):
         try:
             span = (lm.MB2WS_LOCK_GATED_LAST - lm.MB2WS_LOCK_GATED_FIRST) + 1
             base = self.read_holding_registers(a, lm.MB2WS_LOCK_GATED_FIRST, span)
+        except ScanHold:
+            raise
         except Exception as e:
             self.log_poll_fail("led poll", e)
             return None

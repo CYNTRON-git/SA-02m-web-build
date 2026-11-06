@@ -303,6 +303,18 @@ class UploaderTest(unittest.TestCase):
 
 
 class UrlAndTokenTest(unittest.TestCase):
+    def test_token_validation_requires_the_whole_string(self):
+        for token in ("a", "Az09._~+/=-", "a" * 512):
+            with self.subTest(token_length=len(token)):
+                self.assertTrue(config.valid_token(token))
+                for end in ("\n", "\r", "\r\n", "\0"):
+                    with self.subTest(end=end):
+                        self.assertFalse(config.valid_token(token + end))
+                        self.assertFalse(config.valid_token(end + token))
+        for bad in ("", "a" * 513, "bad token", "токен", None, 5):
+            with self.subTest(bad=bad):
+                self.assertFalse(config.valid_token(bad))
+
     def test_url_grammar(self):
         for good in ("", "http://192.168.1.10/up", "https://example.com:8443/a/b?x=1"):
             self.assertTrue(config.valid_upload_url(good), good)
@@ -359,6 +371,26 @@ class TokenFileTest(unittest.TestCase):
                 with open(self.path, "w", newline="") as fh:
                     fh.write(text)
                 self.assertIsNone(config.read_token(self.path))
+
+    def test_token_file_allows_one_line_ending_only(self):
+        for end in ("", "\n", "\r", "\r\n"):
+            with self.subTest(end=end):
+                with open(self.path, "w", newline="") as fh:
+                    fh.write(TOKEN + end)
+                self.assertEqual(config.read_token(self.path), TOKEN)
+        for end in ("\n\n", "\n\r\n", "\r\r", "\0\n"):
+            with self.subTest(end=end):
+                with open(self.path, "w", newline="") as fh:
+                    fh.write(TOKEN + end)
+                self.assertIsNone(config.read_token(self.path))
+
+    def test_save_rejects_line_endings_without_replacing_the_token(self):
+        config.save_token(TOKEN, self.path)
+        for end in ("\n", "\r", "\r\n", "\0"):
+            with self.subTest(end=end):
+                with self.assertRaises(ValueError):
+                    config.save_token("replacement" + end, self.path)
+                self.assertEqual(config.read_token(self.path), TOKEN)
 
 
 @unittest.skipUnless(POSIX, POSIX_REASON)
@@ -569,6 +601,142 @@ class SidecarRewriteTest(unittest.TestCase):
         self.assertEqual(daemon.store.read_meta("emmc", rec_id),
                          {"duration_ms": 2000, "peak_dbfs": -12, "upload": "failed"})
         self.assertEqual(daemon.last["last_upload"], "failed")
+
+
+class UploadDeadlineTest(unittest.TestCase):
+    """Exercise the real worker with a monotonic clock, including queue age."""
+
+    def run_worker(self, durations, *, admission=0, available=0, stop_at=None,
+                   duration_ms=5000, timeout=None):
+        clock = [float(admission)]
+        starts, budgets, results = [], [], []
+
+        class Stop:
+            stopped = False
+
+            def is_set(self):
+                return self.stopped
+
+            def wait(self, delay):
+                clock[0] += delay
+                if stop_at is not None and clock[0] >= stop_at:
+                    self.stopped = True
+                return self.stopped
+
+        stop = Stop()
+
+        def deliver(result):
+            results.append(result)
+            stop.stopped = True
+
+        def attempt(_job, _guard, _opener, budget):
+            starts.append(clock[0])
+            budgets.append(budget)
+            clock[0] += durations[len(starts) - 1]
+            return upload.Attempt("retry", "test receiver")
+
+        kwargs = {} if timeout is None else {"timeout": timeout}
+        with mock.patch.object(threading.Thread, "start"), \
+                mock.patch("time.monotonic", side_effect=lambda: clock[0]), \
+                mock.patch("time.time", side_effect=AssertionError("wall clock used")), \
+                mock.patch.object(upload, "post_once", side_effect=attempt):
+            up = upload.Uploader(deliver, stop, guard=OpenGuard(), **kwargs)
+            clip = job("http://receiver.local/up")
+            clip.duration_ms = duration_ms
+            self.assertEqual(up.submit(clip), C.UP_PENDING)
+            clock[0] = float(available)
+            # Logging legitimately uses wall time; it is outside the scheduler.
+            with mock.patch.object(upload.log, "info"):
+                up._run()
+        self.assertEqual(len(results), 1)
+        return starts, budgets, results[0]
+
+    def test_attempt_time_is_not_added_to_offsets(self):
+        starts, _, result = self.run_worker([10, 10, 10])
+        self.assertEqual(starts, [0, 10, 60])
+        self.assertEqual(result.state, C.UP_FAILED)
+
+    def test_long_attempt_does_not_overlap_next_deadline(self):
+        starts, _, _ = self.run_worker([15, 15, 15])
+        self.assertEqual(starts, [0, 15, 60])
+
+    def test_queued_job_keeps_admission_reference(self):
+        starts, _, _ = self.run_worker([1, 1, 1], admission=100, available=140)
+        self.assertEqual(starts, [140, 141, 160])
+
+    def test_overdue_retry_still_checks_stop(self):
+        starts, _, result = self.run_worker([15, 15, 15], stop_at=15)
+        self.assertEqual(starts, [0])
+        self.assertEqual(result.detail, "daemon stopped")
+
+    def test_duration_budget_and_explicit_override(self):
+        for duration, override, expected in ((19999, None, 10), (20000, None, 15),
+                                             (30000, None, 15), (30000, 0.5, 0.5)):
+            with self.subTest(duration=duration, override=override):
+                _, budgets, _ = self.run_worker([0, 0, 0], duration_ms=duration, timeout=override)
+                self.assertEqual(budgets, [expected] * 3)
+
+    def test_long_clip_receives_one_delayed_response_without_retry(self):
+        requests = []
+
+        class Handler(http.server.BaseHTTPRequestHandler):
+            def log_message(self, *args):
+                pass
+
+            def do_POST(self):
+                self.rfile.read(int(self.headers["Content-Length"]))
+                requests.append(self.headers["X-SA02M-Recording-Id"])
+                time.sleep(12)
+                try:
+                    self.send_response(200)
+                    self.send_header("Content-Length", "0")
+                    self.end_headers()
+                except (BrokenPipeError, ConnectionResetError):
+                    pass
+
+        server = http.server.ThreadingHTTPServer(("127.0.0.1", 0), Handler)
+        threading.Thread(target=server.serve_forever, daemon=True).start()
+        stop = threading.Event()
+        results = []
+        up = upload.Uploader(results.append, stop, guard=OpenGuard(), delays=(0, 0, 0))
+        try:
+            clip = job("http://127.0.0.1:%d/up" % server.server_address[1])
+            clip.duration_ms = 30000
+            up.submit(clip)
+            self.assertTrue(wait_for(lambda: results, 35))
+            self.assertEqual(results[0].state, C.UP_OK)
+            self.assertEqual(requests, [clip.rec_id])
+        finally:
+            stop.set()
+            up._thread.join(16)
+            server.shutdown()
+            server.server_close()
+
+    def test_effective_budget_reaches_real_opener_on_every_redirect(self):
+        receiver = Receiver()
+        self.addCleanup(receiver.close)
+        for duration, override, expected in ((19999, None, 10), (20000, None, 15),
+                                             (30000, None, 15), (30000, 2, 2)):
+            with self.subTest(duration=duration, override=override):
+                receiver.requests.clear()
+                receiver.mode = "redirect"
+                opener = upload.default_opener()
+                recording = mock.Mock(wraps=opener)
+                stop, results = threading.Event(), []
+                kwargs = {} if override is None else {"timeout": override}
+                up = upload.Uploader(results.append, stop, guard=OpenGuard(), opener=recording, **kwargs)
+                try:
+                    clip = job(receiver.url)
+                    clip.duration_ms = duration
+                    up.submit(clip)
+                    self.assertTrue(wait_for(lambda: results, 3))
+                    self.assertEqual(results[0].state, C.UP_OK)
+                    self.assertEqual([r[0] for r in receiver.requests], ["/up", "/moved"])
+                    self.assertEqual([call.kwargs["timeout"] for call in recording.open.call_args_list],
+                                     [expected, expected])
+                finally:
+                    stop.set()
+                    up._thread.join(3)
 
 
 if __name__ == "__main__":

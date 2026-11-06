@@ -45,6 +45,7 @@ function svcCtlWantsStart(svc) {
 
 let _lastSvcCtlData = null;
 let _svcCtlLoadGen = 0;
+const _svcCtlPending = Object.create(null);
 
 /* Same ids as SERVICE_DEFS in etc/sa02m-web-service-ctl.sh. Painted at once
    on the Services sub-tab; the CGI then fills each row in place. A service
@@ -114,7 +115,7 @@ function svcCtlSyncButton(cell, svc, action, flasherBusy) {
   }
   const blocked = action === 'start' && flasherBusy && (svc.id === 'mplc4' || svc.id === 'mqtt-bridge');
   if (cur && cur.dataset.svcId === svc.id && cur.dataset.svcAction === action) {
-    cur.disabled = !!blocked;
+    cur.disabled = !!blocked || !!_svcCtlPending[svc.id];
     return;
   }
   cell.textContent = '';
@@ -214,6 +215,7 @@ function makeSvcCtlButton(svc, action, flasherBusy) {
   btn.textContent = window.sa02mI18n ? window.sa02mI18n.t(meta.ru) : meta.ru;
   btn.dataset.svcId = svc.id;
   btn.dataset.svcAction = action;
+  btn.disabled = !!_svcCtlPending[svc.id];
   if (action === 'start' && flasherBusy && (svc.id === 'mplc4' || svc.id === 'mqtt-bridge')) {
     btn.disabled = true;
     btn.title = window.sa02mI18n
@@ -604,6 +606,8 @@ function svcCtlErrorMessage(code) {
     install_failed: 'не удалось установить службу',
     uninstall_failed: 'не удалось удалить службу',
     purge_blocked: 'не удалось полностью удалить пакет',
+    invalid_result: svcCtlT('Не удалось проверить результат команды'),
+    invalid_operation: svcCtlT('Неверный идентификатор команды'),
   };
   return map[c] || c;
 }
@@ -670,18 +674,21 @@ function pollServiceCtlState(id, action, maxMs, intervalMs) {
   });
 }
 
-function pollServiceCtlResult(id, maxMs, intervalMs) {
+function pollServiceCtlResult(id, maxMs, intervalMs, opId, action) {
   const deadline = Date.now() + (maxMs || 90000);
   return new Promise(function (resolve, reject) {
     function tick() {
-      fetch('cgi-bin/services_ctrl.cgi?result=1&id=' + encodeURIComponent(id), {
+      fetch('cgi-bin/services_ctrl.cgi?result=1&id=' + encodeURIComponent(id) + (opId ? '&op_id=' + encodeURIComponent(opId) : ''), {
         credentials: 'same-origin',
         cache: 'no-store',
       })
         .then(async (r) => {
           const j = await r.json().catch(() => ({}));
           if (!r.ok) throw new Error('HTTP ' + r.status);
-          if (j.pending) {
+          if (j.error === 'unauthorized' || j.error === 'invalid_operation') throw new Error(j.error);
+          // A previous result may still occupy the shared slot before the
+          // background helper starts. Mismatch waits; it cannot finish us.
+          if (j.pending || (opId && (j.op_id !== opId || j.id !== id || j.action !== action))) {
             if (Date.now() >= deadline) {
               reject(new Error('timeout'));
               return;
@@ -693,6 +700,7 @@ function pollServiceCtlResult(id, maxMs, intervalMs) {
             reject(new Error(j.error));
             return;
           }
+          if (j.ok !== true) throw new Error('invalid_result');
           resolve(j);
         })
         .catch(reject);
@@ -701,15 +709,15 @@ function pollServiceCtlResult(id, maxMs, intervalMs) {
   });
 }
 
-function pollServiceCtlDone(id, action, maxMs, intervalMs) {
-  return pollServiceCtlResult(id, maxMs, intervalMs)
+function pollServiceCtlDone(id, action, maxMs, intervalMs, opId) {
+  return pollServiceCtlResult(id, maxMs, intervalMs, opId, action)
     .then(function () { return pollServiceCtlState(id, action, maxMs, intervalMs); });
 }
 
 function serviceCtlAction(btn) {
   const id = btn && btn.dataset ? btn.dataset.svcId : '';
   const action = btn && btn.dataset ? btn.dataset.svcAction : '';
-  if (!id || !action) return;
+  if (!id || !action || _svcCtlPending[id]) return;
   if (action === 'start' && _lastSvcCtlData && _lastSvcCtlData.flasher_busy &&
       (id === 'mplc4' || id === 'mqtt-bridge')) {
     toast(svcCtlErrorMessage('flasher_busy'), 'warn');
@@ -729,12 +737,14 @@ function serviceCtlAction(btn) {
     confirmMsg = verbT + ' «' + label + '»?';
   }
   if (!confirm(confirmMsg)) return;
+  _svcCtlPending[id] = action;
   btn.disabled = true;
+  if (_lastSvcCtlData) renderServicesControl(_lastSvcCtlData);
   // Install/uninstall can run several minutes (dpkg + start/verify) → 10-min
   // poll deadline; start/stop keep 90 s.
   const longOp = action === 'install' || action === 'uninstall';
   const pollMax = longOp ? 600000 : 90000;
-  fetch('cgi-bin/services_ctrl.cgi', {
+  return fetch('cgi-bin/services_ctrl.cgi', {
     method: 'POST',
     credentials: 'same-origin',
     headers: withCsrfHeaders({ 'Content-Type': 'application/json; charset=utf-8' }),
@@ -742,10 +752,11 @@ function serviceCtlAction(btn) {
   })
     .then(async (r) => {
       const j = await r.json().catch(() => ({}));
-      if (!r.ok || j.ok === false) throw new Error(svcCtlErrorMessage(j.error) || ('HTTP ' + r.status));
+      if (!r.ok || j.ok !== true) throw new Error(svcCtlErrorMessage(j.error) || ('HTTP ' + r.status));
+      if (j.op_id && (!/^[a-f0-9]{32}$/.test(j.op_id) || j.id !== id || j.action !== action)) throw new Error('invalid_result');
       if (j.pending) {
         toast(svcCtlActionPendingMsg(action), 'info', longOp ? 8000 : 5000);
-        return pollServiceCtlDone(id, action, pollMax, 2000);
+        return pollServiceCtlDone(id, action, pollMax, 2000, j.op_id);
       }
       return j;
     })
@@ -760,7 +771,11 @@ function serviceCtlAction(btn) {
       toast('Служба: ' + (e && e.message ? svcCtlErrorMessage(e.message) || e.message : String(e)), 'error');
       loadServicesControl(false);
     })
-    .finally(() => { btn.disabled = false; });
+    .finally(() => {
+      delete _svcCtlPending[id];
+      if (_lastSvcCtlData) renderServicesControl(_lastSvcCtlData);
+      else btn.disabled = false;
+    });
 }
 
 /* ══════════════════════════════════════════════════════════════════════════

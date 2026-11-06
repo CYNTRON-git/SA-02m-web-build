@@ -2,6 +2,13 @@
   "_doc": "Multi-component manifest: declares sibling repo roots the ai-dev enforcer may widen the boundary to (PROTOCOL.md invariant 2 · docs/architecture.md ## Components). Operator-authorized read+write to the CYNTRON/cloud sibling for the cross-repo Phase-C mTLS work (2026-07-18).",
   "components": [
     {
+      "name": "vplc",
+      "root": "../vPLC",
+      "path": "C:/Users/perev/Downloads/vPLC",
+      "repo": "CYNTRON-git/vPLC",
+      "description": "Operator-authorized runtime for the service-stop and ARM package audit (2026-11-06). The Operator supplied C:/Users/perev/Downloads/vPLC as the source project; runtime shutdown fixes, packaging and verification are in scope."
+    },
+    {
       "name": "cloud",
       "root": "../cloud",
       "path": "C:/Users/admin/Downloads/cloud",
@@ -59,6 +66,7 @@
     }
   ],
   "siblings": [
+    { "name": "vplc", "root": "../vPLC", "path": "C:/Users/perev/Downloads/vPLC" },
     { "name": "cloud", "root": "../cloud", "path": "C:/Users/admin/Downloads/cloud" },
     { "name": "mr02m", "root": "../MR-02m", "path": "C:/Users/admin/Downloads/MR-02m" },
     { "name": "dtv", "root": "../cyntron-dtv", "path": "C:/Users/admin/Downloads/cyntron-dtv" },

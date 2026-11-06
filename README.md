@@ -4,7 +4,7 @@
   <img src="https://img.shields.io/badge/platform-Armbian%20%7C%20Linux%20ARM-orange?style=flat-square"/>
   <img src="https://img.shields.io/badge/stack-nginx%20%2B%20fcgiwrap%20%2B%20Bash%20CGI-blue?style=flat-square"/>
   <img src="https://img.shields.io/badge/license-MIT-green?style=flat-square"/>
-  <img src="https://img.shields.io/badge/version-1.0.7.30-cyan?style=flat-square"/>
+  <img src="https://img.shields.io/badge/version-1.0.7.31-cyan?style=flat-square"/>
 </p>
 
 Веб-интерфейс для **[сервера автоматизации СА-02м](https://cyntron.ru/catalog/ustroystva_avtomatizatsii/servery_avtomatizatsii/)** производства [ЦИНТРОН](https://cyntron.ru) на базе процессорного модуля [A40i-2eth](https://cyntron.ru/catalog/ustroystva_avtomatizatsii/komplektuyushchie/7705/) (Allwinner A40i, Linux).
@@ -1387,10 +1387,14 @@ setserial -g /dev/ttyS[0-9]
 
 Веб-интерфейс теперь работает с этой микросхемой через общий helper:
 - чтение регистра `0x01` (Output Port) и проверка `0x03` (Configuration);
-- при первом доступе перевод нужных линий в выходы;
+- при первой явной команде управления перевод нужных линий в выходы;
 - `timeout` на каждую операцию I2C;
 - `flock` на lock-файл, чтобы параллельные обращения не конфликтовали;
 - при занятой шине возвращается ошибка `i2c_busy`, а не зависание страницы.
+
+Доступность каналов по варианту платы и гарантии пассивного чтения описаны
+в [контракте аппаратных выходов](docs/contracts/hardware-outputs.md).
+Приведённые ниже диагностические команды изменяют регистры микросхемы.
 
 #### Конфигурация направлений (все пины — выходы)
 
