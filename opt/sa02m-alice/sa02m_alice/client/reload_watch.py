@@ -6,8 +6,8 @@ with the process). The registry could already `reload()` in place; what was
 missing is a trigger, a subscription diff, and retained handling for the
 topics a reload newly subscribes.
 
-The trigger is the device document's own mtime/inode, polled by the watchdog
-loop that already re-reads client_enabled() every second. It needs no new
+The trigger is a stat change in the device document or its bridge YAML inputs,
+polled by the watchdog that already re-reads client_enabled() every second. It needs no new
 verb, no signal semantics, no unit change and no sudoers change — and it
 covers EVERY writer (the CGI, a hand edit, an offline restore), not just one
 caller. Rationale and the rejected alternatives: the 1.0.6.19 plan; the seam
@@ -19,37 +19,24 @@ Nothing here imports main.py, so every unit is independently testable.
 from __future__ import annotations
 
 import logging
-import os
 import threading
 import time
 from typing import Any, Callable, Dict, Iterable, Optional, Set, Tuple
 
-from ..config import scene_devices
-
-Fingerprint = Tuple[int, int, int]
-
-
-def devices_fingerprint(path: str) -> Optional[Fingerprint]:
-    """(inode, mtime_ns, size) of the device document; None when unreadable.
-
-    None is a legitimate value, not an error: `load_devices` returns an empty
-    document for an absent file, so absent→present must count as a change.
-    Never raises — this runs on the watchdog tick.
-    """
-    try:
-        st = os.stat(path)
-    except OSError:
-        return None
-    return (int(st.st_ino), int(st.st_mtime_ns), int(st.st_size))
+from ..common.config_store import file_fingerprint as devices_fingerprint
+from ..config import inventory, scene_devices
 
 
 class DevicesWatcher:
-    """Polls the device document for a change, one stat per call."""
+    """Watch the device document and the source of its hardware write permissions."""
 
     def __init__(self, path: str) -> None:
         self._path = path
         # Seed at construction so a quiet first tick does not report a change.
-        self._fp = devices_fingerprint(path)
+        self._fp = self._fingerprint()
+
+    def _fingerprint(self):
+        return devices_fingerprint(self._path), inventory.bridge_config_fingerprint()
 
     @property
     def path(self) -> str:
@@ -64,7 +51,7 @@ class DevicesWatcher:
         Load-then-commit would record the new fingerprint while holding the old
         document and miss that write permanently.
         """
-        fp = devices_fingerprint(self._path)
+        fp = self._fingerprint()
         previous, self._fp = self._fp, fp
         return fp != previous
 

@@ -417,7 +417,7 @@ def _thermostat_parts(
         return None
     setpoint = None
     for item in caps:
-        if str(item.get("type") or "") != CAP_RANGE or _instance(item) != "temperature":
+        if item.get("writable") is False or str(item.get("type") or "") != CAP_RANGE or _instance(item) != "temperature":
             continue
         if str(_params(item).get("unit") or "") != UNIT_CELSIUS:
             continue
@@ -558,7 +558,7 @@ def device_services(
         # A scene row (config/scene_devices.py homekit_scene_projection): one
         # on_off on the engine's run topic → M18, nothing else is read.
         for item in caps:
-            if str(item.get("type") or "") == CAP_ON_OFF:
+            if str(item.get("type") or "") == CAP_ON_OFF and item.get("writable") is not False:
                 return [ServiceSpec(("M18",), "Switch", (
                     CharBinding("On", RULE_MOMENTARY, CAP_ON_OFF, _instance(item, "on") or "on",
                                 writable=True),))], []
@@ -579,12 +579,12 @@ def device_services(
                 bulb_index = len(services)
             services.append(spec)
         elif ctype == CAP_RANGE:
-            if _instance(item) == "brightness":
+            if _instance(item) == "brightness" and item.get("writable") is not False:
                 brightness.append(item)
             else:
                 skipped.append((_item_label(item), SKIP_RANGE_UNSUPPORTED))
         elif ctype == CAP_COLOR:
-            if _is_rgb_color(item):
+            if _is_rgb_color(item) and item.get("writable") is not False:
                 colors.append(item)
             else:
                 skipped.append((_item_label(item), SKIP_CAPABILITY_UNSUPPORTED))

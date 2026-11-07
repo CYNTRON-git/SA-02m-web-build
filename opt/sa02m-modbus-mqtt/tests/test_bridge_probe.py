@@ -189,6 +189,39 @@ class TestBounds(_ServerCase):
                          bytes.fromhex("0001" "0000" "0006" "01" "03" "0000" "0001"))
 
 
+class TestResetStages(unittest.TestCase):
+    def test_connect_reset_is_tcp_refused_without_retry_or_exchange(self):
+        with mock.patch.object(bridge_probe.socket, "create_connection",
+                               side_effect=ConnectionResetError(errno.ECONNRESET, "peer reset")) as connect, \
+                mock.patch.object(bridge_probe, "_exchange") as exchange:
+            result = bridge_probe.run("192.0.2.10", 502, 7)
+        self.assertTrue(result["ok"], result)
+        self.assertEqual(result["verdict"], "tcp_refused")
+        self.assertEqual((result["host"], result["tcp_port"], result["address"]),
+                         ("192.0.2.10", 502, 7))
+        connect.assert_called_once_with(("192.0.2.10", 502), timeout=bridge_probe.PROBE_TIMEOUT_S)
+        exchange.assert_not_called()
+
+    def test_exchange_resets_keep_phase_verdict_and_close_without_retry(self):
+        for stage, verdict in (("send", "tcp_refused"), ("receive", "tcp_refused"),
+                               ("partial", "not_modbus")):
+            with self.subTest(stage=stage):
+                sock = mock.MagicMock()
+                reset = ConnectionResetError(errno.ECONNRESET, "peer reset")
+                if stage == "send":
+                    sock.sendall.side_effect = reset
+                elif stage == "receive":
+                    sock.recv.side_effect = reset
+                else:
+                    sock.recv.side_effect = [b"\x00", reset]
+                with mock.patch.object(bridge_probe.socket, "create_connection", return_value=sock) as connect:
+                    result = bridge_probe.run("192.0.2.10", 502, 7, refuse_self=False)
+                self.assertEqual((result["ok"], result["verdict"]), (True, verdict))
+                connect.assert_called_once()
+                sock.sendall.assert_called_once_with(bridge_probe.build_adu(bridge_probe.PROBE_TID, 7))
+                sock.close.assert_called_once()
+
+
 class TestProbeEntry(unittest.TestCase):
     """probe(entry, lock): validate → single-flight lock → run."""
 

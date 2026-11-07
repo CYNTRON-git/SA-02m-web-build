@@ -24,6 +24,7 @@ import copy
 import json
 import os
 from typing import Any, Dict, List, Optional, Set, Tuple
+from . import capability_binding
 
 DEFAULT_PATH = "/etc/sa02m-alice/sa02m-alice-devices.conf"
 
@@ -62,8 +63,9 @@ class DeviceIndex:
     missing, unreadable or not a device document — callers then fall back
     (the service to raw topics, the store to skipping its target check)."""
 
-    def __init__(self) -> None:
+    def __init__(self, write_blocker=None) -> None:
         self.loaded = False
+        self.write_blocker = write_blocker if write_blocker is not None else capability_binding.write_blocker()
         self.cap_topics: Dict[Key, str] = {}
         self.prop_topics: Dict[Key, str] = {}
         self.bindings: Dict[Key, Dict[str, Any]] = {}
@@ -83,21 +85,16 @@ class DeviceIndex:
 
     def resolve(self, device: Any, cap: Any, instance: Any = "") -> Tuple[Optional[str], str]:
         """A write target → (state topic, "") or (None, reason) with reason
-        `unknown_target` | `ambiguous_target`. Capabilities only."""
+        `unknown_target`, `ambiguous_target` or `read_only`. Capabilities only."""
         if not isinstance(device, str) or not isinstance(cap, str):
             return None, "unknown_target"
-        short = cap_short(cap)
-        if isinstance(instance, str) and instance:
-            if (device, state_key(short, instance)) in self.ambiguous:
-                return None, "ambiguous_target"
-            topic = self.cap_topics.get((device, state_key(short, instance)))
-            return (topic, "") if topic else (None, "unknown_target")
-        topic = self.cap_topics.get((device, short))
-        if topic:
-            return topic, ""
-        if (device, short) in self.ambiguous:
+        key = (device, state_key(cap_short(cap), instance))
+        if key in self.ambiguous:
             return None, "ambiguous_target"
-        return None, "unknown_target"
+        if key in self.readonly:
+            return None, self.write_blocker(self.cap_topics.get(key, "")) or "read_only"
+        topic = self.cap_topics.get(key)
+        return (topic, "") if topic else (None, "unknown_target")
 
     def alias(self, device: str, name: str) -> Tuple[str, str]:
         """A logic template's capability name → (cap, instance). Templates
@@ -119,8 +116,11 @@ class DeviceIndex:
     def caps_of(self, device: str) -> Tuple[str, ...]:
         """Capability types plus the instance names `alias` resolves."""
         names = set(self.cap_types.get(device, ()))
-        names.update(inst for (did, inst) in self.cap_instances
-                     if did == device and self.alias(device, inst)[1])
+        for did, inst in self.cap_instances:
+            if did == device:
+                short, alias = self.alias(device, inst)
+                if alias and (device, state_key(short, alias)) not in self.readonly:
+                    names.add(inst)
         return tuple(sorted(names))
 
 
@@ -130,8 +130,8 @@ def _instance(item: Dict[str, Any]) -> str:
     return inst.strip() if isinstance(inst, str) else ""
 
 
-def load_index(path: Optional[str] = None) -> DeviceIndex:
-    ix = DeviceIndex()
+def load_index(path: Optional[str] = None, *, write_blocker=None) -> DeviceIndex:
+    ix = DeviceIndex(write_blocker)
     try:
         with open(path or devices_path(), encoding="utf-8") as fh:
             data = json.load(fh)
@@ -157,7 +157,9 @@ def load_index(path: Optional[str] = None) -> DeviceIndex:
             topic = str(cap.get("mqtt")).rstrip("/")
             short = cap_short(str(cap.get("type") or ""))
             inst = _instance(cap)
-            ix.cap_types.setdefault(did, set()).add(short)
+            readonly = cap.get("writable") is False or bool(ix.write_blocker(topic))
+            if not readonly:
+                ix.cap_types.setdefault(did, set()).add(short)
             keys: List[str] = []
             if count[short] == 1:
                 keys.append(short)
@@ -184,7 +186,7 @@ def load_index(path: Optional[str] = None) -> DeviceIndex:
                 ix.cap_topics[(did, key)] = topic
                 ix.bindings[(did, key)] = copy.deepcopy(cap)
                 ix._add_topic(topic, (did, key))
-                if cap.get("writable") is False:
+                if readonly:
                     ix.readonly.add((did, key))
         for prop in d.get("properties") or []:
             if not isinstance(prop, dict):

@@ -36,7 +36,7 @@ DEVICES_TABLE = BRIDGE_DIR / "devices_tables.py"
 # all carry them); the flasher has never shown them and its per-type AI stride /
 # AO-safe logic is unverified for them, so the gap is pinned rather than
 # papered over. Closing it is a flasher change with a bench check, not a test edit.
-BRIDGE_ONLY_IDS = {9, 12}
+BRIDGE_ONLY_IDS = {9}
 # Non-MR-02m families the flasher classifies by type code / signature (EN_METER
 # mezzanine, DTV, CE-02m-3, LED strip, Carel): not MR-02m pollers, never in the
 # bridge table by design.

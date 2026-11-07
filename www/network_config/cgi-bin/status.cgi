@@ -56,14 +56,8 @@ fi
 
 HW_CONF="/etc/sa02m_hw.conf"
 . "$SCRIPT_DIR/lib_hw.sh"
-HW_VARIANT=""
-_hw_variant_conf="/etc/sa02m_hw_variant.conf"
-if [ -f "$_hw_variant_conf" ]; then
-    _v=$(grep -E '^SA02M_HW_VARIANT=' "$_hw_variant_conf" 2>/dev/null | head -n1 | cut -d= -f2 | tr -d '[:space:]')
-    case "$_v" in
-        sa02m-1eth|sa02m-2eth) HW_VARIANT=$_v ;;
-    esac
-fi
+SA02M_HW_VARIANT_SNAPSHOT=$(sa02m_hw_variant)
+HW_VARIANT=$SA02M_HW_VARIANT_SNAPSHOT
 STATUS_BLOCKS_CONF="${STATUS_BLOCKS_CONF:-/etc/sa02m_status_blocks.conf}"
 [ -f "$STATUS_BLOCKS_CONF" ] && . "$STATUS_BLOCKS_CONF" 2>/dev/null || true
 
@@ -157,14 +151,31 @@ status_emit_snapshot() {
     printf '%s,"_status_meta":{"measured_at":%s,"age_s":%s,"ttl_s":%s}}\n' "${payload%?}" "$measured" "$age" "$ttl"
 }
 
+status_cache_failure() {
+    local rc=${1:-1} part=${STATUS_PART:-full}
+    case "$part" in storage|network|system|services|hardware|rs485|blocks|full) ;; *) part=unknown ;; esac
+    printf 'status.cgi: status_build_failed part=%s rc=%s\n' "$part" "$rc" >&2
+    printf '{"error":"status_build_failed"}\n'
+    return "$rc"
+}
+
 status_emit_cache() {
     local file=$1 ttl=$2 measured payload
     # One descriptor pins the inode across an atomic cache replacement.
-    exec 9<"$file" || return 1
+    if ! [ -f "$file" ] || ! [ -r "$file" ] || ! { exec 9<"$file"; } 2>/dev/null; then
+        status_cache_failure 1
+        return 1
+    fi
     measured=$(stat -Lc %Y /proc/self/fd/9 2>/dev/null || echo 0)
     IFS= read -r -d '' payload <&9 || true
     exec 9<&-
-    status_emit_snapshot "${payload%$'\n'}" "$measured" "$ttl"
+    payload=${payload%$'\n'}
+    # Read failures must be reported before any snapshot bytes reach stdout.
+    if [[ "$payload" != \{*\} ]]; then
+        status_cache_failure 1
+        return 1
+    fi
+    status_emit_snapshot "$payload" "$measured" "$ttl"
 }
 
 status_emit_live() {
@@ -178,19 +189,19 @@ cache_print_or_build() {
     local file=$1 ttl=$2 builder=$3 tmp lock_file rc have_lock=0
     if cache_is_fresh "$file" "$ttl"; then
         status_emit_cache "$file" "$ttl"
-        return 0
+        return $?
     fi
 
     lock_file="${file}.lock"
     if command -v flock >/dev/null 2>&1; then
-        exec 8>"$lock_file" 2>/dev/null || true
+        { exec 8>"$lock_file"; } 2>/dev/null || true
         if flock -w "$STATUS_CACHE_LOCK_WAIT_SEC" 8 >/dev/null 2>&1; then
             have_lock=1
             if cache_is_fresh "$file" "$ttl"; then
-                status_emit_cache "$file" "$ttl"
+                if status_emit_cache "$file" "$ttl"; then rc=0; else rc=$?; fi
                 flock -u 8 >/dev/null 2>&1 || true
                 exec 8>&-
-                return 0
+                return "$rc"
             fi
         else
             exec 8>&-
@@ -198,14 +209,14 @@ cache_print_or_build() {
             tmp="${file}.$$"
             if "$builder" > "$tmp"; then
                 mv "$tmp" "$file" 2>/dev/null || cp "$tmp" "$file" 2>/dev/null
-                status_emit_cache "$file" "$ttl"
+                if status_emit_cache "$file" "$ttl"; then rc=0; else rc=$?; fi
                 rm -f "$tmp"
-                return 0
+                return "$rc"
             fi
             rm -f "$tmp"
             if [ -f "$file" ]; then
                 status_emit_cache "$file" "$ttl"
-                return 0
+                return $?
             fi
         fi
     fi
@@ -214,15 +225,16 @@ cache_print_or_build() {
     if "$builder" > "$tmp"; then
         mv "$tmp" "$file" 2>/dev/null || cp "$tmp" "$file" 2>/dev/null
         # После mv временный путь исчез — читаем уже атомарно записанный кэш.
-        status_emit_cache "$file" "$ttl"
+        if status_emit_cache "$file" "$ttl"; then rc=0; else rc=$?; fi
         rm -f "$tmp"
         if (( have_lock )); then
             flock -u 8 >/dev/null 2>&1 || true
             exec 8>&-
         fi
-        return 0
+        return "$rc"
+    else
+        rc=$?
     fi
-    rc=$?
     rm -f "$tmp"
     if (( have_lock )); then
         flock -u 8 >/dev/null 2>&1 || true
@@ -230,9 +242,9 @@ cache_print_or_build() {
     fi
     if [ -f "$file" ]; then
         status_emit_cache "$file" "$ttl"
-        return 0
+        return $?
     fi
-    return "$rc"
+    status_cache_failure "$rc"
 }
 
 status_timeout_run() {
@@ -2058,7 +2070,6 @@ gather_hardware_metrics() {
 
     sa02m_hw_collect_metrics
     sa02m_hw_metrics_cache_save
-    [ "${HW_VARIANT:-}" = "sa02m-2eth" ] && HW_DO=null
 }
 
 gather_main_metrics() {
@@ -2725,7 +2736,7 @@ case "$STATUS_PART" in
         fi
         ;;
     hardware)
-        cache_print_or_build "${CACHE_DIR}/hardware.json" 10 build_hardware_json
+        cache_print_or_build "${CACHE_DIR}/hardware.${HW_VARIANT}.json" 10 build_hardware_json
         ;;
     priority)
         status_emit_live build_priority_json

@@ -283,6 +283,7 @@ class DeviceInfo:
     wb_scan_serial: Optional[int] = None
     # Carel c.pCOmini: вариант платы из метки FC17 (STD_B/STD_E/STD_H) — "B"/"E"/"H", "" если неизвестен.
     carel_variant: str = ""
+    signature_inferred: bool = False
 
 
 def _is_scan_info_missing(s: Optional[str]) -> bool:
@@ -364,7 +365,7 @@ def _apply_signature_from_serial_if_missing(dev: DeviceInfo) -> DeviceInfo:
         return dev
     guess = signature_from_serial(dev.serial)
     if guess:
-        return replace(dev, signature=guess)
+        return replace(dev, signature=guess, signature_inferred=True)
     return dev
 
 
@@ -392,12 +393,13 @@ def _fill_bootloader_info_by_serial(
                 log_cb=None,
                 verbose_exchange_log=False,
             )
-            if _is_scan_info_missing(dev.signature) or _is_scan_info_missing(dev.bootloader_version):
+            if dev.signature_inferred or _is_scan_info_missing(dev.signature) or _is_scan_info_missing(dev.bootloader_version):
                 sig, ver, err = proto.read_bootloader_info_by_serial(serial)
                 # Важный кейс: у части устройств версия бутлоадера недоступна (или невалидна),
                 # но сигнатура по reg 290 читается корректно — её нужно сохранять даже при err.
                 if sig:
                     dev.signature = sig.strip()
+                    dev.signature_inferred = False
                 if ver and not _is_scan_info_missing(ver):
                     dev.bootloader_version = ver.strip()
                 elif log_cb and err:
@@ -505,6 +507,7 @@ def _poll_identity_fast_modbus_for_dup_addr(
                     )
             if sig:
                 dev.signature = sig.strip()
+                dev.signature_inferred = False
             if bl and not _is_scan_info_missing(bl):
                 dev.bootloader_version = bl.strip()
         finally:
@@ -1452,7 +1455,7 @@ def _broadcast_probe_bauds(
                             )
                             u("[%s] адр.%d: расхождение SN скана и регистров — см. flasher_log.txt" % (cfg, addr))
                 if tcp_ep is None and serial_from_wb is not None and (
-                    _is_scan_info_missing(dev.signature)
+                    dev.signature_inferred or _is_scan_info_missing(dev.signature)
                     or _is_scan_info_missing(dev.bootloader_version)
                     or _is_scan_info_missing(dev.app_version)
                 ):

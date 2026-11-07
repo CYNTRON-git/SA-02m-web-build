@@ -23,6 +23,9 @@ from collections import OrderedDict
 
 import serial
 
+from bridge_uart import (MODBUS_MAX_READ_REGS, UART_FIFO_GUARD_MIN_BAUD, UART_RX_FIFO_BYTES,
+                         UART_RX_SAFE_BYTES, fifo_safe_read_regs, uart_line_index)
+
 def _port_client():
     path = str(Path(__file__).resolve().parent.parent / "sa02m-port-coordinator")
     if path not in sys.path:
@@ -75,60 +78,6 @@ def parse_uart_counters(text: str, index: int) -> dict[str, int] | None:
                 vals[key] = int(num)
             return vals
     return None
-
-
-def uart_line_index(port_path: str) -> int | None:
-    """/dev/COM3 → /dev/ttyS4 → 4; None for a port that is not an 8250 ttyS
-    (a USB adapter has no line in /proc/tty/driver/serial)."""
-    m = re.fullmatch(r"ttyS(\d+)", os.path.basename(os.path.realpath(port_path)))
-    return int(m.group(1)) if m else None
-
-
-# ── Host RX FIFO margin (8250 UART overrun guard) ─────────────────────────────
-# The A40i UARTs (dw-apb-uart, 16550-class) buffer 64 received bytes. On the
-# PREEMPT_RT kernel the RX IRQ thread is sometimes served later than 64 char
-# times (5.5 ms at 115200); the FIFO then overruns and a longer reply loses
-# bytes. The source of that latency is not isolated: moving eth/mmc off the
-# UART's CPU did not change it, moving the UART IRQs to CPU3 cut it ~25x but
-# not to zero (docs/decisions/rt-core-affinity.md).
-# The kernel marks the loss with a NUL after the byte it read first, and n_tty
-# in raw mode hands that NUL to us as data (evidence from bench 1.135:
-# docs/bugs/BUGLOG.md, 2026-09-30).
-# A reply that fits the FIFO survives any IRQ latency, so fast 8250 lines cap
-# the registers per FC03/FC04 read. The margin leaves room for an 8-byte
-# request echo on a transceiver that does not mute RX while it transmits.
-UART_RX_FIFO_BYTES = 64
-UART_RX_SAFE_BYTES = UART_RX_FIFO_BYTES - 8
-# Below this the FIFO holds >= 11 ms of line time (33 ms at 19200).
-UART_FIFO_GUARD_MIN_BAUD = 57600
-MODBUS_MAX_READ_REGS = 125
-# Names that are a built-in 8250 line on this board: /dev/COMx is a udev
-# symlink to one (scripts/01-system.sh 99-sa02m-serial.rules).
-_BUILTIN_UART_NAME_RE = re.compile(r"COM[1-5]|ttyS\d+")
-
-
-def _unresolved_builtin_uart(port_path) -> bool:
-    """A built-in UART name whose device node is not there yet (udev has not
-    linked /dev/COMx): fail closed, it is capped until the open re-resolves it."""
-    return (bool(_BUILTIN_UART_NAME_RE.fullmatch(os.path.basename(str(port_path))))
-            and not os.path.exists(port_path))
-
-
-def fifo_safe_read_regs(port_path, baudrate: int) -> int:
-    """Registers per FC03/FC04 read that keep the reply inside the host FIFO.
-
-    Capped only on an 8250 ttyS line (uart_line_index — a USB adapter buffers
-    on its own side, TCP never gets here) at >= UART_FIFO_GUARD_MIN_BAUD, and
-    on a built-in UART name not resolvable yet (fail closed); the cap is even
-    so a read split at it keeps even-aligned 32-bit pairs whole.
-    """
-    if not port_path or int(baudrate) < UART_FIFO_GUARD_MIN_BAUD:
-        return MODBUS_MAX_READ_REGS
-    if (uart_line_index(port_path) is None
-            and not _unresolved_builtin_uart(port_path)):
-        return MODBUS_MAX_READ_REGS
-    n = (UART_RX_SAFE_BYTES - 5) // 2
-    return n - n % 2
 
 
 class UartCounterDelta:
@@ -255,6 +204,43 @@ def build_report_slave_id(addr: int) -> bytes:
     return _append_crc(bytes([addr, 0x11]))
 
 
+def validate_modbus_reply(request: bytes, response: bytes) -> int | None:
+    """Correlate an RTU request with a unit+PDU response, without its CRC.
+
+    The transport checks CRC/MBAP first. Return the corresponding exception
+    code (including zero) or None for a normal reply; malformed/foreign
+    replies raise. Keeping exceptions separate preserves TCP session policy.
+    """
+    if len(response) < 2:
+        raise IOError("Short Modbus response")
+    if response[0] != request[0]:
+        raise IOError("Slave id mismatch: sent %d, got %d" %
+                      (request[0], response[0]))
+    fc = request[1]
+    if response[1] == (fc | 0x80):
+        if len(response) != 3:
+            raise IOError("Invalid Modbus exception length on FC%02X" % fc)
+        return response[2]
+    if response[1] != fc:
+        raise IOError("Function mismatch: sent FC%02X, got FC%02X" %
+                      (fc, response[1]))
+    if fc in (0x05, 0x06, 0x10):
+        if len(response) != 6 or response != request[:6]:
+            raise IOError("Write echo mismatch on FC%02X" % fc)
+    elif fc in (0x01, 0x02, 0x03, 0x04, 0x11):
+        if len(response) < 3 or len(response) != 3 + response[2]:
+            raise IOError("Invalid byte count/length on FC%02X" % fc)
+        if fc != 0x11:
+            count = (request[4] << 8) | request[5]
+            expected = (count + 7) // 8 if fc in (0x01, 0x02) else count * 2
+            if response[2] != expected:
+                raise IOError("Byte count mismatch on FC%02X: expected %d, got %d" %
+                              (fc, expected, response[2]))
+    else:
+        raise IOError("Unsupported Modbus function FC%02X" % fc)
+    return None
+
+
 def build_fmb5(sub: int) -> bytes:
     """5-byte Fast Modbus broadcast command (begin/next/end scan)."""
     return _append_crc(bytes([FMB_ADDR, 0x46, sub]))
@@ -348,6 +334,25 @@ class _WriterPriority:
 
 
 # ── ModbusSerial ───────────────────────────────────────────────────────────────
+def remaining_time(deadline, default):
+    if deadline is None:
+        return default
+    left = deadline - time.monotonic()
+    if left <= 0:
+        raise TimeoutError("MR AI operation deadline")
+    return min(left, default)
+
+
+@contextlib.contextmanager
+def before_deadline(lock, deadline):
+    if not lock.acquire(timeout=remaining_time(deadline, 20.0)):
+        raise TimeoutError("MR AI port lock deadline")
+    try:
+        yield
+    finally:
+        lock.release()
+
+
 class ModbusSerial:
     """Thread-safe Modbus RTU over serial, with Fast Modbus support."""
 
@@ -392,9 +397,9 @@ class ModbusSerial:
         """Пропустить ожидающую запись вперёд текущего цикла полла."""
         self._prio.yield_to_writer(max_wait_s)
 
-    def _bus_gap(self) -> None:
+    def _bus_gap(self, deadline=None) -> None:
         if self._inter_frame_delay_s > 0:
-            time.sleep(self._inter_frame_delay_s)
+            time.sleep(remaining_time(deadline, self._inter_frame_delay_s))
 
     def _read_rtu_response(self, ser: serial.Serial, request: bytes,
                            timeout: float | None = None) -> bytes:
@@ -473,7 +478,7 @@ class ModbusSerial:
     def release_scan(self) -> None:
         self._scan_hold.clear()
 
-    def _ensure_open(self) -> serial.Serial:
+    def _ensure_open(self, *, deadline=None) -> serial.Serial:
         if self._scan_hold.is_set():
             if self._ser is not None and getattr(self._ser, "is_open", False):
                 try:
@@ -493,7 +498,8 @@ class ModbusSerial:
             )
             if self._ownership is not None:
                 self._ownership.close()
-            self._ownership = _port_client()[0](self._port).acquire()
+            budget = {} if deadline is None else {"deadline": deadline}
+            self._ownership = _port_client()[0](self._port).acquire(**budget)
             try:
                 self._ser = serial.Serial(**open_kwargs, exclusive=True)
             except BaseException:
@@ -519,35 +525,44 @@ class ModbusSerial:
                 self._ownership = None
 
     def _transact(self, request: bytes, expected: int,
-                  timeout: float | None = None) -> bytes:
+                  timeout: float | None = None, *, deadline=None) -> bytes:
         """timeout: this transaction's read deadline (None = the port's)."""
-        ser = self._ensure_open()
+        ser = self._ensure_open() if deadline is None else self._ensure_open(deadline=deadline)
         try:
-            self._bus_gap()
+            self._bus_gap(deadline)
             ser.reset_input_buffer()
-            ser.write(request)
-            ser.flush()
+            if deadline is None:
+                ser.write(request)
+                ser.flush()
+            else:
+                previous = ser.write_timeout
+                try:
+                    ser.write_timeout = remaining_time(deadline, self._timeout)
+                    if ser.write(request) != len(request):
+                        raise IOError("short RTU write")
+                finally:
+                    ser.write_timeout = previous
+                timeout = remaining_time(deadline, self._timeout)
             self._last_rx = None
             resp = self._read_rtu_response(ser, request, timeout=timeout)
-            if len(resp) < expected:
-                raise IOError(f"Short response: {len(resp)}/{expected} bytes"
+            minimum = 5 if len(resp) > 1 and resp[1] & 0x80 else expected
+            if len(resp) < minimum:
+                raise IOError(f"Short response: {len(resp)}/{minimum} bytes"
                               + self._rx_evidence(resp))
             recv_crc = resp[-2] | (resp[-1] << 8)
             if crc16(resp[:-2]) != recv_crc:
                 raise IOError(f"CRC mismatch on FC{request[1]:02X}"
                               + self._rx_evidence(resp))
-            # Как wb-mqtt-serial (TUnexpectedResponseError): при коллизии на
-            # шине чужой валидный кадр не должен сойти за ответ (D5 аудита).
-            if resp[0] != request[0]:
+            try:
+                exception = validate_modbus_reply(request, resp[:-2])
+            except IOError as e:
+                raise IOError(str(e) + self._rx_evidence(resp)) from None
+            if exception is not None:
                 raise IOError(
-                    f"Slave id mismatch: sent {request[0]}, got {resp[0]}"
-                    + self._rx_evidence(resp))
-            if resp[1] & 0x80:
-                raise IOError(
-                    f"Modbus exception {resp[2]} on FC{request[1] & 0x7F:02X}")
+                    f"Modbus exception {exception} on FC{request[1]:02X}")
             return resp
         finally:
-            self._bus_gap()
+            self._bus_gap(deadline)
 
     # --- Standard Modbus reads ------------------------------------------------
 
@@ -583,10 +598,19 @@ class ModbusSerial:
                 words.extend(words_from_response(resp, n))
             return words
 
-    def read_holding_registers(self, addr: int, start: int, count: int) -> list[int]:
+    def read_holding_registers(self, addr: int, start: int, count: int, *, deadline=None) -> list[int]:
+        if deadline is not None:
+            with before_deadline(self._lock, deadline):
+                reply = self._transact(build_request(addr, 3, start, count),
+                                       5 + count * 2, deadline=deadline)
+                return words_from_response(reply, count)
         return self._read_words(0x03, addr, start, count)
 
-    def read_input_registers(self, addr: int, start: int, count: int) -> list[int]:
+    def read_input_registers(self, addr: int, start: int, count: int, *, deadline=None) -> list[int]:
+        if deadline is not None:
+            with before_deadline(self._lock, deadline):
+                reply = self._transact(build_request(addr, 4, start, count), 5 + count * 2, deadline=deadline)
+                return words_from_response(reply, count)
         return self._read_words(0x04, addr, start, count)
 
     def write_coil(self, addr: int, coil: int, value: bool) -> None:
@@ -599,8 +623,12 @@ class ModbusSerial:
             log.debug("write_coil a%d c%d: lock %.0f ms, io %.0f ms",
                       addr, coil, (t1 - t0) * 1000, (t2 - t1) * 1000)
 
-    def write_register(self, addr: int, reg: int, value: int) -> None:
+    def write_register(self, addr: int, reg: int, value: int, *, deadline=None) -> None:
         with self._prio.writing():
+            if deadline is not None:
+                with before_deadline(self._lock, deadline):
+                    self._transact(build_write_register(addr, reg, value), 8, deadline=deadline)
+                return
             with self._lock:
                 self._transact(build_write_register(addr, reg, value), 8)
 

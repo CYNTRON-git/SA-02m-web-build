@@ -30,11 +30,12 @@ fi
 METHOD="${REQUEST_METHOD:-GET}"
 
 # GET ?result=1&id=<svc> — результат async start/stop (JSON из /var/run/sa02m-svcctl/<id>.json).
-if [[ "$METHOD" = "GET" ]] && [[ "${QUERY_STRING:-}" =~ result=1 ]]; then
+if [[ "$METHOD" = "GET" ]] && [[ "${QUERY_STRING:-}" =~ (^|&)result=1(&|$) ]]; then
     RID=""
-    if [[ "${QUERY_STRING:-}" =~ (^|&)id=([a-zA-Z0-9_-]+) ]]; then
+    if [[ "${QUERY_STRING:-}" =~ (^|&)id=([a-zA-Z0-9_-]{1,64})(&|$) ]]; then
         RID="${BASH_REMATCH[2]}"
     fi
+    OP_ID=""
     echo "Content-type: application/json; charset=UTF-8"
     echo "Cache-Control: no-store"
     echo ""
@@ -42,8 +43,26 @@ if [[ "$METHOD" = "GET" ]] && [[ "${QUERY_STRING:-}" =~ result=1 ]]; then
         echo '{"ok":false,"error":"missing_id"}'
         exit 0
     fi
+    if [[ "${QUERY_STRING:-}" =~ (^|&)op_id= ]]; then
+        if [[ "${QUERY_STRING:-}" =~ (^|&)op_id=([a-f0-9]{32})(&|$) ]]; then
+            OP_ID="${BASH_REMATCH[2]}"
+        else
+            echo '{"ok":false,"error":"invalid_operation"}'
+            exit 0
+        fi
+    fi
     RF="${RESULT_DIR}/${RID}.json"
-    if [[ -s "$RF" ]]; then
+    if [[ -n "$OP_ID" ]]; then
+        python3 -c 'import json, sys
+try:
+    with open(sys.argv[1]) as f:
+        result = json.load(f)
+except (OSError, ValueError):
+    result = {}
+if not isinstance(result, dict) or result.get("op_id") != sys.argv[3] or result.get("id") != sys.argv[2]:
+    result = {"ok": True, "pending": True, "id": sys.argv[2], "op_id": sys.argv[3]}
+print(json.dumps(result))' "$RF" "$RID" "$OP_ID"
+    elif [[ -s "$RF" ]]; then
         cat "$RF"
     else
         echo '{"ok":true,"pending":true,"id":"'"$RID"'"}'
@@ -123,6 +142,17 @@ case "$SID" in
         exit 0
         ;;
 esac
+if [[ ${#SID} -gt 64 ]]; then
+    printf 'Content-type: application/json; charset=UTF-8\n\n{"ok":false,"error":"invalid_id"}\n'
+    exit 0
+fi
+
+# Fresh admission identity prevents a previous terminal result completing this request.
+OP_ID=$(python3 -c 'import secrets; print(secrets.token_hex(16))')
+if [[ ! "$OP_ID" =~ ^[a-f0-9]{32}$ ]]; then
+    printf 'Content-type: application/json; charset=UTF-8\n\n{"ok":false,"error":"operation_id_failed"}\n'
+    exit 0
+fi
 
 echo "$(date '+%Y-%m-%d %H:%M:%S') services_ctrl.cgi: ${ACTION} ${SID} (web, async)" >> /var/log/sa02m_install.log 2>&1
 
@@ -130,10 +160,6 @@ echo "$(date '+%Y-%m-%d %H:%M:%S') services_ctrl.cgi: ${ACTION} ${SID} (web, asy
 echo "Content-type: application/json; charset=UTF-8"
 echo "Cache-Control: no-store"
 echo ""
-if command -v python3 >/dev/null 2>&1; then
-    python3 -c "import json; print(json.dumps({'ok': True, 'pending': True, 'id': '$SID', 'action': '$ACTION'}))"
-else
-    printf '{"ok":true,"pending":true,"id":"%s","action":"%s"}\n' "$SID" "$ACTION"
-fi
+printf '{"ok":true,"pending":true,"id":"%s","action":"%s","op_id":"%s"}\n' "$SID" "$ACTION" "$OP_ID"
 
-nohup sudo -n "$CTL" "$ACTION" "$SID" >> /var/log/sa02m_install.log 2>&1 &
+nohup sudo -n "$CTL" "$ACTION" "$SID" "$OP_ID" </dev/null >> /var/log/sa02m_install.log 2>&1 &

@@ -4,13 +4,12 @@
 Pure-unit: no serial port, no MQTT broker. Pins:
   * both record grammars byte-for-byte (WB value is LE, legacy value is BE);
   * whole-frame validation (truncated / trailing / wrong n_events -> None);
-  * the reboot collision rule — a WB reboot record must never be read as a
-    legacy COIL event, even for a slave cached as legacy;
-  * the latent invariant the auto-detection rests on, stated at the WB gate so
+  * the scalar reboot collision rule, including a slave cached as legacy;
+  * the latent invariant the auto-detection rests on, stated at the scalar WB gate so
     it covers a frame of any length: no (type, register high byte) pair a
     genuine legacy frame can START with — the configured ranges plus a reboot
     at any register — satisfies that gate, so such a frame fails WB on its
-    first record and therefore never satisfies the WB grammar;
+    first record and therefore never satisfies the scalar WB grammar;
   * bus-garbage robustness (no exception, never more events than announced).
 
 Contract home: docs/contracts/fmb-event-wire.md.
@@ -111,8 +110,12 @@ def frame(records: bytes, n_events: int) -> bytes:
 
 
 def parse_wb(buf: bytes, n_events: int):
-    return bridge.FastModbusEventPortManager._parse_events_wb(
+    """Project only packets wholly representable by the scalar control ABI."""
+    records = bridge.FastModbusEventPortManager._parse_events_wb(
         9, buf, 6, len(buf), n_events)
+    if records is None or any(not rec.fits_control for rec in records):
+        return None
+    return [(rec.slave, rec.kind, rec.reg, rec.value) for rec in records]
 
 
 def parse_legacy(buf: bytes, n_events: int):
@@ -201,16 +204,53 @@ class TestLegacyParser(unittest.TestCase):
 
 # ── 5. Whole-frame validation ────────────────────────────────────────────────
 class TestFrameValidation(unittest.TestCase):
-    def test_n_events_mismatch_rejected_by_both(self):
+    def test_wb_register_record_retains_full_width_and_value(self):
+        for wire in (1, 2, 3, 4):
+            for width in range(1, 9):
+                with self.subTest(wire=wire, width=width):
+                    payload = bytes(range(1, width + 1))
+                    buf = frame(bytes((width, wire, 0, 9)) + payload, 2)
+                    records = bridge.FastModbusEventPortManager._parse_events_wb(
+                        9, buf, 6, len(buf), 2)
+                    self.assertIsNotNone(records)
+                    record, = records
+                    self.assertEqual((record.width, record.value),
+                                     (width, int.from_bytes(payload, 'little')))
+
+    def test_extended_width_never_overrides_an_ambiguous_legacy_reboot(self):
+        # Legacy INPUT and two reboots. WB would read a 3-byte register
+        # and a single reboot if its extended grammar were allowed to win.
+        data = bytes.fromhex('03 01 01 00 00 0f 00 00 0f 00 05')
+        buf = frame(data, 3)
+        self.assertIsNotNone(parse_legacy(buf, 3))
+        mgr = bridge.FastModbusEventPortManager('test', 19200)
+        wb = mgr._parse_events_wb(9, buf, 6, len(buf), 3)
+        self.assertEqual([r.width for r in wb], [3, 0])
+        self.assertEqual(mgr._parse_event_records(9, buf, 6, len(buf), 3), parse_legacy(buf, 3))
+        self.assertIs(mgr._wb_frame_slaves[9], False)
+        mgr._wb_frame_slaves[9] = True
+        self.assertEqual(mgr._parse_event_records(9, buf, 6, len(buf), 3),
+                         [(9, bridge.FMB_EVT_REBOOT, 5, -1)])
+
+    def test_invalid_wb_register_and_reboot_widths_reject_the_whole_packet(self):
+        prefix = wb_record(4, 9, 4)
+        for width, wire in ((0, 1), (0, 3), (9, 4), (1, 0x0f), (2, 5)):
+            with self.subTest(width=width, wire=wire):
+                buf = frame(prefix + bytes((width, wire, 0, 3)) + bytes(width), 2)
+                self.assertIsNone(bridge.FastModbusEventPortManager._parse_events_wb(
+                    9, buf, 6, len(buf), 2))
+
+    def test_wb_queue_can_exceed_delivered_records_but_legacy_count_is_exact(self):
         rec = wb_record(4, 403, 5)
-        self.assertIsNone(parse_wb(frame(rec, 2), 2))       # promises 2, has 1
+        self.assertEqual(parse_wb(frame(rec, 2), 2),
+                         [(9, bridge.FMB_EVT_INPUT, 403, 5)])
         self.assertIsNone(parse_wb(frame(rec + rec, 1), 1))  # 2 present, 1 read
         leg = legacy_record(bridge.FMB_EVT_INPUT, 403, 5)
         self.assertIsNone(parse_legacy(frame(leg, 2), 2))
         self.assertIsNone(parse_legacy(frame(leg + leg, 1), 1))
 
-    def test_empty_payload_with_events_promised(self):
-        self.assertIsNone(parse_wb(frame(b"", 1), 1))
+    def test_empty_payload_with_queued_events(self):
+        self.assertEqual(parse_wb(frame(b"", 1), 1), [])
         self.assertIsNone(parse_legacy(frame(b"", 1), 1))
 
 
@@ -292,12 +332,12 @@ class TestCollisionPins(unittest.TestCase):
                                                   len(legacy_only), 1),
                          [(9, bridge.FMB_EVT_INPUT, 403, 564)])
 
-    def test_single_record_legacy_frames_never_satisfy_wb_grammar(self):
+    def test_single_record_legacy_frames_never_satisfy_scalar_wb_grammar(self):
         # Scope, stated narrowly on purpose: this corpus builds ONE-record
         # frames only, so on its own it says nothing about multi-record frames
         # (a two-record frame can be accepted where each record alone is not).
         # The general statement — for every n — is
-        # test_no_first_record_a_legacy_frame_can_carry_satisfies_the_wb_gate
+        # test_no_first_record_a_legacy_frame_can_carry_satisfies_the_scalar_wb_gate
         # below.
         vals = (0, 1, 0x7F, 0x80, 0xFF, 0x0100, 0x0F0F, 0xFFFF)
         checked = 0
@@ -313,9 +353,9 @@ class TestCollisionPins(unittest.TestCase):
                     checked += 1
         self.assertGreater(checked, 500, "corpus went vacuous")
 
-    def test_no_first_record_a_legacy_frame_can_carry_satisfies_the_wb_gate(self):
+    def test_no_first_record_a_legacy_frame_can_carry_satisfies_the_scalar_wb_gate(self):
         # THE invariant the auto-detection rests on, stated at the gate so it
-        # holds for a frame of ANY length: the WB parser accepts a record only
+        # holds for a frame of ANY length: a WB record fits the native control only
         # when buf[pos+1] is a wire code and buf[pos] equals that wire's payload
         # length. In a legacy record those two bytes are the type and the
         # register HIGH byte. The corpus below is every (type, reg_high) pair a
@@ -323,7 +363,7 @@ class TestCollisionPins(unittest.TestCase):
         # configured ranges (today [(0,0), (2,0), (3,0), (3,1), (3,2)]) PLUS a
         # reboot, which is not a configured range yet can stand first and whose
         # register is unconstrained, hence all 256 high bytes. None passes the
-        # gate, so such a frame fails WB on its FIRST record and therefore as a
+        # gate, so such a frame fails scalar WB on its FIRST record and therefore as a
         # whole, for every n. A failure here means auto-detection is no longer
         # safe — see docs/contracts/fmb-event-wire.md — NOT that the test needs
         # relaxing.

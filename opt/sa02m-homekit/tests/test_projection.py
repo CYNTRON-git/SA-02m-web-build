@@ -67,6 +67,17 @@ class MappingRowTests(unittest.TestCase):
         self.assertEqual(svcs, [(("M01", "M02"), "Lightbulb", ("On", "Brightness"))])
         self.assertEqual(skipped, [])
 
+    def test_legacy_read_only_capabilities_never_create_hap_setters(self):
+        alarm = dict(brightness(), writable=False)
+        color = {"type": P.CAP_COLOR, "parameters": {"color_model": "rgb"}, "writable": False}
+        services, skipped = services_of(dev("light", "devices.types.light"), [on_off(), alarm, color])
+        self.assertEqual(services, [(("M01",), "Lightbulb", ("On",))])
+        self.assertEqual(len(skipped), 2)
+        services, skipped = services_of(dev("t", "devices.types.thermostat"),
+                                       [dict(setpoint(), writable=False)], [flt("temperature")])
+        self.assertEqual([row[1] for row in services], ["TemperatureSensor"])
+        self.assertEqual(len(skipped), 1)
+
     def test_m02_brightness_without_lightbulb_is_skipped(self):
         svcs, skipped = services_of(dev("s", "devices.types.switch"), [on_off(), brightness()])
         self.assertEqual([s[1] for s in svcs], ["Switch"])

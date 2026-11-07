@@ -1,12 +1,12 @@
 /* SA-02m MQTT tab — v1.0 */
 
-import { AI_SENSOR_LABELS } from './ai-sensors.js?v=1.0.7.30';
+import { AI_SENSOR_LABELS } from './ai-sensors.js?v=1.0.7.33';
 
 // The add-device dialog's Modbus TCP rules and wording (pure, unit-tested).
 import {
   makeTcpDeviceId as tcpDeviceId, typeOptionAllowed, dialogRows, addrMax,
   buildTcpEntry, saveRefusalText, probeResultView,
-} from './mqtt/tcp-dialog.js?v=1.0.7.30&r=spodes1';
+} from './mqtt/tcp-dialog.js?v=1.0.7.33&r=spodes1';
 
 function uiT(s) {
   return window.sa02mI18n ? window.sa02mI18n.t(String(s)) : String(s);
@@ -346,10 +346,12 @@ const _aiTypeEditGuard = new Set();
 const _aiTypeEditGuardTimers = Object.create(null);
 /** Ожидаемый тип после выбора до подтверждения с шины (как _ai_sensor_pending). */
 const _aiTypePending = Object.create(null);
-/** Дедлайн только у живой смены типа. «Сохранить» ждёт шину без таймаута. */
 const _aiTypePendingDeadline = Object.create(null);
+const _aiTypeReceipts = Object.create(null);
+const _aiTypeBeforeReceipt = Object.create(null);
+const _aiTypeReadSeq = Object.create(null);
 const _AI_TYPE_EDIT_GUARD_MS = 450;
-const _AI_TYPE_CONFIRM_MS = 5000;
+const _AI_TYPE_CONFIRM_MS = 16000;
 let _unsaved = false;
 /** Выделенные строки таблицы «Устройства на шине» (id устройств). */
 let _selectedDeviceIds = new Set();
@@ -514,21 +516,6 @@ function aiSensorBucketJs(code) {
   return 'other';
 }
 
-/** Как в прошивальщике: тип на N дублируется с P только для ТХА и 3-проводного RTD. */
-function syncMr02mPairAfterParentChange(dev, parentCh, pendingOpts) {
-  const mt = getModuleTypeCode(dev);
-  const nCh = parentCh + 1;
-  if (!mr02mAiIsNLeg(mt, nCh)) return;
-  if (!dev.channels) dev.channels = {};
-  const pCfg = getOrCreateChannel(dev.channels, 'ai', parentCh);
-  const st = pCfg.sensor_type != null ? Number(pCfg.sensor_type) : 0;
-  if (!mr02mAiMirrorTypeToN(st)) return false;
-  const nCfg = getOrCreateChannel(dev.channels, 'ai', nCh);
-  nCfg.sensor_type = st;
-  aiTypeSetPending(dev.id, nCh, st, pendingOpts);
-  return true;
-}
-
 function aiTypeControlKey(devId, ch) {
   return `${devId}:ai_${ch}`;
 }
@@ -554,6 +541,11 @@ function aiTypeEditGuardReleaseLater(devId, ch) {
 function aiTypeSetPending(devId, ch, code, opts) {
   const key = aiTypeControlKey(devId, ch);
   _aiTypePending[key] = Number(code) & 0xffff;
+  const previous = _aiTypeReceipts[devId];
+  _aiTypeBeforeReceipt[key] = previous ? {
+    receipt: previous.receipts[`ai_${ch}`]?.receipt || '',
+    seq: _aiTypeReadSeq[devId] || 0,
+  } : null;
   if (opts && opts.confirmMs) _aiTypePendingDeadline[key] = Date.now() + opts.confirmMs;
 }
 
@@ -561,74 +553,46 @@ function aiTypeDropPending(devId, ch) {
   const key = aiTypeControlKey(devId, ch);
   delete _aiTypePending[key];
   delete _aiTypePendingDeadline[key];
+  delete _aiTypeBeforeReceipt[key];
 }
 
-function aiTypeClearPendingForDevice(devId) {
-  const prefix = `${devId}:ai_`;
-  for (const key of Object.keys(_aiTypePending)) {
-    if (!key.startsWith(prefix)) continue;
-    delete _aiTypePending[key];
-    delete _aiTypePendingDeadline[key];
+function aiTypeReconcilePending(dev, receipts, seq) {
+  if (!dev || !receipts || typeof receipts !== 'object') return;
+  if (seq <= (_aiTypeReceipts[dev.id]?.seq || 0)) return;
+  _aiTypeReceipts[dev.id] = {receipts, seq};
+  const rows = Object.entries(receipts).filter(([ctrl, result]) =>
+    /^ai_(?:[1-9]|1[0-2])$/.test(ctrl) && result && typeof result.receipt === 'string' &&
+    result.receipt && Number.isInteger(result.code) && result.code >= 0 && result.code <= 42);
+  const confirmed = new Set();
+  for (const [ctrl, result] of rows) {
+    const ch = Number(ctrl.slice(3));
+    const key = aiTypeControlKey(dev.id, ch);
+    const before = _aiTypeBeforeReceipt[key];
+    if (_aiTypePending[key] !== result.code || !before ||
+        seq <= before.seq || before.receipt === result.receipt) continue;
+    confirmed.add(result.receipt);
+    aiTypeDropPending(dev.id, ch);
   }
-}
-
-/** После «Сохранить и применить» — ожидаемые типы из YAML до подтверждения с шины (как _ai_sensor_pending). */
-function aiTypeApplyPendingFromDeviceConfig(dev) {
-  if (!dev || dev.type !== 'mr02m') return;
-  const mtCode = getModuleTypeCode(dev);
-  const aiCount = (MR02M_TYPES[mtCode] || {}).ai || 0;
-  const channels = dev.channels || {};
-  for (let i = 1; i <= aiCount; i++) {
-    const chCfg = getOrCreateChannel(channels, 'ai', i);
-    const st = chCfg.sensor_type != null ? Number(chCfg.sensor_type) : 0;
-    aiTypeSetPending(dev.id, i, st);
-  }
-}
-
-function aiTypeReconcilePending(devId, sensorTypes) {
-  if (!sensorTypes) return;
-  const prefix = `${devId}:ai_`;
-  for (const key of Object.keys(_aiTypePending)) {
-    if (!key.startsWith(prefix)) continue;
-    const ctrl = key.slice(devId.length + 1);
-    const live = sensorTypes[ctrl];
-    if (live == null || live === '') continue;
-    if ((Number(live) & 0xffff) === _aiTypePending[key]) {
-      delete _aiTypePending[key];
-      delete _aiTypePendingDeadline[key];
+  for (const [ctrl, result] of rows) {
+    if (confirmed.has(result.receipt)) {
+      getOrCreateChannel(dev.channels, 'ai', Number(ctrl.slice(3))).sensor_type = result.code;
     }
   }
 }
 
-/** Живая смена типа: нет echo с шины за 5 с — вернуть селект к тому, что модуль ещё держит. */
 function aiTypeSweepPending(devId) {
   const prefix = `${devId}:ai_`;
-  const now = Date.now();
-  const lost = [];
-  for (const key of Object.keys(_aiTypePendingDeadline)) {
-    if (!key.startsWith(prefix) || now <= _aiTypePendingDeadline[key]) continue;
-    if (_aiTypePending[key] == null) {
-      delete _aiTypePendingDeadline[key];
-      continue;
+  let expired = false;
+  for (const [key, deadline] of Object.entries(_aiTypePendingDeadline)) {
+    if (key.startsWith(prefix) && Date.now() > deadline) {
+      aiTypeDropPending(devId, Number(key.slice(prefix.length)));
+      expired = true;
     }
-    lost.push(Number(key.slice(prefix.length)));
-    delete _aiTypePending[key];
-    delete _aiTypePendingDeadline[key];
   }
-  if (!lost.length) return;
+  if (!expired) return;
   const dev = (_config.devices || []).find(d => d.id === devId);
-  if (dev) {
-    for (const ch of lost) aiTypeRevertChannelToLive(dev, ch);
-    refreshAiTypeSelects(dev);
-  }
-  showToast('Модуль не подтвердил тип датчика', 'warn');
-}
-
-function aiTypeRevertChannelToLive(dev, ch) {
-  if (!dev.channels) dev.channels = {};
-  const live = _liveSensorTypes[dev.id] && _liveSensorTypes[dev.id][`ai_${ch}`];
-  if (live == null || live === '') return;
-  getOrCreateChannel(dev.channels, 'ai', ch).sensor_type = Number(live) & 0xffff;
+  if (dev) refreshAiTypeSelects(dev);
+  showToast('Применение типа датчика не подтверждено', 'warn');
 }
 
 function aiTypeIsEditBlocked(devId, ch, sel) {
@@ -765,13 +729,12 @@ function mr02mAiEffectiveSensorType(dev, ch, channels) {
 
 function liveUnitFor(devId, controlName, fallback) {
   if (controlName === 'uptime_s') return '';
+  if (/^ao_\d+$/.test(controlName) && mrAoIsDimmer(devId)) return '%';
   const ai = /^ai_(\d+)$/.exec(controlName);
   if (ai) {
-    const dev = (_config.devices || []).find(d => d.id === devId);
-    if (dev) {
-      return aiUnitsForCode(mr02mAiEffectiveSensorType(
-        dev, Number(ai[1]), dev.channels || {}));
-    }
+    const observed = _liveSensorTypes[devId]?.[controlName];
+    if (observed != null && observed !== '') return aiUnitsForCode(Number(observed));
+    return formatUnitLabel(_liveUnits[devId]?.[controlName] || '');
   }
   const u = _liveUnits[devId] && _liveUnits[devId][controlName];
   const raw = u != null && u !== '' ? u : (fallback || '');
@@ -806,7 +769,12 @@ function effectiveUptimeSec(devId) {
   return Number.isNaN(s) ? null : s;
 }
 
-function formatLiveDisplay(controlName, rec) {
+function mrAoIsDimmer(devOrId) {
+  const dev = typeof devOrId === 'object' ? devOrId : (_config.devices || []).find(d => d.id === devOrId);
+  return !!dev && dev.type === 'mr02m' && (detectedModuleTypeCode(dev.id) ?? getModuleTypeCode(dev)) === 15;
+}
+
+function formatLiveDisplay(controlName, rec, devId) {
   if (!rec) return '—';
   if (rec.isError) return '⚠';
   const v = rec.value;
@@ -842,7 +810,7 @@ function formatLiveDisplay(controlName, rec) {
   }
   if (/^ao_\d+$/.test(controlName)) {
     const raw = parseInt(v, 10);
-    if (!Number.isNaN(raw)) return (raw / 100).toFixed(2);
+    if (!Number.isNaN(raw)) return mrAoIsDimmer(devId) ? (raw / 10).toFixed(1) : (raw / 100).toFixed(2);
   }
   return String(v);
 }
@@ -886,7 +854,7 @@ function updateLiveCell(devId, controlName) {
     el.textContent = s == null ? '—' : formatUptimeSeconds(s);
     el.className = 'mqtt-ch-live' + (rec && rec.isError ? ' mqtt-ch-live-err' : rec ? ' mqtt-ch-live-ok' : '');
   } else {
-    el.textContent = formatLiveDisplay(controlName, rec);
+    el.textContent = formatLiveDisplay(controlName, rec, devId);
     el.className = 'mqtt-ch-live' + (rec && rec.isError ? ' mqtt-ch-live-err' : rec ? ' mqtt-ch-live-ok' : '');
   }
   const unitEl = document.querySelector(`[data-unit="${devId}:${controlName}"]`);
@@ -941,6 +909,8 @@ function updateDoToggleBtn(devId, ctrl, btnOpt) {
   if (!btn) return;
   const pending = _doPending[doToggleKey(devId, ctrl)];
   btn.classList.remove('hw-active-blue', 'na', 'is-pending');
+  btn.removeAttribute('aria-busy');
+  btn.removeAttribute('aria-disabled');
   if (btn.dataset.chDisabled === '1') {
     btn.disabled = true;
     btn.textContent = uiT('н/д');
@@ -949,11 +919,18 @@ function updateDoToggleBtn(devId, ctrl, btnOpt) {
     return;
   }
   if (pending) {
-    // Optimistic: full target-state visual right away; the pending hint is the
-    // tooltip + wait cursor only. Re-clicks are ignored by the _doPending
-    // guard in setDoOutput, not by a gray disabled state.
     btn.disabled = false;
     btn.classList.add('is-pending');
+    if (pending.isMr) {
+      const actual = doLiveLogical(devId, ctrl);
+      btn.textContent = uiT('Ждём…');
+      if (actual === 1) btn.classList.add('hw-active-blue');
+      if (actual === -1) btn.classList.add('na');
+      btn.setAttribute('aria-busy', 'true');
+      btn.setAttribute('aria-disabled', 'true');
+      btn.title = uiT('Ожидание подтверждения с шины');
+      return;
+    }
     btn.textContent = uiT(pending.target ? 'ВКЛ' : 'ВЫКЛ');
     if (pending.target) btn.classList.add('hw-active-blue');
     btn.title = uiT('Ожидание подтверждения с шины');
@@ -981,12 +958,8 @@ function refreshDoTogglesForDevice(devId) {
   });
 }
 
-/** Reconcile pending with the bus. The button already shows the target
-    (optimistic), so: echo matches — silently confirmed (no visible change);
-    a known value differing from BOTH target and the pre-click value — a
-    genuine contradicting echo, snap to it (a reading equal to `prev` is
-    likely a stale pre-write poll and is left to the deadline); deadline
-    passed — revert to the live state + timeout toast. */
+/** Reconcile pending with observed state; unchanged pre-command state waits
+    for the existing deadline. A value topic carries no command identifier. */
 function sweepDoPending(devId) {
   const prefix = `${devId}:`;
   const now = Date.now();
@@ -996,7 +969,7 @@ function sweepDoPending(devId) {
     const p = _doPending[key];
     const live = doLiveLogical(devId, ctrl);
     if (live === p.target) {
-      delete _doPending[key]; // confirmed — already rendered
+      delete _doPending[key];
       updateDoToggleBtn(devId, ctrl);
     } else if (live !== -1 && live !== p.prev) {
       delete _doPending[key]; // contradicting echo — show the bus truth
@@ -1004,7 +977,8 @@ function sweepDoPending(devId) {
     } else if (now > p.deadline) {
       delete _doPending[key];
       updateDoToggleBtn(devId, ctrl);
-      showToast('Нет подтверждения от моста (мост остановлен или модуль не отвечает)', 'warn');
+      showToast(p.isMr ? 'Заданное состояние не наблюдается. Проверьте режим/задержку модуля и связь.' :
+        'Нет подтверждения от моста (мост остановлен или модуль не отвечает)', 'warn');
     }
   }
 }
@@ -1018,8 +992,8 @@ function setDoOutput(dev, ctrl) {
   if (!btn || btn.disabled) return;
   const prev = doLiveLogical(devId, ctrl);
   const target = prev === 1 ? 0 : 1;
-  _doPending[key] = {target, prev, deadline: Date.now() + _DO_CONFIRM_DEADLINE_MS};
-  updateDoToggleBtn(devId, ctrl); // optimistic: target state rendered right away
+  _doPending[key] = {target, prev, isMr: dev.type === 'mr02m', deadline: Date.now() + _DO_CONFIRM_DEADLINE_MS};
+  updateDoToggleBtn(devId, ctrl);
   fetch('cgi-bin/mqtt_set.cgi', {
     method: 'POST',
     headers: withCsrfHeaders({'Content-Type': 'application/x-www-form-urlencoded'}),
@@ -1137,7 +1111,7 @@ function updateAoInput(devId, ctrl, inpOpt) {
     return; // keep the optimistically-shown target
   }
   inp.classList.remove('is-pending');
-  inp.title = uiT('Задание, 0–1000 (1000 = 10.00 В)');
+  inp.title = uiT(mrAoIsDimmer(devId) ? 'Задание, 0–1000 (1000 = 100%)' : 'Задание, 0–1000 (1000 = 10.00 В)');
   if (aoInputIsEditBlocked(devId, ctrl, inp)) return; // operator typing — do not overwrite
   const live = aoLiveRaw(devId, ctrl);
   inp.value = live < 0 ? '' : String(live);
@@ -1173,7 +1147,8 @@ function sweepAoPending(devId) {
     } else if (now > p.deadline) {
       delete _aoPending[key];
       updateAoInput(devId, ctrl);
-      showToast('Нет подтверждения от моста (мост остановлен или модуль не отвечает)', 'warn');
+      showToast(p.isMr ? 'Заданное состояние не наблюдается. Проверьте режим/задержку модуля и связь.' :
+        'Нет подтверждения от моста (мост остановлен или модуль не отвечает)', 'warn');
     }
   }
 }
@@ -1194,7 +1169,7 @@ function setAoOutput(dev, ctrl) {
   if (_aoPending[key]) return; // a write is already in flight — ignore re-submit
   const prev = aoLiveRaw(devId, ctrl);
   if (prev === target) return; // already at target — no redundant analog re-drive
-  _aoPending[key] = {target, prev, deadline: Date.now() + _DO_CONFIRM_DEADLINE_MS};
+  _aoPending[key] = {target, prev, isMr: dev.type === 'mr02m', deadline: Date.now() + _DO_CONFIRM_DEADLINE_MS};
   updateAoInput(devId, ctrl, inp); // optimistic pending
   fetch('cgi-bin/mqtt_set.cgi', {
     method: 'POST',
@@ -1323,15 +1298,17 @@ function refreshAiTypeSelects(dev) {
     const ctrl = `ai_${i}`;
     const unitEl = row.querySelector(`[data-unit="${dev.id}:${ctrl}"]`);
     if (unitEl) {
-      const u = aiUnitsForCode(effType);
+      const u = liveUnitFor(dev.id, ctrl, '');
       unitEl.setAttribute('data-unit-default', u);
-      unitEl.textContent = liveUnitFor(dev.id, ctrl, u);
+      unitEl.textContent = u;
       unitEl.hidden = !u ? '' : undefined;
     }
   }
 }
 
 async function prefetchDeviceLive(devId) {
+  const seq = (_aiTypeReadSeq[devId] || 0) + 1;
+  _aiTypeReadSeq[devId] = seq;
   const data = await apiGet(
     `cgi-bin/mqtt_live.cgi?device=${encodeURIComponent(devId)}`).catch(() => null);
   if (!data || !data.ok) {
@@ -1340,7 +1317,6 @@ async function prefetchDeviceLive(devId) {
   }
   if (data.sensor_types && typeof data.sensor_types === 'object') {
     _liveSensorTypes[devId] = Object.assign(Object.create(null), data.sensor_types);
-    aiTypeReconcilePending(devId, data.sensor_types);
   }
   for (const [ctrl, val] of Object.entries(data.controls || {})) {
     if (ctrl === 'uptime_s') setLiveUptimeAnchor(devId, val);
@@ -1354,6 +1330,7 @@ async function prefetchDeviceLive(devId) {
     setLiveValue(devId, ctrl, err, true, {skipDom: true});
   }
   const dev = (_config.devices || []).find(d => d.id === devId);
+  aiTypeReconcilePending(dev, data.sensor_type_confirmations, seq);
   if (dev) refreshAiTypeSelects(dev);
   refreshLiveCellsForDevice(devId);
   if (dev) renderModuleTypeMismatch(dev);
@@ -1446,9 +1423,9 @@ function liveSpan(devId, controlName, unit) {
   let display;
   if (controlName === 'uptime_s') {
     const s = effectiveUptimeSec(devId);
-    display = s == null ? formatLiveDisplay(controlName, rec) : formatUptimeSeconds(s);
+    display = s == null ? formatLiveDisplay(controlName, rec, devId) : formatUptimeSeconds(s);
   } else {
-    display = formatLiveDisplay(controlName, rec);
+    display = formatLiveDisplay(controlName, rec, devId);
   }
   const wrap = h('span', {'class': 'mqtt-ch-live-wrap'});
   wrap.appendChild(h('span', {
@@ -2329,11 +2306,12 @@ function appendMr02mDiGroup(dev, channels, count) {
 }
 
 function appendMr02mAoGroup(dev, channels, count) {
-  const pack = buildChannelWidget('AO — аналоговые выходы');
+  const pack = buildChannelWidget(mrAoIsDimmer(dev) ? 'AO — управление диммерами' : 'AO — аналоговые выходы');
+  if (mrAoIsDimmer(dev)) pack.body.appendChild(h('div', {'class': 'flasher-config-note'}, 'Заданная яркость, не измерение напряжения нагрузки. Включение выхода задаётся отдельно через DO.'));
   for (let i = 1; i <= count; i++) {
     const chCfg = getOrCreateChannel(channels, 'ao', i);
     const ctrl = `ao_${i}`;
-    const row = buildChannelRow(chCfg, topicPath(dev.id, ctrl), 'ao', i, dev, ctrl, 'В');
+    const row = buildChannelRow(chCfg, topicPath(dev.id, ctrl), 'ao', i, dev, ctrl, mrAoIsDimmer(dev) ? '%' : 'В');
     row.appendChild(buildAoSetpointInput(dev, ctrl, chCfg.enabled !== false));
     const cb = row.querySelector('.mqtt-ch-toggle input[type=checkbox]');
     if (cb) cb.addEventListener('change', e => setAoInputChannelEnabled(dev.id, ctrl, e.target.checked));
@@ -2375,7 +2353,6 @@ function applyAiSensorType(dev, ch, code) {
   const fail = (j) => {
     for (const t of targets) {
       aiTypeDropPending(dev.id, t);
-      aiTypeRevertChannelToLive(dev, t);
     }
     refreshAiTypeSelects(dev);
     if (j && j.error === 'unauthorized') showToast('Нет доступа', 'err');
@@ -2390,7 +2367,10 @@ function applyAiSensorType(dev, ch, code) {
     credentials: 'same-origin',
   })
     .then(r => r.json())
-    .then(j => { if (j && j.ok) return; fail(j); })
+    .then(j => {
+      if (j && j.ok) showToast('Запрос типа датчика отправлен в MQTT');
+      else fail(j);
+    })
     .catch(() => fail(null));
 }
 
@@ -2412,15 +2392,14 @@ function appendMr02mAiGroup(dev, channels, mtCode, count) {
         const code = Number(e.target.value);
         if (!Number.isFinite(code)) return;
         const opts = {confirmMs: _AI_TYPE_CONFIRM_MS};
-        chCfg.sensor_type = code;
         aiTypeSetPending(dev.id, i, code, opts);
-        if (!mr02mAiIsNLeg(mtCode, i)) syncMr02mPairAfterParentChange(dev, i, opts);
+        if (!mr02mAiIsNLeg(mtCode, i) && mr02mAiMirrorTypeToN(code) &&
+            mr02mAiIsNLeg(mtCode, i + 1)) aiTypeSetPending(dev.id, i + 1, code, opts);
         refreshAiTypeSelects(dev);
         applyAiSensorType(dev, i, code);
       }});
     const nMirror = mr02mAiNMirrorActive(dev, i, channels, mtCode);
     if (nMirror) {
-      chCfg.sensor_type = effType;
       sel.disabled = true;
       sel.title = 'Тип наследуется с P-канала (ТХА / 3-проводный RTD)';
     }
@@ -3180,6 +3159,7 @@ function addGatewayDeviceFromScan(scanDev, type, name, gateway) {
     dev.poll_power_s = 5; dev.poll_energy_s = 60; dev.poll_diag_s = 120;
     dev.ct_ratio = 4000; dev.phases = ['A','B','C']; dev.channels_enabled = {};
   } else if (type === 'led') {
+    dev.fast_modbus = false;
     dev.poll_s = 2;
     dev.poll_text_s = 30;
   } else if (type === 'template') {
@@ -3235,6 +3215,7 @@ function addDeviceFromScan(scanDev, type, name, port, baud, gateway) {
     dev.poll_power_s = 5; dev.poll_energy_s = 60; dev.poll_diag_s = 120;
     dev.ct_ratio = 4000; dev.phases = ['A','B','C']; dev.channels_enabled = {};
   } else if (type === 'led') {
+    dev.fast_modbus = true;
     // PlayCtrl 416 + colour; text block is slower. Same baud as the COM's
     // other devices — mixed baud on one port is unsupported.
     dev.poll_s = 2;
@@ -3688,6 +3669,7 @@ function confirmAddDevice() {
     dev.phases = ['A','B','C'];
     dev.channels_enabled = {};
   } else if (type === 'led') {
+    dev.fast_modbus = true;
     dev.poll_s = 2;
     dev.poll_text_s = 30;
   }
@@ -3720,7 +3702,6 @@ async function saveAndApply() {
   if (res && res.ok) {
     _unsaved = false;
     for (const dev of _config.devices || []) {
-      aiTypeApplyPendingFromDeviceConfig(dev);
       if (isAccordionOpen(dev.id)) refreshAiTypeSelects(dev);
     }
     showToast(res.restart === 'pending'

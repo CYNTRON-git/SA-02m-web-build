@@ -39,6 +39,61 @@ SA02M_HW_RC_BUSY=75
 SA02M_HW_RC_TIMEOUT=76
 SA02M_HW_RC_IO=77
 SA02M_HW_RC_TOOL=78
+SA02M_HW_RC_UNAVAILABLE=79
+
+# One authoritative variant file; missing means the legacy single-NIC board.
+# Parse data only, never source it. Invalid explicit configuration fails closed.
+sa02m_hw_variant() {
+    local path=/etc/sa02m_hw_variant.conf line value="" count=0 contents=""
+    local LC_ALL=C whitespace=$' \t\r'
+    local assignment=$'^[ \t\r]*SA02M_HW_VARIANT[ \t\r]*=[ \t\r]*(.*)$'
+    local utf8=$'^([\x01-\x7f]|[\xc2-\xdf][\x80-\xbf]|\xe0[\xa0-\xbf][\x80-\xbf]|[\xe1-\xec\xee-\xef][\x80-\xbf]{2}|\xed[\x80-\x9f][\x80-\xbf]|\xf0[\x90-\xbf][\x80-\xbf]{2}|[\xf1-\xf3][\x80-\xbf]{3}|\xf4[\x80-\x8f][\x80-\xbf]{2})*$'
+    if [ ! -e "$path" ] && [ ! -L "$path" ]; then
+        # A denied parent lookup is not evidence that the variant is absent.
+        if [ -x "${path%/*}" ]; then printf 'sa02m-1eth'; else printf 'unknown'; fi
+        return
+    fi
+    if [ ! -f "$path" ] || [ ! -r "$path" ]; then
+        printf 'unknown'
+        return
+    fi
+    # Ordinary Bash line reads discard NUL. Detect its delimiter before parsing.
+    if IFS= read -r -d '' contents < "$path" 2>/dev/null; then
+        printf 'unknown'
+        return
+    fi
+    # Validate bytes in the C locale without a process per hardware poll.
+    if ! [[ "$contents" =~ $utf8 ]]; then
+        printf 'unknown'
+        return
+    fi
+    while IFS= read -r line; do
+        if [[ "$line" =~ $assignment ]]; then
+            count=$((count + 1))
+            value=${BASH_REMATCH[1]}
+            value="${value%"${value##*[!$whitespace]}"}"
+            case "$value" in
+                \"*\") value=${value:1:${#value}-2} ;;
+                \'*\') value=${value:1:${#value}-2} ;;
+            esac
+        fi
+    done <<< "$contents"
+    if [ "$count" = 1 ]; then
+        case "$value" in sa02m-1eth|sa02m-2eth) printf '%s' "$value"; return ;; esac
+    fi
+    printf 'unknown'
+}
+
+sa02m_hw_channel_supported() {
+    [ "$1" != do ] || [ "${SA02M_HW_VARIANT_SNAPSHOT:-$(sa02m_hw_variant)}" = sa02m-1eth ]
+}
+
+sa02m_hw_normalize_capabilities() {
+    if ! sa02m_hw_channel_supported do; then
+        PIN_DO=0
+        HW_DO=null
+    fi
+}
 
 sa02m_hw_backend() {
     case "${SA02M_HW_BACKEND:-auto}" in
@@ -293,6 +348,7 @@ sa02m_hw_i2c_default_output_dec() {
 }
 
 sa02m_hw_channel_available() {
+    sa02m_hw_channel_supported "$1" || return 1
     if [ "$(sa02m_hw_backend)" = "disabled" ]; then
         return 1
     fi
@@ -380,6 +436,8 @@ sa02m_hw_beeper_override_start_worker() {
 
 sa02m_hw_i2c_write_channel_web() {
     local channel=$1 logical=$2
+    local SA02M_HW_VARIANT_SNAPSHOT="${SA02M_HW_VARIANT_SNAPSHOT:-$(sa02m_hw_variant)}"
+    sa02m_hw_channel_supported "$channel" || return "$SA02M_HW_RC_UNAVAILABLE"
 
     SA02M_HW_OVERRIDE_SEC=""
 
@@ -490,6 +548,8 @@ sa02m_hw_i2c_prepare_unlocked() {
     if (( cfg != desired_cfg )); then
         sa02m_hw_i2c_write_reg_unlocked 0x01 "$desired_out" || return $?
         sa02m_hw_i2c_write_reg_unlocked 0x03 "$desired_cfg" || return $?
+        cfg=$(sa02m_hw_i2c_read_reg_unlocked 0x03) || return $?
+        (( cfg == desired_cfg )) || return "$SA02M_HW_RC_IO"
     fi
 
     return 0
@@ -497,8 +557,9 @@ sa02m_hw_i2c_prepare_unlocked() {
 
 sa02m_hw_i2c_read_output_locked() {
     SA02M_HW_RESULT=""
-    sa02m_hw_i2c_prepare_unlocked || return $?
+    SA02M_HW_DIRECTION=""
     SA02M_HW_RESULT=$(sa02m_hw_i2c_read_reg_unlocked 0x01) || return $?
+    SA02M_HW_DIRECTION=$(sa02m_hw_i2c_read_reg_unlocked 0x03) || return $?
     SA02M_HW_RESULT=$(( SA02M_HW_RESULT & 0x0F ))
     return 0
 }
@@ -513,6 +574,7 @@ sa02m_hw_i2c_read_output_dec() {
 
 sa02m_hw_i2c_write_channel_locked() {
     local channel=$1 logical=$2
+    sa02m_hw_channel_supported "$channel" || return "$SA02M_HW_RC_UNAVAILABLE"
     local channel_mask active_low reg new_reg verify
 
     channel_mask=$(sa02m_hw_i2c_channel_mask "$channel") || return 1
@@ -544,6 +606,8 @@ sa02m_hw_i2c_write_channel_locked() {
 
 sa02m_hw_i2c_write_channel() {
     local channel=$1 logical=$2
+    local SA02M_HW_VARIANT_SNAPSHOT="${SA02M_HW_VARIANT_SNAPSHOT:-$(sa02m_hw_variant)}"
+    sa02m_hw_channel_supported "$channel" || return "$SA02M_HW_RC_UNAVAILABLE"
     if [ "$channel" = "usb_power" ] && sa02m_hw_usb_power_use_gpiod; then
         sa02m_hw_usb_gpiod_write "$logical"
         return $?
@@ -557,6 +621,10 @@ sa02m_hw_i2c_write_channel() {
 sa02m_hw_channel_logical_from_reg() {
     local channel=$1 reg=$2 mask active_low
     mask=$(sa02m_hw_i2c_channel_mask "$channel") || return 1
+    if [ -n "${3:-}" ] && (( $3 & mask )); then
+        echo -1
+        return
+    fi
     active_low=$(sa02m_hw_i2c_active_low_mask_dec)
 
     if (( active_low & mask )); then
@@ -598,6 +666,8 @@ sa02m_hw_gpio_export_out() {
 
 sa02m_hw_gpio_write_channel() {
     local channel=$1 logical=$2 pin
+    local SA02M_HW_VARIANT_SNAPSHOT="${SA02M_HW_VARIANT_SNAPSHOT:-$(sa02m_hw_variant)}"
+    sa02m_hw_channel_supported "$channel" || return "$SA02M_HW_RC_UNAVAILABLE"
     if [ "$channel" = "usb_power" ] && sa02m_hw_usb_power_use_gpiod; then
         sa02m_hw_usb_gpiod_write "$logical"
         return $?
@@ -648,6 +718,7 @@ sa02m_hw_usb_power_reset_async() {
 
 # Только проверка /etc/sa02m_hw.conf — без I2C/GPIO опроса (для UI при отключённом status block).
 sa02m_hw_detect_channel_pins() {
+    local SA02M_HW_VARIANT_SNAPSHOT="${SA02M_HW_VARIANT_SNAPSHOT:-$(sa02m_hw_variant)}"
     HW_CFG=0
     PIN_DO=0
     PIN_BEEP=0
@@ -671,7 +742,7 @@ sa02m_hw_detect_channel_pins() {
         return 0
     fi
 
-    [[ "${SA02M_GPIO_DO:-}" =~ ^[0-9]+$ ]] && PIN_DO=1 && HW_CFG=1
+    sa02m_hw_channel_available do && PIN_DO=1 && HW_CFG=1
     [[ "${SA02M_GPIO_BEEPER:-}" =~ ^[0-9]+$ ]] && PIN_BEEP=1 && HW_CFG=1
     [[ "${SA02M_GPIO_ALARM_LED:-}" =~ ^[0-9]+$ ]] && PIN_LED=1 && HW_CFG=1
     if sa02m_hw_usb_power_use_gpiod && command -v gpioset >/dev/null 2>&1; then
@@ -706,6 +777,7 @@ sa02m_hw_metrics_cache_fresh() {
 }
 
 sa02m_hw_metrics_cache_save() {
+    sa02m_hw_normalize_capabilities
     sa02m_hw_metrics_cache_ensure_dir
     local tmp="${SA02M_HW_METRICS_CACHE}.$$"
     cat > "$tmp" <<EOF
@@ -730,11 +802,13 @@ sa02m_hw_metrics_cache_load() {
     [ -f "$snap" ] || return 1
     # shellcheck disable=SC1090
     . "$snap" 2>/dev/null || return 1
+    sa02m_hw_normalize_capabilities
     return 0
 }
 
 # Опрос I2C/GPIO с TTL-кэшем; при status-block hardware=0 — единственный путь к живым значениям.
 sa02m_hw_metrics_cache_refresh() {
+    local SA02M_HW_VARIANT_SNAPSHOT="${SA02M_HW_VARIANT_SNAPSHOT:-$(sa02m_hw_variant)}"
     HW_BACKEND=$(sa02m_hw_backend)
     sa02m_hw_detect_channel_pins
 
@@ -775,6 +849,8 @@ sa02m_hw_metrics_cache_refresh() {
 
 sa02m_hw_metrics_cache_patch_channel() {
     local channel=$1 val=$2
+    local SA02M_HW_VARIANT_SNAPSHOT="${SA02M_HW_VARIANT_SNAPSHOT:-$(sa02m_hw_variant)}"
+    sa02m_hw_channel_supported "$channel" || return "$SA02M_HW_RC_UNAVAILABLE"
     [ "$val" = "0" ] || [ "$val" = "1" ] || return 1
     sa02m_hw_metrics_cache_ensure_dir
     HW_BACKEND=$(sa02m_hw_backend)
@@ -794,6 +870,7 @@ sa02m_hw_metrics_cache_patch_channel() {
 }
 
 sa02m_hw_collect_metrics() {
+    local SA02M_HW_VARIANT_SNAPSHOT="${SA02M_HW_VARIANT_SNAPSHOT:-$(sa02m_hw_variant)}"
     HW_BACKEND=$(sa02m_hw_backend)
     HW_I2C_EXP_ABS=0
     HW_I2C_BUSY=0
@@ -804,6 +881,7 @@ sa02m_hw_collect_metrics() {
     HW_USB=-1
 
     sa02m_hw_detect_channel_pins
+    sa02m_hw_normalize_capabilities
 
     if [ "$HW_BACKEND" = "disabled" ]; then
         # USB power через gpiod не зависит от backend — читаем в любом случае.
@@ -825,11 +903,11 @@ sa02m_hw_collect_metrics() {
         case "$rc" in
             0)
                 reg=$SA02M_HW_RESULT
-                (( PIN_DO )) && HW_DO=$(sa02m_hw_channel_logical_from_reg do "$reg")
-                (( PIN_BEEP )) && HW_BEEP=$(sa02m_hw_channel_logical_from_reg beeper "$reg")
-                (( PIN_LED )) && HW_LED=$(sa02m_hw_channel_logical_from_reg alarm_led "$reg")
+                (( PIN_DO )) && HW_DO=$(sa02m_hw_channel_logical_from_reg do "$reg" "$SA02M_HW_DIRECTION")
+                (( PIN_BEEP )) && HW_BEEP=$(sa02m_hw_channel_logical_from_reg beeper "$reg" "$SA02M_HW_DIRECTION")
+                (( PIN_LED )) && HW_LED=$(sa02m_hw_channel_logical_from_reg alarm_led "$reg" "$SA02M_HW_DIRECTION")
                 if (( PIN_USB )) && ! sa02m_hw_usb_power_use_gpiod; then
-                    HW_USB=$(sa02m_hw_channel_logical_from_reg usb_power "$reg")
+                    HW_USB=$(sa02m_hw_channel_logical_from_reg usb_power "$reg" "$SA02M_HW_DIRECTION")
                 fi
                 ;;
             "$SA02M_HW_RC_BUSY"|"$SA02M_HW_RC_TIMEOUT")
@@ -847,7 +925,7 @@ sa02m_hw_collect_metrics() {
 
     (( HW_CFG )) || return 0
 
-    HW_DO=$(sa02m_hw_gpio_state "${SA02M_GPIO_DO:-}")
+    (( PIN_DO )) && HW_DO=$(sa02m_hw_gpio_state "${SA02M_GPIO_DO:-}")
     HW_BEEP=$(sa02m_hw_gpio_state "${SA02M_GPIO_BEEPER:-}")
     HW_LED=$(sa02m_hw_gpio_state "${SA02M_GPIO_ALARM_LED:-}")
     if sa02m_hw_usb_power_use_gpiod; then

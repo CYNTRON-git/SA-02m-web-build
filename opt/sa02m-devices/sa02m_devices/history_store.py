@@ -35,6 +35,8 @@ except ImportError:  # hardpy_tests layout: /opt/hardpy_tests/lib/
 
 log = logging.getLogger("sa02m-devices-history")
 
+MR_WINDOW_INDEX = "idx_mr_device_ts_ch"
+
 RETENTION_S = float(os.environ.get("STAND_DEVICES_RETENTION_S", str(30 * 86400)))
 # Event rows (device_events) outlive the sample tables: Operator decision F3
 # (Carel plan, 2026-09-03) — the journal is the evidence the feature exists to
@@ -339,11 +341,15 @@ def _connect(path: Path | None = None) -> sqlite3.Connection:
             "CREATE INDEX IF NOT EXISTS idx_ce_device_ts "
             "ON ce_samples(device_id, ts)"
         )
-        # mr_samples is a fresh table (no legacy PK to migrate); its read path
-        # is (device_id, ch, ts) — one channel's series over a window.
+        # Keep channel reads selective; overview/export needs time before ch
+        # to avoid walking the device's lifetime when no channel is selected.
         conn.execute(
             "CREATE INDEX IF NOT EXISTS idx_mr_device_ch_ts "
             "ON mr_samples(device_id, ch, ts)"
+        )
+        conn.execute(
+            f"CREATE INDEX IF NOT EXISTS {MR_WINDOW_INDEX} "
+            "ON mr_samples(device_id, ts, ch)"
         )
         # Wide since 1.0.6.41: the read path is (device_id, ts) — one device's
         # window, every metric in the row (like dtv/ce).

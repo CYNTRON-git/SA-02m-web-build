@@ -29,6 +29,9 @@ WB_EXT_SCAN_RESP = 0x03
 WB_EXT_SCAN_END = 0x04   # конец сканирования
 WB_EXT_SCAN_FRAME_LEN = 10
 
+# One maximum request echo plus response fits without retaining unbounded noise.
+MAX_RESPONSE_BUFFER = 1024
+
 # CRC16 Modbus: poly 0xA001, init 0xFFFF
 def crc16_modbus(data: bytes) -> int:
     crc = 0xFFFF
@@ -162,6 +165,105 @@ def build_fast_modbus_request(serial: int, inner_pdu: bytes) -> bytes:
     frame = bytes([BL_FAST_MODBUS_ADDR, BL_FAST_MODBUS_FUNC, BL_FAST_MODBUS_EMULATE_REQ]) + serial_be + inner_pdu
     crc = crc16_modbus(frame)
     return frame + struct.pack("<H", crc)
+
+
+def response_frame_length(data: bytes) -> int:
+    """Predict a supported response length, or zero for an incomplete header."""
+    if len(data) < 2:
+        return 0
+    base = 1
+    if data[:3] == b'\xfd\x46\x09':
+        if len(data) < 8:
+            return 0
+        base = 7
+    func = data[base]
+    if func & 0x80:
+        return base + 2 + 2
+    if func in (0x05, 0x06, 0x10):
+        return base + 5 + 2
+    if func in (0x01, 0x02, 0x03, 0x04, 0x11) and len(data) > base + 1:
+        return base + 2 + data[base + 1] + 2
+    return 0
+
+
+def _response_crc_valid(data: bytes, fast: bool) -> bool:
+    crc = crc16_modbus(data[:-2])
+    if data[-2:] == struct.pack('<H', crc):
+        return True
+    # Preserve existing standard write/exception CRC byte-order compatibility.
+    func = data[1]
+    return not fast and (func in (0x05, 0x06, 0x10) or func & 0x80) and data[-2:] == struct.pack('>H', crc)
+
+
+def find_matching_response(request: bytes, data: bytes, *, final: bool = False) -> Optional[bytes]:
+    """Select one validated response; ``final`` resolves a lone ambiguous ACK at the deadline.
+
+    Wire rules and the unavoidable identity-ACK ambiguity are defined in
+    docs/contracts/flasher-transport.md. This also guards injected callbacks
+    that bypass the serial/TCP readers.
+    """
+    if len(data) > MAX_RESPONSE_BUFFER:
+        raise ValueError(f'Modbus response exceeds {MAX_RESPONSE_BUFFER}-byte limit')
+    if len(request) < 4 or struct.pack('<H', crc16_modbus(request[:-2])) != request[-2:]:
+        return None
+    fast = request[:3] == b'\xfd\x46\x08'
+    base = 7 if fast else 1
+    if len(request) <= base + 2:
+        return None
+    pdu = request[base:-2]
+    func = pdu[0]
+    if func in (0x01, 0x02, 0x03, 0x04, 0x05, 0x06):
+        if len(pdu) != 5:
+            return None
+    elif func == 0x10:
+        if len(pdu) < 6 or len(pdu) != 6 + pdu[5] or pdu[5] != int.from_bytes(pdu[3:5], 'big') * 2:
+            return None
+    elif func != 0x11 or len(pdu) != 1:
+        return None
+    identity_reply = not fast and func in (0x05, 0x06)
+    prefix = b'\xfd\x46\x09' + request[3:7] if fast else request[:1]
+    offset = 0
+    echo_seen = False
+    while offset < len(data):
+        tail = data[offset:]
+        if not identity_reply:
+            if tail.startswith(request):
+                offset += len(request)
+                echo_seen = True
+                continue
+            if not echo_seen and len(tail) < len(request) and request.startswith(tail):
+                # Only a lone exact ACK can resolve at the deadline; more echo
+                # bytes already observed disprove that interpretation.
+                if not final or response_frame_length(tail) != len(tail):
+                    return None
+        size = response_frame_length(tail)
+        if not size or len(tail) < size:
+            offset += 1
+            continue
+        candidate = tail[:size]
+        candidate_fast = candidate[:3] == b'\xfd\x46\x09'
+        if not _response_crc_valid(candidate, candidate_fast):
+            offset += 1
+            continue
+        candidate_base = 7 if candidate_fast else 1
+        response_pdu = candidate[candidate_base:-2]
+        if candidate_fast == fast and candidate[:base] == prefix:
+            actual = response_pdu[0]
+            if actual == func | 0x80:
+                return candidate
+            if actual == func:
+                if func in (0x05, 0x06, 0x10) and response_pdu == pdu[:5]:
+                    return candidate
+                if func in (0x01, 0x02, 0x03, 0x04):
+                    count = int.from_bytes(pdu[3:5], 'big')
+                    expected = (count + 7) // 8 if func in (0x01, 0x02) else count * 2
+                    if count > 0 and response_pdu[1] == expected:
+                        return candidate
+                if func == 0x11 and 1 <= response_pdu[1] <= 246:
+                    return candidate
+        # Do not reinterpret a valid unrelated frame's payload as another ACK.
+        offset += size
+    return None
 
 
 def parse_fast_modbus_response(

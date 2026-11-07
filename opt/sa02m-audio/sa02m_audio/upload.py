@@ -16,8 +16,8 @@
   when a token is set. Success = HTTP 2xx. A 2xx whose Content-Type is
   application/json may carry absolute commands (voice.commands_from_body);
   any other body is still success and carries no commands. Each attempt is
-  bounded by
-  UPLOAD_TIMEOUT_S; attempts at UPLOAD_DELAYS_S (0, 10, 60 s), then `failed`
+  given a duration-aware socket-operation timeout; attempts at the monotonic
+  UPLOAD_DELAYS_S offsets from queue admission, then `failed`
   and the file stays. A refused URL is `refused` at once (no retry). Only a
   307/308 redirect is followed (the body is re-sent), at most
   UPLOAD_MAX_REDIRECTS hops, each re-judged; any other 3xx is a failed attempt.
@@ -36,6 +36,7 @@ import logging
 import queue
 import sys
 import threading
+import time
 import urllib.error
 import urllib.parse
 import urllib.request
@@ -193,21 +194,21 @@ class Uploader:
 
     def __init__(self, deliver: Callable[[UploadResult], Any], stop: threading.Event, *,
                  guard: Any, opener: Any = None, delays=C.UPLOAD_DELAYS_S,
-                 timeout: float = C.UPLOAD_TIMEOUT_S) -> None:
+                 timeout: Optional[float] = None) -> None:
         self._deliver = deliver
         self._stop = stop
         self._guard = guard
         self._opener = opener or default_opener()
         self._delays = tuple(delays)
         self._timeout = timeout
-        self._jobs: "queue.Queue[UploadJob]" = queue.Queue(maxsize=C.UPLOAD_QUEUE_MAX)
+        self._jobs: "queue.Queue[tuple[UploadJob, float]]" = queue.Queue(maxsize=C.UPLOAD_QUEUE_MAX)
         self._thread = threading.Thread(target=self._run, name="audio-upload", daemon=True)
         self._thread.start()
 
     def submit(self, job: UploadJob) -> str:
         """`pending`, or `failed` when the queue is full."""
         try:
-            self._jobs.put_nowait(job)
+            self._jobs.put_nowait((job, time.monotonic()))
         except queue.Full:
             log.warning("upload queue full — clip %s not uploaded", job.rec_id)
             return C.UP_FAILED
@@ -216,24 +217,26 @@ class Uploader:
     def _run(self) -> None:
         while not self._stop.is_set():
             try:
-                job = self._jobs.get(timeout=0.5)
+                job, admitted_at = self._jobs.get(timeout=0.5)
             except queue.Empty:
                 continue
-            self._deliver(self._attempts(job))
+            self._deliver(self._attempts(job, admitted_at))
 
     def _result(self, job: UploadJob, state: str, detail: str,
                 commands: tuple = ()) -> UploadResult:
         return UploadResult(job.rec_id, job.medium, state, detail,
                             job.duration_ms, job.peak_dbfs, commands)
 
-    def _attempts(self, job: UploadJob) -> UploadResult:
+    def _attempts(self, job: UploadJob, admitted_at: float) -> UploadResult:
         detail = ""
-        previous = 0.0
+        timeout = self._timeout
+        if timeout is None:
+            timeout = (C.UPLOAD_LONG_TIMEOUT_S if job.duration_ms >= C.UPLOAD_LONG_CLIP_MS
+                       else C.UPLOAD_TIMEOUT_S)
         for n, at in enumerate(self._delays, 1):
-            if self._stop.wait(max(0.0, at - previous)):
+            if self._stop.wait(max(0.0, admitted_at + at - time.monotonic())):
                 return self._result(job, C.UP_FAILED, "daemon stopped")
-            previous = at
-            attempt = post_once(job, self._guard, self._opener, self._timeout)
+            attempt = post_once(job, self._guard, self._opener, timeout)
             state, detail = attempt
             log.info("upload %s attempt %d/%d: %s", job.rec_id, n, len(self._delays), detail)
             if state in (C.UP_OK, C.UP_REFUSED):

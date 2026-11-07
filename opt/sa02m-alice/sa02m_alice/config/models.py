@@ -4,10 +4,11 @@ from __future__ import annotations
 
 import re
 import uuid
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Callable, Dict, List, Optional, Tuple
 
 from ..common import constants as C
 from .device_types import CATALOG_DEVICE_TYPES
+from .inventory import led_readonly_source
 
 # Tile icon allow-list (docs/contracts/alice-mqtt-mapping.md §Device document).
 DEVICE_ICONS = frozenset(C.DEVICE_ICONS)
@@ -498,9 +499,11 @@ def _validate_mqtt_item(item: Dict[str, Any], kind: str) -> Tuple[Optional[Dict[
 HOMECONNECT_TOPIC_PREFIX = "/devices/hc-"
 
 
-def _readonly_source_item(item: Dict[str, Any]) -> Tuple[Optional[Dict[str, Any]], Optional[str]]:
+def _readonly_source_item(item: Dict[str, Any], led_readonly: Callable[[str], bool]
+                          ) -> Tuple[Optional[Dict[str, Any]], Optional[str]]:
     """Capability bound to a read-only source: stamp or refuse. Copies."""
-    if not str(item.get("mqtt") or "").strip().startswith(HOMECONNECT_TOPIC_PREFIX):
+    topic = str(item.get("mqtt") or "").strip()
+    if not (topic.startswith(HOMECONNECT_TOPIC_PREFIX) or led_readonly(topic)):
         return item, None
     if str(item.get("type") or "") != "devices.capabilities.on_off":
         return None, "read-only source"
@@ -509,6 +512,27 @@ def _readonly_source_item(item: Dict[str, Any]) -> Tuple[Optional[Dict[str, Any]
     out = dict(item)
     out["writable"] = False
     return out, None
+
+
+def protect_led_readings(doc: Dict[str, Any], readonly=None) -> Dict[str, Any]:
+    """Enforce read-only telemetry in older saved bindings without changing the store."""
+    if readonly is None:
+        readonly = led_readonly_source()
+    devices = []
+    changed = False
+    for dev in doc.get("devices") or ():
+        if isinstance(dev, dict) and isinstance(dev.get("capabilities"), list):
+            guarded = None
+            for index, cap in enumerate(dev["capabilities"]):
+                if isinstance(cap, dict) and cap.get("writable") is not False and readonly(cap.get("mqtt")):
+                    if guarded is None:
+                        guarded = list(dev["capabilities"])
+                    guarded[index] = dict(cap, writable=False)
+            if guarded is not None:
+                dev = dict(dev, capabilities=guarded)
+                changed = True
+        devices.append(dev)
+    return dict(doc, devices=devices) if changed else doc
 
 
 def _carel_mqtt_bound(dev: Dict[str, Any]) -> bool:
@@ -545,6 +569,7 @@ def validate_device(dev: Dict[str, Any], *, partial: bool = False) -> Tuple[Opti
     if not isinstance(dev, dict):
         return None, "device must be an object"
     out = dict(dev)
+    led_readonly = led_readonly_source()
     if not partial or "id" in out:
         did = str(out.get("id") or new_id())
         if not _ID_RE.match(did):
@@ -621,7 +646,7 @@ def validate_device(dev: Dict[str, Any], *, partial: bool = False) -> Tuple[Opti
                 if err:
                     return None, err
                 if kind == "capability":
-                    normalised, err = _readonly_source_item(normalised)
+                    normalised, err = _readonly_source_item(normalised, led_readonly)
                     if err:
                         return None, err
                 pair = (str(normalised.get("type") or ""), _item_instance(normalised))

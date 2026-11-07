@@ -242,7 +242,7 @@ const INVENTORY = {
         other: [
           LED_CH('power', 'power', 'rw'),
           LED_CH('brightness', 'brightness', 'rw'),
-          LED_CH('led_count', 'led_count', 'r'),
+          Object.assign(LED_CH('led_count', 'led_count', 'r'), {command_supported: false}),
         ],
         diag: [],
       },
@@ -978,6 +978,38 @@ async function runPicker(browser, base) {
     `picking the «"» topic stores it verbatim (${JSON.stringify(trip.picked)})`);
   check(trip.built === INJECT_TOPIC && trip.leaked === 0 && !trip.executed,
     `a binding row built for the «"» topic keeps it verbatim and leaks no attribute (value ${JSON.stringify(trip.built)}, leaked ${trip.leaked}, executed ${trip.executed})`);
+
+  const controls = await page.evaluate((led) => {
+    const count = '/devices/' + led + '/controls/led_count';
+    const row = document.querySelector('#sh-rows .sh-bind-row');
+    const kind = row.querySelector('.sh-row-kind');
+    const search = document.querySelector('#sh-pick-search');
+    function open(role) {
+      kind.value = role;
+      kind.dispatchEvent(new Event('change', {bubbles: true}));
+      row.querySelector('.sh-row-bind').click();
+      const card = document.querySelector('.sh-pick-dev[data-id="' + led + '"]');
+      if (!card.classList.contains('is-open')) card.querySelector('button[data-act="dev"]').click();
+      const tree = !!document.querySelector('#sh-pick-list button[data-topic="' + count + '"]');
+      search.value = 'led_count';
+      search.dispatchEvent(new Event('input', {bubbles: true}));
+      return {tree, hit: document.querySelector('#sh-pick-list button[data-topic="' + count + '"]')};
+    }
+    const cmd = open('brightness');
+    const before = row.querySelector('.sh-row-topic').value;
+    document.getElementById('sh-pick-manual-in').value = count;
+    window.shPickManualApply();
+    const kept = row.querySelector('.sh-row-topic').value === before;
+    window.shPickClose();
+    const read = open('temperature');
+    if (read.hit) read.hit.click();
+    return {commandTree: cmd.tree, commandHit: !!cmd.hit, kept, readTree: read.tree, readHit: !!read.hit,
+      selected: row.querySelector('.sh-row-topic').value === count && kind.value === 'temperature'};
+  }, LED_ID);
+  check(!controls.commandTree && !controls.commandHit && controls.kept,
+    'known LED diagnostics cannot be select or manual command targets');
+  check(controls.readTree && controls.readHit && controls.selected,
+    'read rows can select the same LED diagnostic from tree and search');
 
   // Fail-closed: the CGI cannot answer → hand entry, binding intact.
   inventoryOk = false;

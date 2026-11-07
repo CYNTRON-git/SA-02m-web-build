@@ -53,6 +53,7 @@ import modbus_mqtt_bridge as bridge  # noqa: E402
 # it exactly: a module added later must be declared here AND in both deploy
 # scripts (scripts/05-mqtt.sh, scripts/update-www-only.sh).
 EXPECTED_MODULES = [
+    "bridge_admission",
     "bridge_bus",
     "bridge_carel",
     "bridge_device",
@@ -70,6 +71,7 @@ EXPECTED_MODULES = [
     "bridge_spodes",
     "bridge_tcp",
     "bridge_template",
+    "bridge_uart",
 ]
 
 # Frozen test/import surface of the entry module. First block: every

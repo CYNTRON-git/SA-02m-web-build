@@ -4,9 +4,11 @@ from __future__ import annotations
 
 import atexit
 import json
+import math
 import sys
 import logging
 import shutil
+import stat
 import subprocess
 import threading
 import time
@@ -17,8 +19,11 @@ from typing import Iterable, Iterator, List, Optional, Set
 log = logging.getLogger(__name__)
 
 _LEASE_LOCK = threading.RLock()
+# When both are needed, take _LEASE_LOCK first. No RPC or user work under this lock.
+_MANUAL_USERS_LOCK = threading.Lock()
 _MANUAL_LEASES = {}
 _MANUAL_USERS = {}
+_PENDING_RESTORES = {}
 _STOPPED_SERVICES: Set[str] = set()   # учёт глобально остановленных служб (для восстановления)
 
 
@@ -331,9 +336,16 @@ def _pid_cmdline(pid: str) -> str:
 
 
 def _poll_label_from_cmdline(cmd: str) -> str:
-    c = (cmd or "").lower()
+    c = (cmd or "").lower().strip()
     if not c or "agetty" in c or "getty" in c or "/bin/login" in c:
         return ""
+    tokens = c.split()
+    if (tokens[0] in {"sa02m-serial-gateway.service", "serial_gateway.py", "/opt/sa02m-serial-gateway/serial_gateway.py"}
+            or (Path(tokens[0]).name in {"python", "python3"}
+                and "/opt/sa02m-serial-gateway/serial_gateway.py" in tokens[1:])):
+        return "RS-485 Gateway"
+    if tokens[0] in {"/usr/bin/vplc", "vplc", "vplc.service", "sa02m-vplc.service"}:
+        return "vPLC"
     if "modbus_mqtt_bridge" in c or "sa02m-modbus-mqtt" in c:
         return "MQTT"
     if "mplc_daemon" in c or "mplc_monitor" in c or "mplc4" in c:
@@ -428,6 +440,90 @@ def _lease_type():
 COORDINATOR_STATUS = Path("/run/sa02m-port-coordinator/status.json")
 
 
+def _coordinator_snapshot():
+    """Use the public snapshot's PID/start identity, not an idle-state TTL."""
+    data = None
+    try:
+        with COORDINATOR_STATUS.open(encoding="utf-8") as stream:
+            raw = stream.read(131073)
+        if len(raw) > 131072:
+            return None, False
+        data = json.loads(raw)
+        timestamp = data["timestamp"]
+        if not isinstance(timestamp, (int, float)) or not math.isfinite(timestamp):
+            return None, False
+        leases, services, scopes = data["leases"], data["services"], data["configured_scopes"]
+        if not isinstance(leases, list) or not isinstance(services, dict) or not isinstance(scopes, dict):
+            return None, False
+        if any(not isinstance(v, dict) or not isinstance(v.get("id"), str)
+               or not isinstance(v.get("port"), str) or not isinstance(v.get("services"), list)
+               or any(not isinstance(u, str) for u in v["services"]) for v in leases):
+            return None, False
+        if any(not isinstance(v, dict) or not isinstance(v.get("phase"), str) for v in services.values()):
+            return None, False
+        if any(not isinstance(v, list) or any(not isinstance(u, str) for u in v) for v in scopes.values()):
+            return None, False
+    except (OSError, ValueError, KeyError, TypeError, AttributeError):
+        return None, False
+    try:
+        pid = int(data["broker_pid"])
+        if pid <= 0:
+            return data, False
+        proc = Path("/proc/%d/stat" % pid).read_text().rsplit(") ", 1)[1].split()
+        available = (proc[0] != "Z" and proc[19] == data["broker_start_ticks"]
+                     and stat.S_ISSOCK(COORDINATOR_STATUS.with_name("control.sock").stat().st_mode))
+        return data, available
+    except (OSError, ValueError, KeyError, IndexError, TypeError):
+        return data, False
+
+
+def _remember_restore(port, services, lease_id, error, after):
+    pending = _PENDING_RESTORES.setdefault(port, {"services": set(), "ids": set(), "after": after})
+    pending["services"].update(services)
+    if lease_id:
+        pending["ids"].add(lease_id)
+    pending["after"] = max(pending["after"], after)
+    pending["error"] = error or "Service restoration pending"
+
+
+def _pending_restorations():
+    """Reconstruct broker-owned recovery, including shared whole-service scopes.
+
+    The caller holds _LEASE_LOCK. A dead client is not a manual reservation;
+    only a live, sufficiently recent broker snapshot can discharge its recovery.
+    """
+    snapshot, available = _coordinator_snapshot()
+    if snapshot is not None:
+        leases, services = snapshot["leases"], snapshot["services"]
+        for item in leases:
+            if item.get("phase") == "recovering":
+                _remember_restore(item["port"], item["services"], item["id"],
+                                  item.get("error"), snapshot["timestamp"])
+        for unit, obligation in services.items():
+            if obligation["phase"] == "restore_failed" or not any(unit in v["services"] for v in leases):
+                for port, scope in snapshot["configured_scopes"].items():
+                    if unit in scope:
+                        _remember_restore(port, [unit], None, obligation.get("error"), snapshot["timestamp"])
+        if available:
+            ids = {v["id"] for v in leases}
+            for port, pending in list(_PENDING_RESTORES.items()):
+                if (snapshot["timestamp"] >= pending["after"]
+                        and not pending["ids"].intersection(ids)
+                        and not pending["services"].intersection(services)):
+                    del _PENDING_RESTORES[port]
+    return _PENDING_RESTORES, available
+
+
+def restoration_status(device_path: str) -> dict:
+    with _LEASE_LOCK:
+        pending, available = _pending_restorations()
+        item = pending.get(device_path)
+        return {"restore_pending": item is not None,
+                "restore_services": sorted(item["services"]) if item else [],
+                "restore_error": item["error"] if item else "",
+                "coordinator_available": available}
+
+
 def configured_scope(device_path: str) -> List[str]:
     """Whole services the coordinator stops for this UART — read from its public
     snapshot (`configured_scopes`, docs/contracts/port-ownership.md). Display
@@ -475,50 +571,98 @@ def release_pollers(services_to_stop: Iterable[str]) -> dict:
                 _MANUAL_LEASES[port] = lease
                 acquired.append(port)
             except Exception as exc:
-                failed.append(str(exc))
+                failed.append(port + ": " + str(exc))
         return {"stopped_now": released_services(), "already_released": [],
                 "inactive": [], "missing": [], "failed": failed,
-                "reserved_ports": acquired}
+                "reserved_ports": acquired,
+                "manual_reserved_ports": sorted(_MANUAL_LEASES)}
 
 
 def restore_pollers(services_to_start: Iterable[str]) -> dict:
-    failed, restored = [], []
+    failed, restored = {}, []
     with _LEASE_LOCK:
         for port, lease in list(_MANUAL_LEASES.items()):
-            if _MANUAL_USERS.get(port, 0):
-                failed.append(port + ": operation active")
+            with _MANUAL_USERS_LOCK:
+                active = _MANUAL_USERS.get(port, 0)
+            if active:
+                failed[port] = port + ": operation active"
                 continue
+            scope = lease.status.get("lease", {})
+            device = scope.get("port", port)
+            before_close = time.time()
             try:
                 lease.close()
                 restored.append(port)
             except Exception as exc:
-                failed.append(str(exc))
+                _remember_restore(device, scope.get("services", []), scope.get("id"), str(exc), before_close)
+                failed[device] = device + ": " + str(exc)
             finally:
                 # Broker owns any failed restoration, not this connection.
                 del _MANUAL_LEASES[port]
-    return {"restarted": restored, "already_running": [], "not_released": [],
-            "missing": [], "failed": failed}
+        pending, available = _pending_restorations()
+        for port, item in pending.items():
+            failed.setdefault(port, port + ": " + (item["error"] if available else "Coordinator recovery unconfirmed"))
+        return {"restarted": restored, "already_running": [], "not_released": [],
+                "missing": [], "failed": list(failed.values()), "pending_restores": sorted(pending)}
+
+
+@contextmanager
+def _lease_entry_lock(deadline):
+    if deadline is None:
+        with _LEASE_LOCK:
+            yield
+        return
+    if not math.isfinite(deadline):
+        raise ValueError("Port reservation deadline must be finite")
+    remaining = deadline - time.monotonic()
+    if remaining <= 0 or not _LEASE_LOCK.acquire(timeout=min(remaining, threading.TIMEOUT_MAX)):
+        raise TimeoutError("Port reservation deadline exceeded")
+    try:
+        if time.monotonic() >= deadline:
+            raise TimeoutError("Port reservation deadline exceeded")
+        yield
+    finally:
+        _LEASE_LOCK.release()
 
 
 @contextmanager
 def port_lease(device_path: str, services_to_stop: Iterable[str], *,
-               require_free: bool = True, preserve_released: bool = False) -> Iterator[List[str]]:
+               require_free: bool = True, preserve_released: bool = False,
+               acquire_deadline: Optional[float] = None,
+               release_timeout: Optional[float] = None) -> Iterator[List[str]]:
     """Acquire configured scope; caller service lists cannot widen privileges."""
-    with _LEASE_LOCK:
+    with _lease_entry_lock(acquire_deadline):
         manual = _MANUAL_LEASES.get(device_path)
         if manual:
-            if _MANUAL_USERS.get(device_path, 0):
-                raise PortBusyError(device_path, ["another flasher operation"])
-            _MANUAL_USERS[device_path] = _MANUAL_USERS.get(device_path, 0) + 1
+            with _MANUAL_USERS_LOCK:
+                if _MANUAL_USERS.get(device_path, 0):
+                    raise PortBusyError(device_path, ["another flasher operation"])
+                _MANUAL_USERS[device_path] = _MANUAL_USERS.get(device_path, 0) + 1
     if manual:
         try:
             yield list(manual.status.get("lease", {}).get("services", []))
         finally:
-            with _LEASE_LOCK:
+            with _MANUAL_USERS_LOCK:
                 _MANUAL_USERS[device_path] -= 1
         return
-    with _lease_type()(device_path, "flasher") as lease:
-        yield list(lease.status.get("lease", {}).get("services", []))
+    budget = {}
+    if acquire_deadline is not None:
+        budget["acquire_deadline"] = acquire_deadline
+    if release_timeout is not None:
+        budget["release_timeout"] = release_timeout
+    manager = _lease_type()(device_path, "flasher", **budget)
+    lease = manager.__enter__()
+    scope = lease.status.get("lease", {})
+    try:
+        yield list(scope.get("services", []))
+    finally:
+        before_close = time.time()
+        try:
+            manager.__exit__(*sys.exc_info())
+        except Exception as exc:
+            with _LEASE_LOCK:
+                _remember_restore(device_path, scope.get("services", []), scope.get("id"), str(exc), before_close)
+            raise
 
 
 def _restore_all_on_exit() -> None:

@@ -89,6 +89,7 @@ class FakeModule:
 
     def __init__(self, types_by_ch: dict[int, int]):
         self.regs: dict[int, int] = {}
+        self.generation = 1
         for ch, code in types_by_ch.items():
             self.set_type(ch, code)
 
@@ -98,10 +99,20 @@ class FakeModule:
     def set_value(self, ch: int, raw: int) -> None:
         self.regs[400 + (ch - 1) * 7 + 3] = raw
 
-    def read_holding(self, addr, reg, count):
+    def read_holding(self, addr, reg, count, **kwargs):
+        if reg == 569:
+            return [0xA101, 1, self.generation, self.generation]
+        if (reg, count) == (270, 2):
+            return [16, 1]
         return [self.regs.get(reg + k, 0) for k in range(count)]
 
-    def write(self, addr, reg, value):
+    def read_input(self, addr, reg, count, **kwargs):
+        if (reg, count) == (105, 2):
+            return [300, 0]
+        raise AssertionError((reg, count))
+
+    def write(self, addr, reg, value, **kwargs):
+        self.generation += 1
         self.regs[reg] = value
 
 
@@ -114,6 +125,9 @@ def _poller(ai_entries: list[dict], module: FakeModule, module_type: int = 6):
     p._do, p._di, p._ao, p._ai = 0, 0, 0, 6
     p.read_holding_registers = module.read_holding
     p.write_register = module.write
+    p.get_port = lambda: types.SimpleNamespace(
+        read_holding_registers=module.read_holding,
+        read_input_registers=module.read_input, write_register=module.write)
     return p, pub
 
 

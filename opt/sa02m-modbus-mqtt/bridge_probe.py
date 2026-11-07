@@ -113,7 +113,7 @@ def run(host: str, port: int, unit: int, timeout_s: float = PROBE_TIMEOUT_S,
     try:
         try:
             sock = socket.create_connection((host, int(port)), timeout=timeout_s)
-        except ConnectionRefusedError:
+        except (ConnectionRefusedError, ConnectionResetError):
             raise _Verdict("tcp_refused")
         except socket.timeout:
             raise _Verdict("tcp_timeout")

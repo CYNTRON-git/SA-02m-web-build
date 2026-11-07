@@ -24,7 +24,7 @@ class Jobs:
                               key=lambda r: r["ts"])
                 for old in done[: len(self._jobs) - self.MAX_KEPT]:
                     self._jobs.pop(old["id"], None)
-        self._emit(jid, {"event": "start", "job_id": jid})
+            self._emit(owner, jid, {"event": "start", "job_id": jid})
 
         def run():
             try:
@@ -36,7 +36,7 @@ class Jobs:
             with self._lock:
                 rec["status"] = status
                 rec["result"] = result
-            self._emit(jid, {"event": status, "job_id": jid, "result": result})
+                self._emit(owner, jid, {"event": status, "job_id": jid, "result": result})
 
         threading.Thread(target=run, name="agent-job-" + jid, daemon=True).start()
         return jid
@@ -44,10 +44,24 @@ class Jobs:
     def get(self, jid, owner):
         with self._lock:
             rec = self._jobs.get(jid)
-        if not rec or rec.get("owner") != owner:
-            return None
-        return {"id": rec["id"], "status": rec["status"], "result": rec["result"]}
+            if not rec or rec.get("owner") != owner:
+                return None
+            return {"id": rec["id"], "status": rec["status"], "result": rec["result"]}
 
-    def _emit(self, jid, event):
+    def subscribe(self, jid, owner):
+        """Return (found, queue); a missing queue means no subscription capacity."""
+        # Jobs -> Bus is the lock order for both subscription and publication,
+        # so the initial state cannot miss or be overtaken by a transition.
+        with self._lock:
+            rec = self._jobs.get(jid)
+            if not rec or rec.get("owner") != owner:
+                return False, None
+            q = self.bus.subscribe(owner, jid) if self.bus is not None else None
+            if q is not None:
+                q.put_nowait({"event": "state", "job_id": jid, "status": rec["status"],
+                              "result": rec["result"]})
+            return True, q
+
+    def _emit(self, owner, jid, event):
         if self.bus is not None:
-            self.bus.publish(event)
+            self.bus.publish(event, owner=owner, job_id=jid)

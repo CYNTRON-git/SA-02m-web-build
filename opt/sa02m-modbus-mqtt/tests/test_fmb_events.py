@@ -20,6 +20,7 @@ import time
 import types
 import unittest
 from pathlib import Path
+from unittest import mock
 
 BRIDGE_DIR = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(BRIDGE_DIR))
@@ -85,7 +86,12 @@ class FakeSerial:
         self.sent.append(bytes(frame))
         addr, evt_type = frame[0], frame[4]
         if evt_type in self.ack_types:
-            return bytes([addr, 0x46, 0x18, 1, 0x00, 0x00, 0x00])
+            count = frame[7]
+            mask = (bytes((1 << min(8, count - i)) - 1
+                          for i in range(0, count, 8))
+                    if frame[3] == 4 + count else b"\x00")
+            body = bytes([addr, 0x46, 0x18, len(mask)]) + mask
+            return body + bridge.crc16(body).to_bytes(2, "little")
         raise TimeoutError("no configure ack")
 
 
@@ -115,6 +121,7 @@ class TestMr02mEventRanges(unittest.TestCase):
         p = make_mr02m(FakePub(), 1)
         self.assertEqual(p.fmb_event_ranges(), [
             (bridge.FMB_EVT_COIL, 1, 6),
+            (bridge.FMB_EVT_HOLDING, 1, 6),
             (bridge.FMB_EVT_INPUT, 18, 8),
         ])
 
@@ -130,6 +137,7 @@ class TestMr02mEventRanges(unittest.TestCase):
         p = make_mr02m(FakePub(), 99)
         self.assertEqual(p.fmb_event_ranges(), [
             (bridge.FMB_EVT_COIL, 1, 6),
+            (bridge.FMB_EVT_HOLDING, 1, 6),
             (bridge.FMB_EVT_INPUT, 18, 8),
         ])
 
@@ -226,9 +234,13 @@ class TestMr02mDispatch(unittest.TestCase):
         p = make_mr02m(pub, 7, dev_id="mr02m-ut-ai")   # 12AI
         p.fmb_event_ranges()
         # ch5 → reg 403 + 7*(5-1) = 431; sensor code 3 (NTC) → scale 0.1
-        bridge.DeviceLiveCache.set_sensor_type(p.device_id, 5, 3)
-        p.fmb_dispatch(bridge.FMB_EVT_INPUT, 431, 373)
-        p.fmb_dispatch(bridge.FMB_EVT_INPUT, 431, 0x10000 - 373)
+        block = [0] * (12 * 7)
+        block[(5 - 1) * 7] = 3
+        with mock.patch.object(time, 'monotonic', side_effect=range(1, 8)):
+            p._publish_ai_observation(5, block)
+            p.fmb_empty_observed(query_started_at=time.monotonic(), context=p.fmb_query_context())
+            p.fmb_dispatch(bridge.FMB_EVT_INPUT, 431, 373)
+            p.fmb_dispatch(bridge.FMB_EVT_INPUT, 431, 0x10000 - 373)
         self.assertIn((p.device_id, "ai_5", "37.3"), pub.controls)
         self.assertIn((p.device_id, "ai_5", "-37.3"), pub.controls)
         # Non-stride reg inside the AI block is not a channel value — ignored.
@@ -254,6 +266,7 @@ class TestMr02mDispatch(unittest.TestCase):
         p._do, p._di, p._ao, p._ai = 6, 8, 0, 0
         self.assertEqual(p.fmb_event_ranges(), [
             (bridge.FMB_EVT_COIL, 1, 6),
+            (bridge.FMB_EVT_HOLDING, 1, 6),
             (bridge.FMB_EVT_INPUT, 18, 8),
         ])
 
@@ -315,6 +328,7 @@ class TestManagerConfigurePerRange(unittest.TestCase):
         mgr._refresh_ranges_from_poller(dev)
         self.assertEqual(dev["ranges"], [
             (bridge.FMB_EVT_COIL, 1, 6),
+            (bridge.FMB_EVT_HOLDING, 1, 6),
             (bridge.FMB_EVT_INPUT, 18, 8),
         ])
         self.assertEqual(dev["pending"], dev["ranges"])

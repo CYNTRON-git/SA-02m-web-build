@@ -177,7 +177,7 @@ def _led_holding() -> Dict[int, int]:
 
 
 LED_INPUT: Dict[int, int] = {0: module_profiles.RGBW_WS2812}
-LED_INPUT.update({lm.RGBW_IREG_CURRENT_BASE + i: 120 * (i + 1) for i in range(lm.RGBW_PWM_CHANNELS)})
+LED_INPUT.update({lm.RGBW_IREG_OCP_BASE + i: [0, 1, 2, 0][i] for i in range(lm.RGBW_PWM_CHANNELS)})
 LED_INPUT[lm.RGBW_IREG_NTC] = 315
 LED_INPUT[lm.RGBW_IREG_VLED] = 1198
 
@@ -357,6 +357,18 @@ class TestPerTabReadScope(unittest.TestCase):
                 f"{where}: прочитан регистр {anchor} — дорогой блок попал в такт опроса",
             )
 
+    def test_temperature_source_and_raw_are_read_together_on_capable_firmware(self):
+        for source, raw, label, degrees in ((0, 0, 'none', None), (1, 0, 'ntc', 0.0),
+                                           (2, 0xffce, 'mcu', -5.0), (9, 115, 'unknown', None)):
+            plc = led_strip()
+            for i, word in enumerate((1, 0, 3, 1)):
+                plc.holding[device_config.REG_APP_VERSION + i] = word
+            plc.input_regs.update({lm.RGBW_IREG_TEMP_SOURCE: source, lm.RGBW_IREG_NTC: raw})
+            pwm = _snapshot(plc, LED_DEVICE, active_tab="led_pwm")["led"]["pwm"]
+            self.assertIn((4, 130, 2), plc.reads)
+            self.assertEqual(pwm['temperature_source'], label)
+            self.assertEqual(pwm['ntc_c'], degrees)
+
     def test_a_poll_with_no_tab_reads_only_the_base_block(self) -> None:
         plc = led_strip()
         payload = _snapshot(plc, LED_DEVICE)
@@ -373,7 +385,8 @@ class TestPerTabReadScope(unittest.TestCase):
         self._assert_no_expensive_reads(plc, "вкладка «RGBW каналы»")
         pwm = payload["led"]["pwm"]
         self.assertEqual(pwm["levels"][0], 250)
-        self.assertEqual(pwm["currents_ma"][3], 480)
+        self.assertEqual(pwm["overcurrent"], [False, True, None, False])
+        self.assertNotIn("currents_ma", pwm)
         self.assertEqual(pwm["vled_raw"], 1198)
 
     def test_the_di_tab_reads_one_block_and_no_scene_block(self) -> None:
@@ -1147,7 +1160,7 @@ class TestPollerUsesTheSharedMapOnly(unittest.TestCase):
             lm.RGBW_DI_HOLD_LAST,
             lm.RGBW_PWM_HOLDING_BASE,
             lm.RGBW_PWM_STRIP_MODE_HOLDING,
-            lm.RGBW_IREG_CURRENT_BASE,
+            lm.RGBW_IREG_OCP_BASE,
             lm.RGBW_IREG_NTC,
         ):
             self.assertNotIn(

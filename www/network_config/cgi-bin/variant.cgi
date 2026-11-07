@@ -42,14 +42,17 @@ case "${REQUEST_METHOD:-GET}" in
 
         case "$VARIANT" in
             sa02m-1eth|sa02m-2eth)
-                RESULT=$(sudo /usr/local/sbin/sa02m-apply-variant.sh "$VARIANT" 2>&1)
-                # Инвалидируем кэш status.cgi, чтобы «Система» немедленно
-                # показала обновлённое имя устройства (ЦИНТРОН СА-02м / -2).
-                rm -f /tmp/sa02m_status_cache/system.json \
-                      /tmp/sa02m_status_cache/system.json.lock \
-                      /tmp/sa02m_status_cache/main.json \
-                      /tmp/sa02m_status_cache/main.json.lock \
-                      2>/dev/null || true
+                if RESULT=$(sudo /usr/local/sbin/sa02m-apply-variant.sh "$VARIANT" 2>&1); then
+                    # Keep lock inodes: an in-flight reader may still hold them.
+                    rm -f /tmp/sa02m_status_cache/system.json \
+                          /tmp/sa02m_status_cache/main.json \
+                          /tmp/sa02m_status_cache/hardware.json \
+                          /tmp/sa02m_status_cache/hardware.sa02m-1eth.json \
+                          /tmp/sa02m_status_cache/hardware.sa02m-2eth.json \
+                          /tmp/sa02m_status_cache/hardware.unknown.json \
+                          /tmp/sa02m_status_cache/hw_metrics.snapshot \
+                          2>/dev/null || true
+                fi
                 printf 'Content-Type: application/json\r\n\r\n'
                 printf '%s\n' "$RESULT"
                 ;;

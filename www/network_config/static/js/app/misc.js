@@ -364,7 +364,10 @@ function executeCommandLine(cmd, mode, rootPassword) {
     }))
     .then(j => {
       if (!j || !j.ok) {
-        setCommandOutput(prompt + cmd + '\n' + uiT('Ошибка:') + ' ' + ((j && j.error) || 'server_error'));
+        const reason = j && j.error === 'capture_failed'
+          ? uiT('Не удалось получить вывод команды. Повторите запрос; если ошибка сохраняется, проверьте журнал веб-сервера.')
+          : ((j && j.error) || 'server_error');
+        setCommandOutput(prompt + cmd + '\n' + uiT('Ошибка:') + ' ' + reason);
         return;
       }
       if (execMode === 'root' && /root authentication failed/i.test(j.output || '')) {
@@ -377,7 +380,8 @@ function executeCommandLine(cmd, mode, rootPassword) {
       }
       saveCommandHistory(cmd);
       const tail = j.truncated ? '\n' + uiT('[output truncated to last 32768 bytes]') : '';
-      setCommandOutput(prompt + cmd + '\n[mode ' + (j.mode || execMode) + ', exit ' + j.rc + ']\n' + (j.output || '') + tail);
+      const incomplete = j.capture_timed_out ? '\n' + uiT('Сбор вывода остановлен по времени. Ограничьте непрерывную команду; у фоновых процессов закройте или перенаправьте stdout/stderr.') : '';
+      setCommandOutput(prompt + cmd + '\n[mode ' + (j.mode || execMode) + ', exit ' + j.rc + ']\n' + (j.output || '') + tail + incomplete);
     })
     .catch(err => setCommandOutput(prompt + cmd + '\n' + uiT('Ошибка запроса:') + ' ' + err.message));
 }

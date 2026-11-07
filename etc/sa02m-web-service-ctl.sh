@@ -50,12 +50,30 @@ sc_run_slow() {
 
 emit_result() {
     _json=$1
+    if [ -n "${SA02M_SVC_OPERATION_ID:-}" ]; then
+        _json=$(printf '%s\n' "$_json" | python3 -I -c 'import json,sys
+d=json.load(sys.stdin)
+d.update(id=sys.argv[1], action=sys.argv[2], op_id=sys.argv[3])
+print(json.dumps(d))' "$ID" "$ACTION" "$SA02M_SVC_OPERATION_ID") || return 1
+    fi
     printf '%s\n' "$_json"
     if [ -n "${SVC_RESULT_FILE:-}" ]; then
-        mkdir -p "$RESULT_DIR" 2>/dev/null || true
-        printf '%s\n' "$_json" >"$SVC_RESULT_FILE" 2>/dev/null || true
-        chmod 644 "$SVC_RESULT_FILE" 2>/dev/null || true
+        publish_result "$_json"
     fi
+}
+
+publish_result() {
+    mkdir -p "$RESULT_DIR" || return 1
+    _result_tmp=$(mktemp "${SVC_RESULT_FILE}.XXXXXX") || return 1
+    if ! { printf '%s\n' "$1" >"$_result_tmp" && chmod 644 "$_result_tmp" && mv -f "$_result_tmp" "$SVC_RESULT_FILE"; }; then
+        rm -f "$_result_tmp"
+        return 1
+    fi
+}
+
+begin_result() {
+    SVC_RESULT_FILE="${RESULT_DIR}/$1.json"
+    emit_result "$(printf '{"ok":true,"pending":true,"id":"%s","action":"%s"}' "$1" "$2")" >/dev/null
 }
 
 # atomic_install_unit SRC DST [MODE=0644] — land a file on a LIVE path as
@@ -583,33 +601,94 @@ unit_props() {
     derive_props "$_active" "$_en_raw" "$_load"
 }
 
-# Fetch every resolved unit's status in TWO batched systemctl calls instead of
-# ~3 forks per service (was ~4 s on the ARM target). Pass 1 resolves units with
-# the exact prior logic (unchanged — same unit selected). Then, over the full
-# resolved-unit list: ONE `systemctl show` for ActiveState+LoadState (keyed by
-# unit Id) and ONE `systemctl is-enabled` for every unit (it accepts many units
-# and prints one status line per unit IN INPUT ORDER — this IS is-enabled, exact
-# enabled/masked/static/… semantics, just batched, unlike swapping in
-# UnitFileState). Pass 2 derives each service's status from the two lookups. Any
-# unit missing from either batch (older systemd, short/garbled output, a batch
-# error) falls back to the original per-unit path for that unit — so the emitted
-# JSON stays byte-identical to the per-unit implementation for every state.
+# Only complete, uniquely keyed records enter this request-local map. Aliases
+# returned under another Id must use the original per-unit probe.
+list_unit_snapshot() {
+    local wanted=$1 name active load
+    while IFS='|' read -r name active load; do
+        if [ "$name" = "$wanted" ]; then
+            printf '%s|%s' "$active" "$load"
+            return 0
+        fi
+    done <<EOF
+$_batch_props
+EOF
+    return 1
+}
+
+# Catalog strings and normal systemd states need no JSON substitutions. Keep
+# the existing escaping for any row containing quotes, backslashes or controls.
+list_append_row() {
+    local enabled=false masked=false admin_off=false
+    case "$1$2$3$4" in
+        *'"'*|*'\'*|*[[:cntrl:]]*)
+            set -- "$(json_escape "$1")" "$(json_escape "$2")" \
+                "$(json_escape "$3")" "$(json_escape "$4")" "$5" "$6" "$7" "$8"
+            ;;
+    esac
+    [ "$5" = enabled ] && enabled=true
+    [ "$6" = 1 ] && masked=true
+    [ "$7" = 1 ] && admin_off=true
+    parts="${parts}${sep}{\"id\":\"$1\",\"label\":\"$2\",\"unit\":\"$3\",\"active\":\"$4\",\"enabled\":$enabled,\"masked\":$masked,\"user_disabled\":$admin_off,\"installed\":$8}"
+    sep=,
+}
+
+# Resolve candidates and reuse their state from one keyed show snapshot. The
+# second call is the original is-enabled batch, preserving its policy meaning.
 cmd_list() {
-    # ── Pass 1: resolve the unit for every present service (prior logic) ──
+    _present_rows=""
+    _candidate_units=""
+    while IFS='|' read -r _id _label _cands; do
+        [ -z "$_id" ] && continue
+        if ! service_present "$_id" "$_cands"; then
+            if svc_is_installable "$_id"; then
+                _present_rows="${_present_rows}${_id}|${_label}|__absent__
+"
+            fi
+            continue
+        fi
+        _present_rows="${_present_rows}${_id}|${_label}|${_cands}
+"
+        _old_ifs=$IFS
+        IFS=,
+        for _u in $_cands; do
+            IFS=$_old_ifs
+            case "$_u" in *.service) ;; *) _u="${_u}.service" ;; esac
+            _candidate_units="${_candidate_units} ${_u}"
+        done
+        IFS=$_old_ifs
+    done <<EOF
+$SERVICE_DEFS
+EOF
+
+    _batch_props=""
+    if [ -n "$_candidate_units" ] && _show=$(sc_run show --property=Id,ActiveState,LoadState $_candidate_units 2>/dev/null); then
+        _batch_props=$(printf '%s\n' "$_show" | awk '
+            function record() {
+                if (id != "") {
+                    if (ni == 1 && na == 1 && nl == 1 && act != "" && load != "" && !bad)
+                        value[id] = id "|" act "|" load
+                    else invalid[id] = 1
+                }
+                id=""; act=""; load=""; ni=0; na=0; nl=0; bad=0
+            }
+            { sub(/\r$/, "") }
+            /^$/ { record(); next }
+            /^Id=/ { id=substr($0,4); seen[id]++; ni++; next }
+            /^ActiveState=/ { act=substr($0,13); na++; next }
+            /^LoadState=/ { load=substr($0,11); nl++; next }
+            { bad=1 }
+            END { record(); for (id in seen) if (seen[id] == 1 && !invalid[id]) print value[id] }
+        ')
+    fi
+
     _rows=""
     _batch_units=""
     while IFS='|' read -r _id _label _cands; do
         [ -z "$_id" ] && continue
-        if ! service_present "$_id" "$_cands"; then
-            # Absent but installable (codesys|mplc4|node-red) → emit a ghost row
-            # with the __absent__ sentinel unit. It is NOT added to the batched
-            # systemctl probes (there is nothing to probe); Pass 2 emits a fixed
-            # installed:false tuple for it. Non-installable absent services keep
-            # the original `continue` (never shown).
-            if svc_is_installable "$_id"; then
-                _rows="${_rows}${_id}|${_label}|__absent__
+        if [ "$_cands" = __absent__ ]; then
+            _rows="${_rows}${_id}|${_label}|__absent__
 "
-            fi
             continue
         fi
         _unit=""
@@ -618,7 +697,11 @@ cmd_list() {
         for _u in $_cands; do
             IFS=$_old_ifs
             case "$_u" in *.service) ;; *) _u="${_u}.service" ;; esac
-            if unit_exists "$_u"; then
+            if _al=$(list_unit_snapshot "$_u"); then
+                case "${_al#*|}" in not-found|"") continue ;; esac
+                _unit=$_u
+                break
+            elif unit_exists "$_u"; then
                 _unit=$_u
                 break
             fi
@@ -646,23 +729,8 @@ cmd_list() {
 "
         [ "$_unit" != "init.d" ] && _batch_units="${_batch_units} ${_unit}"
     done <<EOF
-$SERVICE_DEFS
+$_present_rows
 EOF
-
-    # ── Batch: one `systemctl show` for every resolved real unit ──
-    # Records are blank-line-separated, one per unit; awk (no paragraph-mode
-    # RS, so busybox/mawk/gawk-safe) flattens each to `Id|ActiveState|LoadState`.
-    _batch_props=""
-    if [ -n "$_batch_units" ]; then
-        _batch_props=$(sc_run show --property=Id,ActiveState,LoadState $_batch_units 2>/dev/null | awk '
-            { sub(/\r$/, "") }
-            /^$/ { if (id != "") print id "|" act "|" load; id=""; act=""; load=""; next }
-            /^Id=/ { id = substr($0, 4) }
-            /^ActiveState=/ { act = substr($0, 13) }
-            /^LoadState=/ { load = substr($0, 11) }
-            END { if (id != "") print id "|" act "|" load }
-        ')
-    fi
 
     # ── Batch: one `systemctl is-enabled` for every resolved real unit ──
     # is-enabled accepts multiple units and prints one status line per unit in
@@ -689,10 +757,7 @@ EOF
             # Ghost row for an installable-but-absent service. No systemctl
             # probe (the unit does not exist); fixed installed:false tuple so
             # the frontend renders the [Установить] button.
-            _id_e=$(json_escape "$_id")
-            _label_e=$(json_escape "$_label")
-            parts="${parts}${sep}{\"id\":\"${_id_e}\",\"label\":\"${_label_e}\",\"unit\":\"\",\"active\":\"inactive\",\"enabled\":false,\"masked\":false,\"user_disabled\":false,\"installed\":false}"
-            sep=,
+            list_append_row "$_id" "$_label" "" inactive disabled 0 0 false
             continue
         fi
         if [ "$_unit" = "init.d" ]; then
@@ -718,7 +783,7 @@ EOF
                 fi
             fi
         else
-            _al=$(printf '%s\n' "$_batch_props" | awk -F'|' -v u="$_unit" '$1==u{print $2"|"$3; exit}')
+            _al=$(list_unit_snapshot "$_unit") || _al=""
             if [ -n "$_al" ]; then
                 _en_raw=$(printf '%s\n' "$_enabled_map" | awk -F'|' -v u="$_unit" '$1==u{print $2; exit}')
                 if [ -z "$_en_raw" ]; then
@@ -752,12 +817,7 @@ EOF2
                 _active=inactive
             fi
         fi
-        _id_e=$(json_escape "$_id")
-        _label_e=$(json_escape "$_label")
-        _unit_e=$(json_escape "$_unit")
-        _active_e=$(json_escape "$_active")
-        parts="${parts}${sep}{\"id\":\"${_id_e}\",\"label\":\"${_label_e}\",\"unit\":\"${_unit_e}\",\"active\":\"${_active_e}\",\"enabled\":$([ "$_enabled" = enabled ] && echo true || echo false),\"masked\":$([ "$_masked" = 1 ] && echo true || echo false),\"user_disabled\":$([ "$_admin_off" = 1 ] && echo true || echo false),\"installed\":true}"
-        sep=,
+        list_append_row "$_id" "$_label" "$_unit" "$_active" "$_enabled" "$_masked" "$_admin_off" true
     done <<EOF
 $_rows
 EOF
@@ -765,14 +825,24 @@ EOF
     if flasher_poll_lock_held; then
         _flasher_busy=true
     fi
-    printf '{"ok":true,"flasher_busy":%s,"services":[%s]}\n' "$([ "$_flasher_busy" = true ] && echo true || echo false)" "$parts"
+    printf '{"ok":true,"flasher_busy":%s,"services":[%s]}\n' "$_flasher_busy" "$parts"
 }
 
 validate_id() {
+    [ "${#1}" -le 64 ] || return 1
     case "$1" in
         ''|*[!a-zA-Z0-9_-]*) return 1 ;;
     esac
     return 0
+}
+
+service_id_known() {
+    while IFS='|' read -r _known_id _known_label _known_units; do
+        [ "$_known_id" = "$1" ] && return 0
+    done <<SVC_IDS
+$SERVICE_DEFS
+SVC_IDS
+    return 1
 }
 
 # Only these three runtimes carry install/uninstall (local .deb / vendor
@@ -798,10 +868,7 @@ cmd_stop() {
         return 1
     fi
     _u=$_found_unit
-    SVC_RESULT_FILE="${RESULT_DIR}/${_id}.json"
-    mkdir -p "$RESULT_DIR" 2>/dev/null || true
-    printf '{"ok":true,"pending":true,"id":"%s","action":"stop"}\n' "$_id" >"$SVC_RESULT_FILE" 2>/dev/null || true
-    chmod 644 "$SVC_RESULT_FILE" 2>/dev/null || true
+    begin_result "$_id" stop || return 1
     echo "$(date '+%Y-%m-%d %H:%M:%S') sa02m-web-service-ctl: stop ${_id} (${_u})" >>"$LOG" 2>&1
     if [ "$_id" = "codesys" ] && [ -x /etc/init.d/codesyscontrol ]; then
         /etc/init.d/codesyscontrol stop >>"$LOG" 2>&1 || true
@@ -882,10 +949,7 @@ cmd_start() {
             ;;
     esac
     _u=$_found_unit
-    SVC_RESULT_FILE="${RESULT_DIR}/${_id}.json"
-    mkdir -p "$RESULT_DIR" 2>/dev/null || true
-    printf '{"ok":true,"pending":true,"id":"%s","action":"start"}\n' "$_id" >"$SVC_RESULT_FILE" 2>/dev/null || true
-    chmod 644 "$SVC_RESULT_FILE" 2>/dev/null || true
+    begin_result "$_id" start || return 1
     echo "$(date '+%Y-%m-%d %H:%M:%S') sa02m-web-service-ctl: start ${_id} (${_u:-init.d})" >>"$LOG" 2>&1
     # codesys: start = RUNTIME ONLY (kernel-conditional service policy) — no
     # codesys_rc_enable, and no `systemctl enable` on the SysV-generated unit
@@ -1652,10 +1716,7 @@ cmd_install() {
         emit_result '{"ok":false,"error":"not_installable","id":"'"$_id"'"}'
         return 1
     fi
-    SVC_RESULT_FILE="${RESULT_DIR}/${_id}.json"
-    mkdir -p "$RESULT_DIR" 2>/dev/null || true
-    printf '{"ok":true,"pending":true,"id":"%s","action":"install"}\n' "$_id" >"$SVC_RESULT_FILE" 2>/dev/null || true
-    chmod 644 "$SVC_RESULT_FILE" 2>/dev/null || true
+    begin_result "$_id" install || return 1
     echo "$(date '+%Y-%m-%d %H:%M:%S') sa02m-web-service-ctl: install ${_id}" >>"$LOG" 2>&1
     case "$_id" in
         codesys) codesys_install ;;
@@ -1674,10 +1735,7 @@ cmd_uninstall() {
         emit_result '{"ok":false,"error":"not_installable","id":"'"$_id"'"}'
         return 1
     fi
-    SVC_RESULT_FILE="${RESULT_DIR}/${_id}.json"
-    mkdir -p "$RESULT_DIR" 2>/dev/null || true
-    printf '{"ok":true,"pending":true,"id":"%s","action":"uninstall"}\n' "$_id" >"$SVC_RESULT_FILE" 2>/dev/null || true
-    chmod 644 "$SVC_RESULT_FILE" 2>/dev/null || true
+    begin_result "$_id" uninstall || return 1
     echo "$(date '+%Y-%m-%d %H:%M:%S') sa02m-web-service-ctl: uninstall ${_id}" >>"$LOG" 2>&1
     case "$_id" in
         codesys) codesys_uninstall ;;
@@ -1691,6 +1749,21 @@ cmd_uninstall() {
 
 ACTION=${1:-}
 ID=${2:-}
+SA02M_SVC_OPERATION_ID=${3:-${SA02M_SVC_OPERATION_ID:-}}
+case "$SA02M_SVC_OPERATION_ID" in
+    *[!a-f0-9]*) printf '{"ok":false,"error":"invalid_operation"}\n'; exit 1 ;;
+esac
+if [ -n "$SA02M_SVC_OPERATION_ID" ] && [ "${#SA02M_SVC_OPERATION_ID}" -ne 32 ]; then
+    printf '{"ok":false,"error":"invalid_operation"}\n'; exit 1
+fi
+export SA02M_SVC_OPERATION_ID
+case "$ACTION" in
+    start|stop|install|uninstall)
+        validate_id "$ID" || { printf '{"ok":false,"error":"invalid_id"}\n'; exit 1; }
+        service_id_known "$ID" || { emit_result '{"ok":false,"error":"unknown_service"}'; exit 1; }
+        begin_result "$ID" "$ACTION" || exit 1
+        ;;
+esac
 
 # The root broker serializes the entire helper operation against UART leases.
 # The inherited fd is checked by inode; a UI flag or snapshot is not authority.

@@ -97,7 +97,7 @@ def pick_capture_volume(controls: Sequence[Control]) -> Optional[Control]:
 def card_arg(card) -> str:
     """The amixer `-c` value for a resolved alsa.Card: its id when that is a
     plain ALSA id, else its index."""
-    return card.id if _CARD_ID.match(card.id) else str(card.index)
+    return card.id if _CARD_ID.fullmatch(card.id) else str(card.index)
 
 
 def card_from_device(device: str) -> Optional[str]:

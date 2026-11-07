@@ -16,6 +16,14 @@ from .fakes import Sandbox
 
 
 class IdTest(unittest.TestCase):
+    def test_id_validation_requires_the_whole_string(self):
+        rec_id = "20261015T120000Z-0a1b2c"
+        self.assertTrue(store_mod.valid_id(rec_id))
+        for end in ("\n", "\r", "\r\n", "\0"):
+            with self.subTest(end=end):
+                self.assertFalse(store_mod.valid_id(rec_id + end))
+                self.assertFalse(store_mod.valid_id(end + rec_id))
+
     def test_format_is_utc_and_matches_the_grammar(self):
         rec_id = store_mod.new_id(0)
         self.assertTrue(rec_id.startswith("19700101T000000Z-"), rec_id)
@@ -108,6 +116,32 @@ class StoreTest(unittest.TestCase):
         deleted = self.store.retention(C.MEDIUM_EMMC, keep_files=50, keep_mb=32, keep_hours=24)
         self.assertEqual(deleted, [old])
         self.assertEqual(self.sb.clips(), [new + ".wav"])
+
+    def test_listing_requires_the_whole_clip_filename(self):
+        good = self.ids(1)[0]
+        self.clip(C.MEDIUM_USB, good)
+        rec = self.sb.rec(C.MEDIUM_USB)
+        malformed = [good + C.CLIP_SUFFIX + end for end in ("\n", "\r", "\r\n")]
+        for name in malformed:
+            with open(os.path.join(rec, name), "wb") as fh:
+                fh.write(b"stray")
+        self.assertEqual([c.id for c in self.store.list_clips(C.MEDIUM_USB)], [good])
+        self.assertEqual(self.store.delete([C.MEDIUM_USB], "all"), [good])
+        self.assertEqual(sorted(os.listdir(rec)), sorted(malformed))
+
+    def test_orphan_sweep_requires_the_whole_meta_filename(self):
+        good, orphan = self.ids(2)
+        self.clip(C.MEDIUM_USB, good)
+        self.assertTrue(self.store.write_meta(C.MEDIUM_USB, good, {"upload": "ok"}))
+        rec = self.sb.rec(C.MEDIUM_USB)
+        malformed = [orphan + C.META_SUFFIX + end for end in ("\n", "\r", "\r\n")]
+        for name in malformed + [orphan + C.META_SUFFIX]:
+            with open(os.path.join(rec, name), "wb") as fh:
+                fh.write(b"{}")
+        self.assertEqual(self.store.sweep_orphan_meta(C.MEDIUM_USB), 1)
+        self.assertEqual(sorted(os.listdir(rec)),
+                         sorted(malformed + [good + C.CLIP_SUFFIX, good + C.META_SUFFIX]))
+        self.assertEqual(self.store.read_meta(C.MEDIUM_USB, good), {"upload": "ok"})
 
     def test_retention_by_count_keeps_the_newest(self):
         ids = self.ids(5)

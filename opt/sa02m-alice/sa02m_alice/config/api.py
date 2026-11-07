@@ -480,7 +480,7 @@ def gateway_reachability(status: Dict[str, Any]) -> Dict[str, Any]:
 def full_config() -> Dict[str, Any]:
     cfg = default_client_cfg()
     _wss, http, _path = gateway_urls()
-    devices = load_devices()
+    devices = models.protect_led_readings(load_devices())
     # ONE scenario-store read feeds both scene blocks of the card.
     rules_doc, rules_ok = scene_devices.read_rules_doc()
     status = read_status_file()

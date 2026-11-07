@@ -3,6 +3,7 @@
 Serial port wrapper for Modbus RTU: open with given baud/parity/stopbits,
 send request and read response with timeout.
 """
+import math
 import socket
 import serial
 import serial.tools.list_ports
@@ -102,17 +103,126 @@ def format_serial_open_error_user_message(port: str, exc: BaseException) -> str:
     return f"Не удалось открыть {port}:\n{exc}"
 
 
+def _remaining_serial_time(deadline: float) -> float:
+    remaining = deadline - time.monotonic()
+    if remaining <= 0:
+        raise TimeoutError("Serial operation deadline exceeded")
+    return remaining
+
+
+def _serial_output_count(ser) -> int:
+    try:
+        count = ser.out_waiting
+    except (AttributeError, NotImplementedError, OSError) as exc:
+        raise RuntimeError("Serial output queue state unavailable") from exc
+    if not isinstance(count, int) or count < 0:
+        raise RuntimeError("Invalid serial output queue state")
+    return count
+
+
+def _serial_wire_guard(seconds: float) -> None:
+    # Cancellation must not release UART while already accepted bytes may shift.
+    end = time.monotonic() + seconds
+    while True:
+        remaining = end - time.monotonic()
+        if remaining <= 0:
+            return
+        time.sleep(min(.005, remaining))
+
+
+def _send_receive_budgeted(ser, request, response_timeout_ms, cancel_check, deadline):
+    if not math.isfinite(deadline):
+        raise ValueError("Serial deadline must be finite")
+    if cancel_check and cancel_check():
+        return None
+    char_time = (1 + (ser.bytesize or 8) + (ser.stopbits or 1)
+                 + bool(ser.parity and ser.parity != "N")) / ser.baudrate
+    post_send_delay = max(.001, min(.02, char_time * 3.5 + .002))
+    # Queue length excludes some device FIFOs. Reserve a full request's wire
+    # time plus the existing RX turnaround guard, including on abort paths.
+    tail = len(request) * char_time + post_send_delay
+    transmit_deadline = deadline - tail
+    _remaining_serial_time(transmit_deadline)
+    if _serial_output_count(ser):
+        raise RuntimeError("Serial output queue is not empty")
+    original_read, original_write = ser.timeout, ser.write_timeout
+    transmitted, quiet = False, False
+    try:
+        ser.reset_input_buffer()
+        if cancel_check and cancel_check():
+            return None
+        remaining = _remaining_serial_time(transmit_deadline)
+        ser.write_timeout = remaining if original_write is None else min(original_write, remaining)
+        transmitted = True
+        if ser.write(request) != len(request):
+            raise TimeoutError("Incomplete serial write; application outcome unknown")
+        while True:
+            if cancel_check and cancel_check():
+                return None
+            remaining = _remaining_serial_time(transmit_deadline)
+            if not _serial_output_count(ser):
+                break
+            time.sleep(min(.001, remaining))
+        _serial_wire_guard(tail)
+        quiet = True
+        if cancel_check and cancel_check():
+            return None
+        _remaining_serial_time(deadline)
+        read_deadline = min(deadline, time.monotonic() + response_timeout_ms / 1000.0)
+        data = bytearray()
+        while time.monotonic() < read_deadline:
+            if cancel_check and cancel_check():
+                return None
+            waiting = ser.in_waiting
+            if waiting:
+                remaining = _remaining_serial_time(read_deadline)
+                ser.timeout = remaining if original_read is None else min(original_read, remaining)
+                chunk = ser.read(min(waiting, modbus_rtu.MAX_RESPONSE_BUFFER + 1 - len(data)))
+                _remaining_serial_time(deadline)
+                if cancel_check and cancel_check():
+                    return None
+                data.extend(chunk)
+                matched = modbus_rtu.find_matching_response(request, bytes(data))
+                if matched is not None:
+                    return matched
+                if chunk:
+                    continue
+            remaining = read_deadline - time.monotonic()
+            if remaining > 0:
+                time.sleep(min(.001, remaining))
+        if cancel_check and cancel_check():
+            return None
+        _remaining_serial_time(deadline)
+        return modbus_rtu.find_matching_response(request, bytes(data), final=True)
+    finally:
+        try:
+            if transmitted and not quiet:
+                try:
+                    ser.reset_output_buffer()
+                finally:
+                    _serial_wire_guard(tail)
+        finally:
+            try:
+                ser.timeout = original_read
+            finally:
+                ser.write_timeout = original_write
+
+
 def send_receive(
     ser: serial.Serial,
     request: bytes,
     response_timeout_ms: int = 2000,
     cancel_check: Optional[Callable[[], bool]] = None,
+    *,
+    deadline: Optional[float] = None,
 ) -> Optional[bytes]:
     """
     Send request, read response. Modbus RTU: пауза после TX (переключение RS-485),
     затем чтение до таймаута или до паузы в приходе данных.
     Returns response bytes or None on timeout.
     """
+    if deadline is not None:
+        return _send_receive_budgeted(ser, request, response_timeout_ms, cancel_check, deadline)
     ser.reset_input_buffer()
     ser.write(request)
     ser.flush()
@@ -124,108 +234,30 @@ def send_receive(
     if not _sleep_interruptible(post_send_delay, cancel_check, step=0.005):
         return None
     deadline = time.perf_counter() + (response_timeout_ms / 1000.0)
-    chunks = []
-    last_recv = time.perf_counter()
+    data = bytearray()
     while time.perf_counter() < deadline:
         if cancel_check and cancel_check():
             return None
-        if ser.in_waiting:
-            chunk = ser.read(ser.in_waiting)
-            chunks.append(chunk)
-            last_recv = time.perf_counter()
-            # Ранний выход: как только сформирован целый Modbus-кадр, не ждём тишину/дедлайн.
-            data_now = b"".join(chunks)
-            # Убираем эхо запроса из начала (часть адаптеров отзеркаливает TX в RX).
-            # Условие > (не >=): для FC06 ответ == запрос (8 байт), при адаптере без TX-эха
-            # принятые байты == len(request) — это И ЕСТЬ ответ, а не эхо. Не срезаем.
-            if len(request) > 0 and len(data_now) > len(request) and data_now[:len(request)] == request:
-                data_now = data_now[len(request):]
-            if len(data_now) >= 5:
-                func = data_now[1]
-                # Ответ быстрого Modbus 0xFD 0x46 0x09 [serial 4B] [inner PDU без addr] CRC. Заголовок 7 B (FD 46 09 + serial). Бутлоадер: inner 5 B для 0x10/0x06.
-                if len(data_now) >= 8 and data_now[0] == 0xFD and data_now[1] == 0x46 and data_now[2] == 0x09:
-                    fc_inner = data_now[7]
-                    if fc_inner in (0x06, 0x10):
-                        inner_len = 5
-                    elif fc_inner in (0x03, 0x04) and len(data_now) > 8:
-                        inner_len = 2 + data_now[8]
-                    else:
-                        inner_len = 8
-                    need = 7 + inner_len + 2  # 7 = header, 2 = CRC
-                    if len(data_now) >= need:
-                        break
-                # Исключение: [addr, func|0x80, ex] + CRC
-                if (func & 0x80) and len(data_now) >= 5:
-                    break
-                # Ответ записи (0x06/0x10): фиксировано 8 байт
-                if func in (0x06, 0x10) and len(data_now) >= 8:
-                    break
-                # Ответ чтения 0x01/0x02/0x03/0x04: [addr, func, byte_count, data..., crc]
-                flen = _modbus_read_var_header_frame_len(data_now)
-                if flen and len(data_now) >= flen:
-                    break
-        else:
-            # Выход по тишине только при полном Modbus-кадре (не по 5+ байтам), иначе теряем ответ или возвращаем обрезок → таймаут/ошибка.
-            if chunks and (time.perf_counter() - last_recv) > 0.02:
-                data_after_strip = b"".join(chunks)
-                if len(request) > 0 and len(data_after_strip) > len(request) and data_after_strip[:len(request)] == request:
-                    data_after_strip = data_after_strip[len(request):]
-                if len(data_after_strip) >= 5:
-                    func = data_after_strip[1]
-                    if len(data_after_strip) >= 8 and data_after_strip[0] == 0xFD and data_after_strip[1] == 0x46 and data_after_strip[2] == 0x09:
-                        fc_inner = data_after_strip[7]
-                        if fc_inner in (0x06, 0x10):
-                            inner_len = 5
-                        elif fc_inner in (0x03, 0x04) and len(data_after_strip) > 8:
-                            inner_len = 2 + data_after_strip[8]
-                        else:
-                            inner_len = 8
-                        if len(data_after_strip) >= 7 + inner_len + 2:
-                            break
-                    if (func & 0x80) and len(data_after_strip) >= 5:
-                        break
-                    if func in (0x06, 0x10) and len(data_after_strip) >= 8:
-                        break
-                    flen = _modbus_read_var_header_frame_len(data_after_strip)
-                    if flen and len(data_after_strip) >= flen:
-                        break
-            if not _sleep_interruptible(0.001, cancel_check, step=0.001):
+        waiting = ser.in_waiting
+        if waiting:
+            # Read at most one byte beyond the cap, then fail explicitly.
+            data.extend(ser.read(min(waiting, modbus_rtu.MAX_RESPONSE_BUFFER + 1 - len(data))))
+            if cancel_check and cancel_check():
                 return None
-    if not chunks:
+            matched = modbus_rtu.find_matching_response(request, bytes(data))
+            if matched is not None:
+                return matched
+        elif not _sleep_interruptible(0.001, cancel_check, step=0.001):
+            return None
+    if cancel_check and cancel_check():
         return None
-    data = b"".join(chunks)
-    # Убрать эхо своего запроса из начала буфера (некоторые USB-RS485 отдают TX в RX).
-    # Условие > (не >=): для FC06 ответ == запрос — не срезаем (иначе возвращаем None).
-    if len(request) > 0 and len(data) > len(request) and data[:len(request)] == request:
-        data = data[len(request):]
-    if len(data) < 5:
-        return None  # после отсечения эха нет полного ответа
-    return data
+    return modbus_rtu.find_matching_response(request, bytes(data), final=True)
 
 
 def _rtu_response_complete(data_now: bytes) -> bool:
-    """Достаточно байт для одного полного RTU-ответа (та же логика, что ранний выход в send_receive)."""
-    if len(data_now) < 5:
-        return False
-    func = data_now[1]
-    if len(data_now) >= 8 and data_now[0] == 0xFD and data_now[1] == 0x46 and data_now[2] == 0x09:
-        fc_inner = data_now[7]
-        if fc_inner in (0x06, 0x10):
-            inner_len = 5
-        elif fc_inner in (0x03, 0x04) and len(data_now) > 8:
-            inner_len = 2 + data_now[8]
-        else:
-            inner_len = 8
-        need = 7 + inner_len + 2
-        return len(data_now) >= need
-    if (func & 0x80) and len(data_now) >= 5:
-        return True
-    if func in (0x06, 0x10) and len(data_now) >= 8:
-        return True
-    flen = _modbus_read_var_header_frame_len(data_now)
-    if flen and len(data_now) >= flen:
-        return True
-    return False
+    """Predict completion using the shared standard/FastModbus response grammar."""
+    size = modbus_rtu.response_frame_length(data_now)
+    return bool(size and len(data_now) >= size)
 
 
 def send_receive_tcp(
@@ -234,59 +266,40 @@ def send_receive_tcp(
     response_timeout_ms: int = 2000,
     cancel_check: Optional[Callable[[], bool]] = None,
 ) -> Optional[bytes]:
-    """
-    Modbus RTU поверх TCP: отправить сырой RTU-кадр (с CRC), прочитать один RTU-ответ.
-    Без MBAP — для шлюзов «прозрачный сокет» / RTU over TCP.
-    """
+    """Send one raw RTU request over TCP and await its matching response."""
     try:
         sock.sendall(request)
     except OSError:
         return None
     time.sleep(0.002)
     deadline = time.perf_counter() + (response_timeout_ms / 1000.0)
-    chunks: List[bytes] = []
-    last_recv = time.perf_counter()
+    data = bytearray()
     while time.perf_counter() < deadline:
         if cancel_check and cancel_check():
             return None
-        rem = deadline - time.perf_counter()
-        if rem <= 0:
+        remaining = deadline - time.perf_counter()
+        if remaining <= 0:
             break
-        sock.settimeout(min(0.05, rem))
+        sock.settimeout(min(0.05, remaining))
         try:
-            chunk = sock.recv(4096)
+            chunk = sock.recv(modbus_rtu.MAX_RESPONSE_BUFFER + 1 - len(data))
         except socket.timeout:
-            chunk = b""
-        except OSError:
-            break
-        else:
-            if len(chunk) == 0:
-                break
-        if chunk:
-            chunks.append(chunk)
-            last_recv = time.perf_counter()
-            data_now = b"".join(chunks)
-            if len(request) > 0 and len(data_now) > len(request) and data_now[: len(request)] == request:
-                data_now = data_now[len(request) :]
-            if _rtu_response_complete(data_now):
-                break
-        else:
-            if chunks and (time.perf_counter() - last_recv) > 0.02:
-                data_after_strip = b"".join(chunks)
-                if len(request) > 0 and len(data_after_strip) > len(request) and data_after_strip[: len(request)] == request:
-                    data_after_strip = data_after_strip[len(request) :]
-                if _rtu_response_complete(data_after_strip):
-                    break
             if not _sleep_interruptible(0.001, cancel_check, step=0.001):
                 return None
-    if not chunks:
+            continue
+        except OSError:
+            return None
+        if not chunk:
+            return None
+        if cancel_check and cancel_check():
+            return None
+        data.extend(chunk)
+        matched = modbus_rtu.find_matching_response(request, bytes(data))
+        if matched is not None:
+            return matched
+    if cancel_check and cancel_check():
         return None
-    data = b"".join(chunks)
-    if len(request) > 0 and len(data) > len(request) and data[: len(request)] == request:
-        data = data[len(request) :]
-    if len(data) < 5:
-        return None
-    return data
+    return modbus_rtu.find_matching_response(request, bytes(data), final=True)
 
 
 def _modbus_frame_length(data: bytes, offset: int) -> int:

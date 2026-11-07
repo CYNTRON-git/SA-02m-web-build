@@ -65,7 +65,7 @@ def new_id(now: Optional[float] = None) -> str:
 
 
 def valid_id(value: object) -> bool:
-    return isinstance(value, str) and bool(ID_RE.match(value))
+    return isinstance(value, str) and bool(ID_RE.fullmatch(value))
 
 
 class Part:
@@ -196,7 +196,7 @@ class Store:
         clips = []
         try:
             for entry in os.listdir(fds[1]):
-                if not _CLIP_NAME.match(entry):
+                if not _CLIP_NAME.fullmatch(entry):
                     continue
                 st = is_regular(fds[1], entry)
                 if st is None:
@@ -290,7 +290,7 @@ class Store:
         try:
             names = set(os.listdir(fds[1]))
             for entry in names:
-                if _META_NAME.match(entry) and entry[:-len(C.META_SUFFIX)] + C.CLIP_SUFFIX not in names:
+                if _META_NAME.fullmatch(entry) and entry[:-len(C.META_SUFFIX)] + C.CLIP_SUFFIX not in names:
                     if unlink_quietly(fds[1], entry):
                         removed += 1
         except OSError:

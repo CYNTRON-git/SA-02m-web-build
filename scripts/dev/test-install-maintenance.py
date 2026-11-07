@@ -10,6 +10,7 @@ import re
 import subprocess
 import tempfile
 import sys
+import time
 import unittest
 from unittest.mock import patch
 
@@ -344,7 +345,7 @@ class GuardTests(unittest.TestCase):
                 with self.assertRaises(KeyboardInterrupt):
                     m.run_installer(["install.sh", "--refresh"])
             self.assertIsNotNone(children[0].poll(), "interrupted installer child survived cleanup")
-        self.assertEqual(first_calls, ["jobs", "owners:True", "migrate", "owners:False", "installer"])
+        self.assertEqual(first_calls, ["jobs", "owners:True", "migrate", "jobs", "owners:False", "installer"])
         for unit, state in states.items():
             self.assertEqual(self.system.states[unit]["ActiveState"], state["ActiveState"])
             self.assertEqual(self.system.states[unit]["UnitFileState"], state["UnitFileState"])
@@ -425,6 +426,315 @@ class GuardTests(unittest.TestCase):
                 *([seed] if expected == '{"seed":true}' else []),
                 "root:root %s/etc/systemd/system/sa02m-port-coordinator.service" % target,
             ])
+
+
+class ManagedGateway(unittest.TestCase):
+    """The installed broker handles real peer credentials, PTYs, SCM_RIGHTS and flocks."""
+
+    def setUp(self):
+        import multiprocessing
+        import pty
+        sys.path.insert(0, str(ROOT / "opt/sa02m-port-coordinator"))
+        from sa02m_ports import Lease, PortError, broker, locks
+        self.Lease, self.PortError = Lease, PortError
+        self.stack = contextlib.ExitStack()
+        self.addCleanup(self.stack.close)
+        self.root = Path(self.stack.enter_context(tempfile.TemporaryDirectory()))
+        self.unit = "sa02m-serial-gateway.service"
+        self.group = "/system.slice/" + self.unit
+        self.system = System(self.root)
+        self.system.states[self.unit].update(LoadState="loaded", ActiveState="active", UnitFileState="disabled")
+        self.runtime = self.root / "run/sa02m-port-coordinator"
+        self.private = self.root / "var/lib/sa02m-port-coordinator"
+        self.sock = str(self.runtime / "control.sock")
+        self.dev = self.root / "dev"
+        self.dev.mkdir()
+        self.ports = ["/dev/COM1", "/dev/COM4"]
+        for port in self.ports:
+            master, slave = pty.openpty()
+            self.stack.callback(os.close, master)
+            (self.dev / Path(port).name).symlink_to(os.ttyname(slave))
+            os.close(slave)
+        self.cgroup = self.root / "cgroup"
+        self.cgroup.write_text("0::" + self.group + "\n")
+        self.install = self.root / "opt/sa02m-port-coordinator"
+        self.install.parent.mkdir()
+        self.install.symlink_to(ROOT / "opt/sa02m-port-coordinator")
+        self.stack.enter_context(patch.object(locks, "OWNER_UID", os.getuid()))
+        self.stack.enter_context(patch.object(locks, "OWNER_GID", os.getgid()))
+        self.stack.enter_context(patch.object(broker, "OCCUPANT_SCAN_ROOT", os.getpid()))
+        class Units:
+            def mqtt_pause(self, port):
+                return None
+            def canonical(self, unit):
+                return unit
+        def server():
+            # Relocate the kernel devices while retaining real COM names on the wire.
+            for name in ("device_key", "occupants", "lock_device"):
+                original = getattr(broker, name)
+                setattr(broker, name, lambda port, *a, fn=original: fn(self.dev / Path(port).name, *a))
+            instance = broker.Broker({"ports": {p: [] for p in self.ports}}, self.private, self.runtime, Units())
+            broker.serve(instance, allowed_uids={os.getuid()}, admin_uids={os.getuid()}, group=os.getgid())
+        daemon = multiprocessing.get_context("fork").Process(target=server)
+        self.daemon = daemon
+        daemon.start()
+        self.stack.callback(lambda: (daemon.kill(), daemon.join(5)))
+        until = time.monotonic() + 5
+        while not Path(self.sock).exists() and daemon.is_alive() and time.monotonic() < until:
+            time.sleep(.01)
+        self.assertTrue(Path(self.sock).exists(), "broker did not listen")
+        self.handles = {}
+        self.stack.callback(self.release)
+        self.gateway_refused = []
+        self.started = 0
+        self.refuse_ports = False
+        self.keep_port_on_stop = False
+        self.child_code = 0
+        def path(name):
+            name = str(name)
+            if name == "/":
+                return self.root
+            if name == "/proc/%d/cgroup" % os.getpid():
+                return self.cgroup
+            if name.split("/")[1:2] in (["dev"], ["run"], ["opt"], ["var"]):
+                return self.root / name[1:]
+            return Path(name)
+        real_guard, real_run = m.Guard, subprocess.run
+        def run(args, **kwargs):
+            if args[0] == "bash":
+                return subprocess.CompletedProcess(args, 0)
+            if args[:3] == [sys.executable, "-I", "-c"] and len(args) == 4:
+                # The .32 one-line probe hardcodes its installed package and socket.
+                args = [*args[:3], args[3].replace("'/opt/sa02m-port-coordinator'", repr(str(self.install)))
+                        .replace("from sa02m_ports import assert_idle", "from sa02m_ports import client; "
+                                 + "client.SOCKET=" + repr(self.sock) + "; from sa02m_ports import assert_idle")]
+            return real_run(args, **kwargs)
+        def launch(args, **kwargs):
+            self.started += 1
+            self.assertFalse(self.handles)
+            journal = self.root / "var/lib/sa02m-install-maintenance/uart.json"
+            self.assertEqual(set(json.loads(journal.read_text())["gateway_ports"]), set(self.ports))
+            for port in self.ports:
+                self.assertEqual(broker.occupants(self.dev / Path(port).name), [])
+                with self.assertRaisesRegex(PortError, "maintenance"):
+                    with Lease(port, "scan", self.sock):
+                        pass
+            class Child:
+                def wait(_self):
+                    return self.child_code
+            return Child()
+        # Keep subprocess.run's own Popen intact for the isolated installed-client RPC.
+        import types
+        process = types.SimpleNamespace(**vars(subprocess))
+        process.Popen, process.run = launch, run
+        for name, value in (("Path", path), ("subprocess", process), ("ctl", self.ctl),
+                            ("Guard", lambda units, **kw: real_guard(units, run=self.root, **kw)),
+                            ("legacy_idle", lambda: None), ("flasher_idle", lambda: None),
+                            ("web_health", lambda: None)):
+            self.stack.enter_context(patch.object(m, name, value))
+        self.stack.enter_context(patch.object(m.os, "geteuid", return_value=0))
+        self.acquire()
+
+    def acquire(self):
+        for port in self.ports:
+            if port not in self.handles and not self.refuse_ports:
+                lease = self.Lease(port, "gateway", self.sock).__enter__()
+                self.handles[port] = lease, os.open(self.dev / Path(port).name, os.O_RDWR | os.O_NOCTTY)
+
+    def release(self):
+        while self.handles:
+            _, (lease, fd) = self.handles.popitem()
+            os.close(fd)
+            lease.close()
+
+    def ctl(self, verb, *args):
+        if verb == "show" and args == (self.unit, "-p", "ControlGroup", "--value"):
+            return self.group
+        if verb == "show" and args[0] == self.unit and "MainPID" in args:
+            return "ActiveState=active\nMainPID=%d\nControlGroup=%s" % (os.getpid(), self.group)
+        result = self.system.ctl(verb, *args)
+        if verb in {"start", "stop"} and args[-1] == self.unit:
+            if verb == "stop":
+                if not self.keep_port_on_stop:
+                    self.release()
+            else:
+                try:
+                    self.acquire()
+                except self.PortError as exc:
+                    self.gateway_refused.append(str(exc))
+        return result
+
+    def test_full_refresh_admits_only_managed_gateway_and_restores_working_line(self):
+        for code in (0, 42):
+            self.child_code = code
+            self.assertEqual(m.run_installer(["install.sh", "--refresh"]), code)
+            self.assertEqual(set(self.handles), set(self.ports))
+            self.assertEqual(self.system.states[self.unit]["UnitFileState"], "disabled")
+        self.assertEqual(self.started, 2)
+        self.assertEqual(self.gateway_refused, [])
+
+    def refusal(self, error=Exception):
+        with self.assertRaises(error):
+            m.run_installer(["install.sh", "--refresh"])
+        self.assertEqual(self.started, 0)
+        self.assertFalse(any(call == ("stop", (self.unit,)) for call in self.system.calls))
+        self.assertEqual(self.system.states["nginx.service"]["ActiveState"], "active")
+
+    def test_live_other_lease_and_service_mutation_never_stop_the_gateway(self):
+        from sa02m_ports import ServiceMutation
+        port = self.ports[-1]
+        lease, fd = self.handles.pop(port)
+        os.close(fd)
+        lease.close()
+        for purpose in ("flasher", "operation", "scan"):
+            with self.subTest(purpose=purpose), self.Lease(port, purpose, self.sock):
+                self.refusal()
+        with ServiceMutation("mplc4.service", self.sock):
+            self.refusal()
+        self.assertIn(self.ports[0], self.handles)
+
+    def test_spoofed_or_recovering_ledger_cannot_interrupt_a_gateway(self):
+        from sa02m_ports.broker import atomic_json
+        ledger = self.private / "state.json"
+        original = json.loads(ledger.read_bytes())
+        self.stack.callback(atomic_json, ledger, original)
+        for change in ({"pid": os.getppid()}, {"purpose": "scan"}, {"phase": "recovering"}, {"id": "x"},
+                       {"key": "1-1"}, {"error": "unresolved"}, {"unknown": True}):
+            state = json.loads(json.dumps(original))
+            next(iter(state["leases"].values())).update(change)
+            atomic_json(ledger, state)
+            with self.subTest(change=change):
+                self.refusal()
+        for leases in ({}, original["leases"]):
+            atomic_json(ledger, {"leases": leases, "services": {"mplc4.service": {
+                "restore": True, "phase": "restore_failed", "error": "failed"}}})
+            self.refusal()
+        atomic_json(ledger, original)
+        self.cgroup.write_text("0::/user.slice/" + self.unit + "\n")
+        self.refusal()
+        self.cgroup.write_text("0::" + self.group + "\n")
+        # Same real process holds the physical UART but has lost its transferred
+        # lock descriptor, as a recycled same-unit PID could after a broker crash.
+        lease, _ = self.handles[self.ports[0]]
+        os.close(lease.fd)
+        lease.fd = None
+        self.refusal()
+
+    def test_foreign_uart_fd_and_unsafe_ledger_refuse_before_stop(self):
+        import multiprocessing
+        ctx = multiprocessing.get_context("fork")
+        ready_r, ready_w = ctx.Pipe(duplex=False)
+        def foreign():
+            fd = os.open(self.dev / Path(self.ports[0]).name, os.O_RDWR | os.O_NOCTTY)
+            ready_w.send(True)
+            time.sleep(30)
+            os.close(fd)
+        owner = ctx.Process(target=foreign)
+        owner.start()
+        try:
+            self.assertTrue(ready_r.poll(5) and ready_r.recv())
+            self.refusal()
+        finally:
+            owner.kill()
+            owner.join(5)
+            ready_r.close()
+            ready_w.close()
+        ledger = self.private / "state.json"
+        ledger.chmod(0o644)
+        self.refusal()
+        ledger.chmod(0o600)
+        moved = self.private / "renamed"
+        ledger.rename(moved)
+        ledger.symlink_to(moved)
+        self.refusal()
+        ledger.unlink()
+        moved.rename(ledger)
+        self.private.chmod(0o755)
+        self.refusal()
+        self.private.chmod(0o700)
+
+    def test_failed_reopen_preserves_both_journals_and_explicit_recovery_repairs_it(self):
+        self.refuse_ports = True
+        self.system.states[self.unit]["UnitFileState"] = "enabled"
+        with self.assertRaisesRegex(RuntimeError, "restore working UART"):
+            m.run_installer(["install.sh", "--refresh"])
+        self.assertEqual(self.started, 1)
+        self.assertEqual(self.handles, {})
+        journal = self.root / "var/lib/sa02m-install-maintenance"
+        self.assertEqual(set(json.loads((journal / "uart.json").read_text())["gateway_ports"]), set(self.ports))
+        self.assertTrue((journal / "web.json").is_file())
+        self.assertEqual(self.system.states["nginx.service"]["ActiveState"], "inactive")
+        self.refuse_ports = False
+        self.assertEqual(m.run_installer(["--recover"]), 0)
+        self.assertEqual(set(self.handles), set(self.ports))
+        self.assertEqual(self.system.states[self.unit]["UnitFileState"], "enabled")
+        self.assertEqual(self.system.states["nginx.service"]["ActiveState"], "active")
+        self.assertEqual(list(journal.iterdir()), [])
+
+    def test_refusal_after_stop_restores_the_original_gateway_and_keeps_installer_out(self):
+        self.keep_port_on_stop = True
+        with patch.object(m, "HANDOFF_SECONDS", .75), self.assertRaisesRegex(RuntimeError, "did not release"):
+            m.run_installer(["install.sh", "--refresh"])
+        self.assertEqual(self.started, 0)
+        self.assertEqual(set(self.handles), set(self.ports))
+        self.assertEqual(self.system.states["nginx.service"]["ActiveState"], "active")
+
+    def test_interrupted_child_releases_gate_before_restoration(self):
+        def launch(args, **kwargs):
+            child = subprocess.Popen(["sleep", "30"], start_new_session=True, pass_fds=kwargs["pass_fds"])
+            wait = child.wait
+            def interrupt(**kwargs):
+                child.wait = wait
+                raise KeyboardInterrupt
+            child.wait = interrupt
+            return child
+        with patch.object(m.subprocess, "Popen", side_effect=launch), self.assertRaises(KeyboardInterrupt):
+            m.run_installer(["install.sh", "--refresh"])
+        self.assertEqual(set(self.handles), set(self.ports))
+        self.assertEqual(self.gateway_refused, [])
+        self.assertEqual(self.system.states["nginx.service"]["ActiveState"], "active")
+
+    def test_surviving_child_descriptor_blocks_recovery_and_reopen(self):
+        inherited = []
+        wrapped = m.subprocess.Popen
+        def launch(args, **kwargs):
+            inherited.extend(map(os.dup, kwargs["pass_fds"]))
+            return wrapped(args, **kwargs)
+        try:
+            with patch.object(m.subprocess, "Popen", side_effect=launch), self.assertRaises(BlockingIOError):
+                m.run_installer(["install.sh", "--refresh"])
+            with self.assertRaises(BlockingIOError):
+                m.run_installer(["--recover"])
+            self.assertFalse(self.handles)
+            self.assertEqual(self.system.states["nginx.service"]["ActiveState"], "inactive")
+        finally:
+            for fd in inherited:
+                os.close(fd)
+        self.assertEqual(m.run_installer(["--recover"]), 0)
+        self.assertEqual(set(self.handles), set(self.ports))
+
+    def test_gateway_is_left_running_if_broker_dies(self):
+        self.daemon.kill()
+        self.daemon.join(5)
+        self.refusal()
+        self.assertEqual(set(self.handles), set(self.ports))
+        for lease, _ in self.handles.values():
+            lease.sock.close()
+            lease.sock = None
+
+    def test_old_journal_recovery_releases_gate_before_gateway_starts(self):
+        self.release()
+        journal = self.root / "var/lib/sa02m-install-maintenance"
+        journal.mkdir(mode=0o700)
+        guard = m.Guard(m.UART + m.UPDATE, journal=journal / "uart.json")
+        guard.enter()
+        guard.stop(m.UART)
+        data = json.loads(guard.journal.read_text())
+        data.pop("gateway_ports", None)
+        guard.journal.write_text(json.dumps(data))
+        self.assertEqual(m.run_installer(["--recover"]), 0)
+        self.assertEqual(self.gateway_refused, [])
+        self.assertEqual(set(self.handles), set(self.ports))
 
 
 class JournalDirectory(unittest.TestCase):

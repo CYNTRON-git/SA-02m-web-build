@@ -106,6 +106,7 @@ MP02_AI12 = 7
 MP02_DO4DI6 = 8
 MP02_DI10CON = 10
 MP02_DO5DI2AO = 11
+MP02_AI6AO2 = 12
 MP02_EN_METER = 14    # мезонин EN_METER в составе MR-02m (Input reg 0 = 14)
 MP02_TO4DI6 = 15
 MP02_CE02M3  = 100   # CE-02m-3: автономный анализатор сети ATM90E32 (Input reg 0 = 100)
@@ -129,6 +130,7 @@ MP02_TYPE_NAMES: Dict[int, str] = {
     MP02_DI14:    "14DI",
     MP02_DI10CON: "10DIcon",
     MP02_DO5DI2AO:"6DO5DI2AO",
+    MP02_AI6AO2:  "6AI2AO",
     MP02_AO6AI6:  "6AI6AO",
     MP02_AI12:    "12AI",
     MP02_DO4DI6:  "4DO6DI",
@@ -149,6 +151,7 @@ TYPE_IO_CAPS: Dict[int, Tuple[int, int, int, int]] = {
     MP02_DI14:    (0, 14, 0, 0),
     MP02_DI10CON: (0, 10, 0, 0),
     MP02_DO5DI2AO:(6, 5, 2, 0),
+    MP02_AI6AO2:  (0, 0, 2, 6),
     MP02_AO6AI6:  (0, 0, 6, 6),
     MP02_AI12:    (0, 0, 0, 12),
     MP02_DO4DI6:  (4, 6, 0, 0),
@@ -196,6 +199,16 @@ def strip_bootloader_signature_suffix(signature: str) -> str:
     return s
 
 
+def is_meter_driver_alias(signature: str) -> bool:
+    name = normalize_signature(strip_bootloader_signature_suffix(signature))
+    return name.replace("_", "").replace("-", "") == "ENMETER"
+
+
+def firmware_identity_missing(signature: str) -> bool:
+    name = normalize_signature(strip_bootloader_signature_suffix(signature))
+    return name in ("", "-", "—", "?", "NONE", "UNKNOWN", "BL", "BOOTLOADER") or is_meter_driver_alias(name)
+
+
 # Как в прошивке / именах модулей (DO6DI8 рядом с 6DO8DI в подсказках).
 _EXTRA_SIG_TOKENS_FOR_BATCH = (
     "DO6DI8",
@@ -227,7 +240,7 @@ def is_mp_module_signature_for_batch_flash(signature: str) -> bool:
     """
     s = strip_bootloader_signature_suffix(signature)
     n = normalize_signature(s)
-    if not n or n in ("NONE", "—", "?"):
+    if firmware_identity_missing(s):
         return False
     if caps_from_signature(s) is not None:
         return True
@@ -242,11 +255,11 @@ def is_mp_module_signature_for_batch_flash(signature: str) -> bool:
     if signature_is_led(s):
         return False
     c_sig = code_from_signature(s)
-    if c_sig in (MP02_CE02M3, DTV):
+    if c_sig == DTV or "CE02M3" in n.replace("-", ""):
         return True
     # Сигнатуры с дефисами (MR-02m-DI16): сравниваем без - и _
     n_compact = n.replace("-", "").replace("_", "")
-    for token in ("MP02M", "MR02M", "ENMETER", "EN_METER"):
+    for token in ("MP02M", "MR02M"):
         compact = token.replace("_", "")
         if compact in n_compact:
             return True
@@ -269,6 +282,8 @@ _SIGNATURE_HINTS: Dict[str, Tuple[int, int, int, int]] = {
     "6AO6AI":    (0, 0, 6, 6),
     "6AI6AO":    (0, 0, 6, 6),
     "AO6AI6":    (0, 0, 6, 6),
+    "6AI2AO":    (0, 0, 2, 6),
+    "AI6AO2":    (0, 0, 2, 6),
     "12AI":      (0, 0, 0, 12),
     "4DO6DI":    (4, 6, 0, 0),
     "DO4DI6":    (4, 6, 0, 0),
@@ -317,7 +332,7 @@ PROFILE_WB_APP = Rs485LineProfile(19200, "N", 2)
 # bl_module_sig.c (MR-02m) + module_profiles hints + serial_ranges
 MP_MR_SIGNATURE_TOKENS: Tuple[str, ...] = (
     "6DO8DI", "16DO", "12AO", "6DO", "14DI", "10DICON", "6DO5DI2AO",
-    "6AO6AI", "6AI6AO", "AO6AI6", "12AI", "4DO6DI", "4TO6DI", "TO4DI6",
+    "6AO6AI", "6AI6AO", "AO6AI6", "6AI2AO", "AI6AO2", "12AI", "4DO6DI", "4TO6DI", "TO4DI6",
     "DO6DI8", "DO4DI6", "TENZO2", "CE02M3", "ENMETER", "EN_METER",
     "MP02M", "MR02M", "SENSOR", "SENS.",
 )
@@ -356,7 +371,7 @@ def is_wirenboard_module_signature(signature: str) -> bool:
     Логика согласована с MR-02m-flasher module_profiles.is_wirenboard_modbus_remote_firmware_signature.
     """
     s = strip_bootloader_signature_suffix((signature or "").strip())
-    if not s or s.upper() in ("NONE", "—", "?", "UNKNOWN"):
+    if firmware_identity_missing(s):
         return False
     if is_mp_module_signature_for_batch_flash(s):
         return False
@@ -453,6 +468,8 @@ def validate_batch_flash_targets(targets: List[Mapping[str, Any]]) -> Optional[s
     """
     if not targets:
         return "Список устройств для пакетной прошивки пуст"
+    if any(t.get("signature_inferred") for t in targets):
+        return "Требуется опознание семейства устройства по регистру 290."
     # Carel c.pCO / uAria — чужой ПЛК на той же линии: своей прошивки у нас для него
     # нет, и «Сигнатура не распознана» увело бы оператора на повторное сканирование.
     carel_sigs = [
@@ -508,7 +525,7 @@ def line_profile_family(signature: str, *, is_wb_firmware: bool = False) -> str:
     """'mp_mr' | 'wb' | 'unknown' — для логов и UI."""
     if is_wb_firmware:
         return "wb"
-    if is_mp_module_signature_for_batch_flash(signature):
+    if is_meter_driver_alias(signature) or is_mp_module_signature_for_batch_flash(signature):
         return "mp_mr"
     if is_wirenboard_module_signature(signature):
         return "wb"
@@ -604,7 +621,7 @@ def signature_is_known_module_family(signature: str) -> bool:
     здесь мало: без ленты в этом предикате каждая строка ленты получала бы
     лишний FC17 на общей шине.
     """
-    return is_mp_module_signature_for_batch_flash(signature) or signature_is_led(signature)
+    return is_mp_module_signature_for_batch_flash(signature) or is_meter_driver_alias(signature) or signature_is_led(signature)
 
 
 def caps_from_signature(signature: str) -> Optional[Tuple[int, int, int, int]]:
@@ -627,6 +644,36 @@ def caps_from_signature(signature: str) -> Optional[Tuple[int, int, int, int]]:
 MANIFEST_DEVICE_MR = "MR-02m"
 MANIFEST_DEVICE_DTV = "RTU-Sensor"
 MANIFEST_DEVICE_CE02M3 = "CE-02m-3"
+NATIVE_FIRMWARE_FAMILIES = (MANIFEST_DEVICE_MR, MANIFEST_DEVICE_DTV, MANIFEST_DEVICE_CE02M3)
+
+
+def firmware_header_family(signature: str) -> Optional[str]:
+    """Identify an exact model or manufacturer prefix at the firmware boundary."""
+    name = normalize_signature(strip_bootloader_signature_suffix(signature))
+    if firmware_identity_missing(name):
+        return None
+    if name.startswith(("WB-", "WB_", "LEDGE", *_WB_RELAY_SIG_PREFIXES, *_WB_MAO4_SIG_PREFIXES)):
+        return "WB"
+    if SPECIAL_SIG_CODES.get(name) == RGBW_WS2812 or signature_is_led(name):
+        return "LED"
+    if signature_is_carel(name):
+        return "Carel"
+    compact = name.replace("-", "").replace("_", "")
+    if compact == "CE02M3":
+        return MANIFEST_DEVICE_CE02M3
+    if SPECIAL_SIG_CODES.get(name) == DTV or compact in ("DTV", "DTVRS45", "DTVRS485", "RTUSENSOR"):
+        return MANIFEST_DEVICE_DTV
+    # A catalogue label may qualify the MR family with one actual MR variant.
+    # Keep the separator so a second family cannot disappear in normalization.
+    label = strip_bootloader_signature_suffix(signature).strip().upper()
+    prefix = re.fullmatch(r"(?:MR|MP)[-_]?02M(?:[ _-]+([A-Z0-9]+))?", label)
+    if prefix and prefix[1] in (None, "BL"):
+        return MANIFEST_DEVICE_MR
+    variant = prefix[1] if prefix else label
+    if variant != "CE02M3" and (variant in _SIGNATURE_HINTS or variant in _EXTRA_SIG_TOKENS_FOR_BATCH
+                                or variant in ("TENZO2", "DI16", "DO16")):
+        return MANIFEST_DEVICE_MR
+    return None
 
 
 def manifest_device_for_signature(signature: str) -> Optional[str]:
@@ -636,14 +683,8 @@ def manifest_device_for_signature(signature: str) -> Optional[str]:
     first (specific), then the MR/MP-02m batch-flash test. An unrecognised
     signature → ``None`` (unknown family; caller keeps the global fallback).
     """
-    code = code_from_signature(signature)
-    if code == MP02_CE02M3:
-        return MANIFEST_DEVICE_CE02M3
-    if code == DTV:
-        return MANIFEST_DEVICE_DTV
-    if is_mp_module_signature_for_batch_flash(signature):
-        return MANIFEST_DEVICE_MR
-    return None
+    family = firmware_header_family(signature)
+    return family if family in NATIVE_FIRMWARE_FAMILIES else None
 
 
 def manifest_device_family(device: str) -> Optional[str]:
@@ -653,16 +694,7 @@ def manifest_device_family(device: str) -> Optional[str]:
     the exact family keys returned by :func:`manifest_device_for_signature`.
     Unrecognised → ``None`` (unknown family; caller falls back to global latest).
     """
-    n = (device or "").strip().upper().replace(" ", "").replace("_", "-")
-    if not n:
-        return None
-    if n.startswith("RTU-SENSOR") or n.startswith("DTV") or "SENSOR" in n or n.startswith("SENS"):
-        return MANIFEST_DEVICE_DTV
-    if n.startswith("CE-02M"):
-        return MANIFEST_DEVICE_CE02M3
-    if n.startswith("MR-02M") or n.startswith("MP-02M") or n.startswith("MR02M") or n.startswith("MP02M"):
-        return MANIFEST_DEVICE_MR
-    return None
+    return manifest_device_for_signature(device)
 
 
 # Modbus selection codes 0..42 (регистр «тип датчика», MR-02m ≥1.0.9.1) — порядок ≠ ai_sensor_t enum
@@ -830,8 +862,23 @@ def is_12ai_module(kind: Optional[ModuleKind]) -> bool:
     )
 
 
-def kind_has_mp_ai_adc_filters(kind: Optional[ModuleKind]) -> bool:
-    return is_6ao6ai_module(kind) or is_12ai_module(kind)
+def has_six_input_adc_layout(kind: Optional[ModuleKind]) -> bool:
+    if kind is None:
+        return False
+    return is_6ao6ai_module(kind) or kind.code == MP02_AI6AO2 or (
+        kind.code == 0 and (kind.max_do, kind.max_di, kind.max_ao, kind.max_ai) == (0, 0, 2, 6)
+    )
+
+
+def kind_has_mp_ai_adc_filters(kind: Optional[ModuleKind], observed_app_version: Optional[str] = None) -> bool:
+    if is_6ao6ai_module(kind) or is_12ai_module(kind):
+        return True
+    if not has_six_input_adc_layout(kind):
+        return False
+    # Type 12 only gained these registers in 1.0.12.20. Cached scan metadata
+    # cannot grant write access when the firmware read itself was unavailable.
+    match = re.fullmatch(r"(\d+)\.(\d+)\.(\d+)\.(\d+)", str(observed_app_version or "").strip())
+    return bool(match and tuple(int(part) for part in match.groups()) >= (1, 0, 12, 20))
 
 
 def ao_safe_holding_register(channel_1_based: int, kind: Optional[ModuleKind] = None) -> int:
@@ -841,13 +888,35 @@ def ao_safe_holding_register(channel_1_based: int, kind: Optional[ModuleKind] = 
     return REG_AO_SAFE_BASE_MAIN + ch - 1
 
 
+def mr_relay_capabilities(kind: Optional[ModuleKind]):
+    """MR relay modes are model capabilities, never inferred from a zero register."""
+    if kind is None or kind.code not in (1, 2, 4, 8, 11, 15):
+        return None
+    fans = kind.code in (1, 8, 11)
+    return {'modes': list(range(6)) if fans else [0, 1, 2] if kind.code == 15 else [0],
+            'drive_count': 2 if kind.code == 8 else 3 if fans else 0,
+            'fan_status': fans, 'dimming': kind.code == 15,
+            'legacy_manual_transition': kind.code in (1, 8),
+            'option_modes': {1: [3, 4], 2: [2], 3: [5], 4: list(range(6))} if fans else {4: list(range(3)) if kind.code == 15 else [0]}}
+
+
+def mr_relay_option_mask(kind, mode):
+    caps = mr_relay_capabilities(kind)
+    return sum(1 << bit for bit, modes in caps['option_modes'].items() if mode in modes) if caps else 0
+
+
+def mr_relay_advanced_supported(observed_app_version):
+    match = re.fullmatch(r'(\d+)\.(\d+)\.(\d+)\.(\d+)', str(observed_app_version or '').strip())
+    return bool(match and tuple(int(part) for part in match.groups()) >= (1, 0, 12, 22))
+
+
 def ai_channel_stride(
     type_code: Optional[int] = None,
     kind: Optional[ModuleKind] = None,
 ) -> int:
-    if kind is not None and (is_6ao6ai_module(kind) or is_12ai_module(kind)):
+    if kind is not None and (has_six_input_adc_layout(kind) or is_12ai_module(kind)):
         return 7
-    if type_code in (MP02_AO6AI6, MP02_AI12):
+    if type_code in (MP02_AO6AI6, MP02_AI12, MP02_AI6AO2):
         return 7
     return 14
 

@@ -76,10 +76,13 @@ function extractConst(src, name) {
 const src = readFileSync(FLASHER_JS, 'utf8');
 
 const parts = [
+  "const state = {devices: [], selectedDeviceIndices: new Set(), latestByDevice: {}, latestStableVersion: '9.0.0.1'};",
+  extractConst(src, 'FAMILY_TO_PRODUCT'),
   extractConst(src, 'WB_RELAY_SIG_PREFIXES'),
   extractConst(src, 'WB_MAO4_SIG_PREFIXES'),
   extractConst(src, 'SIGNATURE_IO_HINTS'),
   extractFn(src, 'stripBootloaderSignatureSuffix'),
+  extractFn(src, 'firmwareIdentityMissing'),
   extractFn(src, 'isMpModuleSignatureForFirmwareHint'),
   extractFn(src, 'isWirenboardModuleSignature'),
   extractFn(src, 'resolveDeviceFlashRoute'),
@@ -89,13 +92,22 @@ const parts = [
   extractFn(src, 'tokenLooksLikeDtv'),
   extractFn(src, 'tokenLooksLikeCe'),
   extractFn(src, 'manifestDeviceForSignature'),
-  'return { resolveDeviceFlashRoute, capsFromSignature, manifestDeviceForSignature };',
+  ...['targetNeedsFirmwareIdentification', 'selectedDevicesForFlash', 'selectedDeviceFamily',
+    'firmwareEntriesForFamily', 'isFirmwareEntryDownloaded', 'pickFirmwareToAutoSelect',
+    'latestVersionForDevice', 'validateMultiFlashSelection'].map(n => extractFn(src, n)),
+  'return { state, resolveDeviceFlashRoute, capsFromSignature, manifestDeviceForSignature, latestVersionForDevice, firmwareEntriesForFamily, pickFirmwareToAutoSelect, validateMultiFlashSelection };',
 ];
 
-const { resolveDeviceFlashRoute, capsFromSignature, manifestDeviceForSignature } =
+const { state, resolveDeviceFlashRoute, capsFromSignature, manifestDeviceForSignature,
+  latestVersionForDevice, firmwareEntriesForFamily, pickFirmwareToAutoSelect, validateMultiFlashSelection } =
   new Function(parts.join('\n'))();
 
 let failures = 0;
+const unidentifiedImage = {file: 'manual.fw', downloaded: true, flash_error: 'unconfirmed family'};
+check(firmwareEntriesForFamily([unidentifiedImage], 'MR-02m').length === 0,
+  'a cached image without confirmed family cannot be selected for MR');
+check(firmwareEntriesForFamily([unidentifiedImage], '').includes(unidentifiedImage),
+  'the file remains visible in the complete inventory');
 function check(cond, msg) {
   if (cond) { console.log('  ok   - ' + msg); }
   else { failures++; console.error('  FAIL - ' + msg); }
@@ -136,8 +148,7 @@ check(arraysEqual(capsFromSignature('10DICON'), [0, 10, 0, 0]),
 // --- manifestDeviceForSignature: firmware family per scanned signature.
 // MUST mirror Python module_profiles.manifest_device_for_signature so the
 // per-family "свежая прошивка" badge never offers a DTV/СЭ an MR-02m version.
-// The ENMETER alias is the drift the reviewer caught: Python SPECIAL_SIG_CODES
-// maps EN_METER/ENMETER → MP02_CE02M3, so JS must return 'CE-02m-3', not 'MR-02m'.
+// The meter alias identifies a historic transport/driver, not an image family.
 const MANIFEST_DEVICE_CASES = [
   ['Sens.', 'RTU-Sensor'],   // DTV default EEPROM signature (type 17)
   ['SENSOR', 'RTU-Sensor'],
@@ -145,14 +156,33 @@ const MANIFEST_DEVICE_CASES = [
   ['6AI6AO', 'MR-02m'],
   ['CE02M3', 'CE-02m-3'],    // CE-02m-3 (type 100)
   ['CE-02M3', 'CE-02m-3'],
-  ['EN_METER', 'CE-02m-3'],  // ENMETER mezzanine → CE-02m-3 family (parity)
-  ['ENMETER', 'CE-02m-3'],
+  ['EN_METER', ''],
+  ['ENMETER', ''],
+  ['en_meter_bl', ''],
   ['MR2M-01', ''],           // third-party Wiren Board relay → no CYNTRON family
 ];
 for (const [sig, want] of MANIFEST_DEVICE_CASES) {
   const got = manifestDeviceForSignature(sig);
   check(got === want,
     `manifestDeviceForSignature('${sig}') === '${want}' (got '${got}')`);
+}
+for (const sig of ['en_meter', 'ENMETER_bl']) {
+  check(resolveDeviceFlashRoute(sig) === 'unknown', sig + ': identification required before flashing');
+  check(latestVersionForDevice(sig, 'app') === '', sig + ': no global latest');
+}
+for (const target of [{signature: 'EN_METER'}, {signature: '10DICON', signature_inferred: true},
+  {signature: 'NONE', in_bootloader: true}]) {
+  state.devices = [{signature: 'CE02M3'}, target];
+  state.selectedDeviceIndices = new Set([0, 1]);
+  check(!!validateMultiFlashSelection(state.devices), target.signature + ': ambiguous mixed selection is blocked');
+  check(pickFirmwareToAutoSelect([{file: 'latest.fw', downloaded: true}]) === null,
+    target.signature + ': catalog refresh cannot select a global file');
+}
+
+for (const sig of ['6AI2AO', 'AI6AO2', 'MR-02m 6AI2AO_bl', 'MP-02m AI6AO2_bl']) {
+  check(resolveDeviceFlashRoute(sig) === 'mp_mr', `${sig}: MR firmware route`);
+  check(arraysEqual(capsFromSignature(sig), [0, 0, 2, 6]), `${sig}: six AI and two AO`);
+  check(manifestDeviceForSignature(sig) === 'MR-02m', `${sig}: MR firmware family`);
 }
 
 if (failures) {

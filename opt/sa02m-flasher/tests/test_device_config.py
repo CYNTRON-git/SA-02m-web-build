@@ -71,7 +71,7 @@ class TestDeviceConfig(unittest.TestCase):
         self.assertFalse(ch2["fault_low"])
         self.assertTrue(ch2["fault_high"])
 
-    def test_write_allowed_coil_ignores_relay_mode_timeout_for_mr(self) -> None:
+    def test_write_allowed_coil_rejects_relay_mode_timeout_for_mr(self) -> None:
         close_transport = Mock()
         send = object()
         device = {"address": 1, "baudrate": 9600, "parity": "N", "stopbits": 1}
@@ -95,11 +95,10 @@ class TestDeviceConfig(unittest.TestCase):
             patch.object(device_config, "write_coil", return_value=None) as write_coil_mock,
             patch.object(device_config, "snapshot_for_device", return_value=snapshot),
         ):
-            result = device_config.write_allowed_coil("COM1", device, 1, True)
-
-        self.assertEqual(result, snapshot)
+            with self.assertRaises(RuntimeError):
+                device_config.write_allowed_coil("COM1", device, 1, True)
         write_single_mock.assert_called_once_with(send, 1, device_config.REG_RELAY_MODE, 0, 1200)
-        write_coil_mock.assert_called_once_with(send, 1, 1, True, 2000)
+        write_coil_mock.assert_not_called()
         close_transport.assert_called_once()
 
     def test_write_allowed_coil_accepts_bus_state_after_fc05_timeout(self) -> None:
@@ -158,8 +157,8 @@ class TestMrSnapshotPanel(unittest.TestCase):
             patch.object(device_config, "_read_mr_snapshot_minimal", return_value=base_min),
             patch.object(device_config, "_mr_do_block_full", return_value=full_do) as mock_do_full,
         ):
-            out = device_config._read_mr_snapshot_panel(send, slave, identity, "do_2")
-        mock_do_full.assert_called_once_with(send, slave, kind)
+            out = device_config._read_mr_snapshot_panel(send, slave, identity, "do_2", max_regs=24)
+        mock_do_full.assert_called_once_with(send, slave, kind, max_regs=24)
         self.assertEqual(out["do"], full_do)
         self.assertEqual(out["inactivity_s"], 5)
 

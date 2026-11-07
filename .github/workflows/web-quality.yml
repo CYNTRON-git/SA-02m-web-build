@@ -60,10 +60,10 @@ jobs:
           sudo apt-get update -qq
           # device-tree-compiler (dtc + fdtget + fdtput): dtb-fdtput-real runs the boot-DTB edit
           # on the real tools here (a whole-row SKIP on a box without them = FAIL under QUALITY_STRICT).
-          sudo apt-get install -y --no-install-recommends python3-venv python3-cffi-backend device-tree-compiler
+          sudo apt-get install -y --no-install-recommends python3-venv python3-cffi-backend python3-yaml python3-serial python3-paho-mqtt device-tree-compiler
           /usr/bin/python3 -m venv --system-site-packages "$RUNNER_TEMP/hk-venv"
           "$RUNNER_TEMP/hk-venv/bin/pip" install --quiet --no-deps -r opt/sa02m-homekit/requirements.lock
-          "$RUNNER_TEMP/hk-venv/bin/python" -c 'import pyhap.accessory_driver, segno'
+          "$RUNNER_TEMP/hk-venv/bin/python" -c 'import pyhap.accessory_driver, segno, yaml, serial, paho.mqtt.client'
           echo "SA02M_HOMEKIT_TEST_PY=$RUNNER_TEMP/hk-venv/bin/python" >> "$GITHUB_ENV"
       - name: Cache Playwright browsers (review-beat chromium; ci-budget.md)
         uses: actions/cache@v4

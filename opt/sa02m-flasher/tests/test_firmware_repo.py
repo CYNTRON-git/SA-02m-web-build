@@ -450,8 +450,9 @@ class TestFlasherSupportedFilter(unittest.TestCase):
 
 class TestAddUploadOverwrite(unittest.TestCase):
     def test_overwrites_existing_file_instead_of_numbered_suffix(self) -> None:
-        payload_v1 = _minimal_fw_bytes(payload_size=80)
-        payload_v2 = _minimal_fw_bytes(payload_size=120)
+        from tests.test_firmware_catalog_metadata import catalog_image
+        payload_v1 = catalog_image("app")
+        payload_v2 = catalog_image("app", "12AI")
         name = "MR-02m_1.0.0.0.fw"
         with tempfile.TemporaryDirectory() as td:
             cache = Path(td)
@@ -459,9 +460,8 @@ class TestAddUploadOverwrite(unittest.TestCase):
             e1 = repo.add_upload(payload_v1, name)
             self.assertEqual(e1.file, name)
             dup_path = cache / "MR-02m_1.0.0.0.2.fw"
-            dup_path.write_bytes(b"\xff" * 64)
-            with repo._lock:
-                repo._entries[("local", dup_path.name)] = e1
+            dup_path.write_bytes(payload_v2)
+            repo.list_entries()
 
             e2 = repo.add_upload(payload_v2, name)
             self.assertEqual(e2.file, name)
@@ -473,6 +473,62 @@ class TestAddUploadOverwrite(unittest.TestCase):
             self.assertEqual(len(entries), 1)
             self.assertEqual(entries[0].file, name)
             self.assertEqual(entries[0].size, len(payload_v2))
+
+    def test_upload_of_short_name_preserves_release_through_restart(self):
+        from tests.test_firmware_catalog_metadata import catalog_image, make_repo
+        good = catalog_image("app", "12AI")
+        for channel in ("stable", "local"):
+            for short_data in (b"x" * 40, good):
+                with self.subTest(channel=channel, valid=short_data == good), tempfile.TemporaryDirectory() as td:
+                    cache = Path(td)
+                    name = "MR-02m_1.0.12.27.fw"
+                    (cache / name).write_bytes(good)
+                    if channel == "stable":
+                        row = {"file": name, "device": "MR-02m", "version": "1.0.12.27",
+                               "size": len(good), "sha256": hashlib.sha256(good).hexdigest()}
+                        (cache / ".index.json").write_text(json.dumps({"channels": {"stable": [row]}}))
+                    repo = make_repo(cache)
+                    previous = repo.get(channel, name).to_dict()
+                    self.assertFalse(previous["flash_error"])
+                    short = repo.add_upload(short_data, "MR-02m_1.0.12.fw")
+                    self.assertEqual(bool(short.flash_error), short_data != good)
+                    for current in (repo, make_repo(cache)):
+                        self.assertEqual(current.get(channel, name).to_dict(), previous)
+                        self.assertEqual(current.path_for(current.get(channel, name)).read_bytes(), good)
+
+    def test_cleanup_requires_proven_content_and_unclaimed_legacy_name(self):
+        from tests.test_firmware_catalog_metadata import catalog_image, make_repo
+        good = catalog_image("app", "12AI")
+        different = catalog_image("app", "Sens.")
+        base = "MR-02m_1.0.12.27"
+        with tempfile.TemporaryDirectory() as td:
+            cache = Path(td)
+            protected = f"{base}.3.fw"
+            row = {"file": protected, "device": "MR-02m", "version": "1.0.12.27",
+                   "size": len(good), "sha256": hashlib.sha256(good).hexdigest()}
+            (cache / ".index.json").write_text(json.dumps({"channels": {"beta": [row]}}))
+            keep = {protected: good, f"{base}.4.fw": different, f"{base}.1.fw": good,
+                    f"{base}.02.fw": good, "manual.2.fw": good}
+            for name, data in keep.items():
+                (cache / name).write_bytes(data)
+            duplicate = cache / f"{base}.10.fw"
+            duplicate.write_bytes(good)
+            repo = make_repo(cache)
+            self.assertTrue(repo.add_upload(b"x" * 40, f"{base}.fw").flash_error)
+            self.assertTrue(duplicate.exists())
+            with patch.object(Path, "replace", side_effect=OSError("rename failed")):
+                with self.assertRaises(OSError):
+                    repo.add_upload(good, f"{base}.fw")
+            self.assertEqual(duplicate.read_bytes(), good)
+            self.assertEqual((cache / f"{base}.fw").read_bytes(), b"x" * 40)
+            self.assertFalse(repo.add_upload(good, f"{base}.fw").flash_error)
+            self.assertFalse(duplicate.exists())
+            repo.add_upload(good, "manual.fw")
+            cold = make_repo(cache)
+            for name, data in keep.items():
+                self.assertEqual((cache / name).read_bytes(), data, name)
+                entry = cold.get("beta" if name == protected else "local", name)
+                self.assertTrue(entry.downloaded)
 
 
 class TestFormatNetworkError(unittest.TestCase):

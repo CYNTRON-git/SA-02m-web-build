@@ -26,7 +26,12 @@ install -d -m 0755 -o root -g root "$INSTALL_DIR"
 install -d -m 0755 -o root -g root "$ETC_DIR"
 if [ -d "$OPT_SRC" ]; then
     rsync -a --delete --exclude '__pycache__' --exclude '*.pyc' --exclude 'tests' \
+        --exclude '/sa02m_rules/bridge_roster.py' \
         "$OPT_SRC/" "$INSTALL_DIR/"
+    # Mixed-version Rules must classify the same validated roster as current Alice.
+    sa02m_atomic_install -m 0644 -o root -g root \
+        "$BASE_DIR/opt/sa02m-alice/sa02m_alice/config/bridge_roster.py" \
+        "$INSTALL_DIR/sa02m_rules/bridge_roster.py"
 fi
 if [ ! -f "$ETC_DIR/scenarios.json" ]; then
     printf '%s\n' '{"scenarios":[],"library":"","runs":[],"notify_queue":[]}' \

@@ -145,6 +145,20 @@ class TestFindForSignatureFiltersFamily(unittest.TestCase):
         self.assertNotIn("MR-02m", devices)
         self.assertNotIn("CE-02m-3", devices)
 
+    def test_meter_alias_never_selects_an_image_or_authorizes_batch(self) -> None:
+        from sa02m_flasher import module_profiles as mp
+        for alias in ("EN_METER", "enmeter", "En_Meter_bl"):
+            with self.subTest(alias=alias):
+                self.assertIsNone(manifest_device_for_signature(alias))
+                self.assertEqual(self.repo.find_for_signature(alias), [])
+                self.assertEqual(self.repo.latest_stable_version(alias), "")
+                self.assertEqual(self.repo.latest_bootloader_version(alias), "")
+                self.assertEqual(mp.device_flash_route(alias), "unknown")
+                self.assertIsNotNone(mp.validate_batch_flash_targets([{"signature": alias}]))
+                self.assertIsNotNone(mp.validate_firmware_device_route(alias, firmware_is_wb=False))
+                self.assertEqual(mp.line_profile_family(alias), "mp_mr")
+                self.assertTrue(mp.signature_is_known_module_family(alias))
+
     def test_mr_scan_excludes_dtv_images(self) -> None:
         devices = {e.device for e in self.repo.find_for_signature("12AI")}
         self.assertIn("MR-02m", devices)

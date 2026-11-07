@@ -41,11 +41,12 @@ except ImportError:
     sys.exit("pyserial not installed: pip3 install pyserial")
 
 # ── Logging ────────────────────────────────────────────────────────────────────
-logging.basicConfig(
-    level=logging.INFO,
-    format="%(asctime)s %(levelname)s [%(name)s] %(message)s",
-    datefmt="%Y-%m-%d %H:%M:%S",
-)
+if __name__ == "__main__":
+    logging.basicConfig(
+        level=logging.INFO,
+        format="%(asctime)s %(levelname)s [%(name)s] %(message)s",
+        datefmt="%Y-%m-%d %H:%M:%S",
+    )
 log = logging.getLogger("bridge")
 
 # ── Constants ──────────────────────────────────────────────────────────────────
@@ -103,6 +104,7 @@ from bridge_carel import CarelPoller
 from bridge_led import LedPoller
 from bridge_template import TemplatePoller  # noqa: F401
 from bridge_spodes import SpodesPoller
+import bridge_admission
 import bridge_bus
 
 
@@ -125,15 +127,7 @@ def sd_notify(msg: str) -> None:
 
 
 # ── Global state ───────────────────────────────────────────────────────────────
-POLLER_CLASSES: dict[str, type] = {
-    "mr02m":    MR02mPoller,
-    "dtv":      DTVPoller,
-    "ce02m3":   CE02M3Poller,
-    "template": TemplatePoller,
-    "carel":    CarelPoller,
-    "led":      LedPoller,
-    "spodes":   SpodesPoller,
-}
+POLLER_CLASSES = {kind: bridge_admission.driver(kind) for kind in bridge_admission.DRIVERS}
 _pollers:  list[DevicePoller] = []
 _port_schedulers: list[PortCycleScheduler] = []
 _threads:  list[threading.Thread] = []
@@ -147,7 +141,6 @@ def load_config() -> dict:
         return {"mqtt": {}, "devices": []}
     with open(CONFIG_PATH) as f:
         cfg = yaml.safe_load(f) or {"mqtt": {}, "devices": []}
-    _migrate_config_ai_sensor_types(cfg)
     return cfg
 
 
@@ -240,7 +233,10 @@ def write_bridge_roster(devices_cfg: list, pub: MQTTPublisher,
             # (docs/contracts/rs485-roster.md), and never a "" ghost port.
             continue
         dev_type = str(dev_cfg.get("type", "")).lower()
-        module_type = int(dev_cfg.get("module_type", 0) or 0)
+        try:
+            module_type = int(dev_cfg.get("module_type", 0) or 0)
+        except (ValueError, TypeError, OverflowError):
+            module_type = 0
         rows.append({
             "port": _com_key_from_port(dev_cfg.get("port", "")),
             "addr": int(dev_cfg.get("address", 0) or 0),
@@ -260,6 +256,11 @@ def write_bridge_roster(devices_cfg: list, pub: MQTTPublisher,
         log.debug("bridge roster write: %s", e)
 
 
+def prepare_poller_registration(devices_cfg, publisher=None):
+    """Producer-owned, bus-free registration capability for family readers."""
+    return bridge_admission.prepare_devices(devices_cfg, bridge_bus, publisher, POLLER_CLASSES.__getitem__)
+
+
 def compose_pollers(devices_cfg: list, pub: MQTTPublisher):
     """Build the pollers and group them by bus: `(by_bus, fmb_ports, refused)`.
 
@@ -272,51 +273,29 @@ def compose_pollers(devices_cfg: list, pub: MQTTPublisher):
     The bridge loader is where an invalid TCP entry is refused: the YAML is
     www-data-writable, so the CGI's save-time check is not the authority.
     """
-    refused = bridge_bus.validate_devices(devices_cfg)
-    refused_idx = {r["index"] for r in refused}
+    prepared, refused = prepare_poller_registration(devices_cfg, pub)
     for r in refused:
         log.error("device %s refused: %s", r["id"], r["reason"])
 
-    # Per-port FMB helpers (no own thread) + pollers grouped by port:baud.
     fmb_ports: dict[str, FastModbusEventPortManager] = {}
     by_port: dict[str, list[DevicePoller]] = {}
-    for index, dev_cfg in enumerate(devices_cfg):
-        if index in refused_idx:
-            continue
-        dev_type = dev_cfg.get("type", "").lower()
-        cls = POLLER_CLASSES.get(dev_type)
-        if cls is None:
-            log.error("Unknown device type '%s' id=%s — skipping",
-                      dev_type, dev_cfg.get("id", "?"))
-            continue
-        poller = cls(dev_cfg, pub)
+    for index, (dev_type, poller, ranges) in prepared.items():
+        dev_cfg = devices_cfg[index]
         _pollers.append(poller)
         pub.register_device(dev_cfg["id"])
         port_key = poller.bus.key
         by_port.setdefault(port_key, []).append(poller)
         log.info("Registered %s poller %s on %s", dev_type, dev_cfg["id"], port_key)
 
-        if poller.bus.transport != bridge_bus.TRANSPORT_RTU:
-            # Fast Modbus is an RS-485 broadcast protocol. Never on TCP,
-            # and never on HDLC, a transparent gateway or a SPODES wrapper.
-            continue
-        # Default ON for MR/DTV. CE: explicit fast_modbus:true only (opt-in);
-        # whether a CE then gets any 0x18, and which form, is decided by its
-        # firmware version (docs/contracts/fmb-event-wire.md §3).
-        want_fmb = bool(dev_cfg["fast_modbus"]) if "fast_modbus" in dev_cfg \
-            else dev_type in ("mr02m", "dtv")
-        if want_fmb:
-            ranges = poller.fmb_event_ranges()
-            if ranges:
-                mgr = fmb_ports.get(port_key)
-                if mgr is None:
-                    mgr = FastModbusEventPortManager(
-                        poller.port_path, poller.baudrate)
-                    fmb_ports[port_key] = mgr
-                mgr.register_device(
-                    poller.address, poller.device_id, ranges,
-                    poller.fmb_dispatch, poller=poller, dev_type=dev_type,
-                    wire_mode=str(dev_cfg.get("fmb_event_wire", "auto")))
+        if ranges is not None:
+            mgr = fmb_ports.get(port_key)
+            if mgr is None:
+                mgr = FastModbusEventPortManager(poller.port_path, poller.baudrate)
+                fmb_ports[port_key] = mgr
+            mgr.register_device(
+                poller.address, poller.device_id, ranges,
+                poller.fmb_dispatch, poller=poller, dev_type=dev_type,
+                wire_mode=str(dev_cfg.get("fmb_event_wire", "auto")))
 
     # Physical lines only: `tcp:H:502` + `tcp:H:503` are two endpoints, not
     # one port at two bauds.
@@ -389,7 +368,9 @@ def main() -> None:
                              args=((wdg_usec / 1_000_000) / 2,), daemon=True)
         t.start()
 
-    by_port, fmb_ports, _refused = compose_pollers(devices_cfg, pub)
+    by_port, fmb_ports, refused = compose_pollers(devices_cfg, pub)
+    rejected = {row["index"] for row in refused}
+    roster_devices = [row for index, row in enumerate(devices_cfg) if index not in rejected]
 
     # One thread per port — EVENTS+POLLING interleaved (wb-mqtt-serial).
     for port_key, pollers in by_port.items():
@@ -409,7 +390,7 @@ def main() -> None:
     # is active, and scans normally when it is not.
     try:
         import bridge_scan_lease
-        bridge_scan_lease.serve()
+        bridge_scan_lease.serve(scheduler_provider=lambda: _port_schedulers)
     except Exception:
         log.exception("scan lease server did not start")
 
@@ -421,14 +402,14 @@ def main() -> None:
 
     # Export the RS-485 roster (Provider A) once now, then on a periodic tick so
     # the bus-free aggregator sees a fresh real per-device online. Cheap file write.
-    write_bridge_roster(devices_cfg, pub)
+    write_bridge_roster(roster_devices, pub)
     _roster_interval_s = 5
     _next_roster = time.monotonic() + _roster_interval_s
     while not _stop_ev.is_set():
         time.sleep(1)
         now = time.monotonic()
         if now >= _next_roster:
-            write_bridge_roster(devices_cfg, pub)
+            write_bridge_roster(roster_devices, pub)
             _next_roster = now + _roster_interval_s
 
     # Graceful offline: tell consumers the bridge and its devices went down

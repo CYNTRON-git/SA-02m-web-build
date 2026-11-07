@@ -6,6 +6,8 @@ Documentation=file:///opt/sa02m-homekit/THIRD_PARTY.md
 # late DHCP lease is picked up, never a reason to fail the start).
 After=network-online.target mosquitto.service
 Wants=network-online.target
+Wants=sa02m-homekit-families.path sa02m-homekit-families.service
+After=sa02m-homekit-families.service
 
 [Service]
 Type=simple

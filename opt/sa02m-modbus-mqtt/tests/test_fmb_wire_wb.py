@@ -101,10 +101,8 @@ def decode_configure(frame: bytes) -> tuple[str, int, int, int]:
 class WireFakeSerial:
     """fmb_send_recv fake that acks per (contract, evt_type) pair.
 
-    mask_replies=True answers a WB frame the way the WB contract specifies
-    (CRC-valid reply, one set bit per requested register) — needed wherever
-    the bridge verifies the mask (CE-02m-3). Elsewhere the prefix-only ack
-    below is all the bridge reads.
+    WB replies carry the post-apply mask; legacy replies carry flags=OK.
+    Both include a real CRC. mask_replies remains accepted by older callers.
     """
 
     def __init__(self, acks, mask_replies=False):
@@ -118,12 +116,12 @@ class WireFakeSerial:
         decoded = decode_configure(bytes(frame))
         self.sent.append(decoded)
         if (decoded[0], decoded[1]) in self.acks:
-            if self.mask_replies and decoded[0] == "wb":
+            if decoded[0] == "wb":
                 count = decoded[3]
                 mask = bytes((1 << min(8, count - i)) - 1
                              for i in range(0, count, 8))
                 return with_crc(bytes([addr, 0x46, 0x18, len(mask)]) + mask)
-            return bytes([addr, 0x46, 0x18, 1, 0x00, 0x00, 0x00])
+            return with_crc(bytes([addr, 0x46, 0x18, 1, 0x00]))
         raise TimeoutError("no configure ack")
 
     def contracts(self) -> list[str]:

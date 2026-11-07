@@ -336,7 +336,7 @@ PY
 sa02m_runtime_watchdog_usec() {   # prints RuntimeWatchdogUSec in µs; rc=1 when unreadable
     local v=""
     command -v busctl >/dev/null 2>&1 || return 1
-    v=$(busctl get-property org.freedesktop.systemd1 /org/freedesktop/systemd1 \
+    v=$(timeout -k 2s 10s busctl get-property org.freedesktop.systemd1 /org/freedesktop/systemd1 \
             org.freedesktop.systemd1.Manager RuntimeWatchdogUSec 2>/dev/null) || return 1
     v=${v##* }                      # "t 15000000" → "15000000"
     case "$v" in ''|*[!0-9]*) return 1 ;; esac
@@ -351,12 +351,12 @@ sa02m_runtime_watchdog_set() {
     case "$want" in ''|*[!0-9]*) return 2 ;; esac
     now=$(sa02m_runtime_watchdog_usec) || return 1
     if [ "$now" != "$want" ] && command -v busctl >/dev/null 2>&1; then
-        busctl set-property org.freedesktop.systemd1 /org/freedesktop/systemd1 \
+        timeout -k 2s 10s busctl set-property org.freedesktop.systemd1 /org/freedesktop/systemd1 \
             org.freedesktop.systemd1.Manager RuntimeWatchdogUSec t "$want" >/dev/null 2>&1 || true
         now=$(sa02m_runtime_watchdog_usec) || return 1
     fi
     if [ "$now" != "$want" ] && command -v systemctl >/dev/null 2>&1; then
-        systemctl set-property --runtime Manager "RuntimeWatchdogSec=${want}us" >/dev/null 2>&1 || true
+        timeout -k 2s 10s systemctl set-property --runtime Manager "RuntimeWatchdogSec=${want}us" >/dev/null 2>&1 || true
         now=$(sa02m_runtime_watchdog_usec) || return 1
     fi
     printf '%s\n' "$now"

@@ -211,7 +211,7 @@ fix-eth-link-cycle|etc/fix-eth.sh|mii-tool -r "$iface" >/dev/null 2>&1
 fix-eth-link-cycle|etc/fix-eth.sh|carrier_up "$iface" && _link_after_cycle=1
 link-monitor|usr/local/sbin/sa02m-link-monitor.sh|systemctl --no-block start "fix-eth@${1}.service"
 link-monitor|scripts/02-network.sh|sa02m_svc_apply sa02m-link-monitor.service infra start
-link-monitor|etc/sa02m-factory-reset-runner.sh|timeout 10 systemctl stop sa02m-link-monitor 2>/dev/null || true
+link-monitor|etc/sa02m-factory-reset-runner.sh|reset_control 10 systemctl stop sa02m-link-monitor 2>/dev/null || true
 link-monitor|usr/local/sbin/sa02m-link-monitor.sh|kill -0 "$pid" 2>/dev/null && {
 link-monitor|usr/local/sbin/sa02m-link-monitor.sh|BUSY_WAIT_MAX=60
 link-monitor|usr/local/sbin/sa02m-link-monitor.sh|-lt "$MIN_START_INTERVAL" ] && {

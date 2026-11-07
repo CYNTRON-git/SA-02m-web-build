@@ -16,7 +16,7 @@ What is read where, and why that split:
     the play state, the effect id, the brightness and the counts the window
     header shows on every tab. One transaction, so it does not need a tab.
   * «RGBW каналы» — the four PWM levels (33..36), the strip mode (49), and the
-    live input registers (currents 37..40, NTC 131, VLED 132).
+    live input registers (overcurrent flags 37..40, NTC 131, VLED 132).
   * «Входы DI» — the DI configuration block 135..186 in one FC03 of 52.
   * «Сцена» — the expensive set: mode data 453..467, TextLines 494, the marquee
     window 516..579, and — ONLY when the selected effect is the line indicator
@@ -185,6 +185,7 @@ def read_led_snapshot(
     *,
     active_tab: Optional[str] = None,
     include_choices: bool = True,
+    observed_version=(),
 ) -> Dict[str, Any]:
     """Live values of the strip, scoped to ``active_tab`` (see the module docstring).
 
@@ -214,7 +215,7 @@ def read_led_snapshot(
     out["scene"]["aux_hint_keys"] = []
 
     if tab == LED_TAB_PWM:
-        out["pwm"] = _read_pwm(lm, send, slave)
+        out["pwm"] = _read_pwm(lm, send, slave, observed_version)
     elif tab == LED_TAB_DI:
         out["di"] = _read_di(lm, send, slave)
     elif tab == LED_TAB_SCENE:
@@ -319,7 +320,7 @@ def _decode_scene_block(lm: Any, regs: List[int]) -> Dict[str, Any]:
     }
 
 
-def _read_pwm(lm: Any, send: SendRtuFn, slave: int) -> Dict[str, Any]:
+def _read_pwm(lm: Any, send: SendRtuFn, slave: int, observed_version=()) -> Dict[str, Any]:
     """«RGBW каналы»: levels + strip mode (holding) and the live analog inputs.
 
     Three reads, not one: 33..36 and 49 are separated by addresses this product's
@@ -339,18 +340,10 @@ def _read_pwm(lm: Any, send: SendRtuFn, slave: int) -> Dict[str, Any]:
         out["mode"] = code
         out["mode_labels"] = list(lm.rgbw_pwm_channel_label_keys(code))
         out["mode_visible"] = list(lm.rgbw_pwm_channel_visible(code))
-    currents = _inp(send, slave, lm.RGBW_IREG_CURRENT_BASE, lm.RGBW_PWM_CHANNELS, 800)
-    if currents is not None:
-        out["currents_ma"] = [int(v) & 0xFFFF for v in currents[: lm.RGBW_PWM_CHANNELS]]
-    # NTC (131) and VLED (132) are adjacent — one FC04 of two.
-    supply = _inp(send, slave, lm.RGBW_IREG_NTC, 2, 700)
-    if supply is not None:
-        out["ntc_raw"] = int(supply[0]) & 0xFFFF
-        out["vled_raw"] = int(supply[1]) & 0xFFFF
-        # Scaled in Python, where the family scale lives (one constant each in
-        # the map) — the window prints, it never converts.
-        out["ntc_c"] = lm.rgbw_ntc_celsius(out["ntc_raw"])
-        out["vled_v"] = lm.rgbw_vled_volts(out["vled_raw"])
+    ocp = _inp(send, slave, lm.RGBW_IREG_OCP_BASE, lm.RGBW_PWM_CHANNELS, 800)
+    if ocp is not None:
+        out["overcurrent"] = [lm.rgbw_input_flag(word) for word in ocp]
+    out.update(lm.rgbw_read_supply(lambda reg, count: _inp(send, slave, reg, count, 700), observed_version))
     return out
 
 

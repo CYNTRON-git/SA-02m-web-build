@@ -46,6 +46,12 @@ case "$CH" in
     *)          echo '{"ok":false,"error":"bad_channel"}'; exit 0 ;;
 esac
 
+SA02M_HW_VARIANT_SNAPSHOT=$(sa02m_hw_variant)
+if ! sa02m_hw_channel_supported "$CH"; then
+    echo '{"ok":false,"error":"channel_unavailable"}'
+    exit 0
+fi
+
 if ! sa02m_hw_channel_available "$CH"; then
     echo '{"ok":false,"error":"gpio_not_configured"}'
     exit 0

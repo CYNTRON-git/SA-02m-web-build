@@ -348,6 +348,140 @@ class TestChannelDetail(Inv):
 
 @unittest.skipUnless(HAVE_YAML, "PyYAML absent")
 class TestOtherFamilies(Inv):
+    def test_led_readings_cannot_ack_a_command_or_replace_an_alarm(self):
+        from sa02m_alice.client.device_registry import DeviceRegistry
+        from sa02m_alice.config import models
+
+        self.write_yaml({"devices": [
+            {"id": "strip-west", "type": "led", "controls": ["power", "ocp_r"]},
+            {"id": "floor/kitchen", "type": "led"},
+            {"id": "led-COM2-19", "type": "template"},
+        ]})
+        tree = inventory.build_mqtt_inventory()
+        channels = self.only(tree, "strip-west")["channels"]["other"]
+        by_tag = {ch["tag"]: ch for ch in channels}
+        self.assertEqual(by_tag["power"]["rw"], "rw")
+        self.assertIs(by_tag["ocp_r"].get("command_supported"), False)
+        on_off = "devices.capabilities.on_off"
+        action = [{"id": "light-1", "capabilities": [
+            {"type": on_off, "state": {"instance": "on", "value": False}}]}]
+
+        for source, control, value, readonly in [
+            ("led-COM3-13", tag, "ntc" if tag == "temperature_source" else "1", True)
+            for tag in ("ocp_r", "ocp_g", "ocp_b", "ocp_w", "temperature_source")
+        ] + [("strip-west", "ocp_w", "1", True), ("strip-west", "di_1", "1", True),
+             ("strip-west", "ocp_g/on", "1", True), ("floor/kitchen", "ocp_r", "1", True),
+             ("custom", "ocp_g/on", "1", False),
+             ("strip-west", "power", "1", False), ("strip-west", "custom", "1", False),
+             ("custom", "ocp_r", "1", False), ("led-COM2-19", "ocp_r", "1", False)]:
+            topic = "/devices/%s/controls/%s" % (source, control)
+            raw = {"id": "light-1", "name": "Light", "type": "devices.types.switch",
+                   "capabilities": [{"mqtt": topic, "type": on_off, "writable": True}]}
+            with self.subTest(topic=topic):
+                clean, error = models.validate_device(raw)
+                self.assertIsNone(error)
+                self.assertIs(clean["capabilities"][0]["writable"], not readonly)
+                # A stored binding may predate the validation rule. Both registry
+                # entry points must protect it, without rewriting the user's doc.
+                registry = DeviceRegistry({"devices": [raw]})
+                for reload in (False, True):
+                    if reload:
+                        registry.reload({"devices": [raw]})
+                    registry.note_mqtt(topic, value, retained=reload)
+                    results, publishes = registry.apply_actions(action)
+                    outcome = results[0]["capabilities"][0]
+                    if readonly:
+                        self.assertEqual(outcome.get("error_code"), "INVALID_ACTION")
+                        self.assertEqual(publishes, [])
+                        self.assertEqual(registry.get_cached(topic), value)
+                        self.assertIs(registry.catalogue_items()[0][2][0]["writable"], False)
+                    else:
+                        self.assertEqual(outcome["status"], "DONE")
+                        self.assertEqual(publishes, [(topic + "/on", "0")])
+                self.assertIs(raw["capabilities"][0]["writable"], True)
+
+        raw["capabilities"] = [{"type": "devices.capabilities.range",
+            "mqtt": "/devices/strip-west/controls/temperature", "parameters": {
+                "instance": "brightness", "range": {"min": 0, "max": 100, "precision": 1}}}]
+        self.assertEqual(models.validate_device(raw)[1], "read-only source")
+        raw["properties"] = [{"type": "devices.properties.float",
+            "mqtt": raw.pop("capabilities")[0]["mqtt"],
+            "parameters": {"instance": "temperature", "unit": "unit.temperature.celsius"}}]
+        clean, error = models.validate_device(raw)
+        self.assertIsNone(error)
+        self.assertEqual(clean["properties"], raw["properties"])
+
+    def test_offline_led_policy_recognizes_only_complete_driver_topics(self):
+        path = self.write_yaml({"devices": []})
+        for value in ("[", "[" * 700 + "]" * 700, "1" * 5500):
+            with open(path, "w", encoding="utf-8") as config:
+                config.write("devices: " + value)
+            readonly = inventory.led_readonly_source()
+            self.assertTrue(readonly("/devices/led-COM3-13/controls/ocp_r"))
+            for topic in ("/devices/custom/controls/ocp_r", "/devices/led-COM3-248/controls/ocp_r",
+                          "/devices/led-COM3-13/controls/not_registered",
+                          "/devices/led-COM3-13/controls/ocp_r/meta/type"):
+                self.assertFalse(readonly(topic), topic)
+
+    def test_malformed_device_list_keeps_registry_and_validation_available(self):
+        from sa02m_alice.client.device_registry import DeviceRegistry
+        from sa02m_alice.config import models
+
+        self.write_yaml({"devices": 42})
+        for device, writable in (("led-COM3-13", False), ("custom", True)):
+            with self.subTest(device=device):
+                cap = {"type": "devices.capabilities.on_off",
+                       "mqtt": "/devices/%s/controls/ocp_r" % device, "writable": True}
+                raw = {"id": "indicator", "name": "Indicator", "type": "devices.types.switch",
+                       "capabilities": [cap]}
+                normalized, error = models.validate_device(raw)
+                self.assertIsNone(error)
+                self.assertIs(normalized["capabilities"][0]["writable"], writable)
+                registry = DeviceRegistry({"devices": [raw]})
+                self.assertIs(registry.catalogue_items()[0][2][0]["writable"], writable)
+        self.assertTrue(inventory.build_mqtt_inventory()["ok"])
+
+    def test_malformed_replacement_retains_known_led_until_valid_removal(self):
+        self.write_yaml({"devices": [{"id": "kitchen-strip", "type": "led"}]})
+        readonly = inventory.led_readonly_source(follow_changes=True)
+        topic = "/devices/kitchen-strip/controls/ocp_g"
+        self.assertTrue(readonly(topic))
+        self.write_yaml({"devices": 42})
+        self.assertTrue(readonly(topic))
+        self.write_yaml({"devices": []})
+        self.assertFalse(readonly(topic))
+
+    def test_missing_current_index_guards_driver_readings_until_ownership_is_known(self):
+        from unittest.mock import patch
+        from sa02m_alice.config import bridge_families
+
+        source = self.write_yaml({"devices": [{"id": "kitchen-strip", "type": "template"}]})
+        index = os.path.join(self.dir, "families.json")
+        with patch.object(bridge_families, "INDEX", index), patch.object(os, "access", return_value=False):
+            readonly = inventory.led_readonly_source(follow_changes=True)
+            for name in ("ocp_r", "temperature_source", "di_1"):
+                self.assertTrue(readonly("/devices/kitchen-strip/controls/" + name), name)
+            self.assertFalse(readonly("/devices/kitchen-strip/controls/power"))
+            bridge_families.write_index(source, index)
+            self.assertFalse(readonly("/devices/kitchen-strip/controls/ocp_r"))
+            self.assertFalse(readonly("/devices/kitchen-strip/controls/di_1"))
+
+    def test_only_an_explicit_empty_roster_releases_known_led_without_paho(self):
+        from unittest.mock import patch
+        from sa02m_alice.config import bridge_roster
+
+        path = self.write_yaml({"devices":[{"id":"kitchen-strip", "type":"led"}]})
+        readonly = inventory.led_readonly_source(follow_changes=True)
+        alarm = "/devices/kitchen-strip/controls/ocp_r"
+        self.assertTrue(readonly(alarm))
+        with patch.object(bridge_roster, "bridge_admission", side_effect=ImportError("paho")):
+            for text in ("", "devices: [", "Devices: []", "devices: []\nDevices: {}", "devices: 42"):
+                with open(path, "w", encoding="utf-8") as stream:
+                    stream.write(text)
+                self.assertTrue(readonly(alarm), text)
+            self.write_yaml({"devices":[]})
+            self.assertFalse(readonly(alarm))
+
     def test_explicit_controls_are_not_second_guessed(self):
         self.write_yaml({"devices": [{
             "id": "led-COM2-3", "type": "led", "port": "COM2", "address": 3,
@@ -399,12 +533,19 @@ class TestOtherFamilies(Inv):
             "id": "led-COM3-13", "type": "led", "port": "/dev/COM3",
             "address": 13, "poll_s": 2, "matrix_layout": 1032,
         }]})
-        dev = self.only(inventory.build_mqtt_inventory(), "led-COM3-13")
+        result = inventory.build_mqtt_inventory()
+        dev = self.only(result, "led-COM3-13")
         chans = dict((ch["tag"], ch) for ch in dev["channels"]["other"])
         self.assertIn("brightness", chans)
         self.assertIn("text", chans)
         self.assertEqual(chans["brightness"]["rw"], "rw")
         self.assertEqual(chans["led_count"]["rw"], "r")
+        offered = inventory.inventory_topics(result)
+        for tag in ("temperature_source", "ocp_r", "ocp_g", "ocp_b", "ocp_w"):
+            with self.subTest(tag=tag):
+                self.assertIn(tag, chans)
+                self.assertEqual(chans[tag]["rw"], "r")
+                self.assertIn("/devices/led-COM3-13/controls/" + tag, offered)
         # Its four dry contacts are inputs, and are grouped as such.
         self.assertEqual(self.tags(dev, "di"), ["di_1", "di_2", "di_3", "di_4"])
 

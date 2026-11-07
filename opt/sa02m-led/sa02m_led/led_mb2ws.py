@@ -312,17 +312,18 @@ RGBW_DI_CNT_DOUBLE_BASE = 228
 RGBW_DI_CNT_SHORTLONG_BASE = 232
 RGBW_DI_ENC_STEPS_BASE = 236
 RGBW_DI_CNT_LAST = 237
-RGBW_IREG_CURRENT_BASE = 37  # mA R/G/B/W
-RGBW_IREG_NTC = 131  # int16 ×0.1 °C — family scale, see rgbw_ntc_celsius()
-RGBW_IREG_VLED = 132  # u16 ×0.01 V — family scale, see rgbw_vled_volts()
-# Live DI state — the MR-02m FAMILY block (Input 18..17+N, FC04), not a
-# product-low-map address: every module of the family answers it there
-# (bridge_mr02m._poll_do_di, docs/MQTT_TOPICS.md «MR-02м … DI»), and the
-# relocation note above only moved the DI *configuration* and press counters.
-# UNVERIFIED on a type-120 device — no strip has answered a scan yet, so a
-# consumer must treat a read failure here as "block absent", never as an error
-# worth taking the device offline.
+RGBW_IREG_OCP_BASE = 37  # Input 37..40: overcurrent protection flags, R/G/B/W.
+RGBW_IREG_TEMP_SOURCE = 130  # From 1.0.3.1: none / NTC / MCU.
+RGBW_IREG_NTC = 131  # int16 ×0.1 °C
+RGBW_IREG_VLED = 132  # u16 ×0.01 V — centivolts, see rgbw_vled_volts()
+# Product map and event producers: svc_wb_inputs.h / svc_rgbw_fmb.c.
 RGBW_DI_INPUT_BASE = 18
+RGBW_FMB_WB_MIN_FW = (1, 0, 2, 2)
+RGBW_TEMP_SOURCE_MIN_FW = (1, 0, 3, 1)
+
+
+def rgbw_input_flag(raw: int) -> Optional[bool]:
+    return bool(raw) if raw in (0, 1) else None
 
 
 def mb2ws_reg(offset: int) -> int:
@@ -1249,32 +1250,64 @@ def rgbw_pwm_permille_to_hex(r: int, g: int, b: int) -> str:
 # ---------------------------------------------------------------------------
 # Live analog inputs (NTC 131, VLED 132)
 # ---------------------------------------------------------------------------
-# SCALES ARE THE MR-02m FAMILY CONVENTION, NOT A MEASURED FACT. The product low
-# map names the two addresses and stops there; the family's own diagnostics pair
-# (holdings 123/124 on every MR/DTV/CE module) is voltage ×0.01 V and temperature
-# int16 ×0.1 °C, documented in docs/MQTT_TOPICS.md and read that way by
-# bridge_mr02m and bridge_dtv_ce. No type-120 device has answered a scan, so the
-# scale is UNVERIFIED here — it is a single constant on purpose, so confirming it
-# on the bench is a one-line edit in one file rather than a hunt through two
-# services.
-
-
+# svc_mb_mr02_rgbw_read_input returns signed tenths for IR131 and centivolts for IR132.
 RGBW_IREG_VLED_SCALE = 0.01   # raw u16 → volts
 RGBW_IREG_NTC_SCALE = 0.1     # raw int16 → °C
 
 
 def rgbw_vled_volts(raw: int) -> float:
-    """Input register 132 → supply volts (family scale, see the note above)."""
+    """Input register 132 → supply volts (product low map)."""
     return round((int(raw) & 0xFFFF) * RGBW_IREG_VLED_SCALE, 2)
 
 
-def rgbw_ntc_celsius(raw: int) -> float:
-    """Input register 131 → °C, SIGNED (family scale, see the note above).
+def rgbw_ntc_celsius(raw: int) -> Optional[float]:
+    """Signed tenths of a degree. INT16_MIN is the producer's unavailable sentinel."""
+    signed = rgbw_u16_to_i16(raw)
+    return None if signed == -32768 else round(signed * RGBW_IREG_NTC_SCALE, 1)
 
-    Signed because the strip's NTC can legitimately read below zero outdoors and
-    an unsigned read would publish −5 °C as +6549 °C.
-    """
-    return round(rgbw_u16_to_i16(raw) * RGBW_IREG_NTC_SCALE, 1)
+
+def rgbw_board_temperature(raw, source=None, *, source_supported=False, event=False):
+    """Return degrees and the source/quality of this observation."""
+    if source_supported:
+        label = {0: 'none', 1: 'ntc', 2: 'mcu'}.get(source, 'unknown')
+        if label in ('none', 'unknown'):
+            return None, label
+    else:
+        label = 'unspecified'
+        # Older FC04 encodes an absent sensor and exactly zero degrees as 0.
+        # Its event producer drops unavailable samples before enqueueing them.
+        if raw == 0 and not event:
+            return None, 'ambiguous_zero'
+    degrees = rgbw_ntc_celsius(raw) if raw is not None else None
+    return (degrees, label) if degrees is not None else (None, 'unknown')
+
+
+def rgbw_version_words(words):
+    return tuple(words) if words and len(words) == 4 and all(type(w) is int and 0 <= w <= 255 for w in words) else None
+
+
+def rgbw_source_sample(read_input):
+    pair = read_input(RGBW_IREG_TEMP_SOURCE, 2)
+    return tuple(pair) if pair is not None and len(pair) == 2 else (None, None)
+
+
+def rgbw_read_supply(read_input, observed_version):
+    has_source = bool(observed_version and tuple(observed_version) >= RGBW_TEMP_SOURCE_MIN_FW)
+    if has_source:
+        source, raw = rgbw_source_sample(read_input)
+        voltage = read_input(RGBW_IREG_VLED, 1)
+        vled = voltage[0] if voltage is not None and len(voltage) == 1 else None
+    else:
+        pair = read_input(RGBW_IREG_NTC, 2)
+        raw, vled = pair if pair is not None and len(pair) == 2 else (None, None)
+        source = None
+    degrees, label = rgbw_board_temperature(raw, source, source_supported=has_source)
+    data = {"ntc_c": degrees, "temperature_source": label}
+    if raw is not None:
+        data["ntc_raw"] = raw
+    if vled is not None:
+        data.update(vled_raw=vled, vled_v=rgbw_vled_volts(vled))
+    return data
 
 
 def rgbw_hex_to_pwm_permille(s: str) -> Optional[Tuple[int, int, int]]:

@@ -218,6 +218,37 @@ until the client's retained `meta/error = "r"` lands at 120 s
 (`home-connect.md` §5). Validating: `tests/test_models.py
 TestHomeConnectReadOnly`.
 
+For an LED driver, the picker marks channels declared read-only in
+`sa02m_led.controls` with `command_supported: false`. A switch bound to
+one of these readings is saved as report-only. The API rejects other
+actuator types for the same source and accepts sensor properties. When the
+registry loads a previously saved writable binding, it enforces read-only
+access in memory for both Alice profiles and the HomeKit projection. A refused
+command returns `INVALID_ACTION` before changing the cached measurement or
+publishing MQTT. The bridge YAML identifies driver-owned MQTT ids, including
+aliases. Without a configured owner the canonical `led-COM<n>-<address>` id
+identifies the driver. Both the state address and its `/on` address are
+protected when entered manually. HomeKit reads the revision-matched family
+index described in `homekit-bridge.md`. While that index is unavailable for
+an unreadable configuration, matching commands return `INVALID_ACTION`.
+Once the new index is available, custom devices can use the same control names.
+
+Changes to the device document, bridge YAML or family index rebuild the
+catalogue on the next watchdog tick. An action on a matching control also
+checks for a changed file before publication. The bridge and the family reader
+use the same poller construction, initial Fast Modbus ranges and fleet transport
+checks. Each admitted LED protects its own id even when another row fails.
+With a 1.0.7.32 bridge the reader runs that release's own migration and
+registration. A failed legacy composition or missing reader dependency can
+add protection for a declared LED, while a successful registration can confirm
+a reassignment to another driver.
+A rejected identifiable replacement keeps its previous family. An ambiguous
+entry without an id retains existing protection while identified LEDs can add
+new protection. A valid empty device list or removal of the bridge
+configuration releases custom ids. The retained and live alarm values, saved
+bindings and ownership changes are covered by `tests/test_inventory.py` and
+`tests/test_reload_watch.py`.
+
 ### Device document id namespace
 
 Ids inside the stored document are the operator's (minted by the config API,

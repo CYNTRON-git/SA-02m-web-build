@@ -107,13 +107,12 @@ def _key(spec: dict) -> tuple:
     return ("gateway", spec["host"], int(spec["tcp_port"]))
 
 
+_scheduler_provider = None
+
+
 def _live_schedulers() -> list:
-    try:
-        import modbus_mqtt_bridge as bridge
-    except Exception:
-        log.debug("bridge entry not loaded", exc_info=True)
-        return []
-    return list(getattr(bridge, "_port_schedulers", ()))
+    # The executable entry owns this registry, including in script mode.
+    return list(_scheduler_provider()) if _scheduler_provider is not None else []
 
 
 def _bus_of(sched):
@@ -288,8 +287,10 @@ def handle(conn: socket.socket) -> None:
             pass
 
 
-def serve(path: str | None = None) -> str:
+def serve(path: str | None = None, *, scheduler_provider=None) -> str:
     """Listen for scan leases. Returns the socket path. Daemon thread."""
+    global _scheduler_provider
+    _scheduler_provider = scheduler_provider
     path = path or SOCK_PATH
     os.makedirs(os.path.dirname(path), exist_ok=True)
     if os.path.exists(path):

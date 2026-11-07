@@ -59,6 +59,8 @@ from . import device_config, runner
 _UNIT_UI_ALIASES = {
     "mplc": "MPLC4",
     "mplc4": "MPLC4",
+    "vplc": "vPLC",
+    "sa02m-vplc": "vPLC",
     "sa02m-modbus-mqtt": "MQTT",
     "modbus-mqtt": "MQTT",
 }
@@ -213,6 +215,60 @@ def _read_json_body(handler: BaseHTTPRequestHandler) -> Dict[str, Any]:
         raise ValueError(f"Некорректный JSON: {exc}")
 
 
+def _configuration_body_length(handler):
+    lengths = handler.headers.get_all('Content-Length', [])
+    if handler.headers.get('Transfer-Encoding') or len(lengths) != 1 or not re.fullmatch(r'[0-9]+', lengths[0]):
+        raise ValueError('Configuration request requires one Content-Length')
+    length = int(lengths[0])
+    if not 0 < length <= 64 * 1024:
+        raise ValueError('Configuration request exceeds 64 KiB or is empty')
+    return length
+
+
+def _read_configuration_body(handler):
+    """Bound partial bodies as a whole; never drain a refused configuration request."""
+    handler.close_connection = True
+    length = _configuration_body_length(handler)
+    deadline = time.monotonic() + 2.0
+    previous_timeout = handler.connection.gettimeout()
+    chunks = []
+    try:
+        while length:
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                raise ValueError('Configuration request body deadline exceeded')
+            handler.connection.settimeout(remaining)
+            chunk = handler.rfile.read1(min(length, 8192))
+            if not chunk:
+                raise ValueError('Incomplete configuration request body')
+            chunks.append(chunk)
+            length -= len(chunk)
+    except (TimeoutError, OSError) as exc:
+        raise ValueError('Configuration request body deadline exceeded') from exc
+    finally:
+        handler.connection.settimeout(previous_timeout)
+
+    def object_pairs(pairs):
+        value = {}
+        for key, item in pairs:
+            if key in value:
+                raise ValueError('Duplicate JSON key: ' + key)
+            value[key] = item
+        return value
+
+    def invalid_constant(value):
+        raise ValueError('Non-finite JSON number: ' + value)
+
+    try:
+        data = json.loads(b''.join(chunks).decode('utf-8'), object_pairs_hook=object_pairs,
+                          parse_constant=invalid_constant)
+    except (UnicodeError, RecursionError, json.JSONDecodeError) as exc:
+        raise ValueError('Invalid configuration JSON') from exc
+    if not isinstance(data, dict):
+        raise ValueError('Configuration request must be an object')
+    return data
+
+
 def _extract_multipart(handler: BaseHTTPRequestHandler) -> Tuple[str, bytes]:
     """Вернуть (filename, raw_bytes) из multipart/form-data с полем 'file'."""
     # No `cgi` (removed in Python 3.13): the parser and its semantics live in
@@ -339,6 +395,7 @@ class Handler(BaseHTTPRequestHandler):
         parsed = urlparse(path)
         p = parsed.path
         q = parse_qs(parsed.query)
+        configuration_route = method == 'POST' and p in ('/device_config/export', '/device_config/import')
 
         try:
             # /health is answered BEFORE _check_auth() by design — the root-side
@@ -347,6 +404,9 @@ class Handler(BaseHTTPRequestHandler):
             # test_health_lease.py pin the ordering.
             if method == "GET" and p == "/health":
                 return _send_json(self, health_payload(ctx))
+            if configuration_route:
+                self.close_connection = True
+                _configuration_body_length(self)
             if not self._check_auth():
                 return _send_error(self, HTTPStatus.UNAUTHORIZED, "unauthorized")
             # Every POST carries the panel's CSRF token (selective-csrf-policy.md
@@ -361,7 +421,8 @@ class Handler(BaseHTTPRequestHandler):
             if method == "POST" and not self._internal_caller():
                 ok, reason = check_csrf(self.headers.get("Cookie"), self.headers.get("X-SA02M-CSRF"), ctx.cfg.session_dir)
                 if not ok:
-                    _discard_body(self)
+                    if not configuration_route:
+                        _discard_body(self)
                     return _send_json(self, csrf_error_body(reason))
 
             if method == "GET" and p == "/status":
@@ -388,6 +449,8 @@ class Handler(BaseHTTPRequestHandler):
                 return self._handle_flash_batch(ctx)
             if method == "POST" and p == "/device_config/snapshot":
                 return self._handle_device_config_snapshot(ctx)
+            if configuration_route:
+                return self._handle_configuration_file(ctx, importing=p.endswith('/import'))
             if method == "POST" and p == "/device_config/network":
                 return self._handle_device_config_network(ctx)
             if method == "POST" and p == "/device_config/holding":
@@ -451,9 +514,11 @@ class Handler(BaseHTTPRequestHandler):
         # What a lease on this line pauses: the coordinator's configured scope
         # for the port (its status.json is the one home — never the legacy
         # MPLC_STOP_SERVICES list) plus the per-port MQTT pause.
-        managed = [_unit_display_name(s) for s in mplc_lease.configured_scope(device_path)]
+        scope = mplc_lease.configured_scope(device_path)
+        managed = [_unit_display_name(s) for s in scope]
         managed.append(_unit_display_name("sa02m-modbus-mqtt.service"))
         reserved = mplc_lease.is_reserved(device_path)
+        restoration = mplc_lease.restoration_status(device_path)
 
         if quick:
             return {
@@ -465,9 +530,11 @@ class Handler(BaseHTTPRequestHandler):
                 "active_job": active_job,
                 "mplc_active": False,
                 "managed_services": managed,
+                "whole_service_scope": scope,
                 "reserved": reserved,
                 "active_services": None,
                 "released_services": None,
+                **restoration,
             }
 
         occupants: List[str] = port_occupants(device_path) if exists else []
@@ -486,9 +553,11 @@ class Handler(BaseHTTPRequestHandler):
             "active_job": active_job,
             "mplc_active": mplc_on_port,
             "managed_services": managed,
+            "whole_service_scope": scope,
             "reserved": reserved,
             "active_services": active_services,
             "released_services": [_unit_display_name(a) for a in mplc_lease.released_services_for(device_path)],
+            **restoration,
         }
 
     def _handle_status(self, ctx: ServiceContext) -> None:
@@ -515,19 +584,20 @@ class Handler(BaseHTTPRequestHandler):
         port = str(data.get("port") or "").strip()
         if not port:
             raise ValueError("Поле 'port' обязательно")
+        if port not in ctx.cfg.ports_map:
+            raise ValueError(f"Неизвестный порт: {port}")
         _guard_no_active_flasher_job(ctx, port=port)
         result = mplc_lease.release_pollers(ctx.cfg.mplc_stop_services)
         port_info = self._describe_port(ctx, port)
-        busy = bool(port_info.get("busy_pids"))
-        released = bool(result.get("stopped_now") or result.get("already_released"))
-        ok = not result["failed"] or (released and not busy)
-        _send_json(self, {"ok": ok, "port": port_info, **result})
+        _send_json(self, {"ok": not result["failed"], "port": port_info, **result})
 
     def _handle_ports_restore(self, ctx: ServiceContext) -> None:
         data = _read_json_body(self)
         port = str(data.get("port") or "").strip()
         if not port:
             raise ValueError("Поле 'port' обязательно")
+        if port not in ctx.cfg.ports_map:
+            raise ValueError(f"Неизвестный порт: {port}")
         _guard_no_active_flasher_job(ctx, port=port)
         result = mplc_lease.restore_pollers(ctx.cfg.mplc_stop_services)
         _send_json(self, {"ok": not result["failed"], "port": self._describe_port(ctx, port), **result})
@@ -655,6 +725,40 @@ class Handler(BaseHTTPRequestHandler):
         snap = self._run_device_config_modbus(ctx, port, device_path, _work)
         _send_json(self, {"ok": True, **snap})
 
+    def _handle_configuration_file(self, ctx: ServiceContext, *, importing: bool) -> None:
+        data = _read_configuration_body(self)
+        allowed = {'port', 'device'} | ({'configuration', 'preview_only', 'allow_partial'} if importing else set())
+        if set(data) - allowed:
+            raise ValueError('Unknown configuration request keys')
+        preview = data.get('preview_only', True)
+        partial = data.get('allow_partial', False)
+        if type(preview) is not bool or type(partial) is not bool:
+            raise ValueError('preview_only and allow_partial must be boolean')
+        if importing and not isinstance(data.get('configuration'), dict):
+            raise ValueError('Configuration file object required')
+        device_path, device = self._device_config_request(ctx, data)
+        device_config.validate_configuration_selector(device)
+        port = data['port']
+        lock = _device_config_port_lock(port)
+        if not lock.acquire(timeout=2.0):
+            raise RuntimeError('Configuration port is busy')
+        result = None
+        try:
+            _guard_no_active_flasher_job(ctx, port=port)
+            try:
+                with port_lease(device_path, ctx.cfg.mplc_stop_services, preserve_released=True,
+                                acquire_deadline=time.monotonic() + 45.0, release_timeout=45.0):
+                    result = device_config.configuration_file_operation(
+                        device_path, device, configuration=data.get('configuration') if importing else None,
+                        preview_only=preview, allow_partial=partial, deadline=time.monotonic() + 20.0)
+            except Exception as exc:
+                if result is None:
+                    raise
+                result.update(ok=False, complete=False, restoration_error=str(exc))
+        finally:
+            lock.release()
+        _send_json(self, result)
+
     def _handle_device_config_network(self, ctx: ServiceContext) -> None:
         data = _read_json_body(self)
         device_path, device = self._device_config_request(ctx, data)
@@ -695,17 +799,27 @@ class Handler(BaseHTTPRequestHandler):
                 },
                 status=HTTPStatus.BAD_REQUEST,
             )
+        if snap.get("ai_write", {}).get("status") == "accepted_unconfirmed":
+            # A cached client treats every 2xx holding response as applied.
+            return _send_json(self, {**snap, "ok": False, "error_code": "AI_TYPE_ACCEPTED_UNCONFIRMED",
+                "error": "Команда смены типа AI принята. Применение не подтверждено."}, status=HTTPStatus.CONFLICT)
         _send_json(self, {"ok": True, **snap})
 
     def _handle_device_config_coil(self, ctx: ServiceContext) -> None:
         data = _read_json_body(self)
         device_path, device = self._device_config_request(ctx, data)
         port = str(data.get("port") or "").strip()
+        intent = data.get('relay_action')
+        if 'relay_action' in data and (type(intent) is not str or intent not in ('drive', 'fan')):
+            raise ValueError('Unknown relay action')
+        if intent is not None and (type(data.get('value')) is not bool or type(data.get('coil')) is not int):
+            raise ValueError('Explicit relay action requires a boolean value and integer coil')
         coil = int(data.get("coil") or 0)
         on = bool(data.get("value"))
 
         def _work():
-            return device_config.write_allowed_coil(device_path, device, coil, on)
+            return device_config.write_allowed_coil(device_path, device, coil, on,
+                                                   **({'relay_action': intent} if intent is not None else {}))
 
         snap = self._run_device_config_modbus(ctx, port, device_path, _work)
         _send_json(self, {"ok": True, **snap})

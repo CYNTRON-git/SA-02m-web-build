@@ -66,6 +66,8 @@ never opens a port, it only uses DevicePoller's FC wrappers.
 
 from __future__ import annotations
 
+from bridge_serial import ScanHold
+
 import os
 import re
 import struct
@@ -265,9 +267,14 @@ class TemplatePoller(DevicePoller):
         self._passes = 0
         self._answered_now = False
         self._load_error = ""
+        # An unreadable or malformed template disables this poller's channels;
+        # it still registers its device id. Roster readers need only that id.
+        if pub is None:
+            return
         try:
             self._load_template()
-        except TemplateParseError as e:
+        except (TemplateParseError, OSError, AttributeError, TypeError, ValueError,
+                IndexError, KeyError, OverflowError, RecursionError) as e:
             self._load_error = str(e)
             self.log.error("template load failed: %s — device %s publishes nothing",
                            e, self.device_id)
@@ -599,6 +606,8 @@ class TemplatePoller(DevicePoller):
             t_read = self._monotonic()
             try:
                 data = self._read_span(unit)
+            except ScanHold:
+                raise
             except Exception as e:
                 self.log.debug("template read block %s %d+%d: %s",
                                unit.reg_type, unit.start, unit.count, e)
@@ -653,6 +662,8 @@ class TemplatePoller(DevicePoller):
         t_read = self._monotonic()
         try:
             words = self._read_channel(ch)
+        except ScanHold:
+            raise
         except Exception as e:
             self.log.debug("template read %s: %s", ch.name, e)
             self._note_read(unit, False)

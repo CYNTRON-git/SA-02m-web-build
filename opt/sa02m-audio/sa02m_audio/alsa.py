@@ -44,7 +44,7 @@ def has_capture(index: int, asound_dir: str = C.ASOUND_DIR) -> bool:
 
 
 def device_name(card: Card) -> str:
-    if _CARD_ID.match(card.id):
+    if _CARD_ID.fullmatch(card.id):
         return "plughw:CARD=%s,DEV=0" % card.id
     return "plughw:%d,0" % card.index
 

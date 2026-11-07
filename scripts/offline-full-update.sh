@@ -167,6 +167,11 @@ LOG="/root/install-offline-${TARGET_VER}.log"
 # post-check table (incl. --status re-attach) to tell a preserved operator
 # stop from a service the update dropped.
 SVC_BEFORE="/root/install-offline-${TARGET_VER}.svc-before"
+if [ "$MODE_STATUS" = 1 ] || [ "$DRY_RUN" = 1 ]; then
+    log INFO "offline-refresh observe $TARGET_VER"
+else
+    log INFO "offline-refresh begin $TARGET_VER"
+fi
 log INFO "Установлено: ${DEPLOYED_VER:-не установлено}  →  цель: ${TARGET_VER}  (дерево: $REPO_ROOT)"
 
 pid_alive() { [ -f "$PIDFILE" ] && kill -0 "$(cat "$PIDFILE" 2>/dev/null)" 2>/dev/null; }
@@ -208,6 +213,7 @@ poll_install() {
 
 # ── Post-checks: PASS/FAIL table, runbook step 7; never silent ──────────────
 N_PASS=0 N_FAIL=0
+MQTT_STOP_PRESERVED=0
 row() {   # row PASS|FAIL <name> <detail>
     case "$1" in PASS) N_PASS=$((N_PASS + 1)) ;; *) N_FAIL=$((N_FAIL + 1)) ;; esac
     # Pad by characters, not printf's bytes (Cyrillic names); width floor 1.
@@ -280,8 +286,12 @@ post_checks() {   # $1 = install.sh exit code or "" when unknown (--status re-at
             prev=""
             [ -f "$SVC_BEFORE" ] && prev="$(awk -v s="$svc" '$1==s {print $2; exit}' "$SVC_BEFORE" 2>/dev/null)"
             if systemctl cat "$svc" >/dev/null 2>&1; then
-                if [ -n "$prev" ] && [ "$prev" != active ]; then
+                if [ -n "$prev" ] && [ "$prev" != active ] &&
+                   { [ "$svc" != sa02m-modbus-mqtt ] || [ "$prev" != unverified ]; }; then
                     row PASS "служба $svc" "не был запущен до обновления — состояние сохранено"
+                    if [ "$svc" = sa02m-modbus-mqtt ] && [ "$prev" = inactive ] && [ "$st" = inactive ]; then
+                        MQTT_STOP_PRESERVED=1
+                    fi
                 else
                     row FAIL "служба $svc" "${st:-unknown}"
                 fi
@@ -407,9 +417,24 @@ fi
 # Service-state snapshot BEFORE the install: the post-check table must tell a
 # PRESERVED operator stop (PASS) from a service the update dropped (FAIL).
 # --status re-runs read the same file.
-for svc in $CORE_SERVICES; do
-    printf '%s %s\n' "$svc" "$(systemctl is-active "$svc" 2>/dev/null || true)"
-done > "$SVC_BEFORE" 2>/dev/null || true
+snapshot_hash=""
+if for svc in $CORE_SERVICES; do
+    snapshot_state=$(systemctl is-active "$svc" 2>/dev/null || true)
+    if [ "$svc" = sa02m-modbus-mqtt ] && [ "$snapshot_state" = inactive ]; then
+        # is-active also prints "inactive" for a missing unit. Verify both
+        # properties in one systemd snapshot before attributing an operator stop.
+        if ! snapshot_unit=$(systemctl show "$svc.service" -p LoadState -p ActiveState 2>/dev/null) ||
+           ! grep -Fxq 'LoadState=loaded' <<< "$snapshot_unit" ||
+           ! grep -Fxq 'ActiveState=inactive' <<< "$snapshot_unit"; then
+            snapshot_state=unverified
+        fi
+    fi
+    printf '%s %s\n' "$svc" "$snapshot_state"
+done > "$SVC_BEFORE" 2>/dev/null &&
+   snapshot_stamp=$(TZ=UTC0 LC_ALL=C stat -c '%d:%i:%z' -- "$SVC_BEFORE") &&
+   snapshot_hash=$(sha256sum -- "$SVC_BEFORE"); then
+    log INFO "svc-before $snapshot_stamp ${snapshot_hash%% *}"
+fi
 nohup setsid env "${LAUNCH_ENV[@]}" bash install.sh </dev/null > "$LOG" 2>&1 &
 INSTALL_PID=$!
 echo "$INSTALL_PID" > "$PIDFILE"
@@ -418,4 +443,11 @@ wait "$INSTALL_PID"; INSTALL_RC=$?
 [ "$INSTALL_RC" -eq 0 ] && log OK "install.sh завершился, rc=0" || log ERR "install.sh завершился с rc=$INSTALL_RC"
 
 # ── Step 7: post-checks ────────────────────────────────────────────────────
-post_checks "$INSTALL_RC"
+if post_checks "$INSTALL_RC"; then
+    if [ "$INSTALL_RC" -eq 0 ] && [ "$MQTT_STOP_PRESERVED" = 1 ] && [ -n "$snapshot_hash" ] &&
+       installed=$(TZ=UTC0 LC_ALL=C stat -c '%d:%i:%z' -- "$WEB_ROOT/VERSION" /var/lib/sa02m-update/runner.version); then
+        log INFO "offline-refresh mqtt-preserved $TARGET_VER $snapshot_stamp ${snapshot_hash%% *} |${installed//$'\n'/|}"
+    fi
+    exit 0
+fi
+exit 1

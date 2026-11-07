@@ -775,6 +775,7 @@ def _with_bus_lock(profile: "HwProfile", fn):
 # namespaced idiom as SA02M_TELEMETRY_CONF above. The default path is identical.
 HW_CONF_ENV = "SA02M_HW_CONF"
 HW_CONF_DEFAULT = "/etc/sa02m_hw.conf"
+HW_VARIANT_FILE = "/etc/sa02m_hw_variant.conf"
 HW_CHANNELS = ("do", "beeper", "alarm_led")
 # The polarity mask under `auto` is built from every declared channel, usb_power
 # included, exactly as lib_hw.sh sa02m_hw_i2c_output_mask_dec does.
@@ -787,6 +788,30 @@ HW_EXTRA_OUTPUT_MASK_DEFAULT = 0x08
 
 def _hw_conf_path() -> str:
     return os.environ.get(HW_CONF_ENV) or HW_CONF_DEFAULT
+
+
+def _hw_variant() -> str:
+    """Read the variant as data; only an absent file has the legacy default."""
+    try:
+        with open(HW_VARIANT_FILE, encoding="utf-8", newline="") as stream:
+            contents = stream.read()
+    except FileNotFoundError:
+        return "unknown" if os.path.lexists(HW_VARIANT_FILE) else "sa02m-1eth"
+    except (OSError, UnicodeError):
+        return "unknown"
+    if "\x00" in contents:
+        return "unknown"
+    values = []
+    for line in contents.split("\n"):
+        match = re.fullmatch(r"[ \t\r]*SA02M_HW_VARIANT[ \t\r]*=[ \t\r]*(.*?)[ \t\r]*", line)
+        if match:
+            value = match.group(1)
+            if len(value) >= 2 and value[0] in "\"'" and value[-1] == value[0]:
+                value = value[1:-1]
+            values.append(value)
+    if len(values) == 1 and values[0] in ("sa02m-1eth", "sa02m-2eth"):
+        return values[0]
+    return "unknown"
 
 
 def _hw_parse_bit(raw: str) -> int | None:
@@ -975,6 +1000,9 @@ class HwProfile:
     def is_active_low(self, channel: str) -> bool:
         return bool(self.active_low_mask & (1 << self.bits[channel]))
 
+    def channel_supported(self, channel: str, variant: str | None = None) -> bool:
+        return channel != "do" or (variant if variant is not None else _hw_variant()) == "sa02m-1eth"
+
     def output_mask(self) -> int:
         """Every pin this board drives, for the direction register."""
         mask = 0
@@ -1137,11 +1165,6 @@ class PCA9536Control:
     def __init__(self, profile: HwProfile):
         self._profile = profile
         self._lock = threading.Lock()
-        # The direction register is applied under the bus lock too, so a busy
-        # bus at startup DEFERS it instead of disabling hardware control for the
-        # life of the process — init_hw() runs once, and MPLC4 already running
-        # when this service starts is the normal case, not the exception.
-        self._direction_applied = False
         # How the poll's read outcomes reach the journal (see the class).
         self.read_log = _HwReadFailureLog()
 
@@ -1149,12 +1172,14 @@ class PCA9536Control:
     def profile(self) -> HwProfile:
         return self._profile
 
-    def channels(self) -> tuple[str, ...]:
+    def channels(self, variant: str | None = None) -> tuple[str, ...]:
         """The channels this board can actually drive, in a stable order."""
-        return tuple(ch for ch in HW_CHANNELS if ch in self._profile.bits)
+        variant = variant if variant is not None else _hw_variant()
+        return tuple(ch for ch in HW_CHANNELS if ch in self._profile.bits
+                     and self._profile.channel_supported(ch, variant))
 
     def init(self) -> tuple[bool, str]:
-        """Apply the direction register once, under the bus lock.
+        """Initialize the direction register under the bus lock.
 
         Returns (usable, detail). `usable` is False only for a real I/O
         failure; a bus another owner holds leaves hardware control ENABLED with
@@ -1172,25 +1197,31 @@ class PCA9536Control:
                                                  "not take")
 
     def _apply_direction_unlocked(self) -> bool:
-        if self._direction_applied:
-            return True
         # Direction from the config's own output set, as lib_hw.sh
         # sa02m_hw_i2c_config_mask_dec computes it: declared outputs low, the
         # rest left as inputs. Forcing 0x00 here would claim a pin an
         # integrator had deliberately narrowed out of the config.
         outputs = self._profile.output_mask() | self._profile.extra_output_mask
         config_mask = 0xF0 | ((~outputs) & 0x0F)
+        # Another writer or an expander reset can change direction after init.
+        # Check it inside the command's lock, without rewriting a correct value.
+        current = _i2cget(self._profile.bus, self._profile.addr,
+                          self.REG_DIR, self._profile.i2c_timeout_s)
+        if current is None:
+            return False
+        if current == config_mask:
+            return True
         if not _i2cset(self._profile.bus, self._profile.addr,
                        self.REG_DIR, config_mask, self._profile.i2c_timeout_s):
             return False
-        self._direction_applied = True
-        return True
+        return _i2cget(self._profile.bus, self._profile.addr,
+                       self.REG_DIR, self._profile.i2c_timeout_s) == config_mask
 
     def _read_out(self) -> int | None:
         return _i2cget(self._profile.bus, self._profile.addr, self.REG_OUT,
                        self._profile.i2c_timeout_s)
 
-    def read_channels(self) -> tuple[dict[str, int], str]:
+    def read_channels(self, variant: str | None = None) -> tuple[dict[str, int], str]:
         """Every configured channel's LOGICAL level, from ONE locked port read.
 
         One read for all of them, as lib_hw.sh sa02m_hw_i2c_read_output_dec
@@ -1213,6 +1244,9 @@ class PCA9536Control:
 
         Returns (levels, reason). A non-empty reason means nothing was read.
         """
+        channels = self.channels(variant)
+        if not channels:
+            return {}, ""
         with self._lock:
             result = _with_bus_lock(self._profile, self._read_out)
         if result is BUS_BUSY:
@@ -1220,7 +1254,7 @@ class PCA9536Control:
         if result is None:
             return {}, "the expander did not answer the read"
         levels: dict[str, int] = {}
-        for channel in self.channels():
+        for channel in channels:
             on = bool(result & (1 << self._profile.bits[channel]))
             if self._profile.is_active_low(channel):
                 on = not on
@@ -1265,13 +1299,16 @@ class PCA9536Control:
         register is read back inside the same lock bracket and the commanded
         bit compared, as lib_hw.sh sa02m_hw_i2c_write_channel_locked does. An
         i2cset exit status of 0 alone is not reported as the pin having moved.
-        The direction register is not verified, mirroring lib_hw.sh.
+        The configured direction is checked before the output write; if it
+        needs correction, that write is read back under the same lock too.
 
         `detail` is that reason on a refusal. On an ACCEPTED command it is
         empty for a plain bus write and names the path taken when the command
         went to the beeper override instead (1.0.6.43) — the journal must not
         read «HW beeper = 1» for a pin this daemon did not drive itself.
         """
+        if not self._profile.channel_supported(channel):
+            return False, "channel unavailable for the selected hardware variant"
         if channel not in self._profile.bits:
             return False, f"no bit for it in {self._profile.source}"
         owner = _hw_owner_active(self._profile)
@@ -1451,6 +1488,7 @@ class TelemetryClient:
         self._connected = False
         self._hw: PCA9536Control | None = None
         self._meta_done = False
+        self._hw_variant_seen: str | None = None
         self._legacy_cleared = False
         # Held for the process lifetime once taken (see _take_instance_lock).
         self._instance_lock_fd: int | None = None
@@ -1551,6 +1589,9 @@ class TelemetryClient:
         self._connected_at = time.monotonic()
         log.info("MQTT connected")
         self._subscribe_writeback()
+        self._meta_done = False
+        self._hw_variant_seen = None
+        TelemetryClient._sync_hw_capability(self, _hw_variant())
         self._pub("controls/connection", "1")
         self._pub("meta/error", "")
 
@@ -1614,7 +1655,7 @@ class TelemetryClient:
                 # exact defect class this release exists to close.
                 log.warning("HW not ready — %s command dropped", ctrl)
                 return
-            if ctrl not in self._hw.channels():
+            if ctrl not in self._hw.profile.bits:
                 # No bit for this channel in /etc/sa02m_hw.conf. Refusing is
                 # the point: driving a guessed pin is how `beeper` came to
                 # switch the discrete output (1.0.6.42).
@@ -1626,8 +1667,15 @@ class TelemetryClient:
             # Not `val`: that name is load()'s conf reader, and the conf-key
             # ledger (tests/test_telemetry_hw_lock.py conf_reads) forbids any
             # other binding of it.
-            text = msg.payload.decode().strip()
-            on = text not in ("0", "false", "False", "")
+            try:
+                text = msg.payload.decode("utf-8").strip()
+            except UnicodeDecodeError:
+                log.warning("HW %s command dropped: invalid UTF-8", ctrl)
+                return
+            if text not in ("0", "1"):
+                log.warning("HW %s command dropped: expected 0 or 1", ctrl)
+                return
+            on = text == "1"
             accepted, why = self._hw.set_channel(ctrl, on)
             if accepted:
                 self._pub(f"controls/{ctrl}", "1" if on else "0")
@@ -1646,7 +1694,19 @@ class TelemetryClient:
         topic = f"{DEVICE_BASE}/{self._device_id}/{suffix}"
         self._client.publish(topic, value, qos=MQTT_QOS, retain=retain)
 
+    def _sync_hw_capability(self, variant: str) -> None:
+        if getattr(self, "_hw_variant_seen", None) == variant:
+            return
+        self._hw_variant_seen = variant
+        self._meta_done = False
+        if variant != "sa02m-1eth":
+            # Only the two retained topics this telemetry publisher owns.
+            self._pub("controls/do", "")
+            self._pub("controls/do/meta/type", "")
+
     def _publish_meta(self) -> None:
+        variant = _hw_variant()
+        TelemetryClient._sync_hw_capability(self, variant)
         if self._meta_done:
             return
         self._pub("meta/name", f"СА-02м ({_hostname() or self._device_id})")
@@ -1664,6 +1724,8 @@ class TelemetryClient:
             self._pub(f"controls/{ctrl}/meta/type", ctype)
             self._pub(f"controls/{ctrl}/meta/readonly", "1")
         for ctrl in ["do", "beeper", "alarm_led"]:
+            if ctrl == "do" and variant != "sa02m-1eth":
+                continue
             self._pub(f"controls/{ctrl}/meta/type", "switch")
         for i in range(SERIAL_COUNT):
             port = f"com{i+1}"
@@ -1673,6 +1735,8 @@ class TelemetryClient:
         self._meta_done = True
 
     def _publish_metrics(self) -> None:
+        variant = _hw_variant()
+        TelemetryClient._sync_hw_capability(self, variant)
         self._pub("controls/cpu_pct", str(cpu_usage_pct()))
         self._pub("controls/temp_c", str(cpu_temp_c()))
         self._pub("controls/ram_pct", str(ram_pct()))
@@ -1684,7 +1748,7 @@ class TelemetryClient:
         # the hardware. A channel we cannot read is left unpublished rather
         # than reported as 0.
         if self._hw:
-            levels, why = self._hw.read_channels()
+            levels, why = self._hw.read_channels(variant)
             self._hw.read_log.note(why)
             for ctrl, level in levels.items():
                 self._pub(f"controls/{ctrl}", str(level))

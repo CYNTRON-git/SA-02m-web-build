@@ -28,6 +28,8 @@ import hashlib
 import json
 import logging
 import re
+import stat
+import tempfile
 import threading
 import time
 import urllib.error
@@ -39,6 +41,10 @@ from typing import Any, Dict, List, Optional, Set, Tuple
 
 from . import firmware as fw_parser
 from .module_profiles import (
+    NATIVE_FIRMWARE_FAMILIES,
+    firmware_header_family,
+    firmware_identity_missing,
+    is_meter_driver_alias,
     manifest_device_family,
     manifest_device_for_signature,
 )
@@ -97,6 +103,9 @@ def _infer_kind_from_filename(file_name: str) -> str:
 
     Явное поле ``kind`` в манифесте предпочтительнее; иначе — по имени файла.
     """
+    known = fw_parser.parse_known_firmware_filename(file_name or "")
+    if known is not None:
+        return known[1]
     n = (file_name or "").lower()
     if "mr-02m_bootloader" in n or n.endswith("_bootloader.fw") or n == "bootloader.fw":
         return "bootloader"
@@ -139,11 +148,62 @@ class FirmwareEntry:
     downloaded: bool = False        # файл есть в локальном кеше
     local_path: Optional[str] = None
     source: str = "manifest"        # manifest | upload | unknown
+    defaulted_manifest_device: bool = False
+    flash_error: str = ""
 
     def to_dict(self) -> Dict[str, Any]:
         d = asdict(self)
         d["local_path"] = str(self.local_path) if self.local_path else None
         return d
+
+
+def _catalog_family_error(entry: FirmwareEntry) -> str:
+    family = manifest_device_family(entry.device)
+    if not family:
+        return "Семейство образа не допускает нативную запись."
+    for signature in entry.signatures:
+        if not firmware_identity_missing(signature) and firmware_header_family(signature) != family:
+            return "Семейство сигнатуры в каталоге не совпадает с семейством образа."
+    return ""
+
+
+def confirmed_version(entry: FirmwareEntry, signature: Optional[str], version: str,
+                      marker_family: Optional[str]) -> str:
+    """Confirm native image identity using the selected entry and actual bytes."""
+    family = manifest_device_family(entry.device)
+    header = firmware_header_family(signature or "")
+    named = fw_parser.filename_family(entry.file)
+    expected = fw_parser.parse_known_firmware_filename(entry.file)
+    trusted = entry.source == "manifest" and not entry.defaulted_manifest_device and bool(entry.sha256)
+    catalog_label = family or entry.device
+    if header and header != catalog_label:
+        raise fw_parser.FirmwareIdentityError(f"Семейство заголовка {header} не совпадает с каталогом {entry.device}.")
+    if not header and not firmware_identity_missing(signature or ""):
+        raise fw_parser.FirmwareIdentityError("Семейство сигнатуры заголовка не подтверждено.")
+    if header and named and header != named:
+        raise fw_parser.FirmwareIdentityError("Семейство заголовка не совпадает с именем релиза.")
+    if marker_family and marker_family != catalog_label:
+        raise fw_parser.FirmwareIdentityError("Семейство маркера приложения не совпадает с каталогом.")
+    if named and named != catalog_label:
+        raise fw_parser.FirmwareIdentityError("Семейство имени релиза не совпадает с каталогом.")
+    if expected and expected[1] != entry.kind:
+        raise fw_parser.FirmwareIdentityError("Тип образа в имени файла не совпадает с каталогом.")
+    if entry.version not in ("", "?") and version not in ("", "?") and not fw_parser.versions_match(entry.version, version):
+        raise fw_parser.FirmwareIdentityError("Версия имени или маркера приложения не совпадает с каталогом.")
+    if family not in NATIVE_FIRMWARE_FAMILIES:
+        cause = "EN_METER" if is_meter_driver_alias(signature or "") else (catalog_label or header or "не определено")
+        raise fw_parser.FirmwareIdentityError(f"Семейство образа {cause} не допускает нативную запись.")
+    catalog_error = _catalog_family_error(entry)
+    if catalog_error:
+        raise fw_parser.FirmwareIdentityError(catalog_error)
+    if Path(entry.file).suffix.lower() == ".bin" and not marker_family and not trusted:
+        raise fw_parser.FirmwareIdentityError("Для BIN без маркера нужен манифест с явным семейством и SHA-256.")
+    if not (marker_family or header or trusted):
+        # Legacy .fw releases can have a neutral signature. An arbitrary
+        # explicit signature is not evidence for the family in the filename.
+        if not named or not firmware_identity_missing(signature or ""):
+            raise fw_parser.FirmwareIdentityError("Семейство образа не подтверждено.")
+    return entry.version if trusted and version in ("", "?") else version
 
 
 def _sha256_of(path: Path) -> str:
@@ -152,6 +212,27 @@ def _sha256_of(path: Path) -> str:
         for chunk in iter(lambda: fp.read(65536), b""):
             h.update(chunk)
     return h.hexdigest()
+
+
+def load_for_flash(entry: FirmwareEntry, path: Path):
+    image, _, version, sig, marker = fw_parser.load_identified_firmware(
+        path, expected_sha256=entry.sha256, kind=entry.kind)
+    return image, sig, confirmed_version(entry, sig, version, marker)
+
+
+def _flash_error(entry: FirmwareEntry, path: Path) -> str:
+    try:
+        load_for_flash(entry, path)
+    except ValueError as exc:
+        return str(exc)
+    return ""
+
+
+def _assess_cached_file(entry: FirmwareEntry, path: Path) -> None:
+    try:
+        entry.flash_error = _flash_error(entry, path)
+    except OSError as exc:
+        entry.flash_error = str(exc)
 
 
 NO_INTERNET_USER_MSG = "Нет доступа к интернету"
@@ -423,11 +504,15 @@ class FirmwareRepo:
                         kind = kind_raw
                     else:
                         kind = _infer_kind_from_filename(file_name)
+                    device_name = str(raw.get("device") or "MR-02m")
+                    if not raw.get("device") and signatures and all(is_meter_driver_alias(str(s)) for s in signatures):
+                        device_name = ""
                     entry = FirmwareEntry(
                         file=file_name,
                         version=str(raw.get("version") or "?"),
                         signatures=[str(s) for s in signatures if s],
-                        device=str(raw.get("device") or "MR-02m"),
+                        device=device_name,
+                        defaulted_manifest_device=not raw.get("device"),
                         size=int(raw.get("size") or 0),
                         sha256=str(raw.get("sha256") or "").lower(),
                         released=str(raw.get("released") or ""),
@@ -438,7 +523,9 @@ class FirmwareRepo:
                         source="manifest",
                     )
                     local = self._cache_path_for_entry(entry)
+                    entry.flash_error = _catalog_family_error(entry)
                     if local.is_file() and self._cached_file_valid(entry, local):
+                        _assess_cached_file(entry, local)
                         entry.downloaded = True
                         entry.local_path = str(local)
                         if not entry.size:
@@ -470,6 +557,8 @@ class FirmwareRepo:
 
     def _cached_file_valid(self, entry: FirmwareEntry, path: Path) -> bool:
         try:
+            if not path.is_file():
+                return False
             if entry.size and path.stat().st_size != int(entry.size):
                 return False
             if entry.sha256 and _sha256_of(path).lower() != entry.sha256.lower():
@@ -485,6 +574,8 @@ class FirmwareRepo:
         for entry in self._entries.values():
             path = self.cache_dir / entry.file
             if path.is_file() and self._cached_file_valid(entry, path):
+                if not entry.downloaded:
+                    _assess_cached_file(entry, path)
                 entry.downloaded = True
                 entry.local_path = str(path)
                 if not entry.size:
@@ -516,7 +607,11 @@ class FirmwareRepo:
                     except OSError:
                         log.warning("Не удалось удалить %s", path, exc_info=True)
                     continue
-                entry = self._entry_from_file(path, source="upload")
+                try:
+                    entry = self._entry_from_file(path, source="upload")
+                except (fw_parser.FirmwareIdentityError, OSError) as exc:
+                    log.warning("Файл %s пропущен: %s", path.name, exc)
+                    continue
                 self._entries[(entry.channel, entry.file)] = entry
 
     def _remove_entry_and_cache_file(self, entry: FirmwareEntry) -> None:
@@ -662,7 +757,10 @@ class FirmwareRepo:
                     continue
                 if path.name in known:
                     continue
-                entry = self._entry_from_file(path, source="upload")
+                try:
+                    entry = self._entry_from_file(path, source="upload")
+                except fw_parser.FirmwareIdentityError:
+                    continue
                 if _should_keep(entry):
                     self._entries[(entry.channel, entry.file)] = entry
                     continue
@@ -720,24 +818,30 @@ class FirmwareRepo:
         """Построить запись из локального файла. Для .fw читаем сигнатуру и версию из info-блока."""
         version = fw_parser.parse_version_from_filename(path.name) or "?"
         signatures: List[str] = []
+        marker_family = None
         try:
-            if path.suffix.lower() == ".fw":
-                _, _, ver, sig = fw_parser.load_fw(path)
+            if path.suffix.lower() in (".fw", ".bin"):
+                _, _, ver, sig, marker_family = fw_parser.load_identified_firmware(path)
                 if ver and ver != "?":
                     version = ver
                 if sig and sig != "NONE":
                     signatures = [sig]
-        except Exception:
-            log.exception("Не удалось разобрать .fw %s", path)
+        except fw_parser.FirmwareIdentityError:
+            raise
+        except ValueError:
+            log.exception("Не удалось разобрать образ %s", path)
         size = path.stat().st_size
         kind = _infer_kind_from_filename(path.name)
-        # Derive the manifest device family from the .fw signature so an uploaded
-        # DTV/CE-02m-3 image is not mis-filed under MR-02m; unknown → "MR-02m"
-        # (the historical default, and the flasher's primary family).
-        device = "MR-02m"
-        if signatures:
-            device = manifest_device_for_signature(signatures[0]) or "MR-02m"
-        return FirmwareEntry(
+        known = fw_parser.parse_known_firmware_filename(path.name)
+        header_device = firmware_header_family(signatures[0]) if signatures else None
+        if path.suffix.lower() == ".bin":
+            fallback_device = fw_parser.filename_family(path.name) or ""
+        else:
+            fallback_device = known[0] if known else "MR-02m"
+        device = header_device or marker_family or fallback_device
+        if not known and not marker_family and signatures and is_meter_driver_alias(signatures[0]):
+            device = ""
+        entry = FirmwareEntry(
             file=path.name,
             version=version,
             signatures=signatures,
@@ -751,6 +855,8 @@ class FirmwareRepo:
             local_path=str(path),
             url="",
         )
+        entry.flash_error = _flash_error(entry, path)
+        return entry
 
     # ─── Публичные методы ─────────────────────────────────────────────────────
 
@@ -795,6 +901,8 @@ class FirmwareRepo:
                 for e in self._entries.values()
                 if e.channel == "stable" and e.source == "manifest" and e.kind == kind
             ]
+        if device and firmware_identity_missing(device):
+            return ""
         family = manifest_device_family(device) if device else None
         if family is not None:
             candidates = [
@@ -858,7 +966,9 @@ class FirmwareRepo:
         при выбранном устройстве — защита от чрезмерной фильтрации (загруженные
         файлы обычно классифицируются по сигнатуре и сюда не попадают).
         """
-        all_entries = self.list_entries()
+        if firmware_identity_missing(signature):
+            return []
+        all_entries = [entry for entry in self.list_entries() if not entry.flash_error]
         family = manifest_device_for_signature(signature)
         if family is None:
             return all_entries
@@ -866,6 +976,7 @@ class FirmwareRepo:
             e
             for e in all_entries
             if manifest_device_family(e.device) in (family, None)
+            and (e.device or not any(is_meter_driver_alias(s) for s in e.signatures))
         ]
 
     def get(self, channel: str, file: str) -> Optional[FirmwareEntry]:
@@ -922,35 +1033,47 @@ class FirmwareRepo:
             raise
         except Exception as exc:
             raise RuntimeError(_format_network_error(exc, url=entry.url)) from exc
-        tmp.write_bytes(raw)
-        if not self._cached_file_valid(entry, tmp):
-            got = hashlib.sha256(raw).hexdigest() if entry.sha256 else f"размер {tmp.stat().st_size}"
-            tmp.unlink(missing_ok=True)
-            raise RuntimeError(f"Sha256/размер не совпадает: ожидался {entry.sha256 or entry.size}, получено {got}")
-        tmp.replace(target)
-        entry.downloaded = True
-        entry.local_path = str(target)
-        if not entry.size:
-            entry.size = target.stat().st_size
+        with self._lock:
+            tmp.write_bytes(raw)
+            if not self._cached_file_valid(entry, tmp):
+                got = hashlib.sha256(raw).hexdigest() if entry.sha256 else f"размер {tmp.stat().st_size}"
+                tmp.unlink(missing_ok=True)
+                raise RuntimeError(f"Sha256/размер не совпадает: ожидался {entry.sha256 or entry.size}, получено {got}")
+            tmp.replace(target)
+            _assess_cached_file(entry, target)
+            entry.downloaded = True
+            entry.local_path = str(target)
+            if not entry.size:
+                entry.size = target.stat().st_size
         return target
 
     # ─── Загрузка файла через UI ──────────────────────────────────────────────
 
     _SAFE_NAME_RE = re.compile(r"[^A-Za-z0-9._-]+")
 
-    def _remove_numbered_duplicate_uploads(self, base_name: str) -> None:
-        """Удалить local-файлы вида stem.N.ext (старый dedup через .2, .3 …)."""
-        base = Path(base_name).stem
-        suffix = Path(base_name).suffix
-        dup_re = re.compile(rf"^{re.escape(base)}\.(\d+){re.escape(suffix)}$")
-        for path in list(self.cache_dir.iterdir()):
-            if not path.is_file() or not dup_re.match(path.name):
+    def _remove_numbered_duplicate_uploads(self, entry: FirmwareEntry, data: bytes) -> None:
+        """Only a complete release name distinguishes a copy counter from a version component."""
+        if entry.flash_error or not fw_parser.parse_known_firmware_filename(entry.file):
+            return
+        release = Path(entry.file)
+        # The former uploader used str(i) starting at 2, without leading zeroes.
+        duplicate = re.compile(rf"{re.escape(release.stem)}\.(?:[2-9]|[1-9][0-9]+){re.escape(release.suffix)}")
+        protected = {self.cache_dir / row.file for row in self._entries.values() if row.source == "manifest"}
+        for path in self.cache_dir.iterdir():
+            if path in protected or not duplicate.fullmatch(path.name):
                 continue
             try:
+                info = path.lstat()
+                if not stat.S_ISREG(info.st_mode) or info.st_nlink != 1 or info.st_size != len(data):
+                    continue
+                with path.open("rb") as candidate:
+                    if candidate.read(len(data) + 1) != data:
+                        continue
                 path.unlink()
                 log.info("Удалён дубликат прошивки (старый dedup): %s", path.name)
             except OSError:
                 log.warning("Не удалось удалить %s", path, exc_info=True)
+                continue
             self._entries.pop(("local", path.name), None)
 
     def add_upload(self, data: bytes, filename: str) -> FirmwareEntry:
@@ -966,14 +1089,46 @@ class FirmwareRepo:
                 "(нужен .fw/.bin приложения или бутлоадера, не полный дамп *_full_* и не .elf)."
             )
         target = self.cache_dir / safe
-        with self._lock:
-            self._remove_numbered_duplicate_uploads(safe)
-            self._entries.pop(("local", safe), None)
-        target.with_suffix(target.suffix + ".part").unlink(missing_ok=True)
-        target.write_bytes(data)
-        entry = self._entry_from_file(target, source="upload")
-        with self._lock:
-            self._entries[(entry.channel, entry.file)] = entry
-        self._consolidate_repository()
+        # Keep the final filename during validation: release names carry identity.
+        with tempfile.TemporaryDirectory(prefix=".upload-", dir=self.cache_dir) as staging:
+            candidate = Path(staging) / safe
+            candidate.write_bytes(data)
+            entry = self._entry_from_file(candidate)
+            with self._lock:
+                manifest = [row for row in self._entries.values() if row.file == safe and row.source == "manifest"]
+                if manifest:
+                    # All channels share this one file on disk. Never invalidate
+                    # a usable release in another channel by replacing its bytes.
+                    matching = [row for row in manifest if self._cached_file_valid(row, candidate)]
+                    if not matching or any(row not in matching and self._cached_file_valid(row, target)
+                                           for row in manifest):
+                        raise fw_parser.FirmwareIdentityError("Файл не совпадает с записью манифеста.")
+                    errors = {row.channel: _flash_error(row, candidate) for row in matching}
+                    for row in matching:
+                        if errors[row.channel] and self._cached_file_valid(row, target) and not _flash_error(row, target):
+                            raise fw_parser.FirmwareIdentityError(errors[row.channel])
+                    entry = next((row for row in matching if row.channel == "stable"), matching[0])
+                elif entry.flash_error and target.is_file():
+                    # Read the committed bytes too: the cache may have been populated
+                    # since startup or reopened after a failed upload.
+                    try:
+                        previous = self._entry_from_file(target)
+                    except fw_parser.FirmwareIdentityError:
+                        previous = None
+                    if previous and not previous.flash_error:
+                        raise fw_parser.FirmwareIdentityError(entry.flash_error)
+                candidate.replace(target)
+                if manifest:
+                    for row in matching:
+                        row.local_path, row.downloaded, row.flash_error = str(target), True, errors[row.channel]
+                        if not row.size:
+                            row.size = len(data)
+                else:
+                    entry.local_path = str(target)
+                    self._entries[(entry.channel, entry.file)] = entry
+                try:
+                    self._remove_numbered_duplicate_uploads(entry, data)
+                except OSError:
+                    log.warning("Не удалось очистить дубликаты %s", safe, exc_info=True)
         log.info("Загружена прошивка %s (sig=%s, size=%d)", entry.file, entry.signatures, entry.size)
         return entry

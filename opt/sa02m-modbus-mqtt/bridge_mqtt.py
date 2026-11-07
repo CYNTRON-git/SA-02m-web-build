@@ -34,6 +34,7 @@ class DeviceLiveCache:
     _units: dict[str, dict[str, str]] = {}
     _errors: dict[str, dict[str, str]] = {}
     _sensor_types: dict[str, dict[str, str]] = {}
+    _sensor_type_confirmations: dict[str, dict[str, dict]] = {}
     # Absent until the device's first tracked read decides (mark_ok → True,
     # the offline transition → False): unknown is written as not ok below.
     _online: dict[str, bool | None] = {}
@@ -78,14 +79,21 @@ class DeviceLiveCache:
             cls._sensor_types.setdefault(device_id, {})[f"ai_{ai_index}"] = str(code)
 
     @classmethod
-    def get_sensor_type(cls, device_id: str, ai_index: int) -> int:
+    def confirm_sensor_type(cls, device_id, ai_index, code, receipt):
+        with cls._lock:
+            cls._sensor_type_confirmations.setdefault(device_id, {})[f"ai_{ai_index}"] = {
+                "code": code, "receipt": receipt,
+            }
+
+    @classmethod
+    def get_sensor_type(cls, device_id: str, ai_index: int, default=0):
         """Код типа датчика AI-канала (для масштабирования событий FMB)."""
         with cls._lock:
-            raw = cls._sensor_types.get(device_id, {}).get(f"ai_{ai_index}", 0)
+            raw = cls._sensor_types.get(device_id, {}).get(f"ai_{ai_index}", default)
         try:
             return int(raw)
         except (TypeError, ValueError):
-            return 0
+            return default
 
     @classmethod
     def flush_file(cls, device_id: str) -> None:
@@ -94,6 +102,7 @@ class DeviceLiveCache:
             units = dict(cls._units.get(device_id, {}))
             errors = dict(cls._errors.get(device_id, {}))
             sensor_types = dict(cls._sensor_types.get(device_id, {}))
+            confirmations = dict(cls._sensor_type_confirmations.get(device_id, {}))
             online = cls._online.get(device_id)
         if not controls and not units and not sensor_types:
             return
@@ -118,6 +127,7 @@ class DeviceLiveCache:
                 "units": units,
                 "errors": errors,
                 "sensor_types": sensor_types,
+                "sensor_type_confirmations": confirmations,
                 "ts": time.time(),
             }
             tmp.write_text(

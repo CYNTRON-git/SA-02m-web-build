@@ -34,6 +34,7 @@ from bridge_serial import (
     build_write_register,
     build_write_registers,
     slave_id_payload,
+    validate_modbus_reply,
     words_from_response,
 )
 
@@ -309,15 +310,16 @@ class ModbusTcpClient:
                               "unit=%d len=%d head=%s"
                               % (self.label, unit, fc, rtid, tid, runit, length,
                                  (head + body)[:12].hex()))
+            resp = bytes([unit]) + body
+            try:
+                exception = validate_modbus_reply(frame, resp)
+            except IOError:
+                self._drop()
+                raise
             self._succeeded()
             self._unit_answered(unit)
-            resp = bytes([unit]) + body
-            if body[0] & 0x80:
-                code = body[1] if len(body) > 1 else 0
-                raise IOError("Modbus exception %d on FC%02X" % (code, fc))
-            if len(resp) < expected:
-                raise IOError("Short response: %d/%d bytes [tcp head=%s]"
-                              % (len(resp), expected, resp[:8].hex()))
+            if exception is not None:
+                raise IOError("Modbus exception %d on FC%02X" % (exception, fc))
             return resp
         raise AssertionError("unreachable")  # pragma: no cover
 
