@@ -5,6 +5,17 @@
 
 ---
 
+## 1.0.7.34 - Fast Modbus power events for CE-02m-3 (November 2026)
+
+### Fast Modbus and MQTT
+
+- With CE-02m-3 firmware 1.0.7.19, the bridge publishes active, reactive and apparent power from signed 32-bit events on even input registers 518 through 540. The published values use the same units and channels as ordinary Modbus polling. Earlier firmware continues to obtain power readings through FC04.
+- A regression test for DTV firmware 1.0.2.11 checks delivery of a light reading from a partial event batch, its addressed acknowledgement and the canonical end-of-events reply.
+
+### Web console tests
+
+- The inherited-output test now uses the console's 18-second capture deadline. It checks the parent's output and exit code while a background process holds the pipe open.
+
 ## 1.0.7.33 - Restore active serial gateway lines after refresh (November 2026)
 
 - Require positive device-family identification for firmware selection and flashing. A standalone meter-driver alias or inferred serial range cannot authorize an image. Bind bootloader recovery to the verified unit.

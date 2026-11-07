@@ -269,7 +269,7 @@ def build_fmb_configure_events(addr: int, evt_type: int,
 
 def build_fmb_configure_events_wb(addr: int, evt_type: int,
                                    start_reg: int, count: int,
-                                   priority: int) -> bytes:
+                                   priority: int | bytes) -> bytes:
     """configure_events (0x18), WB standard form (wb-mqtt-serial reference).
 
     record = [TYPE wire 1..4|0x0F][REG_H][REG_L][COUNT][SETTING x COUNT] — one
@@ -278,8 +278,10 @@ def build_fmb_configure_events_wb(addr: int, evt_type: int,
     Grammar home: docs/contracts/fmb-event-wire.md.
     """
     wire = evt_type + 1 if 0 <= evt_type <= 3 else evt_type
-    record = bytes([wire, start_reg >> 8, start_reg & 0xFF, count]) \
-        + bytes([priority] * count)
+    settings = priority if isinstance(priority, bytes) else bytes([priority] * count)
+    if len(settings) != count:
+        raise ValueError("priority list length differs from register count")
+    record = bytes([wire, start_reg >> 8, start_reg & 0xFF, count]) + settings
     data = bytes([addr, 0x46, 0x18, len(record)]) + record
     return _append_crc(data)
 

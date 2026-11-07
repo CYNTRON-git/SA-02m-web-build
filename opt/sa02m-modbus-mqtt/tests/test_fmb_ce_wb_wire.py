@@ -27,6 +27,7 @@ import sys
 import types
 import unittest
 from pathlib import Path
+from unittest import mock
 
 BRIDGE_DIR = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(BRIDGE_DIR))
@@ -638,6 +639,125 @@ def wb_event_frame(regs_vals: list[tuple[int, int]]) -> bytes:
                     for r, v in regs_vals)
     return with_crc(bytes([ADDR, 0x46, 0x11, 0x00, len(regs_vals), len(recs)])
                     + recs)
+
+
+class TestCeWidePower(unittest.TestCase):
+    def connect(self, fw=(1, 0, 7, 19), refuse=False, publisher=None, **cfg):
+        self.pub = publisher if publisher is not None else _RecPub()
+        self.poller = bridge.CE02M3Poller(dict(id="ce", address=ADDR, **cfg), self.pub)
+        self.poller._fw_version = fw
+        self.mgr = bridge.FastModbusEventPortManager("/dev/COMT", 115200)
+        self.mgr.register_device(ADDR, "ce", self.poller.fmb_event_ranges(),
+                                 self.poller.fmb_dispatch, poller=self.poller, dev_type="ce02m3")
+        self.bus = CeWireBus()
+        if refuse:
+            self.bus.reply_for[518] = with_crc(bytes([ADDR, 0x46, 0x18, 4, 255, 255, 255, 31]))
+        self.mgr._configure_device(self.bus, ADDR, self.mgr._devices[ADDR])
+
+    def feed(self, *records):
+        data = bytes.fromhex(" ".join(records))
+        frame = with_crc(bytes([ADDR, 0x46, 0x11, 0, len(records), len(data)]) + data)
+        _, events = self.mgr._poll_once(_FrameBus(frame))
+        for event in events:
+            self.mgr._dispatch(*event)
+        if isinstance(self.pub, _RecPub):
+            return [(name, value) for _, name, value in self.pub.controls]
+
+    def test_event_reaches_retained_mqtt_and_deduplicates_classic_sample(self):
+        import bridge_mqtt
+        with mock.patch.object(bridge_mqtt.mqtt, "Client") as client, \
+                mock.patch.object(bridge_mqtt.DeviceLiveCache, "_controls", {}):
+            self.connect(publisher=bridge_mqtt.MQTTPublisher({}))
+            self.feed("04 04 02 12 f0 ff ff ff")
+            regs = [0] * 48
+            regs[30:32] = [0xfff0, 0xffff]
+            self.poller._read_power_input_block = lambda: regs
+            self.poller._poll_power()
+            self.feed("04 04 02 12 f8 ff ff ff")
+            calls = [c for c in client.return_value.publish.call_args_list
+                     if c.args[0] == "/devices/ce/controls/reactive_c"]
+            self.assertEqual(calls, [
+                mock.call("/devices/ce/controls/reactive_c", "-16", qos=1, retain=True),
+                mock.call("/devices/ce/controls/reactive_c", "-8", qos=1, retain=True),
+            ])
+            self.assertEqual(bridge_mqtt.DeviceLiveCache._controls["ce"]["reactive_c"], "-8")
+
+    def test_all_power_disabled_keeps_single_disable_and_ignores_queued_records(self):
+        self.connect(channels_enabled={key: False for key in (
+            "power_active", "power_reactive", "power_apparent", "frequency", "power_factor")})
+        frame, = [frame for frame in self.bus.sent if int.from_bytes(frame[5:7], "big") == 518]
+        self.assertEqual(frame[8:-2], bytes(29))
+        self.assertEqual(self.feed("04 04 02 12 f0 ff ff ff"), [])
+
+    def test_meter_link_loss_preserves_all_event_values_until_classic_recovery(self):
+        import bridge_mqtt
+        with mock.patch.object(bridge_mqtt.mqtt, "Client") as client, \
+                mock.patch.object(bridge_mqtt.DeviceLiveCache, "_controls", {}), \
+                mock.patch.object(bridge_mqtt.DeviceLiveCache, "_errors", {}):
+            self.connect(publisher=bridge_mqtt.MQTTPublisher({}))
+            cache = bridge_mqtt.DeviceLiveCache
+            channels = ("voltage_a", "current_c", "reactive_c")
+            self.feed("02 04 01 f4 fc 08", "02 04 02 00 b4 00", "04 04 02 12 f0 ff ff ff")
+            values = {name: cache._controls["ce"][name] for name in channels}
+            self.assertEqual(values, dict(zip(channels, ("230.0", "0.18", "-16"))))
+            self.poller._set_meter_link(True)
+            for name in channels:
+                client.return_value.publish.assert_any_call(
+                    f"/devices/ce/controls/{name}/meta/error", "r", qos=1, retain=True)
+            client.return_value.publish.reset_mock()
+            self.feed("02 04 01 f4 00 00", "02 04 02 00 00 00", "04 04 02 12 00 00 00 00")
+            client.return_value.publish.assert_not_called()
+            self.assertEqual({name: cache._controls["ce"][name] for name in channels}, values)
+            self.assertTrue(all(cache._errors["ce"][name] == "r" for name in channels))
+            fresh = [0] * 48
+            fresh[0], fresh[12], fresh[30], fresh[31] = 2310, 220, 0xfff8, 0xffff
+            self.poller._read_power_input_block = lambda: fresh
+            self.poller._poll_power()
+            for name in channels:
+                client.return_value.publish.assert_any_call(
+                    f"/devices/ce/controls/{name}/meta/error", "", qos=1, retain=True)
+            self.feed("02 04 01 f4 10 09", "02 04 02 00 fa 00", "04 04 02 12 fc ff ff ff")
+            self.assertEqual([cache._controls["ce"][name] for name in channels], ["232.0", "0.25", "-4"])
+
+    def test_signed_power_and_scalar_profile_match_classic_poll(self):
+        self.connect(channels_enabled={"power_apparent": True})
+        observed = self.feed("04 04 02 12 f0 ff ff ff", "04 04 02 0a 2e 00 00 00",
+                             "04 04 02 1c 00 00 01 00", "02 04 02 1e 88 13",
+                             "02 04 02 21 18 fc")
+        self.assertEqual(observed, [("reactive_c", "-16"), ("power_c", "46"),
+                                    ("apparent_total", "65536"), ("frequency", "50.0"), ("pf_c", "-1.0")])
+        regs = [0] * 48
+        for reg, value in {530:65520, 531:65535, 522:46, 541:1, 542:5000, 545:64536}.items():
+            regs[reg - 500] = value
+        self.pub.controls.clear()
+        self.poller._read_power_input_block = lambda: regs
+        self.poller._poll_power()
+        self.assertLessEqual(set(observed), {(name, value) for _, name, value in self.pub.controls})
+
+    def test_priority_mask_matches_channels_and_disabled_halves(self):
+        self.connect(phases=["C"], channels_enabled={"power_reactive":False, "power_apparent":True,
+                                                      "frequency":False})
+        frame, = [frame for frame in self.bus.sent if int.from_bytes(frame[5:7], "big") == 518]
+        self.assertEqual(frame[7], 29)
+        self.assertEqual({518 + i for i, bit in enumerate(frame[8:-2]) if bit},
+                         {522, 524, 534, 536, 538, 540, 543, 544, 545, 546})
+        self.assertEqual(self.feed("04 04 02 06 ff ff ff 7f", "04 04 02 12 f0 ff ff ff",
+                                   "04 04 02 0a 00 00 00 80"), [("power_c", "-2147483648")])
+
+    def test_empty_wrong_width_high_word_and_forged_ack_do_not_publish(self):
+        self.connect()
+        self.assertEqual(self.feed("02 04 02 12 f0 ff", "04 04 02 13 ff ff ff ff",
+                                   "04 04 02 1e 01 02 03 04", "02 04 02 00 b4 00"),
+                         [("current_c", "0.18")])
+        self.connect(refuse=True)
+        self.assertEqual(self.feed("04 04 02 12 f0 ff ff ff", "02 04 02 1e 88 13"), [])
+
+    def test_previous_firmware_reboot_and_bad_tail_fail_closed(self):
+        self.connect(fw=(1, 0, 7, 18))
+        self.assertEqual(self.feed("04 04 02 12 f0 ff ff ff", "02 04 02 1e 88 13"), [])
+        self.connect()
+        self.assertEqual(self.feed("04 04 02 12 f0 ff ff ff", "04 04 02 0a 2e"), [])
+        self.assertEqual(self.feed("00 0f 00 00", "04 04 02 12 f0 ff ff ff"), [])
 
 
 class TestCeEventFrames(unittest.TestCase):

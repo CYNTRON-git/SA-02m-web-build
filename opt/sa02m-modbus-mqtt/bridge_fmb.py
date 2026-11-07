@@ -69,7 +69,15 @@ FMB_UNPARSED_LOG_PERIOD_S = 10.0  # unparsable-frame log throttle: the burst
 CE_FMB_WB_MIN_FW = (1, 0, 6, 13)
 DTV_FMB_WB_MIN_FW = (1, 0, 1, 49)
 CE_FMB_POWER_EVENTS_FW = (1, 0, 7, 6)   # P/Q/S/f/PF events on by default
-CE_FMB_POWER_DISABLE_RANGE = (FMB_EVT_INPUT, 518, 29)   # 518..546, setting 0
+CE_FMB_S32_FW = (1, 0, 7, 19)
+CE_FMB_POWER_RANGE = (FMB_EVT_INPUT, 518, 29)
+CE_FMB_POWER_DISABLE_RANGE = CE_FMB_POWER_RANGE   # historical import name
+
+
+def ce_power_event_width(reg: int) -> int:
+    if 518 <= reg < 542 and reg % 2 == 0:
+        return 4
+    return 2 if 542 <= reg <= 546 else 0
 
 
 def _fmt_fw(fw) -> str:
@@ -94,20 +102,22 @@ def fmb_configure_reply_mask(resp: bytes, addr: int) -> bytes | None:
     return None
 
 
-def fmb_expected_mask(requested: list[tuple[int, int]]) -> bytes:
+def fmb_expected_mask(requested: list[tuple[int, int | bytes]]) -> bytes:
     """Post-apply mask the WB contract promises for [(count, setting)]: one
     bit per register (set = enabled), ceil(count/8) bytes per range, LSB
     first, each range byte-aligned."""
     out = bytearray()
     for count, setting in requested:
+        settings = setting if isinstance(setting, bytes) else bytes([setting] * count)
+        if len(settings) != count:
+            raise ValueError("priority list length differs from register count")
         for i in range(0, count, 8):
-            n = min(8, count - i)
-            out.append(((1 << n) - 1) if setting else 0)
+            out.append(sum(1 << j for j, value in enumerate(settings[i:i + 8]) if value))
     return bytes(out)
 
 
 def fmb_configure_reply_confirms(resp: bytes, addr: int,
-                                 requested: list[tuple[int, int]]) -> bool:
+                                 requested: list[tuple[int, int | bytes]]) -> bool:
     """True only when the reply's mask equals the requested state on every
     requested register (padding bits past COUNT are not compared)."""
     mask = fmb_configure_reply_mask(resp, addr)
@@ -339,7 +349,7 @@ class FastModbusEventPortManager:
                 flags.hex() if flags is not None else "none/CRC-bad")
 
         contracts = self._configure_contracts(addr, dev)
-        if dev.get("type") in ("dtv", "led"):
+        if dev.get("type") in ("dtv", "led", "ce02m3"):
             # The first version read identifies which registers have event producers.
             self._refresh_ranges_from_poller(dev)
         dev["wire_blocked"] = not contracts
@@ -351,12 +361,17 @@ class FastModbusEventPortManager:
             ok = False
             err = ""
             used = ""
+            power_profile = (dev["type"] == "ce02m3" and
+                             (evt_type, start_reg, count) == CE_FMB_POWER_RANGE)
+            priority = dev["poller"].fmb_power_event_settings() if power_profile else 1
             for contract in contracts:
+                if power_profile and contract != "wb":
+                    continue
                 build = (build_fmb_configure_events_wb if contract == "wb"
                          else build_fmb_configure_events)
                 ok, attempt_err = _try(
-                    build(addr, evt_type, start_reg, count, 1),
-                    [(count, 1)] if contract == "wb" else None)
+                    build(addr, evt_type, start_reg, count, priority),
+                    [(count, priority)] if contract == "wb" else None)
                 err = err or attempt_err
                 if ok:
                     used = contract
@@ -385,15 +400,14 @@ class FastModbusEventPortManager:
         dev["pending"] = still_pending
         if (wb_confirmed and dev.get("type") == "ce02m3"
                 and dev.get("fw") is not None
-                and dev["fw"] >= CE_FMB_POWER_EVENTS_FW):
+                and dev["fw"] >= CE_FMB_POWER_EVENTS_FW and CE_FMB_POWER_RANGE not in dev["ranges"]):
             self._disable_ce_power_events(ser, addr, dev, _try)
         return not still_pending
 
     def _disable_ce_power_events(self, ser: ModbusSerial, addr: int,
                                  dev: dict, try_frame) -> None:
-        """CE >= 1.0.7.6 enables P/Q/S/f/PF events by default; the bridge does
-        not subscribe to them (int32 pairs, polled by FC04), so switch the
-        range off. Non-fatal: the dispatcher drops 518+ anyway."""
+        """Disable the CE's default power events when no power profile is active.
+        U/I subscriptions and ordinary FC04 measurements survive a refused disable."""
         evt_type, start_reg, count = CE_FMB_POWER_DISABLE_RANGE
         ok, err = try_frame(
             build_fmb_configure_events_wb(addr, evt_type, start_reg, count, 0),
@@ -567,6 +581,12 @@ class FastModbusEventPortManager:
             self._poll_decoded_wb = True
             return []
         known_wb = self._wb_frame_slaves.get(slave_id)
+        dev = self._devices.get(slave_id, {})
+        ce = dev.get("type") == "ce02m3"
+        power_profile = (ce and known_wb is True and CE_FMB_POWER_RANGE in dev["ranges"]
+                         and CE_FMB_POWER_RANGE not in dev["pending"] and dev["configured"])
+        if wb is None and power_profile:
+            return None
         if (wb is None and known_wb is True and start + 2 <= end
                 and _WB_CONTROL_WIDTH.get(buf[start + 1]) == buf[start]):
             # No subscribed legacy range can start with a scalar WB header.
@@ -582,14 +602,24 @@ class FastModbusEventPortManager:
             legacy = self._parse_events_legacy(slave_id, buf, start, end, n_events)
             if legacy is not None:
                 self._wb_frame_slaves.setdefault(slave_id, False)
+                # Legacy records have no width field and cannot carry this WB profile.
+                if ce:
+                    legacy = [event for event in legacy if not (
+                        event[1] == FMB_EVT_INPUT and 518 <= event[2] <= 546)]
                 return legacy
         if wb is None or (known_wb is False and not scalar_packet):
             return None
         self._wb_frame_slaves.setdefault(slave_id, True)
         self._poll_decoded_wb = True
-        # Current poller mappings take a bit or a single 16-bit register.
-        # A wider WB measurement can share the packet with these registers.
-        return [(ev.slave, ev.kind, ev.reg, ev.value) for ev in wb if ev.fits_control]
+        controls = []
+        for ev in wb:
+            if ce and ev.kind == FMB_EVT_INPUT and 518 <= ev.reg <= 546:
+                if not power_profile or ev.width != ce_power_event_width(ev.reg):
+                    continue
+            elif not ev.fits_control:
+                continue
+            controls.append((ev.slave, ev.kind, ev.reg, ev.value))
+        return controls
 
     @staticmethod
     def _parse_events_wb(slave_id: int, buf: bytes, start: int, end: int,
