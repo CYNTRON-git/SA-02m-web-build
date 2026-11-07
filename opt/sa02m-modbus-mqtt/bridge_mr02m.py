@@ -15,9 +15,11 @@ import json as _json
 import os
 import threading
 import time
+import uuid
 from pathlib import Path
 
 from bridge_device import DevicePoller
+from bridge_bus import TRANSPORT_RTU_TCP
 from bridge_mqtt import DeviceLiveCache, MQTTPublisher, _make_title
 from bridge_serial import (
     FMB_EVT_COIL, FMB_EVT_HOLDING, FMB_EVT_INPUT,
@@ -42,6 +44,127 @@ from bridge_mr02m_map import (
 _AI_TYPE_YAML_LOCK = threading.Lock()
 
 
+class _AiApply:
+    """One MR type operation, including any waits and final verification."""
+
+    def __init__(self, poller):
+        self.poller = poller
+        with poller._ai_state_lock:
+            self.boot_epoch = poller._ai_boot_epoch
+        self.deadline = time.monotonic() + 12.0
+        self.exchanges = 128
+        self.last = None
+        self.boot = None
+        self.attempted = False
+
+    def check(self):
+        with self.poller._ai_state_lock:
+            if self.boot_epoch != self.poller._ai_boot_epoch:
+                raise IOError("AI module reported a reboot during type verification")
+        if self.poller._stop.is_set() or time.monotonic() >= self.deadline:
+            raise TimeoutError("AI type application deadline or stop")
+
+    def exchange(self, fn, *args):
+        self.check()
+        if self.exchanges <= 0:
+            raise TimeoutError("AI type exchange budget")
+        self.exchanges -= 1
+        result = fn(self.poller.address, *args, deadline=self.deadline)
+        self.check()
+        return result
+
+    def read(self, reg, count, *, input_regs=False):
+        port = self.poller.get_port()
+        fn = port.read_input_registers if input_regs else port.read_holding_registers
+        words = self.exchange(fn, reg, count)
+        if len(words) != count or any(type(w) is not int or not 0 <= w <= 65535 for w in words):
+            raise IOError("invalid AI holding response")
+        return tuple(words)
+
+    def check_boot(self):
+        started = time.monotonic()
+        serial = self.read(270, 2)
+        lo, hi = self.read(MR_INP_MCU_UPTIME_LO, 2, input_regs=True)
+        uptime = lo | (hi << 16)
+        if self.boot is None:
+            if serial in ((0, 0), (65535, 65535)) or uptime <= self.deadline - started + 1:
+                raise IOError("AI module identity or startup continuity unavailable")
+            self.boot = serial, uptime, started
+        else:
+            old_serial, old_uptime, previous = self.boot
+            if old_serial != serial or not old_uptime <= uptime <= old_uptime + time.monotonic() - previous + 1:
+                raise IOError("AI module restarted or changed during verification")
+
+    def status(self):
+        previous = None
+        while True:
+            try:
+                words = self.read(569, 4)
+            except OSError as exc:
+                if self.last is not None or str(exc) != "Modbus exception 2 on FC03":
+                    raise
+                words = (0, 0, 0, 0)
+            if words == (0, 0, 0, 0) and self.last is None:
+                if words == previous:
+                    return None
+            else:
+                magic, flags, accepted, completed = words
+                if (magic != 0xA101 or flags & ~0x3f or flags & 0x28
+                        or accepted > 65534 or completed > accepted
+                        or (flags & 1 and accepted == 0)
+                        or (self.last and (accepted < self.last[0] or completed < self.last[1]))):
+                    raise IOError("AI capability failed, exhausted or changed")
+                self.last = (accepted, completed)
+                if words == previous:
+                    return flags, accepted, completed
+            previous = words
+
+    def idle(self, expected=None):
+        while True:
+            status = self.status()
+            if status is None:
+                return None
+            flags, accepted, completed = status
+            if expected is None:
+                expected = accepted
+            if expected != accepted:
+                raise IOError("foreign AI generation")
+            if flags == 1 and accepted == completed:
+                return accepted
+            time.sleep(min(0.05, max(0, self.deadline - time.monotonic())))
+
+    @staticmethod
+    def reg(ch):
+        return MR02M_AI_HOLDING_BASE + (ch - 1) * MR02M_AI_CHANNEL_STRIDE
+
+    def apply(self, changes, affected, generation):
+        if generation is not None:
+            if generation + len(changes) > 65534 or self.idle(generation) != generation:
+                raise IOError("AI type generation unavailable")
+        for ch, code in changes.items():
+            self.attempted = True
+            self.exchange(self.poller.get_port().write_register, self.reg(ch), code)
+            if generation is not None:
+                generation += 1
+                if self.status()[1] != generation:
+                    raise IOError("AI type acknowledgement generation changed")
+        if generation is None:
+            raise IOError("AI type request accepted; application unconfirmed on this firmware")
+        self.idle(generation)
+        return self.observe(changes, affected, generation)
+
+    def observe(self, changes, affected, generation):
+        channels = {ch: self.read(self.reg(ch), 4) for ch in affected}
+        observed = {ch: words[0] for ch, words in channels.items()}
+        if any(code > 42 for code in observed.values()) or any(
+                observed[ch] != code for ch, code in changes.items()):
+            raise IOError("AI type final readback mismatch")
+        if self.status() != (1, generation, generation):
+            raise IOError("AI generation changed during final verification")
+        self.check_boot()
+        return observed, {ch: words[3] for ch, words in channels.items()}
+
+
 # ── MR-02m poller ─────────────────────────────────────────────────────────────
 class MR02mPoller(DevicePoller):
 
@@ -61,6 +184,14 @@ class MR02mPoller(DevicePoller):
         self._ai_chunk_regs = resolve_ai_read_chunk_regs(cfg)
         self._channels      = cfg.get("channels", {})
         self._ai_types: dict[int, int] = {}
+        self._ai_state_lock = threading.RLock()
+        self._ai_unconfirmed: set[int] = set()
+        self._ai_startup_observe: set[int] = set()
+        self._ai_epoch = 0
+        self._ai_boot_epoch = 0
+        self._ai_fifo_waiting: set[int] = set()
+        self._ai_read_floor: dict[int, float] = {}
+        self._ai_event_floor: dict[int, float] = {}
         # DI channels in «Кнопка» mode (holding 630+): press counters polled.
         self._di_button: set[int] = set()
         self._press_fails = 0
@@ -75,6 +206,44 @@ class MR02mPoller(DevicePoller):
         # (do, ao, ai) channel counts already subscribed for writeback —
         # _setup_writeback adds only the delta (YAML at setup, HW on a late init).
         self._wb_subscribed = (0, 0, 0)
+        self._output_state_lock = threading.RLock()
+        self._output_watermark: dict[str, float] = {}
+        self._output_generation = 0
+        self._output_quarantine: dict[str, dict] = {}
+
+    @staticmethod
+    def _valid_output_value(kind: str, value) -> bool:
+        if kind == "do":
+            return type(value) in (int, bool) and value in (0, 1)
+        return type(value) is int and 0 <= value <= 1000
+
+    def _publish_output_observation(self, name: str, value: int,
+                                    started_at: float, completed_at: float,
+                                    *, force: bool = False, error: str = "") -> bool:
+        with self._output_state_lock:
+            kind, number = name.split("_", 1)
+            counts = self._layout_counts()
+            limit = counts[0] if kind == "do" else counts[2]
+            if (not 1 <= int(number) <= limit
+                    or not self._valid_output_value(kind, value)
+                    or started_at < self._output_watermark.get(name, float("-inf"))):
+                return False
+            self._output_watermark[name] = completed_at
+            quarantine = self._output_quarantine.get(name)
+            if quarantine is not None:
+                quarantine["read_completed"] = completed_at
+                self._log_output_quarantine(name, quarantine, completed_at)
+            self.pub.pub_control(self.device_id, name, str(int(value)), force=force)
+            self.pub.pub_error(self.device_id, name, error)
+            return True
+
+    def _log_output_quarantine(self, name: str, entry: dict, now: float) -> None:
+        if now - entry["logged_at"] >= 30:
+            entry["logged_at"] = now
+            self.log.warning("%s: FMB output quarantine %.0fs; awaiting %s, "
+                             "classic polling remains active", name, now - entry["since"],
+                             "fresh read" if entry["read_completed"] is None else
+                             "same-slave empty boundary")
 
     # --- Fast Modbus events (layout owned here; manager is device-agnostic) ---
 
@@ -92,7 +261,9 @@ class MR02mPoller(DevicePoller):
         self._fmb_do, self._fmb_di, self._fmb_ao, self._fmb_ai = do, di, ao, ai
         ranges: list[tuple[int, int, int]] = []
         if do > 0:
-            ranges.append((FMB_EVT_COIL,    1,  do))   # DO: COIL type=0x00, addr 1+
+            # Older modules report coil edges; current MR firmware publishes
+            # the same channel as a two-byte holding-register event.
+            ranges.extend(((FMB_EVT_COIL, 1, do), (FMB_EVT_HOLDING, 1, do)))
         if di > 0:
             ranges.append((FMB_EVT_INPUT,   18, di))   # DI: INPUT type=0x03, addr 18+
             # NOTE: MR-02m DI events arrive as FMB_EVT_INPUT (0x03) at Input Reg address 18+
@@ -109,17 +280,24 @@ class MR02mPoller(DevicePoller):
         return ranges
 
     def fmb_dispatch(self, evt_type: int, reg: int, val: int) -> None:
+        self.fmb_dispatch_observed(evt_type, reg, val, query_started_at=time.monotonic(),
+                                   context=None)
+
+    def fmb_dispatch_observed(self, evt_type: int, reg: int, val: int,
+                              *, query_started_at: float, context: int | None) -> None:
         did = self.device_id
 
-        if evt_type == FMB_EVT_COIL and 1 <= reg <= self._fmb_do:
-            self.pub.pub_control(did, f"do_{reg}", str(val))
-            self.pub.pub_error(did, f"do_{reg}", "")
+        if evt_type in (FMB_EVT_COIL, FMB_EVT_HOLDING) and 1 <= reg <= self._fmb_do:
+            if self._ch_enabled("do", reg):
+                self._fmb_output_observed(f"do_{reg}", val, query_started_at, context)
 
         elif evt_type == FMB_EVT_INPUT:
             # DI events: Input Reg 18+ as FMB_EVT_INPUT (same address as FC04).
             # (NOT as FMB_EVT_DISCRETE; configure_events type 0x03=INPUT, same address as FC04 reg 18+)
             if self._fmb_di > 0 and 18 <= reg < 18 + self._fmb_di:
                 di_n = reg - 17
+                if not self._ch_enabled("di", di_n):
+                    return
                 self.pub.pub_control(did, f"di_{di_n}", str(val & 1))
                 self.pub.pub_error(did, f"di_{di_n}", "")
             elif (self._fmb_ai > 0 and reg >= MR02M_AI_HOLDING_BASE + 3
@@ -128,20 +306,87 @@ class MR02mPoller(DevicePoller):
                 # масштаб по типу датчика — как в _poll_ai_ao.
                 ai_n = (reg - MR02M_AI_HOLDING_BASE - 3) // MR02M_AI_CHANNEL_STRIDE + 1
                 if 1 <= ai_n <= self._fmb_ai:
-                    signed = val - 0x10000 if val >= 0x8000 else val
-                    code = DeviceLiveCache.get_sensor_type(did, ai_n)
-                    _, _, scale = AI_SENSOR_TYPES.get(code, _TEMP)
-                    self.pub.pub_control(
-                        did, f"ai_{ai_n}", str(round(signed * scale, 3)))
-                    self.pub.pub_error(did, f"ai_{ai_n}", "")
+                    self._fmb_ai_observed(ai_n, val, query_started_at)
 
         elif evt_type == FMB_EVT_HOLDING and 33 <= reg < 33 + self._fmb_ao:
             ao_n = reg - 32
-            self.pub.pub_control(did, f"ao_{ao_n}", str(val))
-            self.pub.pub_error(did, f"ao_{ao_n}", "")
+            if self._ch_enabled("ao", ao_n):
+                self._fmb_output_observed(f"ao_{ao_n}", val, query_started_at, context)
 
         else:
             self.log.debug("FMB event ignored type=%02X reg=%d", evt_type, reg)
+
+    def fmb_firmware_invalidate(self) -> None:
+        # A type and sample observed before this reboot cannot describe this FIFO.
+        # Keep uncertain writes quarantined until their own verification completes.
+        with self._ai_state_lock:
+            self._ai_epoch += 1
+            self._ai_boot_epoch += 1
+            self._ai_types.clear()
+            self._ai_read_floor.clear()
+            self._ai_event_floor.clear()
+            self._ai_fifo_waiting.clear()
+
+    def fmb_query_context(self) -> int:
+        with self._output_state_lock:
+            now = time.monotonic()
+            for name, entry in self._output_quarantine.items():
+                self._log_output_quarantine(name, entry, now)
+            return self._output_generation
+
+    def fmb_needs_own_empty(self) -> bool:
+        with self._output_state_lock:
+            if any(entry["read_completed"] is not None
+                   for entry in self._output_quarantine.values()):
+                return True
+        with self._ai_state_lock:
+            return any(ch in self._ai_read_floor and ch not in self._ai_unconfirmed
+                       for ch in self._ai_fifo_waiting)
+
+    def _fmb_ai_observed(self, source: int, raw: int, started: float) -> None:
+        with self._ai_state_lock:
+            if source in self._ai_unconfirmed:
+                return
+            # A paired N samples the P register, including when P is hidden.
+            # Type metadata belongs to the destination channel.
+            last = min(source + 1, self._fmb_ai) if source % 2 else source
+            for ch in range(source, last + 1):
+                if (not self._ch_enabled("ai", ch) or ch in self._ai_unconfirmed
+                        or ch in self._ai_fifo_waiting):
+                    continue
+                code = self._ai_types.get(ch)
+                if (code is not None and self._ai_sample_source(ch, code) == source
+                        and started > self._ai_read_floor.get(ch, float("-inf"))
+                        and started >= self._ai_event_floor.get(ch, float("-inf"))):
+                    self._ai_event_floor[ch] = started
+                    self._publish_ai_sample(ch, code, raw)
+
+    def _fmb_output_observed(self, name: str, value: int,
+                             started_at: float, context: int | None) -> None:
+        with self._output_state_lock:
+            if context is not None and context != self._output_generation:
+                return
+            entry = self._output_quarantine.get(name)
+            if entry is not None:
+                self._log_output_quarantine(name, entry, time.monotonic())
+                return
+            # Records in one FIFO batch share a query boundary and remain in
+            # wire order; callback time must not discard the next record.
+            self._publish_output_observation(name, value, started_at, started_at)
+
+    def fmb_empty_observed(self, *, query_started_at: float, context: int) -> None:
+        with self._output_state_lock:
+            if context == self._output_generation:
+                for name, entry in list(self._output_quarantine.items()):
+                    floor = entry["read_completed"]
+                    if floor is not None and query_started_at > floor:
+                        del self._output_quarantine[name]
+        with self._ai_state_lock:
+            for ch in self._ai_fifo_waiting.copy():
+                if (ch not in self._ai_unconfirmed
+                        and query_started_at > self._ai_read_floor.get(ch, float("inf"))):
+                    self._ai_fifo_waiting.remove(ch)
+                    self._ai_read_floor[ch] = query_started_at
 
     def _ch_cfg(self, kind: str, ch: int) -> dict:
         for e in self._channels.get(kind, []):
@@ -162,6 +407,11 @@ class MR02mPoller(DevicePoller):
     def _ai_mirror_type_from_parent(sensor_code: int) -> bool:
         c = int(sensor_code) & 0xFFFF
         return c == AI_TC_K_CODE or c in AI_RTD_CODES_3_WIRE
+
+    def _ai_sample_source(self, ch: int, code: int) -> int:
+        if ch % 2 == 0 and self._ai_type_pairs() and self._ai_mirror_type_from_parent(code):
+            return ch - 1
+        return ch
 
     def _ai_effective_sensor_type(self, ch: int) -> int | None:
         """N inherits type from P only for TC-K and 3-wire RTD (pair modules)."""
@@ -279,46 +529,16 @@ class MR02mPoller(DevicePoller):
             return False
 
     def _apply_configured_ai_sensor_types(self) -> None:
-        """Записать sensor_type из YAML в holding 400+7*(ch-1), reg0."""
-        if self._ai <= 0:
-            return
-        for i in range(1, self._ai + 1):
-            if not self._ch_enabled("ai", i):
+        """Compare saved intent first, then submit all changed channels once."""
+        desired = {}
+        for ch in range(1, self._ai + 1):
+            if not self._ch_enabled("ai", ch):
                 continue
-            st = self._ai_effective_sensor_type(i)
-            if st is None:
-                continue
-            reg = MR02M_AI_HOLDING_BASE + (i - 1) * MR02M_AI_CHANNEL_STRIDE
-            for attempt in range(4):
-                try:
-                    cur = self.read_holding_registers(self.address, reg, 1)[0] & 0xFFFF
-                    # The saved type is the operator's choice. A register that
-                    # already holds a different modern code used to be kept,
-                    # so a change in the panel never reached the module and
-                    # the reading stayed in the old scale.
-                    if cur == st:
-                        self._ai_types[i] = st
-                        break
-                    self.write_register(self.address, reg, st)
-                    time.sleep(0.12)
-                    verify = self.read_holding_registers(self.address, reg, 1)[0] & 0xFFFF
-                    if verify == st:
-                        self._ai_types[i] = st
-                        self._publish_ai_scale(i, st)
-                        self.log.info("AI%d sensor_type %d -> %d", i, cur, st)
-                        time.sleep(0.25)
-                        break
-                    self.log.warning("AI%d sensor_type verify %d != %d (try %d)",
-                                     i, verify, st, attempt + 1)
-                except ScanHold:
-                    raise
-                except Exception as e:
-                    if attempt >= 3:
-                        self.log.warning("AI%d sensor_type write %d: %s", i, st, e)
-                    time.sleep(0.15 * (attempt + 1))
-            else:
-                continue
-            time.sleep(0.08)
+            code = self._ai_effective_sensor_type(ch)
+            if code is not None:
+                desired[ch] = code
+        if desired:
+            self._apply_ai_types(desired, startup=True)
 
     def _publish_channel_meta(self) -> None:
         for i in range(1, self._do + 1):
@@ -359,25 +579,17 @@ class MR02mPoller(DevicePoller):
             self.pub.pub_control_meta(self.device_id, n, "type", "range")
             self.pub.pub_control_meta(self.device_id, n, "min", "0")
             self.pub.pub_control_meta(self.device_id, n, "max", "1000")
-            # Текущее AO в прошивке — целое ×0,01 В (как MR-02m-flasher).
-            self.pub.pub_control_units(self.device_id, n, "V")
+            # Type 15 keeps raw 0..1000 payloads: its unit is permille, not percent.
+            mt = self._mod_type if self._mod_type is not None else self.cfg.get("module_type")
+            self.pub.pub_control_units(self.device_id, n, "‰" if mt == 15 else "V")
             title = self._ch_title("ao", i, f"AO{i}")
             if title:
                 self.pub.pub_control_meta(self.device_id, n, "title", title)
 
         for i in range(1, self._ai + 1):
             n = f"ai_{i}"
-            ch = self._ch_cfg("ai", i)
-            # sensor_type in config is a hint; actual type is read from device on first poll.
-            # Use -1 as sentinel meaning "not yet read from device".
-            eff = self._ai_effective_sensor_type(i)
-            st = int(eff) if eff is not None else -1
-            self._ai_types[i] = st
             self.pub.pub_control_meta(self.device_id, n, "readonly", "1")
-            if st >= 0:
-                self._publish_ai_scale(i, st)
-            else:
-                self.pub.pub_control_meta(self.device_id, n, "type", "value")
+            self.pub.pub_control_meta(self.device_id, n, "type", "value")
             title = self._ch_title("ai", i, f"AI{i}")
             if title:
                 self.pub.pub_control_meta(self.device_id, n, "title", title)
@@ -402,12 +614,13 @@ class MR02mPoller(DevicePoller):
     def _poll_do_di(self) -> None:
         if self._do > 0:
             try:
-                t_read = time.monotonic()
-                coils = self.read_coils(self.address, 1, self._do)
-                for i, v in enumerate(coils, 1):
-                    if self._ch_enabled("do", i):
-                        self._wb_publish_poll(f"do_{i}", str(v), t_read)
-                        self.pub.pub_error(self.device_id, f"do_{i}", "")
+                with self._output_state_lock:
+                    t_read = time.monotonic()
+                    coils = self.read_coils(self.address, 1, self._do)
+                    completed = time.monotonic()
+                    for i, v in enumerate(coils, 1):
+                        if self._ch_enabled("do", i):
+                            self._publish_output_observation(f"do_{i}", v, t_read, completed)
             except ScanHold:
                 raise
             except Exception as e:
@@ -544,77 +757,90 @@ class MR02mPoller(DevicePoller):
         # AI first (chunked FC03), then AO — on 6AI6AO the first AO frame often
         # failed without a gap after a large AI read.
         if self._ai > 0:
+            with self._ai_state_lock:
+                epoch = self._ai_epoch
+                startup = set(self._ai_startup_observe)
+            if startup:
+                self._observe_startup_ai(startup, epoch)
+            started = time.monotonic()
             block = self._read_ai_holding_block()
             for i in range(1, self._ai + 1):
-                if not self._ch_enabled("ai", i):
-                    continue
-                off = (i - 1) * MR02M_AI_CHANNEL_STRIDE
-                regs = block[off:off + MR02M_AI_CHANNEL_STRIDE]
-                if any(r is None for r in regs):
-                    self.pub.pub_error(self.device_id, f"ai_{i}", "r")
-                    continue
-                bus_st = int(regs[0]) & 0xFFFF
-                eff_st = self._ai_effective_sensor_type(i)
-                dev_st = _resolve_ai_sensor_type(bus_st, eff_st)
-                if dev_st == 0:
-                    parent = self._ai_n_parent_ch(i) if self._ai_uses_pairs() else None
-                    if parent:
-                        p_off = (parent - 1) * MR02M_AI_CHANNEL_STRIDE
-                        p_bus_raw = block[p_off]
-                        if p_bus_raw is not None:
-                            p_bus = int(p_bus_raw) & 0xFFFF
-                            p_yaml = self._ai_effective_sensor_type(parent)
-                            p_st = _resolve_ai_sensor_type(p_bus, p_yaml)
-                            if p_st and self._ai_mirror_type_from_parent(p_st):
-                                dev_st = p_st
-                DeviceLiveCache.set_sensor_type(self.device_id, i, dev_st)
-                prev_st = self._ai_types.get(i, -1)
-                if dev_st != prev_st:
-                    self._ai_types[i] = dev_st
-                    self._publish_ai_scale(i, dev_st)
-                value_ch = i
-                parent = self._ai_n_parent_ch(i) if self._ai_uses_pairs() else None
-                if parent and self._ai_mirror_type_from_parent(dev_st):
-                    value_ch = parent
-                v_off = (value_ch - 1) * MR02M_AI_CHANNEL_STRIDE
-                raw_reg = block[v_off + 3]
-                if raw_reg is None:
-                    self.pub.pub_error(self.device_id, f"ai_{i}", "r")
-                    continue
-                raw = int(raw_reg) & 0xFFFF
-                if raw >= 0x8000:
-                    raw -= 0x10000
-                _, _, scale = AI_SENSOR_TYPES.get(
-                    self._ai_types.get(i, dev_st), _TEMP)
-                self.pub.pub_control(
-                    self.device_id, f"ai_{i}", str(round(raw * scale, 3)))
-                self.pub.pub_error(self.device_id, f"ai_{i}", "")
+                with self._ai_state_lock:
+                    if (epoch == self._ai_epoch and i not in startup and i not in self._ai_unconfirmed
+                            and self._ch_enabled("ai", i)
+                            and started >= self._ai_event_floor.get(i, float("-inf"))
+                            and started >= self._ai_read_floor.get(i, float("-inf"))):
+                        self._publish_ai_observation(i, block)
 
         if self._ao > 0:
             if self._ai > 0 and MODBUS_POST_AI_BLOCK_GAP_S > 0:
                 time.sleep(MODBUS_POST_AI_BLOCK_GAP_S)
-            regs = None
-            last_err: Exception | None = None
-            t_read = time.monotonic()
-            for attempt in range(3):
-                try:
-                    regs = self.read_holding_registers(self.address, 33, self._ao)
-                    last_err = None
-                    break
-                except ScanHold:
-                    raise
-                except Exception as e:
-                    last_err = e
-                    if attempt < 2:
-                        time.sleep(MODBUS_INTER_FRAME_DELAY_S)
-            if regs is not None:
-                for i, v in enumerate(regs, 1):
-                    if self._ch_enabled("ao", i):
-                        self._wb_publish_poll(f"ao_{i}", str(v), t_read)
-                        self.pub.pub_error(self.device_id, f"ao_{i}", "")
-            else:
-                self.log_poll_fail("AO read", last_err)
-                # Same as DO/DI: a failed AO block is not every ao_N dead.
+            with self._output_state_lock:
+                regs = None
+                last_err: Exception | None = None
+                t_read = time.monotonic()
+                for attempt in range(3):
+                    try:
+                        regs = self.read_holding_registers(self.address, 33, self._ao)
+                        last_err = None
+                        break
+                    except ScanHold:
+                        raise
+                    except Exception as e:
+                        last_err = e
+                        if attempt < 2:
+                            time.sleep(MODBUS_INTER_FRAME_DELAY_S)
+                completed = time.monotonic()
+                if regs is not None:
+                    for i, v in enumerate(regs, 1):
+                        if self._ch_enabled("ao", i):
+                            self._publish_output_observation(f"ao_{i}", v, t_read, completed)
+                else:
+                    self.log_poll_fail("AO read", last_err)
+                    # Same as DO/DI: a failed AO block is not every ao_N dead.
+
+    def _ai_read_failed(self, ch):
+        # A later empty only applies after a fresh type and sample were observed together.
+        self._ai_fifo_waiting.add(ch)
+        self._ai_read_floor.pop(ch, None)
+        self.pub.pub_error(self.device_id, f"ai_{ch}", "r")
+
+    def _publish_ai_observation(self, i, block):
+        off = (i - 1) * MR02M_AI_CHANNEL_STRIDE
+        regs = block[off:off + MR02M_AI_CHANNEL_STRIDE]
+        if any(r is None for r in regs):
+            self._ai_read_failed(i)
+            return
+        bus_st = int(regs[0]) & 0xFFFF
+        eff_st = self._ai_effective_sensor_type(i)
+        dev_st = _resolve_ai_sensor_type(bus_st, eff_st)
+        parent = self._ai_n_parent_ch(i) if self._ai_uses_pairs() else None
+        if parent and (dev_st == 0 or self._ai_mirror_type_from_parent(dev_st)):
+            parent_code = block[(parent - 1) * MR02M_AI_CHANNEL_STRIDE]
+            if parent_code not in AI_SENSOR_TYPES:
+                self._ai_read_failed(i)
+                return
+            if dev_st == 0 and self._ai_mirror_type_from_parent(parent_code):
+                dev_st = parent_code
+        value_ch = self._ai_sample_source(i, dev_st)
+        v_off = (value_ch - 1) * MR02M_AI_CHANNEL_STRIDE
+        raw_reg = block[v_off + 3]
+        if raw_reg is None or dev_st not in AI_SENSOR_TYPES:
+            self._ai_read_failed(i)
+            return
+        DeviceLiveCache.set_sensor_type(self.device_id, i, dev_st)
+        if self._ai_types.get(i) != dev_st:
+            self._ai_fifo_waiting.add(i)
+            self._ai_types[i] = dev_st
+            self._publish_ai_scale(i, dev_st)
+        self._ai_read_floor[i] = time.monotonic()
+        self._publish_ai_sample(i, dev_st, raw_reg)
+
+    def _publish_ai_sample(self, ch, code, raw, *, force=False):
+        _, _, scale = AI_SENSOR_TYPES.get(code, _TEMP)
+        value = str(round(self._s16_word(raw) * scale, 3))
+        self.pub.pub_control(self.device_id, f"ai_{ch}", value, force=force)
+        self.pub.pub_error(self.device_id, f"ai_{ch}", "")
 
     @staticmethod
     def _s16_word(raw: int) -> int:
@@ -716,21 +942,17 @@ class MR02mPoller(DevicePoller):
         except (TypeError, ValueError):
             return False
 
-    def _ai_cfg_entry(self, ch: int, create: bool) -> dict | None:
+    def _ai_cfg_entry(self, ch: int) -> dict | None:
         channels = self._channels if isinstance(self._channels, dict) else None
         if channels is None:
             return None
         ai = channels.get("ai")
         if not isinstance(ai, list):
-            if not create:
-                return None
             ai = []
             channels["ai"] = ai
         for e in ai:
             if isinstance(e, dict) and e.get("ch") == ch:
                 return e
-        if not create:
-            return None
         e = {"ch": ch, "enabled": True}
         ai.append(e)
         return e
@@ -748,75 +970,26 @@ class MR02mPoller(DevicePoller):
                 targets.append(nch)
         return targets
 
-    def _remember_ai_sensor_types(self, channels: list[int], code: int) -> None:
-        for tch in channels:
-            entry = self._ai_cfg_entry(tch, create=True)
-            if entry is not None:
-                entry["sensor_type"] = code
-            self._ai_types[tch] = code
-
-    def _ai_type_snapshot(self, channels: list[int]) -> dict[int, tuple[str, int | None]]:
-        snap: dict[int, tuple[str, int | None]] = {}
-        for tch in channels:
-            entry = self._ai_cfg_entry(tch, create=False)
-            if entry is None or "sensor_type" not in entry:
-                snap[tch] = ("absent", None)
-            else:
-                snap[tch] = ("set", int(entry["sensor_type"]) & 0xFFFF)
-        return snap
-
-    def _ai_type_restore(self, snap: dict[int, tuple[str, int | None]]) -> None:
-        for tch, (kind, val) in snap.items():
-            entry = self._ai_cfg_entry(tch, create=False)
-            if kind == "set" and val is not None:
-                if entry is not None:
-                    entry["sensor_type"] = val
-                self._ai_types[tch] = val
-            else:
-                if entry is not None:
-                    entry.pop("sensor_type", None)
-                self._ai_types.pop(tch, None)
-
-    def _publish_ai_reading(self, ch: int, code: int) -> None:
-        value_ch = ch
-        if self._ai_type_pairs():
-            parent = self._ai_n_parent_ch(ch)
-            if parent and self._ai_mirror_type_from_parent(code):
-                value_ch = parent
-        reg = (MR02M_AI_HOLDING_BASE
-               + (value_ch - 1) * MR02M_AI_CHANNEL_STRIDE + 3)
-        raw = int(self.read_holding_registers(self.address, reg, 1)[0]) & 0xFFFF
-        if raw >= 0x8000:
-            raw -= 0x10000
-        _, _, scale = AI_SENSOR_TYPES.get(code, _TEMP)
-        self.pub.pub_control(
-            self.device_id, f"ai_{ch}", str(round(raw * scale, 3)), force=True)
-        self.pub.pub_error(self.device_id, f"ai_{ch}", "")
-
     def _persist_ai_sensor_types(self, updates: dict[int, int]) -> None:
         """Patch sensor_type in the bridge YAML. Does not restart the bridge."""
         if not updates:
             return
         path = Path(os.environ.get("SA02M_MQTT_CONFIG", "/etc/sa02m-modbus-mqtt.yaml"))
-        if not path.is_file():
-            self.log.warning("AI type yaml missing: %s", path)
-            return
         import yaml
         with _AI_TYPE_YAML_LOCK:
             data = yaml.safe_load(path.read_text(encoding="utf-8")) or {}
             if not isinstance(data, dict):
-                return
+                raise ValueError("invalid bridge YAML")
             devices = data.get("devices")
             if not isinstance(devices, list):
-                return
+                raise ValueError("invalid bridge device list")
             target = None
             for dev in devices:
                 if isinstance(dev, dict) and str(dev.get("id", "")) == str(self.device_id):
                     target = dev
                     break
             if target is None:
-                self.log.info("AI type yaml: %s is not in the config", self.device_id)
-                return
+                raise ValueError("AI module absent from bridge YAML")
             channels = target.get("channels")
             if not isinstance(channels, dict):
                 channels = {}
@@ -870,82 +1043,196 @@ class MR02mPoller(DevicePoller):
                     tmp.unlink()
 
     def _writeback_ai_type(self, ch: int, code: int) -> None:
-        """Записать тип датчика сразу: holding 400+7*(ch-1), память, YAML.
-
-        Рестарта моста нет. N-нога (ТХА / 3-проводный RTD) пишется вместе с P.
-        Код 0 («Выключен») записывается так же, как любой другой.
-        """
-        name = f"ai_type_{ch}"
-        if self._wb_offline_skip(name):
-            return
-        code = int(code) & 0xFFFF
-        if code > 42:
+        if self._wb_offline_skip(f"ai_type_{ch}") or not 0 <= code <= 42:
             return
         targets = self._ai_type_write_targets(ch, code)
-        if not targets:
-            return
-        snap = self._ai_type_snapshot(targets)
-        self._remember_ai_sensor_types(targets, code)
+        if targets:
+            self._apply_ai_types(dict.fromkeys(targets, code))
+
+    def _publish_confirmed_ai(self, observed, samples, targets=None):
+        channels = observed if targets is None else sorted(targets)
+        for ch in channels:
+            code = observed[ch]
+            if (not code and ch % 2 == 0 and self._ai_type_pairs()
+                    and self._ai_mirror_type_from_parent(observed.get(ch - 1, 0))):
+                code = observed[ch - 1]
+            self._ai_types[ch] = code
+            DeviceLiveCache.set_sensor_type(self.device_id, ch, code)
+            self._ai_fifo_waiting.add(ch)
+            self._ai_read_floor[ch] = time.monotonic()
+            if self._ch_enabled("ai", ch):
+                self._publish_ai_scale(ch, code)
+                self._publish_ai_sample(ch, code, samples[self._ai_sample_source(ch, code)], force=True)
+
+    def _observe_startup_ai(self, targets, epoch):
+        operation = _AiApply(self)
         try:
-            for tch in targets:
-                reg = MR02M_AI_HOLDING_BASE + (tch - 1) * MR02M_AI_CHANNEL_STRIDE
-                self._wb_write_retry(
-                    lambda r=reg, c=code: self.write_register(self.address, r, c))
-            time.sleep(0.12)
-            for tch in targets:
-                reg = MR02M_AI_HOLDING_BASE + (tch - 1) * MR02M_AI_CHANNEL_STRIDE
-                verify = self.read_holding_registers(self.address, reg, 1)[0] & 0xFFFF
-                if verify != code:
-                    raise RuntimeError(f"AI{tch} sensor_type {verify} != {code}")
-            for tch in targets:
-                DeviceLiveCache.set_sensor_type(self.device_id, tch, code)
-                self._publish_ai_scale(tch, code)
-            time.sleep(0.2)
-            for tch in targets:
-                try:
-                    self._publish_ai_reading(tch, code)
-                except Exception as e:
-                    self.log.warning("AI%d reading after type %d: %s", tch, code, e)
-            try:
-                self._persist_ai_sensor_types({tch: code for tch in targets})
-            except Exception as e:
-                self.log.warning("AI type yaml: %s", e)
-            DeviceLiveCache.flush_file(self.device_id)
-            self.log.info("writeback AI type ch=%s -> %d targets=%s", ch, code, targets)
-        except Exception as e:
-            self._ai_type_restore(snap)
-            self.log.warning("writeback AI type %s: %s", name, e)
-            self.pub.pub_error(self.device_id, f"ai_{ch}", "w")
+            status = operation.status()
+            if status is None or status[0] != 1 or status[1] != status[2]:
+                return
+            operation.check_boot()
+            read_channels = set(targets)
+            if self._ai_type_pairs():
+                read_channels.update(ch - 1 for ch in targets if ch % 2 == 0)
+            observed, samples = operation.observe({}, sorted(read_channels), status[1])
+            with self._ai_state_lock:
+                if epoch != self._ai_epoch:
+                    return
+                self._publish_confirmed_ai(observed, samples, targets)
+                self._ai_unconfirmed.difference_update(targets)
+                self._ai_startup_observe.difference_update(targets)
+        except ScanHold:
+            raise
+        except (OSError, ValueError) as exc:
+            self.log_poll_fail("AI startup verification", exc)
+
+    def _apply_ai_types(self, desired, *, startup=False):
+        operation = _AiApply(self)
+        with self._ai_state_lock:
+            if startup:
+                protected = set(self._ai_unconfirmed)
+                if self._ai_type_pairs():
+                    protected.update(ch - 1 if ch % 2 == 0 else ch + 1 for ch in self._ai_unconfirmed)
+                desired = {ch: code for ch, code in desired.items() if ch not in protected}
+            if not desired:
+                return
+            affected = set(desired)
+            self._ai_epoch += 1
+            if startup:
+                self._ai_startup_observe.update(affected)
+            else:
+                self._ai_startup_observe.difference_update(affected)
+            self._ai_unconfirmed.update(affected)
+        try:
+            if any(type(code) is not int or not 0 <= code <= 42 for code in desired.values()):
+                raise ValueError("invalid configured AI type")
+            generation = operation.idle()
+            if generation is not None:
+                operation.check_boot()
+            current = {ch: operation.read(operation.reg(ch), 1)[0] for ch in desired}
+            changes = {ch: code for ch, code in desired.items() if not startup or current[ch] != code}
+            if startup and generation is None:
+                with self._ai_state_lock:
+                    operation.check()
+                    for ch in affected & self._ai_startup_observe:
+                        known = self._ai_types.get(ch, DeviceLiveCache.get_sensor_type(self.device_id, ch, default=None))
+                        if ch not in changes and (known is None or known == current[ch]):
+                            self._ai_unconfirmed.discard(ch)
+                        elif ch not in changes:
+                            self.pub.pub_error(self.device_id, f"ai_{ch}", "w")
+                    self._ai_startup_observe.difference_update(affected)
+            if not changes:
+                return
+            affected = set(changes)
+            if self._ai_type_pairs():
+                for ch in changes:
+                    parent = ch if ch % 2 else ch - 1
+                    if parent not in current:
+                        current[parent] = operation.read(operation.reg(parent), 1)[0]
+                    if (self._ai_mirror_type_from_parent(current[parent])
+                            or self._ai_mirror_type_from_parent(changes[ch])):
+                        affected.update((parent, parent + 1))
+            with self._ai_state_lock:
+                self._ai_epoch += 1
+                self._ai_startup_observe.difference_update(affected)
+                self._ai_unconfirmed.update(affected)
+            observed, samples = operation.apply(changes, sorted(affected), generation)
+            if any(ch in desired and desired[ch] != code for ch, code in observed.items()):
+                raise IOError("AI type companion differs from configuration")
+            with self._ai_state_lock:
+                operation.check()
+                self._ai_epoch += 1
+                self._ai_unconfirmed.difference_update(affected)
+                self._publish_confirmed_ai(observed, samples)
+                if not startup:
+                    self._persist_ai_sensor_types(observed)
+                    receipt = uuid.uuid4().hex
+                    for ch, code in observed.items():
+                        entry = self._ai_cfg_entry(ch)
+                        if entry is not None:
+                            entry["sensor_type"] = code
+                        DeviceLiveCache.confirm_sensor_type(self.device_id, ch, code, receipt)
+            self.log.info("AI type application confirmed %s", observed)
+        except ScanHold:
+            if startup and not operation.attempted:
+                raise
+            self.log.warning("AI type write paused for scan")
+            for ch in affected:
+                self.pub.pub_error(self.device_id, f"ai_{ch}", "w")
+        except Exception as exc:
+            self.log.warning("AI type application unconfirmed %s: %s", sorted(affected), exc)
+            for ch in affected:
+                self.pub.pub_error(self.device_id, f"ai_{ch}", "w")
+        DeviceLiveCache.flush_file(self.device_id)
 
     def _writeback_do(self, ch: int, on: bool, t_enq: float | None = None) -> None:
-        name = f"do_{ch}"
-        if self._wb_offline_skip(name):
-            return
-        try:
-            t1 = time.monotonic()
-            self._wb_write_retry(
-                lambda: self.get_port().write_coil(self.address, ch, on))
-            t2 = time.monotonic()
-            self._wb_done(name, "1" if on else "0")
-            self.log.info(
-                "writeback DO%d=%d (queue %.0f ms, write %.0f ms)",
-                ch, on, (t1 - t_enq) * 1000 if t_enq else -1, (t2 - t1) * 1000)
-        except Exception as e:
-            self.log.warning("writeback DO%d: %s", ch, e)
-            self.pub.pub_error(self.device_id, name, "w")
+        self._writeback_output("do", ch, on)
 
     def _writeback_ao(self, ch: int, v: int) -> None:
-        name = f"ao_{ch}"
-        if self._wb_offline_skip(name):
-            return
-        try:
-            self._wb_write_retry(
-                lambda: self.get_port().write_register(self.address, 32 + ch, v))
-            self._wb_done(name, str(v))
-            self.log.info("writeback AO%d=%d", ch, v)
-        except Exception as e:
-            self.log.warning("writeback AO%d: %s", ch, e)
-            self.pub.pub_error(self.device_id, name, "w")
+        self._writeback_output("ao", ch, v)
+
+    def _writeback_output(self, kind: str, ch: int, target: int) -> None:
+        name = f"{kind}_{ch}"
+        with self._output_state_lock:
+            ack_state, read_state = "not_attempted", "not_attempted"
+            try:
+                counts = self._layout_counts()
+                limit = counts[0] if kind == "do" else counts[2]
+                if self._wb_offline_skip(name):
+                    return
+                if (self._stop.is_set() or not 1 <= ch <= limit
+                        or not self._ch_enabled(kind, ch)
+                        or not self._valid_output_value(kind, target)):
+                    self.pub.pub_error(self.device_id, name, "w")
+                    return
+                now = time.monotonic()
+                self._output_generation += 1
+                self._output_watermark[name] = now
+                self._output_quarantine[name] = {
+                    "generation": self._output_generation, "since": now,
+                    "read_completed": None, "logged_at": now,
+                }
+                ack_error = None
+                try:
+                    port = self.get_port()
+                    options = {"retry_stale": False} if self.bus.transport == TRANSPORT_RTU_TCP else {}
+                    ack_state = "uncertain"
+                    if kind == "do":
+                        port.write_coil(self.address, ch, bool(target), **options)
+                    else:
+                        port.write_register(self.address, 32 + ch, target, **options)
+                    ack_state = "ok"
+                except (ScanHold, PermissionError):
+                    # Refusal is not an uncertain write: never reacquire to read.
+                    ack_state = "refused"
+                    raise
+                except OSError as e:
+                    ack_error = e
+                if self._stop.is_set():
+                    raise RuntimeError("stopped before readback")
+                started = time.monotonic()
+                read_state = "failed"
+                values = (self.read_coils(self.address, ch, 1) if kind == "do" else
+                          self.read_holding_registers(self.address, 32 + ch, 1))
+                completed = time.monotonic()
+                if (not isinstance(values, (list, tuple)) or len(values) != 1
+                        or not self._valid_output_value(kind, values[0])):
+                    read_state = "invalid"
+                    raise IOError("invalid output readback")
+                actual = values[0]
+                self._publish_output_observation(name, actual, started, completed,
+                    force=True, error="w" if ack_error is not None and actual != target else "")
+                self.log.info("writeback %s requested=%d actual=%d ack=%s read=ok",
+                              name, target, actual, "uncertain" if ack_error else "ok")
+            except Exception as e:
+                self.pub.pub_error(self.device_id, name, "w")
+                entry = self._output_quarantine.get(name)
+                if entry is not None:
+                    self._log_output_quarantine(name, entry, time.monotonic())
+                self.log.warning("writeback %s requested=%s ack=%s read=%s unverified: %s",
+                                 name, target, ack_state, read_state, e)
+            finally:
+                DeviceLiveCache.flush_file(self.device_id)
 
     def _setup_writeback(self) -> None:
         # Callback paho лишь парсит и ставит запись в очередь (A1):
@@ -956,8 +1243,8 @@ class MR02mPoller(DevicePoller):
         # Subscribes the DELTA over what is already subscribed: the YAML
         # layout at setup, then — after a late init — the hardware channels
         # the YAML layout lacked (YAML type 1 on a 6DO5DI2AO: ao_1/ao_2),
-        # never a channel twice. Channels the YAML over-declared stay
-        # subscribed (a write to them fails on the bus, as before).
+        # never a channel twice. Over-declared subscriptions remain, but the
+        # execution guard refuses their writes once hardware counts are known.
         do, _di, ao, ai = self._layout_counts()
         had_do, had_ao, had_ai = self._wb_subscribed
         if do <= had_do and ao <= had_ao and ai <= had_ai:
@@ -973,7 +1260,10 @@ class MR02mPoller(DevicePoller):
                         v = msg.payload.decode().strip()
                     except UnicodeDecodeError:
                         return
-                    on = v not in ("0", "false", "False", "")
+                    v = v.lower()
+                    if v not in ("0", "1", "false", "true"):
+                        return
+                    on = v in ("1", "true")
                     t_enq = time.monotonic()
                     self._wb_submit(
                         f"do_{ch}", lambda: self._writeback_do(ch, on, t_enq))
@@ -988,7 +1278,7 @@ class MR02mPoller(DevicePoller):
                         return
                     try:
                         v = int(float(msg.payload.decode().strip()))
-                    except (UnicodeDecodeError, ValueError):
+                    except (UnicodeDecodeError, ValueError, OverflowError):
                         return
                     v = max(0, min(1000, v))
                     self._wb_submit(
@@ -1004,7 +1294,7 @@ class MR02mPoller(DevicePoller):
                         return
                     try:
                         v = int(float(msg.payload.decode().strip()))
-                    except (UnicodeDecodeError, ValueError):
+                    except (UnicodeDecodeError, ValueError, OverflowError):
                         return
                     if v < 0 or v > 42:
                         return

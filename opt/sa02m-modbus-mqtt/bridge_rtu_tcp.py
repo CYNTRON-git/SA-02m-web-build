@@ -21,6 +21,7 @@ from bridge_serial import (
     ScanHold,
     _WriterPriority,
     _modbus_read_frame_len,
+    before_deadline,
     bits_from_response,
     build_report_slave_id,
     build_request,
@@ -28,7 +29,9 @@ from bridge_serial import (
     build_write_register,
     build_write_registers,
     crc16,
+    remaining_time,
     slave_id_payload,
+    validate_modbus_reply,
     words_from_response,
 )
 from bridge_tcp import TcpLineStats
@@ -112,12 +115,13 @@ class RtuTcpClient:
         except OSError:
             return False
 
-    def _open(self) -> None:
+    def _open(self, deadline=None) -> None:
         left = self._retry_at - time.monotonic()
         if left > 0:
             raise IOError("%s: not connected (reconnect in %.1f s)" % (self.label, left))
         try:
-            s = socket.create_connection((self._host, self._port), timeout=self._timeout)
+            s = socket.create_connection((self._host, self._port),
+                                         timeout=remaining_time(deadline, self._timeout))
         except OSError as e:
             self._connect_failed("connect failed: %s" % e)
             raise IOError("%s: connect failed: %s" % (self.label, e)) from e
@@ -146,7 +150,7 @@ class RtuTcpClient:
             self._announced = True
             self._log.info("connected %s", self.label)
 
-    def _drain(self) -> None:
+    def _drain(self, deadline=None) -> None:
         """Drop a late frame the gateway queued after the previous timeout."""
         sock = self._sock
         if sock is None:
@@ -154,6 +158,8 @@ class RtuTcpClient:
         sock.setblocking(False)
         try:
             while True:
+                if deadline is not None:
+                    remaining_time(deadline, self._timeout)
                 chunk = sock.recv(4096)
                 if not chunk:
                     self._drop()
@@ -203,7 +209,7 @@ class RtuTcpClient:
             return buf[:flen]
         return buf
 
-    def _transact(self, request: bytes, expected: int) -> bytes:
+    def _transact(self, request: bytes, expected: int, *, retry_stale: bool = True, deadline=None) -> bytes:
         """Caller holds self._lock. Timeout is never resent (a write may have landed)."""
         if self._scan_hold.is_set():
             self._drop()
@@ -212,16 +218,16 @@ class RtuTcpClient:
         for attempt in (0, 1):
             reused = self._sock is not None
             if not reused:
-                self._open()
+                self._open(deadline)
             try:
                 if MODBUS_INTER_FRAME_DELAY_S > 0:
-                    time.sleep(MODBUS_INTER_FRAME_DELAY_S)
-                self._drain()
+                    time.sleep(remaining_time(deadline, MODBUS_INTER_FRAME_DELAY_S))
+                self._drain(deadline)
                 if self._sock is None:
-                    self._open()
-                self._sock.settimeout(self._timeout)
+                    self._open(deadline)
+                self._sock.settimeout(remaining_time(deadline, self._timeout))
                 self._sock.sendall(request)
-                resp = self._read_frame(request, self._timeout)
+                resp = self._read_frame(request, remaining_time(deadline, self._timeout))
             except socket.timeout:
                 self._drop()
                 self.stats.timeouts += 1
@@ -229,28 +235,30 @@ class RtuTcpClient:
                     self.label, request[0], fc))
             except (_EarlyEof, OSError) as e:
                 self._drop()
-                if reused and attempt == 0:
+                if retry_stale and reused and attempt == 0:
                     self._log.debug("%s: stale session (%s) — reconnecting", self.label, e)
                     continue
                 if not reused:
                     self._connect_failed("connection reset on open (%s)" % e)
                 raise IOError("%s unit %d FC%02X: connection closed: %s" % (
                     self.label, request[0], fc, e)) from None
-            if len(resp) < expected:
+            minimum = 5 if len(resp) > 1 and resp[1] & 0x80 else expected
+            if len(resp) < minimum:
                 self._drop()
                 raise IOError("Short response: %d/%d bytes [rtu_tcp head=%s]" % (
-                    len(resp), expected, resp[:8].hex()))
+                    len(resp), minimum, resp[:8].hex()))
             recv_crc = resp[-2] | (resp[-1] << 8)
             if crc16(resp[:-2]) != recv_crc:
                 self._drop()
                 raise IOError("CRC mismatch on FC%02X" % fc)
-            if resp[0] != request[0]:
+            try:
+                exception = validate_modbus_reply(request, resp[:-2])
+            except IOError:
                 self._drop()
-                raise IOError("Slave id mismatch: sent %d, got %d" % (request[0], resp[0]))
+                raise
             self._succeeded()
-            if resp[1] & 0x80:
-                code = resp[2] if len(resp) > 2 else 0
-                raise IOError("Modbus exception %d on FC%02X" % (code, fc & 0x7F))
+            if exception is not None:
+                raise IOError("Modbus exception %d on FC%02X" % (exception, fc))
             return resp
         raise AssertionError("unreachable")  # pragma: no cover
 
@@ -268,29 +276,44 @@ class RtuTcpClient:
                                   5 + (count + 7) // 8)
             return bits_from_response(resp, count)
 
-    def read_holding_registers(self, addr: int, start: int, count: int) -> list[int]:
+    def read_holding_registers(self, addr: int, start: int, count: int, *, deadline=None) -> list[int]:
+        if deadline is not None:
+            with before_deadline(self._lock, deadline):
+                reply = self._transact(build_request(addr, 3, start, count), 5 + count * 2,
+                                       retry_stale=False, deadline=deadline)
+                return words_from_response(reply, count)
         self._prio.yield_to_writer()
         with self._lock:
             resp = self._transact(build_request(addr, 0x03, start, count),
                                   5 + count * 2)
             return words_from_response(resp, count)
 
-    def read_input_registers(self, addr: int, start: int, count: int) -> list[int]:
+    def read_input_registers(self, addr: int, start: int, count: int, *, deadline=None) -> list[int]:
+        if deadline is not None:
+            with before_deadline(self._lock, deadline):
+                reply = self._transact(build_request(addr, 4, start, count), 5 + count * 2,
+                                       retry_stale=False, deadline=deadline)
+                return words_from_response(reply, count)
         self._prio.yield_to_writer()
         with self._lock:
             resp = self._transact(build_request(addr, 0x04, start, count),
                                   5 + count * 2)
             return words_from_response(resp, count)
 
-    def write_coil(self, addr: int, coil: int, value: bool) -> None:
+    def write_coil(self, addr: int, coil: int, value: bool, *, retry_stale: bool = True) -> None:
         with self._prio.writing():
             with self._lock:
-                self._transact(build_write_coil(addr, coil, value), 8)
+                self._transact(build_write_coil(addr, coil, value), 8, retry_stale=retry_stale)
 
-    def write_register(self, addr: int, reg: int, value: int) -> None:
+    def write_register(self, addr: int, reg: int, value: int, *, retry_stale: bool = True, deadline=None) -> None:
         with self._prio.writing():
+            if deadline is not None:
+                with before_deadline(self._lock, deadline):
+                    self._transact(build_write_register(addr, reg, value), 8,
+                                   retry_stale=False, deadline=deadline)
+                return
             with self._lock:
-                self._transact(build_write_register(addr, reg, value), 8)
+                self._transact(build_write_register(addr, reg, value), 8, retry_stale=retry_stale)
 
     def write_registers(self, addr: int, start: int, values) -> None:
         with self._prio.writing():

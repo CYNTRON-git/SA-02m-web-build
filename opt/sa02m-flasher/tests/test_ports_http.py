@@ -21,9 +21,11 @@ class PortsHttp(unittest.TestCase):
         nodes = {n.name: n for n in tree.body if isinstance(n, ast.FunctionDef)}
         nodes.update({n.name: n for n in handler.body if isinstance(n, ast.FunctionDef)})
         self.leases = MagicMock()
+        aliases = next(n for n in tree.body if isinstance(n, ast.Assign) and
+                       any(getattr(t, "id", None) == "_UNIT_UI_ALIASES" for t in n.targets))
         ns = {**_NS, "os": os, "mplc_lease": self.leases, "_guard_no_active_flasher_job": lambda *a, **kw: None,
-              "_unit_display_name": lambda s: s, "port_occupants": lambda p: [], "port_poll_service_labels": lambda p: []}
-        names = ("_read_json_body", "_handle_ports_release", "_handle_ports_restore", "_describe_port", "_handle_ports", "_truthy_query")
+              "_UNIT_UI_ALIASES": ast.literal_eval(aliases.value), "port_occupants": lambda p: [], "port_poll_service_labels": lambda p: []}
+        names = ("_unit_display_name", "_read_json_body", "_handle_ports_release", "_handle_ports_restore", "_describe_port", "_handle_ports", "_truthy_query")
         exec("from __future__ import annotations\n" + "\n".join(_src_of(nodes[n]) for n in names), ns)
 
         class ActualPortHandler(_StubHandler):
@@ -47,7 +49,7 @@ class PortsHttp(unittest.TestCase):
         self.ctx.cfg.ports_labels = {}
         self.ctx.jobs.active_job_on_port = lambda key: None
         self.leases.is_reserved.return_value = False
-        self.leases.configured_scope.return_value = ["mplc4.service"]
+        self.leases.configured_scope.return_value = ["mplc4.service", "sa02m-vplc.service"]
         self.leases.released_services_for.return_value = []
         recovery = {"restore_pending": True, "restore_services": ["mplc4.service"],
                     "restore_error": "start failed", "coordinator_available": False}
@@ -59,6 +61,8 @@ class PortsHttp(unittest.TestCase):
             self.assertEqual(status, 200, payload)
             port = payload["ports"][0]
             self.assertFalse(port["reserved"])
+            self.assertEqual(port["whole_service_scope"], ["mplc4.service", "sa02m-vplc.service"])
+            self.assertEqual(port["managed_services"], ["MPLC4", "vPLC", "MQTT"])
             for key, value in recovery.items():
                 self.assertEqual(port[key], value)
 

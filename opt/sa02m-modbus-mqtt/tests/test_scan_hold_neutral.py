@@ -325,7 +325,7 @@ class TestStatefulPause(unittest.TestCase):
         mgr.register_device(10, "mr", ranges, mock.Mock(), wire_mode="legacy")
         dev = mgr._devices[10]
         port = mock.Mock()
-        port.fmb_send_recv.side_effect = [bytes([10, 0x46, 0x18, 1, 0, 0, 0]), serial.ScanHold()]
+        port.fmb_send_recv.side_effect = [bytes.fromhex("0a4618010028de"), serial.ScanHold()]
         with mock.patch.object(fmb, "_get_port", return_value=port):
             with self.assertRaises(serial.ScanHold):
                 mgr.configure_all()
@@ -335,7 +335,7 @@ class TestStatefulPause(unittest.TestCase):
         self.assertEqual((dev["fail_passes"], dev["retry_at"]), (0, 0))
         self.assertEqual(mgr._wb_frame_slaves, {10: False})
         port.fmb_send_recv.side_effect = None
-        port.fmb_send_recv.return_value = bytes([10, 0x46, 0x18, 1, 0, 0, 0])
+        port.fmb_send_recv.return_value = bytes.fromhex("0a4618010028de")
         with mock.patch.object(fmb, "_get_port", return_value=port):
             mgr.reconfigure_pending()
         self.assertEqual(dev["pending"], [])
@@ -348,7 +348,7 @@ class TestStatefulPause(unittest.TestCase):
         mgr = fmb.FastModbusEventPortManager("/dev/COM4", 115200)
         mgr.register_device(10, "mr", [(0, 1, 6)], mock.Mock(), poller=poller, wire_mode="legacy")
         port = mock.Mock()
-        port.fmb_send_recv.return_value = bytes([10, 0x46, 0x18, 1, 0, 0, 0])
+        port.fmb_send_recv.return_value = bytes.fromhex("0a4618010028de")
         with mock.patch.object(fmb, "_get_port", return_value=port):
             with self.assertRaises(serial.ScanHold):
                 mgr.configure_all()

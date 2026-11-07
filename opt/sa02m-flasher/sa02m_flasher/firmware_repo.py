@@ -97,6 +97,9 @@ def _infer_kind_from_filename(file_name: str) -> str:
 
     Явное поле ``kind`` в манифесте предпочтительнее; иначе — по имени файла.
     """
+    known = fw_parser.parse_known_firmware_filename(file_name or "")
+    if known is not None:
+        return known[1]
     n = (file_name or "").lower()
     if "mr-02m_bootloader" in n or n.endswith("_bootloader.fw") or n == "bootloader.fw":
         return "bootloader"
@@ -731,12 +734,9 @@ class FirmwareRepo:
             log.exception("Не удалось разобрать .fw %s", path)
         size = path.stat().st_size
         kind = _infer_kind_from_filename(path.name)
-        # Derive the manifest device family from the .fw signature so an uploaded
-        # DTV/CE-02m-3 image is not mis-filed under MR-02m; unknown → "MR-02m"
-        # (the historical default, and the flasher's primary family).
-        device = "MR-02m"
-        if signatures:
-            device = manifest_device_for_signature(signatures[0]) or "MR-02m"
+        known = fw_parser.parse_known_firmware_filename(path.name)
+        header_device = manifest_device_for_signature(signatures[0]) if signatures else None
+        device = header_device or (known[0] if known is not None else "MR-02m")
         return FirmwareEntry(
             file=path.name,
             version=version,

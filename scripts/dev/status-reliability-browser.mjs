@@ -22,6 +22,9 @@ async function loadPlaywright() {
 const pw=await loadPlaywright();
 if(!pw||!pw.chromium) skip('status-reliability-browser: playwright not installed (npm run ui-layout:install)');
 let mode='normal', cloudRequests=0;
+let serviceEvents=[], serviceSubmitted=false, serviceStateReads=0, serviceHeld=[];
+const serviceOp='c'.repeat(32);
+const serviceList=active=>({ok:true,flasher_busy:false,services:[{id:'vplc',label:'vPLC',unit:'vplc.service',installed:true,active:active?'active':'inactive',enabled:active,masked:!active,user_disabled:!active}]});
 const server=createServer(async(req,res)=>{
  const url=new URL(req.url,'http://localhost');
  if(url.pathname.includes('/cgi-bin/')||url.pathname.startsWith('/api/')) {
@@ -33,6 +36,19 @@ const server=createServer(async(req,res)=>{
   if(mode==='unauthorized') {
    if(url.pathname.endsWith('/auth_check.cgi')) {res.writeHead(401);res.end('unauthorized');return;}
    res.end(JSON.stringify({error:'unauthorized'}));return;
+  }
+  if(mode==='status-build-error'&&url.searchParams.get('part')==='network') {res.end('{"error":"status_build_failed"}');return;}
+  if(mode.startsWith('service-')&&url.pathname.endsWith('/services_ctrl.cgi')) {
+   const phase=req.method==='POST'?'post':url.searchParams.has('result')?'result':serviceSubmitted?'state':'list';
+   serviceEvents.push(phase);
+   if(phase==='post') serviceSubmitted=true;
+   if(phase==='state') serviceStateReads++;
+   // Recovery list reads after a timeout are answered normally.
+   if(mode==='service-'+phase+'-stall'&&(phase!=='state'||serviceStateReads===1)) {res.writeHead(200);res.write('{');return;}
+   if(phase==='post') {res.end(JSON.stringify({ok:true,pending:true,id:'vplc',action:'stop',op_id:serviceOp}));return;}
+   if(phase==='result') {res.end(JSON.stringify({ok:true,id:'vplc',action:'stop',op_id:serviceOp}));return;}
+   if(phase==='state'&&mode==='service-success'&&serviceStateReads===1) {serviceHeld.push(res);return;}
+   res.end(JSON.stringify(serviceList(!serviceSubmitted)));return;
   }
   if(mode==='stall'&&url.searchParams.get('part')==='network') {res.writeHead(200);res.write('{');return;}
   if(mode==='cards'&&['cloud.cgi','sa02m_homekit_api.cgi','sa02m_homeconnect_api.cgi','sa02m_audio_api.cgi'].some(v=>url.pathname.endsWith(v))) {cloudRequests++;res.writeHead(200);res.write('{');return;}
@@ -71,6 +87,12 @@ try {
  mode='normal';
  await page.evaluate(()=>{fetchBackgroundPart('network',applyNetworkStatus,true);fetchPriorityPart('priority');});
  await page.waitForFunction(()=>statusFailures.network===0&&!_statusFetchInFlight);
+ mode='status-build-error';
+ await page.evaluate(()=>fetchBackgroundPart('network',applyNetworkStatus,true));
+ await page.waitForFunction(()=>statusFailures.network===1&&!_statusFetchInFlight);
+ assert.match(await page.locator('#dashboard-poll-alert').innerText(),/Ошибка обновления/);
+ mode='normal';await page.evaluate(()=>fetchBackgroundPart('network',applyNetworkStatus,true));
+ await page.waitForFunction(()=>statusFailures.network===0&&!_statusFetchInFlight);
  await page.evaluate(()=>{noteStatusFailure('priority',new Error('offline'));noteStatusSuccess('network',{_status_meta:{age_s:0}});});
  const alert=await page.locator('#dashboard-poll-alert').innerText();
  assert.match(alert,/^CPU, температура, ОЗУ, диск: /);assert.doesNotMatch(alert,/priority/);
@@ -104,6 +126,63 @@ try {
  await page.evaluate(async()=>{cloudTabInit();audioTabInit();await Promise.all([homekitRefresh(),homeconnectRefresh()]);});
  await page.waitForTimeout(200);assert.equal(cloudRequests,8);
  await page.evaluate(()=>{cloudTabDestroy();audioTabDestroy();homekitTabDestroy();homeconnectTabDestroy();fetchWithTimeout=window._nativeTimedFetch;});
+ // Real DOM actions, fetch guard and HTTP streams; only the device responses
+ // are synthetic. The page clock makes 20-second body deadlines deterministic.
+ await page.clock.install();
+ page.on('dialog',dialog=>dialog.accept());
+ await page.evaluate(()=>{
+  teardownStatusPolling();
+  window._serviceTestToasts=[];
+  const original=toast;toast=function(...args){window._serviceTestToasts.push(args);return original(...args);};
+ });
+ for(const [width,theme] of [[1600,'dark'],[500,'light']]) for(const locale of ['ru','en']) {
+  await page.setViewportSize({width,height:1000});
+  await page.evaluate(({theme,locale})=>{document.documentElement.setAttribute('data-theme',theme);window.sa02mI18n.setLang(locale);},{theme,locale});
+  for(const scenario of ['success','post-stall','result-stall','state-stall']) {
+   serviceEvents=[];serviceSubmitted=false;serviceStateReads=0;serviceHeld=[];mode='service-'+scenario;
+   await page.evaluate(()=>{switchTab('system');window._serviceTestToasts=[];});
+   if(width===500) await page.locator('#nav-burger').click();
+   await page.locator('[data-system-sub="services"]').click();
+   if(width===500) await page.locator('#nav-burger').click();
+   await page.evaluate(()=>loadServicesControl(false));
+   const stop=page.locator('#svc-ctl-list [data-svc-id="vplc"] button[data-svc-action="stop"]');
+   await stop.waitFor();
+   await page.waitForFunction(()=>!document.querySelector('#svc-ctl-list button[data-svc-id="vplc"][data-svc-action="stop"]').disabled);
+   await stop.click();
+   await page.waitForFunction(()=>!!_svcCtlPending.vplc);
+   assert.equal(await stop.isDisabled(),true);
+   if(scenario!=='post-stall') {
+    // Wait for the real admission body before advancing result-poll timers.
+    await page.waitForFunction(()=>window._serviceTestToasts.some(v=>v[1]==='info'));
+    await page.clock.fastForward(1500);
+   }
+   const wanted=scenario==='post-stall'?'post':scenario==='result-stall'?'result':'state';
+   const until=Date.now()+5000;
+   while(!serviceEvents.includes(wanted)&&Date.now()<until) await new Promise(r=>setTimeout(r,20));
+   assert.ok(serviceEvents.includes(wanted),`${scenario}: actual HTTP ${wanted} reached`);
+   if(scenario==='success') {
+    assert.equal(serviceHeld.length,1);
+    assert.equal(await stop.isDisabled(),true,'matching result alone cannot unlock before state verification');
+    assert.equal(await page.evaluate(()=>window._serviceTestToasts.filter(v=>v[1]==='success').length),0);
+    serviceHeld.pop().end(JSON.stringify(serviceList(false)));
+   } else {
+    await page.clock.fastForward(20500);
+   }
+   await page.waitForFunction(()=>!_svcCtlPending.vplc);
+   const toasts=await page.evaluate(()=>window._serviceTestToasts.map(v=>v[1]));
+   assert.equal(toasts.filter(v=>v==='success').length,scenario==='success'?1:0);
+   assert.equal(toasts.filter(v=>v==='error').length,scenario==='success'?0:1);
+   assert.equal(serviceEvents.filter(v=>v==='post').length,1,'never resend an accepted or timed-out POST');
+   await page.waitForFunction(()=>!document.getElementById('svc-ctl-refresh-btn').disabled);
+   assert.ok(await page.evaluate(()=>document.documentElement.scrollWidth<=innerWidth+1));
+  }
+  mode='service-list-stall';serviceSubmitted=false;
+  await page.locator('#svc-ctl-refresh-btn').click();
+  await page.waitForFunction(()=>document.getElementById('svc-ctl-refresh-btn').disabled);
+  await page.clock.fastForward(20500);
+  await page.waitForFunction(()=>!document.getElementById('svc-ctl-refresh-btn').disabled);
+ }
+ console.log('service browser: 20 desktop/mobile RU/EN lifecycle cases; actual unfinished JSON bodies, no duplicate POST, verified state before unlock');
  mode='unauthorized';await page.evaluate(()=>fetchPriorityPart('priority'));await page.waitForURL('**/login.html');
  assert.equal(errors.length,0,errors.join('\n'));console.log('status browser: stalled body recovery, partial failure, stale cache, 8 narrow UI combinations, MTD at 3 widths/2 locales, four card single-flight/timeout, CGI unauthorized passed');
 }finally {await browser.close();server.closeAllConnections();server.close();}

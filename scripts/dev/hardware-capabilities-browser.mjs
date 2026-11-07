@@ -6,6 +6,7 @@ import {chromium} from './node_modules/playwright/index.mjs';
 const www = new URL('../../www/network_config/', import.meta.url);
 const out = new URL('../../.tmp/remediation-20261106/hardware-browser/', import.meta.url);
 let state = {}, accepted = false, posts = 0;
+let releaseVariant, variantRequested;
 const server = createServer(async (req, res) => {
   const url = new URL(req.url, 'http://localhost');
   if (url.pathname.includes('/cgi-bin/') || url.pathname.startsWith('/api/')) {
@@ -15,6 +16,13 @@ const server = createServer(async (req, res) => {
       posts++;
       result = accepted ? {ok: true, channel: 'beeper', value: 1} : {ok: false, error: 'channel_unavailable'};
     } else if (url.pathname.endsWith('/status.cgi')) result = state;
+    else if (url.pathname.endsWith('/variant.cgi')) {
+      result = {variant: state.hw_variant, serial_map: ''};
+      // Deliver initialization after the hardware state to exercise the late reply.
+      releaseVariant = () => res.end(JSON.stringify(result));
+      variantRequested();
+      return;
+    }
     res.end(JSON.stringify(result));
     return;
   }
@@ -38,17 +46,31 @@ try {
       hw_pin_beeper: 1, hw_pin_alarm_led: 1, hw_pin_usb_power: 1,
       hw_do: variant === 'sa02m-1eth' ? -1 : null, hw_beeper: -1, hw_alarm_led: -1, hw_usb_power: -1};
     accepted = false;
+    releaseVariant = null;
+    const variantRequest = new Promise(resolve => { variantRequested = resolve; });
     const context = await browser.newContext({viewport: {width, height: 1000}});
     await context.addCookies([{name: 'session_token', value: 'test', url: origin}]);
     const page = await context.newPage(), errors = [];
     page.on('pageerror', error => errors.push(error.message));
     await page.goto(origin + '/index.html');
+    let variantDeadline;
+    try {
+      await Promise.race([variantRequest, new Promise((_, reject) => {
+        variantDeadline = setTimeout(() => reject(new Error('initial variant request was not received')), 5000);
+      })]);
+    } finally { clearTimeout(variantDeadline); }
     await page.evaluate(({theme, state}) => {
       teardownStatusPolling();
       document.documentElement.setAttribute('data-theme', theme);
       sa02mI18n.setLang('ru');
       applyHardwareStatus(state);
+      // Only the pending real loadVariant() response fills this sentinel.
+      document.getElementById('hw-variant-select').value = '';
     }, {theme, state});
+    assert.equal(typeof releaseVariant, 'function');
+    releaseVariant();
+    await page.waitForFunction(() => document.getElementById('hw-variant-select').value !== '');
+    console.log(`late variant response applied: ${theme} ${variant} ${width}`);
     assert.equal(await page.locator('#hw-beeper-btn').innerText(), 'н/д');
     assert.equal(await page.locator('#hw-beeper-btn').isDisabled(), false);
     assert.equal(await page.locator('#hw-do-btn').isVisible(), variant === 'sa02m-1eth');

@@ -4,7 +4,7 @@
   <img src="https://img.shields.io/badge/platform-Armbian%20%7C%20Linux%20ARM-orange?style=flat-square"/>
   <img src="https://img.shields.io/badge/stack-nginx%20%2B%20fcgiwrap%20%2B%20Bash%20CGI-blue?style=flat-square"/>
   <img src="https://img.shields.io/badge/license-MIT-green?style=flat-square"/>
-  <img src="https://img.shields.io/badge/version-1.0.7.31-cyan?style=flat-square"/>
+  <img src="https://img.shields.io/badge/version-1.0.7.32-cyan?style=flat-square"/>
 </p>
 
 Веб-интерфейс для **[сервера автоматизации СА-02м](https://cyntron.ru/catalog/ustroystva_avtomatizatsii/servery_avtomatizatsii/)** производства [ЦИНТРОН](https://cyntron.ru) на базе процессорного модуля [A40i-2eth](https://cyntron.ru/catalog/ustroystva_avtomatizatsii/komplektuyushchie/7705/) (Allwinner A40i, Linux).
@@ -651,7 +651,11 @@ override установлен worker `/usr/local/sbin/sa02m-beeper-override.sh`;
 
 ### Устройства MR-02м (flasher)
 
-Вкладка **«Устройства MR-02м»** в веб-интерфейсе предназначена для поиска модулей расширения MR-02м на шинах RS-485 и обновления их прошивки. Все операции выполняются фоновым демоном `sa02m-flasher` (см. [scripts/04-flasher.sh](scripts/04-flasher.sh)).
+Вкладка **«Устройства MR-02м»** в веб-интерфейсе предназначена для поиска модулей расширения MR-02м на шинах RS-485, настройки и обновления их прошивки. Операции обслуживает демон `sa02m-flasher` (см. [scripts/04-flasher.sh](scripts/04-flasher.sh)).
+
+Профили модулей, проверенные программные пути и ещё не подтверждённые аппаратные сценарии разделены в [матрице совместимости MR](docs/audits/2026-11-06-project-and-bench.md#mr-compatibility). Поддержка профиля и ответ команды не означают подтверждённого срабатывания физического выхода. Гарантии снимка и единиц измерения описаны в [контракте MR](docs/contracts/mr-module-control.md); незавершённые этапы не считаются поддержанными только по наличию названия модуля.
+
+Формат экспорта настроек, предварительная проверка импорта и границы применения определены [контрактом файлов конфигурации](docs/contracts/module-config-file.md). Состояние проверки и установки этой возможности указано в матрице совместимости выше.
 
 **Поиск:**
 
@@ -669,7 +673,7 @@ override установлен worker `/usr/local/sbin/sa02m-beeper-override.sh`;
 
 **Координация с опросом RS-485:**
 
-На время поиска/прошивки демон временно останавливает службы из `MPLC_STOP_SERVICES` (`/etc/sa02m_flasher.conf`), по умолчанию `mplc.service`, и получает эксклюзивный `flock` на `/dev/COMx`. После завершения или падения демона службы гарантированно восстанавливаются (`atexit` + `ExecStopPost` в systemd unit).
+Владение портом, пауза MQTT, временная остановка и подтверждённое восстановление служб определены [контрактом владения портами](docs/contracts/port-ownership.md). Ошибка восстановления остаётся видимой до подтверждения координатором; освобождение дескриптора само по себе не означает восстановление опроса.
 
 **Архитектура:**
 
@@ -681,7 +685,7 @@ nginx → unix-socket /run/sa02m-flasher/flasher.sock
 sa02m-flasher.service (Python stdlib HTTP + ThreadingMixIn, пользователь sa02m-flasher)
   ├── jobs.py           — очередь задач, SSE-события
   ├── runner.py         — связка scanner.py / flash_protocol.py
-  ├── mplc_lease.py     — sudo systemctl stop/start mplc.service
+  ├── mplc_lease.py     — аренда порта через sa02m-port-coordinator
   ├── firmware_repo.py  — index.json, sha256, upload
   └── /dev/COMx (flock, dialout)
 ```

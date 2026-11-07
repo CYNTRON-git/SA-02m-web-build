@@ -15,6 +15,10 @@ ROOT = Path(__file__).resolve().parents[2]
 if os.name == "nt":
     print("SKIP: service shell/CGI composition requires Linux")
     sys.exit(77)
+if os.geteuid() == 0:
+    # Root imports and spawned children must not contaminate the caller's checkout.
+    sys.dont_write_bytecode = True
+    os.environ["PYTHONDONTWRITEBYTECODE"] = "1"
 
 
 class ServiceOperations(unittest.TestCase):
@@ -114,7 +118,7 @@ class ServiceOperations(unittest.TestCase):
                 self.skipTest("full root helper dispatch requires root or passwordless sudo")
             # CI runs the registry unprivileged with passwordless sudo. Re-run
             # this actual composition case as root, never waive its assertions.
-            run = subprocess.run([sudo, "-n", sys.executable, str(Path(__file__).resolve()),
+            run = subprocess.run([sudo, "-n", sys.executable, "-B", str(Path(__file__).resolve()),
                                   "ServiceOperations.test_full_helper_guard_reexec_keeps_operation_and_refuses_live_lease"],
                                  cwd=ROOT, text=True, capture_output=True, timeout=40)
             self.assertEqual(run.returncode, 0, run.stdout + run.stderr)

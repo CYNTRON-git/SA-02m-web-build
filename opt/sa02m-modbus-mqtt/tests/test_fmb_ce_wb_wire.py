@@ -399,20 +399,22 @@ class TestCePowerEventsDisable(unittest.TestCase):
         self.assertEqual(bus.sent.count(FX_DISABLE_518_546), 2)
 
 
-# ── 3b. Mask verification is CE-only (MR-02m: prefix ACK, not verified yet) ──
+# ── 3b. MR-02m also requires a complete, validated configure ACK ──
 class TestMaskScope(unittest.TestCase):
-    def test_mr02m_wb_prefix_ack_still_counts(self):
+    def test_mr02m_wb_prefix_ack_stays_pending_without_wire_cache(self):
         mgr = bridge.FastModbusEventPortManager("/dev/COMT", 115200)
         mgr.register_device(5, "mr02m-ut-5", [(bridge.FMB_EVT_COIL, 1, 6)],
                             lambda *a: None, dev_type="mr02m")
 
         class PrefixAck:
-            # Mask 00 and CRC 0000: rejected for a CE, still an ACK for MR.
+            # The former positive fixture has a zero mask and invalid CRC.
             def fmb_send_recv(self, frame, *a):
                 return bytes([5, 0x46, 0x18, 1, 0x00, 0x00, 0x00])
-        self.assertTrue(mgr._configure_device(PrefixAck(), 5,
-                                              mgr._devices[5]))
-        self.assertIs(mgr._wb_frame_slaves[5], True)
+        self.assertFalse(mgr._configure_device(PrefixAck(), 5,
+                                               mgr._devices[5]))
+        self.assertFalse(mgr._devices[5]["configured"])
+        self.assertEqual(mgr._devices[5]["pending"], [(bridge.FMB_EVT_COIL, 1, 6)])
+        self.assertNotIn(5, mgr._wb_frame_slaves)
 
 
 # ── 3c. Reply-mask edges: wrong length, padding bits, the disable call site ──

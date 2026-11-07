@@ -46,11 +46,27 @@ def _effective_size(image: bytes) -> int:
     return (used + 3) & ~3
 
 
+def parse_known_firmware_filename(filename: str) -> Optional[Tuple[str, str, str]]:
+    """Return (device, kind, version) for an exact known release basename."""
+    match = re.fullmatch(
+        r"(MR-02m|RTU-Sensor|CE-02m-3)_(bootloader_)?([0-9]+(?:\.[0-9]+){3})\.(?:fw|bin)",
+        filename,
+        re.I | re.ASCII,
+    )
+    if match is None:
+        return None
+    family = {"mr-02m": "MR-02m", "rtu-sensor": "RTU-Sensor", "ce-02m-3": "CE-02m-3"}
+    return family[match[1].lower()], "bootloader" if match[2] else "app", match[3]
+
+
 def parse_version_from_filename(filename: str) -> Optional[str]:
     """
     Извлекает версию из имени файла MR-02m_<version>.fw / .bin.
     Поддерживаются 1–4 компонента: 1, 1.0, 1.0.0, 1.0.0.0 (недостающие дополняются нулями до X.Y.Z.W).
     """
+    known = parse_known_firmware_filename(filename)
+    if known is not None:
+        return known[2]
     m = re.match(r"ce-02m-3_(\d+\.\d+\.\d+\.\d+)\.(?:fw|bin)$", filename, re.I)
     if m:
         return m.group(1)

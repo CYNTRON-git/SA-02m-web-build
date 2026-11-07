@@ -548,6 +548,28 @@ function applyCpuProfile() {
     .finally(() => { if (btn) btn.disabled = false; });
 }
 
+// One request owns its controller until the entire JSON body is consumed.
+// Rejecting as well as aborting bounds wrappers whose body promise may stall.
+function svcCtlFetchJson(url, options, deadline) {
+  const until = Math.min(Date.now() + 20000, deadline == null ? Infinity : deadline);
+  if (until <= Date.now()) return Promise.reject(new Error('timeout'));
+  const controller = new AbortController();
+  let timer;
+  return new Promise(function (resolve, reject) {
+    timer = setTimeout(function () {
+      controller.abort();
+      reject(new Error('timeout'));
+    }, until - Date.now());
+    fetch(url, Object.assign({}, options, { signal: controller.signal }))
+      .then(async function (r) {
+        const j = await r.json();
+        if (Date.now() >= until) throw new Error('timeout');
+        return { response: r, data: j };
+      })
+      .then(resolve, reject);
+  }).finally(function () { clearTimeout(timer); });
+}
+
 function loadServicesControl(forceToast) {
   const host = document.getElementById('svc-ctl-list');
   const btn = document.getElementById('svc-ctl-refresh-btn');
@@ -555,9 +577,8 @@ function loadServicesControl(forceToast) {
   showServicesControlNow();
   if (btn) btn.disabled = true;
   const gen = ++_svcCtlLoadGen;
-  fetch('cgi-bin/services_ctrl.cgi', { credentials: 'same-origin', cache: 'no-store' })
-    .then(async (r) => {
-      const j = await r.json().catch(() => ({}));
+  return svcCtlFetchJson('cgi-bin/services_ctrl.cgi', { credentials: 'same-origin', cache: 'no-store' })
+    .then(({ response: r, data: j }) => {
       if (!r.ok || j.error === 'unauthorized') throw new Error('нет доступа');
       if (j.error === 'ctl_missing') throw new Error('скрипт управления не установлен на устройстве');
       if (!j.ok && j.error) throw new Error(j.error);
@@ -636,14 +657,14 @@ function svcCtlActionDoneMsg(action) {
   return window.sa02mI18n ? window.sa02mI18n.t(ru) : ru;
 }
 
-function pollServiceCtlState(id, action, maxMs, intervalMs) {
+function pollServiceCtlState(id, action, maxMs, intervalMs, operationDeadline) {
   const wantStart = action === 'start';
-  const deadline = Date.now() + (maxMs || 90000);
+  const deadline = operationDeadline == null ? Date.now() + (maxMs || 90000) : operationDeadline;
   return new Promise(function (resolve, reject) {
     function tick() {
-      fetch('cgi-bin/services_ctrl.cgi', { credentials: 'same-origin', cache: 'no-store' })
-        .then(async (r) => {
-          const j = await r.json().catch(() => ({}));
+      if (Date.now() >= deadline) { reject(new Error('timeout')); return; }
+      svcCtlFetchJson('cgi-bin/services_ctrl.cgi', { credentials: 'same-origin', cache: 'no-store' }, deadline)
+        .then(({ response: r, data: j }) => {
           if (!r.ok || j.ok === false) throw new Error(svcCtlErrorMessage(j.error) || ('HTTP ' + r.status));
           const svc = (j.services || []).find(function (s) { return s && s.id === id; });
           renderServicesControl(j);
@@ -666,24 +687,24 @@ function pollServiceCtlState(id, action, maxMs, intervalMs) {
             reject(new Error('timeout'));
             return;
           }
-          setTimeout(tick, intervalMs || 2000);
+          setTimeout(tick, Math.min(intervalMs || 2000, deadline - Date.now()));
         })
         .catch(reject);
     }
-    setTimeout(tick, 1500);
+    tick();
   });
 }
 
-function pollServiceCtlResult(id, maxMs, intervalMs, opId, action) {
-  const deadline = Date.now() + (maxMs || 90000);
+function pollServiceCtlResult(id, maxMs, intervalMs, opId, action, operationDeadline) {
+  const deadline = operationDeadline == null ? Date.now() + (maxMs || 90000) : operationDeadline;
   return new Promise(function (resolve, reject) {
     function tick() {
-      fetch('cgi-bin/services_ctrl.cgi?result=1&id=' + encodeURIComponent(id) + (opId ? '&op_id=' + encodeURIComponent(opId) : ''), {
+      if (Date.now() >= deadline) { reject(new Error('timeout')); return; }
+      svcCtlFetchJson('cgi-bin/services_ctrl.cgi?result=1&id=' + encodeURIComponent(id) + (opId ? '&op_id=' + encodeURIComponent(opId) : ''), {
         credentials: 'same-origin',
         cache: 'no-store',
-      })
-        .then(async (r) => {
-          const j = await r.json().catch(() => ({}));
+      }, deadline)
+        .then(({ response: r, data: j }) => {
           if (!r.ok) throw new Error('HTTP ' + r.status);
           if (j.error === 'unauthorized' || j.error === 'invalid_operation') throw new Error(j.error);
           // A previous result may still occupy the shared slot before the
@@ -693,7 +714,7 @@ function pollServiceCtlResult(id, maxMs, intervalMs, opId, action) {
               reject(new Error('timeout'));
               return;
             }
-            setTimeout(tick, intervalMs || 2000);
+            setTimeout(tick, Math.min(intervalMs || 2000, deadline - Date.now()));
             return;
           }
           if (j.ok === false && j.error) {
@@ -705,13 +726,14 @@ function pollServiceCtlResult(id, maxMs, intervalMs, opId, action) {
         })
         .catch(reject);
     }
-    setTimeout(tick, 1500);
+    setTimeout(tick, Math.max(0, Math.min(1500, deadline - Date.now())));
   });
 }
 
-function pollServiceCtlDone(id, action, maxMs, intervalMs, opId) {
-  return pollServiceCtlResult(id, maxMs, intervalMs, opId, action)
-    .then(function () { return pollServiceCtlState(id, action, maxMs, intervalMs); });
+function pollServiceCtlDone(id, action, maxMs, intervalMs, opId, operationDeadline) {
+  const deadline = operationDeadline == null ? Date.now() + (maxMs || 90000) : operationDeadline;
+  return pollServiceCtlResult(id, maxMs, intervalMs, opId, action, deadline)
+    .then(function () { return pollServiceCtlState(id, action, maxMs, intervalMs, deadline); });
 }
 
 function serviceCtlAction(btn) {
@@ -744,19 +766,19 @@ function serviceCtlAction(btn) {
   // poll deadline; start/stop keep 90 s.
   const longOp = action === 'install' || action === 'uninstall';
   const pollMax = longOp ? 600000 : 90000;
-  return fetch('cgi-bin/services_ctrl.cgi', {
+  const deadline = Date.now() + pollMax;
+  return svcCtlFetchJson('cgi-bin/services_ctrl.cgi', {
     method: 'POST',
     credentials: 'same-origin',
     headers: withCsrfHeaders({ 'Content-Type': 'application/json; charset=utf-8' }),
     body: JSON.stringify({ id, action }),
-  })
-    .then(async (r) => {
-      const j = await r.json().catch(() => ({}));
+  }, deadline)
+    .then(({ response: r, data: j }) => {
       if (!r.ok || j.ok !== true) throw new Error(svcCtlErrorMessage(j.error) || ('HTTP ' + r.status));
       if (j.op_id && (!/^[a-f0-9]{32}$/.test(j.op_id) || j.id !== id || j.action !== action)) throw new Error('invalid_result');
       if (j.pending) {
         toast(svcCtlActionPendingMsg(action), 'info', longOp ? 8000 : 5000);
-        return pollServiceCtlDone(id, action, pollMax, 2000, j.op_id);
+        return pollServiceCtlDone(id, action, pollMax, 2000, j.op_id, deadline);
       }
       return j;
     })

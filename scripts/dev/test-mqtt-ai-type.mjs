@@ -13,8 +13,8 @@
      - an unconfirmed pick (pending) and an open edit still win over live;
      - with no live type the YAML type (and the N-leg mirror of a TC-K /
        3-wire P type) is shown, as before;
-     - a live type change that the module did not confirm reverts the channel
-       config to the live code for every code, the colliding ones included.
+     - only a fresh write receipt updates the saved configuration and clears
+       a matching pending selection.
    Non-vacuous: a helper or declaration that stops being found, or a legacy
    table that stops colliding with 32 codes, FAILS.
    ═══════════════════════════════════════════════════════════════════════════ */
@@ -59,7 +59,8 @@ function check(cond, msg) {
 const FNS = [
   'aiTypeControlKey', 'getOrCreateChannel', 'getModuleTypeCode',
   'mr02mAiSupportsPairs', 'mr02mAiPairParent', 'mr02mAiIsNLeg',
-  'mr02mAiMirrorTypeToN', 'mr02mAiEffectiveSensorType', 'aiTypeRevertChannelToLive',
+  'mr02mAiMirrorTypeToN', 'mr02mAiEffectiveSensorType', 'aiTypeSetPending',
+  'aiTypeDropPending', 'aiTypeReconcilePending',
 ];
 // Helpers the retired heuristic used: cut in when the source still has them, so
 // a reintroduced legacy reading fails by its result, not by a ReferenceError.
@@ -67,7 +68,8 @@ const OPTIONAL_FNS = ['isLegacyAiRegisterCode', 'migrateLegacyAiSensorCode'];
 const DECLS = [
   'MR02M_TYPES', 'MR02M_AI_PAIR_TYPES', '_AI_TC_K_CODES', '_AI_RTD_3WIRE',
   'AI_SENSOR_LEGACY_ENUM_MIGRATION',
-  '_liveSensorTypes', '_aiTypeEditGuard', '_aiTypePending',
+  '_liveSensorTypes', '_aiTypeEditGuard', '_aiTypePending', '_aiTypePendingDeadline',
+  '_aiTypeReceipts', '_aiTypeBeforeReceipt', '_aiTypeReadSeq',
 ];
 
 const src = readFileSync(MQTT_JS, 'utf8');
@@ -136,20 +138,30 @@ console.log('3. no live type: YAML, and the N-leg mirror of a TC-K P type');
   check(shown(d, 5) === 0, 'no YAML, no live: «Выключен»');
 }
 
-console.log('4. an unconfirmed live change reverts the channel to the live code');
+console.log('4. a type-register echo or a stale write receipt cannot update the saved type');
 {
-  const reverted = [];
-  for (const code of [3, 5, 22, 37, 0]) {
-    const d = dev([{ ch: 1, enabled: true, sensor_type: 40 }]);
-    reset({ ai_1: String(code) });
-    api.aiTypeRevertChannelToLive(d, 1);
-    if (d.channels.ai[0].sensor_type !== code) reverted.push(`${code} -> ${d.channels.ai[0].sensor_type}`);
-  }
-  check(reverted.length === 0, `revert takes the live code, colliding codes included (${reverted.join('; ')})`);
-  const d = dev([{ ch: 1, enabled: true, sensor_type: 40 }]);
-  reset({ ai_1: '' });
-  api.aiTypeRevertChannelToLive(d, 1);
-  check(d.channels.ai[0].sensor_type === 40, 'no live type: the channel config is left alone');
+  const d = dev([{ch: 1, enabled: true, sensor_type: 3},
+                 {ch: 2, enabled: true, sensor_type: 8}]);
+  reset({ai_1: '37'});
+  const old = {ai_1: {code: 37, receipt: 'earlier'}};
+  api.aiTypeReconcilePending(d, old, 1);
+  api._aiTypeReadSeq[DEV_ID] = 2;
+  api.aiTypeSetPending(DEV_ID, 1, 37);
+  api.aiTypeReconcilePending(d, undefined, 2);
+  api.aiTypeReconcilePending(d, {ai_1: {code: 37, receipt: 'before-pick'}}, 2);
+  api.aiTypeReconcilePending(d, old, 3);
+  check(d.channels.ai[0].sensor_type === 3 && shown(d, 1) === 37,
+    'raw echo and old receipt leave YAML unchanged while selection is pending');
+  api.aiTypeReconcilePending(d, {ai_1: {code: 37, receipt: 'fresh'},
+    ai_2: {code: 0, receipt: 'fresh'}}, 5);
+  check(d.channels.ai[0].sensor_type === 37 && !Object.keys(api._aiTypePending).length,
+    'a fresh persisted receipt updates the saved type and clears pending');
+  check(d.channels.ai[1].sensor_type === 0, 'the same confirmed command updates its companion');
+  const stale = {ai_1: {code: 3, receipt: 'old-command'}, ai_2: {code: 8, receipt: 'old-command'}};
+  api.aiTypeReconcilePending(d, stale, 4);
+  api.aiTypeReconcilePending(d, stale, 6);
+  check(d.channels.ai[0].sensor_type === 37 && d.channels.ai[1].sensor_type === 0,
+    'late GET and an unsolicited receipt cannot overwrite the locally saved pair');
 }
 
 if (failures) {

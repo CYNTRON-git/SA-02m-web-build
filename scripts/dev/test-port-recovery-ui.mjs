@@ -35,9 +35,29 @@ const ctx = vm.createContext({state, $, currentPort: () => selected, uiT: s => s
   setBadge() {},
 });
 vm.runInContext(['syncActionButtons', 'portReleaseFailure', 'releasePortPollers', 'restorePortPollers', 'updatePortHint', 'reconcilePortRestoration'].map(extract).join('\n'), ctx);
-vm.runInContext('let _portOpPromise = null;\n' + extract('_autoReleasePortForConfig') + '\n' + extract('_autoRestorePortForConfig'), ctx);
 const tests = [];
 function test(name, body) { tests.push([name, body]); }
+test('re-scan with COM5 occupied admits only the selected COM4 scan', async () => {
+  const posted = [];
+  const context = vm.createContext({state: {ports: [{key: 'COM5', busy_pids: ['99']}]},
+    $: () => ({value: 'COM4'}), hidePollerBusyOffer() {}, startScan: async () => posted.push('scan'),
+    releasePortPollers: async () => {posted.push('global release'); return false;}});
+  vm.runInContext(extract('stopPollersAndRescan'), context);
+  await context.stopPollersAndRescan('COM4');
+  assert.deepEqual(posted, ['scan']);
+});
+test('re-scan identifies gateway and unknown PID, offers retry for a configured holder', () => {
+  const offer = {}, port = {key: 'COM4', busy_pids: ['12'], active_services: ['RS-485 Gateway'], managed_services: ['MQTT']};
+  const context = vm.createContext({state: {devices: [], ports: [port]}, pollerBusyOfferEl: () => offer,
+    $: () => null, t: s => s, escapeHtml: s => s, unitUiLabel: s => s});
+  vm.runInContext(extract('portHolderLabels') + '\n' + extract('maybeOfferPollerBusy'), context);
+  context.maybeOfferPollerBusy('error', 'COM4');
+  assert.match(offer.innerHTML, /Gateway/); assert.doesNotMatch(offer.innerHTML, /<button/);
+  port.active_services = []; context.maybeOfferPollerBusy('error', 'COM4');
+  assert.match(offer.innerHTML, /PID 12/); assert.doesNotMatch(offer.innerHTML, /<button/);
+  port.active_services = ['MQTT']; context.maybeOfferPollerBusy('error', 'COM4');
+  assert.match(offer.innerHTML, /<button/);
+});
 test('reserved empty-scope port enables Restore', () => {
   selected.reserved = true;
   ctx.syncActionButtons();
@@ -67,30 +87,32 @@ test('idle Restore disabled, active job refuses even with reservations', () => {
   ctx.syncActionButtons(); assert.equal($('flasher-restore-port-btn').disabled, true);
   selected.active_job = null;
 });
-test('failed auto configuration retains partial reservations without blanket restore', async () => {
-  state.configPortReleased = false;
-  calls.length = 0;
-  reply = {ok: false, port: selected, failed: ['/dev/COM4: busy'], manual_reserved_ports: ['/dev/COM1']};
-  await ctx._autoReleasePortForConfig();
-  assert.deepEqual(calls, ['/ports/release']);
-  assert.equal(state.configPortReleased, false);
-  assert.match(state.portRecoveryError, /COM1/);
+test('opening and closing a module uses the operation lease and preserves independent manual reserves', async () => {
+  const events = [], idle = () => {};
+  const modalState = {devices: [{address: 12}], ports: [{key: 'COM5', reserved: true}]};
+  const context = vm.createContext({state: modalState, isFlasherOperationActive: () => false,
+    isDeviceConfigSupported: () => true, stopConfigPolling: idle, setConfigPollError: idle,
+    clearAiConfigEditState: idle, configModalEl: () => ({}), document: {body: {style: {}}},
+    ensureConfigCloseEnabled: idle, buildConfigSnapshotStubFromDevice: () => null, renderConfigBody: idle,
+    refreshConfigSnapshot: async () => events.push('selected snapshot'), startConfigPolling: idle,
+    apiPost: name => events.push(name)});
+  vm.runInContext('let _configPollSeq = 0;\n' + extract('openConfigModal') + '\n' + extract('closeConfigModal'), context);
+  await context.openConfigModal(0); context.closeConfigModal();
+  assert.deepEqual(events, ['selected snapshot']);
+  assert.equal(modalState.ports[0].reserved, true);
 });
-test('failed auto restore keeps cleanup obligation until successful retry', async () => {
-  state.configPortReleased = true; state.configReservedPort = 'COM4';
-  reply = {ok: false, failed: ['restore failed']};
-  await ctx._autoRestorePortForConfig();
-  await vm.runInContext('_portOpPromise', ctx);
-  assert.equal(state.configPortReleased, true);
-  assert.match(state.portRecoveryError, /restore failed/);
-  reply = {ok: true, failed: []};
-  await ctx._autoRestorePortForConfig();
-  await vm.runInContext('_portOpPromise', ctx);
-  assert.equal(state.configPortReleased, false);
-  assert.equal(state.portRecoveryError, '');
+test('background polling never repeatedly stops a whole service and can borrow a manual reservation', () => {
+  let reads = 0;
+  const port = {whole_service_scope: ['mplc4.service']};
+  const context = vm.createContext({state: {configOpen: true}, currentPort: () => port,
+    refreshConfigSnapshot: () => reads++});
+  vm.runInContext(extract('configPollTick'), context);
+  context.configPollTick(); context.configPollTick(); assert.equal(reads, 0);
+  port.reserved = true; context.configPollTick(); assert.equal(reads, 1);
+  port.reserved = false; port.whole_service_scope = []; context.configPollTick(); assert.equal(reads, 2);
 });
 test('automatic snapshot success cannot erase the persistent recovery banner', () => {
-  vm.runInContext(extract('setConfigBanner'), ctx);
+  vm.runInContext(extract('renderConfigBanner') + '\n' + extract('setConfigBanner'), ctx);
   state.portRecoveryError = 'COM4 busy; restore COM1';
   ctx.setConfigBanner('', '');
   assert.equal($('flasher-config-banner').hidden, false);
@@ -99,7 +121,6 @@ test('automatic snapshot success cannot erase the persistent recovery banner', (
 test('fresh page shows broker recovery separately from manual reserves', () => {
   selected.reserved = false;
   state.ports = [selected, {key: 'COM1', restore_pending: true, restore_services: ['mplc4.service'], restore_error: 'start failed', coordinator_available: false}];
-  state.configPortReleased = false;
   state.portRecoveryError = '';
   ctx.updatePortHint();
   assert.equal($('flasher-restore-port-btn').disabled, false);

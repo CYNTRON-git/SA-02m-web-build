@@ -155,6 +155,12 @@ for (const [sig, want] of MANIFEST_DEVICE_CASES) {
     `manifestDeviceForSignature('${sig}') === '${want}' (got '${got}')`);
 }
 
+for (const sig of ['6AI2AO', 'AI6AO2', 'MR-02m 6AI2AO_bl', 'MP-02m AI6AO2_bl']) {
+  check(resolveDeviceFlashRoute(sig) === 'mp_mr', `${sig}: MR firmware route`);
+  check(arraysEqual(capsFromSignature(sig), [0, 0, 2, 6]), `${sig}: six AI and two AO`);
+  check(manifestDeviceForSignature(sig) === 'MR-02m', `${sig}: MR firmware family`);
+}
+
 if (failures) {
   console.error('js-unit-flasher-signatures: ' + failures + ' assertion(s) failed');
   process.exit(1);

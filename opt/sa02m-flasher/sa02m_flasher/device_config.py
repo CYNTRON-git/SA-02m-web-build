@@ -19,6 +19,7 @@ from __future__ import annotations
 
 import time
 from datetime import datetime
+from functools import partial
 from typing import Any, Dict, List, Optional, Sequence, Tuple
 
 from . import bus_mode
@@ -44,6 +45,7 @@ from .modbus_io import (
     write_single,
 )
 from . import module_profiles
+from . import mr_configuration
 from . import mtd_config
 
 REG_SERIAL_LO = 270
@@ -176,7 +178,6 @@ REG_DI_DEBOUNCE_BASE = 646
 REG_DI_LONG_PRESS_BASE = 662
 REG_DI_DOUBLE_CLICK_BASE = 678
 REG_RESET_DI_COUNTERS = 694
-REG_DI_FREQ_MODE_BASE = 750
 
 # MR-02м MCU diagnostics (как в desktop module_config_window.py)
 REG_MCU_OP_DAYS = 114          # Holding 114: наработка в днях (uint16)
@@ -300,7 +301,7 @@ def _device_line(device: Dict[str, Any]) -> Tuple[int, str, int]:
     return baud, _normalize_parity(device.get("parity")), stop
 
 
-def _open_transport(device_path: str, device: Dict[str, Any]):
+def _open_transport(device_path: str, device: Dict[str, Any], *, deadline=None):
     baud, parity, stop = _device_line(device)
     return make_serial_send_rtu_persistent(
         device_path,
@@ -309,21 +310,22 @@ def _open_transport(device_path: str, device: Dict[str, Any]):
         stop,
         default_timeout_ms=700,
         pre_open_delay_s=0.02,
+        **({'deadline': deadline} if deadline is not None else {}),
     )
 
 
 def _read_u16(send, slave: int, reg: int, timeout_ms: int = 700) -> Optional[int]:
-    payload, err = read_holding(send, slave, reg, 1, timeout_ms)
-    if err or not payload:
-        return None
-    regs = parse_regs_be_u16(payload)
-    return int(regs[0]) & 0xFFFF if regs else None
+    regs = _read_regs(send, slave, reg, 1, timeout_ms=timeout_ms)
+    return int(regs[0]) & 0xFFFF if len(regs) == 1 else None
 
 
 def _read_regs(send, slave: int, start: int, count: int, *, input_regs: bool = False, timeout_ms: int = 900) -> List[int]:
     reader = read_input_regs if input_regs else read_holding
-    payload, err = reader(send, slave, start, count, timeout_ms)
-    if err or not payload:
+    def correlated(request, timeout):
+        response = send(request, timeout)
+        return response if response and len(response) >= 2 and response[:2] == request[:2] else None
+    payload, err = reader(correlated, slave, start, count, timeout_ms)
+    if err or payload is None or len(payload) != 2 * count:
         return []
     return parse_regs_be_u16(payload)
 
@@ -332,6 +334,7 @@ def _read_live_identity(send, slave: int, fallback: Dict[str, Any]) -> Dict[str,
     signature = ""
     serial = int(fallback.get("serial") or 0) & 0xFFFFFFFF
     app_version = str(fallback.get("app_version") or "—").strip() or "—"
+    observed_app_version = None
     bl_version = str(fallback.get("bootloader_version") or "—").strip() or "—"
     type_code = None
 
@@ -344,10 +347,11 @@ def _read_live_identity(send, slave: int, fallback: Dict[str, Any]) -> Dict[str,
         serial = uint32_from_modbus_reg_pair_be(pl_ser, 0)
 
     pl_ver, err_ver = read_holding(send, slave, REG_APP_VERSION, REG_APP_VERSION_COUNT, 900)
-    if not err_ver and pl_ver:
+    if not err_ver and pl_ver and len(pl_ver) == REG_APP_VERSION_COUNT * 2:
         parsed = FlasherProtocol.parse_app_version_from_holding_payload(pl_ver)
         if parsed:
             app_version = parsed
+            observed_app_version = parsed
 
     pl_bl, err_bl = read_holding(send, slave, REG_BOOTLOADER_VER, REG_BOOTLOADER_VER_COUNT, 900)
     if not err_bl and pl_bl:
@@ -367,9 +371,335 @@ def _read_live_identity(send, slave: int, fallback: Dict[str, Any]) -> Dict[str,
         "signature": signature or str(fallback.get("signature") or "").strip(),
         "serial": serial,
         "app_version": app_version,
+        "observed_app_version": observed_app_version,
         "bootloader_version": bl_version,
         "type_code": type_code,
     }
+
+
+def validate_configuration_selector(device):
+    """File operations accept one explicit bounded serial target, never file-supplied IO."""
+    if not isinstance(device, dict):
+        raise ValueError('Invalid device selector')
+    address, baud = device.get('address'), device.get('baudrate')
+    if type(address) is not int or not 1 <= address <= 247:
+        raise ValueError('Invalid device address')
+    if type(baud) is not int or baud not in (1200, 2400, 4800, 9600, 19200, 38400, 57600, 115200):
+        raise ValueError('Invalid device baudrate')
+    if device.get('parity', 'N') not in ('N', 'E', 'O') or type(device.get('stopbits', 1)) is not int or device.get('stopbits', 1) not in (1, 2):
+        raise ValueError('Invalid serial line settings')
+
+
+class _ConfigurationBus:
+    def __init__(self, transport, deadline):
+        self.transport = transport
+        self.deadline = deadline
+        self.exchanges = 0
+
+    def __call__(self, request, timeout_ms=900):
+        remaining = self.deadline - time.monotonic()
+        if remaining <= 0 or self.exchanges >= mr_configuration.MAX_EXCHANGES:
+            raise TimeoutError('Configuration bus budget exhausted')
+        self.exchanges += 1
+        response = self.transport(request, min(timeout_ms, max(1, int(remaining * 1000))))
+        # The serial boundary correlates replies; retain that property for every
+        # adapter, including FC06 echoes and configuration-only fake transports.
+        if not response or len(response) < 5 or response[0] != request[0]:
+            return None
+        if response[1] == (request[1] | 0x80) and len(response) == 5:
+            return response  # The Modbus decoder checks the exception CRC.
+        if response[1] != request[1]:
+            return None
+        if request[1] == 6 and response != request:
+            return None
+        return response
+
+
+def _ai_apply_status(send, slave):
+    first = _read_regs(send, slave, 569, 4)
+    if not first or first[0] != 0xA101:
+        return {'state': 'unsupported'}
+    second = _read_regs(send, slave, 569, 4)
+    if first != second:
+        return {'state': 'unstable'}
+    _, flags, accepted, completed = first
+    if (flags & ~0x3f or flags & 0x28 or accepted > 65534 or completed > accepted or
+            (flags == 1 and (accepted == 0 or completed != accepted))):
+        return {'state': 'failed'}
+    return {'state': 'idle' if flags == 1 else 'busy', 'accepted': accepted, 'completed': completed}
+
+
+def _await_ai_idle(send, slave, status, expected=None):
+    """Only the completed generation covers the ADC worker and paired setters."""
+    previous_completed = expected - 1 if expected is not None else 0
+    while True:
+        state = status['state']
+        if state not in ('unstable', 'idle', 'busy'):
+            raise ValueError('AI application status unavailable or failed')
+        if 'accepted' in status:
+            if expected is None and status['accepted']:
+                expected = status['accepted']
+            if ((expected is not None and expected != status['accepted']) or
+                    status['completed'] < previous_completed):
+                raise ValueError('AI application generation changed')
+            previous_completed = status['completed']
+            if state == 'idle':
+                return expected
+        time.sleep(min(0.02, max(0, send.deadline - time.monotonic())))
+        status = _ai_apply_status(send, slave)
+
+
+def _verify_ai_idle(send, slave, generation):
+    status = _ai_apply_status(send, slave)
+    if status != {'state': 'idle', 'accepted': generation, 'completed': generation}:
+        raise ValueError('AI application changed during verification')
+
+
+def _ai_boot_observation(send, slave):
+    serial = _read_regs(send, slave, REG_SERIAL_LO, 2)
+    uptime = _read_regs(send, slave, INP_MCU_UPTIME_LO, 2, input_regs=True)
+    if len(serial) != 2 or serial in ([0, 0], [65535, 65535]) or len(uptime) != 2:
+        raise ValueError('AI module identity or uptime unavailable')
+    return serial, uptime[0] | (uptime[1] << 16)
+
+
+def _start_ai_boot_check(send, slave):
+    started = time.monotonic()
+    serial, uptime = _ai_boot_observation(send, slave)
+    if uptime <= send.deadline - started + 1:
+        raise ValueError('AI module startup too recent to verify continuity')
+    return serial, uptime, started
+
+
+def _verify_ai_boot(send, slave, baseline):
+    serial, uptime = _ai_boot_observation(send, slave)
+    old_serial, old_uptime, started = baseline
+    now = time.monotonic()
+    if now > send.deadline or serial != old_serial or not old_uptime <= uptime <= old_uptime + (now - started) + 1:
+        raise ValueError('AI module restarted or changed during configuration')
+
+
+def configuration_file_operation(device_path, device, *, configuration=None,
+                                 preview_only=True, allow_partial=False, deadline=None):
+    """One persistent, bounded transport; the caller owns the UART lease throughout."""
+    validate_configuration_selector(device)
+    slave = device['address']
+    deadline = time.monotonic() + 20.0 if deadline is None else deadline
+    transport, close = _open_transport(device_path, device, deadline=deadline)
+    send = _ConfigurationBus(transport, deadline)
+
+    def words_at(start, count, input_regs=False):
+        values = _read_regs(send, slave, start, count, input_regs=input_regs)
+        return dict(zip(range(start, start + count), values)) if len(values) == count else {}
+
+    try:
+        kind_word = words_at(0, 1, True)
+        if not kind_word:
+            raise ValueError('Fresh MR module identity unavailable')
+        kind = module_profiles.kind_from_type_code(kind_word[0])
+        if kind is None or kind.code not in mr_configuration.SHIPPING_TYPES:
+            raise ValueError('Unsupported MR configuration target')
+        signature_payload, error = read_holding(send, slave, REG_SIGNATURE, REG_SIGNATURE_COUNT, 900)
+        if error or not signature_payload or len(signature_payload) != REG_SIGNATURE_COUNT * 2:
+            raise ValueError('Fresh MR signature unavailable')
+        signature = decode_signature_from_holding_290_payload(signature_payload).strip()
+        if module_profiles.caps_from_signature(signature) != tuple(mr_configuration.io_counts(kind).values()):
+            raise ValueError('MR type and signature contradict each other')
+        version_payload, error = read_holding(send, slave, REG_APP_VERSION, REG_APP_VERSION_COUNT, 900)
+        version = (FlasherProtocol.parse_app_version_from_holding_payload(version_payload)
+                   if not error and version_payload and len(version_payload) == 8 else None)
+        request_fields = mr_configuration.requested_paths(configuration, kind) if configuration is not None else None
+        ai_status = _ai_apply_status(send, slave) if kind.max_ai else {}
+        guarded = []
+        generation = None
+        boot = None
+        if request_fields is not None and kind.max_ai:
+            guarded = sorted(path for path in request_fields[0] if mr_configuration.requires_ai_boundary(path))
+            if guarded and ai_status['state'] != 'unsupported' and (not preview_only or ai_status['state'] == 'idle'):
+                if not preview_only:
+                    boot = _start_ai_boot_check(send, slave)
+                generation = _await_ai_idle(send, slave, ai_status)
+        words = {}
+        for start, count in mr_configuration.read_ranges(kind, version):
+            words.update(words_at(start, count))
+        exported = mr_configuration.export_configuration(kind, version, words)
+        if configuration is None:
+            if ai_status.get('state') == 'idle' and _ai_apply_status(send, slave) != ai_status:
+                ai_status = {'state': 'unstable'}
+            if kind.max_ai and ai_status['state'] != 'idle':
+                export_unsupported = {path for path in exported['coverage']['included']
+                                      if mr_configuration.requires_ai_boundary(path)}
+                exported['coverage']['unsupported'] = sorted(export_unsupported | set(exported['coverage']['unsupported']))
+            return {'ok': True, 'complete': not exported['coverage']['unavailable'], 'configuration': exported,
+                    'ai_apply': ai_status}
+        plan = mr_configuration.plan_requested_paths(*request_fields, kind, version, words)
+        fields = mr_configuration.fields_for(kind, version)
+        steps = plan['writes']
+        # Paired sensors have one write and two reads; account before any write.
+        needed = (sum(1 + len({fields[item['path']].register for item in step['fields']}) for step in steps)
+                  + len(plan['final_fields']) + len(plan['final_ai_ranges']))
+        type_steps = [step for step in steps if step['fields'][0]['path'].endswith('.sensor_code')]
+        if generation is not None:
+            if generation + len(type_steps) > 65534:
+                raise ValueError('AI application generation exhausted')
+            needed += 4 + 2 * len(type_steps)
+            if boot is not None:
+                needed += 2
+            if type_steps:
+                needed += len(plan['final_ai_ranges']) + 2
+        if send.exchanges + needed > mr_configuration.MAX_EXCHANGES:
+            raise ValueError('Configuration exceeds exchange limit')
+        changes_by_path = {item['path']: dict(item) for step in steps for item in step['fields']}
+        changes_by_path.update({item['path']: dict(item) for item in plan['final_fields']})
+        changes = list(changes_by_path.values())
+        result = {'ok': True, 'complete': plan['complete'], 'preview_only': preview_only,
+                  'module': exported['module'], 'changes': changes, 'applied': [],
+                  'unchanged': [{'path': path, 'observed': plan['requested'][path]} for path in plan['unchanged']],
+                  'failed': [], 'remaining': [item['path'] for item in changes],
+                  'unavailable': plan['unavailable'], 'unsupported': plan['unsupported'],
+                  'normalizations': plan['normalizations'],
+                  'warnings': ['Configuration may change autonomous outputs; readback does not guarantee persistence.']}
+        if guarded and generation is None:
+            result.update(ok=preview_only, complete=False, apply_blocked=True, ai_apply=ai_status)
+            result['unsupported'] = sorted(set(result['unsupported']) | set(guarded))
+            result['unchanged'] = [item for item in result['unchanged'] if item['path'] not in guarded]
+            result['warnings'].append('AI type application is unconfirmed. Automatic restoration of these fields is unavailable.')
+            return result
+        if generation is not None:
+            _verify_ai_idle(send, slave, generation)
+        if preview_only:
+            return result
+        if not plan['complete'] and not allow_partial:
+            raise ValueError('Incomplete configuration requires explicit partial acknowledgement')
+        final_ai_paths = {item['path'] for item in plan['final_ai']}
+
+        def finish():
+            if boot is not None:
+                try:
+                    _verify_ai_boot(send, slave, boot)
+                except (ValueError, TimeoutError) as exc:
+                    for row in result['applied'] + result['unchanged']:
+                        result['failed'].append(dict(row, status='unknown', error=str(exc)))
+                    result.update(ok=False, complete=False, applied=[], unchanged=[], error=str(exc))
+            return result
+
+        def invalidate_pending_ai():
+            pending_ai = [item for item in result['applied'] if item['path'] in final_ai_paths]
+            result['applied'] = [item for item in result['applied'] if item['path'] not in final_ai_paths]
+            result['failed'].extend(dict(item, status='unknown', error='Final AI verification not completed') for item in pending_ai)
+            result['unchanged'] = [item for item in result['unchanged'] if item['path'] not in guarded]
+
+        for index, step in enumerate(steps):
+            observed = {}
+            acknowledged = False
+            try:
+                error = write_single(send, slave, step['register'], step['value'], 900)
+                if error:
+                    if generation is not None:
+                        result['ai_apply'] = _ai_apply_status(send, slave)
+                    raise RuntimeError('Write acknowledgement unavailable: ' + error)
+                acknowledged = True
+                if step['fields'][0]['path'].endswith('.sensor_code'):
+                    generation = _await_ai_idle(send, slave, _ai_apply_status(send, slave), generation + 1)
+                observed_words = {}
+                for register in sorted({fields[item['path']].register for item in step['fields']}):
+                    observed_words.update(words_at(register, 1))
+                for item in step['fields']:
+                    field = fields[item['path']]
+                    if field.register not in observed_words:
+                        raise RuntimeError('Setting readback unavailable')
+                    observed[item['path']] = field.decode(observed_words[field.register])
+                    if observed[item['path']] != item.get('intermediate', item['expected']):
+                        raise RuntimeError('Setting readback mismatch')
+                if type_steps and step is type_steps[-1]:
+                    # Rebase limit order and skip values already restored by the ADC worker.
+                    for start, count in plan['final_ai_ranges']:
+                        fresh = words_at(start, count)
+                        if not fresh:
+                            raise RuntimeError('Post-apply AI readback unavailable')
+                        words.update(fresh)
+                    rebased = mr_configuration.plan_requested_paths(*request_fields, kind, version, words)
+                    planned_registers = {s['register'] for s in steps[index + 1:]}
+                    if any(s['register'] not in planned_registers for s in rebased['writes']):
+                        raise RuntimeError('Post-apply settings differ from the approved plan')
+                    _verify_ai_idle(send, slave, generation)
+                    steps[index + 1:] = rebased['writes']
+            except (RuntimeError, ValueError, TimeoutError) as exc:
+                result.update(ok=False, complete=False)
+                result['failed'] = [dict(item, status='unknown', acknowledged=acknowledged, error=str(exc),
+                                         **({'observed': observed[item['path']]} if item['path'] in observed else {}))
+                                    for item in step['fields']]
+                pending_paths = {item['path'] for item in plan['final_fields']}
+                prior_pending = {item['path']: item['observed'] for item in result['applied'] if item['path'] in pending_paths}
+                pending = [dict(item, status='unknown', error='Final relay options not verified',
+                                observed=prior_pending.get(item['path'], fields[item['path']].decode(words[fields[item['path']].register])))
+                           for item in plan['final_fields'] if item['path'] not in {failure['path'] for failure in result['failed']}]
+                result['applied'] = [item for item in result['applied'] if item['path'] not in pending_paths]
+                result['failed'].extend(pending)
+                invalidate_pending_ai()
+                result['remaining'] = [item['path'] for pending in steps[index + 1:] for item in pending['fields']]
+                return finish()
+            result['applied'].extend(dict(item, observed=observed[item['path']], status='pending' if 'intermediate' in item or item['path'] in final_ai_paths else 'confirmed') for item in step['fields'])
+        final_ai_words, final_ai_error = {}, ''
+        try:
+            for start, count in plan['final_ai_ranges']:
+                readback = words_at(start, count)
+                if len(readback) != count:
+                    raise RuntimeError('Final AI readback unavailable')
+                final_ai_words.update(readback)
+            if generation is not None:
+                _verify_ai_idle(send, slave, generation)
+        except (RuntimeError, ValueError, TimeoutError) as exc:
+            final_ai_error = str(exc)
+        for item in plan['final_ai']:
+            path, field = item['path'], fields[item['path']]
+            observed_value = None
+            try:
+                if final_ai_error and mr_configuration.requires_ai_boundary(path):
+                    raise RuntimeError(final_ai_error)
+                if field.register not in final_ai_words:
+                    raise RuntimeError(final_ai_error or 'Final AI readback unavailable')
+                observed_value = field.decode(final_ai_words[field.register])
+                if observed_value != item['expected']:
+                    raise RuntimeError('Final AI readback mismatch')
+            except (RuntimeError, ValueError) as exc:
+                result.update(ok=False, complete=False)
+                result['applied'] = [entry for entry in result['applied'] if entry['path'] != path]
+                result['unchanged'] = [entry for entry in result['unchanged'] if entry['path'] != path]
+                result['failed'].append(dict(item, status='unknown', error=str(exc),
+                    **({'observed': observed_value} if observed_value is not None else {})))
+            else:
+                if not any(entry['path'] == path for entry in result['applied'] + result['unchanged']):
+                    result['applied'].append(dict(item, observed=observed_value, status='confirmed'))
+                for entry in result['applied']:
+                    if entry['path'] == path:
+                        entry.update(observed=observed_value, status='confirmed')
+        if not result['ok']:
+            result['remaining'] = []
+            return finish()
+        for item in plan['final_fields']:
+            field = fields[item['path']]
+            prior = next((entry for entry in result['applied'] if entry['path'] == item['path']), None)
+            result['applied'] = [entry for entry in result['applied'] if entry['path'] != item['path']]
+            observed_value = None
+            try:
+                readback = words_at(field.register, 1)
+                if field.register not in readback:
+                    raise RuntimeError('Final relay options readback unavailable')
+                observed_value = field.decode(readback[field.register])
+                if observed_value != item['expected']:
+                    raise RuntimeError('Final relay options readback mismatch')
+            except (RuntimeError, ValueError, TimeoutError) as exc:
+                result.update(ok=False, complete=False)
+                result['failed'].append(dict(item, status='unknown', error=str(exc),
+                    **({'observed': observed_value} if observed_value is not None else {'observed': prior['observed']} if prior else {})))
+                result['remaining'] = []
+                return finish()
+            result['applied'].append(dict(item, observed=observed_value, status='confirmed'))
+        result['remaining'] = []
+        return finish()
+    finally:
+        close()
 
 
 def _kind_from_identity(signature: str, type_code: Optional[int]) -> Optional[str]:
@@ -459,55 +789,62 @@ def _s32_from_u32(value: int) -> int:
 
 
 def _relay_mode_module(kind: module_profiles.ModuleKind) -> bool:
-    return int(kind.code) in (module_profiles.MP02_DO6DI8, module_profiles.MP02_DO4DI6)
+    return module_profiles.mr_relay_capabilities(kind) is not None
 
 
 def _read_do_bits(send, slave: int, count: int) -> List[bool]:
-    bits: List[bool] = []
     payload, err = read_coils(send, slave, DO_COIL_START, count, 900)
-    if not err and payload:
+    if not err and payload is not None and len(payload) == (count + 7) // 8:
         bits = coil_bits_from_payload(payload, count)
-    if len(bits) >= count:
         return [bool(bits[idx]) for idx in range(count)]
     regs = _read_regs(send, slave, INP_DO_FIRST, count, input_regs=True, timeout_ms=900)
-    if regs:
-        return [bool(int(regs[idx]) & 0xFFFF) if idx < len(regs) else False for idx in range(count)]
-    return [False] * count
+    if len(regs) == count:
+        return [bool(int(value) & 0xFFFF) for value in regs]
+    raise RuntimeError("Incomplete DO readback")
+
+
+def _read_required_regs(send, slave: int, start: int, count: int, **kwargs) -> List[int]:
+    regs = _read_regs(send, slave, start, count, **kwargs)
+    if len(regs) != count:
+        raise RuntimeError("Incomplete register readback at %d: expected %d, got %d" % (start, count, len(regs)))
+    return regs
 
 
 def _read_u32_pairs(send, slave: int, start: int, count_u32: int, *, input_regs: bool = True, timeout_ms: int = 1000) -> List[int]:
     regs = _read_regs(send, slave, start, max(0, int(count_u32)) * 2, input_regs=input_regs, timeout_ms=timeout_ms)
+    if len(regs) != int(count_u32) * 2:
+        return []
     values: List[int] = []
     for idx in range(int(count_u32)):
         base = idx * 2
-        values.append(regs_u32_lo_hi(regs, base) if base + 1 < len(regs) else 0)
+        values.append(regs_u32_lo_hi(regs, base))
     return values
 
 
 def _read_bit_mirror(send, slave: int, start: int, count: int) -> List[int]:
     for reader in (read_coils, read_discrete_inputs):
         payload, err = reader(send, slave, start, count, 900)
-        if err or not payload:
+        if err or payload is None or len(payload) != (count + 7) // 8:
             continue
         bits = coil_bits_from_payload(payload, count)
         if len(bits) >= count:
             return [1 if bits[idx] else 0 for idx in range(count)]
-    return [0] * count
+    return []
 
 
 def _ao_raw_to_volts(raw: int) -> float:
     return float(int(raw) & 0xFFFF) / 100.0
 
 
-def _read_ai_channels(send, slave: int, kind: module_profiles.ModuleKind) -> List[Dict[str, Any]]:
+def _read_ai_channels(send, slave: int, kind: module_profiles.ModuleKind, observed_app_version: Optional[str] = None) -> List[Dict[str, Any]]:
     channels: List[Dict[str, Any]] = []
     if kind.max_ai <= 0:
         return channels
     stride = module_profiles.ai_channel_stride(kind.code, kind)
     start = module_profiles.ai_channel_base_register(1, kind.code, kind)
     total = int(kind.max_ai) * int(stride)
-    input_regs = _read_regs(send, slave, start, total, input_regs=True, timeout_ms=1200)
-    holding_regs = _read_regs(send, slave, start, total, input_regs=False, timeout_ms=1200)
+    input_regs = _read_required_regs(send, slave, start, total, input_regs=True, timeout_ms=1200)
+    holding_regs = _read_required_regs(send, slave, start, total, input_regs=False, timeout_ms=1200)
     # Fault flags: Input 107 = below-limit, Input 108 = above-limit, one bit per
     # logical channel (bit ch-1). One paired read per snapshot (O(1), not per
     # channel) on the modal-scoped poll. Ref: MR-02m MODBUS_VARIABLES.txt:261-262;
@@ -515,7 +852,8 @@ def _read_ai_channels(send, slave: int, kind: module_profiles.ModuleKind) -> Lis
     fault_low_word = 0
     fault_high_word = 0
     fault_regs = _read_regs(send, slave, 107, 2, input_regs=True, timeout_ms=900)
-    if len(fault_regs) >= 2:
+    fault_known = len(fault_regs) == 2
+    if fault_known:
         fault_low_word = int(fault_regs[0]) & 0xFFFF
         fault_high_word = int(fault_regs[1]) & 0xFFFF
     for ch in range(1, int(kind.max_ai) + 1):
@@ -548,11 +886,12 @@ def _read_ai_channels(send, slave: int, kind: module_profiles.ModuleKind) -> Lis
             "limit_high": _s16_from_reg(hold[6]) if len(hold) > 6 else 0,
             "fault_low": bool((fault_low_word >> (ch - 1)) & 1) if ch <= 16 else False,
             "fault_high": bool((fault_high_word >> (ch - 1)) & 1) if ch <= 16 else False,
+            "fault_known": fault_known,
         }
-        if module_profiles.kind_has_mp_ai_adc_filters(kind):
+        if module_profiles.kind_has_mp_ai_adc_filters(kind, observed_app_version):
             stor = (
                 module_profiles.ai_stor_for_6ao6ai_p(ch)
-                if module_profiles.is_6ao6ai_module(kind)
+                if module_profiles.has_six_input_adc_layout(kind)
                 else module_profiles.ai_stor_for_12ai_channel(ch)
             )
             kalman_reg = module_profiles.ai_kalman_holding_reg(stor)
@@ -563,8 +902,12 @@ def _read_ai_channels(send, slave: int, kind: module_profiles.ModuleKind) -> Lis
                 "stor": stor,
                 "kalman": 1 if int(kalman or 0) else 0,
                 "sps": int(filters[0]) if len(filters) > 0 else module_profiles.AI_ADC_SAMPLE_RATES_SPS[1],
-                "avg": int(filters[1]) if len(filters) > 1 else 0,
+                "avg": max(1, int(filters[1])) if len(filters) == 3 and 0 <= filters[1] <= 50 else int(filters[1]) if len(filters) > 1 else 0,
                 "tau": int(filters[2]) if len(filters) > 2 else 0,
+                "known": {'kalman': kalman in (0, 1),
+                          'sps': len(filters) == 3 and filters[0] in module_profiles.AI_ADC_SAMPLE_RATES_SPS,
+                          'avg': len(filters) == 3 and 0 <= filters[1] <= 50,
+                          'tau': len(filters) == 3 and 0 <= filters[2] <= 65000},
             }
         channels.append(item)
     return channels
@@ -583,6 +926,7 @@ def _mr_module_payload(kind: module_profiles.ModuleKind) -> Dict[str, Any]:
         "max_ao": max_ao,
         "max_ai": max_ai,
         "relay_mode_panel": _relay_mode_module(kind),
+        "relay_capabilities": module_profiles.mr_relay_capabilities(kind),
     }
 
 
@@ -613,12 +957,11 @@ def _mr_di_block_full(send, slave: int, kind: module_profiles.ModuleKind) -> Dic
             "debounce": [],
             "long_press": [],
             "double_click": [],
-            "freq_mode": [],
         }
     return {
         "values": [
             1 if int(v) else 0
-            for v in _read_regs(send, slave, INP_DI_FIRST, max_di, input_regs=True, timeout_ms=1000)
+            for v in _read_required_regs(send, slave, INP_DI_FIRST, max_di, input_regs=True, timeout_ms=1000)
         ],
         "counts": _read_u32_pairs(send, slave, INP_DI_CNT_BASE, max_di, input_regs=True, timeout_ms=1000),
         "short_counts": _read_regs(send, slave, INP_DI_SHORT_CNT_BASE, max_di, input_regs=True, timeout_ms=1000),
@@ -629,7 +972,6 @@ def _mr_di_block_full(send, slave: int, kind: module_profiles.ModuleKind) -> Dic
         "debounce": _read_regs(send, slave, REG_DI_DEBOUNCE_BASE, max_di, timeout_ms=1000),
         "long_press": _read_regs(send, slave, REG_DI_LONG_PRESS_BASE, max_di, timeout_ms=1000),
         "double_click": _read_regs(send, slave, REG_DI_DOUBLE_CLICK_BASE, max_di, timeout_ms=1000),
-        "freq_mode": _read_bit_mirror(send, slave, REG_DI_FREQ_MODE_BASE, min(8, max_di)),
     }
 
 
@@ -637,7 +979,7 @@ def _mr_ao_block_full(send, slave: int, kind: module_profiles.ModuleKind) -> Dic
     max_ao = int(kind.max_ao)
     if max_ao <= 0:
         return {"current_raw": [], "setpoint": [], "safe": [], "safe_holding_regs": [], "current_volts": []}
-    current_raw = _read_regs(send, slave, INP_AO_FIRST, max_ao, input_regs=True, timeout_ms=1000)
+    current_raw = _read_required_regs(send, slave, INP_AO_FIRST, max_ao, input_regs=True, timeout_ms=1000)
     payload: Dict[str, Any] = {
         "current_raw": current_raw,
         "setpoint": _read_regs(send, slave, INP_AO_FIRST, max_ao, timeout_ms=1000),
@@ -656,14 +998,62 @@ def _mr_ao_block_full(send, slave: int, kind: module_profiles.ModuleKind) -> Dic
     return payload
 
 
-def _mr_relay_block(send, slave: int, kind: module_profiles.ModuleKind) -> Dict[str, Any]:
+def _mr_relay_block(send, slave: int, kind: module_profiles.ModuleKind, observed_app_version=None, *, include_advanced=False) -> Dict[str, Any]:
     if not _relay_mode_module(kind):
-        return {"mode": 0, "options": 0, "power_stagger": 0}
-    return {
-        "mode": int(_read_u16(send, slave, REG_RELAY_MODE, 800) or 0),
-        "options": int(_read_u16(send, slave, REG_RELAY_OPTIONS, 800) or 0),
-        "power_stagger": int(_read_u16(send, slave, REG_POWER_STAGGER, 800) or 0),
+        return {}
+    mode = _read_u16(send, slave, REG_RELAY_MODE, 800)
+    options = _read_u16(send, slave, REG_RELAY_OPTIONS, 800)
+    stagger = _read_u16(send, slave, REG_POWER_STAGGER, 800)
+    supported = module_profiles.mr_relay_advanced_supported(observed_app_version)
+    result = {
+        "mode": int(mode or 0), "mode_known": mode in module_profiles.mr_relay_capabilities(kind)['modes'],
+        "options": int(options or 0), "options_known": options is not None,
+        "power_stagger": int(stagger or 0), "power_stagger_known": stagger is not None and 0 <= stagger <= 60,
+        "advanced_supported": supported,
     }
+    capabilities = module_profiles.mr_relay_capabilities(kind)
+    if capabilities['fan_status']:
+        running = _read_regs(send, slave, 109, 1, input_regs=True) if supported and mode in (3, 4) else []
+        alarms = _read_regs(send, slave, 113, 1, input_regs=True) if supported and mode in (3, 4) else []
+        count = 2 if mode == 3 else 4
+        result['fans'] = {'known': len(running) == 1 and len(alarms) == 1,
+                          'running': [bool(running[0] & (1 << bit)) for bit in range(count)] if len(running) == 1 else [],
+                          'alarms': [bool(alarms[0] & (1 << bit)) for bit in range(count)] if len(alarms) == 1 else [],
+                          'fire': bool(alarms[0] & 16) if len(alarms) == 1 else False}
+    if include_advanced:
+        fields = {path: field for path, field in mr_configuration.fields_for(kind, observed_app_version).items() if path.startswith('relay.')}
+        words = {register: value for register, value in ((130, mode), (131, options), (622, stagger)) if value is not None}
+        ranges = []
+        for register in sorted({field.register for field in fields.values()} - {130, 131, 622}):
+            if ranges and ranges[-1][0] + ranges[-1][1] == register:
+                ranges[-1] = (ranges[-1][0], ranges[-1][1] + 1)
+            else:
+                ranges.append((register, 1))
+        for start, count in ranges:
+            values = _read_regs(send, slave, start, count)
+            if len(values) == count:
+                words.update(zip(range(start, start + count), values))
+        exported = mr_configuration.export_configuration(kind, observed_app_version, words)
+        result['settings'] = exported['settings'].get('relay', {})
+        result['unavailable'] = [path for path in exported['coverage']['unavailable'] if path.startswith('relay.')]
+        result['advanced_fields'] = []
+        for path, field in fields.items():
+            if path in ('relay.mode', 'relay.options', 'relay.power_stagger_s'):
+                continue
+            value, known = None, False
+            if field.register in words:
+                try:
+                    value, known = field.decode(words[field.register]), True
+                except ValueError:
+                    pass
+            result['advanced_fields'].append({'path': path, 'value': value, 'known': known,
+                'minimum': field.minimum, 'maximum': field.maximum, 'boolean': field.boolean})
+    return result
+
+
+def _mr_inactivity(send, slave):
+    value = _read_u16(send, slave, REG_MODBUS_INACTIVITY_S, 800)
+    return {'inactivity_s': int(value or 0), 'inactivity_known': value is not None and 0 <= value <= 255}
 
 
 def _read_mr_snapshot(send, slave: int, identity: Dict[str, Any]) -> Dict[str, Any]:
@@ -673,9 +1063,9 @@ def _read_mr_snapshot(send, slave: int, identity: Dict[str, Any]) -> Dict[str, A
         "do": _mr_do_block_full(send, slave, kind),
         "di": _mr_di_block_full(send, slave, kind),
         "ao": _mr_ao_block_full(send, slave, kind),
-        "ai": {"channels": _read_ai_channels(send, slave, kind)},
-        "inactivity_s": int(_read_u16(send, slave, REG_MODBUS_INACTIVITY_S, 800) or 0),
-        "relay": _mr_relay_block(send, slave, kind),
+        "ai": {"channels": _read_ai_channels(send, slave, kind, identity.get("observed_app_version"))},
+        **_mr_inactivity(send, slave),
+        "relay": _mr_relay_block(send, slave, kind, identity.get('observed_app_version'), include_advanced=True),
         "mcu": _read_mr_mcu_info(send, slave),
     }
     return payload
@@ -693,7 +1083,7 @@ def _read_mr_snapshot_minimal(send, slave: int, identity: Dict[str, Any]) -> Dic
     if max_ai > 0:
         stride = module_profiles.ai_channel_stride(kind.code, kind)
         total_regs = max_ai * stride
-        holding_regs = _read_regs(send, slave, 400, total_regs, timeout_ms=1200)
+        holding_regs = _read_required_regs(send, slave, 400, total_regs, timeout_ms=1200)
         for ch in range(1, max_ai + 1):
             offset = (ch - 1) * stride
             sensor_code = (
@@ -721,19 +1111,19 @@ def _read_mr_snapshot_minimal(send, slave: int, identity: Dict[str, Any]) -> Dic
         "di": {
             "values": [
                 1 if int(v) else 0
-                for v in _read_regs(send, slave, INP_DI_FIRST, max_di, input_regs=True, timeout_ms=1000)
+                for v in _read_required_regs(send, slave, INP_DI_FIRST, max_di, input_regs=True, timeout_ms=1000)
             ]
             if max_di > 0
             else [],
         },
         "ao": {
-            "current_raw": _read_regs(send, slave, INP_AO_FIRST, max_ao, input_regs=True, timeout_ms=1000)
+            "current_raw": _read_required_regs(send, slave, INP_AO_FIRST, max_ao, input_regs=True, timeout_ms=1000)
             if max_ao > 0
             else [],
         },
         "ai": {"channels": ai_channels},
-        "inactivity_s": int(_read_u16(send, slave, REG_MODBUS_INACTIVITY_S, 800) or 0),
-        "relay": _mr_relay_block(send, slave, kind),
+        **_mr_inactivity(send, slave),
+        "relay": _mr_relay_block(send, slave, kind, identity.get('observed_app_version')),
         "mcu": {},
     }
     payload["ao"]["current_volts"] = [_ao_raw_to_volts(raw) for raw in payload["ao"]["current_raw"]]
@@ -762,6 +1152,7 @@ def _read_mr_snapshot_panel(
         "ao": dict(base["ao"]),
         "ai": {"channels": list(base["ai"]["channels"])},
         "inactivity_s": base["inactivity_s"],
+        "inactivity_known": base.get("inactivity_known", False),
         "relay": dict(base["relay"]),
         "mcu": base.get("mcu", {}),
     }
@@ -775,14 +1166,14 @@ def _read_mr_snapshot_panel(
     elif tab.startswith("ao_") and max_ao > 0:
         out["ao"] = _mr_ao_block_full(send, slave, kind)
     elif tab.startswith("ai_") and max_ai > 0:
-        out["ai"] = {"channels": _read_ai_channels(send, slave, kind)}
+        out["ai"] = {"channels": _read_ai_channels(send, slave, kind, identity.get("observed_app_version"))}
     elif tab == "relay" and _relay_mode_module(kind):
-        out["relay"] = _mr_relay_block(send, slave, kind)
+        out["relay"] = _mr_relay_block(send, slave, kind, identity.get('observed_app_version'), include_advanced=True)
 
     return out
 
 
-def _allowed_mr_holding_registers(kind: module_profiles.ModuleKind) -> set[int]:
+def _allowed_mr_holding_registers(kind: module_profiles.ModuleKind, observed_app_version: Optional[str] = None) -> set[int]:
     allowed: set[int] = set()
     max_do = int(kind.max_do)
     max_di = int(kind.max_di)
@@ -797,12 +1188,13 @@ def _allowed_mr_holding_registers(kind: module_profiles.ModuleKind) -> set[int]:
     allowed.add(120)  # Команда перезагрузки устройства
     if _relay_mode_module(kind):
         allowed.update({REG_RELAY_MODE, REG_RELAY_OPTIONS, REG_POWER_STAGGER})
+        if module_profiles.mr_relay_capabilities(kind)['fan_status'] and module_profiles.mr_relay_advanced_supported(observed_app_version):
+            allowed.add(137)
     if max_di > 0:
         allowed.update(range(REG_DI_MODE_BASE, REG_DI_MODE_BASE + max_di))
         allowed.update(range(REG_DI_DEBOUNCE_BASE, REG_DI_DEBOUNCE_BASE + max_di))
         allowed.update(range(REG_DI_LONG_PRESS_BASE, REG_DI_LONG_PRESS_BASE + max_di))
         allowed.update(range(REG_DI_DOUBLE_CLICK_BASE, REG_DI_DOUBLE_CLICK_BASE + max_di))
-        allowed.update(range(REG_DI_FREQ_MODE_BASE, REG_DI_FREQ_MODE_BASE + min(8, max_di)))
         allowed.add(REG_RESET_DI_COUNTERS)
     if max_ao > 0:
         allowed.update(range(INP_AO_FIRST, INP_AO_FIRST + max_ao))
@@ -818,10 +1210,10 @@ def _allowed_mr_holding_registers(kind: module_profiles.ModuleKind) -> set[int]:
             # Editable for active volt/curr modes; rescales the module scale in-place.
             allowed.add(base + 5)
             allowed.add(base + 6)
-            if module_profiles.kind_has_mp_ai_adc_filters(kind):
+            if module_profiles.kind_has_mp_ai_adc_filters(kind, observed_app_version):
                 stor = (
                     module_profiles.ai_stor_for_6ao6ai_p(ch)
-                    if module_profiles.is_6ao6ai_module(kind)
+                    if module_profiles.has_six_input_adc_layout(kind)
                     else module_profiles.ai_stor_for_12ai_channel(ch)
                 )
                 allowed.add(module_profiles.ai_kalman_holding_reg(stor))
@@ -1980,6 +2372,7 @@ def snapshot_for_device(
     *,
     snapshot_detail: str = "full",
     active_tab: Optional[str] = None,
+    _send=None,
 ) -> Dict[str, Any]:
     """Снимок для web UI.
     ``snapshot_detail``: ``full`` — полный MR-блок; ``minimal`` — только live сайдбара;
@@ -1988,7 +2381,7 @@ def snapshot_for_device(
     detail = str(snapshot_detail or "full").strip().lower()
     if detail not in ("full", "minimal", "panel"):
         detail = "full"
-    send, close_transport = _open_transport(device_path, device)
+    send, close_transport = (_send, None) if _send is not None else _open_transport(device_path, device)
     try:
         slave = _device_slave(device)
         if mtd_config.device_is_mtd(device):
@@ -2049,11 +2442,14 @@ def snapshot_for_device(
                 payload["mr"] = _read_mr_snapshot_panel(send, slave, identity, active_tab)
             else:
                 payload["mr"] = _read_mr_snapshot(send, slave, identity)
+            if payload["mr"]["module"]["max_ai"]:
+                payload["mr"]["ai_apply"] = _ai_apply_status(send, slave)
         payload["snapshot_detail"] = detail_out
         payload["active_tab"] = active_tab
         return payload
     finally:
-        close_transport()
+        if close_transport is not None:
+            close_transport()
 
 
 def apply_network_settings(
@@ -2135,6 +2531,62 @@ def apply_network_settings(
     return snapshot_for_device(device_path, updated_device, snapshot_detail="full")
 
 
+def _write_ai_holding(device_path, device, send, slave, field, value, fields):
+    target = int(value) & 0xffff
+    expected = field.decode(target)
+    sensor = field.path.endswith('.sensor_code')
+    generation = None
+    boot = None
+    if mr_configuration.requires_ai_boundary(field.path):
+        status = _ai_apply_status(send, slave)
+        if status['state'] == 'unsupported':
+            if not sensor:
+                raise ValueError('AI type application is unconfirmed; dependent writes are unavailable')
+        else:
+            boot = _start_ai_boot_check(send, slave)
+            generation = _await_ai_idle(send, slave, status)
+            if sensor and generation == 65534:
+                raise ValueError('AI application generation exhausted')
+
+    registers = [field.register]
+    channel = int(field.path.split('.')[1])
+    partner = channel + (1 if channel % 2 else -1)
+    if sensor and generation is not None and target in mr_configuration.PAIRED_SENSORS:
+        registers.append(fields[f'ai.{partner}.sensor_code'].register)
+    if field.path.endswith(('.limit_low', '.limit_high')):
+        applied_type = _read_u16(send, slave, fields[f'ai.{channel}.sensor_code'].register)
+        if applied_type is None or applied_type > 42:
+            raise ValueError('AI sensor type unavailable')
+        if applied_type in module_profiles.AI_RTD_CODES_3_WIRE:
+            registers.append(fields[field.path.replace(f'ai.{channel}.', f'ai.{partner}.')].register)
+        _verify_ai_idle(send, slave, generation)
+
+    err = write_single(send, slave, field.register, target, 700)
+    if err:
+        raise RuntimeError('AI write acknowledgement unavailable: ' + err)
+    if sensor and generation is None:
+        receipt = {'status': 'accepted_unconfirmed', 'register': field.register}
+    else:
+        if sensor:
+            generation = _await_ai_idle(send, slave, _ai_apply_status(send, slave), generation + 1)
+        for register in registers:
+            observed = _read_u16(send, slave, register)
+            if observed is None or field.decode(observed) != expected:
+                raise RuntimeError('AI setting readback mismatch')
+        if generation is not None:
+            _verify_ai_idle(send, slave, generation)
+        receipt = {'status': 'confirmed', 'register': field.register, 'generation': generation}
+
+    snapshot = snapshot_for_device(device_path, device, snapshot_detail='full', _send=send)
+    if generation is not None and snapshot['mr']['ai_apply'] != {
+            'state': 'idle', 'accepted': generation, 'completed': generation}:
+        raise RuntimeError('AI application changed during snapshot')
+    if boot is not None:
+        _verify_ai_boot(send, slave, boot)
+    snapshot['ai_write'] = receipt
+    return snapshot
+
+
 def write_allowed_holding(
     device_path: str,
     device: Dict[str, Any],
@@ -2151,6 +2603,7 @@ def write_allowed_holding(
     try:
         slave = _device_slave(device)
         identity = _read_live_identity(send, slave, device)
+        observed_type = identity.get('type_code')
         kind, identity = _resolve_kind(identity, device)
         if kind == CAREL_KIND:
             raise ValueError(_CAREL_SINGLE_WRITE_REFUSED)
@@ -2166,11 +2619,46 @@ def write_allowed_holding(
         elif kind == "mr":
             allowed_regs.update(
                 _allowed_mr_holding_registers(
-                    _module_kind_from_identity(identity["signature"], identity["type_code"])
+                    _module_kind_from_identity(identity["signature"], identity["type_code"]),
+                    identity.get("observed_app_version"),
                 )
             )
         if reg not in allowed_regs:
             raise ValueError("Запись этого регистра через веб-окно не разрешена")
+        if kind == 'mr':
+            module_kind = _module_kind_from_identity(identity['signature'], identity['type_code'])
+            if module_kind.max_ai:
+                fields = mr_configuration.fields_for(module_kind, identity.get('observed_app_version'))
+                ai_field = next((f for f in fields.values() if f.register == reg and f.path.startswith('ai.')), None)
+                if ai_field:
+                    if observed_type != module_kind.code:
+                        raise ValueError('Fresh MR AI identity unavailable')
+                    deadline = time.monotonic() + 20.0
+                    bus = _ConfigurationBus(partial(send, exchange_deadline=deadline), deadline)
+                    return _write_ai_holding(device_path, device, bus, slave, ai_field, value, fields)
+            capabilities = module_profiles.mr_relay_capabilities(module_kind)
+            if reg == 137 and (type(value) is not int or value != 1 or observed_type != module_kind.code or _read_u16(send, slave, REG_RELAY_MODE, 800) not in (3, 4)):
+                raise ValueError('Alarm reset requires value 1 and a current fan mode')
+            if module_kind.code == 11 and REG_DI_MODE_BASE <= reg <= REG_RESET_DI_COUNTERS:
+                mode = _read_u16(send, slave, REG_RELAY_MODE, 800)
+                if mode not in (0, 1, 2, 5):
+                    raise ValueError('DI settings require a known non-fan relay mode')
+            if capabilities and reg in (REG_RELAY_MODE, REG_RELAY_OPTIONS, REG_POWER_STAGGER):
+                if type(value) is not int:
+                    raise ValueError('Relay setting must be an integer')
+                if reg == REG_RELAY_MODE and value not in capabilities['modes']:
+                    raise ValueError('Relay mode unavailable on this module')
+                if reg == REG_POWER_STAGGER and not 0 <= value <= 60:
+                    raise ValueError('Power-up stagger must be in 0..60 seconds')
+                if reg == REG_RELAY_OPTIONS:
+                    mode = _read_u16(send, slave, REG_RELAY_MODE, 800)
+                    options = _read_u16(send, slave, REG_RELAY_OPTIONS, 800)
+                    if mode not in capabilities['modes'] or options is None or not 0 <= value <= 65535:
+                        raise ValueError('Current relay mode/options unavailable')
+                    mask = module_profiles.mr_relay_option_mask(module_kind, mode)
+                    value = (value & mask) | (options & ~mask)
+            if REG_REDELAY_DO_FIRST <= reg < REG_REDELAY_DO_FIRST + min(6, module_kind.max_do) and not 0 <= value <= 999:
+                raise ValueError('Minimum off time must be in 0..999 seconds')
         ce_ct_write = kind == "ce" and reg in CE_CT_RATIO_REGS
         if ce_ct_write:
             _ce_require_ct_write_firmware(send, slave)
@@ -2257,7 +2745,13 @@ def write_allowed_coil(
     device: Dict[str, Any],
     coil: int,
     on: bool,
+    *,
+    relay_action=None,
 ) -> Dict[str, Any]:
+    if relay_action is not None and (type(relay_action) is not str or relay_action not in ('drive', 'fan')):
+        raise ValueError('Unknown relay action')
+    if relay_action is not None and (type(on) is not bool or type(coil) is not int):
+        raise ValueError('Explicit relay action requires a boolean value and integer coil')
     if mtd_config.device_is_mtd(device):
         raise ValueError("Запись этой катушки через веб-окно не разрешена")
     if _device_is_carel(device):
@@ -2268,25 +2762,41 @@ def write_allowed_coil(
     try:
         slave = _device_slave(device)
         identity = _read_live_identity(send, slave, device)
+        observed_type = identity.get('type_code')
         kind, identity = _resolve_kind(identity, device)
         if kind == CAREL_KIND:
             raise ValueError(_CAREL_SINGLE_WRITE_REFUSED)
         if kind == LED_KIND:
             raise ValueError(_LED_SINGLE_WRITE_REFUSED)
         if kind == "dtv":
+            if relay_action is not None:
+                raise ValueError('Relay action unavailable for this device')
             if coil not in (dtv_registers.DTV_COIL_BUZZER, dtv_registers.DTV_COIL_LEDS_ALL):
                 raise ValueError("Запись этой катушки через веб-окно не разрешена")
         elif kind == "mr":
             module_kind = _module_kind_from_identity(identity["signature"], identity["type_code"])
             if coil < DO_COIL_START or coil >= DO_COIL_START + int(module_kind.max_do):
                 raise ValueError("Запись этой катушки через веб-окно не разрешена")
-            if _relay_mode_module(module_kind):
-                # Как в desktop flasher: для релейных модулей сначала пытаемся
-                # перевести устройство в ручной режим, но не блокируем управление
-                # DO, если эта вспомогательная запись не ответила.
+            capabilities = module_profiles.mr_relay_capabilities(module_kind)
+            if capabilities and (capabilities['modes'] != [0] or relay_action is not None):
                 relay_mode = _read_u16(send, slave, REG_RELAY_MODE, 800)
-                if relay_mode is None or int(relay_mode) != 0:
-                    write_single(send, slave, REG_RELAY_MODE, 0, 1200)
+                if relay_mode not in capabilities['modes']:
+                    raise RuntimeError('Current relay mode unavailable')
+                if relay_action is not None:
+                    if observed_type != module_kind.code or not module_profiles.mr_relay_advanced_supported(identity.get('observed_app_version')):
+                        raise ValueError('Relay action requires fresh supported module firmware >= 1.0.12.22')
+                    if relay_action == 'drive' and (relay_mode != 5 or coil > 2 * capabilities['drive_count']):
+                        raise ValueError('Drive action requires a physical drive in mode 5')
+                    if relay_action == 'fan' and (module_kind.code != 11 or relay_mode not in (3, 4) or coil != 1):
+                        raise ValueError('Fan action requires type 11 coil 1 in mode 3 or 4')
+                elif capabilities['legacy_manual_transition'] and relay_mode != 0:
+                    error = write_single(send, slave, REG_RELAY_MODE, 0, 1200)
+                    if error or _read_u16(send, slave, REG_RELAY_MODE, 800) != 0:
+                        raise RuntimeError('Manual relay mode transition not confirmed')
+                elif module_kind.code == 11 and (relay_mode in (1, 2) or (relay_mode in (3, 4) and coil != 1)):
+                    raise ValueError('Direct DO command unavailable in the current fan/local mode')
+            elif relay_action is not None:
+                raise ValueError('Relay action unavailable for this device')
         else:
             raise ValueError("Запись этой катушки через веб-окно не разрешена")
         err = write_coil(send, slave, coil, bool(on), 2000)

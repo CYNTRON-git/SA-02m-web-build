@@ -707,7 +707,7 @@ retained-значения на брокере остаются, как у «Си
 `fast_modbus: true`, а получит ли СЭ `configure_events` и в какой форме, решает
 версия её прошивки — [`fmb-event-wire.md` §3](contracts/fmb-event-wire.md).
 Configure_events шлётся после classic warmup (`classic_ready_for_fmb`).
-Поддерживаемые типы: `mr02m` (DO/DI/AO/AI), `dtv` (coils 1–2; Input 25–30),
+Поддерживаемые типы: `mr02m` (DO/DI/AO/AI), `dtv` (быстрые каналы по возможностям прошивки, см. §3 контракта),
 `ce02m3` (Input 500–502 Uph, 510–513 Iph+N — как в прошивке CE EN_METER).
 Медленные датчики ДТВ (рег. 1–24), энергия/мощность/диагностика СЭ — classic
 insurance-опрос.

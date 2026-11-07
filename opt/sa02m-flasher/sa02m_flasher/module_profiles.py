@@ -106,6 +106,7 @@ MP02_AI12 = 7
 MP02_DO4DI6 = 8
 MP02_DI10CON = 10
 MP02_DO5DI2AO = 11
+MP02_AI6AO2 = 12
 MP02_EN_METER = 14    # мезонин EN_METER в составе MR-02m (Input reg 0 = 14)
 MP02_TO4DI6 = 15
 MP02_CE02M3  = 100   # CE-02m-3: автономный анализатор сети ATM90E32 (Input reg 0 = 100)
@@ -129,6 +130,7 @@ MP02_TYPE_NAMES: Dict[int, str] = {
     MP02_DI14:    "14DI",
     MP02_DI10CON: "10DIcon",
     MP02_DO5DI2AO:"6DO5DI2AO",
+    MP02_AI6AO2:  "6AI2AO",
     MP02_AO6AI6:  "6AI6AO",
     MP02_AI12:    "12AI",
     MP02_DO4DI6:  "4DO6DI",
@@ -149,6 +151,7 @@ TYPE_IO_CAPS: Dict[int, Tuple[int, int, int, int]] = {
     MP02_DI14:    (0, 14, 0, 0),
     MP02_DI10CON: (0, 10, 0, 0),
     MP02_DO5DI2AO:(6, 5, 2, 0),
+    MP02_AI6AO2:  (0, 0, 2, 6),
     MP02_AO6AI6:  (0, 0, 6, 6),
     MP02_AI12:    (0, 0, 0, 12),
     MP02_DO4DI6:  (4, 6, 0, 0),
@@ -269,6 +272,8 @@ _SIGNATURE_HINTS: Dict[str, Tuple[int, int, int, int]] = {
     "6AO6AI":    (0, 0, 6, 6),
     "6AI6AO":    (0, 0, 6, 6),
     "AO6AI6":    (0, 0, 6, 6),
+    "6AI2AO":    (0, 0, 2, 6),
+    "AI6AO2":    (0, 0, 2, 6),
     "12AI":      (0, 0, 0, 12),
     "4DO6DI":    (4, 6, 0, 0),
     "DO4DI6":    (4, 6, 0, 0),
@@ -317,7 +322,7 @@ PROFILE_WB_APP = Rs485LineProfile(19200, "N", 2)
 # bl_module_sig.c (MR-02m) + module_profiles hints + serial_ranges
 MP_MR_SIGNATURE_TOKENS: Tuple[str, ...] = (
     "6DO8DI", "16DO", "12AO", "6DO", "14DI", "10DICON", "6DO5DI2AO",
-    "6AO6AI", "6AI6AO", "AO6AI6", "12AI", "4DO6DI", "4TO6DI", "TO4DI6",
+    "6AO6AI", "6AI6AO", "AO6AI6", "6AI2AO", "AI6AO2", "12AI", "4DO6DI", "4TO6DI", "TO4DI6",
     "DO6DI8", "DO4DI6", "TENZO2", "CE02M3", "ENMETER", "EN_METER",
     "MP02M", "MR02M", "SENSOR", "SENS.",
 )
@@ -830,8 +835,23 @@ def is_12ai_module(kind: Optional[ModuleKind]) -> bool:
     )
 
 
-def kind_has_mp_ai_adc_filters(kind: Optional[ModuleKind]) -> bool:
-    return is_6ao6ai_module(kind) or is_12ai_module(kind)
+def has_six_input_adc_layout(kind: Optional[ModuleKind]) -> bool:
+    if kind is None:
+        return False
+    return is_6ao6ai_module(kind) or kind.code == MP02_AI6AO2 or (
+        kind.code == 0 and (kind.max_do, kind.max_di, kind.max_ao, kind.max_ai) == (0, 0, 2, 6)
+    )
+
+
+def kind_has_mp_ai_adc_filters(kind: Optional[ModuleKind], observed_app_version: Optional[str] = None) -> bool:
+    if is_6ao6ai_module(kind) or is_12ai_module(kind):
+        return True
+    if not has_six_input_adc_layout(kind):
+        return False
+    # Type 12 only gained these registers in 1.0.12.20. Cached scan metadata
+    # cannot grant write access when the firmware read itself was unavailable.
+    match = re.fullmatch(r"(\d+)\.(\d+)\.(\d+)\.(\d+)", str(observed_app_version or "").strip())
+    return bool(match and tuple(int(part) for part in match.groups()) >= (1, 0, 12, 20))
 
 
 def ao_safe_holding_register(channel_1_based: int, kind: Optional[ModuleKind] = None) -> int:
@@ -841,13 +861,35 @@ def ao_safe_holding_register(channel_1_based: int, kind: Optional[ModuleKind] = 
     return REG_AO_SAFE_BASE_MAIN + ch - 1
 
 
+def mr_relay_capabilities(kind: Optional[ModuleKind]):
+    """MR relay modes are model capabilities, never inferred from a zero register."""
+    if kind is None or kind.code not in (1, 2, 4, 8, 11, 15):
+        return None
+    fans = kind.code in (1, 8, 11)
+    return {'modes': list(range(6)) if fans else [0, 1, 2] if kind.code == 15 else [0],
+            'drive_count': 2 if kind.code == 8 else 3 if fans else 0,
+            'fan_status': fans, 'dimming': kind.code == 15,
+            'legacy_manual_transition': kind.code in (1, 8),
+            'option_modes': {1: [3, 4], 2: [2], 3: [5], 4: list(range(6))} if fans else {4: list(range(3)) if kind.code == 15 else [0]}}
+
+
+def mr_relay_option_mask(kind, mode):
+    caps = mr_relay_capabilities(kind)
+    return sum(1 << bit for bit, modes in caps['option_modes'].items() if mode in modes) if caps else 0
+
+
+def mr_relay_advanced_supported(observed_app_version):
+    match = re.fullmatch(r'(\d+)\.(\d+)\.(\d+)\.(\d+)', str(observed_app_version or '').strip())
+    return bool(match and tuple(int(part) for part in match.groups()) >= (1, 0, 12, 22))
+
+
 def ai_channel_stride(
     type_code: Optional[int] = None,
     kind: Optional[ModuleKind] = None,
 ) -> int:
-    if kind is not None and (is_6ao6ai_module(kind) or is_12ai_module(kind)):
+    if kind is not None and (has_six_input_adc_layout(kind) or is_12ai_module(kind)):
         return 7
-    if type_code in (MP02_AO6AI6, MP02_AI12):
+    if type_code in (MP02_AO6AI6, MP02_AI12, MP02_AI6AO2):
         return 7
     return 14
 

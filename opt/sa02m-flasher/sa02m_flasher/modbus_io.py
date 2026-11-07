@@ -5,6 +5,7 @@ send_rtu(req, timeout_ms) → ответ RTU или None.
 """
 from __future__ import annotations
 
+import math
 import re
 import threading
 import time
@@ -50,26 +51,46 @@ def make_serial_send_rtu_persistent(
     default_timeout_ms: int = 400,
     *,
     pre_open_delay_s: float = 0.02,
+    deadline: Optional[float] = None,
 ) -> Tuple[SendRtuFn, Callable[[], None]]:
     """
     Одно открытое COM-соединение на всё время жизни окна (меньше задержек, чем open+sleep на каждый FC).
     Второй элемент кортежа — close(); вызывать при закрытии UI.
     """
 
+    if deadline is not None and not math.isfinite(deadline):
+        raise ValueError("Serial deadline must be finite")
     ser_lock = threading.Lock()
     ser_holder: list = [None]  # [serial.Serial | None]
 
-    def send_rtu(req: bytes, timeout_ms: int = 0) -> Optional[bytes]:
+    def send_rtu(req: bytes, timeout_ms: int = 0, *, exchange_deadline: Optional[float] = None) -> Optional[bytes]:
+        active_deadline = deadline
+        if exchange_deadline is not None:
+            if not math.isfinite(exchange_deadline):
+                raise ValueError("Serial deadline must be finite")
+            active_deadline = exchange_deadline if deadline is None else min(deadline, exchange_deadline)
         to = timeout_ms if timeout_ms > 0 else default_timeout_ms
-        with ser_lock:
+        if active_deadline is None:
+            ser_lock.acquire()
+        else:
+            remaining = active_deadline - time.monotonic()
+            if remaining <= 0 or not ser_lock.acquire(timeout=min(remaining, threading.TIMEOUT_MAX)):
+                return None
+        try:
             try:
+                if active_deadline is not None and time.monotonic() >= active_deadline:
+                    raise TimeoutError("Serial operation deadline exceeded")
                 s = ser_holder[0]
                 if s is None or not getattr(s, "is_open", False):
                     s = open_port(port, baudrate=baudrate, parity=parity, stopbits=stopbits)
                     ser_holder[0] = s
                     if pre_open_delay_s > 0:
-                        time.sleep(pre_open_delay_s)
-                return send_receive(s, req, response_timeout_ms=to)
+                        delay = pre_open_delay_s
+                        if active_deadline is not None:
+                            delay = min(delay, max(0.0, active_deadline - time.monotonic()))
+                        time.sleep(delay)
+                budget = {} if active_deadline is None else {"deadline": active_deadline}
+                return send_receive(s, req, response_timeout_ms=to, **budget)
             except Exception:
                 try:
                     s2 = ser_holder[0]
@@ -79,6 +100,8 @@ def make_serial_send_rtu_persistent(
                     pass
                 ser_holder[0] = None
                 return None
+        finally:
+            ser_lock.release()
 
     def close_transport() -> None:
         with ser_lock:

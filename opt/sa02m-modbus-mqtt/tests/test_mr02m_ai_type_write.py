@@ -94,16 +94,24 @@ class TestAiTypeWriteback(unittest.TestCase):
     def _run(self, p, code, ch=1, verify=None):
         writes: list[tuple[int, int]] = []
 
-        def write_register(addr, reg, value):
+        def write_register(addr, reg, value, **kwargs):
             writes.append((reg, value))
 
-        def read_holding(addr, reg, count):
+        def read_holding(addr, reg, count, **kwargs):
+            if reg == 270:
+                return [123, 0]
+            if reg == 569:
+                generation = 1 + len(writes)
+                return [0xA101, 1, generation, generation]
+            if not writes:
+                return [3] * count
             if verify is None:
                 return [code] * count
             return [verify] * count
 
-        p.write_register = write_register
-        p.read_holding_registers = read_holding
+        p.get_port = lambda: types.SimpleNamespace(
+            write_register=write_register, read_holding_registers=read_holding,
+            read_input_registers=lambda addr, reg, count, **kwargs: [3600, 0])
         p._persist_ai_sensor_types = mock.Mock()
         with mock.patch("bridge_mr02m.time.sleep", lambda *_a: None), \
                 mock.patch.object(DeviceLiveCache, "flush_file", lambda *_a, **_k: None):

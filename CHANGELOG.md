@@ -5,6 +5,48 @@
 
 ---
 
+## 1.0.7.32 - Verify MR controls and bound device operations (November 2026)
+
+### MR modules and configuration
+
+- Support the 6AI2AO channel layout and firmware-qualified filters. Display 4TO6DI dimmer levels as percentages while retaining raw MQTT command values.
+- Keep failed live reads distinct from OFF or zero, retain drafts during poll failures, and mark unavailable diagnostics and settings explicitly.
+- Export and preview typed configuration files before applying them under one bounded port lease. Validate the complete file and fresh module capabilities before writes; report partial or unverified outcomes without replaying live outputs, resets or network identity.
+- Verify completion of AI type changes before restoring filters and limits on modules that expose the completion registers. Older firmware reports type commands as accepted but unconfirmed and blocks automatic restoration of dependent settings.
+- Validate shared RTD limits across both channels and order limit writes so the module can reach the requested range.
+- Receive both holding-register and coil events for MR digital outputs. Respect disabled channels and let each output module confirm an empty queue after a write on a shared bus.
+- Retry unconfirmed event ranges after backoff and retain full-rate polling until all requested ranges have been confirmed.
+- After an AI sensor type change, publish values from a fresh read while draining events encoded with the previous scale. Paired sensors share the primary channel reading for both enabled controls.
+- Cancel the first pending configuration poll when the module dialog stops polling, preserving write errors and dependent-field locks.
+- Let configuration reads and scans reserve the selected UART for the operation. A factory process on another UART can continue using its port.
+- Expose relay, drive, fan and dimmer controls according to the identified module and observed mode. Verify legacy manual-mode transitions, preserve explicit drive/fan modes, and qualify advanced settings by observed firmware support.
+- Remove the obsolete DI frequency-mode editor, preserve frequency telemetry, and document uptime-based schedules and settings without a persistence guarantee.
+
+### MQTT output state
+
+- Correlate standard Modbus responses with their requests across UART, RTU-over-TCP and Modbus TCP; validate Fast Modbus configuration acknowledgements.
+- Write each MR output command once, read back its actual coil state or AO setpoint, and preserve forced same-value confirmations without inventing target state from an acknowledgement.
+- Prevent older queued Fast Modbus output events from replacing a newer command readback. Preserve ordinary polling while waiting for a validated per-device empty-queue boundary.
+- Keep MR controls visibly pending until actual observations resolve them and report an unobserved target without automatically repeating the command.
+- Select WB event subscriptions for DTV firmware from 1.0.1.49, verify the returned mask, and keep reading the input registers that drive event generation. Read LED and buzzer state through their coils.
+
+### Firmware transport and catalog
+
+- Match complete firmware acknowledgements to the requested device, function and write range. Handle fragmented request echoes consistently over UART and TCP, bound receive buffers, and preserve cancellation after blocking reads.
+- Recognise complete FastModbus exceptions immediately instead of waiting for the full response timeout. Preserve existing retries, UART timing and port ownership.
+- Classify known local MR, RTU-Sensor and CE firmware filenames consistently, including versioned bootloader images. Preserve explicit manifest metadata, recognised header families and legacy filename compatibility.
+
+### Service control and status
+
+- Bound service requests through complete JSON-body reading and share one deadline across admission, result and independent state verification. Remove the extra initial wait before the final state check, without automatically repeating actions.
+- Batch read-only systemd unit resolution while preserving alias selection and incomplete-output fallbacks.
+- Return an explicit error when status cache construction fails without usable cached data, preserve original fallback freshness, and keep later CGI diagnostics visible after opening the cache lock.
+
+### Verification
+
+- Add protocol, real PTY/TCP, firmware catalog, service-list differential and streamed-response browser regressions. Document the factory-reset fixture's forwarded child exit status without changing its execution or assertions.
+- Keep measured performance, target acceptance and unverified physical scenarios in the dated audit; separately packaged vPLC changes are not part of the web overlay.
+
 ## 1.0.7.31 - Repair port recovery, service control and hardware state (November 2026)
 
 ### Ports and services

@@ -14,7 +14,7 @@ from bridge_serial import ScanHold
 import time
 
 from bridge_device import DevicePoller
-from bridge_fmb import FMB_INSURANCE_POLL_S
+from bridge_fmb import DTV_FMB_WB_MIN_FW, FMB_INSURANCE_POLL_S
 from bridge_mqtt import DeviceLiveCache, MQTTPublisher, _make_title
 from bridge_mr02m_map import MR02M_SYS_CONTROLS
 from bridge_serial import (
@@ -35,14 +35,54 @@ DTV_DETECT_RETRY_S = 3.0
 DTV_DETECT_EMPTY_FALLBACK = 5
 
 
-class _SysChannelsMixin:
-    """`channels.sys[]` enabled/label, read the way MR02mPoller reads them.
+class _DtvCeMixin:
+    """Shared firmware identification and system channel publication.
 
     Publication and the CE uptime health-read exception are specified in
     docs/MQTT_TOPICS.md, the DTV/CE system-channel contract.
     """
 
-    cfg: dict
+    def __init__(self, cfg: dict, pub: MQTTPublisher):
+        super().__init__(cfg, pub)
+        self._fw_version: tuple[int, int, int, int] | None = None
+        self._fw_read_warned = False
+
+    # Firmware version, holding 320..323 = (major, minor, patch, build). The
+    # FMB manager picks the configure_events wire from it
+    # (docs/contracts/fmb-event-wire.md §3), so it is read before any 0x18.
+    FW_VERSION_REG = 320
+
+    def _read_fw_version(self) -> None:
+        try:
+            r = self.read_holding_registers(self.address,
+                                            self.FW_VERSION_REG, 4)
+            if len(r) != 4 or any(v == 0xffff for v in r):
+                raise IOError("invalid firmware register values: %r" % (r,))
+            self._fw_version = tuple(r)
+            self._fw_read_warned = False
+            self.log.info("firmware %s",
+                          ".".join(str(v) for v in self._fw_version))
+        except ScanHold:
+            raise
+        except Exception as e:
+            self._fw_version = None
+            # An unknown version is retried on a later pass:
+            # warn once per failure streak, not once a minute.
+            log = self.log.debug if self._fw_read_warned else self.log.warning
+            self._fw_read_warned = True
+            log("firmware version read (HR%d x4): %s",
+                self.FW_VERSION_REG, e)
+
+    def fmb_firmware_version(self):
+        """Cached version; re-read on demand while unknown. Called on the
+        port thread by the FMB manager right before it decides on a 0x18."""
+        if self._fw_version is None:
+            self._read_fw_version()
+        return self._fw_version
+
+    def fmb_firmware_invalidate(self) -> None:
+        self._fw_version = None
+
 
     def _sys_ch_cfg(self, key: str) -> dict:
         channels = self.cfg.get("channels") or {}
@@ -105,7 +145,7 @@ def _energy_wh(raw: int, k_x1000: float,
 
 
 # ── cyntron-dtv (RTU-Sensor) poller ───────────────────────────────────────────
-class DTVPoller(_SysChannelsMixin, DevicePoller):
+class DTVPoller(_DtvCeMixin, DevicePoller):
     # All input registers 1-30 plus MCU diagnostics 123-124
     DTV_REGS: dict[int, tuple[str, float, str, str]] = {
         1:   ("temp_ds18b20",        0.1,   "temperature",  "°C"),
@@ -277,21 +317,32 @@ class DTVPoller(_SysChannelsMixin, DevicePoller):
             pass
 
     # --- Fast Modbus events ---------------------------------------------------
-    # Fast channels only: coils (buzzer/leds echo) + Input 25..30 (light, PB2,
-    # presence, radar distances). Slow sensors 1-24 and diag 123/124 stay
-    # classic-poll-only (analog churn would flood the bus for no value).
+    # Legacy fast channels: output echo and light/PB2/presence/radar inputs.
+    # Slow sensors and diagnostics have a separate classic publication path.
     # Prerequisite: DTV firmware FMB mode = Holding 122 == 1; a rejected range
     # degrades per-range to classic polling (manager logs it).
     DTV_FMB_INPUT_START = 25
     DTV_FMB_INPUT_COUNT = 6
+    DTV_WB_INPUT_LAST = 28
+
+    def _fc04_drives_events(self) -> bool:
+        return self._fw_version is not None and self._fw_version >= DTV_FMB_WB_MIN_FW
 
     def fmb_event_ranges(self) -> list[tuple[int, int, int]]:
+        if self._fc04_drives_events():
+            # The DTV sensor producer ends at INPUT28. The configuration
+            # handler can ACK other ranges even when they produce no events.
+            count = self.DTV_WB_INPUT_LAST - self.DTV_FMB_INPUT_START + 1
+            return [(FMB_EVT_INPUT, self.DTV_FMB_INPUT_START, count)]
         return [
             (FMB_EVT_COIL, 1, len(self.DTV_COILS)),
             (FMB_EVT_INPUT, self.DTV_FMB_INPUT_START, self.DTV_FMB_INPUT_COUNT),
         ]
 
     def fmb_dispatch(self, evt_type: int, reg: int, val: int) -> None:
+        if self._fc04_drives_events() and not (
+                evt_type == FMB_EVT_INPUT and self.DTV_FMB_INPUT_START <= reg <= self.DTV_WB_INPUT_LAST):
+            return
         if evt_type == FMB_EVT_COIL and reg in self.DTV_COILS:
             ch_name = self.DTV_COILS[reg][0]
             # Через _wb_publish_poll (не pub_control): событие-эхо не должно
@@ -429,24 +480,30 @@ class DTVPoller(_SysChannelsMixin, DevicePoller):
                 return      # no sensor set yet — nothing to poll, as before
         # Honor poll_sensors_s — with FMB insurance the port cycle would
         # otherwise hammer FC04×30 every ≥500 ms and collide with events.
+        driven_by_read = self._fc04_drives_events()
+        insurance = self.fmb_covers_io() and not driven_by_read
         interval = self._poll_sensors_s
-        if self.fmb_covers_io():
+        if insurance:
             interval = max(interval, FMB_INSURANCE_POLL_S)
         did = False
         if now - self._t_sensors >= interval:
             self._t_sensors = now
             # Fast channels 25..30 + coils: events when FMB armed; else classic.
-            if self.fmb_covers_io():
+            if insurance:
                 self._poll_sensors(upto_reg=24)
             else:
                 self._poll_sensors(upto_reg=30)
                 self._poll_coils()
+                if driven_by_read:
+                    self._t_insurance = now
             did = True
         # Insurance for the event-covered channels: a lost event (CRC error,
         # burst overflow) must not leave regs 25-30 / coils stale forever —
         # low-rate classic reread, mirroring the MR/CE insurance pattern.
-        if (self.fmb_covers_io()
-                and now - self._t_insurance >= self._poll_insurance_s):
+        # Current DTV samples its event sources inside FC04. Preserve regular
+        # reads of the fast inputs and both physical outputs between slow reads.
+        fast_period = self._poll_presence_s if driven_by_read else self._poll_insurance_s
+        if (insurance or driven_by_read) and now - self._t_insurance >= fast_period:
             self._t_insurance = now
             self._poll_sensors(from_reg=self.DTV_FMB_INPUT_START,
                                upto_reg=self.DTV_FMB_INPUT_START
@@ -472,7 +529,7 @@ class DTVPoller(_SysChannelsMixin, DevicePoller):
 
 
 # ── CE-02m-3 (3-phase energy meter) poller ────────────────────────────────────
-class CE02M3Poller(_SysChannelsMixin, DevicePoller):
+class CE02M3Poller(_DtvCeMixin, DevicePoller):
 
     def __init__(self, cfg: dict, pub: MQTTPublisher):
         super().__init__(cfg, pub)
@@ -502,8 +559,6 @@ class CE02M3Poller(_SysChannelsMixin, DevicePoller):
         self._en_pf    = ch.get("power_factor", True)
         self._en_freq  = ch.get("frequency", True)
         self._en_ener  = ch.get("energy", True)
-        self._fw_version: tuple[int, int, int, int] | None = None
-        self._fw_read_warned = False
         # Device CT ratios (Ka, Kb, Kc) x1000 — read only for firmware whose
         # energy counters are secondary; dropped with the version on a reboot.
         self._ct_k_x1000: tuple[int, int, int] | None = None
@@ -962,43 +1017,10 @@ class CE02M3Poller(_SysChannelsMixin, DevicePoller):
         except Exception:
             pass
 
-    # Firmware version, holding 320..323 = (major, minor, patch, build). The
-    # FMB manager picks the configure_events wire from it
-    # (docs/contracts/fmb-event-wire.md §3), so it is read before any 0x18.
-    CE_FW_VERSION_REG = 320
-
-    def _read_fw_version(self) -> None:
-        try:
-            r = self.read_holding_registers(self.address,
-                                            self.CE_FW_VERSION_REG, 4)
-            if len(r) < 4:
-                raise IOError("short reply: %d of 4 registers" % len(r))
-            self._fw_version = tuple(int(v) & 0xFFFF for v in r[:4])
-            self._fw_read_warned = False
-            self.log.info("firmware %s",
-                          ".".join(str(v) for v in self._fw_version))
-        except ScanHold:
-            raise
-        except Exception as e:
-            self._fw_version = None
-            # The energy poll retries this every cycle while it is unknown:
-            # warn once per failure streak, not once a minute.
-            log = self.log.debug if self._fw_read_warned else self.log.warning
-            self._fw_read_warned = True
-            log("firmware version read (HR%d x4): %s",
-                self.CE_FW_VERSION_REG, e)
-
-    def fmb_firmware_version(self):
-        """Cached version; re-read on demand while unknown. Called on the
-        port thread by the FMB manager right before it decides on a 0x18."""
-        if self._fw_version is None:
-            self._read_fw_version()
-        return self._fw_version
-
     def fmb_firmware_invalidate(self) -> None:
         """A reboot event may follow a reflash — forget the cached version,
         and the CT ratios whose use depends on it."""
-        self._fw_version = None
+        super().fmb_firmware_invalidate()
         self._ct_k_x1000 = None
 
     def setup(self) -> None:

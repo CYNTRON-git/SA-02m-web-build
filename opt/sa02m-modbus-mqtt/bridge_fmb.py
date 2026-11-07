@@ -66,6 +66,7 @@ FMB_UNPARSED_LOG_PERIOD_S = 10.0  # unparsable-frame log throttle: the burst
 # CE-02m-3 event wire by firmware version (HR320..323) — the table and the
 # upper-port wedge behind the floor: docs/contracts/fmb-event-wire.md §3.
 CE_FMB_WB_MIN_FW = (1, 0, 6, 13)
+DTV_FMB_WB_MIN_FW = (1, 0, 1, 49)
 CE_FMB_POWER_EVENTS_FW = (1, 0, 7, 6)   # P/Q/S/f/PF events on by default
 CE_FMB_POWER_DISABLE_RANGE = (FMB_EVT_INPUT, 518, 29)   # 518..546, setting 0
 
@@ -138,6 +139,10 @@ class FastModbusEventPortManager:
         self._ack_slave: int = 0
         self._ack_flag:  int = 0
         self._last_poll_answered = False
+        self._poll_observation = None
+        self._poll_empty_slave = None
+        self._last_drain_target = 0
+        self._full_bus_poll_due = False
         # Event-record generation per slave: True = WB grammar, False = legacy.
         # Authoritative source is the configure_events handshake; the parser
         # only fills it in for a slave nothing is known about yet
@@ -215,14 +220,14 @@ class FastModbusEventPortManager:
         from CE_FMB_WB_MIN_FW, nothing below it or while the version is
         unknown — older CE firmware can go deaf on its upper port after ANY
         0x18 until a power cycle (docs/contracts/fmb-event-wire.md §3).
-        Otherwise WB is probed only where it can pay off: MR-02m or an
-        explicit yaml opt-in; DTV stays legacy. A handshake-confirmed contract
+        DTV switched from legacy to WB at DTV_FMB_WB_MIN_FW. Unknown
+        versions keep the legacy form. A handshake-confirmed contract
         goes first, so the extra probe is paid at most once per slave rather
         than on every reconfigure.
         """
         mode = dev.get("wire_mode", "auto")
         if dev.get("type") == "ce02m3":
-            dev["fw"] = self._ce_firmware(dev)
+            dev["fw"] = self._firmware_version(dev)
             if mode == "auto":
                 fw = dev["fw"]
                 if fw is not None and fw >= CE_FMB_WB_MIN_FW:
@@ -235,6 +240,10 @@ class FastModbusEventPortManager:
                         "0x18 sent (WB wire needs >= %s); classic polling only",
                         addr, seen, _fmt_fw(CE_FMB_WB_MIN_FW))
                 return ()
+        if dev.get("type") == "dtv":
+            fw = self._firmware_version(dev)
+            if mode == "auto":
+                return ("wb",) if fw is not None and fw >= DTV_FMB_WB_MIN_FW else ("legacy",)
         if mode == "legacy":
             contracts = ["legacy"]
         elif mode == "wb" or dev.get("type") == "mr02m":
@@ -249,7 +258,7 @@ class FastModbusEventPortManager:
                                            if c != preferred]
         return tuple(contracts)
 
-    def _ce_firmware(self, dev: dict):
+    def _firmware_version(self, dev: dict):
         """(major, minor, patch, build) from the poller, or None when it has
         not been read (a duck-typed poller without the method counts as
         unknown — never as permission to send a 0x18)."""
@@ -277,19 +286,12 @@ class FastModbusEventPortManager:
         """One configure pass over the still-unacked ranges. Per-range
         graceful: a rejected range stays on classic polling while the rest
         get events. Returns True when no range is left pending."""
-        # CE-02m-3 speaks the WB contract as specified: the reply carries the
-        # post-apply mask, so a WB subscription counts only when that mask
-        # confirms it. MR-02m's mask is not verified yet (prefix ACK, as for
-        # every legacy slave) — docs/contracts/fmb-event-wire.md §1.
-        verify_mask = dev.get("type") == "ce02m3"
-
         def _try(frame: bytes, requested) -> tuple[bool, str]:
             try:
                 # ACK: [addr][0x46][0x18][mask_len][mask…][CRC] — mask_len
                 # depends on count; leading 0xFF arbitration noise possible.
                 resp = ser.fmb_send_recv(frame, 5, 48, 0.4)
             except ScanHold:
-                dev["configure_interrupted"] = True
                 raise
             except Exception as e:
                 return False, f" ({e})"
@@ -301,13 +303,18 @@ class FastModbusEventPortManager:
                     " (reply mask %s, want %s)"
                     % (mask.hex() if mask is not None else "none/CRC-bad",
                        fmb_expected_mask(requested).hex()))
-            for i in range(max(0, len(resp) - 4)):
-                if (resp[i] == addr and resp[i + 1] == 0x46
-                        and resp[i + 2] == 0x18):
-                    return True, ""
-            return False, ""
+            # Legacy has one flags=OK byte, not a register mask. Reusing the
+            # decoder retains address/length/CRC checks on this fallback too.
+            flags = fmb_configure_reply_mask(resp, addr)
+            if flags == b"\x00":
+                return True, ""
+            return False, " (legacy flags %s, want 00)" % (
+                flags.hex() if flags is not None else "none/CRC-bad")
 
         contracts = self._configure_contracts(addr, dev)
+        if dev.get("type") == "dtv":
+            # The first version read identifies which registers have event producers.
+            self._refresh_ranges_from_poller(dev)
         dev["wire_blocked"] = not contracts
         if not contracts:
             return not dev["pending"]
@@ -322,8 +329,7 @@ class FastModbusEventPortManager:
                          else build_fmb_configure_events)
                 ok, attempt_err = _try(
                     build(addr, evt_type, start_reg, count, 1),
-                    [(count, 1)] if verify_mask and contract == "wb"
-                    else None)
+                    [(count, 1)] if contract == "wb" else None)
                 err = err or attempt_err
                 if ok:
                     used = contract
@@ -350,7 +356,6 @@ class FastModbusEventPortManager:
                     "rejected%s — classic polling covers this range",
                     addr, evt_type, start_reg, count, err)
         dev["pending"] = still_pending
-        dev.pop("configure_interrupted", None)
         if (wb_confirmed and dev.get("type") == "ce02m3"
                 and dev.get("fw") is not None
                 and dev["fw"] >= CE_FMB_POWER_EVENTS_FW):
@@ -381,13 +386,40 @@ class FastModbusEventPortManager:
 
     # --- poll_events (0x10) loop ---------------------------------------------
 
+    def _poll_minimum(self) -> int:
+        if self._full_bus_poll_due:
+            self._full_bus_poll_due = False
+            return 1
+        waiting = []
+        for addr, dev in self._devices.items():
+            needs_empty = getattr(dev["poller"], "fmb_needs_own_empty", None)
+            if dev["configured"] and needs_empty is not None and needs_empty():
+                waiting.append(addr)
+        if not waiting:
+            return 1
+        # An idle lower address otherwise wins every BUS_EMPTY arbitration.
+        # Rotate the lower bound among waiters, with a full-line poll between.
+        target = min((addr for addr in waiting if addr > self._last_drain_target),
+                     default=min(waiting))
+        self._last_drain_target = target
+        self._full_bus_poll_due = True
+        return target
+
     def _poll_once(self, ser: ModbusSerial) -> tuple[bool, list[tuple]]:
         """
         One poll_events cycle.  Returns (had_events, [(slave, type, reg, val)]).
         """
         self._last_poll_answered = False
-        frame = build_fmb_poll_events(1, self.MAX_DATA_LEN,
+        self._poll_observation = None
+        self._poll_empty_slave = None
+        frame = build_fmb_poll_events(self._poll_minimum(), self.MAX_DATA_LEN,
                                       self._ack_slave, self._ack_flag)
+        contexts = {}
+        for addr, dev in self._devices.items():
+            context = getattr(dev.get("poller"), "fmb_query_context", None)
+            if context is not None:
+                contexts[addr] = context()
+        self._poll_observation = (time.monotonic(), contexts)
         buf = ser.fmb_send_recv(frame, 4, 256, self.POLL_TIMEOUT)
         # Перед кадром ответа мастер видит байты арбитража (рецессивные 0xFF
         # и обрезки слов) — ищем реальное начало кадра, как wb-mqtt-serial
@@ -402,6 +434,8 @@ class FastModbusEventPortManager:
             return False, []
 
         slave_id = buf[0]
+        if not frame[3] <= slave_id <= 247:
+            return False, []
         subcode  = buf[2]
 
         if subcode == 0x12:
@@ -414,6 +448,9 @@ class FastModbusEventPortManager:
                     self._ack_slave = slave_id
                     self._ack_flag  = flag
                     self._last_poll_answered = True
+                    if (len(buf) == 6 and frame[4] >= 6
+                            and self._devices.get(slave_id, {}).get("configured")):
+                        self._poll_empty_slave = slave_id
             return False, []
 
         if subcode != 0x11:
@@ -574,7 +611,8 @@ class FastModbusEventPortManager:
 
     # --- MQTT dispatch -------------------------------------------------------
 
-    def _dispatch(self, slave_id: int, evt_type: int, reg: int, val: int) -> None:
+    def _dispatch(self, slave_id: int, evt_type: int, reg: int, val: int,
+                  *, observation=None) -> None:
         dev = self._devices.get(slave_id)
         if not dev:
             return
@@ -601,7 +639,12 @@ class FastModbusEventPortManager:
             if poller is not None:
                 poller.set_fmb_io_covered(False)
             return
-        dev["dispatch"](evt_type, reg, val)
+        observed = getattr(dev.get("poller"), "fmb_dispatch_observed", None)
+        if observed is not None and observation is not None and slave_id in observation[1]:
+            observed(evt_type, reg, val, query_started_at=observation[0],
+                     context=observation[1][slave_id])
+        else:
+            dev["dispatch"](evt_type, reg, val)
 
     def _refresh_ranges_from_poller(self, dev: dict) -> None:
         """Re-read fmb_event_ranges after setup() so hardware type wins.
@@ -644,6 +687,20 @@ class FastModbusEventPortManager:
         dev["fail_passes"] = 0
         dev["retry_at"] = 0.0
 
+    def _finish_configure_pass(self, addr: int, dev: dict, now: float) -> None:
+        complete = dev["configured"] and not dev["pending"]
+        if complete:
+            self._note_success(dev)
+        else:
+            delay = self._note_failed_pass(dev, now)
+            self._log.warning(
+                "FMB events config failed addr=%d for %d pending range(s); "
+                "next attempt in %.0f s (pass %d)",
+                addr, len(dev["pending"]), delay, dev["fail_passes"])
+        if dev["poller"] is not None:
+            # The poller adjusts the classic rate for its entire IO block.
+            dev["poller"].set_fmb_io_covered(complete)
+
     def configure_all(self, *, only_ready: bool = False) -> None:
         """EnableEvents for registered devices.
 
@@ -674,8 +731,8 @@ class FastModbusEventPortManager:
                     # only hold the port thread for the sleeps.
                     break
                 time.sleep(0.5)
+            self._finish_configure_pass(addr, dev, time.monotonic())
             if dev["configured"]:
-                self._note_success(dev)
                 acked = [r for r in dev["ranges"] if r not in dev["pending"]]
                 self._log.info(
                     "FMB events configured addr=%d (%s) ranges=%s%s",
@@ -684,7 +741,6 @@ class FastModbusEventPortManager:
                     " — %d range(s) rejected, classic polling covers them"
                     % len(dev["pending"]) if dev["pending"] else "")
                 if poller is not None:
-                    poller.set_fmb_io_covered(True)
                     try:
                         poller.poll_io()
                     except ScanHold:
@@ -692,43 +748,35 @@ class FastModbusEventPortManager:
                     except Exception as e:
                         self._log.debug("post-configure poll %s: %s",
                                         poller.device_id, e)
-            else:
-                delay = self._note_failed_pass(dev, now)
-                self._log.warning(
-                    "FMB events config failed addr=%d — polling only; "
-                    "next attempt in %.0f s (pass %d)",
-                    addr, delay, dev["fail_passes"])
-                if poller is not None:
-                    poller.set_fmb_io_covered(False)
         if not self.has_configured() and not only_ready:
             self._log.warning(
                 "FMB events: no devices configured — classic polling only")
 
     def reconfigure_pending(self) -> None:
-        """After reboot events — wb RescheduleDisconnectedDevices / EnableEvents."""
+        """Arm newly ready slaves and retry their unconfirmed ranges."""
         now = time.monotonic()
         ser = None
         for addr, dev in self._devices.items():
-            if ((dev["configured"] and not dev.get("configure_interrupted"))
-                    or not dev.get("pending")):
+            if not dev["pending"]:
                 continue
             # A rebooted-then-silent device must not burn the 0.4 s configure
             # timeout per range under the port lock on every ~50 ms event
             # cycle — back off like the run loop's next_fmb_retry throttle.
             if now < dev.get("retry_at", 0.0):
                 continue
+            poller = dev["poller"]
+            if poller is not None and not poller.classic_ready_for_fmb():
+                continue
+            self._refresh_ranges_from_poller(dev)
+            if not dev["pending"]:
+                continue
             if ser is None:
                 ser = _get_port(self._port_path, self._baudrate)
-            if self._configure_device(ser, addr, dev) and dev["configured"]:
-                self._note_success(dev)
-                poller = dev.get("poller")
-                if poller is not None:
-                    poller.set_fmb_io_covered(True)
+            if self._configure_device(ser, addr, dev):
                 self._log.info(
-                    "FMB events re-configured addr=%d (%s) after reboot",
+                    "FMB events re-configured addr=%d (%s)",
                     addr, dev["id"])
-            if not dev["configured"]:
-                self._note_failed_pass(dev, now)
+            self._finish_configure_pass(addr, dev, now)
 
     def retry_unconfigured(self) -> bool:
         """Quiet retry when first configure_all failed (device was offline)."""
@@ -750,8 +798,15 @@ class FastModbusEventPortManager:
             if time.monotonic() - t0 >= FMB_EVENT_BURST_S:
                 break
             had_events, events = self._poll_once(ser)
+            observation = self._poll_observation
             for (slave_id, evt_type, reg, val) in events:
-                self._dispatch(slave_id, evt_type, reg, val)
+                self._dispatch(slave_id, evt_type, reg, val, observation=observation)
+            empty_slave = self._poll_empty_slave
+            if empty_slave is not None and observation is not None:
+                poller = self._devices[empty_slave].get("poller")
+                empty = getattr(poller, "fmb_empty_observed", None)
+                if empty is not None and empty_slave in observation[1]:
+                    empty(query_started_at=observation[0], context=observation[1][empty_slave])
             if not self._last_poll_answered:
                 silent += 1
                 break
@@ -764,10 +819,7 @@ class FastModbusEventPortManager:
             poller = dev.get("poller")
             if poller is None:
                 continue
-            if armed and dev.get("configured"):
-                poller.set_fmb_io_covered(True)
-            else:
-                poller.set_fmb_io_covered(False)
+            poller.set_fmb_io_covered(armed and dev["configured"] and not dev["pending"])
 
     def stop(self) -> None:
         self._stop.set()

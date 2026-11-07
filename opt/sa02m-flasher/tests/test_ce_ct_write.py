@@ -161,6 +161,18 @@ def _run_write(meter: FakeCeMeter, clock: FakeClock, reg: int, value: int):
 
 
 class TestCeCtWriteGate(unittest.TestCase):
+    def test_live_ce_uses_original_transport_for_register_shared_with_mr_filters(self):
+        meter = FakeCeMeter((1, 0, 7, 6), FakeClock())
+        stale = dict(CE_DEVICE, signature="12AI", module_type=7)
+        with (
+            patch.object(device_config, "_open_transport", return_value=(meter, lambda: None)) as opened,
+            patch.object(device_config.time, "sleep", side_effect=meter.clock.sleep),
+            patch.object(device_config, "snapshot_for_device", return_value={"kind": "ce"}),
+        ):
+            device_config.write_allowed_holding("/dev/ttyS6", stale, 557, 8000)
+        opened.assert_called_once_with("/dev/ttyS6", stale)
+        self.assertEqual(meter.wire_writes(), [(557, 8000)])
+
     def test_old_firmware_refuses_ct_ratio_write_before_the_wire(self) -> None:
         clock = FakeClock()
         meter = FakeCeMeter((1, 0, 7, 4), clock)

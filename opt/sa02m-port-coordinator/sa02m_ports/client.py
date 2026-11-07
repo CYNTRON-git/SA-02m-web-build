@@ -2,9 +2,11 @@
 
 import array
 import json
+import math
 import os
 import socket
 import stat
+import time
 from .locks import open_locked
 
 SOCKET = "/run/sa02m-port-coordinator/control.sock"
@@ -39,55 +41,83 @@ def lock_device(device, directory=LOCK_DIR):
     return open_locked(path)
 
 
-def connect(path=None):
+def _remaining_timeout(deadline):
+    if not math.isfinite(deadline):
+        raise ValueError("Coordinator deadline must be finite")
+    remaining = deadline - time.monotonic()
+    if remaining <= 0:
+        raise CoordinatorUnavailable("Port coordinator deadline exceeded")
+    return min(TIMEOUT, remaining)
+
+
+def connect(path=None, *, deadline=None):
     sock = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
-    sock.settimeout(TIMEOUT)
     try:
+        sock.settimeout(TIMEOUT if deadline is None else _remaining_timeout(deadline))
         sock.connect(SOCKET if path is None else path)
+        if deadline is not None:
+            sock.settimeout(TIMEOUT)
     except OSError as exc:
         sock.close()
         raise CoordinatorUnavailable("Port coordinator unavailable") from exc
+    except BaseException:
+        sock.close()
+        raise
     return sock
 
 
-def request(sock, value):
-    try:
-        sock.sendall(json.dumps(value).encode() + b"\n")
-        payload, ancillary, flags, _ = sock.recvmsg(16384, socket.CMSG_SPACE(4))
-    except socket.timeout as exc:
-        raise CoordinatorUnavailable("Port coordinator did not answer") from exc
+def request(sock, value, *, deadline=None):
+    original_timeout = sock.gettimeout() if deadline is not None else None
     fds = []
-    for level, kind, data in ancillary:
-        if level == socket.SOL_SOCKET and kind == socket.SCM_RIGHTS:
-            numbers = array.array("i")
-            numbers.frombytes(data[:len(data) - len(data) % numbers.itemsize])
-            fds.extend(numbers)
     try:
-        while b"\n" not in payload:
-            if len(payload) >= 16384:
-                raise PortError("Oversize coordinator reply")
-            try:
+        try:
+            frame = json.dumps(value).encode() + b"\n"
+            if deadline is not None:
+                sock.settimeout(_remaining_timeout(deadline))
+            sock.sendall(frame)
+            if deadline is not None:
+                sock.settimeout(_remaining_timeout(deadline))
+            payload, ancillary, flags, _ = sock.recvmsg(16384, socket.CMSG_SPACE(4))
+            for level, kind, data in ancillary:
+                if level == socket.SOL_SOCKET and kind == socket.SCM_RIGHTS:
+                    numbers = array.array("i")
+                    numbers.frombytes(data[:len(data) - len(data) % numbers.itemsize])
+                    fds.extend(numbers)
+            while b"\n" not in payload:
+                if len(payload) >= 16384:
+                    raise PortError("Oversize coordinator reply")
+                if deadline is not None:
+                    sock.settimeout(_remaining_timeout(deadline))
                 chunk = sock.recv(16384 - len(payload))
-            except socket.timeout as exc:
-                raise CoordinatorUnavailable("Port coordinator did not answer") from exc
-            if not chunk:
-                raise PortError("Coordinator disconnected")
-            payload += chunk
-        reply = json.loads(payload.split(b"\n", 1)[0])
-        if not reply.get("ok"):
-            raise PortError(reply.get("error", "Port operation failed"))
-        return reply, fds
-    except BaseException:
+                if not chunk:
+                    raise PortError("Coordinator disconnected")
+                payload += chunk
+            if deadline is not None:
+                _remaining_timeout(deadline)
+            reply = json.loads(payload.split(b"\n", 1)[0])
+            if not reply.get("ok"):
+                raise PortError(reply.get("error", "Port operation failed"))
+            return reply, fds
+        finally:
+            if deadline is not None:
+                sock.settimeout(original_timeout)
+    except BaseException as exc:
         for fd in fds:
             os.close(fd)
+        if isinstance(exc, socket.timeout):
+            raise CoordinatorUnavailable("Port coordinator did not answer") from exc
         raise
 
 
 class Lease:
     """Exclusive operation. Close only AFTER every UART handle/task is closed."""
 
-    def __init__(self, device, purpose="operation", socket_path=None):
+    def __init__(self, device, purpose="operation", socket_path=None, *,
+                 acquire_deadline=None, release_timeout=None):
+        if release_timeout is not None and (not math.isfinite(release_timeout) or release_timeout < 0):
+            raise ValueError("Release timeout must be finite and nonnegative")
         self.device, self.purpose, self.socket_path = device, purpose, socket_path
+        self.acquire_deadline, self.release_timeout = acquire_deadline, release_timeout
         self.sock = None
         self.fd = None
         self.status = {}
@@ -95,11 +125,12 @@ class Lease:
     def __enter__(self):
         if self.sock is not None or self.fd is not None:
             raise PortError("Lease already acquired")
-        self.sock = connect(self.socket_path)
+        budget = {} if self.acquire_deadline is None else {"deadline": self.acquire_deadline}
+        self.sock = connect(self.socket_path, **budget)
         try:
             self.status, fds = request(self.sock, {
                 "op": "acquire", "port": self.device, "purpose": self.purpose,
-            })
+            }, **budget)
             if len(fds) != 1:
                 for fd in fds:
                     os.close(fd)
@@ -112,14 +143,18 @@ class Lease:
             self.sock = None
             raise
 
-    def close(self):
+    def close(self, *, deadline=None):
+        if self.release_timeout is not None:
+            release_deadline = time.monotonic() + self.release_timeout
+            deadline = release_deadline if deadline is None else min(deadline, release_deadline)
         if self.fd is not None:
             os.close(self.fd)
             self.fd = None
         if self.sock is not None:
             sock, self.sock = self.sock, None
             try:
-                reply, fds = request(sock, {"op": "release"})
+                budget = {} if deadline is None else {"deadline": deadline}
+                reply, fds = request(sock, {"op": "release"}, **budget)
                 for fd in fds:
                     os.close(fd)
                 self.status = reply
@@ -143,11 +178,12 @@ class PollLock:
         self.device, self.socket_path, self.lock_dir = device, socket_path, lock_dir
         self.fd = None
 
-    def acquire(self):
+    def acquire(self, *, deadline=None):
         if self.fd is not None:
             raise PortError("Polling lock already acquired")
-        with connect(self.socket_path) as sock:
-            reply, fds = request(sock, {"op": "poll", "port": self.device})
+        budget = {} if deadline is None else {"deadline": deadline}
+        with connect(self.socket_path, **budget) as sock:
+            reply, fds = request(sock, {"op": "poll", "port": self.device}, **budget)
             for fd in fds:
                 os.close(fd)
         try:
@@ -157,8 +193,8 @@ class PollLock:
         # A lease may have started while we obtained the lock. Recheck its intent
         # before opening UART; broker waits for this fd before granting a lease.
         try:
-            with connect(self.socket_path) as sock:
-                reply, fds = request(sock, {"op": "poll", "port": self.device})
+            with connect(self.socket_path, **budget) as sock:
+                reply, fds = request(sock, {"op": "poll", "port": self.device}, **budget)
                 for fd in fds:
                     os.close(fd)
         except BaseException:

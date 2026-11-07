@@ -16,6 +16,28 @@ from sa02m_flasher import mplc_lease
 
 
 class ManualPortComposition(unittest.TestCase):
+    def test_operation_targets_one_line_and_preserves_a_foreign_or_manual_owner(self):
+        h = ownership.ProcessOwnership()
+        h.setUp()
+        self.addCleanup(h.tearDown)
+        target, other = h.ports[:2]
+        with Lease(other, "gateway", h.path) as gateway, \
+                patch.object(mplc_lease, "_lease_type", return_value=lambda port, purpose: Lease(port, purpose, h.path)):
+            with mplc_lease.port_lease(target, []):
+                os.fstat(gateway.fd)
+                self.assertEqual({row["port"] for row in h.state()["leases"].values()}, {target, other})
+            self.assertEqual([row["port"] for row in h.state()["leases"].values()], [other])
+            with self.assertRaisesRegex(RuntimeError, "already leased"):
+                with mplc_lease.port_lease(other, []):
+                    self.fail("competing gateway was preempted")
+            with Lease(target, "flasher", h.path) as manual, \
+                    patch.dict(mplc_lease._MANUAL_LEASES, {target: manual}):
+                with mplc_lease.port_lease(target, []):
+                    self.assertEqual(mplc_lease._MANUAL_USERS[target], 1)
+                os.fstat(manual.fd)
+                os.fstat(gateway.fd)
+                self.assertEqual({row["port"] for row in h.state()["leases"].values()}, {target, other})
+
     def test_failed_restore_stays_pending_until_broker_recovers(self):
         h = ownership.ProcessOwnership()
         h.setUp()
@@ -64,6 +86,8 @@ class ManualPortComposition(unittest.TestCase):
             data["fail"] = False
             ownership.atomic_json(h.system_file, data)
             h.wait(lambda: not h.state()["services"])
+            # The flasher reads the public snapshot published after the private journal.
+            h.wait(lambda: not ownership.json.loads(status.read_text())["services"])
             self.assertTrue(h.system()["active"])
             self.assertFalse(mplc_lease.restore_pollers([])["failed"])
             for port in h.ports:

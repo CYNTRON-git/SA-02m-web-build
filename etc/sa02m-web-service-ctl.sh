@@ -601,33 +601,77 @@ unit_props() {
     derive_props "$_active" "$_en_raw" "$_load"
 }
 
-# Fetch every resolved unit's status in TWO batched systemctl calls instead of
-# ~3 forks per service (was ~4 s on the ARM target). Pass 1 resolves units with
-# the exact prior logic (unchanged — same unit selected). Then, over the full
-# resolved-unit list: ONE `systemctl show` for ActiveState+LoadState (keyed by
-# unit Id) and ONE `systemctl is-enabled` for every unit (it accepts many units
-# and prints one status line per unit IN INPUT ORDER — this IS is-enabled, exact
-# enabled/masked/static/… semantics, just batched, unlike swapping in
-# UnitFileState). Pass 2 derives each service's status from the two lookups. Any
-# unit missing from either batch (older systemd, short/garbled output, a batch
-# error) falls back to the original per-unit path for that unit — so the emitted
-# JSON stays byte-identical to the per-unit implementation for every state.
+# Only complete, uniquely keyed records enter this request-local map. Aliases
+# returned under another Id must use the original per-unit probe.
+list_unit_snapshot() {
+    local wanted=$1 name active load
+    while IFS='|' read -r name active load; do
+        if [ "$name" = "$wanted" ]; then
+            printf '%s|%s' "$active" "$load"
+            return 0
+        fi
+    done <<EOF
+$_batch_props
+EOF
+    return 1
+}
+
+# Resolve candidates and reuse their state from one keyed show snapshot. The
+# second call is the original is-enabled batch, preserving its policy meaning.
 cmd_list() {
-    # ── Pass 1: resolve the unit for every present service (prior logic) ──
+    _present_rows=""
+    _candidate_units=""
+    while IFS='|' read -r _id _label _cands; do
+        [ -z "$_id" ] && continue
+        if ! service_present "$_id" "$_cands"; then
+            if svc_is_installable "$_id"; then
+                _present_rows="${_present_rows}${_id}|${_label}|__absent__
+"
+            fi
+            continue
+        fi
+        _present_rows="${_present_rows}${_id}|${_label}|${_cands}
+"
+        _old_ifs=$IFS
+        IFS=,
+        for _u in $_cands; do
+            IFS=$_old_ifs
+            case "$_u" in *.service) ;; *) _u="${_u}.service" ;; esac
+            _candidate_units="${_candidate_units} ${_u}"
+        done
+        IFS=$_old_ifs
+    done <<EOF
+$SERVICE_DEFS
+EOF
+
+    _batch_props=""
+    if [ -n "$_candidate_units" ] && _show=$(sc_run show --property=Id,ActiveState,LoadState $_candidate_units 2>/dev/null); then
+        _batch_props=$(printf '%s\n' "$_show" | awk '
+            function record() {
+                if (id != "") {
+                    if (ni == 1 && na == 1 && nl == 1 && act != "" && load != "" && !bad)
+                        value[id] = id "|" act "|" load
+                    else invalid[id] = 1
+                }
+                id=""; act=""; load=""; ni=0; na=0; nl=0; bad=0
+            }
+            { sub(/\r$/, "") }
+            /^$/ { record(); next }
+            /^Id=/ { id=substr($0,4); seen[id]++; ni++; next }
+            /^ActiveState=/ { act=substr($0,13); na++; next }
+            /^LoadState=/ { load=substr($0,11); nl++; next }
+            { bad=1 }
+            END { record(); for (id in seen) if (seen[id] == 1 && !invalid[id]) print value[id] }
+        ')
+    fi
+
     _rows=""
     _batch_units=""
     while IFS='|' read -r _id _label _cands; do
         [ -z "$_id" ] && continue
-        if ! service_present "$_id" "$_cands"; then
-            # Absent but installable (codesys|mplc4|node-red) → emit a ghost row
-            # with the __absent__ sentinel unit. It is NOT added to the batched
-            # systemctl probes (there is nothing to probe); Pass 2 emits a fixed
-            # installed:false tuple for it. Non-installable absent services keep
-            # the original `continue` (never shown).
-            if svc_is_installable "$_id"; then
-                _rows="${_rows}${_id}|${_label}|__absent__
+        if [ "$_cands" = __absent__ ]; then
+            _rows="${_rows}${_id}|${_label}|__absent__
 "
-            fi
             continue
         fi
         _unit=""
@@ -636,7 +680,11 @@ cmd_list() {
         for _u in $_cands; do
             IFS=$_old_ifs
             case "$_u" in *.service) ;; *) _u="${_u}.service" ;; esac
-            if unit_exists "$_u"; then
+            if _al=$(list_unit_snapshot "$_u"); then
+                case "${_al#*|}" in not-found|"") continue ;; esac
+                _unit=$_u
+                break
+            elif unit_exists "$_u"; then
                 _unit=$_u
                 break
             fi
@@ -664,23 +712,8 @@ cmd_list() {
 "
         [ "$_unit" != "init.d" ] && _batch_units="${_batch_units} ${_unit}"
     done <<EOF
-$SERVICE_DEFS
+$_present_rows
 EOF
-
-    # ── Batch: one `systemctl show` for every resolved real unit ──
-    # Records are blank-line-separated, one per unit; awk (no paragraph-mode
-    # RS, so busybox/mawk/gawk-safe) flattens each to `Id|ActiveState|LoadState`.
-    _batch_props=""
-    if [ -n "$_batch_units" ]; then
-        _batch_props=$(sc_run show --property=Id,ActiveState,LoadState $_batch_units 2>/dev/null | awk '
-            { sub(/\r$/, "") }
-            /^$/ { if (id != "") print id "|" act "|" load; id=""; act=""; load=""; next }
-            /^Id=/ { id = substr($0, 4) }
-            /^ActiveState=/ { act = substr($0, 13) }
-            /^LoadState=/ { load = substr($0, 11) }
-            END { if (id != "") print id "|" act "|" load }
-        ')
-    fi
 
     # ── Batch: one `systemctl is-enabled` for every resolved real unit ──
     # is-enabled accepts multiple units and prints one status line per unit in
@@ -736,7 +769,7 @@ EOF
                 fi
             fi
         else
-            _al=$(printf '%s\n' "$_batch_props" | awk -F'|' -v u="$_unit" '$1==u{print $2"|"$3; exit}')
+            _al=$(list_unit_snapshot "$_unit") || _al=""
             if [ -n "$_al" ]; then
                 _en_raw=$(printf '%s\n' "$_enabled_map" | awk -F'|' -v u="$_unit" '$1==u{print $2; exit}')
                 if [ -z "$_en_raw" ]; then

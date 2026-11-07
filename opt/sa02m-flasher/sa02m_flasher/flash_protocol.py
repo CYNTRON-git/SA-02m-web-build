@@ -917,6 +917,13 @@ class FlasherProtocol:
         self.use_indexed_data_blocks = False
         self.use_indexed_bl_blocks = False
 
+    @staticmethod
+    def _matching_response(request: bytes, response: bytes) -> Optional[bytes]:
+        # An injected transport callback has the same bounded wire boundary.
+        if len(response) > modbus_rtu.MAX_RESPONSE_BUFFER:
+            return None
+        return modbus_rtu.find_matching_response(request, response, final=True)
+
     def _exchange(
         self, request: bytes, log_timeout: bool = True
     ) -> Tuple[Optional[int], Optional[bytes], Optional[str]]:
@@ -953,9 +960,12 @@ class FlasherProtocol:
             self.log_cb(f"  RX hex ({len(response)} bytes):")
             for ln in _hex_packet_log(response).split("\n"):
                 self.log_cb("    " + ln)
+        matched = self._matching_response(request, response)
+        if matched is None:
+            return None, None, f"Неверный ответ (ответ: {response[:64].hex()})"
         slave, payload, err = modbus_rtu.parse_response(
-            response,
-            expected_slave=None,
+            matched,
+            expected_slave=request[0],
             log_cb=(self.log_cb if self.verbose_exchange_log else None),
         )
         if err is not None:
@@ -994,8 +1004,11 @@ class FlasherProtocol:
             self.log_cb("  RX hex:")
             for ln in _hex_packet_log(response).split("\n"):
                 self.log_cb("    " + ln)
+        matched = self._matching_response(req, response)
+        if matched is None:
+            return None, f"Неверный ответ (ответ: {response[:64].hex()})"
         _, payload, err = modbus_rtu.parse_fast_modbus_response(
-            response,
+            matched,
             expected_serial=serial,
             log_cb=(self.log_cb if self.verbose_exchange_log else None),
         )
@@ -1277,9 +1290,13 @@ class FlasherProtocol:
             _log("=" * 56)
             return "Таймаут ответа на jump"
 
-        _, _, err = modbus_rtu.parse_response(
-            response, expected_slave=slave, log_cb=None
-        )
+        matched = self._matching_response(req, response)
+        if matched is None:
+            err = f"Неверный ответ (ответ: {response[:64].hex()})"
+        else:
+            _, _, err = modbus_rtu.parse_response(
+                matched, expected_slave=slave, log_cb=None
+            )
         if err:
             _log(f"  Разбор ответа: {err}")
         else:
@@ -1333,9 +1350,13 @@ class FlasherProtocol:
             _log("=" * 56)
             return "Таймаут ответа на jump"
 
-        _, _, err = modbus_rtu.parse_fast_modbus_response(
-            response, expected_serial=serial, log_cb=None
-        )
+        matched = self._matching_response(req, response)
+        if matched is None:
+            err = f"Неверный ответ (ответ: {response[:64].hex()})"
+        else:
+            _, _, err = modbus_rtu.parse_fast_modbus_response(
+                matched, expected_serial=serial, log_cb=None
+            )
         if err:
             _log(f"  Разбор ответа: {err}")
         else:

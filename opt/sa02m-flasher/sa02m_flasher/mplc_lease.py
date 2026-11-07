@@ -19,6 +19,8 @@ from typing import Iterable, Iterator, List, Optional, Set
 log = logging.getLogger(__name__)
 
 _LEASE_LOCK = threading.RLock()
+# When both are needed, take _LEASE_LOCK first. No RPC or user work under this lock.
+_MANUAL_USERS_LOCK = threading.Lock()
 _MANUAL_LEASES = {}
 _MANUAL_USERS = {}
 _PENDING_RESTORES = {}
@@ -580,7 +582,9 @@ def restore_pollers(services_to_start: Iterable[str]) -> dict:
     failed, restored = {}, []
     with _LEASE_LOCK:
         for port, lease in list(_MANUAL_LEASES.items()):
-            if _MANUAL_USERS.get(port, 0):
+            with _MANUAL_USERS_LOCK:
+                active = _MANUAL_USERS.get(port, 0)
+            if active:
                 failed[port] = port + ": operation active"
                 continue
             scope = lease.status.get("lease", {})
@@ -603,24 +607,62 @@ def restore_pollers(services_to_start: Iterable[str]) -> dict:
 
 
 @contextmanager
+def _lease_entry_lock(deadline):
+    if deadline is None:
+        with _LEASE_LOCK:
+            yield
+        return
+    if not math.isfinite(deadline):
+        raise ValueError("Port reservation deadline must be finite")
+    remaining = deadline - time.monotonic()
+    if remaining <= 0 or not _LEASE_LOCK.acquire(timeout=min(remaining, threading.TIMEOUT_MAX)):
+        raise TimeoutError("Port reservation deadline exceeded")
+    try:
+        if time.monotonic() >= deadline:
+            raise TimeoutError("Port reservation deadline exceeded")
+        yield
+    finally:
+        _LEASE_LOCK.release()
+
+
+@contextmanager
 def port_lease(device_path: str, services_to_stop: Iterable[str], *,
-               require_free: bool = True, preserve_released: bool = False) -> Iterator[List[str]]:
+               require_free: bool = True, preserve_released: bool = False,
+               acquire_deadline: Optional[float] = None,
+               release_timeout: Optional[float] = None) -> Iterator[List[str]]:
     """Acquire configured scope; caller service lists cannot widen privileges."""
-    with _LEASE_LOCK:
+    with _lease_entry_lock(acquire_deadline):
         manual = _MANUAL_LEASES.get(device_path)
         if manual:
-            if _MANUAL_USERS.get(device_path, 0):
-                raise PortBusyError(device_path, ["another flasher operation"])
-            _MANUAL_USERS[device_path] = _MANUAL_USERS.get(device_path, 0) + 1
+            with _MANUAL_USERS_LOCK:
+                if _MANUAL_USERS.get(device_path, 0):
+                    raise PortBusyError(device_path, ["another flasher operation"])
+                _MANUAL_USERS[device_path] = _MANUAL_USERS.get(device_path, 0) + 1
     if manual:
         try:
             yield list(manual.status.get("lease", {}).get("services", []))
         finally:
-            with _LEASE_LOCK:
+            with _MANUAL_USERS_LOCK:
                 _MANUAL_USERS[device_path] -= 1
         return
-    with _lease_type()(device_path, "flasher") as lease:
-        yield list(lease.status.get("lease", {}).get("services", []))
+    budget = {}
+    if acquire_deadline is not None:
+        budget["acquire_deadline"] = acquire_deadline
+    if release_timeout is not None:
+        budget["release_timeout"] = release_timeout
+    manager = _lease_type()(device_path, "flasher", **budget)
+    lease = manager.__enter__()
+    scope = lease.status.get("lease", {})
+    try:
+        yield list(scope.get("services", []))
+    finally:
+        before_close = time.time()
+        try:
+            manager.__exit__(*sys.exc_info())
+        except Exception as exc:
+            with _LEASE_LOCK:
+                _remember_restore(device_path, scope.get("services", []), scope.get("id"), str(exc), before_close)
+            raise
 
 
 def _restore_all_on_exit() -> None:

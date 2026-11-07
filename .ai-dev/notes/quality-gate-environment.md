@@ -7,7 +7,7 @@ pass. The registry itself is the one home for *what* each row checks
 
 ## Current host setup — measured 2026-11-06
 
-Release preparation on `1.0.7.31`, continuing `codex/audit-20261106`, has the required Python dependencies
+Release preparation on `1.0.7.32`, continuing `1.0.7.31` and `codex/audit-20261106`, has the required Python dependencies
 and a working Chromium on both Windows and WSL. Installation, import checks and
 browser launch are established. They do not turn earlier FAIL, SKIP or PARTIAL
 results into passes or establish a combined build/review result.
@@ -26,6 +26,34 @@ and final verification totals; this note owns the environment.
 | WSL vPLC native SDKs | libmodbus 3.1.11, Paho MQTT 1.3.15, SQLite development files and pinned open62541 v1.4.6 in `/opt/sa02m-dev-tools/open62541-v1.4.6`. The sibling's configured `runtime/build/native-all-transports` includes the native transports and `modbus_mp02`. Relinking with the custom SDK requires `LIBRARY_PATH` and `LD_LIBRARY_PATH` to include its `lib/` directory. Native/sanitizer/packaging results and their review scope belong to the audit; SDK presence is not ARM execution. |
 | WSL ARM container build | Podman 5.7.0 with crun/overlay; nftables is required for the default container networking. Actual `ubuntu:24.04` startup and Noble ARM cross-build completed. The official archive/security endpoints timed out on this host; an explicitly selected `ru.archive.ubuntu.com` mirror retained mandatory signed apt verification. The minimal image lacks CA certificates: signed HTTP apt bootstraps `ca-certificates`, followed by HTTPS ARM repositories. No TLS/signature bypass or host apt source change was used. The audit records the preflight artifact separately from final commit/package provenance and target acceptance. |
 | Optional isolated quality container | Noble userspace with copied source/manifests, private PID/IPC, network none, 3 GiB RAM, 512 processes, 512 MiB shm, eight CPUs, no host mounts or extra capabilities. The disposable container's real non-root/sudo path exercised the repaired factory-reset fixture; host accounts and sudoers were unchanged. Default container root could not inspect another UID's `/proc/<pid>/fd` in service composition. The optional full registry was not launched; the coordinator ended this attempt without adding `CAP_SYS_PTRACE`. Failed probes and separate successful cases remain distinct evidence in the audit. This WSL-kernel container is not an identical CI VM. |
+| Follow-up isolated quality container | A separate Noble container uses Node 20.19.6, Python 3.12.3, `QUALITY_STRICT=1` and `TMPDIR=/tmp`. PID/IPC are private, networking is disabled and there are no host mounts; `CAP_SYS_PTRACE` applies inside this container only. The actual preflight read three descriptors owned by another UID and verified runner UID 1001 → real sudo UID 0. Configuration is recorded in `.tmp/remediation-20261106/followup-container-inspect.json`; `followup-container-preflight.json` explicitly transcribes successful tool results, not a second run. This environment preflight does not establish a source snapshot or a passing quality suite; those results belong to the audit. The earlier default-capability attempt remains separate. |
+
+The final-source container is a separate instance with `--init`, private PID/IPC,
+no network or host mounts, and the same unprivileged runner/real-sudo boundary.
+Its immutable image adds signed Noble `rsync` 3.2.7-1ubuntu1.5; WSL's signed
+`catatonit` 0.2.1-2build1 supplies child reaping. The first catatonit installation
+had no package candidate until the apt indexes were refreshed. The older frozen
+container's source and failures were retained. Its review was interrupted when
+unreaped children under a sleep PID 1 approached the private process limit; the
+interruption receipt and original logs are preserved under
+`followup32-gates/evidence-interrupted/`. Final build and review use separate
+init containers. Receipts: `final32-dependencies.log` and
+`final32-container-{inspect.json,preflight.log}` under `.tmp/remediation-20261106/`.
+The original frozen source has now run its full build in this environment; the
+separate full review is still in progress. A complementary root invocation of
+`update-deploy-skip` exercised ownership case15e with backup owner4321:4322,
+which the nonroot run cannot prove. Root privileges were confined to the isolated
+container; host sudoers were unchanged. Source manifests and before/after checks
+are in `final32-build-evidence` and `final32-owner-evidence`. The audit owns the
+results and outstanding source-review findings; later working-tree fixes do not
+inherit a passed gate from that earlier immutable snapshot.
+
+The vPLC startup ARM artifact used the canonical `build_armhf_deb.sh --no-docker`
+route inside an immutable prepared Noble SDK after the standard Docker route
+failed during network package installation. The prepared-route receipt records
+the SDK image, exact source archive and compiler; this is an explicit alternate
+canonical route, not a successful replay of the failed network build. Artifact
+and target-acceptance evidence belongs to the audit.
 
 WSL runs as root by default, while CI runs as a non-root user with passwordless
 sudo. Alice's permission-refusal case skips under root; the separate full

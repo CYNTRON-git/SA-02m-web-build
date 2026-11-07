@@ -262,7 +262,7 @@ if not IS_ROOT:
         except (OSError, subprocess.SubprocessError) as error:
             bad(f"privileged fixture execution failed: {error}")
             sys.exit(1)
-        sys.exit(result.returncode)
+        sys.exit(result.returncode)  # exit-status: bounded sudo/timeout child process status, not an assertion count
 
 
 def check(cond: bool, good: str, fail: str) -> None:
