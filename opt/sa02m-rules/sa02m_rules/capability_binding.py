@@ -1,5 +1,6 @@
 """Use the installed Alice converter; raw undeclared targets stay legacy."""
 import os
+import re
 import sys
 
 # Both packages are sibling /opt trees on a board and in this repository.
@@ -10,6 +11,102 @@ try:
     from sa02m_alice.client import converters, capability_values
 except ImportError:
     converters = capability_values = None
+
+try:
+    from sa02m_alice.config import inventory, topics
+except ImportError:
+    inventory = topics = None
+led_readonly_source = getattr(inventory, "led_readonly_source", None)
+
+
+def source_paths():
+    return topics.YAML_CANDIDATES if topics is not None else ("/etc/sa02m-modbus-mqtt.yaml",)
+
+def file_token(path):
+    try:
+        st = os.stat(path)
+        return st.st_dev, st.st_ino, st.st_mtime_ns, st.st_ctime_ns, st.st_size
+    except OSError:
+        return None
+
+
+def _roster_reader():
+    # The Rules installer includes the parser even when Alice stays on an
+    # older release. A source checkout uses the same file from its sibling.
+    try:
+        from . import bridge_roster
+    except ImportError:
+        sibling = os.path.join(_ALICE, "sa02m_alice", "config")
+        if sibling not in sys.path:
+            sys.path.append(sibling)
+        import bridge_roster
+    return bridge_roster
+
+
+def _bridge_families(bridge_roster):
+    for path in source_paths():
+        try:
+            os.stat(path, follow_symlinks=False)
+        except FileNotFoundError:
+            continue
+        except OSError:
+            return None
+        return bridge_roster.admitted_families(bridge_roster.load_yaml(path))
+    return {}
+
+
+def write_blocker():
+    if led_readonly_source is not None and hasattr(getattr(inventory, "bridge_families", None), "merge_families"):
+        readonly = led_readonly_source(follow_changes=True)
+        if hasattr(readonly, "refresh"):
+            def reason(topic):
+                return "read_only" if readonly(topic) else ""
+            reason.refresh = readonly.refresh
+            return reason
+
+    # Rules and Alice can be updated separately. The installed LED driver
+    # remains authoritative for the commands the bridge actually subscribes to.
+    led_path = os.path.join(os.path.dirname(_ALICE), "sa02m-led")
+    if led_path not in sys.path:
+        sys.path.append(led_path)
+    try:
+        from sa02m_led.controls import control_names, writable_names
+        known, writable = control_names(), writable_names()
+    except ImportError:
+        known = getattr(inventory, "LED_CONTROLS", ())
+        writable = getattr(inventory, "LED_WRITABLE", ())
+    families = {}
+    previous = None
+    reader = _roster_reader()
+
+    def refresh():
+        nonlocal families, previous
+        revision = tuple((path, file_token(path)) for path in (*source_paths(), reader.PRODUCER))
+        if previous != revision:
+            families = reader.merge_families(families, _bridge_families(reader))
+            previous = revision
+        return revision
+
+    def reason(topic):
+        path = str(topic).strip()
+        if not path.startswith("/devices/"):
+            return ""
+        device, _, control = path[len("/devices/"):].rpartition("/controls/")
+        control = control.removesuffix("/on")
+        if not device or not control or "/" in control:
+            return ""
+        refresh()
+        if device in families:
+            led = families[device]
+        else:
+            match = re.fullmatch(r"led-COM[1-5]-([1-9][0-9]{0,2})", device)
+            led = match and int(match[1]) <= 247
+        if not led or control in writable:
+            return ""
+        return "read_only" if control in known else "unknown_target"
+
+    reason.refresh = refresh
+    return reason
 
 
 def write(binding, value, current_raw=None):

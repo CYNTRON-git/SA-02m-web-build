@@ -170,6 +170,8 @@ const parts = [
   extractConst(src, 'CAREL_VARIANT_LABELS'),
   extractFn(src, 'stripBootloaderSignatureSuffix'),
   extractFn(src, 'isMpModuleSignatureForFirmwareHint'),
+  extractFn(src, 'firmwareIdentityMissing'),
+  extractFn(src, 'normalizeProductToken'),
   extractFn(src, 'signatureLooksLikeCarel'),
   // 1.0.6.40: deviceConfigKindFromSignature also asks the LED-strip predicate
   // (test-led-window.mjs pins that branch); the sandbox carries its dependency

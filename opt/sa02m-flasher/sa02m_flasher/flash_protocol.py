@@ -18,6 +18,7 @@ from dataclasses import dataclass
 from typing import Callable, List, Optional, Tuple
 
 from . import modbus_rtu
+from . import firmware
 from .modbus_io import (
     decode_bootloader_version_registers_8,
     decode_signature_from_holding_290_payload,
@@ -776,12 +777,15 @@ def _image_has_embedded_fw_header(image: bytes) -> bool:
     size_le = struct.unpack_from("<I", image, 12)[0]
     if not (1 <= size_le <= MAX_FIRMWARE_SIZE_BYTES):
         return False
-    if image[16:20] == b"CRC2":
-        return True
     if _image_starts_like_appboot_vector_table(image):
         return False
+    if image[16:20] == b"CRC2":
+        return True
     sig_raw = image[:12].split(b"\x00", 1)[0]
-    if len(sig_raw) < 2:
+    if not sig_raw and image[:12] == bytes(12):
+        vectors = _fw_payload_first_8_bytes_to_le(image[INFO_BLOCK_BYTES:INFO_BLOCK_BYTES + 8])
+        return bool(vectors) and check_app_vector_table(vectors) is None
+    if not sig_raw:
         return False
     if not all(0x20 <= b <= 0x7E for b in sig_raw):
         return False
@@ -1709,6 +1713,21 @@ def detect_indexed_block_windows_by_address(
     return _apply_indexed_block_windows(flasher, ver, err)
 
 
+def _native_vector_error(image: bytes, kind: str) -> Optional[str]:
+    try:
+        packed = (len(image) != BL_IMAGE_TOTAL_BYTES if kind == "bootloader"
+                  else _image_has_embedded_fw_header(image))
+        if packed:
+            _, size, _ = firmware._fw_container(image)
+            raw = firmware._fw_payload(image, size)
+        else:
+            raw = image
+        firmware.validate_native_payload(raw, kind)
+    except ValueError as exc:
+        return str(exc)
+    return None
+
+
 def run_flash_sequence_by_address(
     flasher: FlasherProtocol,
     slave: int,
@@ -1723,6 +1742,9 @@ def run_flash_sequence_by_address(
     Прошивка приложения по Modbus-адресу. Как у WB: если образ с info-блоком (первые 32 B файла .fw) — отправляем их как 16 рег BE; иначе — сборка из signature + size (для .bin).
     """
     gate = _resolve_flash_cancel_gate(cancel_cb, cancel_gate)
+    vector_error = _native_vector_error(image, "app")
+    if vector_error:
+        return vector_error
     detect_indexed_block_windows_by_address(flasher, slave)
     # Полный файл .fw: первые 32 байта = info, payload в файле — слова BE (как в make_fw.py)
     if _image_has_embedded_fw_header(image):
@@ -1959,6 +1981,9 @@ def run_flash_sequence(
     if not serial or serial == 0xFFFFFFFF:
         return "Для прошивки по 0x46 нужен серийный номер устройства (выполните сканирование и выберите по серийному №)."
     gate = _resolve_flash_cancel_gate(cancel_cb, cancel_gate)
+    vector_error = _native_vector_error(image, "app")
+    if vector_error:
+        return vector_error
     detect_indexed_block_windows_by_serial(flasher, serial)
 
     # Полный файл .fw: первые 32 байта = info, payload в файле — слова BE
@@ -2249,6 +2274,16 @@ def run_flash_sequence_wb(
     return None
 
 
+def _unpad_bootloader_container(image: bytes) -> bytes:
+    """A make_fw container can pad the last 246-byte transport block."""
+    end = INFO_BLOCK_BYTES + BL_IMAGE_TOTAL_BYTES
+    if (end < len(image) < end + DATA_BLOCK_BYTES and
+            struct.unpack_from("<I", image, 12)[0] == BL_IMAGE_TOTAL_BYTES and
+            not image[end:].strip(b"\xff")):
+        return image[:end]
+    return image
+
+
 def run_flash_bootloader_sequence_by_address(
     flasher: FlasherProtocol,
     slave: int,
@@ -2264,11 +2299,15 @@ def run_flash_bootloader_sequence_by_address(
     slave: адрес устройства в загрузчике (обычно 247).
     """
     gate = _resolve_flash_cancel_gate(cancel_cb, cancel_gate)
+    vector_error = _native_vector_error(image, "bootloader")
+    if vector_error:
+        return vector_error
     detect_indexed_block_windows_by_address(flasher, slave)
     # .fw формат: 32 байта info-заголовка (CRC над raw binary) + байт-свопированный payload.
     # При app_from_fw кодировании payload_block_to_registers_app_le: в staging попадает raw binary,
     # running_crc = CRC32(raw binary) = CRC из заголовка .fw → коммит проходит.
     fw_info_bytes: Optional[bytes] = None
+    image = _unpad_bootloader_container(image)
     if len(image) == BL_IMAGE_TOTAL_BYTES + INFO_BLOCK_BYTES:
         fw_info_bytes = image[:INFO_BLOCK_BYTES]
         image = image[INFO_BLOCK_BYTES:]
@@ -2409,6 +2448,10 @@ def run_flash_sequence_bootloader(
     """
     gate = _resolve_flash_cancel_gate(cancel_cb, cancel_gate)
     fw_info_bytes_s: Optional[bytes] = None
+    vector_error = _native_vector_error(image, "bootloader")
+    if vector_error:
+        return vector_error
+    image = _unpad_bootloader_container(image)
     if len(image) == BL_IMAGE_TOTAL_BYTES + INFO_BLOCK_BYTES:
         fw_info_bytes_s = image[:INFO_BLOCK_BYTES]
         image = image[INFO_BLOCK_BYTES:]

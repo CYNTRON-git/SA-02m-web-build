@@ -28,6 +28,10 @@ import os
 import re
 from typing import Any, Dict, List, Optional, Tuple
 
+from ..common.config_store import file_fingerprint
+from . import bridge_families
+from .bridge_roster import picker_id
+
 # Channel groups, in the order the picker renders them. `other` holds the
 # named controls of the non-modular device families (DTV sensors, Carel unit
 # controls, an LED driver): real channels with no DI/DO/AI/AO number.
@@ -119,19 +123,19 @@ CONTROLLER_WRITABLE = frozenset({"do", "beeper", "alarm_led"})
 # the bridge subscribes to `<control>/on`). Same conscious duplication as the
 # MR-02m tables: the one home is opt/sa02m-led/sa02m_led/controls.py, which
 # this package cannot import at runtime, so the copy is pinned equal to it by
-# tests/test_inventory.py. A `type: led` entry carries no `controls` block in
-# the yaml, so without this table the whole device — 21 live controls, 4 of
-# them dry-contact inputs — was missing from the picker (found on bench 1.135).
+# tests/test_inventory.py. The picker also offers these channels when an LED
+# has no live cache and its YAML entry omits the `controls` block.
 LED_CONTROLS = (
     "power", "play_state", "brightness", "effect", "effect_group", "speed",
     "scene_source", "color", "white", "pwm_mode", "text", "led_count",
-    "led_type", "line_mode", "text_lines", "vled", "temperature",
-    "di_1", "di_2", "di_3", "di_4",
+    "led_type", "line_mode", "text_lines", "vled", "temperature", "temperature_source",
+    "di_1", "di_2", "di_3", "di_4", "ocp_r", "ocp_g", "ocp_b", "ocp_w",
 )
 LED_WRITABLE = frozenset({
     "power", "brightness", "effect", "speed", "scene_source", "color",
     "white", "text",
 })
+LED_READONLY = frozenset(LED_CONTROLS) - LED_WRITABLE
 
 # Home Connect appliances (docs/contracts/home-connect.md §6, inventory.json):
 # the file is written by another uid (`sa02m-homeconnect`), so it is read
@@ -391,16 +395,59 @@ def _yaml_controls(dev: Dict[str, Any]) -> List[str]:
     return out
 
 
-def _yaml_devices(doc: Any) -> List[Dict[str, Any]]:
-    if not isinstance(doc, dict):
-        return []
-    devices = doc.get("devices") or doc.get("Devices") or []
-    if isinstance(devices, dict):
-        devices = [
-            {"id": k, **(v if isinstance(v, dict) else {})}
-            for k, v in devices.items()
-        ]
-    return [d for d in devices if isinstance(d, dict)]
+def _bridge_yaml():
+    from . import topics
+    for path in topics.YAML_CANDIDATES:
+        path = os.path.abspath(path)
+        if os.path.isfile(path):
+            doc = topics._load_yaml(path)
+            return (doc, path) if isinstance(doc, dict) else (None, None)
+    return None, None
+
+
+def bridge_config_fingerprint():
+    from . import topics
+    paths = (*topics.YAML_CANDIDATES, bridge_families.INDEX, bridge_families.PRODUCER)
+    return tuple(file_fingerprint(p) for p in paths)
+
+
+def led_readonly_source(*, follow_changes=False):
+    """Classify LED readings, optionally keeping a running consumer current."""
+    from . import topics
+    families = {}
+    unavailable = False
+    previous_files = None
+
+    def refresh():
+        nonlocal families, unavailable, previous_files
+        files = bridge_config_fingerprint() if follow_changes else ()
+        if files != previous_files:
+            updated, unavailable = bridge_families.load_families(topics.YAML_CANDIDATES, topics._load_yaml)
+            families = bridge_families.merge_families(families, updated)
+            previous_files = files
+        return files
+
+    def readonly(topic):
+        path = str(topic or "").strip()
+        if not path.startswith("/devices/"):
+            return False
+        # A legacy manual binding may name the command address itself. The
+        # driver still has no setter for that reading, including under an alias.
+        device_id, _, control = path[len("/devices/"):].rpartition("/controls/")
+        if not device_id or control.removesuffix("/on") not in LED_READONLY:
+            return False
+        refresh()
+        # A restricted consumer may briefly see the new YAML before its
+        # sanitized index. Do not acknowledge a diagnostic write in that gap.
+        if unavailable:
+            return True
+        if device_id in families:
+            return families[device_id]
+        match = re.fullmatch(r"led-COM[1-5]-([1-9][0-9]{0,2})", device_id)
+        return bool(match and int(match[1]) <= 247)
+
+    readonly.refresh = refresh
+    return readonly
 
 
 def _mr02m_model(dev: Dict[str, Any], device_id: str,
@@ -422,7 +469,7 @@ def _mr02m_model(dev: Dict[str, Any], device_id: str,
 
 
 def _device_entry(dev: Dict[str, Any]) -> Optional[Dict[str, Any]]:
-    device_id = str(dev.get("id") or dev.get("name") or "").strip()
+    device_id = picker_id(dev)
     if not device_id:
         return None
     dtype = str(dev.get("type") or "").strip().lower()
@@ -444,6 +491,14 @@ def _device_entry(dev: Dict[str, Any]) -> Optional[Dict[str, Any]]:
         "address": address,
         "channels": _empty_groups(),
     }
+    if dtype == "led":
+        entry["model"] = "LED"
+        entry["channels"] = _named_channels(device_id, explicit or list(LED_CONTROLS), LED_WRITABLE)
+        for channels in entry["channels"].values():
+            for channel in channels:
+                if channel["tag"] in LED_READONLY:
+                    channel["command_supported"] = False
+        return entry
     if explicit:
         # An explicit `controls` list is the author's own inventory and is
         # never second-guessed — the same rule the flat expansion follows.
@@ -490,11 +545,6 @@ def _device_entry(dev: Dict[str, Any]) -> Optional[Dict[str, Any]]:
         entry["model"] = "Carel"
         entry["channels"] = _named_channels(
             device_id, list(topics.CAREL_CONTROLS), CAREL_WRITABLE)
-        return entry
-    if dtype == "led":
-        entry["model"] = "LED"
-        entry["channels"] = _named_channels(
-            device_id, list(LED_CONTROLS), LED_WRITABLE)
         return entry
     if live:
         # A family with no offline table (a `type: template` entry without a
@@ -651,20 +701,9 @@ def _device_sort_key(entry: Dict[str, Any]) -> Tuple[int, str, int, str]:
 
 def build_mqtt_inventory() -> Dict[str, Any]:
     """Structured device/channel inventory for the picker (no gateway, no bus)."""
-    from . import topics
-    doc = None
-    source = None
-    for path in topics.YAML_CANDIDATES:
-        abs_path = os.path.abspath(path)
-        if not os.path.isfile(abs_path):
-            continue
-        loaded = topics._load_yaml(abs_path)
-        if isinstance(loaded, dict):
-            doc = loaded
-            source = abs_path
-            break
+    doc, source = _bridge_yaml()
     devices: List[Dict[str, Any]] = []
-    for dev in _yaml_devices(doc):
+    for dev in bridge_families.yaml_devices(doc) or ():
         entry = _device_entry(dev)
         if entry:
             devices.append(entry)

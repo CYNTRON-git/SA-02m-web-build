@@ -30,16 +30,13 @@ strip on its own COM port, or change the strip's baud to the line's. The entry
 module logs the conflict by name at composition
 (`modbus_mqtt_bridge.mixed_baud_port_conflicts`) instead of failing silently.
 
-NOT VERIFIED ON HARDWARE. No type-120 device has answered a scan on this branch,
-so everything below is unit-test evidence over a FakeSerial. Two reads are the
-MR-02m FAMILY convention rather than a product-low-map fact — the live DI block
-(Input 18..21) and the NTC/VLED scales — which is why they are read as OPTIONAL
-blocks: a failure there publishes a read error for those controls only and never
-marks the device offline.
+The type-120 product map and event producers are verified against the firmware
+source (svc_mb_mr02_rgbw.c and svc_rgbw_fmb.c). Optional diagnostics never
+take the device offline when a bank is unavailable.
 """
 from __future__ import annotations
 
-from bridge_serial import ScanHold
+from bridge_serial import FMB_EVT_INPUT, ScanHold
 
 import os
 import re
@@ -124,6 +121,10 @@ class LedPoller(DevicePoller):
         self._poll_text_s = float(cfg.get("poll_text_s", DEFAULT_TEXT_POLL_S))
         self._t_poll = 0.0
         self._t_text = 0.0
+        self._event_fw = None
+        self._diagnostic_fw = None
+        self._event_epoch = 0
+        self._input_updates = {}
         self._yaml_applied = False
         self._yaml_attempts = 0
         self._names = set(lc.control_names())
@@ -167,14 +168,64 @@ class LedPoller(DevicePoller):
             self.pub.subscribe_writeback(
                 self.device_id, cname, self._make_writeback_cb(cname))
 
-    def fmb_event_ranges(self):
-        """No Fast Modbus: the strip's event ranges are unverified, so none are claimed.
+    def fmb_firmware_version(self):
+        # A configured address may now hold a different device. Read identity
+        # on each configuration attempt, before sending any 0x18.
+        self._event_fw = None
+        if self._read_optional("input", 0, 1) != [lm.RGBW_WS2812_TYPE_CODE]:
+            return None
+        sig = self._read_optional("holding", 290, 12)
+        if not sig or len(sig) != 12 or any(not 0 <= word <= 127 for word in sig):
+            return None
+        signature = bytes(sig).rstrip(b'\0 ').decode('ascii')
+        if lm.normalize_sig(signature) not in lm.LED_SIGNATURE_ALIASES or self._read_optional("holding", 122, 1) != [1]:
+            return None
+        self._event_fw = lm.rgbw_version_words(self._read_optional("holding", 320, 4))
+        self._diagnostic_fw = self._event_fw
+        return self._event_fw
 
-        Configuring FC 0x46 event ranges against a device that does not implement
-        them costs a failed transaction per reconfigure on a shared line, and a
-        guessed range would silently publish the wrong register as an event.
-        """
-        return []
+    def fmb_event_ranges(self):
+        if self._event_fw is None or self._event_fw < lm.RGBW_FMB_WB_MIN_FW:
+            return []
+        return [(FMB_EVT_INPUT, lm.RGBW_DI_INPUT_BASE, lm.RGBW_DI_COUNT),
+                (FMB_EVT_INPUT, lm.RGBW_IREG_OCP_BASE, lm.RGBW_PWM_CHANNELS),
+                (FMB_EVT_INPUT, lm.RGBW_IREG_NTC, 1)]
+
+    def fmb_firmware_invalidate(self):
+        self._event_fw = None
+        self._diagnostic_fw = None
+        with self._live_lock:
+            self._event_epoch += 1
+
+    def fmb_query_context(self):
+        return self._event_epoch
+
+    def fmb_dispatch(self, evt_type, reg, val):
+        self.fmb_dispatch_observed(evt_type, reg, val, query_started_at=time.monotonic(),
+                                   context=self.fmb_query_context())
+
+    def fmb_dispatch_observed(self, evt_type, reg, val, *, query_started_at, context):
+        name = lc.EVENT_INPUTS.get(reg)
+        if name is None or evt_type != FMB_EVT_INPUT or not self.fmb_covers_io():
+            return
+        values = {}
+        if reg == lm.RGBW_IREG_NTC:
+            has_source = self._event_fw is not None and self._event_fw >= lm.RGBW_TEMP_SOURCE_MIN_FW
+            if has_source:
+                # The event carries no source. Read it together with IR131:
+                # a queued event can outlive a sensor change or loss.
+                query_started_at = time.monotonic()
+                source, val = lm.rgbw_source_sample(lambda reg, count: self._read_optional('input', reg, count))
+            else:
+                source = None
+            degrees, label = lm.rgbw_board_temperature(val, source, source_supported=has_source, event=True)
+            values = {"temperature": str(degrees) if degrees is not None else None, "temperature_source": label}
+        else:
+            values[name] = lc.input_flag_value(val)
+        with self._live_lock:
+            if self._event_epoch == context and self.fmb_covers_io():
+                for control, value in values.items():
+                    self._publish_input(control, value, query_started_at)
 
     # --- poll -----------------------------------------------------------------
 
@@ -244,12 +295,26 @@ class LedPoller(DevicePoller):
         for cname, value in values.items():
             if cname not in self._names:
                 continue
+            if cname in lc.EVENT_INPUTS.values() or cname == "temperature_source":
+                with self._live_lock:
+                    self._publish_input(cname, value, t_read)
+                continue
             if value is None:
                 # Block absent / read failed: an error flag, never a made-up 0.
                 self.pub.pub_error(self.device_id, cname, "r")
                 continue
             self._wb_publish_poll(cname, value, t_read)
             self.pub.pub_error(self.device_id, cname, "")
+
+    def _publish_input(self, name, value, started_at):
+        # Keep the compare and publish under _live_lock for both the event and
+        # classic paths. Equal timestamps cover multiple records in one frame.
+        if started_at < self._input_updates.get(name, -1):
+            return
+        self._input_updates[name] = started_at
+        if value is not None:
+            self.pub.pub_control(self.device_id, name, value)
+        self.pub.pub_error(self.device_id, name, "r" if value is None else "")
 
     def _read_optional(self, kind: str, start: int, count: int):
         """Read a block that may not exist on this firmware — None on failure.
@@ -271,7 +336,7 @@ class LedPoller(DevicePoller):
             return None
 
     def _read_snapshot(self) -> dict | None:
-        """One poll: the mandatory settings block plus four optional ones."""
+        """Read settings and independent optional telemetry blocks."""
         a = self.address
         try:
             span = (lm.MB2WS_LOCK_GATED_LAST - lm.MB2WS_LOCK_GATED_FIRST) + 1
@@ -279,6 +344,7 @@ class LedPoller(DevicePoller):
         except ScanHold:
             raise
         except Exception as e:
+            self._diagnostic_fw = None
             self.log_poll_fail("led poll", e)
             return None
         out: dict = {"base": [int(v) & 0xFFFF for v in base]}
@@ -294,7 +360,11 @@ class LedPoller(DevicePoller):
         mode = self._read_optional(
             "holding", lm.RGBW_PWM_STRIP_MODE_HOLDING, 1)
         out["pwm_mode"] = None if mode is None else int(mode[0]) & 0xFFFF
-        out["supply"] = self._read_optional("input", lm.RGBW_IREG_NTC, 2)
+        if self._diagnostic_fw is None:
+            self._diagnostic_fw = lm.rgbw_version_words(self._read_optional("holding", 320, 4))
+        out["supply"] = lm.rgbw_read_supply(lambda reg, count: self._read_optional("input", reg, count),
+                                           self._diagnostic_fw)
+        out["ocp"] = self._read_optional("input", lm.RGBW_IREG_OCP_BASE, lm.RGBW_PWM_CHANNELS)
         out["di"] = self._read_optional(
             "input", lm.RGBW_DI_INPUT_BASE, lm.RGBW_DI_COUNT)
         lines = self._read_optional("holding", lm.MB2WS_TEXT_LINES, 1)
@@ -336,8 +406,16 @@ class LedPoller(DevicePoller):
             else str(lm.rgbw_text_lines_ui_code(raw_lines))
         )
         out.update(self._pwm_controls(snap))
-        out.update(self._supply_controls(snap))
-        out.update(self._di_controls(snap))
+        supply = snap["supply"]
+        out["temperature"] = str(supply["ntc_c"]) if supply["ntc_c"] is not None else None
+        out["temperature_source"] = supply["temperature_source"]
+        out["vled"] = str(supply["vled_v"]) if "vled_v" in supply else None
+        for key, base, count in (("di", lm.RGBW_DI_INPUT_BASE, lm.RGBW_DI_COUNT),
+                                 ("ocp", lm.RGBW_IREG_OCP_BASE, lm.RGBW_PWM_CHANNELS)):
+            words = snap.get(key) or []
+            for i in range(count):
+                reg = base + i
+                out[lc.EVENT_INPUTS[reg]] = lc.input_flag_value(words[i] if i < len(words) else None)
         return out
 
     @staticmethod
@@ -350,28 +428,6 @@ class LedPoller(DevicePoller):
             return out
         w = int(pwm[3]) & 0xFFFF
         out["white"] = str(w)
-        return out
-
-    @staticmethod
-    def _supply_controls(snap: dict) -> dict:
-        supply = snap.get("supply")
-        if supply is None or len(supply) < 2:
-            return {"temperature": None, "vled": None}
-        return {
-            "temperature": str(lm.rgbw_ntc_celsius(supply[0])),
-            "vled": str(lm.rgbw_vled_volts(supply[1])),
-        }
-
-    @staticmethod
-    def _di_controls(snap: dict) -> dict:
-        di = snap.get("di")
-        out = {}
-        for i in range(lm.RGBW_DI_COUNT):
-            name = "di_%d" % (i + 1)
-            if di is None or i >= len(di):
-                out[name] = None
-            else:
-                out[name] = str(int(di[i]) & 1)
         return out
 
     # MR parity (offline_after_fails): after this many failed polls the restore

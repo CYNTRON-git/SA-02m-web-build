@@ -152,7 +152,14 @@ def fields_for(kind, observed_app_version=None):
     return fields
 
 
-def read_ranges(kind, observed_app_version=None):
+def split_range(start, count, max_regs, alignment=1):
+    """Keep channel records together when a register bank spans several replies."""
+    step = max_regs - max_regs % alignment
+    for offset in range(0, count, step):
+        yield start + offset, min(step, count - offset)
+
+
+def read_ranges(kind, observed_app_version=None, *, max_regs=125):
     """Group only contiguous known-readable MR map regions, including AI read-only offsets."""
     fields = fields_for(kind, observed_app_version)
     registers = {field.register for field in fields.values()}
@@ -167,7 +174,11 @@ def read_ranges(kind, observed_app_version=None):
             ranges[-1] = start, count + 1
         else:
             ranges.append((reg, 1))
-    return ranges
+    bounded = []
+    for start, count in ranges:
+        alignment = profiles.ai_channel_stride(kind.code, kind) if start == 400 and kind.max_ai else 1
+        bounded.extend(split_range(start, count, max_regs, alignment))
+    return bounded
 
 
 def _settings_from_paths(values):
@@ -382,7 +393,7 @@ def plan_configuration(data, kind, observed_app_version, words):
     return plan_requested_paths(*requested_paths(data, kind), kind, observed_app_version, words)
 
 
-def plan_requested_paths(raw, unsupported, kind, observed_app_version, words):
+def plan_requested_paths(raw, unsupported, kind, observed_app_version, words, *, max_regs=125):
     fields = fields_for(kind, observed_app_version)
     if set(raw) - set(fields):
         raise ValueError('Unsupported settings: ' + ', '.join(sorted(set(raw) - set(fields))))
@@ -521,7 +532,7 @@ def plan_requested_paths(raw, unsupported, kind, observed_app_version, words):
                 for path, expected in requested.items() if requires_ai_boundary(path) or
                 (path.startswith('ai.') and int(path.split('.')[1]) in affected_ai)]
     final_registers = {fields[item['path']].register for item in final_ai}
-    final_ai_ranges = [(start, count) for start, count in read_ranges(kind, observed_app_version)
+    final_ai_ranges = [(start, count) for start, count in read_ranges(kind, observed_app_version, max_regs=max_regs)
                        if any(start <= reg < start + count for reg in final_registers)]
     return {'writes': writes, 'requested': requested, 'unchanged': unchanged, 'final_fields': final_fields,
             'final_ai': final_ai, 'final_ai_ranges': final_ai_ranges,

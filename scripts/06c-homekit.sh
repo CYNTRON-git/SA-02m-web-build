@@ -140,6 +140,7 @@ esac
 
 # ── System packages ────────────────────────────────────────────────────────
 python3 -c "import paho.mqtt" 2>/dev/null || sa02m_pkg_install_tier optional python3-paho-mqtt
+python3 -c "import yaml" 2>/dev/null || sa02m_pkg_install_tier optional python3-yaml
 python3 -c "import ensurepip, venv" 2>/dev/null || sa02m_pkg_install_tier optional python3-venv
 # The locked cryptography wheel is installed --no-deps: its C backend
 # `_cffi_backend` comes from apt, never from PyPI (requirements.lock header).
@@ -313,6 +314,9 @@ PY
 # opt-in is preserved and a running bridge is restarted on the fresh code
 # (docs/contracts/installer-refresh-policy.md).
 sa02m_svc_capture "$UNIT"
+for dependency in sa02m-homekit-families.service sa02m-homekit-families.path; do
+    sa02m_atomic_install -m 0644 -o root -g root "$UNIT_SRC/$dependency" /etc/systemd/system/
+done
 sa02m_atomic_install -m 0644 -o root -g root \
     "$UNIT_SRC/sa02m-homekit.service" /etc/systemd/system/
 systemctl daemon-reload

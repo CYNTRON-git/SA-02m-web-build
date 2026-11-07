@@ -48,6 +48,7 @@ except ImportError:
     sys.modules["paho.mqtt.client"] = _paho_client
 
 import bridge_serial  # noqa: E402
+import bridge_uart  # noqa: E402
 import modbus_mqtt_bridge as bridge  # noqa: E402
 
 FAST_TTYS = "/dev/ttyS5"       # an 8250 line, as /dev/COM4 resolves on the board
@@ -107,6 +108,46 @@ def _serial(port: str, baud: int, uart: OverrunUart) -> bridge_serial.ModbusSeri
 
 
 class TestFifoSafeReadRegs(unittest.TestCase):
+    def test_wb_event_burst_drains_in_fifo_safe_frames_with_arbitration(self):
+        import bridge_fmb
+
+        for port, baud in ((FAST_TTYS, 115200), (FAST_TTYS, 19200), (USB_PORT, 115200)):
+            with self.subTest(port=port, baud=baud):
+                serial = bridge_serial.ModbusSerial(port, baud)
+                manager = bridge_fmb.FastModbusEventPortManager(port, baud)
+                pending = list(range(25))
+                sent = []
+                max_lengths = []
+                ack = 0
+
+                def poll(request, *args):
+                    nonlocal sent, ack
+                    self.assertEqual((request[5], request[6]), (12, ack) if sent else (0, 0))
+                    del pending[:len(sent)]
+                    max_lengths.append(request[4])
+                    sent = pending[:request[4] // 6]
+                    ack ^= 1
+                    data = b''.join(bytes((2, 4, 1, 144, value, 0)) for value in sent)
+                    frame = bridge_serial._append_crc(bytes((12, 0x46, 0x11, ack, len(sent), len(data))) + data)
+                    reply = b'\xff' * 12 + frame
+                    if serial.max_read_regs == 24 and len(request) + len(reply) > 64:
+                        return reply[:1] + b'\0' + reply[1:63]
+                    return reply
+
+                serial.fmb_send_recv = poll
+                observed = []
+                for _ in range(10):
+                    had_events, events = manager._poll_once(serial)
+                    self.assertTrue(had_events)
+                    observed.extend(evt[3] for evt in events)
+                    if len(observed) == 25:
+                        break
+                self.assertEqual(observed, list(range(25)))
+                if serial.max_read_regs == 24:
+                    self.assertLessEqual(9 + 12 + 8 + max(max_lengths), 64)
+                else:
+                    self.assertEqual(set(max_lengths), {128})
+
     def test_fast_8250_line_is_capped(self):
         for baud in (57600, 115200, 230400):
             with self.subTest(baud=baud):
@@ -147,9 +188,9 @@ class TestFifoSafeReadRegs(unittest.TestCase):
             Serial=lambda **kw: OverrunUart())
         with mock.patch.object(bridge_serial, "serial", fake_serial), \
                 mock.patch.object(bridge_serial, "_port_client", return_value=(mock.Mock(), mock.Mock())), \
-                mock.patch.object(bridge_serial, "uart_line_index",
+                mock.patch.object(bridge_uart, "uart_line_index",
                                   lambda _p: None), \
-                mock.patch.object(bridge_serial, "_unresolved_builtin_uart",
+                mock.patch.object(bridge_uart, "_unresolved_builtin_uart",
                                   lambda _p: False), \
                 mock.patch.object(bridge_serial.time, "sleep", lambda _s: None):
             ms._ensure_open()
@@ -158,7 +199,7 @@ class TestFifoSafeReadRegs(unittest.TestCase):
     def test_unresolved_builtin_uart_name_fails_closed(self):
         with mock.patch.object(bridge_serial.os.path, "exists",
                                lambda _p: False), \
-                mock.patch.object(bridge_serial, "uart_line_index",
+                mock.patch.object(bridge_uart, "uart_line_index",
                                   lambda _p: None):
             for port in ("/dev/COM1", "/dev/COM4", "/dev/COM5", "/dev/ttyS3"):
                 with self.subTest(port=port):
@@ -173,7 +214,7 @@ class TestFifoSafeReadRegs(unittest.TestCase):
     def test_resolved_com_link_to_no_8250_line_is_uncapped(self):
         with mock.patch.object(bridge_serial.os.path, "exists",
                                lambda _p: True), \
-                mock.patch.object(bridge_serial, "uart_line_index",
+                mock.patch.object(bridge_uart, "uart_line_index",
                                   lambda _p: None):
             self.assertEqual(
                 bridge_serial.fifo_safe_read_regs("/dev/COM4", 115200),

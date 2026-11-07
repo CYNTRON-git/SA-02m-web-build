@@ -1,0 +1,8 @@
+[Unit]
+Description=Watch the bridge device families while HomeKit is running
+PartOf=sa02m-homekit.service
+StopWhenUnneeded=yes
+
+[Path]
+PathChanged=/etc/sa02m-modbus-mqtt.yaml
+PathModified=/opt/sa02m-modbus-mqtt/modbus_mqtt_bridge.py

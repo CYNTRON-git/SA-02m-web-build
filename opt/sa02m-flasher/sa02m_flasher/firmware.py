@@ -4,8 +4,10 @@ Load firmware from .fw or .bin.
 .fw: bootloader format — info 32 B (sig 12 + size 4 LE + pad) + data blocks (246 B each as 123 big-endian words).
 .bin: raw image for 0x08000800 (FLASH_APP_START).
 """
+import hashlib
 import re
 import struct
+import zlib
 from pathlib import Path
 from typing import Optional, Tuple, List
 
@@ -49,12 +51,14 @@ def _effective_size(image: bytes) -> int:
 def parse_known_firmware_filename(filename: str) -> Optional[Tuple[str, str, str]]:
     """Return (device, kind, version) for an exact known release basename."""
     match = re.fullmatch(
-        r"(MR-02m|RTU-Sensor|CE-02m-3)_(bootloader_)?([0-9]+(?:\.[0-9]+){3})\.(?:fw|bin)",
+        r"(MR-02m|RTU-Sensor|CE-02m-3|RGBW_WS2812)_(bootloader_)?([0-9]+(?:\.[0-9]+){3})\.(?:fw|bin)",
         filename,
         re.I | re.ASCII,
     )
     if match is None:
         return None
+    if match[1].upper() == "RGBW_WS2812":
+        return None if match[2] else ("LED", "app", match[3])
     family = {"mr-02m": "MR-02m", "rtu-sensor": "RTU-Sensor", "ce-02m-3": "CE-02m-3"}
     return family[match[1].lower()], "bootloader" if match[2] else "app", match[3]
 
@@ -77,7 +81,7 @@ def parse_version_from_filename(filename: str) -> Optional[str]:
     m = re.match(r"ce-02m-3_(.+)\.(?:fw|bin)$", filename, re.I)
     if m:
         ver = m.group(1).strip()
-        return ver if re.match(r"^[\d.]+$", ver) else "?"
+        return ver if re.fullmatch(r"[0-9]+(?:\.[0-9]+){0,3}", ver) else "?"
     # Бутлоадер: MR-02m_bootloader_X.Y.Z.W.fw (до общего MR-02m_<ver>, иначе ver = «bootloader_0…»)
     m = re.match(r"MR-02m_bootloader_(\d+\.\d+\.\d+\.\d+)\.(?:fw|bin)$", filename, re.I)
     if m:
@@ -95,117 +99,115 @@ def parse_version_from_filename(filename: str) -> Optional[str]:
     m = re.match(r"MR-02m_(.+)\.(?:fw|bin)$", filename, re.I)
     if m:
         ver = m.group(1).strip()
-        return ver if re.match(r"^[\d.]+$", ver) else "?"
+        return ver if re.fullmatch(r"[0-9]+(?:\.[0-9]+){0,3}", ver) else "?"
     # .fw: mp02m_1.0.0.fw, MR-02m_1.0.0.0.fw
-    m = re.match(r"(?:MR-02m|mp02m|mp-02m)_([\d.]+)\.fw$", filename, re.I)
+    m = re.fullmatch(r"(?:MR-02m|mp02m|mp-02m)_([0-9]+(?:\.[0-9]+){0,3})\.fw", filename, re.I | re.ASCII)
     if m:
         return m.group(1)
     m = re.match(r"(?:MR-02m|mp02m|mp-02m)_(.+)\.fw$", filename, re.I)
     if m:
         ver = m.group(1).strip()
-        return ver if re.match(r"^[\d.]+$", ver) else "?"
+        return ver if re.fullmatch(r"[0-9]+(?:\.[0-9]+){0,3}", ver) else "?"
     return None
 
 
-ELF_MAGIC_LE = 0x7F454C46  # b'\x7fELF' как uint32 LE — не считать версией
-
-# Строка версии в прошивке AppBoot:
-#   Файл: Core/Src/version_string.c (const firmware_version_elf[]).
-#   В образе: ASCII "MR02M_VER:X.Y.Z.W\0" в секции .rodata (попадает в ELF и во Flash-образ).
-#   Поиск: байты MR02M_VER: (0x4D 0x52 0x30 0x32 0x4D 0x5F 0x56 0x45 0x52 0x3A), затем версия до '\0'.
-FW_VERSION_PREFIX = b"MR02M_VER:"
+# Manufacturer application markers are NUL-terminated C strings in flash.
+_MARKER = re.compile(rb"(?<![A-Za-z0-9_])(MR02M|DTV|LED|CE02M3)_VER:([0-9]{1,5}(?:\.[0-9]{1,5}){3})(?=\x00|\Z)")
+_MARKER_FAMILIES = {b"MR02M": "MR-02m", b"DTV": "RTU-Sensor", b"LED": "LED", b"CE02M3": "CE-02m-3"}
 
 
-def _parse_version_mr02m_prefix(image: bytes) -> Optional[str]:
-    """
-    Ищет в образе/ELF строку версии прошивки AppBoot: префикс MR02M_VER:, затем X.Y.Z.W.
-    Место хранения: const firmware_version_elf[] в Core/Src/version_string.c, секция .rodata.
-    """
-    idx = image.find(FW_VERSION_PREFIX)
-    if idx < 0:
-        return None
-    start = idx + len(FW_VERSION_PREFIX)
-    if start >= len(image):
-        return None
-    end = start
-    while end < len(image) and image[end] in b"0123456789.-":
-        end += 1
-    if end == start:
-        return None
-    try:
-        return image[start:end].decode("ascii")
-    except Exception:
-        return None
+class FirmwareIdentityError(ValueError):
+    """Two explicit identifiers describe different firmware."""
 
 
-def _parse_version_from_u32_le(image: bytes) -> Optional[str]:
-    """
-    Ищет в образе 32-битное значение (LE) версии MAJOR.MINOR.PATCH.SUFFIX.
-    Принимаем только однозначные компоненты (0–9), чтобы не брать посторонние константы
-    (типа 8.0.80.9 из кода). Пропускаем первые 64 байта (векторная таблица).
-    """
-    if len(image) < 4:
-        return None
-    search_len = min(len(image), 64 * 1024)
-    start = 64  # пропуск векторной таблицы и начала кода
+def filename_family(filename: str) -> Optional[str]:
+    known = parse_known_firmware_filename(filename)
+    if known:
+        return known[0]
+    legacy = re.fullmatch(r"(MR-02m|mp-?02m|ce-02m-3)_([0-9]+(?:\.[0-9]+){0,3})\.(fw|bin)",
+                          filename, re.I | re.ASCII)
+    if legacy:
+        return "CE-02m-3" if legacy[1].lower() == "ce-02m-3" else "MR-02m"
+    return None
 
-    def check(off: int) -> Optional[str]:
-        if off + 4 > len(image):
+
+def versions_match(left: str, right: str) -> bool:
+    """Compare a legacy one-to-four-component release name to a marker."""
+    def components(value):
+        if not re.fullmatch(r"[0-9]+(?:\.[0-9]+){0,3}", value):
             return None
-        v = struct.unpack_from("<I", image, off)[0]
-        if v == ELF_MAGIC_LE:
-            return None
-        major = (v >> 24) & 0xFF
-        minor = (v >> 16) & 0xFF
-        patch = (v >> 8) & 0xFF
-        suffix = v & 0xFF
-        if 1 <= major <= 9 and minor <= 9 and patch <= 9 and suffix <= 9:
-            return f"{major}.{minor}.{patch}.{suffix}"
-        return None
+        parts = [part.lstrip("0") or "0" for part in value.split(".")]
+        return parts + ["0"] * (4 - len(parts))
 
-    for off in range(start, search_len - 3, 4):
-        r = check(off)
-        if r:
-            return r
-    for off in range(max(start, 2), min(search_len - 3, start + 1024), 2):
-        r = check(off)
-        if r:
-            return r
-    return None
+    expected = components(left)
+    return expected is not None and expected == components(right)
 
 
-def parse_version_from_image(
-    image: bytes, *, search_u32: bool = True
-) -> Optional[str]:
-    """
-    Ищет в образе прошивки версию: MR02M_VER:X.Y.Z.W (AppBoot), затем строку N.N.N.N или 32-битную константу.
-    search_u32: искать ли 32-битную константу (для сырого ELF не используем — много ложных срабатываний).
-    """
-    if len(image) < len(FW_VERSION_PREFIX):
-        return None
-    # 0) Строка версии AppBoot из version_string.c (префикс MR02M_VER: в .rodata)
-    v = _parse_version_mr02m_prefix(image)
-    if v:
-        return v
-    # 1) Строка вида N.N.N.N (1–3 цифры на компонент)
-    pattern = re.compile(rb"(?<!\d)(\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3})(?!\d)")
-    search_len = min(len(image), 32 * 1024)
-    m = pattern.search(image[:search_len])
-    if m:
-        try:
-            return m.group(1).decode("ascii")
-        except Exception:
-            pass
-    if len(image) > 512:
-        m = pattern.search(image[-512:])
-        if m:
-            try:
-                return m.group(1).decode("ascii")
-            except Exception:
-                pass
-    if search_u32:
-        return _parse_version_from_u32_le(image)
-    return None
+def _application_marker(raw: bytes) -> Optional[Tuple[str, str]]:
+    identity = None
+    for match in _MARKER.finditer(raw):
+        candidate = _MARKER_FAMILIES[match[1]], match[2].decode("ascii")
+        if identity is not None and identity != candidate:
+            raise FirmwareIdentityError("В образе найдены противоречивые маркеры приложения.")
+        identity = candidate
+    return identity
+
+
+def parse_version_from_image(image: bytes, *, search_u32: bool = True) -> Optional[str]:
+    """Read an explicit version marker. The legacy search_u32 keyword is accepted."""
+    marker = _application_marker(image)
+    return marker[1] if marker else None
+
+
+def _fw_payload(image: bytes, size: int) -> bytes:
+    count = (size + 1) & ~1
+    encoded = image[FW_INFO_SIZE:FW_INFO_SIZE + count]
+    if len(encoded) != count:
+        raise ValueError("Контейнер .fw короче указанного размера приложения.")
+    raw = bytearray(count)
+    raw[::2], raw[1::2] = encoded[1::2], encoded[::2]
+    return bytes(raw[:size])
+
+
+def _fw_signature(data: bytes) -> str:
+    name, _, padding = data[:12].partition(b"\x00")
+    if padding.strip(b"\x00\xff") or any(c < 32 or c > 126 for c in name):
+        raise FirmwareIdentityError("Некорректная сигнатура заголовка .fw.")
+    return name.decode("ascii").strip() or "NONE"
+
+
+def application_metadata(filename: str, image: bytes, *, decoded: Optional[bytes] = None,
+                         packed_header: bool = True) -> Tuple[str, Optional[str]]:
+    """Return the reported version and an independently marked family, if present."""
+    name_version = parse_version_from_filename(filename)
+    suffix = Path(filename).suffix.lower()
+    if decoded is not None:
+        marker = _application_marker(decoded)
+    elif suffix == ".fw" and len(image) >= FW_INFO_SIZE:
+        size = struct.unpack_from("<I", image, 12)[0]
+        if not 0 < size <= MAX_FIRMWARE_SIZE:
+            return name_version or "?", None
+        # make_fw stores little-endian flash bytes as big-endian 16-bit words.
+        marker = _application_marker(_fw_payload(image, size))
+    elif suffix == ".bin" and len(image) <= MAX_FIRMWARE_SIZE:
+        marker = _application_marker(image)
+    else:
+        marker = None
+    if marker is None:
+        return name_version or "?", None
+    family, version = marker
+    named_family = filename_family(filename)
+    if named_family and named_family != family:
+        raise FirmwareIdentityError(f"Семейство в имени {named_family} не совпадает с маркером {family}.")
+    if name_version and name_version != "?" and not versions_match(name_version, version):
+        raise FirmwareIdentityError(f"Версия в имени {name_version} не совпадает с маркером {version}.")
+    if suffix == ".fw" and packed_header:
+        from . import module_profiles as mp
+        signature = _fw_signature(image)
+        header_family = mp.firmware_header_family(signature)
+        if header_family and header_family != family:
+            raise FirmwareIdentityError(f"Семейство заголовка {header_family} не совпадает с маркером {family}.")
+    return version, family
 
 
 def check_app_vector_table(payload: bytes) -> Tuple[bool, Optional[str]]:
@@ -241,7 +243,10 @@ def check_app_vector_table(payload: bytes) -> Tuple[bool, Optional[str]]:
 
 def load_bin(path: Path) -> Tuple[bytes, int]:
     """Load raw .bin. Returns (image_bytes, effective_size without trailing 0xFF)."""
-    data = path.read_bytes()
+    return _bin_image(path.read_bytes())
+
+
+def _bin_image(data: bytes) -> Tuple[bytes, int]:
     if len(data) > MAX_FIRMWARE_SIZE:
         raise ValueError(
             f"Размер файла {len(data)} байт превышает допустимый для области приложения ({MAX_FIRMWARE_SIZE} байт). "
@@ -261,39 +266,32 @@ FW_INFO_SIZE = 32
 FW_BLOCK_BYTES = 246  # Modbus 0x10 max (123 reg = 246 B per block), согласовано с бутлоадером
 
 
-def load_fw(path: Path) -> Tuple[bytes, int, str, str]:
+def _fw_container(data: bytes) -> Tuple[bytes, int, str]:
     """
     Загрузка .fw (формат бутлоадера). Возвращаем файл как есть — первые 32 байта пойдут в info-блок (BE), далее блоки по 246 B.
     Format: 32 B info (sig 12 ASCII + size 4 LE + pad) + data as 123 big-endian 16-bit words per block (246 B).
-    Returns (full_file_bytes, size, version_from_filename, signature_from_file).
+    Returns (full_file_bytes, size, signature_from_file).
     """
-    data = path.read_bytes()
     if len(data) < FW_INFO_SIZE:
         raise ValueError("Файл .fw слишком короткий (нет info-блока 32 байт)")
-    sig_raw = data[0:12]
-    signature = sig_raw.rstrip(b"\x00").decode("ascii", errors="replace")
-    if not signature or any(ord(c) < 32 for c in signature):
-        signature = "NONE"
+    signature = _fw_signature(data)
     size = struct.unpack_from("<I", data, 12)[0]
     if size <= 0 or size > MAX_FIRMWARE_SIZE:
         hint = ""
-        try:
-            if path.stat().st_size == BL_IMAGE_TOTAL_BYTES:
-                hint = " Размер файла 34 КБ — похоже на образ бутлоадера: выберите режим «Прошивка бутлоадера» и укажите этот файл там."
-        except OSError:
-            pass
+        if len(data) == BL_IMAGE_TOTAL_BYTES:
+            hint = " Размер файла 34 КБ — похоже на образ бутлоадера: выберите режим «Прошивка бутлоадера» и укажите этот файл там."
         raise ValueError(
             f"В .fw указан размер {size} байт — недопустимо (ожидается 1..{MAX_FIRMWARE_SIZE}). "
             "Возможно, выбран не тот файл (не .fw приложения) или файл повреждён. "
             "Используйте .fw, собранный make_fw.py / скриптом прошивки приложения."
             + hint
         )
-    version = parse_version_from_filename(path.name)
-    if not version or version == "?":
-        payload_part = data[FW_INFO_SIZE : FW_INFO_SIZE + min(size, len(data) - FW_INFO_SIZE)]
-        version = _parse_version_mr02m_prefix(payload_part) or parse_version_from_image(
-            payload_part, search_u32=False
-        ) or "?"
+    return data, size, signature
+
+
+def load_fw(path: Path) -> Tuple[bytes, int, str, str]:
+    data, size, signature = _fw_container(path.read_bytes())
+    version, _ = application_metadata(path.name, data)
     return data, size, version, signature
 
 
@@ -408,27 +406,70 @@ def load_firmware_wbfw(path: Path) -> Tuple[bytes, int, str, Optional[str]]:
     return data, len(data), version, signature
 
 
-def load_firmware(path: Path) -> Tuple[bytes, int, str, Optional[str]]:
+def validate_native_payload(raw: bytes, kind: str) -> None:
+    boot = kind == "bootloader"
+    valid, reason = check_bootloader_vector_table(raw) if boot else check_app_vector_table(raw)
+    if not valid:
+        raise ValueError(f"Неверная таблица векторов {kind}: {reason}")
+    reset = struct.unpack_from("<I", raw, 4)[0] & ~1
+    offset = (BL_VECTORS_SIZE + reset - BL_CODE_ORIGIN) if boot else reset - FLASH_APP_START
+    if offset < 8 or offset + 2 > len(raw) or raw[offset:offset + 2] == b"\xff\xff":
+        raise ValueError("Reset_Handler вне переданного кода образа.")
+    first = struct.unpack_from("<H", raw, offset)[0]
+    if first >> 11 in (0b11101, 0b11110, 0b11111) and offset + 4 > len(raw):
+        raise ValueError("Reset_Handler указывает на неполную инструкцию Thumb.")
+
+
+def load_identified_firmware(path: Path, *, expected_sha256: str = "", kind: Optional[str] = None) -> Tuple[bytes, int, str, Optional[str], Optional[str]]:
     """
     Load firmware from .fw, .bin or .wbfw (Wiren Board).
-    Returns (image, size, version_string, signature_override).
+    Returns the wire image, size, version, signature and marked application family.
     """
     path = Path(path)
     if not path.exists():
         raise FileNotFoundError(f"Файл не найден: {path}")
     suf = path.suffix.lower()
-    if suf == ".bin":
-        image, size = load_bin(path)
-        v_fn = parse_version_from_filename(path.name)
-        v_img = parse_version_from_image(image)
-        version = v_fn or v_img or "?"
-        return image, size, version, None
-    if suf == ".fw":
-        image, size, version, signature = load_fw(path)
-        return image, size, version, signature
     if suf == ".wbfw":
-        return load_firmware_wbfw(path)
-    raise ValueError("Поддерживаются файлы .fw, .bin и .wbfw")
+        return (*load_firmware_wbfw(path), None)
+    data = path.read_bytes()
+    if expected_sha256 and hashlib.sha256(data).hexdigest() != expected_sha256.lower():
+        raise FirmwareIdentityError("SHA-256 выбранного образа не совпадает с каталогом.")
+    release = parse_known_firmware_filename(path.name)
+    boot = kind == "bootloader" or (kind is None and release and release[1] == "bootloader")
+    packed = suf == ".fw" and not (
+        boot and len(data) == BL_IMAGE_TOTAL_BYTES and check_bootloader_vector_table(data)[0])
+    if boot and not packed and suf in (".fw", ".bin"):
+        if len(data) != BL_IMAGE_TOTAL_BYTES and len(data) < FLASH_END - 0x08000000:
+            raise ValueError("Неверный размер образа загрузчика.")
+        image = _bootloader_bin_image(data)
+        size, signature, raw = len(image), None, image
+    elif suf == ".bin":
+        image, size = _bin_image(data)
+        signature, raw = None, image
+    elif suf == ".fw":
+        image, size, signature = _fw_container(data)
+        raw = _fw_payload(image, size)
+    else:
+        raise ValueError("Поддерживаются файлы .fw, .bin и .wbfw")
+    if kind is not None:
+        if packed:
+            padding = image[FW_INFO_SIZE + ((size + 1) & ~1):]
+            if len(padding) >= FW_BLOCK_BYTES or padding.strip(b"\xff"):
+                raise ValueError("Недопустимое заполнение после содержимого .fw.")
+        validate_native_payload(raw, kind)
+        if packed and image[16:20] == b"CRC2" and zlib.crc32(raw) != struct.unpack_from("<I", image, 20)[0]:
+            raise ValueError("CRC32 содержимого прошивки не совпадает с заголовком.")
+        if boot and packed and size != BL_IMAGE_TOTAL_BYTES:
+            if not BL_VECTORS_SIZE < size < BL_IMAGE_TOTAL_BYTES:
+                raise ValueError("Неверный размер области кода загрузчика.")
+            image = raw.ljust(BL_IMAGE_TOTAL_BYTES, b"\xff")
+    version, family = application_metadata(path.name, data, decoded=raw, packed_header=packed)
+    return image, size, version, signature, family
+
+
+def load_firmware(path: Path) -> Tuple[bytes, int, str, Optional[str]]:
+    image, size, version, signature, _ = load_identified_firmware(path)
+    return image, size, version, signature
 
 
 # В полном дампе Flash (objcopy -O binary без -j) код бутлоадера 0x08038000 идёт по смещению 0x38000.
@@ -443,7 +484,10 @@ def load_bootloader_bin(path: Path) -> bytes:
     2) Полный дамп ≥256 КБ: векторы в 0..2047, код в 0x38000..0x38000+32767 (как objcopy -O binary из ELF с двумя регионами).
     Итог всегда ровно BL_IMAGE_TOTAL_BYTES (34816).
     """
-    data = path.read_bytes()
+    return _bootloader_bin_image(path.read_bytes())
+
+
+def _bootloader_bin_image(data: bytes) -> bytes:
     if len(data) >= 0x40000:
         # Полный дамп: код по смещению 0x38000
         if len(data) < BL_CODE_OFFSET_IN_FULL_BIN + BL_CODE_SIZE:

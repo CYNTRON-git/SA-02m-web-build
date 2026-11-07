@@ -192,6 +192,38 @@ class ValueTests(EngineCase):
 
 
 class WriteTests(EngineCase):
+    def test_stale_brightness_setter_cannot_clear_a_new_led_alarm(self):
+        import json
+        from unittest.mock import patch
+        from sa02m_alice.client.reload_watch import DevicesWatcher
+        from sa02m_alice.config import topics
+
+        source = "/devices/kitchen-strip/controls/ocp_r"
+        doc = copy.deepcopy(DOC)
+        light = doc["devices"][0]
+        light["type"] = "devices.types.light"
+        light["capabilities"].append({"type": "devices.capabilities.range", "mqtt": source,
+            "parameters": {"instance": "brightness", "range": {"min": 0, "max": 100, "precision": 1}}})
+        config = os.path.join(self.dir, "bridge.yaml")
+        with patch.object(topics, "YAML_CANDIDATES", (config,)):
+            watcher = DevicesWatcher(os.path.join(self.dir, "devices.json"))
+            self.engine.registry.reload(doc)
+            self.engine.rebuild()
+            light_spec = next(s for s in self.engine.specs if s.device_id == light["id"])
+            setter = next(b for b in light_spec.services[0].bindings if b.char == "Brightness")
+            self.engine.note_mqtt(source, "1", False)
+            with open(config, "w", encoding="utf-8") as f:
+                json.dump({"devices": [{"id": "kitchen-strip", "type": "led"}]}, f)
+            with self.assertRaises(WriteRefused), self.assertLogs("sa02m_homekit.engine", "WARNING"):
+                self.engine.write(light["id"], setter, 0)
+            self.assertEqual(self.published, [])
+            self.assertEqual(self.engine.registry.get_cached(source), "1")
+            self.assertTrue(watcher.changed())
+            self.engine.registry.reload(doc)
+            self.assertTrue(self.engine.rebuild())
+            light_spec = next(s for s in self.engine.specs if s.device_id == light["id"])
+            self.assertEqual([b.char for b in light_spec.services[0].bindings], ["On"])
+
     def _on_binding(self, device_id):
         spec = [s for s in self.engine.specs if s.device_id == device_id][0]
         return spec.services[0].bindings[0]

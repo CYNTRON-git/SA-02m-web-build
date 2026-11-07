@@ -399,8 +399,8 @@
     'rgbw_di_mode': 'Режим входа',
     'rgbw_di_mode_btn': 'Кнопка',
     'rgbw_di_mode_sw': 'Выключатель',
-    'rgbw_current_ma': 'Ток, мА',
-    'rgbw_ntc': 'NTC платы, °C',
+    'rgbw_overcurrent': 'Защита по току',
+    'rgbw_ntc': 'Температура платы, °C',
     'rgbw_vled': 'VLED, В',
   };
 
@@ -492,6 +492,16 @@
       return `<button class="btn ${cls || 'btn-sm'}" type="button" ${idAttr} data-led-cmd="1">${esc(label)}</button>`;
     }
 
+    function overcurrentLabel(flags, index) {
+      const state = flags && flags[index];
+      return state === true ? 'Сработала' : state === false ? 'В норме' : '—';
+    }
+
+    function temperatureSourceLabel(source) {
+      return ({ ntc: 'NTC', mcu: 'MCU', none: 'Нет измерения',
+        ambiguous_zero: '0 °C или нет данных', unspecified: 'Не указан' })[source] || '—';
+    }
+
     function readout(value, digits) {
       if (value == null || value === '') return '—';
       const n = Number(value);
@@ -576,8 +586,9 @@
         }
       }
       const tele = `<dl class="flasher-config-kv">` +
-        [1, 2, 3, 4].map(n => `<div><dt><span>${esc(T('rgbw_current_ma'))}</span> ${n}</dt><dd id="cfg-led-pwm-cur-${n}">${esc(readout(p.currents_ma && p.currents_ma[n - 1], 0))}</dd></div>`).join('') +
+        [1, 2, 3, 4].map(n => `<div><dt><span>${esc(T('rgbw_overcurrent'))}</span> ${'RGBW'[n - 1]}</dt><dd id="cfg-led-pwm-ocp-${n}">${esc(overcurrentLabel(p.overcurrent, n - 1))}</dd></div>`).join('') +
         `<div><dt>${esc(T('rgbw_ntc'))}</dt><dd id="cfg-led-ntc">${esc(readout(p.ntc_c, 1))}</dd></div>` +
+        `<div><dt>Источник температуры</dt><dd id="cfg-led-temp-source">${esc(temperatureSourceLabel(p.temperature_source))}</dd></div>` +
         `<div><dt>${esc(T('rgbw_vled'))}</dt><dd id="cfg-led-vled">${esc(readout(p.vled_v, 2))}</dd></div></dl>`;
       return grid(
         card(T('rgbw_pwm_title'), `<div class="flasher-config-form">${rows}</div>`) +
@@ -595,8 +606,9 @@
         set(`cfg-led-pwm-en-${i + 1}`, Number(levels[i]) > 0);
         set(`cfg-led-pwm-lvl-${i + 1}`, levels[i]);
       }
-      for (let n = 1; n <= 4; n++) text(`cfg-led-pwm-cur-${n}`, readout(p.currents_ma && p.currents_ma[n - 1], 0));
+      for (let n = 1; n <= 4; n++) text(`cfg-led-pwm-ocp-${n}`, overcurrentLabel(p.overcurrent, n - 1));
       text('cfg-led-ntc', readout(p.ntc_c, 1));
+      text('cfg-led-temp-source', temperatureSourceLabel(p.temperature_source));
       text('cfg-led-vled', readout(p.vled_v, 2));
     }
 

@@ -199,6 +199,16 @@ def strip_bootloader_signature_suffix(signature: str) -> str:
     return s
 
 
+def is_meter_driver_alias(signature: str) -> bool:
+    name = normalize_signature(strip_bootloader_signature_suffix(signature))
+    return name.replace("_", "").replace("-", "") == "ENMETER"
+
+
+def firmware_identity_missing(signature: str) -> bool:
+    name = normalize_signature(strip_bootloader_signature_suffix(signature))
+    return name in ("", "-", "—", "?", "NONE", "UNKNOWN", "BL", "BOOTLOADER") or is_meter_driver_alias(name)
+
+
 # Как в прошивке / именах модулей (DO6DI8 рядом с 6DO8DI в подсказках).
 _EXTRA_SIG_TOKENS_FOR_BATCH = (
     "DO6DI8",
@@ -230,7 +240,7 @@ def is_mp_module_signature_for_batch_flash(signature: str) -> bool:
     """
     s = strip_bootloader_signature_suffix(signature)
     n = normalize_signature(s)
-    if not n or n in ("NONE", "—", "?"):
+    if firmware_identity_missing(s):
         return False
     if caps_from_signature(s) is not None:
         return True
@@ -245,11 +255,11 @@ def is_mp_module_signature_for_batch_flash(signature: str) -> bool:
     if signature_is_led(s):
         return False
     c_sig = code_from_signature(s)
-    if c_sig in (MP02_CE02M3, DTV):
+    if c_sig == DTV or "CE02M3" in n.replace("-", ""):
         return True
     # Сигнатуры с дефисами (MR-02m-DI16): сравниваем без - и _
     n_compact = n.replace("-", "").replace("_", "")
-    for token in ("MP02M", "MR02M", "ENMETER", "EN_METER"):
+    for token in ("MP02M", "MR02M"):
         compact = token.replace("_", "")
         if compact in n_compact:
             return True
@@ -361,7 +371,7 @@ def is_wirenboard_module_signature(signature: str) -> bool:
     Логика согласована с MR-02m-flasher module_profiles.is_wirenboard_modbus_remote_firmware_signature.
     """
     s = strip_bootloader_signature_suffix((signature or "").strip())
-    if not s or s.upper() in ("NONE", "—", "?", "UNKNOWN"):
+    if firmware_identity_missing(s):
         return False
     if is_mp_module_signature_for_batch_flash(s):
         return False
@@ -458,6 +468,8 @@ def validate_batch_flash_targets(targets: List[Mapping[str, Any]]) -> Optional[s
     """
     if not targets:
         return "Список устройств для пакетной прошивки пуст"
+    if any(t.get("signature_inferred") for t in targets):
+        return "Требуется опознание семейства устройства по регистру 290."
     # Carel c.pCO / uAria — чужой ПЛК на той же линии: своей прошивки у нас для него
     # нет, и «Сигнатура не распознана» увело бы оператора на повторное сканирование.
     carel_sigs = [
@@ -513,7 +525,7 @@ def line_profile_family(signature: str, *, is_wb_firmware: bool = False) -> str:
     """'mp_mr' | 'wb' | 'unknown' — для логов и UI."""
     if is_wb_firmware:
         return "wb"
-    if is_mp_module_signature_for_batch_flash(signature):
+    if is_meter_driver_alias(signature) or is_mp_module_signature_for_batch_flash(signature):
         return "mp_mr"
     if is_wirenboard_module_signature(signature):
         return "wb"
@@ -609,7 +621,7 @@ def signature_is_known_module_family(signature: str) -> bool:
     здесь мало: без ленты в этом предикате каждая строка ленты получала бы
     лишний FC17 на общей шине.
     """
-    return is_mp_module_signature_for_batch_flash(signature) or signature_is_led(signature)
+    return is_mp_module_signature_for_batch_flash(signature) or is_meter_driver_alias(signature) or signature_is_led(signature)
 
 
 def caps_from_signature(signature: str) -> Optional[Tuple[int, int, int, int]]:
@@ -632,6 +644,36 @@ def caps_from_signature(signature: str) -> Optional[Tuple[int, int, int, int]]:
 MANIFEST_DEVICE_MR = "MR-02m"
 MANIFEST_DEVICE_DTV = "RTU-Sensor"
 MANIFEST_DEVICE_CE02M3 = "CE-02m-3"
+NATIVE_FIRMWARE_FAMILIES = (MANIFEST_DEVICE_MR, MANIFEST_DEVICE_DTV, MANIFEST_DEVICE_CE02M3)
+
+
+def firmware_header_family(signature: str) -> Optional[str]:
+    """Identify an exact model or manufacturer prefix at the firmware boundary."""
+    name = normalize_signature(strip_bootloader_signature_suffix(signature))
+    if firmware_identity_missing(name):
+        return None
+    if name.startswith(("WB-", "WB_", "LEDGE", *_WB_RELAY_SIG_PREFIXES, *_WB_MAO4_SIG_PREFIXES)):
+        return "WB"
+    if SPECIAL_SIG_CODES.get(name) == RGBW_WS2812 or signature_is_led(name):
+        return "LED"
+    if signature_is_carel(name):
+        return "Carel"
+    compact = name.replace("-", "").replace("_", "")
+    if compact == "CE02M3":
+        return MANIFEST_DEVICE_CE02M3
+    if SPECIAL_SIG_CODES.get(name) == DTV or compact in ("DTV", "DTVRS45", "DTVRS485", "RTUSENSOR"):
+        return MANIFEST_DEVICE_DTV
+    # A catalogue label may qualify the MR family with one actual MR variant.
+    # Keep the separator so a second family cannot disappear in normalization.
+    label = strip_bootloader_signature_suffix(signature).strip().upper()
+    prefix = re.fullmatch(r"(?:MR|MP)[-_]?02M(?:[ _-]+([A-Z0-9]+))?", label)
+    if prefix and prefix[1] in (None, "BL"):
+        return MANIFEST_DEVICE_MR
+    variant = prefix[1] if prefix else label
+    if variant != "CE02M3" and (variant in _SIGNATURE_HINTS or variant in _EXTRA_SIG_TOKENS_FOR_BATCH
+                                or variant in ("TENZO2", "DI16", "DO16")):
+        return MANIFEST_DEVICE_MR
+    return None
 
 
 def manifest_device_for_signature(signature: str) -> Optional[str]:
@@ -641,14 +683,8 @@ def manifest_device_for_signature(signature: str) -> Optional[str]:
     first (specific), then the MR/MP-02m batch-flash test. An unrecognised
     signature → ``None`` (unknown family; caller keeps the global fallback).
     """
-    code = code_from_signature(signature)
-    if code == MP02_CE02M3:
-        return MANIFEST_DEVICE_CE02M3
-    if code == DTV:
-        return MANIFEST_DEVICE_DTV
-    if is_mp_module_signature_for_batch_flash(signature):
-        return MANIFEST_DEVICE_MR
-    return None
+    family = firmware_header_family(signature)
+    return family if family in NATIVE_FIRMWARE_FAMILIES else None
 
 
 def manifest_device_family(device: str) -> Optional[str]:
@@ -658,16 +694,7 @@ def manifest_device_family(device: str) -> Optional[str]:
     the exact family keys returned by :func:`manifest_device_for_signature`.
     Unrecognised → ``None`` (unknown family; caller falls back to global latest).
     """
-    n = (device or "").strip().upper().replace(" ", "").replace("_", "-")
-    if not n:
-        return None
-    if n.startswith("RTU-SENSOR") or n.startswith("DTV") or "SENSOR" in n or n.startswith("SENS"):
-        return MANIFEST_DEVICE_DTV
-    if n.startswith("CE-02M"):
-        return MANIFEST_DEVICE_CE02M3
-    if n.startswith("MR-02M") or n.startswith("MP-02M") or n.startswith("MR02M") or n.startswith("MP02M"):
-        return MANIFEST_DEVICE_MR
-    return None
+    return manifest_device_for_signature(device)
 
 
 # Modbus selection codes 0..42 (регистр «тип датчика», MR-02m ≥1.0.9.1) — порядок ≠ ai_sensor_t enum

@@ -59,12 +59,28 @@ CONTROLS: Tuple[Tuple[str, str, str, bool, Optional[int]], ...] = (
     ("text_lines",   "value",  "",  True,  lm.MB2WS_TEXT_LINES),
     ("vled",         "voltage", "V", True, lm.RGBW_IREG_VLED),
     ("temperature",  "temperature", "°C", True, lm.RGBW_IREG_NTC),
+    ("temperature_source", "text", "", True, lm.RGBW_IREG_TEMP_SOURCE),
     # --- 4 dry-contact inputs (TYPE_IO_CAPS RGBW_WS2812 = (0, 4, 0, 0)) -------
     ("di_1",         "switch", "",  True,  None),
     ("di_2",         "switch", "",  True,  None),
     ("di_3",         "switch", "",  True,  None),
     ("di_4",         "switch", "",  True,  None),
+    ("ocp_r",        "switch", "",  True,  None),
+    ("ocp_g",        "switch", "",  True,  None),
+    ("ocp_b",        "switch", "",  True,  None),
+    ("ocp_w",        "switch", "",  True,  None),
 )
+
+EVENT_INPUTS = {**{lm.RGBW_DI_INPUT_BASE + i: 'di_%d' % (i + 1) for i in range(lm.RGBW_DI_COUNT)},
+                **{lm.RGBW_IREG_OCP_BASE + i: 'ocp_' + ch for i, ch in enumerate('rgbw')},
+                lm.RGBW_IREG_NTC: 'temperature'}
+
+
+def input_flag_value(word):
+    if word is None:
+        return None
+    flag = lm.rgbw_input_flag(word)
+    return None if flag is None else str(int(flag))
 
 # Writable ranges the bridge clamps to before it touches the bus. Each mirrors
 # the clamp the map itself applies, so a value that survives here survives the

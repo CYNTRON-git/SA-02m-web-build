@@ -129,6 +129,62 @@ class TestDevicesFingerprint(_DevicesFileCase):
 
 
 class TestDevicesWatcher(_DevicesFileCase):
+    def test_led_owner_changes_guard_the_next_action_and_refresh_the_catalogue(self):
+        from unittest.mock import patch
+        from sa02m_alice.config import topics
+
+        config = os.path.join(self.tmpdir, "bridge.yaml")
+        source = "/devices/kitchen-strip/controls/ocp_r"
+        cap = {"type": "devices.capabilities.on_off", "mqtt": source}
+        self.write({"devices": [{"id": "indicator", "capabilities": [cap]}]})
+        command = [{"id": "indicator", "capabilities": [
+            {"type": cap["type"], "state": {"instance": "on", "value": False}}]}]
+
+        def replace(family):
+            with open(config + ".new", "w", encoding="utf-8") as f:
+                json.dump({"devices": [{"id": "kitchen-strip", "type": family}]}, f)
+            os.replace(config + ".new", config)
+
+        with patch.object(topics, "YAML_CANDIDATES", (config,)):
+            watcher = DevicesWatcher(self.path)
+            for profile in (C.PROFILE_YANDEX, C.PROFILE_CLOUD, C.PROFILE_HOMEKIT):
+                with self.subTest(profile=profile):
+                    registry = DeviceRegistry(profile=profile)
+                    registry.note_mqtt(source, "1")
+                    self.assertEqual(registry.apply_actions(command)[1], [(source + "/on", "0")])
+                    registry.note_mqtt(source, "1")
+                    replace("led")
+                    with patch.object(topics, "_load_yaml", wraps=topics._load_yaml) as parse:
+                        for _ in range(2):
+                            result, writes = registry.apply_actions(command)
+                            self.assertEqual(result[0]["capabilities"][0].get("error_code"), "INVALID_ACTION")
+                            self.assertEqual(writes, [])
+                            self.assertEqual(registry.get_cached(source), "1")
+                        self.assertEqual(parse.call_count, 1)
+                    self.assertTrue(watcher.changed())
+                    apply_reload(registry, _FakeMqtt(), RetainedGrace(), window_s=1, log=self.log)
+                    self.assertIs(registry.catalogue_items()[0][2][0]["writable"], False)
+                    for malformed in ("devices: [42]", "Devices: {kitchen-strip: 42}",
+                                      "devices: [{id: kitchen-strip, type: ' template '}]",
+                                      "devices: [{name: kitchen-strip, type: template}]",
+                                      "Devices: {kitchen-strip: {type: template}}",
+                                      "devices: [{id: kitchen-strip, type: template, transport: udp}]",
+                                      "devices: [{id: kitchen-strip, type: [led]}]"):
+                        with open(config, "w", encoding="utf-8") as f:
+                            f.write(malformed)
+                        apply_reload(registry, _FakeMqtt(), RetainedGrace(), window_s=1, log=self.log)
+                        result, writes = registry.apply_actions(command)
+                        self.assertEqual(result[0]["capabilities"][0].get("error_code"), "INVALID_ACTION")
+                        self.assertEqual(writes, [])
+                        self.assertEqual(registry.get_cached(source), "1")
+                    replace("template")
+                    self.assertTrue(watcher.changed())
+                    apply_reload(registry, _FakeMqtt(), RetainedGrace(), window_s=1, log=self.log)
+                    self.assertEqual(registry.apply_actions(command)[1], [(source + "/on", "0")])
+                    os.unlink(config)
+                    self.assertTrue(watcher.changed())
+                    self.assertFalse(watcher.changed())
+
     def test_quiet_tick_reports_no_change(self):
         self.write(_doc([TOPIC_A]))
         watcher = DevicesWatcher(self.path)

@@ -707,9 +707,10 @@
 
   function pickFirmwareToAutoSelect(newEntries) {
     if (!newEntries.length) return null;
-    const downloaded = newEntries.filter(isFirmwareEntryDownloaded);
+    const family = selectedDeviceFamily();
+    const downloaded = firmwareEntriesForFamily(newEntries, family).filter(isFirmwareEntryDownloaded);
     if (!downloaded.length) return null;
-    const latestApp = state.latestStableVersion;
+    const latestApp = family ? (state.latestByDevice[family] || {}).app : state.latestStableVersion;
     if (latestApp) {
       const match = downloaded.find(e =>
         e.channel === 'stable' && String(e.kind || 'app').toLowerCase() === 'app' &&
@@ -864,6 +865,7 @@
   function validateMultiFlashSelection(devices) {
     const list = devices || selectedDevicesForFlash();
     if (!list.length) return 'Выберите устройство';
+    if (list.some(targetNeedsFirmwareIdentification)) return 'Требуется опознание семейства устройства по регистру 290.';
     const routes = list.map(d => resolveDeviceFlashRoute(d.signature));
     const unknown = list.filter((d, i) => routes[i] === 'unknown');
     if (unknown.length) {
@@ -893,11 +895,12 @@
     return !!entry.downloaded;
   }
 
-  function stableEntryForVersion(kind, version) {
+  function stableEntryForVersion(kind, version, family) {
     const ver = String(version || '').trim();
     if (!ver) return null;
     return state.firmware.find(e =>
-      e.channel === 'stable' && e.kind === kind && String(e.version || '').trim() === ver
+      !e.flash_error && e.channel === 'stable' && e.kind === kind && String(e.version || '').trim() === ver &&
+      (!family || firmwareProductKindFromEntry(e) === FAMILY_TO_PRODUCT[family])
     ) || null;
   }
 
@@ -1094,6 +1097,7 @@
   function selectedDeviceFamily() {
     const devs = selectedDevicesForFlash();
     if (!devs.length) return '';
+    if (devs.some(targetNeedsFirmwareIdentification)) return null;
     const fams = new Set(devs.map(d => manifestDeviceForSignature(d.signature)).filter(Boolean));
     return fams.size === 1 ? [...fams][0] : '';
   }
@@ -1101,6 +1105,10 @@
   /* Отфильтровать список прошивок под семейство выбранного устройства
      (нераспознанные/загруженные вручную образы не скрываем). */
   function firmwareEntriesForFamily(entries, family) {
+    if (family === null) return [];
+    if (family) entries = entries.filter(e => !e.flash_error);
+    entries = entries.filter(e => e.device || !(e.signatures || []).some(s =>
+      normalizeProductToken(stripBootloaderSignatureSuffix(s)) === 'ENMETER'));
     const product = FAMILY_TO_PRODUCT[family];
     if (!product) return entries;
     return entries.filter(e => {
@@ -1112,9 +1120,11 @@
   function renderFirmware(data) {
     const list = $('flasher-fw-list');
     const prevKey = state.selectedFirmwareKey;
-    const visible = firmwareEntriesForFamily(visibleFirmwareEntries(), selectedDeviceFamily());
+    const family = selectedDeviceFamily();
+    const visible = firmwareEntriesForFamily(visibleFirmwareEntries(), family);
     if (!visible.length) {
-      list.textContent = t('Нет скачанных прошивок. Нажмите «Скачать» или выберите .fw вручную.');
+      list.textContent = family === null ? t('Требуется опознание семейства устройства по регистру 290.') :
+        t('Нет скачанных прошивок. Нажмите «Скачать» или выберите .fw вручную.');
       state.selectedFirmwareKey = '';
     } else {
       list.innerHTML = '';
@@ -1250,13 +1260,22 @@
     return s;
   }
 
+  function firmwareIdentityMissing(sig) {
+    const n = normalizeProductToken(stripBootloaderSignatureSuffix(sig));
+    return !n || ['—', '?', 'NONE', 'UNKNOWN', 'BL', 'BOOTLOADER', 'ENMETER'].includes(n);
+  }
+
+  function targetNeedsFirmwareIdentification(device) {
+    return !!device.signature_inferred || firmwareIdentityMissing(device.signature);
+  }
+
   function isMpModuleSignatureForFirmwareHint(sig) {
     let s = stripBootloaderSignatureSuffix(sig);
     const n = s.toUpperCase().replace(/\s/g, '');
-    if (!n || n === 'NONE' || n === '—' || n === '?') return false;
+    if (firmwareIdentityMissing(s)) return false;
     const hintKeys = [
       '6DO8DI', '16DO', '12AO', '6DO', '14DI', '10DICON', '6DO5DI2AO', '6AO6AI', '6AI6AO', 'AO6AI6', '6AI2AO', 'AI6AO2', '12AI',
-      '4DO6DI', '4TO6DI', 'TO4DI6', 'CE02M3', 'CE-02M-3', 'ENMETER', 'EN_METER',
+      '4DO6DI', '4TO6DI', 'TO4DI6', 'CE02M3', 'CE-02M-3',
       'SENSOR', 'SENS.',
     ];
     for (const key of hintKeys) {
@@ -1267,7 +1286,7 @@
       if (n.includes(tok)) return true;
     }
     const compact = n.replace(/-/g, '').replace(/_/g, '');
-    for (const token of ['MP02M', 'MR02M', 'ENMETER']) {
+    for (const token of ['MP02M', 'MR02M']) {
       if (compact.includes(token)) return true;
     }
     return false;
@@ -1280,7 +1299,7 @@
 
   function isWirenboardModuleSignature(sig) {
     let s = stripBootloaderSignatureSuffix(sig);
-    if (!s) return false;
+    if (firmwareIdentityMissing(s)) return false;
     const u = s.toUpperCase();
     if (u === 'NONE' || u === '—' || u === '?' || u === 'UNKNOWN') return false;
     if (isMpModuleSignatureForFirmwareHint(s)) return false;
@@ -1343,10 +1362,7 @@
   function tokenLooksLikeCe(token) {
     const n = normalizeProductToken(token);
     if (!n) return false;
-    // ENMETER mezzanine belongs to the CE-02m-3 family — parity with Python
-    // module_profiles.SPECIAL_SIG_CODES (EN_METER/ENMETER → MP02_CE02M3).
-    // normalizeProductToken strips '_'/'-', so EN_METER and ENMETER both match.
-    return n.includes('CE02M3') || n.includes('CE02M') || n.includes('ENMETER');
+    return n.includes('CE02M3');
   }
 
   function deviceProductKindForFlash(signature) {
@@ -1390,16 +1406,18 @@
   /* Последняя версия прошивки семейства устройства (app|bootloader). '' — нет
      образа для семейства. Неизвестное семейство → глобальный максимум. */
   function latestVersionForDevice(signature, kind) {
+    if (firmwareIdentityMissing(signature)) return '';
     const key = kind === 'bootloader' ? 'bootloader' : 'app';
     const fam = manifestDeviceForSignature(signature);
     const map = state.latestByDevice || {};
-    if (fam && Object.prototype.hasOwnProperty.call(map, fam)) {
+    if (fam) {
       return String((map[fam] && map[fam][key]) || '').trim();
     }
     return key === 'bootloader' ? state.latestBootloaderVersion : state.latestStableVersion;
   }
 
   function validateFirmwareSelectionForDevice(signature, entry) {
+    if (entry && entry.flash_error) return entry.flash_error;
     const routeErr = validateFirmwareForDevice(signature, entry && entry.file);
     if (routeErr) return routeErr;
     const devKind = deviceProductKindForFlash(signature);
@@ -1438,6 +1456,7 @@
       serial: dev.serial,
       signature: dev.signature,
       in_bootloader: dev.in_bootloader,
+      signature_inferred: !!dev.signature_inferred,
       baudrate: line.baudrate,
       parity: line.parity,
       stopbits: line.stopbits,
@@ -1487,7 +1506,7 @@
     // signature (mtd_config.MTD_MODEL) — also before the MP/MR hints.
     if (n === 'MTDX62-MB') return 'mtd';
     if (n.includes('SENSOR') || n.startsWith('SENS.') || n === 'SENS' || n.startsWith('SENS')) return 'dtv';
-    if (n.includes('CE02M3') || n.includes('CE-02M-3') || n.includes('CE-02M3')) return 'ce';
+    if (normalizeProductToken(n) === 'ENMETER' || n.includes('CE02M3') || n.includes('CE-02M-3') || n.includes('CE-02M3')) return 'ce';
     if (isMpModuleSignatureForFirmwareHint(raw)) return 'mr';
     return '';
   }
@@ -1622,6 +1641,7 @@
   }
 
   function firmwareAppUpdateHintForDevice(d) {
+    if (targetNeedsFirmwareIdentification(d)) return '';
     if (!isMpModuleSignatureForFirmwareHint(d.signature)) return '';
     const fam = manifestDeviceForSignature(d.signature);
     const latest = latestVersionForDevice(d.signature, 'app');
@@ -1635,13 +1655,14 @@
     const dv = parseVersionTuple(d.app_version);
     if (!lv || !dv) return '';
     if (compareVersionTuple(lv, dv) <= 0) return '';
-    const entry = stableEntryForVersion('app', latest);
+    const entry = stableEntryForVersion('app', latest, fam);
     const cached = entry && isFirmwareEntryDownloaded(entry);
     const suffix = cached ? '' : ' (не скачан — «Скачать»)';
     return `<div class="flasher-sub flasher-fw-update-hint">есть ${escapeHtml(latest)}${escapeHtml(suffix)}</div>`;
   }
 
   function firmwareBlUpdateHintForDevice(d) {
+    if (targetNeedsFirmwareIdentification(d)) return '';
     if (!isMpModuleSignatureForFirmwareHint(d.signature)) return '';
     const latest = latestVersionForDevice(d.signature, 'bootloader');
     if (!latest) return '';
@@ -1649,7 +1670,7 @@
     const dv = parseVersionTuple(d.bootloader_version);
     if (!lv || !dv) return '';
     if (compareVersionTuple(lv, dv) <= 0) return '';
-    const entry = stableEntryForVersion('bootloader', latest);
+    const entry = stableEntryForVersion('bootloader', latest, manifestDeviceForSignature(d.signature));
     const cached = entry && isFirmwareEntryDownloaded(entry);
     const suffix = cached ? '' : ' (не скачан — «Скачать»)';
     return `<div class="flasher-sub flasher-fw-update-hint">есть ${escapeHtml(latest)}${escapeHtml(suffix)}</div>`;
@@ -5325,7 +5346,7 @@
       sps: 'Частота АЦП, SPS', average: 'Количество усреднений', tau_ms: 'Постоянная фильтра, мс', inactivity_s: 'Таймаут линии, с',
       primary_fans: 'Основные вентиляторы, маска 0–3', start_hour: 'Начало, час', start_minute: 'Начало, минута', end_hour: 'Конец, час', end_minute: 'Конец, минута', enabled: 'Включено',
       deadtime_ms: 'Пауза смены направления, мс', default_run_s: 'Общее время движения, с', opening_deciseconds: 'Время открытия, 0.1 с', closing_deciseconds: 'Время закрытия, 0.1 с',
-      powerup_action: 'При включении: 0 нет, 1 открыть, 2 закрыть', safe_action: 'При потере связи: 0 нет, 1 открыть, 2 закрыть', edge: 'Фронт: 0 передний, 1 задний'};
+      powerup_action: 'При включении: 0 нет, 1 открыть, 2 закрыть', safe_action: 'При потере связи: 0 нет, 1 открыть, 2 закрыть', edge: 'При 0 и 1 симистор включается с задержкой после перехода через ноль'};
     const parts = String(path || '').split('.');
     let prefix = '';
     if (['do', 'di', 'ao', 'ai'].includes(parts[0])) prefix = parts[0].toUpperCase() + parts[1];
@@ -5827,6 +5848,9 @@
     Object.keys(dev || {}).forEach((field) => {
       merged[field] = mergeScanField(prev[field], dev[field]);
     });
+    if (Object.prototype.hasOwnProperty.call(dev, 'signature') && firmwareIdentityMissing(dev.signature)) {
+      merged.signature_inferred = true;
+    }
     state.devices[idx] = merged;
   }
 

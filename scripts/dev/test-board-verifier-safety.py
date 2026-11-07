@@ -54,6 +54,158 @@ def thread_group_running(pid):
     return False
 
 
+class SavedMqttState(unittest.TestCase):
+    """Execute the shipped verifier through check 2 against a completed offline run."""
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.tmp.cleanup)
+        self.root = Path(self.tmp.name)
+        self.web = self.root / 'www'
+        (self.web / 'static/js').mkdir(parents=True)
+        self.version = '1.0.7.33'
+        (self.web / 'static/js/app.js').write_text('APP_VERSION="' + self.version + '"')
+        for name in ('index.html', 'login.html'):
+            (self.web / name).write_text('?v=' + self.version)
+        name = 'install-offline-' + self.version
+        self.baseline = self.root / (name + '.svc-before')
+        self.baseline.write_text('nginx active\nsa02m-modbus-mqtt inactive\n')
+        (self.web / 'VERSION').write_text(self.version)
+        self.runner = self.root / 'runner.version'
+        self.runner.write_text(self.version)
+        self.log = self.root / (name + '-a1b2c3d.wrapper.log')
+        self.write_log()
+        self.script = self.root / 'verify.sh'
+        src = SCRIPT.read_text().split('# 3 no 0-byte unit fragment', 1)[0]
+        src = src.replace('/var/www/network_config', str(self.web)).replace('/root/', str(self.root) + '/')
+        src = src.replace('/var/lib/sa02m-update/runner.version', str(self.runner))
+        src = src.replace('EVIDENCE_UID=0', 'EVIDENCE_UID=' + str(os.getuid()))
+        self.script.write_text(src + '\nexit "$F"\n')
+        systemctl = self.root / 'systemctl'
+        systemctl.write_text('''#!/bin/bash
+case "$1" in
+list-unit-files) echo "$2 enabled" ;;
+show) echo "${MQTT_LOAD:-loaded}" ;;
+is-active) case "$2" in
+    sa02m-modbus-mqtt) echo "${MQTT_STATE:-inactive}";;
+    nginx) echo "${NGINX_STATE:-active}";;
+    *) echo active;;
+esac ;;
+esac
+''')
+        systemctl.chmod(0o755)
+
+    def write_log(self):
+        stamp = subprocess.check_output(['stat', '-c', '%d:%i:%z', self.baseline],
+                                        env={**os.environ, 'TZ': 'UTC0', 'LC_ALL': 'C'}, text=True).strip()
+        import hashlib
+        digest = hashlib.sha256(self.baseline.read_bytes()).hexdigest()
+        wrapper = (ROOT / 'scripts/offline-full-update.sh').read_text()
+        finish = wrapper.split('# ── Step 7: post-checks ─', 1)[1].split('\n', 1)[1]
+        finish = finish.replace('/var/lib/sa02m-update/runner.version', str(self.runner))
+        receipt = subprocess.check_output(['bash', '-eu', '-c', '''
+post_checks() { MQTT_STOP_PRESERVED=1; }
+log() { printf '[08:03:02] [%s] %s\\n' "$1" "$2"; }
+''' + finish], env={**os.environ, 'INSTALL_RC': '0', 'TARGET_VER': self.version, 'WEB_ROOT': str(self.web),
+                    'snapshot_stamp': stamp, 'snapshot_hash': digest}, text=True)
+        self.log_body = (
+            '[08:00:00] [INFO] offline-refresh begin ' + self.version + '\n'
+            '[08:00:00] [INFO] Установлено: 1.0.7.32  →  цель: ' + self.version + '  (дерево: /tmp/repo)\n'
+            '[08:00:01] [INFO] svc-before ' + stamp + ' ' + digest + '\n'
+            '[08:03:00] [OK] install.sh завершился, rc=0\n'
+            '  PASS  служба sa02m-modbus-mqtt           не был запущен до обновления — состояние сохранено\n'
+            '[08:03:01] [OK] ИТОГ: PASS (13/13) — обновление до ' + self.version + ' выполнено\n'
+            + receipt)
+        self.log.write_text(self.log_body)
+
+    def run_check(self, *args, **states):
+        env = {**os.environ, 'PATH': str(self.root) + ':' + os.environ['PATH'], **states}
+        return subprocess.run(['bash', self.script, self.version, *args], env=env, capture_output=True, text=True)
+
+    def test_current_successful_baseline_exempts_only_inactive_mqtt_when_requested(self):
+        self.assertIn('FAIL 2 core units:', self.run_check().stdout)
+        flag = '--preserve-mqtt-state'
+        result = self.run_check(flag)
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertIn('sa02m-modbus-mqtt=inactive (preserved', result.stdout)
+        for states in ({'NGINX_STATE': 'inactive'}, {'MQTT_STATE': 'failed'}, {'MQTT_STATE': 'unknown'},
+                       {'MQTT_LOAD': 'masked'}):
+            with self.subTest(states=states):
+                self.assertIn('FAIL 2 core units:', self.run_check(flag, **states).stdout)
+
+    def test_offline_snapshot_distinguishes_loaded_inactive_mqtt_from_an_absent_unit(self):
+        wrapper = (ROOT / 'scripts/offline-full-update.sh').read_text()
+        capture = wrapper.split('# Service-state snapshot BEFORE the install:', 1)[1].split('nohup setsid env', 1)[0]
+        capture = '\n'.join(line for line in capture.splitlines()[1:] if not line.startswith('#'))
+        script = '''SVC_BEFORE=$1
+CORE_SERVICES="nginx sa02m-modbus-mqtt"
+systemctl() {
+    case "$1" in
+        is-active) if [ "$2" = nginx ]; then echo active; else echo inactive; fi ;;
+        show)
+            [ "$BEFORE_LOAD" != error ] || return 1
+            printf 'LoadState=%s\\nActiveState=%s\\n' "$BEFORE_LOAD" "$BEFORE_ACTIVE"
+            ;;
+    esac
+}
+log() { printf '[08:00:01] [%s] %s\\n' "$1" "$2"; }
+''' + capture
+        for load, active, expected in (('loaded', 'inactive', True), ('not-found', 'inactive', False),
+                                       ('error', 'inactive', False), ('masked', 'inactive', False),
+                                       ('loaded', 'active', False)):
+            with self.subTest(load=load, active=active):
+                env = {**os.environ, 'BEFORE_LOAD': load, 'BEFORE_ACTIVE': active}
+                marker = subprocess.check_output(['bash', '-ec', script, 'capture', self.baseline],
+                                                 text=True, env=env).strip()
+                self.assertIn('[INFO] svc-before ', marker)
+                self.runner.touch()
+                self.write_log()
+                self.log.write_text(re.sub(r'(?m)^.*\[INFO\] svc-before .+$', lambda _: marker, self.log_body))
+                result = self.run_check('--preserve-mqtt-state')
+                self.assertEqual(result.returncode, 0 if expected else 1, result.stdout + result.stderr)
+                self.assertIn('nginx active', self.baseline.read_text().splitlines())
+
+    def test_incomplete_stale_unsafe_or_mismatched_evidence_fails(self):
+        flag = '--preserve-mqtt-state'
+        for body in (self.log_body.replace('ИТОГ: PASS', 'ИТОГ: FAIL'),
+                     self.log_body.replace('rc=0', 'rc=1'),
+                     self.log_body + '[09:00:00] [INFO] offline-refresh begin ' + self.version + '\n'):
+            self.log.write_text(body)
+            self.assertIn('FAIL 2 core units:', self.run_check(flag).stdout)
+        self.write_log()
+        os.utime(self.log, (1, 1))
+        self.assertIn('FAIL 2 core units:', self.run_check(flag).stdout)
+        for state in ('active', 'unknown', 'inactive\nsa02m-modbus-mqtt active'):
+            self.baseline.write_text('sa02m-modbus-mqtt ' + state + '\n')
+            self.runner.touch()
+            self.write_log()
+            self.assertIn('FAIL 2 core units:', self.run_check(flag).stdout)
+        self.baseline.write_text('sa02m-modbus-mqtt inactive\n')
+        self.runner.touch()
+        self.write_log()
+        self.baseline.chmod(0o666)
+        self.runner.touch()
+        self.write_log()
+        self.assertIn('FAIL 2 core units:', self.run_check(flag).stdout)
+        self.baseline.unlink()
+        self.assertIn('FAIL 2 core units:', self.run_check(flag).stdout)
+
+    def test_read_only_status_does_not_erase_or_create_installation_evidence(self):
+        flag = '--preserve-mqtt-state'
+        header = next(line for line in self.log_body.splitlines() if 'Установлено:' in line)
+        table = '\n'.join(line for line in self.log_body.splitlines() if 'PASS' in line) + '\n'
+        observed = '[09:00:00] [INFO] offline-refresh observe ' + self.version + '\n' + header + '\n' + table
+        self.log.write_text(self.log_body + observed)
+        self.assertEqual(self.run_check(flag).returncode, 0)
+        for partial in ('', self.log_body.split('ИТОГ:')[0]):
+            self.log.write_text('[09:00:00] [INFO] offline-refresh begin ' + self.version + '\n' + partial + observed)
+            self.assertIn('FAIL 2 core units:', self.run_check(flag).stdout)
+        self.log.write_text(self.log_body + observed)
+        self.runner.touch()
+        self.log.touch()
+        self.assertIn('FAIL 2 core units:', self.run_check(flag).stdout)
+
+
 class FixtureSafety(unittest.TestCase):
     def test_operator_rows_under_the_fixture_ids_survive_a_full_unpatched_run(self):
         # The defect this pins: the old CLEAN block deleted the operator's own

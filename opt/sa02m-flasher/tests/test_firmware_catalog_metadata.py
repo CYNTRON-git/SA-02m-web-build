@@ -19,10 +19,12 @@ def catalog_image(kind: str = "bootloader", signature: str = "NONE") -> bytes:
     """Build a valid word-swapped make_fw container without a firmware download."""
     size = firmware.BL_IMAGE_TOTAL_BYTES if kind == "bootloader" else 256
     raw = bytearray(b"\xff" * size)
-    reset = firmware.BL_CODE_ORIGIN if kind == "bootloader" else firmware.FLASH_APP_START
+    reset = firmware.BL_CODE_ORIGIN if kind == "bootloader" else firmware.FLASH_APP_START + 8
     struct.pack_into("<II", raw, 0, firmware.RAM_END, reset | 1)
     if kind == "bootloader":
         raw[firmware.BL_VECTORS_SIZE:firmware.BL_VECTORS_SIZE + 4] = b"\x01\x02\x03\x04"
+    else:
+        raw[8:10] = b"\x00\xbf"
     info = signature.encode("ascii").ljust(12, b"\x00")
     info += struct.pack("<I", len(raw)) + b"CRC2"
     info += struct.pack("<I", zlib.crc32(raw) & 0xFFFFFFFF) + b"\x00" * 8

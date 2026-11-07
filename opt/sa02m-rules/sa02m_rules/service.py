@@ -159,13 +159,11 @@ class RulesApp:
         return self._index.caps_of(device)
 
     def reload_index(self) -> None:
-        try:
-            mtime = os.path.getmtime(self._alice_path)
-        except OSError:
-            mtime = 0.0
+        blocker = self._index.write_blocker
+        mtime = (capability_binding.file_token(self._alice_path), blocker.refresh())
         if mtime == self._alice_mtime and self._index.loaded:
             return
-        self._index = load_index(self._alice_path)
+        self._index = load_index(self._alice_path, write_blocker=blocker)
         self._alice_mtime = mtime
 
     def mqtt_topic(self, device: str, cap: str) -> str:
@@ -183,12 +181,15 @@ class RulesApp:
         list is refused, never guessed. The raw `/devices/<device>/controls/
         <cap>` topic is kept only for a device the document does not list at
         all (and for every device while the document cannot be read)."""
+        self.reload_index()
         if device in self._index.devices:
             topic, reason = self._index.resolve(device, short, instance)
             return (topic, "") if topic else (None, reason)
         if instance:
             return None, "unknown_target"
-        return "/devices/%s/controls/%s" % (device, short), ""
+        topic = "/devices/%s/controls/%s" % (device, short)
+        reason = self._index.write_blocker(topic)
+        return (None, reason) if reason else (topic, "")
 
     def check_target(self, device: str, cap: str, instance: str = "") -> str:
         """"" or the `last_error` a write to this target gets (the engine
@@ -220,8 +221,6 @@ class RulesApp:
             LOG.warning("publish refused: %s is a scenario device", device)
             return None
         key = state_key(short, instance)
-        if (device, key) in self._index.readonly:
-            return "read only"
         topic, reason = self.target_topic(str(device), short, instance)
         if not topic:
             LOG.warning("publish refused: %s/%s%s — %s", device, short,
@@ -238,6 +237,9 @@ class RulesApp:
                 return error
             if error or payload is None:
                 return "invalid capability value"
+        reason = self._index.write_blocker(topic)
+        if reason:
+            return reason.replace("_", " ")
         self._publish(topic + "/on", payload, retain=False)
         self.state.setdefault(device, {})[key] = value
         return None

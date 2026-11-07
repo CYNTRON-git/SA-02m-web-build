@@ -67,6 +67,27 @@ class TestDtvWire(unittest.TestCase):
         self.dev["wire_mode"] = "wb"
         self.assertEqual(choose(), ("wb", "legacy"))
 
+    def test_unmapped_wb_width_and_count_only_cannot_overwrite_a_sensor(self):
+        self.compose()
+        self.manager.configure_all()
+        self.client.publish.reset_mock()
+        # IR25 is the configured light sensor. The wide observation has the
+        # same address and the plausible scalar value 5 in its low word.
+        data = bytes.fromhex('02 04 00 19 20 00 04 04 00 19 05 00 01 00')
+        self.bus.replies.extend([
+            _append_crc(bytes.fromhex('0f 46 11 00 03 0e') + data),
+            _append_crc(bytes.fromhex('0f 46 11 01 01 00')),
+        ])
+        self.assertEqual(self.manager.event_burst(), 0)
+        topic = '/devices/dtv-COM3-15/controls/light_pct'
+        self.assertEqual([c.args[1] for c in self.client.publish.call_args_list if c.args[0] == topic],
+                         ['32.0'])
+        self.assertEqual(bridge_mqtt.DeviceLiveCache._controls['dtv-COM3-15']['light_pct'], '32.0')
+        self.assertEqual(self.bus.polls[-1][1:], (15, 0))
+        self.bus.replies.append(bytes.fromhex('fd4612525d'))
+        self.assertEqual(self.manager.event_burst(), 0)
+        self.assertEqual(self.bus.polls[-1][1:], (15, 1))
+
     def test_partial_wb_mask_keeps_classic_coverage(self):
         self.compose()
         wb_send = self.bus.fmb_send_recv

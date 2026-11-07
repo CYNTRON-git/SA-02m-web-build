@@ -5,6 +5,24 @@
 
 ---
 
+## 1.0.7.33 - Restore active serial gateway lines after refresh (November 2026)
+
+- Require positive device-family identification for firmware selection and flashing. A standalone meter-driver alias or inferred serial range cannot authorize an image. Bind bootloader recovery to the verified unit.
+- Read explicit application version markers for MR, DTV, LED and CE images. Reject conflicting firmware identities and avoid displaying arbitrary binary words as release versions.
+- Validate the target family and reset vector before starting a native firmware transfer. Keep a working local release available when a replacement upload fails validation.
+- The service list uses fewer processes to format its response. On the ARM test controller the median helper time fell from 2.854 to 2.163 seconds across four alternating samples per version, with identical response bytes.
+- Full installation refresh can pause a verified serial gateway and restores its previously open COM lines before reopening the panel. Other UART operations and pending service restoration still block installation.
+- The serial gateway detects lost idle TCP peers. A healthy transparent client can stay idle, and a stalled reader no longer interrupts serial data delivery to other clients.
+- Release the coordinator maintenance lock before restarting consumers on success, failure and explicit recovery. Preserve the recovery journals if a previously working gateway line fails to reopen.
+- The on-board release verifier can confirm a deliberately stopped MQTT bridge from the matching successful offline installation. Use `--preserve-mqtt-state` to check its saved state.
+- Read MR analog channels, I/O counters, relay schedules and configuration banks in FIFO-sized groups on fast built-in serial lines. Bound long reads at low baud rates and reserve each import verification exchange before writing.
+- Request smaller Fast Modbus event batches on fast built-in serial lines, leaving room for arbitration and the response header.
+- Acknowledge Wiren Board event batches when only part of the queue fits, including count-only replies and flag zero. Keep wide register values out of single-register controls while delivering supported records in the same packet.
+- Subscribe identified RGBW modules to digital inputs, overcurrent flags and board temperature. The web panel now reports channel protection status. Firmware 1.0.3.1 and later identifies the temperature source and distinguishes a missing sensor from a measurement of zero degrees. Alice, HomeKit and Rules keep LED diagnostics read-only when loading saved bindings or reloading the bridge configuration.
+- Publish DTV environmental events on their sensor topics, decode ZMOD readings by firmware version and verify ambiguous zero measurements during classic polling.
+- Alternate full-line Fast Modbus polls with rotating address thresholds so sustained traffic from one module also gives equal-priority peers a turn.
+- Correct the 4TO6DI dimmer labels. Both register values delay triac turn-on after the zero crossing.
+
 ## 1.0.7.32 - Verify MR controls and bound device operations (November 2026)
 
 ### MR modules and configuration

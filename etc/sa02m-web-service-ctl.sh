@@ -616,6 +616,23 @@ EOF
     return 1
 }
 
+# Catalog strings and normal systemd states need no JSON substitutions. Keep
+# the existing escaping for any row containing quotes, backslashes or controls.
+list_append_row() {
+    local enabled=false masked=false admin_off=false
+    case "$1$2$3$4" in
+        *'"'*|*'\'*|*[[:cntrl:]]*)
+            set -- "$(json_escape "$1")" "$(json_escape "$2")" \
+                "$(json_escape "$3")" "$(json_escape "$4")" "$5" "$6" "$7" "$8"
+            ;;
+    esac
+    [ "$5" = enabled ] && enabled=true
+    [ "$6" = 1 ] && masked=true
+    [ "$7" = 1 ] && admin_off=true
+    parts="${parts}${sep}{\"id\":\"$1\",\"label\":\"$2\",\"unit\":\"$3\",\"active\":\"$4\",\"enabled\":$enabled,\"masked\":$masked,\"user_disabled\":$admin_off,\"installed\":$8}"
+    sep=,
+}
+
 # Resolve candidates and reuse their state from one keyed show snapshot. The
 # second call is the original is-enabled batch, preserving its policy meaning.
 cmd_list() {
@@ -740,10 +757,7 @@ EOF
             # Ghost row for an installable-but-absent service. No systemctl
             # probe (the unit does not exist); fixed installed:false tuple so
             # the frontend renders the [Установить] button.
-            _id_e=$(json_escape "$_id")
-            _label_e=$(json_escape "$_label")
-            parts="${parts}${sep}{\"id\":\"${_id_e}\",\"label\":\"${_label_e}\",\"unit\":\"\",\"active\":\"inactive\",\"enabled\":false,\"masked\":false,\"user_disabled\":false,\"installed\":false}"
-            sep=,
+            list_append_row "$_id" "$_label" "" inactive disabled 0 0 false
             continue
         fi
         if [ "$_unit" = "init.d" ]; then
@@ -803,12 +817,7 @@ EOF2
                 _active=inactive
             fi
         fi
-        _id_e=$(json_escape "$_id")
-        _label_e=$(json_escape "$_label")
-        _unit_e=$(json_escape "$_unit")
-        _active_e=$(json_escape "$_active")
-        parts="${parts}${sep}{\"id\":\"${_id_e}\",\"label\":\"${_label_e}\",\"unit\":\"${_unit_e}\",\"active\":\"${_active_e}\",\"enabled\":$([ "$_enabled" = enabled ] && echo true || echo false),\"masked\":$([ "$_masked" = 1 ] && echo true || echo false),\"user_disabled\":$([ "$_admin_off" = 1 ] && echo true || echo false),\"installed\":true}"
-        sep=,
+        list_append_row "$_id" "$_label" "$_unit" "$_active" "$_enabled" "$_masked" "$_admin_off" true
     done <<EOF
 $_rows
 EOF
@@ -816,7 +825,7 @@ EOF
     if flasher_poll_lock_held; then
         _flasher_busy=true
     fi
-    printf '{"ok":true,"flasher_busy":%s,"services":[%s]}\n' "$([ "$_flasher_busy" = true ] && echo true || echo false)" "$parts"
+    printf '{"ok":true,"flasher_busy":%s,"services":[%s]}\n' "$_flasher_busy" "$parts"
 }
 
 validate_id() {

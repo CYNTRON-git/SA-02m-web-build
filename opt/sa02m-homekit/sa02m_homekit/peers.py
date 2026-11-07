@@ -46,6 +46,9 @@ REQUIRED_PEER_SYMBOLS: Tuple[str, ...] = (
     # equal string (constants.CATALOGUE_PROFILE), so the constant is the marker.
     "sa02m_alice.common.constants:PROFILE_HOMEKIT",
     "sa02m_alice.common.constants:STATUS_DONE",
+    "sa02m_alice.config.bridge_families:admitted_families",
+    "sa02m_alice.config.bridge_families:load_families",
+    "sa02m_alice.config.bridge_families:merge_families",
     "sa02m_alice.config.scene_devices:homekit_exposure_fingerprint",
     "sa02m_alice.config.scene_devices:homekit_scene_state",
 )

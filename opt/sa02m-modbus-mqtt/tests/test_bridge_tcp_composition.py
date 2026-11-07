@@ -99,6 +99,96 @@ class TestCompose(_Isolated):
                                side_effect=AssertionError("serial port opened")):
             return bridge.compose_pollers(devices, self.pub)
 
+    def test_family_index_matches_registered_topic_ids_without_starting_a_poller(self):
+        from importlib.util import module_from_spec, spec_from_file_location
+
+        path = BRIDGE_DIR.parent / "sa02m-alice/sa02m_alice/config/bridge_roster.py"
+        spec = spec_from_file_location("tested_bridge_roster", path)
+        roster = module_from_spec(spec)
+        spec.loader.exec_module(roster)
+        accepted = [
+            ({"id":" kitchen ", "type":"LeD"}, {" kitchen ":True}),
+            ({"id":"kitchen", "type":"TeMpLaTe"}, {"kitchen":False}),
+            ({"id":17, "type":"led"}, {"17":True}),
+            ({"id":"room/strip", "type":"led"}, {"room/strip":True}),
+            (_tcp_template(id="kitchen"), {"kitchen":False}),
+            (_tcp_template(id="other", type="carel", family=" UARIA "), {"other":False}),
+            ({"id":"meter", "type":"ce02m3", "ct_ratio":"4000"}, {"meter":False}),
+            ({"id":"analog", "type":"mr02m", "module_type":7}, {"analog":False}),
+            ({"id":"sensor", "type":"dtv", "sensors_present":["presence"]}, {"sensor":False}),
+            ({"id":"meter", "type":"spodes", "transport":"wrapper", "host":"192.0.2.1"}, {"meter":False}),
+        ]
+        for row, expected in accepted:
+            with self.subTest(row=row):
+                by_bus, _, refused = self._compose([row])
+                pollers = [p for group in by_bus.values() for p in group]
+                self.assertEqual(refused, [])
+                self.assertEqual({str(p.device_id): isinstance(p, bridge.LedPoller) for p in pollers}, expected)
+                self.assertEqual(roster.admitted_families({"devices":[row]}), expected)
+
+        kitchen = {"id":"kitchen", "type":"template"}
+        for row in ({"name":"kitchen", "type":"template"}, dict(kitchen, type=" template "),
+                    dict(kitchen, type=[]), dict(kitchen, id=[]), dict(kitchen, id=True),
+                    dict(kitchen, transport="TCP"), dict(kitchen, port=[]),
+                    dict(kitchen, baudrate="broken"), dict(kitchen, poll_s=[]),
+                    dict(kitchen, address={}), _tcp_template(host="127.0.0.1"),
+                    _tcp_template(address=256), _tcp_template(type="led")):
+            with self.subTest(row=row):
+                by_bus, _, refused = self._compose([row])
+                self.assertTrue(refused)
+                self.assertFalse(by_bus)
+                self.assertIsNone(roster.admitted_families({"devices":[row]}))
+        rows = [kitchen, {"id":"hdlc", "type":"spodes"}]
+        self.assertTrue(self._compose(rows)[2])
+        self.assertIsNone(roster.admitted_families({"devices":rows}))
+        rows = [kitchen, dict(kitchen, type="led"), dict(kitchen, id=" kitchen ")]
+        self.assertEqual(self._compose(rows)[2], [])
+        self.assertEqual(roster.admitted_families({"devices":rows}), {"kitchen":True," kitchen ":False})
+
+    def test_family_evidence_matches_real_preparation_with_rejected_neighbours(self):
+        from importlib.util import module_from_spec, spec_from_file_location
+        path = BRIDGE_DIR.parent / "sa02m-alice/sa02m_alice/config/bridge_roster.py"
+        spec = spec_from_file_location("mixed_roster", path)
+        roster = module_from_spec(spec)
+        spec.loader.exec_module(roster)
+        bad_rows = [
+            {"type":"template", "stopbits":float("inf")},
+            {"type":"template", "transport":"tcp", "host":"127.0.0.1"},
+            {"type":"spodes", "association":"reader", "encryption_key":"銅"},
+            {"type":"spodes", "baudrate":[]},
+            {"type":"ce02m3", "channels_enabled":[{}]},
+            {"type":"dtv", "sensors_present":[["nested"]]},
+            {"type":"mr02m", "module_type":[]},  # FMB layout lookup
+            {"type":"mr02m", "ai_read_chunk_regs":float("inf")},
+            {"type":"mr02m", "channels":{"ai":[{"sensor_type":{}}]}},
+            {"type":"led", "poll_text_s":[]},
+            {"type":"led", "port":None},
+            {"type":"carel", "offline_after_fails":{}},
+        ]
+        healthy = [{"id":"kitchen", "type":"led"}, {"id":"ordinary", "type":"template"}]
+        for bad in bad_rows:
+            for rejected_id in ("bad", "kitchen", "ordinary"):
+                with self.subTest(row=bad, id=rejected_id):
+                    rows = [healthy[0], dict(bad, id=rejected_id), healthy[1]]
+                    by_bus, _, refused = self._compose(rows)
+                    self.assertEqual([record["index"] for record in refused], [1])
+                    pollers = [p for group in by_bus.values() for p in group]
+                    self.assertEqual({p.device_id:type(p) for p in pollers},
+                                     {"kitchen":bridge.LedPoller, "ordinary":bridge.TemplatePoller})
+                    self.pub.reset_mock()
+                    with mock.patch("socket.socket", side_effect=AssertionError("socket opened")), \
+                         mock.patch.object(bridge_template.TemplatePoller, "_load_template",
+                                           side_effect=AssertionError("external template loaded")), \
+                         mock.patch.object(bridge_serial, "get_port", side_effect=AssertionError("serial opened")), \
+                         mock.patch("threading.Thread.start", side_effect=AssertionError("worker started")):
+                        evidence = roster.admitted_families({"devices":rows})
+                    self.assertIs(evidence["kitchen"], True)
+                    if rejected_id != "kitchen":
+                        self.assertIsNone(evidence[rejected_id])
+                    if rejected_id != "ordinary":
+                        self.assertIs(evidence["ordinary"], False)
+                    self.pub.assert_not_called()
+
     def test_rtu_only_config_composes_as_before(self):
         devices = [
             {"id": "mr-COM1-5", "type": "mr02m", "port": "/dev/COM1",

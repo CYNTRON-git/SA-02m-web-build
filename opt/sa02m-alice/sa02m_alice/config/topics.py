@@ -8,6 +8,8 @@ import re
 import socket
 from typing import Any, Dict, List, Set
 
+from .bridge_roster import load_yaml as _load_yaml, picker_id, yaml_devices
+
 YAML_CANDIDATES = (
     "/etc/sa02m-modbus-mqtt.yaml",
     os.path.join(
@@ -200,31 +202,10 @@ def _controller_device_id() -> str:
     return CONTROLLER_ID_FALLBACK
 
 
-def _load_yaml(path: str) -> Any:
-    try:
-        import yaml  # type: ignore
-    except ImportError:
-        return None
-    try:
-        with open(path, encoding="utf-8") as fh:
-            return yaml.safe_load(fh)
-    except OSError:
-        return None
-
-
 def _topics_from_yaml(doc: Any) -> List[str]:
     out: Set[str] = set()
-    if not isinstance(doc, dict):
-        return []
-    devices = doc.get("devices") or doc.get("Devices") or []
-    if isinstance(devices, dict):
-        devices = [
-            {"id": k, **(v if isinstance(v, dict) else {})} for k, v in devices.items()
-        ]
-    for dev in devices:
-        if not isinstance(dev, dict):
-            continue
-        did = str(dev.get("id") or dev.get("name") or "").strip()
+    for dev in yaml_devices(doc) or ():
+        did = picker_id(dev)
         if not did:
             continue
         controls = dev.get("controls") or dev.get("Channels") or []

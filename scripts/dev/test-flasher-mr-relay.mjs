@@ -75,6 +75,16 @@ try {
       await open(model, 0); await tab('relay');
       await check('capability modes type ' + model, async () => assert.deepEqual(await page.locator('#cfg-mr-relay-mode option').evaluateAll(options => options.map(option => Number(option.value))), fixtures[`${model}:0`].mr.module.relay_capabilities.modes));
     }
+    await page.locator('#flasher-config-body details summary').click();
+    await check('4TO6DI labels describe both compatibility values on all four channels', async () => {
+      const inputs = page.locator('input[data-relay-field^="relay.dimming.channels."]');
+      assert.equal(await inputs.count(), 4);
+      for (const input of await inputs.all()) {
+        const label = await input.locator('..').innerText();
+        assert.match(label, lang === 'ru' ? /0 и 1.*включается с задержкой после перехода через ноль/ : /0 and 1.*delay triac turn-on after the zero crossing/);
+        assert.deepEqual(await input.evaluate(el => [el.min, el.max]), ['0', '1']);
+      }
+    });
     await open(1, 2); await tab('do_1');
     await check('manual transition warning is visible before action', async () => assert.match(await page.locator('#cfg-mr-do-command-note').innerText(), /Modbus/));
     await page.locator('[data-mr-do-on="1"]').click(); await idle();

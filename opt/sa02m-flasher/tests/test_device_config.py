@@ -157,8 +157,8 @@ class TestMrSnapshotPanel(unittest.TestCase):
             patch.object(device_config, "_read_mr_snapshot_minimal", return_value=base_min),
             patch.object(device_config, "_mr_do_block_full", return_value=full_do) as mock_do_full,
         ):
-            out = device_config._read_mr_snapshot_panel(send, slave, identity, "do_2")
-        mock_do_full.assert_called_once_with(send, slave, kind)
+            out = device_config._read_mr_snapshot_panel(send, slave, identity, "do_2", max_regs=24)
+        mock_do_full.assert_called_once_with(send, slave, kind, max_regs=24)
         self.assertEqual(out["do"], full_do)
         self.assertEqual(out["inactivity_s"], 5)
 

@@ -279,6 +279,8 @@ const seamParts = () => [
   extractConst(flasherSrc, 'LED_SIGNATURE_PREFIXES'),
   extractFn(flasherSrc, 'stripBootloaderSignatureSuffix'),
   extractFn(flasherSrc, 'isMpModuleSignatureForFirmwareHint'),
+  extractFn(flasherSrc, 'firmwareIdentityMissing'),
+  extractFn(flasherSrc, 'normalizeProductToken'),
   extractFn(flasherSrc, 'signatureLooksLikeCarel'),
   extractFn(flasherSrc, 'signatureLooksLikeLed'),
   extractFn(flasherSrc, 'deviceConfigKindFromSignature'),
@@ -400,7 +402,7 @@ function snapFor(o) {
   if (opts.tab === 'led_pwm') {
     const visible = opts.pwmMode === 5 ? [true, false, false, false] : [true, true, true, true];
     const labels = opts.pwmMode === 5 ? ['rgbw_pwm_ch_4w', 'rgbw_pwm_ch_4w_par', 'rgbw_pwm_ch_4w_par', 'rgbw_pwm_ch_4w_par'] : ['rgbw_pwm_ch_r', 'rgbw_pwm_ch_g', 'rgbw_pwm_ch_b', 'rgbw_pwm_ch_w'];
-    led.pwm = { levels: [250, 500, 750, 1000], color_hex: '#408000', mode: opts.pwmMode, mode_labels: labels, mode_visible: visible, currents_ma: [120, 240, 360, 480], ntc_raw: 315, vled_raw: 1198, ntc_c: 31.5, vled_v: 11.98 };
+    led.pwm = { levels: [250, 500, 750, 1000], color_hex: '#408000', mode: opts.pwmMode, mode_labels: labels, mode_visible: visible, overcurrent: [true, false, null, false], ntc_raw: 315, vled_raw: 1198, ntc_c: 31.5, temperature_source: "mcu", vled_v: 11.98 };
   }
   if (opts.tab === 'led_di') {
     led.di = { channels: [1, 2, 3, 4].map(n => ({ channel: n, mode: n === 1 ? 1 : 0, debounce_ms: n === 1 ? 50 : 0 })), encoders: [] };
@@ -574,8 +576,8 @@ function patchedValues(html, snap, expectations) {
 const pwmSnap = useSnap(snapFor({ tab: 'led_pwm', pwmMode: 0 }));
 const pwmHtml = api.renderPwmTab(pwmSnap);
 const pwmIds = idsIn(pwmHtml);
-for (const id of ['cfg-led-pwm-mode', 'cfg-led-pwm-color', 'cfg-led-pwm-en-1', 'cfg-led-pwm-lvl-4', 'cfg-led-pwm-cur-1', 'cfg-led-ntc', 'cfg-led-vled']) check(pwmIds.has(id), `PWM tab emits #${id}`);
-patchedValues(pwmHtml, pwmSnap, { 'cfg-led-pwm-mode': '0', 'cfg-led-pwm-lvl-1': '250', 'cfg-led-pwm-en-1': true, 'cfg-led-pwm-cur-1': '120', 'cfg-led-ntc': '31.5', 'cfg-led-vled': '11.98', 'cfg-led-pwm-color': '#408000' });
+for (const id of ['cfg-led-pwm-mode', 'cfg-led-pwm-color', 'cfg-led-pwm-en-1', 'cfg-led-pwm-lvl-4', 'cfg-led-pwm-ocp-1', 'cfg-led-ntc', 'cfg-led-vled']) check(pwmIds.has(id), `PWM tab emits #${id}`);
+patchedValues(pwmHtml, pwmSnap, { 'cfg-led-pwm-mode': '0', 'cfg-led-pwm-lvl-1': '250', 'cfg-led-pwm-en-1': true, 'cfg-led-pwm-ocp-1': 'Сработала', 'cfg-led-pwm-ocp-2': 'В норме', 'cfg-led-pwm-ocp-3': '—', 'cfg-led-ntc': '31.5', 'cfg-led-temp-source': 'MCU', 'cfg-led-vled': '11.98', 'cfg-led-pwm-color': '#408000' });
 const pwm5 = idsIn(api.renderPwmTab(useSnap(snapFor({ tab: 'led_pwm', pwmMode: 5 }))));
 check(pwm5.has('cfg-led-pwm-en-1') && !pwm5.has('cfg-led-pwm-en-2') && !pwm5.has('cfg-led-pwm-lvl-4'), 'PWM mode 5 (4×W) hides channels 2–4 (parallel slaves), never greys them');
 check(!pwm5.has('cfg-led-pwm-color'), 'the colour wheel is RGB + W only');

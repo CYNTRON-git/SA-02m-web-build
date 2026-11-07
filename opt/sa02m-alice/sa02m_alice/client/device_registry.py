@@ -10,7 +10,7 @@ from typing import Any, Callable, Dict, Iterable, List, Optional, Set, Tuple
 
 from ..common import constants as C
 from ..common.config_store import load_devices
-from ..config import ahu_status, device_types, scene_devices, topics
+from ..config import ahu_status, device_types, inventory, models, scene_devices, topics
 from . import converters, capability_values
 
 log = logging.getLogger("sa02m_alice.registry")
@@ -176,6 +176,7 @@ class DeviceRegistry:
         # gains its cloud-only status rows and keeps only the LIVE optional
         # probes (bridge live cache) — in memory, the stored document is
         # never rewritten. Same call in reload(): the two sites must agree.
+        self._led_readonly = inventory.led_readonly_source(follow_changes=True)
         self._doc = self._catalogue_doc(devices_doc)
         self._mqtt_cache: Dict[str, str] = {}  # topic -> last value seen (retained included)
         self._mqtt_ts: Dict[str, float] = {}
@@ -212,7 +213,7 @@ class DeviceRegistry:
         """
         return scene_devices.attach_exposed_scenes(
             ahu_status.prepare_catalogue_doc(
-                devices_doc if devices_doc is not None else load_devices()
+                models.protect_led_readings(devices_doc if devices_doc is not None else load_devices(), self._led_readonly)
             ),
             self._profile,
         )
@@ -794,7 +795,8 @@ class DeviceRegistry:
                             }
                         )
                         continue
-                    if local.get("writable") is False:
+                    topic = str(local.get("mqtt") or "")
+                    if local.get("writable") is False or self._led_readonly(topic):
                         # Latching DI / report-only capability: query and
                         # report stay, a command must not publish `/on`.
                         cap_results.append(
@@ -806,7 +808,6 @@ class DeviceRegistry:
                             }
                         )
                         continue
-                    topic = str(local.get("mqtt") or "")
                     polled = _modbus_slave_topic(topic)
                     # A Modbus write goes out unless the slave itself is
                     # down. Sticky per-channel `r` (busy bus / scenario

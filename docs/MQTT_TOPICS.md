@@ -507,8 +507,8 @@ Baudrate: 19200 (по умолчанию). Адрес: 1 (по умолчани�
 # reg=16 gas_resist_bme680  kΩ     ×1.0
 # reg=17 iaq_bme680         IAQ    ×1.0  (0-500)
 # reg=18 eco2_bme680        ppm    ×1.0
-# reg=19 tvoc_zmod          mg/m³  ×0.01
-# reg=20 iaq_zmod           IAQ    ×1.0
+# reg=19 tvoc_zmod          mg/m³  (масштаб зависит от версии ДТВ)
+# reg=20 iaq_zmod           IAQ    (шкала зависит от версии ДТВ)
 # reg=21 eco2_zmod          ppm    ×1.0
 /devices/dtv-COM3-1/controls/iaq_bme680    type=value units=IAQ
 /devices/dtv-COM3-1/controls/tvoc_zmod     type=value units=mg/m³
@@ -537,7 +537,8 @@ Baudrate: 19200 (по умолчанию). Адрес: 1 (по умолчани�
 /devices/dtv-COM3-1/controls/mcu_temp     type=temperature units=°C
 ```
 
-> **Примечание:** При 0x8000 в регистре → датчик не установлен или ошибка. Мост публикует `/meta/error = "r"`.
+Масштабы ZMOD, смысл `0x8000` и проверка нулевых значений при публикации
+по FC04 и событиям описаны в [контракте Fast Modbus, §3](contracts/fmb-event-wire.md#3-какую-форму-получает-каждый-тип-при-auto).
 
 ### «Системные» ДТВ и СЭ-02м-3 (`channels.sys`)
 

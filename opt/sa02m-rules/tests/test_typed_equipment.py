@@ -4,6 +4,8 @@ import os
 import sys
 import tempfile
 import unittest
+from contextlib import ExitStack
+from pathlib import Path
 from unittest.mock import Mock, patch
 
 OPT = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", ".."))
@@ -48,6 +50,10 @@ class TypedEquipment(unittest.TestCase):
             self.app = service.RulesApp(self.client, os.path.join(self.tmp.name, "rules.json"))
         self.client.reset_mock()
 
+    def restart_rules(self):
+        with patch.object(service, "ALICE_DEVICES", self.path):
+            self.app = service.RulesApp(self.client, self.app.path)
+
     def test_typed_writer_payloads(self):
         for kind, inst, value, expected in (("range", "temperature", 22.5, "22.5"),
                 ("range", "humidity", 60, "60"), ("color_setting", "rgb", 0x00FF00, "#00FF00"),
@@ -67,11 +73,358 @@ class TypedEquipment(unittest.TestCase):
             self.assertTrue(self.app.pub("unit", kind, value, inst))
         self.client.publish.assert_not_called()
 
+    def test_live_family_recheck_preserves_readback_after_invalid_yaml(self):
+        topic = "/devices/kitchen/controls/ocp_r"
+        bridge = Path(self.tmp.name) / "bridge.yaml"
+        example = Path(self.tmp.name) / "example.yaml"
+        example.write_text("devices: []")
+        binding = dict(type=P+"on_off", mqtt=topic)
+        Path(self.path).write_text(json.dumps({"devices":[{"id":"saved","capabilities":[binding]}]}))
+
+        def family(kind):
+            stage = bridge.with_suffix(".new")
+            stage.write_text(json.dumps({"devices":[{"id":"kitchen","type":kind}]}))
+            stage.replace(bridge)
+
+        for legacy in (False, True):
+            with self.subTest(legacy=legacy), ExitStack() as stack:
+                stack.enter_context(patch.object(capability_binding.topics, "YAML_CANDIDATES", (bridge,example)))
+                stack.enter_context(patch.object(service, "ALICE_DEVICES", self.path))
+                if legacy:
+                    stack.enter_context(patch.object(capability_binding, "led_readonly_source", None))
+                family("template")
+                from sa02m_rules import store
+                rules_path = os.path.join(self.tmp.name, "old-" + str(legacy) + ".json")
+                scenario = dict(id="old",name="Old",type="scene",enabled=True,
+                                action=[dict(kind="set",device="saved",cap="on_off",value=True)])
+                with patch.dict(os.environ, {"SA02M_ALICE_DEVICES":self.path}):
+                    self.assertTrue(store.apply_command(scenario,rules_path)["ok"])
+                app = service.RulesApp(self.client, rules_path)
+                app._apply_message(topic, "1")
+                self.client.reset_mock()
+                self.assertEqual(app.check_target("saved","on_off"), "")
+                # The family changes after the step is admitted.
+                family("led")
+                for phase in ("before reload", "after reload", "invalid", "invalid after reload"):
+                    if "after reload" in phase:
+                        app.reload_index()
+                    if phase == "invalid":
+                        bridge.write_text("devices: 42")
+                    off = app.engine.run_off("old")
+                    self.assertFalse(off["ok"])
+                    self.assertIn("read only", off["error"])
+                    for device, cap in (("saved","on_off"), ("kitchen","ocp_r")):
+                        self.assertEqual(app.pub(device,cap,False), "read only", phase)
+                        self.assertEqual(app.check_target(device,cap), "read only", phase)
+                        self.assertEqual(app.state[device][cap], 1)
+                    self.client.publish.assert_not_called()
+                for invalid in (
+                    "devices: [{id: kitchen, type: ' template '}]",
+                    "devices: [{name: kitchen, type: template}]",
+                    "Devices: {kitchen: {type: template}}",
+                    "devices: {kitchen: {type: template}}",
+                    "devices: [{id: kitchen, type: template, transport: TCP}]",
+                    "devices: [{id: kitchen, type: template, transport: tcp, host: 127.0.0.1}]",
+                    "devices: [{id: kitchen, type: template, baudrate: []}]",
+                    "devices: [{id: kitchen, type: template, address: {}}]",
+                    "devices: [{id: kitchen, type: template, poll_s: []}]",
+                    "devices: [{id: kitchen, type: template}, {id: other, type: spodes}]",
+                    "devices: [42]",
+                    "devices: [{id: kitchen, type: [led]}]",
+                    "Devices: {kitchen: 42}",
+                    "devices: [{id: kitchen, type: template}, false]",
+                    "devices: [{id: [kitchen], type: template}]",
+                    "devices: [{id: kitchen}]",
+                    "devices: [{id: kitchen, type: led-typo}]",
+                    "devices: {kitchen: {id: different, type: template}}",
+                    "Devices: {kitchen: {type: led}, kitchen: {type: template}}",
+                    "devices: []\nDevices: {other: {type: template}}",
+                    "unrelated: {}",
+                ):
+                    with self.subTest(invalid=invalid):
+                        bridge.write_text(invalid)
+                        app.reload_index()
+                        for device, cap in (("saved","on_off"), ("kitchen","ocp_r")):
+                            self.assertEqual(app.pub(device,cap,False), "read only")
+                            self.assertEqual(app.state[device][cap], 1)
+                        self.client.publish.assert_not_called()
+                for kind in ("template", None):
+                    if kind:
+                        family(kind)
+                    else:
+                        family("led")
+                        self.assertEqual(app.check_target("saved","on_off"), "read only")
+                        bridge.write_text("devices: []")
+                    for device, cap in (("saved","on_off"), ("kitchen","ocp_r")):
+                        self.assertIsNone(app.pub(device,cap,False))
+                        self.client.publish.assert_called_with(topic+"/on","0",qos=1,retain=False)
+                        self.assertEqual(app.state[device][cap], False)
+                self.assertIsNone(app.pub("ordinary","ocp_r",True))
+                self.client.publish.assert_called_with("/devices/ordinary/controls/ocp_r/on","1",qos=1,retain=False)
+
+    def test_partial_admission_preserves_measured_alarm_on_each_write_path(self):
+        bridge = Path(self.tmp.name) / "kitchen.yaml"
+        topic = "/devices/kitchen/controls/ocp_r"
+        binding = dict(type=P+"on_off", mqtt=topic)
+        Path(self.path).write_text(json.dumps({"devices":[{"id":"saved", "capabilities":[binding]}]}))
+        good = {"id":"healthy", "type":"template", "port":"/dev/COM4"}
+        cases = [
+            ("template", [{"id":"kitchen", "type":"led"},
+                          {"id":"bad", "type":"template", "transport":"tcp", "host":"127.0.0.1"}]),
+            ("led", [{"id":"kitchen", "type":"template", "stopbits":float("inf")}]),
+            ("led", [{"id":"kitchen", "type":"spodes", "association":"reader", "encryption_key":"銅"}]),
+            ("led", [{"id":"kitchen", "type":"mr02m", "channels":{"ai":[{"sensor_type":{}}]}}]),
+        ]
+        import yaml
+        for legacy in (False, True):
+            for device, cap in (("saved","on_off"), ("kitchen","ocp_r")):
+                for previous, replacement in cases:
+                    with self.subTest(legacy=legacy, device=device, replacement=replacement), ExitStack() as stack:
+                        stack.enter_context(patch.object(capability_binding.topics, "YAML_CANDIDATES", (bridge,)))
+                        if legacy:
+                            stack.enter_context(patch.object(capability_binding, "led_readonly_source", None))
+                        bridge.write_text(yaml.safe_dump({"devices":[{"id":"kitchen", "type":previous}]}))
+                        self.restart_rules()
+                        self.app._apply_message(topic, "1")
+                        bridge.write_text(yaml.safe_dump({"devices":[*replacement,good]}))
+                        self.client.reset_mock()
+                        self.assertEqual(self.app.pub(device,cap,False), "read only")
+                        self.assertEqual(self.app.state["kitchen"]["ocp_r"], 1)
+                        self.assertEqual(self.app.state["saved"]["on_off"], 1)
+                        self.client.publish.assert_not_called()
+                        self.assertIsNone(self.app.pub("healthy","ocp_r",False))
+
+    def test_mixed_admission_uses_the_installed_producers_registration_order(self):
+        """Also run against the released .32 opt tree during mixed-package verification."""
+        import yaml
+        bridge_roster = capability_binding._roster_reader()
+        legacy = b"\ndef prepare_poller_registration(" not in bridge_roster.PRODUCER.read_bytes()
+        bridge = Path(self.tmp.name) / "bridge.yaml"
+        topic = "/devices/kitchen/controls/ocp_r"
+        binding = dict(type=P+"on_off", mqtt=topic)
+        Path(self.path).write_text(json.dumps({"devices":[{"id":"saved", "capabilities":[binding]}]}))
+        template = {"id":"kitchen", "type":"template", "port":"/dev/COM4"}
+        led = dict(template, type="led")
+        bad = {"id":"bad", "type":"spodes", "port":"/dev/COM4", "association":"reader", "encryption_key":"銅"}
+        elsewhere = dict(bad, port="/dev/COM1")
+        if legacy:
+            entry = bridge_roster._producer_namespace(bridge_roster._producer_code()[0])
+            with patch("socket.socket", side_effect=AssertionError("socket opened")), \
+                 patch("bridge_serial.get_port", side_effect=AssertionError("serial opened")), \
+                 patch("threading.Thread.start", side_effect=AssertionError("worker started")):
+                accepted, refused = bridge_roster._legacy_registration(entry, [template,bad])
+                self.assertFalse(accepted)
+                self.assertEqual([row["reason"] for row in refused], ["mixed_framing"]*2)
+                self.assertEqual(bridge_roster._legacy_registration(entry, [led])[0], [("led","kitchen")])
+        # .32 checked fleet framing before constructors and aborted on a
+        # constructor error. .33 isolates bad constructors before framing.
+        cases = [(led, [template,bad], legacy), (led, [elsewhere,template], legacy),
+                 (led, [template,elsewhere], legacy), (led, [template], False),
+                 (template, [dict(elsewhere, type="template", stopbits=float("inf")),led], True),
+                 (template, [led,elsewhere], True), (template, [template,led], True),
+                 (led, [template,dict(bad, id="kitchen")], True)]
+        for fallback in (False,True):
+            for device, cap in (("saved","on_off"),("kitchen","ocp_r")):
+                for initial,rows,blocked in cases:
+                    with self.subTest(fallback=fallback,device=device,rows=rows), ExitStack() as stack:
+                        stack.enter_context(patch.object(capability_binding.topics, "YAML_CANDIDATES", (bridge,)))
+                        if fallback:
+                            stack.enter_context(patch.object(capability_binding, "led_readonly_source", None))
+                        bridge.write_text(yaml.safe_dump({"devices":[initial]}))
+                        self.restart_rules()
+                        self.app._apply_message(topic, "1")
+                        bridge.write_text(yaml.safe_dump({"devices":rows}))
+                        self.client.reset_mock()
+                        result = self.app.pub(device,cap,False)
+                        if blocked:
+                            self.assertEqual(result, self._alarm_refusal(fallback))
+                            self.assertEqual(self.app.state["saved"]["on_off"], 1)
+                            self.assertEqual(self.app.state["kitchen"]["ocp_r"], 1)
+                            self.client.publish.assert_not_called()
+                        else:
+                            self.assertIsNone(result)
+                            self.client.publish.assert_called_once_with(topic+"/on", "0", qos=1, retain=False)
+
+    def _alarm_refusal(self, fallback):
+        if fallback or capability_binding.led_readonly_source is None:
+            from sa02m_led.controls import control_names
+            if "ocp_r" not in control_names():
+                return "unknown target"
+        return "read only"
+
+    def test_missing_spodes_in_reader_cannot_release_mixed_framing_replacement(self):
+        import yaml
+        bridge_roster = capability_binding._roster_reader()
+        if str(bridge_roster.PRODUCER.parent) not in sys.path:
+            sys.path.insert(0, str(bridge_roster.PRODUCER.parent))
+        import modbus_mqtt_bridge as producer
+        import bridge_spodes
+        bridge = Path(self.tmp.name) / "bridge.yaml"
+        topic = "/devices/kitchen/controls/ocp_r"
+        binding = dict(type=P+"on_off", mqtt=topic)
+        Path(self.path).write_text(json.dumps({"devices":[{"id":"saved", "capabilities":[binding]}]}))
+        rows = [{"id":"kitchen","type":"template","port":"/dev/COM4"},
+                {"id":"meter","type":"spodes","port":"/dev/COM4"}]
+        with patch.object(producer, "_pollers", []):
+            buses, _, refused = producer.compose_pollers(rows, Mock())
+            self.assertFalse(buses)
+            self.assertEqual([r["reason"] for r in refused], ["mixed_framing"]*2)
+        for fallback in (False,True):
+            for device, cap in (("saved","on_off"),("kitchen","ocp_r")):
+                with self.subTest(fallback=fallback,device=device), ExitStack() as stack:
+                    stack.enter_context(patch.object(capability_binding.topics,"YAML_CANDIDATES",(bridge,)))
+                    if fallback:
+                        stack.enter_context(patch.object(capability_binding,"led_readonly_source",None))
+                    bridge.write_text("devices: [{id: kitchen, type: led}]")
+                    self.restart_rules()
+                    self.app._apply_message(topic,"1")
+                    self.client.reset_mock()
+                    bridge.write_text(yaml.safe_dump({"devices":rows}))
+                    stack.enter_context(patch.object(bridge_spodes, "mercury", None))
+                    stack.enter_context(patch.dict(sys.modules, {"sa02m_spodes":None}))
+                    self.assertEqual(self.app.pub(device,cap,False), self._alarm_refusal(fallback))
+                    self.assertEqual(self.app.state["saved"]["on_off"], 1)
+                    self.assertEqual(self.app.state["kitchen"]["ocp_r"], 1)
+                    self.client.publish.assert_not_called()
+
+    def test_reclassification_during_conversion_cannot_publish_or_mirror(self):
+        bridge = Path(self.tmp.name) / "bridge.yaml"
+        topic = "/devices/kitchen/controls/ocp_r"
+        bridge.write_text("devices: [{id: kitchen, type: template}]")
+        Path(self.path).write_text(json.dumps({"devices":[{"id":"saved","capabilities":[dict(type=P+"on_off",mqtt=topic)]}]}))
+        convert = capability_binding.write
+        def changed(*args):
+            bridge.write_text("devices: [{id: kitchen, type: led}]")
+            return convert(*args)
+        with patch.object(service,"ALICE_DEVICES",self.path), \
+                patch.object(capability_binding.topics,"YAML_CANDIDATES",(bridge,)):
+            app = service.RulesApp(self.client,self.app.path)
+            app._apply_message(topic,"1")
+            self.client.reset_mock()
+            with patch.object(capability_binding,"write",side_effect=changed):
+                self.assertEqual(app.pub("saved","on_off",False),"read only")
+            self.client.publish.assert_not_called()
+            self.assertIs(app.state["saved"]["on_off"], True)
+
+    def test_raw_only_families_seen_before_malformed_rebuild(self):
+        bridge = Path(self.tmp.name) / "bridge.yaml"
+        Path(self.path).write_text('{"devices":[]}')
+        for legacy in (False, True):
+            with self.subTest(legacy=legacy), ExitStack() as stack:
+                stack.enter_context(patch.object(capability_binding.topics, "YAML_CANDIDATES", (bridge,)))
+                if legacy:
+                    stack.enter_context(patch.object(capability_binding, "led_readonly_source", None))
+                bridge.write_text("devices: [{id: cold, type: led}]")
+                self.restart_rules()
+                bridge.write_text("devices: 42")
+                self.assertEqual(self.app.pub("cold","ocp_r",False), "read only")
+                bridge.write_text("devices: [{id: hot, type: led}]")
+                self.app.reload_index()
+                bridge.write_text("devices: [")
+                self.app.reload_index()
+                self.assertEqual(self.app.pub("hot","ocp_r",False), "read only")
+                self.assertNotIn("hot", self.app.state)
+                self.assertIsNone(self.app.pub("cold","ocp_r",False))
+
+    def test_known_led_readback_refuses_mapped_and_raw_commands_but_mirrors_state(self):
+        topic = '/devices/led-COM3-13/controls/led_count'
+        binding = dict(type=P+'range', mqtt=topic,
+                       parameters={'instance':'brightness','range':{'min':0,'max':255}})
+        with open(self.path, 'w', encoding='utf-8') as fh:
+            json.dump({'devices':[{'id':'old-strip','capabilities':[binding]}]},fh)
+        self.app._alice_mtime = -1
+        self.app.reload_index()
+        self.assertNotIn('brightness', self.app.caps_of('old-strip'))
+        self.assertNotIn('range', self.app.caps_of('old-strip'))
+        for device, cap, instance in [('old-strip','range','brightness'),('led-COM3-13','led_count','')]:
+            self.assertEqual(self.app.check_target(device,cap,instance),'read only')
+            self.assertEqual(self.app.pub(device,cap,42,instance),'read only')
+        self.app.engine.doc['scenarios'].append(dict(id='stale', name='Stale', type='scene', enabled=True,
+            action=[dict(kind='set',device='old-strip',cap='range',instance='brightness',value=42)]))
+        outcome=self.app.engine.run_scene('stale')
+        self.assertFalse(outcome['ok'])
+        self.assertIn('read only',outcome['error'])
+        self.client.publish.assert_not_called()
+        self.app._apply_message(topic,'42')
+        self.assertEqual(self.app.state['old-strip']['range|brightness'],42)
+        self.assertIsNone(self.app.pub('custom','led_count',42))
+        self.client.publish.assert_called_with('/devices/custom/controls/led_count/on','42',qos=1,retain=False)
+
     def test_readonly_invalid_and_duplicate_instances_do_not_publish(self):
         self.app._index.readonly.add(("unit", "range|temperature"))
         self.assertEqual(self.app.pub("unit", "range", 22, "temperature"), "read only")
         self.assertTrue(self.app.pub("unit", "range", 22))
         self.client.publish.assert_not_called()
+
+    def test_partial_upgrade_old_alice_uses_driver_for_mapped_and_raw_targets(self):
+        bridge = os.path.join(self.tmp.name, "bridge.yaml")
+        with open(bridge, "w", encoding="utf-8") as fh:
+            json.dump({"devices":[{"id":"strip", "type":"led"}, {"id":"led-COM3-15", "type":"template"}]}, fh)
+        topic = "/devices/strip/controls/ocp_r"
+        with open(self.path, "w", encoding="utf-8") as fh:
+            json.dump({"devices":[{"id":"saved","capabilities":[dict(type=P+"on_off",mqtt=topic)]}]},fh)
+        with patch.object(capability_binding, "led_readonly_source", None), \
+                patch.object(capability_binding.topics, "YAML_CANDIDATES", (bridge,)):
+            self.restart_rules()
+            from sa02m_rules import store
+            row = dict(id="alarm", name="Alarm", type="scene",
+                       action=[dict(kind="set",device="saved",cap="on_off",value=False)])
+            with patch.dict(os.environ,{"SA02M_ALICE_DEVICES":self.path}):
+                rejected = store.apply_command(row,self.app.path)
+            self.assertEqual(rejected["dropped"],[{"part":"action","index":0,"reason":"read_only"}])
+            for device,cap in (("saved","on_off"),("strip","ocp_r"),("led-COM4-12","temperature_source")):
+                self.assertEqual(self.app.pub(device,cap,False), "read only")
+            self.assertEqual(self.app.check_target("strip","unconfirmed_channel"), "unknown target")
+            self.client.publish.assert_not_called()
+            self.app._apply_message(topic, "1")
+            self.assertTrue(self.app.state["saved"]["on_off"])
+            for device,cap in (("strip","brightness"),("led-COM3-15","ocp_r"),("custom","ocp_r")):
+                self.assertIsNone(self.app.pub(device,cap,1))
+                self.client.publish.assert_called_with("/devices/%s/controls/%s/on" % (device,cap),
+                                                       "1",qos=1,retain=False)
+
+    def test_partial_upgrade_missing_peers_and_malformed_bridge_config(self):
+        bridge = os.path.join(self.tmp.name,"bridge.yaml")
+        with open(bridge,"w",encoding="utf-8") as fh:
+            json.dump({"devices":42},fh)
+        with patch.object(capability_binding,"led_readonly_source",None), \
+                patch.object(capability_binding,"topics",None), \
+                patch.object(capability_binding,"source_paths",return_value=(bridge,)), \
+                patch.dict(sys.modules,{"sa02m_led.controls":None}):
+            self.restart_rules()
+            self.assertEqual(self.app.pub("led-COM3-13","led_count",0),"read only")
+            self.assertIsNone(self.app.pub("led-COM3-13","brightness",100))
+            self.client.reset_mock()
+            with patch.object(capability_binding,"inventory",None):
+                self.restart_rules()
+                self.assertEqual(self.app.pub("led-COM3-13","ocp_r",0),"unknown target")
+                self.client.publish.assert_not_called()
+                self.assertIsNone(self.app.pub("custom","ocp_r",0))
+                self.client.publish.assert_called_once_with("/devices/custom/controls/ocp_r/on",
+                                                            "0",qos=1,retain=False)
+
+    def test_partial_upgrade_saved_diagnostic_command_address_and_nested_device_id(self):
+        bridge = os.path.join(self.tmp.name, "bridge.yaml")
+        with open(bridge, "w", encoding="utf-8") as fh:
+            json.dump({"devices":[{"id":"room/strip","type":"led"},{"id":"room/third","type":"template"}]}, fh)
+        paths = ["/devices/led-COM3-13/controls/ocp_r/on", "/devices/room/strip/controls/ocp_r",
+                 "/devices/room/strip/controls/ocp_r/on", "/devices/room/third/controls/ocp_r",
+                 "/devices/room/strip/controls/power"]
+        with open(self.path, "w", encoding="utf-8") as fh:
+            json.dump({"devices":[{"id":"saved"+str(i),"capabilities":[dict(type=P+"on_off",mqtt=t)]}
+                                  for i,t in enumerate(paths)]},fh)
+        with patch.object(capability_binding,"led_readonly_source",None), \
+                patch.object(capability_binding.topics,"YAML_CANDIDATES",(bridge,)):
+            self.restart_rules()
+            for i in range(3):
+                name="saved"+str(i)
+                self.assertEqual(self.app.check_target(name,"on_off"),"read only")
+                self.assertEqual(self.app.pub(name,"on_off",False),"read only")
+                self.assertNotIn("on_off",self.app.state.get(name,{}))
+            self.client.publish.assert_not_called()
+            for i in (3,4):
+                self.assertIsNone(self.app.pub("saved"+str(i),"on_off",True))
+                self.client.publish.assert_called_with(paths[i]+"/on","1",qos=1,retain=False)
 
     def test_typed_mirror_keeps_native_values_and_raw_aliases(self):
         self.app._apply_message("/devices/unit/controls/thermostat", "2")

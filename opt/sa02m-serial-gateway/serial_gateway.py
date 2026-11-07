@@ -19,6 +19,7 @@ Systemd: sd_notify READY=1 / WATCHDOG=1
 
 import argparse
 import asyncio
+import errno
 import fcntl
 import ipaddress
 import json
@@ -321,6 +322,19 @@ async def _drain_on_cancel(future):
     return result
 
 
+def _enable_peer_keepalive(sock):
+    sock.setsockopt(socket.SOL_SOCKET, socket.SO_KEEPALIVE, 1)
+    for name, value in (("TCP_KEEPIDLE", 60), ("TCP_KEEPINTVL", 10), ("TCP_KEEPCNT", 3)):
+        option = getattr(socket, name, None)
+        if option is not None:
+            try:
+                sock.setsockopt(socket.IPPROTO_TCP, option, value)
+            except OSError as exc:
+                if exc.errno not in (errno.ENOPROTOOPT, errno.EOPNOTSUPP):
+                    raise
+                log.debug("%s unavailable, using kernel default: %s", name, exc)
+
+
 class _GatewayLifecycle:
     def _init_lifecycle(self):
         self._handlers = {}
@@ -330,6 +344,14 @@ class _GatewayLifecycle:
 
     def _accept_client(self, reader, writer):
         if self._stopping:
+            writer.close()
+            return
+        try:
+            _enable_peer_keepalive(writer.get_extra_info('socket'))
+        except OSError as exc:
+            self._stats.errors += 1
+            self._stats.last_error = f"Cannot configure TCP keepalive: {exc}"
+            log.warning("[%s] %s", self.port_name, self._stats.last_error)
             writer.close()
             return
         task = asyncio.create_task(self._handle_client(reader, writer))
@@ -961,7 +983,6 @@ class TransparentGateway(_GatewayLifecycle):
         self._server    = None
         self._init_lifecycle()
         self._clients: set[asyncio.StreamWriter] = set()
-        self._cli_lock  = asyncio.Lock()
         self._stop_evt  = asyncio.Event()
 
     async def start(self):
@@ -981,15 +1002,11 @@ class TransparentGateway(_GatewayLifecycle):
             return
         peer = writer.get_extra_info('peername')
         log.info("[%s] Transparent connect from %s", self.port_name, peer)
-        async with self._cli_lock:
-            self._clients.add(writer)
+        self._clients.add(writer)
         self._stats.tcp_clients += 1
         try:
             while not self._stop_evt.is_set():
-                try:
-                    data = await asyncio.wait_for(reader.read(1024), timeout=30.0)
-                except asyncio.TimeoutError:
-                    continue
+                data = await reader.read(1024)
                 if not data:
                     break
                 self._stats.bytes_tx += len(data)
@@ -1000,8 +1017,7 @@ class TransparentGateway(_GatewayLifecycle):
             self._stats.errors += 1
             self._stats.last_error = str(exc)
         finally:
-            async with self._cli_lock:
-                self._clients.discard(writer)
+            self._clients.discard(writer)
             self._stats.tcp_clients -= 1
             try:
                 writer.close()
@@ -1016,15 +1032,19 @@ class TransparentGateway(_GatewayLifecycle):
                 data = await self._io(self._worker.read_pending)
                 if data:
                     self._stats.bytes_rx += len(data)
-                    async with self._cli_lock:
-                        dead: set[asyncio.StreamWriter] = set()
-                        for w in self._clients:
-                            try:
-                                w.write(data)
-                                await w.drain()
-                            except Exception:
-                                dead.add(w)
-                        self._clients -= dead
+                    # Each socket has its own backlog. Waiting for one to drain
+                    # would stop the UART reader and every other subscriber.
+                    for writer in tuple(self._clients):
+                        try:
+                            writer.write(data)
+                            if writer.transport.get_write_buffer_size() <= 64 * 1024:
+                                continue
+                            self._stats.last_error = "Transparent client write backlog exceeded 64 KiB"
+                        except (OSError, RuntimeError) as exc:
+                            self._stats.last_error = str(exc)
+                        self._stats.errors += 1
+                        self._clients.discard(writer)
+                        writer.transport.abort()
                 else:
                     await asyncio.sleep(0.01)
             except Exception as exc:

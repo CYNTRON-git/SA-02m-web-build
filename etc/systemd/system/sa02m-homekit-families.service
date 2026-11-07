@@ -1,0 +1,27 @@
+[Unit]
+Description=Publish bridge device families for HomeKit without broker credentials
+
+[Service]
+Type=oneshot
+User=root
+Group=sa02m-homekit
+WorkingDirectory=/opt/sa02m-alice
+Environment=PYTHONDONTWRITEBYTECODE=1
+ExecStart=/usr/bin/python3 -m sa02m_alice.config.bridge_families
+RuntimeDirectory=sa02m-homekit-families
+RuntimeDirectoryMode=0750
+RuntimeDirectoryPreserve=yes
+UMask=0027
+NoNewPrivileges=yes
+CapabilityBoundingSet=
+ProtectSystem=strict
+ProtectHome=yes
+PrivateTmp=yes
+PrivateDevices=yes
+PrivateNetwork=yes
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectControlGroups=yes
+RestrictAddressFamilies=AF_UNIX
+MemoryMax=64M
+TimeoutStartSec=10s

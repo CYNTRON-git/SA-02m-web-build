@@ -25,7 +25,7 @@ from . import modbus_rtu
 from . import module_profiles as mp
 from . import scanner as scn
 from .config import FlasherConfig
-from .firmware_repo import FirmwareEntry, FirmwareRepo
+from .firmware_repo import FirmwareEntry, FirmwareRepo, load_for_flash
 from .jobs import Job
 from .module_profiles import (
     application_line_profile,
@@ -33,7 +33,11 @@ from .module_profiles import (
     line_profile_family,
     validate_firmware_device_route,
 )
-from .modbus_io import uint32_from_modbus_reg_pair_be
+from .modbus_io import (
+    decode_signature_from_holding_290_payload,
+    serial_reconcile_modbus_regs_with_wb,
+    uint32_from_modbus_reg_pair_be,
+)
 from .mplc_lease import port_lease, PortBusyError, device_path_exists, is_port_poll_free
 from .scanner import REG_SERIAL_LO
 from .serial_port import open_port, send_receive, send_receive_wb_ext_scan
@@ -142,7 +146,7 @@ def _classify_scanned_device(dev: scn.DeviceInfo) -> Dict[str, Any]:
     """One scan roster row: addr, signature, model, ours(bool). Classification
     reuses module_profiles (is_mp_module_signature_for_batch_flash / code_from_signature)."""
     sig = dev.signature or ""
-    ours = mp.is_mp_module_signature_for_batch_flash(sig)
+    ours = mp.is_mp_module_signature_for_batch_flash(sig) or mp.is_meter_driver_alias(sig)
     return {
         "addr": int(dev.address),
         "signature": mp.strip_bootloader_signature_suffix(sig).strip(),
@@ -348,8 +352,7 @@ def _load_firmware_for_flash(repo: FirmwareRepo, params: Dict[str, Any]) -> Tupl
             )
         path = repo.ensure_local_path(entry, allow_download=True)
 
-    from . import firmware as fw_parser
-    image, _size, version, signature = fw_parser.load_firmware(path)
+    image, signature, version = load_for_flash(entry, path)
     return image, signature, version, entry
 
 
@@ -495,12 +498,6 @@ def _resolve_use_fast_modbus(
     return bool(requested)
 
 
-def _serial_valid_fast_modbus_u32(serial: int) -> bool:
-    """Диапазон SN для 0x46 (MR serial_ranges.is_valid_device_serial_u32)."""
-    u = int(serial) & 0xFFFFFFFF
-    return u not in (0, 0xFFFFFFFF) and (u & 0xFFFF0000) == 0x0E0A0000
-
-
 def _open_bootloader_serial(device_path: str, *, is_wb_firmware: bool) -> Any:
     baud = fp.BOOTLOADER_BAUDRATE_WB if is_wb_firmware else fp.BOOTLOADER_BAUDRATE
     stop = int(fp.BOOTLOADER_STOPBITS_WB if is_wb_firmware else fp.BOOTLOADER_STOPBITS)
@@ -589,6 +586,50 @@ def _wait_bootloader_ready_on_serial(
     return False, last_err
 
 
+FlashIdentity = Tuple[int, str]
+
+
+def _confirm_flash_identity(
+    flasher: fp.FlasherProtocol, device: Dict[str, Any], address: int, use_fast: bool,
+    *, image_family: Optional[str], prior: Optional[FlashIdentity] = None,
+) -> Tuple[Optional[FlashIdentity], Optional[str]]:
+    """Read identity on the same transport as the write. Prior is local to this reset."""
+    selected_sn = int(device.get("serial") or 0) & 0xFFFFFFFF
+    family = mp.manifest_device_for_signature(str(device.get("signature") or ""))
+    if not family or family != image_family:
+        return None, "Требуется опознание семейства устройства по регистру 290."
+    if use_fast:
+        if selected_sn in (0, 0xFFFFFFFF):
+            return None, "Не определён серийный номер устройства."
+        read = flasher.read_holding_registers_by_serial
+        target = selected_sn
+    else:
+        read = flasher.read_holding_registers
+        target = address
+    sn_data, sn_err = read(target, REG_SERIAL_LO, 2)
+    actual_sn = (uint32_from_modbus_reg_pair_be(sn_data)
+                 if not sn_err and sn_data and len(sn_data) == 4 else 0)
+    if use_fast and not sn_err:
+        # The 0x46 reader verified the response envelope's serial and CRC.
+        actual_sn = serial_reconcile_modbus_regs_with_wb(actual_sn, selected_sn)
+    if selected_sn not in (0, 0xFFFFFFFF) and actual_sn != selected_sn:
+        return None, "Серийный номер устройства не совпал с выбранной целью."
+    if prior and prior[0] not in (0, 0xFFFFFFFF) and actual_sn != prior[0]:
+        return None, "Серийный номер загрузчика не совпал с номером приложения."
+    sig_data, sig_err = read(target, fp.REG_SIGNATURE, fp.REG_SIGNATURE_COUNT)
+    if sig_err or not sig_data or len(sig_data) != 2 * fp.REG_SIGNATURE_COUNT:
+        return None, "Не удалось прочитать сигнатуру устройства по регистру 290."
+    signature = decode_signature_from_holding_290_payload(sig_data)
+    actual_family = mp.manifest_device_for_signature(signature)
+    identity = (actual_sn, family)
+    if actual_family == image_family:
+        return identity, None
+    if (mp.firmware_identity_missing(signature) and actual_sn not in (0, 0xFFFFFFFF)
+            and prior == identity):
+        return identity, None
+    return None, f"Регистр 290 («{signature or '—'}») не подтвердил семейство {family}."
+
+
 def _enter_bootloader_from_application_line(
     device_path: str,
     device: Dict[str, Any],
@@ -596,10 +637,12 @@ def _enter_bootloader_from_application_line(
     log_cb: Callable[[str, str], None],
     *,
     is_wb_firmware: bool,
-) -> Optional[str]:
+    use_fast_modbus: bool,
+    image_family: Optional[str],
+) -> Tuple[Optional[FlashIdentity], Optional[str]]:
     """MR: reg 129 с линии приложения (закрыть порт)."""
     if device.get("in_bootloader"):
-        return None
+        return None, None
     baud, parity, stopbits = _application_line_params(device, is_wb_firmware=is_wb_firmware)
     addr = int(device.get("address") or fp.BOOTLOADER_DEFAULT_ADDR)
     scan_baud = int(device.get("baudrate") or 0)
@@ -621,8 +664,17 @@ def _enter_bootloader_from_application_line(
         log_cb,
     )
     try:
-        err = flasher.enter_bootloader_wb(addr)
-        if not is_wb_firmware and err:
+        verified = None
+        if not is_wb_firmware:
+            verified, identity_err = _confirm_flash_identity(
+                flasher, device, addr, use_fast_modbus, image_family=image_family)
+            if identity_err:
+                return None, identity_err
+        if use_fast_modbus and not is_wb_firmware:
+            err = flasher.write_multiple_registers_by_serial(int(device["serial"]), fp.REG_ENTER_BOOTLOADER, [1])
+        else:
+            err = flasher.enter_bootloader_wb(addr)
+        if not is_wb_firmware and not use_fast_modbus and err:
             log_cb(f"enter_bootloader_wb 0x10(slave={addr}) → {err}", "warn")
             err2 = flasher.enter_bootloader(addr)
             if err2:
@@ -634,19 +686,19 @@ def _enter_bootloader_from_application_line(
             log_cb("Запись reg 129 через 0x10 (Write Multiple): OK", "info")
             err = None
         if err and "Таймаут" not in err:
-            return (
+            return None, (
                 f"Не удалось перевести устройство в загрузчик (reg 129): {err}. "
-                "Оба способа записи отклонены, это не ожидаемый таймаут при сбросе."
+                "Запись отклонена."
             )
         if err:
             log_cb(
                 "Таймаут записи reg 129 — возможен сброс в загрузчик; продолжаем",
                 "info",
             )
-        return None
+        return verified, None
     except Exception as exc:
         log_cb(f"enter_bootloader исключение: {exc}", "error")
-        return str(exc)
+        return None, str(exc)
     finally:
         try:
             ser.close()
@@ -786,22 +838,7 @@ def _resolve_bootloader_serial_mr_style(
     in_bl = bool(device.get("in_bootloader"))
 
     if (in_bl or recovery) and use_fast_modbus:
-        _slave = (
-            int(device["address"])
-            if (device.get("address") and 1 <= int(device["address"]) <= 247)
-            else int(fp.BOOTLOADER_DEFAULT_ADDR)
-        )
-        pl_sn, err_sn = flasher.read_holding_registers(_slave, REG_SERIAL_LO, 2)
-        if not err_sn and pl_sn and len(pl_sn) >= 4:
-            sn247 = uint32_from_modbus_reg_pair_be(pl_sn, 0)
-            if _serial_valid_fast_modbus_u32(sn247):
-                if sn247 != bootloader_serial:
-                    log_cb(
-                        "Загрузчик: фактический SN (рег.%d @ адр.%d)=0x%08X; в таблице 0x%08X — используем фактический."
-                        % (REG_SERIAL_LO, _slave, sn247, bootloader_serial),
-                        "info",
-                    )
-                bootloader_serial = sn247
+        # Identity was verified by this serial. Address 247 can have several responders.
         return bootloader_serial, None
 
     if not (in_bl or recovery):
@@ -876,15 +913,18 @@ def _run_bootloader_flash_session(
     recovery: bool,
     image: bytes,
     file_signature: str,
+    image_family: Optional[str],
     on_irreversible: Optional[Callable[[], None]] = None,
 ) -> Optional[str]:
     """
     Одна сессия: перевод из приложения (при необходимости) → один COM на скорости загрузчика
     → wait на том же ser (MR) → второй prime при duplicate+fast → FlasherProtocol → прошивка.
     """
+    application_identity = None
     if not device.get("in_bootloader"):
-        fatal = _enter_bootloader_from_application_line(
-            device_path, device, cancel_evt, log_cb, is_wb_firmware=is_wb_firmware
+        application_identity, fatal = _enter_bootloader_from_application_line(
+            device_path, device, cancel_evt, log_cb, is_wb_firmware=is_wb_firmware,
+            use_fast_modbus=use_fast_modbus, image_family=image_family,
         )
         if fatal:
             return fatal
@@ -960,12 +1000,13 @@ def _run_bootloader_flash_session(
                     ser.close()
                 except OSError:
                     pass
-                err_re = _enter_bootloader_from_application_line(
+                application_identity, err_re = _enter_bootloader_from_application_line(
                     device_path,
                     device,
                     cancel_evt,
                     log_cb,
                     is_wb_firmware=is_wb_firmware,
+                    use_fast_modbus=use_fast_modbus, image_family=image_family,
                 )
                 if err_re:
                     return err_re
@@ -1014,6 +1055,13 @@ def _run_bootloader_flash_session(
             ser, cancel_evt, log_cb, is_wb_firmware=is_wb_firmware
         )
 
+        if not is_wb_firmware:
+            _, identity_err = _confirm_flash_identity(
+                flasher, device, fp.BOOTLOADER_DEFAULT_ADDR, use_fast_modbus,
+                image_family=image_family, prior=application_identity,
+            )
+            if identity_err:
+                return identity_err
         return _flash_one_device(
             flasher,
             device,
@@ -1232,6 +1280,8 @@ def _resolve_flash_route_for_device(
     """
     dev_sig = str(device.get("signature") or "").strip()
     firmware_is_wb = _firmware_file_is_wb(entry)
+    if device.get("signature_inferred"):
+        return False, "Требуется опознание семейства устройства по регистру 290."
     is_bl_fw = (entry.kind or "").lower() == "bootloader"
     err = validate_firmware_device_route(
         dev_sig,
@@ -1240,6 +1290,14 @@ def _resolve_flash_route_for_device(
     )
     if err:
         return False, err
+    target_family = mp.manifest_device_for_signature(dev_sig)
+    image_family = mp.manifest_device_family(entry.device)
+    if not firmware_is_wb and target_family is None:
+        return False, "Сигнатура выбранного устройства не подтверждает нативное семейство."
+    if target_family and not image_family:
+        return False, "Семейство образа не определено в каталоге."
+    if target_family and image_family and target_family != image_family:
+        return False, f"Семейство образа {image_family} не соответствует устройству {target_family}."
     route = device_flash_route(dev_sig)
     return route == "wb", None
 
@@ -1267,6 +1325,7 @@ def run_flash_job(job: Job, ctx: Dict[str, Any], cfg: FlasherConfig, repo: Firmw
 
     device_path = resolve_device_path(cfg, port_key)
     image, file_sig, file_ver, entry = _load_firmware_for_flash(repo, params)
+    image_family = mp.manifest_device_family(entry.device)
     is_wb, route_err = _resolve_flash_route_for_device(target, entry)
     if route_err:
         raise RuntimeError(route_err)
@@ -1306,6 +1365,7 @@ def run_flash_job(job: Job, ctx: Dict[str, Any], cfg: FlasherConfig, repo: Firmw
                 recovery=recovery,
                 image=image,
                 file_signature=file_sig,
+                image_family=image_family,
                 on_irreversible=on_irreversible,
             )
             if err:
@@ -1387,6 +1447,11 @@ def run_flash_batch_job(job: Job, ctx: Dict[str, Any], cfg: FlasherConfig, repo:
     log_sig = _firmware_signature_for_log(file_sig, entry, targets[0] if targets else None)
     log_cb(f"Пакет: {len(targets)} устройств, файл {entry.file} sig={log_sig} ver={file_ver}", "info")
     settle_s = _resolve_batch_settle_s(params)
+    image_family = mp.manifest_device_family(entry.device)
+    routes = [_resolve_flash_route_for_device(dev, entry) for dev in targets]
+    invalid = [reason for _, reason in routes if reason]
+    if invalid and (not skip_on_error or len(invalid) == len(routes)):
+        raise RuntimeError(invalid[0])
 
     with port_lease(device_path, cfg.mplc_stop_services):
         with _port_flock(cfg, port_key):
@@ -1404,7 +1469,7 @@ def run_flash_batch_job(job: Job, ctx: Dict[str, Any], cfg: FlasherConfig, repo:
                     if cancel_evt.is_set():
                         log_cb("Отмена пакетной прошивки", "warn")
                         break
-                is_wb, route_err = _resolve_flash_route_for_device(dev, entry)
+                is_wb, route_err = routes[i]
                 if route_err:
                     errors.append((dev, route_err))
                     log_cb(f"Ошибка: {route_err}", "error")
@@ -1447,6 +1512,7 @@ def run_flash_batch_job(job: Job, ctx: Dict[str, Any], cfg: FlasherConfig, repo:
                     recovery=recovery,
                     image=image,
                     file_signature=file_sig,
+                    image_family=image_family,
                     on_irreversible=on_irreversible,
                 )
                 if err:

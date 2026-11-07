@@ -93,7 +93,7 @@ def oracle(case):
 
 
 class ServiceListBatch(unittest.TestCase):
-    def run_list(self, case, source=TEXT, cgi=False):
+    def run_list(self, case, source=TEXT, cgi=False, expected_escapes=None):
         with tempfile.TemporaryDirectory(prefix='svc-list-') as tmp:
             root = Path(tmp)
             (root / 'case.json').write_text(json.dumps(case))
@@ -102,6 +102,8 @@ class ServiceListBatch(unittest.TestCase):
                 (root / ('sysv-' + name)).write_text('#!/bin/sh\nexit 0\n')
                 (root / ('sysv-' + name)).chmod(0o755)
             source = source.split('\nACTION=', 1)[0]
+            if expected_escapes is not None:
+                source = source.replace('json_escape() {', 'json_escape() {\n    echo list-json-escape >&2', 1)
             source = source.replace('SA02M_STACKS_LIB=/usr/local/lib/sa02m-stacks-policy.sh', 'SA02M_STACKS_LIB=/nonexistent')
             source = source.replace('/etc/init.d/codesyscontrol', str(root / 'sysv-codesys')).replace('/etc/init.d/mplc4', str(root / 'sysv-mplc4'))
             mock = 'python3 ' + shlex.quote(str(root / 'mock.py'))
@@ -133,11 +135,14 @@ class ServiceListBatch(unittest.TestCase):
             self.assertEqual(result.returncode, 0, result.stderr)
             payload = result.stdout.split('\n\n', 1)[1] if cgi else result.stdout
             self.assertEqual(json.loads(payload), oracle(case), result.stderr)
+            self.assertEqual(payload, json.dumps(oracle(case), ensure_ascii=False, separators=(',', ':')) + '\n')
+            if expected_escapes is not None:
+                self.assertEqual(result.stderr.splitlines().count('list-json-escape'), expected_escapes)
             return json.loads(payload), [json.loads(v) for v in (root / 'calls.jsonl').read_text().splitlines()] if (root / 'calls.jsonl').exists() else []
 
     def test_normal_batch_and_optional_old_reference(self):
         case = standard_case()
-        actual, calls = self.run_list(case)
+        actual, calls = self.run_list(case, expected_escapes=0)
         self.assertEqual(len(calls), 2, calls)
         if os.environ.get('SERVICE_LIST_BASELINE'):
             old, old_calls = self.run_list(case, Path(os.environ['SERVICE_LIST_BASELINE']).read_text())
@@ -146,6 +151,7 @@ class ServiceListBatch(unittest.TestCase):
 
     def test_state_and_candidate_matrix(self):
         cases = []
+        c = standard_case(); c['units']['docker.service']['active'] = 'vendor-"quoted"\\path'; cases.append(c)
         for active, enabled, load in [('active','disabled','loaded'), ('failed','masked','masked'), ('activating','static','loaded'), ('deactivating','generated','loaded'), ('inactive','enabled-runtime','loaded')]:
             c = standard_case(); c['units']['docker.service'] = dict(active=active,enabled=enabled,load=load); cases.append(c)
         c = standard_case(); c['units'].pop('node-red.service'); c['units']['nodered.service'] = dict(active='active',enabled='enabled',load='loaded'); cases.append(c)

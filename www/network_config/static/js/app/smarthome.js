@@ -974,6 +974,7 @@ function shCollectRows() {
     const kind = (kindSel && kindSel.value) || '';
     const topic = (topicSel && topicSel.value) || '';
     if (!topic) return { rows: [], error: uiT('Укажите MQTT-топик для каждого показания') };
+    if (!shAcceptsChannel(row, shTopicMeta[topic])) return { rows: [], error: uiT('Только чтение') + ' · ' + topic };
     const pair = shRowPair(kind, row._shRawItem);
     if (seen[pair]) {
       return { rows: [], error: uiT('Два показания одного вида в одном устройстве — выберите разные') };
@@ -1087,6 +1088,15 @@ function shPickChannels(dev, group) {
   return ((dev.channels || {})[group]) || [];
 }
 
+function shAcceptsChannel(row, channel) {
+  if (!channel || channel.command_supported !== false || !row) return true;
+  const kind = row.querySelector('.sh-row-kind').value;
+  const item = row._shOrigKind === kind && row._shRawItem;
+  if (item) return !item.type.startsWith('devices.capabilities.') || item.writable === false;
+  const spec = SH_KINDS[kind];
+  return !!spec && (spec.writable === false || spec.kindOf === 'float' || spec.kindOf === 'event');
+}
+
 // «6 DO · 8 DI» — what the module is, before it is expanded.
 function shPickDevBadges(dev) {
   return SH_PICK_GROUPS.filter(function (g) { return g.short; }).map(function (g) {
@@ -1132,7 +1142,8 @@ function shChTagLabel(tag) {
 function shPickChannelHtml(dev, ch, occupied, prefer) {
   const busy = occupied[ch.topic];
   const cls = 'sh-pick-ch' + (busy ? ' is-busy' : '') + (prefer ? ' is-pref' : '');
-  const subs = (ch.sub || []).length;
+  const children = (ch.sub || []).filter(function (s) { return shAcceptsChannel(shPickRow, s); });
+  const subs = children.length;
   const tag = shChTagLabel(ch.tag);
   const title = String(ch.title || ch.tag || '');
   // The bridge's default title for a channel IS its tag («DO3»), so printing
@@ -1155,7 +1166,7 @@ function shPickChannelHtml(dev, ch, occupied, prefer) {
       ' aria-expanded="false">' + escHtml(uiT('счётчики')) + ' (' + subs + ')</button>' : '') +
     '</div>' +
     (subs ? '<div class="sh-pick-subs" hidden>' +
-      ch.sub.map(function (s) {
+      children.map(function (s) {
         return shPickChannelHtml(dev, s, occupied, false);
       }).join('') + '</div>' : '') +
     '</div>';
@@ -1168,7 +1179,7 @@ function shPickChannelHtml(dev, ch, occupied, prefer) {
 function shPickGroupsHtml(dev, occupied, prefer) {
   return SH_PICK_GROUPS.map(function (g) {
     if (shPickChip && g.key !== shPickChip) return '';
-    const chans = shPickChannels(dev, g.key);
+    const chans = shPickChannels(dev, g.key).filter(function (ch) { return shAcceptsChannel(shPickRow, ch); });
     if (!chans.length) return '';
     const isPref = prefer.indexOf(g.key) !== -1;
     // Diagnostics are bindable but never what the operator came for.
@@ -1236,7 +1247,7 @@ function shPickSearchHtml(occupied, prefer) {
       shPickChannels(dev, g.key).forEach(function (ch) {
         const flat = [ch].concat(ch.sub || []);
         flat.forEach(function (item) {
-          if (!shPickMatches(dev, item, query)) return;
+          if (!shAcceptsChannel(shPickRow, item) || !shPickMatches(dev, item, query)) return;
           const busy = occupied[item.topic];
           out.push('<button type="button" class="sh-pick-hit' + (busy ? ' is-busy' : '') +
             (prefer.indexOf(g.key) !== -1 ? ' is-pref' : '') +
@@ -1349,6 +1360,15 @@ function shApplyPickedTopic(row, topic) {
 
 function shPickApply(topic) {
   if (!topic || !shPickRow) return;
+  if (!shAcceptsChannel(shPickRow, shTopicMeta[topic])) {
+    const input = $('sh-pick-manual-in');
+    if (input) {
+      input.setCustomValidity(uiT('Только чтение'));
+      input.reportValidity();
+      input.setCustomValidity('');
+    }
+    return;
+  }
   shApplyPickedTopic(shPickRow, topic);
   shPickClose();
 }
@@ -1744,6 +1764,7 @@ function shBuildTopicMeta(devices) {
             devShort: devShort,
             chLabel: item.title || item.tag,
             group: g.key,
+            command_supported: item.command_supported,
           };
         });
       });

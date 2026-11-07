@@ -27,7 +27,7 @@
 # asset sweep — the same torn-write class as check 3, which is what the
 # release's atomic-install work was about.
 #
-# Usage:  bash verify-release-on-board.sh [X.Y.Z.W]
+# Usage:  bash verify-release-on-board.sh [X.Y.Z.W] [--preserve-mqtt-state]
 #         scp scripts/dev/verify-release-on-board.sh root@<board>:/tmp/ && \
 #           ssh root@<board> 'bash /tmp/verify-release-on-board.sh 1.0.6.42'
 # Exit:   0 = no FAIL, 1 = at least one FAIL, 2 = not runnable here.
@@ -50,7 +50,18 @@ if [ ! -d "$WEB_ROOT" ]; then
     exit 2
 fi
 
-VER=${1:-}
+VER=""
+PRESERVE_MQTT=0
+for arg in "$@"; do
+    if [ "$arg" = "--preserve-mqtt-state" ]; then
+        PRESERVE_MQTT=1
+    elif [[ -z "$VER" && "$arg" =~ ^[0-9]+(\.[0-9]+){1,3}$ ]]; then
+        VER=$arg
+    else
+        echo "Invalid version or option: $arg" >&2
+        exit 2
+    fi
+done
 if [ -z "$VER" ]; then
     VER=$(tr -d '\r' < "$WEB_ROOT/VERSION" 2>/dev/null | grep -E '^[0-9]+(\.[0-9]+){1,3}$' | head -1)
 fi
@@ -104,11 +115,64 @@ fi
 
 # 2 core units active. A unit the board does not ship is not a failure — only a
 # shipped unit that is not running is.
+OUTF=""
+for f in "/root/install-offline-$VER.wrapper.log" /root/install-offline-"$VER"-*.wrapper.log; do
+    [ -f "$f" ] || continue
+    if [ -z "$OUTF" ] || [ "$f" -nt "$OUTF" ]; then OUTF=$f; fi
+done
+ANCHOR=""
+for f in /var/lib/sa02m-update/runner.version "$WEB_ROOT/VERSION"; do
+    [ -f "$f" ] || continue
+    if [ -z "$ANCHOR" ] || [ "$f" -nt "$ANCHOR" ]; then ANCHOR=$f; fi
+done
+EVIDENCE_UID=0
+trusted_evidence() {
+    local mode
+    [ -f "$1" ] && [ ! -L "$1" ] && [ "$(stat -c '%u:%h' -- "$1")" = "$EVIDENCE_UID:1" ] || return 1
+    mode=$(stat -c '%a' -- "$1") && (( (8#$mode & 022) == 0 ))
+}
+preserved_mqtt() {
+    local before="/root/install-offline-$VER.svc-before" stamp hash installed
+    [ "$V" = "$VER" ] && [ -n "$ANCHOR" ] && [ -n "$OUTF" ] &&
+        [ ! "$OUTF" -ot "$ANCHOR" ] && [ ! "$before" -nt "$ANCHOR" ] || return 1
+    trusted_evidence "$before" && trusted_evidence "$OUTF" || return 1
+    awk '$1 == "sa02m-modbus-mqtt" {n++; correct = (NF == 2 && $2 == "inactive")} END {exit !(n == 1 && correct)}' "$before" || return 1
+    stamp=$(TZ=UTC0 LC_ALL=C stat -c '%d:%i:%z' -- "$before") && hash=$(sha256sum -- "$before") || return 1
+    installed=$(TZ=UTC0 LC_ALL=C stat -c '%d:%i:%z' -- "$WEB_ROOT/VERSION" /var/lib/sa02m-update/runner.version) || return 1
+    # Only a real install invalidates or issues evidence. A --status observer
+    # appends its own table but cannot attest a prior or interrupted install.
+    awk -v marker="[INFO] svc-before $stamp ${hash%% *}" -v ver="$VER" \
+        -v receipt="[INFO] offline-refresh mqtt-preserved $VER $stamp ${hash%% *} |${installed//$'\n'/|}" '
+        /\[INFO\] offline-refresh begin / {
+            target = (substr($0, index($0, "[INFO]")) == "[INFO] offline-refresh begin " ver)
+            saved = completed = stopped = success = verified = 0
+        }
+        target && /\[INFO\] svc-before / { saved = (substr($0, index($0, "[INFO]")) == marker) }
+        saved && /\[OK\] install.sh завершился, rc=0$/ { completed = 1 }
+        completed && $1 == "PASS" && $2 == "служба" && $3 == "sa02m-modbus-mqtt" &&
+            /не был запущен до обновления — состояние сохранено$/ { stopped = 1 }
+        /ИТОГ: / { success = stopped && /\[OK\] ИТОГ: PASS \([0-9]+\/[0-9]+\)/ &&
+                            index($0, "обновление до " ver " выполнено") > 0 }
+        /\[INFO\] offline-refresh mqtt-preserved / {
+            verified = success && (substr($0, index($0, "[INFO]")) == receipt)
+        }
+        END { exit !verified }
+    ' "$OUTF"
+}
 BAD=""
 for u in nginx mosquitto sa02m-rules sa02m-alice sa02m-devices-logger sa02m-modbus-mqtt sa02m-flasher; do
-    systemctl list-unit-files "$u.service" --no-legend 2>/dev/null | grep -q . || continue
+    if ! systemctl list-unit-files "$u.service" --no-legend 2>/dev/null | grep -q .; then
+        if [ "$u" = sa02m-modbus-mqtt ] && [ "$PRESERVE_MQTT" = 1 ]; then BAD="$BAD $u=missing"; fi
+        continue
+    fi
     s=$(systemctl is-active "$u" 2>/dev/null)
-    [ "$s" = active ] || BAD="$BAD $u=$s"
+    [ "$s" != active ] || continue
+    if [ "$u" = sa02m-modbus-mqtt ] && [ "$PRESERVE_MQTT" = 1 ] && [ "$s" = inactive ] &&
+       [ "$(systemctl show "$u.service" -p LoadState --value 2>/dev/null)" = loaded ] && preserved_mqtt; then
+        echo "INFO 2 sa02m-modbus-mqtt=inactive (preserved from completed offline refresh: $OUTF)"
+    else
+        BAD="$BAD $u=$s"
+    fi
 done
 # The devices API is served by sa02m-devices-api, or by the stand's gunicorn
 # (sa02m-stand-api on a stand board, bound to the same socket since 1.0.6.65) — either owner is a PASS.
@@ -116,7 +180,7 @@ DA=$(systemctl is-active sa02m-devices-api 2>/dev/null)
 DS=$(systemctl is-active sa02m-stand-api 2>/dev/null)
 [ "$DA" = active ] || [ "$DS" = active ] || BAD="$BAD devices-api=$DA stand-api=$DS"
 echo "INFO 2b devices API owner: sa02m-devices-api=$DA sa02m-stand-api=$DS"
-if [ -z "$BAD" ]; then ok "2 core units active"; else no "2 core units:$BAD"; fi
+if [ -z "$BAD" ]; then ok "2 core unit states verified"; else no "2 core units:$BAD"; fi
 
 # 3 no 0-byte unit fragment — systemd reads an empty unit as MASKED (8D
 # bench-136 reset, the defect the atomic install helpers exist for).
@@ -369,16 +433,6 @@ fi
 # only — nothing to read. (Until 1.0.6.54 this read /root/offline-<ver>.out,
 # which nothing writes: a check that could only ever SKIP.)
 mtime_of() { date -r "$1" '+%F %T' 2>/dev/null || echo 'mtime unread'; }
-OUTF=""
-for f in "/root/install-offline-$VER.wrapper.log" /root/install-offline-"$VER"-*.wrapper.log; do
-    [ -f "$f" ] || continue
-    if [ -z "$OUTF" ] || [ "$f" -nt "$OUTF" ]; then OUTF=$f; fi
-done
-ANCHOR=""
-for f in /var/lib/sa02m-update/runner.version "$WEB_ROOT/VERSION"; do
-    [ -f "$f" ] || continue
-    if [ -z "$ANCHOR" ] || [ "$f" -nt "$ANCHOR" ]; then ANCHOR=$f; fi
-done
 if [ -z "$OUTF" ]; then
     skip "13 offline update post-checks: no /root/install-offline-${VER}[-<sha7>].wrapper.log (no --log'ged offline update of $VER here; an interactive run keeps its table on the terminal only)"
 elif [ -z "$ANCHOR" ]; then

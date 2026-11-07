@@ -25,6 +25,22 @@ except ImportError:  # Windows dev host — the daemon and the CGI run on Linux
 _LOCK_DEPTH = threading.local()
 
 
+def file_revision(st: os.stat_result) -> Tuple[int, int, int, int, int]:
+    # Windows Python 3.12 reports different ctimes through stat and fstat
+    # for one inode. Both APIs expose the same creation timestamp explicitly.
+    change_ns = getattr(st, "st_birthtime_ns", st.st_ctime_ns) if os.name == "nt" else st.st_ctime_ns
+    return st.st_dev, st.st_ino, st.st_mtime_ns, change_ns, st.st_size
+
+
+def file_fingerprint(path: str) -> Optional[Tuple[int, int, int, int, int]]:
+    """A replace, modification, creation or removal changes the watched value."""
+    try:
+        st = os.stat(path)
+    except OSError:
+        return None
+    return file_revision(st)
+
+
 def _atomic_write(path: str, data: str, mode: int = 0o640) -> None:
     directory = os.path.dirname(path) or "."
     os.makedirs(directory, exist_ok=True)

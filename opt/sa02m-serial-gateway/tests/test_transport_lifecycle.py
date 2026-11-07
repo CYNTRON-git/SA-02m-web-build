@@ -1,15 +1,18 @@
 """Linux socket + PTY composition; simulated UART, never physical RS-485."""
 import asyncio
 from concurrent.futures import ThreadPoolExecutor
+import ctypes
 import errno
 import os
 from pathlib import Path
 import select
 import socket
+import struct
 import sys
 import threading
 import time
 from unittest.mock import patch
+import warnings
 
 import pytest
 
@@ -106,6 +109,150 @@ async def wait_until(predicate):
     async with asyncio.timeout(2):
         while not predicate():
             await asyncio.sleep(.005)
+
+
+@pytest.mark.parametrize("mode", ["modbus_tcp", "rtu_over_tcp", "transparent"])
+def test_accepted_tcp_socket_has_bounded_keepalive(mode):
+    async def run():
+        async with Bench(mode) as bench:
+            _, client = await bench.connect()
+            try:
+                await wait_until(lambda: bench.pg.stats.tcp_clients == 1)
+                accepted, = bench.pg._gw._handlers.values()
+                sock = accepted.get_extra_info("socket")
+                assert sock.getsockopt(socket.SOL_SOCKET, socket.SO_KEEPALIVE) == 1
+                assert sock.getsockopt(socket.IPPROTO_TCP, socket.TCP_KEEPIDLE) == 60
+                assert sock.getsockopt(socket.IPPROTO_TCP, socket.TCP_KEEPINTVL) == 10
+                assert sock.getsockopt(socket.IPPROTO_TCP, socket.TCP_KEEPCNT) == 3
+            finally:
+                client.close()
+                await client.wait_closed()
+    asyncio.run(run())
+
+
+@pytest.mark.parametrize("failure", ["option_absent", errno.ENOPROTOOPT, errno.EACCES])
+def test_keepalive_option_support_and_setup_failure(monkeypatch, failure):
+    async def run():
+        async with Bench("transparent") as bench:
+            real_setsockopt = socket.socket.setsockopt
+            if failure == "option_absent":
+                monkeypatch.delattr(socket, "TCP_KEEPINTVL")
+            else:
+                def setsockopt(sock, level, opt, value):
+                    if level == socket.IPPROTO_TCP and opt == socket.TCP_KEEPINTVL:
+                        raise OSError(failure, os.strerror(failure))
+                    return real_setsockopt(sock, level, opt, value)
+                monkeypatch.setattr(socket.socket, "setsockopt", setsockopt)
+            reader, client = await bench.connect()
+            try:
+                if failure == errno.EACCES:
+                    assert await asyncio.wait_for(reader.read(), 1) == b""
+                    assert bench.pg.stats.tcp_clients == 0 and bench.pg.stats.errors == 1
+                    assert "TCP keepalive" in bench.pg.stats.last_error
+                    assert bench.requests == []
+                else:
+                    await wait_until(lambda: bench.pg.stats.tcp_clients == 1)
+                    accepted, = bench.pg._gw._handlers.values()
+                    sock = accepted.get_extra_info("socket")
+                    assert sock.getsockopt(socket.SOL_SOCKET, socket.SO_KEEPALIVE) == 1
+                    assert sock.getsockopt(socket.IPPROTO_TCP, socket.TCP_KEEPCNT) == 3
+            finally:
+                client.close()
+                await client.wait_closed()
+    asyncio.run(run())
+
+
+def test_transparent_peer_loss_cleanup_idle_survivor_and_reconnect():
+    async def run():
+        async with Bench("transparent") as bench:
+            _, lost = await bench.connect()
+            reader, healthy = await bench.connect()
+            try:
+                await wait_until(lambda: bench.pg.stats.tcp_clients == 2)
+                # Linux classic socket filter: RET 0 drops incoming packets on
+                # just this test socket, including probes, without a FIN or RST.
+                instruction = ctypes.create_string_buffer(struct.pack("=HBBI", 6, 0, 0, 0))
+                program = struct.pack("@HP", 1, ctypes.addressof(instruction))
+                so_attach_filter = getattr(socket, "SO_ATTACH_FILTER", 26)
+                peer = lost.get_extra_info("socket")
+                try:
+                    peer.setsockopt(socket.SOL_SOCKET, so_attach_filter, program)
+                    use_reset = False
+                except PermissionError:
+                    warnings.warn("SO_ATTACH_FILTER denied: exercising idle ACKs and a TCP reset")
+                    use_reset = True
+                # Accelerate only the kernel timers. The daemon must have
+                # enabled keepalive itself or the silent peer never expires.
+                for writer in bench.pg._gw._handlers.values():
+                    sock = writer.get_extra_info("socket")
+                    assert sock.getsockopt(socket.SOL_SOCKET, socket.SO_KEEPALIVE) == 1
+                    for opt in (socket.TCP_KEEPIDLE, socket.TCP_KEEPINTVL, socket.TCP_KEEPCNT):
+                        sock.setsockopt(socket.IPPROTO_TCP, opt, 1)
+                if use_reset:
+                    # Both healthy kernels must ACK beyond the 1+1s loss horizon.
+                    await asyncio.sleep(3)
+                    assert bench.pg.stats.tcp_clients == 2
+                    peer.setsockopt(socket.SOL_SOCKET, socket.SO_LINGER, struct.pack("ii", 1, 0))
+                    lost.transport.abort()
+                async with asyncio.timeout(6):
+                    while bench.pg.stats.tcp_clients != 1:
+                        await asyncio.sleep(.02)
+                assert bench.requests == []
+                healthy.write(b"alive")
+                assert await asyncio.wait_for(reader.readexactly(5 + len(RESP)), 1) == b"alive" + RESP
+                assert bench.requests == [b"alive"]
+                new_reader, reconnected = await bench.connect()
+                try:
+                    await wait_until(lambda: bench.pg.stats.tcp_clients == 2)
+                    reconnected.write(b"again")
+                    expected = b"again" + RESP
+                    for subscriber in (reader, new_reader):
+                        assert await asyncio.wait_for(subscriber.readexactly(len(expected)), 1) == expected
+                    assert bench.requests == [b"alive", b"again"]
+                finally:
+                    reconnected.close()
+                    await reconnected.wait_closed()
+            finally:
+                lost.transport.abort()
+                healthy.close()
+                await healthy.wait_closed()
+    asyncio.run(run())
+
+
+def test_transparent_stalled_subscriber_cannot_block_independent_reader():
+    async def run():
+        async with Bench("transparent") as bench:
+            _, slow = await bench.connect()
+            reader, healthy = await bench.connect()
+            try:
+                await wait_until(lambda: bench.pg.stats.tcp_clients == 2)
+                slow.transport.pause_reading()
+                slow.get_extra_info("socket").setsockopt(socket.SOL_SOCKET, socket.SO_RCVBUF, 4096)
+                for accepted in bench.pg._gw._handlers.values():
+                    if accepted.get_extra_info("peername") == slow.get_extra_info("sockname"):
+                        accepted.get_extra_info("socket").setsockopt(socket.SOL_SOCKET, socket.SO_SNDBUF, 4096)
+                os.set_blocking(bench.master, False)
+                payload = bytes(range(256)) * 2048
+                received = asyncio.create_task(reader.readexactly(len(payload)))
+                try:
+                    async with asyncio.timeout(6):
+                        sent = 0
+                        while sent < len(payload):
+                            try:
+                                sent += os.write(bench.master, payload[sent:sent + 4096])
+                            except BlockingIOError:
+                                pass
+                            await asyncio.sleep(.001)
+                        assert await received == payload
+                    await wait_until(lambda: bench.pg.stats.tcp_clients == 1)
+                finally:
+                    received.cancel()
+                    await asyncio.gather(received, return_exceptions=True)
+            finally:
+                slow.transport.abort()
+                healthy.close()
+                await healthy.wait_closed()
+    asyncio.run(run())
 
 
 @pytest.mark.parametrize("mode", ["modbus_tcp", "rtu_over_tcp", "transparent"])

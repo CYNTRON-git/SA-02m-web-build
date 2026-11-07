@@ -1,12 +1,12 @@
 /* SA-02m MQTT tab — v1.0 */
 
-import { AI_SENSOR_LABELS } from './ai-sensors.js?v=1.0.7.32';
+import { AI_SENSOR_LABELS } from './ai-sensors.js?v=1.0.7.33';
 
 // The add-device dialog's Modbus TCP rules and wording (pure, unit-tested).
 import {
   makeTcpDeviceId as tcpDeviceId, typeOptionAllowed, dialogRows, addrMax,
   buildTcpEntry, saveRefusalText, probeResultView,
-} from './mqtt/tcp-dialog.js?v=1.0.7.32&r=spodes1';
+} from './mqtt/tcp-dialog.js?v=1.0.7.33&r=spodes1';
 
 function uiT(s) {
   return window.sa02mI18n ? window.sa02mI18n.t(String(s)) : String(s);
@@ -3159,6 +3159,7 @@ function addGatewayDeviceFromScan(scanDev, type, name, gateway) {
     dev.poll_power_s = 5; dev.poll_energy_s = 60; dev.poll_diag_s = 120;
     dev.ct_ratio = 4000; dev.phases = ['A','B','C']; dev.channels_enabled = {};
   } else if (type === 'led') {
+    dev.fast_modbus = false;
     dev.poll_s = 2;
     dev.poll_text_s = 30;
   } else if (type === 'template') {
@@ -3214,6 +3215,7 @@ function addDeviceFromScan(scanDev, type, name, port, baud, gateway) {
     dev.poll_power_s = 5; dev.poll_energy_s = 60; dev.poll_diag_s = 120;
     dev.ct_ratio = 4000; dev.phases = ['A','B','C']; dev.channels_enabled = {};
   } else if (type === 'led') {
+    dev.fast_modbus = true;
     // PlayCtrl 416 + colour; text block is slower. Same baud as the COM's
     // other devices — mixed baud on one port is unsupported.
     dev.poll_s = 2;
@@ -3667,6 +3669,7 @@ function confirmAddDevice() {
     dev.phases = ['A','B','C'];
     dev.channels_enabled = {};
   } else if (type === 'led') {
+    dev.fast_modbus = true;
     dev.poll_s = 2;
     dev.poll_text_s = 30;
   }

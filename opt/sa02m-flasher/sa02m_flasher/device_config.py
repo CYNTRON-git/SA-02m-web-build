@@ -479,6 +479,17 @@ def _verify_ai_boot(send, slave, baseline):
         raise ValueError('AI module restarted or changed during configuration')
 
 
+def _mr_read_limit(device_path, baudrate):
+    # At 1200/2400 baud the largest bank also exceeds a single 900 ms
+    # exchange with parity and two stop bits. 24 words leave processing time.
+    if baudrate <= 2400:
+        return 24
+    policy = module_profiles._shared_pkg('bridge_uart', 'fifo_safe_read_regs',
+                                         'sa02m-modbus-mqtt', 'SA02M_MODBUS_MQTT_DIR')
+    # Standalone flasher installations may omit the bridge package.
+    return policy(device_path, baudrate) if policy is not None else 24
+
+
 def configuration_file_operation(device_path, device, *, configuration=None,
                                  preview_only=True, allow_partial=False, deadline=None):
     """One persistent, bounded transport; the caller owns the UART lease throughout."""
@@ -519,8 +530,9 @@ def configuration_file_operation(device_path, device, *, configuration=None,
                 if not preview_only:
                     boot = _start_ai_boot_check(send, slave)
                 generation = _await_ai_idle(send, slave, ai_status)
+        max_regs = _mr_read_limit(device_path, device['baudrate'])
         words = {}
-        for start, count in mr_configuration.read_ranges(kind, version):
+        for start, count in mr_configuration.read_ranges(kind, version, max_regs=max_regs):
             words.update(words_at(start, count))
         exported = mr_configuration.export_configuration(kind, version, words)
         if configuration is None:
@@ -532,7 +544,7 @@ def configuration_file_operation(device_path, device, *, configuration=None,
                 exported['coverage']['unsupported'] = sorted(export_unsupported | set(exported['coverage']['unsupported']))
             return {'ok': True, 'complete': not exported['coverage']['unavailable'], 'configuration': exported,
                     'ai_apply': ai_status}
-        plan = mr_configuration.plan_requested_paths(*request_fields, kind, version, words)
+        plan = mr_configuration.plan_requested_paths(*request_fields, kind, version, words, max_regs=max_regs)
         fields = mr_configuration.fields_for(kind, version)
         steps = plan['writes']
         # Paired sensors have one write and two reads; account before any write.
@@ -618,7 +630,7 @@ def configuration_file_operation(device_path, device, *, configuration=None,
                         if not fresh:
                             raise RuntimeError('Post-apply AI readback unavailable')
                         words.update(fresh)
-                    rebased = mr_configuration.plan_requested_paths(*request_fields, kind, version, words)
+                    rebased = mr_configuration.plan_requested_paths(*request_fields, kind, version, words, max_regs=max_regs)
                     planned_registers = {s['register'] for s in steps[index + 1:]}
                     if any(s['register'] not in planned_registers for s in rebased['writes']):
                         raise RuntimeError('Post-apply settings differ from the approved plan')
@@ -806,18 +818,19 @@ def _read_do_bits(send, slave: int, count: int) -> List[bool]:
 def _read_required_regs(send, slave: int, start: int, count: int, **kwargs) -> List[int]:
     regs = _read_regs(send, slave, start, count, **kwargs)
     if len(regs) != count:
-        raise RuntimeError("Incomplete register readback at %d: expected %d, got %d" % (start, count, len(regs)))
+        fc = 4 if kwargs.get("input_regs") else 3
+        raise RuntimeError("Incomplete FC%02d register readback at %d: expected %d, got %d" % (fc, start, count, len(regs)))
     return regs
 
 
-def _read_u32_pairs(send, slave: int, start: int, count_u32: int, *, input_regs: bool = True, timeout_ms: int = 1000) -> List[int]:
-    regs = _read_regs(send, slave, start, max(0, int(count_u32)) * 2, input_regs=input_regs, timeout_ms=timeout_ms)
-    if len(regs) != int(count_u32) * 2:
-        return []
+def _read_u32_pairs(send, slave: int, start: int, count_u32: int, *, input_regs: bool = True,
+                    timeout_ms: int = 1000, max_regs=125) -> List[int]:
     values: List[int] = []
-    for idx in range(int(count_u32)):
-        base = idx * 2
-        values.append(regs_u32_lo_hi(regs, base))
+    for addr, count in mr_configuration.split_range(start, 2 * count_u32, max_regs, alignment=2):
+        regs = _read_regs(send, slave, addr, count, input_regs=input_regs, timeout_ms=timeout_ms)
+        if len(regs) != count:
+            return []
+        values.extend(regs_u32_lo_hi(regs, idx) for idx in range(0, count, 2))
     return values
 
 
@@ -836,15 +849,22 @@ def _ao_raw_to_volts(raw: int) -> float:
     return float(int(raw) & 0xFFFF) / 100.0
 
 
-def _read_ai_channels(send, slave: int, kind: module_profiles.ModuleKind, observed_app_version: Optional[str] = None) -> List[Dict[str, Any]]:
+def _read_ai_bank(send, slave, kind, max_regs, *, input_regs=False):
+    start = module_profiles.ai_channel_base_register(1, kind.code, kind)
+    stride = module_profiles.ai_channel_stride(kind.code, kind)
+    words = []
+    for reg, count in mr_configuration.split_range(start, kind.max_ai * stride, max_regs, stride):
+        words.extend(_read_required_regs(send, slave, reg, count, input_regs=input_regs, timeout_ms=1200))
+    return words
+
+
+def _read_ai_channels(send, slave: int, kind: module_profiles.ModuleKind, observed_app_version: Optional[str] = None, *, max_regs=125) -> List[Dict[str, Any]]:
     channels: List[Dict[str, Any]] = []
     if kind.max_ai <= 0:
         return channels
     stride = module_profiles.ai_channel_stride(kind.code, kind)
-    start = module_profiles.ai_channel_base_register(1, kind.code, kind)
-    total = int(kind.max_ai) * int(stride)
-    input_regs = _read_required_regs(send, slave, start, total, input_regs=True, timeout_ms=1200)
-    holding_regs = _read_required_regs(send, slave, start, total, input_regs=False, timeout_ms=1200)
+    input_regs = _read_ai_bank(send, slave, kind, max_regs, input_regs=True)
+    holding_regs = _read_ai_bank(send, slave, kind, max_regs)
     # Fault flags: Input 107 = below-limit, Input 108 = above-limit, one bit per
     # logical channel (bit ch-1). One paired read per snapshot (O(1), not per
     # channel) on the modal-scoped poll. Ref: MR-02m MODBUS_VARIABLES.txt:261-262;
@@ -930,20 +950,20 @@ def _mr_module_payload(kind: module_profiles.ModuleKind) -> Dict[str, Any]:
     }
 
 
-def _mr_do_block_full(send, slave: int, kind: module_profiles.ModuleKind) -> Dict[str, Any]:
+def _mr_do_block_full(send, slave: int, kind: module_profiles.ModuleKind, *, max_regs=125) -> Dict[str, Any]:
     max_do = int(kind.max_do)
     if max_do <= 0:
         return {"bits": [], "counts": [], "safe": [], "timer_words": [], "redelay": []}
     return {
         "bits": _read_do_bits(send, slave, max_do),
-        "counts": _read_u32_pairs(send, slave, INP_DO_CNT_BASE, max_do, input_regs=True, timeout_ms=1000),
+        "counts": _read_u32_pairs(send, slave, INP_DO_CNT_BASE, max_do, max_regs=max_regs),
         "safe": _read_regs(send, slave, REG_SAFE_DO_BASE, max_do, timeout_ms=1000),
         "timer_words": _read_regs(send, slave, REG_TIMER_DO_BASE, min(6, max_do), timeout_ms=1000),
         "redelay": _read_regs(send, slave, REG_REDELAY_DO_FIRST, min(6, max_do), timeout_ms=1000),
     }
 
 
-def _mr_di_block_full(send, slave: int, kind: module_profiles.ModuleKind) -> Dict[str, Any]:
+def _mr_di_block_full(send, slave: int, kind: module_profiles.ModuleKind, *, max_regs=125) -> Dict[str, Any]:
     max_di = int(kind.max_di)
     if max_di <= 0:
         return {
@@ -963,7 +983,7 @@ def _mr_di_block_full(send, slave: int, kind: module_profiles.ModuleKind) -> Dic
             1 if int(v) else 0
             for v in _read_required_regs(send, slave, INP_DI_FIRST, max_di, input_regs=True, timeout_ms=1000)
         ],
-        "counts": _read_u32_pairs(send, slave, INP_DI_CNT_BASE, max_di, input_regs=True, timeout_ms=1000),
+        "counts": _read_u32_pairs(send, slave, INP_DI_CNT_BASE, max_di, max_regs=max_regs),
         "short_counts": _read_regs(send, slave, INP_DI_SHORT_CNT_BASE, max_di, input_regs=True, timeout_ms=1000),
         "long_counts": _read_regs(send, slave, INP_DI_LONG_CNT_BASE, max_di, input_regs=True, timeout_ms=1000),
         "double_counts": _read_regs(send, slave, INP_DI_DOUBLE_CNT_BASE, max_di, input_regs=True, timeout_ms=1000),
@@ -998,7 +1018,7 @@ def _mr_ao_block_full(send, slave: int, kind: module_profiles.ModuleKind) -> Dic
     return payload
 
 
-def _mr_relay_block(send, slave: int, kind: module_profiles.ModuleKind, observed_app_version=None, *, include_advanced=False) -> Dict[str, Any]:
+def _mr_relay_block(send, slave: int, kind: module_profiles.ModuleKind, observed_app_version=None, *, include_advanced=False, max_regs=125) -> Dict[str, Any]:
     if not _relay_mode_module(kind):
         return {}
     mode = _read_u16(send, slave, REG_RELAY_MODE, 800)
@@ -1025,7 +1045,7 @@ def _mr_relay_block(send, slave: int, kind: module_profiles.ModuleKind, observed
         words = {register: value for register, value in ((130, mode), (131, options), (622, stagger)) if value is not None}
         ranges = []
         for register in sorted({field.register for field in fields.values()} - {130, 131, 622}):
-            if ranges and ranges[-1][0] + ranges[-1][1] == register:
+            if ranges and ranges[-1][0] + ranges[-1][1] == register and ranges[-1][1] < max_regs:
                 ranges[-1] = (ranges[-1][0], ranges[-1][1] + 1)
             else:
                 ranges.append((register, 1))
@@ -1056,22 +1076,22 @@ def _mr_inactivity(send, slave):
     return {'inactivity_s': int(value or 0), 'inactivity_known': value is not None and 0 <= value <= 255}
 
 
-def _read_mr_snapshot(send, slave: int, identity: Dict[str, Any]) -> Dict[str, Any]:
+def _read_mr_snapshot(send, slave: int, identity: Dict[str, Any], *, max_regs=125) -> Dict[str, Any]:
     kind = _module_kind_from_identity(identity.get("signature", ""), identity.get("type_code"))
     payload: Dict[str, Any] = {
         "module": _mr_module_payload(kind),
-        "do": _mr_do_block_full(send, slave, kind),
-        "di": _mr_di_block_full(send, slave, kind),
+        "do": _mr_do_block_full(send, slave, kind, max_regs=max_regs),
+        "di": _mr_di_block_full(send, slave, kind, max_regs=max_regs),
         "ao": _mr_ao_block_full(send, slave, kind),
-        "ai": {"channels": _read_ai_channels(send, slave, kind, identity.get("observed_app_version"))},
+        "ai": {"channels": _read_ai_channels(send, slave, kind, identity.get("observed_app_version"), max_regs=max_regs)},
         **_mr_inactivity(send, slave),
-        "relay": _mr_relay_block(send, slave, kind, identity.get('observed_app_version'), include_advanced=True),
+        "relay": _mr_relay_block(send, slave, kind, identity.get('observed_app_version'), include_advanced=True, max_regs=max_regs),
         "mcu": _read_mr_mcu_info(send, slave),
     }
     return payload
 
 
-def _read_mr_snapshot_minimal(send, slave: int, identity: Dict[str, Any]) -> Dict[str, Any]:
+def _read_mr_snapshot_minimal(send, slave: int, identity: Dict[str, Any], *, max_regs=125) -> Dict[str, Any]:
     """Лёгкий снимок для сайдбара и live-подписей (без полных AI/DI/AO настроек)."""
     kind = _module_kind_from_identity(identity.get("signature", ""), identity.get("type_code"))
     max_do = int(kind.max_do)
@@ -1082,8 +1102,7 @@ def _read_mr_snapshot_minimal(send, slave: int, identity: Dict[str, Any]) -> Dic
     ai_channels: List[Dict[str, Any]] = []
     if max_ai > 0:
         stride = module_profiles.ai_channel_stride(kind.code, kind)
-        total_regs = max_ai * stride
-        holding_regs = _read_required_regs(send, slave, 400, total_regs, timeout_ms=1200)
+        holding_regs = _read_ai_bank(send, slave, kind, max_regs)
         for ch in range(1, max_ai + 1):
             offset = (ch - 1) * stride
             sensor_code = (
@@ -1104,7 +1123,7 @@ def _read_mr_snapshot_minimal(send, slave: int, identity: Dict[str, Any]) -> Dic
         "module": _mr_module_payload(kind),
         "do": {
             "bits": _read_do_bits(send, slave, max_do) if max_do > 0 else [],
-            "counts": _read_u32_pairs(send, slave, INP_DO_CNT_BASE, max_do, input_regs=True, timeout_ms=1000)
+            "counts": _read_u32_pairs(send, slave, INP_DO_CNT_BASE, max_do, max_regs=max_regs)
             if max_do > 0
             else [],
         },
@@ -1135,10 +1154,11 @@ def _read_mr_snapshot_panel(
     slave: int,
     identity: Dict[str, Any],
     active_tab: Optional[str],
+    *, max_regs=125,
 ) -> Dict[str, Any]:
     """Снимок для фонового опроса: минимум для сайдбара + полный блок только активной вкладки IO."""
     kind = _module_kind_from_identity(identity.get("signature", ""), identity.get("type_code"))
-    base = _read_mr_snapshot_minimal(send, slave, identity)
+    base = _read_mr_snapshot_minimal(send, slave, identity, max_regs=max_regs)
     tab = str(active_tab or "").strip().lower()
     max_do = int(kind.max_do)
     max_di = int(kind.max_di)
@@ -1160,15 +1180,15 @@ def _read_mr_snapshot_panel(
     if tab == "info":
         out["mcu"] = _read_mr_mcu_info(send, slave)
     elif tab.startswith("do_") and max_do > 0:
-        out["do"] = _mr_do_block_full(send, slave, kind)
+        out["do"] = _mr_do_block_full(send, slave, kind, max_regs=max_regs)
     elif tab.startswith("di_") and max_di > 0:
-        out["di"] = _mr_di_block_full(send, slave, kind)
+        out["di"] = _mr_di_block_full(send, slave, kind, max_regs=max_regs)
     elif tab.startswith("ao_") and max_ao > 0:
         out["ao"] = _mr_ao_block_full(send, slave, kind)
     elif tab.startswith("ai_") and max_ai > 0:
-        out["ai"] = {"channels": _read_ai_channels(send, slave, kind, identity.get("observed_app_version"))}
+        out["ai"] = {"channels": _read_ai_channels(send, slave, kind, identity.get("observed_app_version"), max_regs=max_regs)}
     elif tab == "relay" and _relay_mode_module(kind):
-        out["relay"] = _mr_relay_block(send, slave, kind, identity.get('observed_app_version'), include_advanced=True)
+        out["relay"] = _mr_relay_block(send, slave, kind, identity.get('observed_app_version'), include_advanced=True, max_regs=max_regs)
 
     return out
 
@@ -2433,15 +2453,17 @@ def snapshot_for_device(
             # The static choice lists ride every reply but the 1 s `panel` poll:
             # the window caches them from the first full snapshot.
             payload["led"] = led_poll.read_led_snapshot(
-                send, slave, active_tab=active_tab, include_choices=detail != "panel"
+                send, slave, active_tab=active_tab, include_choices=detail != "panel",
+                observed_version=version_tuple(identity.get("observed_app_version") or ""),
             )
         elif kind == "mr":
+            max_regs = _mr_read_limit(device_path, _device_line(device)[0])
             if detail == "minimal":
-                payload["mr"] = _read_mr_snapshot_minimal(send, slave, identity)
+                payload["mr"] = _read_mr_snapshot_minimal(send, slave, identity, max_regs=max_regs)
             elif detail == "panel":
-                payload["mr"] = _read_mr_snapshot_panel(send, slave, identity, active_tab)
+                payload["mr"] = _read_mr_snapshot_panel(send, slave, identity, active_tab, max_regs=max_regs)
             else:
-                payload["mr"] = _read_mr_snapshot(send, slave, identity)
+                payload["mr"] = _read_mr_snapshot(send, slave, identity, max_regs=max_regs)
             if payload["mr"]["module"]["max_ai"]:
                 payload["mr"]["ai_apply"] = _ai_apply_status(send, slave)
         payload["snapshot_detail"] = detail_out

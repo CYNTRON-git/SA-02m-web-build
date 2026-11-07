@@ -35,9 +35,9 @@ from sa02m_flasher import flash_protocol as fp
 # reg-290 signatures known-valid for MR batch flash (see module_profiles).
 REG290_VALID = "12AI"
 # A .fw payload whose first 8 bytes decode (BE→LE) to a valid app vector table
-# (SP=0x20001000 in RAM, Reset=0x08000801 in flash, Thumb LSB set) — lets the
+# (SP=0x20001000 in RAM, Reset=0x08000809 in flash, Thumb LSB set) — lets the
 # app by-address sequence reach the info-block send without a VT rejection.
-_APP_VT_FW_BE = bytes([0x10, 0x00, 0x20, 0x00, 0x08, 0x01, 0x08, 0x00])
+_APP_VT_FW_BE = bytes([0x10, 0x00, 0x20, 0x00, 0x08, 0x09, 0x08, 0x00, 0xBF, 0x00])
 
 
 def _info_block(signature: str, payload: bytes) -> bytes:
@@ -178,8 +178,11 @@ class TestBootloaderBySerialSite(unittest.TestCase):
     """run_flash_sequence_bootloader (.fw bl, site 2255 → send_info_block_bytes_by_serial)."""
 
     def _drive(self, embedded_sig, reg290_sig, reg290_err=None):
-        payload = b"\x00" * fp.BL_IMAGE_TOTAL_BYTES
-        image = _info_block(embedded_sig, payload) + payload
+        raw = bytearray(fp.BL_IMAGE_TOTAL_BYTES)
+        struct.pack_into("<II", raw, 0, 0x20008000, 0x08038001)
+        payload = bytearray(raw)
+        payload[::2], payload[1::2] = raw[1::2], raw[::2]
+        image = _info_block(embedded_sig, raw) + payload
         fake = FakeFlasher(reg290_sig, reg290_err=reg290_err)
         try:
             fp.run_flash_sequence_bootloader(fake, 0x01020304, image, "NONE")

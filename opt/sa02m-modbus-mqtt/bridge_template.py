@@ -267,9 +267,14 @@ class TemplatePoller(DevicePoller):
         self._passes = 0
         self._answered_now = False
         self._load_error = ""
+        # An unreadable or malformed template disables this poller's channels;
+        # it still registers its device id. Roster readers need only that id.
+        if pub is None:
+            return
         try:
             self._load_template()
-        except TemplateParseError as e:
+        except (TemplateParseError, OSError, AttributeError, TypeError, ValueError,
+                IndexError, KeyError, OverflowError, RecursionError) as e:
             self._load_error = str(e)
             self.log.error("template load failed: %s — device %s publishes nothing",
                            e, self.device_id)
