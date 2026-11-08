@@ -23,7 +23,9 @@ if [ ! -d "$WWW_DIR" ]; then
 fi
 
 log INFO "Копирование $WWW_DIR → $WEB_ROOT"
+sa02m_install_mqtt_web_deps "$SCRIPT_DIR/../opt/sa02m-modbus-mqtt" /opt/sa02m-modbus-mqtt
 mkdir -p "$WEB_ROOT/cgi-bin" "$WEB_ROOT/static/css" "$WEB_ROOT/static/js"
+sa02m_atomic_install -m 0644 -o root -g www-data "$WWW_DIR/cgi-bin/lib_mqtt_write_controls.sh" "$WEB_ROOT/cgi-bin/lib_mqtt_write_controls.sh"
 cp -a "$WWW_DIR/." "$WEB_ROOT/"
 
 REPO_ROOT="$SCRIPT_DIR/.."
@@ -458,10 +460,8 @@ fi
 MQTT_OPT="$REPO_ROOT/opt/sa02m-modbus-mqtt"
 BRIDGE_DIR=/opt/sa02m-modbus-mqtt
 if [ -d "$BRIDGE_DIR" ] && [ -f "$MQTT_OPT/modbus_mqtt_bridge.py" ]; then
-    # Bridge modules FIRST, the entry modbus_mqtt_bridge.py LAST: the old entry
-    # is self-contained, so a crash/restart mid-copy still boots the previous
-    # bridge — only the final copy switches the composition. CRLF strip per
-    # file (sources may transit with CRLF). Keep the list in sync with
+    # Install dependencies before their consumers and the entry point last.
+    # Strip CRLF per file (sources may transit with CRLF). Keep the list in sync with
     # tests/test_entry_surface.py EXPECTED_MODULES and scripts/05-mqtt.sh.
     # Generated device-library table first (bridge_mr02m_map reads it lazily;
     # optional — identity without it), same as 05-mqtt.sh.
@@ -469,13 +469,12 @@ if [ -d "$BRIDGE_DIR" ] && [ -f "$MQTT_OPT/modbus_mqtt_bridge.py" ]; then
         install -m 0644 -o root -g root "$MQTT_OPT/devices_tables.py" "$BRIDGE_DIR/devices_tables.py"
         sed -i 's/\r$//' "$BRIDGE_DIR/devices_tables.py" 2>/dev/null || true
     fi
-    for f in bridge_admission.py bridge_uart.py bridge_serial.py bridge_bus.py bridge_probe.py bridge_tcp.py bridge_rtu_tcp.py bridge_scan_lease.py bridge_fmb.py bridge_meta.py \
-             bridge_mqtt.py bridge_mr02m_map.py \
-             bridge_device.py bridge_mr02m.py bridge_dtv_ce.py bridge_template.py bridge_carel.py bridge_led.py bridge_spodes.py; do
-        if [ -f "$MQTT_OPT/$f" ]; then
-            install -m 0755 -o root -g root "$MQTT_OPT/$f" "$BRIDGE_DIR/$f"
-            sed -i 's/\r$//' "$BRIDGE_DIR/$f" 2>/dev/null || true
-        fi
+    for f in bridge_meta.py bridge_uart.py bridge_serial.py bridge_bus.py bridge_probe.py bridge_tcp.py bridge_rtu_tcp.py bridge_scan_lease.py \
+             bridge_mqtt.py bridge_fmb.py bridge_mr02m_map.py \
+             bridge_device.py bridge_mr02m.py bridge_dtv_ce.py bridge_template_channels.py bridge_template.py \
+             bridge_carel.py bridge_led.py bridge_spodes.py bridge_admission.py; do
+        install -m 0755 -o root -g root "$MQTT_OPT/$f" "$BRIDGE_DIR/$f"
+        sed -i 's/\r$//' "$BRIDGE_DIR/$f" 2>/dev/null || true
     done
     # Shared Carel register map — the bridge imports it, so it has to travel
     # with a bridge refresh (this script never touches the flasher tree).
@@ -499,6 +498,10 @@ if [ -d "$BRIDGE_DIR" ] && [ -f "$MQTT_OPT/modbus_mqtt_bridge.py" ]; then
             "$MQTT_OPT/mqtt_bus_scan.py" "$BRIDGE_DIR/mqtt_bus_scan.py"
         sed -i 's/\r$//' "$BRIDGE_DIR/mqtt_bus_scan.py" 2>/dev/null || true
     fi
+    for f in mqtt_live_snapshot.py mqtt_monitor_poll.py mqtt_monitor_stream.py; do
+        install -m 0755 -o root -g root "$MQTT_OPT/$f" "$BRIDGE_DIR/$f" || exit 1
+        sed -i 's/\r$//' "$BRIDGE_DIR/$f" || exit 1
+    done
     if systemctl is-active --quiet sa02m-modbus-mqtt.service 2>/dev/null; then
         systemctl restart sa02m-modbus-mqtt.service \
             && log OK "sa02m-modbus-mqtt: код обновлён, сервис перезапущен" \

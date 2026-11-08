@@ -26,6 +26,7 @@ from __future__ import annotations
 import json
 import os
 import re
+import stat
 from typing import Any, Dict, List, Optional, Tuple
 
 from ..common.config_store import file_fingerprint
@@ -200,20 +201,51 @@ def _live_dir() -> str:
 
 
 def _read_json(path: str) -> Any:
+    def open_regular(name, flags):
+        return os.open(name, flags | getattr(os, "O_NOFOLLOW", 0) | getattr(os, "O_NONBLOCK", 0))
+
     try:
-        with open(path, encoding="utf-8") as fh:
+        with open(path, encoding="utf-8", opener=open_regular) as fh:
+            if not stat.S_ISREG(os.fstat(fh.fileno()).st_mode):
+                return None
             return json.load(fh)
     except (OSError, ValueError):
         return None
 
 
-def _live_controls(device_id: str) -> Dict[str, str]:
+def live_cache_rows(device_ids, directory=None) -> dict:
+    """Find the selected live records by producer identity, using only direct children."""
+    wanted = {mid for mid in device_ids if mid}
+    rows = {}
+    if not wanted:
+        return rows
+    try:
+        with os.scandir(directory or _live_dir()) as entries:
+            for entry in entries:
+                name = entry.name
+                if (not name.endswith(".json") or name == ROSTER_BASENAME
+                        or name.endswith((".profile.json", ".events.json"))
+                        or not entry.is_file(follow_symlinks=False)):
+                    continue
+                stem = name[:-5]
+                encoded = bool(re.fullmatch(r"@[0-9a-f]{64}", stem))
+                if not encoded and stem not in wanted:
+                    continue
+                data = _read_json(entry.path)
+                if isinstance(data, dict):
+                    mid = data.get("device", None if encoded else stem)
+                    if type(mid) in (str, int) and str(mid) in wanted and (encoded or str(mid) == stem):
+                        rows[str(mid)] = data
+    except OSError:
+        pass
+    return rows
+
+
+def _live_controls(device_id: str, rows=None) -> Dict[str, str]:
     """`{control: value}` from the bridge's live cache, or empty when absent."""
-    if not device_id:
-        return {}
-    data = _read_json(os.path.join(_live_dir(), "%s.json" % device_id))
-    if not isinstance(data, dict):
-        return {}
+    if rows is None:
+        rows = live_cache_rows([device_id])
+    data = rows.get(device_id, {})
     controls = data.get("controls")
     if not isinstance(controls, dict):
         return {}
@@ -468,7 +500,7 @@ def _mr02m_model(dev: Dict[str, Any], device_id: str,
     return None, ""
 
 
-def _device_entry(dev: Dict[str, Any]) -> Optional[Dict[str, Any]]:
+def _device_entry(dev: Dict[str, Any], live_rows=None) -> Optional[Dict[str, Any]]:
     device_id = picker_id(dev)
     if not device_id:
         return None
@@ -477,7 +509,7 @@ def _device_entry(dev: Dict[str, Any]) -> Optional[Dict[str, Any]]:
     address = dev.get("address")
     if address is None:
         address = dev.get("addr")
-    live = _live_controls(device_id)
+    live = _live_controls(device_id, live_rows)
     explicit = _yaml_controls(dev)
     entry: Dict[str, Any] = {
         "id": device_id,
@@ -703,8 +735,10 @@ def build_mqtt_inventory() -> Dict[str, Any]:
     """Structured device/channel inventory for the picker (no gateway, no bus)."""
     doc, source = _bridge_yaml()
     devices: List[Dict[str, Any]] = []
-    for dev in bridge_families.yaml_devices(doc) or ():
-        entry = _device_entry(dev)
+    configured = bridge_families.yaml_devices(doc) or ()
+    live_rows = live_cache_rows(picker_id(dev) for dev in configured)
+    for dev in configured:
+        entry = _device_entry(dev, live_rows)
         if entry:
             devices.append(entry)
     # The board's own controls are always offered, so the picker is never empty

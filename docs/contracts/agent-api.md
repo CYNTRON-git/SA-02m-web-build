@@ -193,8 +193,8 @@ CSRF. POST с **cookie-сессией** на `/api/v1/admin/*` без верно
 | `services.list` | read | `services_ctrl.cgi` |
 | `network.get` | read | `config.cgi` |
 | `mqtt.config.get` | read | `mqtt_config.cgi` |
-| `mqtt.devices.live` | read | кэш `/run/sa02m-modbus-mqtt` |
-| `mqtt.topics.snapshot` | read | ключи того же кэша |
+| `mqtt.devices.live` | read | записи показаний за последние 10 секунд из `/run/sa02m-modbus-mqtt`; поле `device` содержит полный MQTT ID, включая вложенные уровни |
+| `mqtt.topics.snapshot` | read | ключи тех же записей, сгруппированные по MQTT ID |
 | `gateway.config.get` | read | `gateway_config.cgi` |
 | `gateway.status` | read | `gateway_status.cgi` |
 | `rules.list` `rules.get` `rules.runs` | read | `/etc/sa02m-rules/scenarios.json`, `runs.json` |

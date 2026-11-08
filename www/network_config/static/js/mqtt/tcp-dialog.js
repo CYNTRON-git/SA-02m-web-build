@@ -92,10 +92,19 @@ export const TCP_REFUSAL_TEXT = {
  *  refusal (the caller falls back to its generic error). */
 export function saveRefusalText(res, uiT) {
   if (!res) return '';
+  if (res.error === 'mqtt_id_validator_unavailable') {
+    return uiT('Не удалось проверить ID устройств. Обновите мост MQTT.');
+  }
   if (res.error === 'transport_validator_unavailable') {
     return uiT('Проверка сетевых устройств недоступна: обновите мост MQTT на плате');
   }
   if (res.error !== 'invalid_device') return '';
+  if (res.reason === 'invalid_device_id') {
+    const why = uiT('Проверьте путь в ID устройства. Символы + и # и служебные пути MQTT запрещены.');
+    return res.id ? why + ' (' + res.id + ')' : why;
+  }
+  if (res.reason === 'invalid_template_event_channels') return uiT('Проверьте выбранные каналы Fast Modbus');
+  if (res.reason === 'template_event_catalog_unavailable') return uiT('Не удалось проверить каналы шаблона');
   const text = TCP_REFUSAL_TEXT[res.reason];
   if (!text) return '';
   return res.id ? `${text(uiT)} (${res.id})` : text(uiT);

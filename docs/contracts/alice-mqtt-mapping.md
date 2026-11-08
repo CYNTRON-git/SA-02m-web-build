@@ -32,8 +32,10 @@ same builder, so they can not disagree about what is bindable:
 
 The flat list is a PROJECTION of the inventory (`inventory_topics`): every
 enabled channel and sub-channel, sorted. Both are file reads only — the bridge
-yaml plus the live cache (`/run/sa02m-modbus-mqtt/<id>.json`, `_roster.json`) —
-so the picker works with no gateway and no bus. Rules:
+yaml plus the live records in `/run/sa02m-modbus-mqtt` and its `_roster.json` —
+so the picker works with no gateway and no bus. The picker and AHU catalogue match
+the full MQTT ID against the record's `device` field, including IDs such as
+`carel-floor/unit`. Legacy flat records can supply the ID in their filename.
 
 - an MR-02m's channel set comes from its **`module_type`**, never from whether
   the yaml author wrote a `channels` block (`MR02M_MODULE_TYPES`, a pinned copy

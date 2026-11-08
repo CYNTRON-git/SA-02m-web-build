@@ -11,6 +11,7 @@ import json
 import math
 import os
 import re
+import stat
 import time
 from pathlib import Path
 from typing import Any
@@ -317,38 +318,19 @@ def device_label(kind: str, addr: int | None, port_num: int | None) -> str:
 
 
 def _load_cache(path: Path) -> dict[str, Any] | None:
-    if not path.is_file():
-        return None
     try:
-        data = json.loads(path.read_text(encoding="utf-8"))
+        flags = os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0) | getattr(os, "O_NONBLOCK", 0)
+        with os.fdopen(os.open(path, flags), encoding="utf-8") as fh:
+            st = os.fstat(fh.fileno())
+            if not stat.S_ISREG(st.st_mode):
+                return None
+            data = json.load(fh)
     except (OSError, ValueError):
         return None
     if not isinstance(data, dict):
         return None
-    try:
-        data["_mtime"] = path.stat().st_mtime
-    except OSError:
-        data["_mtime"] = None
+    data["_mtime"] = st.st_mtime
     return data
-
-
-def _list_device_files(cache_dir: Path, prefix: str) -> list[Path]:
-    """Все файлы ``{prefix}-*.json``; env STAND_DEVICES_*_ID — только этот id."""
-    env_key = f"STAND_DEVICES_{prefix.upper().replace('-', '_')}_ID"
-    forced = str(os.environ.get(env_key) or "").strip()
-    if forced:
-        p = cache_dir / f"{forced}.json"
-        return [p] if p.is_file() else []
-    if not cache_dir.is_dir():
-        return []
-    return sorted(
-        p
-        for p in cache_dir.glob(f"{prefix}-*.json")
-        if p.is_file()
-        and not p.name.startswith("_")
-        and not p.name.endswith(".profile.json")
-        and not p.name.endswith(".events.json")
-    )
 
 
 def _empty_dtv(device_id: str = "") -> dict[str, Any]:
@@ -788,54 +770,36 @@ def _build_mtd(raw: dict[str, Any] | None, *, fallback_id: str = "") -> dict[str
 def live_snapshot(cache_dir: Path | None = None) -> dict[str, Any]:
     """Снимок для ``GET /api/devices`` — списки всех ДТВ/СЭ/Carel из кэша MQTT."""
     root = Path(cache_dir) if cache_dir is not None else DEFAULT_CACHE_DIR
-    dtv_list: list[dict[str, Any]] = []
-    for path in _list_device_files(root, "dtv"):
+    builders = {"dtv": _build_dtv, "ce02m3": _build_ce, "mr02m": _build_mr,
+                "carel": _build_carel, "spodes": _build_spodes, "mtdx62-mb": _build_mtd}
+    groups = {prefix: [] for prefix in builders}
+    forced = {prefix: os.environ.get(f"STAND_DEVICES_{prefix.upper().replace('-', '_')}_ID")
+              for prefix in builders}
+    prefixes = tuple(prefix + "-" for prefix in builders)
+    for path in root.glob("*.json"):
+        if (path.name == "_roster.json" or path.name.endswith((".profile.json", ".events.json"))
+                or path.is_symlink() or not path.is_file()):
+            continue
+        stem = path.stem
+        encoded = bool(re.fullmatch(r"@[0-9a-f]{64}", stem))
+        if not encoded and not stem.startswith(prefixes) and stem not in forced.values():
+            continue
         raw = _load_cache(path)
-        device_id = path.stem
-        if raw is not None and not raw.get("device"):
-            raw = {**raw, "device": device_id}
-        dtv_list.append(_build_dtv(raw, fallback_id=device_id))
-    ce_list: list[dict[str, Any]] = []
-    for path in _list_device_files(root, "ce02m3"):
-        raw = _load_cache(path)
-        device_id = path.stem
-        if raw is not None and not raw.get("device"):
-            raw = {**raw, "device": device_id}
-        ce_list.append(_build_ce(raw, fallback_id=device_id))
-    # MR-02m analog modules only — _build_mr returns None for a DI/DO/AO module
-    # sharing the mr02m id space, so those are skipped (never carded).
-    mr_list: list[dict[str, Any]] = []
-    for path in _list_device_files(root, "mr02m"):
-        raw = _load_cache(path)
-        device_id = path.stem
-        if raw is not None and not raw.get("device"):
-            raw = {**raw, "device": device_id}
-        built = _build_mr(raw, fallback_id=device_id)
-        if built is not None:
-            mr_list.append(built)
-    carel_list: list[dict[str, Any]] = []
-    for path in _list_device_files(root, "carel"):
-        raw = _load_cache(path)
-        device_id = path.stem
-        if raw is not None and not raw.get("device"):
-            raw = {**raw, "device": device_id}
-        built = _build_carel(raw, fallback_id=device_id)
-        if built is not None:
-            carel_list.append(built)
-    spodes_list: list[dict[str, Any]] = []
-    for path in _list_device_files(root, "spodes"):
-        raw = _load_cache(path)
-        device_id = path.stem
-        if raw is not None and not raw.get("device"):
-            raw = {**raw, "device": device_id}
-        spodes_list.append(_build_spodes(raw, fallback_id=device_id))
-    mtd_list: list[dict[str, Any]] = []
-    for path in _list_device_files(root, "mtdx62-mb"):
-        raw = _load_cache(path)
-        device_id = path.stem
-        if raw is not None and not raw.get("device"):
-            raw = {**raw, "device": device_id}
-        mtd_list.append(_build_mtd(raw, fallback_id=device_id))
+        identity = (raw or {}).get("device", None if encoded else stem)
+        if type(identity) not in (str, int) or (not encoded and str(identity) != stem):
+            continue
+        device_id = str(identity)
+        for prefix, builder in builders.items():
+            selected = forced[prefix]
+            if selected and device_id != selected:
+                continue
+            if not selected and not device_id.startswith(prefix + "-"):
+                continue
+            card = builder(raw, fallback_id=device_id)
+            if card is not None:
+                groups[prefix].append(card)
+    dtv_list, ce_list, mr_list = groups["dtv"], groups["ce02m3"], groups["mr02m"]
+    carel_list, spodes_list, mtd_list = groups["carel"], groups["spodes"], groups["mtdx62-mb"]
     # Сортировка: порт, затем адрес
     def _sort_key(d: dict[str, Any]) -> tuple:
         return (

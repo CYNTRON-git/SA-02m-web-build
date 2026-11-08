@@ -1,12 +1,12 @@
 /* SA-02m MQTT tab — v1.0 */
 
-import { AI_SENSOR_LABELS } from './ai-sensors.js?v=1.0.7.34';
+import { AI_SENSOR_LABELS } from './ai-sensors.js?v=1.0.7.35';
 
 // The add-device dialog's Modbus TCP rules and wording (pure, unit-tested).
 import {
   makeTcpDeviceId as tcpDeviceId, typeOptionAllowed, dialogRows, addrMax,
   buildTcpEntry, saveRefusalText, probeResultView,
-} from './mqtt/tcp-dialog.js?v=1.0.7.34&r=spodes1';
+} from './mqtt/tcp-dialog.js?v=1.0.7.35&r=spodes1';
 
 function uiT(s) {
   return window.sa02mI18n ? window.sa02mI18n.t(String(s)) : String(s);
@@ -357,7 +357,7 @@ let _unsaved = false;
 let _selectedDeviceIds = new Set();
 
 function toggleDeviceListSelection(devId) {
-  if (!devId) return;
+  if (devId == null) return;
   if (_selectedDeviceIds.has(devId)) _selectedDeviceIds.delete(devId);
   else _selectedDeviceIds.add(devId);
 }
@@ -821,7 +821,7 @@ function isAccordionOpen(devId) {
 }
 
 function scheduleLiveDomRefresh(devId) {
-  if (!devId || !isAccordionOpen(devId)) return;
+  if (devId == null || !isAccordionOpen(devId)) return;
   _liveDirtyDevices.add(devId);
   if (_liveDomScheduled) return;
   _liveDomScheduled = true;
@@ -845,8 +845,8 @@ function setLiveValue(devId, controlName, value, isError, opts) {
   if (isAccordionOpen(devId)) scheduleLiveDomRefresh(devId);
 }
 
-function updateLiveCell(devId, controlName) {
-  const el = document.querySelector(`[data-live="${devId}:${controlName}"]`);
+function updateLiveCell(devId, controlName, cell) {
+  const el = cell || document.querySelector(`[data-live="${CSS.escape(devId + ':' + controlName)}"]`);
   if (!el) return;
   const rec = _liveByDevice[devId] && _liveByDevice[devId][controlName];
   if (controlName === 'uptime_s') {
@@ -857,7 +857,7 @@ function updateLiveCell(devId, controlName) {
     el.textContent = formatLiveDisplay(controlName, rec, devId);
     el.className = 'mqtt-ch-live' + (rec && rec.isError ? ' mqtt-ch-live-err' : rec ? ' mqtt-ch-live-ok' : '');
   }
-  const unitEl = document.querySelector(`[data-unit="${devId}:${controlName}"]`);
+  const unitEl = el.parentElement.querySelector('[data-unit]');
   if (unitEl) {
     const u = liveUnitFor(devId, controlName, unitEl.getAttribute('data-unit-default') || '');
     unitEl.textContent = u;
@@ -866,12 +866,14 @@ function updateLiveCell(devId, controlName) {
 }
 
 function refreshLiveCellsForDevice(devId) {
-  if (!devId || !_accordionBuilt.has(devId)) return;
+  if (devId == null || !_accordionBuilt.has(devId)) return;
+  const body = document.getElementById('acc-body-' + devId);
+  if (!body) return;
   const prefix = `${devId}:`;
-  document.querySelectorAll(`[data-live^="${prefix}"]`).forEach(el => {
+  body.querySelectorAll('[data-live]').forEach(el => {
     const key = el.getAttribute('data-live');
     if (!key || key.indexOf(':') < 1) return;
-    updateLiveCell(devId, key.slice(prefix.length));
+    updateLiveCell(devId, key.slice(prefix.length), el);
   });
   refreshDoTogglesForDevice(devId);
   refreshAoInputsForDevice(devId);
@@ -891,7 +893,7 @@ function doToggleKey(devId, ctrl) {
 }
 
 function doToggleBtnEl(devId, ctrl) {
-  return document.querySelector(`[data-do-toggle="${devId}:${ctrl}"]`);
+  return document.querySelector(`[data-do-toggle="${CSS.escape(devId + ':' + ctrl)}"]`);
 }
 
 /** Logical output value from the bus: 1 / 0; error or unknown → -1. */
@@ -951,7 +953,7 @@ function updateDoToggleBtn(devId, ctrl, btnOpt) {
 
 function refreshDoTogglesForDevice(devId) {
   const prefix = `${devId}:`;
-  document.querySelectorAll(`[data-do-toggle^="${prefix}"]`).forEach(btn => {
+  document.querySelectorAll(`[data-do-toggle^="${CSS.escape(prefix)}"]`).forEach(btn => {
     const key = btn.getAttribute('data-do-toggle');
     if (!key || key.indexOf(':') < 1) return;
     updateDoToggleBtn(devId, key.slice(prefix.length), btn);
@@ -1048,7 +1050,7 @@ function aoInputKey(devId, ctrl) {
 }
 
 function aoInputEl(devId, ctrl) {
-  return document.querySelector(`[data-ao-input="${devId}:${ctrl}"]`);
+  return document.querySelector(`[data-ao-input="${CSS.escape(devId + ':' + ctrl)}"]`);
 }
 
 /** Raw integer setpoint from the bus: 0..1000; error or unknown → -1. */
@@ -1119,7 +1121,7 @@ function updateAoInput(devId, ctrl, inpOpt) {
 
 function refreshAoInputsForDevice(devId) {
   const prefix = `${devId}:`;
-  document.querySelectorAll(`[data-ao-input^="${prefix}"]`).forEach(inp => {
+  document.querySelectorAll(`[data-ao-input^="${CSS.escape(prefix)}"]`).forEach(inp => {
     const key = inp.getAttribute('data-ao-input');
     if (!key || key.indexOf(':') < 1) return;
     updateAoInput(devId, key.slice(prefix.length), inp);
@@ -1296,7 +1298,7 @@ function refreshAiTypeSelects(dev) {
       ? 'Тип наследуется с P-канала (ТХА / 3-проводный RTD)'
       : '';
     const ctrl = `ai_${i}`;
-    const unitEl = row.querySelector(`[data-unit="${dev.id}:${ctrl}"]`);
+    const unitEl = row.querySelector(`[data-unit="${CSS.escape(dev.id + ':' + ctrl)}"]`);
     if (unitEl) {
       const u = liveUnitFor(dev.id, ctrl, '');
       unitEl.setAttribute('data-unit-default', u);
@@ -1388,7 +1390,7 @@ function startUptimeTick() {
   stopUptimeTick();
   _uptimeTickTimer = setInterval(() => {
     const devId = _channelPollDevId;
-    if (!devId || !isAccordionOpen(devId)) return;
+    if (devId == null || !isAccordionOpen(devId)) return;
     updateLiveCell(devId, 'uptime_s');
     // Pending expiry must not depend on a successful poll (mqtt_live may be failing).
     sweepDoPending(devId);
@@ -1407,7 +1409,7 @@ function stopChannelPoll() {
 
 function startChannelPoll(devId) {
   stopChannelPoll();
-  if (!devId) return;
+  if (devId == null) return;
   _channelPollDevId = devId;
   _channelPollTimer = setInterval(() => {
     if (_channelPollDevId === devId && isAccordionOpen(devId)) {
@@ -1443,22 +1445,28 @@ function liveSpan(devId, controlName, unit) {
 }
 
 function ingestMonitorTopic(topic, value) {
-  const unitsM = /^\/devices\/([^/]+)\/controls\/([^/]+)\/meta\/units$/.exec(topic);
-  if (unitsM) {
-    if (!_liveUnits[unitsM[1]]) _liveUnits[unitsM[1]] = Object.create(null);
-    _liveUnits[unitsM[1]][unitsM[2]] = String(value);
-    scheduleLiveDomRefresh(unitsM[1]);
+  if (!topic.startsWith('/devices/')) return;
+  const path = topic.slice('/devices/'.length);
+  const boundary = path.indexOf('/controls/');
+  if (boundary < 1) return;
+  const topicId = path.slice(0, boundary);
+  const tail = /^([^/]+)(?:\/meta\/(units|error))?$/.exec(path.slice(boundary + '/controls/'.length));
+  if (!tail) return;
+  // Topics carry text while configured device IDs can also be YAML integers.
+  const deviceId = (_config.devices || []).find(dev => String(dev.id) === topicId)?.id ?? topicId;
+  const [, name, meta] = tail;
+  if (meta === 'units') {
+    if (!_liveUnits[deviceId]) _liveUnits[deviceId] = Object.create(null);
+    _liveUnits[deviceId][name] = String(value);
+    scheduleLiveDomRefresh(deviceId);
     return;
   }
-  const errM = /^\/devices\/([^/]+)\/controls\/([^/]+)\/meta\/error$/.exec(topic);
-  if (errM) {
-    setLiveValue(errM[1], errM[2], value, value !== '' && value != null);
+  if (meta === 'error') {
+    setLiveValue(deviceId, name, value, value !== '' && value != null);
     return;
   }
-  const m = /^\/devices\/([^/]+)\/controls\/([^/]+)$/.exec(topic);
-  if (!m || m[2] === 'module_type' || m[2] === 'connection') return;
-  if (m[2] === 'uptime_s') setLiveUptimeAnchor(m[1], value);
-  setLiveValue(m[1], m[2], value, false);
+  if (name === 'module_type' || name === 'connection') return;
+  setLiveValue(deviceId, name, value, false);
 }
 
 function getOrCreateSysChannel(dev, item) {
@@ -1878,7 +1886,7 @@ function renderDeviceList() {
 function refreshDeviceListCounts(devId) {
   const dev = (_config.devices || []).find(d => d.id === devId);
   if (!dev) return;
-  const tr = document.querySelector(`#mqtt-device-tbody tr[data-device-id="${devId}"]`);
+  const tr = document.querySelector(`#mqtt-device-tbody tr[data-device-id="${CSS.escape(devId)}"]`);
   if (!tr) return;
   const ioTd = tr.querySelector('.mqtt-io-count');
   const pollTd = tr.querySelector('.mqtt-poll-count');
@@ -1951,7 +1959,10 @@ function templateChannelList(dev) {
   const name = String(dev.template || '');
   const cat = (_templateCatalog || []).find(t => t && t.name === name);
   const ch = cat && Array.isArray(cat.channels) ? cat.channels : [];
-  return ch.filter(c => c && typeof c.name === 'string' && c.name);
+  if (!ch.length) return [];
+  const idBytes = new TextEncoder().encode(String(dev.id)).length;
+  return ch.filter(c => c && typeof c.name === 'string' && c.name &&
+    (c.max_device_id_bytes == null || idBytes <= c.max_device_id_bytes));
 }
 
 function countChannelsEnabled(dev) {
@@ -2148,16 +2159,35 @@ function buildTemplateChannels(dev, container) {
   const row = mqttChannelWidgetsRow();
   container.appendChild(row);
   const cat = (_templateCatalog || []).find(t => t && t.name === String(dev.template || ''));
-  const pack = buildChannelWidget((cat && cat.title) || 'Каналы шаблона');
+  const pack = buildChannelWidget((cat && cat.title) || uiT('Каналы шаблона'));
+  row.appendChild(pack.widget);
+  const localRtu = !dev.transport || dev.transport === 'rtu';
+  // mqtt_set.cgi permits writes only to a flat ASCII device ID (up to 64 characters).
+  const canWriteDevice = /^[a-zA-Z0-9._-]{1,64}$/.test(String(dev.id));
+  const eligible = new Set(channels.filter(ch => ch.fast_eligible === true).map(ch => ch.name));
+  // Old selections can outlive a replaced or temporarily unavailable template.
+  if (localRtu && Array.isArray(dev.fmb_event_channels) &&
+      dev.fmb_event_channels.some(name => !eligible.has(name))) {
+    pack.body.appendChild(h('button', {type: 'button', 'class': 'btn btn-sm', onclick: () => {
+      dev.fmb_event_channels = [];
+      dev.fast_modbus = false;
+      markUnsaved();
+      refreshTemplateBodiesAfterCatalog();
+    }}, uiT('Снять все подписки Fast Modbus')));
+  }
   if (!channels.length) {
-    pack.body.appendChild(h('div', {'class': 'muted'}, 'Шаблон без каналов'));
-    row.appendChild(pack.widget);
+    pack.body.appendChild(h('div', {'class': 'muted'}, uiT(cat ? 'Шаблон без каналов' : 'Каналы шаблона недоступны')));
+    if (!cat) pack.body.appendChild(h('button', {
+      type: 'button', 'class': 'btn btn-sm',
+      onclick: async () => { await fetchTemplateCatalog(true); refreshTemplateBodiesAfterCatalog(); },
+    }, uiT('Повторить')));
     return;
   }
   for (const ch of channels) {
     const name = ch.name;
-    // Input 3 is the scan fingerprint (self-test 0..6). Not shown.
-    if (name === 'device_status') continue;
+    const canSelectEvents = localRtu && eligible.has(name);
+    // The MTD scan fingerprint also supports event selection on serial.
+    if (name === 'device_status' && dev.template === 'mtdx62-mb' && !canSelectEvents) continue;
     const topic = topicPath(dev.id, name);
     const line = h('div', {'class': 'mqtt-ch-row'},
       h('input', {
@@ -2170,12 +2200,28 @@ function buildTemplateChannels(dev, container) {
       h('span', {'class': 'topic-preview mono', 'title': topic}, name),
       liveSpan(dev.id, name, ch.units || ''),
     );
-    if (ch.readonly === false) {
+    if (canSelectEvents) {
+      const label = uiT('Fast Modbus');
+      const input = h('input', {type: 'checkbox', 'aria-label': label + ' — ' + name,
+        onchange: e => {
+          const selected = new Set(dev.fast_modbus !== false && Array.isArray(dev.fmb_event_channels)
+            ? dev.fmb_event_channels.filter(n => eligible.has(n)) : []);
+          if (e.target.checked) selected.add(name); else selected.delete(name);
+          dev.fmb_event_channels = [...selected];
+          dev.fast_modbus = selected.size > 0;
+          markUnsaved();
+        },
+      });
+      input.checked = dev.fast_modbus !== false && Array.isArray(dev.fmb_event_channels)
+        && dev.fmb_event_channels.includes(name);
+      line.appendChild(h('label', {'class': 'mqtt-ch-toggle'}, input, label));
+    }
+    if (canWriteDevice && ch.web_write === true) {
       line.appendChild(h('input', {
         'type': 'number',
         'class': 'mqtt-ao-input',
         'step': 'any',
-        'title': 'Записать (Enter)',
+        'title': uiT('Записать (Enter)'),
         'onkeydown': e => {
           if (e.key !== 'Enter') return;
           e.preventDefault();
@@ -2186,7 +2232,6 @@ function buildTemplateChannels(dev, container) {
     }
     pack.body.appendChild(line);
   }
-  row.appendChild(pack.widget);
 }
 
 function buildDeviceChannels(dev, container) {
@@ -3270,9 +3315,8 @@ function fillTemplateSelect(sel, list) {
 async function fetchTemplateCatalog(force) {
   if (!force && Array.isArray(_templateCatalog)) return _templateCatalog;
   const data = await apiGet('cgi-bin/mqtt_templates.cgi').catch(() => null);
-  const list = (data && data.ok && Array.isArray(data.templates)) ? data.templates : [];
-  _templateCatalog = list;
-  return list;
+  if (data && data.ok && Array.isArray(data.templates)) _templateCatalog = data.templates;
+  return _templateCatalog || [];
 }
 
 async function loadTemplateCatalog(force) {
@@ -3776,7 +3820,7 @@ function markUnsaved() {
 
 // ── Topic monitor ─────────────────────────────────────────────────────────────
 async function pollMonitorDevice(deviceId) {
-  if (_monitorPaused || !deviceId) return;
+  if (_monitorPaused || deviceId == null || deviceId === '') return;
   const data = await apiGet(
     `cgi-bin/mqtt_monitor_poll.cgi?device=${encodeURIComponent(deviceId)}`).catch(() => null);
   const logEl = document.getElementById('mqtt-monitor-log');

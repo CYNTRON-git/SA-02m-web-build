@@ -42,7 +42,7 @@
 # `validate_devices(` line is this gate's registered case in
 # `comment-mutation-proof`.
 #
-# Requires python3 with PyYAML (the endpoint itself does); skips nothing.
+# Requires python3 with PyYAML and paho-mqtt (the live cache writer); skips nothing.
 #
 # Run: bash scripts/dev/test-mqtt-config-transport.sh
 set -u
@@ -79,6 +79,8 @@ command -v cygpath >/dev/null 2>&1 && LIBW=$(cygpath -m "$LIBW")
 export T_DIR="$TW"
 BIN="$T/bin"; CGIDIR="$T/cgi-bin"
 mkdir -p "$BIN" "$CGIDIR" "$T/sessions" "$T/nolib"
+# Simulate an unavailable optional TCP validator with a working MQTT core.
+cp "$BRIDGE_LIB/bridge_meta.py" "$T/nolib/"
 YAML_FILE="$TW/sa02m-modbus-mqtt.yaml"
 APPLIED="$TW/applied.yaml"
 SUDOALL="$TW/sudo-all.log"
@@ -168,9 +170,9 @@ print(eval(sys.argv[1], {"j": j}))' "$2"
 applied() {  # <python expression over `d`>
     [ -f "$APPLIED" ] || { printf '<<no yaml applied>>\n'; return 0; }
     APPLIED_FILE="$APPLIED" "$PY" - "$1" <<'PY'
-import os, sys, yaml
+import json, os, sys, yaml
 d = yaml.safe_load(open(os.environ["APPLIED_FILE"], encoding="utf-8")) or {}
-print(eval(sys.argv[1], {"d": d}))
+print(eval(sys.argv[1], {"d": d, "json": json}))
 PY
 }
 
@@ -371,6 +373,281 @@ else
     bad "17 no config yet: GET is wrong: $out"
 fi
 
+# Exercise the catalog and the authenticated write endpoint on one template.
+export SA02M_WB_TEMPLATES_DIR="$TW/event-templates"
+mkdir -p "$SA02M_WB_TEMPLATES_DIR"
+cat > "$SA02M_WB_TEMPLATES_DIR/config-events.json" <<'JSON'
+{"device":{"channels":[
+  {"name":"group","channels":[{"name":"voltage","reg_type":"input","address":"0x10d9","scale":0.01}]},
+  {"name":"disabled","reg_type":"input","address":4,"enabled":false},
+  {"name":"relay/on","reg_type":"holding","address":7,"readonly":false},
+  {"name":"relay/meta/type","reg_type":"holding","address":8,"readonly":false},
+  {"name":"+","reg_type":"holding","address":9,"readonly":false},
+  {"name":"unwritable_from_web","reg_type":"holding","address":5,"readonly":false},
+  {"name":"trigger_sensitivity","reg_type":"holding","address":6,"readonly":false}
+]}}
+JSON
+catalog() {
+    env REQUEST_METHOD=GET HTTP_COOKIE="$1" SA02M_BRIDGE_LIB_DIR="$LIBW" \
+        bash www/network_config/cgi-bin/mqtt_templates.cgi | sed '1,/^\r\{0,1\}$/d'
+}
+body_for_selection() {
+    printf '{"devices":[{"type":"template","id":"fixture","port":"/dev/COM1","address":5,"template":"events","fast_modbus":true,"fmb_event_channels":%s}]}' "$1"
+}
+if [ "$(jget "$(catalog '')" "j.get('error')")" = unauthorized ]; then ok 'catalog requires authentication'; else bad 'anonymous catalog'; fi
+missing=$(SA02M_WB_TEMPLATES_DIR="$TW/missing-templates" catalog "$GOOD_COOKIE")
+if [ "$(jget "$missing" "j.get('error')")" = template_catalog_unavailable ]; then
+    ok 'unavailable directory does not replace a previously loaded catalog with an empty one'
+else bad "missing directory presented as a usable catalog: $missing"; fi
+out=$(catalog "$GOOD_COOKIE")
+if [ "$(jget "$out" "[(c['name'],c['fast_eligible'],c['web_write']) for c in j['templates'][0]['channels']]")" = "[('voltage', True, False), ('unwritable_from_web', True, False), ('trigger_sensitivity', True, True)]" ]; then
+    ok 'catalog uses actual nested supported channels and the web write allowlist'
+else
+    bad "catalog disagrees with the runtime: $out"
+fi
+body=$(body_for_selection '["voltage"]')
+out=$(call POST "$GOOD_COOKIE" "$CSRF" "${body/fixture/room\/strip}")
+if [ "$(jget "$out" "j.get('ok')")" = True ] && [ "$(applied "d['devices'][0]['id']")" = room/strip ] &&
+        [ "$(applied "d['devices'][0]['fmb_event_channels']")" = "['voltage']" ]; then
+    ok 'existing nested RTU device ID still accepts a channel selection'
+else bad "nested RTU device refused or changed: $out"; fi
+
+cache="$TW/live-cache"
+# Git Bash needs the harness's python3 shim in PATH in place of the board path.
+sed 's|/usr/bin/python3|python3|g' www/network_config/cgi-bin/mqtt_live.cgi > "$CGIDIR/mqtt_live.cgi"
+"$PY" - "$LIBW" "$cache" <<'PY'
+import json, os, pathlib, sys
+sys.path.insert(0, sys.argv[1])
+os.environ["SA02M_MQTT_LIVE_CACHE"] = sys.argv[2]
+from bridge_mqtt import DeviceLiveCache
+DeviceLiveCache.set_online("room/errors", True)
+DeviceLiveCache.set_error("room/errors", "temperature", "r")
+DeviceLiveCache.flush_file("room/errors")
+for device, value in [("room", "17"), ("room/strip", "223"), ("room strip", "92"), ("room/offline", "1"),
+                      ("room.events", "93"), ("room.profile", "94"), (42, "95")]:
+    DeviceLiveCache.set_online(device, device != "room/offline")
+    DeviceLiveCache.set_control(device, "voltage", value)
+    DeviceLiveCache.flush_file(device)
+for reserved in ('room.events', 'room.profile'):
+    # A sidecar belonging to room may itself contain the other ID in its data.
+    # The identity guard must never accept a nested field as the owner of the file.
+    (pathlib.Path(sys.argv[2]) / (reserved + ".json")).write_text(json.dumps({
+        "device": "room", "ok": True, "controls": {"device": reserved, "voltage": "wrong"}}))
+PY
+if "$PY" - "$LIBW" <<'PY'
+import sys
+from contextlib import redirect_stdout
+from io import StringIO
+from types import SimpleNamespace
+from unittest.mock import Mock, patch
+sys.path.insert(0, sys.argv[1])
+import mqtt_live_snapshot as live
+import mqtt_monitor_stream as stream
+client = Mock()
+prefix = '/devices/room/strip/controls/'
+def send(filters):
+    assert filters == [(prefix + '+', 0), (prefix + '+/meta/units', 0), (prefix + '+/meta/error', 0)]
+    for topic, value in [(prefix+'voltage','223'), (prefix+'voltage/meta/units','V'),
+                         (prefix+'energy/meta/error','r'), ('/devices/room/controls/voltage','17'),
+                         (prefix+'voltage/on','0')]:
+        client.on_message(client, None, SimpleNamespace(topic=topic, payload=value.encode()))
+client.subscribe.side_effect = send
+with patch.object(live.mqtt, 'Client', return_value=client) as reader:
+    data = live.snapshot_paho('room/strip', idle_s=0)
+    live.snapshot_paho('room/strip', idle_s=0)
+    ids = [call.kwargs['client_id'] for call in reader.call_args_list]
+    assert len(ids) == len(set(ids)) == 2
+assert data['controls'] == {'voltage':'223'} and data['units'] == {'voltage':'V'}
+assert data['errors'] == {'energy':'r'}
+with patch.object(sys, 'argv', ['mqtt_monitor_stream.py', 'device=room%2Fstrip']), \
+     patch.object(stream, 'mqtt_client_v5', side_effect=StopIteration) as reader, redirect_stdout(StringIO()):
+    for _ in range(2):
+        try:
+            stream.main()
+        except StopIteration:
+            pass
+    ids = [call.args[0] for call in reader.call_args_list]
+    assert len(ids) == len(set(ids)) == 2
+PY
+then ok 'snapshot and SSE use independent client IDs; fallback selects exact nested controls and discards a neighbor and /on'
+else bad 'nested fallback subscription, topic selection or client ID isolation failed'; fi
+live() {
+    env REQUEST_METHOD=GET HTTP_COOKIE="$GOOD_COOKIE" QUERY_STRING="$1" SA02M_BRIDGE_LIB_DIR="$LIBW" \
+        SA02M_MQTT_LIVE_CACHE="$cache" bash "$CGIDIR/mqtt_live.cgi" | sed '1,/^\r\{0,1\}$/d'
+}
+out=$(live 'device=room%2Ferrors')
+if [ "$(jget "$out" "(j.get('source'), j.get('controls'), j.get('errors'))")" = "('cache', {}, {'temperature': 'r'})" ]; then
+    ok 'channel read failure is visible even before its first good sample'
+else bad "lost the errors-only live snapshot: $out"; fi
+for pair in 'room:17' 'room%2Fstrip:223' 'room%20strip:92' 'room.events:93' 'room.profile:94' '42:95'; do
+    out=$(live "device=${pair%:*}")
+    if [ "$(jget "$out" "j.get('controls', {}).get('voltage')")" = "${pair#*:}" ]; then
+        ok "live CGI reads the intended device: ${pair%:*}"
+    else bad "cross-device/absent live value for $pair: $out"; fi
+done
+out=$(live 'device=room%2Foffline')
+if [ "$(jget "$out" "(j.get('source'), j.get('ok'))")" = "('cache', False)" ]; then
+    ok 'an offline nested device stays offline when its last values are cached'
+else bad "offline cache read reported the wrong status: $out"; fi
+for url_id in 'room+strip' 'room%2Bstrip' 'room%00' 'room%2F..%2Fstrip' 'room%2Fcontrols%2Frelay'; do
+    out=$(live "device=$url_id")
+    if [ "$(jget "$out" "(j.get('ok'), j.get('controls'))")" = "(False, {})" ]; then
+        ok "live CGI refuses unsafe/ambiguous query: $url_id"
+    else bad "unsafe live query: $url_id ($out)"; fi
+done
+for unsafe_id in '+' '#' 'another/controls/relay'; do
+    out=$(call POST "$GOOD_COOKIE" "$CSRF" "${body/fixture/$unsafe_id}")
+    if [ "$(jget "$out" "j.get('reason')")" = invalid_device_id ] && [ ! -f "$APPLIED" ]; then
+        ok "device ID refused before YAML: $unsafe_id"
+    else
+        bad "unsafe MQTT device ID was not refused: $out"
+    fi
+done
+# An older/incomplete cache refresh may provide bridge_meta without the new guard.
+mkdir -p "$T/old-core"
+touch "$T/old-core/bridge_meta.py"
+out=$(call POST "$GOOD_COOKIE" "$CSRF" "$body" "$TW/old-core")
+if [ "$(jget "$out" "j.get('error')")" = mqtt_id_validator_unavailable ] && [ ! -f "$APPLIED" ]; then
+    ok 'a mismatched MQTT core cannot silently accept unchecked IDs'
+else
+    bad "an unchecked device ID reached YAML: $out"
+fi
+out=$(call POST "$GOOD_COOKIE" "$CSRF" "$body")
+if [ "$(jget "$out" "j.get('ok')")" = True ] && [ "$(applied "d['devices'][0]['fmb_event_channels']")" = "['voltage']" ]; then
+    ok 'selected channel reaches YAML'
+    cp "$APPLIED" "$YAML_FILE"
+else
+    bad "valid event selection was not applied: $out"
+fi
+for bad_choice in '["disabled"]' '["missing"]' '["relay/on"]' '["relay/meta/type"]' '["+"]' '["voltage","voltage"]' '[5]' '"voltage"'; do
+    out=$(call POST "$GOOD_COOKIE" "$CSRF" "$(body_for_selection "$bad_choice")")
+    if [ "$(jget "$out" "j.get('reason')")" = invalid_template_event_channels ] && [ ! -f "$APPLIED" ]; then
+        ok "invalid event choice refused: $bad_choice"
+    else
+        bad "invalid event choice accepted: $bad_choice ($out)"
+    fi
+done
+out=$(call POST "$GOOD_COOKIE" "$CSRF" "${body/\"port\":\"\/dev\/COM1\"/\"transport\":\"tcp\",\"host\":\"192.0.2.1\"}")
+if [ "$(jget "$out" "j.get('reason')")" = invalid_template_event_channels ] && [ ! -f "$APPLIED" ]; then
+    ok 'Modbus TCP event list refused'
+else
+    bad "Modbus TCP event list reached YAML: $out"
+fi
+mv "$SA02M_WB_TEMPLATES_DIR/config-events.json" "$T/offline-template.json"
+out=$(call POST "$GOOD_COOKIE" "$CSRF" "$body")
+if [ "$(jget "$out" "j.get('ok')")" = True ]; then ok 'saved selection survives unavailable catalog'; else bad "saved selection lost: $out"; fi
+out=$(call POST "$GOOD_COOKIE" "$CSRF" "${body/COM1/COM4}")
+if [ "$(jget "$out" "j.get('reason')")" = template_event_catalog_unavailable ] && [ ! -f "$APPLIED" ]; then
+    ok 'moving a subscription to another bus requires a valid catalog'
+else
+    bad "moved subscription bypassed validation: $out"
+fi
+out=$(call POST "$GOOD_COOKIE" "$CSRF" "$(body_for_selection '["new"]')")
+if [ "$(jget "$out" "j.get('reason')")" = template_event_catalog_unavailable ] && [ ! -f "$APPLIED" ]; then
+    ok 'new subscription refused when catalog unavailable'
+else
+    bad "unchecked subscription reached YAML: $out"
+fi
+out=$(call POST "$GOOD_COOKIE" "$CSRF" "$(body_for_selection '[]')")
+if [ "$(jget "$out" "j.get('ok')")" = True ]; then ok 'selection clears without the catalog'; else bad "clear failed: $out"; fi
+
+# Old YAML can carry numeric IDs. An offline catalog must preserve the ID's
+# type while an edit to a different device is applied; bool is never an ID.
+for typed_id in '42' '"42"' 'true'; do
+    typed_body=$("$PY" - "$YAML_FILE" "$typed_id" "$body" <<'PY'
+import json, pathlib, sys, yaml
+data = json.loads(sys.argv[3])
+data["devices"][0]["id"] = json.loads(sys.argv[2])
+peer = {"type": "dtv", "id": "peer", "poll_s": 1}
+data["devices"].append(peer)
+pathlib.Path(sys.argv[1]).write_text(yaml.safe_dump(data))
+peer["poll_s"] = 3
+print(json.dumps(data))
+PY
+)
+    out=$(call POST "$GOOD_COOKIE" "$CSRF" "$typed_body")
+    if [ "$typed_id" = 'true' ]; then
+        if [ "$(jget "$out" "j.get('reason')")" = invalid_device_id ] && [ ! -f "$APPLIED" ]; then
+            ok 'prior YAML boolean ID cannot bypass admission'
+        else bad "previous bool ID was allowed: $out"; fi
+    elif [ "$(jget "$out" "j.get('ok')")" = True ] &&
+         [ "$(applied "json.dumps(d['devices'][0]['id'])")" = "$typed_id" ] &&
+         [ "$(applied "d['devices'][1]['poll_s']")" = 3 ]; then
+        ok "unrelated edit preserved offline selection and ID type: $typed_id"
+    else bad "unrelated edit blocked or ID changed: $typed_id ($out)"; fi
+    # Python considers True == 1. A historical bool cannot exempt a numeric
+    # ID, and changing a stored number to a string is a fresh device config.
+    if [ "$typed_id" != '"42"' ]; then
+        changed_id='"42"'
+        [ "$typed_id" = 'true' ] && changed_id=1
+        changed_body=$(printf '%s' "$typed_body" | "$PY" -c 'import json,sys; d=json.load(sys.stdin); d["devices"][0]["id"]=json.loads(sys.argv[1]); print(json.dumps(d))' "$changed_id")
+        out=$(call POST "$GOOD_COOKIE" "$CSRF" "$changed_body")
+        if [ "$(jget "$out" "j.get('reason')")" = template_event_catalog_unavailable ] && [ ! -f "$APPLIED" ]; then
+            ok "changed ID does not inherit offline selection: $typed_id -> $changed_id"
+        else bad "ID conversion bypassed catalog validation: $out"; fi
+    fi
+done
+
+cp "$BRIDGE_LIB/templates/config-mtdx62-mb.json" "$SA02M_WB_TEMPLATES_DIR/"
+"$PY" - "$SA02M_WB_TEMPLATES_DIR" <<'PY'
+import json, pathlib, sys
+base = pathlib.Path(sys.argv[1])
+(base / "config-deep.json").write_text('{"device":{"channels":[' + '{"channels":[' * 1500
+        + '{"name":"nested","reg_type":"input","address":0}' + ']}' * 1500 + ']}}')
+(base / "config-overflow.json").write_text(json.dumps({"device": {"channels": [
+    {"name": "bad_scale", "reg_type": "input", "address": 1, "scale": 10**309},
+    {"name": "survivor", "reg_type": "input", "address": 2}]}}))
+PY
+out=$(catalog "$GOOD_COOKIE")
+if [ "$(jget "$out" "{t['name']: [c['name'] for c in t['channels']] for t in j['templates'] if t['name'] in ('deep', 'overflow')}")" = "{'overflow': ['survivor']}" ]; then
+    ok 'deep template isolated; valid neighbor survives a scale overflow in its own template'
+else
+    bad 'catalog with malformed templates lost valid files/channels or emitted invalid JSON'
+fi
+for template in deep overflow; do
+    probe=$(body_for_selection '["bad_scale"]')
+    out=$(call POST "$GOOD_COOKIE" "$CSRF" "${probe/\"template\":\"events\"/\"template\":\"$template\"}")
+    expected=invalid_template_event_channels
+    [ "$template" = deep ] && expected=template_event_catalog_unavailable
+    if [ "$(jget "$out" "j.get('reason')")" = "$expected" ] && [ ! -f "$APPLIED" ]; then
+        ok "unusable template/channel selection returns a named JSON refusal: $template"
+    else bad "unusable $template yielded invalid refusal or a write: $out"; fi
+done
+out=$(catalog "$GOOD_COOKIE")
+if [ "$(jget "$out" "any(c['name'] == 'device_status' and c['fast_eligible'] for t in j['templates'] if t['name'] == 'mtdx62-mb' for c in t['channels'])")" = True ]; then
+    ok 'MTD scan fingerprint is an eligible serial event'
+else
+    bad "shipped MTD fingerprint missing from event catalog: $out"
+fi
+body=$(body_for_selection '["device_status","presence_status"]')
+out=$(call POST "$GOOD_COOKIE" "$CSRF" "${body/\"template\":\"events\"/\"template\":\"mtdx62-mb\"}")
+if [ "$(jget "$out" "j.get('ok')")" = True ] && [ "$(applied "d['devices'][0]['fmb_event_channels']")" = "['device_status', 'presence_status']" ]; then
+    ok 'MTD fingerprint and neighboring selection reach YAML together'
+else
+    bad "MTD selection changed: $out"
+fi
+
+# The same legal name can fit under a short ID, but not a longer UTF-8 ID.
+"$PY" - "$TW" "$SA02M_WB_TEMPLATES_DIR" <<'PY'
+import json, pathlib, sys
+tmp, templates = map(pathlib.Path, sys.argv[1:])
+name = "x" * 65490
+(templates / "config-limit.json").write_text(json.dumps({"device": {"channels": [
+    {"name": name, "reg_type": "input", "address": 0}]}}))
+for suffix, device_id in (("short", "x"), ("long", "я" * 13)):
+    (tmp / (suffix + ".json")).write_text(json.dumps({"devices": [{"type": "template",
+        "template": "limit", "id": device_id, "port": "/dev/COM1", "address": 10,
+        "fmb_event_channels": [name]}]}))
+PY
+out=$(call POST "$GOOD_COOKIE" "$CSRF" "$(cat "$T/short.json")")
+if [ "$(jget "$out" "j.get('ok')")" = True ]; then ok 'complete topic fits under short ID'; else bad "legal topic refused: $out"; fi
+out=$(call POST "$GOOD_COOKIE" "$CSRF" "$(cat "$T/long.json")")
+if [ "$(jget "$out" "j.get('reason')")" = invalid_template_event_channels ] && [ ! -f "$APPLIED" ]; then
+    ok 'selection cannot exceed MQTT topic limit with actual device ID'
+else
+    bad "oversized topic reached YAML: $out"
+fi
+
 # ── non-vacuity ────────────────────────────────────────────────────────────
 sudo_calls=$(grep -c . "$SUDOALL")
 if [ "$sudo_calls" -ge 4 ]; then
@@ -381,7 +658,7 @@ fi
 
 echo
 if [ "$fails" -eq 0 ]; then
-    echo "mqtt-config-transport: ALL OK - 21 case(s) green"
+    echo "mqtt-config-transport: ALL OK"
     exit 0
 fi
 echo "mqtt-config-transport: $fails FAILURE(S)"

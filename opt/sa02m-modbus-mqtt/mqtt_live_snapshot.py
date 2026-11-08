@@ -1,25 +1,26 @@
 #!/usr/bin/env python3
 """Снимок значений controls одного устройства: кэш моста (мс) или paho MQTT (резерв)."""
 import json
+import os
 import re
 import sys
 import time
 from pathlib import Path
+from uuid import uuid4
+from bridge_meta import device_id_from_query, live_cache_filename, valid_device_id
 
 try:
     import paho.mqtt.client as mqtt
 except ImportError:
     mqtt = None
 
-CACHE_DIR = Path("/run/sa02m-modbus-mqtt")
-_CTRL_RE = re.compile(r"^/devices/([^/]+)/controls/([^/]+)$")
-_UNITS_RE = re.compile(r"^/devices/([^/]+)/controls/([^/]+)/meta/units$")
-_ERR_RE = re.compile(r"^/devices/([^/]+)/controls/([^/]+)/meta/error$")
+CACHE_DIR = Path(os.environ.get("SA02M_MQTT_LIVE_CACHE", "/run/sa02m-modbus-mqtt"))
+_CONTROL = re.compile(r"([^/]+)(?:/meta/(units|error))?$")
 _SKIP_CTRL = frozenset({"module_type", "connection"})
 
 
 def read_cache_file(device: str, max_age_s: float = 8.0) -> dict | None:
-    path = CACHE_DIR / f"{device}.json"
+    path = CACHE_DIR / live_cache_filename(device)
     if not path.is_file():
         return None
     try:
@@ -27,11 +28,12 @@ def read_cache_file(device: str, max_age_s: float = 8.0) -> dict | None:
         if age > max_age_s:
             return None
         data = json.loads(path.read_text(encoding="utf-8"))
-        if data.get("device") != device:
+        stored_id = data.get("device") if isinstance(data, dict) else None
+        if not valid_device_id(stored_id) or str(stored_id) != str(device):
             return None
-        if not data.get("controls"):
+        if not data.get("controls") and not data.get("errors") and data.get("ok") is not False:
             return None
-        data["ok"] = True
+        data.setdefault("ok", True)
         data["source"] = "cache"
         data.setdefault("units", {})
         data.setdefault("errors", {})
@@ -49,7 +51,7 @@ def snapshot_paho(device: str, idle_s: float = 0.12, timeout_s: float = 0.9) -> 
     units: dict[str, str] = {}
     errors: dict[str, str] = {}
     last_rx = time.monotonic()
-    base = f"/devices/{device}/controls"
+    base = f"/devices/{device}/controls/"
 
     def on_message(_client, _userdata, msg) -> None:
         nonlocal last_rx
@@ -59,34 +61,37 @@ def snapshot_paho(device: str, idle_s: float = 0.12, timeout_s: float = 0.9) -> 
             payload = msg.payload.decode("utf-8")
         except UnicodeDecodeError:
             payload = ""
-        m = _UNITS_RE.match(topic)
-        if m and m.group(1) == device:
-            units[m.group(2)] = payload
+        if not topic.startswith(base):
             return
-        m = _ERR_RE.match(topic)
-        if m and m.group(1) == device:
+        m = _CONTROL.fullmatch(topic[len(base):])
+        if not m:
+            return
+        name, meta = m.groups()
+        if meta == "units":
+            units[name] = payload
+        elif meta == "error":
             if payload:
-                errors[m.group(2)] = payload
-            return
-        m = _CTRL_RE.match(topic)
-        if m and m.group(1) == device and m.group(2) not in _SKIP_CTRL:
-            controls[m.group(2)] = payload
+                errors[name] = payload
+        elif name not in _SKIP_CTRL:
+            controls[name] = payload
 
     try:
+        # Simultaneous browser requests each need their own broker connection.
+        client_id = uuid4().hex[:23]
         try:
             client = mqtt.Client(
                 callback_api_version=mqtt.CallbackAPIVersion.VERSION2,
-                client_id=f"sa02m-live-snap-{device}"[:22],
+                client_id=client_id,
             )
         except (AttributeError, TypeError):
-            client = mqtt.Client(client_id=f"sa02m-live-snap-{device}"[:22])
+            client = mqtt.Client(client_id=client_id)
         client.on_message = on_message
         client.connect("127.0.0.1", 1883, 60)
         client.loop_start()
         client.subscribe([
-            (f"{base}/+", 0),
-            (f"{base}/+/meta/units", 0),
-            (f"{base}/+/meta/error", 0),
+            (f"{base}+", 0),
+            (f"{base}+/meta/units", 0),
+            (f"{base}+/meta/error", 0),
         ])
         t0 = time.monotonic()
         while time.monotonic() - t0 < timeout_s:
@@ -110,6 +115,8 @@ def snapshot_paho(device: str, idle_s: float = 0.12, timeout_s: float = 0.9) -> 
 
 
 def snapshot(device: str) -> dict:
+    if not valid_device_id(device):
+        return {"ok": False, "error": "invalid device", "controls": {}}
     cached = read_cache_file(device)
     if cached is not None:
         return cached
@@ -117,10 +124,7 @@ def snapshot(device: str) -> dict:
 
 
 def main() -> None:
-    device = (sys.argv[1] if len(sys.argv) > 1 else "").strip()
-    if not device or not re.match(r"^[a-zA-Z0-9._-]+$", device):
-        print(json.dumps({"ok": False, "error": "device required", "controls": {}}))
-        return
+    device = sys.argv[1] if len(sys.argv) == 2 else device_id_from_query(os.environ.get("QUERY_STRING", ""))
     print(json.dumps(snapshot(device), ensure_ascii=False))
 
 

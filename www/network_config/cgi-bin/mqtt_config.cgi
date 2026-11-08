@@ -87,8 +87,61 @@ if [ "$REQUEST_METHOD" = "POST" ]; then
         exit 0
     fi
 
-    RESULT=$(python3 - "$TMP_IN" "$TMP_OUT" "$BRIDGE_LIB_DIR" <<'PYEOF'
+    RESULT=$(python3 - "$TMP_IN" "$TMP_OUT" "$BRIDGE_LIB_DIR" "$CONFIG_FILE" <<'PYEOF'
 import sys, json, yaml, pathlib
+
+
+def check_template_choices(devices):
+    selected = [d for d in devices if isinstance(d, dict) and "fmb_event_channels" in d]
+    if not selected:
+        return
+    # A temporarily unavailable template must not block edits to unrelated devices.
+    try:
+        with open(sys.argv[4], encoding="utf-8") as f:
+            old_config = yaml.safe_load(f)
+        old_devices = old_config.get("devices") if isinstance(old_config, dict) else None
+    except (OSError, ValueError, OverflowError, RecursionError, yaml.YAMLError):
+        old_devices = None
+    # Preserve the stored type: 42 and "42" are distinct config entries.
+    # In particular an old YAML boolean must never act as numeric ID 0 or 1.
+    rows = old_devices if isinstance(old_devices, list) else []
+    previous = {d["id"]: d for d in rows if isinstance(d, dict) and valid_device_id(d.get("id"))}
+    catalogs = {}
+    for dev in selected:
+        names = dev["fmb_event_channels"]
+        refusal = {"ok": False, "error": "invalid_device", "id": dev.get("id"),
+                   "reason": "invalid_template_event_channels"}
+        if (not isinstance(names, list) or not all(isinstance(n, str) and n for n in names)
+                or len(set(names)) != len(names)):
+            return refusal
+        if not names:
+            continue
+        if dev.get("type") != "template" or dev.get("transport") not in (None, "rtu"):
+            return refusal
+        old = previous.get(dev["id"])  # the incoming ID has already passed valid_device_id
+        if (old and old.get("transport") in (None, "rtu") and
+                all(old.get(key) == dev.get(key) for key in
+                    ("type", "template", "port", "address", "fmb_event_channels", "fast_modbus"))):
+            continue
+        template = dev.get("template")
+        if not isinstance(template, str) or not template:
+            return refusal
+        device_id = str(dev["id"])
+        # The complete MQTT metadata topic must fit for this device. IDs of
+        # the same UTF-8 length have the same eligible names for a template.
+        key = (template, len(device_id.encode("utf-8")))
+        if key not in catalogs:
+            try:
+                from bridge_template_channels import channel_catalog, resolve_template_path
+                with resolve_template_path(template).open(encoding="utf-8") as f:
+                    catalogs[key] = {ch["name"] for ch in channel_catalog(json.load(f), device_id) if ch["fast_eligible"]}
+            except (ImportError, OSError, ValueError, TypeError, OverflowError, RuntimeError):
+                refusal["reason"] = "template_event_catalog_unavailable"
+                return refusal
+        if not set(names) <= catalogs[key]:
+            return refusal
+
+
 try:
     with open(sys.argv[1]) as f:
         data = json.load(f)
@@ -102,10 +155,22 @@ try:
     # Modbus TCP entries: refuse the WHOLE save on the first invalid one, with
     # the bridge's own reason code, before anything is written. The bridge
     # loader re-checks (the YAML is www-data-writable); this is the early,
-    # explainable refusal. RS-485-only bodies are never judged.
+    # explainable refusal. The MQTT topic ID applies to every transport.
     devices = data.get("devices") or []
+    sys.path.insert(0, sys.argv[3])
+    if devices:
+        try:
+            from bridge_meta import valid_device_id
+        except ImportError as e:
+            print("mqtt_config.cgi: MQTT device ID validator unavailable: %s" % e, file=sys.stderr)
+            print(json.dumps({"ok": False, "error": "mqtt_id_validator_unavailable"}))
+            sys.exit(0)
+        for device in devices:
+            if isinstance(device, dict) and not valid_device_id(device.get("id")):
+                print(json.dumps({"ok": False, "error": "invalid_device", "id": device.get("id"),
+                                  "reason": "invalid_device_id"}))
+                sys.exit(0)
     try:
-        sys.path.insert(0, sys.argv[3])
         import bridge_bus
     except Exception as e:
         print("mqtt_config.cgi: Modbus TCP validator unavailable - cannot "
@@ -124,6 +189,10 @@ try:
             print(json.dumps({"ok": False, "error": "invalid_device",
                               "id": refused[0]["id"], "reason": refused[0]["reason"]}))
             sys.exit(0)
+    refusal = check_template_choices(devices)
+    if refusal:
+        print(json.dumps(refusal))
+        sys.exit(0)
     tmp_path = pathlib.Path(sys.argv[2])
     with open(tmp_path, "w", encoding="utf-8") as f:
         f.write("# SA-02m Modbus\u2192MQTT bridge configuration\n")

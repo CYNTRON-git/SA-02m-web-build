@@ -125,6 +125,9 @@ class FakeFmb:
     def reconfigure_pending(self) -> None:
         self.calls.append("reconfigure_pending")
 
+    def configure_template_step(self) -> None:
+        self.calls.append("configure_template_step")
+
     def event_burst(self) -> int:
         self.burst_count += 1
         self.calls.append("event_burst")

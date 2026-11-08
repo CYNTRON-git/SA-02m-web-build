@@ -59,71 +59,41 @@ answers the pass reads the remaining units in template order, so a returning
 device is read in full on its first window back, whatever its broken channels
 and however long the outage.
 
-Classic polling only in v1 (no Fast Modbus): fmb_event_ranges() inherits [] from
-the base. The port-lease invariant is inherited structurally — TemplatePoller
-never opens a port, it only uses DevicePoller's FC wrappers.
+Serial devices may subscribe to explicit fmb_event_channels in addition to the
+normal complete polling pass. The bridge reads and writes through DevicePoller's
+shared transport and uses the WB event manager for confirmed subscriptions.
 """
 
 from __future__ import annotations
 
-from bridge_serial import ScanHold
+from bridge_serial import (FMB_EVT_COIL, FMB_EVT_DISCRETE, FMB_EVT_HOLDING, FMB_EVT_INPUT,
+                           ScanHold, WRITEBACK_POLL_GRACE_S)
+from bridge_template_channels import (
+    TemplateChannel, TemplateParseError, _BIT_REG_TYPES, event_candidates, parse_channels,
+    resolve_template_path as _resolve_template_path,
+)
 
-import os
-import re
+import math
 import struct
-from pathlib import Path
+import threading
 
 from bridge_device import DevicePoller
 from bridge_mqtt import DeviceLiveCache, MQTTPublisher, _ctrl_precision
 
-# reg_type → the number of 16-bit words a scalar of `format` occupies.
-_WORDS_BY_FORMAT = {
-    "u16": 1, "s16": 1,
-    "u32": 2, "s32": 2, "float": 2,
-}
+_EVENT_TYPES = {"coil": FMB_EVT_COIL, "discrete": FMB_EVT_DISCRETE,
+                "holding": FMB_EVT_HOLDING, "input": FMB_EVT_INPUT}
+
 # Raw range a single-register holding write may carry, per format. Writeback is
 # 16-bit only (32-bit writable channels are never subscribed), and a value
 # outside its format is refused, never masked: `& 0xFFFF` alone would turn an
 # s16 40000 into -25536 on the wire.
 _WRITE_RANGE_BY_FORMAT = {"u16": (0, 0xFFFF), "s16": (-0x8000, 0x7FFF)}
-_SUPPORTED_REG_TYPES = ("coil", "discrete", "input", "holding")
-_REGISTER_REG_TYPES = ("input", "holding")   # carry a numeric format
-_BIT_REG_TYPES = ("coil", "discrete")        # 1 bit, format ignored
-
-# A bare template name: no path separators, no traversal, no absolute path.
-_TEMPLATE_NAME_RE = re.compile(r"^[A-Za-z0-9._-]+$")
-
 # Modbus per-request maxima: FC03/04 registers, FC01/02 bits.
 _PROTO_MAX_REGS = 125
 _PROTO_MAX_BITS = 2000
 # Consecutive passes a block must fail while its channels read singly before it
 # is split for good.
 _GROUP_SPLIT_AFTER = 2
-
-
-class TemplateParseError(Exception):
-    """A template file could not be located or parsed into any poll channel."""
-
-
-class TemplateChannel:
-    """One decoded, supported channel flattened out of a template's channel list."""
-
-    __slots__ = ("name", "reg_type", "address", "fmt", "word_order",
-                 "scale", "offset", "wb_type", "units", "readonly", "words")
-
-    def __init__(self, name, reg_type, address, fmt, word_order,
-                 scale, offset, wb_type, units, readonly, words):
-        self.name = name
-        self.reg_type = reg_type
-        self.address = address
-        self.fmt = fmt
-        self.word_order = word_order
-        self.scale = scale
-        self.offset = offset
-        self.wb_type = wb_type
-        self.units = units
-        self.readonly = readonly
-        self.words = words
 
 
 class _ReadUnit:
@@ -192,65 +162,23 @@ def _build_read_units(channels, max_read, reg_hole, bit_hole) -> list:
     return units
 
 
-def _resolve_template_path(name: str) -> Path:
-    """Map a template `name` to a file under the drop-in dir, fail-closed.
-
-    Base dir = ``templates/`` beside this module, overridable by the env seam
-    ``SA02M_WB_TEMPLATES_DIR`` (mirrors SA02M_MQTT_CONFIG). Only a bare
-    ``[A-Za-z0-9._-]+`` name is accepted — a value from web-written YAML is
-    untrusted (docs/contracts/template-device.md §Security). The resolved path
-    must stay strictly inside the base dir (realpath containment check), so a
-    crafted name can never open an arbitrary file. Tries ``config-<name>.json``
-    then ``<name>.json``. Raises TemplateParseError on a bad name or a miss.
-    """
-    base = Path(os.environ.get(
-        "SA02M_WB_TEMPLATES_DIR", str(Path(__file__).resolve().parent / "templates")))
-    if not name or not _TEMPLATE_NAME_RE.match(name) or ".." in name:
-        raise TemplateParseError(f"invalid template name {name!r}")
-    base_real = base.resolve()
-    for fname in (f"config-{name}.json", f"{name}.json"):
-        cand = (base / fname).resolve()
-        # Containment floor: reject anything that escaped the base dir.
-        if cand.parent != base_real:
-            continue
-        if cand.is_file():
-            return cand
-    raise TemplateParseError(
-        f"template {name!r} not found in {base_real}")
-
-
-def _flatten_channels(node, out: list, on_skip) -> None:
-    """Walk a template's channel tree into a flat list of raw channel dicts.
-
-    A WB template's ``device.channels`` is mostly flat, but a group entry may
-    nest its own ``channels``. A sub-device entry (carries ``device_type`` or a
-    nested ``device``) is out of scope — loud-skipped, not descended into.
-    """
-    if not isinstance(node, list):
-        return
-    for item in node:
-        if not isinstance(item, dict):
-            continue
-        if "device_type" in item or "device" in item:
-            on_skip(item.get("name", "?"), "sub-device")
-            continue
-        if "channels" in item and "reg_type" not in item:
-            _flatten_channels(item.get("channels"), out, on_skip)
-            continue
-        out.append(item)
-
-
 class TemplatePoller(DevicePoller):
     """Poll a template-described device and publish it on WB-MQTT conventions."""
 
     def __init__(self, cfg: dict, pub: MQTTPublisher):
         super().__init__(cfg, pub)
         self._poll_s = float(cfg.get("poll_s", 2))
-        self._t_poll = 0.0
+        self._t_poll = -math.inf  # The first pass is due even just after boot.
         self._template_name = str(cfg.get("template", "")).strip()
         self._device_name = ""
         self._setup_writes: list[tuple[int, int]] = []
         self._channels: list[TemplateChannel] = []
+        self._event_channels: dict[tuple[int, int], TemplateChannel] = {}
+        # Owned by the port scheduler. One pending read per writable channel,
+        # in arrival order, with an earliest retry after a concurrent write.
+        self._event_readbacks: dict[TemplateChannel, float] = {}
+        self._first_answer: TemplateChannel | None = None
+        self._write_echo_lock = threading.Lock()
         self._units: list[_ReadUnit] = []
         # First channel of the unit a silent device's next window reads first
         # (the probe): the unit that answered last, or the one _next_probe
@@ -298,12 +226,7 @@ class TemplatePoller(DevicePoller):
             raise TemplateParseError(f"template {path} has no 'device' object")
         self._device_name = str(device.get("name") or device.get("device_type") or "")
 
-        raw_channels: list = []
-        _flatten_channels(device.get("channels"), raw_channels, self._skip)
-        for raw in raw_channels:
-            ch = self._parse_channel(raw)
-            if ch is not None:
-                self._channels.append(ch)
+        self._channels = parse_channels(device, self._skip, self.device_id)
 
         self._parse_setup(device.get("setup"))
 
@@ -314,6 +237,63 @@ class TemplatePoller(DevicePoller):
 
         max_read, reg_hole, bit_hole = self._parse_grouping(device)
         self._units = _build_read_units(self._channels, max_read, reg_hole, bit_hole)
+        selected = self.cfg.get("fmb_event_channels", [])
+        if self.bus.transport == "rtu" and self.cfg.get("fast_modbus", True) is True:
+            if not isinstance(selected, list) or not all(isinstance(name, str) for name in selected):
+                self.log.warning("fmb_event_channels must be a list of channel names; using classic polling")
+            elif selected:
+                candidates = event_candidates(self._channels)
+                for name in dict.fromkeys(selected):
+                    ch = candidates.get(name)
+                    if ch is None:
+                        self.log.warning("template %s: no unique event mapping for channel %r",
+                                         self._template_name, name)
+                    else:
+                        self._event_channels[_EVENT_TYPES[ch.reg_type], ch.address] = ch
+
+    def fmb_event_ranges(self):
+        # Each mask confirms one channel start, independently of its neighbour.
+        return [(kind, address, 1) for kind, address in self._event_channels]
+
+    def fmb_event_width(self, kind, reg):
+        ch = self._event_channels.get((kind, reg))
+        if ch is not None:
+            return 1 if ch.reg_type in _BIT_REG_TYPES else 2 * ch.words
+        return None
+
+    def fmb_query_context(self):
+        # Request dispatch with the event poll's start time for the writeback guard.
+        return None
+
+    def fmb_firmware_invalidate(self):
+        # A reboot carries no values. Resample the new state on the next port
+        # slice and establish classic readiness again before arming events.
+        self._classic_ok_count = 0
+        self._event_readbacks.clear()
+        self._first_answer = None
+        self._t_poll = -math.inf
+        with self._write_echo_lock:
+            self._wb_recent.clear()
+
+    def fmb_dispatch(self, kind, reg, value):
+        self.fmb_dispatch_observed(kind, reg, value, query_started_at=self._monotonic(), context=None)
+
+    def fmb_dispatch_observed(self, kind, reg, value, *, query_started_at, context):
+        ch = self._event_channels.get((kind, reg))
+        if ch is None or type(value) is not int:
+            return
+        # A coil/discrete change carries one logical value in its own byte.
+        if ch.reg_type in _BIT_REG_TYPES and value not in (0, 1):
+            return
+        width = self.fmb_event_width(kind, reg)
+        if not 0 <= value < (1 << (width * 8)):
+            return
+        if ch.writable:
+            # The slave may have queued this DATA before a more recent write.
+            # Confirm the physical register on the next classic port slice.
+            self._event_readbacks.setdefault(ch, 0.0)
+            return
+        self._publish_scalar(ch, value, query_started_at)
 
     def _parse_grouping(self, device: dict) -> tuple[int, int, int]:
         """Device-level block-read fields; anything but a non-negative int is
@@ -328,76 +308,6 @@ class TemplatePoller(DevicePoller):
                 val = default
             out.append(val)
         return out[0], out[1], out[2]
-
-    def _parse_channel(self, raw: dict):
-        name = raw.get("name")
-        if not isinstance(name, str) or not name:
-            return None
-        # Disabled channels are a valid config choice — excluded silently.
-        if raw.get("enabled") is False:
-            return None
-
-        reg_type = str(raw.get("reg_type", "")).lower()
-        if reg_type not in _SUPPORTED_REG_TYPES:
-            self._skip(name, f"reg_type {reg_type!r}")
-            return None
-
-        # A composite / conditional / byte-swapped channel is out of the subset.
-        if "consists_of" in raw:
-            self._skip(name, "consists_of composite")
-            return None
-        if "condition" in raw:
-            self._skip(name, "condition expression")
-            return None
-        if raw.get("byte_order"):
-            self._skip(name, "byte_order in-register swap")
-            return None
-
-        # A bitfield address ("reg:shift:width") is any colon-form string.
-        addr_raw = raw.get("address")
-        if isinstance(addr_raw, str) and ":" in addr_raw:
-            self._skip(name, "bitfield address")
-            return None
-        try:
-            address = int(addr_raw)
-        except (TypeError, ValueError):
-            self._skip(name, f"address {addr_raw!r}")
-            return None
-
-        wb_type = str(raw.get("type", "value"))
-        units = str(raw.get("units", "") or "")
-        readonly = bool(raw.get("readonly", True))
-
-        if reg_type in _BIT_REG_TYPES:
-            # A bit channel carries no numeric format; default WB type 'switch'.
-            return TemplateChannel(
-                name=name, reg_type=reg_type, address=address, fmt="bit",
-                word_order="big_endian", scale=1, offset=0,
-                wb_type=raw.get("type", "switch"), units=units,
-                readonly=readonly, words=1)
-
-        fmt = str(raw.get("format", "u16")).lower()
-        if fmt not in _WORDS_BY_FORMAT:
-            self._skip(name, f"format {fmt!r}")
-            return None
-
-        word_order = str(raw.get("word_order", "big_endian")).lower()
-        if word_order not in ("big_endian", "little_endian"):
-            self._skip(name, f"word_order {word_order!r}")
-            return None
-
-        try:
-            scale = float(raw.get("scale", 1))
-            offset = float(raw.get("offset", 0))
-        except (TypeError, ValueError):
-            self._skip(name, "non-numeric scale/offset")
-            return None
-
-        return TemplateChannel(
-            name=name, reg_type=reg_type, address=address, fmt=fmt,
-            word_order=word_order, scale=scale, offset=offset,
-            wb_type=wb_type, units=units, readonly=readonly,
-            words=_WORDS_BY_FORMAT[fmt])
 
     def _parse_setup(self, setup) -> None:
         """Collect template `device.setup` holding-register init writes.
@@ -417,39 +327,18 @@ class TemplatePoller(DevicePoller):
                 continue
             try:
                 self._setup_writes.append((int(addr_raw), int(val_raw)))
-            except (TypeError, ValueError):
+            except (OverflowError, TypeError, ValueError):
                 self._skip(entry.get("title", "setup"), "non-integer setup entry")
 
     # --- decode --------------------------------------------------------------
 
-    def _combine32(self, w0: int, w1: int) -> int:
-        """Combine two 16-bit words per word_order into a 32-bit pattern.
-
-        big_endian (WB default): the word at the LOWER address is the high word.
-        little_endian: the lower-address word is the low word.
-        """
-        if self._cur_little:
-            return ((w1 & 0xFFFF) << 16) | (w0 & 0xFFFF)
-        return ((w0 & 0xFFFF) << 16) | (w1 & 0xFFFF)
-
-    def _decode(self, ch: TemplateChannel, words: list) -> float:
-        self._cur_little = (ch.word_order == "little_endian")
-        if ch.fmt == "u16":
-            raw = words[0] & 0xFFFF
-        elif ch.fmt == "s16":
-            w = words[0] & 0xFFFF
-            raw = w - 0x10000 if w >= 0x8000 else w
-        elif ch.fmt == "u32":
-            raw = self._combine32(words[0], words[1])
-        elif ch.fmt == "s32":
-            raw = self._combine32(words[0], words[1])
-            if raw >= 0x80000000:
-                raw -= 0x100000000
+    def _decode_scalar(self, ch: TemplateChannel, raw: int) -> float:
+        if ch.fmt == "s16" and raw >= 0x8000:
+            raw -= 0x10000
+        elif ch.fmt == "s32" and raw >= 0x80000000:
+            raw -= 0x100000000
         elif ch.fmt == "float":
-            bits = self._combine32(words[0], words[1])
-            raw = struct.unpack(">f", struct.pack(">I", bits))[0]
-        else:  # pragma: no cover - unreachable, filtered at parse
-            raw = 0
+            raw = struct.unpack(">f", struct.pack(">I", raw))[0]
         return raw * ch.scale + ch.offset
 
     def _format_value(self, ch: TemplateChannel, value: float) -> str:
@@ -480,7 +369,7 @@ class TemplatePoller(DevicePoller):
         for ch in self._channels:
             self.pub.pub_control_meta(self.device_id, ch.name, "type", ch.wb_type)
             self.pub.pub_control_meta(
-                self.device_id, ch.name, "readonly", "1" if ch.readonly else "0")
+                self.device_id, ch.name, "readonly", "0" if ch.writable else "1")
             if ch.units:
                 self.pub.pub_control_units(self.device_id, ch.name, ch.units)
         self._setup_writeback()
@@ -490,8 +379,8 @@ class TemplatePoller(DevicePoller):
             return
         now = self._monotonic()
         if now - self._t_poll < self._poll_s:
+            self._confirm_pending_event(now)
             return
-        self._t_poll = now
         order = self._pass_order()
         self._answered_now = False
         failed: list[_ReadUnit] = []
@@ -520,8 +409,33 @@ class TemplatePoller(DevicePoller):
                 unit.alive = False
         if to_split:
             self._split_units(to_split)
+        if self._first_answer is not None:
+            # A single register or one grouped read needs one more independent
+            # answer to arm FC46. Recheck one channel that actually answered.
+            if self._classic_ok_count == 1:
+                self._event_readbacks.setdefault(self._first_answer, 0.0)
+            self._first_answer = None
+        # ScanHold interrupts a pass without spending its interval. Resume it
+        # when the port is released, including the first read after reboot.
+        self._t_poll = now
         self._passes += 1
         DeviceLiveCache.flush_file(self.device_id)
+
+    def _confirm_pending_event(self, now):
+        ch = next((ch for ch, due in self._event_readbacks.items() if due <= now), None)
+        if ch is None:
+            return
+        with DeviceLiveCache.flush_changes():
+            try:
+                words = self._read_channel(ch)
+            except ScanHold:
+                raise
+            except Exception as exc:
+                self.log.debug("template event readback %s: %s", ch.name, exc)
+                del self._event_readbacks[ch]
+                self.pub.pub_error(self.device_id, ch.name, "r")
+                return
+            self._publish_value(ch, words, now)
 
     def _note_read(self, unit: _ReadUnit, ok: bool) -> None:
         """Feed one read's outcome to the stop and probe state."""
@@ -676,10 +590,36 @@ class TemplatePoller(DevicePoller):
         return True
 
     def _publish_value(self, ch: TemplateChannel, words: list, t_read: float) -> None:
+        if self._event_channels and self._classic_ok_count == 1:
+            self._first_answer = ch
+        raw = words[0] & 0xFFFF
+        if ch.words == 2:
+            second = words[1] & 0xFFFF
+            high, low = (second, raw) if ch.word_order == "little_endian" else (raw, second)
+            raw = (high << 16) | low
+        # A write worker may finish between the guard check and the publish.
+        # Serialize publication with its echo; never hold this lock on Modbus I/O.
+        with self._write_echo_lock:
+            self._publish_scalar(ch, raw, t_read)
+            if ch in self._event_readbacks:
+                write = self._wb_recent.get(ch.name)
+                if write is None:
+                    del self._event_readbacks[ch]
+                else:
+                    # A newer write suppressed this snapshot. Recheck once the
+                    # grace expires even if the device sends no further event.
+                    self._event_readbacks[ch] = write[1] + WRITEBACK_POLL_GRACE_S
+
+    def _publish_scalar(self, ch: TemplateChannel, raw: int, t_read: float) -> None:
+        # WB event payloads already represent the complete little-endian scalar.
+        # Word order only applies while assembling an FC03/04 register sequence.
         if ch.reg_type in _BIT_REG_TYPES:
-            self._wb_publish_poll(ch.name, str(words[0] & 1), t_read)
+            self._wb_publish_poll(ch.name, str(raw & 1), t_read)
         else:
-            value = self._decode(ch, words)
+            value = self._decode_scalar(ch, raw)
+            if not math.isfinite(value):
+                self.pub.pub_error(self.device_id, ch.name, "r")
+                return
             self._wb_publish_poll(
                 ch.name, self._format_value(ch, value), t_read)
         self.pub.pub_error(self.device_id, ch.name, "")
@@ -713,6 +653,10 @@ class TemplatePoller(DevicePoller):
 
     # --- writeback (writable channels) ---------------------------------------
 
+    def _wb_done(self, name, value):
+        with self._write_echo_lock:
+            super()._wb_done(name, value)
+
     def _setup_writeback(self) -> None:
         for ch in self._channels:
             if ch.readonly or ch.reg_type not in ("holding", "coil"):
@@ -743,6 +687,7 @@ class TemplatePoller(DevicePoller):
             self._wb_submit(ch.name, lambda: self._writeback(ch, payload))
         return cb
 
+    @DeviceLiveCache.flush_changes()
     def _writeback(self, ch: TemplateChannel, payload: str) -> None:
         if self._wb_offline_skip(ch.name):
             return
@@ -755,7 +700,7 @@ class TemplatePoller(DevicePoller):
             else:
                 # Holding register: invert scale/offset back to a raw u16 word.
                 value = float(payload)
-                raw = int(round((value - ch.offset) / ch.scale)) if ch.scale else 0
+                raw = int(round((value - ch.offset) / ch.scale))
                 lo, hi = _WRITE_RANGE_BY_FORMAT.get(ch.fmt, (1, 0))  # unknown → refuse
                 if not lo <= raw <= hi:
                     # Same refusal path as a non-numeric payload: no bus

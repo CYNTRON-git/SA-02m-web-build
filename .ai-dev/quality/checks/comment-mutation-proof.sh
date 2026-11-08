@@ -145,6 +145,7 @@ led-shared-home|scripts/05-mqtt.sh|sa02m_install_led_pkg "$BASE_DIR"
 led-shared-home|scripts/update-www-only.sh|sa02m_install_led_pkg "$REPO_ROOT"
 gateway-acl-contract|www/network_config/cgi-bin/gateway_config.cgi|norm_allow_from(name, pcfg, all_errors)
 mqtt-config-transport-contract|www/network_config/cgi-bin/mqtt_config.cgi|refused = bridge_bus.validate_devices(devices)
+mqtt-template-events-browser|www/network_config/static/js/mqtt.js|dev.fmb_event_channels = [...selected];
 mqtt-tcp-probe-contract|www/network_config/cgi-bin/mqtt_tcp_probe.cgi|web_csrf_validate
 mqtt-set-contract|www/network_config/cgi-bin/mqtt_set.cgi|timeout 5 mosquitto_pub
 mqtt-set-contract|www/network_config/cgi-bin/mqtt_set.cgi|web_csrf_validate
@@ -486,7 +487,9 @@ run_gate() {  # $1 = gate id ; returns the gate's exit status
     [ -n "$cmd" ] || return 2
     # The runner's per-row QUALITY_SKIP_LOG is THIS row's: a gate run here must
     # not write its skips into it (run.mjs header, PARTIAL).
-    ( unset QUALITY_SKIP_LOG; cd "$TREE" && bash -c "$cmd" ) >/dev/null 2>&1
+    # The temporary Git tree has no installed dev packages. Let its CommonJS
+    # browser harnesses resolve the same Playwright version as the build check.
+    ( unset QUALITY_SKIP_LOG; cd "$TREE" && NODE_PATH="$ROOT/scripts/dev/node_modules${NODE_PATH:+:$NODE_PATH}" bash -c "$cmd" ) >/dev/null 2>&1
 }
 
 # The token a developer would actually use to disable a line in THIS file type.

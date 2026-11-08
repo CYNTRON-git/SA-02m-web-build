@@ -12,28 +12,22 @@ check_auth() {
 }
 if ! check_auth; then echo '{"ok":false,"error":"unauthorized","controls":{}}'; exit 0; fi
 
-SNAP_PY="/opt/sa02m-modbus-mqtt/mqtt_live_snapshot.py"
-CACHE_DIR="/run/sa02m-modbus-mqtt"
-DEVICE=""
-if [ -n "${QUERY_STRING:-}" ]; then
-    DEVICE=$(printf '%s' "${QUERY_STRING}" | tr '&' '\n' | sed -n 's/^device=\(.*\)$/\1/p' | head -1)
-    DEVICE=$(printf '%b' "${DEVICE//%/\\x}")
-fi
-
-if [ -z "$DEVICE" ]; then
+SNAP_PY="${SA02M_BRIDGE_LIB_DIR:-/opt/sa02m-modbus-mqtt}/mqtt_live_snapshot.py"
+CACHE_DIR="${SA02M_MQTT_LIVE_CACHE:-/run/sa02m-modbus-mqtt}"
+if [ -z "${QUERY_STRING:-}" ]; then
     echo '{"ok":false,"error":"device required","controls":{}}'
     exit 0
 fi
 
-case "$DEVICE" in
-    *[!a-zA-Z0-9._-]*|'')
-        echo '{"ok":false,"error":"invalid device","controls":{}}'
-        exit 0
-        ;;
-esac
-
-CACHE_FILE="${CACHE_DIR}/${DEVICE}.json"
-if [ -f "$CACHE_FILE" ]; then
+# Keep the fast path for a plain, literal filename. Pass all encoded or
+# hierarchical IDs to Python unchanged so NUL cannot disappear in bash.
+CACHE_FILE=""
+if [[ "$QUERY_STRING" =~ ^device=[a-zA-Z0-9_-][a-zA-Z0-9._-]{0,199}$ &&
+      "$QUERY_STRING" != device=_roster && "$QUERY_STRING" != *.profile && "$QUERY_STRING" != *.events ]]; then
+    DEVICE=${QUERY_STRING#device=}
+    CACHE_FILE="${CACHE_DIR}/${DEVICE}.json"
+fi
+if [ -n "${CACHE_FILE:-}" ] && [ -f "$CACHE_FILE" ]; then
     now=$(date +%s)
     mtime=$(stat -c %Y "$CACHE_FILE" 2>/dev/null || echo 0)
     age=$((now - mtime))
@@ -55,4 +49,7 @@ if [ ! -f "$SNAP_PY" ]; then
     exit 0
 fi
 
-/usr/bin/python3 "$SNAP_PY" "$DEVICE" 2>/dev/null
+if [ -n "$CACHE_FILE" ]; then
+    exec /usr/bin/python3 "$SNAP_PY" "$DEVICE"
+fi
+exec /usr/bin/python3 "$SNAP_PY"

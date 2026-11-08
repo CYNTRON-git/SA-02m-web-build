@@ -150,6 +150,7 @@ case "${WEB_ROOT:-}" in
 esac
 
 log INFO "Деплой файлов в $WEB_ROOT"
+sa02m_install_mqtt_web_deps "$SCRIPT_DIR/../opt/sa02m-modbus-mqtt" /opt/sa02m-modbus-mqtt || exit 1
 mkdir -p "$WEB_ROOT"
 
 # Полная очистка каталога веб-приложения (остатки старого проекта / чужие cgi, html, static)
@@ -159,6 +160,7 @@ if [ -d "$WEB_ROOT" ]; then
 fi
 
 mkdir -p "$WEB_ROOT/cgi-bin" "$WEB_ROOT/static/css" "$WEB_ROOT/static/js"
+sa02m_atomic_install -m 0644 -o root -g www-data "$WWW_DIR/cgi-bin/lib_mqtt_write_controls.sh" "$WEB_ROOT/cgi-bin/lib_mqtt_write_controls.sh" || exit 1
 cp -r "$WWW_DIR/." "$WEB_ROOT/"
 
 REPO_ROOT="$SCRIPT_DIR/.."

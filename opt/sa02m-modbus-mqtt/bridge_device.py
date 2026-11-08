@@ -579,11 +579,16 @@ class PortCycleScheduler:
                 # POLLING task (Low) — Force if balancing threshold hit or no FMB.
                 read_at_least_one = force_poll or not has_fmb
                 t0 = time.monotonic()
+                did = False
                 try:
                     did = self._classic_slice(FMB_MAX_POLL_TIME_S, read_at_least_one)
+                    if self._fmb is not None and not self._stop.is_set():
+                        self._fmb.configure_template_step()
                 except bridge_serial.ScanHold:
                     self._stop.wait(0.05)
                     continue
+                except Exception as e:
+                    self._log.warning("classic poll / template subscription: %s", e)
                 spent = time.monotonic() - t0
                 if force_poll:
                     high_time_accum = 0.0

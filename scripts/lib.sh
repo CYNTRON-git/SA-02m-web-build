@@ -462,6 +462,16 @@ sa02m_stamp_runner_version() {
     log OK "runner.version = $ver"
 }
 
+# The web tree can be refreshed before 05-mqtt. Keep its CGI imports and
+# query readers usable with the installed bridge until its own update runs.
+sa02m_install_mqtt_web_deps() {
+    local src=$1 dst=$2 f
+    [ -f "$dst/modbus_mqtt_bridge.py" ] || return 0
+    for f in bridge_meta.py bridge_template_channels.py mqtt_live_snapshot.py mqtt_monitor_poll.py mqtt_monitor_stream.py; do
+        sa02m_atomic_install -m 0755 -o root -g root "$src/$f" "$dst/$f" || return 1
+    done
+}
+
 # Install the shared Carel register-map package (repo opt/sa02m-carel) to
 # /opt/sa02m-carel. THREE services import it from three different trees under
 # different users - the flasher daemon (sa02m-flasher,

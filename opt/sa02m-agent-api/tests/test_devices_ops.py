@@ -63,6 +63,34 @@ class _Base(unittest.TestCase):
                                json.dumps(args).encode("utf-8"))
 
 
+class MqttLiveCache(_Base):
+    def test_both_read_ops_return_mqtt_ids_and_fresh_telemetry_only(self):
+        from unittest.mock import patch
+
+        root = os.path.join(self.tmp.name, "live")
+        os.mkdir(root)
+        encoded = "@7c6ffaaed1fd44204542857ad2515509ce94596cf6c2c49f5c3e894a4e212d4d"
+        good = {"device": "room/strip", "controls": {"power": "1"}}
+        old = {"controls": {"di_1": "0"}}
+        for name, data in ((encoded, good), ("flat", old), ("_roster", {"devices": []}),
+                           (encoded + ".profile", good), (encoded + ".events", good),
+                           ("@" + "2" * 64, old), ("other", good), ("stale", old)):
+            path = os.path.join(root, name + ".json")
+            with open(path, "w", encoding="utf-8") as out:
+                json.dump(data, out)
+            if name == "stale":
+                os.utime(path, (0, 0))
+        with patch.dict(os.environ, {"SA02M_MQTT_RUN": root}):
+            status, live = self.get("/api/v1/mqtt/devices/live")
+            self.assertEqual(status, 200)
+            self.assertEqual({row["device"]: row["data"] for row in live["result"]},
+                             {"room/strip": good, "flat": old})
+            status, snap = self.get("/api/v1/mqtt/topics/snapshot")
+            self.assertEqual(status, 200)
+            self.assertEqual({row["device"]: row["keys"] for row in snap["result"]},
+                             {"room/strip": list(good), "flat": list(old)})
+
+
 class DevicesGrammar(_Base):
     """The op forwards the daemon's keys; ctx.unix_request is recorded."""
 

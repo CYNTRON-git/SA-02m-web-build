@@ -341,6 +341,40 @@ class TestManifestAndPackage(unittest.TestCase):
         tier_on = pack.semver_key(pack.MIN_UPDATER) >= pack.semver_key(pack.FIX_ETH_OTA_SINCE)
         self.assertEqual("/usr/local/bin/fix-eth.sh" in [d["dst"] for d in default], tier_on)
 
+    def test_template_dependencies_in_tracked_release_payload(self) -> None:
+        pack = self._load_packer()
+        bridge = "opt/sa02m-modbus-mqtt/bridge_template_channels.py"
+        template = "opt/sa02m-modbus-mqtt/templates/config-demo.json"
+        helper = "www/network_config/cgi-bin/lib_mqtt_write_controls.sh"
+        version = "www/network_config/VERSION"
+        selected = {bridge, template, helper, version}
+        excluded = {"opt/other/sa02m-modbus-mqtt/secret", "opt/sa02m-orphan",
+                    "private/secrets", "etc/sa02m_mqtt.env", "www/network_config_extra/file"}
+        with tempfile.TemporaryDirectory() as tmp:
+            # Use the release selection from a real index, without --allow-dirty's overlay.
+            root = Path(tmp)
+            pack.ROOT = root
+            subprocess.run(["git", "init", "-q"], cwd=root, check=True)
+            for path in selected | excluded:
+                source = root / path
+                source.parent.mkdir(parents=True, exist_ok=True)
+                source.write_bytes((_REPO / path).read_bytes() if path in (bridge, helper)
+                                   else path.encode())
+            subprocess.run(["git", "add", "-f", "."], cwd=root, check=True)
+            (root / "opt/sa02m-modbus-mqtt/untracked.env").write_text("private")
+            files = pack.list_allowlisted_files(pack.load_allowlist_patterns())
+            self.assertEqual(set(files), selected)
+            deploy = {d["src"]: d for d in pack.build_deploy_list(files, pack.load_deploy_map())}
+            self.assertEqual((deploy[bridge]["dst"], deploy[bridge]["mode"], deploy[bridge]["owner"]),
+                             ("/" + bridge, "0644", "root:root"))
+            self.assertEqual((deploy[helper]["dst"], deploy[helper]["mode"], deploy[helper]["owner"]),
+                             ("/var/" + helper, "0755", "www-data:www-data"))
+            payload, _ = pack.make_payload_tar_gz(root, files)
+            with tarfile.open(fileobj=io.BytesIO(payload), mode="r:gz") as tf:
+                self.assertEqual(set(tf.getnames()), selected)
+                for path in (bridge, helper):
+                    self.assertEqual(tf.extractfile(path).read(), (_REPO / path).read_bytes())
+
     def test_packer_min_updater_flag(self) -> None:
         # --min-updater lets the release engineer build a pack for boards
         # already on >= FIX_ETH_OTA_SINCE without a code edit; an older board

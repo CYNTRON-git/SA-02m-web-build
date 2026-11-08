@@ -5,6 +5,19 @@
 
 ---
 
+## 1.0.7.35 - Select Fast Modbus channels for serial templates (November 2026)
+
+### Modbus and MQTT
+
+- Serial template devices can subscribe to individual channels. The bridge publishes accepted events on the same MQTT controls, in the same units as a register read. Existing configurations continue polling until channels are selected.
+- A notification on a writable control schedules an addressed read so a queued event cannot undo a confirmed write on screen. Subscription attempts are spread across polling cycles and addresses so unsupported devices can continue answering ordinary reads.
+- The web panel and MQTT monitor show accepted input events and read errors before the next scheduled register read. The panel also refreshes devices with numeric ID zero.
+- The bridge validates MQTT device paths and template control names before polling or registering write commands. Nested device IDs such as `room/strip` retain their existing topics. Unsafe declarations cannot issue relay commands or overwrite another control's metadata.
+- The MQTT panel lists channels supported by the template parser, including registers with hexadecimal addresses. The serial device configuration stores the operator's event selection. Modbus TCP templates continue using ordinary reads.
+- The Fast Modbus receiver accepts an addressed reboot record with a zero unacknowledged-event count, acknowledges the device and reconfigures its subscriptions. The broadcast end-of-events frame keeps its existing handling.
+- Event requests share the classic poller's serial settings and port handle on 8N1 and 8N2 lines. A port configured with conflicting stop bits reports the conflict and skips event polling.
+- Full installs, web refreshes and signed offline updates include the template parser and web write-control list. The offline packer now includes tracked files under declared `opt/sa02m-*/` directories.
+
 ## 1.0.7.34 - Fast Modbus power events for CE-02m-3 (November 2026)
 
 ### Fast Modbus and MQTT

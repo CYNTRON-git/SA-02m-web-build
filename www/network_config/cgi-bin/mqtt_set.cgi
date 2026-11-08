@@ -69,7 +69,8 @@ fi
 #  MTD values are the physical number the template poller inverts by scale.
 #  load_disconnect is 0/1 for a Mercury configurator; the bridge drops it
 #  unless that role is active, and the value is not a secret.)
-if ! [[ "$CONTROL" =~ ^(do_([1-9]|1[0-6])|ao_([1-9]|1[0-2])|ai_type_([1-9]|1[0-2])|buzzer|leds|unit_on|setpoint|setpoint_summer|fan_supply|fan_step|alarm_reset|detection_distance|detection_shielding_distance|admission_confirmation_delay|departure_disappearance_delay|trigger_sensitivity|maintain_sensitivity|entrance_distance_reduction|load_disconnect)$ ]]; then
+. "$(dirname "$0")/lib_mqtt_write_controls.sh"
+if [ -z "${MQTT_WEB_WRITE_PATTERN:-}" ] || ! [[ "$CONTROL" =~ $MQTT_WEB_WRITE_PATTERN ]]; then
     echo '{"ok":false,"error":"bad_control"}'
     exit 0
 fi
