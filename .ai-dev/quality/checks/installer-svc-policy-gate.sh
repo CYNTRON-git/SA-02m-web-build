@@ -183,6 +183,30 @@ else
     fail "(g) install.sh lost the 'Установка завершена' banner (the wrapper's post-check greps it)"
 fi
 
+# An ordering dependency lets enabled services start together. An activation
+# dependency would start the disabled poller and claim the gateway's UART.
+for unit in etc/systemd/sa02m-devices-{api,logger}.service; do
+    if awk -F= '
+        /^[[:space:]]*[#;]/ { next }
+        /^[[:space:]]*\[/ { unit=($0 ~ /^[[:space:]]*\[Unit\][[:space:]]*$/); next }
+        unit {
+            line=line $0
+            if (sub(/\\$/, " ", line)) next
+            $0=line; line=""
+            gsub(/^[[:space:]]+|[[:space:]]+$/, "", $1)
+            if ($2 ~ /(^|[[:space:]])sa02m-modbus-mqtt\.service([[:space:]]|$)/) {
+                if ($1 == "After") ordered=1
+                if ($1 ~ /^(Wants|Requires|BindsTo|Upholds|OnSuccess|OnFailure)$/) activates=1
+            }
+        }
+        END { exit !(ordered && !activates) }
+    ' "$unit"; then
+        pass "$unit preserves independent MQTT activation"
+    else
+        fail "$unit must order after the Modbus poller without starting it"
+    fi
+done
+
 if [ "$fails" -eq 0 ]; then
     echo "installer-svc-policy-gate: all checks passed"
     exit 0

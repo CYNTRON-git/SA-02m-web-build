@@ -13,6 +13,7 @@ from __future__ import annotations
 
 from bridge_serial import ScanHold
 from bridge_mqtt import DeviceLiveCache
+from bridge_mr02m_map import MR02M_AI_CHANNEL_STRIDE, MR02M_AI_HOLDING_BASE, MR02M_MODULE_TYPES
 
 import sys
 import time
@@ -121,7 +122,10 @@ def fmb_configure_reply_confirms(resp: bytes, addr: int,
                                  requested: list[tuple[int, int | bytes]]) -> bool:
     """True only when the reply's mask equals the requested state on every
     requested register (padding bits past COUNT are not compared)."""
-    mask = fmb_configure_reply_mask(resp, addr)
+    return _mask_confirms(fmb_configure_reply_mask(resp, addr), requested)
+
+
+def _mask_confirms(mask, requested) -> bool:
     want = fmb_expected_mask(requested)
     if mask is None or len(mask) != len(want):
         return False
@@ -136,6 +140,10 @@ def fmb_configure_reply_confirms(resp: bytes, addr: int,
 
 
 _WB_CONTROL_WIDTH = {1: 1, 2: 1, 3: 2, 4: 2, 0x0f: 0}
+_MR_AI_EVENT_RANGES = {
+    (FMB_EVT_INPUT, MR02M_AI_HOLDING_BASE + 3, (ai - 1) * MR02M_AI_CHANNEL_STRIDE + 1)
+    for _, _, _, ai in MR02M_MODULE_TYPES.values() if ai
+}
 
 
 class _WbEvent(NamedTuple):
@@ -334,7 +342,7 @@ class FastModbusEventPortManager:
         """One configure pass over the still-unacked ranges. Per-range
         graceful: a rejected range stays on classic polling while the rest
         get events. Returns True when no range is left pending."""
-        def _try(frame: bytes, requested) -> tuple[bool, str]:
+        def _try(frame: bytes, requested, producer_map=None) -> tuple[bool, str]:
             try:
                 # ACK: [addr][0x46][0x18][mask_len][mask…][CRC] — mask_len
                 # depends on count; leading 0xFF arbitration noise possible.
@@ -344,13 +352,14 @@ class FastModbusEventPortManager:
             except Exception as e:
                 return False, f" ({e})"
             if requested is not None:
-                if fmb_configure_reply_confirms(resp, addr, requested):
-                    return True, ""
                 mask = fmb_configure_reply_mask(resp, addr)
+                alternatives = (requested,) if producer_map is None else (requested, producer_map)
+                if any(_mask_confirms(mask, settings) for settings in alternatives):
+                    return True, ""
                 return False, (
                     " (reply mask %s, want %s)"
                     % (mask.hex() if mask is not None else "none/CRC-bad",
-                       fmb_expected_mask(requested).hex()))
+                       " or ".join(fmb_expected_mask(s).hex() for s in alternatives)))
             # Legacy has one flags=OK byte, not a register mask. Reusing the
             # decoder retains address/length/CRC checks on this fallback too.
             flags = fmb_configure_reply_mask(resp, addr)
@@ -379,9 +388,15 @@ class FastModbusEventPortManager:
                     continue
                 build = (build_fmb_configure_events_wb if contract == "wb"
                          else build_fmb_configure_events)
+                producer_map = None
+                if (contract == "wb" and dev["type"] == "mr02m"
+                        and (evt_type, start_reg, count) in _MR_AI_EVENT_RANGES):
+                    # One uniform priority fits a single firmware table slot. Some MR
+                    # modules acknowledge only the scaled value in each channel.
+                    producer_map = [(count, bytes(i % MR02M_AI_CHANNEL_STRIDE == 0 for i in range(count)))]
                 ok, attempt_err = _try(
                     build(addr, evt_type, start_reg, count, priority),
-                    [(count, priority)] if contract == "wb" else None)
+                    [(count, priority)] if contract == "wb" else None, producer_map)
                 err = err or attempt_err
                 if ok:
                     used = contract

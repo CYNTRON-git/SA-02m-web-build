@@ -489,6 +489,36 @@ unset SA02M_ROOTFS_BUILD SA02M_ROOTFS_ROOT
 
 echo "── 7. package tiers + pip ──"
 
+# Run the module's package section against offline package inventories.
+# Buffer the section so a missing boundary cannot run adjacent system setup.
+awk '/^sa02m_apt_update$/ { found = 1; next }
+     found && /^# .*User hmi / { print section; done = 1; exit }
+     found { section = section $0 "\n" }
+     END { if (!done) exit 1 }' scripts/01-system.sh > "$T/base-packages.sh" \
+    || { echo "FAIL  cannot isolate the 01-system.sh package section"; exit 1; }
+gpio_offline_log() (
+    local has_gpiod=$1 runtime=$2
+    export SA02M_ONLINE_CACHE=no
+    LOGCAP=""
+    dpkg() {
+        case "$2" in
+            gpiod) [ "$has_gpiod" = yes ] || return 1 ;;
+            libgpiod*) [ "$2" = "$runtime" ] || return 1 ;;
+        esac
+        printf 'ii  %s  1  armhf\n' "$2"
+    }
+    source "$T/base-packages.sh" || exit 1
+    printf '%s' "$LOGCAP"
+)
+for runtime in libgpiod2t64 libgpiod2; do
+    gpio_log=$(gpio_offline_log yes "$runtime") && [ -z "$gpio_log" ] \
+        && ok "gpiod with $runtime installed: no package warnings" \
+        || bad "gpiod with $runtime installed caused package warnings: $gpio_log"
+done
+gpio_log=$(gpio_offline_log no libgpiod2t64) && [[ "$gpio_log" == *"[WARN] ОФФЛАЙН: опциональные пакеты пропущены: gpiod ("* ]] \
+    && ok "missing gpiod: the offline optional warning names the CLI package" \
+    || bad "missing gpiod did not produce its optional warning: $gpio_log"
+
 # 7a. thirdparty tier in refresh ⇒ NO apt-get + the INFO
 reset_case
 export SA02M_INSTALL_MODE=refresh

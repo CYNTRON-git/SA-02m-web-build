@@ -52,7 +52,7 @@ class TemplateEventReadback(unittest.TestCase):
 
     def test_queued_prewrite_value_after_matching_classic_read_and_new_external_change(self):
         self.change(8)
-        self.p._t_poll = 0
+        self.p._t_poll -= self.p._poll_s
         self.p.poll_io()
         self.assertNotIn('trigger_sensitivity', self.p._wb_recent)
         self.reset()
@@ -108,7 +108,7 @@ class TemplateEventReadback(unittest.TestCase):
         self.pub.pub_control.assert_not_called()
         self.bank.read_holding_registers.side_effect = None
         self.bank.regs[4] = 13
-        self.p._t_poll = 0
+        self.p._t_poll -= self.p._poll_s
         self.slice()
         self.pub.pub_control.assert_any_call(self.id, 'trigger_sensitivity', '13')
 

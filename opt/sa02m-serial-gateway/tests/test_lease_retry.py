@@ -4,6 +4,8 @@ A scripted broker on a real Unix socket that appears late and answers the
 `acquire` with an SCM_RIGHTS descriptor, as sa02m_ports.broker does.
 """
 import array
+import asyncio
+from concurrent.futures import ThreadPoolExecutor
 import json
 import os
 from pathlib import Path
@@ -15,7 +17,9 @@ import time
 import pytest
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "sa02m-port-coordinator"))
 import serial_gateway as sg  # noqa: E402
+from sa02m_ports import broker  # noqa: E402
 
 
 def late_broker(path, delay, log):
@@ -104,3 +108,141 @@ def test_a_refusal_is_not_retried(socket_path):
     assert lock.acquire() is False
     assert lock.error == "UART already leased"
     assert time.monotonic() - started < 2
+
+
+@pytest.mark.parametrize("recovered", ["listening", "stopped"])
+def test_gateway_recovers_only_after_mqtt_can_yield(tmp_path, monkeypatch, recovered):
+    state = "active"
+    pause = str(tmp_path / "pause.sock")
+    monkeypatch.setattr(broker, "MQTT_PAUSE_SOCKET", pause)
+    monkeypatch.setattr(broker.System, "_state", lambda self, unit: state)
+    monkeypatch.setattr(broker.System, "MQTT_PAUSE_RETRIES", 0)
+    with pytest.raises(broker.PortError) as refused:
+        broker.System().mqtt_pause("/dev/COM4", pause)
+
+    async def run(executor, listener, slave):
+        nonlocal state
+        pg = sg.PortGateway("COM4", {"enabled": True, "mode": "transparent",
+            "bind": "127.0.0.1", "tcp_port": 0}, executor)
+        real_open = sg.SerialWorker.open
+        def open_pty(worker):
+            worker.dev = os.ttyname(slave)
+            real_open(worker)
+        monkeypatch.setattr(sg.SerialWorker, "open", open_pty)
+        attempts = []
+        def acquire(*args):
+            attempts.append(True)
+            pg._lock.error = str(refused.value) if len(attempts) == 1 else ""
+            return not pg._lock.error
+        monkeypatch.setattr(pg._lock, "acquire", acquire)
+        try:
+            assert not await pg.start()
+            for _ in range(3):
+                pg.retry_mqtt_startup()
+                await pg._mqtt_retry_task
+            assert len(attempts) == 1
+            if recovered == "stopped":
+                state = "inactive"
+            else:
+                listener.bind(pause)
+                listener.listen(1)
+            pg.retry_mqtt_startup()
+            task = pg._mqtt_retry_task
+            pg.retry_mqtt_startup()
+            assert pg._mqtt_retry_task is task
+            await task
+            assert pg.is_running() and not pg.stats.last_error
+            tcp = pg._gw._server.sockets[0].getsockname()
+            reader, writer = await asyncio.open_connection(*tcp)
+            writer.close()
+            await writer.wait_closed()
+            pg.retry_mqtt_startup()
+            assert pg._mqtt_retry_task is None and len(attempts) == 2
+        finally:
+            await pg.stop()
+
+    master, slave = os.openpty()
+    try:
+        with ThreadPoolExecutor() as executor, socket.socket(socket.AF_UNIX) as listener:
+            asyncio.run(run(executor, listener, slave))
+    finally:
+        os.close(master)
+        os.close(slave)
+
+
+def test_retry_teardown_failure_stays_on_its_port(monkeypatch):
+    async def run(executor):
+        pg = sg.PortGateway("COM4", {"enabled": True, "mode": "transparent"}, executor)
+        pg.stats.last_error = "MQTT pause socket is not ready"
+        monkeypatch.setattr(pg._lock, "mqtt_ready_for_retry", lambda: True)
+        async def fail_close(cancel):
+            pg._worker = object()  # teardown failed with the UART still held
+            raise RuntimeError("UART close failed")
+        monkeypatch.setattr(pg, "start", fail_close)
+        pg.retry_mqtt_startup()
+        await asyncio.wait([pg._mqtt_retry_task])
+        pg.retry_mqtt_startup()
+        assert pg.stats.last_error == "UART close failed"
+        assert pg._mqtt_retry_task is None and pg._worker is not None
+        pg._worker = None
+        pg.stats.last_error = "UART already leased"
+        pg.retry_mqtt_startup()
+        assert pg._mqtt_retry_task is None
+    with ThreadPoolExecutor() as executor:
+        asyncio.run(run(executor))
+
+
+def test_stop_drains_pending_readiness_probe_before_reload(monkeypatch):
+    async def run(executor):
+        pg = sg.PortGateway("COM4", {"enabled": True, "mode": "transparent"}, executor)
+        entered, release = threading.Event(), threading.Event()
+        def wait_for_socket():
+            entered.set()
+            assert release.wait(3)
+            return True
+        pg.stats.last_error = "MQTT pause socket is not ready"
+        monkeypatch.setattr(pg._lock, "mqtt_ready_for_retry", wait_for_socket)
+        acquired = []
+        monkeypatch.setattr(pg._lock, "acquire", lambda: acquired.append(True))
+        pg.retry_mqtt_startup()
+        try:
+            assert await asyncio.to_thread(entered.wait, 2)
+            stopping = asyncio.create_task(pg.stop())
+            async with asyncio.timeout(2):
+                while not pg._mqtt_retry_task.cancelling():
+                    await asyncio.sleep(0)
+            assert not stopping.done()
+        finally:
+            release.set()
+        await asyncio.wait_for(stopping, 3)
+        assert not acquired and pg._mqtt_retry_task is None
+    with ThreadPoolExecutor() as executor:
+        asyncio.run(run(executor))
+
+
+def test_stop_interrupts_a_silent_broker_during_background_acquire(socket_path, monkeypatch):
+    async def run(executor):
+        accepted, disconnected = asyncio.Event(), asyncio.Event()
+        requests = []
+        async def silent(reader, writer):
+            requests.append(json.loads(await reader.readline()))
+            accepted.set()
+            await reader.read()
+            writer.close()
+            await writer.wait_closed()
+            disconnected.set()
+
+        async with await asyncio.start_unix_server(silent, path=socket_path):
+            pg = sg.PortGateway("COM4", {"enabled": True, "mode": "transparent"}, executor)
+            pg._lock.socket_path = socket_path
+            pg.stats.last_error = "MQTT pause socket is not ready"
+            monkeypatch.setattr(pg._lock, "mqtt_ready_for_retry", lambda: True)
+            pg.retry_mqtt_startup()
+            await asyncio.wait_for(accepted.wait(), 2)
+            await asyncio.wait_for(pg.stop(), 2)
+            await asyncio.wait_for(disconnected.wait(), 2)
+            assert len(requests) == 1 and requests[0]["op"] == "acquire"
+            assert not pg.is_running() and pg._lock._lease is None
+            assert pg.stats.errors == 0
+    with ThreadPoolExecutor() as executor:
+        asyncio.run(run(executor))

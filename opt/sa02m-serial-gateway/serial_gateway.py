@@ -694,8 +694,8 @@ class PortLock:
     At boot `After=sa02m-port-coordinator.service` orders us behind the broker,
     but a lease is only answerable once its control socket listens, so an
     outage (socket absent / refused / silent) is retried for a bounded window
-    before the port is declared failed. A refusal is final: the conflict is
-    real and GatewayDaemon retries nothing until SIGHUP.
+    before the port is declared failed. The daemon retries MQTT startup
+    separately from lease conflicts, which require operator action.
     """
 
     RETRIES = 10
@@ -705,22 +705,27 @@ class PortLock:
         self.port_name = port_name
         self.socket_path = socket_path
         self._lease = None
+        self._pending_retry = None
         self.error = ""
 
-    def acquire(self):
+    def acquire(self, cancel=None):
         package = str(Path(__file__).resolve().parent.parent / "sa02m-port-coordinator")
         if package not in sys.path:
             sys.path.insert(0, package)
         from sa02m_ports import CoordinatorUnavailable, Lease
         for attempt in range(self.RETRIES + 1):
             device = "/dev/" + self.port_name
-            lease = (Lease(device, "gateway") if self.socket_path is None
-                     else Lease(device, "gateway", self.socket_path))
+            opts = {} if cancel is None else {"cancel_acquire": cancel}
+            if self.socket_path is not None:
+                opts["socket_path"] = self.socket_path
+            lease = Lease(device, "gateway", **opts)
+            if cancel is not None:
+                self._pending_retry = lease
             try:
                 lease.__enter__()
             except CoordinatorUnavailable as exc:
                 self.error = str(exc)
-                if attempt >= self.RETRIES:
+                if cancel is not None or attempt >= self.RETRIES:
                     return False
                 time.sleep(self.RETRY_DELAY)
             except Exception as exc:
@@ -730,12 +735,37 @@ class PortLock:
                 self._lease = lease
                 self.error = ""
                 return True
+            finally:
+                self._pending_retry = None
         return False
+
+    def interrupt_retry(self):
+        lease = self._pending_retry
+        if lease is not None:
+            lease.interrupt_acquire()
 
     def release(self):
         if self._lease is not None:
             lease, self._lease = self._lease, None
-            lease.close()
+            cancel = getattr(lease, "cancel_acquire", None)
+            if cancel is not None and cancel.is_set():
+                lease.close(deadline=time.monotonic() + 3)
+            else:
+                lease.close()
+
+    @staticmethod
+    def mqtt_ready_for_retry():
+        from sa02m_ports.broker import MQTT_PAUSE_SOCKET, MQTT_UNIT, System
+        # Probing without a request changes no pause or lease state. This avoids
+        # rewriting the broker's durable journal while MQTT is still starting.
+        with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as probe:
+            probe.setblocking(False)
+            try:
+                probe.connect(MQTT_PAUSE_SOCKET)
+                return True
+            except (FileNotFoundError, ConnectionRefusedError, BlockingIOError):
+                pass
+        return not System().active(MQTT_UNIT)
 
 # ── Modbus TCP gateway ────────────────────────────────────────────────────────
 
@@ -1073,13 +1103,15 @@ class PortGateway:
         self._gw = None
         self._state_lock = asyncio.Lock()
         self._stop_task = None
+        self._mqtt_retry_task = None
+        self._cancel_mqtt_retry = None
         self.stats     = PortStats()
 
     async def _io(self, function, *args):
         return await _drain_on_cancel(
             asyncio.get_running_loop().run_in_executor(self._executor, function, *args))
 
-    async def start(self) -> bool:
+    async def start(self, cancel=None) -> bool:
         async with self._state_lock:
             if self._gw is not None:
                 return True
@@ -1098,7 +1130,8 @@ class PortGateway:
 
             gateway = None
             try:
-                if not await self._io(self._lock.acquire):
+                args = () if cancel is None else (cancel,)
+                if not await self._io(self._lock.acquire, *args):
                     self._record_error(self._lock.error or "Port is busy")
                     return False
                 self._worker = SerialWorker(self.port_name, self._cfg)
@@ -1112,7 +1145,8 @@ class PortGateway:
                 return True
             except BaseException as exc:
                 self._gw = None
-                self._record_error(exc)
+                if not (isinstance(exc, asyncio.CancelledError) and cancel is not None and cancel.is_set()):
+                    self._record_error(exc)
                 # Includes cancellation while acquiring/opening: those threads
                 # are drained by _io before cleanup can release the lease.
                 await _drain_on_cancel(asyncio.create_task(self._cleanup(gateway)))
@@ -1126,6 +1160,33 @@ class PortGateway:
         self.stats.errors += 1
         self.stats.last_error = str(exc) or "Gateway operation cancelled"
         log.error("[%s] %s", self.port_name, self.stats.last_error)
+
+    def retry_mqtt_startup(self):
+        if self._mqtt_retry_task is not None:
+            if not self._mqtt_retry_task.done():
+                return
+            try:
+                if not self._mqtt_retry_task.cancelled():
+                    self._mqtt_retry_task.result()
+            except Exception as exc:
+                self._record_error(exc)
+            self._mqtt_retry_task = None
+        # These two replies from the coordinator denote MQTT startup. Retrying
+        # a lease conflict could take a port back from its operator later.
+        if self._worker is None and self.stats.last_error in (
+            "MQTT pause socket is not ready", "Service is changing state: sa02m-modbus-mqtt.service",
+        ):
+            self._cancel_mqtt_retry = threading.Event()
+            self._mqtt_retry_task = asyncio.create_task(self._retry_when_mqtt_ready())
+
+    async def _retry_when_mqtt_ready(self):
+        try:
+            ready = await self._io(self._lock.mqtt_ready_for_retry)
+        except Exception as exc:
+            log.debug("[%s] MQTT readiness unavailable: %s", self.port_name, exc)
+            return
+        if ready:
+            await self.start(self._cancel_mqtt_retry)
 
     async def _cleanup(self, gateway):
         if gateway is not None:
@@ -1147,6 +1208,13 @@ class PortGateway:
             raise
 
     async def _stop(self):
+        if self._mqtt_retry_task is not None:
+            if not self._mqtt_retry_task.done():
+                self._cancel_mqtt_retry.set()
+                self._lock.interrupt_retry()
+                self._mqtt_retry_task.cancel()
+            await asyncio.gather(self._mqtt_retry_task, return_exceptions=True)
+            self._mqtt_retry_task = None
         async with self._state_lock:
             gateway, self._gw = self._gw, None
             try:
@@ -1277,6 +1345,8 @@ class GatewayDaemon:
                         log.error("Reload failed: %s", exc)
 
                 if now - last_status >= 5.0:
+                    for port in self._ports.values():
+                        port.retry_mqtt_startup()
                     _write_status(self._ports)
                     last_status = now
 

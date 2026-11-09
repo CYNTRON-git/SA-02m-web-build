@@ -721,7 +721,7 @@
       "config": null,
       "run": "bash scripts/dev/test-installer-svc-helpers.sh",
       "beat": "build",
-      "covers": ["scripts/lib.sh", "etc/sa02m-stacks-policy.sh", "scripts/dev/test-installer-svc-helpers.sh", "scripts/12-docker.sh", ".ai-dev/quality/checks/lib_check.sh", "docs/contracts/installer-refresh-policy.md"],
+      "covers": ["scripts/lib.sh", "etc/sa02m-stacks-policy.sh", "scripts/dev/test-installer-svc-helpers.sh", "scripts/01-system.sh", "scripts/12-docker.sh", ".ai-dev/quality/checks/lib_check.sh", "docs/contracts/installer-refresh-policy.md"],
       "init": "bash (stdlib only, no deps) — run on demand: bash scripts/dev/test-installer-svc-helpers.sh"
     },
     {
@@ -734,6 +734,8 @@
         "install.sh",
         "scripts/",
         ".ai-dev/quality/checks/installer-svc-policy-gate.sh",
+        "etc/systemd/sa02m-devices-api.service",
+        "etc/systemd/sa02m-devices-logger.service",
         "docs/contracts/installer-refresh-policy.md"
       ],
       "init": "bash + grep + awk (present everywhere the project builds)"

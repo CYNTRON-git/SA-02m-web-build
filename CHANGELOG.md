@@ -9,6 +9,9 @@
 
 ### Modbus and MQTT
 
+- Starting the devices API or history logger preserves the operator's disabled Modbus poller. If MQTT starts alongside the gateway, the gateway retries the affected port when the poller's pause interface is ready.
+- A failed MQTT pause releases its ungranted UART reservation, allowing the gateway to recover while the original poller remains active. Existing client locks and service restoration obligations remain protected.
+- MR-02m analog modules can confirm their Fast Modbus subscription with the exact bitmap of their six or twelve physical inputs. Missing channels and mixed bitmaps still trigger ordinary polling.
 - Serial template devices can subscribe to individual channels. The bridge publishes accepted events on the same MQTT controls, in the same units as a register read. Existing configurations continue polling until channels are selected.
 - A notification on a writable control schedules an addressed read so a queued event cannot undo a confirmed write on screen. Subscription attempts are spread across polling cycles and addresses so unsupported devices can continue answering ordinary reads.
 - The web panel and MQTT monitor show accepted input events and read errors before the next scheduled register read. The panel also refreshes devices with numeric ID zero.
@@ -17,6 +20,7 @@
 - The Fast Modbus receiver accepts an addressed reboot record with a zero unacknowledged-event count, acknowledges the device and reconfigures its subscriptions. The broadcast end-of-events frame keeps its existing handling.
 - Event requests share the classic poller's serial settings and port handle on 8N1 and 8N2 lines. A port configured with conflicting stop bits reports the conflict and skips event polling.
 - Full installs, web refreshes and signed offline updates include the template parser and web write-control list. The offline packer now includes tracked files under declared `opt/sa02m-*/` directories.
+- The installer uses the GPIO library selected by the board distribution's `gpiod` package.
 
 ## 1.0.7.34 - Fast Modbus power events for CE-02m-3 (November 2026)
 
