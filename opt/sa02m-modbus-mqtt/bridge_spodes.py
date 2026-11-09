@@ -21,6 +21,7 @@ from datetime import datetime, timedelta
 
 import bridge_bus
 from bridge_device import DevicePoller
+from bridge_meta import live_cache_filename
 from bridge_mqtt import LIVE_CACHE_DIR, DeviceLiveCache
 
 
@@ -247,7 +248,7 @@ class SpodesPoller(DevicePoller):
         }
         try:
             LIVE_CACHE_DIR.mkdir(parents=True, exist_ok=True)
-            path = LIVE_CACHE_DIR / ("%s.%s.json" % (self.device_id, kind))
+            path = (LIVE_CACHE_DIR / live_cache_filename(self.device_id)).with_suffix(f".{kind}.json")
             tmp = path.with_suffix(".json.tmp")
             tmp.write_text(json.dumps(payload, ensure_ascii=False), encoding="utf-8")
             tmp.replace(path)

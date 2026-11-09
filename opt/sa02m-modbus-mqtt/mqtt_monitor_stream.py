@@ -5,6 +5,9 @@ import re
 import sys
 import time
 from pathlib import Path
+from uuid import uuid4
+
+from bridge_meta import device_id_from_query, live_cache_filename, valid_device_id
 
 try:
     import paho.mqtt.client as mqtt
@@ -20,17 +23,6 @@ _SKIP_SUFFIX = (
 _CTRL_SKIP = frozenset({"module_type", "connection"})
 _FLUSH_INTERVAL_S = 0.05
 _MAX_BATCH = 48
-
-
-def parse_query_device() -> str:
-    qs = (sys.argv[1] if len(sys.argv) > 1 else "").strip()
-    if not qs:
-        return ""
-    for part in qs.split("&"):
-        if part.startswith("device="):
-            return part[7:]
-    m = re.search(r"(?:^|[?&])device=([^&]+)", qs)
-    return m.group(1) if m else ""
 
 
 def sse_line(topic: str, value: str, ts: str | None = None) -> str:
@@ -71,21 +63,25 @@ def should_emit_topic(top: str) -> bool:
         return True
     if top.endswith("/meta/units"):
         return True
-    m = re.match(r"^/devices/[^/]+/controls/([^/]+)$", top)
+    m = re.fullmatch(r"/devices/.+/controls/([^/]+)", top)
     if m and m.group(1) not in _CTRL_SKIP:
         return True
     return False
 
 
 def seed_from_cache(device: str, batcher: SseBatcher) -> int:
-    path = CACHE_DIR / f"{device}.json"
+    try:
+        path = CACHE_DIR / live_cache_filename(device)
+    except ValueError:
+        return 0
     if not path.is_file():
         return 0
     try:
         data = json.loads(path.read_text(encoding="utf-8"))
     except (OSError, json.JSONDecodeError, ValueError):
         return 0
-    if data.get("device") != device:
+    cached_id = data.get("device") if isinstance(data, dict) else None
+    if not valid_device_id(cached_id) or str(cached_id) != device:
         return 0
     base = f"/devices/{device}/controls"
     n = 0
@@ -135,8 +131,8 @@ def subscribe_live(client: mqtt.Client, device: str) -> None:
 
 
 def main() -> None:
-    device = parse_query_device()
-    if not device or not re.match(r"^[a-zA-Z0-9._-]+$", device):
+    device = device_id_from_query(sys.argv[1] if len(sys.argv) > 1 else "")
+    if device is None:
         print("Content-Type: text/event-stream")
         print()
         print("event: error")
@@ -176,7 +172,7 @@ def main() -> None:
         batcher.push(top, val)
         batcher.flush()
 
-    client = mqtt_client_v5(f"sa02m-mon-{device}"[:22])
+    client = mqtt_client_v5(uuid4().hex[:23])
     client.on_message = on_message
     client.connect("127.0.0.1", 1883, 60)
     client.loop_start()

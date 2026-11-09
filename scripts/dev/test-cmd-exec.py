@@ -223,11 +223,20 @@ class ConsoleCGITest(unittest.TestCase):
         self.assertEqual(self.request("printf recovered")["output"], "recovered")
 
     def test_inherited_pipe_keeps_real_zero_exit(self):
-        collector = self.root / "lib_cmd_capture.py"
-        source = collector.read_text()
-        self.assertIn("CAPTURE_SECONDS = 18", source)
-        collector.write_text(source.replace("CAPTURE_SECONDS = 18", "CAPTURE_SECONDS = .15"))
-        result = self.request("sleep 1 & printf parent-done")
+        from shlex import quote
+
+        release = self.root / "release-child"
+        os.mkfifo(release)
+        # The child holds stdout until the test releases it, even on a slow host.
+        command = (f'exec 3< {quote(str(release))}; '
+                   'read -r -t 60 <&3 & sleep .5; printf parent-done')
+        with release.open("r+b", buffering=0) as gate:
+            start = time.monotonic()
+            try:
+                result = self.request(command)
+            finally:
+                gate.write(b"\n")
+        self.assertGreaterEqual(time.monotonic() - start, 18)
         self.assertEqual(result["rc"], 0)
         self.assertEqual(result["output"], "parent-done")
         self.assertFalse(result["truncated"])

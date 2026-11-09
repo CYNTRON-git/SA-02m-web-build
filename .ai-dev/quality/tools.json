@@ -131,6 +131,15 @@
       "init": "Node, Python3 with flasher dependencies, scripts/dev Playwright and Chromium; PYTHON can select the interpreter"
     },
     {
+      "id": "mqtt-template-events-browser",
+      "checks": "Chromium exercises selection and persistence of Fast Modbus channels on a serial template device, including clearing the choice and preserving other configuration.",
+      "config": null,
+      "run": "node scripts/dev/test-mqtt-template-events.mjs",
+      "beat": "build",
+      "covers": ["www/network_config/static/js/mqtt.js", "www/network_config/static/js/mqtt/tcp-dialog.js", "www/network_config/static/js/i18n.js", "www/network_config/index.html", "www/network_config/cgi-bin/mqtt_templates.cgi", "www/network_config/cgi-bin/mqtt_live.cgi", "opt/sa02m-modbus-mqtt/bridge_meta.py", "www/network_config/cgi-bin/mqtt_config.cgi", "www/network_config/cgi-bin/lib_mqtt_write_controls.sh", "opt/sa02m-modbus-mqtt/bridge_template_channels.py", "scripts/dev/test-mqtt-template-events.mjs", "docs/contracts/template-device.md"],
+      "init": "Node, scripts/dev Playwright and Chromium from the existing UI harness setup"
+    },
+    {
       "id": "mqtt-mr-readback-browser",
       "checks": "Full shipped MQTT UI in Chromium over real HTTP fixtures: MR pending DO/AO commands retain observed state, matching readback confirms, differing or failed readback remains honest, and percent/volt displays preserve raw values across both languages, themes and narrow/wide viewports.",
       "config": null,
@@ -228,7 +237,7 @@
       "config": null,
       "run": "bash -c 'for p in python3 python py; do if \"$p\" -c \"import sys\"; then exec \"$p\" -m unittest discover -s opt/sa02m-modbus-mqtt/tests -q; fi; done; echo py-unit: no working python interpreter; exit 1'",
       "beat": "build",
-      "covers": ["opt/sa02m-modbus-mqtt/", "opt/sa02m-led/", "opt/sa02m-carel/", "opt/sa02m-alice/sa02m_alice/client/converters.py", "docs/contracts/template-device.md", "docs/contracts/fmb-event-wire.md", "docs/contracts/mr-module-control.md", "docs/contracts/mqtt-set-endpoint.md", "docs/contracts/bridge-modbus-tcp.md", "docs/contracts/carel-ahu.md", "docs/contracts/ce-energy-mqtt.md", "etc/sa02m_hw.conf", "www/network_config/cgi-bin/lib_hw.sh", "etc/sa02m-beeper-override.sh", "scripts/03-webserver.sh", "opt/sa02m-flasher/sa02m_flasher/mtd_link.py", "opt/sa02m-audio/sa02m_audio/constants.py", "opt/sa02m-audio/sa02m_audio/lightshow.py", "opt/sa02m-port-coordinator/", "opt/sa02m-spodes/", "opt/sa02m-audio/sa02m_audio/lightmusic.py", "opt/sa02m-alice/sa02m_alice/common/carel_import.py", "opt/sa02m-alice/sa02m_alice/common/constants.py", "docs/contracts/port-ownership.md", "scripts/dev/fixtures/hardware-variants.json", "docs/contracts/hardware-outputs.md", "docs/contracts/bridge-modbus-correlation.md"],
+      "covers": ["opt/sa02m-modbus-mqtt/", "www/network_config/cgi-bin/mqtt_monitor_poll.cgi", "opt/sa02m-led/", "opt/sa02m-carel/", "opt/sa02m-alice/sa02m_alice/client/converters.py", "docs/contracts/template-device.md", "docs/contracts/fmb-event-wire.md", "docs/contracts/mr-module-control.md", "docs/contracts/mqtt-set-endpoint.md", "docs/contracts/bridge-modbus-tcp.md", "docs/contracts/carel-ahu.md", "docs/contracts/ce-energy-mqtt.md", "etc/sa02m_hw.conf", "www/network_config/cgi-bin/lib_hw.sh", "etc/sa02m-beeper-override.sh", "scripts/03-webserver.sh", "opt/sa02m-flasher/sa02m_flasher/mtd_link.py", "opt/sa02m-audio/sa02m_audio/constants.py", "opt/sa02m-audio/sa02m_audio/lightshow.py", "opt/sa02m-port-coordinator/", "opt/sa02m-spodes/", "opt/sa02m-audio/sa02m_audio/lightmusic.py", "opt/sa02m-alice/sa02m_alice/common/carel_import.py", "opt/sa02m-alice/sa02m_alice/common/constants.py", "docs/contracts/port-ownership.md", "scripts/dev/fixtures/hardware-variants.json", "docs/contracts/hardware-outputs.md", "docs/contracts/bridge-modbus-correlation.md"],
       "init": "Python 3.10+ (stdlib unittest, no extra deps) — same interpreter picker as py-syntax"
     },
     {
@@ -712,7 +721,7 @@
       "config": null,
       "run": "bash scripts/dev/test-installer-svc-helpers.sh",
       "beat": "build",
-      "covers": ["scripts/lib.sh", "etc/sa02m-stacks-policy.sh", "scripts/dev/test-installer-svc-helpers.sh", "scripts/12-docker.sh", ".ai-dev/quality/checks/lib_check.sh", "docs/contracts/installer-refresh-policy.md"],
+      "covers": ["scripts/lib.sh", "etc/sa02m-stacks-policy.sh", "scripts/dev/test-installer-svc-helpers.sh", "scripts/01-system.sh", "scripts/12-docker.sh", ".ai-dev/quality/checks/lib_check.sh", "docs/contracts/installer-refresh-policy.md"],
       "init": "bash (stdlib only, no deps) — run on demand: bash scripts/dev/test-installer-svc-helpers.sh"
     },
     {
@@ -725,6 +734,8 @@
         "install.sh",
         "scripts/",
         ".ai-dev/quality/checks/installer-svc-policy-gate.sh",
+        "etc/systemd/sa02m-devices-api.service",
+        "etc/systemd/sa02m-devices-logger.service",
         "docs/contracts/installer-refresh-policy.md"
       ],
       "init": "bash + grep + awk (present everywhere the project builds)"
@@ -916,7 +927,7 @@
       "config": null,
       "run": "bash .ai-dev/quality/checks/mqtt-set-contract.sh",
       "beat": "build",
-      "covers": ["www/network_config/cgi-bin/mqtt_set.cgi", "www/network_config/cgi-bin/lib_web_auth.sh", "docs/contracts/mqtt-set-endpoint.md", ".ai-dev/quality/checks/mqtt-set-contract.sh", ".ai-dev/quality/checks/lib_check.sh"],
+      "covers": ["www/network_config/cgi-bin/mqtt_set.cgi", "www/network_config/cgi-bin/lib_mqtt_write_controls.sh", "www/network_config/cgi-bin/lib_web_auth.sh", "docs/contracts/mqtt-set-endpoint.md", ".ai-dev/quality/checks/mqtt-set-contract.sh", ".ai-dev/quality/checks/lib_check.sh"],
       "init": "bash + coreutils — no mosquitto, no broker, no device (both external commands are recording shims)"
     },
     {
@@ -934,8 +945,8 @@
       "config": null,
       "run": "bash scripts/dev/test-mqtt-config-transport.sh",
       "beat": "build",
-      "covers": ["www/network_config/cgi-bin/mqtt_config.cgi", "www/network_config/cgi-bin/lib_web_auth.sh", "www/network_config/cgi-bin/lib_web_json.sh", "opt/sa02m-modbus-mqtt/bridge_bus.py", "scripts/dev/test-mqtt-config-transport.sh", "docs/contracts/bridge-modbus-tcp.md"],
-      "init": "bash + python3 with PyYAML (the endpoint itself needs it) — installed in CI (web-quality.yml)"
+      "covers": ["www/network_config/cgi-bin/mqtt_config.cgi", "www/network_config/cgi-bin/mqtt_templates.cgi", "www/network_config/cgi-bin/mqtt_live.cgi", "opt/sa02m-modbus-mqtt/bridge_meta.py", "opt/sa02m-modbus-mqtt/bridge_mqtt.py", "opt/sa02m-modbus-mqtt/mqtt_live_snapshot.py", "www/network_config/cgi-bin/lib_mqtt_write_controls.sh", "www/network_config/cgi-bin/lib_web_auth.sh", "www/network_config/cgi-bin/lib_web_json.sh", "opt/sa02m-modbus-mqtt/bridge_bus.py", "opt/sa02m-modbus-mqtt/bridge_template_channels.py", "scripts/dev/test-mqtt-config-transport.sh", "docs/contracts/bridge-modbus-tcp.md", "docs/contracts/template-device.md"],
+      "init": "Bash and Python 3 with PyYAML and paho-mqtt, installed by web-quality.yml"
     },
     {
       "id": "mqtt-install-secret",

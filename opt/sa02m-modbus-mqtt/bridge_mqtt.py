@@ -14,15 +14,17 @@ import os
 import time
 import threading
 import logging
+from collections import defaultdict
+from contextlib import contextmanager
+from contextvars import ContextVar
 from pathlib import Path
 
 import paho.mqtt.client as mqtt
 
-from bridge_meta import control_meta_blob, device_meta_blob
+from bridge_meta import DEVICE_BASE, control_meta_blob, device_meta_blob, live_cache_filename, valid_control_id, valid_device_id
 
 log = logging.getLogger("bridge")
 
-DEVICE_BASE = "/devices"
 LIVE_CACHE_DIR = Path(os.environ.get("SA02M_MQTT_LIVE_CACHE", "/run/sa02m-modbus-mqtt"))
 
 
@@ -30,6 +32,8 @@ class DeviceLiveCache:
     """Снимок последних значений controls для быстрого mqtt_live.cgi (<10 ms)."""
 
     _lock = threading.Lock()
+    _file_locks = defaultdict(threading.Lock)
+    _changed = ContextVar('live_cache_changed', default=None)
     _controls: dict[str, dict[str, str]] = {}
     _units: dict[str, dict[str, str]] = {}
     _errors: dict[str, dict[str, str]] = {}
@@ -40,14 +44,41 @@ class DeviceLiveCache:
     _online: dict[str, bool | None] = {}
 
     @classmethod
+    @contextmanager
+    def flush_changes(cls):
+        """Commit each changed device once, even if a later transaction raises ScanHold."""
+        if cls._changed.get() is not None:
+            yield
+            return
+        changed = set()
+        token = cls._changed.set(changed)
+        try:
+            yield
+        finally:
+            cls._changed.reset(token)
+            for device_id in changed:
+                cls.flush_file(device_id)
+
+    @classmethod
+    def _note_change(cls, device_id):
+        changed = cls._changed.get()
+        if changed is not None:
+            changed.add(device_id)
+
+    @classmethod
     def set_online(cls, device_id: str, online: bool) -> None:
         with cls._lock:
-            cls._online[device_id] = bool(online)
+            if cls._online.get(device_id) is not bool(online):
+                cls._online[device_id] = bool(online)
+                cls._note_change(device_id)
 
     @classmethod
     def set_control(cls, device_id: str, name: str, value: str) -> None:
         with cls._lock:
-            cls._controls.setdefault(device_id, {})[name] = value
+            controls = cls._controls.setdefault(device_id, {})
+            if value != controls.get(name):
+                controls[name] = value
+                cls._note_change(device_id)
 
     @classmethod
     def set_unit(cls, device_id: str, name: str, units: str) -> None:
@@ -68,10 +99,13 @@ class DeviceLiveCache:
     def set_error(cls, device_id: str, name: str, err: str) -> None:
         with cls._lock:
             bucket = cls._errors.setdefault(device_id, {})
+            if bucket.get(name, "") == err:
+                return
             if err:
                 bucket[name] = err
             else:
                 bucket.pop(name, None)
+            cls._note_change(device_id)
 
     @classmethod
     def set_sensor_type(cls, device_id: str, ai_index: int, code: int) -> None:
@@ -98,17 +132,29 @@ class DeviceLiveCache:
     @classmethod
     def flush_file(cls, device_id: str) -> None:
         with cls._lock:
+            file_lock = cls._file_locks[str(device_id)]
+        # Hold the lock from taking the snapshot through replacement. A writer
+        # for the same file must always snapshot after its predecessor's commit.
+        with file_lock:
+            cls._write_file(device_id)
+        changed = cls._changed.get()
+        if changed is not None:
+            changed.discard(device_id)  # An explicit writeback flush already committed it.
+
+    @classmethod
+    def _write_file(cls, device_id: str) -> None:
+        with cls._lock:
             controls = dict(cls._controls.get(device_id, {}))
             units = dict(cls._units.get(device_id, {}))
             errors = dict(cls._errors.get(device_id, {}))
             sensor_types = dict(cls._sensor_types.get(device_id, {}))
             confirmations = dict(cls._sensor_type_confirmations.get(device_id, {}))
             online = cls._online.get(device_id)
-        if not controls and not units and not sensor_types:
+        if not controls and not units and not sensor_types and not errors:
             return
         try:
             LIVE_CACHE_DIR.mkdir(parents=True, exist_ok=True)
-            path = LIVE_CACHE_DIR / f"{device_id}.json"
+            path = LIVE_CACHE_DIR / live_cache_filename(device_id)
             tmp = path.with_suffix(".json.tmp")
             payload = {
                 # Unknown (never answered a tracked read) is NOT ok: the
@@ -133,7 +179,7 @@ class DeviceLiveCache:
             tmp.write_text(
                 _json.dumps(payload, ensure_ascii=False), encoding="utf-8")
             tmp.replace(path)
-        except OSError as e:
+        except (OSError, ValueError) as e:
             log.debug("live cache %s: %s", device_id, e)
 
 # ── WB conventions: precision per units ───────────────────────────────────────
@@ -494,6 +540,9 @@ class MQTTPublisher:
             pass
 
     def subscribe_writeback(self, device_id: str, name: str, callback) -> None:
+        if not valid_device_id(device_id) or not valid_control_id(name, device_id):
+            log.warning("Skipping unsafe MQTT writeback address: device %r, control %r", device_id, name)
+            return
         topic = f"{DEVICE_BASE}/{device_id}/controls/{name}/on"
         self._subscriptions[topic] = callback
         self._client.subscribe(topic, qos=1)

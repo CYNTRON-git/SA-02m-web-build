@@ -92,6 +92,7 @@ TMOLOG="$T/timeout.log"
 # (the session store) is already env-directed by lib_web_auth.sh.
 sed "s|/var/log/sa02m_install.log|$AUDIT|g" "$CGI_SRC" > "$CGIDIR/mqtt_set.cgi"
 cp "$AUTH_LIB" "$CGIDIR/lib_web_auth.sh"
+cp www/network_config/cgi-bin/lib_mqtt_write_controls.sh "$CGIDIR/"
 chmod +x "$CGIDIR/mqtt_set.cgi"
 
 grep -q '/var/log/sa02m_install.log' "$CGIDIR/mqtt_set.cgi" \

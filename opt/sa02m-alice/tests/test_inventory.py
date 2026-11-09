@@ -622,6 +622,30 @@ class TestFlatListIsAProjection(Inv):
 
 
 class TestNoBoardNoCrash(Inv):
+    def test_nested_identity_supplies_template_and_ahu_cache_without_opening_yaml_paths(self):
+        from sa02m_alice.config import ahu_status
+
+        mid = "carel-floor/unit"
+        payload = {"device": mid, "controls": {"fan_step": "2", "room_temp": "21", "failed": "0"},
+                   "errors": {"failed": "r"}}
+        name = "@473b33796657c1c4a0540204fdabd50ed4b72b642e85dea7b9b09301161d80f0"
+        for filename in (name + ".json", name + ".events.json"):
+            with open(os.path.join(self.dir, filename), "w", encoding="utf-8") as fh:
+                json.dump(payload if filename == name + ".json"
+                          else {"device": mid, "controls": {"sidecar": "1"}}, fh)
+        self.write_yaml({"devices": [{"id": mid, "type": "template"}]})
+        offered = inventory.inventory_topics(inventory.build_mqtt_inventory())
+        self.assertIn("/devices/carel-floor/unit/controls/fan_step", offered)
+        binding = {"devices": [{"properties": [{"mqtt": "/devices/carel-floor/unit/controls/room_temp"}]}]}
+        self.assertEqual(ahu_status.carel_mqtt_ids(binding), [mid])
+        self.assertEqual(ahu_status.carel_cache_snapshot([mid])[mid]["live"], {"room_temp", "fan_step"})
+        with tempfile.TemporaryDirectory() as outside:
+            stem = os.path.join(outside, "secret")
+            with open(stem + ".json", "w", encoding="utf-8") as fh:
+                json.dump({"controls": {"secret": "1"}}, fh)
+            self.assertEqual(inventory._live_controls(stem), {})
+            self.assertEqual(ahu_status.carel_cache_snapshot([stem]), {})
+
     def test_no_yaml_still_offers_the_controller(self):
         topics.YAML_CANDIDATES = ()
         inv = inventory.build_mqtt_inventory()

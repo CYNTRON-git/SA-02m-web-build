@@ -181,10 +181,11 @@ fi
 # running (module interfaces stay backward-compatible) — the last copy is the
 # one that switches the composition. Keep this ordered list in sync with
 # tests/test_entry_surface.py EXPECTED_MODULES and scripts/update-www-only.sh.
-for f in bridge_admission.py bridge_uart.py bridge_serial.py bridge_bus.py bridge_probe.py bridge_tcp.py bridge_rtu_tcp.py bridge_scan_lease.py bridge_fmb.py bridge_meta.py \
-         bridge_mqtt.py bridge_mr02m_map.py \
-         bridge_device.py bridge_mr02m.py bridge_dtv_ce.py bridge_template.py bridge_carel.py bridge_led.py bridge_spodes.py; do
-    install -m 0755 -o root -g root "$OPT_DIR/$f" "$BRIDGE_DIR/$f"
+for f in bridge_meta.py bridge_uart.py bridge_serial.py bridge_bus.py bridge_probe.py bridge_tcp.py bridge_rtu_tcp.py bridge_scan_lease.py \
+         bridge_mqtt.py bridge_fmb.py bridge_mr02m_map.py \
+         bridge_device.py bridge_mr02m.py bridge_dtv_ce.py bridge_template_channels.py bridge_template.py \
+         bridge_carel.py bridge_led.py bridge_spodes.py bridge_admission.py; do
+    install -m 0755 -o root -g root "$OPT_DIR/$f" "$BRIDGE_DIR/$f" || exit 1
 done
 
 install -m 0755 -o root -g root "$OPT_DIR/modbus_mqtt_bridge.py" "$BRIDGE_DIR/modbus_mqtt_bridge.py"
@@ -197,8 +198,9 @@ for f in "$OPT_DIR/templates/"*.json "$OPT_DIR/templates/README.md"; do
 done
 install -m 0755 -o root -g root "$OPT_DIR/sa02m_telemetry.py"    "$BRIDGE_DIR/sa02m_telemetry.py"
 install -m 0755 -o root -g root "$OPT_DIR/mqtt_bus_scan.py"     "$BRIDGE_DIR/mqtt_bus_scan.py"
-install -m 0755 -o root -g root "$OPT_DIR/mqtt_live_snapshot.py" "$BRIDGE_DIR/mqtt_live_snapshot.py"
-install -m 0755 -o root -g root "$OPT_DIR/mqtt_monitor_stream.py" "$BRIDGE_DIR/mqtt_monitor_stream.py"
+for f in mqtt_live_snapshot.py mqtt_monitor_poll.py mqtt_monitor_stream.py; do
+    install -m 0755 -o root -g root "$OPT_DIR/$f" "$BRIDGE_DIR/$f" || exit 1
+done
 
 # Конфиг YAML (только если не существует — не перетираем пользовательские настройки)
 if [ ! -f /etc/sa02m-modbus-mqtt.yaml ]; then
@@ -252,7 +254,9 @@ CGI_SRC="$WWW_DIR/cgi-bin"
 CGI_DST="$WEB_ROOT/cgi-bin"
 
 if [ -d "$CGI_DST" ]; then
-    for cgi in mqtt_config.cgi mqtt_status.cgi mqtt_monitor.cgi mqtt_ctrl.cgi mqtt_scan.cgi mqtt_live.cgi; do
+    install -m 0644 -o root -g www-data "$CGI_SRC/lib_mqtt_write_controls.sh" "$CGI_DST/lib_mqtt_write_controls.sh" || exit 1
+    sed -i 's/\r$//' "$CGI_DST/lib_mqtt_write_controls.sh"
+    for cgi in mqtt_config.cgi mqtt_status.cgi mqtt_monitor.cgi mqtt_monitor_poll.cgi mqtt_ctrl.cgi mqtt_scan.cgi mqtt_live.cgi mqtt_templates.cgi mqtt_set.cgi; do
         if [ -f "$CGI_SRC/$cgi" ]; then
             install -m 0755 -o root -g www-data "$CGI_SRC/$cgi" "$CGI_DST/$cgi"
             sed -i 's/\r$//' "$CGI_DST/$cgi"

@@ -71,6 +71,7 @@ EXPECTED_MODULES = [
     "bridge_spodes",
     "bridge_tcp",
     "bridge_template",
+    "bridge_template_channels",
     "bridge_uart",
 ]
 
@@ -136,14 +137,14 @@ class TestFrozenSurface(unittest.TestCase):
         self.assertIs(bridge.time, _time)
 
 
-def copy_loop_modules(text: str) -> list[str]:
-    """Module names in a deploy script's bridge copy loop (`for f in … ; do`).
+def copy_loop_modules(text: str, prefix: str = "bridge_") -> list[str]:
+    """Module names in the named deploy copy loop (`for f in … ; do`).
 
     Parsed, not substring-searched: until 1.0.6.56 this suite checked
     `"bridge_x.py" in text`, so a module named only in a COMMENT passed while
     the loop never copied it (shape (a), docs/agent-rules/quality-gate-rigor.md).
     Comments are stripped first, continuation lines joined, and only the loop
-    whose every token is a bridge_*.py file counts. Returns [] when there is
+    whose every token is a *.py file with the given prefix counts. Returns [] when there is
     no such loop — the caller fails on that (non-vacuous).
     """
     lines = [re.sub(r"(^|\s)#.*$", "", ln) for ln in text.splitlines()]
@@ -151,7 +152,7 @@ def copy_loop_modules(text: str) -> list[str]:
     found = []
     for m in re.finditer(r"^\s*for\s+f\s+in\s+([^;\n]*);\s*do\b", joined, re.M):
         tokens = m.group(1).split()
-        if tokens and all(re.fullmatch(r"bridge_\w+\.py", t) for t in tokens):
+        if tokens and all(re.fullmatch(re.escape(prefix) + r"\w+\.py", t) for t in tokens):
             found.append([t[:-3] for t in tokens])
     return found[0] if len(found) == 1 else []
 
@@ -173,6 +174,9 @@ class TestSubmoduleImportSmoke(unittest.TestCase):
         repo = BRIDGE_DIR.parent.parent
         for script in ("scripts/05-mqtt.sh", "scripts/update-www-only.sh"):
             text = (repo / script).read_text(encoding="utf-8", errors="replace")
+            self.assertCountEqual(copy_loop_modules(text, "mqtt_"),
+                                  ["mqtt_live_snapshot", "mqtt_monitor_poll", "mqtt_monitor_stream"],
+                                  f"{script} must deploy each helper invoked by a live/monitor CGI")
             self.assertTrue(text.strip(), "%s is empty or unreadable" % script)
             copied = copy_loop_modules(text)
             self.assertTrue(copied, "%s: no single bridge_*.py copy loop "
@@ -184,6 +188,20 @@ class TestSubmoduleImportSmoke(unittest.TestCase):
                              "%s never copies: %s" % (script, ", ".join(missing)))
             self.assertEqual([], extra,
                              "%s copies undeclared: %s" % (script, ", ".join(extra)))
+            # A restart between any two copies must still import and compose
+            # the installed bridge: load the new API before the code using it.
+            for dependency, consumer in (
+                ("bridge_meta", "bridge_admission"),
+                ("bridge_meta", "bridge_mqtt"),
+                ("bridge_mqtt", "bridge_fmb"),
+                ("bridge_meta", "bridge_template_channels"),
+                ("bridge_fmb", "bridge_device"),
+                ("bridge_device", "bridge_template"),
+                ("bridge_template_channels", "bridge_template"),
+                ("bridge_template", "bridge_admission"),
+            ):
+                self.assertLess(copied.index(dependency), copied.index(consumer),
+                                f"{script} copies {consumer} before {dependency}")
 
     def test_copy_loop_parser_is_not_comment_blind(self):
         loop = ("for f in bridge_serial.py \\\n"

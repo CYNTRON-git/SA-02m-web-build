@@ -290,7 +290,7 @@ def compose_pollers(devices_cfg: list, pub: MQTTPublisher):
         if ranges is not None:
             mgr = fmb_ports.get(port_key)
             if mgr is None:
-                mgr = FastModbusEventPortManager(poller.port_path, poller.baudrate)
+                mgr = FastModbusEventPortManager(poller.port_path, poller.baudrate, poller.stopbits)
                 fmb_ports[port_key] = mgr
             mgr.register_device(
                 poller.address, poller.device_id, ranges,
@@ -308,10 +308,14 @@ def compose_pollers(devices_cfg: list, pub: MQTTPublisher):
                   "port:baud and all but one will fail to open. Put the odd "
                   "device on its own COM port or change its baud.",
                   path, ", ".join(str(b) for b in bauds))
-    for path, framed in _mixed_stopbits(by_port).items():
+    mixed_framing = _mixed_stopbits(by_port)
+    for path, framed in mixed_framing.items():
         log.error("%s is configured with both 8N1 and 8N2 (%s) — one physical "
-                  "line has one framing. Put the 8N2 device on its own COM port.",
+                  "line has one framing. Fast Modbus disabled on this line. "
+                  "Put the 8N2 device on its own COM port.",
                   path, ", ".join(framed))
+    fmb_ports = {key: mgr for key, mgr in fmb_ports.items()
+                 if by_port[key][0].port_path not in mixed_framing}
     return by_port, fmb_ports, refused
 
 

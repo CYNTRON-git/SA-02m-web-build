@@ -3,6 +3,8 @@
 from copy import deepcopy
 from importlib import import_module
 
+from bridge_meta import valid_device_id
+
 
 DRIVERS = {
     "mr02m": ("bridge_mr02m", "MR02mPoller"),
@@ -32,8 +34,9 @@ def prepare_devices(rows, bus_rules, publisher=None, get_driver=driver):
         device_id = cfg.get("id") if isinstance(cfg, dict) else None
         reason = "invalid_poller_config"
         try:
-            if type(device_id) not in (str, int) or not str(device_id).strip():
-                raise ValueError("missing device id")
+            if not valid_device_id(device_id):
+                reason = "invalid_device_id"
+                raise ValueError("unsafe MQTT device ID")
             kind = cfg["type"].lower()
             bus = bus_rules.device_bus(cfg)
             if bus.transport in (bus_rules.TRANSPORT_RTU, bus_rules.TRANSPORT_HDLC) and not isinstance(bus.port, str):
@@ -45,7 +48,7 @@ def prepare_devices(rows, bus_rules, publisher=None, get_driver=driver):
             poller = get_driver(kind)(cfg, publisher)
             ranges = None
             if (bus.transport == bus_rules.TRANSPORT_RTU
-                    and cfg.get("fast_modbus", kind in ("mr02m", "dtv", "led"))):
+                    and cfg.get("fast_modbus", kind in ("mr02m", "dtv", "led", "template"))):
                 initial = poller.fmb_event_ranges()
                 if initial or kind == "led":
                     ranges = initial

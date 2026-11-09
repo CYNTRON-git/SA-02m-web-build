@@ -1,7 +1,6 @@
 [Unit]
 Description=SA-02m Devices API (DTV / CE-02m-3 widgets, history, export)
 After=network.target sa02m-modbus-mqtt.service
-Wants=sa02m-modbus-mqtt.service
 
 [Service]
 Type=simple

@@ -14,7 +14,7 @@ from bridge_serial import ScanHold
 import time
 
 from bridge_device import DevicePoller
-from bridge_fmb import DTV_FMB_WB_MIN_FW, FMB_INSURANCE_POLL_S
+from bridge_fmb import CE_FMB_POWER_RANGE, CE_FMB_S32_FW, DTV_FMB_WB_MIN_FW, FMB_INSURANCE_POLL_S
 from bridge_mqtt import DeviceLiveCache, MQTTPublisher, _make_title
 from bridge_mr02m_map import MR02M_SYS_CONTROLS
 from bridge_serial import (
@@ -682,6 +682,7 @@ class CE02M3Poller(_DtvCeMixin, DevicePoller):
         self._en_pf    = ch.get("power_factor", True)
         self._en_freq  = ch.get("frequency", True)
         self._en_ener  = ch.get("energy", True)
+        self._power_event_controls = self._make_power_event_controls()
         # Device CT ratios (Ka, Kb, Kc) x1000 — read only for firmware whose
         # energy counters are secondary; dropped with the version on a reboot.
         self._ct_k_x1000: tuple[int, int, int] | None = None
@@ -700,15 +701,40 @@ class CE02M3Poller(_DtvCeMixin, DevicePoller):
         return v - 0x10000 if v >= 0x8000 else v
 
     @staticmethod
-    def _int32(lsw: int, msw: int) -> int:
-        """Assemble signed int32 from LSW (lower address) and MSW (higher address)."""
-        v = lsw | (msw << 16)
-        return v - 0x100000000 if v >= 0x80000000 else v
+    def _s32(value: int) -> int:
+        return value - 0x100000000 if value >= 0x80000000 else value
 
     @staticmethod
     def _uint64(r0: int, r1: int, r2: int, r3: int) -> int:
         """Assemble uint64 from 4 regs: r0=word0 (LSW), r3=word3 (MSB)."""
         return r0 | (r1 << 16) | (r2 << 32) | (r3 << 48)
+
+    def _make_power_event_controls(self) -> dict[int, tuple[str, str]]:
+        controls = {}
+        for base, enabled, prefix, unit in (
+            (518, self._en_pact, "power", "W"),
+            (526, self._en_preac, "reactive", "var"),
+            (534, self._en_papp, "apparent", "VA"),
+        ):
+            for i, phase in enumerate(("a", "b", "c", "total")):
+                if enabled and (base != 518 or phase == "total" or phase.upper() in self._phases):
+                    controls[base + 2 * i] = (f"{prefix}_{phase}", unit)
+        if self._en_freq:
+            controls[542] = ("frequency", "Hz")
+        if self._en_pf:
+            for i, phase in enumerate(("a", "b", "c", "total")):
+                controls[543 + i] = (f"pf_{phase}", "")
+        return controls
+
+    def _publish_power_event_control(self, reg: int, raw: int) -> None:
+        name, _unit = self._power_event_controls[reg]
+        if reg < 542:
+            value = self._s32(raw)
+        elif reg == 542:
+            value = round(raw * 0.01, 2)
+        else:
+            value = round(self._s16(raw) * 0.001, 3)
+        self.pub.pub_control(self.device_id, name, str(value))
 
     def _power_controls(self) -> list[tuple[str, str]]:
         """(name, units) of every control _poll_power publishes under this
@@ -723,18 +749,7 @@ class CE02M3Poller(_DtvCeMixin, DevicePoller):
             out += [(f"voltage_{ln}", "V") for ln in ("ab", "bc", "ca")]
         if self._en_curr:
             out += [(f"current_{x}", "A") for x in (*ph3, "n")]
-        if self._en_pact:
-            out += [(f"power_{ph}", "W") for ph in on]
-            out.append(("power_total", "W"))
-        if self._en_preac:
-            out += [(f"reactive_{x}", "var") for x in (*ph3, "total")]
-        if self._en_papp:
-            out += [(f"apparent_{x}", "VA") for x in (*ph3, "total")]
-        if self._en_freq:
-            out.append(("frequency", "Hz"))
-        if self._en_pf:
-            # cos φ is a ratio: no unit (firmware 543-546 «×0.001»).
-            out += [(f"pf_{x}", "") for x in (*ph3, "total")]
+        out.extend(self._power_event_controls.values())
         out.append(("asic_temp", "°C"))
         return out
 
@@ -902,41 +917,12 @@ class CE02M3Poller(_DtvCeMixin, DevicePoller):
                 if amps is not None:
                     self.pub.pub_control(self.device_id, name, amps)
 
-        if self._en_pact:
-            # 518-525: P A,B,C,total — int32 (LSW,MSW), W
-            for i, ph in enumerate(ph3):
-                if ph.upper() in self._phases:
-                    w = self._int32(regs[18 + i * 2], regs[19 + i * 2])
-                    self.pub.pub_control(self.device_id, f"power_{ph}", str(w))
-            total = self._int32(regs[24], regs[25])
-            self.pub.pub_control(self.device_id, "power_total", str(total))
-
-        if self._en_preac:
-            # 526-533: Q A,B,C,total — int32, var
-            for i, ph in enumerate(ph3):
-                q = self._int32(regs[26 + i * 2], regs[27 + i * 2])
-                self.pub.pub_control(self.device_id, f"reactive_{ph}", str(q))
-            total_q = self._int32(regs[32], regs[33])
-            self.pub.pub_control(self.device_id, "reactive_total", str(total_q))
-
-        if self._en_papp:
-            # 534-541: S A,B,C,total — int32, VA
-            for i, ph in enumerate(ph3):
-                s = self._int32(regs[34 + i * 2], regs[35 + i * 2])
-                self.pub.pub_control(self.device_id, f"apparent_{ph}", str(s))
-            total_s = self._int32(regs[40], regs[41])
-            self.pub.pub_control(self.device_id, "apparent_total", str(total_s))
-
-        if self._en_freq:
-            # 542: freq ×0.01 Hz
-            self.pub.pub_control(self.device_id, "frequency",
-                                 str(round(regs[42] * 0.01, 2)))
-
-        if self._en_pf:
-            # 543-546: PF A,B,C,total — ×0.001 signed
-            for i, ph in enumerate(ph3 + ["total"]):
-                pf = round(self._s16(regs[43 + i]) * 0.001, 3)
-                self.pub.pub_control(self.device_id, f"pf_{ph}", str(pf))
+        for reg in self._power_event_controls:
+            offset = reg - 500
+            raw = regs[offset]
+            if reg < 542:
+                raw |= regs[offset + 1] << 16
+            self._publish_power_event_control(reg, raw)
 
         # 547: ASIC temperature (°C, signed)
         if len(regs) > 47:
@@ -952,14 +938,24 @@ class CE02M3Poller(_DtvCeMixin, DevicePoller):
     CE_FMB_I_COUNT = 4
 
     def fmb_event_ranges(self) -> list[tuple[int, int, int]]:
-        return [
+        ranges = [
             (FMB_EVT_INPUT, self.CE_FMB_U_START, self.CE_FMB_U_COUNT),
             (FMB_EVT_INPUT, self.CE_FMB_I_START, self.CE_FMB_I_COUNT),
         ]
+        if (self._power_event_controls and self._fw_version is not None and self._fw_version >= CE_FMB_S32_FW
+                and str(self.cfg.get("fmb_event_wire", "auto")).strip().lower() != "legacy"):
+            ranges.append(CE_FMB_POWER_RANGE)
+        return ranges
+
+    def fmb_power_event_settings(self) -> bytes:
+        _, start, count = CE_FMB_POWER_RANGE
+        return bytes(reg in self._power_event_controls for reg in range(start, start + count))
 
     def fmb_dispatch(self, evt_type: int, reg: int, val: int) -> None:
         if evt_type != FMB_EVT_INPUT:
             self.log.debug("FMB event ignored type=%02X reg=%d", evt_type, reg)
+            return
+        if self._meter_link_lost:
             return
         ph3 = ["a", "b", "c"]
         if self.CE_FMB_U_START <= reg < self.CE_FMB_U_START + self.CE_FMB_U_COUNT:
@@ -984,6 +980,10 @@ class CE02M3Poller(_DtvCeMixin, DevicePoller):
                                      amps)
             else:
                 self.pub.pub_control(self.device_id, "current_n", amps)
+            return
+        if (self._fw_version is not None and self._fw_version >= CE_FMB_S32_FW
+                and reg in self._power_event_controls):
+            self._publish_power_event_control(reg, val)
             return
         self.log.debug("FMB event ignored type=%02X reg=%d", evt_type, reg)
 

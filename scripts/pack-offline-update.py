@@ -220,7 +220,13 @@ def path_matches(path: str, pattern: str) -> bool:
     path = path.replace("\\", "/")
     pattern = pattern.replace("\\", "/")
     if pattern.endswith("/"):
-        return path == pattern.rstrip("/") or path.startswith(pattern)
+        # A directory glob (e.g. opt/sa02m-*/) matches a directory, never
+        # an unrelated path across a slash or a similarly named root file.
+        dirs = pattern[:-1].split("/")
+        parts = path.split("/", len(dirs))
+        return len(parts) > len(dirs) and all(
+            fnmatch.fnmatchcase(part, glob) for part, glob in zip(parts, dirs)
+        )
     if pattern.endswith("/**"):
         base = pattern[:-3]
         return path == base.rstrip("/") or path.startswith(base if base.endswith("/") else base + "/")

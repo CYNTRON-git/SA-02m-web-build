@@ -5,6 +5,7 @@ import base64
 import json
 import os
 import re
+import stat
 import time
 import urllib.parse
 
@@ -78,20 +79,27 @@ def _read_live():
         return []
     now = time.time()
     for name in sorted(names):
-        if not name.endswith(".json"):
+        if (not name.endswith(".json") or name == "_roster.json"
+                or name.endswith((".profile.json", ".events.json"))):
             continue
         path = os.path.join(root, name)
         try:
             if os.path.islink(path):
                 continue
             st = os.lstat(path)
-            if now - st.st_mtime > 10:
+            if not stat.S_ISREG(st.st_mode) or now - st.st_mtime > 10:
                 continue
             with open(path, "r", encoding="utf-8") as fh:
                 data = json.load(fh)
         except (OSError, ValueError):
             continue
-        out.append({"device": name[:-5], "data": data})
+        if not isinstance(data, dict) or not isinstance(data.get("controls"), dict):
+            continue
+        stem = name[:-5]
+        encoded = bool(re.fullmatch(r"@[0-9a-f]{64}", stem))
+        device = data.get("device", None if encoded else stem)
+        if type(device) in (str, int) and str(device).strip() and (encoded or str(device) == stem):
+            out.append({"device": str(device), "data": data})
     return out
 
 

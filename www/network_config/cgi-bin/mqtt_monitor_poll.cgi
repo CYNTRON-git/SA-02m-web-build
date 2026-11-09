@@ -12,28 +12,15 @@ check_auth() {
 }
 if ! check_auth; then echo '{"ok":false,"error":"unauthorized","events":[]}'; exit 0; fi
 
-POLL_PY="/opt/sa02m-modbus-mqtt/mqtt_monitor_poll.py"
-DEVICE=""
-if [ -n "${QUERY_STRING:-}" ]; then
-    DEVICE=$(printf '%s' "${QUERY_STRING}" | tr '&' '\n' | sed -n 's/^device=\(.*\)$/\1/p' | head -1)
-    DEVICE=$(printf '%b' "${DEVICE//%/\\x}")
-fi
-
-if [ -z "$DEVICE" ]; then
+POLL_PY="${SA02M_BRIDGE_LIB_DIR:-/opt/sa02m-modbus-mqtt}/mqtt_monitor_poll.py"
+if [ -z "${QUERY_STRING:-}" ]; then
     echo '{"ok":false,"error":"device required","events":[]}'
     exit 0
 fi
-
-case "$DEVICE" in
-    *[!a-zA-Z0-9._-]*|'')
-        echo '{"ok":false,"error":"invalid device","events":[]}'
-        exit 0
-        ;;
-esac
 
 if [ ! -f "$POLL_PY" ]; then
     echo '{"ok":false,"error":"poll not installed","events":[]}'
     exit 0
 fi
 
-/usr/bin/python3 "$POLL_PY" "device=${DEVICE}" 2>/dev/null
+/usr/bin/python3 "$POLL_PY" "$QUERY_STRING"

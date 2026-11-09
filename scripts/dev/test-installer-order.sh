@@ -86,6 +86,33 @@ if grep -qi 'self-contained' scripts/05-mqtt.sh; then
 else
     ok "1c the stale 'self-contained' claim is gone from scripts/05-mqtt.sh"
 fi
+for script in scripts/03-webserver.sh scripts/update-www-only.sh; do
+    web_copy='^[[:space:]]*cp -[ra] "\$WWW_DIR/\." "\$WEB_ROOT/"'
+    order_pin "$script" "MQTT Python helpers → web CGI" '^[[:space:]]*sa02m_install_mqtt_web_deps ' "$web_copy"
+    order_pin "$script" "MQTT control allowlist → web CGI" '^[[:space:]]*sa02m_atomic_install .*lib_mqtt_write_controls\.sh' "$web_copy"
+done
+check_mqtt_web_deps() (
+    . scripts/lib.sh || return 1
+    local stage src=opt/sa02m-modbus-mqtt f
+    stage=$(mktemp -d) || return 1
+    trap 'rm -rf -- "$stage"' EXIT
+    # Exercise file selection and order as an unprivileged developer. The
+    # atomic root-owned copy itself is covered by test-install-atomic.sh.
+    sa02m_atomic_install() {
+        local dest=${!#}
+        [ "${dest##*/}" = bridge_meta.py ] || [ -f "$stage/bridge/bridge_meta.py" ] || return 1
+        cp -- "${@: -2}"
+    }
+    sa02m_install_mqtt_web_deps "$src" "$stage/bridge" || return 1
+    [ ! -e "$stage/bridge" ] || return 1
+    mkdir "$stage/bridge" && touch "$stage/bridge/modbus_mqtt_bridge.py" || return 1
+    sa02m_install_mqtt_web_deps "$src" "$stage/bridge" || return 1
+    for f in bridge_meta.py bridge_template_channels.py mqtt_live_snapshot.py mqtt_monitor_poll.py mqtt_monitor_stream.py; do
+        cmp -s "$src/$f" "$stage/bridge/$f" || return 1
+    done
+)
+if check_mqtt_web_deps; then ok 'web dependencies land before the CGI switch on an installed bridge and skip a fresh host'
+else bad 'web dependencies absent, out of order, or created a partial bridge'; fi
 
 echo "── 2. 04-flasher.sh: shared packages land before the daemon tree ──"
 order_pin scripts/04-flasher.sh "2a LED pkg → rsync"   '^[[:space:]]*sa02m_install_led_pkg '   '^[[:space:]]*rsync '

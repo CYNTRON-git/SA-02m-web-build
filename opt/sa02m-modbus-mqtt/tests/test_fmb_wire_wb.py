@@ -240,6 +240,33 @@ class TestGenerationCache(unittest.TestCase):
 
 # ── 8. Fallback ──────────────────────────────────────────────────────────────
 class TestFallback(unittest.TestCase):
+    def test_mr_ai_ack_is_the_whole_span_or_exactly_its_physical_channels(self):
+        for count, bits, all_bits in ((36, '8140201008', 'ffffffff0f'),
+                                      (78, '81402010080402814020', 'ffffffffffffffffff3f')):
+            physical = bytes.fromhex(bits)  # 78-register mask captured on COM4 at address 12
+            for device, length, mask, accepted in (
+                ('mr02m', count, physical, True), ('mr02m', count, bytes.fromhex(all_bits), True),
+                ('mr02m', count, physical[:-1] + b'\x00', False),
+                ('mr02m', count, b'\x83' + physical[1:], False),
+                ('mr02m', count - 1, physical, False), ('dtv', count, physical, False),
+            ):
+                with self.subTest(device=device, count=length, mask=mask):
+                    span = [(bridge.FMB_EVT_INPUT, 403, length)]
+                    mgr, dev = make_mgr(dev_type=device, wire_mode='wb', addr=12, ranges=span)
+                    frames = []
+
+                    def reply(frame, *args):
+                        frames.append(frame)
+                        return with_crc(bytes([12, 0x46, 0x18, len(mask)]) + mask)
+
+                    serial = types.SimpleNamespace(fmb_send_recv=reply)
+                    self.assertEqual(mgr._configure_device(serial, 12, dev), accepted)
+                    self.assertEqual(dev['pending'], [] if accepted else span)
+                    expected = [bridge.build_fmb_configure_events_wb(12, *span[0], 1)]
+                    if not accepted:
+                        expected.append(bridge.build_fmb_configure_events(12, *span[0], 1))
+                    self.assertEqual(frames, expected)
+
     def test_legacy_sent_after_wb_goes_unanswered(self):
         mgr, dev = make_mgr()
         ser = WireFakeSerial({("legacy", bridge.FMB_EVT_COIL),

@@ -21,50 +21,41 @@ if [ "$REQUEST_METHOD" != "GET" ]; then
     exit 0
 fi
 
-python3 - "$TEMPLATES_DIR" <<'PYEOF'
-import sys, json, pathlib
+. "$(dirname "$0")/lib_mqtt_write_controls.sh"
+python3 - "$TEMPLATES_DIR" "${SA02M_BRIDGE_LIB_DIR:-/opt/sa02m-modbus-mqtt}" "${MQTT_WEB_WRITE_PATTERN:-}" <<'PYEOF'
+import sys, json, pathlib, re
+sys.path.insert(0, sys.argv[2])
+try:
+    from bridge_template_channels import channel_catalog, resolve_template_path
+except ImportError:
+    print(json.dumps({"ok": False, "error": "template_catalog_unavailable"}))
+    sys.exit(0)
 base = pathlib.Path(sys.argv[1])
 out = []
-if base.is_dir():
-    for f in sorted(base.glob("*.json")):
-        name = f.stem
-        if name.startswith("config-"):
-            name = name[len("config-"):]
-        title = name
-        device_type = ""
-        channels = []
-        try:
-            with open(f, encoding="utf-8") as fh:
-                doc = json.load(fh)
-            dev = doc.get("device", {}) if isinstance(doc, dict) else {}
-            if not isinstance(dev, dict):
-                dev = {}
-            device_type = str(dev.get("device_type", "") or "")
-            title = str(dev.get("title") or dev.get("name") or name)
-            raw_ch = dev.get("channels")
-            if isinstance(raw_ch, list):
-                for item in raw_ch:
-                    if not isinstance(item, dict) or "reg_type" not in item:
-                        continue
-                    ch_name = item.get("name")
-                    if not isinstance(ch_name, str) or not ch_name:
-                        continue
-                    channels.append({
-                        "name": ch_name,
-                        "title": str(item.get("title") or ch_name),
-                        "reg_type": str(item.get("reg_type") or ""),
-                        "type": str(item.get("type") or ""),
-                        "units": str(item.get("units") or ""),
-                        "readonly": item.get("readonly") is not False,
-                    })
-        except Exception:
-            pass
-        # verified:false — register maps are unverified against hardware until
-        # the operator bench-confirms them (docs/contracts/template-device.md).
-        # channels: the MQTT accordion draws these rows. An empty list is a
-        # template the parser could not read — the UI must not invent controls.
-        out.append({"name": name, "title": title,
-                    "device_type": device_type, "verified": False,
-                    "channels": channels})
+try:
+    names = sorted({f.stem.removeprefix("config-") for f in base.iterdir() if f.suffix == ".json"})
+except OSError:
+    print(json.dumps({"ok": False, "error": "template_catalog_unavailable"}))
+    sys.exit(0)
+for name in names:
+    try:
+        with resolve_template_path(name).open(encoding="utf-8") as fh:
+            doc = json.load(fh)
+        dev = doc.get("device") if isinstance(doc, dict) else None
+        if not isinstance(dev, dict):
+            continue
+        device_type = str(dev.get("device_type") or "")
+        title = str(dev.get("title") or dev.get("name") or name)
+        channels = channel_catalog(doc)
+        for ch in channels:
+            ch["web_write"] = (not ch["readonly"] and
+                               bool(re.fullmatch(sys.argv[3], ch["name"])))
+    except (OSError, ValueError, TypeError, OverflowError, RuntimeError) as e:
+        # RuntimeError includes nested JSON/channel trees and symlink loops.
+        print("mqtt_templates.cgi: skipping %r (%s)" % (name, type(e).__name__), file=sys.stderr)
+        continue
+    # A parsed register map still needs independent hardware verification.
+    out.append({"name": name, "title": title, "device_type": device_type,
+                "verified": False, "channels": channels})
 print(json.dumps({"ok": True, "templates": out}))
 PYEOF

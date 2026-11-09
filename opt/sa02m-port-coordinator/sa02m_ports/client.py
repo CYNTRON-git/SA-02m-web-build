@@ -113,24 +113,48 @@ class Lease:
     """Exclusive operation. Close only AFTER every UART handle/task is closed."""
 
     def __init__(self, device, purpose="operation", socket_path=None, *,
-                 acquire_deadline=None, release_timeout=None):
+                 acquire_deadline=None, release_timeout=None, cancel_acquire=None):
         if release_timeout is not None and (not math.isfinite(release_timeout) or release_timeout < 0):
             raise ValueError("Release timeout must be finite and nonnegative")
         self.device, self.purpose, self.socket_path = device, purpose, socket_path
         self.acquire_deadline, self.release_timeout = acquire_deadline, release_timeout
+        self.cancel_acquire = cancel_acquire
         self.sock = None
         self.fd = None
         self.status = {}
+
+    def interrupt_acquire(self):
+        """Wake an outstanding acquire before its UART has been handed over."""
+        if self.cancel_acquire is not None:
+            self.cancel_acquire.set()
+            sock = self.sock
+            if sock is not None and self.fd is None:
+                try:
+                    sock.shutdown(socket.SHUT_RD)
+                except OSError:
+                    pass  # The acquire thread already closed it.
 
     def __enter__(self):
         if self.sock is not None or self.fd is not None:
             raise PortError("Lease already acquired")
         budget = {} if self.acquire_deadline is None else {"deadline": self.acquire_deadline}
-        self.sock = connect(self.socket_path, **budget)
+        connect_budget = budget
+        if self.cancel_acquire is not None:
+            # A UNIX socket with a full backlog can block before we have a
+            # connected descriptor to interrupt. Bound only that handshake.
+            limit = time.monotonic() + 3
+            connect_budget = {"deadline": min(limit, budget.get("deadline", limit))}
+        self.sock = connect(self.socket_path, **connect_budget)
         try:
+            if self.cancel_acquire is not None and self.cancel_acquire.is_set():
+                raise PortError("Lease acquisition cancelled")
             self.status, fds = request(self.sock, {
                 "op": "acquire", "port": self.device, "purpose": self.purpose,
             }, **budget)
+            if self.cancel_acquire is not None and self.cancel_acquire.is_set():
+                for fd in fds:
+                    os.close(fd)
+                raise PortError("Lease acquisition cancelled")
             if len(fds) != 1:
                 for fd in fds:
                     os.close(fd)

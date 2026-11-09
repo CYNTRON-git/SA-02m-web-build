@@ -405,7 +405,7 @@ class Broker:
             self.state["leases"][token] = {
                 "id": token, "port": port, "key": key, "purpose": purpose,
                 "pid": pid, "services": list(self.config["ports"][port]),
-                "phase": "preparing", "error": "",
+                "phase": "pausing", "error": "",
             }
             self.connected.add(token)
             # Persist membership BEFORE any stop, including services currently
@@ -413,6 +413,10 @@ class Broker:
             self.save()
             try:
                 self.holds[token] = self.system.mqtt_pause(port)
+                # A durable boundary: no unit stop or lock transfer can precede
+                # this write. An interrupted pause still belongs to its poller.
+                self.state["leases"][token]["phase"] = "preparing"
+                self.save()
                 for unit in self.config["ports"][port]:
                     if unit in self.state["services"]:
                         continue
@@ -454,7 +458,8 @@ class Broker:
             if fd is not None:
                 os.close(fd)
             if token in self.state["leases"]:
-                self.state["leases"][token]["phase"] = "recovering"
+                if self.state["leases"][token]["phase"] != "pausing":
+                    self.state["leases"][token]["phase"] = "recovering"
                 self.save()
             self.recover(force=True)
             return {"ok": True, "pending_restore": bool(
@@ -470,19 +475,22 @@ class Broker:
             for token, lease in list(self.state["leases"].items()):
                 if token in self.connected:
                     continue
-                try:
-                    # Passed lock fds protect surviving clients after broker
-                    # death; descriptors protect external child flash tools.
-                    if device_key(lease["port"]) != lease["key"]:
-                        lease["error"] = "UART mapping changed during recovery"
-                        self.save()
+                if lease.get("phase") != "pausing":
+                    try:
+                        # Passed lock fds protect surviving clients after broker
+                        # death; descriptors protect external child flash tools.
+                        if device_key(lease["port"]) != lease["key"]:
+                            lease["error"] = "UART mapping changed during recovery"
+                            self.save()
+                            continue
+                        if occupants(lease["port"]):
+                            continue
+                        fd = lock_device(lease["port"], str(self.lock_dir))
+                    except (OSError, PortError):
                         continue
-                    if occupants(lease["port"]):
-                        continue
-                    fd = lock_device(lease["port"], str(self.lock_dir))
-                except (OSError, PortError):
-                    continue
-                os.close(fd)
+                    os.close(fd)
+                # A pre-pause intent has never authorized a new UART owner.
+                # Waiting for its original poller here would deadlock the retry.
                 del self.state["leases"][token]
                 self.save()
                 hold = self.holds.pop(token, None)

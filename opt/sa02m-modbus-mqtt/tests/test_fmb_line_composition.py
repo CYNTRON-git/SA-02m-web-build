@@ -41,11 +41,18 @@ class EventLine:
         if addr in self.legacy:
             assert frame[3] == 5 and frame[8] == 1
             mask = bytes([0])
+            selected = range(count)
         else:
             assert frame[3] == 4 + count and frame[8:-2] == bytes([1]) * count
             kind -= 1
-            mask = bytes((1 << min(8, count - n)) - 1 for n in range(0, count, 8))
-        self.enabled.update((addr, kind, reg) for reg in range(start, start + count))
+            if kind == 3 and start == 403:
+                selected = range(0, count, 7)
+                masks = {36: '8140201008', 78: '81402010080402814020'}
+                mask = bytes.fromhex(masks[count])
+            else:
+                selected = range(count)
+                mask = bytes((1 << min(8, count - n)) - 1 for n in range(0, count, 8))
+        self.enabled.update((addr, kind, start + i) for i in selected)
         return _append_crc(bytes([addr, fc, sub, len(mask)]) + mask)
 
     def emit(self, addr, values):

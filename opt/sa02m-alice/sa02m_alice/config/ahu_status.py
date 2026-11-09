@@ -44,7 +44,6 @@ Idempotent: a second pass is a no-op. Other devices are untouched.
 from __future__ import annotations
 
 import copy
-import os
 from typing import Any, Dict, Iterable, List, Optional, Set, Tuple
 
 from ..common import carel_import
@@ -212,9 +211,9 @@ def ahu_float_item(prefix: str, instance: str, control: str, unit: str) -> Dict[
 
 def _mqtt_id_from_prefix(prefix: str) -> str:
     """`/devices/carel-COM3-1/controls` → `carel-COM3-1`."""
-    if not prefix.startswith("/devices/"):
+    if not prefix.startswith("/devices/") or not prefix.endswith("/controls"):
         return ""
-    return prefix[len("/devices/"):].split("/", 1)[0]
+    return prefix[len("/devices/"):-len("/controls")]
 
 
 def _live_ok(
@@ -468,13 +467,7 @@ def carel_cache_snapshot(
     reload, not a poll path.
     """
     out: Dict[str, Dict[str, Set[str]]] = {}
-    directory = cache_dir or inventory._live_dir()
-    for mid in mqtt_ids:
-        if not mid:
-            continue
-        data = inventory._read_json(os.path.join(directory, "%s.json" % mid))
-        if not isinstance(data, dict):
-            continue
+    for mid, data in inventory.live_cache_rows(mqtt_ids, cache_dir).items():
         controls = data.get("controls")
         errors = data.get("errors")
         names: Set[str] = set()

@@ -58,6 +58,25 @@ def test_mtdx62_snapshot(tmp_path: Path):
     assert snap["devices"][-1]["id"] == "mtdx62-mb-COM3-20"
 
 
+def test_encoded_ids_keep_family_filter_and_explicit_override_inside_cache(tmp_path, monkeypatch):
+    cache = tmp_path / "run"
+    cache.mkdir()
+    sensor = "@0aac5c28c4046e75362a92b3c50a73ec0bbba3cbf8d0be0d1c6837c125aeca5c"
+    strip = "@7c6ffaaed1fd44204542857ad2515509ce94596cf6c2c49f5c3e894a4e212d4d"
+    for stem, mid in ((sensor, "dtv-floor/sensor"), (strip, "room/strip")):
+        payload = {"device": mid, "ok": True, "controls": {"temp_hdc1080": "24"}}
+        (cache / (stem + ".json")).write_text(json.dumps(payload))
+    _write(cache, "dtv-COM4-5", {"temp_hdc1080": "25"})
+    (cache / (strip + ".profile.json")).write_text(json.dumps({"device": "room/strip"}))
+    assert {row["id"] for row in live_snapshot(cache)["dtv"]} == {"dtv-floor/sensor", "dtv-COM4-5"}
+    monkeypatch.setenv("STAND_DEVICES_DTV_ID", "room/strip")
+    rows = live_snapshot(cache)["dtv"]
+    assert [(row["id"], row["room_temp"]) for row in rows] == [("room/strip", 24.0)]
+    _write(tmp_path, "secret", {"temp_hdc1080": "26"})
+    monkeypatch.setenv("STAND_DEVICES_DTV_ID", "../secret")
+    assert live_snapshot(cache)["dtv"] == []
+
+
 def test_parse_and_label():
     m = parse_device_id("ce02m3-COM2-14")
     assert m["kind"] == "ce" and m["port_num"] == 2 and m["addr"] == 14

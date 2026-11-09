@@ -52,6 +52,20 @@ class TestDtvWire(unittest.TestCase):
         self.assertEqual(bridge_mqtt.DeviceLiveCache._controls["dtv-COM3-15"]["light_pct"], "32.0")
         self.assertEqual(self.bus.polls[-1][1:], (15, 0xaa))
 
+    def test_dtv_11_producer_partial_batch_and_canonical_end(self):
+        self.fw.return_value = [1, 0, 2, 11]
+        self.compose()
+        self.manager.configure_all()
+        # DTV v1.0.2.11 tests/test_event_poll_frames.py: N=9, one IR25 sample, flag 0.
+        self.bus.replies.extend([
+            _append_crc(bytes.fromhex("0f 46 11 00 09 06 02 04 00 19 64 00")),
+            bytes.fromhex("fd 46 12 52 5d"),
+        ])
+        self.assertEqual(self.manager.event_burst(), 0)
+        self.assertEqual(self.bus.polls[-1][1:], (15, 0))
+        self.client.publish.assert_any_call("/devices/dtv-COM3-15/controls/light_pct",
+                                            "100.0", qos=1, retain=True)
+
     def test_explicit_wire_choices_and_version_read_recovery(self):
         self.compose()
         self.fw.side_effect = [IOError("timeout"), [1, 0, 1, 48], [1, 0, 1, 49]]
