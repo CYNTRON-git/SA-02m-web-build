@@ -292,8 +292,9 @@ fi
 if [ -f "$ETC_DIR/sa02m-prepare-working-board.sh" ]; then
     sa02m_atomic_install -m 755 "$ETC_DIR/sa02m-prepare-working-board.sh" /usr/local/sbin/sa02m-prepare-working-board
 fi
-# Signature before/after the script + unit writes: a running monitor keeps the old
-# code until it restarts, so it is restarted below only when they changed (D36-02).
+# A running monitor keeps the old code until it restarts: it is restarted below when the
+# script/unit changed in this run (signature before/after) or when the running process
+# still executes an older script than the installed one (D36-02).
 _fm_sig0=$(sa02m_file_sig /usr/local/sbin/sa02m-failure-monitor /etc/systemd/system/sa02m-failure-monitor.service)
 if [ -f "$ETC_DIR/sa02m-failure-monitor.sh" ]; then
     sa02m_atomic_install -m 755 "$ETC_DIR/sa02m-failure-monitor.sh" /usr/local/sbin/sa02m-failure-monitor
@@ -812,7 +813,7 @@ fi
 sa02m_svc_apply fcgiwrap.service infra start restart
 sa02m_svc_apply nginx.service infra start restart
 _fm_sig1=$(sa02m_file_sig /usr/local/sbin/sa02m-failure-monitor /etc/systemd/system/sa02m-failure-monitor.service)
-if [ "$_fm_sig0" != "$_fm_sig1" ]; then
+if [ "$_fm_sig0" != "$_fm_sig1" ] || sa02m_daemon_runs_stale_script sa02m-failure-monitor.service /usr/local/sbin/sa02m-failure-monitor; then
     sa02m_svc_apply sa02m-failure-monitor.service infra start restart
 else
     sa02m_svc_apply sa02m-failure-monitor.service infra start

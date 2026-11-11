@@ -816,6 +816,30 @@ sa02m_file_sig() {
     done
 }
 
+# Does the RUNNING main process of <unit> still execute an OLDER copy of its bash script <script>?
+# Decided from the process, not from the disk: a bash loop keeps its script open (an fd that reads
+# `<script> (deleted)` once an atomic install renamed a new file over it), so comparing that open file
+# with the installed one is true exactly when the old code is still running - also when the new file
+# is already on disk (a network update, or an earlier build of the same version, put it there and
+# restarted nothing: bench 1.135, D36-02). Content, not inode: an install rewrites the file every
+# run, so an inode/mtime test would bounce every daemon on every refresh. Returns 0 = stale (restart),
+# 1 = fresh, stopped, or not decidable (no open fd) - the caller still restarts on a disk change.
+sa02m_daemon_runs_stale_script() {
+    local _unit=$1 _script=$2 _pid _fd _link
+    _pid=$(timeout 10 systemctl show -p MainPID "$_unit" 2>/dev/null | sed -n 's/^MainPID=//p')
+    case "$_pid" in ''|0|*[!0-9]*) return 1 ;; esac
+    [ -d "/proc/$_pid/fd" ] || return 1
+    for _fd in /proc/"$_pid"/fd/*; do
+        _link=$(readlink "$_fd" 2>/dev/null) || continue
+        case "$_link" in
+            "$_script"|"$_script (deleted)")
+                cmp -s "$_fd" "$_script" 2>/dev/null && return 1
+                return 0 ;;
+        esac
+    done
+    return 1
+}
+
 # /etc/sudoers.d/time-sync — `www-data ALL=(ALL) NOPASSWD: /bin/date, /sbin/hwclock`,
 # written by the very first installer (12764245, removed from the tree in
 # 39124e45) and kept on every board imaged from it. It is in no committed file,
