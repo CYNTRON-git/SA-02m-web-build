@@ -60,6 +60,7 @@ renderer-owned DOM containers wipe hand-inserted nodes on the next poll;
 | Pre/post-edit discipline, «—» trace recipe | `docs/agent-rules/web-workflow.md` |
 | MPLC4 runtime API, license reads, the FastCGI-not-HTTP trap | `docs/agent-rules/mplc4-api.md` |
 | Regression history ("when did X break") | `CHANGELOG.md` — grep it FIRST |
+| Known defects and stated limits of released panel versions; Wiren Board errata classes for our Fast Modbus master | `docs/ERRATA.md` (Russian; found/fixed history with commits: `docs/bugs/BUGLOG.md`) |
 | Install/HW variants (Operator-facing) | `README.md` |
 | Bench board target services / Alice / Cloud / Docker (gold 1.136) | `docs/bench-board-target-state.md` — a bench runbook, not a contract (nothing converges to it) |
 | Cursor sessions — how Cursor finds these rules at all | `.cursor/rules/*.mdc` — trigger files that POINT at `docs/agent-rules/` and `CLAUDE.md` (`sa02m_project_rules.mdc`); never a second home for a rule, a credential or a fingerprint (audit 2026-09-08, D10/D11) |

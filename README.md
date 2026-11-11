@@ -2106,6 +2106,7 @@ sudo /usr/local/sbin/sa02m-web-update-apply
 | [docs/HOMEKIT_INTEGRATION.md](docs/HOMEKIT_INTEGRATION.md) | Мост Apple HomeKit: установка, сопряжение iPhone, сброс, неполадки |
 | [docs/HOME_CONNECT_INTEGRATION.md](docs/HOME_CONNECT_INTEGRATION.md) | Приборы BSH Home Connect: своё приложение и Client ID, вход по коду, лимит, неполадки |
 | [docs/OFFLINE_UPDATE_PACKAGE_V1.md](docs/OFFLINE_UPDATE_PACKAGE_V1.md) | Формат офлайн-пакета обновления `.sa02m` |
+| [**docs/ERRATA.md**](docs/ERRATA.md) | Errata панели: известные дефекты и пределы по версиям, что исправлено и что открыто; классы errata Wiren Board у нашего мастера Быстрого Modbus |
 | [docs/bugs/BUGLOG.md](docs/bugs/BUGLOG.md) | Известные проблемы и обходные пути |
 | [docs/audits/](docs/audits/) | Отчёты аудитов (исторические срезы) |
 | [CHANGELOG.md](CHANGELOG.md) | Полный журнал изменений по версиям |
