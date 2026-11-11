@@ -519,8 +519,11 @@ sync_hwclock_from_sys() {
     [ "$rc" = 0 ] || echo "$(date '+%Y-%m-%d %H:%M:%S') apply.cgi: RTC write after manual time set FAILED (rc=$rc)" >> /var/log/sa02m_install.log 2>&1
 }
 
+# The typed value goes into a plain-text log: keep only the characters a date can
+# carry, so a newline cannot forge a log line (review LOW-8).
+DATETIME_LOG=$(printf '%s' "$DATETIME" | tr -cd '0-9A-Za-z :T._+-' | cut -c1-40)
 if [ -n "$DATETIME" ] && [ -z "$DT_EPOCH" ]; then
-    echo "$(date '+%Y-%m-%d %H:%M:%S') apply.cgi: unreadable time, not set ($DATETIME)" >> /var/log/sa02m_install.log 2>&1
+    echo "$(date '+%Y-%m-%d %H:%M:%S') apply.cgi: unreadable time, not set ($DATETIME_LOG)" >> /var/log/sa02m_install.log 2>&1
     REDIRECT="error_time"
 elif [ -n "$DATETIME" ]; then
     # The same instant, as wall-clock text in the zone now in force.
@@ -528,9 +531,9 @@ elif [ -n "$DATETIME" ]; then
     if [ -n "$DATETIME_NEW" ] && apply_system_time "$DATETIME_NEW"; then
         time_ok=1
         sync_hwclock_from_sys
-        echo "$(date '+%Y-%m-%d %H:%M:%S') datetime set to $DATETIME_NEW (entered $DATETIME)" >> /var/log/sa02m_install.log 2>&1
+        echo "$(date '+%Y-%m-%d %H:%M:%S') datetime set to $DATETIME_NEW (entered $DATETIME_LOG)" >> /var/log/sa02m_install.log 2>&1
     else
-        echo "$(date '+%Y-%m-%d %H:%M:%S') apply.cgi: set time failed ($DATETIME)" >> /var/log/sa02m_install.log 2>&1
+        echo "$(date '+%Y-%m-%d %H:%M:%S') apply.cgi: set time failed ($DATETIME_LOG)" >> /var/log/sa02m_install.log 2>&1
         REDIRECT="error_time"
     fi
 fi

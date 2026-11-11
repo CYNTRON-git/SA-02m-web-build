@@ -177,6 +177,16 @@ else
     bad "T5: RTC write after a time set — $n_regs register write(s); acts=$(acts)"
 fi
 
+# ── T6: a newline typed into the time field cannot forge an install.log line ──
+# (review LOW-8). %0A is a newline; the forged line must not appear on its own.
+post Europe/Moscow 'skip_network=1&timezone=Europe%2FMoscow&datetime=bad%0A2099-01-01+00%3A00%3A00+FORGED+root+login'
+if [ -s "$LOGF" ] && ! grep -q '^2099-01-01' "$LOGF" && [ "$(grep -c 'FORGED' "$LOGF")" -le 1 ] \
+   && ! grep -qE '^FORGED' "$LOGF"; then
+    ok "T6: a newline in the typed time stays inside one install.log line (no forged line)"
+else
+    bad "T6: install.log carries a forged line: $(tr '\n' '|' < "$LOGF")"
+fi
+
 echo
 if [ "$fails" = 0 ]; then
     echo "test-apply-time: all cases passed"
