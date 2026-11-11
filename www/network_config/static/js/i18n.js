@@ -1734,6 +1734,9 @@
     'Прошивка отменена': 'Flashing cancelled',
     'Прошивка завершена': 'Flashing complete',
     'Прошивка не выполнена:': 'Flashing failed:',
+    'Серийный номер устройства не совпал с выбранной целью.': 'The device serial number does not match the selected target.',
+    'Серийный номер загрузчика не совпал с номером приложения.': 'The bootloader serial number does not match the application serial number.',
+    'Не удалось прочитать сигнатуру устройства по регистру 290.': 'Could not read the device signature from register 290.',
     'Восстановлено отслеживание прошивки': 'Flash tracking restored',
     'Восстановлено отслеживание сканирования': 'Scan tracking restored',
     'Манифест обновлён, но файлы в кеш не загружены': 'Manifest refreshed, but no files were downloaded to the cache',
@@ -2430,12 +2433,18 @@
     [/^Регистр (\d+) датчика MTD из окна настроек не записывается$/u, 'Register $1 of the MTD sensor is not writable from the settings window'],
     [/^Значение вне диапазона (.+)…(.+)$/u, 'Value out of range $1…$2'],
     [/^Запись рег\. (\d+): Таймаут$/u, 'Writing register $1: timeout'],
-    // Flasher job failures (jobs.failed_targets_text, runner identity read; FL-01/02/03)
-    [/^Не прошито: (.+)$/u, 'Not flashed: $1'],
-    [/^адр\.(\d+)( SN 0x[0-9A-F]{8})?: (.+)$/u, 'addr $1$2: $3'],
+    // Flasher job failures (jobs.failed_targets_text, runner identity read; FL-01/02/03): the text the
+    // tab shows is whole-string matched, so the rule translates each «адр.N SN …: причина» part itself.
+    [/^Не прошито: (.+)$/u, (_m, rest) => 'Not flashed: ' + rest.split('; адр.').map((part, i) => {
+      const m = (i ? 'адр.' + part : part).match(/^адр\.(\d+)( SN 0x[0-9A-F]{8})?: (.+)$/u);
+      return m ? 'addr ' + m[1] + (m[2] || '') + ': ' + translateText(m[3]) : translateText(part);
+    }).join('; ')],
     [/^Нет ответа устройства \(таймаут чтения серийного номера\)\.$/u, 'The device did not answer (serial number read timed out).'],
     [/^Нет ответа устройства адр\.(\d+): таймаут чтения серийного номера на линиях (.+)\. Прошивка не начата, запись не отправлялась\. Проверьте скорость линии модуля и адрес\.$/u, 'No answer from the device at address $1: the serial number read timed out on lines $2. Flashing was not started and nothing was written. Check the module line speed and address.'],
     [/^Не удалось прочитать серийный номер устройства: (.+)\.$/u, 'Could not read the device serial number: $1.'],
+    [/^Регистр 290 «(.*)» не подтвердил семейство (.+)\.$/u, 'Register 290 ("$1") did not confirm family $2.'],
+    [/^Не удалось перевести устройство в загрузчик \(reg 129\): (.+)\. Запись отклонена\.$/u, 'Could not switch the device to the bootloader (reg 129): $1. Write refused.'],
+    [/^Адр\.(\d+) не ответил на (.+); пробую линию (.+)$/u, 'Address $1 did not answer on $2; trying line $3'],
     [/^Скорость датчика: только (.+)$/u, 'Sensor baud: $1 only'],
     [/^Датчик MTD на адресе (\d+), (\d+) ([NOE]) не отвечает или не опознан — параметры связи не изменены$/u, 'The MTD sensor at address $1, $2 $3 does not answer or is not recognised — link settings not changed'],
     [/^На адресе (\d+), (\d+) ([NOE]) уже отвечает другое устройство — параметры связи не изменены\. Выберите свободный адрес\.$/u, 'Another device already answers at address $1, $2 $3 — link settings not changed. Choose a free address.'],

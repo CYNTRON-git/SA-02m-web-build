@@ -26,7 +26,7 @@ from . import module_profiles as mp
 from . import scanner as scn
 from .config import FlasherConfig
 from .firmware_repo import FirmwareEntry, FirmwareRepo, load_for_flash
-from .jobs import Job
+from .jobs import Job, failed_targets_text
 from .module_profiles import (
     PROFILE_MP_MR,
     application_line_profile,
@@ -677,7 +677,7 @@ def _confirm_flash_identity(
     if sn_err:
         # FL-03: no answer / a damaged answer is NOT a serial mismatch. The caller
         # (_enter_bootloader_from_application_line) retries another line on «no answer».
-        if "таймаут" in str(sn_err).lower() or "timeout" in str(sn_err).lower():
+        if fp._fp_is_timeout_err(sn_err):
             return None, f"{IDENTITY_NO_ANSWER} (таймаут чтения серийного номера)."
         return None, f"Не удалось прочитать серийный номер устройства: {sn_err}."
     actual_sn = (uint32_from_modbus_reg_pair_be(sn_data)
@@ -1417,6 +1417,16 @@ def _resolve_flash_route_for_device(
     return route == "wb", None
 
 
+def _fail_flash_targets(job: Job, failed: List[Tuple[Dict[str, Any], str]]) -> "RuntimeError":
+    """Записать неудавшиеся цели в params["errors"] и вернуть исключение с текстом, который
+    показывает вкладка: «Не прошито: адр.N SN 0x…: причина» — на ЛЮБОМ пути (одна цель, пакет
+    с остановкой на первой ошибке, пакет с продолжением), без имени класса исключения."""
+    job.params["errors"] = [
+        {"address": d.get("address"), "serial": d.get("serial"), "error": e} for d, e in failed
+    ]
+    return RuntimeError(failed_targets_text(job.params["errors"]))
+
+
 def run_flash_job(job: Job, ctx: Dict[str, Any], cfg: FlasherConfig, repo: FirmwareRepo) -> None:
     """
     Задача прошивки одного устройства.
@@ -1443,7 +1453,7 @@ def run_flash_job(job: Job, ctx: Dict[str, Any], cfg: FlasherConfig, repo: Firmw
     image_family = mp.manifest_device_family(entry.device)
     is_wb, route_err = _resolve_flash_route_for_device(target, entry)
     if route_err:
-        raise RuntimeError(route_err)
+        raise _fail_flash_targets(job, [(target, route_err)])
     log_sig = _firmware_signature_label(file_sig, entry, target)
     route_name = device_flash_route(str(target.get("signature") or ""))
     log_cb(
@@ -1484,7 +1494,7 @@ def run_flash_job(job: Job, ctx: Dict[str, Any], cfg: FlasherConfig, repo: Firmw
                 on_irreversible=on_irreversible,
             )
             if err:
-                raise RuntimeError(err)
+                raise _fail_flash_targets(job, [(target, err)])
     progress_cb(100, "Готово")
 
 
@@ -1566,7 +1576,8 @@ def run_flash_batch_job(job: Job, ctx: Dict[str, Any], cfg: FlasherConfig, repo:
     routes = [_resolve_flash_route_for_device(dev, entry) for dev in targets]
     invalid = [reason for _, reason in routes if reason]
     if invalid and (not skip_on_error or len(invalid) == len(routes)):
-        raise RuntimeError(invalid[0])
+        bad_targets = [(dev, reason) for dev, (_, reason) in zip(targets, routes) if reason]
+        raise _fail_flash_targets(job, bad_targets if skip_on_error else bad_targets[:1])
 
     with port_lease(device_path, cfg.mplc_stop_services):
         with _port_flock(cfg, port_key):
@@ -1589,7 +1600,7 @@ def run_flash_batch_job(job: Job, ctx: Dict[str, Any], cfg: FlasherConfig, repo:
                     errors.append((dev, route_err))
                     log_cb(f"Ошибка: {route_err}", "error")
                     if not skip_on_error:
-                        raise RuntimeError(route_err)
+                        raise _fail_flash_targets(job, errors)
                     continue
                 route_name = device_flash_route(str(dev.get("signature") or ""))
                 log_cb(
@@ -1634,10 +1645,11 @@ def run_flash_batch_job(job: Job, ctx: Dict[str, Any], cfg: FlasherConfig, repo:
                     errors.append((dev, err))
                     log_cb(f"Ошибка: {err}", "error")
                     if not skip_on_error:
-                        raise RuntimeError(err)
+                        raise _fail_flash_targets(job, errors)
             if errors:
                 log_cb(f"Завершено с ошибками: {len(errors)} из {total}", "warn")
-                # Запишем ошибки в параметры, чтобы UI показал; статус job — DONE, но с сообщением.
+                # Партия с продолжением (skip_on_error=true, только по явной просьбе): ошибки — в
+                # params; JobManager завершает такую задачу статусом error (jobs.failed_flash_targets).
                 job.params["errors"] = [
                     {"address": d.get("address"), "serial": d.get("serial"), "error": e}
                     for d, e in errors

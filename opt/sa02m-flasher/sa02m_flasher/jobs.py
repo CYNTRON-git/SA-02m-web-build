@@ -226,7 +226,9 @@ class JobManager:
                 log.exception("Job %s failed", job_id)
                 with self._lock:
                     job.state = JobState.ERROR
-                    job.error = f"{type(exc).__name__}: {exc}"
+                    # A flash that failed on a target already carries its text («Не прошито: адр.N
+                    # SN …: причина»): no Python class name in what the tab shows.
+                    job.error = str(exc) if failed_flash_targets(job) else f"{type(exc).__name__}: {exc}"
                     job.finished_ts = time.time()
                 self._emit(job, "error", "error", str(exc), data={"exception": type(exc).__name__})
             finally:

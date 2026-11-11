@@ -310,19 +310,35 @@
     syncActionButtons();
   }
 
-  // The flash job's own failure text (naming the target), from the job snapshot.
-  // Backends before 1.0.7.36 end a failed batch `done` with params.errors — read
-  // that too, so a failed target never shows the green «Прошивка завершена» (FL-02).
+  // What the tab shows for a failed flash: «Не прошито: адр.N SN 0x…: причина», the SAME text the
+  // daemon puts in job.error (jobs.failed_targets_text) — built here from params.errors for a daemon
+  // that still ends a failed batch `done` (before 1.0.7.36), so a failed target never shows green (FL-02).
+  function failedTargetsText(errs) {
+    return 'Не прошито: ' + errs.map(e => {
+      const sn = Number(e.serial) >>> 0;
+      return 'адр.' + e.address + (sn ? ' SN 0x' + sn.toString(16).toUpperCase().padStart(8, '0') : '') + ': ' + e.error;
+    }).join('; ');
+  }
+
   async function flashFailureText(jobId) {
     try {
       const snap = await apiGet('/jobs/' + jobId);
       if (snap && snap.error) return String(snap.error);
       const errs = snap && snap.params && Array.isArray(snap.params.errors) ? snap.params.errors : [];
-      if (errs.length) {
-        return 'Не прошито: ' + errs.map(e => 'адр.' + e.address + ': ' + e.error).join('; ');
-      }
+      if (errs.length) return failedTargetsText(errs);
     } catch (_) { /* the snapshot is best-effort */ }
     return '';
+  }
+
+  // A failed-target text starts with «Не прошито:» and names the target itself; any other job error
+  // (port busy, unexpected exception) gets the «Прошивка не выполнена:» lead.
+  function failureToastText(failText) {
+    return /^Не прошито:/.test(failText) ? failText : uiT('Прошивка не выполнена:') + ' ' + t(failText);
+  }
+
+  // The log line of a job error; the failed-target text is already a sentence of its own.
+  function errorLogLine(message) {
+    return /^Не прошито:/.test(message) ? message : 'Ошибка: ' + message;
   }
 
   async function onFlashJobEnd(state2, jobId) {
@@ -337,7 +353,7 @@
       updateGlobalBusyFromPorts();
       setFlashButtons();
       if (state2 === 'cancelled') toast('Прошивка отменена', 'warn');
-      else if (failText) toast(uiT('Прошивка не выполнена:') + ' ' + failText, 'error');
+      else if (failText) toast(failureToastText(failText), 'error');
       else toast('Прошивка прервана или завершилась с ошибкой. Выполните сканирование.', 'error');
     } else {
       updateGlobalBusyFromPorts();
@@ -5750,7 +5766,7 @@
         }
         const st = snap.state;
         if (st === 'running' || st === 'pending') return;
-        if (snap.error) logAppend('Ошибка: ' + snap.error, 'error');
+        if (snap.error) logAppend(errorLogLine(String(snap.error)), 'error');
         const lastEv = (snap.events || []).slice(-1)[0];
         if (lastEv && lastEv.message) logAppend(lastEv.message, lastEv.level || 'info');
         if (st !== 'done') logAppend(`Готово: ${st}`, st === 'cancelled' ? 'warn' : 'warn');
@@ -5799,7 +5815,7 @@
     });
     es.addEventListener('error', ev => {
       const p = safeParse(ev.data);
-      if (p) logAppend('Ошибка: ' + (p.message || ''), 'error');
+      if (p) logAppend(errorLogLine(String(p.message || '')), 'error');
     });
     es.addEventListener('end', ev => {
       const p = safeParse(ev.data);
