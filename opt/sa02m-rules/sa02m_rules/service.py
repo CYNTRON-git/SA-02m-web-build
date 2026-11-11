@@ -137,6 +137,11 @@ class RulesApp:
         self._failed = 0
         self._warned_non_finite: set = set()
         self._warned_failed: set = set()
+        # Refused scene commands (retained replay / payload neither on nor
+        # off): one WARN per topic, then sampled -- a LAN client looping a
+        # bad payload must not turn into a stream of journal lines.
+        self._warned_command: set = set()
+        self._refused_commands = 0
         self._step_failures: Dict[str, int] = {}
         self.reload_index()
         # Pre-create the mirror: Engine.__init__ adopts the existing doc and
@@ -271,8 +276,11 @@ class RulesApp:
         topic = getattr(msg, "topic", "") or ""
         payload = msg.payload
         raw = payload.decode("utf-8", "replace") if isinstance(payload, (bytes, bytearray)) else str(payload)
+        # The retain flag travels with the message: the command branch must
+        # tell a broker replay from a live publish (audit 2026-11-11 A5-02).
+        retain = bool(getattr(msg, "retain", False))
         try:
-            self._inbox.put_nowait((topic, raw))
+            self._inbox.put_nowait((topic, raw, retain))
         except queue.Full:
             self._dropped += 1
             if self._dropped == 1 or _sampled(self._dropped):
@@ -305,14 +313,14 @@ class RulesApp:
     def _drain_inbox(self) -> None:
         while True:
             try:
-                topic, raw = self._inbox.get_nowait()
+                topic, raw, retain = self._inbox.get_nowait()
             except queue.Empty:
                 return
             # One bad message must not end the loop: a RETAINED payload that
             # raises would otherwise crash-loop the unit on every start.
             # Exception only — the SIGTERM SystemExit must still unwind.
             try:
-                self._apply_message(topic, raw)
+                self._apply_message(topic, raw, retain=retain)
             except Exception:
                 self._failed += 1
                 if self._first_time(self._warned_failed, topic):
@@ -321,7 +329,7 @@ class RulesApp:
                     LOG.warning("%d message(s) skipped after an error, "
                                 "latest on %r", self._failed, topic)
 
-    def _scene_command(self, parts: list, raw: str) -> None:
+    def _scene_command(self, parts: list, raw: str, retain: bool = False) -> None:
         """`devices/sa02m-rules-<sid>/controls/run/on` → run / run_off.
 
         The sid is LOOKED UP in the store, never interpolated into anything:
@@ -340,17 +348,40 @@ class RulesApp:
         sid = did[len(RULES_DEVICE_PREFIX):]
         if not sid or not ID_RE.match(sid):
             return
-        self.reload()
-        if raw.strip() in ("1", "on", "true", "True", "ON"):
+        topic = "/" + "/".join(parts)
+        if retain:
+            # The broker replays a retained command on every reconnect:
+            # running it would start (or stop) the scene with nobody asking
+            # (audit 2026-11-11 A5-02). The retained STATE mirror is still
+            # taken by _apply_message.
+            self._warn_command("scene command %s dropped: retained /on is "
+                               "never replayed", topic)
+            return
+        v = raw.strip().lower()
+        if v in ("1", "on", "true"):
+            self.reload()
             self.engine.run_scene(sid)
-        else:
+        elif v in ("0", "off", "false"):
+            self.reload()
             self.engine.run_off(sid)
+        else:
+            # Only an explicit off switches the outputs off: an empty or
+            # garbled payload is not a command (contract cloud-scenarios.md
+            # `run`).
+            self._warn_command("scene command %s ignored: payload %r is "
+                               "neither on nor off", topic, raw[:16])
 
-    def _apply_message(self, topic: str, raw: str) -> None:
+    def _warn_command(self, fmt: str, topic: str, *args: Any) -> None:
+        self._refused_commands += 1
+        if (self._first_time(self._warned_command, topic)
+                or _sampled(self._refused_commands)):
+            LOG.warning(fmt, topic, *args)
+
+    def _apply_message(self, topic: str, raw: str, retain: bool = False) -> None:
         parts = topic.strip("/").split("/")
         # devices / <id> / controls / <name> / on   — a command, ours only
         if len(parts) == 5:
-            self._scene_command(parts, raw)
+            self._scene_command(parts, raw, retain=retain)
             return
         # devices / <id> / controls / <name>   — the state mirror
         if len(parts) != 4 or parts[0] != "devices" or parts[2] != "controls":

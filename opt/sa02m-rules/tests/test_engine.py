@@ -477,6 +477,77 @@ class SceneCommandIntakeTests(unittest.TestCase):
         self.app.tick()
         self.assertEqual(self.sent(), [("/devices/led/controls/on_off/on", "1")])
 
+    # Audit 2026-11-11 A5-02: the broker hands a retained `run/on` over on
+    # every reconnect, and "anything but on" used to mean off.
+
+    def test_retained_run_on_is_never_replayed(self):
+        for payload in (b"1", b"0"):
+            with self.subTest(payload=payload):
+                self.client.published = []
+                msg = types.SimpleNamespace(
+                    topic="/devices/sa02m-rules-%s/controls/run/on" % "s1",
+                    payload=payload, retain=True)
+                self.app.on_message(None, None, msg)
+                if payload == b"1":
+                    # The first refusal per topic is named; repeats are sampled.
+                    with self.assertLogs(rules_service.LOG, level="WARNING") as logs:
+                        self.app.tick()
+                    self.assertTrue(any(
+                        "retained /on is never replayed" in r.getMessage()
+                        for r in logs.records))
+                else:
+                    self.app.tick()
+                self.assertEqual(self.sent(), [])
+
+    def test_a_retained_state_topic_is_still_taken(self):
+        # Non-vacuity of the filter's scope: the retained state mirror (four
+        # parts, no `/on`) is what the engine boots from and must still land.
+        msg = types.SimpleNamespace(topic="/devices/mr/controls/do_1",
+                                    payload=b"1", retain=True)
+        self.app.on_message(None, None, msg)
+        self.app.tick()
+        self.assertEqual(self.app.state.get("mr", {}).get("do_1"), 1)
+
+    def test_a_live_run_on_through_the_inbox_still_runs(self):
+        msg = types.SimpleNamespace(
+            topic="/devices/sa02m-rules-s1/controls/run/on", payload=b"1",
+            retain=False)
+        self.app.on_message(None, None, msg)
+        self.app.tick()
+        self.assertEqual(self.sent(), [("/devices/led/controls/on_off/on", "1")])
+
+    def test_empty_payload_is_not_off(self):
+        for raw in ("", "  "):
+            with self.subTest(raw=raw):
+                self.app._apply_message("/devices/sa02m-rules-s1/controls/run/on", raw)
+        self.assertEqual(self.sent(), [])
+
+    def test_garbage_payload_is_ignored(self):
+        with self.assertLogs(rules_service.LOG, level="WARNING") as logs:
+            for raw in ("2", "OFFF", "yes", "-1"):
+                with self.subTest(raw=raw):
+                    self.app._apply_message(
+                        "/devices/sa02m-rules-s1/controls/run/on", raw)
+        self.assertEqual(self.sent(), [])
+        self.assertTrue(any("neither on nor off" in r.getMessage()
+                            for r in logs.records))
+
+    def test_off_verbs(self):
+        for raw in ("off", "FALSE", " 0 "):
+            with self.subTest(raw=raw):
+                self.client.published = []
+                self.app._apply_message("/devices/sa02m-rules-s1/controls/run/on", raw)
+                self.assertEqual(self.sent(),
+                                 [("/devices/led/controls/on_off/on", "0")])
+
+    def test_on_verbs(self):
+        for raw in ("on", "TRUE", " 1\n"):
+            with self.subTest(raw=raw):
+                self.client.published = []
+                self.app._apply_message("/devices/sa02m-rules-s1/controls/run/on", raw)
+                self.assertEqual(self.sent(),
+                                 [("/devices/led/controls/on_off/on", "1")])
+
 
 if __name__ == "__main__":
     unittest.main()
