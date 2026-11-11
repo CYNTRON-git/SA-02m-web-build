@@ -1583,7 +1583,6 @@ function renderMqttClientInfo(st) {
   const host = (st.host || '').trim() || window.location.hostname || '—';
   const port = String(st.port_external != null ? st.port_external : 1884);
   const user = (st.mqtt_user || 'mqttuser').trim();
-  const secret = (st.mqtt_password || '').trim();
 
   if (hostEl) {
     hostEl.textContent = host;
@@ -1598,30 +1597,22 @@ function renderMqttClientInfo(st) {
     userEl.dataset.copyText = user;
   }
   if (passEl) {
-    passEl.dataset.secret = secret;
+    // The polled status no longer carries the password (audit 2026-11-11
+    // A5-05): the cell shows the mask, and a click fetches the secret with an
+    // explicit POST (resolveMqttPassword). A secret already fetched on this
+    // page is kept, so a poll does not cost another request.
     passEl.dataset.revealed = '0';
     passEl.classList.remove('mqtt-secret-revealed');
-    if (secret) {
-      passEl.textContent = MQTT_PASS_MASK;
-      passEl.title = 'Нажмите, чтобы показать и скопировать';
-    } else {
-      passEl.textContent = '—';
-      passEl.title = 'Пароль не получен с устройства; нажмите для повторной проверки';
-    }
+    passEl.textContent = MQTT_PASS_MASK;
+    passEl.title = 'Нажмите, чтобы показать и скопировать';
   }
-}
-
-async function fetchMqttExternalCredentials() {
-  const st = await apiGet('cgi-bin/mqtt_status.cgi').catch(() => null);
-  if (!st || st.error) return null;
-  return st;
 }
 
 async function resolveMqttPassword(passEl) {
   let secret = (passEl.dataset.secret || '').trim();
   if (secret) return secret;
-  const st = await fetchMqttExternalCredentials();
-  if (!st) return '';
+  const st = await apiPost('cgi-bin/mqtt_status.cgi', { reveal: 'password' }).catch(() => null);
+  if (!st || st.ok !== true) return '';
   secret = (st.mqtt_password || '').trim();
   if (secret) {
     passEl.dataset.secret = secret;
