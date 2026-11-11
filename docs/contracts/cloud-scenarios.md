@@ -873,7 +873,7 @@ scene switch commands through (`alice-mqtt-mapping.md` §Scene devices):
 | any other value, the empty payload included | ignored — nothing runs, nothing is switched off; one journal WARN per topic, then sampled |
 
 Payloads are compared after trimming surrounding whitespace, case-insensitively.
-A retained `run/on` is never executed (1.0.7.36): the broker replays it on
+A retained `run/on` replayed by the broker is never executed (1.0.7.36): the broker replays it on
 every reconnect of the engine, so it is dropped with a journal WARN. The
 retained state mirror (`…/controls/<name>` without `/on`) is still consumed.
 
