@@ -121,6 +121,13 @@ def _connect(path: Path | None = None) -> sqlite3.Connection:
     journal, sync = journaling_for_fstype(fst)
     conn.execute(f"PRAGMA journal_mode={journal}")
     conn.execute(f"PRAGMA synchronous={sync}")
+    ensure_events_schema_on(conn)
+    return conn
+
+
+def ensure_events_schema_on(conn: sqlite3.Connection) -> None:
+    """device_events + its two indexes on an already-open connection — the one
+    home of the journal DDL (`_connect` and the logger's batch writer)."""
     conn.executescript(_CREATE_EVENTS)
     conn.execute(
         "CREATE INDEX IF NOT EXISTS idx_device_events_ts ON device_events(ts DESC)"
@@ -129,7 +136,6 @@ def _connect(path: Path | None = None) -> sqlite3.Connection:
         "CREATE INDEX IF NOT EXISTS idx_device_events_dedup "
         "ON device_events(device_id, kind, phase, ts)"
     )
-    return conn
 
 
 def _ensure_seed_table(
@@ -297,8 +303,12 @@ def detect_ce_events(
     snapshot: dict[str, Any],
     *,
     path: Path | None = None,
+    conn: sqlite3.Connection | None = None,
 ) -> list[dict[str, Any]]:
-    """Сравнить текущий снимок СЭ с предыдущим/средним за день и записать события."""
+    """Сравнить текущий снимок СЭ с предыдущим/средним за день и записать события.
+
+    `conn` given: run inside the caller's open transaction (the logger's batch
+    writer) — no open, no commit, no close."""
     ts = float(snapshot.get("ts") or time.time())
     ce_list = [
         d
@@ -308,108 +318,117 @@ def detect_ce_events(
     if not ce_list:
         return []
 
-    created: list[dict[str, Any]] = []
+    if conn is not None:
+        _ensure_seed_table(conn, path, "ce_samples")
+        return _detect_ce(conn, ts, ce_list)
     conn = _connect(path)
     try:
         _ensure_seed_table(conn, path, "ce_samples")
         with conn:
-            for ce in ce_list:
-                did = str(ce.get("id") or "").strip()
-                meta = parse_device_id(did)
-                port_num = meta.get("port_num")
-                addr = meta.get("addr")
-                volt = ce.get("voltage") if isinstance(ce.get("voltage"), dict) else {}
-                curr = ce.get("current") if isinstance(ce.get("current"), dict) else {}
-                prev = _prev_ce_row(conn, did, ts)
-                day_avg = _day_avg_current(conn, did, ts)
-
-                for ph in _PHASES:
-                    ph_ru = _PHASE_RU[ph]
-                    v_now = volt.get(ph)
-                    try:
-                        v_now_f = float(v_now) if v_now is not None else None
-                    except (TypeError, ValueError):
-                        v_now_f = None
-                    v_prev = prev.get(f"voltage_{ph}") if prev else None
-                    if (
-                        v_now_f is not None
-                        and v_prev is not None
-                        and abs(v_now_f - v_prev) >= voltage_jump_v()
-                    ):
-                        up = v_now_f > v_prev
-                        kind = "voltage_up" if up else "voltage_down"
-                        verb = "выросло" if up else "уменьшилось"
-                        msg = (
-                            f"Напряжение фазы {ph_ru} резко {verb}: "
-                            f"{v_prev:.1f} → {v_now_f:.1f} В"
-                        )
-                        if _insert_event(
-                            conn,
-                            ts=ts,
-                            device_id=did,
-                            kind=kind,
-                            phase=ph_ru,
-                            port_num=port_num,
-                            addr=addr,
-                            value=v_now_f,
-                            ref_value=v_prev,
-                            message=msg,
-                        ):
-                            created.append(
-                                {
-                                    "ts": ts,
-                                    "device_id": did,
-                                    "kind": kind,
-                                    "phase": ph_ru,
-                                    "message": msg,
-                                }
-                            )
-
-                    i_now = curr.get(ph)
-                    try:
-                        i_now_f = float(i_now) if i_now is not None else None
-                    except (TypeError, ValueError):
-                        i_now_f = None
-                    i_avg = day_avg.get(ph)
-                    if (
-                        i_now_f is not None
-                        and i_avg is not None
-                        and i_avg >= current_spike_abs_a()
-                        and i_now_f >= current_spike_min_a()
-                        and i_now_f >= i_avg * current_spike_ratio()
-                    ):
-                        # доп. условие: рост относительно предыдущего семпла
-                        i_prev = prev.get(f"current_{ph}") if prev else None
-                        if i_prev is not None and i_now_f <= i_prev * 1.05:
-                            continue
-                        kind = "current_spike"
-                        msg = (
-                            f"Ток фазы {ph_ru} резко вырос выше среднего за день: "
-                            f"{i_now_f:.3f} А (ср. {i_avg:.3f} А)"
-                        )
-                        if _insert_event(
-                            conn,
-                            ts=ts,
-                            device_id=did,
-                            kind=kind,
-                            phase=ph_ru,
-                            port_num=port_num,
-                            addr=addr,
-                            value=i_now_f,
-                            ref_value=i_avg,
-                            message=msg,
-                        ):
-                            created.append(
-                                {
-                                    "ts": ts,
-                                    "device_id": did,
-                                    "kind": kind,
-                                    "phase": ph_ru,
-                                    "message": msg,
-                                }
-                            )
+            return _detect_ce(conn, ts, ce_list)
     finally:
         conn.close()
+
+
+def _detect_ce(
+    conn: sqlite3.Connection, ts: float, ce_list: list[dict[str, Any]]
+) -> list[dict[str, Any]]:
+    created: list[dict[str, Any]] = []
+    for ce in ce_list:
+        did = str(ce.get("id") or "").strip()
+        meta = parse_device_id(did)
+        port_num = meta.get("port_num")
+        addr = meta.get("addr")
+        volt = ce.get("voltage") if isinstance(ce.get("voltage"), dict) else {}
+        curr = ce.get("current") if isinstance(ce.get("current"), dict) else {}
+        prev = _prev_ce_row(conn, did, ts)
+        day_avg = _day_avg_current(conn, did, ts)
+
+        for ph in _PHASES:
+            ph_ru = _PHASE_RU[ph]
+            v_now = volt.get(ph)
+            try:
+                v_now_f = float(v_now) if v_now is not None else None
+            except (TypeError, ValueError):
+                v_now_f = None
+            v_prev = prev.get(f"voltage_{ph}") if prev else None
+            if (
+                v_now_f is not None
+                and v_prev is not None
+                and abs(v_now_f - v_prev) >= voltage_jump_v()
+            ):
+                up = v_now_f > v_prev
+                kind = "voltage_up" if up else "voltage_down"
+                verb = "выросло" if up else "уменьшилось"
+                msg = (
+                    f"Напряжение фазы {ph_ru} резко {verb}: "
+                    f"{v_prev:.1f} → {v_now_f:.1f} В"
+                )
+                if _insert_event(
+                    conn,
+                    ts=ts,
+                    device_id=did,
+                    kind=kind,
+                    phase=ph_ru,
+                    port_num=port_num,
+                    addr=addr,
+                    value=v_now_f,
+                    ref_value=v_prev,
+                    message=msg,
+                ):
+                    created.append(
+                        {
+                            "ts": ts,
+                            "device_id": did,
+                            "kind": kind,
+                            "phase": ph_ru,
+                            "message": msg,
+                        }
+                    )
+
+            i_now = curr.get(ph)
+            try:
+                i_now_f = float(i_now) if i_now is not None else None
+            except (TypeError, ValueError):
+                i_now_f = None
+            i_avg = day_avg.get(ph)
+            if (
+                i_now_f is not None
+                and i_avg is not None
+                and i_avg >= current_spike_abs_a()
+                and i_now_f >= current_spike_min_a()
+                and i_now_f >= i_avg * current_spike_ratio()
+            ):
+                # доп. условие: рост относительно предыдущего семпла
+                i_prev = prev.get(f"current_{ph}") if prev else None
+                if i_prev is not None and i_now_f <= i_prev * 1.05:
+                    continue
+                kind = "current_spike"
+                msg = (
+                    f"Ток фазы {ph_ru} резко вырос выше среднего за день: "
+                    f"{i_now_f:.3f} А (ср. {i_avg:.3f} А)"
+                )
+                if _insert_event(
+                    conn,
+                    ts=ts,
+                    device_id=did,
+                    kind=kind,
+                    phase=ph_ru,
+                    port_num=port_num,
+                    addr=addr,
+                    value=i_now_f,
+                    ref_value=i_avg,
+                    message=msg,
+                ):
+                    created.append(
+                        {
+                            "ts": ts,
+                            "device_id": did,
+                            "kind": kind,
+                            "phase": ph_ru,
+                            "message": msg,
+                        }
+                    )
     return created
 
 
@@ -426,6 +445,23 @@ def reset_carel_event_state() -> None:
     """Forget every in-memory Carel baseline (tests; a process restart does
     this implicitly — the next tick re-seeds from carel_samples)."""
     _CAREL_PREV.clear()
+
+
+def carel_state_save() -> dict[tuple[str, str], dict[str, float | None]]:
+    """A copy of the in-memory Carel baselines, taken before a batch writes.
+
+    The batch writer rolls the journal back on a failed commit; the baselines
+    must roll back with it, or the retried batch compares against the edge it
+    never stored and the `carel_alarm_*` row is lost for good."""
+    return {k: dict(v) for k, v in _CAREL_PREV.items()}
+
+
+def carel_state_restore(
+    saved: dict[tuple[str, str], dict[str, float | None]],
+) -> None:
+    """Put back the baselines `carel_state_save()` copied."""
+    _CAREL_PREV.clear()
+    _CAREL_PREV.update({k: dict(v) for k, v in saved.items()})
 
 
 def _carel_prev_from_archive(
@@ -460,6 +496,7 @@ def detect_carel_events(
     *,
     path: Path | None = None,
     cooldown_s: float = 0.0,
+    conn: sqlite3.Connection | None = None,
 ) -> list[dict[str, Any]]:
     """Carel AHU edges → device_events: `alarm` 0→1 / 1→0 and every
     `plant_state` change, at the tick's own ts.
@@ -469,6 +506,8 @@ def detect_carel_events(
     defaults to 0 so a flap inside the CE cooldown still lands — dedup is by
     edge, not by time. A device seen for the first time (no in-memory baseline
     and nothing in carel_samples) only baselines; it never fabricates an edge.
+    `conn` given: run inside the caller's open transaction — no open, no
+    commit, no close.
     """
     ts = float(snapshot.get("ts") or time.time())
     carel_list = [
@@ -480,94 +519,107 @@ def detect_carel_events(
         return []
 
     key_path = str(db_path(path))
-    created: list[dict[str, Any]] = []
+    if conn is not None:
+        _ensure_seed_table(conn, path, "carel_samples", column="alarm")
+        return _detect_carel(conn, ts, key_path, carel_list, cooldown_s)
     conn = _connect(path)
     try:
         # `alarm` = the wide shape the seed reads (a 1.0.6.40 long table migrates).
         _ensure_seed_table(conn, path, "carel_samples", column="alarm")
         with conn:
-            for dev in carel_list:
-                did = str(dev.get("id") or "").strip()
-                meta = parse_device_id(did)
-                alarm_now = _f(dev.get("alarm"))
-                plant_now = carel_plant_code(dev.get("plant_state"))
-                key = (key_path, did)
-                prev = _CAREL_PREV.get(key)
-                if prev is None:
-                    prev = _carel_prev_from_archive(conn, did)
-                alarm_prev = prev.get("alarm")
-                plant_prev = prev.get("plant_state")
-
-                if (
-                    alarm_now is not None
-                    and alarm_prev is not None
-                    and alarm_now != alarm_prev
-                ):
-                    rising = alarm_now > alarm_prev
-                    kind = "carel_alarm_on" if rising else "carel_alarm_off"
-                    codes = str(dev.get("alarm_text") or "").strip()
-                    if rising:
-                        msg = "Общая авария установки: появилась"
-                        if codes:
-                            msg += f" ({codes})"
-                    else:
-                        msg = "Общая авария установки: снята"
-                    if _insert_event(
-                        conn,
-                        ts=ts,
-                        device_id=did,
-                        kind=kind,
-                        phase="",
-                        port_num=meta.get("port_num"),
-                        addr=meta.get("addr"),
-                        value=alarm_now,
-                        ref_value=alarm_prev,
-                        message=msg,
-                        cooldown_s=cooldown_s,
-                    ):
-                        created.append(
-                            {"ts": ts, "device_id": did, "kind": kind,
-                             "phase": "", "message": msg}
-                        )
-
-                if (
-                    plant_now is not None
-                    and plant_prev is not None
-                    and plant_now != int(plant_prev)
-                ):
-                    kind = "carel_plant_state"
-                    msg = (
-                        f"Состояние установки: {_plant_ru(plant_prev)} → "
-                        f"{_plant_ru(plant_now)}"
-                    )
-                    if _insert_event(
-                        conn,
-                        ts=ts,
-                        device_id=did,
-                        kind=kind,
-                        phase="",
-                        port_num=meta.get("port_num"),
-                        addr=meta.get("addr"),
-                        value=float(plant_now),
-                        ref_value=float(plant_prev),
-                        message=msg,
-                        cooldown_s=cooldown_s,
-                    ):
-                        created.append(
-                            {"ts": ts, "device_id": did, "kind": kind,
-                             "phase": "", "message": msg}
-                        )
-
-                # A None reading (probe unread this tick) keeps the old baseline
-                # rather than erasing it — the next real value still compares.
-                _CAREL_PREV[key] = {
-                    "alarm": alarm_now if alarm_now is not None else alarm_prev,
-                    "plant_state": (
-                        float(plant_now) if plant_now is not None else plant_prev
-                    ),
-                }
+            return _detect_carel(conn, ts, key_path, carel_list, cooldown_s)
     finally:
         conn.close()
+
+
+def _detect_carel(
+    conn: sqlite3.Connection,
+    ts: float,
+    key_path: str,
+    carel_list: list[dict[str, Any]],
+    cooldown_s: float,
+) -> list[dict[str, Any]]:
+    created: list[dict[str, Any]] = []
+    for dev in carel_list:
+        did = str(dev.get("id") or "").strip()
+        meta = parse_device_id(did)
+        alarm_now = _f(dev.get("alarm"))
+        plant_now = carel_plant_code(dev.get("plant_state"))
+        key = (key_path, did)
+        prev = _CAREL_PREV.get(key)
+        if prev is None:
+            prev = _carel_prev_from_archive(conn, did)
+        alarm_prev = prev.get("alarm")
+        plant_prev = prev.get("plant_state")
+
+        if (
+            alarm_now is not None
+            and alarm_prev is not None
+            and alarm_now != alarm_prev
+        ):
+            rising = alarm_now > alarm_prev
+            kind = "carel_alarm_on" if rising else "carel_alarm_off"
+            codes = str(dev.get("alarm_text") or "").strip()
+            if rising:
+                msg = "Общая авария установки: появилась"
+                if codes:
+                    msg += f" ({codes})"
+            else:
+                msg = "Общая авария установки: снята"
+            if _insert_event(
+                conn,
+                ts=ts,
+                device_id=did,
+                kind=kind,
+                phase="",
+                port_num=meta.get("port_num"),
+                addr=meta.get("addr"),
+                value=alarm_now,
+                ref_value=alarm_prev,
+                message=msg,
+                cooldown_s=cooldown_s,
+            ):
+                created.append(
+                    {"ts": ts, "device_id": did, "kind": kind,
+                     "phase": "", "message": msg}
+                )
+
+        if (
+            plant_now is not None
+            and plant_prev is not None
+            and plant_now != int(plant_prev)
+        ):
+            kind = "carel_plant_state"
+            msg = (
+                f"Состояние установки: {_plant_ru(plant_prev)} → "
+                f"{_plant_ru(plant_now)}"
+            )
+            if _insert_event(
+                conn,
+                ts=ts,
+                device_id=did,
+                kind=kind,
+                phase="",
+                port_num=meta.get("port_num"),
+                addr=meta.get("addr"),
+                value=float(plant_now),
+                ref_value=float(plant_prev),
+                message=msg,
+                cooldown_s=cooldown_s,
+            ):
+                created.append(
+                    {"ts": ts, "device_id": did, "kind": kind,
+                     "phase": "", "message": msg}
+                )
+
+        # A None reading (probe unread this tick) keeps the old baseline
+        # rather than erasing it — the next real value still compares.
+        _CAREL_PREV[key] = {
+            "alarm": alarm_now if alarm_now is not None else alarm_prev,
+            "plant_state": (
+                float(plant_now) if plant_now is not None else plant_prev
+            ),
+        }
     return created
 
 
@@ -638,9 +690,17 @@ def list_events(
 
 
 def purge_events(
-    path: Path | None = None, *, cutoff: float | None = None
+    path: Path | None = None,
+    *,
+    cutoff: float | None = None,
+    conn: sqlite3.Connection | None = None,
 ) -> int:
+    """Delete journal rows older than `cutoff`. `conn` given: inside the
+    caller's open transaction."""
     cut = float(cutoff if cutoff is not None else time.time() - 30 * 86400)
+    if conn is not None:
+        n = conn.execute("DELETE FROM device_events WHERE ts < ?", (cut,)).rowcount
+        return int(n or 0)
     conn = _connect(path)
     try:
         with conn:
