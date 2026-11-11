@@ -357,11 +357,11 @@ def _poll_label_from_cmdline(cmd: str) -> str:
     return ""
 
 
-def port_poll_service_labels(device_path: str) -> List[str]:
-    """Какая служба реально держит /dev/COM* (по fuser + cmdline), не глобальный systemd MPLC."""
+def port_poll_service_labels_from(pids: Iterable[str]) -> List[str]:
+    """Labels of the services among `pids` (one fuser result, reused)."""
     labels: List[str] = []
     seen: Set[str] = set()
-    for pid in port_occupants(device_path):
+    for pid in pids:
         label = _poll_label_from_cmdline(_pid_cmdline(pid))
         if not label:
             continue
@@ -371,11 +371,40 @@ def port_poll_service_labels(device_path: str) -> List[str]:
     return labels
 
 
-def port_occupants(device_path: str) -> List[str]:
+def port_poll_service_labels(device_path: str) -> List[str]:
+    """Какая служба реально держит /dev/COM* (по fuser + cmdline), не глобальный systemd MPLC."""
+    return port_poll_service_labels_from(port_occupants(device_path))
+
+
+# One fuser per port per /ports request (H5-05): the description asks for the
+# occupants and then for their labels; both read this short cache instead of
+# running `sudo fuser` twice (~0.3 s each on a loaded board). Decisions
+# (is_port_poll_free) always take a fresh reading.
+OCCUPANTS_CACHE_S = 2.0
+_OCCUPANTS_CACHE = {}
+_OCCUPANTS_CACHE_LOCK = threading.Lock()
+
+
+def port_occupants_checked(device_path: str, max_age: float = OCCUPANTS_CACHE_S) -> Optional[List[str]]:
     """
-    Вернуть список PID'ов, удерживающих /dev/<port>. Пустой список = свободен.
-    Требует наличия fuser; если нет — возвращает пустой список (не блокируем операцию).
+    PIDs holding /dev/<port>; [] = nobody; None = UNKNOWN — fuser timed out,
+    was refused, failed (rc other than 0/1, or rc 1 with an error on stderr).
+    No fuser on the system at all reads as [] (nothing to ask; the legacy
+    behaviour). A reading younger than `max_age` seconds is reused.
     """
+    now = time.monotonic()
+    if max_age > 0:
+        with _OCCUPANTS_CACHE_LOCK:
+            hit = _OCCUPANTS_CACHE.get(device_path)
+        if hit is not None and now - hit[0] < max_age:
+            return None if hit[1] is None else list(hit[1])
+    result = _fuser_occupants(device_path)
+    with _OCCUPANTS_CACHE_LOCK:
+        _OCCUPANTS_CACHE[device_path] = (time.monotonic(), None if result is None else tuple(result))
+    return result
+
+
+def _fuser_occupants(device_path: str) -> Optional[List[str]]:
     fuser = _fuser()
     if not fuser:
         return []
@@ -390,13 +419,27 @@ def port_occupants(device_path: str) -> List[str]:
     try:
         res = _run(cmd, timeout=2.0 if timeout_cmd else 1.0)
     except (subprocess.TimeoutExpired, PermissionError):
-        return []
+        return None
+    if res.returncode == 1:
+        # fuser без совпадений возвращает код 1 и пустой stdout; a message on
+        # stderr with rc 1 is a failure (sudo refusal, unreadable /proc).
+        return None if (res.stderr or "").strip() else []
     if res.returncode != 0:
-        # fuser без совпадений возвращает код 1 и пустой stdout.
-        return []
+        # 124/137 = the outer `timeout -s KILL` fired; anything else = failed.
+        return None
     raw = (res.stdout or "").strip() + " " + (res.stderr or "").strip()
-    pids = [tok for tok in raw.split() if tok.isdigit()]
-    return pids
+    return [tok for tok in raw.split() if tok.isdigit()]
+
+
+def port_occupants(device_path: str, strict: bool = False) -> Optional[List[str]]:
+    """
+    Вернуть список PID'ов, удерживающих /dev/<port>. Для ответов API (по
+    умолчанию) неизвестно читается как пустой список — поля те же. strict=True
+    (решения: is_port_poll_free) — свежее чтение, None = неизвестно.
+    """
+    if strict:
+        return port_occupants_checked(device_path, max_age=0)
+    return port_occupants_checked(device_path) or []
 
 
 class PortBusyError(RuntimeError):
@@ -416,7 +459,10 @@ def is_port_poll_free(device_path: str) -> bool:
     """
     if not device_path_exists(device_path):
         return False
-    return not port_occupants(device_path)
+    # Fresh reading, and fail-closed: a fuser that timed out or failed says
+    # nothing about the port, so it is NOT free (H5-05).
+    occupants = port_occupants(device_path, strict=True)
+    return occupants is not None and not occupants
 
 
 def wait_port_poll_free(device_path: str, timeout_s: float = 4.0) -> bool:
