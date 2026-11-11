@@ -34,8 +34,17 @@
 # Cases:
 #   A1  watchdog probes the port from /etc/sa02m_web_port.conf (8080), not 9999,
 #       for both the static page and the CGI layer.          RED: :9999 only
-#   A2  auth_check.cgi answering 502 (fcgiwrap dead): `systemctl restart
-#       fcgiwrap.service` is issued BEFORE any `systemctl reboot`.  RED: no restart
+#   A2  a persistent auth_check.cgi 502 (fcgiwrap dead): `systemctl restart
+#       fcgiwrap.service` is issued and NO board reboot ever follows — the cgi
+#       check is heal-only (Operator 2026-11-11).  RED: the cgi check reboots
+#   A2b control: a missing required process (sshd) still reboots.
+#   A5  a probe TIMEOUT (saturated fcgiwrap pool) restarts nothing until
+#       CGI_BUSY_RESTART_AT consecutive timeouts (A5b: then one restart, never
+#       a reboot) — a restart would kill an in-flight upload.  RED: restarts
+#   A6  the SHIPPED auth_check.cgi, run through the real lib_web_auth.sh: no
+#       cookie -> exactly `Status: 401 Unauthorized` + body `unauthorized`
+#       (A6a), live session -> 204 (A6b), and the daemon's own check_cgi reads
+#       it as healthy (A6c). Plus C4: nginx still routes /cgi-bin/, not internal.
 #   A3  a healthy CGI layer (401 + body `unauthorized`) is not a failure: no
 #       restart, no reboot.
 #   A4  sourced with SA02M_WD_SOURCE_ONLY=1 the file only defines; with no port
@@ -108,6 +117,42 @@ else
     bad "C3: fcgiwrap.service lacks [Unit] StartLimitIntervalSec=0 or RestartSec=3"
 fi
 
+# C4: the watchdog's cgi probe GETs /cgi-bin/auth_check.cgi from outside nginx.
+# If the prefix location vanished, went `internal` (like /_auth_check) or an
+# exact-match location took auth_check.cgi over, every board would see a
+# permanent cgi fault. Comment-stripped; the `location /cgi-bin/ {` block is cut
+# by brace depth, and an absent block FAILS (non-vacuous).
+NGX=etc/nginx/network_config.conf
+if [ -s "$NGX" ]; then
+    nx=$(stripped_text "$NGX")
+    blk=$(awk '/^[[:space:]]*location[[:space:]]+\/cgi-bin\/[[:space:]]*\{/{on=1} on{print; n+=gsub(/\{/,"{"); m+=gsub(/\}/,"}"); if(n>0&&n==m) exit}' <<< "$nx")
+    if [ -z "$blk" ]; then
+        bad "C4: $NGX has no 'location /cgi-bin/ {' block — the watchdog's cgi probe has no route"
+    elif text_matches "$blk" '(^|[{;[:space:]])internal[[:space:]]*;' || ! text_matches "$blk" 'fastcgi_pass'; then
+        bad "C4: location /cgi-bin/ is internal or has no fastcgi_pass — the watchdog's cgi probe cannot reach auth_check.cgi"
+    elif text_matches "$nx" 'location[[:space:]]+[=~^]*[[:space:]]*[^[:space:]]*auth_check[.]cgi'; then
+        bad "C4: a dedicated auth_check location in $NGX overrides the prefix route the watchdog probes"
+    else
+        ok "C4: nginx routes /cgi-bin/ (fastcgi_pass, not internal) with no auth_check override — the cgi probe reaches the shipped CGI"
+    fi
+else
+    bad "C4: $NGX missing"
+fi
+
+# C5: the shipped failure-monitor conf (repo + firstboot overlay) must not pin the
+# probe URLs: a conf URL wins over the port library, so a pinned :9999 keeps the
+# monitor probing the wrong port on a board installed with `--port N`. A
+# fail-IF-PRESENT pin (the mutation is re-adding the line, not commenting it out);
+# a missing or empty conf FAILS.
+for fmc in etc/sa02m_failure_monitor.conf tools/imaging/firstboot-overlay/etc/sa02m_failure_monitor.conf; do
+    if [ ! -s "$fmc" ]; then bad "C5: $fmc missing or empty"; continue; fi
+    if stripped_matches "$fmc" '^[[:space:]]*(HTTP_PROBE_URL|STATUS_PROBE_URL)[[:space:]]*='; then
+        bad "C5: $fmc pins a probe URL — it would override the panel's real port"
+    else
+        ok "C5: $fmc leaves HTTP_PROBE_URL/STATUS_PROBE_URL unset (the monitor follows the real port)"
+    fi
+done
+
 # ═══ black-box half: Linux + shims only ═════════════════════════════════════
 run_blackbox=1
 if [ "$(uname -s)" != Linux ]; then
@@ -140,7 +185,20 @@ while [ $# -gt 0 ]; do
     shift
 done
 case "$url" in
-    *auth_check.cgi) code=${SHIM_CGI_CODE:-401}; body=${SHIM_CGI_BODY:-unauthorized} ;;
+    *auth_check.cgi)
+        if [ -n "${SHIM_CGI_TIMEOUT:-}" ]; then   # a saturated pool: curl --max-time fires
+            [ -n "$fmt" ] && printf '%b' "${fmt//%\{http_code\}/000}"
+            exit 28
+        fi
+        if [ -n "${SHIM_CGI_REAL:-}" ]; then      # the SHIPPED CGI, no cookie, real lib_web_auth.sh
+            raw=$(env -i PATH="$PATH" SA02M_SESSION_DIR="$SHIM_STATE/sessions" bash "$SHIM_CGI_REAL" 2>/dev/null)
+            code=$(printf '%s\n' "$raw" | sed -n 's/^Status: \([0-9]*\).*/\1/p' | head -n 1)
+            # body = everything after the first empty line of the CGI response
+            body=$(printf '%s\n' "$raw" | awk 'b{print} /^\r?$/{b=1}')
+            [ -n "$code" ] || code=200
+        else
+            code=${SHIM_CGI_CODE:-401}; body=${SHIM_CGI_BODY:-unauthorized}
+        fi ;;
     *) code=200; body=ok ;;
 esac
 if [ -n "$out" ]; then printf '%s\n' "$body" > "$out"; else printf '%s\n' "$body"; fi
@@ -203,10 +261,12 @@ export SA02M_WEB_PORT_CONF="$T/web_port.conf" SA02M_WEB_PORT_LIB="$PWD/$PORT_LIB
 
 wd_run() {   # $1 = max passes; leaves the call log in $SHIM_LOG
     : > "$SHIM_LOG"; rm -f "$SHIM_STATE"/down.*
+    for dn in ${WD_DOWN:-}; do : > "$SHIM_STATE/down.$dn"; done   # processes pgrep reports missing
     cat > "$T/wd.conf" <<EOF
 CHECK_INTERVAL=1
 FAIL_THRESHOLD=3
 CGI_RESTART_AT=1
+CGI_BUSY_RESTART_AT=${WD_BUSY_AT:-99}
 GRACE_AFTER_BOOT_SEC=0
 HEARTBEAT_INTERVAL_SEC=300
 IMAGING_LOCK=$T/no-imaging.lock
@@ -243,16 +303,76 @@ else
     fi
 fi
 
-# ── A2: fcgiwrap dead (502) — restart the service before the board ────────
+# ── A2: persistent CGI fault (502) — HEAL ONLY, never the board ────────────
+# Operator decision 2026-11-11: a cgi failure alone restarts fcgiwrap and never
+# reaches the reboot path, however long it lasts (8 passes here against
+# FAIL_THRESHOLD=3). The board keeps running without the panel.
 : > "$T/wd.log"
 SHIM_CGI_CODE=502 SHIM_CGI_BODY='<html>502 Bad Gateway</html>' wd_run 8
-l_restart=$(grep -n '^systemctl restart fcgiwrap\.service' "$SHIM_LOG" | head -n 1 | cut -d: -f1)
-l_reboot=$(grep -nE '^systemctl reboot|^reboot' "$SHIM_LOG" | head -n 1 | cut -d: -f1)
-if [ -n "$l_restart" ] && { [ -z "$l_reboot" ] || [ "$l_restart" -lt "$l_reboot" ]; } \
+n_restart=$(grep -c '^systemctl restart fcgiwrap\.service' "$SHIM_LOG")
+n_reboot=$(grep -cE '^systemctl reboot|^reboot' "$SHIM_LOG")
+if [ "$n_restart" -ge 2 ] && [ "$n_reboot" -eq 0 ] && ! grep -q 'FORCED REBOOT' "$T/wd.log" \
    && grep -q '^systemctl reset-failed fcgiwrap\.service' "$SHIM_LOG"; then
-    ok "A2: CGI 502 -> reset-failed + restart fcgiwrap.service (call #$l_restart) before any board reboot (${l_reboot:-none})"
+    ok "A2: persistent CGI 502 -> reset-failed + restart fcgiwrap.service x$n_restart, and NO board reboot over 8 passes (threshold 3)"
 else
-    bad "A2: no fcgiwrap restart before reboot — restart line=${l_restart:-none} reboot line=${l_reboot:-none}; log: $(grep 'check cgi' "$T/wd.log" | head -n 3 | tr '\n' '|')"
+    bad "A2: cgi fault is not heal-only — restarts=$n_restart reboot calls=$n_reboot; log: $(grep -E 'check cgi|FORCED' "$T/wd.log" | head -n 4 | tr '\n' '|')"
+fi
+
+# ── A2b: the OTHER reboot-capable checks still reboot (control for A2) ─────
+: > "$T/wd.log"
+WD_DOWN=sshd SHIM_CGI_CODE=401 SHIM_CGI_BODY=unauthorized wd_run 8
+if grep -q 'FORCED REBOOT: check=procs' "$T/wd.log" && grep -qE '^systemctl reboot' "$SHIM_LOG"; then
+    ok "A2b: a missing required process (sshd) still reaches the board reboot at FAIL_THRESHOLD"
+else
+    bad "A2b: procs check no longer reboots — log: $(grep -E 'check procs|FORCED' "$T/wd.log" | head -n 3 | tr '\n' '|')"
+fi
+
+# ── A5: a probe TIMEOUT is a busy pool — no restart mid-upload ─────────────
+: > "$T/wd.log"
+SHIM_CGI_TIMEOUT=1 WD_BUSY_AT=99 wd_run 8
+if ! grep -q '^systemctl restart fcgiwrap' "$SHIM_LOG" && ! grep -qE '^systemctl reboot|^reboot' "$SHIM_LOG" \
+   && grep -q 'pool busy' "$T/wd.log"; then
+    ok "A5: 8 probe timeouts (busy pool) -> no fcgiwrap restart, no reboot (a restart would kill an in-flight upload)"
+else
+    bad "A5: a busy pool triggered action: $(grep -E '^(systemctl|reboot)' "$SHIM_LOG" | tr '\n' '|')"
+fi
+: > "$T/wd.log"
+SHIM_CGI_TIMEOUT=1 WD_BUSY_AT=3 wd_run 8
+if grep -q '^systemctl restart fcgiwrap\.service' "$SHIM_LOG" && ! grep -qE '^systemctl reboot|^reboot' "$SHIM_LOG"; then
+    ok "A5b: a pool still unanswered after CGI_BUSY_RESTART_AT (3) timeouts is healed by one fcgiwrap restart, never a reboot"
+else
+    bad "A5b: a wedged pool is never healed: $(grep -E '^(systemctl|reboot)' "$SHIM_LOG" | tr '\n' '|')"
+fi
+
+# ── A6: the SHIPPED auth_check.cgi through the real lib_web_auth.sh ────────
+# The watchdog's cgi check counts any answer other than 401+`unauthorized` (or
+# 204) as a fault. The shim above cannot see the real CGI change, so run it:
+# no cookie -> exactly this status line and body; a live session -> 204.
+AUTHCGI=www/network_config/cgi-bin/auth_check.cgi
+mkdir -p "$SHIM_STATE/sessions"
+raw=$(env -i PATH="$PATH" SA02M_SESSION_DIR="$SHIM_STATE/sessions" bash "$AUTHCGI" 2>/dev/null)
+want=$(printf 'Status: 401 Unauthorized\nContent-type: text/plain\n\nunauthorized')
+if [ "$raw" = "$want" ]; then
+    ok "A6a: shipped auth_check.cgi, no cookie -> 'Status: 401 Unauthorized' + body 'unauthorized' (the watchdog's healthy answer)"
+else
+    bad "A6a: auth_check.cgi without a session answers: $(printf '%s' "$raw" | tr '\n' '|')"
+fi
+tok=0123456789abcdef0123456789abcdef0123
+hash=$(printf '%s' "$tok" | sha256sum | cut -d' ' -f1)
+printf '%s admin\n' "$(( $(date +%s) + 864000 ))" > "$SHIM_STATE/sessions/$hash"
+raw=$(env -i PATH="$PATH" SA02M_SESSION_DIR="$SHIM_STATE/sessions" HTTP_COOKIE="session_token=$tok" bash "$AUTHCGI" 2>/dev/null | head -n 1)
+if [ "$raw" = "Status: 204 No Content" ]; then
+    ok "A6b: shipped auth_check.cgi, live session -> 204 (the other answer the watchdog accepts)"
+else
+    bad "A6b: auth_check.cgi with a live session answers '$raw'"
+fi
+: > "$T/wd.log"
+SHIM_CGI_REAL="$PWD/$AUTHCGI" wd_run 4
+if grep -q '^curl .*auth_check\.cgi' "$SHIM_LOG" && ! grep -q 'check cgi: FAIL' "$T/wd.log" \
+   && ! grep -qE '^systemctl (restart|reboot)' "$SHIM_LOG"; then
+    ok "A6c: the daemon's own check_cgi reads the real CGI's no-cookie answer as healthy (no FAIL, no restart)"
+else
+    bad "A6c: the real auth_check.cgi reads as a fault to the watchdog: $(grep 'check cgi' "$T/wd.log" | head -n 2 | tr '\n' '|')"
 fi
 
 # ── A4: source-only mode + fallback when the port library is absent ───────

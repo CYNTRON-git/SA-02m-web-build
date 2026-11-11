@@ -397,6 +397,11 @@ mqtt-status-secret|www/network_config/cgi-bin/mqtt_status.cgi|web_csrf_require
 iface-conf-write|etc/sa02m-iface-conf-write.sh|[ "$staged" = 1 ] && mv -f -- "$wtmp" "$dst" && replaced=1
 userspace-watchdog-probe|etc/systemd/system/nginx.service.d/sa02m-restart.conf|Restart=on-failure
 userspace-watchdog-probe|etc/sa02m-userspace-watchdog.sh|timeout 30 systemctl restart fcgiwrap.service
+userspace-watchdog-probe|etc/sa02m-userspace-watchdog.sh|[ "$name" = cgi ] && { log "check ${name}: FAIL
+userspace-watchdog-probe|etc/sa02m-userspace-watchdog.sh|[ "$rc" -eq 28 ] && { echo "busy"; return 0; }
+userspace-watchdog-probe|www/network_config/cgi-bin/auth_check.cgi|echo "unauthorized"
+userspace-watchdog-probe|www/network_config/cgi-bin/auth_check.cgi|echo "Status: 401 Unauthorized"
+userspace-watchdog-probe|etc/nginx/network_config.conf|location /cgi-bin/ {
 kernel-select|etc/sa02m-kernel-select.sh|if ! zimage_md5_ok "$target" "$canon"; then
 apply-time|www/network_config/cgi-bin/apply.cgi|sync_rtc_from_system >/dev/null 2>&1 || rc=$?
 js-unit-forms-time-prefill|www/network_config/static/js/app/forms.js|setText('"'"'time-sys-disp'"'"', d.datetime ||
