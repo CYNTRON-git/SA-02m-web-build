@@ -310,6 +310,43 @@
     syncActionButtons();
   }
 
+  // The flash job's own failure text (naming the target), from the job snapshot.
+  // Backends before 1.0.7.36 end a failed batch `done` with params.errors — read
+  // that too, so a failed target never shows the green «Прошивка завершена» (FL-02).
+  async function flashFailureText(jobId) {
+    try {
+      const snap = await apiGet('/jobs/' + jobId);
+      if (snap && snap.error) return String(snap.error);
+      const errs = snap && snap.params && Array.isArray(snap.params.errors) ? snap.params.errors : [];
+      if (errs.length) {
+        return 'Не прошито: ' + errs.map(e => 'адр.' + e.address + ': ' + e.error).join('; ');
+      }
+    } catch (_) { /* the snapshot is best-effort */ }
+    return '';
+  }
+
+  async function onFlashJobEnd(state2, jobId) {
+    state.flashJobId = null;
+    state.flashIrreversible = false;
+    clearPersistedJobId('flash');
+    hideProgress();
+    let failText = '';
+    if (state2 === 'error' || state2 === 'done') failText = await flashFailureText(jobId);
+    if (state2 === 'error' || state2 === 'cancelled' || failText) {
+      await loadPorts();
+      updateGlobalBusyFromPorts();
+      setFlashButtons();
+      if (state2 === 'cancelled') toast('Прошивка отменена', 'warn');
+      else if (failText) toast(uiT('Прошивка не выполнена:') + ' ' + failText, 'error');
+      else toast('Прошивка прервана или завершилась с ошибкой. Выполните сканирование.', 'error');
+    } else {
+      updateGlobalBusyFromPorts();
+      setFlashButtons();
+      toast('Прошивка завершена', 'success');
+      await refreshScanAfterFlash();
+    }
+  }
+
   async function reconnectToJob(kind, jobId, snap) {
     const portKey = snap.port || '';
     if (portKey && $('flasher-port')) {
@@ -329,24 +366,7 @@
       persistJobId('flash', jobId);
       setFlashButtons();
       state.flashStream = openStream(jobId, {
-        onEnd: async state2 => {
-          state.flashJobId = null;
-          state.flashIrreversible = false;
-          clearPersistedJobId('flash');
-          hideProgress();
-          if (state2 === 'error' || state2 === 'cancelled') {
-            await loadPorts();
-            updateGlobalBusyFromPorts();
-            setFlashButtons();
-            if (state2 === 'error') toast('Прошивка прервана или завершилась с ошибкой. Выполните сканирование.', 'error');
-            else toast('Прошивка отменена', 'warn');
-          } else {
-            updateGlobalBusyFromPorts();
-            setFlashButtons();
-            toast('Прошивка завершена', 'success');
-            await refreshScanAfterFlash();
-          }
-        },
+        onEnd: state2 => onFlashJobEnd(state2, jobId),
       });
       toast('Восстановлено отслеживание прошивки', 'info');
       return;
@@ -1441,7 +1461,10 @@
       return lineProfileFromScan(d, LINE_PROFILE_WB_APP);
     }
     if (isMpModuleSignatureForFirmwareHint(signature) || !isWbfwFirmware) {
-      return Object.assign({}, LINE_PROFILE_MP_MR);
+      // The line the SCAN found the device on is the device's real line (FL-01:
+      // an MR at 19200 is unreachable on a constant 115200); the profile is only
+      // the fallback when the scan gave none.
+      return lineProfileFromScan(d, LINE_PROFILE_MP_MR);
     }
     return lineProfileFromScan(d, LINE_PROFILE_WB_APP);
   }
@@ -6100,6 +6123,9 @@
         firmware_channel: channel,
         firmware_file: file,
         use_fast_modbus: useFastAny,
+        // Stop at the first failed target: a failure must never be followed by
+        // another irreversible write to a neighbour (continue-on-error stays an API option).
+        skip_on_error: false,
         devices_on_port: allPeers,
         targets: flashTargets,
       });
@@ -6109,24 +6135,7 @@
       persistJobId('flash', res.job_id);
       setFlashButtons();
       state.flashStream = openStream(res.job_id, {
-        onEnd: async state2 => {
-          state.flashJobId = null;
-          state.flashIrreversible = false;
-          clearPersistedJobId('flash');
-          hideProgress();
-          if (state2 === 'error' || state2 === 'cancelled') {
-            await loadPorts();
-            updateGlobalBusyFromPorts();
-            setFlashButtons();
-            if (state2 === 'error') toast('Прошивка прервана или завершилась с ошибкой. Выполните сканирование.', 'error');
-            else toast('Прошивка отменена', 'warn');
-          } else {
-            updateGlobalBusyFromPorts();
-            setFlashButtons();
-            toast('Прошивка завершена', 'success');
-            await refreshScanAfterFlash();
-          }
-        },
+        onEnd: state2 => onFlashJobEnd(state2, res.job_id),
       });
     } catch (err) {
       state.flashPending = false;

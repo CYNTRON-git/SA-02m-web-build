@@ -28,6 +28,7 @@ from .config import FlasherConfig
 from .firmware_repo import FirmwareEntry, FirmwareRepo, load_for_flash
 from .jobs import Job
 from .module_profiles import (
+    PROFILE_MP_MR,
     application_line_profile,
     device_flash_route,
     line_profile_family,
@@ -370,6 +371,55 @@ def _application_line_params(
     return profile.as_tuple()
 
 
+def _scan_line_tuple(device: Dict[str, Any]) -> Optional[Tuple[int, str, int]]:
+    """Параметры линии, на которых СКАН реально получил ответ устройства (None — скан их не дал)."""
+    try:
+        baud = int(device.get("baudrate") or 0)
+    except (TypeError, ValueError):
+        return None
+    if baud <= 0:
+        return None
+    parity = str(device.get("parity") or "N").upper()
+    if parity not in ("N", "E", "O"):
+        parity = "N"
+    try:
+        stop = int(device.get("stopbits") or 1)
+    except (TypeError, ValueError):
+        stop = 1
+    return baud, parity, (2 if stop == 2 else 1)
+
+
+def _application_line_candidates(
+    device: Dict[str, Any],
+    *,
+    is_wb_firmware: bool,
+) -> List[Tuple[int, str, int]]:
+    """
+    Линии, на которых пробуют заговорить с приложением (порядок = порядок попыток).
+
+    Первая — как раньше (явные app_line_* цели, иначе профиль по сигнатуре). Для MR/MP/CE/DTV
+    (не .wbfw) затем — линия, на которой скан нашёл устройство (FL-01: MR на 19200 недостижим на
+    константе 115200), и профиль 115200 N1 — на случай ложного baud в скане. WB: как раньше,
+    одна линия (скан или 19200 N2).
+    """
+    first = _application_line_params(device, is_wb_firmware=is_wb_firmware)
+    out: List[Tuple[int, str, int]] = [first]
+    if not is_wb_firmware:
+        scan = _scan_line_tuple(device)
+        for cand in (scan, PROFILE_MP_MR.as_tuple()):
+            if cand and cand not in out:
+                out.append(cand)
+    return out
+
+
+# Префикс ошибки «устройство не ответило» — по нему вход в загрузчик пробует следующую линию (FL-01/FL-03).
+IDENTITY_NO_ANSWER = "Нет ответа устройства"
+
+
+def _is_no_answer(err: Optional[str]) -> bool:
+    return bool(err) and str(err).startswith(IDENTITY_NO_ANSWER)
+
+
 def _firmware_signature_for_log(
     file_sig: str,
     entry: FirmwareEntry,
@@ -388,6 +438,23 @@ def _firmware_signature_for_log(
         if ds and ds.upper() != "NONE":
             return ds
     return fs or "NONE"
+
+
+def _firmware_signature_label(
+    file_sig: str,
+    entry: FirmwareEntry,
+    device: Optional[Dict[str, Any]] = None,
+) -> str:
+    """Подпись для строки лога «файл … sig=…»: сигнатура ФАЙЛА (из .fw или манифеста).
+
+    Если у файла её нет, сигнатура цели не выдаётся за файловую (FL-04: «файл ce-02m-3… sig=14DI»):
+    пишем, что в файле её нет, и отдельно — что прочитано у устройства.
+    """
+    own = _firmware_signature_for_log(file_sig, entry, None)
+    if own and own.upper() != "NONE":
+        return own
+    ds = str((device or {}).get("signature") or "").strip()
+    return f"нет в файле (устройство: {ds})" if ds and ds.upper() != "NONE" else "нет в файле"
 
 
 def _make_flasher(
@@ -607,6 +674,12 @@ def _confirm_flash_identity(
         read = flasher.read_holding_registers
         target = address
     sn_data, sn_err = read(target, REG_SERIAL_LO, 2)
+    if sn_err:
+        # FL-03: no answer / a damaged answer is NOT a serial mismatch. The caller
+        # (_enter_bootloader_from_application_line) retries another line on «no answer».
+        if "таймаут" in str(sn_err).lower() or "timeout" in str(sn_err).lower():
+            return None, f"{IDENTITY_NO_ANSWER} (таймаут чтения серийного номера)."
+        return None, f"Не удалось прочитать серийный номер устройства: {sn_err}."
     actual_sn = (uint32_from_modbus_reg_pair_be(sn_data)
                  if not sn_err and sn_data and len(sn_data) == 4 else 0)
     if use_fast and not sn_err:
@@ -640,17 +713,59 @@ def _enter_bootloader_from_application_line(
     use_fast_modbus: bool,
     image_family: Optional[str],
 ) -> Tuple[Optional[FlashIdentity], Optional[str]]:
-    """MR: reg 129 с линии приложения (закрыть порт)."""
+    """MR: reg 129 с линии приложения (закрыть порт).
+
+    Линия берётся не из константы: первой идёт линия цели/профиля, затем та, на которой скан
+    нашёл устройство, затем профиль 115200 N1. Следующая пробуется только если на предыдущей
+    устройство НЕ ОТВЕТИЛО на чтение серийного номера (записей до подтверждения личности нет).
+    """
     if device.get("in_bootloader"):
         return None, None
-    baud, parity, stopbits = _application_line_params(device, is_wb_firmware=is_wb_firmware)
     addr = int(device.get("address") or fp.BOOTLOADER_DEFAULT_ADDR)
-    scan_baud = int(device.get("baudrate") or 0)
+    candidates = _application_line_candidates(device, is_wb_firmware=is_wb_firmware)
+    tried: List[str] = []
+    for idx, (baud, parity, stopbits) in enumerate(candidates):
+        tried.append(f"{baud} {parity}{stopbits}")
+        verified, err = _enter_bootloader_on_line(
+            device_path, device, cancel_evt, log_cb, baud, parity, stopbits,
+            is_wb_firmware=is_wb_firmware, use_fast_modbus=use_fast_modbus, image_family=image_family,
+        )
+        if not _is_no_answer(err):
+            return verified, err
+        if idx + 1 < len(candidates) and not cancel_evt.is_set():
+            nb, npar, nst = candidates[idx + 1]
+            log_cb(
+                f"Адр.{addr} не ответил на {baud} {parity}{stopbits}; пробую линию {nb} {npar}{nst}",
+                "warn",
+            )
+    return None, (
+        f"{IDENTITY_NO_ANSWER} адр.{addr}: таймаут чтения серийного номера на линиях "
+        f"{', '.join(tried)}. Прошивка не начата, запись не отправлялась. "
+        "Проверьте скорость линии модуля и адрес."
+    )
+
+
+def _enter_bootloader_on_line(
+    device_path: str,
+    device: Dict[str, Any],
+    cancel_evt,
+    log_cb: Callable[[str, str], None],
+    baud: int,
+    parity: str,
+    stopbits: int,
+    *,
+    is_wb_firmware: bool,
+    use_fast_modbus: bool,
+    image_family: Optional[str],
+) -> Tuple[Optional[FlashIdentity], Optional[str]]:
+    """Одна попытка входа в загрузчик на заданной линии приложения."""
+    addr = int(device.get("address") or fp.BOOTLOADER_DEFAULT_ADDR)
     family = line_profile_family(str(device.get("signature") or ""), is_wb_firmware=is_wb_firmware)
-    if scan_baud and (scan_baud, str(device.get("parity") or "N").upper(), int(device.get("stopbits") or 1)) != (baud, parity, stopbits):
+    scan = _scan_line_tuple(device)
+    if scan and scan != (baud, parity, stopbits):
         log_cb(
-            f"Профиль {family}: скан {scan_baud} {device.get('parity') or 'N'}{device.get('stopbits') or 1} "
-            f"→ для reg 129 используем {baud} {parity}{stopbits}",
+            f"Профиль {family}: скан {scan[0]} {scan[1]}{scan[2]} "
+            f"→ для reg 129 пробуем {baud} {parity}{stopbits}",
             "debug",
         )
 
@@ -1329,7 +1444,7 @@ def run_flash_job(job: Job, ctx: Dict[str, Any], cfg: FlasherConfig, repo: Firmw
     is_wb, route_err = _resolve_flash_route_for_device(target, entry)
     if route_err:
         raise RuntimeError(route_err)
-    log_sig = _firmware_signature_for_log(file_sig, entry, target)
+    log_sig = _firmware_signature_label(file_sig, entry, target)
     route_name = device_flash_route(str(target.get("signature") or ""))
     log_cb(
         f"Файл: {entry.file} sig={log_sig} ver={file_ver} size={len(image)} route={route_name}",
@@ -1444,7 +1559,7 @@ def run_flash_batch_job(job: Job, ctx: Dict[str, Any], cfg: FlasherConfig, repo:
 
     device_path = resolve_device_path(cfg, port_key)
     image, file_sig, file_ver, entry = _load_firmware_for_flash(repo, params)
-    log_sig = _firmware_signature_for_log(file_sig, entry, targets[0] if targets else None)
+    log_sig = _firmware_signature_label(file_sig, entry, targets[0] if targets else None)
     log_cb(f"Пакет: {len(targets)} устройств, файл {entry.file} sig={log_sig} ver={file_ver}", "info")
     settle_s = _resolve_batch_settle_s(params)
     image_family = mp.manifest_device_family(entry.device)
