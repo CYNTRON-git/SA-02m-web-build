@@ -1591,5 +1591,119 @@ else
     [ "$saw_done" = 1 ] || fail "grant-registry analysis stopped before its sentinel — treat as NOT run"
 fi
 
+# ── 9. a LEGACY clock drop-in left on a board (D36-01, shape (b)) ───────────
+# Every check above reads the COMMITTED drop-ins. /etc/sudoers.d/time-sync —
+# `www-data ALL=(ALL) NOPASSWD: /bin/date, /sbin/hwclock`, laid by the very first
+# installer (12764245) on every board imaged from it — is in no committed file,
+# so no wholesale install of sa02m-www ever replaced it and bench .135 still
+# carried the clock escalation after 1.0.7.36. Both removal homes (the installer's
+# sa02m_remove_legacy_clock_sudoers in scripts/lib.sh and the OTA runner's
+# remove_legacy_clock_sudoers) are wired AND run for real against a sandbox
+# sudoers dir: the bench file goes; anything that is not purely a www-data
+# date/hwclock/timedatectl grant, a symlink, or a board whose replacement is not
+# in place yet stays and is NAMED in a WARN.
+LEGACY_NAME=time-sync
+fn9_obs=$(awk 'index($0,"sa02m_remove_obsolete_www_sudoers() {")==1{f=1} f{print} f&&/^\}/{exit}' scripts/lib.sh)
+fn9_lib=$(awk 'index($0,"sa02m_remove_legacy_clock_sudoers() {")==1{f=1} f{print} f&&/^\}/{exit}' scripts/lib.sh)
+fn9_run=$(awk 'index($0,"remove_legacy_clock_sudoers() {")==1{f=1} f{print} f&&/^\}/{exit}' etc/sa02m-update-runner.sh)
+if printf '%s\n' "$fn9_obs" | sed 's/#.*$//' | grep -q 'sa02m_remove_legacy_clock_sudoers'; then
+    pass "9 the installer's obsolete-sudoers cleanup (03-webserver, update-www-only via sa02m_cleanup_b1_deploy_artifacts) calls sa02m_remove_legacy_clock_sudoers"
+else
+    fail "9 sa02m_remove_obsolete_www_sudoers does not call sa02m_remove_legacy_clock_sudoers — a board with /etc/sudoers.d/$LEGACY_NAME keeps the clock grant"
+fi
+if stripped_has_inline etc/sa02m-update-runner.sh '    remove_legacy_clock_sudoers'; then
+    pass "9 the OTA runner calls remove_legacy_clock_sudoers after its deploy"
+else
+    fail "9 the OTA runner never calls remove_legacy_clock_sudoers — an OTA-only board keeps /etc/sudoers.d/$LEGACY_NAME"
+fi
+if [ -z "$fn9_lib" ] || [ -z "$fn9_run" ]; then
+    fail "9 could not extract the legacy-clock removal (lib=${#fn9_lib}B runner=${#fn9_run}B) — the board case below is NOT run"
+else
+    _9root=$(mktemp -d 2>/dev/null) || _9root=""
+    if [ -z "$_9root" ]; then
+        printf 'sudoers-pin-contract: note  mktemp unavailable — 9 behavioural run skipped\n'
+    else
+        _9helper="$_9root/sa02m-clock-set.sh"; printf '#!/bin/sh\n' > "$_9helper"; chmod 0755 "$_9helper"
+        run_9() {  # $1 home (lib|runner)  $2 sudoers dir  $3 helper path → log lines
+            if [ "$1" = lib ]; then
+                ( LOG_FILE=/dev/null; export SA02M_SUDOERS_DIR="$2" SA02M_CLOCK_HELPER="$3"
+                  # shellcheck disable=SC1091
+                  . scripts/lib.sh
+                  log() { printf 'LOG %s %s\n' "$1" "${2:-}"; }
+                  sa02m_remove_legacy_clock_sudoers ) 2>&1
+            else
+                ( export SA02M_SUDOERS_DIR="$2" SA02M_CLOCK_HELPER="$3"
+                  log() { printf 'LOG %s\n' "$*"; }
+                  eval "$fn9_run"
+                  remove_legacy_clock_sudoers ) 2>&1
+            fi
+        }
+        seed_9() {  # $1 dir  $2 content of time-sync ('' = no file)  $3 with-replacement (1/0)
+            rm -rf "$1"; mkdir -p "$1"
+            if [ "$3" = 1 ]; then cp "$SUD" "$1/sa02m-www"; else printf '# none\n' > "$1/sa02m-www"; fi
+            [ -n "$2" ] && printf '%s' "$2" > "$1/$LEGACY_NAME"
+            return 0
+        }
+        BENCH_LINE='www-data ALL=(ALL) NOPASSWD: /bin/date, /sbin/hwclock'
+        for _home in lib runner; do
+            _d="$_9root/$_home"
+            # 9a the exact bench file (one line) → removed, logged once, second run silent
+            seed_9 "$_d" "$BENCH_LINE"$'\n' 1
+            _o1=$(run_9 "$_home" "$_d" "$_9helper"); _o2=$(run_9 "$_home" "$_d" "$_9helper")
+            if [ ! -e "$_d/$LEGACY_NAME" ] && [ "$(printf '%s\n' "$_o1" | grep -c "$LEGACY_NAME")" = 1 ] && [ -z "$_o2" ]; then
+                pass "9a/$_home the bench's one-line $LEGACY_NAME is removed once, logged, and the second run is silent"
+            else
+                fail "9a/$_home the bench's $LEGACY_NAME survived or the run is noisy — still there: $([ -e "$_d/$LEGACY_NAME" ] && echo yes || echo no); log: $(printf '%s' "$_o1 / $_o2" | tr '\n' '|' | head -c 240)"
+            fi
+            # 9b comments, blank lines, the ALL:ALL form, other date/hwclock/timedatectl paths → removed
+            seed_9 "$_d" $'# legacy\n\nwww-data ALL=(ALL:ALL) NOPASSWD: /usr/bin/date , /usr/sbin/hwclock\nwww-data ALL=(ALL) /usr/bin/timedatectl\r\n' 1
+            run_9 "$_home" "$_d" "$_9helper" >/dev/null
+            [ ! -e "$_d/$LEGACY_NAME" ] && pass "9b/$_home a clock-only drop-in with comments, ALL:ALL and timedatectl is removed" \
+                || fail "9b/$_home a clock-only variant was left in place"
+            # 9c anything else stays and is named: an extra grant, ALL, another user, args, a continuation, comments only
+            for _bad in \
+                "$BENCH_LINE"$'\nwww-data ALL=(ALL) NOPASSWD: /usr/bin/tee\n' \
+                $'www-data ALL=(ALL) NOPASSWD: ALL\n' \
+                $'admin ALL=(ALL) NOPASSWD: /bin/date\n' \
+                $'www-data ALL=(ALL) NOPASSWD: /bin/date -s *\n' \
+                $'www-data ALL=(ALL) NOPASSWD: /bin/date, \\\n    /usr/bin/tee\n' \
+                $'# only a comment\n'; do
+                seed_9 "$_d" "$_bad" 1
+                _o=$(run_9 "$_home" "$_d" "$_9helper")
+                if [ -f "$_d/$LEGACY_NAME" ] && printf '%s\n' "$_o" | grep -q "WARN.*$LEGACY_NAME"; then
+                    pass "9c/$_home left in place and named in a WARN: $(printf '%s' "$_bad" | head -n 1 | cut -c1-48)…"
+                else
+                    fail "9c/$_home removed (or silently kept) a drop-in that is not purely a clock grant: $(printf '%s' "$_bad" | head -n 1 | cut -c1-60) — log: $(printf '%s' "$_o" | tr '\n' '|' | head -c 160)"
+                fi
+            done
+            # 9d replacement not in place (no sa02m-www grant, or no executable helper) → left + WARN
+            seed_9 "$_d" "$BENCH_LINE"$'\n' 0
+            _o=$(run_9 "$_home" "$_d" "$_9helper")
+            [ -f "$_d/$LEGACY_NAME" ] && printf '%s\n' "$_o" | grep -q "WARN.*$LEGACY_NAME" \
+                && pass "9d/$_home without the sa02m-www clock grant the legacy file stays (and is named)" \
+                || fail "9d/$_home removed the clock grant before its replacement was in place: $(printf '%s' "$_o" | tr '\n' '|' | head -c 160)"
+            seed_9 "$_d" "$BENCH_LINE"$'\n' 1
+            _o=$(run_9 "$_home" "$_d" "$_9root/no-such-helper")
+            [ -f "$_d/$LEGACY_NAME" ] && printf '%s\n' "$_o" | grep -q "WARN.*$LEGACY_NAME" \
+                && pass "9d/$_home without the executable clock helper the legacy file stays (and is named)" \
+                || fail "9d/$_home removed the clock grant with no helper installed: $(printf '%s' "$_o" | tr '\n' '|' | head -c 160)"
+            # 9e a symlink is never followed or removed; an absent file is silent
+            seed_9 "$_d" "" 1; printf 'target\n' > "$_d/../target-$_home"; ln -s "../target-$_home" "$_d/$LEGACY_NAME" 2>/dev/null
+            if [ -L "$_d/$LEGACY_NAME" ]; then
+                _o=$(run_9 "$_home" "$_d" "$_9helper")
+                [ -L "$_d/$LEGACY_NAME" ] && [ -f "$_9root/target-$_home" ] && printf '%s\n' "$_o" | grep -q "WARN.*$LEGACY_NAME" \
+                    && pass "9e/$_home a symlinked $LEGACY_NAME is left alone (and named)" \
+                    || fail "9e/$_home touched a symlinked $LEGACY_NAME: $(printf '%s' "$_o" | tr '\n' '|' | head -c 160)"
+            else
+                printf 'sudoers-pin-contract: note  9e/%s symlink case skipped (ln -s makes no symlink on this host)\n' "$_home"
+            fi
+            seed_9 "$_d" "" 1
+            [ -z "$(run_9 "$_home" "$_d" "$_9helper")" ] && pass "9f/$_home no $LEGACY_NAME: silent no-op" \
+                || fail "9f/$_home logged something on a board without $LEGACY_NAME"
+        done
+        rm -rf "$_9root"
+    fi
+fi
+
 [ "$fails" = 0 ] || printf 'sudoers-pin-contract: %s check(s) failed — audit B1 escalation not fully closed\n' "$fails"
 exit $(( fails > 0 ))  # never the count: 77 reads SKIP, 256 reads PASS (run.mjs SKIP_EXIT)
