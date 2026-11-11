@@ -181,6 +181,10 @@ class IdentityMetadataTest(unittest.TestCase):
             "serverPort = 8890",
             'auth.token = "t"',
             "transport.tls.enable = true",
+            # 1.0.7.36 (A7-03): frpc retries the login itself instead of exiting
+            # on the first failure — one line, a deliberate change of the render
+            # contract (docs/contracts/cloud-enrollment.md §2), not a weakening.
+            "loginFailExit = false",
             "",
             "[[proxies]]",
             'name = "dev-sa02m-abc"',
@@ -209,6 +213,123 @@ class IdentityMetadataTest(unittest.TestCase):
     def test_tls_still_pinned_with_identity(self):
         self.assertIn("transport.tls.enable = true",
                       agent.render_frpc_toml(_identity_profile()))
+
+
+# The A7 vector from audit 2026-11-11: a subdomain carrying a newline closes the
+# string, opens a new key and a whole new [[proxies]] table pointing at :22 — the
+# local-port allow-list never sees it, because it only reads `local_port`.
+A7_SUBDOMAIN = 'x"\nlocalIP = "127.0.0.1"\nlocalPort = 22\n[[proxies]]\nname = "pad'
+
+
+class FieldGrammarTest(unittest.TestCase):
+    """A7-01: every string field of the cloud profile is checked against its
+    grammar BEFORE anything is rendered; a violation refuses the whole profile
+    (fail closed), so the cloud cannot dictate a tunnel outside {80, 9999} by
+    string injection either."""
+
+    def test_injected_subdomain_is_refused(self):
+        p = _profile(80)
+        p["proxies"][0]["subdomain"] = A7_SUBDOMAIN
+        with self.assertRaises(ValueError) as cm:
+            agent.render_frpc_toml(p)
+        self.assertIn("subdomain", str(cm.exception))
+
+    def test_injected_legacy_fields_are_refused(self):
+        for field, value in (("proxy_name", 'a"\nlocalPort = 22'),
+                             ("subdomain", A7_SUBDOMAIN)):
+            legacy = {"server_addr": "cloud.cyntron.ru", "server_port": 8890,
+                      "token": "t", "proxy_name": "dev-x", "subdomain": "sa02m-x",
+                      "local_port": 9999}
+            legacy[field] = value
+            with self.assertRaises(ValueError, msg=field):
+                agent.render_frpc_toml(legacy)
+
+    def test_each_field_grammar(self):
+        bad = [
+            ("server_addr", "cloud..cyntron.ru"),
+            ("server_addr", "cloud.cyntron.ru\n[x]"),
+            ("server_addr", "-cloud"),
+            ("token", ""),
+            ("token", "a\x00b"),
+            ("token", "a\x7fb"),
+            ("token", "x" * 513),
+            ("device_id", "sa02m abc"),
+            ("device_id", ".sa02m"),
+            ("device_secret", "s\ncr"),
+        ]
+        for field, value in bad:
+            p = _identity_profile()
+            p[field] = value
+            with self.assertRaises(ValueError, msg="%s=%r" % (field, value)):
+                agent.render_frpc_toml(p)
+        for field, value in (("name", "dev x"), ("name", "-dev"), ("subdomain", "sa02m.abc"),
+                             ("subdomain", "sa02m-"), ("subdomain", "a" * 64)):
+            p = _identity_profile()
+            p["proxies"][0][field] = value
+            with self.assertRaises(ValueError, msg="%s=%r" % (field, value)):
+                agent.render_frpc_toml(p)
+
+    def test_contract_shaped_profile_still_renders(self):
+        # docs/contracts/cloud-enrollment.md §2: dev-<id>, <id>, <id>-cfg.
+        p = _identity_profile(did="sa02m-0A1B2C3D")
+        p["proxies"].append({"name": "dev-sa02m-0A1B2C3D-cfg",
+                             "subdomain": "sa02m-0A1B2C3D-cfg", "local_port": 9999})
+        toml = agent.render_frpc_toml(p)
+        self.assertEqual(toml.count("[[proxies]]"), 2)
+
+    def test_token_quote_is_escaped_and_round_trips(self):
+        try:
+            import tomllib
+        except ImportError:  # Python < 3.11
+            self.skipTest("tomllib needs Python 3.11+")
+        p = _identity_profile(secret='se"c\\ret')
+        p["token"] = 'to"k\\en'
+        doc = tomllib.loads(agent.render_frpc_toml(p))
+        self.assertEqual(doc["auth"]["token"], 'to"k\\en')
+        self.assertEqual(doc["metadatas"]["device_secret"], 'se"c\\ret')
+        self.assertEqual(len(doc["proxies"]), 1)
+        self.assertEqual(doc["proxies"][0]["localPort"], 80)
+
+    def test_login_fail_exit_is_false(self):
+        self.assertIn("loginFailExit = false", agent.render_frpc_toml(_profile(80)).splitlines())
+
+    def test_refused_profile_writes_nothing_and_enrollment_fails(self):
+        with tempfile.TemporaryDirectory() as d:
+            target = os.path.join(d, "frpc.toml")
+            p = _profile(80)
+            p["proxies"][0]["subdomain"] = A7_SUBDOMAIN
+            saved = agent.write_frpc_config.__defaults__
+            agent.write_frpc_config.__defaults__ = (target,)
+            try:
+                self.assertFalse(agent.finalize_enrollment({"frpc": p}, None, os.path.join(d, "agent.conf"), "sa02m-x"))
+            finally:
+                agent.write_frpc_config.__defaults__ = saved
+            self.assertEqual(os.listdir(d), [])
+
+
+class FrpcConfigAtomicWriteTest(unittest.TestCase):
+    """A7-11: frpc.toml is replaced by rename (tmp in the same directory, fsync,
+    os.replace), never truncated in place — a power cut mid-write left an empty
+    or half config and no tunnel."""
+
+    def test_replaced_by_rename_0600_no_temp(self):
+        with tempfile.TemporaryDirectory() as d:
+            target = os.path.join(d, "frpc.toml")
+            agent.write_frpc_config(_profile(80), path=target)
+            ino1 = os.stat(target).st_ino
+            keep = os.path.join(d, "old-link")
+            try:
+                os.link(target, keep)          # pin the old inode number
+            except OSError:
+                keep = None
+            agent.write_frpc_config(_profile(80, 9999), path=target)
+            self.assertNotEqual(os.stat(target).st_ino, ino1)
+            if os.name == "posix":
+                self.assertEqual(os.stat(target).st_mode & 0o777, 0o600)
+            left = sorted(n for n in os.listdir(d) if n not in ("frpc.toml", "old-link"))
+            self.assertEqual(left, [])
+            with open(target, encoding="utf-8") as f:
+                self.assertEqual(f.read().count("[[proxies]]"), 2)
 
 
 class DeviceSecretStorageTest(unittest.TestCase):

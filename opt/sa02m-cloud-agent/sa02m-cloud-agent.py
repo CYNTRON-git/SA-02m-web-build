@@ -29,10 +29,12 @@ Activation modes (no SSH needed):
 """
 import argparse
 import configparser
+import contextlib
 import json
 import logging
 import os
 import platform
+import re
 import subprocess
 import sys
 import time
@@ -271,6 +273,44 @@ def api_post(url: str, payload: dict, timeout: int = 15):
 
 
 # ── frpc profile → config ─────────────────────────────────────────────────────
+# Grammar of every string field the cloud profile puts into frpc.toml (A7-01).
+# The local-port allow-list reads only `local_port`; a string field carrying a
+# quote and a newline would otherwise close its TOML string and open a whole
+# new [[proxies]] table (e.g. localPort = 22) the allow-list never sees. Each
+# field is checked BEFORE anything is rendered and a violation refuses the whole
+# profile (fail closed): finalize_enrollment then writes nothing. Shapes:
+# docs/contracts/cloud-enrollment.md §2 (dev-<id>, <id>, <id>-cfg; device_id
+# charset §1, here also required to start alphanumeric).
+_FRPC_NAME_RE = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]{0,63}")
+_FRPC_LABEL_RE = re.compile(r"[A-Za-z0-9](?:[A-Za-z0-9-]{0,61}[A-Za-z0-9])?")
+_FRPC_HOST_RE = re.compile(r"[A-Za-z0-9][A-Za-z0-9.-]{0,252}")
+_FRPC_SECRET_MAX = 512
+
+
+def _frpc_field(field: str, value, kind: str) -> str:
+    """Return `value` as str if it matches the grammar for `kind`, else raise
+    ValueError naming the field (never the value — it may be a credential)."""
+    v = value if isinstance(value, str) else ""
+    if kind == "name":
+        good = bool(_FRPC_NAME_RE.fullmatch(v))
+    elif kind == "label":
+        good = bool(_FRPC_LABEL_RE.fullmatch(v))
+    elif kind == "host":
+        good = bool(_FRPC_HOST_RE.fullmatch(v)) and ".." not in v
+    else:  # secret: any printable text, bounded
+        good = (0 < len(v) <= _FRPC_SECRET_MAX
+                and not any(ord(c) < 0x20 or ord(c) == 0x7F for c in v))
+    if not good:
+        raise ValueError("cloud frpc profile: %s refused" % field)
+    return v
+
+
+def _toml_str(s: str) -> str:
+    """A TOML basic string body: backslash and quote escaped. Control
+    characters never get here (_frpc_field refuses them)."""
+    return s.replace("\\", "\\\\").replace('"', '\\"')
+
+
 def render_frpc_toml(frpc: dict) -> str:
     """Render frpc.toml from the contract's frpc profile. Emits the proxies the
     cloud handed out (normally two: <sub> → :80 web SCADA, <sub>-cfg → :9999
@@ -289,26 +329,40 @@ def render_frpc_toml(frpc: dict) -> str:
 
     metadatas.device_id + metadatas.device_secret (Phase C) эмитятся ТОЛЬКО когда
     облако выдало секрет; без него рендер байт-в-байт прежний (legacy-путь окна
-    grace)."""
-    server_addr = frpc["server_addr"]
+    grace).
+
+    Every string field is checked against its grammar first (_frpc_field) and
+    a violation raises ValueError — the profile is refused whole (A7-01)."""
+    server_addr = _frpc_field("server_addr", frpc["server_addr"], "host")
     server_port = int(frpc["server_port"])
-    token       = frpc["token"]
+    token       = _frpc_field("token", frpc["token"], "secret")
     device_id     = frpc.get("device_id") or ""
     device_secret = frpc.get("device_secret") or ""
+    if device_secret:
+        device_id = _frpc_field("device_id", device_id, "name")
+        device_secret = _frpc_field("device_secret", device_secret, "secret")
     proxies     = frpc.get("proxies") or []
     if not proxies:
         # Legacy single-proxy fallback fields (pre-Phase-B contract)
         proxies = [{
-            "name":       frpc["proxy_name"],
+            "name":       _frpc_field("proxy_name", frpc["proxy_name"], "name"),
             "subdomain":  frpc["subdomain"],
             "local_port": frpc["local_port"],
         }]
+    for p in proxies:
+        _frpc_field("name", p.get("name"), "name")
+        _frpc_field("subdomain", p.get("subdomain"), "label")
     lines = [
-        'serverAddr = "%s"' % server_addr,
+        'serverAddr = "%s"' % _toml_str(server_addr),
         "serverPort = %d" % server_port,
-        'auth.token = "%s"' % token,
+        'auth.token = "%s"' % _toml_str(token),
         # Пиним TLS транспортного (control) соединения frpc→frps явно.
         "transport.tls.enable = true",
+        # frpc повторяет вход сам (с нарастающей паузой) вместо выхода после
+        # первой неудачи: иначе при недоступном облаке systemd перезапускал его
+        # каждые 15 с без конца, сотни строк журнала (A7-03). Процесс жив —
+        # ensure_frpc_running видит `active` и не дёргает юнит.
+        "loginFailExit = false",
     ]
     # transport.poolCount — сколько work-соединений frpc держит открытыми в пуле,
     # чтобы проксируемый запрос не платил свежий handshake через ~555ms облачный
@@ -337,8 +391,8 @@ def render_frpc_toml(frpc: dict) -> str:
     # как раньше — это и есть окно grace на стороне облака.
     if device_secret:
         lines += [
-            'metadatas.device_id = "%s"' % device_id,
-            'metadatas.device_secret = "%s"' % device_secret,
+            'metadatas.device_id = "%s"' % _toml_str(device_id),
+            'metadatas.device_secret = "%s"' % _toml_str(device_secret),
         ]
     lines.append("")
     emitted = 0
@@ -352,9 +406,9 @@ def render_frpc_toml(frpc: dict) -> str:
             continue
         lines += [
             "[[proxies]]",
-            'name = "%s"' % p["name"],
+            'name = "%s"' % _toml_str(p["name"]),
             'type = "http"',
-            'subdomain = "%s"' % p["subdomain"],
+            'subdomain = "%s"' % _toml_str(p["subdomain"]),
             "localIP = \"127.0.0.1\"",
             "localPort = %d" % local_port,
             "",
@@ -369,11 +423,33 @@ def render_frpc_toml(frpc: dict) -> str:
 
 
 def write_frpc_config(frpc: dict, path: str = FRPC_CONFIG):
-    os.makedirs(os.path.dirname(path), exist_ok=True)
+    # Rendered (and validated) BEFORE anything touches the disk: a refused
+    # profile raises here and the live config stays as it was.
     content = render_frpc_toml(frpc)
-    with open(path, "w") as f:
-        f.write(content)
-    os.chmod(path, 0o600)  # carries the frp token
+    directory = os.path.dirname(path) or "."
+    os.makedirs(directory, exist_ok=True)
+    # tmp in the SAME directory + fsync + os.replace (A7-11): opening the live
+    # file with "w" truncated it first, and a power cut mid-write left an empty
+    # frpc.toml — no tunnel until the next enrollment. 0600 from the first byte
+    # (O_EXCL + mode): the file carries the frp token.
+    tmp = os.path.join(directory, ".%s.tmp.%d" % (os.path.basename(path), os.getpid()))
+    fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+    try:
+        with os.fdopen(fd, "w") as f:
+            f.write(content)
+            f.flush()
+            os.fsync(f.fileno())
+        os.replace(tmp, path)
+    except BaseException:
+        with contextlib.suppress(OSError):
+            os.remove(tmp)
+        raise
+    with contextlib.suppress(OSError):
+        dfd = os.open(directory, os.O_RDONLY)
+        try:
+            os.fsync(dfd)
+        finally:
+            os.close(dfd)
     log.info("frpc config written: %s (%d proxies)", path, content.count("[[proxies]]"))
 
 

@@ -52,8 +52,26 @@ Phase 4 → per-device **mTLS** (идентичность + отзыв). Общ�
 `render_frpc_toml` разворачивает это в `/etc/sa02m-cloud/frpc.toml` (0600):
 `type = "http"` — единственная форма, которую принимает frps NewProxy-authz;
 `localIP = "127.0.0.1"`; `transport.tls.enable = true` пиннится явно (control-leg
-TLS, `O3`). Легаси одиночный fallback (`proxy_name`/`subdomain`/`local_port`) —
-для до-Phase-B ответов.
+TLS, `O3`); `loginFailExit = false` (с 1.0.7.36) — при недоступном облаке frpc сам
+повторяет вход с нарастающей паузой, а не выходит и не перезапускается systemd
+каждые 15 с. Легаси одиночный fallback (`proxy_name`/`subdomain`/`local_port`) —
+для до-Phase-B ответов. Запись `frpc.toml` атомарна (временный файл в том же
+каталоге, fsync, rename).
+
+**Грамматика строковых полей (с 1.0.7.36, A7-01).** До рендера каждое строковое
+поле профиля проверяется; нарушение — `ValueError`, профиль отклоняется целиком,
+зачисление не проходит, конфиг не пишется (fail closed):
+
+| Поле | Грамматика |
+|---|---|
+| `proxies[].name`, легаси `proxy_name`, `device_id` | `^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$` |
+| `proxies[].subdomain` | метка DNS: `^[A-Za-z0-9](?:[A-Za-z0-9-]{0,61}[A-Za-z0-9])?$` |
+| `server_addr` | `^[A-Za-z0-9][A-Za-z0-9.-]{0,252}$`, без `..` |
+| `token`, `device_secret` | 1..512 символов, без управляющих (`< 0x20`, `0x7f`); в TOML `\` и `"` экранируются |
+
+Без этой проверки строковое поле с кавычкой и переводом строки закрывало свою
+строку TOML и открывало новую таблицу `[[proxies]]` (например, `localPort = 22`),
+которую allow-list портов (§3) не видит — он читает только `local_port`.
 
 ## 3. Device-side allow-list локальных портов (O1 — сторона устройства)
 
@@ -77,7 +95,10 @@ TLS, `O3`). Легаси одиночный fallback (`proxy_name`/`subdomain`/`
 ## Проверка контракта
 
 `opt/sa02m-cloud-agent/tests/test_render_frpc.py` — allow-list ({80,9999}
-проходят, :22/:1883 отброшены, all-dropped → 0 прокси, TLS запиннен).
+проходят, :22/:1883 отброшены, all-dropped → 0 прокси, TLS запиннен), грамматика
+полей (вектор A7 с переводом строки в `subdomain` отклонён, зачисление не
+проходит, файл не создан; кавычка в токене экранируется и читается `tomllib`
+обратно), `loginFailExit = false`, атомарная запись `frpc.toml`.
 `opt/sa02m-cloud-agent/tests/test_agent.py` — форма frpc.toml, send-only, отсутствие
 командного канала и WireGuard-остатков, `modules` verbatim из ростера.
 Облачная сторона (frps authz, backend `/api/v1/*`) проверяется в облачном репо.
