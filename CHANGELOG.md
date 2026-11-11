@@ -5,6 +5,55 @@
 
 ---
 
+## 1.0.7.36 - Audit fixes: MQTT commands, Fast Modbus events, watchdog, time and privileges (November 2026)
+
+### Delivery
+
+- **Full installation only** (`install.sh`, including `--refresh`): automatic nginx restart (new drop-in `nginx.service.d/sa02m-restart.conf`) and the new restart limits of `fcgiwrap.service`.
+- **Network update (OTA, offline package) and full installation**, not www-only: the Modbus-to-MQTT bridge and telemetry, the scenario engine, Alice, the flasher, the cloud agent, the port coordinator, the helpers in `/usr/local/sbin` (service control, kernel switch, bridge configuration writer), the nginx site (checked with `nginx -t`) and `sa02m-rs485-roster.service`. Telemetry, scenarios and a running bridge are restarted by the update; the userspace watchdog, the failure monitor and the cloud agent apply the new behaviour after their service or the board restarts.
+- **Every path, www-only included**: CGI endpoints, panel pages and scripts, the login library, the clock helper `sa02m-clock-set.sh` with its new `sudoers` grant, and the network file writer.
+
+### Modbus and MQTT
+
+- **Retained `/on` commands are no longer executed**: neither the board's `do`/`beeper`/`alarm_led` nor a scenario's `run/on`. Such a command used to fire again on every broker reconnect. The journal logs `retained /on is never replayed`.
+- **A scenario's `run/on` accepts explicit values only**: `1`/`on`/`true` runs it, `0`/`off`/`false` switches it off (case and surrounding spaces ignored). An empty payload and any other value are ignored with a warning; previously anything other than "on" switched the scenario's outputs off. Alice (`1`/`0`) and HomeKit (`1`) are unaffected.
+- The DTV buzzer and LEDs accept only `0`/`1`/`false`/`true`; `off`, an empty payload or other values no longer switch the output.
+- DTV `temp_ext`: an open NTC sensor and the first 10 s after a DTV reboot or an HR6 change publish `…/temp_ext/meta/error = r` instead of −55.0 °C or 0.0 °C. Pt1000 is unchanged.
+- With DTV firmware 1.0.2.17, Input 6 values −9999 and +9999 are published as a read error of `temp_ext`, not as a temperature; an open or shorted sensor is logged by the bridge.
+- Fast Modbus events: an all-zero reply mask to a subscription is a final refusal by the device (one INFO line instead of `config failed` on every pass), and the MR insurance poll is armed when events cover the outputs. Subscriptions are set again after a line lease ends (`port-ownership.md` updated). A replayed DTV/CE batch no longer overwrites a newer reading. A reply arriving at the 0.25 s deadline is read to its end. DTV from 1.0.2.7 is subscribed with one INPUT 1..28 record (23/24 disabled) and read less often over FC04. The shared-core "no events" frame (MR ≥ 1.0.12.28, DTV 1.0.2.16, CE 1.0.7.22) ends the MR output and AI waits; the wait is capped at 10 s and the periodic `quarantine` warning is gone. Topics and formats are unchanged.
+- **MQTT tab: the `mqtt_status.cgi` response no longer carries the external broker password** (the `mqtt_password` field is removed from the poll). The password is shown on click through a separate POST with session and CSRF checks, not cached. A tab opened before the update shows "—" until the page is reloaded.
+- The bridge configuration `/etc/sa02m-modbus-mqtt.yaml` is written atomically; a power cut during a save no longer leaves an empty file.
+- Alice: in a group command only the capability whose publish failed is marked as an error; relays that did switch are reported as done.
+
+### System and watchdog
+
+- The userspace watchdog and the failure monitor probe the panel on its actual port (`/etc/sa02m_web_port.conf`, installation with `--port N`) instead of 9999, so a board on another port is no longer rebooted as "web down". The watchdog also checks the CGI layer (`auth_check.cgi`) and on failure restarts `fcgiwrap` first (nginx when its process is gone); the board is rebooted only at the unchanged 10-minute threshold.
+- The failure monitor writes its state snapshot only on a change or every 60 s instead of every 5 s.
+- `interfaces.d` network files, the kernel configuration and `frpc.toml` are written atomically; a power cut no longer leaves an empty `eth0.conf`.
+- Kernel switch: selecting the running kernel after a cancelled switch puts its image back on the boot partition (the board used to boot the cancelled kernel). The image is checked against the `manifest.json` checksum; a damaged one is refused with "Kernel image is damaged: checksum mismatch".
+- The kernel and CPU-profile cards show "The helper did not answer in time" when the helper does not answer, instead of a raw code.
+- init.d calls for CODESYS, CodeMeter and MPLC4 are time-bounded; a hung vendor script yields a logged error instead of a permanent "busy".
+- The `sa02m-rs485-roster` timer no longer fills the journal with informational lines (`LogLevelMax=notice`).
+
+### Time and clock
+
+- **The "Date and time" field is empty when the tab opens**: saving only the time zone no longer sets the clock back or turns NTP off. A typed time is read in the zone in force before the save; the same zone is not applied again. The RTC is written again after a manual time set (the write used to fail silently).
+- The clock is changed through the pinned helper `sa02m-clock-set.sh`, which validates its arguments; the web server's root grants for `date`, `hwclock` and `timedatectl` are revoked.
+
+### Security and panel
+
+- The password is no longer passed on the `openssl` command line (visible in `/proc`); passwords starting with `-` now verify.
+- Console: after 10 wrong root passwords in 5 minutes, root mode refuses for 5 minutes (`root_locked`); panel login is not locked.
+- A cloud profile with invalid characters in its tunnel fields is refused as a whole (a tunnel outside the allowed ports can no longer be set); `frpc` no longer exits on a failed login.
+- Requests to `/cgi-bin/` are limited to 6 concurrent per session (answer 429); the MQTT monitor stream to one per session and 60 s.
+- Polled CGI endpoints (status, services, gateway, cloud, kernel, CPU profile, MPLC project) are time-bounded: a hung systemd yields an error answer instead of a busy worker.
+- Dashboard: "Services" and RS-485 answer from cache at once while the cache refreshes in the background (data may be one poll period older); the frame/parity/overrun error counters on the RS-485 card count real errors again; with the bridge stopped, the "MQTT bridge" row shows inactive instead of the telemetry uptime.
+- Flasher: the port list runs one `fuser` per port; a port whose occupancy could not be checked is no longer reported free.
+
+### Verification
+
+- New registry checks: `mqtt-config-apply-atomic`, `mqtt-status-secret`, `userspace-watchdog-probe`, `kernel-select`, `initd-bounded`, `apply-time`, `js-unit-forms-time-prefill`, `no-timeout-on-shell-function`, `clock-set-helper`, `status-cache`, `json-escape-equiv`, `cgi-timeouts`; extended `iface-conf-write`, `sudoers-pin-contract`, `rs485-roster-consumer`, `web-auth-behaviour` and the unit suites of the bridge, scenarios, Alice, the flasher, the cloud agent and the port coordinator.
+
 ## 1.0.7.35 - Select Fast Modbus channels for serial templates (November 2026)
 
 ### Modbus and MQTT
