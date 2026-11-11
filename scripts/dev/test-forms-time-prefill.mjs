@@ -1,5 +1,4 @@
 #!/usr/bin/env node
-// comment-mutation-proof-exempt: the guarded behaviour is the ABSENCE of the f-datetime prefill in forms.js — there is no source line to comment out; the RED is re-introducing `setVal('f-datetime', d.datetime)` (FORMS_JS=<origin/main copy>, recipe below), and the harness fails if loadConfig, its fetch or the time block is not reached.
 /* test-forms-time-prefill — the «Дата и время» field of the Время tab starts
    EMPTY (www/network_config/static/js/app/forms.js loadConfig).
 
@@ -24,6 +23,11 @@
 
    PROVEN RED against forms.js of origin/main (FORMS_JS=<git show copy>): P1
    FAIL (f-datetime = the device time). GREEN after.
+
+   MUTATION. P1 guards an ABSENCE, so it has no line to comment out — its RED
+   is re-introducing `setVal('f-datetime', d.datetime)`. P2 does pin a line:
+   commenting out forms.js's `setText('time-sys-disp', …)` turns it RED, so that
+   line is a registered case in comment-mutation-proof, not an exemption.
 
    Run: node scripts/dev/test-forms-time-prefill.mjs */
 import fs from 'fs';

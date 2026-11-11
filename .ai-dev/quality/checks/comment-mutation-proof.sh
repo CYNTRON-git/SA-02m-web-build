@@ -392,6 +392,22 @@ web-port-persist|scripts/lib.sh|port=$(sa02m_web_port_effective)
 web-port-persist|scripts/11-devices.sh|&& sa02m_render_nginx_site "$ETC_DIR/nginx/network_config.conf" "$WEB_ROOT"; then
 web-port-persist|etc/sa02m-update-runner.sh|if ! localize_staged_package_port "$txn"; then
 web-port-persist|etc/sa02m-web-port-lib.sh|[ "$1" -le 65535 ]
+mqtt-config-apply-atomic|usr/local/sbin/sa02m-mqtt-config-apply.sh|mv -f -- "$TMP_DST" "$DST"
+mqtt-status-secret|www/network_config/cgi-bin/mqtt_status.cgi|web_csrf_require
+iface-conf-write|etc/sa02m-iface-conf-write.sh|[ "$staged" = 1 ] && mv -f -- "$wtmp" "$dst" && replaced=1
+userspace-watchdog-probe|etc/systemd/system/nginx.service.d/sa02m-restart.conf|Restart=on-failure
+userspace-watchdog-probe|etc/sa02m-userspace-watchdog.sh|timeout 30 systemctl restart fcgiwrap.service
+kernel-select|etc/sa02m-kernel-select.sh|if ! zimage_md5_ok "$target" "$canon"; then
+apply-time|www/network_config/cgi-bin/apply.cgi|sync_rtc_from_system >/dev/null 2>&1 || rc=$?
+js-unit-forms-time-prefill|www/network_config/static/js/app/forms.js|setText('"'"'time-sys-disp'"'"', d.datetime ||
+sudoers-pin-contract|etc/sudoers.d/sa02m-www|www-data ALL=(ALL) NOPASSWD: /usr/local/sbin/sa02m-clock-set.sh
+clock-set-helper|usr/local/sbin/sa02m-clock-set.sh|if ! tz_ok "$2"; then
+initd-bounded|etc/sa02m-web-service-ctl.sh|initd_run() {
+status-cache|www/network_config/cgi-bin/status.cgi|cache_print_or_build "${CACHE_DIR}/rs485.json" 8 build_rs485_json 24
+status-cache|etc/sa02m-web-service-ctl.sh|trap '"'"'svc_list_cache_invalidate'"'"' EXIT
+cgi-timeouts|etc/nginx/network_config.conf|limit_conn     sa02m_cgi_sess 6;
+cgi-timeouts|etc/nginx/network_config.conf|limit_conn     sa02m_mon_sess 1;
+cgi-timeouts|www/network_config/cgi-bin/mqtt_monitor.cgi|exec timeout -k 2 60
 '
 
 command -v git >/dev/null 2>&1 || { echo "comment-mutation-proof: FAIL — git is required to build the pristine copy"; exit 1; }
