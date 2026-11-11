@@ -454,9 +454,36 @@ if [ "$SKIP_NETWORK" != "1" ] && [ "$NET_IFACE" = "eth1" ]; then
     fi
 fi
 
+# ── The typed time is an INSTANT in the zone in force BEFORE this save ──────
+# The Operator reads and types the time in the zone the device shows now; the
+# zone change below must not shift it (A4-05: Moscow -> Samara + 12:00 set
+# 12:00 Samara, one hour off). Read it as an epoch here, while /etc/localtime
+# is still the old zone (`date` reads it on every call); it is turned back into
+# wall-clock text in the NEW zone right before the clock is set.
+DT_EPOCH=""
+if [ -n "$DATETIME" ]; then
+    DT_EPOCH=$(date -d "$DATETIME" +%s 2>/dev/null) || DT_EPOCH=""
+    case "$DT_EPOCH" in ''|*[!0-9]*) DT_EPOCH="" ;; esac
+fi
+
+# The zone in force now ('' when unknown — then the zone is always applied).
+current_timezone() {
+    local tz
+    tz=$(timeout_run 4 timedatectl show -p Timezone --value 2>/dev/null) || tz=""
+    if [ -z "$tz" ]; then
+        tz=$(readlink /etc/localtime 2>/dev/null) || tz=""
+        case "$tz" in */zoneinfo/*) tz=${tz#*/zoneinfo/} ;; *) tz="" ;; esac
+    fi
+    printf '%s' "$tz"
+}
+
 # ── Timezone (ошибка таймзоны не блокирует установку времени) ──────────────
-if [ -n "$TIMEZONE" ]; then
-    if timeout_run 8 sudo -n /usr/bin/timedatectl set-timezone "$TIMEZONE" 2>/dev/null; then
+if [ -n "$TIMEZONE" ] && [ "$TIMEZONE" = "$(current_timezone)" ]; then
+    echo "$(date '+%Y-%m-%d %H:%M:%S') timezone unchanged ($TIMEZONE) — not re-applied" >> /var/log/sa02m_install.log 2>&1
+elif [ -n "$TIMEZONE" ]; then
+    # The pinned clock helper validates the zone itself (sudoers grants no raw
+    # timedatectl — A8-01); the outer bound covers sudo + its own 8 s timeout.
+    if timeout_run 10 sudo -n /usr/local/sbin/sa02m-clock-set.sh tz "$TIMEZONE" 2>/dev/null; then
         echo "$(date '+%Y-%m-%d %H:%M:%S') timezone set to $TIMEZONE" >> /var/log/sa02m_install.log 2>&1
     else
         timezone_failed=1
@@ -472,28 +499,36 @@ SCRIPT_DIR=$(dirname "$0")
 apply_system_time() {
     local dt="$1"
     # При зависшем dbus timedatectl может не возвращаться → nginx 504; везде timeout.
-    timeout_run 6 sudo -n /usr/bin/timedatectl set-ntp false >/dev/null 2>&1 || true
-    if timeout_run 18 sudo -n /usr/bin/timedatectl set-time "$dt" >/dev/null 2>&1; then
-        return 0
-    fi
-    if timeout_run 10 sudo -n /bin/date -s "$dt" >/dev/null 2>&1; then
-        return 0
-    fi
-    if timeout_run 10 sudo -n /usr/bin/date -s "$dt" >/dev/null 2>&1; then
+    # Through the pinned clock helper (A8-01): it tries timedatectl set-time,
+    # then date -s, each under its own timeout; the outer bounds cover sudo too.
+    timeout_run 8 sudo -n /usr/local/sbin/sa02m-clock-set.sh ntp-off >/dev/null 2>&1 || true
+    if timeout_run 32 sudo -n /usr/local/sbin/sa02m-clock-set.sh time "$dt" >/dev/null 2>&1; then
         return 0
     fi
     return 1
 }
 
+# Called directly, never through timeout/timeout_run: `timeout` cannot run a
+# shell function (it exits 127 and the RTC was never written — A8-02). Every
+# external call inside sync_rtc_from_system is already bounded by
+# sa02m_rtc_timeout_run (lib_rtc.sh). A failure is logged, not hidden; the
+# panel's answer does not change (the system clock IS set).
 sync_hwclock_from_sys() {
-    timeout_run 12 sync_rtc_from_system >/dev/null 2>&1 || true
+    local rc=0
+    sync_rtc_from_system >/dev/null 2>&1 || rc=$?
+    [ "$rc" = 0 ] || echo "$(date '+%Y-%m-%d %H:%M:%S') apply.cgi: RTC write after manual time set FAILED (rc=$rc)" >> /var/log/sa02m_install.log 2>&1
 }
 
-if [ -n "$DATETIME" ]; then
-    if apply_system_time "$DATETIME"; then
+if [ -n "$DATETIME" ] && [ -z "$DT_EPOCH" ]; then
+    echo "$(date '+%Y-%m-%d %H:%M:%S') apply.cgi: unreadable time, not set ($DATETIME)" >> /var/log/sa02m_install.log 2>&1
+    REDIRECT="error_time"
+elif [ -n "$DATETIME" ]; then
+    # The same instant, as wall-clock text in the zone now in force.
+    DATETIME_NEW=$(date -d "@$DT_EPOCH" '+%Y-%m-%d %H:%M:%S' 2>/dev/null) || DATETIME_NEW=""
+    if [ -n "$DATETIME_NEW" ] && apply_system_time "$DATETIME_NEW"; then
         time_ok=1
         sync_hwclock_from_sys
-        echo "$(date '+%Y-%m-%d %H:%M:%S') datetime set to $DATETIME" >> /var/log/sa02m_install.log 2>&1
+        echo "$(date '+%Y-%m-%d %H:%M:%S') datetime set to $DATETIME_NEW (entered $DATETIME)" >> /var/log/sa02m_install.log 2>&1
     else
         echo "$(date '+%Y-%m-%d %H:%M:%S') apply.cgi: set time failed ($DATETIME)" >> /var/log/sa02m_install.log 2>&1
         REDIRECT="error_time"

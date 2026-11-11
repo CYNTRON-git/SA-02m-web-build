@@ -321,6 +321,12 @@ if [ -f "$ETC_DIR/sa02m-usb-power.sh" ]; then
     sa02m_atomic_install -m 755 "$ETC_DIR/sa02m-usb-power.sh" /usr/local/sbin/sa02m-usb-power.sh
     sed -i 's/\r$//' /usr/local/sbin/sa02m-usb-power.sh
 fi
+# The clock helper — the only clock capability in sudoers (A8-01); it lands
+# before etc/sudoers.d/sa02m-www below, which grants it.
+if [ -f "$SCRIPT_DIR/../usr/local/sbin/sa02m-clock-set.sh" ]; then
+    sa02m_atomic_install -m 0755 -o root -g root "$SCRIPT_DIR/../usr/local/sbin/sa02m-clock-set.sh" /usr/local/sbin/sa02m-clock-set.sh
+    sed -i 's/\r$//' /usr/local/sbin/sa02m-clock-set.sh
+fi
 if [ -f "$ETC_DIR/sa02m_failure_monitor.conf" ] && [ ! -f /etc/sa02m_failure_monitor.conf ]; then
     install -m 644 "$ETC_DIR/sa02m_failure_monitor.conf" /etc/sa02m_failure_monitor.conf
 fi

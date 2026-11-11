@@ -661,11 +661,8 @@ def parse_sudoers_text(text):
 # count asserted. This is the one home for "what www-data may run as root".
 LEDGER = {
     "etc/sudoers.d/sa02m-www": [
-        "/bin/date",
-        "/usr/bin/date",
-        "/sbin/hwclock",
-        "/usr/sbin/hwclock",
-        "/usr/bin/timedatectl",
+        # The clock: one helper, argv validated inside (A8-01, 1.0.7.36).
+        "/usr/local/sbin/sa02m-clock-set.sh",
         "/usr/local/sbin/sa02m-iface-conf-write.sh",
         "/usr/local/sbin/sa02m-ensure-eth1-dhcp-hook.sh",
         "/sbin/ifup eth0",
@@ -949,6 +946,60 @@ else:
 # helper sweep must see the heredoc-written grants too — that is precisely where
 # the two unpinned escalation grants were hiding.
 granted_any = granted_all + granted_heredoc
+
+# ── Clock: no raw date / hwclock / timedatectl grant in ANY home ───────────
+# Until 1.0.7.36 sa02m-www granted all three with no argument at all, under a
+# comment calling it «set-only, clock DoS at worst» — but `date -f <file>`
+# reads any root-readable file into its error output and `hwclock
+# --adjfile=<path>` writes one (audit 2026-11-11 A8-01). The clock now goes
+# through the pinned helper (sa02m-clock-set.sh, argv validated inside, checked
+# below). Read over every home — committed drop-ins AND heredoc-written grants —
+# by the command's basename, so no path spelling (/bin, /usr/bin, /sbin, …) and
+# no argument form escapes it.
+CLOCK_TOOLS = ("date", "hwclock", "timedatectl")
+clock_hits = sorted(set(
+    c for c in granted_any
+    if os.path.basename(c.split(" ")[0]) in CLOCK_TOOLS
+))
+if clock_hits:
+    for c in clock_hits:
+        bad("raw clock tool granted to www-data as root: %s — `date -f` reads and `hwclock --adjfile` writes any file; route the clock through /usr/local/sbin/sa02m-clock-set.sh" % c)
+elif not granted_any:
+    bad("clock-tool class swept ZERO grants — vacuous")
+else:
+    ok("no home grants www-data date / hwclock / timedatectl (%d grants swept)" % len(granted_any))
+
+# The clock helper itself: exactly three verbs, no eval, no unquoted heredoc.
+CLOCK_HELPER = "usr/local/sbin/sa02m-clock-set.sh"
+ch_text = read(CLOCK_HELPER)
+if ch_text is None:
+    bad("clock helper %s missing from the tree — the clock grant points at nothing" % CLOCK_HELPER)
+else:
+    ch_lines = [re.sub(r"^\s*#.*$", "", ln) for ln in ch_text.splitlines()]
+    ch_code = "\n".join(ch_lines)
+    ch_bad = 0
+    if re.search(r"(^|[;&|\s])eval\b", ch_code, re.M):
+        bad("%s uses eval — the helper must never re-parse its argv as shell" % CLOCK_HELPER)
+        ch_bad += 1
+    for lineno, _op, _body, quoted in heredocs(ch_text):
+        if not quoted:
+            bad("%s:%d opens an UNQUOTED heredoc — none is allowed in the clock helper" % (CLOCK_HELPER, lineno))
+            ch_bad += 1
+    m = re.search(r"^\s*case\s+\"\$verb\"\s+in\s*$(.*?)^\s*esac\b", ch_code, re.M | re.S)
+    if not m:
+        bad("%s: no `case \"$verb\" in … esac` dispatch found — the verb set cannot be checked (restructured? update this check, do not delete it)" % CLOCK_HELPER)
+        ch_bad += 1
+    else:
+        labels = re.findall(r"^\s*([^\s()#][^()\n]*)\)\s*$", m.group(1), re.M)
+        verbs = sorted(set(v.strip() for lab in labels for v in lab.split("|")) - {"*"})
+        if verbs != ["ntp-off", "time", "tz"]:
+            bad("%s: dispatch verbs are %r — expected exactly tz | ntp-off | time" % (CLOCK_HELPER, verbs))
+            ch_bad += 1
+        elif "*" not in [v.strip() for lab in labels for v in lab.split("|")]:
+            bad("%s: dispatch has no `*)` refusal branch — an unknown verb would fall through" % CLOCK_HELPER)
+            ch_bad += 1
+    if not ch_bad:
+        ok("%s: verbs exactly tz | ntp-off | time (+ refusing `*`), no eval, no unquoted heredoc" % CLOCK_HELPER)
 
 # ── Argument pinning for the privileged web triggers ──────────────────────
 # A sudoers Cmnd written WITHOUT arguments permits ANY argument vector. The
@@ -1256,6 +1307,13 @@ HELPER_GUARDS = [
         ("a-z0-9", "pins the user-unit instance alphabet"),
     ], [
         ("unit_ok", [r"\bjournalctl\b"], "reads the journal as root"),
+    ]),
+    ("usr/local/sbin/sa02m-clock-set.sh", [
+        ("A-Za-z0-9_+-", "carries an explicit time-zone character allow-list"),
+        ("ZONEINFO", "requires the zone to exist under the zoneinfo tree"),
+    ], [
+        ("tz_ok", [r"set-timezone"], "sets the system time zone"),
+        ("time_ok", [r"set-time\b", r"\bdate\s+-s\b"], "sets the system clock"),
     ]),
 ]
 

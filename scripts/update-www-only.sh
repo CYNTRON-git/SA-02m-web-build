@@ -342,6 +342,12 @@ fi
 # one-home committed file wholesale (install -m 0440 + CRLF strip + visudo -cf,
 # via sa02m_install_sudoers) OVERWRITES the old file and removes the dangerous
 # grant by construction. Same file, same helpers, as 03-webserver.sh.
+# The clock helper the grant below names (A8-01) lands first: the new apply.cgi
+# calls it, and a grant without its helper fails every time save.
+if [ -f "$SCRIPT_DIR/../usr/local/sbin/sa02m-clock-set.sh" ]; then
+    sa02m_atomic_install -m 755 -o root -g root "$SCRIPT_DIR/../usr/local/sbin/sa02m-clock-set.sh" /usr/local/sbin/sa02m-clock-set.sh
+    sed -i 's/\r$//' /usr/local/sbin/sa02m-clock-set.sh
+fi
 log INFO "Синхронизация sudoers (установка единого файла sa02m-www)"
 sa02m_install_sudoers "$REPO_ETC/sudoers.d/sa02m-www" /etc/sudoers.d/sa02m-www
 # Pinned helpers referenced by that grant (the two new B1 helpers + the existing
