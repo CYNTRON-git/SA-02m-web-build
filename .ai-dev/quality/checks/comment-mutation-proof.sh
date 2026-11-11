@@ -417,6 +417,10 @@ daemon-restart-on-change|scripts/03-webserver.sh|sa02m_svc_apply sa02m-failure-m
 daemon-restart-on-change|scripts/02-network.sh|_nw_sig0=$(sa02m_file_sig
 daemon-restart-on-change|scripts/02-network.sh|_nw_sig1=$(sa02m_file_sig
 daemon-restart-on-change|scripts/02-network.sh|sa02m_svc_apply net-watchdog.service infra start restart
+daemon-restart-on-change|scripts/02-network.sh|_lp_sig0=$(sa02m_file_sig
+daemon-restart-on-change|scripts/02-network.sh|_lp_sig1=$(sa02m_file_sig
+daemon-restart-on-change|scripts/02-network.sh|sa02m_svc_apply sa02m-eth0-led-poll.service infra start restart
+daemon-restart-on-change|scripts/lib.sh|                cmp -s "$_fd" "$_script" 2>/dev/null && return 1
 daemon-restart-on-change|etc/sa02m-update-runner.sh|            "sa02m-userspace-watchdog",
 daemon-restart-on-change|scripts/pack-offline-update.py|        "sa02m-failure-monitor",
 daemon-restart-on-change|etc/sa02m-update-runner.sh|            "sa02m-failure-monitor",
@@ -424,7 +428,7 @@ daemon-restart-on-change|scripts/pack-offline-update.py|        "sa02m-userspace
 js-unit-flasher-flash-failure|www/network_config/static/js/flasher.js|        skip_on_error: false,
 js-unit-flasher-flash-failure|www/network_config/static/js/flasher.js|      return lineProfileFromScan(d, LINE_PROFILE_MP_MR);
 js-unit-flasher-flash-failure|www/network_config/static/js/flasher.js|      else if (failText) toast(
-js-unit-flasher-flash-failure|www/network_config/static/js/flasher.js|    if (state2 === 'error' || state2 === 'done') failText = await flashFailureText(jobId);
+js-unit-flasher-flash-failure|www/network_config/static/js/flasher.js|    if (state2 === '"'"'error'"'"' || state2 === '"'"'done'"'"') failText = await flashFailureText(jobId);
 kernel-select|etc/sa02m-kernel-select.sh|if ! zimage_md5_ok "$target" "$canon"; then
 apply-time|www/network_config/cgi-bin/apply.cgi|sync_rtc_from_system >/dev/null 2>&1 || rc=$?
 js-unit-forms-time-prefill|www/network_config/static/js/app/forms.js|setText('"'"'time-sys-disp'"'"', d.datetime ||

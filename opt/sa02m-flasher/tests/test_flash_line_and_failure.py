@@ -234,5 +234,112 @@ class TestLogSignatureIsTheFiles(unittest.TestCase):
         self.assertEqual(runner._firmware_signature_label("NONE", self._entry(["CE02M3"]), {"signature": "14DI"}), "CE02M3")
 
 
+class TestTabRequestPathEndToEnd(unittest.TestCase):
+    """B-2 (review R4): the tab sends skip_on_error=false. Driven through JobManager and the REAL
+    run_flash_batch_job / run_flash_job (only the serial session is a stub): the job's error text names
+    the target (address + serial) with the reason, on EVERY path, and carries no Python class name."""
+
+    MISMATCH = "Серийный номер устройства не совпал с выбранной целью."
+
+    @staticmethod
+    def _entry():
+        return FirmwareEntry(file="MR-02m_1.0.0.0.fw", version="1.0.0.0", signatures=["MR-02m-DI16"],
+                             device="MR-02m", size=1, sha256="", released="", notes="")
+
+    def _drive(self, kind, targets, results, **params_extra):
+        import contextlib
+        from types import SimpleNamespace
+
+        @contextlib.contextmanager
+        def lease(*_a, **_k):
+            yield []
+
+        queue = list(results)
+        calls = []
+
+        def session(*_a, **_k):
+            calls.append(1)
+            return queue.pop(0)
+
+        params = {"port": "COM3", "targets": targets, "target": targets[0], **params_extra}
+        cfg = SimpleNamespace(mplc_stop_services=[])
+        entry = self._entry()
+        patches = [
+            mock.patch.object(runner, "resolve_device_path", lambda *a, **k: "/dev/COM3"),
+            mock.patch.object(runner, "_load_firmware_for_flash", lambda *a, **k: (b"img", "MR-02m-DI16", "1.0", entry)),
+            mock.patch.object(runner, "port_lease", lease),
+            mock.patch.object(runner, "_port_flock", lease),
+            mock.patch.object(runner, "_resolve_flash_route_for_device", lambda *a, **k: (False, None)),
+            mock.patch.object(runner, "device_flash_route", lambda *a, **k: "mp_mr"),
+            mock.patch.object(runner, "_duplicate_modbus_address_on_line", lambda *a, **k: False),
+            mock.patch.object(runner, "_run_bootloader_flash_session", session),
+            mock.patch.object(runner, "_settle_between_batch_devices", lambda *a, **k: None),
+        ]
+        fn = runner.run_flash_batch_job if kind == JobKind.FLASH_BATCH else runner.run_flash_job
+        mgr = JobManager()
+        with contextlib.ExitStack() as stack:
+            for p in patches:
+                stack.enter_context(p)
+            job = mgr.submit(kind, "COM3", params, lambda j, ctx: fn(j, ctx, cfg, None))
+            for _ in range(200):
+                if mgr.get(job.id).state in (JobState.DONE, JobState.ERROR, JobState.CANCELLED):
+                    break
+                time.sleep(0.02)
+        return mgr.get(job.id), len(calls)
+
+    @staticmethod
+    def _targets(*addrs):
+        return [{"address": a, "serial": SERIAL + i, "signature": "MR-02m-DI16"} for i, a in enumerate(addrs)]
+
+    def test_single_target_stop_on_error_names_the_target_without_a_class_name(self) -> None:
+        job, n = self._drive(JobKind.FLASH_BATCH, self._targets(5), [self.MISMATCH], skip_on_error=False)
+        self.assertEqual(job.state, JobState.ERROR)
+        self.assertEqual(job.error, f"Не прошито: адр.5 SN 0x0E0A7530: {self.MISMATCH}")
+        self.assertNotIn("RuntimeError", job.error)
+        self.assertEqual(job.params["errors"], [{"address": 5, "serial": SERIAL, "error": self.MISMATCH}])
+
+    def test_batch_stops_at_the_first_failed_target_and_names_only_it(self) -> None:
+        job, n = self._drive(JobKind.FLASH_BATCH, self._targets(5, 6), [self.MISMATCH, None], skip_on_error=False)
+        self.assertEqual(n, 1, "the second target was flashed after the first failed")
+        self.assertEqual(job.state, JobState.ERROR)
+        self.assertTrue(job.error.startswith("Не прошито: адр.5 SN 0x0E0A7530:"), job.error)
+        self.assertNotIn("адр.6", job.error)
+
+    def test_failure_of_the_second_target_names_the_second(self) -> None:
+        job, n = self._drive(JobKind.FLASH_BATCH, self._targets(5, 6), [None, "boom"], skip_on_error=False)
+        self.assertEqual(n, 2)
+        self.assertEqual(job.state, JobState.ERROR)
+        self.assertEqual(job.error, "Не прошито: адр.6 SN 0x0E0A7531: boom")
+
+    def test_explicit_continue_names_every_failed_target(self) -> None:
+        job, n = self._drive(JobKind.FLASH_BATCH, self._targets(5, 6, 7), ["a", None, "c"], skip_on_error=True)
+        self.assertEqual(n, 3)
+        self.assertEqual(job.state, JobState.ERROR)
+        self.assertEqual(job.error, "Не прошито: адр.5 SN 0x0E0A7530: a; адр.7 SN 0x0E0A7532: c")
+
+    def test_single_flash_kind_names_the_target_too(self) -> None:
+        job, _ = self._drive(JobKind.FLASH, self._targets(5), [self.MISMATCH])
+        self.assertEqual(job.state, JobState.ERROR)
+        self.assertEqual(job.error, f"Не прошито: адр.5 SN 0x0E0A7530: {self.MISMATCH}")
+
+    def test_a_clean_batch_stays_done(self) -> None:
+        job, _ = self._drive(JobKind.FLASH_BATCH, self._targets(5, 6), [None, None], skip_on_error=False)
+        self.assertEqual(job.state, JobState.DONE)
+        self.assertIsNone(job.error)
+
+    def test_a_non_flash_exception_keeps_its_class_name(self) -> None:
+        mgr = JobManager()
+
+        def run_fn(job, ctx):
+            raise OSError("port vanished")
+
+        job = mgr.submit(JobKind.FLASH_BATCH, "COM3", {}, run_fn)
+        for _ in range(100):
+            if mgr.get(job.id).state in (JobState.ERROR, JobState.DONE):
+                break
+            time.sleep(0.02)
+        self.assertEqual(mgr.get(job.id).error, "OSError: port vanished")
+
+
 if __name__ == "__main__":
     unittest.main()

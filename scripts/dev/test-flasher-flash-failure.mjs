@@ -22,30 +22,32 @@ import { fileURLToPath } from 'node:url';
 import { dirname, join } from 'node:path';
 
 const HERE = dirname(fileURLToPath(import.meta.url));
-const SRC = readFileSync(join(HERE, '..', '..', 'www', 'network_config', 'static', 'js', 'flasher.js'), 'utf8');
+const JS_DIR = join(HERE, '..', '..', 'www', 'network_config', 'static', 'js');
+const SRC = readFileSync(join(JS_DIR, 'flasher.js'), 'utf8');
+const I18N = readFileSync(join(JS_DIR, 'i18n.js'), 'utf8');
 
-function extractFn(name) {
-  let start = SRC.indexOf('async function ' + name + '(');
-  if (start < 0) start = SRC.indexOf('function ' + name + '(');
-  if (start < 0) throw new Error('function ' + name + '() not found in flasher.js');
-  const open = SRC.indexOf('{', SRC.indexOf(')', start));
+function extractFn(name, src = SRC) {
+  let start = src.indexOf('async function ' + name + '(');
+  if (start < 0) start = src.indexOf('function ' + name + '(');
+  if (start < 0) throw new Error('function ' + name + '() not found');
+  const open = src.indexOf('{', src.indexOf(')', start));
   let depth = 0;
-  for (let j = open; j < SRC.length; j++) {
-    if (SRC[j] === '{') depth++;
-    else if (SRC[j] === '}' && --depth === 0) return SRC.slice(start, j + 1);
+  for (let j = open; j < src.length; j++) {
+    if (src[j] === '{') depth++;
+    else if (src[j] === '}' && --depth === 0) return src.slice(start, j + 1);
   }
   throw new Error('unbalanced braces extracting ' + name + '()');
 }
-function extractConst(name) {
-  const start = SRC.indexOf('const ' + name);
-  if (start < 0) throw new Error('const ' + name + ' not found in flasher.js');
-  let i = SRC.indexOf('=', start) + 1;
-  while (/\s/.test(SRC[i])) i++;
-  const open = SRC[i], close = open === '[' ? ']' : '}';
+function extractConst(name, src = SRC) {
+  const start = src.indexOf('const ' + name);
+  if (start < 0) throw new Error('const ' + name + ' not found');
+  let i = src.indexOf('=', start) + 1;
+  while (/\s/.test(src[i])) i++;
+  const open = src[i], close = open === '[' ? ']' : '}';
   let depth = 0;
-  for (let j = i; j < SRC.length; j++) {
-    if (SRC[j] === open) depth++;
-    else if (SRC[j] === close && --depth === 0) return SRC.slice(start, SRC.indexOf(';', j) + 1);
+  for (let j = i; j < src.length; j++) {
+    if (src[j] === open) depth++;
+    else if (src[j] === close && --depth === 0) return src.slice(start, src.indexOf(';', j) + 1);
   }
   throw new Error('unbalanced brackets extracting const ' + name);
 }
@@ -64,7 +66,7 @@ const lineParts = [
   extractConst('SIGNATURE_IO_HINTS'), extractConst('FAMILY_TO_PRODUCT'),
   ...['normalizeProductToken', 'normalizeModuleSignature', 'stripBootloaderSignatureSuffix', 'firmwareIdentityMissing', 'isMpModuleSignatureForFirmwareHint',
     'isWirenboardModuleSignature', 'resolveDeviceFlashRoute', 'lineProfileFromScan',
-    'resolveApplicationLineProfile', 'buildFlashTargetFromDevice'].map(extractFn),
+    'resolveApplicationLineProfile', 'buildFlashTargetFromDevice'].map(n => extractFn(n)),
   'return { resolveApplicationLineProfile, buildFlashTargetFromDevice };',
 ];
 const { resolveApplicationLineProfile, buildFlashTargetFromDevice } = new Function(lineParts.join('\n'))();
@@ -87,24 +89,32 @@ check(target.baudrate === 19200 && target.app_line_baud === 19200 && target.app_
   'the flash target carries the scan line in baudrate AND app_line_* (the daemon reads app_line_*)');
 
 // ── FL-02: the end of a flash job ─────────────────────────────────────────
-function makeEnd(snapshot) {
+// The real i18n engine (DICT + REGEX + translateText of the SHIPPED i18n.js); lang 'en' translates, 'ru' is the identity.
+const i18nParts = [
+  extractConst('DICT', I18N), extractConst('REGEX', I18N), extractFn('normalize', I18N), extractFn('translateText', I18N),
+  'return translateText;',
+];
+const translateText = new Function(i18nParts.join('\n'))();
+function makeEnd(snapshot, lang = 'ru') {
+  const tr = (msg) => (lang === 'en' ? translateText(String(msg)) : String(msg));
   const rec = { toasts: [], scans: 0, ports: 0 };
   const parts = [
     "const state = {flashJobId: 'j1', flashIrreversible: true};",
-    extractFn('flashFailureText'), extractFn('onFlashJobEnd'),
+    extractFn('failedTargetsText'), extractFn('flashFailureText'), extractFn('failureToastText'),
+    extractFn('onFlashJobEnd'),
     'return onFlashJobEnd;',
   ];
   const factory = new Function('apiGet', 'clearPersistedJobId', 'hideProgress', 'loadPorts', 'updateGlobalBusyFromPorts',
-    'setFlashButtons', 'toast', 'uiT', 'refreshScanAfterFlash',
+    'setFlashButtons', 'toast', 'uiT', 'refreshScanAfterFlash', 't',
     parts.join('\n'));
   const end = factory(
     async () => { if (snapshot instanceof Error) throw snapshot; return snapshot; },
     () => {}, () => {}, async () => { rec.ports++; }, () => {}, () => {},
-    (msg, type) => rec.toasts.push([msg, type]), (s) => s, async () => { rec.scans++; });
+    (msg, type) => rec.toasts.push([tr(msg), type]), tr, async () => { rec.scans++; }, tr);
   return { end, rec };
 }
-async function run(stateName, snapshot) {
-  const { end, rec } = makeEnd(snapshot);
+async function run(stateName, snapshot, lang = 'ru') {
+  const { end, rec } = makeEnd(snapshot, lang);
   await end(stateName, 'j1');
   return rec;
 }
@@ -128,6 +138,26 @@ check(r.toasts.length === 1 && r.toasts[0][1] === 'error' && !greenDone(r),
 
 r = await run('cancelled', { state: 'cancelled', error: null, params: {} });
 check(r.toasts.length === 1 && r.toasts[0][1] === 'warn' && !greenDone(r), 'a cancelled job is a warning');
+
+// The text the daemon puts in job.error for a failed target (jobs.failed_targets_text): single target AND batch.
+const DAEMON_TEXT = 'Не прошито: адр.5 SN 0x0E0A7530: Нет ответа устройства адр.5: таймаут чтения серийного номера на линиях 115200 N1, 19200 N1. Прошивка не начата, запись не отправлялась. Проверьте скорость линии модуля и адрес.';
+r = await run('error', { state: 'error', error: DAEMON_TEXT, params: {} }, 'ru');
+check(r.toasts.length === 1 && r.toasts[0][0] === DAEMON_TEXT && !/RuntimeError/.test(r.toasts[0][0]),
+  'RU: the toast is the daemon text - address and serial named, no Python class name');
+r = await run('error', { state: 'error', error: DAEMON_TEXT, params: {} }, 'en');
+check(r.toasts.length === 1 && r.toasts[0][0].startsWith('Not flashed: addr 5 SN 0x0E0A7530: No answer from the device at address 5')
+  && !/[А-Яа-яЁё]/.test(r.toasts[0][0]),
+  'EN: the same toast is fully English (the rule translates the parts itself): ' + (r.toasts[0] || [''])[0].slice(0, 90));
+r = await run('error', { state: 'error', error: 'Не прошито: адр.5 SN 0x0E0A7530: Серийный номер устройства не совпал с выбранной целью.; адр.6: Серийный номер загрузчика не совпал с номером приложения.', params: {} }, 'en');
+check(r.toasts.length === 1 && r.toasts[0][0] === 'Not flashed: addr 5 SN 0x0E0A7530: The device serial number does not match the selected target.; addr 6: The bootloader serial number does not match the application serial number.',
+  'EN: a continued batch names every failed target, each reason translated');
+r = await run('done', { state: 'done', error: null, params: { errors: [{ address: 5, serial: 0x0E0A7530, error: 'Серийный номер устройства не совпал с выбранной целью.' }] } }, 'en');
+check(r.toasts.length === 1 && r.toasts[0][0] === 'Not flashed: addr 5 SN 0x0E0A7530: The device serial number does not match the selected target.',
+  'EN: an older daemon (done + params.errors) renders the same target text, translated');
+r = await run('error', { state: 'error', error: 'PortBusyError: порт занят', params: {} }, 'ru');
+check(r.toasts.length === 1 && r.toasts[0][0].startsWith('Прошивка не выполнена:'), 'a non-target job error keeps the «Прошивка не выполнена:» lead');
+check(translateText('Адр.5 не ответил на 115200 N1; пробую линию 19200 N1') === 'Address 5 did not answer on 115200 N1; trying line 19200 N1',
+  'the daemon line-fallback log message is translated');
 
 // ── FL-02: the batch is asked to stop at the first failed target ──────────
 const flashCall = SRC.slice(SRC.indexOf("apiPost('/flash_batch'"));

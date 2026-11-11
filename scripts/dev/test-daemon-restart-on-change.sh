@@ -24,6 +24,12 @@
 #        W4 installed unit differs              -> `… infra start restart`
 #        W5 the other two units in the loop stay `infra` (their restart lives in
 #           their own modules, case B)
+#        W6 the new files are ALREADY on disk and the running process is stale
+#           (verdict of sa02m_daemon_runs_stale_script)   -> `… infra start restart`
+#   F  (behavioural, Linux) the REAL sa02m_daemon_runs_stale_script from scripts/lib.sh against a
+#      real long-lived bash process: untouched script -> fresh; a DIFFERENT script renamed over it
+#      (the new file already on disk) -> stale; an IDENTICAL rewrite (what every install does) ->
+#      fresh; stopped unit / other path -> not stale.
 #   B  (static, comment-stripped) 03-webserver.sh (failure monitor) and
 #      02-network.sh (net-watchdog) capture the signature BEFORE their first
 #      install line, read it again BEFORE the apply and pass `restart` only inside
@@ -94,6 +100,8 @@ else
                     mkdir -p "$(dirname "$dst")"; cp -f "$src" "$dst"
                 }
                 sa02m_svc_apply() { printf '%s\n' "$*" >> "$REC"; }
+                # the verdict of the RUNNING process (case F tests the real function): STALE=1 = it still runs an older script
+                sa02m_daemon_runs_stale_script() { [ "${STALE:-0}" = 1 ]; }
                 eval "$sig_fn"
                 eval "$block"
             ) >/dev/null 2>&1
@@ -123,11 +131,50 @@ else
         [ "$(wd_line w4)" = "sa02m-userspace-watchdog.service infra start restart|" ] \
             && ok "A/W4: an older unit file on the board -> infra start restart" \
             || bad "A/W4: an old unit was applied as '$(wd_line w4)'"
+        # W6: the NEW files are already on disk (a network update, or an earlier build of this version put
+        # them there) while the OLD process still runs: the disk delta is empty, the running process decides.
+        reset_sb; inst_same; STALE=1 run_block w6
+        [ "$(wd_line w6)" = "sa02m-userspace-watchdog.service infra start restart|" ] \
+            && ok "A/W6: new files already on disk, old process still running -> infra start restart (the bench .135 state)" \
+            || bad "A/W6: identical files but a stale running process were applied as '$(wd_line w6)' — the old watchdog keeps running"
         others=$(grep -E '^sa02m-failure-monitor\.service|^net-watchdog\.service' "$T/w3.rec" | tr '\n' '|')
         [ "$others" = "sa02m-failure-monitor.service infra|net-watchdog.service infra|" ] \
             && ok "A/W5: the other two units of the loop stay enable-only here (their own modules restart them, case B)" \
             || bad "A/W5: the loop's other units are applied as '$others'"
     fi
+fi
+
+# ── F: the real stale-process verdict against a real long-lived bash loop ───
+stale_fn=$(awk 'index($0,"sa02m_daemon_runs_stale_script() {")==1{f=1} f{print} f&&/^\}/{exit}' "$LIB")
+if [ -z "$stale_fn" ]; then
+    bad "F: sa02m_daemon_runs_stale_script is missing from $LIB — the install cannot tell a stale running daemon from a fresh one"
+elif [ "$(uname -s)" != Linux ] || [ ! -d /proc/self/fd ]; then
+    printf 'SKIP  F: needs Linux /proc (the installer runs on the board; CI/WSL measure it)\n'
+else
+    FD="$T/fd"; mkdir -p "$FD/bin"
+    printf '#!/bin/bash\nwhile :; do sleep 1; done\n' > "$FD/daemon.sh"
+    printf '#!/bin/sh\n# shim: systemctl show -p MainPID <unit>\necho "MainPID=$(cat "$SHIM_PID_FILE" 2>/dev/null || echo 0)"\n' > "$FD/bin/systemctl"
+    chmod +x "$FD/bin/systemctl"
+    export SHIM_PID_FILE="$FD/pid"
+    bash "$FD/daemon.sh" & dpid=$!
+    printf '%s' "$dpid" > "$SHIM_PID_FILE"
+    sleep 0.3
+    stale() { ( PATH="$FD/bin:$PATH"; eval "$stale_fn"; sa02m_daemon_runs_stale_script test.service "$1" ); }
+    cp "$FD/daemon.sh" "$FD/orig"
+    replace_with() {   # $1 = source file: rename a NEW copy over the script, as sa02m_atomic_install does
+        cp "$1" "$FD/daemon.sh.new"; chmod 0755 "$FD/daemon.sh.new"; mv -f "$FD/daemon.sh.new" "$FD/daemon.sh"
+    }
+    if stale "$FD/daemon.sh"; then bad "F1: an untouched script reads as stale"; else ok "F1: untouched script -> the running process is fresh"; fi
+    replace_with "$FD/orig"
+    if stale "$FD/daemon.sh"; then bad "F3: an identical rewrite (what every install does) reads as stale — every refresh would bounce the daemon"; else ok "F3: an identical atomic rewrite -> still fresh (no bounce on every refresh)"; fi
+    { cat "$FD/orig"; printf '# the 1.0.7.36 heal-only code
+'; } > "$FD/newer"
+    replace_with "$FD/newer"
+    if stale "$FD/daemon.sh"; then ok "F2: a DIFFERENT script renamed over the running one (new file already on disk) -> stale"; else bad "F2: the new file is already on disk, the old process still runs, and the verdict is 'fresh' (bench .135)"; fi
+    if stale "$FD/other-script"; then bad "F5: an unrelated path reads as stale"; else ok "F5: a path the process does not run -> not stale"; fi
+    printf '0' > "$SHIM_PID_FILE"
+    if stale "$FD/daemon.sh"; then bad "F4: a stopped unit reads as stale (nothing to restart)"; else ok "F4: a stopped unit (MainPID 0) -> not stale"; fi
+    kill "$dpid" 2>/dev/null; wait "$dpid" 2>/dev/null
 fi
 
 # ── B: failure monitor (03-webserver.sh) and net-watchdog (02-network.sh) ──
@@ -141,7 +188,7 @@ check_site() {   # <label> <file> <sigvar-prefix> <first-install-ERE> <apply-uni
     lrestart=$(grep -nE "sa02m_svc_apply ${unit} infra start restart\$" <<<"$txt" | head -n 1 | cut -d: -f1)
     if [ -n "$l0" ] && [ -n "$lfirst" ] && [ "$l0" -lt "$lfirst" ] && [ -n "$l1" ] && [ -n "$lrestart" ] \
        && [ "$l1" -lt "$lrestart" ] && [ -n "$lapply" ] \
-       && text_has "$txt" "if [ \"\$${p}_sig0\" != \"\$${p}_sig1\" ]; then"; then
+       && text_has "$txt" "if [ \"\$${p}_sig0\" != \"\$${p}_sig1\" ] || sa02m_daemon_runs_stale_script ${unit} "; then
         ok "B/$label: signature captured (line $l0) before the first install line ($lfirst), re-read (line $l1), '$unit … infra start restart' only in the != branch"
     else
         bad "B/$label: $f does not restart $unit when its script/unit changed (sig0=${l0:-none} first-install=${lfirst:-none} sig1=${l1:-none} restart-line=${lrestart:-none} plain-apply=${lapply:-none})"
@@ -149,6 +196,7 @@ check_site() {   # <label> <file> <sigvar-prefix> <first-install-ERE> <apply-uni
 }
 check_site "failure-monitor" "$WEB" _fm 'sa02m_atomic_install -m 755 "\$ETC_DIR/sa02m-failure-monitor\.sh"' sa02m-failure-monitor.service
 check_site "net-watchdog" "$NET" _nw 'sa02m_atomic_install -m 755 "\$ETC_DIR/net-watchdog\.sh"' net-watchdog.service
+check_site "eth0-led-poll" "$NET" _lp 'sa02m_atomic_install -m 755 "\$ETC_DIR/sa02m-eth0-led-poll\.sh"' sa02m-eth0-led-poll.service
 
 # ── C: the GitHub OTA manifest and the offline packer, in step ─────────────
 # restart_if_active (not restart_if_changed: its validator takes directory
