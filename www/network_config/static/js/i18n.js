@@ -1085,6 +1085,8 @@
     'Загрузочное ядро обновлено': 'Boot kernel refreshed',
     'Неверное действие': 'Invalid action',
     'Не удалось записать ядро на загрузочный раздел': 'Failed to write the kernel to the boot partition',
+    'Образ ядра повреждён: контрольная сумма не совпадает': 'Kernel image is damaged: checksum mismatch',
+    'Помощник не ответил вовремя': 'The helper did not answer in time',
     'нет доступа': 'no access',
     'Ethernet № 1': 'Ethernet #1',
     'Ethernet № 2': 'Ethernet #2',
