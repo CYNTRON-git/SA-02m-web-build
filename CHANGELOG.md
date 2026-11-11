@@ -10,7 +10,7 @@
 ### Delivery
 
 - **Full installation only** (`install.sh`, including `--refresh`): automatic nginx restart (new drop-in `nginx.service.d/sa02m-restart.conf`) and the new restart limits of `fcgiwrap.service`.
-- **Network update (OTA, offline package) and full installation**, not www-only: the Modbus-to-MQTT bridge and telemetry, the scenario engine, Alice, the flasher, the cloud agent, the port coordinator, the helpers in `/usr/local/sbin` (service control, kernel switch, bridge configuration writer), the nginx site (checked with `nginx -t`) and `sa02m-rs485-roster.service`. Telemetry, scenarios and a running bridge are restarted by the update; the userspace watchdog, the failure monitor and the cloud agent apply the new behaviour after their service or the board restarts.
+- **Network update (OTA, offline package) and full installation**, not www-only: the Modbus-to-MQTT bridge and telemetry, the device archive, the scenario engine, Alice, the flasher, the cloud agent, the port coordinator, the helpers in `/usr/local/sbin` (service control, kernel switch, bridge configuration writer), the nginx site (checked with `nginx -t`) and `sa02m-rs485-roster.service`. Telemetry, the device logger, scenarios and a running bridge are restarted by the update; the userspace watchdog, the failure monitor and the cloud agent apply the new behaviour after their service or the board restarts.
 - **Every path, www-only included**: CGI endpoints, panel pages and scripts, the login library, the clock helper `sa02m-clock-set.sh` with its new `sudoers` grant, and the network file writer.
 
 ### Modbus and MQTT
@@ -24,6 +24,15 @@
 - **MQTT tab: the `mqtt_status.cgi` response no longer carries the external broker password** (the `mqtt_password` field is removed from the poll). The password is shown on click through a separate POST with session and CSRF checks, not cached. A tab opened before the update shows "—" until the page is reloaded.
 - The bridge configuration `/etc/sa02m-modbus-mqtt.yaml` is written atomically; a power cut during a save no longer leaves an empty file.
 - Alice: in a group command only the capability whose publish failed is marked as an error; relays that did switch are reported as done.
+
+### Devices
+
+- **The reading archive is written to disk in batches every 30 s**, in one transaction on one connection instead of opening and closing the database several times per tick, to reduce wear of the built-in eMMC. The interval is `STAND_DEVICES_FLUSH_EVERY_S`.
+- The right edge of charts, exports and the event journal appears up to ~35 s late. Live card values are unaffected.
+- A power cut loses up to 30 s of archive; a normal service stop writes what is buffered.
+- The legacy Carel table `carel_samples_v1` is dropped on the first start of the new logger; rolling back to 1.0.6.40 with it is no longer possible.
+- The write rate on a board is not measured yet: the reduction is shown on a model; the bench measurement is separate.
+- `sa02m_devices` Python API: `insert_sample`, `insert_mr_sample`, `insert_carel_sample`, `insert_mtd_sample`, `purge_old`, `detect_ce_events`, `detect_carel_events` and `purge_events` take a new optional `conn` keyword; existing calls work as before.
 
 ### System and watchdog
 
@@ -52,7 +61,7 @@
 
 ### Verification
 
-- New registry checks: `mqtt-config-apply-atomic`, `mqtt-status-secret`, `userspace-watchdog-probe`, `kernel-select`, `initd-bounded`, `apply-time`, `js-unit-forms-time-prefill`, `no-timeout-on-shell-function`, `clock-set-helper`, `status-cache`, `json-escape-equiv`, `cgi-timeouts`; extended `iface-conf-write`, `sudoers-pin-contract`, `rs485-roster-consumer`, `web-auth-behaviour` and the unit suites of the bridge, scenarios, Alice, the flasher, the cloud agent and the port coordinator.
+- New registry checks: `mqtt-config-apply-atomic`, `mqtt-status-secret`, `userspace-watchdog-probe`, `kernel-select`, `initd-bounded`, `apply-time`, `js-unit-forms-time-prefill`, `no-timeout-on-shell-function`, `clock-set-helper`, `status-cache`, `json-escape-equiv`, `cgi-timeouts`; extended `iface-conf-write`, `sudoers-pin-contract`, `rs485-roster-consumer`, `web-auth-behaviour` and the unit suites of the bridge, scenarios, Alice, the flasher, the cloud agent, the port coordinator and the device archive.
 
 ## 1.0.7.35 - Select Fast Modbus channels for serial templates (November 2026)
 
