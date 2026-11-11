@@ -477,6 +477,7 @@ chmod 750 "$mnt/etc/sa02m-cloud"
 rm -f "$mnt/etc/sa02m-cloud/device_secret" \
       "$mnt/etc/sa02m-cloud/frpc.toml" \
       "$mnt/etc/sa02m-cloud"/frpc.toml.bak* \
+      "$mnt/etc/sa02m-cloud"/.frpc.toml.tmp.* \
       "$mnt/etc/sa02m-cloud/pair_request" \
       "$mnt/etc/sa02m-cloud/activation_token"
 cat > "$mnt/etc/sa02m-cloud/agent.conf" <<'EOF'

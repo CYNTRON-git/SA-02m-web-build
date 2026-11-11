@@ -2,7 +2,7 @@
 # Gate for the image-identity reset of the Alice controller enrollment (1.0.6.20),
 # of the HomeKit bridge identity (Part H, contract §7) and of the Home Connect
 # sign-in (Part C, contract §8).
-# comment-mutation-proof-exempt: behavioural harness - every guarantee is asserted by RUNNING the shipped code in a sandbox (files written, shim invocations, exit codes), so a commented-out line changes the measured behaviour instead of hiding behind a needle grep; its source-text greps are extraction/retarget sanity guards on its own scratch copy, which abort the run when the shipped block moves.
+# comment-mutation-proof-exempt: behavioural harness - every guarantee is asserted by RUNNING the shipped code in a sandbox (files written, shim invocations, exit codes), so a commented-out line changes the measured behaviour instead of hiding behind a needle grep; its source-text greps are extraction/retarget sanity guards on its own scratch copy, which abort the run when the shipped block moves. Exception, stated so the reason stays true: A8b (the cloud frpc.toml sidecar rows, review M-5) is a static pin on the six clear-lists plus a real glob expansion; its RED is measured by leaving one site's row out (STREAM_SRC / AUTORUN_FEL_SRC overrides), not by a comment-out case, because a # inside a backslash-continued rm turns the rest of the list into commands instead of disabling one row.
 #
 # The defect it pins is a CROSS-TENANT one: the gateway identifies a controller
 # by its mTLS DN alone, so an image captured from a LINKED donor makes every
@@ -47,6 +47,7 @@
 #   remove /var/lib/sa02m-alice from cleanup-donor.sh's DENY_TREES        ... A5
 #   delete the CALL at any site, leaving the body intact                  ... A1c
 #   drop a *.tmp / .alice-* sidecar row from a clear-list                 ... A2/B
+#   drop the .frpc.toml.tmp.* row from any of the six cloud clear-lists    ... A8b
 #   widen a sidecar glob to *.pem* or *                                   ... A3c/B
 #   drop the gateway_probe.json / gateway_probe.lock rows from one wipe   ... A2/B
 #     (the 2026-10-06 capture died on that cache; a path-set pin alone
@@ -435,6 +436,49 @@ for f in "$CLOUD_RESET" "$STREAM_SRC" "$PATCH_SRC" "$AUTORUN_SRC" \
     grep -q 'device_secret' "$f" || { cloud_ok=0; bad "(A8) ${f#"$HERE"/} lost its cloud enrollment wipe (the twin defect, fixed 2026-07-31)"; }
 done
 [ "$cloud_ok" -eq 1 ] && ok "(A8) all six cloud-wipe sites intact"
+
+# ── A8b — the cloud agent's frpc.toml atomic-write sidecar (review M-5) ───
+# opt/sa02m-cloud-agent writes frpc.toml (frp token + device secret) through a
+# mkstemp file `.frpc.toml.tmp.XXXXXX` in /etc/sa02m-cloud and renames it; a
+# crash in between strands the whole credential under that name. Every cloud
+# clear site must carry the glob BY SHAPE, and the glob is tied to the writer's
+# own prefix so the two cannot drift. Each site's glob is expanded for real
+# against a seeded directory: it must take the sidecars and nothing else.
+AGENT_PY="$HERE/opt/sa02m-cloud-agent/sa02m-cloud-agent.py"
+if [ -s "$AGENT_PY" ] && grep -qF 'prefix=".%s.tmp." % os.path.basename(path)' "$AGENT_PY"; then
+    ok "(A8b) the agent's writer still names its sidecar .<basename>.tmp.* (the shape the sites glob)"
+else
+    bad "(A8b) the agent's atomic writer no longer uses prefix=\".%s.tmp.\" % basename — the clear sites' .frpc.toml.tmp.* glob is pinned to it"
+fi
+sc_dir="$(mktemp -d)"
+for s in .frpc.toml.tmp.AbC123 .frpc.toml.tmp.x; do : > "$sc_dir/$s"; done
+for s in frpc.toml frpc.toml.bak agent.conf device_secret pair_request ca.crt.pem .other.tmp.1; do : > "$sc_dir/$s"; done
+sc_ok=1; sc_sites=0
+for f in "$CLOUD_RESET" "$STREAM_SRC" "$PATCH_SRC" "$AUTORUN_SRC" \
+         "$AUTORUN_FEL_SRC" "$SSH_FLASH_SRC"; do
+    toks="$(sed 's/#.*$//' "$f" | tr -d '"' | grep -oE '[^[:space:]]*sa02m-cloud[^[:space:]]*/\.frpc\.toml\.tmp\.\*|CLOUD_DIR/\.frpc\.toml\.tmp\.\*|CLOUD_DIR\.frpc\.toml\.tmp\.\*' | sort -u)"
+    if [ -z "$toks" ]; then
+        bad "(A8b) ${f#"$HERE"/}: no .frpc.toml.tmp.* row in its cloud clear-list — a crash-stranded frpc.toml (token + device secret) would clone"
+        sc_ok=0; continue
+    fi
+    sc_sites=$((sc_sites + 1))
+    # Only the shape after the directory matters here (the directory is the
+    # cloud dir at every site); expand it against the seeded dir.
+    hits="$(cd "$sc_dir" && for h in .frpc.toml.tmp.*; do [ -e "$h" ] && printf '%s\n' "$h"; done | sort | tr '\n' ' ')"
+    if [ "$hits" != ".frpc.toml.tmp.AbC123 .frpc.toml.tmp.x " ]; then
+        bad "(A8b) the .frpc.toml.tmp.* shape expands to '$hits' in the seeded dir (expected exactly the two sidecars)"
+        sc_ok=0
+    fi
+done
+rm -rf "$sc_dir"
+[ "$sc_sites" -eq 6 ] && [ "$sc_ok" -eq 1 ] && ok "(A8b) all six cloud clear sites remove .frpc.toml.tmp.* (real expansion takes the two sidecars, not frpc.toml / agent.conf / ca.crt.pem)"
+[ "$sc_sites" -ne 6 ] && bad "(A8b) only $sc_sites/6 cloud clear sites carry the frpc.toml sidecar row"
+# The contract's clear-list names it too, or the six copies lose their anchor.
+if grep -qF '.frpc.toml.tmp.*' "$CONTRACT"; then
+    ok "(A8b) the contract §6 clear-list names .frpc.toml.tmp.*"
+else
+    bad "(A8b) $CONTRACT §6 does not list .frpc.toml.tmp.* — the six sites have no documented home for the row"
+fi
 
 echo
 echo "B. behavioural — the shipped wipes against a sandboxed linked donor"

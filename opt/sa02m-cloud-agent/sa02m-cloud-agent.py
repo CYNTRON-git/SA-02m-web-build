@@ -450,6 +450,31 @@ def _atomic_write_private(path: str, content: str):
             os.close(dfd)
 
 
+def remove_stale_frpc_tmps(path: str = FRPC_CONFIG) -> int:
+    """Delete the sidecars of THIS writer (`.frpc.toml.tmp.*` in the config's
+    directory — the mkstemp names of `_atomic_write_private`) left by a crash
+    between mkstemp and os.replace. They carry the full frpc.toml, token and
+    device secret included, and would otherwise outlive every identity wipe and
+    ride into a cloned image (review M-5; docs/contracts/image-identity-reset.md
+    §6 lists the same glob for the image clear sites). Returns how many went."""
+    directory = os.path.dirname(path) or "."
+    prefix = ".%s.tmp." % os.path.basename(path)
+    removed = 0
+    try:
+        names = os.listdir(directory)
+    except OSError:
+        return 0
+    for name in names:
+        if not name.startswith(prefix):
+            continue
+        with contextlib.suppress(OSError):
+            os.remove(os.path.join(directory, name))
+            removed += 1
+    if removed:
+        log.info("removed %d stale frpc.toml temp file(s) in %s", removed, directory)
+    return removed
+
+
 def write_frpc_config(frpc: dict, path: str = FRPC_CONFIG):
     # Rendered (and validated) BEFORE anything touches the disk: a refused
     # profile raises here and the live config stays as it was. The file carries
@@ -468,11 +493,13 @@ def migrate_frpc_login_fail_exit(path: str = FRPC_CONFIG) -> bool:
     already-enrolled board kept a frpc that exits on every failed login. Only
     that one line is added — nothing else of the file is touched. Returns True
     when the file was changed (frpc reads its config at start, so the caller
-    restarts the unit once). A missing or unreadable file is a no-op."""
+    restarts the unit once). A missing, unreadable or non-UTF-8 file is a no-op."""
     try:
         with open(path, encoding="utf-8", newline="") as f:
             content = f.read()
-    except OSError:
+    except (OSError, ValueError):
+        # ValueError covers UnicodeDecodeError: a foreign or damaged file must
+        # never crash-loop the agent (review L-2) — it is simply left alone.
         return False
     if _LOGIN_FAIL_EXIT_RE.search(content):
         return False
@@ -672,8 +699,11 @@ def binding_files():
 def wipe_cloud_binding() -> dict:
     """Erase the two identity files. Idempotence, the `absent` report and the
     raise-on-any-other-OSError rule are the core's (`binding_core.wipe_binding`);
-    this door contributes only the clear-list above."""
-    return binding_core.wipe_binding(binding_files)
+    this door contributes only the clear-list above (plus the stale temp
+    sidecars of the frpc.toml writer, which carry the same secrets)."""
+    result = binding_core.wipe_binding(binding_files)
+    remove_stale_frpc_tmps(FRPC_CONFIG)
+    return result
 
 
 def _status_state() -> str:
@@ -1214,6 +1244,7 @@ def main():
     # A board that stood down before this (re)boot: /run is empty, but
     # agent.conf carries the durable marker — put the reason back on the card.
     restore_stand_down_status(cfg)
+    remove_stale_frpc_tmps(FRPC_CONFIG)
 
     while True:
         if not cfg["cloud"].getboolean("enrolled"):

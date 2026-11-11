@@ -795,6 +795,53 @@ class LoginFailExitMigrationTest(unittest.TestCase):
             agent.write_frpc_config(_profile(80), path=target)
             self.assertTrue(os.path.getsize(target) > 0)
 
+    def test_non_utf8_file_is_left_alone_not_a_crash(self):
+        # L-2: UnicodeDecodeError is a ValueError, not an OSError; it used to
+        # escape ensure_frpc_running and crash-loop the agent.
+        with tempfile.TemporaryDirectory() as d:
+            target = os.path.join(d, "frpc.toml")
+            raw = b'# \xff\xfe cp1251 comment \xcf\xf0\xe8\n[[proxies]]\n'
+            with open(target, "wb") as f:
+                f.write(raw)
+            self.assertFalse(agent.migrate_frpc_login_fail_exit(target))
+            with open(target, "rb") as f:
+                self.assertEqual(f.read(), raw, "the foreign file must not be touched")
+
+    def test_stale_tmp_sidecars_of_the_writer_are_removed_and_only_those(self):
+        # M-5: a crash between mkstemp and os.replace strands the full
+        # frpc.toml (token + device secret) under .frpc.toml.tmp.XXXXXX.
+        with tempfile.TemporaryDirectory() as d:
+            target = os.path.join(d, "frpc.toml")
+            for n in (".frpc.toml.tmp.AbC123", ".frpc.toml.tmp.x", "frpc.toml",
+                      "agent.conf", ".other.tmp.1", "frpc.toml.bak"):
+                with open(os.path.join(d, n), "w") as f:
+                    f.write("secret")
+            self.assertEqual(agent.remove_stale_frpc_tmps(target), 2)
+            self.assertEqual(sorted(os.listdir(d)),
+                             [".other.tmp.1", "agent.conf", "frpc.toml", "frpc.toml.bak"])
+            self.assertEqual(agent.remove_stale_frpc_tmps(target), 0)
+        self.assertEqual(agent.remove_stale_frpc_tmps("/nonexistent-dir/frpc.toml"), 0)
+
+    def test_stand_down_wipe_also_removes_the_stale_tmp(self):
+        with tempfile.TemporaryDirectory() as d:
+            target = os.path.join(d, "frpc.toml")
+            secret = os.path.join(d, "device_secret")
+            for n in (target, secret, os.path.join(d, ".frpc.toml.tmp.Zz9")):
+                with open(n, "w") as f:
+                    f.write("secret")
+            saved = (agent.FRPC_CONFIG, agent.DEVICE_SECRET_FILE)
+            agent.FRPC_CONFIG, agent.DEVICE_SECRET_FILE = target, secret
+            try:
+                agent.wipe_cloud_binding()
+            finally:
+                agent.FRPC_CONFIG, agent.DEVICE_SECRET_FILE = saved
+            self.assertEqual(os.listdir(d), [], "the binding wipe left a credential sidecar")
+
+    def test_writer_names_its_sidecar_as_the_image_clear_sites_expect(self):
+        # The image clear sites (tools/imaging/*.sh) glob `.frpc.toml.tmp.*`;
+        # the gate alice-image-identity (A8b) pins the same prefix to this source.
+        self.assertIn('prefix=".%s.tmp." % os.path.basename(path)', AGENT_SOURCE)
+
     def test_ensure_frpc_running_migrates_and_restarts_an_active_unit_once(self):
         with tempfile.TemporaryDirectory() as d:
             target = os.path.join(d, "frpc.toml")

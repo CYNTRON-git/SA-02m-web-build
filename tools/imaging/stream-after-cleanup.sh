@@ -77,6 +77,7 @@ wipe_cloud_enrollment() {
     rm -f /etc/sa02m-cloud/device_secret \
           /etc/sa02m-cloud/frpc.toml \
           /etc/sa02m-cloud/frpc.toml.bak* \
+          /etc/sa02m-cloud/.frpc.toml.tmp.* \
           /etc/sa02m-cloud/pair_request \
           /etc/sa02m-cloud/activation_token \
           /run/sa02m-cloud-status.json

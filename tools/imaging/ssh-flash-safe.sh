@@ -134,6 +134,7 @@ wipe_cloud_enrollment() {
     rm -f "$root/etc/sa02m-cloud/device_secret" \
           "$root/etc/sa02m-cloud/frpc.toml" \
           "$root/etc/sa02m-cloud"/frpc.toml.bak* \
+          "$root/etc/sa02m-cloud"/.frpc.toml.tmp.* \
           "$root/etc/sa02m-cloud/pair_request" \
           "$root/etc/sa02m-cloud/activation_token"
     printf "%s\n" \
