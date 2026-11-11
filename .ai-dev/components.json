@@ -24,10 +24,10 @@
     },
     {
       "name": "dtv",
-      "root": "../cyntron-dtv",
-      "path": "C:/Users/admin/Downloads/cyntron-dtv",
-      "repo": "CYNTRON-git/cyntron-dtv",
-      "description": "DTV temperature/humidity sensor firmware. READ-REFERENCE for BACnet MS/TP planning (Operator 2026-08-05): carries BACNET_VARIABLES.txt and the device's BACnet object model/scripts."
+      "root": "../DTV-RS-485",
+      "path": "C:/Users/perev/Downloads/DTV-RS-485",
+      "repo": "CYNTRON-git/DTV-RS-485",
+      "description": "DTV temperature/humidity sensor firmware. READ-REFERENCE: the register map and the Fast Modbus event table (MODBUS_VARIABLES.txt), the wb-mqtt-serial template (integrations/wirenboard/) and BACNET_VARIABLES.txt. Read the released tree through `git show origin/main:<path>` - the working copy at the repo root can sit on a stale branch. Root re-pointed from the dead ../cyntron-dtv to the real checkout by the Operator 2026-11-11 (whole-project audit); BACnet MS/TP planning use dates from 2026-08-05."
     },
     {
       "name": "ce02m3",
@@ -69,7 +69,7 @@
     { "name": "vplc", "root": "../vPLC", "path": "C:/Users/perev/Downloads/vPLC" },
     { "name": "cloud", "root": "../cloud", "path": "C:/Users/admin/Downloads/cloud" },
     { "name": "mr02m", "root": "../MR-02m", "path": "C:/Users/admin/Downloads/MR-02m" },
-    { "name": "dtv", "root": "../cyntron-dtv", "path": "C:/Users/admin/Downloads/cyntron-dtv" },
+    { "name": "dtv", "root": "../DTV-RS-485", "path": "C:/Users/perev/Downloads/DTV-RS-485" },
     { "name": "ce02m3", "root": "../CE-02m-3", "path": "C:/Users/admin/Downloads/CE-02m-3" },
     { "name": "mr02m-flasher", "root": "../MR-02m-flasher", "path": "C:/Users/admin/Downloads/MR-02m-flasher" },
     { "name": "hardpy_tests", "root": "../hardpy_tests", "path": "C:/Users/admin/Downloads/hardpy_tests" },
