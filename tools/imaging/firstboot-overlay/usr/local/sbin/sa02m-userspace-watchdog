@@ -13,6 +13,11 @@
 #   * fail-счётчик каждой проверки независим. Если у любой проверки
 #     счётчик достигает FAIL_THRESHOLD подряд — выполняется
 #     `sa02m_reboot()` (попытки graceful → force → отпуск /dev/watchdog).
+#     ИСКЛЮЧЕНИЕ: проверка `cgi` только лечит — перезапуск fcgiwrap, но
+#     НИКОГДА не перезагрузка платы (решение Оператора 2026-11-11): стойкая
+#     поломка слоя CGI (битая lib_web_auth.sh, потерянный exec-бит) не лечится
+#     перезапуском веб-сервисов, а перезагрузка прерывала бы CODESYS/MPLC4
+#     каждые ~13 мин; плата живёт без панели.
 #   * Любой ok сбрасывает свой счётчик.
 #
 # Логи:
@@ -45,6 +50,11 @@ SA02M_WEB_PORT_LIB="${SA02M_WEB_PORT_LIB:-/usr/local/lib/sa02m-web-port-lib.sh}"
 # Restart a dead fcgiwrap / nginx at this many consecutive failures of their
 # check and again at twice that, before FAIL_THRESHOLD reboots the board.
 CGI_RESTART_AT="${CGI_RESTART_AT:-6}"
+# A probe that TIMES OUT (curl rc 28) is a busy fcgiwrap pool, not a dead layer:
+# a restart would kill an in-flight offline-update upload (600 s) or backup
+# stream (300 s). It is healed only after this many consecutive timeouts
+# (90 x 10 s = 15 min, longer than any single bounded request).
+CGI_BUSY_RESTART_AT="${CGI_BUSY_RESTART_AT:-90}"
 NET_IFACE="${NET_IFACE:-eth0}"
 # REQUIRED_PROCS — отсутствие любого из них на FAIL_THRESHOLD подряд → reboot.
 # Кладём сюда ТОЛЬКО критичную для управления плитой инфраструктуру.
@@ -206,13 +216,20 @@ check_http() {
 # session must come back 401 with body `unauthorized` (or 204) — only fcgiwrap
 # running the CGI produces that; nginx alone gives 502/504. This probe reads the
 # real HTTP status (no -f: a 401 is the healthy answer here) and the body.
+# A probe TIMEOUT (curl rc 28) answers "busy" and is not a failure of this
+# check: the pool may only be saturated by long requests (CGI_BUSY_RESTART_AT).
+# Seam: auth_check.cgi + the nginx /cgi-bin/ route must keep answering 401
+# `unauthorized` without a session; the shipped pair is executed by
+# scripts/dev/test-userspace-watchdog.sh case A6.
 check_cgi() {
-    local url=$1 out code body
+    local url=$1 out code body rc
     if ! command -v curl >/dev/null 2>&1; then
         echo "no-curl"
         return 0
     fi
     out=$(curl -sS --max-time 4 -w '\n%{http_code}' "$url" 2>/dev/null)
+    rc=$?
+    [ "$rc" -eq 28 ] && { echo "busy"; return 0; }
     code=${out##*$'\n'}
     body=${out%$'\n'*}
     case "$code" in
@@ -301,10 +318,16 @@ sa02m_reboot() {
 
 # ───────────────────────────── service healing ─────────────────────────────
 # A dead fcgiwrap or nginx is a one-service fault: restart that service first
-# (at CGI_RESTART_AT and 2*CGI_RESTART_AT consecutive failures); the board is
-# rebooted only if FAIL_THRESHOLD is still reached after that.
+# (at CGI_RESTART_AT and 2*CGI_RESTART_AT consecutive failures); for `procs` the
+# board is rebooted if FAIL_THRESHOLD is still reached after that. The `cgi`
+# check never reboots: after the first two heals it restarts fcgiwrap again
+# every FAIL_THRESHOLD failures.
 heal_due() {
     [ "$1" -eq "$CGI_RESTART_AT" ] || [ "$1" -eq $(( 2 * CGI_RESTART_AT )) ]
+}
+
+heal_cgi_due() {
+    heal_due "$1" || { [ "$1" -gt $(( 2 * CGI_RESTART_AT )) ] && [ $(( $1 % FAIL_THRESHOLD )) -eq 0 ]; }
 }
 
 heal_fcgiwrap() {
@@ -321,18 +344,33 @@ heal_nginx() {
 
 # ───────────────────────────── main loop ──────────────────────────────────
 declare -A FAIL_COUNT
+CGI_BUSY_COUNT=0
 
 run_check() {
     local name=$1 result status
     shift
     result=$("$@")
     status=$?
+    if [ "$name" = cgi ]; then
+        if [ "$result" = busy ]; then
+            CGI_BUSY_COUNT=$(( CGI_BUSY_COUNT + 1 ))
+            [ "$CGI_BUSY_COUNT" -eq 1 ] && log "check cgi: probe timed out - pool busy, not restarting yet [busy=1/${CGI_BUSY_RESTART_AT}]"
+            if [ "$CGI_BUSY_COUNT" -eq "$CGI_BUSY_RESTART_AT" ]; then
+                heal_fcgiwrap "busy=${CGI_BUSY_COUNT}"
+                CGI_BUSY_COUNT=0
+            fi
+        else
+            CGI_BUSY_COUNT=0
+        fi
+    fi
     if [ "$status" -ne 0 ]; then
         FAIL_COUNT["$name"]=$(( ${FAIL_COUNT["$name"]:-0} + 1 ))
+        # Heal-only (Operator 2026-11-11): a cgi failure alone never reaches the
+        # reboot below. One line on purpose — the comment-out proof pins it.
+        [ "$name" = cgi ] && { log "check ${name}: FAIL (${result}) [count=${FAIL_COUNT[$name]}, heal-only: never reboots]"; heal_cgi_due "${FAIL_COUNT[$name]}" && heal_fcgiwrap "${FAIL_COUNT[$name]}"; return 0; }
         log "check ${name}: FAIL (${result}) [count=${FAIL_COUNT[$name]}/${FAIL_THRESHOLD}]"
         if heal_due "${FAIL_COUNT[$name]}"; then
             case "$name:$result" in
-                cgi:*) heal_fcgiwrap "${FAIL_COUNT[$name]}" ;;
                 procs:*nginx*) heal_nginx "${FAIL_COUNT[$name]}" ;;
             esac
         fi
