@@ -29,12 +29,14 @@ DST=/etc/sa02m-modbus-mqtt.yaml
 MAX_BYTES=1048576   # a bridge config is a few KB; refuse anything absurd
 
 WORK=""
+TMP_DST=""
 # `return 0` is load-bearing: an EXIT trap whose last command fails makes THAT
 # status the script's exit status, so a bare `[ -n "$WORK" ] && rm` turned every
 # `exit 2` refusal into an exit 1 (caught by running the refusal matrix, not by
 # reading). The documented refusal code must survive the cleanup.
 cleanup() {
     if [ -n "$WORK" ]; then rm -rf -- "$WORK"; fi
+    if [ -n "$TMP_DST" ]; then rm -f -- "$TMP_DST"; fi
     return 0
 }
 trap cleanup EXIT
@@ -88,5 +90,17 @@ if [ "$(wc -c <"$SAFE_SRC")" -ge "$MAX_BYTES" ]; then
     exit 2
 fi
 
-install -m 0660 -o root -g www-data "$SAFE_SRC" "$DST"
-sync
+# Land the live config by tmp + fsync + rename-over in the destination's own
+# directory (same filesystem), never by `install` straight onto $DST: install
+# removes/truncates the live file and then fills it, so a power cut in between
+# left the bridge with an empty config (audit 2026-11-11 A5-06). The same idiom
+# as scripts/lib.sh sa02m_atomic_install, repeated here on purpose (header).
+TMP_DST=$(mktemp /etc/.sa02m-modbus-mqtt.yaml.XXXXXX) || {
+    echo "ERROR: cannot create a temporary file next to $DST" >&2
+    exit 1
+}
+install -m 0660 -o root -g www-data "$SAFE_SRC" "$TMP_DST"
+sync -- "$TMP_DST" 2>/dev/null || sync
+mv -f -- "$TMP_DST" "$DST"
+TMP_DST=""
+sync -- /etc 2>/dev/null || sync
