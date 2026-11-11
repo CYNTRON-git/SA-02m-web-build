@@ -39,6 +39,12 @@ DTV_DETECT_RETRY_S = 3.0
 DTV_EXT_TEMP_SETTLE_S = 10.0
 # Input 6 with an NTC10k type (HR6 1..4) and the probe open: -55.0 C.
 DTV_EXT_TEMP_OPEN_NTC_RAW = 64986
+# Input 6 fault markers (DTV team decision for firmware 1.0.2.17), NTC and
+# Pt1000 alike: -9999 open circuit, +9999 short circuit. +-999.9 C is no
+# measurement for any sensor type (Pt1000 ends at +850 C), so they need no
+# firmware version (plan fix-1.0.7.37 A17).
+DTV_EXT_TEMP_MARKERS = {0xD8F1: "open circuit (raw -9999)",
+                        0x270F: "short circuit (raw 9999)"}
 DTV_DETECT_EMPTY_FALLBACK = 5
 
 
@@ -256,6 +262,9 @@ class DTVPoller(_DtvCeMixin, DevicePoller):
         # which a zero on Input 6 is the settling input, not a reading.
         self._ext_temp_mode: int | None = None
         self._ext_temp_hold_until = 0.0
+        # The fault marker last logged for Input 6 (None = measuring): the
+        # journal names a cause once per change, not once per poll.
+        self._ext_temp_fault: str | None = None
 
     def _note_ext_temp_mode(self, mode: int) -> None:
         if self._ext_temp_mode is not None and mode != self._ext_temp_mode:
@@ -423,9 +432,17 @@ class DTVPoller(_DtvCeMixin, DevicePoller):
         if reg in (19, 20) and version is None:
             self.pub.pub_error(self.device_id, name, "r")
             return
-        if reg == 6 and self._ext_temp_unreadable(raw, quality):
-            self.pub.pub_error(self.device_id, name, "r")
-            return
+        if reg == 6:
+            fault = DTV_EXT_TEMP_MARKERS.get(raw & 0xFFFF)
+            if fault is not None:
+                if fault != self._ext_temp_fault:
+                    self.log.warning("temp_ext: external sensor %s", fault)
+                    self._ext_temp_fault = fault
+                self.pub.pub_error(self.device_id, name, "r")
+                return
+            if self._ext_temp_unreadable(raw, quality):
+                self.pub.pub_error(self.device_id, name, "r")
+                return
         if renesas:
             if reg == 19:
                 scale = 0.001  # µg/m³ on the wire; keep mg/m³ on MQTT
@@ -445,6 +462,10 @@ class DTVPoller(_DtvCeMixin, DevicePoller):
         if raw > 0x8000 and (reg in self.SIGNED_INPUTS
                              or (not self._wb_event_wire() and 25 <= reg <= 30)):
             raw -= 0x10000
+        if reg == 6 and self._ext_temp_fault is not None:
+            self.log.info("temp_ext: external sensor measuring again after %s",
+                          self._ext_temp_fault.split(" (")[0])
+            self._ext_temp_fault = None
         self.pub.pub_control(self.device_id, name, str(round(raw * scale, 3)))
         self.pub.pub_error(self.device_id, name, "")
 
