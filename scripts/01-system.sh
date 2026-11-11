@@ -696,6 +696,11 @@ log INFO "Не маскируем watchdogs навсегда; first-boot mask �
 # leaves nginx / the login page / the CGI layer down only makes the watchdog
 # restart the web services (heal-only, never a reboot) — docs/deployment.md
 # «Программный сторож после установки (с 1.0.6.51)» has both cases and the way out.
+# The daemon loops forever in one bash process: a new script on disk changes
+# nothing until the process restarts, so the loop below restarts it when the
+# script or the unit actually changed (signature before/after the writes) — else
+# the heal-only fix would wait for the next reboot on every upgraded board (D36-02).
+_wd_sig0=$(sa02m_file_sig /usr/local/sbin/sa02m-userspace-watchdog /etc/systemd/system/sa02m-userspace-watchdog.service)
 if [ -f "$ETC_REPO/sa02m-userspace-watchdog.sh" ] && [ -f "$ETC_REPO/systemd/sa02m-userspace-watchdog.service" ]; then
     sa02m_atomic_install -m 755 "$ETC_REPO/sa02m-userspace-watchdog.sh" /usr/local/sbin/sa02m-userspace-watchdog
     sa02m_atomic_install -m 644 "$ETC_REPO/systemd/sa02m-userspace-watchdog.service" /etc/systemd/system/sa02m-userspace-watchdog.service
@@ -711,7 +716,12 @@ for u in sa02m-userspace-watchdog.service sa02m-failure-monitor.service net-watc
         rm -f "/etc/systemd/system/$u"
     fi
     if [ "$u" = sa02m-userspace-watchdog.service ]; then
-        sa02m_svc_apply "$u" infra start
+        _wd_sig1=$(sa02m_file_sig /usr/local/sbin/sa02m-userspace-watchdog /etc/systemd/system/sa02m-userspace-watchdog.service)
+        if [ "$_wd_sig0" != "$_wd_sig1" ]; then
+            sa02m_svc_apply "$u" infra start restart
+        else
+            sa02m_svc_apply "$u" infra start
+        fi
     else
         sa02m_svc_apply "$u" infra
     fi

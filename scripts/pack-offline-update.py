@@ -662,6 +662,13 @@ def build_services_block(min_updater: str = MIN_UPDATER) -> dict[str, Any]:
         # Must stay in step with etc/sa02m-update-runner.sh. Off until the
         # panel enables it; restarting an inactive unit would turn it on.
         "sa02m-agent-api",
+        # The two health daemons are long-lived bash loops: a replaced script
+        # changes nothing until the process restarts (D36-02). Always on, so
+        # restart-if-active; the offline allow-list carries the failure monitor
+        # but not the userspace watchdog (1.0.7.36), where its entry is inert.
+        # Must stay in step with etc/sa02m-update-runner.sh.
+        "sa02m-userspace-watchdog",
+        "sa02m-failure-monitor",
     ]
     services["restart_if_changed"] = {
         "sa02m-modbus-mqtt": "/opt/sa02m-modbus-mqtt/",
