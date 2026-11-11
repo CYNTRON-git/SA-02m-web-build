@@ -37,6 +37,7 @@ import platform
 import re
 import subprocess
 import sys
+import tempfile
 import time
 import urllib.request
 import urllib.error
@@ -422,20 +423,17 @@ def render_frpc_toml(frpc: dict) -> str:
     return "\n".join(lines)
 
 
-def write_frpc_config(frpc: dict, path: str = FRPC_CONFIG):
-    # Rendered (and validated) BEFORE anything touches the disk: a refused
-    # profile raises here and the live config stays as it was.
-    content = render_frpc_toml(frpc)
+def _atomic_write_private(path: str, content: str):
+    """Write `content` to `path` 0600: tmp in the SAME directory + fsync +
+    os.replace (A7-11) — opening the live file with "w" truncated it first, and
+    a power cut mid-write left an empty file. mkstemp names the tmp uniquely and
+    opens it O_EXCL 0600, so a tmp left by a power cut can never collide with
+    the next attempt (review LOW-7)."""
     directory = os.path.dirname(path) or "."
     os.makedirs(directory, exist_ok=True)
-    # tmp in the SAME directory + fsync + os.replace (A7-11): opening the live
-    # file with "w" truncated it first, and a power cut mid-write left an empty
-    # frpc.toml — no tunnel until the next enrollment. 0600 from the first byte
-    # (O_EXCL + mode): the file carries the frp token.
-    tmp = os.path.join(directory, ".%s.tmp.%d" % (os.path.basename(path), os.getpid()))
-    fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+    fd, tmp = tempfile.mkstemp(prefix=".%s.tmp." % os.path.basename(path), dir=directory)
     try:
-        with os.fdopen(fd, "w") as f:
+        with os.fdopen(fd, "w", newline="") as f:
             f.write(content)
             f.flush()
             os.fsync(f.fileno())
@@ -450,7 +448,50 @@ def write_frpc_config(frpc: dict, path: str = FRPC_CONFIG):
             os.fsync(dfd)
         finally:
             os.close(dfd)
+
+
+def write_frpc_config(frpc: dict, path: str = FRPC_CONFIG):
+    # Rendered (and validated) BEFORE anything touches the disk: a refused
+    # profile raises here and the live config stays as it was. The file carries
+    # the frp token, hence 0600 from the first byte.
+    content = render_frpc_toml(frpc)
+    _atomic_write_private(path, content)
     log.info("frpc config written: %s (%d proxies)", path, content.count("[[proxies]]"))
+
+
+_LOGIN_FAIL_EXIT_RE = re.compile(r"^\s*loginFailExit\s*=", re.M)
+
+
+def migrate_frpc_login_fail_exit(path: str = FRPC_CONFIG) -> bool:
+    """Add `loginFailExit = false` to an frpc.toml rendered before 1.0.7.36
+    (A7-03): the line is otherwise only written at enrollment, so an
+    already-enrolled board kept a frpc that exits on every failed login. Only
+    that one line is added — nothing else of the file is touched. Returns True
+    when the file was changed (frpc reads its config at start, so the caller
+    restarts the unit once). A missing or unreadable file is a no-op."""
+    try:
+        with open(path, encoding="utf-8", newline="") as f:
+            content = f.read()
+    except OSError:
+        return False
+    if _LOGIN_FAIL_EXIT_RE.search(content):
+        return False
+    lines = content.split("\n")
+    # A top-level key must precede the first table ([[proxies]]); anchor on the
+    # TLS line that sits in the same block, else just before the first table.
+    at = next((i + 1 for i, ln in enumerate(lines)
+               if ln.strip().startswith("transport.tls.enable")), None)
+    if at is None:
+        at = next((i for i, ln in enumerate(lines) if ln.lstrip().startswith("[")),
+                  len(lines))
+    lines.insert(at, "loginFailExit = false")
+    try:
+        _atomic_write_private(path, "\n".join(lines))
+    except OSError as e:
+        log.warning("frpc loginFailExit migration failed: %s", e)
+        return False
+    log.info("frpc config %s: added loginFailExit = false (A7-03 migration)", path)
+    return True
 
 
 def _systemctl(*args, timeout: int = 15) -> int:
@@ -470,7 +511,13 @@ def ensure_frpc_running() -> str:
         return "no_config"
     if not os.path.exists(FRPC_BINARY):
         return "frpc_missing"
+    migrated = migrate_frpc_login_fail_exit()
     if _systemctl("is-active", "--quiet", FRPC_UNIT) == 0:
+        if migrated:
+            # frpc reads its config only at start: one restart puts the
+            # migrated file in force (the tunnel redials within seconds).
+            log.info("frpc config migrated — restarting %s once", FRPC_UNIT)
+            _systemctl("restart", FRPC_UNIT)
         return "running"
     log.info("frpc unit not active — (re)starting %s", FRPC_UNIT)
     _systemctl("enable", FRPC_UNIT)

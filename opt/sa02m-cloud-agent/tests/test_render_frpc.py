@@ -744,5 +744,79 @@ class RevocationHandlingTest(unittest.TestCase):
                          "stood down on a plain tunnel failure — that is a truck roll")
 
 
+class LoginFailExitMigrationTest(unittest.TestCase):
+    """An frpc.toml rendered before 1.0.7.36 has no loginFailExit line; only an
+    enrollment wrote it, so an enrolled board kept an frpc that exits on every
+    failed login (review M-1b). The agent adds the one line on start."""
+
+    OLD = ('serverAddr = "cloud.example"\nserverPort = 7000\n'
+           'auth.token = "tok"\ntransport.tls.enable = true\n'
+           'metadatas.device_id = "sa02m-abc"\n\n[[proxies]]\nname = "w"\n')
+
+    def _migrate(self, text):
+        with tempfile.TemporaryDirectory() as d:
+            target = os.path.join(d, "frpc.toml")
+            with open(target, "w", encoding="utf-8", newline="") as f:
+                f.write(text)
+            changed = agent.migrate_frpc_login_fail_exit(target)
+            with open(target, encoding="utf-8", newline="") as f:
+                return changed, f.read(), os.listdir(d)
+
+    def test_old_file_gets_the_line_before_the_first_table(self):
+        changed, out, left = self._migrate(self.OLD)
+        self.assertTrue(changed)
+        lines = out.splitlines()
+        self.assertIn("loginFailExit = false", lines)
+        self.assertLess(lines.index("loginFailExit = false"), lines.index("[[proxies]]"))
+        self.assertEqual(out.replace("loginFailExit = false\n", ""), self.OLD,
+                         "only the one line may be added")
+        self.assertEqual(left, ["frpc.toml"], "no tmp file left behind")
+
+    def test_new_file_is_left_alone(self):
+        text = agent.render_frpc_toml(_profile(80))
+        changed, out, _l = self._migrate(text)
+        self.assertFalse(changed)
+        self.assertEqual(out, text)
+
+    def test_idempotent(self):
+        _c, once, _l = self._migrate(self.OLD)
+        changed, twice, _l = self._migrate(once)
+        self.assertFalse(changed)
+        self.assertEqual(once, twice)
+
+    def test_missing_file_is_a_noop(self):
+        self.assertFalse(agent.migrate_frpc_login_fail_exit("/nonexistent/frpc.toml"))
+
+    def test_stale_tmp_from_a_power_cut_does_not_block_a_write(self):
+        # LOW-7: the tmp used to be named by PID with O_EXCL.
+        with tempfile.TemporaryDirectory() as d:
+            target = os.path.join(d, "frpc.toml")
+            open(os.path.join(d, ".frpc.toml.tmp.%d" % os.getpid()), "w").close()
+            agent.write_frpc_config(_profile(80), path=target)
+            self.assertTrue(os.path.getsize(target) > 0)
+
+    def test_ensure_frpc_running_migrates_and_restarts_an_active_unit_once(self):
+        with tempfile.TemporaryDirectory() as d:
+            target = os.path.join(d, "frpc.toml")
+            with open(target, "w", encoding="utf-8", newline="") as f:
+                f.write(self.OLD)
+            binary = os.path.join(d, "frpc")
+            open(binary, "w").close()
+            calls = []
+            saved = (agent.FRPC_CONFIG, agent.FRPC_BINARY, agent._systemctl,
+                     agent.migrate_frpc_login_fail_exit.__defaults__)
+            agent.FRPC_CONFIG, agent.FRPC_BINARY = target, binary
+            agent.migrate_frpc_login_fail_exit.__defaults__ = (target,)
+            agent._systemctl = lambda *a, **kw: (calls.append(a) or 0)
+            try:
+                self.assertEqual(agent.ensure_frpc_running(), "running")
+                self.assertEqual(agent.ensure_frpc_running(), "running")
+            finally:
+                (agent.FRPC_CONFIG, agent.FRPC_BINARY, agent._systemctl,
+                 agent.migrate_frpc_login_fail_exit.__defaults__) = saved
+            restarts = [c for c in calls if c and c[0] == "restart"]
+            self.assertEqual(len(restarts), 1, "exactly one restart, on the first pass")
+
+
 if __name__ == "__main__":
     unittest.main()
