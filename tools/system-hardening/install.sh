@@ -17,7 +17,7 @@
 #   2. Кладёт drop-in /etc/systemd/system.conf.d/sa02m-watchdog.conf
 #      (RuntimeWatchdogSec=15s, RebootWatchdogSec=16s) → PID1 владеет HW WDT.
 #   3. Ставит /usr/local/sbin/sa02m-userspace-watchdog (health-checks).
-#   4. Активирует sa02m-userspace-watchdog.service (forces reboot при сбоях).
+#   4. Активирует sa02m-userspace-watchdog.service (reboot при отказе всей платы; веб-отказы только лечатся).
 #   5. Активирует sa02m-failure-monitor.service (логирование, без reboot).
 #   6. Размаскирует и активирует serial-getty@ttyS0 (115200) для COM-fallback.
 #   7. Применяет настройки systemd (daemon-reexec).

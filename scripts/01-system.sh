@@ -691,9 +691,11 @@ log INFO "Не маскируем watchdogs навсегда; first-boot mask �
 # whole run, and the watchdog pauses its reboot checks while that file exists.
 # Nothing else does: its 180 s grace counts from BOOT (/proc/uptime), so on a
 # board that has been up for days it is already spent. Once the run ends and
-# the lock is gone, an install that leaves nginx/sshd/the login page down gets
-# the board rebooted after 10 min — docs/deployment.md «Программный сторож после
-# установки (с 1.0.6.51)» names the resulting reboot loop and the way out.
+# the lock is gone, an install that leaves sshd (or the SSH port, interface,
+# load, memory) failing gets the board rebooted after 10 min, while one that
+# leaves nginx / the login page / the CGI layer down only makes the watchdog
+# restart the web services (heal-only, never a reboot) — docs/deployment.md
+# «Программный сторож после установки (с 1.0.6.51)» has both cases and the way out.
 if [ -f "$ETC_REPO/sa02m-userspace-watchdog.sh" ] && [ -f "$ETC_REPO/systemd/sa02m-userspace-watchdog.service" ]; then
     sa02m_atomic_install -m 755 "$ETC_REPO/sa02m-userspace-watchdog.sh" /usr/local/sbin/sa02m-userspace-watchdog
     sa02m_atomic_install -m 644 "$ETC_REPO/systemd/sa02m-userspace-watchdog.service" /etc/systemd/system/sa02m-userspace-watchdog.service
