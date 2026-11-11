@@ -250,16 +250,23 @@ web_login__ensure_dir() {
 # A stable, filesystem-safe key for the client. REMOTE_ADDR is set by nginx; an
 # absent one (direct CGI, misconfig) collapses to a single shared bucket, which
 # still throttles — it never fails to a per-request-unique key that can't be
-# counted.
+# counted. $1 = an optional bucket prefix ([a-z-] only, default empty = the
+# panel login): cmd_exec.cgi counts root-password failures as `root-` so they
+# never lock — nor are cleared by — the panel login (A8-09).
 web_login__client_key() {
-    printf '%s' "${REMOTE_ADDR:-unknown}" | sha256sum 2>/dev/null | cut -d' ' -f1
+    local prefix=${1:-} hash
+    case "$prefix" in *[!a-z-]*) prefix=invalid- ;; esac
+    hash=$(printf '%s' "${REMOTE_ADDR:-unknown}" | sha256sum 2>/dev/null | cut -d' ' -f1)
+    [ -n "$hash" ] || return 0
+    printf '%s%s' "$prefix" "$hash"
 }
 
 # 0 = the client may attempt a login now; 1 = locked out. Fail OPEN on any error.
+# $1 = optional bucket prefix (web_login__client_key).
 web_login_check() {
     web_login__ensure_dir || return 0
     local key f count start now
-    key=$(web_login__client_key); [ -n "$key" ] || return 0
+    key=$(web_login__client_key "${1:-}"); [ -n "$key" ] || return 0
     f="$SA02M_LOGIN_DIR/$key"
     [ -f "$f" ] || return 0
     IFS=' ' read -r count start < "$f" 2>/dev/null || return 0
@@ -275,10 +282,11 @@ web_login_check() {
 
 # Record one failed login for the current client. Read-modify-write serialised by
 # flock so a login burst cannot under-count. Best-effort throughout.
+# $1 = optional bucket prefix (web_login__client_key).
 web_login_record_failure() {
     web_login__ensure_dir || return 0
     local key f now
-    key=$(web_login__client_key); [ -n "$key" ] || return 0
+    key=$(web_login__client_key "${1:-}"); [ -n "$key" ] || return 0
     f="$SA02M_LOGIN_DIR/$key"
     now=$(date +%s 2>/dev/null) || return 0
     (
@@ -334,11 +342,15 @@ web_auth_hash() {
     local plain="$1" salt
     salt=$(head -c 12 /dev/urandom 2>/dev/null | od -An -tx1 | tr -d ' \n' | cut -c1-16)
     [ -n "$salt" ] || salt="sa02m$$"
+    # The password travels on stdin, never in argv: argv is world-readable in
+    # /proc/<pid>/cmdline while the hasher runs (A8-08). -stdin reads one line,
+    # so a value holding a newline is refused rather than half-hashed.
+    case "$plain" in *$'\n'*) return 1 ;; esac
     if command -v openssl >/dev/null 2>&1; then
-        openssl passwd -6 -salt "$salt" "$plain" 2>/dev/null && return 0
+        printf '%s\n' "$plain" | openssl passwd -6 -salt "$salt" -stdin 2>/dev/null && return 0
     fi
     if command -v python3 >/dev/null 2>&1; then
-        python3 -c 'import crypt,sys; print(crypt.crypt(sys.argv[1], "$6$"+sys.argv[2]))' "$plain" "$salt" 2>/dev/null && return 0
+        printf '%s' "$plain" | python3 -c 'import crypt,sys; print(crypt.crypt(sys.stdin.read(), "$6$"+sys.argv[1]))' "$salt" 2>/dev/null && return 0
     fi
     return 1
 }
@@ -358,10 +370,13 @@ web_auth_verify() {
         # $6$<salt>$<hash> — recompute with the same salt and compare.
         rest="${stored#\$6\$}"
         salt="${rest%%\$*}"
+        # On stdin, not argv (see web_auth_hash). A newline cannot be part of
+        # a stored password (web_creds.cgi refuses it), so it never verifies.
+        case "$plain" in *$'\n'*) return 1 ;; esac
         if command -v openssl >/dev/null 2>&1; then
-            recomputed=$(openssl passwd -6 -salt "$salt" "$plain" 2>/dev/null)
+            recomputed=$(printf '%s\n' "$plain" | openssl passwd -6 -salt "$salt" -stdin 2>/dev/null)
         elif command -v python3 >/dev/null 2>&1; then
-            recomputed=$(python3 -c 'import crypt,sys; print(crypt.crypt(sys.argv[1], sys.argv[2]))' "$plain" "$stored" 2>/dev/null)
+            recomputed=$(printf '%s' "$plain" | python3 -c 'import crypt,sys; print(crypt.crypt(sys.stdin.read(), sys.argv[1]))' "$stored" 2>/dev/null)
         else
             return 1
         fi

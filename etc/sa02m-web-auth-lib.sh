@@ -22,11 +22,15 @@ web_auth_hash() {
     local plain="$1" salt
     salt=$(head -c 12 /dev/urandom 2>/dev/null | od -An -tx1 | tr -d ' \n' | cut -c1-16)
     [ -n "$salt" ] || salt="sa02m$$"
+    # The password travels on stdin, never in argv: argv is world-readable in
+    # /proc/<pid>/cmdline while the hasher runs (A8-08). -stdin reads one line,
+    # so a value holding a newline is refused rather than half-hashed.
+    case "$plain" in *$'\n'*) return 1 ;; esac
     if command -v openssl >/dev/null 2>&1; then
-        openssl passwd -6 -salt "$salt" "$plain" 2>/dev/null && return 0
+        printf '%s\n' "$plain" | openssl passwd -6 -salt "$salt" -stdin 2>/dev/null && return 0
     fi
     if command -v python3 >/dev/null 2>&1; then
-        python3 -c 'import crypt,sys; print(crypt.crypt(sys.argv[1], "$6$"+sys.argv[2]))' "$plain" "$salt" 2>/dev/null && return 0
+        printf '%s' "$plain" | python3 -c 'import crypt,sys; print(crypt.crypt(sys.stdin.read(), "$6$"+sys.argv[1]))' "$salt" 2>/dev/null && return 0
     fi
     return 1
 }
@@ -39,10 +43,13 @@ web_auth_verify() {
     local plain="$1" stored="$2" salt rest recomputed s h1 h2
     if web_auth_is_hash "$stored"; then
         rest="${stored#\$6\$}"; salt="${rest%%\$*}"
+        # On stdin, not argv (see web_auth_hash). A newline cannot be part of
+        # a stored password (web_creds.cgi refuses it), so it never verifies.
+        case "$plain" in *$'\n'*) return 1 ;; esac
         if command -v openssl >/dev/null 2>&1; then
-            recomputed=$(openssl passwd -6 -salt "$salt" "$plain" 2>/dev/null)
+            recomputed=$(printf '%s\n' "$plain" | openssl passwd -6 -salt "$salt" -stdin 2>/dev/null)
         elif command -v python3 >/dev/null 2>&1; then
-            recomputed=$(python3 -c 'import crypt,sys; print(crypt.crypt(sys.argv[1], sys.argv[2]))' "$plain" "$stored" 2>/dev/null)
+            recomputed=$(printf '%s' "$plain" | python3 -c 'import crypt,sys; print(crypt.crypt(sys.stdin.read(), sys.argv[1]))' "$stored" 2>/dev/null)
         else
             return 1
         fi
