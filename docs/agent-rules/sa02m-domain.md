@@ -121,7 +121,7 @@ a service.
   syncer rewrites only the `?v=` group and leaves `&r=` intact. Gated by the
   `cache-bust-r` row since 1.0.6.40 (one home: `.ai-dev/quality/tools.json`).
 - `CHANGELOG.md` gets a `## <version> - <summary> (<month>)` section per
-  release branch, Russian, grouped by subsystem.
+  release branch, English (`PROTOCOL.md` invariant 5), grouped by subsystem.
 - Devices self-update via «Обновление веб» (semver compare, `web_update_*.cgi`)
   — shipping a version string lower than deployed hides the update.
 

@@ -64,5 +64,6 @@ renderer-owned DOM containers wipe hand-inserted nodes on the next poll;
 | Bench board target services / Alice / Cloud / Docker (gold 1.136) | `docs/bench-board-target-state.md` — a bench runbook, not a contract (nothing converges to it) |
 | Cursor sessions — how Cursor finds these rules at all | `.cursor/rules/*.mdc` — trigger files that POINT at `docs/agent-rules/` and `CLAUDE.md` (`sa02m_project_rules.mdc`); never a second home for a rule, a credential or a fingerprint (audit 2026-09-08, D10/D11) |
 | MR-02m module internals (Modbus map, .fw) | the sibling repo `CYNTRON-git/MR-02m`, its `docs/agent-rules/` |
+| Reference behaviour for MQTT and the Fast Modbus event master (Wiren Board) | `https://github.com/wirenboard/wb-mqtt-serial` (Operator 2026-11-11); our reconciliation with it: `docs/contracts/fmb-event-wire.md` |
 | Skills (deep dives) | `.claude/skills/` — sa02m-web-architecture, sa02m-versioning-release, sa02m-ui-style, sa02m-web-testing |
 | How a skill is written (triggers, budget) | `docs/agent-rules/skill-authoring.md` |
