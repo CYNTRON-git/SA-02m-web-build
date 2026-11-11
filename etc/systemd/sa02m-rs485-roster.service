@@ -8,6 +8,11 @@ After=sa02m-modbus-mqtt.service sa02m-flasher.service
 [Service]
 Type=oneshot
 ExecStart=/usr/bin/python3 /opt/sa02m-rs485-roster/aggregate.py
+# The timer fires every 8 s; at info level each run left three journal lines,
+# half of the board's journal (H5-08). Warnings and errors still reach it.
+# Whether systemd's own Starting/Finished/Deactivated lines are filtered too
+# depends on the board's systemd version — checked on the bench, not here.
+LogLevelMax=notice
 # Never opens a serial port; only reads local files + writes one JSON in /run.
 ProtectSystem=strict
 ReadWritePaths=/run
