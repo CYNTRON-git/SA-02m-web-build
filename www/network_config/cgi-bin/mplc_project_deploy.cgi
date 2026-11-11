@@ -306,7 +306,7 @@ fi
 
 # Refuse if the RS-485 flasher holds the COM lease (mirror the mplc4-start gate).
 if [ -x "$SVC_CTL" ]; then
-  BUSY=$(sudo -n "$SVC_CTL" list 2>/dev/null | python3 -c 'import json,sys;
+  BUSY=$(timeout -k 2 18 sudo -n "$SVC_CTL" list 2>/dev/null | python3 -c 'import json,sys;
 try: print("1" if json.load(sys.stdin).get("flasher_busy") else "0")
 except Exception: print("0")' 2>/dev/null || echo 0)
   if [ "$BUSY" = "1" ]; then

@@ -14,9 +14,19 @@ from .locks import verify_descriptor
 # Two codes only: an outage the Operator must repair is not a busy port.
 CODE_UNAVAILABLE = "coordinator_unavailable"
 CODE_BUSY = "port_busy"
+# The re-executed helper overran its budget (A4-10): reported as such, not as
+# a busy port the Operator would wait out.
+CODE_TIMEOUT = "guard_timeout"
+
+# start/stop is bounded inside the panel's 90 s operation budget several times
+# over; install/uninstall (CODESYS, Node-RED) legitimately runs for minutes and
+# is bounded by the panel's 600 s budget instead, so it gets no timer here.
+START_STOP_TIMEOUT_S = 300
 
 
 def error_code(exc):
+    if isinstance(exc, subprocess.TimeoutExpired):
+        return CODE_TIMEOUT
     return CODE_UNAVAILABLE if isinstance(exc, CoordinatorUnavailable) else CODE_BUSY
 
 
@@ -38,12 +48,16 @@ def run(helper, action, identity, unit):
         raise PermissionError("Invalid UART service")
     # The installed shell entrypoint supplies its own path and validated unit.
     # All children inherit the fd: killing just the wrapper cannot unlock a
-    # systemctl/init.d command still changing the service.
+    # systemctl/init.d command still changing the service — which is why each
+    # of those carries its own bound in the helper (initd_run, sc_run_slow) and
+    # this timeout only stops the wrapper from being waited on forever.
+    timeout = START_STOP_TIMEOUT_S if action in {"start", "stop"} else None
     with ServiceMutation(unit) as guard:
         env = {**os.environ, "SA02M_SERVICE_GUARD_FD": str(guard.fd),
                "SA02M_SERVICE_GUARD_UNIT": guard.unit}
         return subprocess.run(["/bin/sh", helper, action, identity], env=env,
-                              pass_fds=(guard.fd,), check=False).returncode
+                              pass_fds=(guard.fd,), check=False,
+                              timeout=timeout).returncode
 
 
 def main():

@@ -28,7 +28,11 @@
 #   * honesty of the scan source: `live:false` and `online:null` survive the
 #     hop, so a stale scan can never render as live-green in the UI;
 #   * the emitted string is valid JSON and pure ASCII (the helper's
-#     ensure_ascii is what stands in for json_escape on these values).
+#     ensure_ascii is what stands in for json_escape on these values);
+#   * (cases 20-23, 1.0.7.36, A8-03) the UART error deltas survive between two
+#     polls in two processes (fe 100 -> 105 gives fe_d=5, the state file keeps
+#     105) and zero deltas leave the port object byte-identical to the old
+#     shape. RED before the fix: fe_d stayed 0 and the state file was empty.
 #
 # Method: the four RS-485 functions plus their globals are extracted from the
 # shipped status.cgi by function anchor, their absolute roots (/dev/RS-485-,
@@ -164,13 +168,18 @@ cat > "$CACHE" <<'JSON'
 }
 JSON
 
+# Since 1.0.7.36 rs485_port_json leaves its object in RS485_PORT_JSON instead
+# of printing it (A8-03: a `$(…)` caller lost the error-delta state). This
+# reads either form, so the same cases run against an older status.cgi too.
+port_json() { RS485_PORT_JSON=""; rs485_port_json "$1"; printf '%s' "${RS485_PORT_JSON:-}"; }
+
 jget() {  # $1 = port json, $2 = python expression over `d`
     printf '%s' "$1" | "$PY" -c "import json,sys; d=json.load(sys.stdin); print($2)" 2>/dev/null
 }
 
 rs485_load_roster
-J3=$(rs485_port_json 3)
-J4=$(rs485_port_json 4)
+J3=$(port_json 3)
+J4=$(port_json 4)
 
 # 1-2: the emitted port object is valid JSON at all.
 if printf '%s' "$J3" | "$PY" -c 'import json,sys; json.load(sys.stdin)' 2>/dev/null; then
@@ -232,13 +241,13 @@ ok "11 every legacy port field survives alongside \`modules\`"
 # 14-16: absent / unreadable / malformed cache -> `modules` OMITTED, not empty.
 rm -f "$CACHE"
 rs485_load_roster
-JN=$(rs485_port_json 3)
+JN=$(port_json 3)
 [ "$(jget "$JN" 'int("modules" in d)')" = "0" ] \
     && ok "14 no cache -> \`modules\` is omitted (old bundles unaffected)" \
     || bad "14 a missing cache produced a \`modules\` field anyway: $JN"
 printf 'not json at all' > "$CACHE"
 rs485_load_roster
-JB=$(rs485_port_json 3)
+JB=$(port_json 3)
 if printf '%s' "$JB" | "$PY" -c 'import json,sys; json.load(sys.stdin)' 2>/dev/null \
    && [ "$(jget "$JB" 'int("modules" in d)')" = "0" ]; then
     ok "15 a corrupt cache -> valid JSON, \`modules\` omitted (fail closed, never broken JSON)"
@@ -247,17 +256,75 @@ else
 fi
 printf '{"ts":1,"ports":{}}' > "$CACHE"
 rs485_load_roster
-JE=$(rs485_port_json 3)
+JE=$(port_json 3)
 [ "$(jget "$JE" 'int("modules" in d)')" = "0" ] \
     && ok "16 an empty ports map -> \`modules\` omitted" \
     || bad "16 an empty ports map produced a \`modules\` field: $JE"
 
 # 17: an absent device node keeps the legacy 'absent' shape and no modules.
-JA=$(rs485_port_json 9)
+JA=$(port_json 9)
 if [ "$(jget "$JA" 'd["st"]')" = "absent" ] && [ "$(jget "$JA" 'int("modules" in d)')" = "0" ]; then
     ok "17 an absent port reports st:absent with no \`modules\`"
 else
     bad "17 an absent port object is malformed: $JA"
+fi
+
+# ── 20-23: UART error deltas survive between polls (A8-03, 1.0.7.36) ───────
+# The kernel counts fe/pe/oe since boot; the UI shows the increase between two
+# polls. Each poll is a separate CGI process, so the state file is the only
+# memory: two builder runs in two processes, driver text fe:100 then fe:105,
+# must give fe_d=5 on the second and leave 105 in the state file. Before the fix
+# the per-port JSON was built inside `$(…)`, the counter update died with that
+# subshell, the saver wrote an empty file and fe_d stayed 0 forever.
+EX2="$T/rs485-builder.sh"
+awk '/^build_rs485_array\(\) \{/{f=1} f{print} f&&/^\}/{exit}' "$SRC" > "$EX2"
+awk '/^rs485_err_prev_save\(\) \{/{f=1} f{print} f&&/^\}/{exit}' "$SRC" >> "$EX2"
+grep -q '^build_rs485_array() {' "$EX2" && grep -q '^rs485_err_prev_save() {' "$EX2" \
+    || { bad "20 could not extract build_rs485_array/rs485_err_prev_save from $SRC"; }
+sed -i -e "s|/dev/RS-485-|$DEV/RS-485-|g" "$EX2"
+STATE="$T/cache/rs485_err_prev.state"
+rm -f "$STATE"
+: > "$DEV/RS-485-0"
+rs485_poll() {  # $1 = fe counter in the fixture driver text; one CGI process per call
+    ( RS485_FE_FIXTURE=$1 bash -c '
+        . "$1"; . "$2"; . "$3"
+        status_block_enabled() { return 0; }
+        rs485_load_driver_text() { RS485_DRIVER_TEXT="4850: uart:16550A mmio:0x01C28000 irq:33 tx:10 rx:20 fe:${RS485_FE_FIXTURE} pe:2 oe:3 RTS|DTR"; }
+        rs485_inuse_batch() { return 0; }
+        rs485_tty_in_use() { return 1; }
+        rs485_load_roster() { RS485_MODULES=(); }
+        SA02M_SERIAL_COUNT=1
+        build_rs485_array' _ "$JSONLIB" "$EX" "$EX2" )
+}
+# The fixture node is a plain file (no symlink — MSYS would copy it), so the
+# builder reads the port index from its own name: the digits of "RS-485-0" are
+# 4850, and the fixture driver line carries that index.
+P1=$(rs485_poll 100)
+P2=$(rs485_poll 105)
+d1=$(jget "[$P1]" 'd[0]["fe_d"]'); d2=$(jget "[$P2]" 'd[0]["fe_d"]')
+if [ "$d1" = "0" ]; then
+    ok "20 the first poll (no previous counters) reports fe_d=0"
+else
+    bad "20 first poll fe_d=$d1, expected 0: $P1"
+fi
+if [ "$d2" = "5" ]; then
+    ok "21 the second poll reports the increase fe_d=5 (100 -> 105)"
+else
+    bad "21 second poll fe_d=${d2:-<none>}, expected 5 — the delta state is lost between polls: $P2"
+fi
+if [ -f "$STATE" ] && grep -q "^4850:105:2:3$" "$STATE"; then
+    ok "22 the state file carries the last counters (4850:105:2:3)"
+else
+    bad "22 the state file does not hold the last counters: '$(cat "$STATE" 2>/dev/null)'"
+fi
+# 23: with zero deltas the port object is byte-for-byte the pre-1.0.7.36 shape
+# (characterization captured from the old builder on this fixture).
+P3=$(rs485_poll 105)
+GOLDEN='{"n":0,"dev":"RS-485-0","st":"present","open":0,"tx":10,"rx":20,"fe":105,"pe":2,"oe":3,"fe_d":0,"pe_d":0,"oe_d":0}'
+if [ "$P3" = "$GOLDEN" ]; then
+    ok "23 zero deltas -> the port JSON is byte-identical to the old shape"
+else
+    bad "23 the port JSON changed shape: $P3 (expected $GOLDEN)"
 fi
 
 # ── non-vacuity ────────────────────────────────────────────────────────────

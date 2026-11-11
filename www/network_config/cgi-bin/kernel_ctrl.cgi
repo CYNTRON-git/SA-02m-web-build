@@ -35,7 +35,16 @@ if [[ "$METHOD" = "GET" ]]; then
     echo "Content-type: application/json; charset=UTF-8"
     echo "Cache-Control: no-store"
     echo ""
-    sudo -n "$CTL" status --json
+    # Bounded under the 20 s nginx read timeout of /cgi-bin/ (A8-11). Captured
+    # so a timed-out helper cannot leave half a JSON body in front of ours.
+    OUT=$(timeout -k 2 18 sudo -n "$CTL" status --json)
+    rc=$?
+    if [[ "$rc" -eq 124 || "$rc" -eq 137 ]]; then
+        echo "kernel_ctrl.cgi: status timed out after 18s" >&2
+        echo '{"ok":false,"error":"timeout"}'
+    elif [[ -n "$OUT" ]]; then
+        printf '%s\n' "$OUT"
+    fi
     exit 0
 fi
 

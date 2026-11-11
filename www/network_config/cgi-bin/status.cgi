@@ -28,9 +28,9 @@ case "${QUERY_STRING:-}" in
     *part=core*)     STATUS_PART=core ;;
 esac
 
-# Opt-in fast services list: skip the ~3.5 s `sudo CTL list` disabled/masked
-# refinement so «Службы» paints its real rows instantly; the full poll refines
-# a moment later. Strict allow-list — only the literal fast=1 flag on part=services
+# Opt-in fast services list: skip the `sudo CTL list` disabled/masked
+# refinement so «Службы» paints its real rows early (a cold build is still ~4 s
+# on the board, bench 1.135 2026-11-11); the full poll refines a moment later. Strict allow-list — only the literal fast=1 flag on part=services
 # enables it; the flag merely gates one internal function, never interpolated.
 STATUS_SERVICES_FAST=0
 if [ "$STATUS_PART" = "services" ]; then
@@ -185,12 +185,45 @@ status_emit_live() {
     status_emit_snapshot "$payload" "$measured" 0
 }
 
+# Stale-while-revalidate for the slow parts (A8-05, H5-03/H5-04): a cache past
+# its TTL but younger than $1 seconds is answered at once and rebuilt in the
+# background by ONE process — the one that wins `flock -n`; everyone else just
+# answers the stale copy. The child inherits fd 8 with the lock held (flock
+# locks follow the open file description), so the lock lives exactly as long as
+# the rebuild. Its stdin/stdout/stderr point at /dev/null: holding the CGI's
+# stdout would keep fcgiwrap from closing the response until the build ends.
+# Returns 3 (nothing printed) when the cache is not in the stale window, so the
+# caller builds in line; otherwise the status of status_emit_cache.
+cache_print_stale_and_refresh() {
+    local file=$1 ttl=$2 builder=$3 stale_max=$4 lock_file
+    [ "${stale_max:-0}" -gt "$ttl" ] 2>/dev/null || return 3
+    cache_is_fresh "$file" "$stale_max" || return 3
+    lock_file="${file}.lock"
+    if command -v flock >/dev/null 2>&1 && { exec 8>"$lock_file"; } 2>/dev/null; then
+        if flock -n 8 >/dev/null 2>&1; then
+            (
+                tmp="${file}.${BASHPID}"
+                if "$builder" > "$tmp"; then
+                    mv "$tmp" "$file" 2>/dev/null || cp "$tmp" "$file" 2>/dev/null
+                fi
+                rm -f "$tmp"
+            ) </dev/null >/dev/null 2>&1 &
+        fi
+        exec 8>&-
+    fi
+    status_emit_cache "$file" "$ttl"
+}
+
 cache_print_or_build() {
-    local file=$1 ttl=$2 builder=$3 tmp lock_file rc have_lock=0
+    local file=$1 ttl=$2 builder=$3 stale_max=${4:-0} tmp lock_file rc have_lock=0
     if cache_is_fresh "$file" "$ttl"; then
         status_emit_cache "$file" "$ttl"
         return $?
     fi
+    # `|| rc=$?`, not a bare `rc=$?`: callers may run under `set -e`.
+    rc=0
+    cache_print_stale_and_refresh "$file" "$ttl" "$builder" "$stale_max" || rc=$?
+    [ "$rc" -eq 3 ] || return "$rc"
 
     lock_file="${file}.lock"
     if command -v flock >/dev/null 2>&1; then
@@ -336,13 +369,26 @@ _snap_pids_cmd() {
     done <<< "$_PROC_SNAPSHOT"
 }
 
+# starttime (field 22 of /proc/<pid>/stat, in clock ticks) read with the `read`
+# builtin, not awk (A8-06). Counted after the LAST ')' so a comm holding spaces
+# cannot shift the fields: state is then field 0 and starttime field 19.
+# Result in the global _PROC_START_J (0 when unreadable) — no subshell.
+_PROC_START_J=0
+_proc_start_jiffies() {
+    local line f
+    _PROC_START_J=0
+    IFS= read -r line 2>/dev/null < "/proc/$1/stat" || return 0
+    read -r -a f <<< "${line##*) }"
+    case "${f[19]:-}" in ''|*[!0-9]*) ;; *) _PROC_START_J=${f[19]} ;; esac
+}
+
 # Max uptime (s) among a whitespace-separated PID list; 0 if none.
 _proc_uptime_from_pidlist() {
     local pids=$1 pid best=0 boot_j proc_start up
     for pid in $pids; do
         case "$pid" in ''|*[!0-9]*) continue ;; esac
         [ -r "/proc/${pid}/stat" ] || continue
-        boot_j=$(awk '{print $22}' "/proc/${pid}/stat" 2>/dev/null || echo 0)
+        _proc_start_jiffies "$pid"; boot_j=$_PROC_START_J
         proc_start=$(( boot_j / _PROC_CLK_TCK ))
         up=$(( UPTIME_SEC - proc_start ))
         (( up < 0 )) && up=0
@@ -458,8 +504,11 @@ fast_service_state() {
             fi
             ;;
         sa02m-modbus-mqtt|sa02m-modbus-mqtt.service)
-            if _proc_cmd_matches '[m]odbus_mqtt_bridge' \
-                || _proc_cmd_matches '[s]a02m-modbus-mqtt'; then
+            # The bridge's own script only: the package directory name also
+            # matches /opt/sa02m-modbus-mqtt/sa02m_telemetry.py, which always
+            # runs, so a stopped bridge read as active with the telemetry's
+            # uptime (H5-06).
+            if _proc_cmd_matches '[m]odbus_mqtt_bridge\.py'; then
                 echo active
             else
                 echo inactive
@@ -563,11 +612,8 @@ fast_service_uptime() {
             echo "$up"
             ;;
         sa02m-modbus-mqtt|sa02m-modbus-mqtt.service)
-            local up=0 u2
-            up=$(proc_uptime_seconds_by_pgrep_f '[m]odbus_mqtt_bridge')
-            u2=$(proc_uptime_seconds_by_pgrep_f '[s]a02m-modbus-mqtt')
-            (( u2 > up )) && up=$u2
-            echo "$up"
+            # Same pattern as fast_service_state (H5-06).
+            proc_uptime_seconds_by_pgrep_f '[m]odbus_mqtt_bridge\.py'
             ;;
         sa02m-alice-client|sa02m-alice-client.service)
             proc_uptime_seconds_by_pgrep_f 'sa02m_alice\.client\.main'
@@ -624,6 +670,8 @@ unit_uptime_seconds() {
 uptime_from_cgroup_slice() {
     local slice=$1 f pid boot_j clock_hz proc_start up best=0
     case "$slice" in *.service) ;; *) slice="${slice}.service" ;; esac
+    clock_hz=$(getconf CLK_TCK 2>/dev/null || echo 100)
+    [ "$clock_hz" -gt 0 ] 2>/dev/null || clock_hz=100
     for f in \
         "/sys/fs/cgroup/system.slice/${slice}/cgroup.procs" \
         "/sys/fs/cgroup/unified/system.slice/${slice}/cgroup.procs"; do
@@ -631,8 +679,7 @@ uptime_from_cgroup_slice() {
         while IFS= read -r pid; do
             case "$pid" in ''|*[!0-9]*) continue ;; esac
             [ -r "/proc/${pid}/stat" ] || continue
-            boot_j=$(awk '{print $22}' "/proc/${pid}/stat" 2>/dev/null || echo 0)
-            clock_hz=$(getconf CLK_TCK 2>/dev/null || echo 100)
+            _proc_start_jiffies "$pid"; boot_j=$_PROC_START_J
             proc_start=$(( boot_j / clock_hz ))
             up=$(( UPTIME_SEC - proc_start ))
             (( up < 0 )) && up=0
@@ -722,21 +769,32 @@ systemd_unit_file_installed() {
 # Единый источник статуса управляемых служб — sa02m-web-service-ctl.sh list
 # (active / inactive / disabled с учётом user_disabled+mask, как «Управление → Службы»).
 declare -A SVC_CTL_STATE=()
+SVC_CTL_LIST_CACHE=/var/run/sa02m-svcctl/list.json
 
 load_svc_ctl_states() {
     SVC_CTL_STATE=()
     local CTL=/usr/local/sbin/sa02m-web-service-ctl.sh
     [ -x "$CTL" ] || return 0
     command -v python3 >/dev/null 2>&1 || return 0
-    local tmp
-    tmp=$(mktemp /tmp/sa02m-svcctl.XXXXXX)
-    if ! sudo -n "$CTL" list >"$tmp" 2>/dev/null; then
-        rm -f "$tmp"
-        return 0
+    local tmp="" src
+    # The helper's `list` leaves its answer in SVC_CTL_LIST_CACHE (root-owned
+    # dir, 0644, dropped by every start/stop/install/uninstall). A copy younger
+    # than 10 s skips the second `sudo CTL list` of a poll round (A8-04); it is
+    # read directly, not through `list --cached` — the sudoers grant pins the
+    # bare `list` verb, and a plain read forks no sudo at all.
+    if cache_is_fresh "$SVC_CTL_LIST_CACHE" 10 && [ -s "$SVC_CTL_LIST_CACHE" ]; then
+        src=$SVC_CTL_LIST_CACHE
+    else
+        tmp=$(mktemp /tmp/sa02m-svcctl.XXXXXX) || return 0
+        src=$tmp
+        if ! timeout -k 2 18 sudo -n "$CTL" list >"$tmp" 2>/dev/null; then
+            rm -f "$tmp"
+            return 0
+        fi
     fi
     while IFS='|' read -r _sid _st; do
         [ -n "$_sid" ] && SVC_CTL_STATE[$_sid]=$_st
-    done < <(python3 - "$tmp" <<'PY'
+    done < <(python3 - "$src" <<'PY'
 import json, sys
 with open(sys.argv[1], encoding="utf-8") as f:
     d = json.load(f)
@@ -753,7 +811,8 @@ for s in d.get("services", []):
     print(f"{sid}|{st}")
 PY
     )
-    rm -f "$tmp"
+    [ -n "$tmp" ] && rm -f "$tmp"
+    return 0
 }
 
 svc_ctl_override() {
@@ -1067,7 +1126,7 @@ rs485_driver_serial_text() {
     text=$(cat "$f" 2>/dev/null) || text=""
     [ -n "$text" ] && printf '%s' "$text" && return 0
     if [ -x "$RS485_STATS_HELPER" ]; then
-        text=$(/usr/bin/sudo -n "$RS485_STATS_HELPER" driver 2>/dev/null) || text=""
+        text=$(timeout -k 1 5 /usr/bin/sudo -n "$RS485_STATS_HELPER" driver 2>/dev/null) || text=""
         [ -n "$text" ] && printf '%s' "$text" && return 0
     fi
     return 1
@@ -1108,7 +1167,7 @@ rs485_load_driver_text() {
         [ -n "$text" ] && break
     done
     if [ -z "$text" ] && [ -x "$RS485_STATS_HELPER" ]; then
-        text=$(/usr/bin/sudo -n "$RS485_STATS_HELPER" driver 2>/dev/null) || text=""
+        text=$(timeout -k 1 5 /usr/bin/sudo -n "$RS485_STATS_HELPER" driver 2>/dev/null) || text=""
     fi
     RS485_DRIVER_TEXT="$text"
 }
@@ -1123,7 +1182,7 @@ rs485_inuse_batch() {
         flag=${line#*:}
         [ -n "$dev" ] || continue
         RS485_INUSE[$dev]=${flag:-0}
-    done < <(/usr/bin/sudo -n "$RS485_STATS_HELPER" inuse-batch "${devs[@]}" 2>/dev/null)
+    done < <(timeout -k 1 8 /usr/bin/sudo -n "$RS485_STATS_HELPER" inuse-batch "${devs[@]}" 2>/dev/null)
 }
 
 rs485_tty_in_use() {
@@ -1134,7 +1193,7 @@ rs485_tty_in_use() {
         return 1
     fi
     if [ -x "$RS485_STATS_HELPER" ]; then
-        /usr/bin/sudo -n "$RS485_STATS_HELPER" inuse "$dev" >/dev/null 2>&1 && return 0
+        timeout -k 1 2 /usr/bin/sudo -n "$RS485_STATS_HELPER" inuse "$dev" >/dev/null 2>&1 && return 0
     fi
     if command -v timeout >/dev/null 2>&1; then
         if command -v fuser >/dev/null 2>&1; then
@@ -1187,35 +1246,44 @@ rs485_err_prev_save() {
     rm -f "$tmp"
 }
 
+# Result in the globals RS485_D_FE/PE/OE, never on stdout: called through
+# `$(…)` the RS485_ERR_PREV_* update happened in a subshell and was lost, so
+# rs485_err_prev_save wrote the old counters back and every delta read 0
+# (A8-03). The caller and the saver must stay in ONE process.
+RS485_D_FE=0 RS485_D_PE=0 RS485_D_OE=0
 rs485_err_deltas() {
     local idx=$1 fe=$2 pe=$3 oe=$4
-    local pfe ppe poe dfe dpe doe
+    local pfe ppe poe
+    RS485_D_FE=0 RS485_D_PE=0 RS485_D_OE=0
     rs485_err_prev_load
     if [ -z "${RS485_ERR_PREV_FE[$idx]+x}" ]; then
         RS485_ERR_PREV_FE[$idx]=$fe
         RS485_ERR_PREV_PE[$idx]=$pe
         RS485_ERR_PREV_OE[$idx]=$oe
-        printf '0 0 0'
         return 0
     fi
     pfe=${RS485_ERR_PREV_FE[$idx]:-0}
     ppe=${RS485_ERR_PREV_PE[$idx]:-0}
     poe=${RS485_ERR_PREV_OE[$idx]:-0}
-    dfe=$(( fe - pfe )); (( dfe < 0 )) && dfe=$fe
-    dpe=$(( pe - ppe )); (( dpe < 0 )) && dpe=$pe
-    doe=$(( oe - poe )); (( doe < 0 )) && doe=$oe
+    RS485_D_FE=$(( fe - pfe )); (( RS485_D_FE < 0 )) && RS485_D_FE=$fe
+    RS485_D_PE=$(( pe - ppe )); (( RS485_D_PE < 0 )) && RS485_D_PE=$pe
+    RS485_D_OE=$(( oe - poe )); (( RS485_D_OE < 0 )) && RS485_D_OE=$oe
     RS485_ERR_PREV_FE[$idx]=$fe
     RS485_ERR_PREV_PE[$idx]=$pe
     RS485_ERR_PREV_OE[$idx]=$oe
-    printf '%s %s %s' "$dfe" "$dpe" "$doe"
+    return 0
 }
 
+# Result in the global RS485_PORT_JSON, not on stdout: a caller wrapping it in
+# `$(…)` would lose the error-delta state it updates (see rs485_err_deltas).
+RS485_PORT_JSON=""
 rs485_port_json() {
-    local num=$1 dev real ttyname portidx line tx rx fe pe oe fe_d pe_d oe_d deltas inuse driver_text
+    local num=$1 dev real ttyname portidx line tx rx fe pe oe fe_d pe_d oe_d inuse driver_text
     dev="/dev/RS-485-${num}"
+    RS485_PORT_JSON=""
 
     if [ ! -e "$dev" ]; then
-        printf '{"n":%d,"dev":"","st":"absent","open":0,"tx":0,"rx":0,"fe":0,"pe":0,"oe":0,"fe_d":0,"pe_d":0,"oe_d":0}' "$num"
+        printf -v RS485_PORT_JSON '{"n":%d,"dev":"","st":"absent","open":0,"tx":0,"rx":0,"fe":0,"pe":0,"oe":0,"fe_d":0,"pe_d":0,"oe_d":0}' "$num"
         return
     fi
 
@@ -1237,11 +1305,12 @@ rs485_port_json() {
             line=""
         fi
         if [ -n "$line" ]; then
-            tx=$(printf '%s\n' "$line" | grep -o 'tx:[0-9]*' | cut -d: -f2); tx=${tx:-0}
-            rx=$(printf '%s\n' "$line" | grep -o 'rx:[0-9]*' | cut -d: -f2); rx=${rx:-0}
-            fe=$(printf '%s\n' "$line" | grep -o 'fe:[0-9]*' | cut -d: -f2); fe=${fe:-0}
-            pe=$(printf '%s\n' "$line" | grep -o 'pe:[0-9]*' | cut -d: -f2); pe=${pe:-0}
-            oe=$(printf '%s\n' "$line" | grep -o 'oe:[0-9]*' | cut -d: -f2); oe=${oe:-0}
+            # In-shell matches, not 5 x `grep | cut` per port (A8-06).
+            [[ $line =~ (^|[[:space:]])tx:([0-9]+) ]] && tx=${BASH_REMATCH[2]}
+            [[ $line =~ (^|[[:space:]])rx:([0-9]+) ]] && rx=${BASH_REMATCH[2]}
+            [[ $line =~ (^|[[:space:]])fe:([0-9]+) ]] && fe=${BASH_REMATCH[2]}
+            [[ $line =~ (^|[[:space:]])pe:([0-9]+) ]] && pe=${BASH_REMATCH[2]}
+            [[ $line =~ (^|[[:space:]])oe:([0-9]+) ]] && oe=${BASH_REMATCH[2]}
         fi
     fi
 
@@ -1252,10 +1321,8 @@ rs485_port_json() {
     pe_d=0
     oe_d=0
     if [ -n "$portidx" ]; then
-        deltas=$(rs485_err_deltas "$portidx" "$fe" "$pe" "$oe")
-        fe_d=$(printf '%s' "$deltas" | awk '{print $1}')
-        pe_d=$(printf '%s' "$deltas" | awk '{print $2}')
-        oe_d=$(printf '%s' "$deltas" | awk '{print $3}')
+        rs485_err_deltas "$portidx" "$fe" "$pe" "$oe"
+        fe_d=$RS485_D_FE pe_d=$RS485_D_PE oe_d=$RS485_D_OE
     fi
 
     # Additive `modules` block from the bus-free roster cache (valid JSON already,
@@ -1265,7 +1332,7 @@ rs485_port_json() {
         modules_frag=',"modules":'"${RS485_MODULES[$num]}"
     fi
 
-    printf '{"n":%d,"dev":"%s","st":"present","open":%d,"tx":%s,"rx":%s,"fe":%s,"pe":%s,"oe":%s,"fe_d":%s,"pe_d":%s,"oe_d":%s%s}' \
+    printf -v RS485_PORT_JSON '{"n":%d,"dev":"%s","st":"present","open":%d,"tx":%s,"rx":%s,"fe":%s,"pe":%s,"oe":%s,"fe_d":%s,"pe_d":%s,"oe_d":%s%s}' \
         "$num" "$(json_escape "$ttyname")" "$inuse" "$tx" "$rx" "$fe" "$pe" "$oe" "$fe_d" "$pe_d" "$oe_d" "$modules_frag"
 }
 
@@ -1299,8 +1366,10 @@ build_rs485_array() {
     rs485_inuse_batch "${rs485_devs[@]}"
     for (( i=0; i<port_count; i++ )); do
         [ -n "$json" ] && json="${json},"
-        json="${json}$(rs485_port_json "$i")"
+        rs485_port_json "$i"
+        json="${json}${RS485_PORT_JSON}"
     done
+    # Same process as the loop above, so it saves the counters the loop read.
     rs485_err_prev_save
     printf '%s' "$json"
 }
@@ -2730,9 +2799,9 @@ case "$STATUS_PART" in
     services)
         if [ "${STATUS_SERVICES_FAST:-0}" = "1" ]; then
             # Own short-TTL cache key so the fast variant never poisons the 45 s full cache.
-            cache_print_or_build "${CACHE_DIR}/services_fast.json" 10 build_services_json
+            cache_print_or_build "${CACHE_DIR}/services_fast.json" 10 build_services_json 30
         else
-            cache_print_or_build "${CACHE_DIR}/services.json" 45 build_services_json
+            cache_print_or_build "${CACHE_DIR}/services.json" 45 build_services_json 135
         fi
         ;;
     hardware)
@@ -2745,7 +2814,9 @@ case "$STATUS_PART" in
         status_emit_live build_main_json
         ;;
     rs485)
-        cache_print_or_build "${CACHE_DIR}/rs485.json" 8 build_rs485_json
+        # Past its TTL but within 3 x TTL: answered stale, rebuilt in the
+        # background (cache_print_stale_and_refresh). Same for services.
+        cache_print_or_build "${CACHE_DIR}/rs485.json" 8 build_rs485_json 24
         ;;
     blocks)
         cache_print_or_build "${CACHE_DIR}/blocks.json" 60 build_blocks_json

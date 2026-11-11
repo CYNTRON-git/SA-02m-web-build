@@ -174,9 +174,10 @@ elif [ "$REQUEST_METHOD" = "GET" ]; then
 
     # Append service state (is-active/is-enabled exit ≠0 when inactive/disabled —
     # must not append "unknown" via ||, or we get "inactive\nunknown").
-    SVC_STATE=$(systemctl is-active sa02m-cloud-agent 2>/dev/null || true)
+    # Bounded (A8-11): a timeout leaves the value empty -> "unknown", as before.
+    SVC_STATE=$(timeout 2 systemctl is-active sa02m-cloud-agent 2>/dev/null || true)
     [ -n "$SVC_STATE" ] || SVC_STATE=unknown
-    SVC_ENABLED=$(systemctl is-enabled sa02m-cloud-agent 2>/dev/null || true)
+    SVC_ENABLED=$(timeout 2 systemctl is-enabled sa02m-cloud-agent 2>/dev/null || true)
     [ -n "$SVC_ENABLED" ] || SVC_ENABLED=unknown
     # www-data cannot look inside /etc/sa02m-cloud (750 root:root).
     HAS_TOKEN=false
