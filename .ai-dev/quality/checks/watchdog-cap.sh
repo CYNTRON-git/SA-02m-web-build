@@ -40,6 +40,13 @@
 #      Known limit: a static text pin, so it sees the path spelled literally;
 #      a writer that builds the path in a variable escapes it (both shipped
 #      writers spell it out, deliberately, so this pin can see them).
+#   9. With RebootWatchdogSec armed (>0), the FIRST active `setenv bootargs`
+#      line of the default boot payload etc/boot.cmd.sa02m.min carries
+#      watchdog.stop_on_reboot=0 — else the kernel disarms the watchdog itself
+#      before a hung reboot (audit 2026-11-11 A1-01). Comment-stripped: a
+#      `#`-disabled bootargs line FAILS (no active line). Reaches the repo
+#      payload only — what an INSTALLED board boots is sa02m-bootscr-apply.sh
+#      check's to say, not this gate's.
 #
 # Deliberate NON-flags (a gate that cries wolf here gets switched off):
 #   - `=0` / `off` disables, including the imaging `systemctl set-property
@@ -365,6 +372,38 @@ elif [ "$fails" -ne "$fails_before_pin8" ]; then
         "$wd_writes" "${#wd_sysfs_files[@]}" "$((fails - fails_before_pin8))"
 else
     pass "$wd_writes direct sysfs timeout write(s) across ${#wd_sysfs_files[@]} file(s) are clamped to max_timeout (no constant above ${HW_CAP_SEC}s)"
+fi
+
+# ── 9. An armed reboot watchdog is not disarmed by the kernel itself ───────
+# RebootWatchdogSec>0 is only half the hung-reboot fix: without the kernel
+# parameter watchdog.stop_on_reboot=0 the kernel stops the watchdog in
+# kernel_restart_prepare(), before device_shutdown — where the reboot hangs
+# (.ai-dev/notes/reboot-hang-2026-10-21.md). The policy home's comment used to
+# say the parameter was in boot.scr while the payload never carried it (audit
+# 2026-11-11 A1-01). Pinned on the default boot.scr payload, comment-stripped:
+# its FIRST `setenv bootargs` line (the one U-Boot uses) carries the parameter.
+# Non-vacuous: a missing payload, no `setenv bootargs` line, or an unreadable
+# RebootWatchdogSec in the policy home FAILS.
+BOOT_PAYLOAD=etc/boot.cmd.sa02m.min
+reboot_val=$(uncommented "$POLICY_HOME" | grep -oE 'RebootWatchdogSec=[^[:space:]]+' | head -n 1)
+reboot_secs=$(dur_secs "${reboot_val#RebootWatchdogSec=}") || reboot_secs=""
+if [ -z "$reboot_secs" ]; then
+    fail "pin 9: cannot read RebootWatchdogSec from $POLICY_HOME — the boot-parameter pin has nothing to key on"
+elif ! awk -v s="$reboot_secs" 'BEGIN { exit !(s > 0) }'; then
+    pass "pin 9: RebootWatchdogSec is a disable — watchdog.stop_on_reboot=0 not required"
+elif [ ! -f "$BOOT_PAYLOAD" ]; then
+    fail "pin 9: $BOOT_PAYLOAD missing — the boot parameter cannot be checked"
+else
+    # Capture, then match in-shell (no producer piped into an early-exit grep).
+    boot_text=$(stripped_text "$BOOT_PAYLOAD")
+    bootargs=$(grep -E '^[[:space:]]*setenv[[:space:]]+bootargs([[:space:]]|$)' <<<"$boot_text")
+    bootargs=${bootargs%%$'\n'*}
+    case " $bootargs " in
+        " ") fail "pin 9: $BOOT_PAYLOAD has no active \`setenv bootargs\` line — U-Boot would boot with no kernel command line from it" ;;
+        *[[:space:]]watchdog.stop_on_reboot=0[[:space:]]*)
+            pass "pin 9: RebootWatchdogSec armed and the first \`setenv bootargs\` of $BOOT_PAYLOAD carries watchdog.stop_on_reboot=0" ;;
+        *) fail "pin 9: RebootWatchdogSec is armed but the first \`setenv bootargs\` of $BOOT_PAYLOAD lacks watchdog.stop_on_reboot=0 — the kernel disarms the watchdog itself before a hung reboot can be reset (got: $bootargs)" ;;
+    esac
 fi
 
 [ "$fails" = 0 ] || printf 'watchdog-cap: %s check(s) failed — policy home: %s\n' "$fails" "$POLICY_HOME"

@@ -605,6 +605,29 @@ install -d -m 755 /etc/systemd/system.conf.d
 sa02m_atomic_install -m 644 "$ETC_REPO/systemd/sa02m-watchdog.conf" \
     /etc/systemd/system.conf.d/sa02m-watchdog.conf
 
+# boot.scr restorer (sa02m-restore-dtb.service, from the image): refreshed ONLY
+# where the image already put it — the installer never introduces the service
+# on a board without it. The new copy writes FAT by tmp + rename instead of a
+# `cp` over the live boot.scr / DTB (audit 2026-11-11 A3-01).
+if [ -f /usr/local/sbin/sa02m-restore-dtb.sh ] && [ -f "$ETC_REPO/sa02m-restore-dtb.sh" ]; then
+    sa02m_atomic_install -m 755 "$ETC_REPO/sa02m-restore-dtb.sh" /usr/local/sbin/sa02m-restore-dtb.sh
+    sed -i 's/\r$//' /usr/local/sbin/sa02m-restore-dtb.sh
+fi
+
+# Hand-run boot.scr tool + what it builds from (watchdog.stop_on_reboot=0,
+# A1-01). Installed, NEVER run here: neither the installer nor OTA rewrites
+# boot.scr on a board (Operator decision В2 (a)); the procedure is
+# docs/deployment.md «Пути деплоя» (boot.scr). uboot-script.py keeps its one
+# home in tools/imaging/ — this is a copy for the board.
+if [ -f "$ETC_REPO/boot.cmd.sa02m.min" ] && [ -f "$ETC_REPO/../tools/imaging/uboot-script.py" ] \
+   && [ -f "$ETC_REPO/../usr/local/sbin/sa02m-bootscr-apply.sh" ]; then
+    install -d -m 755 /usr/local/share/sa02m /usr/local/lib/sa02m
+    sa02m_atomic_install -m 644 "$ETC_REPO/boot.cmd.sa02m.min" /usr/local/share/sa02m/boot.cmd.sa02m.min
+    sa02m_atomic_install -m 644 "$ETC_REPO/../tools/imaging/uboot-script.py" /usr/local/lib/sa02m/uboot-script.py
+    sa02m_atomic_install -m 755 "$ETC_REPO/../usr/local/sbin/sa02m-bootscr-apply.sh" /usr/local/sbin/sa02m-bootscr-apply.sh
+    sed -i 's/\r$//' /usr/local/share/sa02m/boot.cmd.sa02m.min /usr/local/sbin/sa02m-bootscr-apply.sh
+fi
+
 # Уменьшаем умолчательный stop-timeout сервисов: иначе при reboot, если
 # какой-нибудь сервис «застрял», systemd ждёт 90 секунд прежде чем
 # отправить SIGKILL и продолжить — итог: reboot занимает 2-3 минуты.

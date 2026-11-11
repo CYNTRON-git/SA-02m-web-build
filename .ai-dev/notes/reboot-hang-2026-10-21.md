@@ -51,6 +51,10 @@ hung reboot ever recovers. Evidence files live in
   persistent `/etc/systemd/system.conf.d/zz-bench-rebootwdt.conf`
   (`RebootWatchdogSec=16s`). Both are bench state until the repo payload and
   the policy file change through the normal loop and are observed on hardware.
+- How the parameter reaches an installed board (1.0.7.36): only by hand —
+  `sa02m-bootscr-apply.sh check` / `apply` + reboot; the installer and OTA
+  never rewrite `boot.scr`. Procedure and rollback: `docs/deployment.md`
+  «Пути деплоя», row «boot.scr».
 
 ## How to see the kernel's shutdown on this board
 
