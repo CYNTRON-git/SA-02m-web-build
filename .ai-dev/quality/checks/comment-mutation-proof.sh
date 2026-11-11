@@ -408,6 +408,8 @@ status-cache|etc/sa02m-web-service-ctl.sh|trap '"'"'svc_list_cache_invalidate'"'
 cgi-timeouts|etc/nginx/network_config.conf|limit_conn     sa02m_cgi_sess 6;
 cgi-timeouts|etc/nginx/network_config.conf|limit_conn     sa02m_mon_sess 1;
 cgi-timeouts|www/network_config/cgi-bin/mqtt_monitor.cgi|exec timeout -k 2 60
+watchdog-cap|etc/boot.cmd.sa02m.min|setenv bootargs root=/dev/mmcblk2p2
+bootscr-apply|etc/sa02m-restore-dtb.sh|[ "$staged" = 1 ] && mv -f "$tmp" "$fat_file" && replaced=1
 '
 
 command -v git >/dev/null 2>&1 || { echo "comment-mutation-proof: FAIL — git is required to build the pristine copy"; exit 1; }

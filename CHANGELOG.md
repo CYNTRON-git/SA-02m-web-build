@@ -9,7 +9,7 @@
 
 ### Delivery
 
-- **Full installation only** (`install.sh`, including `--refresh`): automatic nginx restart (new drop-in `nginx.service.d/sa02m-restart.conf`) and the new restart limits of `fcgiwrap.service`.
+- **Full installation only** (`install.sh`, including `--refresh`): automatic nginx restart (new drop-in `nginx.service.d/sa02m-restart.conf`) and the new restart limits of `fcgiwrap.service`; the `sa02m-bootscr-apply.sh` tool with its `boot.scr` source (see the last section).
 - **Network update (OTA, offline package) and full installation**, not www-only: the Modbus-to-MQTT bridge and telemetry, the device archive, the scenario engine, Alice, the flasher, the cloud agent, the port coordinator, the helpers in `/usr/local/sbin` (service control, kernel switch, bridge configuration writer), the nginx site (checked with `nginx -t`) and `sa02m-rs485-roster.service`. Telemetry, the device logger, scenarios and a running bridge are restarted by the update; the userspace watchdog, the failure monitor and the cloud agent apply the new behaviour after their service or the board restarts.
 - **Every path, www-only included**: CGI endpoints, panel pages and scripts, the login library, the clock helper `sa02m-clock-set.sh` with its new `sudoers` grant, and the network file writer.
 
@@ -62,6 +62,10 @@
 ### Verification
 
 - New registry checks: `mqtt-config-apply-atomic`, `mqtt-status-secret`, `userspace-watchdog-probe`, `kernel-select`, `initd-bounded`, `apply-time`, `js-unit-forms-time-prefill`, `no-timeout-on-shell-function`, `clock-set-helper`, `status-cache`, `json-escape-equiv`, `cgi-timeouts`; extended `iface-conf-write`, `sudoers-pin-contract`, `rs485-roster-consumer`, `web-auth-behaviour` and the unit suites of the bridge, scenarios, Alice, the flasher, the cloud agent, the port coordinator and the device archive.
+
+### Boot script: reboot watchdog parameter
+
+The `boot.scr` source (`etc/boot.cmd.sa02m.min`) carries the kernel parameter `watchdog.stop_on_reboot=0`; without it the kernel disarms the hardware watchdog itself before a hanging reboot. **On an installed board the parameter takes effect only after the hand-run tool is applied**: `sa02m-bootscr-apply.sh check` → `apply` → reboot → `check`. Neither installation nor updates rewrite `boot.scr`; new images carry the parameter. The restorer `sa02m-restore-dtb.sh` replaces boot partition files atomically. `watchdog-cap` requires the parameter in the source; `bootscr-apply` checks the tool and the restorer.
 
 ## 1.0.7.35 - Select Fast Modbus channels for serial templates (November 2026)
 
