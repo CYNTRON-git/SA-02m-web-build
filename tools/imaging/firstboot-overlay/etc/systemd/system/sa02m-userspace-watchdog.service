@@ -1,5 +1,5 @@
 [Unit]
-Description=SA-02m userspace watchdog (forces reboot on persistent userspace failures)
+Description=SA-02m userspace watchdog (reboots on persistent whole-board failures; web faults only restart the web services)
 Documentation=file:/usr/local/sbin/sa02m-userspace-watchdog
 After=network.target network-online.target nginx.service ssh.service mplc4.service
 Wants=network-online.target

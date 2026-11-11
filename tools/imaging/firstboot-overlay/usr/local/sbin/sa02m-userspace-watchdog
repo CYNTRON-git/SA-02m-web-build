@@ -13,11 +13,16 @@
 #   * fail-счётчик каждой проверки независим. Если у любой проверки
 #     счётчик достигает FAIL_THRESHOLD подряд — выполняется
 #     `sa02m_reboot()` (попытки graceful → force → отпуск /dev/watchdog).
-#     ИСКЛЮЧЕНИЕ: проверка `cgi` только лечит — перезапуск fcgiwrap, но
-#     НИКОГДА не перезагрузка платы (решение Оператора 2026-11-11): стойкая
-#     поломка слоя CGI (битая lib_web_auth.sh, потерянный exec-бит) не лечится
-#     перезапуском веб-сервисов, а перезагрузка прерывала бы CODESYS/MPLC4
-#     каждые ~13 мин; плата живёт без панели.
+#     ИСКЛЮЧЕНИЕ (решение Оператора 2026-11-11): веб-проверки — `cgi` (слой CGI),
+#     `web-proc` (нет процесса nginx), `web-port` (панель не слушает порт) и
+#     `http` (страница входа не отдаётся) — только ЛЕЧАТ: перезапуск fcgiwrap /
+#     nginx, но НИКОГДА не перезагрузка платы. Такая поломка (потерянный
+#     exec-бит или CRLF в auth_check.cgi, права на сокет fcgiwrap, nginx не
+#     стартует) перезапуском не всегда лечится, а перезагрузка прерывала бы
+#     CODESYS/MPLC4 каждые ~13 мин; плата живёт без панели. Перезагрузку
+#     по-прежнему вызывают отказы всей платы: нет sshd (и любого другого
+#     процесса из REQUIRED_PROCS, кроме nginx), закрыт порт SSH, интерфейс,
+#     load, память.
 #   * Любой ok сбрасывает свой счётчик.
 #
 # Логи:
@@ -48,15 +53,19 @@ HTTP_PROBE_URL="${HTTP_PROBE_URL:-}"
 CGI_PROBE_URL="${CGI_PROBE_URL:-}"
 SA02M_WEB_PORT_LIB="${SA02M_WEB_PORT_LIB:-/usr/local/lib/sa02m-web-port-lib.sh}"
 # Restart a dead fcgiwrap / nginx at this many consecutive failures of their
-# check and again at twice that, before FAIL_THRESHOLD reboots the board.
+# check and again at twice that, then every FAIL_THRESHOLD. The web checks
+# (cgi, web-proc, web-port, http) are heal-only and never reboot the board.
 CGI_RESTART_AT="${CGI_RESTART_AT:-6}"
 # A probe that TIMES OUT (curl rc 28) is a busy fcgiwrap pool, not a dead layer:
 # a restart would kill an in-flight offline-update upload (600 s) or backup
 # stream (300 s). It is healed only after this many consecutive timeouts
-# (90 x 10 s = 15 min, longer than any single bounded request).
+# (90 x (4 s probe + 10 s interval) = about 21 min, longer than any single
+# bounded request).
 CGI_BUSY_RESTART_AT="${CGI_BUSY_RESTART_AT:-90}"
 NET_IFACE="${NET_IFACE:-eth0}"
 # REQUIRED_PROCS — отсутствие любого из них на FAIL_THRESHOLD подряд → reboot.
+# nginx отсюда исключён кодом (WEB_PROCS): его отсутствие только перезапускает
+# nginx (проверка web-proc), плату не перезагружает, даже если он указан в conf.
 # Кладём сюда ТОЛЬКО критичную для управления плитой инфраструктуру.
 # mplc4 здесь НЕТ умышленно: на части плат он по дизайну отключён,
 # а его отсутствие не должно перезагружать устройство (см. WATCHED_PROCS).
@@ -151,12 +160,37 @@ check_proc() {
     pgrep -x "$name" >/dev/null 2>&1
 }
 
+# Web-only processes: their absence is a panel fault, not a board fault, so it is
+# judged by `check_web_procs` (heal-only) and NEVER by `check_required_procs`
+# (reboot). Fixed on purpose, not configurable: a conf must not be able to put
+# nginx back on the reboot path.
+WEB_PROCS="nginx"
+
+is_web_proc() {
+    case " $WEB_PROCS " in *" $1 "*) return 0 ;; esac
+    return 1
+}
+
 check_required_procs() {
     local p missing=""
     for p in $REQUIRED_PROCS; do
+        is_web_proc "$p" && continue
         if ! check_proc "$p"; then
             missing="$missing $p"
         fi
+    done
+    if [ -n "$missing" ]; then
+        echo "missing:${missing# }"
+        return 1
+    fi
+    echo "ok"
+    return 0
+}
+
+check_web_procs() {
+    local p missing=""
+    for p in $WEB_PROCS; do
+        check_proc "$p" || missing="$missing $p"
     done
     if [ -n "$missing" ]; then
         echo "missing:${missing# }"
@@ -317,16 +351,24 @@ sa02m_reboot() {
 }
 
 # ───────────────────────────── service healing ─────────────────────────────
-# A dead fcgiwrap or nginx is a one-service fault: restart that service first
-# (at CGI_RESTART_AT and 2*CGI_RESTART_AT consecutive failures); for `procs` the
-# board is rebooted if FAIL_THRESHOLD is still reached after that. The `cgi`
-# check never reboots: after the first two heals it restarts fcgiwrap again
-# every FAIL_THRESHOLD failures.
+# Web-only faults are HEAL-ONLY (Operator 2026-11-11): the checks `cgi`,
+# `web-proc` (nginx process missing), `web-port` (the panel port not listening)
+# and `http` (login page not served) restart the web service and NEVER reach
+# the board reboot — a reboot cannot cure them and interrupts CODESYS/MPLC4
+# about every 13 minutes. Whole-board faults (`procs` for non-web processes,
+# `ssh-port`, `iface`, `load`, `mem`) still reboot at FAIL_THRESHOLD.
+# A heal-only check restarts at CGI_RESTART_AT and 2*CGI_RESTART_AT consecutive
+# failures, then again every FAIL_THRESHOLD failures.
+is_heal_only() {
+    case "$1" in cgi|web-proc|web-port|http) return 0 ;; esac
+    return 1
+}
+
 heal_due() {
     [ "$1" -eq "$CGI_RESTART_AT" ] || [ "$1" -eq $(( 2 * CGI_RESTART_AT )) ]
 }
 
-heal_cgi_due() {
+heal_only_due() {
     heal_due "$1" || { [ "$1" -gt $(( 2 * CGI_RESTART_AT )) ] && [ $(( $1 % FAIL_THRESHOLD )) -eq 0 ]; }
 }
 
@@ -336,15 +378,29 @@ heal_fcgiwrap() {
     timeout 30 systemctl restart fcgiwrap.service >/dev/null 2>&1 || log "HEAL: restart fcgiwrap.service failed"
 }
 
+# $1 = count, $2 = check name. One nginx restart per pass however many of the
+# web checks fail together (a dead nginx fails web-proc, web-port and http).
+NGINX_HEALED_PASS=""
 heal_nginx() {
-    log "HEAL: restart nginx.service (check=procs count=$1)"
+    [ "$NGINX_HEALED_PASS" = "$WD_PASS" ] && return 0
+    NGINX_HEALED_PASS=$WD_PASS
+    log "HEAL: restart nginx.service (check=${2:-web} count=$1)"
     timeout 30 systemctl reset-failed nginx.service >/dev/null 2>&1 || true
     timeout 30 systemctl restart nginx.service >/dev/null 2>&1 || log "HEAL: restart nginx.service failed"
+}
+
+# What a heal-only check restarts: the CGI layer -> fcgiwrap, the rest -> nginx.
+heal_web() {
+    case "$1" in
+        cgi) heal_fcgiwrap "$2" ;;
+        *)   heal_nginx "$2" "$1" ;;
+    esac
 }
 
 # ───────────────────────────── main loop ──────────────────────────────────
 declare -A FAIL_COUNT
 CGI_BUSY_COUNT=0
+WD_PASS=0
 
 run_check() {
     local name=$1 result status
@@ -365,15 +421,10 @@ run_check() {
     fi
     if [ "$status" -ne 0 ]; then
         FAIL_COUNT["$name"]=$(( ${FAIL_COUNT["$name"]:-0} + 1 ))
-        # Heal-only (Operator 2026-11-11): a cgi failure alone never reaches the
+        # Heal-only (Operator 2026-11-11): a web-only failure never reaches the
         # reboot below. One line on purpose — the comment-out proof pins it.
-        [ "$name" = cgi ] && { log "check ${name}: FAIL (${result}) [count=${FAIL_COUNT[$name]}, heal-only: never reboots]"; heal_cgi_due "${FAIL_COUNT[$name]}" && heal_fcgiwrap "${FAIL_COUNT[$name]}"; return 0; }
+        is_heal_only "$name" && { log "check ${name}: FAIL (${result}) [count=${FAIL_COUNT[$name]}, heal-only: never reboots]"; heal_only_due "${FAIL_COUNT[$name]}" && heal_web "$name" "${FAIL_COUNT[$name]}"; return 0; }
         log "check ${name}: FAIL (${result}) [count=${FAIL_COUNT[$name]}/${FAIL_THRESHOLD}]"
-        if heal_due "${FAIL_COUNT[$name]}"; then
-            case "$name:$result" in
-                procs:*nginx*) heal_nginx "${FAIL_COUNT[$name]}" ;;
-            esac
-        fi
         if [ "${FAIL_COUNT[$name]}" -ge "$FAIL_THRESHOLD" ]; then
             sa02m_reboot "check=${name} reason=${result}"
         fi
@@ -391,6 +442,7 @@ main() {
     resolve_web_port
 
     while true; do
+        WD_PASS=$loop
         now=$(uptime_sec)
 
         if [ "$grace_done" -eq 0 ]; then
@@ -413,6 +465,7 @@ main() {
                 log_watched_procs
             else
                 run_check "procs"     check_required_procs
+                run_check "web-proc"  check_web_procs
                 run_check "ssh-port"  check_port "$SSH_PORT"
                 run_check "web-port"  check_port "$WEB_PORT"
                 run_check "http"      check_http "$HTTP_PROBE_URL"

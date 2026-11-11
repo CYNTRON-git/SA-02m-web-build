@@ -397,7 +397,9 @@ mqtt-status-secret|www/network_config/cgi-bin/mqtt_status.cgi|web_csrf_require
 iface-conf-write|etc/sa02m-iface-conf-write.sh|[ "$staged" = 1 ] && mv -f -- "$wtmp" "$dst" && replaced=1
 userspace-watchdog-probe|etc/systemd/system/nginx.service.d/sa02m-restart.conf|Restart=on-failure
 userspace-watchdog-probe|etc/sa02m-userspace-watchdog.sh|timeout 30 systemctl restart fcgiwrap.service
-userspace-watchdog-probe|etc/sa02m-userspace-watchdog.sh|[ "$name" = cgi ] && { log "check ${name}: FAIL
+userspace-watchdog-probe|etc/sa02m-userspace-watchdog.sh|is_heal_only "$name" && { log "check ${name}: FAIL
+userspace-watchdog-probe|etc/sa02m-userspace-watchdog.sh|is_web_proc "$p" && continue
+userspace-watchdog-probe|etc/sa02m-userspace-watchdog.sh|NGINX_HEALED_PASS=$WD_PASS
 userspace-watchdog-probe|etc/sa02m-userspace-watchdog.sh|[ "$rc" -eq 28 ] && { echo "busy"; return 0; }
 userspace-watchdog-probe|www/network_config/cgi-bin/auth_check.cgi|echo "unauthorized"
 userspace-watchdog-probe|www/network_config/cgi-bin/auth_check.cgi|echo "Status: 401 Unauthorized"

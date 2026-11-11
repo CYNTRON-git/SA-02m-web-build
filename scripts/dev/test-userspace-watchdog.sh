@@ -38,6 +38,11 @@
 #       fcgiwrap.service` is issued and NO board reboot ever follows — the cgi
 #       check is heal-only (Operator 2026-11-11).  RED: the cgi check reboots
 #   A2b control: a missing required process (sshd) still reboots.
+#   A2c the other web-only faults are heal-only too (Operator J-2): nginx process
+#       missing (web-proc), the panel port not listening (web-port), login.html
+#       not served (http) -> nginx restarted, NO reboot; one restart per pass when
+#       they fail together.  RED on 51d31d08: each reaches FORCED REBOOT.
+#   A2d control: ssh-port closed still reboots.
 #   A5  a probe TIMEOUT (saturated fcgiwrap pool) restarts nothing until
 #       CGI_BUSY_RESTART_AT consecutive timeouts (A5b: then one restart, never
 #       a reboot) — a restart would kill an in-flight upload.  RED: restarts
@@ -199,6 +204,7 @@ case "$url" in
         else
             code=${SHIM_CGI_CODE:-401}; body=${SHIM_CGI_BODY:-unauthorized}
         fi ;;
+    *login.html) code=${SHIM_HTTP_CODE:-200}; body=ok ;;     # the static page nginx serves
     *) code=200; body=ok ;;
 esac
 if [ -n "$out" ]; then printf '%s\n' "$body" > "$out"; else printf '%s\n' "$body"; fi
@@ -209,6 +215,9 @@ EOF
 cat > "$SH/ss" <<'EOF'
 #!/bin/bash
 printf 'ss %s\n' "$*" >> "$SHIM_LOG"
+port=""
+for a in "$@"; do case "$a" in *"sport = :"*) port=${a##*:} ;; esac; done
+[ -n "$port" ] && [ -n "${SHIM_SS_MISS:-}" ] && case " $SHIM_SS_MISS " in *" $port "*) exit 0 ;; esac   # a port nobody listens on
 echo "LISTEN 0 128 0.0.0.0:22 0.0.0.0:*"
 EOF
 cat > "$SH/pgrep" <<'EOF'
@@ -307,11 +316,13 @@ fi
 # Operator decision 2026-11-11: a cgi failure alone restarts fcgiwrap and never
 # reaches the reboot path, however long it lasts (8 passes here against
 # FAIL_THRESHOLD=3). The board keeps running without the panel.
+# Heals fall at failures 1, 2 (CGI_RESTART_AT=1, doubled) and then every
+# FAIL_THRESHOLD (3, 6): >= 4 restarts in 8 passes pins the periodic re-heal.
 : > "$T/wd.log"
 SHIM_CGI_CODE=502 SHIM_CGI_BODY='<html>502 Bad Gateway</html>' wd_run 8
 n_restart=$(grep -c '^systemctl restart fcgiwrap\.service' "$SHIM_LOG")
 n_reboot=$(grep -cE '^systemctl reboot|^reboot' "$SHIM_LOG")
-if [ "$n_restart" -ge 2 ] && [ "$n_reboot" -eq 0 ] && ! grep -q 'FORCED REBOOT' "$T/wd.log" \
+if [ "$n_restart" -ge 4 ] && [ "$n_reboot" -eq 0 ] && ! grep -q 'FORCED REBOOT' "$T/wd.log" \
    && grep -q '^systemctl reset-failed fcgiwrap\.service' "$SHIM_LOG"; then
     ok "A2: persistent CGI 502 -> reset-failed + restart fcgiwrap.service x$n_restart, and NO board reboot over 8 passes (threshold 3)"
 else
@@ -325,6 +336,53 @@ if grep -q 'FORCED REBOOT: check=procs' "$T/wd.log" && grep -qE '^systemctl rebo
     ok "A2b: a missing required process (sshd) still reaches the board reboot at FAIL_THRESHOLD"
 else
     bad "A2b: procs check no longer reboots — log: $(grep -E 'check procs|FORCED' "$T/wd.log" | head -n 3 | tr '\n' '|')"
+fi
+
+# ── A2c: the other web-only faults are heal-only too (Operator J-2) ────────
+# Each of the three alone, over 8 passes against FAIL_THRESHOLD=3: nginx is
+# restarted (and never fcgiwrap) and the board is never rebooted. The conf
+# above lists nginx in REQUIRED_PROCS on purpose: the code must keep it off the
+# reboot path anyway.
+for wc in "web-proc|WD_DOWN=nginx|check web-proc: FAIL" \
+          "web-port|SHIM_SS_MISS=8080|check web-port: FAIL" \
+          "http|SHIM_HTTP_CODE=503|check http: FAIL"; do
+    wlabel=${wc%%|*}; rest=${wc#*|}; wlog=${rest#*|}
+    : > "$T/wd.log"
+    case "$wlabel" in
+        web-proc) WD_DOWN=nginx SHIM_CGI_CODE=401 SHIM_CGI_BODY=unauthorized wd_run 8 ;;
+        web-port) SHIM_SS_MISS=8080 SHIM_CGI_CODE=401 SHIM_CGI_BODY=unauthorized wd_run 8 ;;
+        http)     SHIM_HTTP_CODE=503 SHIM_CGI_CODE=401 SHIM_CGI_BODY=unauthorized wd_run 8 ;;
+    esac
+    n_ng=$(grep -c '^systemctl restart nginx\.service' "$SHIM_LOG")
+    n_fc=$(grep -c '^systemctl restart fcgiwrap\.service' "$SHIM_LOG")
+    n_rb=$(grep -cE '^systemctl reboot|^reboot' "$SHIM_LOG")
+    if grep -q "$wlog" "$T/wd.log" && [ "$n_ng" -ge 4 ] && [ "$n_fc" -eq 0 ] && [ "$n_rb" -eq 0 ] \
+       && ! grep -q 'FORCED REBOOT' "$T/wd.log"; then
+        ok "A2c/$wlabel: a persistent $wlabel fault -> nginx restarted x$n_ng (heal, then every threshold), never fcgiwrap, NO board reboot over 8 passes"
+    else
+        bad "A2c/$wlabel: not heal-only — nginx restarts=$n_ng fcgiwrap=$n_fc reboot calls=$n_rb; log: $(grep -E 'FAIL|FORCED' "$T/wd.log" | head -n 3 | tr '\n' '|')"
+    fi
+done
+
+# A dead nginx fails web-proc, web-port and http in the same pass: ONE restart per
+# pass, not three.
+: > "$T/wd.log"
+WD_DOWN=nginx SHIM_SS_MISS=8080 SHIM_HTTP_CODE=503 SHIM_CGI_CODE=502 wd_run 3
+n_ng=$(grep -c '^systemctl restart nginx\.service' "$SHIM_LOG")
+n_rb=$(grep -cE '^systemctl reboot|^reboot' "$SHIM_LOG")
+if [ "$n_ng" -ge 1 ] && [ "$n_ng" -le 3 ] && [ "$n_rb" -eq 0 ]; then
+    ok "A2c/dedupe: nginx dead (web-proc + web-port + http + cgi failing together) -> $n_ng nginx restart(s) over 3 passes, one per pass at most, no reboot"
+else
+    bad "A2c/dedupe: nginx restarts=$n_ng reboot calls=$n_rb over 3 passes (expected 1..3 restarts, 0 reboots)"
+fi
+
+# ── A2d: an unreachable SSH port is a whole-board fault — still reboots ─────
+: > "$T/wd.log"
+SHIM_SS_MISS=22 SHIM_CGI_CODE=401 SHIM_CGI_BODY=unauthorized wd_run 8
+if grep -q 'FORCED REBOOT: check=ssh-port' "$T/wd.log" && grep -qE '^systemctl reboot' "$SHIM_LOG"; then
+    ok "A2d: ssh-port closed still reaches the board reboot at FAIL_THRESHOLD"
+else
+    bad "A2d: ssh-port no longer reboots — log: $(grep -E 'check ssh-port|FORCED' "$T/wd.log" | head -n 3 | tr '\n' '|')"
 fi
 
 # ── A5: a probe TIMEOUT is a busy pool — no restart mid-upload ─────────────
