@@ -213,3 +213,79 @@ class TestDtvSensorEvents(unittest.TestCase):
         self.poller.read_input_registers.side_effect = [[0], [0x8001]]
         self.poller._poll_sensors(from_reg=2, upto_reg=2)
         self.assertEqual(self.values("temp_mcp9808"), ["0.0"])
+
+
+class TestDtvReadScheduleBySampler(unittest.TestCase):
+    """Audit 2026-11-11 A2-12: only DTV firmware up to 1.0.2.6 forms sensor
+    events inside the FC04 handler (DTV origin/main
+    Core/Src/svc_modbus_registers.c: from 1.0.2.7 the device samples its
+    sources in its own 1 Hz cycle). For 1.0.2.6 the full FC04 stays the event
+    driver; for 1.0.2.7+ an armed subscription needs no FC04 of 25..28
+    beyond the insurance rate, while 29..30 and the outputs (no events) keep
+    the presence rate."""
+
+    SENSORS = ["temp_mcp9808", "light_pct", "presence", "still_distance"]
+    did = TestDtvSensorEvents.did
+    compose = TestDtvSensorEvents.compose   # fixture only, not its tests
+
+    def schedule(self, version, seconds=60.0, step=0.5):
+        self.compose(version, self.SENSORS)
+        del self.poller.poll_io
+        clock = [10000.0]
+        self.enterContext(mock.patch("time.monotonic", side_effect=lambda: clock[0]))
+        reads = []
+
+        def read_input(addr, start, count):
+            reads.append(("in", start, count))
+            return [100] * count
+
+        def read_coils(addr, start, count):
+            reads.append(("coil", start, count))
+            return [0] * count
+        self.poller.read_input_registers = mock.Mock(side_effect=read_input)
+        self.poller.read_coils = mock.Mock(side_effect=read_coils)
+        t_end = clock[0] + seconds
+        while clock[0] < t_end:
+            self.poller.poll_io()
+            clock[0] += step
+        return reads
+
+    @staticmethod
+    def count(reads, *key):
+        return sum(1 for r in reads if r == key)
+
+    def test_up_to_1_0_2_6_full_fc04_stays_the_event_driver(self):
+        reads = self.schedule([1, 0, 2, 6])
+        self.assertTrue(self.poller.fmb_covers_io())
+        self.assertEqual(self.count(reads, "in", 1, 30), 6)       # every 10 s
+        # every 2 s, except on the full-read ticks (which reset that timer)
+        self.assertEqual(self.count(reads, "in", 25, 6), 24)
+        self.assertEqual(self.count(reads, "coil", 1, 2), 30)
+        self.assertEqual(self.count(reads, "in", 25, 4), 0)
+
+    def test_from_1_0_2_7_the_device_samples_by_itself(self):
+        for version in ([1, 0, 2, 7], [1, 0, 2, 16]):
+            with self.subTest(version=version):
+                reads = self.schedule(version)
+                self.assertTrue(self.poller.fmb_covers_io())
+                self.assertEqual(self.count(reads, "in", 1, 30), 0,
+                                 "no full FC04 once the subscription is armed")
+                self.assertEqual(self.count(reads, "in", 1, 24), 6)   # every 10 s
+                self.assertEqual(self.count(reads, "in", 25, 4), 2)   # every 30 s
+                self.assertEqual(self.count(reads, "in", 29, 2), 30)  # every 2 s
+                self.assertEqual(self.count(reads, "coil", 1, 2), 30)
+                self.assertEqual(self.count(reads, "in", 25, 6), 0)
+
+    def test_from_1_0_2_7_without_the_subscription_nothing_changes(self):
+        # FMB not covering the device (subscription not confirmed): the same
+        # schedule as before the boundary -- full FC04 + fast reads.
+        reads = self.schedule([1, 0, 2, 16], seconds=0.0)
+        self.poller.set_fmb_io_covered(False)
+        reads.clear()
+        clock = [20000.0]
+        with mock.patch("time.monotonic", side_effect=lambda: clock[0]):
+            for _ in range(120):
+                self.poller.poll_io()
+                clock[0] += 0.5
+        self.assertEqual(self.count(reads, "in", 1, 30), 6)
+        self.assertEqual(self.count(reads, "in", 25, 6), 24)

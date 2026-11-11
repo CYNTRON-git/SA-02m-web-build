@@ -393,6 +393,10 @@ class PortCycleScheduler:
         self._line_stats = line_stats
         self._stop = threading.Event()
         self._scan_hold = threading.Event()
+        # Set by the lease thread when it takes the line (bridge_scan_lease
+        # _arm); consumed here so the FMB manager is only touched by its own
+        # port thread.
+        self._fmb_rearm = threading.Event()
         self._poll_idx = 0
         tag = port_path.replace("/dev/", "")
         self._log = logging.getLogger(f"port.{tag}")
@@ -403,6 +407,13 @@ class PortCycleScheduler:
             self._fmb.stop()
         for p in self._pollers:
             p.stop()
+
+    def _rearm_fmb_if_due(self) -> None:
+        """Once per lease: the line is back, set the FMB subscriptions again
+        (docs/contracts/port-ownership.md)."""
+        if self._fmb_rearm.is_set() and self._fmb is not None:
+            self._fmb_rearm.clear()
+            self._fmb.rearm_after_line_return()
 
     def _classic_slice(self, budget_s: float, read_at_least_one: bool) -> bool:
         """RegisterPoller.OpenPortCycle — one time-boxed classic pass."""
@@ -511,6 +522,7 @@ class PortCycleScheduler:
                 if self._stop.wait(0.05):
                     break
                 continue
+            self._rearm_fmb_if_due()
             now = time.monotonic()
             has_fmb = self._fmb is not None and self._fmb.has_configured()
             # Offline at first configure_all → quiet retry until device answers.

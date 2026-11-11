@@ -70,6 +70,9 @@ FMB_UNPARSED_LOG_PERIOD_S = 10.0  # unparsable-frame log throttle: the burst
 # upper-port wedge behind the floor: docs/contracts/fmb-event-wire.md §3.
 CE_FMB_WB_MIN_FW = (1, 0, 6, 13)
 DTV_FMB_WB_MIN_FW = (1, 0, 1, 49)
+# From this DTV firmware the device samples its event sources in its own
+# 1 Hz cycle; up to 1.0.2.6 the FC04 handler formed them (contract §3).
+DTV_FMB_SAMPLER_FW = (1, 0, 2, 7)
 CE_FMB_POWER_EVENTS_FW = (1, 0, 7, 6)   # P/Q/S/f/PF events on by default
 CE_FMB_S32_FW = (1, 0, 7, 19)
 CE_FMB_POWER_RANGE = (FMB_EVT_INPUT, 518, 29)
@@ -182,7 +185,14 @@ class FastModbusEventPortManager:
         self._ack_flag:  int = 0
         self._last_poll_answered = False
         self._poll_observation = None
+        # Start time of the poll that FIRST carried the last DATA batch: a
+        # byte-identical replay keeps the original time (see _poll_once).
+        self._poll_origin = None
+        # The addressed (legacy, MR <= 1.0.12.23) empty reply's sender of the
+        # last poll; _poll_empty_slaves is the boundary set BOTH END formats
+        # feed, and the one the burst loop acts on.
         self._poll_empty_slave = None
+        self._poll_empty_slaves: set[int] = set()
         self._last_poll_target = 0
         self._full_data_run = 0
         self._full_bus_poll_due = False
@@ -233,6 +243,11 @@ class FastModbusEventPortManager:
             "id": device_id,
             "ranges": list(ranges),
             "pending": list(ranges),
+            # Ranges the firmware answered with a CRC-valid all-zero mask to
+            # an enable request: "no producer here". Not retried until the
+            # device reboots (0x0F), the range map changes or the line comes
+            # back (docs/contracts/fmb-event-wire.md).
+            "unsupported": [],
             "dispatch": dispatch,
             "poller": poller,
             "type": str(dev_type or "").strip().lower(),
@@ -342,7 +357,11 @@ class FastModbusEventPortManager:
         """One configure pass over the still-unacked ranges. Per-range
         graceful: a rejected range stays on classic polling while the rest
         get events. Returns True when no range is left pending."""
-        def _try(frame: bytes, requested, producer_map=None) -> tuple[bool, str]:
+        def _try(frame: bytes, requested, producer_map=None) -> tuple[bool, str, bool]:
+            """(acked, error text, zero_mask). zero_mask: a CRC-valid WB reply
+            of the expected length, to a request enabling at least one
+            register, with every used bit clear -- the firmware's final "no
+            producer for these registers", not a transient refusal."""
             try:
                 # ACK: [addr][0x46][0x18][mask_len][mask…][CRC] — mask_len
                 # depends on count; leading 0xFF arbitration noise possible.
@@ -350,23 +369,27 @@ class FastModbusEventPortManager:
             except ScanHold:
                 raise
             except Exception as e:
-                return False, f" ({e})"
+                return False, f" ({e})", False
             if requested is not None:
                 mask = fmb_configure_reply_mask(resp, addr)
                 alternatives = (requested,) if producer_map is None else (requested, producer_map)
                 if any(_mask_confirms(mask, settings) for settings in alternatives):
-                    return True, ""
+                    return True, "", False
+                want = fmb_expected_mask(requested)
+                zero = (mask is not None and len(mask) == len(want)
+                        and any(want)
+                        and _mask_confirms(mask, [(c, 0) for c, _s in requested]))
                 return False, (
                     " (reply mask %s, want %s)"
                     % (mask.hex() if mask is not None else "none/CRC-bad",
-                       " or ".join(fmb_expected_mask(s).hex() for s in alternatives)))
+                       " or ".join(fmb_expected_mask(s).hex() for s in alternatives))), zero
             # Legacy has one flags=OK byte, not a register mask. Reusing the
             # decoder retains address/length/CRC checks on this fallback too.
             flags = fmb_configure_reply_mask(resp, addr)
             if flags == b"\x00":
-                return True, ""
+                return True, "", False
             return False, " (legacy flags %s, want 00)" % (
-                flags.hex() if flags is not None else "none/CRC-bad")
+                flags.hex() if flags is not None else "none/CRC-bad"), False
 
         contracts = self._configure_contracts(addr, dev)
         if dev.get("type") in ("dtv", "led", "ce02m3"):
@@ -380,12 +403,22 @@ class FastModbusEventPortManager:
             ok = False
             err = ""
             used = ""
+            # Not short-circuited on a zero mask: an older MR with the legacy
+            # handler may answer the WB frame with 00 and still take legacy.
+            wb_zero = False
             power_profile = (dev["type"] == "ce02m3" and
                              (evt_type, start_reg, count) == CE_FMB_POWER_RANGE)
             priority = dev["poller"].fmb_power_event_settings() if power_profile else 1
+            range_settings = getattr(dev["poller"], "fmb_range_settings", None)
+            settings = (range_settings((evt_type, start_reg, count))
+                        if range_settings is not None and not power_profile else None)
+            if isinstance(settings, (bytes, bytearray)):
+                # Per-register priorities (DTV: 23/24 off); the reply mask is
+                # checked bit by bit against them -- a 0 must come back 0.
+                priority = bytes(settings)
             for contract in contracts:
-                if power_profile and contract != "wb":
-                    continue
+                if isinstance(priority, bytes) and contract != "wb":
+                    continue  # the legacy record carries one priority only
                 build = (build_fmb_configure_events_wb if contract == "wb"
                          else build_fmb_configure_events)
                 producer_map = None
@@ -394,9 +427,10 @@ class FastModbusEventPortManager:
                     # One uniform priority fits a single firmware table slot. Some MR
                     # modules acknowledge only the scaled value in each channel.
                     producer_map = [(count, bytes(i % MR02M_AI_CHANNEL_STRIDE == 0 for i in range(count)))]
-                ok, attempt_err = _try(
+                ok, attempt_err, zero_mask = _try(
                     build(addr, evt_type, start_reg, count, priority),
                     [(count, priority)] if contract == "wb" else None, producer_map)
+                wb_zero = wb_zero or zero_mask
                 err = err or attempt_err
                 if ok:
                     used = contract
@@ -412,6 +446,19 @@ class FastModbusEventPortManager:
                 self._log.info(
                     "configure_events addr=%d type=0x%02X start=%d count=%d "
                     "— %s contract", addr, evt_type, start_reg, count, used)
+            elif wb_zero and dev["type"] != "template":
+                # A user template describes a third-party device whose zero
+                # mask may be a transient refusal (a full event table): it
+                # keeps the retry rotation of configure_template_step.
+                rng = (evt_type, start_reg, count)
+                dev["pending"].remove(rng)
+                if rng not in dev["unsupported"]:
+                    dev["unsupported"].append(rng)
+                self._log.info(
+                    "configure_events addr=%d type=0x%02X start=%d count=%d "
+                    "not supported by the firmware (reply mask all zero) — "
+                    "not retried until the device reboots",
+                    addr, evt_type, start_reg, count)
             else:
                 # Loud once; a slave that never ACKs would otherwise repeat
                 # this per range on every backed-off pass.
@@ -432,7 +479,7 @@ class FastModbusEventPortManager:
         """Disable the CE's default power events when no power profile is active.
         U/I subscriptions and ordinary FC04 measurements survive a refused disable."""
         evt_type, start_reg, count = CE_FMB_POWER_DISABLE_RANGE
-        ok, err = try_frame(
+        ok, err, _zero = try_frame(
             build_fmb_configure_events_wb(addr, evt_type, start_reg, count, 0),
             [(count, 0)])
         if ok:
@@ -498,7 +545,9 @@ class FastModbusEventPortManager:
         """
         self._last_poll_answered = False
         self._poll_observation = None
+        self._poll_origin = None
         self._poll_empty_slave = None
+        self._poll_empty_slaves = set()
         # An RTU reply to FC03/04 has five framing bytes. The same RX budget
         # must fit the twelve event arbitration slots and the eight-byte
         # 0x11 envelope before it can carry event records.
@@ -545,19 +594,22 @@ class FastModbusEventPortManager:
 
         slave_id = buf[0]
         if buf == b"\xfd\x46\x12\x52\x5d":
-            # Standard WB end-of-burst has no source or confirmation flag.
+            # Standard WB end-of-burst has no source or confirmation flag. On
+            # the shared firmware core (MR >= 1.0.12.28, DTV 1.0.2.16, CE
+            # 1.0.7.22) it is THE "no events" answer: no slave that heard a
+            # poll with min_slave = m has anything queued (audit 2026-11-11
+            # H2-01). WB's events reader resets its confirmation state on it
+            # too (docs/contracts/fmb-event-wire.md).
             self._last_poll_answered = True
+            self._mark_slaves_empty(frame[3], frame[4])
             return False, []
         if not frame[3] <= slave_id <= 247:
             return False, []
         if buf[2] == 0x12:
             # No events: [slave][0x46][0x12][flag][CRC_L][CRC_H] = 6 bytes
             self._last_poll_answered = True
-            dev = self._devices.get(slave_id)
-            if dev and dev["configured"] and frame[4] >= max(6, dev["possible_inflight_bytes"]):
+            if slave_id in self._mark_slaves_empty(slave_id, frame[4], only=slave_id):
                 self._poll_empty_slave = slave_id
-                dev.pop("last_confirmation", None)
-                dev.pop("possible_inflight_bytes", None)
             return False, []
 
         flag, n_events, data_len = buf[3:6]
@@ -594,9 +646,43 @@ class FastModbusEventPortManager:
             confirmation = flag if wb_flag else bytes(buf)
             self._confirm_repeated = not confirming and dev.get("last_confirmation") == confirmation
             dev["last_confirmation"] = confirmation
+            # A byte-identical batch (same flag, same records) is the device
+            # re-sending what it already sent: its events are as old as the
+            # poll that first carried them, not this one (audit 2026-11-11
+            # A2-03 -- ordering against a classic read in between).
+            payload = bytes(buf[3:-2])
+            if (dev.get("last_batch_payload") == payload
+                    and "last_batch_started" in dev):
+                origin = dev["last_batch_started"]
+            else:
+                origin = self._poll_observation[0]
+                dev["last_batch_payload"] = payload
+                dev["last_batch_started"] = origin
+            self._poll_origin = origin
         # A count-only DATA participates in arbitration and confirmation.
         # A later scheduled poll retries without spinning at the same budget.
         return bool(data_len), events
+
+    def _mark_slaves_empty(self, min_slave: int, budget: int, *,
+                           only: int | None = None) -> set[int]:
+        """An END answering a poll with `min_slave` and data budget `budget`:
+        every configured device at or above min_slave whose possibly
+        in-flight batch fits the budget has an empty queue -- its batch
+        confirmation is spent and it reached its "empty boundary". `only`
+        narrows to the sender of an addressed reply."""
+        marked = set()
+        for addr, dev in self._devices.items():
+            if addr < min_slave or (only is not None and addr != only):
+                continue
+            if not dev["configured"] or budget < max(6, dev.get("possible_inflight_bytes", 0)):
+                continue
+            dev.pop("last_confirmation", None)
+            dev.pop("possible_inflight_bytes", None)
+            dev.pop("last_batch_payload", None)
+            dev.pop("last_batch_started", None)
+            marked.add(addr)
+        self._poll_empty_slaves |= marked
+        return marked
 
     # --- event-record grammars (0x11) ----------------------------------------
 
@@ -745,7 +831,7 @@ class FastModbusEventPortManager:
     # --- MQTT dispatch -------------------------------------------------------
 
     def _dispatch(self, slave_id: int, evt_type: int, reg: int, val: int,
-                  *, observation=None) -> None:
+                  *, observation=None, origin=None) -> None:
         dev = self._devices.get(slave_id)
         if not dev:
             return
@@ -755,7 +841,10 @@ class FastModbusEventPortManager:
             # wb-mqtt-serial: reboot → SetDisconnected + re-EnableEvents.
             self._log.info("Device addr=%d rebooted (event 0x0F)", slave_id)
             dev["pending"] = list(dev["ranges"])
+            dev["unsupported"] = []
             dev.pop("template_round_left", None)
+            dev.pop("last_batch_payload", None)
+            dev.pop("last_batch_started", None)
             dev["configured"] = False
             # A reboot is also what a just-reflashed module sends: the cached
             # generation may now be wrong, so the next handshake re-decides.
@@ -777,8 +866,12 @@ class FastModbusEventPortManager:
         if observed is not None and observation is not None and slave_id in observation[1]:
             observed(evt_type, reg, val, query_started_at=observation[0],
                      context=observation[1][slave_id])
-        else:
-            dev["dispatch"](evt_type, reg, val)
+            return
+        ordered = getattr(dev.get("poller"), "fmb_dispatch_ordered", None)
+        if ordered is not None and origin is not None:
+            ordered(evt_type, reg, val, origin=origin)
+            return
+        dev["dispatch"](evt_type, reg, val)
 
     def _refresh_ranges_from_poller(self, dev: dict) -> None:
         """Re-read fmb_event_ranges after setup() so hardware type wins.
@@ -797,6 +890,7 @@ class FastModbusEventPortManager:
             "FMB ranges refreshed %s: %s -> %s",
             dev.get("id"), old, new)
         dev["ranges"] = new
+        dev["unsupported"] = []
         dev.pop("template_round_left", None)
         if not dev.get("configured"):
             dev["pending"] = list(new)
@@ -821,10 +915,35 @@ class FastModbusEventPortManager:
     def _note_success(dev: dict) -> None:
         dev["fail_passes"] = 0
         dev["retry_at"] = 0.0
+        dev.pop("ceiling_logged", None)
+
+    @staticmethod
+    def _twin_acked(dev: dict, rng) -> bool:
+        """MR-02m outputs: (COIL, s, n) is covered by a confirmed
+        (HOLDING, s, n) and vice versa -- current firmware reports DO only as
+        the holding event (docs/contracts/fmb-event-wire.md). No other type
+        has such a twin."""
+        if dev.get("type") != "mr02m":
+            return False
+        evt_type, start, count = rng
+        twin_type = {FMB_EVT_COIL: FMB_EVT_HOLDING,
+                     FMB_EVT_HOLDING: FMB_EVT_COIL}.get(evt_type)
+        if twin_type is None:
+            return False
+        twin = (twin_type, start, count)
+        return (twin in dev["ranges"] and twin not in dev["pending"]
+                and twin not in dev.get("unsupported", ()))
+
+    def _io_complete(self, dev: dict) -> bool:
+        """Events cover every channel the classic insurance poll would."""
+        return (bool(dev["configured"]) and not dev["pending"]
+                and all(self._twin_acked(dev, r)
+                        for r in dev.get("unsupported", ())))
 
     def _finish_configure_pass(self, addr: int, dev: dict, now: float) -> None:
-        complete = dev["configured"] and not dev["pending"]
-        if complete:
+        # Only a range still pending makes the pass a failure: an unsupported
+        # one has its final answer, and repeating the frame changes nothing.
+        if not dev["pending"]:
             self._note_success(dev)
         else:
             delay = self._note_failed_pass(dev, now)
@@ -832,11 +951,19 @@ class FastModbusEventPortManager:
                 self._log.info("LED addr=%d stays on classic polling; identity, firmware or Fast mode "
                                "does not allow WB configuration. Next check in %.0f s", addr, delay)
             else:
-                self._log.warning(
+                # Loud on the first failed pass and on the first pass that
+                # reaches the backoff ceiling; the passes between are DEBUG.
+                at_ceiling = (delay >= FMB_UNSUPPORTED_BACKOFF_MAX_S
+                              and not dev.get("ceiling_logged"))
+                if at_ceiling:
+                    dev["ceiling_logged"] = True
+                self._log.log(
+                    logging.WARNING if dev["fail_passes"] == 1 or at_ceiling
+                    else logging.DEBUG,
                     "FMB events config failed addr=%d for %d pending range(s); "
                     "next attempt in %.0f s (pass %d)",
                     addr, len(dev["pending"]), delay, dev["fail_passes"])
-        self._set_io_covered(dev, complete)
+        self._set_io_covered(dev, self._io_complete(dev))
 
     def configure_template_step(self) -> None:
         """Spend one WB subscription transaction after classic polling on this line."""
@@ -886,7 +1013,8 @@ class FastModbusEventPortManager:
             if dev["type"] == "template":
                 continue  # The scheduler advances these after serving classic reads.
             self._refresh_ranges_from_poller(dev)
-            if dev.get("configured") and not dev.get("pending"):
+            if not dev.get("pending") and (dev.get("configured")
+                                           or dev.get("unsupported")):
                 continue
             # Backed off after a failed pass — no bus time until the window ends.
             if now < dev.get("retry_at", 0.0):
@@ -933,7 +1061,8 @@ class FastModbusEventPortManager:
         for addr, dev in self._devices.items():
             if dev["type"] == "template":
                 continue
-            if not dev["pending"] and (dev["configured"] or dev["type"] != "led"):
+            if not dev["pending"] and (dev["configured"] or dev.get("unsupported")
+                                       or dev["type"] != "led"):
                 continue
             # An LED registers with an empty map until its identity is read.
             # A rebooted-then-silent device must not burn the 0.4 s configure
@@ -954,6 +1083,27 @@ class FastModbusEventPortManager:
                     "FMB events re-configured addr=%d (%s)",
                     addr, dev["id"])
             self._finish_configure_pass(addr, dev, now)
+
+    def rearm_after_line_return(self) -> None:
+        """Ask every confirmed device for its subscriptions once more after a
+        line lease ended (docs/contracts/port-ownership.md): a device that
+        rebooted while another master held the line had its 0x0F answered by
+        that master and runs on its firmware defaults now. `configured` stays
+        set, so events and the insurance poll go on until the new answer;
+        a device still in its configure backoff keeps the window. Port
+        thread only — the manager is single-threaded per line."""
+        n = 0
+        for dev in self._devices.values():
+            if not dev.get("configured"):
+                continue
+            dev["pending"] = list(dev["ranges"])
+            dev["unsupported"] = []
+            dev["retry_at"] = 0.0
+            dev.pop("template_round_left", None)
+            n += 1
+        if n:
+            self._log.info(
+                "line returned — re-arming FMB subscriptions for %d device(s)", n)
 
     def retry_unconfigured(self) -> bool:
         """Quiet retry when first configure_all failed (device was offline)."""
@@ -977,10 +1127,13 @@ class FastModbusEventPortManager:
                 break
             had_events, events = self._poll_once(ser)
             observation = self._poll_observation
+            origin = self._poll_origin
             for (slave_id, evt_type, reg, val) in events:
-                self._dispatch(slave_id, evt_type, reg, val, observation=observation)
-            empty_slave = self._poll_empty_slave
-            if empty_slave is not None and observation is not None:
+                self._dispatch(slave_id, evt_type, reg, val,
+                               observation=observation, origin=origin)
+            for empty_slave in sorted(self._poll_empty_slaves):
+                if observation is None:
+                    break
                 poller = self._devices[empty_slave].get("poller")
                 empty = getattr(poller, "fmb_empty_observed", None)
                 if empty is not None and empty_slave in observation[1]:
@@ -1002,7 +1155,7 @@ class FastModbusEventPortManager:
 
     def set_insurance(self, armed: bool) -> None:
         for dev in self._devices.values():
-            self._set_io_covered(dev, armed and dev["configured"] and not dev["pending"])
+            self._set_io_covered(dev, armed and self._io_complete(dev))
 
     def stop(self) -> None:
         self._stop.set()

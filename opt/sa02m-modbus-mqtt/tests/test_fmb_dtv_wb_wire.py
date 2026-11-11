@@ -42,7 +42,9 @@ class TestDtvWire(unittest.TestCase):
         self.manager.configure_all()
         self.assertTrue(self.poller.fmb_covers_io())
         self.fw.assert_called_once_with(15, 320, 4)
-        self.assertEqual(self.bus.enabled, {(15, 3, r) for r in range(25, 29)})
+        # One record 1..28 since 1.0.7.36 (A2-13): 23/24 off, the rest LOW.
+        self.assertEqual(self.bus.enabled,
+                         {(15, 3, r) for r in (*range(1, 23), *range(25, 29))})
         # COM3/15 on 1.0.2.3, 2026-11-07: arbitration + INPUT25 = 32.
         self.bus.replies.append(bytes.fromhex("ffffffffffffff0f4611aa01060204001920007241"))
         self.bus.replies.append(_append_crc(bytes.fromhex("0f4612aa")))
@@ -107,14 +109,15 @@ class TestDtvWire(unittest.TestCase):
         wb_send = self.bus.fmb_send_recv
 
         def partial(frame, *args):
-            if int.from_bytes(frame[5:7], "big") == 25:
-                return _append_crc(bytes.fromhex("0f46180107"))
+            if int.from_bytes(frame[5:7], "big") == 1:
+                # 1..28 record (1.0.7.36): INPUT28 not confirmed
+                return _append_crc(bytes.fromhex("0f461804ffff3f07"))
             return wb_send(frame, *args)
 
         self.patch(self.bus, "fmb_send_recv", side_effect=partial)
         self.manager.configure_all()
         self.assertFalse(self.dev["configured"])
-        self.assertEqual(self.dev["pending"], [(bridge.FMB_EVT_INPUT, 25, 4)])
+        self.assertEqual(self.dev["pending"], [(bridge.FMB_EVT_INPUT, 1, 28)])
         self.assertFalse(self.poller.fmb_covers_io())
 
     def test_wb_masks_do_not_slow_the_fc04_producer_or_output_status(self):
@@ -132,6 +135,49 @@ class TestDtvWire(unittest.TestCase):
         self.poller.poll_io()
         self.assertEqual(self.poller._poll_sensors.call_args, mock.call(from_reg=25, upto_reg=30))
         self.assertEqual(self.poller._poll_coils.call_count, 2)
+
+    def configure_frames(self, reply=None):
+        sent = []
+        wb_send = self.bus.fmb_send_recv
+
+        def record(frame, *args):
+            if frame[2] == 0x18:
+                sent.append(bytes(frame))
+                if reply is not None:
+                    return reply(frame)
+            return wb_send(frame, *args)
+
+        self.patch(self.bus, "fmb_send_recv", side_effect=record)
+        self.manager.configure_all()
+        return sent
+
+    def test_one_record_1_to_28_with_radar_energies_disabled(self):
+        """Audit 2026-11-11 A2-13: the DTV ships HIGH on INPUT 1..28. The
+        bridge set LOW only on the registers it publishes and never touched
+        23/24 (radar energies, no MQTT channel), which stayed HIGH and won
+        the arbitration. One record, three priority runs (1..22 LOW, 23..24
+        off, 25..28 LOW) = three rows of the device table."""
+        self.fw.return_value = [1, 0, 2, 16]
+        self.compose()
+        sent = self.configure_frames()
+        self.assertEqual(len(sent), 1, [f.hex() for f in sent])
+        frame = sent[0]
+        self.assertEqual(frame[4:8], bytes.fromhex("0400011c"))
+        settings = frame[8:-2]
+        self.assertEqual(len(settings), 28)
+        self.assertEqual(settings[22:24], b"\x00\x00")
+        self.assertEqual(settings[:22] + settings[24:], b"\x01" * 26)
+        self.assertTrue(self.dev["configured"])
+        self.assertEqual(self.dev["pending"], [])
+
+    def test_a_mask_with_23_or_24_enabled_is_not_a_confirmation(self):
+        self.fw.return_value = [1, 0, 2, 16]
+        self.compose()
+        # all 28 bits set: 23/24 came back enabled
+        everything = lambda frame: _append_crc(bytes([15, 0x46, 0x18, 4]) + bytes.fromhex("ffffff0f"))
+        self.configure_frames(everything)
+        self.assertFalse(self.dev["configured"])
+        self.assertEqual(self.dev["pending"], [(bridge.FMB_EVT_INPUT, 1, 28)])
 
     def test_modern_dtv_ignores_other_and_known_absent_sources(self):
         self.compose()

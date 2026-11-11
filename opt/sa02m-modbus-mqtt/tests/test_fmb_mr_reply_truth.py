@@ -114,10 +114,31 @@ class TestMrReplyTruth(unittest.TestCase):
                 self.assert_rejected(response)
 
     def test_wb_requires_every_requested_bit_and_exact_mask_length(self):
-        for mask in (b"\x00\x00", b"\xff\x7f", b"\xfe\xff",
+        # The all-zero mask of the right length is not a rejection since
+        # 1.0.7.36 -- test_zero_mask_of_the_right_length_is_unsupported.
+        for mask in (b"\xff\x7f", b"\xfe\xff",
                      b"\xff", b"\xff\xff\xff"):
             with self.subTest(mask=mask.hex()):
                 self.assert_rejected(reply(mask))
+
+    def test_zero_mask_of_the_right_length_is_unsupported(self):
+        """Audit 2026-11-11 A2-01: a CRC-valid all-zero mask answering an
+        enable request is the firmware's final "no producer" -- the range
+        leaves `pending` for `unsupported` (not configured, no generation
+        learnt), after the legacy form also had its chance."""
+        for dev_type, wire_mode, count, mask in (
+                ("mr02m", "auto", 16, b"\x00\x00"),
+                ("dtv", "wb", 2, b"\x00")):
+            with self.subTest(dev_type=dev_type):
+                manager, dev = self.make_manager(
+                    count=count, wire_mode=wire_mode, dev_type=dev_type)
+                serial = SerialReplies([reply(mask), b""])
+                self.assertTrue(manager._configure_device(serial, 2, dev))
+                self.assertFalse(dev["configured"])
+                self.assertEqual(dev["pending"], [])
+                self.assertEqual(dev["unsupported"], dev["ranges"])
+                self.assertEqual(manager._wb_frame_slaves, {})
+                self.assertEqual(len(serial.sent), 2)
 
     def test_valid_wb_masks_and_arbitration_noise_confirm_without_fallback(self):
         for count, mask in ((2, b"\x03"), (6, b"\x3f"), (6, b"\xff"),
@@ -158,8 +179,9 @@ class TestMrReplyTruth(unittest.TestCase):
         self.assert_rejected(bytes.fromhex("02461801000000"), cached=True)
 
     def test_explicit_dtv_wb_requires_requested_mask(self):
+        # b"\x00" (all zero): test_zero_mask_of_the_right_length_is_unsupported.
         for mask, accepted in ((b"\x03", True), (b"\x01", False),
-                               (b"\x00", False), (b"\x03\x00", False)):
+                               (b"\x03\x00", False)):
             with self.subTest(mask=mask.hex()):
                 manager, dev = self.make_manager(
                     count=2, wire_mode="wb", dev_type="dtv")

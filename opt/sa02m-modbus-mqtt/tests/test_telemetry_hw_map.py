@@ -282,12 +282,14 @@ class TestCommandPayloadGrammar(HwTestCase):
         self.assertEqual(self.exp.out_writes, [ALL_OFF & ~(1 << SHIPPED_BIT_DO)])
         self.assertEqual(self.stub.published, [("controls/do", "1")])
 
-    def test_surrounding_whitespace_and_retained_commands_keep_their_semantics(self):
+    def test_surrounding_whitespace_keeps_its_semantics(self):
+        # A retained command is never executed since 1.0.7.36 (audit
+        # 2026-11-11 A5-01) -- pinned in tests/test_telemetry_retained_command.py.
         cb = tel.TelemetryClient._make_hw_cb(self.stub, "do")
         for payload, state in ((b" \t1\r\n", "1"), (b"\t0\n", "0")):
             with self.subTest(payload=payload):
                 self.stub.published.clear()
-                cb(None, None, _Msg("unused", payload, retain=True))
+                cb(None, None, _Msg("unused", payload, retain=False))
                 self.assertEqual(self.exp.regs[REG_OUT] & (1 << SHIPPED_BIT_DO),
                                  0 if state == "1" else (1 << SHIPPED_BIT_DO))
                 self.assertEqual(self.stub.published, [("controls/do", state)])

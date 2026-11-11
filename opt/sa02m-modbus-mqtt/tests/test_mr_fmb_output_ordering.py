@@ -232,15 +232,14 @@ class TestMrFmbOrdering(unittest.TestCase):
         self.burst([event(1, slave=4), b""])
         self.assertEqual(received, [(FMB_EVT_COIL, 1, 1)])
 
-    def test_quarantine_diagnostic_is_rate_limited_without_output_events(self):
+    def test_quarantine_writes_no_periodic_warning(self):
+        # Since 1.0.7.36 (H2-01) the wait is capped instead of reported every
+        # 30 s: tests/test_fmb_empty_boundary.py pins the cap and its one INFO.
         self.p._writeback_do(1, True)
-        self.p._output_quarantine["do_1"]["logged_at"] -= 31
-        with self.assertLogs(self.p.log, level="WARNING") as logged:
+        with self.assertNoLogs(self.p.log, level="WARNING"):
             self.p.fmb_query_context()
             self.p.fmb_query_context()
-        self.assertEqual(len(logged.records), 1)
-        self.assertIn("same-slave empty boundary", logged.output[0])
-        self.assertIn("classic polling remains active", logged.output[0])
+        self.assertIn("do_1", self.p._output_quarantine)
 
     def test_context_and_callbacks_run_outside_transport_lock(self):
         lock = threading.Lock()

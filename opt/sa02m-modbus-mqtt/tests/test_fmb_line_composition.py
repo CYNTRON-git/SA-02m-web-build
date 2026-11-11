@@ -43,15 +43,20 @@ class EventLine:
             mask = bytes([0])
             selected = range(count)
         else:
-            assert frame[3] == 4 + count and frame[8:-2] == bytes([1]) * count
+            # LOW (1) per register, or 0 = event off (DTV 23/24 since 1.0.7.36):
+            # the post-apply mask carries a bit only for the enabled ones.
+            settings = frame[8:-2]
+            assert frame[3] == 4 + count and set(settings) <= {0, 1} and any(settings)
             kind -= 1
             if kind == 3 and start == 403:
+                assert settings == bytes([1]) * count
                 selected = range(0, count, 7)
                 masks = {36: '8140201008', 78: '81402010080402814020'}
                 mask = bytes.fromhex(masks[count])
             else:
-                selected = range(count)
-                mask = bytes((1 << min(8, count - n)) - 1 for n in range(0, count, 8))
+                selected = [i for i in range(count) if settings[i]]
+                mask = bytes(sum(1 << j for j in range(8) if n + j in selected)
+                             for n in range(0, count, 8))
         self.enabled.update((addr, kind, start + i) for i in selected)
         return _append_crc(bytes([addr, fc, sub, len(mask)]) + mask)
 
