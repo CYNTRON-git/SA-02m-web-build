@@ -10,8 +10,8 @@
 ### Delivery
 
 - **Full installation only** (`install.sh`, including `--refresh`): automatic nginx restart (new drop-in `nginx.service.d/sa02m-restart.conf`) and the new restart limits of `fcgiwrap.service`; the `sa02m-bootscr-apply.sh` tool with its `boot.scr` source (see the last section).
-- **Network update (OTA, offline package) and full installation**, not www-only: the Modbus-to-MQTT bridge and telemetry, the device archive, the scenario engine, Alice, the flasher, the cloud agent, the port coordinator, the helpers in `/usr/local/sbin` (service control, kernel switch, bridge configuration writer), the nginx site (checked with `nginx -t`) and `sa02m-rs485-roster.service`. Telemetry, the device logger, scenarios and a running bridge are restarted by the update; the failure monitor and the cloud agent apply the new behaviour after their service or the board restarts.
-- **The userspace watchdog** (`sa02m-userspace-watchdog`) is carried by the GitHub network update and by full installation, **not** by the offline package; it applies the new behaviour after its service or the board restarts.
+- **Network update (OTA, offline package) and full installation**, not www-only: the Modbus-to-MQTT bridge and telemetry, the device archive, the scenario engine, Alice, the flasher, the cloud agent, the port coordinator, the helpers in `/usr/local/sbin` (service control, kernel switch, bridge configuration writer), the nginx site (checked with `nginx -t`) and `sa02m-rs485-roster.service`. Telemetry, the device logger, scenarios and a running bridge are restarted by the update; the cloud agent applies the new behaviour after its service or the board restarts.
+- **The userspace watchdog** (`sa02m-userspace-watchdog`) is carried by the GitHub network update and by full installation, **not** by the offline package; a full installation or `--refresh` restarts it (and the failure monitor and `net-watchdog`) when its script or unit actually changed, so a board that already runs an older watchdog gets the new code without a reboot; the GitHub network update and the offline package restart the watchdog and the failure monitor when they are already running (every update, not only when they changed), but only from the update after the one that delivers this release's update runner (the running runner is the installed one).
 - **Every path, www-only included**: CGI endpoints, panel pages and scripts, the login library, the clock helper `sa02m-clock-set.sh` with its new `sudoers` grant, and the network file writer.
 
 ### Modbus and MQTT
@@ -32,8 +32,14 @@
 - The right edge of charts, exports and the event journal appears up to ~35 s late. Live card values are unaffected.
 - A power cut loses up to 30 s of archive; a normal service stop writes what is buffered.
 - The legacy Carel table `carel_samples_v1` is dropped on the first start of the new logger; rolling back to 1.0.6.40 with it is no longer possible.
-- The write rate on a board is not measured yet: the reduction is shown on a model; the bench measurement is separate.
+- Measured on the bench board (192.168.1.135, bridge running, 20 minutes): the root partition's write rate fell from 366 MB/h to 80.4 MB/h (about -78 %), and journal commits from 1.06 to 0.05 per second. The remaining 35-45 MB/h is not attributed to a writer yet (backlog).
 - `sa02m_devices` Python API: `insert_sample`, `insert_mr_sample`, `insert_carel_sample`, `insert_mtd_sample`, `purge_old`, `detect_ce_events`, `detect_carel_events` and `purge_events` take a new optional `conn` keyword; existing calls work as before.
+
+### Flasher
+
+- A module that answers on a line other than 115200 is now flashed on that line. The tab passes the line the scan found the device on (the bench's 14DI at 19200 was flashed at 115200, read register 270 into a timeout and nothing was written); the daemon tries the target's line, then the scan's, then 115200 N1, and sends no write before the serial number has been read.
+- A failed flash is no longer reported as success: the job ends `error` and the tab shows the failure with the target's address and serial number instead of the green «Flashing complete». A batch started from the tab stops at the first failed target (the API option `skip_on_error` still exists).
+- A read timeout is reported as «No answer from the device …» with the lines tried, not as a serial number mismatch; the job log's `sig=` is the firmware file's signature, never the target's.
 
 ### System and watchdog
 
@@ -49,7 +55,7 @@
 ### Time and clock
 
 - **The "Date and time" field is empty when the tab opens**: saving only the time zone no longer sets the clock back or turns NTP off. A typed time is read in the zone in force before the save; the same zone is not applied again. The RTC is written again after a manual time set (the write used to fail silently).
-- The clock is changed through the pinned helper `sa02m-clock-set.sh`, which validates its arguments; the web server's root grants for `date`, `hwclock` and `timedatectl` are revoked.
+- The clock is changed through the pinned helper `sa02m-clock-set.sh`, which validates its arguments; the web server's root grants for `date`, `hwclock` and `timedatectl` are revoked. Boards imaged from the very first installer also carry a legacy `/etc/sudoers.d/time-sync` (`www-data … NOPASSWD: /bin/date, /sbin/hwclock`) that no committed file replaces, so the old grant survived 1.0.7.36 on them. A full installation, `--refresh` and `update-www-only.sh` now remove it, and so does the GitHub network update's runner (again only from the update after the one that delivers this runner); only when every line of the file is a `www-data` grant of `date`, `hwclock` or `timedatectl`, and only after the new helper and grant are in place. Any other content is left and named in a warning. A board updated only through the network update to this release keeps the file until that next update, a full installation or `update-www-only.sh`.
 
 ### Security and panel
 
@@ -63,7 +69,7 @@
 
 ### Verification
 
-- New registry checks: `mqtt-config-apply-atomic`, `mqtt-status-secret`, `userspace-watchdog-probe`, `kernel-select`, `initd-bounded`, `apply-time`, `js-unit-forms-time-prefill`, `no-timeout-on-shell-function`, `clock-set-helper`, `status-cache`, `json-escape-equiv`, `cgi-timeouts`; extended `iface-conf-write`, `sudoers-pin-contract`, `rs485-roster-consumer`, `web-auth-behaviour` and the unit suites of the bridge, scenarios, Alice, the flasher, the cloud agent, the port coordinator and the device archive.
+- New registry checks: `mqtt-config-apply-atomic`, `mqtt-status-secret`, `userspace-watchdog-probe`, `kernel-select`, `initd-bounded`, `apply-time`, `js-unit-forms-time-prefill`, `no-timeout-on-shell-function`, `clock-set-helper`, `status-cache`, `json-escape-equiv`, `cgi-timeouts`, `daemon-restart-on-change`, `js-unit-flasher-flash-failure`; extended `iface-conf-write`, `sudoers-pin-contract` (now also a legacy `time-sync` drop-in left on a board), `rs485-roster-consumer`, `web-auth-behaviour` and the unit suites of the bridge, scenarios, Alice, the flasher, the cloud agent, the port coordinator and the device archive.
 
 ### Boot script: reboot watchdog parameter
 

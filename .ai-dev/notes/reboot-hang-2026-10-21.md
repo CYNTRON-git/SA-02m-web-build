@@ -75,6 +75,23 @@ hung reboot ever recovers. Evidence files live in
   gadget outlives Ethernet and eMMC in `device_shutdown` (musb is registered
   early, so it is shut down late).
 
+## Confirmed on bench 135 (2026-11-11, `.ai-dev/audit/20261111-H6.md`)
+
+- **The hardware watchdog resets a frozen PID 1.** `kill -SEGV 1` (systemd logs
+  «Freezing execution»): the board stopped answering ping/22/9999 about 19 s
+  later and came back as a fresh boot (new boot id) — `sunxi-wdt`, 16 s timeout,
+  `RuntimeWatchdogSec=15s`, no human needed. SSH kept answering for 16 s while
+  `sshd` lived. The last ~16 s before the reset are not in the persistent
+  journal. A kernel panic (`kernel.panic=0`) was not tried.
+- **OOM kills only the hog.** With 158 MB of 491 MB available and
+  `vm.panic_on_oom=0`, a memory-eating unit was killed 6 s after start by the
+  kernel's OOM killer; no service died or restarted. It was the largest process;
+  the services' `oom_score` is 667-701 at `oom_score_adj=0` (`sshd` -1000), so
+  the victim order for a smaller hog is untested.
+- **`boot.scr` with `watchdog.stop_on_reboot=0` boots** on this board (observed
+  2026-11-11, record in `docs/bugs/BUGLOG.md`); the hung software reboot itself
+  was not provoked.
+
 ## Not yet known
 
 - Which device's shutdown callback (or the restart handler) hangs. Next step:
