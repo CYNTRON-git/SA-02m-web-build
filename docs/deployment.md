@@ -184,7 +184,11 @@ OTA и офлайн-пакет **копируют файлы по карте н�
     Оператора 2026-09-29: запасной порт отдал бы cookie сессии тому, кто его
     займёт). Остаток и мера — строка модели угроз про `sa02m-devices-api`;
 - гранты sudoers, которые пишет сам установщик, а не файл из `etc/sudoers.d/`;
-- политика enable/disable юнитов (`sa02m_svc_capture`/`sa02m_svc_apply`).
+- политика enable/disable юнитов (`sa02m_svc_capture`/`sa02m_svc_apply`);
+- юниты и drop-in с чужими (не `sa02m-*`) именами: `fcgiwrap.service`,
+  `nginx.service.d/sa02m-restart.conf` (автоматический перезапуск nginx и
+  fcgiwrap, с 1.0.7.36) — только полная установка / `--refresh`
+  (`scripts/03-webserver.sh`).
 
 **Практическое правило для Алисы.** Код Алисы (`opt/sa02m-alice/**`,
 `usr/local/sbin/sa02m-alice-web-trigger.sh`, юниты `sa02m-alice-*.service`,
@@ -688,9 +692,22 @@ diff /root/before.txt /root/after.txt
 запускает `sa02m-userspace-watchdog`, в том числе на платах, которые раньше
 жили без него (обновлялись только refresh'ем). Сторож перезагружает плату, если
 одна из его проверок подряд не проходит 10 мин (60 × 10 с): нет процесса
-`nginx`/`sshd`, закрыт порт 22 или 9999, не отдаётся `/login.html`, `eth0` с
-линком, но не поднят, load1 > 24, MemAvailable < 16 МиБ
+`nginx`/`sshd`, закрыт порт 22 или порт панели, не отдаётся `/login.html`, слой
+CGI не отвечает (`/cgi-bin/auth_check.cgi` без сессии должен дать 401
+`unauthorized` — это доказывает, что fcgiwrap исполняет CGI; nginx без fcgiwrap
+даёт 502), `eth0` с линком, но не поднят, load1 > 24, MemAvailable < 16 МиБ
 (`etc/sa02m-userspace-watchdog.sh`).
+
+С 1.0.7.36 порт панели сторож берёт из `/etc/sa02m_web_port.conf` (через
+`/usr/local/lib/sa02m-web-port-lib.sh`; нет библиотеки — 9999, строка в журнале),
+а не жёстко 9999: плата, установленная с `--port N`, больше не перезагружается
+как «веб лежит». Перечитывается раз в 5 мин (heartbeat). `WEB_PORT=` в
+`/etc/sa02m_userspace_watchdog.conf` по-прежнему главнее. Сначала сторож лечит
+службу, а не плату: при провале проверки CGI через 1 мин и через 2 мин
+(`CGI_RESTART_AT`, по умолчанию 6 кругов) — `systemctl reset-failed` +
+`restart fcgiwrap.service`, при пропавшем процессе `nginx` — то же для
+`nginx.service`; перезагрузка — только если через 10 мин проверка всё ещё не
+проходит. В журнале сторожа это строки `HEAL: restart …`.
 
 **Что защищает саму установку — только блокировка** `/run/sa02m-imaging.lock`:
 `install.sh` держит её весь прогон, и сторож на это время ставит проверки на

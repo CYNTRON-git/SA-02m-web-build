@@ -34,8 +34,17 @@ HEARTBEAT_INTERVAL_SEC="${HEARTBEAT_INTERVAL_SEC:-300}"
 
 # Что мониторим
 SSH_PORT="${SSH_PORT:-22}"
-WEB_PORT="${WEB_PORT:-9999}"
-HTTP_PROBE_URL="${HTTP_PROBE_URL:-http://127.0.0.1:9999/login.html}"
+# WEB_PORT / HTTP_PROBE_URL / CGI_PROBE_URL: empty = derived from the panel's
+# real port (resolve_web_port) — a board installed with `--port N` serves the
+# panel on N, and a hard-coded 9999 rebooted it as «web down» (audit A3-04).
+# A value set here or in $CONF_FILE still wins.
+WEB_PORT="${WEB_PORT:-}"
+HTTP_PROBE_URL="${HTTP_PROBE_URL:-}"
+CGI_PROBE_URL="${CGI_PROBE_URL:-}"
+SA02M_WEB_PORT_LIB="${SA02M_WEB_PORT_LIB:-/usr/local/lib/sa02m-web-port-lib.sh}"
+# Restart a dead fcgiwrap / nginx at this many consecutive failures of their
+# check and again at twice that, before FAIL_THRESHOLD reboots the board.
+CGI_RESTART_AT="${CGI_RESTART_AT:-6}"
 NET_IFACE="${NET_IFACE:-eth0}"
 # REQUIRED_PROCS — отсутствие любого из них на FAIL_THRESHOLD подряд → reboot.
 # Кладём сюда ТОЛЬКО критичную для управления плитой инфраструктуру.
@@ -50,6 +59,12 @@ MAX_LOAD1_X100="${MAX_LOAD1_X100:-2400}"        # load average 1m × 100; >24 �
 MIN_MEM_AVAIL_KB="${MIN_MEM_AVAIL_KB:-16384}"   # минимум 16 MiB available
 
 [ -f "$CONF_FILE" ] && . "$CONF_FILE" 2>/dev/null || true
+
+# What the operator pinned (env or conf); resolve_web_port fills the rest.
+WEB_PORT_PINNED="$WEB_PORT"
+HTTP_PROBE_URL_PINNED="$HTTP_PROBE_URL"
+CGI_PROBE_URL_PINNED="$CGI_PROBE_URL"
+WEB_PORT_SOURCE=""
 
 # ───────────────────────────── helpers ────────────────────────────────────
 log() {
@@ -90,6 +105,33 @@ uptime_sec() {
 
 imaging_active() {
     [ -f "$IMAGING_LOCK" ]
+}
+
+# The panel's port: pinned value, else the installer's port library (read in a
+# subshell — it is sourced code), else 9999. Re-run on every heartbeat: on a
+# first install this daemon starts (01-system.sh) before 03-webserver.sh lays
+# the library down. Logs only when the port or its source changes.
+resolve_web_port() {
+    local port="" rc src
+    if [ -n "$WEB_PORT_PINNED" ]; then
+        port=$WEB_PORT_PINNED; src="conf"
+    elif [ -r "$SA02M_WEB_PORT_LIB" ]; then
+        port=$(. "$SA02M_WEB_PORT_LIB" >/dev/null 2>&1 && sa02m_web_port 2>/dev/null)
+        rc=$?
+        case "$rc:$port" in
+            0:[0-9]*|3:[0-9]*) src="port library" ;;
+            *) port=9999; src="default (port library failed rc=$rc)" ;;
+        esac
+    else
+        port=9999; src="default (no port library at $SA02M_WEB_PORT_LIB)"
+    fi
+    if [ "$port:$src" != "$WEB_PORT:$WEB_PORT_SOURCE" ]; then
+        log "web port ${port} (${src})"
+    fi
+    WEB_PORT=$port
+    WEB_PORT_SOURCE=$src
+    HTTP_PROBE_URL=${HTTP_PROBE_URL_PINNED:-http://127.0.0.1:${WEB_PORT}/login.html}
+    CGI_PROBE_URL=${CGI_PROBE_URL_PINNED:-http://127.0.0.1:${WEB_PORT}/cgi-bin/auth_check.cgi}
 }
 
 # ───────────────────────────── checks ─────────────────────────────────────
@@ -156,6 +198,28 @@ check_http() {
         return 0
     fi
     echo "fail"
+    return 1
+}
+
+# The CGI layer: login.html is static and nginx serves it with fcgiwrap dead,
+# so it cannot see the 502 every CGI then answers. auth_check.cgi without a
+# session must come back 401 with body `unauthorized` (or 204) — only fcgiwrap
+# running the CGI produces that; nginx alone gives 502/504. This probe reads the
+# real HTTP status (no -f: a 401 is the healthy answer here) and the body.
+check_cgi() {
+    local url=$1 out code body
+    if ! command -v curl >/dev/null 2>&1; then
+        echo "no-curl"
+        return 0
+    fi
+    out=$(curl -sS --max-time 4 -w '\n%{http_code}' "$url" 2>/dev/null)
+    code=${out##*$'\n'}
+    body=${out%$'\n'*}
+    case "$code" in
+        204) echo "ok"; return 0 ;;
+        401) case "$body" in *unauthorized*) echo "ok"; return 0 ;; esac ;;
+    esac
+    echo "http=${code:-none}"
     return 1
 }
 
@@ -235,6 +299,26 @@ sa02m_reboot() {
     while true; do sleep 60; done
 }
 
+# ───────────────────────────── service healing ─────────────────────────────
+# A dead fcgiwrap or nginx is a one-service fault: restart that service first
+# (at CGI_RESTART_AT and 2*CGI_RESTART_AT consecutive failures); the board is
+# rebooted only if FAIL_THRESHOLD is still reached after that.
+heal_due() {
+    [ "$1" -eq "$CGI_RESTART_AT" ] || [ "$1" -eq $(( 2 * CGI_RESTART_AT )) ]
+}
+
+heal_fcgiwrap() {
+    log "HEAL: restart fcgiwrap.service (check=cgi count=$1)"
+    timeout 30 systemctl reset-failed fcgiwrap.service >/dev/null 2>&1 || true
+    timeout 30 systemctl restart fcgiwrap.service >/dev/null 2>&1 || log "HEAL: restart fcgiwrap.service failed"
+}
+
+heal_nginx() {
+    log "HEAL: restart nginx.service (check=procs count=$1)"
+    timeout 30 systemctl reset-failed nginx.service >/dev/null 2>&1 || true
+    timeout 30 systemctl restart nginx.service >/dev/null 2>&1 || log "HEAL: restart nginx.service failed"
+}
+
 # ───────────────────────────── main loop ──────────────────────────────────
 declare -A FAIL_COUNT
 
@@ -246,6 +330,12 @@ run_check() {
     if [ "$status" -ne 0 ]; then
         FAIL_COUNT["$name"]=$(( ${FAIL_COUNT["$name"]:-0} + 1 ))
         log "check ${name}: FAIL (${result}) [count=${FAIL_COUNT[$name]}/${FAIL_THRESHOLD}]"
+        if heal_due "${FAIL_COUNT[$name]}"; then
+            case "$name:$result" in
+                cgi:*) heal_fcgiwrap "${FAIL_COUNT[$name]}" ;;
+                procs:*nginx*) heal_nginx "${FAIL_COUNT[$name]}" ;;
+            esac
+        fi
         if [ "${FAIL_COUNT[$name]}" -ge "$FAIL_THRESHOLD" ]; then
             sa02m_reboot "check=${name} reason=${result}"
         fi
@@ -260,6 +350,7 @@ run_check() {
 main() {
     local last_heartbeat=0 now loop=0 grace_done=0
     log "userspace watchdog started; interval=${CHECK_INTERVAL}s threshold=${FAIL_THRESHOLD} grace=${GRACE_AFTER_BOOT_SEC}s"
+    resolve_web_port
 
     while true; do
         now=$(uptime_sec)
@@ -287,6 +378,7 @@ main() {
                 run_check "ssh-port"  check_port "$SSH_PORT"
                 run_check "web-port"  check_port "$WEB_PORT"
                 run_check "http"      check_http "$HTTP_PROBE_URL"
+                run_check "cgi"       check_cgi "$CGI_PROBE_URL"
                 run_check "iface"     check_iface "$NET_IFACE"
                 run_check "load"      check_load
                 run_check "mem"       check_mem
@@ -298,6 +390,7 @@ main() {
         if [ "$last_heartbeat" -eq 0 ] || [ $(( now - last_heartbeat )) -ge "$HEARTBEAT_INTERVAL_SEC" ]; then
             log "heartbeat uptime=$(uptime_sec)s load=$(load1_x100)/100 memavail=$(mem_available_kb)KB"
             last_heartbeat=$now
+            resolve_web_port
         fi
 
         loop=$(( loop + 1 ))
@@ -307,4 +400,6 @@ main() {
     done
 }
 
-main "$@"
+# Sourced with SA02M_WD_SOURCE_ONLY=1 the file only defines (test seam,
+# scripts/dev/test-userspace-watchdog.sh).
+[ "${SA02M_WD_SOURCE_ONLY:-0}" = 1 ] || main "$@"

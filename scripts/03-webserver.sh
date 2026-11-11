@@ -774,6 +774,12 @@ if [ -f "$SYSTEMD_DIR/fcgiwrap.service" ]; then
     systemctl daemon-reload >> "$LOG_FILE" 2>&1 || true
 fi
 
+# ── nginx: restart after a crash (drop-in; the stock unit has no Restart=) ──
+if [ -f "$SYSTEMD_DIR/system/nginx.service.d/sa02m-restart.conf" ]; then
+    install -d -m 755 /etc/systemd/system/nginx.service.d
+    sa02m_atomic_install -m 644 "$SYSTEMD_DIR/system/nginx.service.d/sa02m-restart.conf" /etc/systemd/system/nginx.service.d/sa02m-restart.conf
+fi
+
 systemctl daemon-reload >> "$LOG_FILE" 2>&1 || true
 
 if [ -f /etc/systemd/system/sa02m-web-update-check.timer ]; then
