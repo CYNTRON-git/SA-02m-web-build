@@ -44,6 +44,29 @@ class JobKind(str, Enum):
     BACNET_RECOVER = "bacnet_recover"  # in-band возврат в Modbus (§5.4)
 
 
+def failed_flash_targets(job: "Job") -> List[Dict[str, Any]]:
+    """Цели прошивки, закончившиеся ошибкой (run_flash_batch_job кладёт их в params["errors"])."""
+    if job.kind not in (JobKind.FLASH, JobKind.FLASH_BATCH):
+        return []
+    errs = job.params.get("errors")
+    return [e for e in errs if isinstance(e, dict)] if isinstance(errs, list) else []
+
+
+def failed_targets_text(errors: List[Dict[str, Any]]) -> str:
+    """«Не прошито: адр.5 SN 0x0E0A7530: <причина>; …» — цель названа по адресу и серийному."""
+    parts: List[str] = []
+    for e in errors:
+        label = f"адр.{e.get('address')}"
+        try:
+            sn = int(e.get("serial") or 0)
+        except (TypeError, ValueError):
+            sn = 0
+        if sn:
+            label += f" SN 0x{sn & 0xFFFFFFFF:08X}"
+        parts.append(f"{label}: {e.get('error')}")
+    return "Не прошито: " + "; ".join(parts)
+
+
 @dataclass
 class JobEvent:
     ts: float
@@ -170,10 +193,22 @@ class JobManager:
             try:
                 ctx = self._make_ctx(job, cancel_evt)
                 run_fn(job, ctx)
+                failed_targets = None
                 with self._lock:
                     if job.state == JobState.RUNNING:
-                        job.state = JobState.CANCELLED if cancel_evt.is_set() else JobState.DONE
+                        failed_targets = failed_flash_targets(job)
+                        if cancel_evt.is_set():
+                            job.state = JobState.CANCELLED
+                        elif failed_targets:
+                            # FL-02: a flash with any failed target is NEVER «done» — the tab
+                            # turns «done» into the green «Прошивка завершена».
+                            job.state = JobState.ERROR
+                            job.error = failed_targets_text(failed_targets)
+                        else:
+                            job.state = JobState.DONE
                         job.finished_ts = time.time()
+                if failed_targets and job.state == JobState.ERROR:
+                    self._emit(job, "error", "error", job.error or "", data={"failed_targets": failed_targets})
                 fin_st = job.state
                 if job.kind == JobKind.SCAN and fin_st == JobState.DONE:
                     fin_lvl: str = "debug"
@@ -191,7 +226,9 @@ class JobManager:
                 log.exception("Job %s failed", job_id)
                 with self._lock:
                     job.state = JobState.ERROR
-                    job.error = f"{type(exc).__name__}: {exc}"
+                    # A flash that failed on a target already carries its text («Не прошито: адр.N
+                    # SN …: причина»): no Python class name in what the tab shows.
+                    job.error = str(exc) if failed_flash_targets(job) else f"{type(exc).__name__}: {exc}"
                     job.finished_ts = time.time()
                 self._emit(job, "error", "error", str(exc), data={"exception": type(exc).__name__})
             finally:

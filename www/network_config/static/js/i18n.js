@@ -1085,6 +1085,8 @@
     'Загрузочное ядро обновлено': 'Boot kernel refreshed',
     'Неверное действие': 'Invalid action',
     'Не удалось записать ядро на загрузочный раздел': 'Failed to write the kernel to the boot partition',
+    'Образ ядра повреждён: контрольная сумма не совпадает': 'Kernel image is damaged: checksum mismatch',
+    'Помощник не ответил вовремя': 'The helper did not answer in time',
     'нет доступа': 'no access',
     'Ethernet № 1': 'Ethernet #1',
     'Ethernet № 2': 'Ethernet #2',
@@ -1731,6 +1733,10 @@
     'Прошивка прервана или завершилась с ошибкой. Выполните сканирование.': 'Flashing was interrupted or failed. Run a scan.',
     'Прошивка отменена': 'Flashing cancelled',
     'Прошивка завершена': 'Flashing complete',
+    'Прошивка не выполнена:': 'Flashing failed:',
+    'Серийный номер устройства не совпал с выбранной целью.': 'The device serial number does not match the selected target.',
+    'Серийный номер загрузчика не совпал с номером приложения.': 'The bootloader serial number does not match the application serial number.',
+    'Не удалось прочитать сигнатуру устройства по регистру 290.': 'Could not read the device signature from register 290.',
     'Восстановлено отслеживание прошивки': 'Flash tracking restored',
     'Восстановлено отслеживание сканирования': 'Scan tracking restored',
     'Манифест обновлён, но файлы в кеш не загружены': 'Manifest refreshed, but no files were downloaded to the cache',
@@ -2427,6 +2433,26 @@
     [/^Регистр (\d+) датчика MTD из окна настроек не записывается$/u, 'Register $1 of the MTD sensor is not writable from the settings window'],
     [/^Значение вне диапазона (.+)…(.+)$/u, 'Value out of range $1…$2'],
     [/^Запись рег\. (\d+): Таймаут$/u, 'Writing register $1: timeout'],
+    // Flasher job failures (jobs.failed_targets_text, runner identity read; FL-01/02/03): the text the
+    // tab shows is whole-string matched, so the rule translates each «адр.N SN …: причина» part itself.
+    [/^Не прошито: (.+)$/u, (_m, rest) => 'Not flashed: ' + rest.split('; адр.').map((part, i) => {
+      const m = (i ? 'адр.' + part : part).match(/^адр\.(\d+)( SN 0x[0-9A-F]{8})?: (.+)$/u);
+      return m ? 'addr ' + m[1] + (m[2] || '') + ': ' + translateText(m[3]) : translateText(part);
+    }).join('; ')],
+    [/^Нет ответа устройства \(таймаут чтения серийного номера\)\.$/u, 'The device did not answer (serial number read timed out).'],
+    [/^Нет ответа устройства адр\.(\d+): таймаут чтения серийного номера на линиях (.+)\. Прошивка не начата, запись не отправлялась\. Проверьте скорость линии модуля и адрес\.$/u, 'No answer from the device at address $1: the serial number read timed out on lines $2. Flashing was not started and nothing was written. Check the module line speed and address.'],
+    [/^Не удалось прочитать серийный номер устройства: (.+)\.$/u, 'Could not read the device serial number: $1.'],
+    [/^Регистр 290 «(.*)» не подтвердил семейство (.+)\.$/u, 'Register 290 ("$1") did not confirm family $2.'],
+    [/^Не удалось перевести устройство в загрузчик \(reg 129\): (.+)\. Запись отклонена\.$/u, 'Could not switch the device to the bootloader (reg 129): $1. Write refused.'],
+    [/^Адр\.(\d+) не ответил на (.+); пробую линию (.+)$/u, 'Address $1 did not answer on $2; trying line $3'],
+    // D36b-01/02: the bootloader is looked for on the application's line, then on 115200 N1; not found after reg 129
+    // was accepted = the module may still be in its bootloader (it returns by itself after ~120 s).
+    [/^Загрузчик не ответил на (.+); пробую линию (.+)$/u, 'The bootloader did not answer on $1; trying line $2'],
+    [/^Загрузчик найден на линии (.+)\.$/u, 'The bootloader answered on line $1.'],
+    [/^На линии (.+) отвечает не целевой загрузчик: (.+)$/u, (_m, line, why) => 'A bootloader that is not the target answers on line ' + line + ': ' + translateText(why)],
+    [/^Загрузчик цели не подтверждён: (.+)$/u, (_m, why) => 'The target bootloader was not confirmed: ' + translateText(why)],
+    [/^Загрузчик не найден на линиях (.+) после успешной записи рег\. 129 \(вход в загрузчик\): модуль мог остаться в загрузчике\. Образ не записывался\. По исходникам загрузчика MR-02м он сам возвращается в приложение примерно через 120 с без обращений к нему; можно также выключить и включить питание модуля\. Проверьте скорость и чётность линии\.$/u, 'The bootloader was not found on lines $1 after reg 129 (enter bootloader) was written successfully: the module may have been left in its bootloader. No image was written. By the MR-02m bootloader source it returns to the application by itself after about 120 s without requests; you can also power-cycle the module. Check the line speed and parity.'],
+    [/^Загрузчик не отвечает по серийному (0x[0-9A-F]{8}) \(0xFD 0x46\). Проверьте режим bootloader и параметры линии\.$/u, 'The bootloader does not answer by serial $1 (0xFD 0x46). Check the bootloader mode and the line parameters.'],
     [/^Скорость датчика: только (.+)$/u, 'Sensor baud: $1 only'],
     [/^Датчик MTD на адресе (\d+), (\d+) ([NOE]) не отвечает или не опознан — параметры связи не изменены$/u, 'The MTD sensor at address $1, $2 $3 does not answer or is not recognised — link settings not changed'],
     [/^На адресе (\d+), (\d+) ([NOE]) уже отвечает другое устройство — параметры связи не изменены\. Выберите свободный адрес\.$/u, 'Another device already answers at address $1, $2 $3 — link settings not changed. Choose a free address.'],

@@ -276,9 +276,9 @@ def _migrate_carel_to_wide(conn: sqlite3.Connection) -> None:
     behaviour. The script's own `BEGIN IMMEDIATE` stays the one serialisation
     point; only the loser's verdict is re-taken against what it serialised on.
 
-    Runs on EVERY file `_connect` opens. `carel_samples_v1` is the one-release
-    rollback (plan 1.0.6.41 fork F4; 1.0.6.42 drops it) and `purge_old` never
-    touches it.
+    Runs on EVERY file `_connect` opens. `carel_samples_v1` is the old long
+    table; the logger's batch writer drops it on open since 1.0.7.36
+    (history_writer.drop_legacy_carel_table) and `purge_old` never touches it.
     """
     if not _carel_is_long(conn):
         return

@@ -1650,6 +1650,13 @@ class TelemetryClient:
 
     def _make_hw_cb(self, ctrl: str):
         def cb(client, userdata, msg):
+            # The broker keeps retained messages on disk and hands them over on
+            # every subscribe: executing one would switch the output again on
+            # every reconnect, with nobody having asked (audit 2026-11-11
+            # A5-01). Same rule as every bridge /on subscriber.
+            if getattr(msg, "retain", False):
+                log.warning("HW %s command dropped: retained /on is never replayed", ctrl)
+                return
             if self._hw is None:
                 # Never silent: a dropped command that leaves no trace is the
                 # exact defect class this release exists to close.

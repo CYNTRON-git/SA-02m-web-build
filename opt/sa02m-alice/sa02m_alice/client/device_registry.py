@@ -156,6 +156,15 @@ def _modbus_slave_topic(topic: str) -> bool:
     return bool(mid and "-COM" in mid)
 
 
+
+def action_instance(ctype: str, state: Any) -> str:
+    """The capability instance an action addresses: the state's own, else the
+    single instance on_off / color_setting imply."""
+    requested = state if isinstance(state, dict) else {}
+    return str(requested.get("instance") or (
+        "on" if ctype == "devices.capabilities.on_off"
+        else "rgb" if ctype == "devices.capabilities.color_setting" else ""))
+
 class DeviceRegistry:
     """In-memory registry backed by sa02m-alice-devices.conf."""
 
@@ -755,8 +764,18 @@ class DeviceRegistry:
         self, devices_payload: List[Dict[str, Any]]
     ) -> Tuple[List[Dict[str, Any]], List[Tuple[str, str]]]:
         """Apply Yandex action payload → (results, mqtt_publishes)."""
+        results, tracked = self.apply_actions_tracked(devices_payload)
+        return results, [(topic, payload) for topic, payload, _key in tracked]
+
+    def apply_actions_tracked(
+        self, devices_payload: List[Dict[str, Any]]
+    ) -> Tuple[List[Dict[str, Any]], List[Tuple[str, str, Tuple[str, str, str]]]]:
+        """apply_actions, each publish carrying the capability it serves as
+        (device_id, capability type, instance) -- so a failed publish marks
+        only that capability (alice-mqtt-mapping.md, «for this capability»).
+        The key matches action_instance() over the result's own state."""
         results: List[Dict[str, Any]] = []
-        publishes: List[Tuple[str, str]] = []
+        publishes: List[Tuple[str, str, Tuple[str, str, str]]] = []
         with self._lock:
             for d in devices_payload or []:
                 if not isinstance(d, dict):
@@ -783,7 +802,7 @@ class DeviceRegistry:
                         continue
                     ctype = str(cap.get("type") or "")
                     requested = cap.get("state") if isinstance(cap.get("state"), dict) else {}
-                    instance = requested.get("instance") or ("on" if ctype == "devices.capabilities.on_off" else "rgb" if ctype == "devices.capabilities.color_setting" else "")
+                    instance = action_instance(ctype, requested)
                     local = capability_values.select(dev.get("capabilities") or [], ctype, instance)
                     if not local:
                         cap_results.append(
@@ -861,7 +880,7 @@ class DeviceRegistry:
                             }
                         )
                         continue
-                    publishes.append((topic + "/on", payload))
+                    publishes.append((topic + "/on", payload, (did, ctype, instance)))
                     self._mqtt_cache[topic] = payload
                     self._mqtt_ts[topic] = self._clock()
                     self._mqtt_live[topic] = True

@@ -307,8 +307,10 @@ function kernelErrorMessage(code) {
     bad_profile: uiT('Неверный профиль ядра'),
     bad_action: uiT('Неверное действие'),
     fat_write_failed: uiT('Не удалось записать ядро на загрузочный раздел'),
+    zimage_mismatch: uiT('Образ ядра повреждён: контрольная сумма не совпадает'),
     sudo_failed: uiT('Нет прав sudo'),
     ctl_missing: uiT('Скрипт переключения ядра не установлен'),
+    timeout: uiT('Помощник не ответил вовремя'),
   };
   return map[code] || code;
 }
@@ -321,6 +323,7 @@ function cpuProfileErrorMessage(code) {
     apply_failed: uiT('Не удалось применить профиль'),
     sudo_failed: uiT('Нет прав sudo'),
     ctl_missing: uiT('Скрипт управления CPU не установлен'),
+    timeout: uiT('Помощник не ответил вовремя'),
   };
   return map[code] || code;
 }

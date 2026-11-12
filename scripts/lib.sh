@@ -795,11 +795,104 @@ sa02m_remove_obsolete_www_sudoers() {
                 || log WARN "не удалось удалить устаревший sudoers: $_path"
         fi
     done
+    sa02m_remove_legacy_clock_sudoers
     sa02m_normalise_sudoers_modes
     if command -v visudo >/dev/null 2>&1; then
         visudo -c >/dev/null 2>&1 \
             || log WARN "visudo -c после удаления legacy sudoers — проверьте /etc/sudoers.d"
     fi
+}
+
+# Content signature of the given files (one line each; `absent` for a missing
+# one). A daemon's script and unit are atomic live-path writes, so a RUNNING
+# process keeps the old inode until it restarts: callers take the signature
+# before and after their install lines and pass `restart` to sa02m_svc_apply
+# only when it changed (D36-02: the heal-only watchdog never reached an upgraded
+# board because the loop only said `start`).
+sa02m_file_sig() {
+    local _f
+    for _f in "$@"; do
+        if [ -f "$_f" ]; then cksum < "$_f" 2>/dev/null || echo unreadable; else echo absent; fi
+    done
+}
+
+# Does the RUNNING main process of <unit> still execute an OLDER copy of its bash script <script>?
+# Decided from the process, not from the disk: a bash loop keeps its script open (an fd that reads
+# `<script> (deleted)` once an atomic install renamed a new file over it), so comparing that open file
+# with the installed one is true exactly when the old code is still running - also when the new file
+# is already on disk (a network update, or an earlier build of the same version, put it there and
+# restarted nothing: bench 1.135, D36-02). Content, not inode: an install rewrites the file every
+# run, so an inode/mtime test would bounce every daemon on every refresh. Returns 0 = stale (restart),
+# 1 = fresh, stopped, or not decidable (no open fd) - the caller still restarts on a disk change.
+sa02m_daemon_runs_stale_script() {
+    local _unit=$1 _script=$2 _pid _fd _link
+    _pid=$(timeout 10 systemctl show -p MainPID "$_unit" 2>/dev/null | sed -n 's/^MainPID=//p')
+    case "$_pid" in ''|0|*[!0-9]*) return 1 ;; esac
+    [ -d "/proc/$_pid/fd" ] || return 1
+    for _fd in /proc/"$_pid"/fd/*; do
+        _link=$(readlink "$_fd" 2>/dev/null) || continue
+        case "$_link" in
+            "$_script"|"$_script (deleted)")
+                cmp -s "$_fd" "$_script" 2>/dev/null && return 1
+                return 0 ;;
+        esac
+    done
+    return 1
+}
+
+# /etc/sudoers.d/time-sync — `www-data ALL=(ALL) NOPASSWD: /bin/date, /sbin/hwclock`,
+# written by the very first installer (12764245, removed from the tree in
+# 39124e45) and kept on every board imaged from it. It is in no committed file,
+# so no wholesale install ever overwrote it, and it re-opens exactly what
+# sa02m-www closes (audit A8-01: `date -f` reads any file as root, `hwclock
+# --adjfile` writes one). Removed here, by NAME (never a glob), and only when
+# (1) the file is a regular file whose every non-comment line is a www-data grant
+# of date / hwclock / timedatectl and nothing else, and (2) the replacement is
+# already in place (sa02m-www names the clock helper and the helper is
+# executable) — otherwise it is LEFT and named in a WARN. Idempotent: no file,
+# no output. The OTA runner carries the same rule (remove_legacy_clock_sudoers
+# in etc/sa02m-update-runner.sh); gate: sudoers-pin-contract.
+sa02m_remove_legacy_clock_sudoers() {
+    local _dir=${SA02M_SUDOERS_DIR:-/etc/sudoers.d} _f _line _rest _c _n=0 _ok=1
+    local _helper=${SA02M_CLOCK_HELPER:-/usr/local/sbin/sa02m-clock-set.sh}
+    local -a _cmds
+    _dir=${_dir%/}
+    _f="$_dir/time-sync"
+    [ -e "$_f" ] || [ -L "$_f" ] || return 0
+    if [ -L "$_f" ] || [ ! -f "$_f" ]; then
+        log WARN "legacy sudoers $_f не обычный файл — оставлен; проверьте вручную"
+        return 0
+    fi
+    while IFS= read -r _line || [ -n "$_line" ]; do
+        _line=${_line%$'\r'}
+        _line=${_line#"${_line%%[![:space:]]*}"}
+        _line=${_line%"${_line##*[![:space:]]}"}
+        case "$_line" in ''|'#'*) continue ;; esac
+        _n=$((_n + 1))
+        if [[ "$_line" =~ ^www-data[[:space:]]+ALL=\(ALL(:ALL)?\)[[:space:]]+(NOPASSWD:[[:space:]]*)?(.+)$ ]]; then
+            _rest=${BASH_REMATCH[3]}
+        else
+            _ok=0; break
+        fi
+        IFS=',' read -r -a _cmds <<< "$_rest"
+        for _c in "${_cmds[@]}"; do
+            _c=${_c#"${_c%%[![:space:]]*}"}
+            _c=${_c%"${_c##*[![:space:]]}"}
+            [[ "$_c" =~ ^/[A-Za-z0-9._/-]*/(date|hwclock|timedatectl)$ ]] || { _ok=0; break; }
+        done
+        [ "$_ok" = 1 ] || break
+    done < "$_f"
+    if [ "$_ok" != 1 ] || [ "$_n" -lt 1 ]; then
+        log WARN "legacy sudoers $_f несёт не только grant date/hwclock/timedatectl — оставлен; уберите вручную"
+        return 0
+    fi
+    if ! grep -qF 'sa02m-clock-set.sh' "$_dir/sa02m-www" 2>/dev/null || [ ! -x "$_helper" ]; then
+        log WARN "legacy sudoers $_f не удалён: замена (sa02m-www с sa02m-clock-set.sh) ещё не на месте"
+        return 0
+    fi
+    rm -f -- "$_f" \
+        && log OK "удалён legacy sudoers $_f (грант date/hwclock: аудит A8-01)" \
+        || log WARN "не удалось удалить legacy sudoers $_f"
 }
 
 # OTA map_dst used to strip .sh from these helpers; remove the twins so sudoers

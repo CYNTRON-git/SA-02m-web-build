@@ -155,7 +155,7 @@ sa02m_audio_api.cgi|TRIG_OUT=$(timeout 11 sudo -n /usr/local/sbin/sa02m-audio-we
 # the sudo line, and the publish sits after the same token check (read, not
 # pinned: an anchor matches exactly one line). Its GET download is read-only.
 READ_ONLY_SUDO='
-mqtt_status.cgi|sudo -n cat /etc/sa02m_mqtt.env + sudo -n sa02m-mqtt-external-info.py: reads only, nothing written
+mqtt_status.cgi|sudo -n cat /etc/sa02m_mqtt.env + sudo -n sa02m-mqtt-external-info.py: reads only, nothing written; both run only on the POST {"reveal":"password"} branch, which web_csrf_require guards (GET never reads the secret)
 status.cgi|sudo -n CTL list + sudo -n rs485-stats-helper driver/inuse: reads only (dashboard poll)
 web_backup.cgi|GET-only by design (refuses non-GET), streams sa02m-web-backup.sh output; the script writes only its own $TMP
 '

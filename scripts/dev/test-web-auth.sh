@@ -687,6 +687,125 @@ for _entry in "${RUNTIME_DIRS[@]}"; do
     fi
 done
 
+# ═══ 10. The password never rides in argv (A8-08, 1.0.7.36) ═══════════════
+# argv is world-readable in /proc/<pid>/cmdline for as long as the hasher runs.
+# An `openssl` PATH shim records its argv and then runs the real binary, so the
+# hash is the real one: the password must not appear in the record, and a hash
+# made the OLD way (password as an argument) must still verify — every board's
+# stored $6$ keeps working. RED on the pre-1.0.7.36 lib: 69 (password in argv)
+# and 71 (a password starting with `-` was parsed by openssl as an option).
+REAL_OPENSSL=$(command -v openssl 2>/dev/null || true)
+if [ -n "$REAL_OPENSSL" ]; then
+    printf '#!/bin/sh\nprintf "%%s\\n" "$*" >> "%s/openssl.argv"\nexec "%s" "$@"\n' "$T" "$REAL_OPENSSL" > "$BIN/openssl"
+    chmod +x "$BIN/openssl"
+    PW='Arg!vSecret 42'
+    OLD_HASH=$("$REAL_OPENSSL" passwd -6 -salt 'q1w2e3r4' "$PW")
+    : > "$T/openssl.argv"
+    NEW_HASH=$(web_auth_hash "$PW")
+    web_auth_verify "$PW" "$OLD_HASH"; v_old=$?
+    web_auth_verify "$PW" "$NEW_HASH"; v_new=$?
+    web_auth_verify 'Arg!vSecret 43' "$OLD_HASH"; v_bad=$?
+    if [ ! -s "$T/openssl.argv" ]; then
+        bad "69 the openssl shim never ran — the argv assertion would be vacuous"
+    elif grep -qF "$PW" "$T/openssl.argv"; then
+        bad "69 the password is in openssl's argv (world-readable in /proc/<pid>/cmdline): $(head -1 "$T/openssl.argv")"
+    else
+        ok "69 web_auth_hash/web_auth_verify keep the password out of argv ($(wc -l < "$T/openssl.argv") openssl runs recorded)"
+    fi
+    if [ "$v_old" -eq 0 ] && [ "$v_new" -eq 0 ] && [ "$v_bad" -ne 0 ]; then
+        ok "70 a hash made the old way (password in argv) still verifies; a wrong password does not"
+    else
+        bad "70 stored-hash compatibility broken: old=$v_old new=$v_new wrong=$v_bad (0 = verified)"
+    fi
+    DASH_HASH=$("$REAL_OPENSSL" passwd -6 -salt 'q1w2e3r4' -stdin <<< '-dash-first')
+    if web_auth_verify '-dash-first' "$DASH_HASH"; then
+        ok "71 a password starting with '-' verifies (it is data on stdin, not an option)"
+    else
+        bad "71 a password starting with '-' does not verify — it is still handed to openssl as an argument"
+    fi
+    rm -f "$BIN/openssl"
+else
+    skip "69-71 no openssl on this host (the board has it; CI runs these)"
+fi
+# The python fallback (no openssl on PATH): same rule, read from stdin.
+PYBIN=$(command -v python3 2>/dev/null || true)
+if [ -n "$PYBIN" ] && "$PYBIN" -c 'import crypt' >/dev/null 2>&1; then
+    NOSSL="$T/nossl"; mkdir -p "$NOSSL"
+    for tool in head od tr cut sha256sum; do
+        tp=$(command -v "$tool") && ln -s "$tp" "$NOSSL/$tool" 2>/dev/null
+    done
+    printf '#!/bin/sh\nprintf "%%s\\n" "$*" >> "%s/python.argv"\nexec "%s" "$@"\n' "$T" "$PYBIN" > "$NOSSL/python3"
+    chmod +x "$NOSSL/python3"
+    PH=$(PATH="$NOSSL" web_auth_hash "$PW")
+    if [ -n "$PH" ] && PATH="$NOSSL" web_auth_verify "$PW" "$PH" && ! grep -qF "$PW" "$T/python.argv"; then
+        ok "72 python3 fallback: hash + verify work and the password is not in argv"
+    else
+        bad "72 python3 fallback: hash='$PH' or the password reached argv: $(head -1 "$T/python.argv" 2>/dev/null)"
+    fi
+else
+    skip "72 python3 with the crypt module is not available here (removed in Python 3.13; the board's 3.11 has it)"
+fi
+
+# ═══ 11. Root-password guessing in cmd_exec.cgi is throttled (A8-09) ════════
+# The SHIPPED cmd_exec.cgi runs in a sandbox: the real lib (session, CSRF,
+# throttle), the real output collector, and a root-helper stand-in behind a
+# `sudo` shim that logs every call and answers like a wrong password (exit 77,
+# «root authentication failed»). 10 wrong passwords inside the window -> the
+# 11th request is refused with root_locked WITHOUT reaching the helper, and the
+# panel-login bucket of the same client stays open. RED on the pre-1.0.7.36
+# CGI: the helper is called all 11 times and no root_locked is ever answered.
+CMD_SRC=${CMD_EXEC_SRC:-www/network_config/cgi-bin/cmd_exec.cgi}
+CGI_DIR="$T/cgi"; mkdir -p "$CGI_DIR"
+if [ "$(uname -s 2>/dev/null)" != "Linux" ]; then
+    # The CGI hands MSYS /tmp paths to its python3 collector; a native Windows
+    # python cannot open them (the collector dies, the helper takes SIGPIPE).
+    skip "73-75 cmd_exec.cgi sandbox needs Linux (MSYS /tmp paths vs native python on $(uname -s 2>/dev/null)); CI is the authority"
+elif [ -n "$PYBIN" ] && [ -f "$CMD_SRC" ]; then
+    cp "$LIB" "$CGI_DIR/lib_web_auth.sh"
+    cp www/network_config/cgi-bin/lib_cmd_capture.py "$CGI_DIR/"
+    printf '#!/bin/sh\nexit 0\n' > "$CGI_DIR/root-helper"; chmod +x "$CGI_DIR/root-helper"
+    printf '#!/bin/sh\necho call >> "%s/root-helper.calls"\necho "root authentication failed" >&2\nexit 77\n' "$T" > "$CGI_DIR/sudo-root"
+    chmod +x "$CGI_DIR/sudo-root"
+    sed -e "s|HELPER=/usr/local/sbin/sa02m-web-root-cmd.sh|HELPER=$CGI_DIR/root-helper|" \
+        -e "s|sudo -n -u root|$CGI_DIR/sudo-root -n -u root|" "$CMD_SRC" > "$CGI_DIR/cmd_exec.cgi"
+    grep -qF "HELPER=$CGI_DIR/root-helper" "$CGI_DIR/cmd_exec.cgi" && grep -qF "$CGI_DIR/sudo-root" "$CGI_DIR/cmd_exec.cgi" \
+        || bad "73 the cmd_exec.cgi retarget did not apply (helper/sudo lines moved) — section 11 would test the host"
+    RTOK=$(web_session_create admin)
+    RCSRF=$(web_csrf_token_for_session "$RTOK")
+    ROOT_LOGIN_DIR="$T/login-root"
+    root_try() {
+        local body="cmd=id&mode=root&root_password=wrong$1"
+        printf '%s' "$body" | env HTTP_COOKIE="session_token=$RTOK" HTTP_X_SA02M_CSRF="$RCSRF" \
+            REQUEST_METHOD=POST CONTENT_LENGTH="${#body}" REMOTE_ADDR=192.0.2.50 \
+            SA02M_SESSION_DIR="$SA02M_SESSION_DIR" SA02M_LOGIN_DIR="$ROOT_LOGIN_DIR" \
+            SA02M_LOGIN_MAXFAIL=10 SA02M_LOGIN_LOCKOUT=300 \
+            bash "$CGI_DIR/cmd_exec.cgi" 2>/dev/null | sed '1,/^$/d'
+    }
+    : > "$T/root-helper.calls"
+    last=""
+    for i in 1 2 3 4 5 6 7 8 9 10; do last=$(root_try "$i"); done
+    calls10=$(wc -l < "$T/root-helper.calls")
+    eleventh=$(root_try 11)
+    calls11=$(wc -l < "$T/root-helper.calls")
+    if [ "$calls10" -eq 10 ] && printf '%s' "$last" | grep -q 'root authentication failed'; then
+        ok "73 ten wrong root passwords each reach the helper and read as a wrong password"
+    else
+        bad "73 precondition: $calls10 helper call(s) after 10 tries, last answer: $last"
+    fi
+    if [ "$calls11" -eq 10 ] && printf '%s' "$eleventh" | grep -q '"error": *"root_locked"'; then
+        ok "74 the 11th try is refused with root_locked and never reaches the helper"
+    else
+        bad "74 the 11th try was not throttled: helper calls=$calls11, answer: $eleventh"
+    fi
+    if SA02M_LOGIN_DIR="$ROOT_LOGIN_DIR" SA02M_LOGIN_MAXFAIL=10 SA02M_LOGIN_LOCKOUT=300 REMOTE_ADDR=192.0.2.50 web_login_check; then
+        ok "75 the same client's panel-login bucket is untouched by root failures"
+    else
+        bad "75 root-password failures locked the panel login of the same client"
+    fi
+else
+    skip "73-75 python3 not available (the CGI parses its form with it)"
+fi
+
 # ── non-vacuity ────────────────────────────────────────────────────────────
 # `[ "$n_store" -ge 0 ]` used to stand here: a count is never negative, so the
 # line printed "store + shim were exercised" without testing anything — decoration

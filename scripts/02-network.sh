@@ -174,6 +174,10 @@ if [ -f "$ETC_DIR/fix-eth.sh" ]; then
     sa02m_atomic_install -m 755 "$ETC_DIR/fix-eth.sh" /usr/local/bin/fix-eth.sh
 fi
 
+# net-watchdog.sh is a long-lived loop: it is restarted at the end when the script/unit
+# changed in this run (signature before/after) or the running process still executes an
+# older script than the installed one (D36-02).
+_nw_sig0=$(sa02m_file_sig /usr/local/bin/net-watchdog.sh /etc/systemd/system/net-watchdog.service)
 if [ -f "$ETC_DIR/net-watchdog.sh" ]; then
     log INFO "Установка net-watchdog.sh"
     sa02m_atomic_install -m 755 "$ETC_DIR/net-watchdog.sh" /usr/local/bin/net-watchdog.sh
@@ -214,6 +218,9 @@ if [ -f "$ETC_DIR/systemd/sa02m-link-monitor.service" ]; then
         /etc/systemd/system/sa02m-link-monitor.service
 fi
 
+# Same long-lived-loop shape as net-watchdog (A-5): restarted at the end only when its script/unit
+# changed in this run (signature) or a running bash/dash loop still holds an older copy.
+_lp_sig0=$(sa02m_file_sig /usr/local/bin/sa02m-eth0-led-poll.sh /etc/systemd/system/sa02m-eth0-led-poll.service)
 if [ -f "$ETC_DIR/sa02m-eth0-led-poll.sh" ]; then
     log INFO "Установка sa02m-eth0-led-poll.sh"
     sa02m_atomic_install -m 755 "$ETC_DIR/sa02m-eth0-led-poll.sh" /usr/local/bin/sa02m-eth0-led-poll.sh
@@ -401,7 +408,12 @@ sa02m_svc_apply networking.service infra start
 
 # infra: enabled + unmasked in every mode (a stale /dev/null mask from
 # imaging / old 01-system is repaired by the helper).
-sa02m_svc_apply net-watchdog.service infra start
+_nw_sig1=$(sa02m_file_sig /usr/local/bin/net-watchdog.sh /etc/systemd/system/net-watchdog.service)
+if [ "$_nw_sig0" != "$_nw_sig1" ] || sa02m_daemon_runs_stale_script net-watchdog.service /usr/local/bin/net-watchdog.sh; then
+    sa02m_svc_apply net-watchdog.service infra start restart
+else
+    sa02m_svc_apply net-watchdog.service infra start
+fi
 # start restart: a re-run (--refresh) restarts a running monitor so a changed
 # script takes effect (an idle listener — the restart costs one 5 s gap at most).
 sa02m_svc_apply sa02m-link-monitor.service infra start restart
@@ -409,7 +421,12 @@ sa02m_svc_apply sa02m-link-monitor.service infra start restart
 # avoid double ethtool -r on LAN1.
 sa02m_svc_apply sa02m-eth-coldboot.service infra start
 sa02m_systemctl disable sa02m-eth1-coldboot 2>/dev/null || true
-sa02m_svc_apply sa02m-eth0-led-poll.service infra start
+_lp_sig1=$(sa02m_file_sig /usr/local/bin/sa02m-eth0-led-poll.sh /etc/systemd/system/sa02m-eth0-led-poll.service)
+if [ "$_lp_sig0" != "$_lp_sig1" ] || sa02m_daemon_runs_stale_script sa02m-eth0-led-poll.service /usr/local/bin/sa02m-eth0-led-poll.sh; then
+    sa02m_svc_apply sa02m-eth0-led-poll.service infra start restart
+else
+    sa02m_svc_apply sa02m-eth0-led-poll.service infra start
+fi
 # ENABLE only, deliberately no `start`: the belt's job is the NEXT boot, and a
 # live board must never be disturbed by an installer re-run. The unit only ever
 # adds a resolver record when one is missing, so starting it would be harmless

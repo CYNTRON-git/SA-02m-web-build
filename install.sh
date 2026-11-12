@@ -218,10 +218,13 @@ sa02m_restore_runtime_watchdog() {
     SA02M_WDT_PREV=""
 }
 # The userspace watchdog (etc/sa02m-userspace-watchdog.sh) reboots the board
-# after 10 min of nginx/sshd/the login page being down — which is what a long
-# install restarting them looks like — and pauses only while this lock exists
-# (the update and factory-reset runners take it too). Taken below only when
-# absent, released only when owned.
+# after 10 min of a whole-board fault (sshd, the SSH port, interface, load,
+# memory) and only restarts the web services for a web-only fault (nginx, the
+# panel port, the login page, the CGI layer) — which is what a long install
+# restarting them looks like. It pauses only while this lock exists (the update
+# and factory-reset runners take it too), so the lock still keeps its heals from
+# restarting nginx mid-install. Taken below only when absent, released only when
+# owned.
 SA02M_IMAGING_LOCK=/run/sa02m-imaging.lock
 SA02M_OWN_IMAGING_LOCK=0
 # One EXIT handler for both holds; `|| true` so a failed restore under set -e

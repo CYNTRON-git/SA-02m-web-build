@@ -16,6 +16,7 @@ rm -f \
   "$CLOUD_DIR/device_secret" \
   "$CLOUD_DIR/frpc.toml" \
   "$CLOUD_DIR/frpc.toml.bak"* \
+  "$CLOUD_DIR"/.frpc.toml.tmp.* \
   "$CLOUD_DIR/pair_request" \
   "$CLOUD_DIR/activation_token" \
   /run/sa02m-cloud-status.json \

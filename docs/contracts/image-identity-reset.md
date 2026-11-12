@@ -201,7 +201,10 @@ firstrun этой конкретной платы. Очистка Алисы н�
 Площадки те же пять плюс ручной скрипт: `reset-cloud-enrollment.sh`,
 `stream-after-cleanup.sh` (`wipe_cloud_enrollment`), `patch-firstboot-image.sh`,
 `autorun.sh`, `autorun-fel.sh`, `ssh-flash-safe.sh`. Clear-list облака: `device_secret`, `frpc.toml`
-(+ `.bak*`), `pair_request`, `activation_token`, `/run/sa02m-cloud-status.json`,
+(+ `.bak*` и **`.frpc.toml.tmp.*`** — глоб по форме: агент пишет `frpc.toml` (токен frp и
+`device_secret`) через mkstemp-файл `/etc/sa02m-cloud/.frpc.toml.tmp.XXXXXX` и
+переименовывает его, обрыв между ними оставляет весь секрет под этим именем; агент
+сам удаляет такие файлы при старте и при отвязке), `pair_request`, `activation_token`, `/run/sa02m-cloud-status.json`,
 `/run/sa02m-cloud-frpc.cursor` (позиция чтения журнала frpc — снимается
 `reset-cloud-enrollment.sh` и свежей привязкой; это tmpfs, в образ не попадает,
 поэтому площадки образа его не трогают), и `agent.conf` приводится к `enrolled = false`

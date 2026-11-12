@@ -14,10 +14,23 @@ LOG_ROTATE_KEEP_BYTES="${LOG_ROTATE_KEEP_BYTES:-1048576}"
 
 MONITOR_UNITS="${MONITOR_UNITS:-ssh nginx fcgiwrap mplc4.service}"
 PORT_CHECK="${PORT_CHECK:-22}"
-HTTP_PROBE_URL="${HTTP_PROBE_URL:-http://127.0.0.1:9999/login.html}"
-STATUS_PROBE_URL="${STATUS_PROBE_URL:-http://127.0.0.1:9999/cgi-bin/status.cgi?part=priority}"
+# Empty = derived from the panel's real port (resolve_web_port): a board
+# installed with `--port N` serves on N, not 9999 (audit A3-04). A value set
+# here or in $CONF_FILE still wins.
+WEB_PORT="${WEB_PORT:-}"
+HTTP_PROBE_URL="${HTTP_PROBE_URL:-}"
+STATUS_PROBE_URL="${STATUS_PROBE_URL:-}"
+SA02M_WEB_PORT_LIB="${SA02M_WEB_PORT_LIB:-/usr/local/lib/sa02m-web-port-lib.sh}"
+# The state snapshot is rewritten when a state changed in the pass, else at
+# most this often (H5-01: rewriting it every 5 s cost an ss + ps fork each pass).
+SNAPSHOT_MAX_AGE_S="${SNAPSHOT_MAX_AGE_S:-60}"
 
 [ -f "$CONF_FILE" ] && . "$CONF_FILE" 2>/dev/null || true
+
+WEB_PORT_PINNED="$WEB_PORT"
+HTTP_PROBE_URL_PINNED="$HTTP_PROBE_URL"
+STATUS_PROBE_URL_PINNED="$STATUS_PROBE_URL"
+WEB_PORT_SOURCE=""
 
 mkdir -p "$STATE_DIR"
 
@@ -36,6 +49,31 @@ log() {
     ts=$(date '+%Y-%m-%d %H:%M:%S')
     printf '[%s] %s\n' "$ts" "$*" >> "$LOG_FILE" 2>/dev/null || true
     printf '[%s] %s\n' "$ts" "$*"
+}
+
+# The panel's port: pinned value, else the installer's port library (sourced in
+# a subshell), else 9999. Re-run on every heartbeat; logs only on a change.
+resolve_web_port() {
+    local port="" rc src
+    if [ -n "$WEB_PORT_PINNED" ]; then
+        port=$WEB_PORT_PINNED; src="conf"
+    elif [ -r "$SA02M_WEB_PORT_LIB" ]; then
+        port=$(. "$SA02M_WEB_PORT_LIB" >/dev/null 2>&1 && sa02m_web_port 2>/dev/null)
+        rc=$?
+        case "$rc:$port" in
+            0:[0-9]*|3:[0-9]*) src="port library" ;;
+            *) port=9999; src="default (port library failed rc=$rc)" ;;
+        esac
+    else
+        port=9999; src="default (no port library at $SA02M_WEB_PORT_LIB)"
+    fi
+    if [ "$port:$src" != "$WEB_PORT:$WEB_PORT_SOURCE" ]; then
+        log "web port ${port} (${src})"
+    fi
+    WEB_PORT=$port
+    WEB_PORT_SOURCE=$src
+    HTTP_PROBE_URL=${HTTP_PROBE_URL_PINNED:-http://127.0.0.1:${WEB_PORT}/login.html}
+    STATUS_PROBE_URL=${STATUS_PROBE_URL_PINNED:-http://127.0.0.1:${WEB_PORT}/cgi-bin/status.cgi?part=priority}
 }
 
 trim_log_if_needed() {
@@ -94,7 +132,8 @@ unit_state() {
             fi
             ;;
         mplc|mplc.service|mplc4|mplc4.service)
-            if command -v pgrep >/dev/null 2>&1 && { pgrep -x mplc >/dev/null 2>&1 || pgrep -x mplc4 >/dev/null 2>&1 || pgrep -x mplc_monitor >/dev/null 2>&1; }; then
+            # One pgrep for the three process names (pgrep -x anchors the ERE).
+            if command -v pgrep >/dev/null 2>&1 && pgrep -x 'mplc|mplc4|mplc_monitor' >/dev/null 2>&1; then
                 echo active
             else
                 echo inactive
@@ -156,6 +195,12 @@ dump_system_snapshot() {
     } >> "$LOG_FILE"
 }
 
+# Unit states and the port-22 state read in THIS pass, reused by the snapshot
+# instead of a second round of probes (H5-01).
+declare -A _pass_unit_state
+_pass_port22="unknown"
+_pass_changed=0
+
 write_snapshot_file() {
     local tmp
     tmp="${SNAPSHOT_FILE}.tmp.$$"
@@ -163,12 +208,12 @@ write_snapshot_file() {
         echo "generated_at=$(date '+%Y-%m-%d %H:%M:%S' 2>/dev/null || echo unknown)"
         echo "load=$(load_short)"
         echo "mem_available_kb=$(mem_available_kb)"
-        echo "port22=$(port_state)"
+        echo "port22=${_pass_port22}"
         printf 'login_http=%s\n' "$_probe_login_http"
         printf 'status_priority=%s\n' "$_probe_status_priority"
         echo "--- units ---"
         for unit in $MONITOR_UNITS; do
-            printf '%s=%s\n' "$unit" "$(unit_state "$unit")"
+            printf '%s=%s\n' "$unit" "${_pass_unit_state[$unit]:-$(unit_state "$unit")}"
         done
         echo "--- ssh listeners ---"
         ss -ltnp 2>/dev/null | awk 'NR==1 || /:22[[:space:]]/' || true
@@ -185,7 +230,9 @@ check_unit() {
     key="unit:${unit}"
     prev=$(read_state "$key")
     cur=$(unit_state "$unit")
+    _pass_unit_state[$unit]=$cur
     [ "$cur" = "$prev" ] && return 0
+    _pass_changed=1
     write_state "$key" "$cur"
     log "unit ${unit}: ${prev:-unset} -> ${cur}"
     if [ "$cur" != "active" ]; then
@@ -208,6 +255,7 @@ check_named_probe_cached() {
     local name=$1 cur=$2 prev
     prev=$(read_state "probe:${name}")
     [ "$cur" = "$prev" ] && return 0
+    _pass_changed=1
     write_state "probe:${name}" "$cur"
     log "probe ${name}: ${prev:-unset} -> ${cur}"
     case "$cur" in
@@ -233,17 +281,21 @@ heartbeat() {
 }
 
 main() {
-    local last_heartbeat=0 last_http_probe=0 now unit loop_count=0
+    local last_heartbeat=0 last_http_probe=0 last_snapshot=0 now unit loop_count=0
     log "failure monitor started; units=${MONITOR_UNITS}; interval=${CHECK_INTERVAL}s"
+    resolve_web_port
 
     while true; do
         now=$(date +%s)
+        _pass_changed=0
+        _pass_unit_state=()
 
         for unit in $MONITOR_UNITS; do
             check_unit "$unit"
         done
 
-        check_named_probe ssh-port port_state
+        _pass_port22=$(port_state)
+        check_named_probe_cached ssh-port "$_pass_port22"
         # HTTP probes fork a Bash CGI (+ its sudo/i2c reads) — far heavier than
         # the systemctl unit-state checks. Run them on a longer cadence
         # (HTTP_PROBE_INTERVAL_SEC, default 30 s) instead of every 5 s loop.
@@ -258,6 +310,7 @@ main() {
         if [ "$last_heartbeat" -eq 0 ] || [ $(( now - last_heartbeat )) -ge "$HEARTBEAT_INTERVAL_SEC" ]; then
             heartbeat
             last_heartbeat=$now
+            resolve_web_port
         fi
 
         loop_count=$(( loop_count + 1 ))
@@ -265,7 +318,11 @@ main() {
             trim_log_if_needed
         fi
 
-        write_snapshot_file
+        if [ "$_pass_changed" = 1 ] || [ "$last_snapshot" -eq 0 ] \
+           || [ $(( now - last_snapshot )) -ge "$SNAPSHOT_MAX_AGE_S" ]; then
+            write_snapshot_file
+            last_snapshot=$now
+        fi
 
         sleep "$CHECK_INTERVAL"
     done

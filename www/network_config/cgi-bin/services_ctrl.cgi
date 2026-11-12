@@ -74,7 +74,24 @@ if [[ "$METHOD" = "GET" ]]; then
     echo "Content-type: application/json; charset=UTF-8"
     echo "Cache-Control: no-store"
     echo ""
-    sudo -n "$CTL" list
+    # The helper's `list` leaves its exact answer in list.json (root-owned dir,
+    # 0644, dropped by every start/stop/install/uninstall); a copy younger than
+    # 10 s is served without a `sudo CTL list` (A8-04). Read directly — the
+    # sudoers grant pins the bare `list` verb, and a read forks no sudo.
+    LIST_CACHE="${RESULT_DIR}/list.json"
+    if [[ -f "$LIST_CACHE" && -s "$LIST_CACHE" ]]; then
+        LIST_AGE=$(( EPOCHSECONDS - $(stat -c %Y "$LIST_CACHE" 2>/dev/null || echo 0) ))
+        if (( LIST_AGE >= 0 && LIST_AGE < 10 )) && cat "$LIST_CACHE" 2>/dev/null; then
+            exit 0
+        fi
+    fi
+    # Bounded below this location's 120 s nginx read timeout (A8-11).
+    timeout -k 2 100 sudo -n "$CTL" list
+    rc=$?
+    if [[ "$rc" -eq 124 || "$rc" -eq 137 ]]; then
+        echo "services_ctrl.cgi: list timed out after 100s" >&2
+        echo '{"ok":false,"error":"timeout"}'
+    fi
     exit 0
 fi
 

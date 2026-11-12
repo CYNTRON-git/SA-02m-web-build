@@ -58,6 +58,9 @@
 #   W18b a mirror refusal W18a's widening does not cover (end0.conf over the
 #       32 KiB snapshot bound): eth0.conf written, NO bounce, the answer
 #       {"ok":true,"applied":false,"reason":"reboot_required","status":"applied"}.
+#   W19 (A3-03) the live conf is replaced by rename (its inode changes), mode
+#       644, no `*.sa02m-tmp.*` left in the directory — also after a refusal.
+#       RED on the truncate-in-place helper (`cat "$tmp" > "$dst"`): inode kept.
 #
 # Non-vacuous: a missing helper/apply.cgi/lib, a failed or over-wide retarget,
 # a helper that never logs, or an unloadable lib_check.sh FAILS rather than
@@ -567,6 +570,37 @@ if [ "$rc" = 0 ] && grep -qx '{"ok":true,"applied":false,"reason":"reboot_requir
 else
     bad "W18b: refused mirror after a written canonical — out='$(tr '\n' '|' < "$E/out")' apply='$(tr '\n' ';' < "$E2E_NOHUP_LOG")' end0.conf changed=$(e_same end0.conf && echo no || echo YES)"
 fi
+
+# ── W19 (A3-03): the live conf is replaced by rename, never truncated in place.
+# A write that truncates the live file and refills it keeps the inode; a hard
+# reset between truncate and fill leaves a 0-byte eth0.conf and the board
+# boots without its address. The helper must write a temp in the destination
+# directory (same filesystem, so the rename is atomic) and rename it over dst.
+reset; cur eth0.conf "${STANZA[@]}"
+ino_before=$(stat -c %i "$IFD/eth0.conf" 2>/dev/null || echo none)
+# keep a second name on the old inode so the filesystem cannot recycle the number
+ln "$IFD/eth0.conf" "$T/old-eth0-link" 2>/dev/null || cp -p "$IFD/eth0.conf" "$T/old-eth0-link"
+feed eth0.conf "${STANZA2[@]}"
+ino_after=$(stat -c %i "$IFD/eth0.conf" 2>/dev/null || echo none)
+mode_after=$(stat -c %a "$IFD/eth0.conf" 2>/dev/null || echo none)
+n_tmp=$(find "$IFD" -name '*.sa02m-tmp.*' 2>/dev/null | wc -l)
+w19_ok=1
+[ "$rc" = 0 ] && written eth0.conf || { bad "W19: the write itself failed rc=$rc"; w19_ok=0; }
+[ "$ino_before" != none ] && [ "$ino_before" != "$ino_after" ] \
+    || { bad "W19: eth0.conf kept its inode ($ino_before -> $ino_after) — written by truncation, not by rename"; w19_ok=0; }
+[ "$n_tmp" -eq 0 ] || { bad "W19: $n_tmp temp file(s) left in the interfaces.d directory"; w19_ok=0; }
+case "$mode_after" in
+    644) ;;
+    *) if [ "$(uname -s)" = Linux ]; then bad "W19: eth0.conf mode is $mode_after, expected 644"; w19_ok=0; fi ;;
+esac
+rm -f "$T/old-eth0-link"
+# A refused write must leave no temp behind either.
+reset; cur eth0.conf "${STANZA[@]}"; snap eth0.conf
+feed eth0.conf "${STANZA2[@]}" '    pre-up /bin/sh -c id'
+n_tmp=$(find "$IFD" -name '*.sa02m-tmp.*' 2>/dev/null | wc -l)
+{ [ "$rc" = 2 ] && unchanged eth0.conf && [ "$n_tmp" -eq 0 ]; } \
+    || { bad "W19: a refused write changed dst or left a temp (rc=$rc tmp=$n_tmp)"; w19_ok=0; }
+[ "$w19_ok" = 1 ] && ok "W19: eth0.conf replaced by rename (inode $ino_before -> $ino_after), mode $mode_after, no *.sa02m-tmp.* left; a refused write leaves none"
 
 echo
 if [ "$fails" = 0 ]; then

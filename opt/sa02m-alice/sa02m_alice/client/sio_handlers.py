@@ -7,7 +7,7 @@ from typing import Any, Callable, Dict, List, Optional
 
 from ..common import constants as C
 from ..config import api as config_api
-from .device_registry import DeviceRegistry
+from .device_registry import DeviceRegistry, action_instance
 
 log = logging.getLogger("sa02m_alice.handlers")
 
@@ -116,16 +116,22 @@ class SioHandlers:
         self._emit_response({"request_id": request_id, "payload": {"devices": result}})
 
     def _on_action(self, request_id: Optional[str], devices: List[Any]) -> None:
-        results, publishes = self.registry.apply_actions(devices)
-        for topic, payload in publishes:
+        results, publishes = self.registry.apply_actions_tracked(devices)
+        for topic, payload, key in publishes:
             try:
                 self._publish(topic, payload)
             except Exception as exc:
                 log.error("MQTT publish failed %s: %s", topic, exc)
-                # Mark matching capability as unreachable
+                # Only THIS capability is unreachable: the relays of a group
+                # command that did switch stay DONE (alice-mqtt-mapping.md).
+                did, ctype, instance = key
                 for dev in results:
+                    if str(dev.get("id") or "") != did:
+                        continue
                     for cap in dev.get("capabilities") or []:
-                        if cap.get("status") == C.STATUS_DONE:
+                        if (cap.get("status") == C.STATUS_DONE
+                                and cap.get("type") == ctype
+                                and action_instance(ctype, cap.get("state")) == instance):
                             cap["status"] = C.STATUS_ERROR
                             cap["error_code"] = C.ERR_DEVICE_UNREACHABLE
         self._emit_response({"request_id": request_id, "payload": {"devices": results}})

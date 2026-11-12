@@ -292,6 +292,10 @@ fi
 if [ -f "$ETC_DIR/sa02m-prepare-working-board.sh" ]; then
     sa02m_atomic_install -m 755 "$ETC_DIR/sa02m-prepare-working-board.sh" /usr/local/sbin/sa02m-prepare-working-board
 fi
+# A running monitor keeps the old code until it restarts: it is restarted below when the
+# script/unit changed in this run (signature before/after) or when the running process
+# still executes an older script than the installed one (D36-02).
+_fm_sig0=$(sa02m_file_sig /usr/local/sbin/sa02m-failure-monitor /etc/systemd/system/sa02m-failure-monitor.service)
 if [ -f "$ETC_DIR/sa02m-failure-monitor.sh" ]; then
     sa02m_atomic_install -m 755 "$ETC_DIR/sa02m-failure-monitor.sh" /usr/local/sbin/sa02m-failure-monitor
 fi
@@ -320,6 +324,12 @@ fi
 if [ -f "$ETC_DIR/sa02m-usb-power.sh" ]; then
     sa02m_atomic_install -m 755 "$ETC_DIR/sa02m-usb-power.sh" /usr/local/sbin/sa02m-usb-power.sh
     sed -i 's/\r$//' /usr/local/sbin/sa02m-usb-power.sh
+fi
+# The clock helper — the only clock capability in sudoers (A8-01); it lands
+# before etc/sudoers.d/sa02m-www below, which grants it.
+if [ -f "$SCRIPT_DIR/../usr/local/sbin/sa02m-clock-set.sh" ]; then
+    sa02m_atomic_install -m 0755 -o root -g root "$SCRIPT_DIR/../usr/local/sbin/sa02m-clock-set.sh" /usr/local/sbin/sa02m-clock-set.sh
+    sed -i 's/\r$//' /usr/local/sbin/sa02m-clock-set.sh
 fi
 if [ -f "$ETC_DIR/sa02m_failure_monitor.conf" ] && [ ! -f /etc/sa02m_failure_monitor.conf ]; then
     install -m 644 "$ETC_DIR/sa02m_failure_monitor.conf" /etc/sa02m_failure_monitor.conf
@@ -774,6 +784,12 @@ if [ -f "$SYSTEMD_DIR/fcgiwrap.service" ]; then
     systemctl daemon-reload >> "$LOG_FILE" 2>&1 || true
 fi
 
+# ── nginx: restart after a crash (drop-in; the stock unit has no Restart=) ──
+if [ -f "$SYSTEMD_DIR/system/nginx.service.d/sa02m-restart.conf" ]; then
+    install -d -m 755 /etc/systemd/system/nginx.service.d
+    sa02m_atomic_install -m 644 "$SYSTEMD_DIR/system/nginx.service.d/sa02m-restart.conf" /etc/systemd/system/nginx.service.d/sa02m-restart.conf
+fi
+
 systemctl daemon-reload >> "$LOG_FILE" 2>&1 || true
 
 if [ -f /etc/systemd/system/sa02m-web-update-check.timer ]; then
@@ -796,7 +812,12 @@ fi
 # ── Start services ────────────────────────────────────────────────────────
 sa02m_svc_apply fcgiwrap.service infra start restart
 sa02m_svc_apply nginx.service infra start restart
-sa02m_svc_apply sa02m-failure-monitor.service infra start
+_fm_sig1=$(sa02m_file_sig /usr/local/sbin/sa02m-failure-monitor /etc/systemd/system/sa02m-failure-monitor.service)
+if [ "$_fm_sig0" != "$_fm_sig1" ] || sa02m_daemon_runs_stale_script sa02m-failure-monitor.service /usr/local/sbin/sa02m-failure-monitor; then
+    sa02m_svc_apply sa02m-failure-monitor.service infra start restart
+else
+    sa02m_svc_apply sa02m-failure-monitor.service infra start
+fi
 
 # ── Верификация: сокет fcgiwrap должен появиться в течение 5 с ──────────────
 FCGI_SOCK="/run/fcgiwrap/fcgiwrap.socket"

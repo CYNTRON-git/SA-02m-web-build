@@ -25,11 +25,14 @@ TIMEOUT_SEC=8
 TIMEOUT_SLOW_SEC=45
 
 # Canonical home: www/network_config/cgi-bin/lib_web_json.sh. This script
-# deploys to /etc (a different directory from the cgi-bin libs) so it keeps a
-# byte-identical local copy rather than a cross-dir source; the two MUST stay
-# in sync (web-code-rigor.md ## Bash CGI floors).
+# deploys to /etc under /bin/sh (no bash pattern substitution), so it keeps a
+# sed copy that MUST give the same bytes as the lib's bash escaper
+# (scripts/dev/test-json-escape-equiv.sh compares them). Lines are joined
+# BEFORE substituting so `\`, `"` and CR are escaped on every line, not only
+# the first; `$!{N;ba}` keeps a single-line value from exiting on N.
 json_escape() {
-    printf '%s' "$1" | sed 's/\\/\\\\/g; s/"/\\"/g; s/\r//g; :a;N;$!ba;s/\n/ /g'
+    printf '%s' "$1" | sed -e ':a' -e '$!{' -e 'N' -e 'ba' -e '}' \
+        -e 's/\\/\\\\/g' -e 's/"/\\"/g' -e 's/\r//g' -e 's/\n/ /g'
 }
 
 sc_run() {
@@ -46,6 +49,79 @@ sc_run_slow() {
     else
         "$SC" "$@" 2>/dev/null
     fi
+}
+
+# Every /etc/init.d/{codemeter,codesyscontrol,mplc4} start|stop goes through
+# here (A4-10): a wedged vendor script must not hold the service lock and the
+# panel's 90 s operation budget forever. 45 + 5 s stays inside that budget.
+# timeout signals its whole process group, so the script's own children die
+# with it; a daemon that setsid()'d away survives, which is the normal state
+# of a started runtime. The bound sits at EVERY init.d call, not only around
+# the helper: killing the helper alone would not release the coordinator's
+# guard fd while an init.d child still holds it.
+INITD_TIMEOUT_S=45
+case "${SA02M_INITD_TIMEOUT_S:-}" in ''|*[!0-9]*) ;; *) INITD_TIMEOUT_S=$SA02M_INITD_TIMEOUT_S ;; esac
+initd_run() {
+    command -v timeout >/dev/null 2>&1 || { "$@"; return $?; }
+    timeout -k 5 "$INITD_TIMEOUT_S" "$@"
+    _initd_rc=$?
+    if [ "$_initd_rc" -eq 124 ] || [ "$_initd_rc" -eq 137 ]; then
+        echo "$(date '+%Y-%m-%d %H:%M:%S') sa02m-web-service-ctl: init.d ${1##*/} ${2:-} timed out after ${INITD_TIMEOUT_S}s" >>"$LOG" 2>&1
+    fi
+    return "$_initd_rc"
+}
+
+# The list cache: `list` leaves its exact answer here for status.cgi and
+# services_ctrl.cgi to read without a second `sudo … list` (A8-04; dir 0755
+# root, file 0644 — www-data reads, cannot write). Every mutation bumps the
+# generation and drops the file before AND after its work; a `list` that was
+# already running when a mutation began sees the generation move and does not
+# publish its now-stale snapshot.
+SVC_LIST_CACHE="${RESULT_DIR}/list.json"
+SVC_LIST_GEN="${RESULT_DIR}/list.gen"
+SVC_LIST_LOCK="${RESULT_DIR}/list.lock"
+
+svc_list_gen_read() {
+    _svc_gen=0
+    [ -r "$SVC_LIST_GEN" ] && read -r _svc_gen <"$SVC_LIST_GEN" 2>/dev/null
+    case "$_svc_gen" in ''|*[!0-9]*) _svc_gen=0 ;; esac
+}
+
+svc_list_cache_invalidate() {
+    mkdir -p "$RESULT_DIR" 2>/dev/null || return 0
+    (
+        command -v flock >/dev/null 2>&1 && flock -w 2 9 2>/dev/null
+        svc_list_gen_read
+        printf '%s\n' "$((_svc_gen + 1))" >"${SVC_LIST_GEN}.tmp" 2>/dev/null \
+            && mv -f "${SVC_LIST_GEN}.tmp" "$SVC_LIST_GEN" 2>/dev/null
+        rm -f "$SVC_LIST_CACHE" 2>/dev/null
+    ) 9>"$SVC_LIST_LOCK" 2>/dev/null
+    return 0
+}
+
+# Print cmd_list's answer unchanged; publish it only when it is a JSON object
+# and no mutation began while it was being built.
+svc_list_publish() {
+    svc_list_gen_read
+    _svc_start_gen=$_svc_gen
+    _svc_out=$(cmd_list)
+    _svc_rc=$?
+    printf '%s\n' "$_svc_out"
+    [ "$_svc_rc" -eq 0 ] || return "$_svc_rc"
+    case "$_svc_out" in '{'*'}') ;; *) return 0 ;; esac
+    mkdir -p "$RESULT_DIR" 2>/dev/null || return 0
+    (
+        command -v flock >/dev/null 2>&1 && flock -w 2 9 2>/dev/null
+        svc_list_gen_read
+        [ "$_svc_gen" = "$_svc_start_gen" ] || exit 0
+        _svc_tmp=$(mktemp "${SVC_LIST_CACHE}.XXXXXX" 2>/dev/null) || exit 0
+        if printf '%s\n' "$_svc_out" >"$_svc_tmp" && chmod 644 "$_svc_tmp" \
+                && mv -f "$_svc_tmp" "$SVC_LIST_CACHE"; then
+            exit 0
+        fi
+        rm -f "$_svc_tmp"
+    ) 9>"$SVC_LIST_LOCK" 2>/dev/null
+    return 0
 }
 
 emit_result() {
@@ -323,7 +399,7 @@ codesys_rc_enable() {
 codemeter_runtime_start() {
     [ -x /etc/init.d/codemeter ] || return 0
     if ! pgrep -f '[C]odeMeter' >/dev/null 2>&1; then
-        /etc/init.d/codemeter start >>"$LOG" 2>&1 || true
+        initd_run /etc/init.d/codemeter start >>"$LOG" 2>&1 || true
     fi
 }
 
@@ -871,11 +947,11 @@ cmd_stop() {
     begin_result "$_id" stop || return 1
     echo "$(date '+%Y-%m-%d %H:%M:%S') sa02m-web-service-ctl: stop ${_id} (${_u})" >>"$LOG" 2>&1
     if [ "$_id" = "codesys" ] && [ -x /etc/init.d/codesyscontrol ]; then
-        /etc/init.d/codesyscontrol stop >>"$LOG" 2>&1 || true
+        initd_run /etc/init.d/codesyscontrol stop >>"$LOG" 2>&1 || true
         codesys_rc_disable
     fi
     if [ "$_id" = "mplc4" ] && [ -x /etc/init.d/mplc4 ]; then
-        /etc/init.d/mplc4 stop >>"$LOG" 2>&1 || true
+        initd_run /etc/init.d/mplc4 stop >>"$LOG" 2>&1 || true
         mplc4_rc_disable
     fi
     if [ "$_id" = "alice" ]; then
@@ -979,12 +1055,12 @@ cmd_start() {
     fi
     if [ "$_id" = "codesys" ] && [ -x /etc/init.d/codesyscontrol ]; then
         if ! codesys_process_active; then
-            /etc/init.d/codesyscontrol start >>"$LOG" 2>&1 || true
+            initd_run /etc/init.d/codesyscontrol start >>"$LOG" 2>&1 || true
         fi
     fi
     if [ "$_id" = "mplc4" ] && [ -x /etc/init.d/mplc4 ]; then
         if ! service_runtime_active mplc4 "$_u"; then
-            /etc/init.d/mplc4 start >>"$LOG" 2>&1 || true
+            initd_run /etc/init.d/mplc4 start >>"$LOG" 2>&1 || true
         fi
     fi
     if ! service_runtime_active "$_id" "$_u"; then
@@ -1059,7 +1135,7 @@ codesys_install() {
     # start it (a manual act the policy allows), with CodeMeter for licensing.
     codemeter_runtime_start
     if [ -x /etc/init.d/codesyscontrol ] && ! codesys_process_active; then
-        /etc/init.d/codesyscontrol start >>"$LOG" 2>&1 || true
+        initd_run /etc/init.d/codesyscontrol start >>"$LOG" 2>&1 || true
         sleep 2
     fi
     if codesys_process_active || port_listening 11740; then
@@ -1583,7 +1659,7 @@ nodered_install() {
 codesys_uninstall() {
     apt-mark unhold codesyscontrol >>"$LOG" 2>&1 || true
     if [ -x /etc/init.d/codesyscontrol ]; then
-        /etc/init.d/codesyscontrol stop >>"$LOG" 2>&1 || true
+        initd_run /etc/init.d/codesyscontrol stop >>"$LOG" 2>&1 || true
     fi
     if command -v update-rc.d >/dev/null 2>&1; then
         update-rc.d codesyscontrol disable >>"$LOG" 2>&1 || true
@@ -1628,7 +1704,7 @@ mplc4_uninstall() {
         sc_run_slow disable mplc4.service >>"$LOG" 2>&1 || true
     fi
     if [ -x /etc/init.d/mplc4 ]; then
-        /etc/init.d/mplc4 stop >>"$LOG" 2>&1 || true
+        initd_run /etc/init.d/mplc4 stop >>"$LOG" 2>&1 || true
     fi
     if command -v update-rc.d >/dev/null 2>&1; then
         update-rc.d mplc4 remove >>"$LOG" 2>&1 || true
@@ -1762,6 +1838,10 @@ case "$ACTION" in
         validate_id "$ID" || { printf '{"ok":false,"error":"invalid_id"}\n'; exit 1; }
         service_id_known "$ID" || { emit_result '{"ok":false,"error":"unknown_service"}'; exit 1; }
         begin_result "$ID" "$ACTION" || exit 1
+        # A cached `list` must not outlive a change of service state: drop it
+        # now and again whenever this process ends (svc_list_cache_invalidate).
+        svc_list_cache_invalidate
+        trap 'svc_list_cache_invalidate' EXIT
         ;;
 esac
 
@@ -1803,7 +1883,7 @@ esac
 
 case "$ACTION" in
     list)
-        cmd_list
+        svc_list_publish
         ;;
     stop)
         [ -n "$ID" ] || { printf '{"ok":false,"error":"missing_id"}\n'; exit 1; }

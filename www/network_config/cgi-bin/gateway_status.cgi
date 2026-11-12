@@ -16,7 +16,8 @@ if ! check_auth; then echo '{"error":"unauthorized"}'; exit 0; fi
 
 STATUS_FILE="/run/sa02m-gateway/status.json"
 
-svc_state="$(systemctl show -p ActiveState --value sa02m-serial-gateway.service 2>/dev/null)"
+# Bounded: a wedged systemd/dbus must not hold this polled handler (A8-11).
+svc_state="$(timeout 2 systemctl show -p ActiveState --value sa02m-serial-gateway.service 2>/dev/null)"
 python3 - "$STATUS_FILE" "${svc_state:-unknown}" <<'PYEOF'
 import json, os, stat, sys, time
 from pathlib import Path

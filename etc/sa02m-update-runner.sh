@@ -947,6 +947,16 @@ manifest = {
             # `app off`). Bounce only a running daemon so new /opt code is not
             # left in memory, and never start one the operator left off.
             "sa02m-agent-api",
+            # The two health daemons are long-lived bash loops: a replaced
+            # script changes nothing until the process restarts (the
+            # 1.0.7.36 heal-only watchdog stayed old on an upgraded board,
+            # D36-02). Always on (infra units), so restart-if-active is the
+            # right rule; restart_if_changed cannot name them, its validator
+            # takes /opt-style directory prefixes only. A bounce just resets
+            # their failure counters. Must stay in step with
+            # scripts/pack-offline-update.py.
+            "sa02m-userspace-watchdog",
+            "sa02m-failure-monitor",
         ],
         # Change-gated conditional restart: unit -> /opt prefix watched in the
         # apply journal. sa02m-modbus-mqtt owns the RS-485 port lease: restart
@@ -1505,6 +1515,58 @@ cleanup_b1_deploy_artifacts() {
     if command -v visudo >/dev/null 2>&1; then
         visudo -c >/dev/null 2>&1 || log "WARN: visudo -c after B1 cleanup"
     fi
+}
+
+# /etc/sudoers.d/time-sync — `www-data ALL=(ALL) NOPASSWD: /bin/date, /sbin/hwclock`,
+# laid by the very first installer on every board imaged from it, in no committed
+# file, so no wholesale sudoers install ever replaced it; it re-opens the clock
+# escalation sa02m-www closes (audit A8-01). Same rule as the installer's
+# sa02m_remove_legacy_clock_sudoers (scripts/lib.sh): by NAME, only when the file
+# is regular and every non-comment line is a www-data grant of date / hwclock /
+# timedatectl, and only once sa02m-www names the clock helper and the helper is
+# executable (this runs after the deploy, so a package carrying both has landed
+# them); otherwise it is left and named in a WARN. Gate: sudoers-pin-contract.
+remove_legacy_clock_sudoers() {
+    local _dir=${SA02M_SUDOERS_DIR:-/etc/sudoers.d} _f _line _rest _c _n=0 _ok=1
+    local _helper=${SA02M_CLOCK_HELPER:-/usr/local/sbin/sa02m-clock-set.sh}
+    local -a _cmds
+    _dir=${_dir%/}
+    _f="$_dir/time-sync"
+    [ -e "$_f" ] || [ -L "$_f" ] || return 0
+    if [ -L "$_f" ] || [ ! -f "$_f" ]; then
+        log "WARN: legacy sudoers $_f is not a regular file — left in place"
+        return 0
+    fi
+    while IFS= read -r _line || [ -n "$_line" ]; do
+        _line=${_line%$'\r'}
+        _line=${_line#"${_line%%[![:space:]]*}"}
+        _line=${_line%"${_line##*[![:space:]]}"}
+        case "$_line" in ''|'#'*) continue ;; esac
+        _n=$((_n + 1))
+        if [[ "$_line" =~ ^www-data[[:space:]]+ALL=\(ALL(:ALL)?\)[[:space:]]+(NOPASSWD:[[:space:]]*)?(.+)$ ]]; then
+            _rest=${BASH_REMATCH[3]}
+        else
+            _ok=0; break
+        fi
+        IFS=',' read -r -a _cmds <<< "$_rest"
+        for _c in "${_cmds[@]}"; do
+            _c=${_c#"${_c%%[![:space:]]*}"}
+            _c=${_c%"${_c##*[![:space:]]}"}
+            [[ "$_c" =~ ^/[A-Za-z0-9._/-]*/(date|hwclock|timedatectl)$ ]] || { _ok=0; break; }
+        done
+        [ "$_ok" = 1 ] || break
+    done < "$_f"
+    if [ "$_ok" != 1 ] || [ "$_n" -lt 1 ]; then
+        log "WARN: legacy sudoers $_f carries more than a date/hwclock/timedatectl grant — left in place, remove it by hand"
+        return 0
+    fi
+    if ! grep -qF 'sa02m-clock-set.sh' "$_dir/sa02m-www" 2>/dev/null || [ ! -x "$_helper" ]; then
+        log "WARN: legacy sudoers $_f not removed: its replacement (sa02m-www naming sa02m-clock-set.sh) is not in place yet"
+        return 0
+    fi
+    rm -f -- "$_f" \
+        && log "cleanup: removed legacy sudoers $_f (date/hwclock grant, audit A8-01)" \
+        || log "WARN: could not remove legacy sudoers $_f"
 }
 
 # The deploy loop. One python3 start for the whole manifest: it writes the deploy
@@ -2922,6 +2984,7 @@ cmd_apply() {
         exit 1
     fi
     cleanup_b1_deploy_artifacts
+    remove_legacy_clock_sudoers
     if ! apply_deletes "$txn"; then
         rollback_from_journal "$txn" E_APPLY "${APPLY_FAIL_REASON:-delete failed}"
         log "ERROR [E_APPLY]: delete failed (${ROLLBACK_OUTCOME:-rollback attempted})"

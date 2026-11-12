@@ -16,8 +16,12 @@
 #   261 bytes total · 189-byte script · `00 00 00 bd 00 00 00 00` at 0x40 ·
 #   script text starting at 0x48
 # — NOT to the writer's own logic, so a shared misunderstanding between writer
-# and test cannot pass. The `== 261` assertion is the padding discriminator:
-# a writer that pads the script to 4 bytes emits 264 and FAILS.
+# and test cannot pass. Since 1.0.7.36 the default payload is the donor's plus
+# ` watchdog.stop_on_reboot=0` on its bootargs line (26 bytes, audit A1-01;
+# docs/contracts/uboot-boot-script.md §3): 215-byte script, 287 bytes total,
+# table `00 00 00 d7 00 00 00 00` — the same layout arithmetic as the donor.
+# The `== 287` assertion is the padding discriminator: a writer that pads the
+# script to 4 bytes emits 288 and FAILS.
 #
 # No mkimage, no device, no network: mkimage is absent on the dev boxes and in
 # CI, so the gate must not depend on it (the pipeline requires it separately —
@@ -48,12 +52,13 @@ VALIDATOR=tools/imaging/uboot-script.py
 PAYLOAD=etc/boot.cmd.sa02m.min
 UNVERIFIED=etc/boot.cmd.sa02m
 
-# Donor-observed constants (the anchor — never derived from the writer).
-WANT_TOTAL=261
-WANT_SCRIPT=189
-WANT_IH_SIZE=197
-WANT_TABLE=000000bd00000000
-WANT_SHA256=20ffa6151e80a73625552f996051e801dc22448a9c9691848cc3a4c854c71abd
+# Donor-layout constants for the default payload (the anchor — never derived
+# from the writer): 64 header + 8 table + 215 script; the payload's sha256.
+WANT_TOTAL=287
+WANT_SCRIPT=215
+WANT_IH_SIZE=223
+WANT_TABLE=000000d700000000
+WANT_SHA256=71f616ec8c22c0eb2f994f7961959f8002fd0061c997544ede3c2e6dffbd8842
 
 PY=""
 for p in python3 python py; do
@@ -116,7 +121,7 @@ if errs:
     print("      " + "; ".join(errs))
     sys.exit(1)
 PYCHK
-    [ "$fails" -eq 0 ] && ok "D1: default payload is 189 bytes, LF-only, sha256 pinned"
+    [ "$fails" -eq 0 ] && ok "D1: default payload is $WANT_SCRIPT bytes, LF-only, sha256 pinned"
 fi
 
 grep -q 'UNVERIFIED-ON-HARDWARE' "$UNVERIFIED" \
@@ -235,12 +240,13 @@ payload = open(sys.argv[2], "rb").read()
 want_total, want_size, want_table = int(sys.argv[3]), int(sys.argv[4]), sys.argv[5]
 errs = []
 
-# Anchored to the donor artifact, not to the writer's logic. 261 (not 264) is
+# Anchored to the donor layout, not to the writer's logic. 287 (not 288) is
 # what proves the script is NOT padded to a 4-byte boundary.
 if len(blob) != want_total:
     errs.append("total %d != %d (64 header + 8 table + %d script; a missing size "
-                "table gives %d, a padding writer gives 264)"
-                % (len(blob), want_total, len(payload), 64 + len(payload)))
+                "table gives %d, a padding writer gives %d)"
+                % (len(blob), want_total, len(payload), 64 + len(payload),
+                   72 + ((len(payload) + 3) // 4) * 4))
 else:
     if blob[64:72].hex() != want_table:
         errs.append("size table @0x40 is %s, want %s" % (blob[64:72].hex(), want_table))
@@ -456,7 +462,7 @@ grep -q "grep -aq 'threadirqs'" tools/imaging/patch-firstboot-image.sh \
 
 printf '\n'
 if [ "$fails" -eq 0 ]; then
-    printf 'PASS  boot.scr format pinned (261 = 64 header + 8 table + 189 payload)\n'
+    printf 'PASS  boot.scr format pinned (%s = 64 header + 8 table + %s payload)\n' "$WANT_TOTAL" "$WANT_SCRIPT"
 else
     printf 'FAIL  %d check(s) failed\n' "$fails"
 fi

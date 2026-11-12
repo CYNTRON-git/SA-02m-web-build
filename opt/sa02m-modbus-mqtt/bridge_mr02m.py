@@ -43,6 +43,15 @@ from bridge_mr02m_map import (
 # Serialises YAML patches from writeback threads (one worker per port).
 _AI_TYPE_YAML_LOCK = threading.Lock()
 
+# Longest wait for an "empty" boundary after a write or an AI type change. A
+# 16DO forms an output event once per second and an events poll takes a
+# fraction of a second, so 10 s covers what was queued before the write with
+# margin; the boundary itself usually arrives in < 0.5 s. Without a cap a slave
+# whose END never reaches us (none above it on the line answers -- caveat (a)
+# of docs/contracts/fmb-event-wire.md) kept the channel quarantined until the
+# bridge restarted (audit 2026-11-11 H2-01).
+MR_OUTPUT_QUARANTINE_MAX_S = 10.0
+
 
 class _AiApply:
     """One MR type operation, including any waits and final verification."""
@@ -232,18 +241,9 @@ class MR02mPoller(DevicePoller):
             quarantine = self._output_quarantine.get(name)
             if quarantine is not None:
                 quarantine["read_completed"] = completed_at
-                self._log_output_quarantine(name, quarantine, completed_at)
             self.pub.pub_control(self.device_id, name, str(int(value)), force=force)
             self.pub.pub_error(self.device_id, name, error)
             return True
-
-    def _log_output_quarantine(self, name: str, entry: dict, now: float) -> None:
-        if now - entry["logged_at"] >= 30:
-            entry["logged_at"] = now
-            self.log.warning("%s: FMB output quarantine %.0fs; awaiting %s, "
-                             "classic polling remains active", name, now - entry["since"],
-                             "fresh read" if entry["read_completed"] is None else
-                             "same-slave empty boundary")
 
     # --- Fast Modbus events (layout owned here; manager is device-agnostic) ---
 
@@ -328,10 +328,21 @@ class MR02mPoller(DevicePoller):
             self._ai_fifo_waiting.clear()
 
     def fmb_query_context(self) -> int:
+        now = time.monotonic()
+        with self._ai_state_lock:
+            for ch in sorted(self._ai_fifo_waiting):
+                floor = self._ai_read_floor.get(ch)
+                if (floor is not None and ch not in self._ai_unconfirmed
+                        and now - floor > MR_OUTPUT_QUARANTINE_MAX_S):
+                    self._ai_fifo_waiting.discard(ch)
+                    self.log.info("ai_%d: FMB AI event wait lifted after %.0fs "
+                                  "(no empty boundary seen)", ch, now - floor)
         with self._output_state_lock:
-            now = time.monotonic()
-            for name, entry in self._output_quarantine.items():
-                self._log_output_quarantine(name, entry, now)
+            for name, entry in list(self._output_quarantine.items()):
+                if now - entry["since"] > MR_OUTPUT_QUARANTINE_MAX_S:
+                    del self._output_quarantine[name]
+                    self.log.info("%s: FMB output quarantine lifted after %.0fs "
+                                  "(no empty boundary seen)", name, now - entry["since"])
             return self._output_generation
 
     def fmb_needs_own_empty(self) -> bool:
@@ -366,9 +377,7 @@ class MR02mPoller(DevicePoller):
         with self._output_state_lock:
             if context is not None and context != self._output_generation:
                 return
-            entry = self._output_quarantine.get(name)
-            if entry is not None:
-                self._log_output_quarantine(name, entry, time.monotonic())
+            if name in self._output_quarantine:
                 return
             # Records in one FIFO batch share a query boundary and remain in
             # wire order; callback time must not discard the next record.
@@ -1190,8 +1199,10 @@ class MR02mPoller(DevicePoller):
                 self._output_watermark[name] = now
                 self._output_quarantine[name] = {
                     "generation": self._output_generation, "since": now,
-                    "read_completed": None, "logged_at": now,
+                    "read_completed": None,
                 }
+                self.log.debug("%s: FMB output quarantine until the next empty "
+                               "boundary (max %.0fs)", name, MR_OUTPUT_QUARANTINE_MAX_S)
                 ack_error = None
                 try:
                     port = self.get_port()
@@ -1226,9 +1237,6 @@ class MR02mPoller(DevicePoller):
                               name, target, actual, "uncertain" if ack_error else "ok")
             except Exception as e:
                 self.pub.pub_error(self.device_id, name, "w")
-                entry = self._output_quarantine.get(name)
-                if entry is not None:
-                    self._log_output_quarantine(name, entry, time.monotonic())
                 self.log.warning("writeback %s requested=%s ack=%s read=%s unverified: %s",
                                  name, target, ack_state, read_state, e)
             finally:

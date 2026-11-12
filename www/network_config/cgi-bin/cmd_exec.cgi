@@ -94,6 +94,14 @@ if [ "$MODE" = "root" ]; then
         echo '{"ok":false,"error":"root_helper_missing"}'
         exit 0
     fi
+    # Root-password guessing is throttled like the panel login (A8-09): same
+    # 10 failures / 5 min window, its own `root-` bucket, checked BEFORE the
+    # helper runs, so a locked client never reaches the shadow check.
+    if ! web_login_check root-; then
+        echo "cmd_exec.cgi: root mode locked for ${REMOTE_ADDR:-unknown} after repeated wrong passwords" >&2
+        echo '{"ok":false,"error":"root_locked"}'
+        exit 0
+    fi
     printf '%s\n' "$ROOT_PASSWORD" >"$TMP_PASS"
     printf '%s\n' "$CMD" >"$TMP_CMD"
     chmod 600 "$TMP_PASS" "$TMP_CMD" 2>/dev/null || true
@@ -106,6 +114,11 @@ else
     STATUSES=("${PIPESTATUS[@]}")
 fi
 RC=${STATUSES[0]}
+# 77 = the helper's "root authentication failed" (etc/sa02m-web-root-cmd.sh).
+if [ "$MODE" = "root" ] && [ "$RC" -eq 77 ]; then
+    web_login_record_failure root-
+    echo "cmd_exec.cgi: wrong root password from ${REMOTE_ADDR:-unknown}" >&2
+fi
 if [ "${STATUSES[1]}" -ne 0 ]; then
     echo '{"ok":false,"error":"capture_failed"}'
     exit 0

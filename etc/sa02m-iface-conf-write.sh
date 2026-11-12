@@ -214,10 +214,25 @@ if [ "$is_bak" = 0 ]; then
 fi
 
 # ── Write (byte-exact copy of the validated stdin) ──────────────────────────
-if cat "$tmp" > "$dst"; then
-    chmod 644 "$dst" 2>/dev/null || true
+# Atomic replace: a truncate-and-refill of the live conf leaves a 0-byte file
+# when power drops in between, and the board boots without its address. The
+# temp lives in the destination directory (a rename across filesystems is a
+# copy, not atomic); its leading dot and non-.conf suffix keep it out of the
+# `source /etc/network/interfaces.d/*.conf` glob while it exists.
+dst_dir=$(dirname "$dst")
+wtmp=$(mktemp "$dst_dir/.$(basename "$dst").sa02m-tmp.XXXXXX") || {
+    log "REFUSED (write failed): $dst"
+    exit 2
+}
+trap 'rm -f "$tmp" "$wtmp"' EXIT
+staged=0; replaced=0
+cat "$tmp" > "$wtmp" && chmod 644 "$wtmp" && { sync -- "$wtmp" 2>/dev/null || sync; } && staged=1
+[ "$staged" = 1 ] && mv -f -- "$wtmp" "$dst" && replaced=1
+if [ "$replaced" = 1 ]; then
+    sync -- "$dst_dir" 2>/dev/null || sync
     log "wrote: $dst"
     exit 0
 fi
+rm -f "$wtmp"
 log "REFUSED (write failed): $dst"
 exit 2

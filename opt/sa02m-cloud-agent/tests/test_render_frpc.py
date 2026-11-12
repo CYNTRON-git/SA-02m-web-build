@@ -181,6 +181,10 @@ class IdentityMetadataTest(unittest.TestCase):
             "serverPort = 8890",
             'auth.token = "t"',
             "transport.tls.enable = true",
+            # 1.0.7.36 (A7-03): frpc retries the login itself instead of exiting
+            # on the first failure — one line, a deliberate change of the render
+            # contract (docs/contracts/cloud-enrollment.md §2), not a weakening.
+            "loginFailExit = false",
             "",
             "[[proxies]]",
             'name = "dev-sa02m-abc"',
@@ -209,6 +213,123 @@ class IdentityMetadataTest(unittest.TestCase):
     def test_tls_still_pinned_with_identity(self):
         self.assertIn("transport.tls.enable = true",
                       agent.render_frpc_toml(_identity_profile()))
+
+
+# The A7 vector from audit 2026-11-11: a subdomain carrying a newline closes the
+# string, opens a new key and a whole new [[proxies]] table pointing at :22 — the
+# local-port allow-list never sees it, because it only reads `local_port`.
+A7_SUBDOMAIN = 'x"\nlocalIP = "127.0.0.1"\nlocalPort = 22\n[[proxies]]\nname = "pad'
+
+
+class FieldGrammarTest(unittest.TestCase):
+    """A7-01: every string field of the cloud profile is checked against its
+    grammar BEFORE anything is rendered; a violation refuses the whole profile
+    (fail closed), so the cloud cannot dictate a tunnel outside {80, 9999} by
+    string injection either."""
+
+    def test_injected_subdomain_is_refused(self):
+        p = _profile(80)
+        p["proxies"][0]["subdomain"] = A7_SUBDOMAIN
+        with self.assertRaises(ValueError) as cm:
+            agent.render_frpc_toml(p)
+        self.assertIn("subdomain", str(cm.exception))
+
+    def test_injected_legacy_fields_are_refused(self):
+        for field, value in (("proxy_name", 'a"\nlocalPort = 22'),
+                             ("subdomain", A7_SUBDOMAIN)):
+            legacy = {"server_addr": "cloud.cyntron.ru", "server_port": 8890,
+                      "token": "t", "proxy_name": "dev-x", "subdomain": "sa02m-x",
+                      "local_port": 9999}
+            legacy[field] = value
+            with self.assertRaises(ValueError, msg=field):
+                agent.render_frpc_toml(legacy)
+
+    def test_each_field_grammar(self):
+        bad = [
+            ("server_addr", "cloud..cyntron.ru"),
+            ("server_addr", "cloud.cyntron.ru\n[x]"),
+            ("server_addr", "-cloud"),
+            ("token", ""),
+            ("token", "a\x00b"),
+            ("token", "a\x7fb"),
+            ("token", "x" * 513),
+            ("device_id", "sa02m abc"),
+            ("device_id", ".sa02m"),
+            ("device_secret", "s\ncr"),
+        ]
+        for field, value in bad:
+            p = _identity_profile()
+            p[field] = value
+            with self.assertRaises(ValueError, msg="%s=%r" % (field, value)):
+                agent.render_frpc_toml(p)
+        for field, value in (("name", "dev x"), ("name", "-dev"), ("subdomain", "sa02m.abc"),
+                             ("subdomain", "sa02m-"), ("subdomain", "a" * 64)):
+            p = _identity_profile()
+            p["proxies"][0][field] = value
+            with self.assertRaises(ValueError, msg="%s=%r" % (field, value)):
+                agent.render_frpc_toml(p)
+
+    def test_contract_shaped_profile_still_renders(self):
+        # docs/contracts/cloud-enrollment.md §2: dev-<id>, <id>, <id>-cfg.
+        p = _identity_profile(did="sa02m-0A1B2C3D")
+        p["proxies"].append({"name": "dev-sa02m-0A1B2C3D-cfg",
+                             "subdomain": "sa02m-0A1B2C3D-cfg", "local_port": 9999})
+        toml = agent.render_frpc_toml(p)
+        self.assertEqual(toml.count("[[proxies]]"), 2)
+
+    def test_token_quote_is_escaped_and_round_trips(self):
+        try:
+            import tomllib
+        except ImportError:  # Python < 3.11
+            self.skipTest("tomllib needs Python 3.11+")
+        p = _identity_profile(secret='se"c\\ret')
+        p["token"] = 'to"k\\en'
+        doc = tomllib.loads(agent.render_frpc_toml(p))
+        self.assertEqual(doc["auth"]["token"], 'to"k\\en')
+        self.assertEqual(doc["metadatas"]["device_secret"], 'se"c\\ret')
+        self.assertEqual(len(doc["proxies"]), 1)
+        self.assertEqual(doc["proxies"][0]["localPort"], 80)
+
+    def test_login_fail_exit_is_false(self):
+        self.assertIn("loginFailExit = false", agent.render_frpc_toml(_profile(80)).splitlines())
+
+    def test_refused_profile_writes_nothing_and_enrollment_fails(self):
+        with tempfile.TemporaryDirectory() as d:
+            target = os.path.join(d, "frpc.toml")
+            p = _profile(80)
+            p["proxies"][0]["subdomain"] = A7_SUBDOMAIN
+            saved = agent.write_frpc_config.__defaults__
+            agent.write_frpc_config.__defaults__ = (target,)
+            try:
+                self.assertFalse(agent.finalize_enrollment({"frpc": p}, None, os.path.join(d, "agent.conf"), "sa02m-x"))
+            finally:
+                agent.write_frpc_config.__defaults__ = saved
+            self.assertEqual(os.listdir(d), [])
+
+
+class FrpcConfigAtomicWriteTest(unittest.TestCase):
+    """A7-11: frpc.toml is replaced by rename (tmp in the same directory, fsync,
+    os.replace), never truncated in place — a power cut mid-write left an empty
+    or half config and no tunnel."""
+
+    def test_replaced_by_rename_0600_no_temp(self):
+        with tempfile.TemporaryDirectory() as d:
+            target = os.path.join(d, "frpc.toml")
+            agent.write_frpc_config(_profile(80), path=target)
+            ino1 = os.stat(target).st_ino
+            keep = os.path.join(d, "old-link")
+            try:
+                os.link(target, keep)          # pin the old inode number
+            except OSError:
+                keep = None
+            agent.write_frpc_config(_profile(80, 9999), path=target)
+            self.assertNotEqual(os.stat(target).st_ino, ino1)
+            if os.name == "posix":
+                self.assertEqual(os.stat(target).st_mode & 0o777, 0o600)
+            left = sorted(n for n in os.listdir(d) if n not in ("frpc.toml", "old-link"))
+            self.assertEqual(left, [])
+            with open(target, encoding="utf-8") as f:
+                self.assertEqual(f.read().count("[[proxies]]"), 2)
 
 
 class DeviceSecretStorageTest(unittest.TestCase):
@@ -621,6 +742,127 @@ class RevocationHandlingTest(unittest.TestCase):
              agent.load_device_secret, agent.api_post, agent.WATCHDOG_S) = orig
         self.assertEqual(calls["standby"], 0,
                          "stood down on a plain tunnel failure — that is a truck roll")
+
+
+class LoginFailExitMigrationTest(unittest.TestCase):
+    """An frpc.toml rendered before 1.0.7.36 has no loginFailExit line; only an
+    enrollment wrote it, so an enrolled board kept an frpc that exits on every
+    failed login (review M-1b). The agent adds the one line on start."""
+
+    OLD = ('serverAddr = "cloud.example"\nserverPort = 7000\n'
+           'auth.token = "tok"\ntransport.tls.enable = true\n'
+           'metadatas.device_id = "sa02m-abc"\n\n[[proxies]]\nname = "w"\n')
+
+    def _migrate(self, text):
+        with tempfile.TemporaryDirectory() as d:
+            target = os.path.join(d, "frpc.toml")
+            with open(target, "w", encoding="utf-8", newline="") as f:
+                f.write(text)
+            changed = agent.migrate_frpc_login_fail_exit(target)
+            with open(target, encoding="utf-8", newline="") as f:
+                return changed, f.read(), os.listdir(d)
+
+    def test_old_file_gets_the_line_before_the_first_table(self):
+        changed, out, left = self._migrate(self.OLD)
+        self.assertTrue(changed)
+        lines = out.splitlines()
+        self.assertIn("loginFailExit = false", lines)
+        self.assertLess(lines.index("loginFailExit = false"), lines.index("[[proxies]]"))
+        self.assertEqual(out.replace("loginFailExit = false\n", ""), self.OLD,
+                         "only the one line may be added")
+        self.assertEqual(left, ["frpc.toml"], "no tmp file left behind")
+
+    def test_new_file_is_left_alone(self):
+        text = agent.render_frpc_toml(_profile(80))
+        changed, out, _l = self._migrate(text)
+        self.assertFalse(changed)
+        self.assertEqual(out, text)
+
+    def test_idempotent(self):
+        _c, once, _l = self._migrate(self.OLD)
+        changed, twice, _l = self._migrate(once)
+        self.assertFalse(changed)
+        self.assertEqual(once, twice)
+
+    def test_missing_file_is_a_noop(self):
+        self.assertFalse(agent.migrate_frpc_login_fail_exit("/nonexistent/frpc.toml"))
+
+    def test_stale_tmp_from_a_power_cut_does_not_block_a_write(self):
+        # LOW-7: the tmp used to be named by PID with O_EXCL.
+        with tempfile.TemporaryDirectory() as d:
+            target = os.path.join(d, "frpc.toml")
+            open(os.path.join(d, ".frpc.toml.tmp.%d" % os.getpid()), "w").close()
+            agent.write_frpc_config(_profile(80), path=target)
+            self.assertTrue(os.path.getsize(target) > 0)
+
+    def test_non_utf8_file_is_left_alone_not_a_crash(self):
+        # L-2: UnicodeDecodeError is a ValueError, not an OSError; it used to
+        # escape ensure_frpc_running and crash-loop the agent.
+        with tempfile.TemporaryDirectory() as d:
+            target = os.path.join(d, "frpc.toml")
+            raw = b'# \xff\xfe cp1251 comment \xcf\xf0\xe8\n[[proxies]]\n'
+            with open(target, "wb") as f:
+                f.write(raw)
+            self.assertFalse(agent.migrate_frpc_login_fail_exit(target))
+            with open(target, "rb") as f:
+                self.assertEqual(f.read(), raw, "the foreign file must not be touched")
+
+    def test_stale_tmp_sidecars_of_the_writer_are_removed_and_only_those(self):
+        # M-5: a crash between mkstemp and os.replace strands the full
+        # frpc.toml (token + device secret) under .frpc.toml.tmp.XXXXXX.
+        with tempfile.TemporaryDirectory() as d:
+            target = os.path.join(d, "frpc.toml")
+            for n in (".frpc.toml.tmp.AbC123", ".frpc.toml.tmp.x", "frpc.toml",
+                      "agent.conf", ".other.tmp.1", "frpc.toml.bak"):
+                with open(os.path.join(d, n), "w") as f:
+                    f.write("secret")
+            self.assertEqual(agent.remove_stale_frpc_tmps(target), 2)
+            self.assertEqual(sorted(os.listdir(d)),
+                             [".other.tmp.1", "agent.conf", "frpc.toml", "frpc.toml.bak"])
+            self.assertEqual(agent.remove_stale_frpc_tmps(target), 0)
+        self.assertEqual(agent.remove_stale_frpc_tmps("/nonexistent-dir/frpc.toml"), 0)
+
+    def test_stand_down_wipe_also_removes_the_stale_tmp(self):
+        with tempfile.TemporaryDirectory() as d:
+            target = os.path.join(d, "frpc.toml")
+            secret = os.path.join(d, "device_secret")
+            for n in (target, secret, os.path.join(d, ".frpc.toml.tmp.Zz9")):
+                with open(n, "w") as f:
+                    f.write("secret")
+            saved = (agent.FRPC_CONFIG, agent.DEVICE_SECRET_FILE)
+            agent.FRPC_CONFIG, agent.DEVICE_SECRET_FILE = target, secret
+            try:
+                agent.wipe_cloud_binding()
+            finally:
+                agent.FRPC_CONFIG, agent.DEVICE_SECRET_FILE = saved
+            self.assertEqual(os.listdir(d), [], "the binding wipe left a credential sidecar")
+
+    def test_writer_names_its_sidecar_as_the_image_clear_sites_expect(self):
+        # The image clear sites (tools/imaging/*.sh) glob `.frpc.toml.tmp.*`;
+        # the gate alice-image-identity (A8b) pins the same prefix to this source.
+        self.assertIn('prefix=".%s.tmp." % os.path.basename(path)', AGENT_SOURCE)
+
+    def test_ensure_frpc_running_migrates_and_restarts_an_active_unit_once(self):
+        with tempfile.TemporaryDirectory() as d:
+            target = os.path.join(d, "frpc.toml")
+            with open(target, "w", encoding="utf-8", newline="") as f:
+                f.write(self.OLD)
+            binary = os.path.join(d, "frpc")
+            open(binary, "w").close()
+            calls = []
+            saved = (agent.FRPC_CONFIG, agent.FRPC_BINARY, agent._systemctl,
+                     agent.migrate_frpc_login_fail_exit.__defaults__)
+            agent.FRPC_CONFIG, agent.FRPC_BINARY = target, binary
+            agent.migrate_frpc_login_fail_exit.__defaults__ = (target,)
+            agent._systemctl = lambda *a, **kw: (calls.append(a) or 0)
+            try:
+                self.assertEqual(agent.ensure_frpc_running(), "running")
+                self.assertEqual(agent.ensure_frpc_running(), "running")
+            finally:
+                (agent.FRPC_CONFIG, agent.FRPC_BINARY, agent._systemctl,
+                 agent.migrate_frpc_login_fail_exit.__defaults__) = saved
+            restarts = [c for c in calls if c and c[0] == "restart"]
+            self.assertEqual(len(restarts), 1, "exactly one restart, on the first pass")
 
 
 if __name__ == "__main__":

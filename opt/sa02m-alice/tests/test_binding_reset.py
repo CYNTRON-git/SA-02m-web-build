@@ -742,6 +742,8 @@ class TestHandlerUnlinkBranch(_BindingBase):
         registry.discovery_devices.return_value = []
         registry.query_devices.return_value = []
         registry.apply_actions.return_value = ([], [])
+        # The action handler calls the tracked form since 1.0.7.36 (A7-05).
+        registry.apply_actions_tracked.return_value = ([], [])
         return SioHandlers(
             registry,
             publish_mqtt=mock.MagicMock(),

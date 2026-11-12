@@ -392,6 +392,56 @@ web-port-persist|scripts/lib.sh|port=$(sa02m_web_port_effective)
 web-port-persist|scripts/11-devices.sh|&& sa02m_render_nginx_site "$ETC_DIR/nginx/network_config.conf" "$WEB_ROOT"; then
 web-port-persist|etc/sa02m-update-runner.sh|if ! localize_staged_package_port "$txn"; then
 web-port-persist|etc/sa02m-web-port-lib.sh|[ "$1" -le 65535 ]
+mqtt-config-apply-atomic|usr/local/sbin/sa02m-mqtt-config-apply.sh|mv -f -- "$TMP_DST" "$DST"
+mqtt-status-secret|www/network_config/cgi-bin/mqtt_status.cgi|web_csrf_require
+iface-conf-write|etc/sa02m-iface-conf-write.sh|[ "$staged" = 1 ] && mv -f -- "$wtmp" "$dst" && replaced=1
+userspace-watchdog-probe|etc/systemd/system/nginx.service.d/sa02m-restart.conf|Restart=on-failure
+sudoers-pin-contract|scripts/lib.sh|    sa02m_remove_legacy_clock_sudoers
+sudoers-pin-contract|scripts/lib.sh|    rm -f -- "$_f" \
+sudoers-pin-contract|etc/sa02m-update-runner.sh|    remove_legacy_clock_sudoers
+sudoers-pin-contract|etc/sa02m-update-runner.sh|    rm -f -- "$_f" \
+userspace-watchdog-probe|etc/sa02m-userspace-watchdog.sh|timeout 30 systemctl restart fcgiwrap.service
+userspace-watchdog-probe|etc/sa02m-userspace-watchdog.sh|is_heal_only "$name" && { log "check ${name}: FAIL
+userspace-watchdog-probe|etc/sa02m-userspace-watchdog.sh|is_web_proc "$p" && continue
+userspace-watchdog-probe|etc/sa02m-userspace-watchdog.sh|NGINX_HEALED_PASS=$WD_PASS
+userspace-watchdog-probe|etc/sa02m-userspace-watchdog.sh|[ "$rc" -eq 28 ] && { echo "busy"; return 0; }
+userspace-watchdog-probe|www/network_config/cgi-bin/auth_check.cgi|echo "unauthorized"
+userspace-watchdog-probe|www/network_config/cgi-bin/auth_check.cgi|echo "Status: 401 Unauthorized"
+userspace-watchdog-probe|etc/nginx/network_config.conf|location /cgi-bin/ {
+daemon-restart-on-change|scripts/01-system.sh|_wd_sig0=$(sa02m_file_sig
+daemon-restart-on-change|scripts/01-system.sh|_wd_sig1=$(sa02m_file_sig
+daemon-restart-on-change|scripts/01-system.sh|sa02m_svc_apply "$u" infra start restart
+daemon-restart-on-change|scripts/03-webserver.sh|_fm_sig0=$(sa02m_file_sig
+daemon-restart-on-change|scripts/03-webserver.sh|_fm_sig1=$(sa02m_file_sig
+daemon-restart-on-change|scripts/03-webserver.sh|sa02m_svc_apply sa02m-failure-monitor.service infra start restart
+daemon-restart-on-change|scripts/02-network.sh|_nw_sig0=$(sa02m_file_sig
+daemon-restart-on-change|scripts/02-network.sh|_nw_sig1=$(sa02m_file_sig
+daemon-restart-on-change|scripts/02-network.sh|sa02m_svc_apply net-watchdog.service infra start restart
+daemon-restart-on-change|scripts/02-network.sh|_lp_sig0=$(sa02m_file_sig
+daemon-restart-on-change|scripts/02-network.sh|_lp_sig1=$(sa02m_file_sig
+daemon-restart-on-change|scripts/02-network.sh|sa02m_svc_apply sa02m-eth0-led-poll.service infra start restart
+daemon-restart-on-change|scripts/lib.sh|                cmp -s "$_fd" "$_script" 2>/dev/null && return 1
+daemon-restart-on-change|etc/sa02m-update-runner.sh|            "sa02m-userspace-watchdog",
+daemon-restart-on-change|scripts/pack-offline-update.py|        "sa02m-failure-monitor",
+daemon-restart-on-change|etc/sa02m-update-runner.sh|            "sa02m-failure-monitor",
+daemon-restart-on-change|scripts/pack-offline-update.py|        "sa02m-userspace-watchdog",
+js-unit-flasher-flash-failure|www/network_config/static/js/flasher.js|        skip_on_error: false,
+js-unit-flasher-flash-failure|www/network_config/static/js/flasher.js|      return lineProfileFromScan(d, LINE_PROFILE_MP_MR);
+js-unit-flasher-flash-failure|www/network_config/static/js/flasher.js|      else if (failText) toast(
+js-unit-flasher-flash-failure|www/network_config/static/js/flasher.js|    if (state2 === '"'"'error'"'"' || state2 === '"'"'done'"'"') failText = await flashFailureText(jobId);
+kernel-select|etc/sa02m-kernel-select.sh|if ! zimage_md5_ok "$target" "$canon"; then
+apply-time|www/network_config/cgi-bin/apply.cgi|sync_rtc_from_system >/dev/null 2>&1 || rc=$?
+js-unit-forms-time-prefill|www/network_config/static/js/app/forms.js|setText('"'"'time-sys-disp'"'"', d.datetime ||
+sudoers-pin-contract|etc/sudoers.d/sa02m-www|www-data ALL=(ALL) NOPASSWD: /usr/local/sbin/sa02m-clock-set.sh
+clock-set-helper|usr/local/sbin/sa02m-clock-set.sh|if ! tz_ok "$2"; then
+initd-bounded|etc/sa02m-web-service-ctl.sh|initd_run() {
+status-cache|www/network_config/cgi-bin/status.cgi|cache_print_or_build "${CACHE_DIR}/rs485.json" 8 build_rs485_json 24
+status-cache|etc/sa02m-web-service-ctl.sh|trap '"'"'svc_list_cache_invalidate'"'"' EXIT
+cgi-timeouts|etc/nginx/network_config.conf|limit_conn     sa02m_cgi_sess 6;
+cgi-timeouts|etc/nginx/network_config.conf|limit_conn     sa02m_mon_sess 1;
+cgi-timeouts|www/network_config/cgi-bin/mqtt_monitor.cgi|exec timeout -k 2 60
+watchdog-cap|etc/boot.cmd.sa02m.min|setenv bootargs root=/dev/mmcblk2p2
+bootscr-apply|etc/sa02m-restore-dtb.sh|[ "$staged" = 1 ] && mv -f "$tmp" "$fat_file" && replaced=1
 '
 
 command -v git >/dev/null 2>&1 || { echo "comment-mutation-proof: FAIL — git is required to build the pristine copy"; exit 1; }

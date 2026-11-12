@@ -54,7 +54,8 @@ const PRIORITY_POLL_PHASE_MS = 500;
  *  so RS-485 lands before the services list. The 2.2 s heavy-queue gap still
  *  serializes it against network/services (shared ARM CPU). */
 const RS485_POLL_PHASE_MS = 3600;
-/** part=services&fast=1 — instant service list (skips the ~3.5 s `sudo CTL list`);
+/** part=services&fast=1 — early service list: skips the `sudo CTL list` refinement;
+ *  a cold build still takes ~4 s on the board (bench 1.135, 2026-11-11), a cached one well under 1 s;
  *  one-shot on init, just after RS-485, treated as a LIGHT fetch. The full
  *  services heavy poll (phase 6500) still lands second and refines disabled/masked. */
 const SERVICES_FAST_PHASE_MS = 4000;
@@ -1360,9 +1361,10 @@ function fetchBackgroundPart(part, applyFn, force, onDone) {
 }
 
 /**
- * One-shot instant paint of the services list on init: hits
- * status.cgi?part=services&fast=1 (skips the heavy `sudo CTL list`, ~3.5 s) so
- * the widget shows its real rows within ~1 s. The recurring full `services`
+ * One-shot early paint of the services list on init: hits
+ * status.cgi?part=services&fast=1, which skips the `sudo CTL list` refinement; a
+ * cold build still takes ~4 s on the board (bench 1.135, 2026-11-11), a cached
+ * answer well under 1 s. The recurring full `services`
  * heavy poll (phase 6500) then refines disabled/masked states. Queued through
  * scheduleStatusFetch under a distinct 'services_fast' key so it is NOT deduped
  * against the full 'services' poll and is treated as a LIGHT fetch (no 2.2 s

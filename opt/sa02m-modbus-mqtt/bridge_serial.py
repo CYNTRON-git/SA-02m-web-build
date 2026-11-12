@@ -688,6 +688,23 @@ class ModbusSerial:
                         last_recv = time.monotonic()
                     elif buf and time.monotonic() - last_recv >= 0.02:
                         break   # тишина после данных — кадр завершён
+                # A frame still arriving at the deadline is read to its end:
+                # cut mid-frame it fails CRC, and its tail would collide with
+                # our next request 8 ms later (audit 2026-11-11 A2, item c).
+                # Capped by one maximum frame time + 20 ms; a reply that had
+                # not started by the deadline is still a timeout.
+                if (buf and len(buf) < max_resp
+                        and time.monotonic() - last_recv < 0.02):
+                    t_cut = time.monotonic()
+                    drain_end = deadline + max_resp * 11 / self._baudrate + 0.02
+                    while (len(buf) < max_resp and time.monotonic() < drain_end
+                           and time.monotonic() - last_recv < 0.02):
+                        chunk = ser.read(max_resp - len(buf))
+                        if chunk:
+                            buf += chunk
+                            last_recv = time.monotonic()
+                    log.debug("fmb reply overran the %.0f ms poll timeout by %.0f ms",
+                              timeout * 1000, (time.monotonic() - t_cut) * 1000)
                 return buf if len(buf) >= min_resp else b""
             finally:
                 ser.timeout = old_t

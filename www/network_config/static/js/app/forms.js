@@ -83,7 +83,10 @@ function loadConfig() {
       setKlogicHint('eth1-klogic-hint', d.klogic, d.klogic && d.klogic.eth1_hook);
       /* time */
       timeZoneSelectApplyFromDeviceOrBrowser(document.getElementById('f-tz'), d.timezone);
-      if (d.datetime) setVal('f-datetime', d.datetime);
+      /* f-datetime is NOT prefilled: it carries a NEW time only (empty = keep
+         the clock and NTP). A prefilled load-time value was re-applied by a
+         zone-only save, setting the clock back and NTP off (audit A4-05).
+         The device time is shown read-only in time-sys-disp. */
       if (document.getElementById('time-sys-disp'))
         setText('time-sys-disp', d.datetime || '—');
       if (document.getElementById('time-rtc-disp')) {

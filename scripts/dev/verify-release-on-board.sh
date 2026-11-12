@@ -357,7 +357,10 @@ ISOLATED_FIXTURES
     tally "$OUT" 6 "checks 5-9 (isolated installed components)"
 fi
 
-# 10 the Carel archive is wide, the rollback copy is there, a read is quick
+# 10 the Carel archive is wide and a read is quick. The legacy long-format
+# table carel_samples_v1 (the old 1.0.6.40 rollback copy) is dropped by the
+# devices logger's archive writer since 1.0.7.36, so it is only reported here:
+# absent after the first logger start, or its row count while still present.
 OUT=$(python3 - <<'PY'
 import sqlite3, glob, time, os
 pats = ["/var/lib/sa02m-devices/*.db", "/var/lib/sa02m-stand/*.db",
@@ -380,14 +383,15 @@ else:
         cols = [r[1] for r in c.execute("PRAGMA table_info(carel_samples)")]
         wide = len(cols) > 4 and "metric" not in cols
         n = c.execute("SELECT count(*) FROM carel_samples").fetchone()[0]
-        n1 = (c.execute("SELECT count(*) FROM carel_samples_v1").fetchone()[0]
-              if "carel_samples_v1" in tabs else -1)
+        v1 = ("legacy v1 table present, %d rows"
+              % c.execute("SELECT count(*) FROM carel_samples_v1").fetchone()[0]
+              if "carel_samples_v1" in tabs else "legacy v1 table dropped")
         t0 = time.time()
         c.execute("SELECT * FROM carel_samples ORDER BY ts DESC LIMIT 5000").fetchall()
         dt = time.time() - t0
         print(("PASS" if (wide and dt <= 10.0) else "FAIL") +
-              " 10 Carel wide table: %d cols, %d rows (v1 keeps %d), 5000-row read %.2fs (<=10s)"
-              % (len(cols), n, n1, dt))
+              " 10 Carel wide table: %d cols, %d rows (%s), 5000-row read %.2fs (<=10s)"
+              % (len(cols), n, v1, dt))
 PY
 )
 printf '%s\n' "$OUT"

@@ -5,6 +5,76 @@
 
 ---
 
+## 1.0.7.36 - Audit fixes: MQTT commands, Fast Modbus events, watchdog, time and privileges (November 2026)
+
+### Delivery
+
+- **Full installation only** (`install.sh`, including `--refresh`): automatic nginx restart (new drop-in `nginx.service.d/sa02m-restart.conf`) and the new restart limits of `fcgiwrap.service`; the `sa02m-bootscr-apply.sh` tool with its `boot.scr` source (see the last section).
+- **Network update (OTA, offline package) and full installation**, not www-only: the Modbus-to-MQTT bridge and telemetry, the device archive, the scenario engine, Alice, the flasher, the cloud agent, the port coordinator, the helpers in `/usr/local/sbin` (service control, kernel switch, bridge configuration writer), the nginx site (checked with `nginx -t`) and `sa02m-rs485-roster.service`. Telemetry, the device logger, scenarios and a running bridge are restarted by the update; the cloud agent applies the new behaviour after its service or the board restarts.
+- **The userspace watchdog** (`sa02m-userspace-watchdog`) is carried by the GitHub network update and by full installation, **not** by the offline package; a full installation or `--refresh` restarts it (and the failure monitor, `net-watchdog` and the eth0 LED poll) when it still runs an older script than the installed one, including a board whose disk already holds the new file (the rule and its limits: `docs/contracts/installer-refresh-policy.md` §2); the GitHub network update and the offline package restart the watchdog and the failure monitor when they are already running (every update, not only when they changed), but only from the update after the one that delivers this release's update runner (the running runner is the installed one).
+- **Every path, www-only included**: CGI endpoints, panel pages and scripts, the login library, the clock helper `sa02m-clock-set.sh` with its new `sudoers` grant, and the network file writer.
+
+### Modbus and MQTT
+
+- **Retained `/on` commands replayed by the broker are no longer executed**: neither the board's `do`/`beeper`/`alarm_led` nor a scenario's `run/on`. Such a command used to fire again on every broker reconnect; the replay by the broker is dropped (a live publish is executed once, as before). The journal logs `retained /on is never replayed`.
+- **A scenario's `run/on` accepts explicit values only**: `1`/`on`/`true` runs it, `0`/`off`/`false` switches it off (case and surrounding spaces ignored). An empty payload and any other value are ignored with a warning; previously anything other than "on" switched the scenario's outputs off. Alice (`1`/`0`) and HomeKit (`1`) are unaffected.
+- The DTV buzzer and LEDs accept only `0`/`1`/`false`/`true`; `off`, an empty payload or other values no longer switch the output.
+- DTV `temp_ext`: an open NTC sensor and the first 10 s after a DTV reboot or an HR6 change publish `…/temp_ext/meta/error = r` instead of −55.0 °C or 0.0 °C. Pt1000 is unchanged.
+- With DTV firmware 1.0.2.17, Input 6 values −9999 and +9999 are published as a read error of `temp_ext`, not as a temperature; an open or shorted sensor is logged by the bridge.
+- Fast Modbus events: an all-zero reply mask to a subscription is a final refusal by the device (one INFO line instead of `config failed` on every pass), and the MR insurance poll is armed when events cover the outputs. Subscriptions are set again after a line lease ends (`port-ownership.md` updated). A replayed DTV/CE batch no longer overwrites a newer reading. A reply arriving at the 0.25 s deadline is read to its end. DTV from 1.0.2.7 is subscribed with one INPUT 1..28 record (23/24 disabled) and read less often over FC04. The shared-core "no events" frame (MR ≥ 1.0.12.28, DTV 1.0.2.16, CE 1.0.7.22) ends the MR output and AI waits; the wait is capped at 10 s and the periodic `quarantine` warning is gone. Topics and formats are unchanged.
+- **MQTT tab: the `mqtt_status.cgi` response no longer carries the external broker password** (the `mqtt_password` field is removed from the poll). The password is shown on click through a separate POST with session and CSRF checks, not cached. A tab opened before the update shows "—" until the page is reloaded.
+- The bridge configuration `/etc/sa02m-modbus-mqtt.yaml` is written atomically; a power cut during a save no longer leaves an empty file.
+- Alice: in a group command only the capability whose publish failed is marked as an error; relays that did switch are reported as done.
+
+### Devices
+
+- **The reading archive is written to disk in batches every 30 s**, in one transaction on one connection instead of opening and closing the database several times per tick, to reduce wear of the built-in eMMC. The interval is `STAND_DEVICES_FLUSH_EVERY_S`.
+- The right edge of charts, exports and the event journal appears up to ~35 s late. Live card values are unaffected.
+- A power cut loses up to 30 s of archive; a normal service stop writes what is buffered.
+- The legacy Carel table `carel_samples_v1` is dropped on the first start of the new logger; rolling back to 1.0.6.40 with it is no longer possible.
+- Measured on the bench board (192.168.1.135, bridge running, 20 minutes): the root partition's write rate fell from 366 MB/h to 80.4 MB/h (about -78 %), and journal commits from 1.06 to 0.05 per second. The remaining 35-45 MB/h is not attributed to a writer yet (backlog).
+- `sa02m_devices` Python API: `insert_sample`, `insert_mr_sample`, `insert_carel_sample`, `insert_mtd_sample`, `purge_old`, `detect_ce_events`, `detect_carel_events` and `purge_events` take a new optional `conn` keyword; existing calls work as before.
+
+### Flasher
+
+- A module that answers on a line other than 115200 is now flashed on that line. The tab passes the line the scan found the device on (the bench's 14DI at 19200 was flashed at 115200, read register 270 into a timeout and nothing was written); the daemon tries the target's line, then the scan's, then 115200 N1, and sends no write before the serial number has been read. After reg 129 the bootloader is looked for on that same application line (baud, parity and stop bits) and then on 115200 8N1, with read-only probes and before any block is written, so a bootloader that keeps the line speed (a final MR-02m bootloader from 0.0.0.35) and one on the fixed 115200 are both found; the rule is homed in the MR-02m repo (`doc/05_BOOTLOADER.md` §5). A different module answering at 247 on the application line does not end the search (the target's serial number and signature are confirmed on the line itself, before any block). If the target's bootloader is confirmed on neither line, the job error says the module may have been left in its bootloader and returns to the application by itself after about 120 s without requests (nothing is written or retried). The first version of this fix entered the bootloader on the scan line but looked for it on 115200 only (bench 2026-11-12).
+- A failed flash is no longer reported as success: the job ends `error` and the tab shows "Not flashed: addr N SN 0x...: <reason>" (the target's address and serial number, no internal error class) in Russian and in English, instead of the green «Flashing complete». This holds for a single target, for a batch started from the tab (it stops at the first failed target and does not flash the neighbours) and for an explicit continue-on-error batch (API option `skip_on_error`), which names every failed target. A reason without a translation stays Russian in the English interface.
+- A read timeout is reported as «No answer from the device …» with the lines tried, not as a serial number mismatch; the job log's `sig=` is the firmware file's signature, never the target's.
+
+### System and watchdog
+
+- The userspace watchdog probes the panel on its actual port (`/etc/sa02m_web_port.conf`, installation with `--port N`) instead of 9999, so a board on another port is no longer treated as "web down". The failure monitor does the same on boards that do not already carry an `/etc/sa02m_failure_monitor.conf` (new installations and images): an existing conf keeps its pinned `:9999` probe URLs, which only affects the monitor's diagnostics, never a reboot.
+- The watchdog also checks the CGI layer (`auth_check.cgi`). The four web-only checks (CGI layer, `nginx` process missing, panel port not listening, login page not served) only heal: after 6 failed passes the watchdog restarts `fcgiwrap` (CGI) or `nginx` (the others), again after 12, then every 60 passes (once per pass when several fail together), and a persistent web fault never reboots the board, so the PLC runtimes, the bridge, MQTT and SSH keep running without the panel. A probe that times out (a busy `fcgiwrap` pool) restarts nothing until 90 consecutive timeouts (about 21 minutes), so an upload or backup in progress is not cut. Faults of the whole board (a missing `sshd` or other required process, the SSH port, load, memory, the network interface) keep the unchanged 10-minute reboot threshold.
+- The failure monitor writes its state snapshot only on a change or every 60 s instead of every 5 s.
+- `interfaces.d` network files, the kernel configuration and `frpc.toml` are written atomically; a power cut no longer leaves an empty `eth0.conf`.
+- Kernel switch: selecting the running kernel after a cancelled switch puts its image back on the boot partition (the board used to boot the cancelled kernel). The image is checked against the `manifest.json` checksum; a damaged one is refused with "Kernel image is damaged: checksum mismatch".
+- The kernel card shows "The helper did not answer in time" when the helper does not answer, instead of a raw code.
+- init.d calls for CODESYS, CodeMeter and MPLC4 are time-bounded; a hung vendor script yields a logged error instead of a permanent "busy".
+- The `sa02m-rs485-roster` timer no longer fills the journal with informational lines (`LogLevelMax=notice`).
+
+### Time and clock
+
+- **The "Date and time" field is empty when the tab opens**: saving only the time zone no longer sets the clock back or turns NTP off. A typed time is read in the zone in force before the save; the same zone is not applied again. The RTC is written again after a manual time set (the write used to fail silently).
+- The clock is changed through the pinned helper `sa02m-clock-set.sh`, which validates its arguments; the web server's root grants for `date`, `hwclock` and `timedatectl` are revoked. Boards imaged from the very first installer also carry a legacy `/etc/sudoers.d/time-sync` (`www-data … NOPASSWD: /bin/date, /sbin/hwclock`) that no committed file replaces, so the old grant survived 1.0.7.36 on them. A full installation, `--refresh` and `update-www-only.sh` now remove it, and so does the GitHub network update's runner (again only from the update after the one that delivers this runner); only when every line of the file is a `www-data` grant of `date`, `hwclock` or `timedatectl`, and only after the new helper and grant are in place. Any other content is left and named in a warning. A board updated only through the network update to this release keeps the file until that next update, a full installation or `update-www-only.sh`.
+
+### Security and panel
+
+- The password is no longer passed on the `openssl` command line (visible in `/proc`); passwords starting with `-` now verify.
+- Console: after 10 wrong root passwords in 5 minutes, root mode refuses for 5 minutes (`root_locked`); panel login is not locked.
+- A cloud profile with invalid characters in its tunnel fields is refused as a whole (a tunnel outside the allowed ports can no longer be set); `frpc` no longer exits on a failed login (new enrollments get the setting in `frpc.toml`; the cloud agent adds it to an existing `frpc.toml` on start and restarts `frpc` once; a `frpc.toml` that is not valid UTF-8 is left alone). The agent also deletes stale `.frpc.toml.tmp.*` files of its own writer on start, and the image clear scripts remove them, so a crash during a save cannot carry the tunnel token into a cloned image.
+- Requests to `/cgi-bin/` are limited to 6 concurrent per session (answer 429); the MQTT monitor stream to one per session and 60 s.
+- Polled CGI endpoints (status, services, gateway, cloud, kernel, CPU profile, MPLC project) are time-bounded: a hung systemd yields an error answer instead of a busy worker.
+- Dashboard: "Services" and RS-485 answer from cache at once while the cache refreshes in the background (data may be one poll period older); the frame/parity/overrun error counters on the RS-485 card count real errors again; with the bridge stopped, the "MQTT bridge" row shows inactive instead of the telemetry uptime.
+- Flasher: the port list runs one `fuser` per port; a port whose occupancy could not be checked is no longer reported free.
+
+### Verification
+
+- New registry checks: `mqtt-config-apply-atomic`, `mqtt-status-secret`, `userspace-watchdog-probe`, `kernel-select`, `initd-bounded`, `apply-time`, `js-unit-forms-time-prefill`, `no-timeout-on-shell-function`, `clock-set-helper`, `status-cache`, `json-escape-equiv`, `cgi-timeouts`, `daemon-restart-on-change`, `js-unit-flasher-flash-failure`; extended `iface-conf-write`, `sudoers-pin-contract` (now also a legacy `time-sync` drop-in left on a board), `rs485-roster-consumer`, `web-auth-behaviour` and the unit suites of the bridge, scenarios, Alice, the flasher, the cloud agent, the port coordinator and the device archive.
+
+### Boot script: reboot watchdog parameter
+
+The `boot.scr` source (`etc/boot.cmd.sa02m.min`) carries the kernel parameter `watchdog.stop_on_reboot=0`; without it the kernel disarms the hardware watchdog itself before a hanging reboot. **On an installed board the parameter takes effect only after the hand-run tool is applied**: `sa02m-bootscr-apply.sh check` → `apply` → reboot → `check`. Neither installation nor updates rewrite `boot.scr`; new images carry the parameter. The restorer `sa02m-restore-dtb.sh` replaces boot partition files atomically. `watchdog-cap` requires the parameter in the source; `bootscr-apply` checks the tool and the restorer.
+
 ## 1.0.7.35 - Select Fast Modbus channels for serial templates (November 2026)
 
 ### Modbus and MQTT

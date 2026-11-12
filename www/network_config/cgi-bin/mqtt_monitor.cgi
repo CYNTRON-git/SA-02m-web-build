@@ -23,4 +23,7 @@ if [ ! -f "$STREAM_PY" ]; then
     exit 0
 fi
 
-exec /usr/bin/python3 -u "$STREAM_PY" "${QUERY_STRING:-}"
+# One stream holds one fcgiwrap worker for its whole life, so it is capped at
+# 60 s (A8-07); a client that wants more reconnects. nginx also allows a single
+# stream per session (limit_conn in etc/nginx/network_config.conf).
+exec timeout -k 2 60 /usr/bin/python3 -u "$STREAM_PY" "${QUERY_STRING:-}"

@@ -14,7 +14,8 @@ from bridge_serial import ScanHold
 import time
 
 from bridge_device import DevicePoller
-from bridge_fmb import CE_FMB_POWER_RANGE, CE_FMB_S32_FW, DTV_FMB_WB_MIN_FW, FMB_INSURANCE_POLL_S
+from bridge_fmb import (CE_FMB_POWER_RANGE, CE_FMB_S32_FW, DTV_FMB_SAMPLER_FW,
+                        DTV_FMB_WB_MIN_FW, FMB_INSURANCE_POLL_S)
 from bridge_mqtt import DeviceLiveCache, MQTTPublisher, _make_title
 from bridge_mr02m_map import MR02M_SYS_CONTROLS
 from bridge_serial import (
@@ -32,6 +33,18 @@ DTV_CE_SYS_CONTROLS = tuple(
 # cadence and the bound of the original setup() loop — 5 x (read + sleep 3 s)
 # — kept, but run from the poll cycle instead of sleeping on the port thread.
 DTV_DETECT_RETRY_S = 3.0
+# temp_ext after a DTV reboot or an HR6 change: the firmware reports 0 while
+# the input settles. UNVERIFIED value -- the DTV team named "the first
+# seconds"; the conversion time is not documented by the firmware.
+DTV_EXT_TEMP_SETTLE_S = 10.0
+# Input 6 with an NTC10k type (HR6 1..4) and the probe open: -55.0 C.
+DTV_EXT_TEMP_OPEN_NTC_RAW = 64986
+# Input 6 fault markers (DTV team decision for firmware 1.0.2.17), NTC and
+# Pt1000 alike: -9999 open circuit, +9999 short circuit. +-999.9 C is no
+# measurement for any sensor type (Pt1000 ends at +850 C), so they need no
+# firmware version (plan fix-1.0.7.37 A17).
+DTV_EXT_TEMP_MARKERS = {0xD8F1: "open circuit (raw -9999)",
+                        0x270F: "short circuit (raw 9999)"}
 DTV_DETECT_EMPTY_FALLBACK = 5
 
 
@@ -46,6 +59,26 @@ class _DtvCeMixin:
         super().__init__(cfg, pub)
         self._fw_version: tuple[int, int, int, int] | None = None
         self._fw_read_warned = False
+        # (evt_type, reg) -> monotonic START time of the last successful
+        # classic read of that register (fmb_dispatch_ordered).
+        self._fmb_read_floor: dict[tuple[int, int], float] = {}
+
+    def _note_read_floor(self, evt_type: int, start: int, count: int,
+                         t: float) -> None:
+        for reg in range(start, start + count):
+            self._fmb_read_floor[(evt_type, reg)] = t
+
+    def fmb_dispatch_ordered(self, evt_type: int, reg: int, val: int, *,
+                             origin: float) -> None:
+        """An event older than the last read of its register is a replayed
+        batch (the manager keeps a replay's first poll time): publishing it
+        would roll the value back (audit 2026-11-11 A2-03)."""
+        if origin < self._fmb_read_floor.get((evt_type, reg), float("-inf")):
+            self.log.debug(
+                "FMB event dropped: repeated batch older than the last read "
+                "type=%02X reg=%d", evt_type, reg)
+            return
+        self.fmb_dispatch(evt_type, reg, val)
 
     # Firmware version, holding 320..323 = (major, minor, patch, build). The
     # FMB manager picks the configure_events wire from it
@@ -204,6 +237,7 @@ class DTVPoller(_DtvCeMixin, DevicePoller):
         self._poll_insurance_s = max(0.5, float(cfg.get("poll_insurance_s", 30)))
         self._t_sensors       = 0.0
         self._t_insurance     = 0.0
+        self._t_presence      = 0.0
         self._t_diag          = 0.0
         self._t_uptime        = 0.0
         # Optional explicit list of sensor names to poll
@@ -224,9 +258,23 @@ class DTVPoller(_DtvCeMixin, DevicePoller):
         self._t_detect = 0.0
         self._detect_empty_answers = 0
         self._sensor_model_confirmed: bool | None = None
+        # HR6 (external temp type) last read, and the end of the window in
+        # which a zero on Input 6 is the settling input, not a reading.
+        self._ext_temp_mode: int | None = None
+        self._ext_temp_hold_until = 0.0
+        # The fault marker last logged for Input 6 (None = measuring): the
+        # journal names a cause once per change, not once per poll.
+        self._ext_temp_fault: str | None = None
+
+    def _note_ext_temp_mode(self, mode: int) -> None:
+        if self._ext_temp_mode is not None and mode != self._ext_temp_mode:
+            self._ext_temp_hold_until = time.monotonic() + DTV_EXT_TEMP_SETTLE_S
+        self._ext_temp_mode = mode
 
     def fmb_firmware_invalidate(self) -> None:
         super().fmb_firmware_invalidate()
+        # 0x0F: the device rebooted -- its external input settles again.
+        self._ext_temp_hold_until = time.monotonic() + DTV_EXT_TEMP_SETTLE_S
         self._sensor_model_confirmed = None
         if self._autodetect:
             self._detect_pending = True
@@ -234,7 +282,7 @@ class DTVPoller(_DtvCeMixin, DevicePoller):
             self._sensors_present.clear()
 
     def _absent_word(self, reg: int, raw: int) -> bool:
-        return raw == 0x8000 and (reg in self.SIGNED_INPUTS or not self._fc04_drives_events())
+        return raw == 0x8000 and (reg in self.SIGNED_INPUTS or not self._wb_event_wire())
 
     def _try_autodetect(self) -> bool:
         """Read Input 1..30 once; return True when sensor metadata is ready.
@@ -317,6 +365,8 @@ class DTVPoller(_DtvCeMixin, DevicePoller):
             except Exception as exc:
                 self.log.debug("sensor status %d: %s", address, exc)
                 quality[key] = None
+            if key == (FMB_EVT_HOLDING, 6) and quality[key] is not None:
+                self._note_ext_temp_mode(int(quality[key]) & 0xFFFF)
         return quality[key]
 
     def _live_sensor_mask(self, quality: dict) -> int | None:
@@ -382,6 +432,17 @@ class DTVPoller(_DtvCeMixin, DevicePoller):
         if reg in (19, 20) and version is None:
             self.pub.pub_error(self.device_id, name, "r")
             return
+        if reg == 6:
+            fault = DTV_EXT_TEMP_MARKERS.get(raw & 0xFFFF)
+            if fault is not None:
+                if fault != self._ext_temp_fault:
+                    self.log.warning("temp_ext: external sensor %s", fault)
+                    self._ext_temp_fault = fault
+                self.pub.pub_error(self.device_id, name, "r")
+                return
+            if self._ext_temp_unreadable(raw, quality):
+                self.pub.pub_error(self.device_id, name, "r")
+                return
         if renesas:
             if reg == 19:
                 scale = 0.001  # µg/m³ on the wire; keep mg/m³ on MQTT
@@ -399,10 +460,29 @@ class DTVPoller(_DtvCeMixin, DevicePoller):
             self.pub.pub_error(self.device_id, name, "r")
             return
         if raw > 0x8000 and (reg in self.SIGNED_INPUTS
-                             or (not self._fc04_drives_events() and 25 <= reg <= 30)):
+                             or (not self._wb_event_wire() and 25 <= reg <= 30)):
             raw -= 0x10000
+        if reg == 6 and self._ext_temp_fault is not None:
+            self.log.info("temp_ext: external sensor measuring again after %s",
+                          self._ext_temp_fault.split(" (")[0])
+            self._ext_temp_fault = None
         self.pub.pub_control(self.device_id, name, str(round(raw * scale, 3)))
         self.pub.pub_error(self.device_id, name, "")
+
+    def _ext_temp_unreadable(self, raw: int, quality: dict | None) -> bool:
+        """Input 6 values that are not a temperature (audit 2026-11-11 A5-07):
+        the open-NTC marker under an NTC type, and the zero of the settling
+        input. Pt1000 (5..7) has no open marker -- an open Pt1000 reads 0.0."""
+        if raw == 0 and time.monotonic() < self._ext_temp_hold_until:
+            return True
+        if raw != DTV_EXT_TEMP_OPEN_NTC_RAW:
+            return False
+        mode = None
+        if quality is not None:
+            mode = self._quality_word((FMB_EVT_HOLDING, 6), quality)
+        if mode is None:
+            mode = self._ext_temp_mode
+        return mode is not None and 1 <= (int(mode) & 0xFFFF) <= 4
 
     def _poll_sensors(self, *, from_reg: int = 1, upto_reg: int = 30) -> None:
         # Bulk read regs from_reg..upto_reg (hot path truncates to 1..24 when
@@ -411,7 +491,9 @@ class DTVPoller(_DtvCeMixin, DevicePoller):
         start = max(1, min(30, int(from_reg)))
         count = max(1, min(30, int(upto_reg)) - start + 1)
         try:
+            t_read = time.monotonic()
             regs = self.read_input_registers(self.address, start, count)
+            self._note_read_floor(FMB_EVT_INPUT, start, count, t_read)
             if self._fw_version is None and not self._detect_pending:
                 self._read_fw_version()
             quality = {(FMB_EVT_INPUT, reg): raw for reg, raw in enumerate(regs, start)}
@@ -428,6 +510,7 @@ class DTVPoller(_DtvCeMixin, DevicePoller):
         try:
             t_read = time.monotonic()
             coils = self.read_coils(self.address, 1, 2)
+            self._note_read_floor(FMB_EVT_COIL, 1, 2, t_read)
             for coil_num, (ch_name, _) in self.DTV_COILS.items():
                 self._wb_publish_poll(
                     ch_name, str(coils[coil_num - 1]), t_read)
@@ -445,31 +528,48 @@ class DTVPoller(_DtvCeMixin, DevicePoller):
     DTV_FMB_INPUT_COUNT = 6
     DTV_WB_INPUT_LAST = 28
 
-    def _fc04_drives_events(self) -> bool:
+    def _wb_event_wire(self) -> bool:
+        """WB subscription wire, record format and scales (>= 1.0.1.49)."""
         return self._fw_version is not None and self._fw_version >= DTV_FMB_WB_MIN_FW
 
+    def _fc04_drives_events(self) -> bool:
+        """The FC04 handler forms the sensor events: WB wire up to 1.0.2.6.
+        From DTV_FMB_SAMPLER_FW the device samples in its own 1 Hz cycle
+        (audit 2026-11-11 A2-12; docs/contracts/fmb-event-wire.md §3)."""
+        return self._wb_event_wire() and self._fw_version < DTV_FMB_SAMPLER_FW
+
+    # INPUT23/24: radar energies, no MQTT channel -- their events are switched
+    # OFF, or the device default (HIGH) wins the arbitration over every
+    # register the bridge does publish (audit 2026-11-11 A2-13).
+    DTV_WB_DISABLED_INPUTS = (23, 24)
+
+    def _wb_input_range(self) -> tuple[int, int, int]:
+        return (FMB_EVT_INPUT, 1, self.DTV_WB_INPUT_LAST)
+
     def fmb_event_ranges(self) -> list[tuple[int, int, int]]:
-        if self._fc04_drives_events():
-            # Autodetection may finish after the manager arms this device.
-            # Subscribe once and filter the actual detected set at delivery.
-            ranges = []
-            for reg in range(1, 23):
-                if not self._autodetect and self.DTV_REGS[reg][0] not in self._sensors_present:
-                    continue
-                if ranges and ranges[-1][1] + ranges[-1][2] == reg:
-                    kind, start, count = ranges[-1]
-                    ranges[-1] = (kind, start, count + 1)
-                else:
-                    ranges.append((FMB_EVT_INPUT, reg, 1))
-            count = self.DTV_WB_INPUT_LAST - self.DTV_FMB_INPUT_START + 1
-            return ranges + [(FMB_EVT_INPUT, self.DTV_FMB_INPUT_START, count)]
+        if self._wb_event_wire():
+            # ONE record 1..28 -- three priority runs (1..22 LOW, 23..24 off,
+            # 25..28 LOW) take three rows of the device table, where a hole
+            # per absent sensor would take one more each. Absent sensors stay
+            # LOW: their value never changes, so they raise no events, and
+            # delivery filters the detected set anyway.
+            return [self._wb_input_range()]
         return [
             (FMB_EVT_COIL, 1, len(self.DTV_COILS)),
             (FMB_EVT_INPUT, self.DTV_FMB_INPUT_START, self.DTV_FMB_INPUT_COUNT),
         ]
 
+    def fmb_range_settings(self, rng) -> bytes | None:
+        """Per-register priorities for the WB record of `rng`, or None for the
+        manager's uniform LOW."""
+        if not self._wb_event_wire() or tuple(rng) != self._wb_input_range():
+            return None
+        _kind, start, count = rng
+        return bytes(0 if reg in self.DTV_WB_DISABLED_INPUTS else 1
+                     for reg in range(start, start + count))
+
     def fmb_dispatch(self, evt_type: int, reg: int, val: int) -> None:
-        if self._fc04_drives_events():
+        if self._wb_event_wire():
             if (evt_type == FMB_EVT_INPUT and reg <= self.DTV_WB_INPUT_LAST
                     and reg in self.DTV_REGS and self.DTV_REGS[reg][0] in self._sensors_present):
                 self._publish_sensor_input(reg, val)
@@ -531,6 +631,7 @@ class DTVPoller(_DtvCeMixin, DevicePoller):
         # and hide it on Off. A read failure keeps the last value (mirrors _poll_diag).
         try:
             r = self.read_holding_registers(self.address, 6, 1)
+            self._note_ext_temp_mode(int(r[0]) & 0xFFFF)
             self.pub.pub_control(self.device_id, "ext_temp_mode", str(int(r[0]) & 0xFFFF))
         except ScanHold:
             raise
@@ -559,10 +660,17 @@ class DTVPoller(_DtvCeMixin, DevicePoller):
                     if msg.retain:
                         return
                     try:
-                        on = msg.payload.decode().strip() not in (
-                            "0", "false", "False", "")
+                        v = msg.payload.decode().strip().lower()
                     except UnicodeDecodeError:
                         return
+                    # Same grammar as MR02mPoller: `off` or garbage used to
+                    # mean ON here (audit 2026-11-11 A5-08).
+                    if v not in ("0", "1", "false", "true"):
+                        self.log.warning(
+                            "writeback %s: payload %r refused (expected 0/1)",
+                            name, v[:16])
+                        return
+                    on = v in ("1", "true")
                     self._wb_submit(
                         name, lambda: self._writeback_coil(coil, name, on))
                 return cb
@@ -603,8 +711,15 @@ class DTVPoller(_DtvCeMixin, DevicePoller):
                 return      # no sensor set yet — nothing to poll, as before
         # Honor poll_sensors_s — with FMB insurance the port cycle would
         # otherwise hammer FC04×30 every ≥500 ms and collide with events.
-        driven_by_read = self._fc04_drives_events()
-        insurance = self.fmb_covers_io() and not driven_by_read
+        fc04_driver = self._fc04_drives_events()
+        insurance = self.fmb_covers_io() and not fc04_driver
+        # >= 1.0.2.7 with the subscription armed: 25..28 come by events, the
+        # radar distances 29..30 and the outputs have none -- they keep the
+        # presence rate, or they would update once per insurance period.
+        sampler = insurance and self._wb_event_wire()
+        # Not armed on the WB wire: the schedule from before the 1.0.2.7
+        # boundary (full FC04 + fast reads at the presence rate).
+        driven_by_read = fc04_driver or (self._wb_event_wire() and not insurance)
         interval = self._poll_sensors_s
         if insurance:
             interval = max(interval, FMB_INSURANCE_POLL_S)
@@ -625,8 +740,22 @@ class DTVPoller(_DtvCeMixin, DevicePoller):
         # low-rate classic reread, mirroring the MR/CE insurance pattern.
         # Current DTV samples its event sources inside FC04. Preserve regular
         # reads of the fast inputs and both physical outputs between slow reads.
+        if sampler:
+            if now - self._t_insurance >= self._poll_insurance_s:
+                self._t_insurance = now
+                self._poll_sensors(from_reg=self.DTV_FMB_INPUT_START,
+                                   upto_reg=self.DTV_WB_INPUT_LAST)
+                did = True
+            if now - self._t_presence >= self._poll_presence_s:
+                self._t_presence = now
+                self._poll_sensors(from_reg=self.DTV_WB_INPUT_LAST + 1,
+                                   upto_reg=self.DTV_FMB_INPUT_START
+                                   + self.DTV_FMB_INPUT_COUNT - 1)
+                self._poll_coils()
+                did = True
         fast_period = self._poll_presence_s if driven_by_read else self._poll_insurance_s
-        if (insurance or driven_by_read) and now - self._t_insurance >= fast_period:
+        if (not sampler and (insurance or driven_by_read)
+                and now - self._t_insurance >= fast_period):
             self._t_insurance = now
             self._poll_sensors(from_reg=self.DTV_FMB_INPUT_START,
                                upto_reg=self.DTV_FMB_INPUT_START
@@ -883,12 +1012,14 @@ class CE02M3Poller(_DtvCeMixin, DevicePoller):
     def _poll_power(self) -> None:
         # Regs 500-547: 48 registers (chunked — see _read_power_input_block)
         try:
+            t_read = time.monotonic()
             regs = self._read_power_input_block()
         except ScanHold:
             raise
         except Exception as e:
             self.log_poll_fail("power poll", e)
             return
+        self._note_read_floor(FMB_EVT_INPUT, 500, 48, t_read)
         lost = self._meter_link_check(not any(regs))
         self._set_meter_link(lost)
         if lost:

@@ -128,32 +128,47 @@ def _ce_roll_tuple(ts: float, ce: dict[str, Any]) -> tuple[Any, ...]:
     )
 
 
-def insert_sample(snapshot: dict[str, Any], path: Path | None = None) -> None:
-    """Записать снимок live_snapshot() — все ДТВ/СЭ в списках (по умолчанию)."""
-    from sa02m_devices.history_ce_roll import LOGGER_CHUNK, note_ce_rows
+def insert_sample(
+    snapshot: dict[str, Any],
+    path: Path | None = None,
+    *,
+    conn: sqlite3.Connection | None = None,
+) -> None:
+    """Записать снимок live_snapshot() — все ДТВ/СЭ в списках (по умолчанию).
 
-    ts = float(snapshot.get("ts") or time.time())
-    dtv_list = _as_device_list(snapshot.get("dtv"))
-    ce_list = _as_device_list(snapshot.get("ce"))
+    `conn` given: write inside the caller's open transaction (the logger's batch
+    writer) — no open, no BEGIN, no commit, no close."""
+    if conn is not None:
+        _write_sample(conn, snapshot)
+        return
     conn = _connect(path)
     try:
         # IMMEDIATE so a chart-request backfill cannot fold the same rows.
         conn.execute("BEGIN IMMEDIATE")
-        for dtv in dtv_list:
-            _insert_dtv(conn, ts, dtv)
-        rolled: list[tuple[Any, ...]] = []
-        # Mercury uses the same columns. The row is keyed by its own device_id,
-        # so a СЭ chart that passes its id never sees these samples.
-        for ce in ce_list + _as_device_list(snapshot.get("spodes")):
-            if _insert_ce(conn, ts, ce):
-                rolled.append(_ce_roll_tuple(ts, ce))
-        note_ce_rows(conn, rolled, chunk=LOGGER_CHUNK)
+        _write_sample(conn, snapshot)
         conn.commit()
     except Exception:
         conn.rollback()
         raise
     finally:
         conn.close()
+
+
+def _write_sample(conn: sqlite3.Connection, snapshot: dict[str, Any]) -> None:
+    from sa02m_devices.history_ce_roll import LOGGER_CHUNK, note_ce_rows
+
+    ts = float(snapshot.get("ts") or time.time())
+    dtv_list = _as_device_list(snapshot.get("dtv"))
+    ce_list = _as_device_list(snapshot.get("ce"))
+    for dtv in dtv_list:
+        _insert_dtv(conn, ts, dtv)
+    rolled: list[tuple[Any, ...]] = []
+    # Mercury uses the same columns. The row is keyed by its own device_id,
+    # so a СЭ chart that passes its id never sees these samples.
+    for ce in ce_list + _as_device_list(snapshot.get("spodes")):
+        if _insert_ce(conn, ts, ce):
+            rolled.append(_ce_roll_tuple(ts, ce))
+    note_ce_rows(conn, rolled, chunk=LOGGER_CHUNK)
 
 
 def _ai_ch_num(field: str) -> int:
@@ -198,17 +213,26 @@ def _insert_mr(conn: sqlite3.Connection, ts: float, mr: dict[str, Any]) -> None:
         )
 
 
-def insert_mr_sample(snapshot: dict[str, Any], path: Path | None = None) -> None:
+def insert_mr_sample(
+    snapshot: dict[str, Any],
+    path: Path | None = None,
+    *,
+    conn: sqlite3.Connection | None = None,
+) -> None:
     """Записать MR-02m AI из снимка (отдельная каденция от dtv/ce — 10 с)."""
     ts = float(snapshot.get("ts") or time.time())
-    mr_list = _as_device_list(snapshot.get("mr"))
-    if not mr_list:
+    items = _as_device_list(snapshot.get("mr"))
+    if not items:
+        return
+    if conn is not None:
+        for item in items:
+            _insert_mr(conn, ts, item)
         return
     conn = _connect(path)
     try:
         with conn:
-            for mr in mr_list:
-                _insert_mr(conn, ts, mr)
+            for item in items:
+                _insert_mr(conn, ts, item)
     finally:
         conn.close()
 
@@ -274,82 +298,117 @@ def _insert_mtd(conn: sqlite3.Connection, ts: float, mtd: dict[str, Any]) -> Non
     )
 
 
-def insert_mtd_sample(snapshot: dict[str, Any], path: Path | None = None) -> None:
+def insert_mtd_sample(
+    snapshot: dict[str, Any],
+    path: Path | None = None,
+    *,
+    conn: sqlite3.Connection | None = None,
+) -> None:
     """Записать MTD262-MB (освещённость, дистанция, присутствие) из снимка."""
     ts = float(snapshot.get("ts") or time.time())
-    mtd_list = _as_device_list(snapshot.get("mtd"))
-    if not mtd_list:
+    items = _as_device_list(snapshot.get("mtd"))
+    if not items:
+        return
+    if conn is not None:
+        for item in items:
+            _insert_mtd(conn, ts, item)
         return
     conn = _connect(path)
     try:
         with conn:
-            for mtd in mtd_list:
-                _insert_mtd(conn, ts, mtd)
+            for item in items:
+                _insert_mtd(conn, ts, item)
     finally:
         conn.close()
 
 
-def insert_carel_sample(snapshot: dict[str, Any], path: Path | None = None) -> None:
+def insert_carel_sample(
+    snapshot: dict[str, Any],
+    path: Path | None = None,
+    *,
+    conn: sqlite3.Connection | None = None,
+) -> None:
     """Записать Carel AHU из снимка (та же 10 с каденция, что у MR)."""
     ts = float(snapshot.get("ts") or time.time())
-    carel_list = _as_device_list(snapshot.get("carel"))
-    if not carel_list:
+    items = _as_device_list(snapshot.get("carel"))
+    if not items:
+        return
+    if conn is not None:
+        for item in items:
+            _insert_carel(conn, ts, item)
         return
     conn = _connect(path)
     try:
         with conn:
-            for carel in carel_list:
-                _insert_carel(conn, ts, carel)
+            for item in items:
+                _insert_carel(conn, ts, item)
     finally:
         conn.close()
 
 
-def purge_old(path: Path | None = None, *, now: float | None = None) -> dict[str, int]:
+def purge_old(
+    path: Path | None = None,
+    *,
+    now: float | None = None,
+    conn: sqlite3.Connection | None = None,
+) -> dict[str, int]:
+    """Delete samples older than RETENTION_S and events older than
+    EVENT_RETENTION_S. `conn` given: inside the caller's open transaction."""
     t_now = float(now if now is not None else time.time())
     cutoff = t_now - RETENTION_S
     ev_cutoff = t_now - EVENT_RETENTION_S
+    if conn is not None:
+        counts = _purge_samples(conn, cutoff)
+        return _purge_report(counts, _purge_events(path, ev_cutoff, conn), cutoff)
     conn = _connect(path)
     try:
         with conn:
-            c1 = conn.execute(
-                "DELETE FROM dtv_samples WHERE ts < ?", (cutoff,)
-            ).rowcount
-            c2 = conn.execute(
-                "DELETE FROM ce_samples WHERE ts < ?", (cutoff,)
-            ).rowcount
-            from sa02m_devices.history_ce_roll import purge_ce_roll
-
-            purge_ce_roll(conn, cutoff)
-            c3 = conn.execute(
-                "DELETE FROM mr_samples WHERE ts < ?", (cutoff,)
-            ).rowcount
-            c4 = conn.execute(
-                "DELETE FROM carel_samples WHERE ts < ?", (cutoff,)
-            ).rowcount
-            c5 = conn.execute(
-                "DELETE FROM mtd_samples WHERE ts < ?", (cutoff,)
-            ).rowcount
-        ev_deleted = 0
-        try:
-            from sa02m_devices import device_events
-
-            ev_deleted = device_events.purge_events(path=path, cutoff=ev_cutoff)
-        except Exception as exc:  # noqa: BLE001
-            # A swallowed failure here left a healthy-looking report over a
-            # journal that was never trimmed; the samples above are already
-            # purged, so report zero and say why.
-            log.warning("device_events purge failed: %s", exc)
-        return {
-            "dtv_deleted": int(c1 or 0),
-            "ce_deleted": int(c2 or 0),
-            "mr_deleted": int(c3 or 0),
-            "carel_deleted": int(c4 or 0),
-            "mtd_deleted": int(c5 or 0),
-            "events_deleted": int(ev_deleted),
-            "cutoff": cutoff,
-        }
+            counts = _purge_samples(conn, cutoff)
+        return _purge_report(counts, _purge_events(path, ev_cutoff, None), cutoff)
     finally:
         conn.close()
+
+
+def _purge_samples(conn: sqlite3.Connection, cutoff: float) -> tuple[int, ...]:
+    from sa02m_devices.history_ce_roll import purge_ce_roll
+
+    c1 = conn.execute("DELETE FROM dtv_samples WHERE ts < ?", (cutoff,)).rowcount
+    c2 = conn.execute("DELETE FROM ce_samples WHERE ts < ?", (cutoff,)).rowcount
+    purge_ce_roll(conn, cutoff)
+    c3 = conn.execute("DELETE FROM mr_samples WHERE ts < ?", (cutoff,)).rowcount
+    c4 = conn.execute("DELETE FROM carel_samples WHERE ts < ?", (cutoff,)).rowcount
+    c5 = conn.execute("DELETE FROM mtd_samples WHERE ts < ?", (cutoff,)).rowcount
+    return c1, c2, c3, c4, c5
+
+
+def _purge_events(
+    path: Path | None, ev_cutoff: float, conn: sqlite3.Connection | None
+) -> int:
+    try:
+        from sa02m_devices import device_events
+
+        return device_events.purge_events(path=path, cutoff=ev_cutoff, conn=conn)
+    except Exception as exc:  # noqa: BLE001
+        # A swallowed failure here left a healthy-looking report over a
+        # journal that was never trimmed; the samples above are already
+        # purged, so report zero and say why.
+        log.warning("device_events purge failed: %s", exc)
+        return 0
+
+
+def _purge_report(
+    counts: tuple[int, ...], ev_deleted: int, cutoff: float
+) -> dict[str, int]:
+    c1, c2, c3, c4, c5 = counts
+    return {
+        "dtv_deleted": int(c1 or 0),
+        "ce_deleted": int(c2 or 0),
+        "mr_deleted": int(c3 or 0),
+        "carel_deleted": int(c4 or 0),
+        "mtd_deleted": int(c5 or 0),
+        "events_deleted": int(ev_deleted),
+        "cutoff": cutoff,
+    }
 
 
 def _number_is_finite(v: Any) -> bool:

@@ -142,6 +142,11 @@ def _arm(schedulers, pred) -> bool:
         hold = getattr(sched, "_scan_hold", None)
         if hold is not None:
             hold.set()
+        # Set on TAKING the line: even a pause shorter than one loop turn
+        # gets its one re-arm on the next turn after the release.
+        rearm = getattr(sched, "_fmb_rearm", None)
+        if rearm is not None:
+            rearm.set()
         for poller in getattr(sched, "_pollers", ()) or ():
             _release_poller(poller)
     return hit

@@ -126,14 +126,19 @@ write_conf() {
     # чтобы не терять уточнённую версию модулей при следующей загрузке.
     local smp_ver=${SA02M_KERNEL_SMP_VER:-$SMP_VER_DEFAULT}
     local rt_ver=${SA02M_KERNEL_RT_VER:-$RT_VER_DEFAULT}
-    cat >"$CONF" <<EOF
+    # tmp + fsync + rename: a truncate-in-place left an empty conf on a power
+    # cut, and an empty conf silently drops the Operator's desired profile.
+    local tmp="$CONF.tmp.$$"
+    cat >"$tmp" <<EOF || { rm -f "$tmp"; return 1; }
 # Управляется веб-панелью СА-02m. Желаемое ядро после reboot.
 SA02M_KERNEL_DESIRED=$desired
 SA02M_KERNEL_SMP_VER=$smp_ver
 SA02M_KERNEL_RT_VER=$rt_ver
 SA02M_KERNEL_INIT_DONE=$init_done
 EOF
-    chmod 644 "$CONF"
+    chmod 644 "$tmp"
+    sync -- "$tmp" 2>/dev/null || sync
+    mv -f "$tmp" "$CONF" || { rm -f "$tmp"; return 1; }
 }
 
 zimage_ok() {
@@ -147,6 +152,35 @@ zimage_ok() {
 modules_ok() {
     local ver=$1
     [ -d "/lib/modules/$ver" ] && [ -n "$(ls -A "/lib/modules/$ver" 2>/dev/null)" ]
+}
+
+# zimage_md5_ok <profile> <file> — the canonical image against the md5 that
+# tools/buildroot/sa02m-kernel-deploy.sh records in $CANON_DIR/manifest.json.
+# Size alone let a damaged image of the right size onto the boot slot (A4-03).
+# No manifest, or no md5 for this profile (boards installed before the
+# manifest existed): pass with a log line — size check only, stated honestly.
+zimage_md5_ok() {
+    local prof=$1 f=$2 man="$CANON_DIR/manifest.json" want="" have
+    if [ -f "$man" ] && command -v python3 >/dev/null 2>&1; then
+        want=$(python3 -c '
+import json, sys
+try:
+    v = json.load(open(sys.argv[1]))["images"][sys.argv[2]]["md5"]
+    print(v if isinstance(v, str) else "")
+except Exception:
+    print("")
+' "$man" "$prof" 2>/dev/null || true)
+    fi
+    if ! [[ "$want" =~ ^[0-9a-f]{32}$ ]]; then
+        log "no manifest md5 for $prof — size check only"
+        return 0
+    fi
+    have=$(md5sum < "$f" 2>/dev/null | awk '{print $1}') || have=""
+    if [ "$have" != "$want" ]; then
+        log "zImage.$prof md5 ${have:-unreadable} != manifest $want — refused"
+        return 1
+    fi
+    return 0
 }
 
 artifact_smp_ok() { zimage_ok "$CANON_DIR/zImage.smp"; }
@@ -177,9 +211,40 @@ write_fat_zimage() {
     tmp="$(dirname "$dst")/.$(basename "$dst").new"
     cp -f "$src" "$tmp" || { rm -f "$tmp" 2>/dev/null || true; return 1; }
     sync
-    zimage_ok "$tmp" || { rm -f "$tmp" 2>/dev/null || true; return 1; }
+    # Size AND bytes: the FAT copy must equal its source before it may replace
+    # the boot slot (a short or corrupted copy of the right size is refused).
+    { zimage_ok "$tmp" && cmp -s "$src" "$tmp"; } || { rm -f "$tmp" 2>/dev/null || true; return 1; }
     mv -f "$tmp" "$dst" || { rm -f "$tmp" 2>/dev/null || true; return 1; }
     sync
+}
+
+# restore_active_slot <profile> — put the canonical zImage.<profile> on the FAT
+# boot slot unless it is already byte-identical there. FAT must be mounted.
+# Sets RESTORE_REFRESHED (0|1) and RESTORE_ERR ("" | zimage_mismatch |
+# fat_write_failed); returns 1 on error. Shared by `refresh` and by `set` when
+# the target is the running profile (A4-02: the slot may hold the OTHER image).
+restore_active_slot() {
+    local run=$1 canon="$CANON_DIR/zImage.$1"
+    RESTORE_REFRESHED=0
+    RESTORE_ERR=""
+    if ! zimage_md5_ok "$run" "$canon"; then
+        RESTORE_ERR="zimage_mismatch"
+        return 1
+    fi
+    # A missing/corrupt active slot counts as needs-refresh (recovery); cmp -s
+    # is set -e safe inside the if.
+    if zimage_ok "$FAT_MNT/zImage" && cmp -s "$canon" "$FAT_MNT/zImage"; then
+        return 0
+    fi
+    if ! write_fat_zimage "$canon" "$FAT_MNT/zImage"; then
+        RESTORE_ERR="fat_write_failed"
+        return 1
+    fi
+    # Suffix mirror is non-critical (active boot slot already written): a
+    # failure here must NOT abort under set -e — degrade to a logged warning.
+    write_fat_zimage "$canon" "$FAT_MNT/zImage.$run" || log "restore $run: warn: suffix mirror zImage.$run failed (active already written)"
+    RESTORE_REFRESHED=1
+    return 0
 }
 
 codesys_active() {
@@ -263,7 +328,27 @@ cmd_set() {
     run=$(running_profile)
     if [ "$run" = "$target" ]; then
         write_conf "$target" 1
-        printf '{"ok":true,"noop":true,"target":"%s","reboot_required":false,"warnings":""}\n' "$target"
+        # The running kernel is already the target, but the FAT slot may hold the
+        # other image (an SMP switch cancelled by choosing RT again, A4-02):
+        # put the running profile's image back, or the next boot is the
+        # cancelled one.
+        if ! zimage_ok "$CANON_DIR/zImage.$target"; then
+            log "set $target: running already; no canonical image to verify the FAT slot"
+            printf '{"ok":true,"noop":true,"restored":0,"target":"%s","reboot_required":false,"warnings":"zimage_missing"}\n' "$target"
+            return 0
+        fi
+        if ! mount_fat; then
+            printf '{"ok":false,"error":"fat_mount_failed","target":"%s"}\n' "$target"
+            return 1
+        fi
+        restore_active_slot "$target" || true
+        umount_fat_if_needed
+        if [ -n "$RESTORE_ERR" ]; then
+            printf '{"ok":false,"error":"%s","target":"%s"}\n' "$RESTORE_ERR" "$target"
+            return 1
+        fi
+        log "set $target: running already; FAT slot restored=$RESTORE_REFRESHED"
+        printf '{"ok":true,"noop":true,"restored":%s,"target":"%s","reboot_required":false,"warnings":""}\n' "$RESTORE_REFRESHED" "$target"
         return 0
     fi
 
@@ -280,6 +365,7 @@ cmd_set() {
         printf '{"ok":false,"error":"zimage_missing","target":"%s"}\n' "$target"
         return 1
     fi
+    if ! zimage_md5_ok "$target" "$canon"; then printf '{"ok":false,"error":"zimage_mismatch","target":"%s"}\n' "$target"; return 1; fi
     if ! modules_ok "$mod_ver"; then
         log "set $target: missing modules /lib/modules/$mod_ver"
         printf '{"ok":false,"error":"modules_missing","target":"%s","modules_ver":"%s"}\n' "$target" "$(json_str "$mod_ver")"
@@ -348,24 +434,12 @@ cmd_refresh() {
 
     # Local why: reinstall the RUNNING profile's canonical zImage onto the boot
     # FAT slot (same-profile update flow) — no profile change, so no codesys/RT
-    # warnings apply. Skip the write when the active slot already byte-matches
-    # the canonical image (cmp -s → set -e safe inside the if); a missing/corrupt
-    # active slot counts as needs-refresh (recovery). All writes go through the
-    # atomic temp→rename helper — the boot-critical active zImage is never left
-    # truncated. Single umount path: result computed into vars, then umount,
-    # then print.
+    # warnings apply. Single umount path: result computed by
+    # restore_active_slot, then umount, then print.
     local refreshed=0 err=""
-    if zimage_ok "$FAT_MNT/zImage" && cmp -s "$canon" "$FAT_MNT/zImage"; then
-        refreshed=0
-    elif write_fat_zimage "$canon" "$FAT_MNT/zImage"; then
-        # Suffix mirror is non-critical (active boot slot already written): a
-        # failure here must NOT abort under set -e and leak the mount / mask the
-        # success — degrade to a logged warning.
-        write_fat_zimage "$canon" "$FAT_MNT/zImage.$run" || log "refresh $run: warn: suffix mirror zImage.$run failed (active already written)"
-        refreshed=1
-    else
-        err="fat_write_failed"
-    fi
+    restore_active_slot "$run" || true
+    refreshed=$RESTORE_REFRESHED
+    err=$RESTORE_ERR
     umount_fat_if_needed
 
     if [ -n "$err" ]; then

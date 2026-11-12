@@ -9,7 +9,7 @@
 | Слой | Файл | Назначение |
 |---|---|---|
 | **HW WDT (PID1)** | `etc/systemd/sa02m-watchdog.conf` | drop-in для `system.conf` — `RuntimeWatchdogSec=15s`, `RebootWatchdogSec=16s` (сторож на время перезагрузки взведён на кэп драйвера, чтобы зависшая перезагрузка сбрасывалась сама; обоснование — в шапке самого файла). PID1 systemd сам владеет `/dev/watchdog0`. |
-| **Userspace WDT** | `etc/sa02m-userspace-watchdog.sh` + `etc/systemd/sa02m-userspace-watchdog.service` | health-checks (procs/ports/http/iface/load/mem); при стойком сбое делает forced reboot (graceful → reboot -f → kernel WDT). |
+| **Userspace WDT** | `etc/sa02m-userspace-watchdog.sh` + `etc/systemd/sa02m-userspace-watchdog.service` | health-checks (procs/ports/http/iface/load/mem); при стойком сбое ВСЕЙ платы (sshd, порт 22, интерфейс, load, память) делает forced reboot (graceful → reboot -f → kernel WDT); веб-отказы (nginx, порт панели, страница входа, CGI) только лечатся перезапуском веб-служб, плату не перезагружают. |
 | **Failure monitor** | `etc/sa02m-failure-monitor.sh` + `etc/sa02m-failure-monitor.service` | логирование переходов состояний и snapshot при сбоях, без reboot. |
 | **COM-fallback** | `serial-getty@ttyS0` (115200) | если сеть зависла — root login через USB-serial COM7. |
 
@@ -73,7 +73,9 @@ MIN_MEM_AVAIL_KB=32768
 
 По умолчанию `REQUIRED_PROCS="nginx sshd"`, `WATCHED_PROCS="mplc4 fcgiwrap"`.
 Это значит: отсутствие mplc4 **не** перезагружает плату (на части плат
-он по дизайну отключён); fcgiwrap мониторим, но не reboot'им.
+он по дизайну отключён); fcgiwrap мониторим, но не reboot'им. `nginx` в
+`REQUIRED_PROCS` код не считает отказом платы (веб-отказ — только перезапуск
+nginx, см. `docs/deployment.md`, «Программный сторож после установки»).
 
 ## Восстановление через COM7
 

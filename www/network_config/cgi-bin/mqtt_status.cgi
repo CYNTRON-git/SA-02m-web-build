@@ -3,6 +3,12 @@
 . "$(dirname "$0")/lib_web_auth.sh"
 # MQTT broker / bridge status + параметры внешнего подключения (mqttuser).
 # Fast path: pgrep + systemctl is-active/is-enabled (no full svcctl list).
+#
+# GET (polled by the MQTT tab) never carries the external broker password:
+# it would sit in every poll response, cache and proxy log (audit 2026-11-11
+# A5-05). The password is answered only to `POST {"reveal":"password"}` with a
+# valid session AND CSRF token, `Cache-Control: no-store`. Transport stays HTTP
+# 200 (the CGI-layer idiom). Behaviour pinned by scripts/dev/test-mqtt-status-secret.sh.
 
 check_auth() {
     web_session_check_cookie && return 0
@@ -13,6 +19,62 @@ if ! check_auth; then
     echo "Cache-Control: no-store"
     echo ""
     echo '{"error":"unauthorized"}'
+    exit 0
+fi
+
+if [ "${REQUEST_METHOD:-GET}" = "POST" ]; then
+    web_csrf_require
+    body=""
+    CL=$(printf '%s' "${CONTENT_LENGTH:-}" | tr -cd '0-9')
+    if [ -n "$CL" ] && [ "$CL" -gt 0 ] 2>/dev/null; then
+        [ "$CL" -gt 256 ] && CL=256   # the only accepted body is 21 bytes
+        body=$(dd bs=1 count="$CL" 2>/dev/null) || body=""
+    fi
+    echo "Content-type: application/json; charset=UTF-8"
+    echo "Cache-Control: no-store"
+    echo ""
+    # Allow-list: exactly {"reveal":"password"}, whitespace aside.
+    if [ "$(printf '%s' "$body" | tr -d ' \t\r\n')" != '{"reveal":"password"}' ]; then
+        echo '{"ok":false,"error":"bad_request"}'
+        exit 0
+    fi
+    MQTT_ENV_TEXT=$(timeout 2 sudo -n cat /etc/sa02m_mqtt.env 2>/dev/null || true)
+    MQTT_EXT_INFO=""
+    case "$MQTT_ENV_TEXT" in
+        *MQTT_PASS=?*|*MQTT_PASSWORD=?*) : ;;
+        *) MQTT_EXT_INFO=$(timeout 2 sudo -n /usr/local/sbin/sa02m-mqtt-external-info.py 2>/dev/null || true) ;;
+    esac
+    export MQTT_ENV_TEXT MQTT_EXT_INFO
+    python3 <<'PY'
+import json
+import os
+
+
+def _parse_mqtt_env_text(text: str) -> dict:
+    user, passwd = "mqttuser", ""
+    for raw in text.splitlines():
+        line = raw.strip()
+        if not line or line.startswith("#"):
+            continue
+        if line.startswith("MQTT_USER="):
+            user = line.split("=", 1)[1].strip().strip("'\"")
+        elif line.startswith("MQTT_PASS=") or line.startswith("MQTT_PASSWORD="):
+            passwd = line.split("=", 1)[1].strip().strip("'\"")
+    return {"mqtt_user": user or "mqttuser", "mqtt_password": passwd}
+
+
+ext = _parse_mqtt_env_text(os.environ.get("MQTT_ENV_TEXT", ""))
+if not ext["mqtt_password"].strip():
+    try:
+        info = json.loads(os.environ.get("MQTT_EXT_INFO") or "{}")
+        if isinstance(info, dict):
+            ext["mqtt_user"] = str(info.get("mqtt_user") or ext["mqtt_user"])
+            ext["mqtt_password"] = str(info.get("mqtt_password") or "")
+    except ValueError:
+        pass
+print(json.dumps({"ok": True, "mqtt_user": ext["mqtt_user"],
+                  "mqtt_password": ext["mqtt_password"]}, ensure_ascii=False))
+PY
     exit 0
 fi
 
@@ -133,50 +195,9 @@ export PRIMARY_HOST
 python3 <<'PY'
 import json
 import os
-import subprocess
 
-def _parse_mqtt_env_text(text: str) -> dict:
-    user, passwd = "mqttuser", ""
-    for raw in text.splitlines():
-        line = raw.strip()
-        if not line or line.startswith("#"):
-            continue
-        if line.startswith("MQTT_USER="):
-            user = line.split("=", 1)[1].strip().strip("'\"")
-        elif line.startswith("MQTT_PASS=") or line.startswith("MQTT_PASSWORD="):
-            passwd = line.split("=", 1)[1].strip().strip("'\"")
-    return {"mqtt_user": user or "mqttuser", "mqtt_password": passwd}
-
-
-ext = {"host": "", "mqtt_user": "mqttuser", "mqtt_password": ""}
-# Prefer direct env file (fast); external-info.py is optional fallback.
-try:
-    r = subprocess.run(
-        ["sudo", "-n", "cat", "/etc/sa02m_mqtt.env"],
-        capture_output=True,
-        text=True,
-        timeout=1,
-    )
-    if r.returncode == 0 and r.stdout.strip():
-        parsed = _parse_mqtt_env_text(r.stdout)
-        ext["mqtt_user"] = parsed.get("mqtt_user") or ext.get("mqtt_user")
-        ext["mqtt_password"] = parsed.get("mqtt_password") or ""
-except Exception:
-    pass
-
-if not (ext.get("mqtt_password") or "").strip():
-    try:
-        r = subprocess.run(
-            ["sudo", "-n", "/usr/local/sbin/sa02m-mqtt-external-info.py"],
-            capture_output=True,
-            text=True,
-            timeout=1.5,
-        )
-        if r.returncode == 0 and r.stdout.strip():
-            ext.update(json.loads(r.stdout))
-    except Exception:
-        pass
-
+# No credential read on the poll path: the user is the installer's fixed
+# `mqttuser` (scripts/05-mqtt.sh); the password is the POST reveal above.
 print(
     json.dumps(
         {
@@ -192,9 +213,8 @@ print(
             "listen_external": int(os.environ.get("LISTEN_EXTERNAL", 0)),
             "port_local": 1883,
             "port_external": 1884,
-            "host": ext.get("host") or os.environ.get("PRIMARY_HOST") or "",
-            "mqtt_user": ext.get("mqtt_user") or "mqttuser",
-            "mqtt_password": ext.get("mqtt_password") or "",
+            "host": os.environ.get("PRIMARY_HOST") or "",
+            "mqtt_user": "mqttuser",
         },
         ensure_ascii=False,
     )

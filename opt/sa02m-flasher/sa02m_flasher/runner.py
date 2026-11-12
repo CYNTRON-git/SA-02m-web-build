@@ -26,8 +26,9 @@ from . import module_profiles as mp
 from . import scanner as scn
 from .config import FlasherConfig
 from .firmware_repo import FirmwareEntry, FirmwareRepo, load_for_flash
-from .jobs import Job
+from .jobs import Job, failed_targets_text
 from .module_profiles import (
+    PROFILE_MP_MR,
     application_line_profile,
     device_flash_route,
     line_profile_family,
@@ -370,6 +371,55 @@ def _application_line_params(
     return profile.as_tuple()
 
 
+def _scan_line_tuple(device: Dict[str, Any]) -> Optional[Tuple[int, str, int]]:
+    """Параметры линии, на которых СКАН реально получил ответ устройства (None — скан их не дал)."""
+    try:
+        baud = int(device.get("baudrate") or 0)
+    except (TypeError, ValueError):
+        return None
+    if baud <= 0:
+        return None
+    parity = str(device.get("parity") or "N").upper()
+    if parity not in ("N", "E", "O"):
+        parity = "N"
+    try:
+        stop = int(device.get("stopbits") or 1)
+    except (TypeError, ValueError):
+        stop = 1
+    return baud, parity, (2 if stop == 2 else 1)
+
+
+def _application_line_candidates(
+    device: Dict[str, Any],
+    *,
+    is_wb_firmware: bool,
+) -> List[Tuple[int, str, int]]:
+    """
+    Линии, на которых пробуют заговорить с приложением (порядок = порядок попыток).
+
+    Первая — как раньше (явные app_line_* цели, иначе профиль по сигнатуре). Для MR/MP/CE/DTV
+    (не .wbfw) затем — линия, на которой скан нашёл устройство (FL-01: MR на 19200 недостижим на
+    константе 115200), и профиль 115200 N1 — на случай ложного baud в скане. WB: как раньше,
+    одна линия (скан или 19200 N2).
+    """
+    first = _application_line_params(device, is_wb_firmware=is_wb_firmware)
+    out: List[Tuple[int, str, int]] = [first]
+    if not is_wb_firmware:
+        scan = _scan_line_tuple(device)
+        for cand in (scan, PROFILE_MP_MR.as_tuple()):
+            if cand and cand not in out:
+                out.append(cand)
+    return out
+
+
+# Префикс ошибки «устройство не ответило» — по нему вход в загрузчик пробует следующую линию (FL-01/FL-03).
+IDENTITY_NO_ANSWER = "Нет ответа устройства"
+
+
+def _is_no_answer(err: Optional[str]) -> bool:
+    return bool(err) and str(err).startswith(IDENTITY_NO_ANSWER)
+
+
 def _firmware_signature_for_log(
     file_sig: str,
     entry: FirmwareEntry,
@@ -388,6 +438,23 @@ def _firmware_signature_for_log(
         if ds and ds.upper() != "NONE":
             return ds
     return fs or "NONE"
+
+
+def _firmware_signature_label(
+    file_sig: str,
+    entry: FirmwareEntry,
+    device: Optional[Dict[str, Any]] = None,
+) -> str:
+    """Подпись для строки лога «файл … sig=…»: сигнатура ФАЙЛА (из .fw или манифеста).
+
+    Если у файла её нет, сигнатура цели не выдаётся за файловую (FL-04: «файл ce-02m-3… sig=14DI»):
+    пишем, что в файле её нет, и отдельно — что прочитано у устройства.
+    """
+    own = _firmware_signature_for_log(file_sig, entry, None)
+    if own and own.upper() != "NONE":
+        return own
+    ds = str((device or {}).get("signature") or "").strip()
+    return f"нет в файле (устройство: {ds})" if ds and ds.upper() != "NONE" else "нет в файле"
 
 
 def _make_flasher(
@@ -498,7 +565,16 @@ def _resolve_use_fast_modbus(
     return bool(requested)
 
 
-def _open_bootloader_serial(device_path: str, *, is_wb_firmware: bool) -> Any:
+def _open_bootloader_serial(
+    device_path: str,
+    *,
+    is_wb_firmware: bool,
+    line: Optional[Tuple[int, str, int]] = None,
+) -> Any:
+    """Порт на линии загрузчика. `line` (baud, parity, stopbits) — линия, найденная поиском (D36b-01);
+    без неё — как раньше: константа 115200 8N1 (WB: 9600 8N2, `line` для WB не задаётся)."""
+    if line is not None and not is_wb_firmware:
+        return open_port(device_path, baudrate=line[0], parity=line[1], stopbits=line[2])
     baud = fp.BOOTLOADER_BAUDRATE_WB if is_wb_firmware else fp.BOOTLOADER_BAUDRATE
     stop = int(fp.BOOTLOADER_STOPBITS_WB if is_wb_firmware else fp.BOOTLOADER_STOPBITS)
     return open_port(
@@ -506,6 +582,134 @@ def _open_bootloader_serial(device_path: str, *, is_wb_firmware: bool) -> Any:
         baudrate=baud,
         parity=fp.BOOTLOADER_PARITY,
         stopbits=stop,
+    )
+
+
+# D36b-01 (bench 2026-11-12): after reg 129 the bootloader is NOT always on the constant 115200. The rule lives
+# in the MR-02m repo, one home per fact: doc/05_BOOTLOADER.md §5 «Параметры линии (один дом)», the contract
+# docs/contracts/bootloader-modbus.md «Listen parameters», shared/bootloader/Core/Inc/bl_link_params.h. In short:
+# a final BL >= 0.0.0.35 listens on the APPLICATION's baud, parity and stop bits; older loaders, the «pre-final»
+# 0.0.0.35 and the family image (CE-02m-3, RTU-Sensor/DTV, RGBW) listen on 115200 8N1 — the version number alone
+# does not tell the variant, so the loader is looked for on the application's line first and then on 115200 8N1,
+# for every family (MR team's recommendation). The probe is read-only and ends before any block is written.
+BOOTLOADER_FIXED_LINE = (fp.BOOTLOADER_BAUDRATE, fp.BOOTLOADER_PARITY, int(fp.BOOTLOADER_STOPBITS))
+# Rounds of the bounded search: the module resets after reg 129, so the first look can be too early.
+BOOTLOADER_SEARCH_ROUNDS = 2
+
+
+def _line_text(line: Tuple[int, str, int]) -> str:
+    return f"{line[0]} {line[1]}{line[2]}"
+
+
+def _bootloader_line_candidates(
+    device: Dict[str, Any],
+    entered_line: Optional[Tuple[int, str, int]],
+) -> List[Tuple[int, str, int]]:
+    """Линии для поиска загрузчика (порядок = порядок попыток): линия приложения, затем 115200 8N1.
+
+    Модуль, найденный сканом уже в загрузчике (`in_bootloader`), — линия скана (там он ответил), затем 115200 8N1.
+    """
+    first = _scan_line_tuple(device) if device.get("in_bootloader") else entered_line
+    out: List[Tuple[int, str, int]] = []
+    if first:
+        out.append(first)
+    if BOOTLOADER_FIXED_LINE not in out:
+        out.append(BOOTLOADER_FIXED_LINE)
+    return out
+
+
+def _open_bootloader_on_candidates(
+    device_path: str,
+    candidates: List[Tuple[int, str, int]],
+    cancel_evt,
+    log_cb: Callable[[str, str], None],
+    *,
+    prime_fast: bool,
+    probe_serial: Optional[int],
+    probe_addr: Optional[int],
+    confirm: Optional[Callable[[Any], Tuple[Any, Optional[str]]]] = None,
+) -> Tuple[Any, Tuple[int, str, int], bool, Optional[str], Optional[Tuple[Any, Optional[str]]]]:
+    """Открыть порт на линии, где отвечает ЦЕЛЕВОЙ загрузчик: (ser, линия, готов, ошибка, итог проверки личности).
+
+    Только чтение рег. 290 по 247 (или по серийному) и — через `confirm` — чтение серийного номера и сигнатуры:
+    ни одного записывающего кадра. Ответ «код 1» — это ещё приложение: порт остаётся на этой линии, решает
+    вызывающий. Если на линии отвечает НЕ целевое устройство (другой модуль в загрузчике, приложение по адресу
+    247), `confirm` возвращает ошибку личности — поиск идёт дальше по следующей линии (G-2): целевой модуль
+    может сидеть в загрузчике на 115200, пока на линии приложения кто-то другой отвечает на 247. Не нашли нигде —
+    порт на первой линии; итог проверки личности — (None, текст последнего отказа) или None, если никто не отвечал.
+    Порт закрывается на любом выходе, в том числе при исключении (G-4).
+    """
+    ser: Any = None
+    last_err: Optional[str] = None
+    foreign: Optional[str] = None
+    rounds = BOOTLOADER_SEARCH_ROUNDS if len(candidates) > 1 else 1
+    for rnd in range(rounds):
+        for idx, line in enumerate(candidates):
+            if cancel_evt.is_set():
+                break
+            if ser is not None:
+                try:
+                    ser.close()
+                except Exception:
+                    pass
+                ser = None
+            ser = _open_bootloader_serial(device_path, is_wb_firmware=False, line=line)
+            try:
+                ready, err = _wait_bootloader_ready_on_serial(
+                    ser, cancel_evt, log_cb,
+                    prime_fast=prime_fast, probe_serial=probe_serial, probe_addr=probe_addr,
+                )
+                ident: Optional[Tuple[Any, Optional[str]]] = None
+                if ready and confirm is not None:
+                    ident = confirm(ser)
+                    if ident[1] is not None:
+                        foreign = ident[1]
+                        log_cb(
+                            f"На линии {_line_text(line)} отвечает не целевой загрузчик: {ident[1]}",
+                            "warn",
+                        )
+                        ready = False
+                        err = None
+            except BaseException:
+                try:
+                    ser.close()
+                except Exception:
+                    pass
+                raise
+            if ready:
+                log_cb(f"Загрузчик найден на линии {_line_text(line)}.", "info")
+                return ser, line, True, None, ident
+            last_err = err or last_err
+            if err and ("код 1" in err or "код 01" in err.lower()):
+                return ser, line, False, err, None
+            nxt = candidates[idx + 1] if idx + 1 < len(candidates) else (candidates[0] if rnd + 1 < rounds else None)
+            if nxt is not None and not cancel_evt.is_set():
+                log_cb(f"Загрузчик не ответил на {_line_text(line)}; пробую линию {_line_text(nxt)}", "warn")
+    first = candidates[0]
+    # Park on the first candidate; with nobody answering, the identity read that follows reports the final «no answer».
+    if ser is not None:
+        try:
+            ser.close()
+        except Exception:
+            pass
+    ser = _open_bootloader_serial(device_path, is_wb_firmware=False, line=first)
+    return ser, first, False, last_err, ((None, foreign) if foreign else None)
+
+
+def _bootloader_not_found_text(lines: List[Tuple[int, str, int]]) -> str:
+    """D36b-02: reg 129 was accepted, the bootloader answers nowhere — the module may still be in it.
+
+    The way back is the bootloader's own: a magic entry (reg 129) without a following flash ends by idle timeout,
+    BL_IDLE_TIMEOUT_MS = 120 s, and jumps to a valid application (MR-02m shared/bootloader:
+    Core/Inc/bootloader_config.h, Core/Inc/bl_boot_decision.h bl_idle_jump_due; the MR team REPORTED that bootloader
+    0.0.0.40 of the bench module returned by itself after ~120 s — the bench report itself did not observe it).
+    Nothing is written or retried here.
+    """
+    return (
+        f"Загрузчик не найден на линиях {', '.join(_line_text(l) for l in lines)} после успешной записи "
+        "рег. 129 (вход в загрузчик): модуль мог остаться в загрузчике. Образ не записывался. "
+        "По исходникам загрузчика MR-02м он сам возвращается в приложение примерно через 120 с без обращений к нему; "
+        "можно также выключить и включить питание модуля. Проверьте скорость и чётность линии."
     )
 
 
@@ -607,6 +811,12 @@ def _confirm_flash_identity(
         read = flasher.read_holding_registers
         target = address
     sn_data, sn_err = read(target, REG_SERIAL_LO, 2)
+    if sn_err:
+        # FL-03: no answer / a damaged answer is NOT a serial mismatch. The caller
+        # (_enter_bootloader_from_application_line) retries another line on «no answer».
+        if fp._fp_is_timeout_err(sn_err):
+            return None, f"{IDENTITY_NO_ANSWER} (таймаут чтения серийного номера)."
+        return None, f"Не удалось прочитать серийный номер устройства: {sn_err}."
     actual_sn = (uint32_from_modbus_reg_pair_be(sn_data)
                  if not sn_err and sn_data and len(sn_data) == 4 else 0)
     if use_fast and not sn_err:
@@ -639,18 +849,66 @@ def _enter_bootloader_from_application_line(
     is_wb_firmware: bool,
     use_fast_modbus: bool,
     image_family: Optional[str],
+    entered: Optional[Dict[str, Any]] = None,
 ) -> Tuple[Optional[FlashIdentity], Optional[str]]:
-    """MR: reg 129 с линии приложения (закрыть порт)."""
+    """MR: reg 129 с линии приложения (закрыть порт).
+
+    `entered` (необязательный словарь): при успехе получает ключ "line" — линию приложения
+    (baud, parity, stopbits), на которой принят reg 129; загрузчик ищут с неё (D36b-01).
+
+    Линия берётся не из константы: первой идёт линия цели/профиля, затем та, на которой скан
+    нашёл устройство, затем профиль 115200 N1. Следующая пробуется только если на предыдущей
+    устройство НЕ ОТВЕТИЛО на чтение серийного номера (записей до подтверждения личности нет).
+    """
     if device.get("in_bootloader"):
         return None, None
-    baud, parity, stopbits = _application_line_params(device, is_wb_firmware=is_wb_firmware)
     addr = int(device.get("address") or fp.BOOTLOADER_DEFAULT_ADDR)
-    scan_baud = int(device.get("baudrate") or 0)
+    candidates = _application_line_candidates(device, is_wb_firmware=is_wb_firmware)
+    tried: List[str] = []
+    for idx, (baud, parity, stopbits) in enumerate(candidates):
+        tried.append(f"{baud} {parity}{stopbits}")
+        verified, err = _enter_bootloader_on_line(
+            device_path, device, cancel_evt, log_cb, baud, parity, stopbits,
+            is_wb_firmware=is_wb_firmware, use_fast_modbus=use_fast_modbus, image_family=image_family,
+        )
+        if not _is_no_answer(err):
+            if entered is not None and not err:
+                entered["line"] = (baud, parity, stopbits)
+            return verified, err
+        if idx + 1 < len(candidates) and not cancel_evt.is_set():
+            nb, npar, nst = candidates[idx + 1]
+            log_cb(
+                f"Адр.{addr} не ответил на {baud} {parity}{stopbits}; пробую линию {nb} {npar}{nst}",
+                "warn",
+            )
+    return None, (
+        f"{IDENTITY_NO_ANSWER} адр.{addr}: таймаут чтения серийного номера на линиях "
+        f"{', '.join(tried)}. Прошивка не начата, запись не отправлялась. "
+        "Проверьте скорость линии модуля и адрес."
+    )
+
+
+def _enter_bootloader_on_line(
+    device_path: str,
+    device: Dict[str, Any],
+    cancel_evt,
+    log_cb: Callable[[str, str], None],
+    baud: int,
+    parity: str,
+    stopbits: int,
+    *,
+    is_wb_firmware: bool,
+    use_fast_modbus: bool,
+    image_family: Optional[str],
+) -> Tuple[Optional[FlashIdentity], Optional[str]]:
+    """Одна попытка входа в загрузчик на заданной линии приложения."""
+    addr = int(device.get("address") or fp.BOOTLOADER_DEFAULT_ADDR)
     family = line_profile_family(str(device.get("signature") or ""), is_wb_firmware=is_wb_firmware)
-    if scan_baud and (scan_baud, str(device.get("parity") or "N").upper(), int(device.get("stopbits") or 1)) != (baud, parity, stopbits):
+    scan = _scan_line_tuple(device)
+    if scan and scan != (baud, parity, stopbits):
         log_cb(
-            f"Профиль {family}: скан {scan_baud} {device.get('parity') or 'N'}{device.get('stopbits') or 1} "
-            f"→ для reg 129 используем {baud} {parity}{stopbits}",
+            f"Профиль {family}: скан {scan[0]} {scan[1]}{scan[2]} "
+            f"→ для reg 129 пробуем {baud} {parity}{stopbits}",
             "debug",
         )
 
@@ -759,8 +1017,8 @@ def _preflight_read_bootloader_info_by_serial_mr(
                 break
     if err:
         return None, (
-            "Загрузчик не отвечает по серийному 0x%08X (0xFD 0x46). Проверьте режим bootloader (%d 8N1)."
-            % (bootloader_serial, fp.BOOTLOADER_BAUDRATE)
+            "Загрузчик не отвечает по серийному 0x%08X (0xFD 0x46). Проверьте режим bootloader и параметры линии."
+            % bootloader_serial
         )
     log_cb(
         "Данные загрузчика с устройства: сигнатура %s, версия загрузчика %s."
@@ -921,27 +1179,67 @@ def _run_bootloader_flash_session(
     → wait на том же ser (MR) → второй prime при duplicate+fast → FlasherProtocol → прошивка.
     """
     application_identity = None
+    entered: Dict[str, Any] = {}
+    entered_by_us = False
     if not device.get("in_bootloader"):
         application_identity, fatal = _enter_bootloader_from_application_line(
             device_path, device, cancel_evt, log_cb, is_wb_firmware=is_wb_firmware,
-            use_fast_modbus=use_fast_modbus, image_family=image_family,
+            use_fast_modbus=use_fast_modbus, image_family=image_family, entered=entered,
         )
         if fatal:
             return fatal
+        entered_by_us = True
         _post_reset_delays_before_bootloader_open(log_cb, is_wb_firmware=is_wb_firmware)
     else:
         if recovery:
             log_cb("Режим восстановления: устройство уже в загрузчике.", "info")
         else:
             log_cb(
-                "Устройство уже в режиме загрузчика, открываем линию загрузчика %d бод."
-                % (fp.BOOTLOADER_BAUDRATE_WB if is_wb_firmware else fp.BOOTLOADER_BAUDRATE),
+                "Устройство уже в режиме загрузчика, ищем линию загрузчика.",
                 "info",
             )
 
     ser: Optional[Any] = None
+    bl_line: Tuple[int, str, int] = BOOTLOADER_FIXED_LINE
+    bl_tried: List[Tuple[int, str, int]] = []
     try:
-        ser = _open_bootloader_serial(device_path, is_wb_firmware=is_wb_firmware)
+        sn_pf = int(device.get("serial") or 0) & 0xFFFFFFFF
+        probe_serial = (
+            sn_pf
+            if (use_fast_modbus and sn_pf not in (0, 0xFFFFFFFF) and not is_wb_firmware)
+            else None
+        )
+        # После входа в bootloader (reg 129) устройство всегда отвечает на адресе 247; адрес приложения нужен
+        # только для самого входа.
+        probe_addr = None if probe_serial is not None else fp.BOOTLOADER_DEFAULT_ADDR
+        prime_for_wait = bool(probe_serial and duplicate_on_line)
+        found_ready: Optional[bool] = None
+        found_err: Optional[str] = None
+        ident_state: Optional[Tuple[Any, Optional[str]]] = None
+
+        def _confirm_on_line(port: Any) -> Tuple[Any, Optional[str]]:
+            # Identity on the bootloader line itself (serial + signature of the TARGET) - read only, before any block.
+            if use_fast_modbus and duplicate_on_line:
+                log_cb(
+                    "Прогрев шины (0xFD 0x46 0x04) перед быстрым Modbus — устраняет таймаут первого 0x08 после долгого открытия COM.",
+                    "debug",
+                )
+                _prime_wb_fast_modbus_line(port, cancel_evt.is_set)
+            fl = _make_bootloader_flasher_protocol(port, cancel_evt, log_cb, is_wb_firmware=False)
+            return _confirm_flash_identity(
+                fl, device, fp.BOOTLOADER_DEFAULT_ADDR, use_fast_modbus,
+                image_family=image_family, prior=application_identity,
+            )
+
+        if is_wb_firmware:
+            ser = _open_bootloader_serial(device_path, is_wb_firmware=is_wb_firmware)
+        else:
+            bl_tried = _bootloader_line_candidates(device, entered.get("line"))
+            ser, bl_line, found_ready, found_err, ident_state = _open_bootloader_on_candidates(
+                device_path, bl_tried, cancel_evt, log_cb,
+                prime_fast=prime_for_wait, probe_serial=probe_serial, probe_addr=probe_addr,
+                confirm=_confirm_on_line,
+            )
         if is_wb_firmware:
             baud = fp.BOOTLOADER_BAUDRATE_WB
             stop = int(fp.BOOTLOADER_STOPBITS_WB)
@@ -953,31 +1251,8 @@ def _run_bootloader_flash_session(
             log_cb(".wbfw: пауза 1.5 с после открытия порта загрузчика.", "debug")
             time.sleep(1.5)
 
-        sn_pf = int(device.get("serial") or 0) & 0xFFFFFFFF
-        probe_serial = (
-            sn_pf
-            if (
-                use_fast_modbus
-                and sn_pf not in (0, 0xFFFFFFFF)
-                and not is_wb_firmware
-            )
-            else None
-        )
-        # После входа в bootloader (reg 129) устройство всегда отвечает на адресе 247.
-        # addr приложения используется только для самого входа (enter_bootloader_wb/enter_bootloader).
-        addr_probe = fp.BOOTLOADER_DEFAULT_ADDR
-        probe_addr = None if probe_serial is not None else addr_probe
-        prime_for_wait = bool(probe_serial and duplicate_on_line)
-
         if not is_wb_firmware:
-            ready, wait_err = _wait_bootloader_ready_on_serial(
-                ser,
-                cancel_evt,
-                log_cb,
-                prime_fast=prime_for_wait,
-                probe_serial=probe_serial,
-                probe_addr=probe_addr,
-            )
+            ready, wait_err = found_ready, found_err
             if ready:
                 log_cb("Загрузчик ответил без дополнительной длинной паузы.", "debug")
             else:
@@ -1006,24 +1281,21 @@ def _run_bootloader_flash_session(
                     cancel_evt,
                     log_cb,
                     is_wb_firmware=is_wb_firmware,
-                    use_fast_modbus=use_fast_modbus, image_family=image_family,
+                    use_fast_modbus=use_fast_modbus, image_family=image_family, entered=entered,
                 )
                 if err_re:
+                    if entered_by_us and _is_no_answer(err_re):
+                        # G-6: reg 129 was already written in this job, so «запись не отправлялась» would be untrue.
+                        return _bootloader_not_found_text(bl_tried)
                     return err_re
                 _post_reset_delays_before_bootloader_open(
                     log_cb, is_wb_firmware=is_wb_firmware
                 )
-                ser = _open_bootloader_serial(device_path, is_wb_firmware=is_wb_firmware)
-                if is_wb_firmware:
-                    time.sleep(1.5)
-
-                ready, _ = _wait_bootloader_ready_on_serial(
-                    ser,
-                    cancel_evt,
-                    log_cb,
-                    prime_fast=prime_for_wait,
-                    probe_serial=probe_serial,
-                    probe_addr=probe_addr,
+                bl_tried = _bootloader_line_candidates(device, entered.get("line"))
+                ser, bl_line, ready, _, ident_state = _open_bootloader_on_candidates(
+                    device_path, bl_tried, cancel_evt, log_cb,
+                    prime_fast=prime_for_wait, probe_serial=probe_serial, probe_addr=probe_addr,
+                    confirm=_confirm_on_line,
                 )
                 if ready:
                     log_cb("Загрузчик ответил без дополнительной длинной паузы.", "debug")
@@ -1038,35 +1310,34 @@ def _run_bootloader_flash_session(
         log_cb(
             "Скорость загрузчика: %d бод, стоп-биты: %s"
             % (
-                fp.BOOTLOADER_BAUDRATE_WB if is_wb_firmware else fp.BOOTLOADER_BAUDRATE,
-                fp.BOOTLOADER_STOPBITS_WB if is_wb_firmware else fp.BOOTLOADER_STOPBITS,
+                fp.BOOTLOADER_BAUDRATE_WB if is_wb_firmware else bl_line[0],
+                fp.BOOTLOADER_STOPBITS_WB if is_wb_firmware else bl_line[2],
             ),
             "debug",
         )
-
-        if use_fast_modbus and not is_wb_firmware and duplicate_on_line:
-            log_cb(
-                "Прогрев шины (0xFD 0x46 0x04) перед быстрым Modbus — устраняет таймаут первого 0x08 после долгого открытия COM.",
-                "debug",
-            )
-            _prime_wb_fast_modbus_line(ser, cancel_evt.is_set)
 
         flasher = _make_bootloader_flasher_protocol(
             ser, cancel_evt, log_cb, is_wb_firmware=is_wb_firmware
         )
 
         if not is_wb_firmware:
-            _, identity_err = _confirm_flash_identity(
-                flasher, device, fp.BOOTLOADER_DEFAULT_ADDR, use_fast_modbus,
-                image_family=image_family, prior=application_identity,
-            )
+            if ident_state is None:
+                # Nobody answered the probe on any line (or a slow bootloader): one identity read on the parked line.
+                ident_state = _confirm_on_line(ser)
+            identity_err = ident_state[1]
             if identity_err:
+                if entered_by_us:
+                    # D36b-02 (+G-2): reg 129 was accepted and the target's identity was confirmed on no line,
+                    # so the module may be sitting in its bootloader; the reason goes to the job log.
+                    log_cb(f"Загрузчик цели не подтверждён: {identity_err}", "warn")
+                    return _bootloader_not_found_text(bl_tried)
                 return identity_err
         return _flash_one_device(
             flasher,
             device,
             image,
             file_signature,
+            bootloader_line=None if is_wb_firmware else bl_line,
             ser=ser,
             duplicate_on_line=duplicate_on_line,
             use_fast_modbus=use_fast_modbus,
@@ -1102,6 +1373,7 @@ def _flash_one_device(
     log_cb: Callable[[str, str], None],
     progress_cb: Callable[[int, str], None],
     on_irreversible: Optional[Callable[[], None]] = None,
+    bootloader_line: Optional[Tuple[int, str, int]] = None,
 ) -> Optional[str]:
     addr = int(device.get("address") or fp.BOOTLOADER_DEFAULT_ADDR)
     serial = int(device.get("serial") or 0) & 0xFFFFFFFF
@@ -1144,7 +1416,7 @@ def _flash_one_device(
     if use_by_address:
         log_cb(
             "Прошивка по Modbus-адресу %d (%d бод, обычный Modbus)."
-            % (boot_addr_for_address_path, fp.BOOTLOADER_BAUDRATE),
+            % (boot_addr_for_address_path, (bootloader_line or BOOTLOADER_FIXED_LINE)[0]),
             "info",
         )
         if is_bootloader_firmware:
@@ -1302,6 +1574,16 @@ def _resolve_flash_route_for_device(
     return route == "wb", None
 
 
+def _fail_flash_targets(job: Job, failed: List[Tuple[Dict[str, Any], str]]) -> "RuntimeError":
+    """Записать неудавшиеся цели в params["errors"] и вернуть исключение с текстом, который
+    показывает вкладка: «Не прошито: адр.N SN 0x…: причина» — на ЛЮБОМ пути (одна цель, пакет
+    с остановкой на первой ошибке, пакет с продолжением), без имени класса исключения."""
+    job.params["errors"] = [
+        {"address": d.get("address"), "serial": d.get("serial"), "error": e} for d, e in failed
+    ]
+    return RuntimeError(failed_targets_text(job.params["errors"]))
+
+
 def run_flash_job(job: Job, ctx: Dict[str, Any], cfg: FlasherConfig, repo: FirmwareRepo) -> None:
     """
     Задача прошивки одного устройства.
@@ -1328,8 +1610,8 @@ def run_flash_job(job: Job, ctx: Dict[str, Any], cfg: FlasherConfig, repo: Firmw
     image_family = mp.manifest_device_family(entry.device)
     is_wb, route_err = _resolve_flash_route_for_device(target, entry)
     if route_err:
-        raise RuntimeError(route_err)
-    log_sig = _firmware_signature_for_log(file_sig, entry, target)
+        raise _fail_flash_targets(job, [(target, route_err)])
+    log_sig = _firmware_signature_label(file_sig, entry, target)
     route_name = device_flash_route(str(target.get("signature") or ""))
     log_cb(
         f"Файл: {entry.file} sig={log_sig} ver={file_ver} size={len(image)} route={route_name}",
@@ -1369,7 +1651,7 @@ def run_flash_job(job: Job, ctx: Dict[str, Any], cfg: FlasherConfig, repo: Firmw
                 on_irreversible=on_irreversible,
             )
             if err:
-                raise RuntimeError(err)
+                raise _fail_flash_targets(job, [(target, err)])
     progress_cb(100, "Готово")
 
 
@@ -1444,14 +1726,15 @@ def run_flash_batch_job(job: Job, ctx: Dict[str, Any], cfg: FlasherConfig, repo:
 
     device_path = resolve_device_path(cfg, port_key)
     image, file_sig, file_ver, entry = _load_firmware_for_flash(repo, params)
-    log_sig = _firmware_signature_for_log(file_sig, entry, targets[0] if targets else None)
+    log_sig = _firmware_signature_label(file_sig, entry, targets[0] if targets else None)
     log_cb(f"Пакет: {len(targets)} устройств, файл {entry.file} sig={log_sig} ver={file_ver}", "info")
     settle_s = _resolve_batch_settle_s(params)
     image_family = mp.manifest_device_family(entry.device)
     routes = [_resolve_flash_route_for_device(dev, entry) for dev in targets]
     invalid = [reason for _, reason in routes if reason]
     if invalid and (not skip_on_error or len(invalid) == len(routes)):
-        raise RuntimeError(invalid[0])
+        bad_targets = [(dev, reason) for dev, (_, reason) in zip(targets, routes) if reason]
+        raise _fail_flash_targets(job, bad_targets if skip_on_error else bad_targets[:1])
 
     with port_lease(device_path, cfg.mplc_stop_services):
         with _port_flock(cfg, port_key):
@@ -1474,7 +1757,7 @@ def run_flash_batch_job(job: Job, ctx: Dict[str, Any], cfg: FlasherConfig, repo:
                     errors.append((dev, route_err))
                     log_cb(f"Ошибка: {route_err}", "error")
                     if not skip_on_error:
-                        raise RuntimeError(route_err)
+                        raise _fail_flash_targets(job, errors)
                     continue
                 route_name = device_flash_route(str(dev.get("signature") or ""))
                 log_cb(
@@ -1519,10 +1802,11 @@ def run_flash_batch_job(job: Job, ctx: Dict[str, Any], cfg: FlasherConfig, repo:
                     errors.append((dev, err))
                     log_cb(f"Ошибка: {err}", "error")
                     if not skip_on_error:
-                        raise RuntimeError(err)
+                        raise _fail_flash_targets(job, errors)
             if errors:
                 log_cb(f"Завершено с ошибками: {len(errors)} из {total}", "warn")
-                # Запишем ошибки в параметры, чтобы UI показал; статус job — DONE, но с сообщением.
+                # Партия с продолжением (skip_on_error=true, только по явной просьбе): ошибки — в
+                # params; JobManager завершает такую задачу статусом error (jobs.failed_flash_targets).
                 job.params["errors"] = [
                     {"address": d.get("address"), "serial": d.get("serial"), "error": e}
                     for d, e in errors

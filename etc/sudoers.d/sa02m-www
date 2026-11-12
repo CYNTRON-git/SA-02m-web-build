@@ -15,8 +15,10 @@
 # (sa02m-iface-conf-write.sh, sa02m-usb-power.sh) and ifup/ifdown to the four
 # LAN names. Threat model: docs/threat-model.md (A1/A2/A5->S2 row).
 
-# ── Clock (set-only; no file-write / no exec — clock DoS at worst) ──────────
-www-data ALL=(ALL) NOPASSWD: /bin/date, /usr/bin/date, /sbin/hwclock, /usr/sbin/hwclock, /usr/bin/timedatectl
+# ── Clock: one pinned helper, argv validated inside (tz | ntp-off | time) ───
+# No date / hwclock / timedatectl grant: unpinned, `date -f` read and
+# `hwclock --adjfile` wrote any file as root (audit 2026-11-11 A8-01).
+www-data ALL=(ALL) NOPASSWD: /usr/local/sbin/sa02m-clock-set.sh
 
 # ── Network: pinned interface conf write + fixed ifup/ifdown vectors ────────
 # The conf write goes through the pinned helper (four-name allow-list, symlink
