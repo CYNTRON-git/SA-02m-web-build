@@ -158,6 +158,17 @@ r = await run('error', { state: 'error', error: 'PortBusyError: порт зан�
 check(r.toasts.length === 1 && r.toasts[0][0].startsWith('Прошивка не выполнена:'), 'a non-target job error keeps the «Прошивка не выполнена:» lead');
 check(translateText('Адр.5 не ответил на 115200 N1; пробую линию 19200 N1') === 'Address 5 did not answer on 115200 N1; trying line 19200 N1',
   'the daemon line-fallback log message is translated');
+// D36b-02: reg 129 accepted, the bootloader found nowhere - the toast says the module may be in its bootloader (RU and EN).
+const BL_LOST = 'Загрузчик не найден на линиях 19200 N1, 115200 N1 после успешной записи рег. 129 (вход в загрузчик): модуль мог остаться в загрузчике. Образ не записывался. По исходникам загрузчика MR-02м он сам возвращается в приложение примерно через 120 с без обращений к нему; можно также выключить и включить питание модуля. Проверьте скорость и чётность линии.';
+r = await run('error', { state: 'error', error: 'Не прошито: адр.5 SN 0x0E0A7530: ' + BL_LOST, params: {} }, 'ru');
+check(r.toasts.length === 1 && r.toasts[0][0].includes('мог остаться в загрузчике') && !/RuntimeError/.test(r.toasts[0][0]),
+  'RU: the lost-bootloader toast names the target and says the module may be left in its bootloader');
+r = await run('error', { state: 'error', error: 'Не прошито: адр.5 SN 0x0E0A7530: ' + BL_LOST, params: {} }, 'en');
+check(r.toasts.length === 1 && r.toasts[0][0].startsWith('Not flashed: addr 5 SN 0x0E0A7530: The bootloader was not found on lines 19200 N1, 115200 N1')
+  && r.toasts[0][0].includes('may have been left in its bootloader') && !/[А-Яа-яЁё]/.test(r.toasts[0][0]),
+  'EN: the lost-bootloader toast is fully English: ' + (r.toasts[0] || [''])[0].slice(0, 100));
+check(translateText('Загрузчик не ответил на 19200 N1; пробую линию 115200 N1') === 'The bootloader did not answer on 19200 N1; trying line 115200 N1',
+  'the bootloader-search log message is translated');
 
 // ── FL-02: the batch is asked to stop at the first failed target ──────────
 const flashCall = SRC.slice(SRC.indexOf("apiPost('/flash_batch'"));

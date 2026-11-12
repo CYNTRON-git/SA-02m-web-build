@@ -2445,6 +2445,12 @@
     [/^Регистр 290 «(.*)» не подтвердил семейство (.+)\.$/u, 'Register 290 ("$1") did not confirm family $2.'],
     [/^Не удалось перевести устройство в загрузчик \(reg 129\): (.+)\. Запись отклонена\.$/u, 'Could not switch the device to the bootloader (reg 129): $1. Write refused.'],
     [/^Адр\.(\d+) не ответил на (.+); пробую линию (.+)$/u, 'Address $1 did not answer on $2; trying line $3'],
+    // D36b-01/02: the bootloader is looked for on the application's line, then on 115200 N1; not found after reg 129
+    // was accepted = the module may still be in its bootloader (it returns by itself after ~120 s).
+    [/^Загрузчик не ответил на (.+); пробую линию (.+)$/u, 'The bootloader did not answer on $1; trying line $2'],
+    [/^Загрузчик найден на линии (.+)\.$/u, 'The bootloader answered on line $1.'],
+    [/^Загрузчик не найден на линиях (.+) после успешной записи рег\. 129 \(вход в загрузчик\): модуль мог остаться в загрузчике\. Образ не записывался\. По исходникам загрузчика MR-02м он сам возвращается в приложение примерно через 120 с без обращений к нему; можно также выключить и включить питание модуля\. Проверьте скорость и чётность линии\.$/u, 'The bootloader was not found on lines $1 after reg 129 (enter bootloader) was written successfully: the module may have been left in its bootloader. No image was written. By the MR-02m bootloader source it returns to the application by itself after about 120 s without requests; you can also power-cycle the module. Check the line speed and parity.'],
+    [/^Загрузчик не отвечает по серийному (0x[0-9A-F]{8}) \(0xFD 0x46\). Проверьте режим bootloader и параметры линии\.$/u, 'The bootloader does not answer by serial $1 (0xFD 0x46). Check the bootloader mode and the line parameters.'],
     [/^Скорость датчика: только (.+)$/u, 'Sensor baud: $1 only'],
     [/^Датчик MTD на адресе (\d+), (\d+) ([NOE]) не отвечает или не опознан — параметры связи не изменены$/u, 'The MTD sensor at address $1, $2 $3 does not answer or is not recognised — link settings not changed'],
     [/^На адресе (\d+), (\d+) ([NOE]) уже отвечает другое устройство — параметры связи не изменены\. Выберите свободный адрес\.$/u, 'Another device already answers at address $1, $2 $3 — link settings not changed. Choose a free address.'],
