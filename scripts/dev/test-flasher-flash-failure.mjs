@@ -169,6 +169,10 @@ check(r.toasts.length === 1 && r.toasts[0][0].startsWith('Not flashed: addr 5 SN
   'EN: the lost-bootloader toast is fully English: ' + (r.toasts[0] || [''])[0].slice(0, 100));
 check(translateText('Загрузчик не ответил на 19200 N1; пробую линию 115200 N1') === 'The bootloader did not answer on 19200 N1; trying line 115200 N1',
   'the bootloader-search log message is translated');
+check(translateText('На линии 19200 N1 отвечает не целевой загрузчик: Серийный номер устройства не совпал с выбранной целью.') === 'A bootloader that is not the target answers on line 19200 N1: The device serial number does not match the selected target.',
+  'G-2: the log line about a foreign module answering on the application line is translated');
+check(translateText('Загрузчик цели не подтверждён: Нет ответа устройства (таймаут чтения серийного номера).') === 'The target bootloader was not confirmed: The device did not answer (serial number read timed out).',
+  'G-2: the log line about the unconfirmed target bootloader is translated');
 
 // ── FL-02: the batch is asked to stop at the first failed target ──────────
 const flashCall = SRC.slice(SRC.indexOf("apiPost('/flash_batch'"));

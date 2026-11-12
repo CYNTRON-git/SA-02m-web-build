@@ -627,14 +627,21 @@ def _open_bootloader_on_candidates(
     prime_fast: bool,
     probe_serial: Optional[int],
     probe_addr: Optional[int],
-) -> Tuple[Any, Tuple[int, str, int], bool, Optional[str]]:
-    """Открыть порт на линии, где отвечает загрузчик: (ser, линия, готов, текст последней ошибки).
+    confirm: Optional[Callable[[Any], Tuple[Any, Optional[str]]]] = None,
+) -> Tuple[Any, Tuple[int, str, int], bool, Optional[str], Optional[Tuple[Any, Optional[str]]]]:
+    """Открыть порт на линии, где отвечает ЦЕЛЕВОЙ загрузчик: (ser, линия, готов, ошибка, итог проверки личности).
 
-    Только чтение рег. 290 по 247 (или по серийному) — ни одного записывающего кадра. Ответ «код 1» —
-    это ещё приложение: порт остаётся на этой линии, решает вызывающий. Не нашли нигде — порт на первой линии.
+    Только чтение рег. 290 по 247 (или по серийному) и — через `confirm` — чтение серийного номера и сигнатуры:
+    ни одного записывающего кадра. Ответ «код 1» — это ещё приложение: порт остаётся на этой линии, решает
+    вызывающий. Если на линии отвечает НЕ целевое устройство (другой модуль в загрузчике, приложение по адресу
+    247), `confirm` возвращает ошибку личности — поиск идёт дальше по следующей линии (G-2): целевой модуль
+    может сидеть в загрузчике на 115200, пока на линии приложения кто-то другой отвечает на 247. Не нашли нигде —
+    порт на первой линии; итог проверки личности — (None, текст последнего отказа) или None, если никто не отвечал.
+    Порт закрывается на любом выходе, в том числе при исключении (G-4).
     """
     ser: Any = None
     last_err: Optional[str] = None
+    foreign: Optional[str] = None
     rounds = BOOTLOADER_SEARCH_ROUNDS if len(candidates) > 1 else 1
     for rnd in range(rounds):
         for idx, line in enumerate(candidates):
@@ -645,29 +652,48 @@ def _open_bootloader_on_candidates(
                     ser.close()
                 except Exception:
                     pass
+                ser = None
             ser = _open_bootloader_serial(device_path, is_wb_firmware=False, line=line)
-            ready, err = _wait_bootloader_ready_on_serial(
-                ser, cancel_evt, log_cb,
-                prime_fast=prime_fast, probe_serial=probe_serial, probe_addr=probe_addr,
-            )
+            try:
+                ready, err = _wait_bootloader_ready_on_serial(
+                    ser, cancel_evt, log_cb,
+                    prime_fast=prime_fast, probe_serial=probe_serial, probe_addr=probe_addr,
+                )
+                ident: Optional[Tuple[Any, Optional[str]]] = None
+                if ready and confirm is not None:
+                    ident = confirm(ser)
+                    if ident[1] is not None:
+                        foreign = ident[1]
+                        log_cb(
+                            f"На линии {_line_text(line)} отвечает не целевой загрузчик: {ident[1]}",
+                            "warn",
+                        )
+                        ready = False
+                        err = None
+            except BaseException:
+                try:
+                    ser.close()
+                except Exception:
+                    pass
+                raise
             if ready:
                 log_cb(f"Загрузчик найден на линии {_line_text(line)}.", "info")
-                return ser, line, True, None
+                return ser, line, True, None, ident
             last_err = err or last_err
             if err and ("код 1" in err or "код 01" in err.lower()):
-                return ser, line, False, err
+                return ser, line, False, err, None
             nxt = candidates[idx + 1] if idx + 1 < len(candidates) else (candidates[0] if rnd + 1 < rounds else None)
             if nxt is not None and not cancel_evt.is_set():
                 log_cb(f"Загрузчик не ответил на {_line_text(line)}; пробую линию {_line_text(nxt)}", "warn")
     first = candidates[0]
-    # Park on the first candidate (the identity read that follows reports the final «no answer»).
+    # Park on the first candidate; with nobody answering, the identity read that follows reports the final «no answer».
     if ser is not None:
         try:
             ser.close()
         except Exception:
             pass
     ser = _open_bootloader_serial(device_path, is_wb_firmware=False, line=first)
-    return ser, first, False, last_err
+    return ser, first, False, last_err, ((None, foreign) if foreign else None)
 
 
 def _bootloader_not_found_text(lines: List[Tuple[int, str, int]]) -> str:
@@ -675,8 +701,9 @@ def _bootloader_not_found_text(lines: List[Tuple[int, str, int]]) -> str:
 
     The way back is the bootloader's own: a magic entry (reg 129) without a following flash ends by idle timeout,
     BL_IDLE_TIMEOUT_MS = 120 s, and jumps to a valid application (MR-02m shared/bootloader:
-    Core/Inc/bootloader_config.h, Core/Inc/bl_boot_decision.h bl_idle_jump_due; verified on the bench 2026-11-12:
-    BL 0.0.0.40 returned by itself after ~120 s). Nothing is written or retried here.
+    Core/Inc/bootloader_config.h, Core/Inc/bl_boot_decision.h bl_idle_jump_due; the MR team REPORTED that bootloader
+    0.0.0.40 of the bench module returned by itself after ~120 s — the bench report itself did not observe it).
+    Nothing is written or retried here.
     """
     return (
         f"Загрузчик не найден на линиях {', '.join(_line_text(l) for l in lines)} после успешной записи "
@@ -1188,13 +1215,30 @@ def _run_bootloader_flash_session(
         prime_for_wait = bool(probe_serial and duplicate_on_line)
         found_ready: Optional[bool] = None
         found_err: Optional[str] = None
+        ident_state: Optional[Tuple[Any, Optional[str]]] = None
+
+        def _confirm_on_line(port: Any) -> Tuple[Any, Optional[str]]:
+            # Identity on the bootloader line itself (serial + signature of the TARGET) - read only, before any block.
+            if use_fast_modbus and duplicate_on_line:
+                log_cb(
+                    "Прогрев шины (0xFD 0x46 0x04) перед быстрым Modbus — устраняет таймаут первого 0x08 после долгого открытия COM.",
+                    "debug",
+                )
+                _prime_wb_fast_modbus_line(port, cancel_evt.is_set)
+            fl = _make_bootloader_flasher_protocol(port, cancel_evt, log_cb, is_wb_firmware=False)
+            return _confirm_flash_identity(
+                fl, device, fp.BOOTLOADER_DEFAULT_ADDR, use_fast_modbus,
+                image_family=image_family, prior=application_identity,
+            )
+
         if is_wb_firmware:
             ser = _open_bootloader_serial(device_path, is_wb_firmware=is_wb_firmware)
         else:
             bl_tried = _bootloader_line_candidates(device, entered.get("line"))
-            ser, bl_line, found_ready, found_err = _open_bootloader_on_candidates(
+            ser, bl_line, found_ready, found_err, ident_state = _open_bootloader_on_candidates(
                 device_path, bl_tried, cancel_evt, log_cb,
                 prime_fast=prime_for_wait, probe_serial=probe_serial, probe_addr=probe_addr,
+                confirm=_confirm_on_line,
             )
         if is_wb_firmware:
             baud = fp.BOOTLOADER_BAUDRATE_WB
@@ -1240,14 +1284,18 @@ def _run_bootloader_flash_session(
                     use_fast_modbus=use_fast_modbus, image_family=image_family, entered=entered,
                 )
                 if err_re:
+                    if entered_by_us and _is_no_answer(err_re):
+                        # G-6: reg 129 was already written in this job, so «запись не отправлялась» would be untrue.
+                        return _bootloader_not_found_text(bl_tried)
                     return err_re
                 _post_reset_delays_before_bootloader_open(
                     log_cb, is_wb_firmware=is_wb_firmware
                 )
                 bl_tried = _bootloader_line_candidates(device, entered.get("line"))
-                ser, bl_line, ready, _ = _open_bootloader_on_candidates(
+                ser, bl_line, ready, _, ident_state = _open_bootloader_on_candidates(
                     device_path, bl_tried, cancel_evt, log_cb,
                     prime_fast=prime_for_wait, probe_serial=probe_serial, probe_addr=probe_addr,
+                    confirm=_confirm_on_line,
                 )
                 if ready:
                     log_cb("Загрузчик ответил без дополнительной длинной паузы.", "debug")
@@ -1268,25 +1316,20 @@ def _run_bootloader_flash_session(
             "debug",
         )
 
-        if use_fast_modbus and not is_wb_firmware and duplicate_on_line:
-            log_cb(
-                "Прогрев шины (0xFD 0x46 0x04) перед быстрым Modbus — устраняет таймаут первого 0x08 после долгого открытия COM.",
-                "debug",
-            )
-            _prime_wb_fast_modbus_line(ser, cancel_evt.is_set)
-
         flasher = _make_bootloader_flasher_protocol(
             ser, cancel_evt, log_cb, is_wb_firmware=is_wb_firmware
         )
 
         if not is_wb_firmware:
-            _, identity_err = _confirm_flash_identity(
-                flasher, device, fp.BOOTLOADER_DEFAULT_ADDR, use_fast_modbus,
-                image_family=image_family, prior=application_identity,
-            )
+            if ident_state is None:
+                # Nobody answered the probe on any line (or a slow bootloader): one identity read on the parked line.
+                ident_state = _confirm_on_line(ser)
+            identity_err = ident_state[1]
             if identity_err:
-                if entered_by_us and _is_no_answer(identity_err):
-                    # D36b-02: reg 129 was accepted, so the module may be sitting in its bootloader.
+                if entered_by_us:
+                    # D36b-02 (+G-2): reg 129 was accepted and the target's identity was confirmed on no line,
+                    # so the module may be sitting in its bootloader; the reason goes to the job log.
+                    log_cb(f"Загрузчик цели не подтверждён: {identity_err}", "warn")
                     return _bootloader_not_found_text(bl_tried)
                 return identity_err
         return _flash_one_device(

@@ -2449,6 +2449,8 @@
     // was accepted = the module may still be in its bootloader (it returns by itself after ~120 s).
     [/^Загрузчик не ответил на (.+); пробую линию (.+)$/u, 'The bootloader did not answer on $1; trying line $2'],
     [/^Загрузчик найден на линии (.+)\.$/u, 'The bootloader answered on line $1.'],
+    [/^На линии (.+) отвечает не целевой загрузчик: (.+)$/u, (_m, line, why) => 'A bootloader that is not the target answers on line ' + line + ': ' + translateText(why)],
+    [/^Загрузчик цели не подтверждён: (.+)$/u, (_m, why) => 'The target bootloader was not confirmed: ' + translateText(why)],
     [/^Загрузчик не найден на линиях (.+) после успешной записи рег\. 129 \(вход в загрузчик\): модуль мог остаться в загрузчике\. Образ не записывался\. По исходникам загрузчика MR-02м он сам возвращается в приложение примерно через 120 с без обращений к нему; можно также выключить и включить питание модуля\. Проверьте скорость и чётность линии\.$/u, 'The bootloader was not found on lines $1 after reg 129 (enter bootloader) was written successfully: the module may have been left in its bootloader. No image was written. By the MR-02m bootloader source it returns to the application by itself after about 120 s without requests; you can also power-cycle the module. Check the line speed and parity.'],
     [/^Загрузчик не отвечает по серийному (0x[0-9A-F]{8}) \(0xFD 0x46\). Проверьте режим bootloader и параметры линии\.$/u, 'The bootloader does not answer by serial $1 (0xFD 0x46). Check the bootloader mode and the line parameters.'],
     [/^Скорость датчика: только (.+)$/u, 'Sensor baud: $1 only'],
