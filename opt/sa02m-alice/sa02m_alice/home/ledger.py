@@ -7,7 +7,26 @@ import threading
 import time
 from pathlib import Path
 
-from .contract import APIError, encoded
+from .contract import APIError, IDENTIFIER, encoded
+
+
+# Leave room for the envelope and ASCII escaping on the cloud transport.
+RESULT_DETAIL_BYTES = 64 * 1024
+
+
+def _bounded_receipt(row):
+    result = row.get("result")
+    if result is None or len(encoded(result)) <= RESULT_DETAIL_BYTES:
+        return row
+    summary = {"details_omitted": True}
+    if isinstance(result, dict):
+        if isinstance(result.get("ok"), bool):
+            summary["ok"] = result["ok"]
+        kind = row["operation"].partition(".")[0]
+        item = result.get(kind)
+        if isinstance(item, dict) and isinstance(item.get("id"), str) and IDENTIFIER.fullmatch(item["id"]):
+            summary[kind] = {"id": item["id"]}
+    return {**row, "result": summary}
 
 
 class Ledger:
@@ -40,20 +59,22 @@ class Ledger:
         self.db.close()
 
     def _save(self, cid, receipt):
+        receipt = _bounded_receipt(receipt)
         with self.db:
             self.db.execute("UPDATE receipts SET receipt=? WHERE id=?", (encoded(receipt).decode(), cid))
+        return receipt
 
     def get(self, cid):
         with self.lock:
             row = self.db.execute("SELECT receipt FROM receipts WHERE id=?", (cid,)).fetchone()
-            return json.loads(row[0]) if row else None
+            return _bounded_receipt(json.loads(row[0])) if row else None
 
     def existing(self, cid, digest):
         with self.lock:
             row = self.db.execute("SELECT hash,receipt FROM receipts WHERE id=?", (cid,)).fetchone()
             if row and row[0] != digest:
                 raise APIError(409, "command_conflict")
-            return json.loads(row[1]) if row else None
+            return _bounded_receipt(json.loads(row[1])) if row else None
 
     def create(self, cid, digest, operation, target):
         with self.lock:
@@ -80,5 +101,4 @@ class Ledger:
             if row is None:
                 raise APIError(404, "receipt_not_found")
             row.update(status=status, updated_at=self.clock(), **fields)
-            self._save(cid, row)
-            return row
+            return self._save(cid, row)

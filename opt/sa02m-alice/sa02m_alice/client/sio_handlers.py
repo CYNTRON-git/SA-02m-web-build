@@ -61,8 +61,8 @@ class SioHandlers:
         if event == "home_api_v1":
             if self._profile != C.PROFILE_CLOUD:
                 return
-            from ..home.bridge import request
-            self._emit_response({"request_id": request_id, "payload": request(data)})
+            from ..home.bridge import cloud_reply
+            self._emit_response(cloud_reply(data))
         elif event == C.EVT_DEVICES_LIST:
             self._on_list(request_id)
         elif event == C.EVT_DEVICES_QUERY:

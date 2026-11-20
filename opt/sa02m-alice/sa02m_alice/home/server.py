@@ -47,6 +47,10 @@ class Handler(BaseHTTPRequestHandler):
         except (ValueError, UnicodeDecodeError, RecursionError) as exc:
             raise APIError(400, "invalid_json") from exc
 
+    def _dispatch_home(self, method, path, query, body):
+        self._command_submitted = method == "POST" and path == "/commands"
+        return self.server.dispatcher.request(method, path, query, body)
+
     def _handle(self):
         dispatcher = self.server.dispatcher
         parsed = urlsplit(self.path)
@@ -61,7 +65,7 @@ class Handler(BaseHTTPRequestHandler):
                 return dispatcher.rule_request(parsed.path.rsplit("/", 1)[1], body)
             if set(body) != {"method", "path", "query", "body"}:
                 raise APIError(400, "invalid_request")
-            return dispatcher.request(body["method"], body["path"], body["query"], body["body"])
+            return self._dispatch_home(body["method"], body["path"], body["query"], body["body"])
         cookie = self.headers.get("Cookie")
         if not check_session_store(cookie, self.server.session_dir):
             raise APIError(401, "unauthorized")
@@ -83,17 +87,22 @@ class Handler(BaseHTTPRequestHandler):
             query = parse_qs(parsed.query, keep_blank_values=True, max_num_fields=16)
         except ValueError as exc:
             raise APIError(400, "invalid_query") from exc
-        return dispatcher.request(self.command, parsed.path[len(start):], query, self._body())
+        return self._dispatch_home(self.command, parsed.path[len(start):], query, self._body())
 
     def _serve(self):
+        self._command_submitted = False
         try:
             status, body = self._handle()
         except APIError as exc:
             status, body = exc.status, {"ok": False, "error": exc.code}
         except (OSError, ValueError):
             status, body = 503, {"ok": False, "error": "temporarily_unavailable"}
+            if self._command_submitted:
+                body["outcome_unknown"] = True
         except Exception:
             status, body = 500, {"ok": False, "error": "internal"}
+            if self._command_submitted:
+                body["outcome_unknown"] = True
         raw = encoded(body)
         self.send_response(status)
         self.send_header("Content-Type", "application/json; charset=utf-8")

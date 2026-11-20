@@ -9,7 +9,7 @@ import tempfile
 import threading
 import time
 import unittest
-from unittest.mock import patch
+from unittest.mock import Mock, patch
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
@@ -73,6 +73,14 @@ class HTTPTests(unittest.TestCase):
         finally:
             conn.close()
 
+    def test_internal_failure_after_command_dispatch_reports_unknown(self):
+        with patch.object(self.server.dispatcher, "request", side_effect=RuntimeError("receipt storage unavailable")) as dispatch:
+            status, result = self.call("POST", "/api/home/v1/controllers/SA-test/commands", b"{}")
+            self.assertEqual(status, 500)
+            self.assertIs(result["outcome_unknown"], True)
+            dispatch.assert_called_once()
+            self.assertNotIn("outcome_unknown", self.call()[1])
+
     def test_no_session_no_dispatch_including_global_meta(self):
         for path in ("/api/home/v1/meta", "/api/home/v1/controllers", "/api/home/v1/controllers/SA-test/snapshot"):
             self.assertEqual(self.call(path=path, auth=False)[0], 401)
@@ -117,6 +125,39 @@ class HTTPTests(unittest.TestCase):
 
 
 class BridgeTests(unittest.TestCase):
+    def test_result_of_interrupted_command_depends_on_dispatch(self):
+        command = {"method": "POST", "path": "/commands", "body": {}}
+        connection = Mock()
+        connection.connect.side_effect = ConnectionRefusedError()
+        before = request(command, lambda: connection)
+        self.assertIs(before["body"]["outcome_unknown"], False)
+        connection.request.assert_not_called()
+
+        connection = Mock()
+        connection.getresponse.side_effect = TimeoutError()
+        after = request(command, lambda: connection)
+        self.assertEqual(after["status"], 503)
+        self.assertIs(after["body"]["outcome_unknown"], True)
+        connection.request.assert_called_once()
+        reading = request({"method": "GET", "path": "/history"}, lambda: connection)
+        self.assertNotIn("outcome_unknown", reading["body"])
+
+    def test_cloud_encoder_accounts_for_text_and_the_full_event(self):
+        from sa02m_alice.home import bridge
+
+        query = {"request_id": "catalog-read", "method": "GET", "path": "/snapshot"}
+        payload = {"status": 200, "body": {"ok": True, "name": "Свет в мастерской"}}
+        envelope = {"request_id": query["request_id"], "payload": payload}
+        wire = "42" + json.dumps(["alice_devices_response", envelope], ensure_ascii=True, separators=(",", ":"))
+        with patch.object(bridge, "request", return_value=payload):
+            with patch.object(bridge, "CLOUD_PACKET_BYTES", len(wire)):
+                self.assertEqual(bridge.cloud_reply(query), envelope)
+            with patch.object(bridge, "CLOUD_PACKET_BYTES", len(wire) - 1):
+                rejected = bridge.cloud_reply(query)
+        self.assertEqual(rejected["payload"]["status"], 413)
+        self.assertEqual(rejected["request_id"], query["request_id"])
+        self.assertNotIn("outcome_unknown", rejected["payload"]["body"])
+
     def test_invalid_path_is_rejected_before_socket(self):
         def forbidden():
             self.fail("socket must not be touched")

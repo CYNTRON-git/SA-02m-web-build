@@ -79,9 +79,12 @@ class Dispatcher:
             with self.lock:
                 self._expire_pending()
                 status, result = self._dispatch(method, path, query or {}, body or {})
-            if len(encoded(result)) > MAX_RESPONSE:
-                raise APIError(413, "response_too_large")
-            return status, result
+            if len(encoded(result)) <= MAX_RESPONSE:
+                return status, result
+            error = {"ok": False, "api_version": API_VERSION, "error": "response_too_large"}
+            if method == "POST" and path == "/commands":
+                error["outcome_unknown"] = True
+            return 413, error
         except APIError as exc:
             return exc.status, {"ok": False, "api_version": API_VERSION, "error": exc.code}
 

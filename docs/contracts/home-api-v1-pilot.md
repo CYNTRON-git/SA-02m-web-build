@@ -11,6 +11,9 @@
    build и независимый review. Собрать архив командой
    `python3 scripts/pack-home-api-pilot.py --ref HEAD --base <base-commit> --output <new-directory>`.
    Упаковываются git bytes; незакоммиченные рабочие файлы в пакет не попадают.
+   Команда `bash scripts/dev/test-home-pilot-payload.sh <new-directory>` проверяет
+   отправку ответа Home через Socket.IO на комплекте модулей из пакета,
+   наложенном на исходный base commit во временном каталоге.
 2. Проверить pinned SSH host key именно выбранной платы. Прочитать version,
    активные/enabled units, путь и SHA nginx site, registry/rules revision,
    свободное место, наличие Python3, paho, sa02m-devices/websession.

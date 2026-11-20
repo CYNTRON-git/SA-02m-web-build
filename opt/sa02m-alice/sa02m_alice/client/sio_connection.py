@@ -13,6 +13,7 @@ from ..common import constants as C
 from ..common.config_store import cert_paths_present, cloud_control_urls, gateway_urls
 
 log = logging.getLogger("sa02m_alice.sio")
+EVT_DEVICES_RESPONSE = "alice_devices_response"
 
 # 2**_MAX_EXP is the largest ladder step computed; the result is capped anyway,
 # and this keeps a runaway attempt counter out of float overflow territory.
@@ -478,7 +479,7 @@ class AliceSocketIO:
         if not self._sio or not self._connected:
             raise ConnectionError("Socket.IO not connected")
         # Gateway expects the response payload with request_id at top level.
-        self._sio.emit("alice_devices_response", data)
+        self._sio.emit(EVT_DEVICES_RESPONSE, data)
 
     def disconnect(self) -> None:
         # Flag first: the library's disconnect callback fires during the call

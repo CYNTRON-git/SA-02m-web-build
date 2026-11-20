@@ -8,13 +8,18 @@ import sys
 import tempfile
 from types import SimpleNamespace
 import unittest
+import uuid
 from unittest.mock import patch
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path[:0] = [str(ROOT), str(ROOT.parent / "sa02m-rules")]
 from sa02m_alice.common import config_store
+from sa02m_alice.config import api as config
+from sa02m_alice.home import bridge
 from sa02m_alice.home.adapter import BoardAdapter
-from sa02m_alice.home.contract import APIError
+from sa02m_alice.home.contract import APIError, MAX_RESPONSE, encoded
+from sa02m_alice.home.dispatcher import Dispatcher
+from sa02m_alice.home.ledger import Ledger
 from sa02m_rules import store
 
 
@@ -70,6 +75,58 @@ class CatalogTests(unittest.TestCase):
         self.assertEqual(after["name"], "After")
         self.assertEqual(after["vendor_extension"], {"version": 7})
         self.assertEqual(after["capabilities"][0]["vendor_binding"], 42)
+
+    def dispatch_command(self, operation, target, data):
+        ledger = Ledger(":memory:")
+        self.addCleanup(ledger.close)
+        api = Dispatcher("SA-test", self.adapter.registry, self.fail, ledger, self.adapter)
+        lease = api.request("POST", "/lease")[1]["lease"]["lease_id"]
+        body = dict(self.command(operation, target, data), command_id=str(uuid.uuid4()), lease_id=lease)
+        with patch.object(config, "save_devices", wraps=config.save_devices) as save:
+            status, reply = api.request("POST", "/commands", body=body)
+            self.assertEqual(status, 202)
+            self.assertEqual(api.request("GET", "/commands/" + body["command_id"]), (200, reply))
+            self.assertEqual(api.request("POST", "/commands", body=body), (200, reply))
+            save.assert_called_once()
+        stored = ledger.db.execute("SELECT receipt FROM receipts WHERE id=?", (body["command_id"],)).fetchone()[0]
+        receipt = reply["receipt"]
+        self.assertEqual(json.loads(stored), receipt)
+        self.assertEqual(receipt["command_id"], body["command_id"])
+        self.assertEqual(receipt["status"], "applied")
+        self.assertEqual(receipt["confirmation"], "document_saved")
+        self.assertFalse(receipt["physical_confirmation"])
+        self.assertEqual(receipt["catalog_revision"], self.adapter.revision())
+        self.assertNotEqual(receipt["catalog_revision"], body["expected_revision"])
+        with patch.object(bridge, "request", return_value={"status": status, "body": reply}):
+            event = bridge.cloud_reply({"request_id": "board-test", "method": "POST", "path": "/commands"})
+        self.assertEqual(event["payload"]["body"], reply)
+        return receipt
+
+    def test_large_device_metadata_patch_returns_durable_compact_receipt(self):
+        doc = json.loads(self.catalog.read_text())
+        history = [[1700000000 + 60 * i, 20.5] for i in range(117000)]
+        doc["devices"][0]["vendor_extension"] = {"history": history}
+        self.assertGreater(len(encoded(doc["devices"][0])), MAX_RESPONSE)
+        self.catalog.write_bytes(encoded(doc))
+        receipt = self.dispatch_command("device.upsert", {"device_id": "lamp"}, {"name": "Кухня"})
+        self.assertEqual(receipt["result"], {"ok": True, "details_omitted": True, "device": {"id": "lamp"}})
+        saved = json.loads(self.catalog.read_text())["devices"][0]
+        self.assertEqual(saved["name"], "Кухня")
+        self.assertEqual(saved["vendor_extension"]["history"], history)
+
+    def test_large_room_creation_result_retains_the_generated_id(self):
+        doc = json.loads(self.catalog.read_text())
+        doc["devices"] = [dict(doc["devices"][0], id="synthetic-light-%04d" % i) for i in range(1600)]
+        self.catalog.write_bytes(encoded(doc))
+        receipt = self.dispatch_command("room.upsert", {}, {"name": "Lab"})
+        new_room, = json.loads(self.catalog.read_text())["rooms"]
+        self.assertEqual(receipt["result"], {"ok": True, "details_omitted": True, "room": {"id": new_room["id"]}})
+
+    def test_small_room_creation_preserves_the_full_result(self):
+        receipt = self.dispatch_command("room.upsert", {}, {"name": "Lab"})
+        room = {"id": json.loads(self.catalog.read_text())["rooms"][0]["id"], "name": "Lab"}
+        self.assertEqual(receipt["result"], {"ok": True, "room": room, "rooms": [room],
+                         "devices": [{"id": "lamp", "room": "", "room_id": ""}]})
 
     def test_full_get_upsert_preserves_nested_extensions_and_empty_code(self):
         doc = store.load(self.path)

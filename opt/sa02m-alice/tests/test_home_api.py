@@ -19,7 +19,8 @@ sys.path.insert(0, str(ROOT.parent / "sa02m-devices"))
 sys.path.insert(0, str(ROOT.parent / "sa02m-rules"))
 from sa02m_alice.client.device_registry import DeviceRegistry
 from sa02m_alice.common import constants as C
-from sa02m_alice.home.contract import APIError, command_hash, validate_command, validate_request
+from sa02m_alice.home import bridge
+from sa02m_alice.home.contract import APIError, MAX_RESPONSE, command_hash, encoded, validate_command, validate_request
 from sa02m_alice.home.dispatcher import Dispatcher
 from sa02m_alice.home.ledger import Ledger
 from sa02m_alice.home.publisher import publish_once, _read_exact
@@ -189,6 +190,58 @@ class HomeTest(unittest.TestCase):
         body = {**body, "command_id": str(uuid.uuid4()), "expected_revision": "c" * 64}
         self.assertEqual(self.send(body)[1]["receipt"]["error"], "revision_conflict")
         self.assertEqual(len(self.adapter.applied), 1)
+
+    def test_legacy_receipts_fit_cloud_without_changing_the_stored_outcome(self):
+        for status in ("applied", "outcome_unknown"):
+            with self.subTest(status=status):
+                cid = str(uuid.uuid4())
+                command = {"command_id": cid, "lease_id": str(uuid.uuid4()), "operation": "room.upsert",
+                           "expected_revision": "a" * 64, "data": {"name": "Lab"}}
+                old = {"command_id": cid, "operation": command["operation"], "target": {}, "status": status,
+                       "created_at": 20, "updated_at": 21, "physical_confirmation": False,
+                       "confirmation": "document_saved" if status == "applied" else "none",
+                       "catalog_revision": "b" * 64, "result": {"ok": status == "applied",
+                       "room": {"id": "room7", "name": "Lab"}, "devices": ["Ж" * 180000]}}
+                raw = encoded(old).decode()
+                self.assertLess(len(raw.encode()), MAX_RESPONSE)
+                self.assertGreater(len(json.dumps(old, ensure_ascii=True)), bridge.CLOUD_PACKET_BYTES)
+                with self.ledger.db:
+                    self.ledger.db.execute("INSERT INTO receipts VALUES (?,?,?,?)", (cid, command_hash(command), 20, raw))
+                self.ledger.close()
+                self.ledger = Ledger(Path(self.tmp.name) / "receipts.db", clock=lambda: self.now)
+                self.api.ledger = self.ledger
+                expected = {**old, "result": {"ok": status == "applied", "room": {"id": "room7"}, "details_omitted": True}}
+                code, body = self.api.request("GET", "/commands/" + cid)
+                self.assertEqual(code, 200)
+                self.assertLess(len(encoded(body)), 1024)
+                self.assertEqual(body["receipt"], expected)
+                self.assertEqual(self.send(command), (200, body))
+                self.assertFalse(self.adapter.applied)
+                stored = self.ledger.db.execute("SELECT receipt FROM receipts WHERE id=?", (cid,)).fetchone()[0]
+                self.assertEqual(stored, raw)
+
+    def test_receipt_detail_budget_includes_exact_utf8_boundary(self):
+        cid = str(uuid.uuid4())
+        self.ledger.create(cid, "test-digest", "group.delete", {"group_id": "used"})
+        result = {"ok": True, "groups": [{"id": "other", "name": "Ж"}]}
+        result["groups"][0]["name"] += "x" * (65536 - len(encoded(result)))
+        full = self.ledger.update(cid, "applied", result=result)
+        self.assertEqual(full["result"], result)
+        result["groups"][0]["name"] += "x"
+        short = self.ledger.update(cid, "applied", result=result)
+        self.assertEqual(short["result"], {"ok": True, "details_omitted": True})
+
+    def test_command_response_limit_after_dispatch_marks_outcome_unknown(self):
+        command = self.command()
+        with patch("sa02m_alice.home.dispatcher.MAX_RESPONSE", 4):
+            status, failure = self.send(command)
+            self.assertEqual(status, 413)
+            self.assertIs(failure.get("outcome_unknown"), True)
+            self.assertNotIn("outcome_unknown", self.api.request("GET", "/meta")[1])
+        code, recovered = self.api.request("GET", "/commands/" + command["command_id"])
+        self.assertEqual(code, 200)
+        self.assertEqual(recovered["receipt"]["status"], "published")
+        self.assertEqual(len(self.sent), 1)
 
     def test_snapshot_honest_quality_and_unsupported_scenarios(self):
         device = self.api.request("GET", "/snapshot")[1]["devices"][0]
