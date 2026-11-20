@@ -792,6 +792,25 @@ device-side allow-list `{80, 9999}` держится (A5→S1/S2/S4). Проду
 
 ## §7 Дом связанных правил
 
+### Home API v1: дополнительная граница управления
+
+`/api/home/v1/` использует panel session и CSRF на каждом POST, включая lease;
+nginx проксирует только публичный prefix в root:www-data Unix socket. Root-peer
+RPC не доступен через nginx и проверяет SO_PEERCRED. Cloud использует прежний
+JWT-bound SID и owner/admin ACL до RPC; версия протокола объявляется в
+авторизованном handshake отдельно от availability. Offline/timeout не дают
+права повторить POST другим транспортом.
+
+Один dispatcher применяет существующий registry, durable command ID/receipt,
+monotonic lease/retention и revision CAS под общими каталог/rules locks.
+Нет произвольного MQTT topic, shell, редактирования Python-сценариев или
+синтетического физического ACK. MQTT broker/локальный root остаются доверенной
+границей; recent producer observation не является криптографической аттестацией
+оборудования. HTTP LAN передаёт session/пароль без TLS и допустим только в явно
+выбранной доверенной частной сети; внешний доступ требует HTTPS/VPN.
+Пределы тела/ответа/параллелизма/SQLite и остаточные риски рестарта описаны в
+[контракте](contracts/home-api-v1.md) и [pilot runbook](contracts/home-api-v1-pilot.md).
+
 - CGI/frontend/CSS «floor»-правила (allow-list, escaping, auth, timeouts): `docs/agent-rules/web-code-rigor.md`.
 - CSRF-политика (SameSite=Lax baseline + `X-SA02M-CSRF` defense-in-depth + POST-only, перечень эндпоинтов, механика токена, исключение `logout`): `docs/decisions/selective-csrf-policy.md`.
 - Архитектура опроса, port-lease, стек: `docs/agent-rules/sa02m-domain.md`.

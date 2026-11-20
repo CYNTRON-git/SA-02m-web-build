@@ -7,7 +7,7 @@ Wants=mosquitto.service
 Type=simple
 ExecStart=/usr/bin/python3 -m sa02m_rules.service
 WorkingDirectory=/opt/sa02m-rules
-Environment=PYTHONPATH=/opt/sa02m-rules
+Environment=PYTHONPATH=/opt/sa02m-rules:/opt/sa02m-alice
 # paho-mqtt missing → exit 0 (standby); do not restart storm on it
 Restart=on-failure
 RestartSec=5
@@ -30,6 +30,9 @@ ProtectHome=true
 PrivateTmp=true
 ProtectSystem=strict
 ReadWritePaths=/etc/sa02m-rules
+RuntimeDirectory=sa02m-rules
+RuntimeDirectoryMode=0700
+RuntimeDirectoryPreserve=restart
 
 [Install]
 WantedBy=multi-user.target

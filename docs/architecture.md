@@ -25,6 +25,7 @@
 | Раскладка репозитория как overlay файловой системы устройства | `README.md` → «Структура проекта» |
 | Живой перечень служб/демонов/эндпоинтов | само дерево (`ls -d opt/*/`, `ls www/network_config/cgi-bin/*.cgi`) |
 | Что именно проверяется на «зелено» | `.ai-dev/quality/tools.json` |
+| Единый LAN/cloud Home dispatcher, receipts, ревизии и runtime capabilities | [Home API v1](contracts/home-api-v1.md); канонические wire examples — `contracts/home-api-v1-wire.json` |
 | Знание, ещё не заслужившее канонического дома | `.ai-dev/notes/` |
 
 ## Оговорка про ссылки самого протокола

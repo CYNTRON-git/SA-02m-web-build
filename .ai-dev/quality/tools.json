@@ -11,6 +11,25 @@
     "mutationExempt": "optional; ONLY for a row that runs no check script of ours (an inline `bash -n` / compileall / unittest command, or a repo tool outside .ai-dev/quality/ and scripts/dev/). A non-empty reason why comment-mutation-proof carries no case for it. A row that DOES run one of our scripts keeps its exemption in that script's own header instead, and this field on such a row FAILS the comment-mutation-proof run."
   },
   "tools": [
+{
+  "id": "home-api-v1",
+  "checks": "Unified LAN/cloud command dedupe, leases, durable crash boundaries, honest MQTT observations, real local MQTT PUBACK/no replay, HTTP auth/CSRF/limits, scenario single-claim deadline and shared wire examples.",
+  "config": null,
+  "run": "python3 -m unittest discover -s opt/sa02m-alice/tests -p 'test_home_*.py' -q",
+  "beat": "build",
+  "covers": [
+    "opt/sa02m-alice/sa02m_alice/home/",
+    "opt/sa02m-alice/sa02m_alice/client/",
+    "opt/sa02m-alice/tests/test_home_*.py",
+    "opt/sa02m-rules/sa02m_rules/",
+    "opt/sa02m-devices/sa02m_devices/websession.py",
+    "docs/contracts/home-api-v1-wire.json",
+    "etc/nginx/network_config.conf",
+    "etc/systemd/system/sa02m-home-api.service"
+  ],
+  "init": "Python3.10+, standard library; Linux for Unix-peer integration.",
+  "mutationExempt": "Direct unittest runner; behavior suite includes optimistic-cache and disabled-CSRF defect mutations."
+},
     {
       "id": "cmd-exec",
         "checks": "Real authenticated console CGI, streaming collector and root verifier: bounded output/spool, GNU TERM/KILL deadline, inherited-pipe capture timeout distinct from rc, UTF-8, metadata errors, temporary cleanup and session/method/CSRF/password refusals.",

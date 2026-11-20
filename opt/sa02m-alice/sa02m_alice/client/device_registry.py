@@ -768,7 +768,7 @@ class DeviceRegistry:
         return results, [(topic, payload) for topic, payload, _key in tracked]
 
     def apply_actions_tracked(
-        self, devices_payload: List[Dict[str, Any]]
+        self, devices_payload: List[Dict[str, Any]], *, update_cache: bool = True
     ) -> Tuple[List[Dict[str, Any]], List[Tuple[str, str, Tuple[str, str, str]]]]:
         """apply_actions, each publish carrying the capability it serves as
         (device_id, capability type, instance) -- so a failed publish marks
@@ -881,10 +881,11 @@ class DeviceRegistry:
                         )
                         continue
                     publishes.append((topic + "/on", payload, (did, ctype, instance)))
-                    self._mqtt_cache[topic] = payload
-                    self._mqtt_ts[topic] = self._clock()
-                    self._mqtt_live[topic] = True
-                    self._note_slave_live(topic)
+                    if update_cache:
+                        self._mqtt_cache[topic] = payload
+                        self._mqtt_ts[topic] = self._clock()
+                        self._mqtt_live[topic] = True
+                        self._note_slave_live(topic)
                     cap_results.append(
                         {
                             "type": ctype,

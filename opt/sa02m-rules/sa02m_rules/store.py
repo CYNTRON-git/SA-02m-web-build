@@ -22,6 +22,7 @@ import time
 from typing import Any, Callable, Dict, List, Optional, Set, Tuple
 
 from sa02m_rules import device_index, http_guard
+from sa02m_rules.document_lock import command_lock
 
 LOG = logging.getLogger("sa02m-rules.store")
 
@@ -1096,7 +1097,12 @@ def _wait_run_flag(flag: str, timeout_s: float = 2.5) -> None:
         time.sleep(0.05)
 
 
-def apply_command(body: Dict[str, Any], path: str = DEFAULT_PATH) -> Dict[str, Any]:
+def apply_command(body: Dict[str, Any], path: str = DEFAULT_PATH, *, preserve_unknown: bool = False) -> Dict[str, Any]:
+    with command_lock(path):
+        return _apply_command_unlocked(body, path, preserve_unknown=preserve_unknown)
+
+
+def _apply_command_unlocked(body: Dict[str, Any], path: str, *, preserve_unknown: bool = False) -> Dict[str, Any]:
     """Upsert / delete / run_now / library / replace. Returns board response."""
     if not isinstance(body, dict):
         return {"ok": False, "error": "bad json"}
@@ -1207,18 +1213,32 @@ def apply_command(body: Dict[str, Any], path: str = DEFAULT_PATH) -> Dict[str, A
         return _ok(load(path), run_now=sid)
     prev_row = next((s for s in doc["scenarios"] if isinstance(s, dict)
                      and sid and s.get("id") == sid), None)
-    if prev_row is not None and all(body.get(k) is None for k in _BODY_PARTS):
+    supplied = body
+    metadata_only = prev_row is not None and all(supplied.get(k) is None for k in _BODY_PARTS)
+    if preserve_unknown and prev_row is not None:
+        # Home v1 edits are patches. Missing fields belong to the stored
+        # document, including extensions this engine does not interpret.
+        body = {**prev_row, **body}
+    extension_body = body
+    if preserve_unknown:
+        from .home_document import validation_input, restore_extensions
+        body = validation_input(body)
+    if metadata_only:
         # Partial update: the carried keys over the stored row. The body
         # parts were validated when stored, so the target check is not
         # re-run (a device renamed since must not block a rename/disable).
         merged = {k: v for k, v in prev_row.items() if k not in _LAST_KEYS}
         merged.update({k: v for k, v in body.items()
                        if not (k in _BODY_PARTS and v is None)})  # null = not sent
-        row, err, dropped = _checked_row(merged, sid, None)
+        row, err, dropped = _checked_row(validation_input(merged) if preserve_unknown else merged, sid, None)
     else:
         row, err, dropped = _checked_row(body, sid or None, _target_index())
     if err:
         return _refused(err, dropped)
+    if preserve_unknown:
+        if dropped:
+            return _refused("invalid_elements", dropped)
+        row = restore_extensions(extension_body, row)
     ids = [s.get("id") for s in doc["scenarios"] if isinstance(s, dict)]
     if not row["id"]:
         row["id"] = _new_id([i for i in ids if isinstance(i, str)])

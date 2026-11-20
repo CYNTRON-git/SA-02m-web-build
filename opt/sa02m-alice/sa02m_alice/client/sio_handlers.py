@@ -58,7 +58,12 @@ class SioHandlers:
             log.warning("Ignoring non-object payload for %s", event)
             return
         request_id = data.get("request_id")
-        if event == C.EVT_DEVICES_LIST:
+        if event == "home_api_v1":
+            if self._profile != C.PROFILE_CLOUD:
+                return
+            from ..home.bridge import request
+            self._emit_response({"request_id": request_id, "payload": request(data)})
+        elif event == C.EVT_DEVICES_LIST:
             self._on_list(request_id)
         elif event == C.EVT_DEVICES_QUERY:
             self._on_query(request_id, data.get("devices") or [])

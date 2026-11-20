@@ -135,7 +135,7 @@ PY
 # on first install; an operator's opt-in (enabled and/or running) is preserved
 # and a running client is restarted on the fresh code
 # (docs/contracts/installer-refresh-policy.md).
-sa02m_svc_capture sa02m-alice-config.service sa02m-alice-client.service sa02m-cloud-control.service
+sa02m_svc_capture sa02m-alice-config.service sa02m-alice-client.service sa02m-cloud-control.service sa02m-home-api.service
 
 sa02m_atomic_install -m 0644 -o root -g root \
     "$UNIT_SRC/sa02m-alice-client.service" /etc/systemd/system/
@@ -150,6 +150,11 @@ systemctl daemon-reload
 sa02m_svc_apply sa02m-alice-config.service app off
 sa02m_svc_apply sa02m-alice-client.service app off
 sa02m_svc_apply sa02m-cloud-control.service app off
+sa02m_atomic_install -m 0644 -o root -g root \
+    "$UNIT_SRC/sa02m-home-api.service" /etc/systemd/system/
+systemctl daemon-reload
+# Explicitly enabled by the unified-home deployment; refresh preserves opt-in.
+sa02m_svc_apply sa02m-home-api.service app off
 
 # Never-started Yandex client leaves no status.json; gold and the card
 # then read state=unknown. Write disabled only when the file is absent
