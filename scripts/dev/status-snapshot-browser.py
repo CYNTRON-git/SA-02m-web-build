@@ -10,14 +10,14 @@ import time
 from urllib.parse import urlparse
 
 try:
-    from playwright.sync_api import sync_playwright
+    from playwright.sync_api import Error as PlaywrightError, sync_playwright
 except ImportError:
     print('SKIP: Python Playwright and Chromium are required')
     sys.exit(77)
 
 ROOT = Path(__file__).resolve().parents[2]
 WEB = ROOT/'www/network_config'
-state = {'revision': 1, 'error': False, 'old': False, 'warming': False, 'requests': []}
+state = {'revision': 1, 'error': False, 'old': False, 'warming': False, 'requests': [], 'activity': []}
 
 
 def packet():
@@ -47,8 +47,18 @@ class Handler(SimpleHTTPRequestHandler):
 
     def do_GET(self):
         url = urlparse(self.path)
+        if url.path == '/navigation-check.html':
+            encoded = b'<!doctype html><title>Navigation fixture</title>'
+            self.send_response(200)
+            self.send_header('Content-Type', 'text/html')
+            self.send_header('Content-Length', str(len(encoded)))
+            self.end_headers()
+            self.wfile.write(encoded)
+            return
         if '/cgi-bin/' in url.path or url.path.startswith('/api/'):
             state['requests'].append(self.path)
+            if url.path.endswith('/status_snapshot.cgi'):
+                state['activity'].append(self.headers.get('X-SA02M-Dashboard'))
             value = packet() if url.path.endswith('/status_snapshot.cgi') else {'ok': True}
             encoded = json.dumps(value).encode()
             self.send_response(200)
@@ -78,6 +88,27 @@ try:
         assert '12' in page.locator('#cpu-val').inner_text()
         assert '25' in page.locator('#ram-pct').inner_text()
         assert not any('/status.cgi?' in request for request in state['requests']), state['requests']
+        # Mirror an in-progress flasher's navigation guard without starting any
+        # flash job. A trusted click permits the browser's real beforeunload UI.
+        page.locator('#cpu-val').click()
+        page.evaluate("""window.cancelNavigation = event => {
+          event.preventDefault(); event.returnValue = '';
+        }; window.addEventListener('beforeunload', window.cancelNavigation);""")
+        dialogs = []
+        def stay(dialog):
+            dialogs.append(dialog.type)
+            dialog.dismiss()
+        page.once('dialog', stay)
+        try:
+            page.goto(origin+'/navigation-check.html', timeout=5000)
+            raise AssertionError('navigation must be cancelled by the user choosing to stay')
+        except PlaywrightError as error:
+            assert 'ERR_ABORTED' in str(error), str(error)
+        assert dialogs == ['beforeunload'], dialogs
+        assert page.url == origin+'/index.html'
+        assert page.evaluate('statusPageActive() && _statusSnapshotMode && Boolean(_statusPollTimers.snapshot)'), \
+            'cancelled navigation must leave the visible dashboard polling'
+        page.evaluate("window.removeEventListener('beforeunload', window.cancelNavigation)")
         page.screenshot(path=str(out/'status-snapshot-dark.png'), full_page=True)
         state['revision'] = 2
         page.wait_for_function("document.getElementById('cpu-val').textContent.includes('77')", timeout=8500)
@@ -97,11 +128,36 @@ try:
         page.screenshot(path=str(out/'status-snapshot-light-narrow.png'), full_page=True)
         assert 'Preparing data' in page.locator('#dashboard-poll-alert').inner_text()
         assert page.evaluate('document.documentElement.scrollWidth <= innerWidth + 1')
+        page.evaluate("switchTab('network')")
+        page.wait_for_function("!statusPageActive() && !Boolean(_statusPollTimers.snapshot)")
+        before = len(state['activity'])
+        page.wait_for_timeout(6500)
+        assert len(state['activity']) == before, 'another tab must not keep the dashboard lease alive'
+        state['warming'] = False
+        state['old'] = True
+        page.evaluate("switchTab('dashboard')")
+        page.wait_for_function("_statusSnapshotMode && statusFreshness.priority.state === 'stale'")
+        assert len(state['activity']) == before + 1, 'return must start exactly one immediate request'
+        assert '77' in page.locator('#cpu-val').inner_text(), 'old cached values remain visible'
+        state['old'] = False
+        page.wait_for_function("statusFreshness.priority.state === 'fresh'", timeout=8500)
+        assert all(header == 'active' for header in state['activity']), state['activity']
+        page.evaluate("""window.addEventListener('pagehide', () => {
+          sessionStorage.setItem('snapshot-departure', JSON.stringify({
+            mode: _statusSnapshotMode, timer: Boolean(_statusPollTimers.snapshot)
+          }));
+        });""")
+        page.goto(origin+'/navigation-check.html')
+        assert json.loads(page.evaluate("sessionStorage.getItem('snapshot-departure')")) == {'mode': False, 'timer': False}
+        page.go_back()
+        page.wait_for_function("_statusSnapshotMode && Boolean(_statusPollTimers.snapshot)")
         page.evaluate('teardownStatusPolling()')
-        assert not page.evaluate('Boolean(_statusPollTimers.snapshot)')
         assert not errors, errors
         print(json.dumps({'ok': True, 'snapshot_requests': sum('status_snapshot.cgi' in r for r in state['requests']),
-                          'legacy_status_requests': sum('/status.cgi?' in r for r in state['requests']), 'page_errors': errors}))
+                          'legacy_status_requests': sum('/status.cgi?' in r for r in state['requests']),
+                          'activity_headers': len(state['activity']), 'navigation_idle_ms': 6500,
+                          'cancelled_beforeunload': len(dialogs), 'confirmed_pagehide': True,
+                          'page_errors': errors}))
         browser.close()
 finally:
     server.shutdown()

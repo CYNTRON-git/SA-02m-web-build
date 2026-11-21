@@ -19,6 +19,10 @@ const _statusSnapshotBodyRevision = {};
 function statusMonotonicNow() {
   return typeof performance !== 'undefined' ? performance.now() : Date.now();
 }
+function statusPageActive() {
+  const pane = document.getElementById('tab-dashboard');
+  return !document.hidden && Boolean(pane && pane.classList && pane.classList.contains('active'));
+}
 function statusSnapshotBarrier(part) {
   _statusSnapshotEpochs[part]++;
   _statusSnapshotBarriers[part] = { boot: _statusSnapshotBoot, floor: null };
@@ -381,11 +385,13 @@ function statusFetchJson(part, url, timeoutMs, gen, onTimeout) {
     if (onTimeout) onTimeout();
     ctrl.abort();
   }, timeoutMs);
-  return fetch(url, {
+  const options = {
     cache: 'no-store',
     credentials: 'same-origin',
     signal: ctrl.signal
-  }).then(function (r) {
+  };
+  if (part === 'snapshot' && statusPageActive()) options.headers = {'X-SA02M-Dashboard': 'active'};
+  return fetch(url, options).then(function (r) {
     if (!r.ok) throw new Error('HTTP ' + r.status);
     return r.json();
   }).then(function (d) {
@@ -403,14 +409,24 @@ function statusFetchJson(part, url, timeoutMs, gen, onTimeout) {
 function bindStatusPollingLifecycle() {
   if (_statusLifecycleBound) return;
   _statusLifecycleBound = true;
+  // beforeunload can be cancelled; retire only a confirmed departure.
   window.addEventListener('pagehide', teardownStatusPolling);
-  window.addEventListener('beforeunload', teardownStatusPolling);
   window.addEventListener('pageshow', function (e) {
     if (e.persisted) initStatusPolling();
   });
-  document.addEventListener('visibilitychange', function () {
-    if (!document.hidden) fetchPriorityPart('priority');
-  });
+  let wasActive = statusPageActive();
+  const reconcile = function () {
+    const active = statusPageActive();
+    if (active === wasActive) return;
+    wasActive = active;
+    if (!active) teardownStatusPolling();
+    else initStatusPolling();
+  };
+  document.addEventListener('visibilitychange', reconcile);
+  const pane = document.getElementById('tab-dashboard');
+  if (pane && typeof MutationObserver !== 'undefined') {
+    new MutationObserver(reconcile).observe(pane, {attributes: true, attributeFilter: ['class']});
+  }
 }
 
 function startPriorityPollTimer(gen) {
@@ -548,13 +564,16 @@ function applyStatusSnapshot(reply, epochs) {
     if (part in backgroundLoaded) backgroundLoaded[part] = true;
     if (accepted) noteStatusSuccess(part, data);
     if (accepted && snapshot.errors && snapshot.errors[part]) noteStatusFailure(part, new Error('Collection failed'));
+    if (reply.activity_ack === false || (snapshot.collection && snapshot.collection.activity_error)) {
+      noteStatusFailure(part, new Error('Dashboard activity unavailable'));
+    }
   });
   backgroundLoaded.main = activeBackgroundParts().every(function (part) { return backgroundLoaded[part]; });
   renderStatusFreshness();
 }
 
 function scheduleStatusSnapshotPoll(gen) {
-  if (gen !== _statusPollGeneration || !_statusSnapshotMode || _statusSnapshotBusy) return;
+  if (gen !== _statusPollGeneration || !_statusSnapshotMode || _statusSnapshotBusy || !statusPageActive()) return;
   if (_statusPollTimers.snapshot) clearTimeout(_statusPollTimers.snapshot);
   // Anchor the next request to actual queue admission. An early callback waits
   // only the remainder, and a late wake sends one request without catch-up.
@@ -567,7 +586,7 @@ function scheduleStatusSnapshotPoll(gen) {
 }
 
 function fetchStatusSnapshot(force, onReady, onUnavailable) {
-  if (_statusSnapshotBusy) return;
+  if (_statusSnapshotBusy || !statusPageActive()) return;
   const gen = _statusPollGeneration;
   if (!force && statusMonotonicNow() - _statusSnapshotLastFetchMs < STATUS_SNAPSHOT_INTERVAL_MS) {
     scheduleStatusSnapshotPoll(gen);
@@ -578,6 +597,7 @@ function fetchStatusSnapshot(force, onReady, onUnavailable) {
   _statusSnapshotBusy = true;
   scheduleStatusFetch('snapshot', 0, function (release) {
     if (gen !== _statusPollGeneration) { release(); return; }
+    if (!statusPageActive()) { _statusSnapshotBusy = false; release(); return; }
     _statusSnapshotLastFetchMs = statusMonotonicNow();
     const epochs = Object.assign({}, _statusSnapshotEpochs);
     let timedOut = false;
@@ -605,6 +625,8 @@ function fetchStatusSnapshot(force, onReady, onUnavailable) {
 
 function initStatusPolling() {
   teardownStatusPolling();
+  bindStatusPollingLifecycle();
+  if (!statusPageActive()) return;
   resetBackgroundLoadedFlags();
   clearHwHintPending();
   _statusBlocksConfig = null;
@@ -639,7 +661,6 @@ function initStatusPolling() {
     }
   };
 
-  bindStatusPollingLifecycle();
   fetchStatusSnapshot(true, function () {
     if (gen !== _statusPollGeneration || pollingStarted) return;
     pollingStarted = true;

@@ -12,6 +12,7 @@ import sys
 import tempfile
 import threading
 import time
+from types import SimpleNamespace
 import unittest
 from unittest.mock import patch
 
@@ -175,6 +176,221 @@ class SnapshotTests(unittest.TestCase):
     def sample(self, value=12, age=0):
         return {'cpu_usage': value, '_status_meta': {'measured_at': 123, 'age_s': age, 'ttl_s': 6}}
 
+    def test_boot_warms_once_then_sleeps_without_readers(self):
+        calls, errors = [], []
+        def collect(part, *_):
+            calls.append(part)
+            return self.sample()
+        with patch.dict(module.PARTS, {'priority': (.03, 1), 'services': (.03, 1)}, clear=True), \
+                patch.object(module, 'LANES', (('priority',), ('services',))), \
+                patch.object(module, 'collect', collect):
+            collector = module.Collector(self.runtime, '/unused')
+            def run():
+                try: collector.run()
+                except Exception as error: errors.append(error)
+            thread = threading.Thread(target=run)
+            thread.start()
+            try:
+                deadline = time.monotonic() + 2
+                while len(calls) < 2 and time.monotonic() < deadline:
+                    time.sleep(.01)
+                time.sleep(.2)
+                self.assertCountEqual(calls, ['priority', 'services'])
+                self.assertFalse(errors)
+                frozen = (self.runtime/'snapshot.json').read_bytes()
+                time.sleep(.1)
+                self.assertEqual((self.runtime/'snapshot.json').read_bytes(), frozen)
+            finally:
+                collector.stop.set()
+                thread.join(2)
+            self.assertFalse(thread.is_alive())
+
+    def test_reader_lease_expires_preserves_errors_and_resumes_without_backlog(self):
+        calls, errors = [], []
+        def collect(part, *_):
+            calls.append(part)
+            if len(calls) > 1:
+                raise ValueError('failed_measurement')
+            return self.sample(age=7)
+        def wait_for(predicate):
+            deadline = time.monotonic() + 2
+            while not predicate() and time.monotonic() < deadline:
+                time.sleep(.01)
+            self.assertTrue(predicate())
+        with patch.dict(module.PARTS, {'priority': (.03, 1)}, clear=True), \
+                patch.object(module, 'LANES', (('priority',),)), \
+                patch.object(module, 'ACTIVITY_LEASE_S', .15), \
+                patch.object(module, 'ACTIVITY_POLL_S', .01), patch.object(module, 'collect', collect):
+            collector = module.Collector(self.runtime, '/unused')
+            def run():
+                try: collector.run()
+                except Exception as error: errors.append(error)
+            thread = threading.Thread(target=run)
+            thread.start()
+            try:
+                wait_for(lambda: len(calls) == 1)
+                module.renew_activity(self.runtime)
+                wait_for(lambda: len(calls) > 1)
+                first_expiry = collector.activity.expires
+                time.sleep(.03)
+                module.renew_activity(self.runtime)  # A second reader shares the same lease.
+                wait_for(lambda: collector.activity.expires > first_expiry)
+                wait_for(lambda: collector.collection_state()['mode'] == 'idle')
+                count = len(calls)
+                time.sleep(.15)
+                self.assertEqual(len(calls), count)
+                document = json.loads((self.runtime/'snapshot.json').read_bytes())
+                self.assertEqual(document['errors'], {'priority': 'collection_failed'})
+                self.assertEqual(document['parts']['priority']['_status_meta']['measured_at'], 123)
+                self.assertGreaterEqual(document['parts']['priority']['_status_meta']['age_s'], 7)
+                module.renew_activity(self.runtime)
+                wait_for(lambda: len(calls) > count)
+                self.assertFalse(errors)
+            finally:
+                collector.stop.set()
+                thread.join(2)
+            self.assertFalse(thread.is_alive())
+
+    def test_lease_expiry_allows_only_the_already_started_child_to_finish(self):
+        calls, running, finish = [], threading.Event(), threading.Event()
+        def collect(part, *_):
+            calls.append(part)
+            if len(calls) == 2:
+                running.set()
+                finish.wait(1)
+            return self.sample()
+        with patch.dict(module.PARTS, {'priority': (.03, 1)}, clear=True), \
+                patch.object(module, 'LANES', (('priority',),)), \
+                patch.object(module, 'ACTIVITY_LEASE_S', .1), \
+                patch.object(module, 'ACTIVITY_POLL_S', .01), patch.object(module, 'collect', collect):
+            collector = module.Collector(self.runtime, '/unused')
+            thread = threading.Thread(target=collector.run)
+            thread.start()
+            try:
+                deadline = time.monotonic() + 2
+                while not calls and time.monotonic() < deadline: time.sleep(.01)
+                module.renew_activity(self.runtime)
+                self.assertTrue(running.wait(2))
+                time.sleep(.15)
+                self.assertEqual(collector.collection_state()['mode'], 'idle')
+                finish.set()
+                time.sleep(.15)
+                self.assertEqual(len(calls), 2)
+            finally:
+                finish.set()
+                collector.stop.set()
+                thread.join(2)
+            self.assertFalse(thread.is_alive())
+
+    def test_activity_lease_uses_monotonic_observation_not_file_wall_time(self):
+        lease = module.ActivityLease(self.runtime)
+        self.addCleanup(lease.close)
+        with patch.object(module.time, 'monotonic', return_value=100) as clock, \
+                patch.object(module.time, 'time', return_value=5000) as wall:
+            self.assertFalse(lease.poll())
+            self.assertEqual(lease.expires, 0)
+            module.renew_activity(self.runtime)
+            self.assertTrue(lease.poll())
+            self.assertEqual(lease.expires, 120)
+            for jump in (1, 999999999999):
+                wall.return_value = jump
+                clock.return_value = 119
+                self.assertFalse(lease.poll())
+                self.assertEqual(lease.expires, 120)
+            clock.return_value = 121
+            self.assertFalse(lease.poll())
+            self.assertLess(lease.expires, clock.return_value)
+            os.utime(self.runtime/'activity', (1, 1))
+            self.assertTrue(lease.poll())
+            self.assertEqual(lease.expires, 141, 'mtime is an event, never the lease deadline')
+
+    def test_first_reader_retries_failed_warmup_once_without_waiting_long_period(self):
+        calls = []
+        def collect(part, *_):
+            calls.append(part)
+            if len(calls) == 1: raise ValueError('warmup_failed')
+            return self.sample()
+        with patch.dict(module.PARTS, {'services': (45, 1)}, clear=True), \
+                patch.object(module, 'LANES', (('services',),)), \
+                patch.object(module, 'ACTIVITY_LEASE_S', .4), \
+                patch.object(module, 'ACTIVITY_POLL_S', .01), patch.object(module, 'collect', collect):
+            collector = module.Collector(self.runtime, '/unused')
+            thread = threading.Thread(target=collector.run)
+            thread.start()
+            try:
+                deadline = time.monotonic() + 2
+                while not calls and time.monotonic() < deadline: time.sleep(.01)
+                module.renew_activity(self.runtime)
+                deadline = time.monotonic() + .3
+                while len(calls) < 2 and time.monotonic() < deadline: time.sleep(.01)
+                self.assertEqual(len(calls), 2, 'new reader must not wait 45 seconds for the failed part')
+                for _ in range(3):
+                    module.renew_activity(self.runtime)
+                    time.sleep(.03)
+                self.assertEqual(len(calls), 2, 'additional readers must not restart the measurement schedule')
+                self.assertEqual(collector.activation, 1)
+                self.assertEqual(collector.errors, {})
+            finally:
+                collector.stop.set()
+                thread.join(2)
+            self.assertFalse(thread.is_alive())
+
+    def test_activity_marker_rejects_links_nonfiles_and_replacement(self):
+        lease = module.ActivityLease(self.runtime)
+        self.addCleanup(lease.close)
+        marker = self.runtime/'activity'
+        saved = self.runtime/'original'
+        marker.rename(saved)
+        target = self.path/'outside'
+        target.write_bytes(b'')
+        target.chmod(0o600)
+        before = target.stat().st_mtime_ns
+        marker.symlink_to(target)
+        with self.assertRaises(OSError): module.renew_activity(self.runtime)
+        self.assertEqual(target.stat().st_mtime_ns, before)
+        marker.unlink()
+        os.link(target, marker)
+        with self.assertRaises(ValueError): module.renew_activity(self.runtime)
+        self.assertEqual(target.stat().st_mtime_ns, before)
+        marker.unlink()
+        os.mkfifo(marker, 0o600)
+        with self.assertRaises(ValueError): module.renew_activity(self.runtime)
+        marker.unlink()
+        marker.write_bytes(b'')
+        marker.chmod(0o600)
+        module.renew_activity(self.runtime)
+        lease.poll()
+        self.assertTrue(lease.error)
+        self.assertEqual(lease.expires, 0, 'a replacement inode cannot activate the collector')
+        marker.write_bytes(b'forged deadline')
+        with self.assertRaises(ValueError): module.renew_activity(self.runtime)
+
+    def test_concurrent_readers_share_one_safe_marker_and_directory_links_fail_closed(self):
+        lease = module.ActivityLease(self.runtime)
+        self.addCleanup(lease.close)
+        marker = self.runtime/'activity'
+        identity = marker.stat().st_ino
+        barrier = threading.Barrier(5)
+        def reader():
+            barrier.wait(timeout=2)
+            module.renew_activity(self.runtime)
+        with module.concurrent.futures.ThreadPoolExecutor(max_workers=4) as pool:
+            readers = [pool.submit(reader) for _ in range(4)]
+            barrier.wait(timeout=2)
+            for reader in readers: reader.result(timeout=2)
+        self.assertTrue(lease.poll())
+        self.assertGreater(lease.expires, time.monotonic())
+        self.assertEqual(marker.stat().st_ino, identity)
+        self.assertEqual(marker.read_bytes(), b'')
+        alias = self.path/'runtime-alias'
+        alias.symlink_to(self.runtime, target_is_directory=True)
+        before = marker.stat().st_mtime_ns
+        with self.assertRaises(OSError): module.renew_activity(alias)
+        self.assertEqual(marker.stat().st_mtime_ns, before)
+        self.runtime.chmod(0o770)
+        with self.assertRaises(ValueError): module.renew_activity(self.runtime)
+        self.assertEqual(marker.stat().st_mtime_ns, before)
+
     def test_exported_refresh_budget_covers_healthy_real_lane_schedule(self):
         command = self.path/'sample'
         command.write_text('#!/bin/bash\necho \'{"_status_meta":{"measured_at":1,"age_s":7}}\'\n')
@@ -202,7 +418,9 @@ class SnapshotTests(unittest.TestCase):
                 events.append((started, clock[0]))
                 if len(events) == 3: stop.done = True
         self.collector.stop = stop
+        self.collector.activity = SimpleNamespace(expires=float('inf'), error=False)
         with patch.object(module.time, 'monotonic', lambda: clock[0]), \
+                patch.object(self.collector.condition, 'wait', lambda wait: clock.__setitem__(0, clock[0] + wait)), \
                 patch.object(self.collector, 'cycle', cycle):
             self.collector.lane(next(lane for lane in module.LANES if 'services' in lane))
         ages = [current[1] - previous[0] for previous, current in zip(events, events[1:])]
@@ -312,6 +530,7 @@ class SnapshotTests(unittest.TestCase):
                 time.sleep(.5)
             events.append(part)
             return self.sample()
+        self.collector.activity = SimpleNamespace(expires=float('inf'), error=False)
         with patch.object(module, 'collect', collect), patch.dict(module.PARTS, {'priority': (.1, 1), 'services': (1, 1)}):
             fast = threading.Thread(target=self.collector.lane, args=(('priority',),))
             slow = threading.Thread(target=self.collector.lane, args=(('services',),))
@@ -340,12 +559,17 @@ class SnapshotTests(unittest.TestCase):
     def fixture(self):
         cgi = self.path/'cgi'
         cgi.mkdir()
+        heartbeat = self.path/'heartbeat.py'
+        heartbeat.write_text((ROOT/'etc/sa02m-status-cache.py').read_text().replace(
+            "RUNTIME = '/run/sa02m-dashboard'", 'RUNTIME = '+repr(str(self.runtime))))
         for source in (ROOT/'www/network_config/cgi-bin').glob('lib_*.sh'):
             (cgi/source.name).write_bytes(source.read_bytes())
         for name in ('status.cgi', 'status_snapshot.cgi'):
             source = (ROOT/'www/network_config/cgi-bin'/name).read_text()
             source = source.replace('/run/sa02m-dashboard/snapshot.json', str(self.runtime/'snapshot.json'))
             source = source.replace('/tmp/sa02m_status_cache', str(self.path/'legacy'))
+            source = source.replace('/usr/bin/python3 -I /usr/local/libexec/sa02m-status-cache.py',
+                                    shlex.join([sys.executable, '-I', str(heartbeat)]))
             (cgi/name).write_text(source)
         sessions = self.path/'sessions'
         sessions.mkdir()
@@ -371,6 +595,28 @@ class SnapshotTests(unittest.TestCase):
         second = self.request(cgi/'status_snapshot.cgi', env)
         self.assertEqual(first['snapshot'], second['snapshot'])
         self.assertGreaterEqual(second['served_at']-second['snapshot']['generated_at'], 100)
+
+    def test_only_authenticated_explicit_get_activity_renews_the_marker(self):
+        lease = module.ActivityLease(self.runtime)
+        self.addCleanup(lease.close)
+        cgi, env = self.fixture()
+        script = cgi/'status_snapshot.cgi'
+        module.atomic_json(self.runtime/'snapshot.json', {'schema': 1, 'parts': {}})
+        for extra in ({}, {'HTTP_X_SA02M_DASHBOARD': 'ACTIVE'},
+                      {'HTTP_X_SA02M_DASHBOARD': 'active, active'},
+                      {'HTTP_X_SA02M_DASHBOARD': 'active', 'REQUEST_METHOD': 'POST'},
+                      {'HTTP_X_SA02M_DASHBOARD': 'active', 'HTTP_COOKIE': ''}):
+            self.request(script, {**env, **extra})
+            self.assertFalse(lease.poll())
+            self.assertEqual(lease.expires, 0)
+        reply = self.request(script, {**env, 'HTTP_X_SA02M_DASHBOARD': 'active'})
+        self.assertIs(reply['activity_ack'], True)
+        self.assertTrue(lease.poll())
+        self.assertGreater(lease.expires, time.monotonic())
+        (self.runtime/'activity').unlink()
+        reply = self.request(script, {**env, 'HTTP_X_SA02M_DASHBOARD': 'active'})
+        self.assertIs(reply['activity_ack'], False)
+        self.assertEqual(reply['snapshot'], {'schema': 1, 'parts': {}})
 
     def test_cgi_json_numbers_ignore_inherited_numeric_locale(self):
         # Build a real glibc numeric locale even on minimal C-only QA images.

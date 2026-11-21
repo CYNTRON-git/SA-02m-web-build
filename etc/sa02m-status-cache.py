@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Collect the dashboard without HTTP clients; publish bounded RAM snapshots."""
+"""Warm the dashboard once, then collect while visible readers hold a RAM lease."""
 import argparse
 import concurrent.futures
 import copy
@@ -8,10 +8,92 @@ import json
 import os
 from pathlib import Path
 import signal
+import stat
 import subprocess
 import tempfile
 import threading
 import time
+
+RUNTIME = '/run/sa02m-dashboard'
+ACTIVITY_NAME = 'activity'
+ACTIVITY_LEASE_S = 20
+ACTIVITY_POLL_S = 0.5
+DIR_FLAGS = os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW | os.O_CLOEXEC
+FILE_FLAGS = os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK | os.O_CLOEXEC
+
+
+def activity_stat(directory, fd):
+    info = os.fstat(fd)
+    named = os.stat(ACTIVITY_NAME, dir_fd=directory, follow_symlinks=False)
+    if (not stat.S_ISREG(info.st_mode) or info.st_nlink != 1 or info.st_size != 0 or
+            info.st_uid != os.geteuid() or stat.S_IMODE(info.st_mode) != 0o600 or
+            not stat.S_ISREG(named.st_mode) or
+            (info.st_dev, info.st_ino) != (named.st_dev, named.st_ino)):
+        raise ValueError('invalid_activity_file')
+    return info
+
+
+def open_activity(runtime, *, create=False):
+    directory = os.open(runtime, DIR_FLAGS)
+    fd = None
+    try:
+        info = os.fstat(directory)
+        if info.st_uid != os.geteuid() or info.st_mode & 0o022:
+            raise ValueError('invalid_activity_directory')
+        if create:
+            try:
+                fd = os.open(ACTIVITY_NAME, FILE_FLAGS | os.O_CREAT | os.O_EXCL, 0o600, dir_fd=directory)
+            except FileExistsError:
+                pass
+        if fd is None:
+            fd = os.open(ACTIVITY_NAME, FILE_FLAGS, dir_fd=directory)
+        activity_stat(directory, fd)
+        return directory, fd
+    except BaseException:
+        if fd is not None:
+            os.close(fd)
+        os.close(directory)
+        raise
+
+
+def renew_activity(runtime):
+    """Touch only a validated pinned inode; never create a reader-supplied path."""
+    directory, fd = open_activity(runtime)
+    try:
+        info = activity_stat(directory, fd)
+        # An event counter, not wall time: an immediate first reader must not
+        # disappear in the filesystem's current-time granularity.
+        os.utime(fd, ns=(info.st_atime_ns, info.st_mtime_ns + 1))
+        activity_stat(directory, fd)
+    finally:
+        os.close(fd)
+        os.close(directory)
+
+
+class ActivityLease:
+    def __init__(self, runtime):
+        self.directory, self.fd = open_activity(runtime, create=True)
+        info = activity_stat(self.directory, self.fd)
+        self.fingerprint = (info.st_mtime_ns, info.st_ctime_ns)
+        self.expires = 0.0
+        self.error = False
+
+    def poll(self):
+        previous = self.expires, self.error
+        try:
+            info = activity_stat(self.directory, self.fd)
+            fingerprint = info.st_mtime_ns, info.st_ctime_ns
+            self.error = False
+            if fingerprint != self.fingerprint:
+                self.fingerprint = fingerprint
+                self.expires = time.monotonic() + ACTIVITY_LEASE_S
+        except (OSError, ValueError):
+            self.expires, self.error = 0.0, True
+        return previous != (self.expires, self.error)
+
+    def close(self):
+        os.close(self.fd)
+        os.close(self.directory)
 
 def boot_uptime():
     # CLOCK_BOOTTIME semantics, shared with the CGI and stable across NTP.
@@ -116,9 +198,21 @@ class Collector:
         self.errors = {}
         self.sample_received = {}
         self.lock = threading.Lock()
+        self.condition = threading.Condition(self.lock)
+        self.activity = None
+        self.activation = 0
+        self.warm_pending = set(PARTS)
         self.stop = threading.Event()
         self.started_at = time.time()
         self.boot_id = Path('/proc/sys/kernel/random/boot_id').read_text().strip()
+
+    def active(self):
+        return self.activity is not None and not self.activity.error and self.activity.expires > time.monotonic()
+
+    def collection_state(self):
+        return {'mode': 'warming' if self.warm_pending else 'active' if self.active() else 'idle',
+                'lease_seconds': ACTIVITY_LEASE_S,
+                'activity_error': bool(self.activity and self.activity.error)}
 
     def publish(self, *, reserve_priority=False):
         now = time.time()
@@ -133,7 +227,7 @@ class Collector:
         atomic_json(self.runtime/'snapshot.json', {
             'schema': 1, 'started_at': self.started_at, 'generated_at': now,
             'boot_id': self.boot_id, 'generated_uptime': uptime,
-            'parts': parts, 'errors': self.errors,
+            'parts': parts, 'errors': self.errors, 'collection': self.collection_state(),
         }, reserve_priority=reserve_priority)
 
     def cycle(self, part):
@@ -143,6 +237,7 @@ class Collector:
         except (OSError, ValueError, TypeError, json.JSONDecodeError):
             sample, error = None, 'collection_failed'
         with self.lock:
+            self.warm_pending.discard(part)
             previous_samples = self.samples.copy()
             previous_received = self.sample_received.copy()
             if sample is not None:
@@ -165,11 +260,30 @@ class Collector:
 
     def lane(self, parts):
         due = {part: 0.0 for part in parts}
+        warm = list(parts)
+        activation = self.activation
         while not self.stop.is_set():
-            part = min(parts, key=lambda name: due[name])
-            wait = due[part] - time.monotonic()
-            if self.stop.wait(max(0.0, wait)):
-                return
+            with self.condition:
+                while not self.stop.is_set():
+                    if warm:
+                        part = warm.pop(0)
+                        break
+                    if not self.active():
+                        self.condition.wait()
+                        continue
+                    if activation != self.activation:
+                        # One fresh pass on a new viewing session, including
+                        # a part that failed during warm-up. Heartbeats do not
+                        # advance this serial or reset normal active periods.
+                        due = dict.fromkeys(parts, 0.0)
+                        activation = self.activation
+                    part = min(parts, key=lambda name: due[name])
+                    wait = due[part] - time.monotonic()
+                    if wait <= 0:
+                        break
+                    self.condition.wait(wait)
+                if self.stop.is_set():
+                    return
             started = time.monotonic()
             self.cycle(part)
             # No backlog/catch-up burst after a timeout or a suspended machine.
@@ -179,24 +293,52 @@ class Collector:
         self.runtime.mkdir(mode=0o750, parents=True, exist_ok=True)
         with open(self.runtime/'collector.lock', 'a') as lock:
             fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
-            self.publish()
-            with concurrent.futures.ThreadPoolExecutor(max_workers=len(LANES)) as pool:
-                futures = [pool.submit(self.lane, lane) for lane in LANES]
-                try:
-                    while not self.stop.wait(0.5):
-                        for future in futures:
-                            if future.done():
-                                future.result()
-                                raise RuntimeError('collector_lane_stopped')
-                finally:
-                    self.stop.set()
+            self.activity = ActivityLease(self.runtime)
+            try:
+                self.publish()
+                previous = self.collection_state()
+                with concurrent.futures.ThreadPoolExecutor(max_workers=len(LANES)) as pool:
+                    futures = [pool.submit(self.lane, lane) for lane in LANES]
+                    try:
+                        while not self.stop.wait(ACTIVITY_POLL_S):
+                            with self.condition:
+                                was_active = self.active()
+                                changed = self.activity.poll()
+                                if self.active() and not was_active:
+                                    self.activation += 1
+                                current = self.collection_state()
+                                if changed or current != previous:
+                                    self.condition.notify_all()
+                                if current != previous:
+                                    self.publish()
+                                previous = current
+                            for future in futures:
+                                if future.done():
+                                    future.result()
+                                    raise RuntimeError('collector_lane_stopped')
+                    finally:
+                        with self.condition:
+                            self.stop.set()
+                            self.condition.notify_all()
+            finally:
+                self.activity.close()
 
 
 def main():
     parser = argparse.ArgumentParser()
-    parser.add_argument('--runtime', default='/run/sa02m-dashboard')
+    parser.add_argument('--runtime', default=RUNTIME)
     parser.add_argument('--command', default='/usr/local/libexec/sa02m-status-part')
+    parser.add_argument('--heartbeat', action='store_true')
     args = parser.parse_args()
+    if args.heartbeat:
+        # The authenticated CGI invokes only this exact mode and fixed runtime.
+        if args.runtime != RUNTIME or args.command != '/usr/local/libexec/sa02m-status-part':
+            parser.error('heartbeat uses the fixed runtime only')
+        try:
+            renew_activity(RUNTIME)
+        except (OSError, ValueError):
+            raise SystemExit(1) from None
+        return
     collector = Collector(args.runtime, args.command)
     for sig in (signal.SIGTERM, signal.SIGINT):
         signal.signal(sig, lambda _sig, _frame: collector.stop.set())

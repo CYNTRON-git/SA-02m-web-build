@@ -8,7 +8,8 @@ const source = readFileSync(path, 'utf8');
 function world(fetcher = async () => ({ok: true, json: async () => packet()})) {
   const rendered = [], elements = new Map();
   const document = {hidden: false, addEventListener(){}, getElementById(id) {
-    if (!elements.has(id)) elements.set(id, {style: {}, textContent: ''});
+    if (!elements.has(id)) elements.set(id, {style: {}, textContent: '',
+      classList: {contains:name=>id==='tab-dashboard' && name==='active'}});
     return elements.get(id);
   }};
   const context = vm.createContext({fetch: fetcher, AbortController, DOMException, Date, console,
@@ -274,4 +275,115 @@ test('snapshot self timer has no overlap or catch-up burst and cannot survive te
     assert.equal(w.run('_statusPollTimers.snapshot'),current,'old callback cannot clear the new generation timer');
   } finally {w.run('teardownStatusPolling()');}
   assert.equal(clock.snapshot(),undefined);
+});
+
+test('only the visible dashboard sends activity and returning shows cached age before refreshing',async()=>{
+  const requests=[], events={};let revision=0, observed, active=true;
+  const w=world(async(url,options)=>{
+    requests.push({url,headers:options.headers});
+    return {ok:true,json:async()=>packet(100+revision,revision?0:200)};
+  });
+  const clock=controlledTimers(w);
+  const pane=w.context.document.getElementById('tab-dashboard');
+  pane.classList.contains=()=>active;
+  w.context.document.addEventListener=(name,fn)=>{events[name]=fn;};
+  w.context.MutationObserver=class {constructor(fn){observed=fn;} observe(target,options){assert.equal(target,pane);assert.equal(options.attributeFilter[0],'class');}};
+  try {
+    w.run('initStatusPolling()');await new Promise(resolve=>setImmediate(resolve));
+    assert.equal(requests.length,1);
+    assert.equal(requests[0].headers['X-SA02M-Dashboard'],'active');
+    assert.equal(w.run('statusFreshness.priority.state'),'stale');
+    w.context.document.hidden=true;events.visibilitychange();
+    assert.equal(clock.snapshot(),undefined);
+    w.run('fetchStatusSnapshot(true)');assert.equal(requests.length,1);
+    clock.set(1000);w.context.document.hidden=false;events.visibilitychange();
+    await new Promise(resolve=>setImmediate(resolve));
+    assert.equal(requests.length,2);
+    assert.equal(w.run('statusFreshness.priority.sourceAgeMs'),200000,'opening cached values does not rejuvenate them');
+    revision=1;await clock.fireSnapshot(clock.now()+6000);
+    assert.equal(w.run('statusFreshness.priority.state'),'fresh');
+    active=false;w.run('fetchStatusSnapshot(true)');assert.equal(requests.length,3);
+    observed();assert.equal(clock.snapshot(),undefined);
+    clock.set(clock.now()+1000);active=true;observed();await new Promise(resolve=>setImmediate(resolve));
+    assert.equal(requests.length,4);
+    observed();events.visibilitychange();await new Promise(resolve=>setImmediate(resolve));
+    assert.equal(requests.length,4,'unchanged visibility cannot create duplicate polls');
+  } finally {w.run('teardownStatusPolling()');}
+});
+
+test('hidden page retires pending snapshot and a missing dashboard never claims activity',async()=>{
+  let finish, requests=0;const events={};
+  const w=world(async()=>{requests++;return {ok:true,json:()=>new Promise(resolve=>{finish=resolve;})};});
+  const clock=controlledTimers(w);
+  w.context.document.addEventListener=(name,fn)=>{events[name]=fn;};
+  w.run('initStatusPolling()');await new Promise(resolve=>setImmediate(resolve));
+  w.context.document.hidden=true;events.visibilitychange();
+  finish(packet());await new Promise(resolve=>setImmediate(resolve));
+  assert.equal(w.rendered.length,0);
+  assert.equal(clock.snapshot(),undefined);
+  assert.equal(requests,1);
+  const absent=world(async()=>{throw new Error('must not request without dashboard');});
+  absent.context.document.getElementById=()=>null;
+  absent.run('initStatusPolling()');
+  assert.equal(absent.run('_statusSnapshotBusy'),false);
+  assert.equal(absent.run('Boolean(_statusPollTimers.snapshot)'),false);
+});
+
+test('closing one reader does not stop another and activity failure preserves cached data with an error',async()=>{
+  const starts=[0,0], readers=[0,1].map(index=>world(async(_url,options)=>{
+    assert.equal(options.headers['X-SA02M-Dashboard'],'active');starts[index]++;
+    return {ok:true,json:async()=>packet()};
+  }));
+  const clocks=readers.map(controlledTimers);
+  try {
+    readers.forEach(w=>w.run('initStatusPolling()'));
+    await new Promise(resolve=>setImmediate(resolve));
+    readers[0].run('teardownStatusPolling()');
+    await clocks[1].fireSnapshot(6000);
+    assert.deepEqual(starts,[1,2]);
+    const w=readers[1];w.context.reply=packet();w.context.reply.activity_ack=false;
+    assert.doesNotThrow(()=>w.run('applyStatusSnapshot(reply)'));
+    assert.equal(w.run('backgroundLoaded.main'),true);
+    assert.equal(w.run('statusFreshness.priority.state'),'error');
+    w.context.reply.activity_ack=true;w.run('applyStatusSnapshot(reply)');
+    assert.equal(w.run('statusFreshness.priority.state'),'fresh');
+    w.context.reply.snapshot.collection={mode:'idle',activity_error:true};
+    w.run('applyStatusSnapshot(reply)');
+    assert.equal(w.run('statusFreshness.priority.state'),'error');
+  } finally {readers.forEach(w=>w.run('teardownStatusPolling()'));}
+});
+
+test('cancelled beforeunload retains polling; confirmed pagehide stops it and bfcache return resumes once',async()=>{
+  const events={};let requests=0;
+  const w=world(async()=>{requests++;return {ok:true,json:async()=>packet()};});
+  const clock=controlledTimers(w);
+  w.context.window.addEventListener=(name,fn)=>{(events[name] ||= []).push(fn);};
+  const emit=(name,event)=>{for(const fn of events[name] || []) fn(event);};
+  try {
+    w.run('initStatusPolling()');await new Promise(resolve=>setImmediate(resolve));
+    const scheduled=w.run('_statusPollTimers.snapshot');
+    w.context.window.addEventListener('beforeunload',event=>event.preventDefault());
+    const cancelled={defaultPrevented:false,preventDefault(){this.defaultPrevented=true;}};
+    emit('beforeunload',cancelled);
+    assert.equal(cancelled.defaultPrevented,true);
+    assert.equal(w.run('statusPageActive()'),true);
+    assert.equal(w.run('_statusSnapshotMode'),true,'attempted navigation must not retire an active page');
+    assert.equal(w.run('_statusPollTimers.snapshot'),scheduled);
+    await clock.fireSnapshot(6000);assert.equal(requests,2,'a user choosing to stay must keep renewing activity');
+    const retired=clock.snapshot().fn;
+    emit('pagehide',{persisted:true});
+    assert.equal(clock.snapshot(),undefined);
+    assert.equal(w.run('_statusSnapshotMode'),false);
+    retired();await new Promise(resolve=>setImmediate(resolve));
+    assert.equal(requests,2,'confirmed departure retires even an already scheduled callback');
+    clock.set(7000);emit('pageshow',{persisted:true});
+    await new Promise(resolve=>setImmediate(resolve));
+    assert.equal(requests,3);
+    assert.equal(w.run('_statusSnapshotMode'),true);
+    assert.equal(events.pagehide.length,1,'return does not bind duplicate lifecycle listeners');
+    emit('pageshow',{persisted:false});
+    await new Promise(resolve=>setImmediate(resolve));
+    assert.equal(requests,3,'ordinary pageshow must not duplicate the initial fetch');
+    assert.equal(clock.snapshot().at,13000);
+  } finally {w.run('teardownStatusPolling()');}
 });
