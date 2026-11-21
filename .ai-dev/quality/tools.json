@@ -11,6 +11,97 @@
     "mutationExempt": "optional; ONLY for a row that runs no check script of ours (an inline `bash -n` / compileall / unittest command, or a repo tool outside .ai-dev/quality/ and scripts/dev/). A non-empty reason why comment-mutation-proof carries no case for it. A row that DOES run one of our scripts keeps its exemption in that script's own header instead, and this field on such a row FAILS the comment-mutation-proof run."
   },
   "tools": [
+    {
+      "id": "mac-quality-adapter",
+      "checks": "QA adapter preserves process failure and skip evidence, selects native browsers, forwards Linux fixture Python and rejects non-pure wheel dependencies.",
+      "config": null,
+      "run": "python3 scripts/dev/test-mac-quality.py",
+      "beat": "build",
+      "covers": [
+        "scripts/dev/mac-quality.py",
+        "scripts/dev/test-mac-quality.py",
+        "docs/development/mac-quality.md"
+      ],
+      "init": "Python3 stdlib plus packaging (included in the Mac QA dependency overlay)."
+    },
+    {
+      "id": "status-cache-install",
+      "checks": "Collector installer preserves a first-install mask and complete payload; web-only offline packages cannot create orphan collector units.",
+      "config": null,
+      "run": "python3 scripts/dev/test-status-cache-install.py",
+      "beat": "build",
+      "covers": [
+        "scripts/install-status-cache.sh",
+        "scripts/pack-offline-update.py",
+        "scripts/offline-update-*",
+        "scripts/dev/test-status-cache-install.py",
+        "etc/sa02m-status-*"
+      ],
+      "init": "Python3 stdlib and Bash; fixture-only, no host service operations."
+    },
+    {
+      "id": "status-cache-pilot-transaction",
+      "checks": "Strict 8-file package, anchored no-follow writes, parent/final/temp swaps, no-replace, concurrent drift, bounded reads, private backups and crash rollback.",
+      "config": null,
+      "run": "python3 scripts/dev/test-status-cache-pilot-transaction.py",
+      "beat": "build",
+      "covers": [
+        "scripts/status-cache-pilot-transaction.py",
+        "scripts/pack-status-cache-pilot.py",
+        "scripts/dev/test-status-cache-pilot-transaction.py",
+        "docs/contracts/status-snapshot-pilot.md"
+      ],
+      "init": "Linux Python3 stdlib and renameat2; filesystem tests explicitly skip non-Linux, package tests still run."
+    },
+    {
+      "id": "status-snapshot-browser",
+      "checks": "Real Chromium applies the ready bundle, updates CPU on the packet timer, reports stale/error/warmup in both locales and themes, and sends no legacy polls.",
+      "config": null,
+      "run": "python3 scripts/dev/status-snapshot-browser.py",
+      "beat": "build",
+      "covers": ["www/network_config/static/js/app/status.js", "www/network_config/static/js/i18n.js", "www/network_config/index.html", "scripts/dev/status-snapshot-browser.py", "docs/contracts/status-polling.md"],
+      "init": "Python Playwright plus its installed Chromium; absent package exits77. Mac nms-edge venv is an available runner."
+    },
+    {
+      "id": "status-snapshot-runtime",
+      "checks": "Boot-time collector atomic snapshots, independent lanes, bounded process groups, original age, real session auth and disabled hardware.",
+      "config": null,
+      "run": "python3 scripts/dev/test-status-snapshot.py",
+      "beat": "build",
+      "covers": [
+        "etc/sa02m-status-*",
+        "etc/systemd/system/sa02m-status-cache.service",
+        "www/network_config/cgi-bin/status.cgi",
+        "www/network_config/cgi-bin/status_snapshot.cgi",
+        "www/network_config/static/js/app/status.js",
+        "scripts/install-status-cache.sh",
+        "scripts/pack-status-cache-pilot.py",
+        "scripts/dev/test-status-snapshot*",
+        "docs/contracts/status-polling.md",
+        "docs/contracts/status-snapshot-pilot.md"
+      ],
+      "init": "Linux Python3 stdlib, Bash5 and existing status helpers; other platforms explicitly SKIP."
+    },
+    {
+      "id": "status-snapshot-ui",
+      "checks": "Ready packet paints all cards once, preserves measurement age, fails honestly, respects hardware command barrier, probes legacy once and cancels retired generations.",
+      "config": null,
+      "run": "node --test scripts/dev/test-status-snapshot.mjs",
+      "beat": "build",
+      "covers": [
+        "etc/sa02m-status-*",
+        "etc/systemd/system/sa02m-status-cache.service",
+        "www/network_config/cgi-bin/status.cgi",
+        "www/network_config/cgi-bin/status_snapshot.cgi",
+        "www/network_config/static/js/app/status.js",
+        "scripts/install-status-cache.sh",
+        "scripts/pack-status-cache-pilot.py",
+        "scripts/dev/test-status-snapshot*",
+        "docs/contracts/status-polling.md",
+        "docs/contracts/status-snapshot-pilot.md"
+      ],
+      "init": "Node18+ stdlib."
+    },
 {
   "id": "home-api-v1",
   "checks": "Unified LAN/cloud command dedupe, leases, durable crash boundaries, honest MQTT observations, real local MQTT PUBACK/no replay, HTTP auth/CSRF/limits, scenario single-claim deadline and shared wire examples.",

@@ -13,7 +13,8 @@
 
 | Вопрос | Единственный дом |
 |---|---|
-| Стек (nginx + fcgiwrap + Bash CGI, vanilla JS без сборки), вкладки и подсистемы, архитектура опроса дашборда, дисциплина версий | `docs/agent-rules/sa02m-domain.md` |
+| Стек (nginx + fcgiwrap + Bash CGI, vanilla JS без сборки), вкладки и подсистемы, дисциплина версий | `docs/agent-rules/sa02m-domain.md` |
+| Фоновый RAM-сборщик dashboard, авторизованный готовый пакет, граница CGI/браузера и legacy fallback | [Опрос статусов](contracts/status-polling.md) |
 | Исключительное владение UART, приостановка/восстановление служб, привилегированный координатор и его локальный протокол | [docs/contracts/port-ownership.md](contracts/port-ownership.md) |
 | Слои и границы: устройство → CGI → fetch → DOM; полы качества для CGI/JS/CSS | `docs/agent-rules/web-code-rigor.md` |
 | Контракты внешних поверхностей (MQTT-топики, CGI-эндпоинты, облако, Алиса, сценарии, образ, ядро) | `docs/contracts/` (сценарии: `cloud-scenarios.md`; межпроектный Python-API `sa02m_devices` для стенда HardPy: `sa02m-devices-python-api.md`) |

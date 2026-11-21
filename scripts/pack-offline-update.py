@@ -245,6 +245,11 @@ def list_allowlisted_files(patterns: list[str]) -> list[str]:
     for path in tracked:
         if "/__pycache__/" in path or path.endswith((".pyc", ".pyo")):
             continue
+        # A new collector needs the full installer (payload, activation and
+        # operator policy capture). Web-only OTA must not leave a disabled
+        # orphan unit that a later refresh mistakes for operator intent.
+        if path == "etc/systemd/system/sa02m-status-cache.service":
+            continue
         if fnmatch.fnmatch(path, "scripts/0*.sh"):
             continue
         if any(path_matches(path, pat) for pat in patterns):

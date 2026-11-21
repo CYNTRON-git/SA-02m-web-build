@@ -524,4 +524,10 @@ if [ -f "$SCRIPT_DIR/11-devices.sh" ] && [ -d "$REPO_ROOT/opt/sa02m-devices/sa02
         || log WARN "11-devices.sh завершился с ошибкой"
 fi
 
+# The matching status.cgi is already deployed; the optional payload guard keeps
+# historical www-only packages without system files usable.
+if [ -f "$SCRIPT_DIR/install-status-cache.sh" ]; then
+    bash "$SCRIPT_DIR/install-status-cache.sh" || exit 1
+fi
+
 log OK "Веб-интерфейс обновлён: $WEB_ROOT"

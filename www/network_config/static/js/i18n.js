@@ -252,6 +252,7 @@
     'Состояние неизвестно': 'Unknown state',
     'Автозапуск выключен': 'Autostart disabled',
     'Автозапуск включён': 'Autostart enabled',
+  'Подготовка данных': 'Preparing data',
     'Ошибка обновления': 'Refresh failed',
     'Данные устарели': 'Stale data',
     'Возраст данных неизвестен': 'Data age unknown',

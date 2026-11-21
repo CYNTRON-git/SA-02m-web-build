@@ -7,6 +7,42 @@
 /* ══════════════════════════════════════════════════════════════════════════
    STATUS POLLING — приоритетные виджеты отдельно, остальное в фоне
    ══════════════════════════════════════════════════════════════════════════ */
+const STATUS_SNAPSHOT_INTERVAL_MS = 6000;
+const STATUS_SNAPSHOT_TIMEOUT_MS = 3000;
+let _statusSnapshotMode = false;
+let _statusSnapshotBusy = false;
+let _statusSnapshotLastFetchMs = -Infinity;
+let _statusSnapshotBoot = null;
+const _statusSnapshotBarriers = {};
+const _statusSnapshotEpochs = { hardware: 0, services: 0 };
+const _statusSnapshotBodyRevision = {};
+function statusMonotonicNow() {
+  return typeof performance !== 'undefined' ? performance.now() : Date.now();
+}
+function statusSnapshotBarrier(part) {
+  _statusSnapshotEpochs[part]++;
+  _statusSnapshotBarriers[part] = { boot: _statusSnapshotBoot, floor: null };
+}
+function statusSnapshotBodyAllowed(part, reply, epochs) {
+  if (Object.prototype.hasOwnProperty.call(_statusSnapshotEpochs, part) &&
+      epochs[part] !== _statusSnapshotEpochs[part]) return false;
+  const barrier = _statusSnapshotBarriers[part];
+  if (!barrier) return true;
+  const boot = reply.snapshot.boot_id;
+  if (barrier.boot !== null && barrier.boot !== boot) {
+    delete _statusSnapshotBarriers[part];
+    return true;
+  }
+  barrier.boot = boot;
+  // The first response requested AFTER the readback establishes a server
+  // uptime witness. A collection already in flight cannot cross this fence.
+  if (barrier.floor === null) barrier.floor = reply.served_uptime;
+  const meta = reply.snapshot.parts[part] && reply.snapshot.parts[part]._status_meta;
+  if (!meta || !Number.isFinite(meta.sample_started_uptime) || meta.sample_started_uptime <= barrier.floor) return false;
+  delete _statusSnapshotBarriers[part];
+  return true;
+}
+let _statusSnapshotApplied = {};
 const widgetBusy = { priority: false };
 const backgroundBusy = {
   main: false,
@@ -180,8 +216,8 @@ let _statusFetchInFlight = false;
 let _statusSlot = null;
 let _statusPreviousPart = null;
 let _statusQueuePumpTimer = null;
-let _statusLastGlobalFetchMs = 0;
-let _statusLastHeavyStartMs = 0;
+let _statusLastGlobalFetchMs = -Infinity;
+let _statusLastHeavyStartMs = -Infinity;
 
 function isHeavyStatusPart(part) {
   return HEAVY_STATUS_PARTS_ALL.indexOf(part) >= 0;
@@ -197,17 +233,17 @@ function clearStatusFetchQueue() {
 
 function scheduleStatusFetch(part, delayMs, runner) {
   const delay = Math.max(0, delayMs || 0);
-  const at = Date.now() + delay;
+  const at = statusMonotonicNow() + delay;
   const dup = _statusFetchQueue.some(function (item) { return item.part === part; });
   if (dup) return;
-  _statusFetchQueue.push({ part: part, at: at, queuedAt: Date.now(), runner: runner });
+  _statusFetchQueue.push({ part: part, at: at, queuedAt: statusMonotonicNow(), runner: runner });
   _statusFetchQueue.sort(function (a, b) { return a.at - b.at; });
   pumpStatusFetchQueue();
 }
 
 function pumpStatusFetchQueue() {
   if (_statusFetchInFlight) return;
-  const now = Date.now();
+  const now = statusMonotonicNow();
   if (_statusFetchQueue.length === 0) return;
   if (_statusFetchQueue[0].at > now) {
     if (_statusQueuePumpTimer) clearTimeout(_statusQueuePumpTimer);
@@ -251,7 +287,7 @@ function pumpStatusFetchQueue() {
     if (_statusQueuePumpTimer) clearTimeout(_statusQueuePumpTimer);
     _statusQueuePumpTimer = setTimeout(pumpStatusFetchQueue, STATUS_GLOBAL_MIN_GAP_MS);
   };
-  const queueWaitMs = Math.max(0, Date.now() - (item.queuedAt || item.at));
+  const queueWaitMs = Math.max(0, statusMonotonicNow() - (item.queuedAt || item.at));
   try {
     item.runner(release, { queueWaitMs: queueWaitMs });
   } catch (_) {
@@ -259,10 +295,10 @@ function pumpStatusFetchQueue() {
   }
 }
 let _statusFetchAbort = { priority: null, main: null, rs485: null };
-let _statusLastFetchMs = { priority: 0, main: 0, rs485: 0 };
+let _statusLastFetchMs = { priority: -Infinity, main: -Infinity, rs485: -Infinity };
 BACKGROUND_STATUS_PARTS.forEach(function (p) {
   _statusFetchAbort[p] = null;
-  _statusLastFetchMs[p] = 0;
+  _statusLastFetchMs[p] = -Infinity;
 });
 let _statusLifecycleBound = false;
 
@@ -292,7 +328,7 @@ function abortStatusPart(part) {
 }
 
 function abortAllStatusFetches() {
-  ['priority', 'main', 'rs485', 'services_fast'].concat(BACKGROUND_STATUS_PARTS).forEach(abortStatusPart);
+  ['priority', 'main', 'rs485', 'services_fast', 'snapshot'].concat(BACKGROUND_STATUS_PARTS).forEach(abortStatusPart);
 }
 
 function clearStatusPollTimers() {
@@ -312,6 +348,10 @@ function resetBackgroundLoadedFlags() {
 
 function teardownStatusPolling() {
   _statusPollGeneration += 1;
+  _statusSnapshotMode = false;
+  _statusSnapshotBusy = false;
+  _statusSnapshotLastFetchMs = -Infinity;
+  _statusSnapshotApplied = {};
   clearStatusPollTimers();
   clearStatusFetchQueue();
   abortAllStatusFetches();
@@ -329,7 +369,7 @@ function canFetchStatusPart(part, force) {
   if (!force && part !== 'main' && isStatusPartPaused('main')) return false;
   if (force) return true;
   const gap = STATUS_MIN_GAP_MS[part] || 1000;
-  return (Date.now() - (_statusLastFetchMs[part] || 0)) >= gap;
+  return (statusMonotonicNow() - (_statusLastFetchMs[part] ?? -Infinity)) >= gap;
 }
 
 /** Fetch status.cgi с AbortController, отменой предыдущего запроса той же части и проверкой поколения. */
@@ -451,6 +491,99 @@ function startAllBackgroundPartPollTimers(gen) {
   });
 }
 
+function applyStatusSnapshot(reply, epochs) {
+  epochs = epochs || Object.assign({}, _statusSnapshotEpochs);
+  const snapshot = reply && reply.snapshot;
+  if (!snapshot || snapshot.schema !== 1 || !snapshot.parts || typeof snapshot.parts !== 'object' ||
+      !Number.isFinite(snapshot.generated_uptime) || !Number.isFinite(reply.served_uptime) ||
+      typeof snapshot.boot_id !== 'string' || !snapshot.boot_id) {
+    throw new Error('Invalid dashboard snapshot');
+  }
+  const elapsed = reply.served_uptime - snapshot.generated_uptime;
+  const parts = snapshot.parts;
+  _statusSnapshotBoot = snapshot.boot_id;
+  if (parts.blocks && !parts.blocks.error) _statusBlocksConfig = parts.blocks;
+  ['priority'].concat(BACKGROUND_STATUS_PARTS, ['rs485']).forEach(function (part) {
+    const original = parts[part];
+    if ((part !== 'hardware' && !isStatusBlockEnabled(part)) || (original && original._status_disabled === true)) {
+      if (part in backgroundLoaded) backgroundLoaded[part] = true;
+      delete statusFreshness[part];
+      return;
+    }
+    if (!original) {
+      if (snapshot.errors && snapshot.errors[part]) noteStatusFailure(part, new Error('Collection failed'));
+      else statusFreshness[part] = { warming: true, sourceAgeMs: null, receivedAt: statusMonotonicNow() };
+      return;
+    }
+    const accepted = statusSnapshotBodyAllowed(part, reply, epochs);
+    if (!accepted && (part !== 'services' || !_lastPartStatus.services)) return;
+    const data = Object.assign({}, accepted ? original : _lastPartStatus.services);
+    const sourceMeta = original._status_meta || {};
+    if (accepted) data._status_meta = Object.assign({}, sourceMeta, {
+      age_s: Number.isFinite(sourceMeta.age_s) && sourceMeta.age_s >= 0 && elapsed >= 0
+        ? sourceMeta.age_s + elapsed : null
+    });
+    if (part === 'services') {
+      const coordinator = parts.coordinator;
+      data.port_coordinator = Object.assign({}, coordinator && coordinator.port_coordinator);
+      const meta = coordinator && coordinator._status_meta;
+      const age = meta && Number.isFinite(meta.age_s) && meta.age_s >= 0 && elapsed >= 0 ? meta.age_s + elapsed : null;
+      const deadline = (meta && Number.isFinite(meta.ttl_s) ? meta.ttl_s : 0) +
+        (STATUS_SNAPSHOT_INTERVAL_MS + STATUS_SNAPSHOT_TIMEOUT_MS) / 1000;
+      if (age === null || age > deadline || (snapshot.errors && snapshot.errors.coordinator)) {
+        // Retain unfinished leases even when liveness can no longer be trusted.
+        data.port_coordinator.available = false;
+        data.port_coordinator.error = 'snapshot_unavailable';
+      }
+    }
+    const apply = part === 'priority' ? applyPriorityStatus : part === 'rs485' ? applyRs485Status : getBackgroundPartApply(part);
+    if (accepted) _statusSnapshotBodyRevision[part] = snapshot.boot_id + ':' + sourceMeta.sample_started_uptime + ':' + sourceMeta.measured_at;
+    const revision = _statusSnapshotBodyRevision[part] + (part === 'services' ? JSON.stringify(data.port_coordinator) : '');
+    if (apply && _statusSnapshotApplied[part] !== revision) {
+      if (part !== 'priority' && part !== 'rs485') _lastPartStatus[part] = data;
+      apply(data);
+      _statusSnapshotApplied[part] = revision;
+      if (part === 'priority') ['cpu', 'temp', 'ram', 'disk'].forEach(function (name) { writePriorityWarmupPart(name, data); });
+    }
+    if (part in backgroundLoaded) backgroundLoaded[part] = true;
+    if (accepted) noteStatusSuccess(part, data);
+    if (accepted && snapshot.errors && snapshot.errors[part]) noteStatusFailure(part, new Error('Collection failed'));
+  });
+  backgroundLoaded.main = activeBackgroundParts().every(function (part) { return backgroundLoaded[part]; });
+  renderStatusFreshness();
+}
+
+function fetchStatusSnapshot(force, onReady, onUnavailable) {
+  if (_statusSnapshotBusy) return;
+  if (!force && statusMonotonicNow() - _statusSnapshotLastFetchMs < STATUS_SNAPSHOT_INTERVAL_MS) return;
+  const gen = _statusPollGeneration;
+  _statusSnapshotBusy = true;
+  scheduleStatusFetch('snapshot', 0, function (release) {
+    if (gen !== _statusPollGeneration) { release(); return; }
+    _statusSnapshotLastFetchMs = statusMonotonicNow();
+    const epochs = Object.assign({}, _statusSnapshotEpochs);
+    let timedOut = false;
+    statusFetchJson('snapshot', 'cgi-bin/status_snapshot.cgi', STATUS_SNAPSHOT_TIMEOUT_MS, gen, function () { timedOut = true; })
+      .then(function (reply) {
+        applyStatusSnapshot(reply, epochs);
+        _statusSnapshotMode = true;
+        renderStatusFreshness();
+        if (onReady) onReady();
+      })
+      .catch(function (error) {
+        if (gen !== _statusPollGeneration || isBenignStatusFetchError(error, timedOut)) return;
+        if (!_statusSnapshotMode && onUnavailable) { onUnavailable(); return; }
+        ['priority'].concat(activeBackgroundParts(), ['rs485']).forEach(function (part) {
+          if (isStatusBlockEnabled(part) || part === 'hardware') noteStatusFailure(part, error);
+        });
+      })
+      .finally(function () {
+        if (gen === _statusPollGeneration) _statusSnapshotBusy = false;
+        release();
+      });
+  });
+}
+
 function initStatusPolling() {
   teardownStatusPolling();
   resetBackgroundLoadedFlags();
@@ -487,16 +620,28 @@ function initStatusPolling() {
     }
   };
 
-  fetchStatusBlocksConfig(deferScheduleInitial);
-  _statusInitTimeouts.push(setTimeout(scheduleInitial, 600));
+  bindStatusPollingLifecycle();
+  fetchStatusSnapshot(true, function () {
+    if (gen !== _statusPollGeneration || pollingStarted) return;
+    pollingStarted = true;
+    _statusPollTimers.freshness = setInterval(renderStatusFreshness, 1000);
+    _statusPollTimers.snapshot = setInterval(function () {
+      if (gen === _statusPollGeneration) fetchStatusSnapshot(false);
+    }, STATUS_SNAPSHOT_INTERVAL_MS);
+  }, function () {
+    // One capability probe per page generation. Older boards keep the existing
+    // bounded scheduler; a running snapshot mode never starts duplicate polls.
+    fetchStatusBlocksConfig(deferScheduleInitial);
+    _statusInitTimeouts.push(setTimeout(scheduleInitial, 600));
+  });
 }
 
 function isStatusPartPaused(part) {
-  return (statusPauseUntil[part] || 0) > Date.now();
+  return (statusPauseUntil[part] || 0) > statusMonotonicNow();
 }
 
 function setStatusPartPause(part, ms) {
-  statusPauseUntil[part] = Date.now() + ms;
+  statusPauseUntil[part] = statusMonotonicNow() + ms;
 }
 
 const statusFreshness = {};
@@ -547,6 +692,7 @@ function statusPollDeadlineMs(part) {
   return _statusPollDeadlineMs[part];
 }
 function statusStaleAfter(part, ttlMs) {
+  if (_statusSnapshotMode) return (ttlMs || 0) + STATUS_SNAPSHOT_INTERVAL_MS + STATUS_SNAPSHOT_TIMEOUT_MS;
   return (ttlMs || 0) + statusPollDeadlineMs(part);
 }
 /* Runs every second: a part turns stale only once its deadline has passed and
@@ -554,15 +700,15 @@ function statusStaleAfter(part, ttlMs) {
    flip it back — no flapping inside a period by construction. The banner is
    written only when its text changes (no per-tick layout work). */
 function renderStatusFreshness() {
-  const now = Date.now();
+  const now = statusMonotonicNow();
   const issues = [];
   Object.keys(statusFreshness).forEach(function (part) {
     if (!isStatusBlockEnabled(part)) return;
     const f = statusFreshness[part];
     const age = f.sourceAgeMs == null || now < f.receivedAt ? null : f.sourceAgeMs + now - f.receivedAt;
-    const state = f.error ? 'error' : age == null ? 'unknown' : age > statusStaleAfter(part, f.ttlMs) ? 'stale' : 'fresh';
+    const state = f.warming ? 'warming' : f.error ? 'error' : age == null ? 'unknown' : age > statusStaleAfter(part, f.ttlMs) ? 'stale' : 'fresh';
     f.state = state;
-    if (state !== 'fresh') issues.push(statusPartLabel(part) + ': ' + statusText(state === 'error' ? 'Ошибка обновления' : state === 'stale' ? 'Данные устарели' : 'Возраст данных неизвестен'));
+    if (state !== 'fresh') issues.push(statusPartLabel(part) + ': ' + statusText(state === 'warming' ? 'Подготовка данных' : state === 'error' ? 'Ошибка обновления' : state === 'stale' ? 'Данные устарели' : 'Возраст данных неизвестен'));
   });
   const el = document.getElementById('dashboard-poll-alert');
   if (!el) return;
@@ -576,7 +722,8 @@ function statusText(text) {
 }
 function noteStatusFailure(part, err) {
   statusFailures[part] = (statusFailures[part] || 0) + 1;
-  const f = statusFreshness[part] || (statusFreshness[part] = { sourceAgeMs: null, receivedAt: Date.now() });
+  const f = statusFreshness[part] || (statusFreshness[part] = { sourceAgeMs: null, receivedAt: statusMonotonicNow() });
+  f.warming = false;
   f.error = String(err && err.message || 'Request failed');
   if (statusFailures[part] >= 5) setStatusPartPause(part, 25000);
   renderStatusFreshness();
@@ -587,7 +734,7 @@ function noteStatusSuccess(part, data) {
   if (part !== 'main') {
     const meta = data && data._status_meta;
     statusFreshness[part] = {
-      receivedAt: Date.now(), error: null,
+      receivedAt: statusMonotonicNow(), error: null,
       sourceAgeMs: meta && Number.isFinite(meta.age_s) && meta.age_s >= 0 ? meta.age_s * 1000 : null,
       ttlMs: meta && Number.isFinite(meta.ttl_s) && meta.ttl_s >= 0 ? meta.ttl_s * 1000 : 0
     };
@@ -1236,6 +1383,7 @@ function applyRs485Status(d) {
 }
 
 function fetchPriorityPart(_part, persist = true) {
+  if (_statusSnapshotMode) { fetchStatusSnapshot(false); return; }
   if (widgetBusy.priority) return;
   if (!canFetchStatusPart('priority', false)) return;
   scheduleStatusFetch('priority', 0, function (release, meta) {
@@ -1243,7 +1391,7 @@ function fetchPriorityPart(_part, persist = true) {
     if (widgetBusy.priority) { release(); return; }
     if (!canFetchStatusPart('priority', false)) { release(); return; }
     widgetBusy.priority = true;
-    _statusLastFetchMs.priority = Date.now();
+    _statusLastFetchMs.priority = statusMonotonicNow();
     let timedOut = false;
     const queueWaitMs = meta && meta.queueWaitMs ? meta.queueWaitMs : 0;
     statusFetchJson('priority', 'cgi-bin/status.cgi?part=priority', statusRequestTimeout('priority', queueWaitMs), gen, function () {
@@ -1271,9 +1419,15 @@ function fetchPriorityPart(_part, persist = true) {
 let mainStatusEpoch = 0;
 function bumpMainStatusEpoch() {
   mainStatusEpoch++;
+  statusSnapshotBarrier('hardware');
 }
 
 function fetchBackgroundPart(part, applyFn, force, onDone) {
+  if (_statusSnapshotMode && !force) {
+    fetchStatusSnapshot(false);
+    if (onDone) onDone(false);
+    return;
+  }
   if (BACKGROUND_STATUS_PARTS.indexOf(part) >= 0 && !shouldFetchBackgroundPart(part)) {
     backgroundLoaded[part] = true;
     if (onDone) onDone(false);
@@ -1307,7 +1461,7 @@ function fetchBackgroundPart(part, applyFn, force, onDone) {
       return;
     }
     backgroundBusy[part] = true;
-    _statusLastFetchMs[part] = Date.now();
+    _statusLastFetchMs[part] = statusMonotonicNow();
     let timedOut = false;
     let reported = false;
     const reportDone = function (failed) {
@@ -1326,6 +1480,11 @@ function fetchBackgroundPart(part, applyFn, force, onDone) {
       .then(d => {
         if (epochAtStart !== null && epochAtStart !== mainStatusEpoch) return;
         if (d.error) return;
+        if (part === 'services' && force) {
+          statusSnapshotBarrier('services');
+          _statusSnapshotBodyRevision.services = 'readback:' + _statusSnapshotEpochs.services;
+          delete _statusSnapshotApplied.services;
+        }
         if (part === 'rs485') {
           apply(d);
         } else {
@@ -1394,6 +1553,7 @@ function fetchServicesFast(gen) {
 }
 
 function fetchStatusMain(force) {
+  if (_statusSnapshotMode && !force) { fetchStatusSnapshot(false); return; }
   if (statusMainRoundBusy) {
     if (force) mainBundleRefreshQueued = true;
     return;
@@ -1401,7 +1561,7 @@ function fetchStatusMain(force) {
   if (!canFetchStatusPart('main', !!force)) return;
   statusMainRoundBusy = true;
   const generation = _statusPollGeneration;
-  _statusLastFetchMs.main = Date.now();
+  _statusLastFetchMs.main = statusMonotonicNow();
   let pending = 0;
   let roundHadFailure = false;
   const finishPart = function (failed) {

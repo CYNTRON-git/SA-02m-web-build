@@ -835,4 +835,10 @@ else
     log WARN "  systemctl mask fcgiwrap.socket && systemctl restart fcgiwrap"
 fi
 
+# The matching status.cgi is already deployed; the optional payload guard keeps
+# historical www-only packages without system files usable.
+if [ -f "$SCRIPT_DIR/install-status-cache.sh" ]; then
+    bash "$SCRIPT_DIR/install-status-cache.sh" || exit 1
+fi
+
 log OK "=== [03] Веб-сервер запущен на http://<IP>:${PORT} ==="

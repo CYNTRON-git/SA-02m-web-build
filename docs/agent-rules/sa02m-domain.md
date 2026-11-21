@@ -49,18 +49,11 @@ English (`PROTOCOL.md` invariant 5); the Operator conversation is Russian per
 
 ## Dashboard status polling — the architecture to respect
 
-This section is the ONE home for the polling facts; the deep-dive skill
-(`.claude/skills/sa02m-web-architecture/`) cites it and adds only executable
-detail (queue functions, the apply-map).
-
-`app/status.js` polls `status.cgi?part=<name>` on a rolling scheduler (the
-scheduler and every `apply*Status` live there since the F10 split, not in
-`app.js`) — parts:
-`priority` (CPU/temp/RAM/swap/disk, 6 s), `rs485` (12 s), and the
-background set `storage,time,uptime,network,load,system,services,hardware`
-(phase-shifted). `fetchStatusMain` coordinates those split parts; it does not
-request `part=main`. Queueing and freshness are specified in
-`docs/contracts/status-polling.md`. Facts that bite:
+Единственный источник правил опроса —
+[контракт статусов](../contracts/status-polling.md): фоновый RAM-сборщик,
+авторизованный готовый пакет, барьеры команд/readback, свежесть и ограниченный
+legacy fallback. Планировщик и apply*Status находятся в app/status.js после
+разделения F10. Практические ограничения:
 
 - Each part has its own `apply*Status()` function; UI ids are contract between
   `index.html` and `app.js` — renaming an id in one place is a finding.
@@ -79,7 +72,7 @@ request `part=main`. Queueing and freshness are specified in
 
 | Tab | Frontend | Backend | Device side |
 |---|---|---|---|
-| Сведения (dashboard) | `app/status.js` apply*/render* | `status.cgi` parts | `/proc`, `sa02m-web-service-ctl.sh list` |
+| Сведения (dashboard) | `app/status.js` apply*/render* | `status_snapshot.cgi`, legacy `status.cgi` parts | `/proc`, `sa02m-web-service-ctl.sh list` |
 | Сеть / Время | `app/forms.js` (static-IP toggles per iface) | `config.cgi`, `apply.cgi` | ifupdown/netplan per installer |
 | MQTT | `mqtt.js` | `mqtt_*.cgi` | mosquitto (1883 local / 1884 external+auth), `sa02m-modbus-mqtt` bridge (+ Modbus TCP for `template`/`carel`, `docs/contracts/bridge-modbus-tcp.md`) |
 | Устройства (ДТВ / СЭ / MR AI / Carel / LED) | `devices.js` | nginx `/api/devices*` → upstream `sa02m_devices_api` = `sa02m-devices-api` on `unix:/run/sa02m-devices/api.sock` only (the daemon checks the panel session itself and keeps `127.0.0.1:8765` only for an OTA-only board's old site file; stand 1.135: gunicorn `sa02m-stand-api` binds the same socket — `docs/bench-board-target-state.md` §10; `11-devices.sh` restarts it when active) | `opt/sa02m-devices` — live from the MQTT cache, SQLite archive (`sa02m-devices-logger`); Carel `kind=carel`, LED type 120. Contracts: `devices-mr-history.md`, `carel-ahu.md`, `led-mb2ws.md`. |
