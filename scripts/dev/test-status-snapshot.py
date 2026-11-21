@@ -175,6 +175,56 @@ class SnapshotTests(unittest.TestCase):
     def sample(self, value=12, age=0):
         return {'cpu_usage': value, '_status_meta': {'measured_at': 123, 'age_s': age, 'ttl_s': 6}}
 
+    def test_exported_refresh_budget_covers_healthy_real_lane_schedule(self):
+        command = self.path/'sample'
+        command.write_text('#!/bin/bash\necho \'{"_status_meta":{"measured_at":1,"age_s":7}}\'\n')
+        command.chmod(0o755)
+        sample = module.collect('services', str(command), self.runtime, 1)
+        meta = sample['_status_meta']
+        self.assertEqual(meta['age_s'], 7, 'budget must not rewrite source age')
+        self.assertEqual(meta['ttl_s'], 45, 'the collection period remains unchanged')
+        clock, events = [0.0], []
+
+        class Stop:
+            done = False
+            def is_set(self): return self.done
+            def wait(self, seconds):
+                clock[0] += seconds
+                return self.done
+
+        stop = Stop()
+        def cycle(part):
+            started = clock[0]
+            # Every builder succeeds within its configured timeout. Exercise
+            # the shipped earliest-due lane, including its other slow parts.
+            clock[0] += 12 if part == 'services' else module.PARTS[part][1] * .9
+            if part == 'services':
+                events.append((started, clock[0]))
+                if len(events) == 3: stop.done = True
+        self.collector.stop = stop
+        with patch.object(module.time, 'monotonic', lambda: clock[0]), \
+                patch.object(self.collector, 'cycle', cycle):
+            self.collector.lane(next(lane for lane in module.LANES if 'services' in lane))
+        ages = [current[1] - previous[0] for previous, current in zip(events, events[1:])]
+        self.assertGreater(max(ages), 45 + 6 + 3, 'old UI deadline misses a healthy lane')
+        self.assertLessEqual(max(ages), meta['ttl_s'] + meta['refresh_budget_s'])
+
+    def test_refresh_budget_follows_only_its_lane_and_no_backlog_gap(self):
+        command = self.path/'sample'
+        command.write_text('#!/bin/bash\necho \'{"_status_meta":{"measured_at":1,"age_s":0}}\'\n')
+        command.chmod(0o755)
+        def budget(part):
+            return module.collect(part, str(command), self.runtime, 1)['_status_meta']['refresh_budget_s']
+        fast, slow = budget('priority'), budget('services')
+        self.assertLess(fast, slow)
+        period, timeout = module.PARTS['network']
+        with patch.dict(module.PARTS, {'network': (period, timeout + 5)}):
+            self.assertEqual(budget('priority'), fast)
+            self.assertEqual(budget('services'), slow + 5)
+        # A builder whose budget reaches its own period must also account for
+        # the scheduler's existing 100 ms no-backlog gap before another cycle.
+        self.assertGreater(budget('hardware'), slow)
+
     def test_failure_preserves_value_and_source_age(self):
         with patch.object(module, 'collect', return_value=self.sample(age=10)):
             self.collector.cycle('priority')

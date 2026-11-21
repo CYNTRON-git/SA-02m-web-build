@@ -162,3 +162,116 @@ test('snapshot cadence and queued requests continue across both browser wall-clo
     assert.equal(w.context.completed.length,1,'queued deadline must use monotonic time');
   } finally {w.run('teardownStatusPolling()');}
 });
+
+
+test('healthy queued service collection stays fresh within its budget without resetting source age',()=>{
+  const w=world();let mono=1000;w.context.performance={now:()=>mono};
+  w.context.reply=packet(100,55);
+  const meta=w.context.reply.snapshot.parts.services._status_meta;
+  Object.assign(meta,{measured_at:45,sample_started_uptime:45,ttl_s:45,refresh_budget_s:70});
+  w.run('_statusSnapshotMode=true;applyStatusSnapshot(reply)');
+  assert.equal(w.run('statusFreshness.services.sourceAgeMs'),55000);
+  assert.equal(w.run('statusFreshness.services.state'),'fresh');
+  mono+=69000;w.run('renderStatusFreshness()');
+  assert.equal(w.run('statusFreshness.services.state'),'fresh','exact deadline remains inclusive');
+  mono+=1;w.run('renderStatusFreshness()');
+  assert.equal(w.run('statusFreshness.services.state'),'stale','budget is finite');
+  w.context.reply.served_uptime+=70;w.run('applyStatusSnapshot(reply)');
+  assert.equal(w.run('statusFreshness.services.sourceAgeMs'),125000,'frozen source retains age across HTTP reads');
+  assert.equal(w.run('statusFreshness.services.state'),'stale');
+  w.context.reply=packet(171,0);
+  Object.assign(w.context.reply.snapshot.parts.services._status_meta,{ttl_s:45,refresh_budget_s:70});
+  w.context.reply.snapshot.errors.services='collection_failed';
+  w.run('applyStatusSnapshot(reply)');
+  assert.equal(w.run('statusFreshness.services.state'),'error','collection failure is immediate');
+  delete w.context.reply.snapshot.errors.services;w.run('applyStatusSnapshot(reply)');
+  assert.equal(w.run('statusFreshness.services.state'),'fresh');
+});
+
+test('invalid refresh budgets do not suppress staleness and coordinator uses its own lane budget',()=>{
+  const malformed=JSON.parse('{"toString":null,"valueOf":null}');
+  for(const invalid of [undefined,-1,NaN,Infinity,Number.MAX_VALUE,'70',null,true,{},[],[70],[[70]],malformed,[malformed]]) {
+    const w=world();w.context.reply=packet(100,55);
+    Object.assign(w.context.reply.snapshot.parts.services._status_meta,{ttl_s:45,refresh_budget_s:invalid});
+    w.run('_statusSnapshotMode=true;applyStatusSnapshot(reply)');
+    assert.equal(w.run('statusFreshness.services.state'),'stale');
+  }
+  const w=world();w.context.reply=packet(100,18);
+  Object.assign(w.context.reply.snapshot.parts.coordinator._status_meta,{ttl_s:6,refresh_budget_s:6});
+  w.run('_statusSnapshotMode=true;applyStatusSnapshot(reply)');
+  assert.equal(w.rendered.filter(row=>row[0]==='services').at(-1)[1].port_coordinator.available,true);
+  w.context.reply.served_uptime+=4;w.run('applyStatusSnapshot(reply)');
+  assert.equal(w.rendered.filter(row=>row[0]==='services').at(-1)[1].port_coordinator.available,false);
+});
+
+
+function controlledTimers(w) {
+  let now=0, next=1;
+  const timers=new Map();
+  const add=(fn,delay,interval)=>{const id=next++;timers.set(id,{fn,at:now+delay,interval});return id;};
+  w.context.performance={now:()=>now};
+  w.context.setTimeout=(fn,delay)=>add(fn,delay,0);
+  w.context.setInterval=(fn,delay)=>add(fn,delay,delay);
+  w.context.clearTimeout=w.context.clearInterval=id=>timers.delete(id);
+  return {
+    timers, now:()=>now, set:at=>{now=at;},
+    snapshot:()=>timers.get(w.run('_statusPollTimers.snapshot')),
+    async fireSnapshot(at) {
+      const id=w.run('_statusPollTimers.snapshot'), entry=timers.get(id);
+      assert.ok(entry,'one snapshot timer must be scheduled');now=at;
+      if(entry.interval) entry.at+=entry.interval;else timers.delete(id);
+      entry.fn();await new Promise(resolve=>setImmediate(resolve));
+    }
+  };
+}
+
+test('snapshot timer retries the remaining deadline under early jitter and queue delays',async()=>{
+  const starts=[];let clock;
+  const w=world(async()=>{starts.push(clock.now());return {ok:true,json:async()=>packet()};});
+  clock=controlledTimers(w);
+  try {
+    w.run('initStatusPolling()');await new Promise(resolve=>setImmediate(resolve));
+    assert.deepEqual(starts,[0]);
+    await clock.fireSnapshot(5980);
+    assert.deepEqual(starts,[0],'early tick must preserve the six-second rate limit');
+    assert.equal(clock.snapshot().at,6000,'early tick must retry its 20 ms remainder');
+    await clock.fireSnapshot(6000);assert.deepEqual(starts,[0,6000]);
+    w.run('_statusFetchInFlight=true');
+    await clock.fireSnapshot(12020);assert.deepEqual(starts,[0,6000]);
+    clock.set(12040);w.run('_statusFetchInFlight=false;pumpStatusFetchQueue()');
+    await new Promise(resolve=>setImmediate(resolve));
+    assert.deepEqual(starts,[0,6000,12040]);
+    assert.equal(clock.snapshot().at,18040,'next deadline follows actual queue admission');
+    await clock.fireSnapshot(18020);assert.equal(clock.snapshot().at,18040);
+    await clock.fireSnapshot(18060);assert.deepEqual(starts,[0,6000,12040,18060]);
+    assert.equal(clock.snapshot().at,24060);
+  } finally {w.run('teardownStatusPolling()');}
+});
+
+test('snapshot self timer has no overlap or catch-up burst and cannot survive teardown',async()=>{
+  const starts=[];let clock, finish;
+  const w=world(async()=>{
+    starts.push(clock.now());
+    return {ok:true,json:()=>starts.length===2?new Promise(resolve=>{finish=resolve;}):Promise.resolve(packet())};
+  });clock=controlledTimers(w);
+  try {
+    w.run('initStatusPolling()');await new Promise(resolve=>setImmediate(resolve));
+    await clock.fireSnapshot(6000);
+    clock.set(6500);w.run('fetchStatusSnapshot(false);fetchStatusSnapshot(true)');
+    assert.deepEqual(starts,[0,6000]);
+    assert.equal(clock.snapshot(),undefined,'an in-flight body owns the next scheduling decision');
+    finish(packet());await new Promise(resolve=>setImmediate(resolve));
+    assert.equal(clock.snapshot().at,12000);
+    await clock.fireSnapshot(66000);
+    assert.deepEqual(starts,[0,6000,66000],'late wake sends one request');
+    assert.equal(clock.snapshot().at,72000,'missed periods are not replayed');
+    const retired=clock.snapshot().fn;
+    w.run('teardownStatusPolling();initStatusPolling()');
+    await new Promise(resolve=>setImmediate(resolve));
+    const current=w.run('_statusPollTimers.snapshot'), count=starts.length;
+    retired();await new Promise(resolve=>setImmediate(resolve));
+    assert.equal(starts.length,count);
+    assert.equal(w.run('_statusPollTimers.snapshot'),current,'old callback cannot clear the new generation timer');
+  } finally {w.run('teardownStatusPolling()');}
+  assert.equal(clock.snapshot(),undefined);
+});

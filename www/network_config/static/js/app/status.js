@@ -529,7 +529,7 @@ function applyStatusSnapshot(reply, epochs) {
       const meta = coordinator && coordinator._status_meta;
       const age = meta && Number.isFinite(meta.age_s) && meta.age_s >= 0 && elapsed >= 0 ? meta.age_s + elapsed : null;
       const deadline = (meta && Number.isFinite(meta.ttl_s) ? meta.ttl_s : 0) +
-        (STATUS_SNAPSHOT_INTERVAL_MS + STATUS_SNAPSHOT_TIMEOUT_MS) / 1000;
+        (statusRefreshBudgetMs(meta) + STATUS_SNAPSHOT_INTERVAL_MS + STATUS_SNAPSHOT_TIMEOUT_MS) / 1000;
       if (age === null || age > deadline || (snapshot.errors && snapshot.errors.coordinator)) {
         // Retain unfinished leases even when liveness can no longer be trusted.
         data.port_coordinator.available = false;
@@ -553,10 +553,28 @@ function applyStatusSnapshot(reply, epochs) {
   renderStatusFreshness();
 }
 
+function scheduleStatusSnapshotPoll(gen) {
+  if (gen !== _statusPollGeneration || !_statusSnapshotMode || _statusSnapshotBusy) return;
+  if (_statusPollTimers.snapshot) clearTimeout(_statusPollTimers.snapshot);
+  // Anchor the next request to actual queue admission. An early callback waits
+  // only the remainder, and a late wake sends one request without catch-up.
+  const delay = Math.max(0, Math.ceil(STATUS_SNAPSHOT_INTERVAL_MS - (statusMonotonicNow() - _statusSnapshotLastFetchMs)));
+  _statusPollTimers.snapshot = setTimeout(function () {
+    if (gen !== _statusPollGeneration) return;
+    _statusPollTimers.snapshot = null;
+    if (_statusSnapshotMode) fetchStatusSnapshot(false);
+  }, delay);
+}
+
 function fetchStatusSnapshot(force, onReady, onUnavailable) {
   if (_statusSnapshotBusy) return;
-  if (!force && statusMonotonicNow() - _statusSnapshotLastFetchMs < STATUS_SNAPSHOT_INTERVAL_MS) return;
   const gen = _statusPollGeneration;
+  if (!force && statusMonotonicNow() - _statusSnapshotLastFetchMs < STATUS_SNAPSHOT_INTERVAL_MS) {
+    scheduleStatusSnapshotPoll(gen);
+    return;
+  }
+  if (_statusPollTimers.snapshot) clearTimeout(_statusPollTimers.snapshot);
+  _statusPollTimers.snapshot = null;
   _statusSnapshotBusy = true;
   scheduleStatusFetch('snapshot', 0, function (release) {
     if (gen !== _statusPollGeneration) { release(); return; }
@@ -580,6 +598,7 @@ function fetchStatusSnapshot(force, onReady, onUnavailable) {
       .finally(function () {
         if (gen === _statusPollGeneration) _statusSnapshotBusy = false;
         release();
+        scheduleStatusSnapshotPoll(gen);
       });
   });
 }
@@ -625,9 +644,6 @@ function initStatusPolling() {
     if (gen !== _statusPollGeneration || pollingStarted) return;
     pollingStarted = true;
     _statusPollTimers.freshness = setInterval(renderStatusFreshness, 1000);
-    _statusPollTimers.snapshot = setInterval(function () {
-      if (gen === _statusPollGeneration) fetchStatusSnapshot(false);
-    }, STATUS_SNAPSHOT_INTERVAL_MS);
   }, function () {
     // One capability probe per page generation. Older boards keep the existing
     // bounded scheduler; a running snapshot mode never starts duplicate polls.
@@ -691,8 +707,14 @@ function statusPollDeadlineMs(part) {
   _statusPollDeadlineMs[part] = statusPartPeriodMs(part) + wait + statusSlotMs(part);
   return _statusPollDeadlineMs[part];
 }
-function statusStaleAfter(part, ttlMs) {
-  if (_statusSnapshotMode) return (ttlMs || 0) + STATUS_SNAPSHOT_INTERVAL_MS + STATUS_SNAPSHOT_TIMEOUT_MS;
+function statusRefreshBudgetMs(meta) {
+  const seconds = meta && meta.refresh_budget_s;
+  if (!Number.isFinite(seconds) || seconds < 0) return 0;
+  const ms = seconds * 1000;
+  return Number.isFinite(ms) ? ms : 0;
+}
+function statusStaleAfter(part, ttlMs, refreshBudgetMs) {
+  if (_statusSnapshotMode) return (ttlMs || 0) + (refreshBudgetMs || 0) + STATUS_SNAPSHOT_INTERVAL_MS + STATUS_SNAPSHOT_TIMEOUT_MS;
   return (ttlMs || 0) + statusPollDeadlineMs(part);
 }
 /* Runs every second: a part turns stale only once its deadline has passed and
@@ -706,7 +728,7 @@ function renderStatusFreshness() {
     if (!isStatusBlockEnabled(part)) return;
     const f = statusFreshness[part];
     const age = f.sourceAgeMs == null || now < f.receivedAt ? null : f.sourceAgeMs + now - f.receivedAt;
-    const state = f.warming ? 'warming' : f.error ? 'error' : age == null ? 'unknown' : age > statusStaleAfter(part, f.ttlMs) ? 'stale' : 'fresh';
+    const state = f.warming ? 'warming' : f.error ? 'error' : age == null ? 'unknown' : age > statusStaleAfter(part, f.ttlMs, f.refreshBudgetMs) ? 'stale' : 'fresh';
     f.state = state;
     if (state !== 'fresh') issues.push(statusPartLabel(part) + ': ' + statusText(state === 'warming' ? 'Подготовка данных' : state === 'error' ? 'Ошибка обновления' : state === 'stale' ? 'Данные устарели' : 'Возраст данных неизвестен'));
   });
@@ -736,7 +758,8 @@ function noteStatusSuccess(part, data) {
     statusFreshness[part] = {
       receivedAt: statusMonotonicNow(), error: null,
       sourceAgeMs: meta && Number.isFinite(meta.age_s) && meta.age_s >= 0 ? meta.age_s * 1000 : null,
-      ttlMs: meta && Number.isFinite(meta.ttl_s) && meta.ttl_s >= 0 ? meta.ttl_s * 1000 : 0
+      ttlMs: meta && Number.isFinite(meta.ttl_s) && meta.ttl_s >= 0 ? meta.ttl_s * 1000 : 0,
+      refreshBudgetMs: statusRefreshBudgetMs(meta)
     };
   }
   renderStatusFreshness();

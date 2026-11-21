@@ -31,6 +31,17 @@ PARTS = {
 }
 LANES = (('priority', 'coordinator'),
          ('blocks', 'uptime', 'load', 'hardware', 'storage', 'network', 'system', 'rs485', 'services', 'time'))
+MIN_CYCLE_GAP_S = 0.1
+
+
+def refresh_budget(part):
+    # Once this part is due, each other slot can run at most once before it:
+    # the earliest-due scheduler moves every completed slot into the future.
+    # Include its own next build, the existing no-backlog gap when a build can
+    # reach its period, and one second for Bash's integer source timestamps.
+    lane = next(lane for lane in LANES if part in lane)
+    period, timeout = PARTS[part]
+    return sum(PARTS[name][1] for name in lane) + max(0, timeout + MIN_CYCLE_GAP_S - period) + 1
 
 
 class SnapshotTooLarge(ValueError):
@@ -92,6 +103,7 @@ def collect(part, command, runtime, timeout):
         raise ValueError('missing_measurement_time')
     # Existing hardware snapshots may explicitly carry an unknown age.
     meta['ttl_s'] = PARTS[part][0]
+    meta['refresh_budget_s'] = refresh_budget(part)
     meta['sample_started_uptime'] = started_uptime
     return data
 
@@ -161,7 +173,7 @@ class Collector:
             started = time.monotonic()
             self.cycle(part)
             # No backlog/catch-up burst after a timeout or a suspended machine.
-            due[part] = max(started + PARTS[part][0], time.monotonic() + 0.1)
+            due[part] = max(started + PARTS[part][0], time.monotonic() + MIN_CYCLE_GAP_S)
 
     def run(self):
         self.runtime.mkdir(mode=0o750, parents=True, exist_ok=True)
