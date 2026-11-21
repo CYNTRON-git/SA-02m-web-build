@@ -322,6 +322,47 @@ class SnapshotTests(unittest.TestCase):
         self.assertEqual(first['snapshot'], second['snapshot'])
         self.assertGreaterEqual(second['served_at']-second['snapshot']['generated_at'], 100)
 
+    def test_cgi_json_numbers_ignore_inherited_numeric_locale(self):
+        # Build a real glibc numeric locale even on minimal C-only QA images.
+        # localedef fills omitted categories with defaults and warns; the live
+        # Bash probe below, not its exit code, proves that the comma is active.
+        charmap = self.path/'ascii.charmap'
+        charmap.write_text('<code_set_name> "ASCII"\n<escape_char> /\n'
+                           '<mb_cur_max> 1\n<mb_cur_min> 1\nCHARMAP\n' +
+                           ''.join('<U%04X> /x%02x\n' % (n, n) for n in range(128)) +
+                           'END CHARMAP\n')
+        numeric = self.path/'numeric.locale'
+        numeric.write_text('LC_NUMERIC\ndecimal_point ","\nthousands_sep "."\n'
+                           'grouping 3\nEND LC_NUMERIC\n')
+        locales = self.path/'locales'
+        locales.mkdir()
+        compiled = subprocess.run(['localedef', '--no-archive', '-c', '-f', str(charmap),
+                                   '-i', str(numeric), str(locales/'sa02m_comma')],
+                                  capture_output=True, text=True, timeout=5)
+        self.assertTrue((locales/'sa02m_comma/LC_NUMERIC').is_file(), compiled.stderr)
+        cgi, env = self.fixture()
+        env.update(LOCPATH=str(locales), LC_ALL='sa02m_comma', LANG='C')
+        probe = subprocess.run(['bash', '-c', 'printf "%s" "$EPOCHREALTIME"'],
+                               env=env, capture_output=True, text=True, timeout=5)
+        self.assertEqual(probe.returncode, 0, probe.stderr)
+        self.assertEqual(probe.stderr, '')
+        self.assertRegex(probe.stdout, r'^\d+,\d+$')
+        script = cgi/'status_snapshot.cgi'
+        self.assertEqual(self.request(script, {**env, 'HTTP_COOKIE': ''}),
+                         {'error': 'unauthorized'})
+        self.assertEqual(self.request(script, env)['error'], 'status_snapshot_unavailable')
+        snapshot = self.runtime/'snapshot.json'
+        snapshot.write_text('{broken')
+        self.assertEqual(self.request(script, env)['error'], 'status_snapshot_invalid')
+        payload = {'schema': 1, 'parts': {'network': {'title': 'Сеть', 'value': 12.5}}}
+        module.atomic_json(snapshot, payload)
+        reply = self.request(script, env)
+        self.assertIsInstance(reply['served_at'], float)
+        self.assertIsInstance(reply['served_uptime'], float)
+        self.assertGreater(reply['served_at'], 0)
+        self.assertGreaterEqual(reply['served_uptime'], 0)
+        self.assertEqual(reply['snapshot'], payload)
+
     def test_source_mode_is_not_a_query_auth_bypass(self):
         cgi, env = self.fixture()
         for query in ('part=cpu', 'source=1&part=priority', 'collect=priority', 'part=hardware&no_cache=1'):

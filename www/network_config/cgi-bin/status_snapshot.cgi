@@ -1,5 +1,7 @@
 #!/bin/bash
 # The request only reads a prebuilt RAM snapshot. No metric collector runs here.
+# Bash formats EPOCHREALTIME with the inherited numeric locale. JSON requires a dot.
+export LC_ALL=C
 # shellcheck disable=SC1091
 . "$(dirname "$0")/lib_web_auth.sh"
 printf 'Content-Type: application/json; charset=UTF-8\nCache-Control: no-store\n\n'
