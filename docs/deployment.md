@@ -32,6 +32,18 @@
 
 ## Пути деплоя
 
+Для явно согласованного пилота программной энергии фаз применяется [узкая процедура](contracts/phase-energy-correction.md#установка-и-узкий-пилот).
+
+Для отдельно запрошенного пилота фонового dashboard-кэша действует узкая процедура [status-snapshot-pilot.md](contracts/status-snapshot-pilot.md): manifest из commit, сверка live/base SHA-256, восемь файлов, backup/rollback и перезапуск только нового сборщика. Она не заменяет весь web-root и не изменяет общий deployed_commit.
+
+Исключение для явно запрошенного контролируемого пилота **Home API v1**:
+[точная процедура](contracts/home-api-v1-pilot.md). Используется архив только
+зафиксированных git bytes и manifest; это не релиз и не замена общего
+`deployed_commit`. Новые runtime файлы сначала проходят build/review, backup
+и read-only preflight. Правки исходников непосредственно на плате запрещены.
+Пилот добавляет одну службу и narrow nginx route, сохраняя legacy пути;
+обновление rules требует одноразового skip-boot и проверки остаточных рисков.
+
 | Путь | Когда | Чем |
 |---|---|---|
 | **www-only** | изменения только в `www/` (frontend + CGI) | `scripts/update-www-only.sh` |

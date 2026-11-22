@@ -97,7 +97,7 @@ function aliceSetBadge(el, text, kind) {
   el.innerHTML = aliceBadge(uiT(text), kind);
 }
 
-async function aliceApi(body) {
+async function aliceApi(body, signal) {
   const opt = body
     ? {
         method: 'POST',
@@ -105,9 +105,21 @@ async function aliceApi(body) {
         credentials: 'same-origin',
         body: JSON.stringify(body),
       }
-    : { method: 'GET', credentials: 'same-origin' };
-  const r = await fetch('cgi-bin/sa02m_alice_api.cgi', opt);
-  return r.json();
+    : { method: 'GET', credentials: 'same-origin', cache: 'no-store', signal: signal };
+  if (body) {
+    // A sent command is never aborted here. Retire only older status reads.
+    aliceRetireReads();
+    _aliceMutations += 1;
+  }
+  try {
+    const r = await fetch('cgi-bin/sa02m_alice_api.cgi', opt);
+    return await r.json();
+  } finally {
+    if (body) {
+      _aliceMutations -= 1;
+      if (!_aliceMutations) aliceRefresh();
+    }
+  }
 }
 
 // Session-local bridge for the 2-step link flow (link → open URL →
@@ -366,16 +378,38 @@ function aliceRender(d) {
 
 // Returns the rendered status (or null) so a caller can tell whether the
 // device state has settled — see aliceFastPoll.
-async function aliceRefresh() {
-  try {
-    const d = await aliceApi(null);
+function aliceRefresh() {
+  if (!aliceReaderActive() || _aliceMutations) return Promise.resolve(null);
+  if (_aliceRead) return _aliceRead.promise;
+  if (_alicePoll) { clearTimeout(_alicePoll); _alicePoll = null; }
+  const read = {gen: _aliceReadGen, ctrl: new AbortController(), timer: null, cancel: null, promise: null, timedOut: false};
+  const deadline = new Promise(function (_resolve, reject) {
+    read.cancel = function () { reject(new DOMException('Retired Alice read', 'AbortError')); };
+    read.timer = setTimeout(function () {
+      read.timedOut = true;
+      read.ctrl.abort();
+      reject(new Error('Alice read timed out'));
+    }, ALICE_READ_TIMEOUT_MS);
+  });
+  _aliceRead = read;
+  read.promise = Promise.race([aliceApi(null, read.ctrl.signal), deadline]).then(function (d) {
+    if (read.gen !== _aliceReadGen || _aliceRead !== read || !aliceReaderActive()) return null;
     if (d && d.error === 'unauthorized') return null;
     aliceRender(d);
+    if (aliceFastPollSettled(d)) _aliceFastUntil = 0;
     return d;
-  } catch (e) {
-    alicePollNoticeOnce(uiT('Ошибка запроса API Алисы'), false);
+  }).catch(function (e) {
+    if (read.gen === _aliceReadGen && aliceReaderActive() && (read.timedOut || e.name !== 'AbortError')) {
+      alicePollNoticeOnce(uiT('Ошибка запроса API Алисы'), false);
+    }
     return null;
-  }
+  }).finally(function () {
+    clearTimeout(read.timer);
+    if (_aliceRead !== read) return;
+    _aliceRead = null;
+    if (read.gen === _aliceReadGen) aliceScheduleNext();
+  });
+  return read.promise;
 }
 
 async function aliceToggleClient() {
@@ -480,24 +514,44 @@ async function aliceLinkAction() {
 }
 
 let _alicePoll = null;
-let _aliceFastPoll = null;
-let _aliceFastPollGen = 0;
+let _aliceRead = null;
+let _aliceReadGen = 0;
+let _aliceMutations = 0;
+let _aliceFastUntil = 0;
 let _aliceTabActive = false;
+let _aliceModalActive = false;
+let _alicePageDeparted = false;
 
-// After an action that changes state on the device (cert issued → client
-// restart, enable/disable), the 5 s cadence makes the card look stuck for
-// several seconds. Poll faster for a short window instead.
-//
-// CHAINED, never setInterval: each status GET forks bash + python on the
-// shared board (the gateway probe itself is cached and refreshed off the
-// request since 1.0.6.58 — docs/contracts/alice-mqtt-mapping.md §Gateway
-// reachability), so a fixed-rate 1 Hz timer could still stack overlapping
-// requests on a loaded board and hold several of the 8 shared fcgiwrap
-// workers (web-code-rigor ## Architecture).
-// Each tick waits for its own refresh to settle, and the window ends early
-// once the state stops being transitional.
+// Alice, cloud controls, Smart Home and HomeKit share one bounded GET. Both
+// ordinary and post-action refresh schedule their next request on completion.
 const ALICE_POLL_MS = 5000;
+const ALICE_READ_TIMEOUT_MS = 8000;
 const ALICE_SETTLED_STATES = ['connected', 'disabled', 'error'];
+
+function aliceReaderActive() { return (_aliceTabActive || _aliceModalActive) && !_alicePageDeparted && !document.hidden; }
+
+function aliceRetireReads() {
+  _aliceReadGen += 1;
+  _aliceFastUntil = 0;
+  if (_alicePoll) { clearTimeout(_alicePoll); _alicePoll = null; }
+  const read = _aliceRead;
+  _aliceRead = null;
+  if (read) {
+    clearTimeout(read.timer);
+    read.cancel();
+    read.ctrl.abort();
+  }
+}
+
+function aliceScheduleNext(delay) {
+  if (!aliceReaderActive() || _aliceRead || _aliceMutations) return;
+  if (_alicePoll) clearTimeout(_alicePoll);
+  const fast = performance.now() < _aliceFastUntil;
+  _alicePoll = setTimeout(function () {
+    _alicePoll = null;
+    aliceRefresh();
+  }, delay === undefined ? (fast ? 1000 : ALICE_POLL_MS) : delay);
+}
 
 function aliceFastPollSettled(d) {
   if (!d) return false;
@@ -506,58 +560,54 @@ function aliceFastPollSettled(d) {
 }
 
 function aliceFastPoll() {
-  const until = Date.now() + 20000;
-  // A second call landing while a tick is awaiting must not start a second
-  // chain: the generation counter makes the older chain retire on its return.
-  _aliceFastPollGen += 1;
-  const gen = _aliceFastPollGen;
-  if (_aliceFastPoll) clearTimeout(_aliceFastPoll);
-  // The base 5 s poll would race the window and hit the same probing
-  // endpoint — park it and restore it when the window ends.
-  if (_alicePoll) {
-    clearInterval(_alicePoll);
-    _alicePoll = null;
-  }
-  const stop = function () {
-    _aliceFastPoll = null;
-    if (_aliceTabActive && !_alicePoll) _alicePoll = setInterval(aliceRefresh, ALICE_POLL_MS);
-  };
-  const tick = async function () {
-    _aliceFastPoll = null;
-    let settled = false;
-    try {
-      settled = aliceFastPollSettled(await aliceRefresh());
-    } catch (e) {
-      /* transport hiccup — keep the window running */
-    }
-    // A newer window took over while this tick was in flight — retire this
-    // chain and leave the pollers to the newer one.
-    if (gen !== _aliceFastPollGen) return;
-    if (settled || Date.now() >= until) {
-      stop();
-      return;
-    }
-    _aliceFastPoll = setTimeout(tick, 1000);
-  };
-  _aliceFastPoll = setTimeout(tick, 700);
+  if (!aliceReaderActive()) return;
+  _aliceFastUntil = performance.now() + 20000;
+  aliceScheduleNext(700);
 }
 
-// The 5 s poll runs only while «Облако» or «Умный дом» is the open sub-tab.
+// The 5 s poll runs while an integration sub-tab or its bindings modal is open.
 // Starting it with the page held an fcgiwrap worker on every other tab.
+function aliceResumePolling() {
+  if (aliceReaderActive() && !_aliceRead && !_alicePoll) aliceRefresh();
+}
+
 window.aliceTabInit = function () {
   if (!$('alice-card')) return;
   _aliceTabActive = true;
-  if (_alicePoll || _aliceFastPoll) return;
-  aliceRefresh();
-  _alicePoll = setInterval(aliceRefresh, ALICE_POLL_MS);
+  aliceResumePolling();
 };
 
 window.aliceTabDestroy = function () {
   _aliceTabActive = false;
-  if (_alicePoll) { clearInterval(_alicePoll); _alicePoll = null; }
-  if (_aliceFastPoll) { clearTimeout(_aliceFastPoll); _aliceFastPoll = null; }
-  _aliceFastPollGen += 1;
+  if (!aliceReaderActive()) aliceRetireReads();
 };
+
+// The existing shared modal is also a visible consumer, including when opened
+// before the host sub-tab. Closing either owner cannot retire the other one.
+window.sa02mAliceModalActive = function (active) {
+  _aliceModalActive = active === true;
+  if (aliceReaderActive()) aliceResumePolling();
+  else aliceRetireReads();
+};
+
+let _aliceDocumentVisible = !document.hidden;
+document.addEventListener('visibilitychange', function () {
+  const visible = !document.hidden;
+  if (visible === _aliceDocumentVisible) return;
+  _aliceDocumentVisible = visible;
+  if (!visible) aliceRetireReads();
+  else aliceResumePolling();
+});
+window.addEventListener('pagehide', function () {
+  _alicePageDeparted = true;
+  aliceRetireReads();
+});
+window.addEventListener('pageshow', function (event) {
+  if (event.persisted) {
+    _alicePageDeparted = false;
+    aliceResumePolling();
+  }
+});
 
 // Only functions invoked from HTML onclick handlers need a global handle;
 // aliceStartLink/CompleteLink/Unlink are called internally (via

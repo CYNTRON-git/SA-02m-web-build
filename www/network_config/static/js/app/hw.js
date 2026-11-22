@@ -65,6 +65,8 @@ const HW_ST_BY_CH = {
 
 /** Пока status отдаёт старый hw_usb_power (gpiod/sudo), не откатывать подпись и кнопки. */
 let pendingUsbPowerUntil = 0;
+// Keep the legacy wall deadline for a cached older status.js consumer.
+let pendingUsbPowerMonotonicUntil = 0;
 let pendingUsbPowerVal = /** @type {number|null} */ (null);
 
 function clearPendingUsbPowerIfServerMatches(v) {
@@ -72,6 +74,7 @@ function clearPendingUsbPowerIfServerMatches(v) {
   if (hwLogicalFromPayload(v) === pendingUsbPowerVal) {
     pendingUsbPowerVal = null;
     pendingUsbPowerUntil = 0;
+    pendingUsbPowerMonotonicUntil = 0;
   }
 }
 
@@ -172,11 +175,13 @@ function usbPowerReset() {
         applyHwChannel('hw-usb-st', 'usb_power', 0);
         pendingUsbPowerVal = 0;
         pendingUsbPowerUntil = Date.now() + (sec + 2) * 1000;
+        pendingUsbPowerMonotonicUntil = performance.now() + (sec + 2) * 1000;
         bumpMainStatusEpoch();
         fetchStatusMain(true);
         window.setTimeout(function () {
           pendingUsbPowerVal = null;
           pendingUsbPowerUntil = 0;
+          pendingUsbPowerMonotonicUntil = 0;
           if (btn) { btn.disabled = false; btn.classList.remove('hw-active-blue'); }
           bumpMainStatusEpoch();
           fetchStatusMain(true);
@@ -228,6 +233,7 @@ function setHw(channel, value, opts) {
         if (channel === 'usb_power' && (vApplied === 0 || vApplied === 1)) {
           pendingUsbPowerVal = vApplied;
           pendingUsbPowerUntil = Date.now() + 15000;
+          pendingUsbPowerMonotonicUntil = performance.now() + 15000;
         }
         bumpMainStatusEpoch();
         fetchStatusMain(true);

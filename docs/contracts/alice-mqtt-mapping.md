@@ -247,7 +247,9 @@ a reassignment to another driver.
 A rejected identifiable replacement keeps its previous family. An ambiguous
 entry without an id retains existing protection while identified LEDs can add
 new protection. A valid empty device list or removal of the bridge
-configuration releases custom ids. The retained and live alarm values, saved
+configuration releases custom ids. After a failed family lookup, a running
+classifier retries on the next matching lookup even if file metadata is unchanged.
+The retained and live alarm values, saved
 bindings and ownership changes are covered by `tests/test_inventory.py` and
 `tests/test_reload_watch.py`.
 
@@ -1089,6 +1091,34 @@ re-measured on this branch.
 - Gateway probe failure → API returns `gateway_unavailable`; UI must not show
   linked/paired success.
 - Config CRUD and MQTT topic inventory work without the gateway.
+
+## Общий опрос карточек в браузере
+
+Alice, управление облаком, «Умный дом» и HomeKit получают одну принятую выдачу
+через `sa02mAliceOnData`. Reader нужен выбранному подразделу «Облако»/«Умный дом»
+или открытому модальному окну `shOpenModal()`, включая открытие из dashboard.
+Эти два потребителя разделяют один запрос и таймер: закрытие окна не останавливает
+опрос выбранного подраздела, уход из подраздела не останавливает открытое окно.
+При отсутствии обоих потребителей reader останавливается. Скрытый документ и подтверждённый
+`pagehide` отменяют устаревшее чтение; возврат видимой выбранной панели и bfcache
+восстанавливает один немедленный GET. Попытка отменяемого ухода не останавливает
+опрос. Это политика браузерной диагностики, а не остановка служб и автоматизации.
+
+Общий GET — single-flight с восьмисекундным пределом на ответ вместе с JSON-телом.
+Ручные refresh разделяют текущий запрос. Следующий обычный цикл назначается через
+5 с после завершения; после enable/disable или завершения привязки — через 1 с
+в ограниченном 20-секундном монотонном окне, которое заканчивается раньше при
+устоявшемся состоянии. Обе цепочки используют один слот, без догоняющих запросов.
+Timeout показывает прежнюю ошибку API и допускает следующий ограниченный цикл.
+
+Любой POST через общий `sa02mAliceApi` инвалидирует более старые GET и задерживает
+новые чтения до завершения всех выполняющихся изменений. Последующее чтение
+общее для действия и его вызывающей карточки. Отменяются только устаревшие GET:
+уже отправленный POST не отменяется и не повторяется автоматически. Ответ из
+старого поколения не меняет DOM, кнопки или подписчиков; локальная отмена не
+выдаётся за сетевую ошибку. Последнее принятое значение остаётся доступно новым
+подписчикам как кэш, не как новое измерение. Поведение проверяет
+`scripts/dev/test-alice-lifecycle.mjs` на полном shipped IIFE и отложенном transport.
 
 ## Gateway reachability — поле `gateway` в опросе статуса (1.0.6.58)
 

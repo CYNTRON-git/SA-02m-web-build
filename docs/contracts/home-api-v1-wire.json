@@ -1,0 +1,315 @@
+{
+  "contract": "cyntron.home/1.0",
+  "revision": 1,
+  "status": "implementation-contract",
+  "socketio": {
+    "event": "home_api_v1",
+    "response_event": "alice_devices_response",
+    "request": {
+      "request_id": "transport-only-uuid",
+      "method": "GET",
+      "path": "/snapshot",
+      "query": {},
+      "body": null
+    },
+    "response": {
+      "request_id": "transport-only-uuid",
+      "payload": {
+        "status": 200,
+        "body": {
+          "ok": true,
+          "api_version": "1.0"
+        }
+      }
+    }
+  },
+  "identity": {
+    "controller_id": "board-controller-serial",
+    "fleet_controller_id": "cloud-only-fleet-uuid",
+    "rule": "Cloud route uses fleet UUID; board body controller_id remains stable board serial. Never derive either identity from an IP address."
+  },
+  "http": {
+    "prefix": "/api/home/v1",
+    "global_get": [
+      "/meta",
+      "/controllers"
+    ],
+    "controller_prefix": "/controllers/{id}",
+    "controller_get": [
+      "/meta",
+      "/capabilities",
+      "/snapshot",
+      "/commands/{command_id}",
+      "/history",
+      "/events",
+      "/rooms",
+      "/groups",
+      "/devices",
+      "/scenarios"
+    ],
+    "controller_post": [
+      "/lease",
+      "/commands"
+    ],
+    "controller_put": [],
+    "controller_delete": [],
+    "query_type": "object<string,array<string>>",
+    "errors": [
+      400,
+      401,
+      403,
+      404,
+      409,
+      413,
+      422,
+      429,
+      500,
+      503,
+      504
+    ]
+  },
+  "meta_example": {
+    "ok": true,
+    "api_version": "1.0",
+    "controller_id": "SA-SERIAL",
+    "features": {
+      "snapshot": 1,
+      "commands": 1,
+      "receipts": 1,
+      "history": 1,
+      "events": 1,
+      "catalog": 1,
+      "scenarios": 1
+    },
+    "limits": {
+      "request_bytes": 65536,
+      "response_bytes": 2097152,
+      "lease_seconds": 60,
+      "receipt_seconds": 86400
+    },
+    "account_scope": "cloud"
+  },
+  "controllers_example": {
+    "ok": true,
+    "api_version": "1.0",
+    "controllers": [
+      {
+        "id": "SA-SERIAL",
+        "controller_id": "SA-SERIAL",
+        "name": "SA-02m",
+        "online": true
+      }
+    ]
+  },
+  "lease_example": {
+    "ok": true,
+    "api_version": "1.0",
+    "controller_id": "SA-SERIAL",
+    "lease": {
+      "lease_id": "eb5b7825-cee5-4dda-a26b-0a2e402eb914",
+      "boot_id": "1255f060-f55b-4a86-b5b0-ed79716e4ec7",
+      "expires_in_s": 60
+    }
+  },
+  "command_example": {
+    "command_id": "53dc0dc9-4b40-4a2f-b5e3-090093fa8ada",
+    "lease_id": "eb5b7825-cee5-4dda-a26b-0a2e402eb914",
+    "operation": "device.control",
+    "target": {
+      "device_id": "virtual-device-id"
+    },
+    "capability": {
+      "type": "devices.capabilities.range",
+      "instance": "brightness"
+    },
+    "value": 50
+  },
+  "receipt_example": {
+    "ok": true,
+    "api_version": "1.0",
+    "controller_id": "SA-SERIAL",
+    "receipt": {
+      "command_id": "53dc0dc9-4b40-4a2f-b5e3-090093fa8ada",
+      "status": "published",
+      "operation": "device.control",
+      "target": {
+        "device_id": "virtual-device-id"
+      },
+      "created_at": 1795100000.0,
+      "updated_at": 1795100000.1,
+      "confirmation": "broker_publish",
+      "physical_confirmation": false
+    }
+  },
+  "receipt_states": [
+    "accepted",
+    "dispatch_started",
+    "published",
+    "observed",
+    "applied",
+    "rejected",
+    "failed",
+    "expired",
+    "outcome_unknown",
+    "partial"
+  ],
+  "command_semantics": {
+    "new": "202 with receipt",
+    "duplicate_identical": "200 with original receipt, no republish",
+    "duplicate_changed": "409 command_conflict",
+    "expired_new_lease": "409 lease_expired, no publish",
+    "query_missing": "404 receipt_not_found, no replay",
+    "snapshot": "200 top-level home/devices/rooms/groups/scenarios/online/linked plus api_version/controller_id/catalog_revision/state_source",
+    "observation": "observed means matching non-retained MQTT state after dispatch; never proves electrical effect"
+  },
+  "snapshot_device_example": {
+    "id": "lamp1",
+    "name": "Light",
+    "room_id": "room1",
+    "type": "devices.types.light",
+    "online": true,
+    "capabilities": [
+      {
+        "type": "devices.capabilities.range",
+        "instance": "brightness",
+        "parameters": {
+          "instance": "brightness",
+          "range": {
+            "min": 0,
+            "max": 100,
+            "precision": 1
+          }
+        },
+        "writable": true,
+        "value": 50,
+        "state": {
+          "instance": "brightness",
+          "value": 50
+        },
+        "quality": "live",
+        "observed_at": 1795100000.0,
+        "source": "mqtt",
+        "availability": {
+          "can_control": true,
+          "reason": "recent_producer_observation",
+          "evidence_at": 1795100000.0
+        },
+        "can_control": true
+      },
+      {
+        "type": "devices.capabilities.mode",
+        "instance": "fan_speed",
+        "parameters": {
+          "instance": "fan_speed",
+          "modes": [
+            {
+              "value": "low"
+            },
+            {
+              "value": "high"
+            }
+          ]
+        },
+        "writable": true,
+        "value": "low",
+        "quality": "cached",
+        "source": "mqtt",
+        "availability": {
+          "can_control": true,
+          "reason": "recent_producer_observation",
+          "evidence_at": 1795100000.0
+        },
+        "can_control": true
+      },
+      {
+        "type": "devices.capabilities.color_setting",
+        "instance": "rgb",
+        "parameters": {
+          "instance": "rgb",
+          "color_model": "rgb"
+        },
+        "writable": true,
+        "value": 16711680,
+        "quality": "unknown",
+        "source": "mqtt",
+        "availability": {
+          "can_control": true,
+          "reason": "recent_producer_observation",
+          "evidence_at": 1795100000.0
+        },
+        "can_control": true
+      }
+    ],
+    "properties": []
+  },
+  "scenarios_example": {
+    "ok": true,
+    "api_version": "1.0",
+    "controller_id": "SA-SERIAL",
+    "catalog_revision": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+    "scenarios": [],
+    "runs": [],
+    "notify_queue": [],
+    "library": "",
+    "rules_engine": 1
+  },
+  "config_example": {
+    "command_id": "53dc0dc9-4b40-4a2f-b5e3-090093fa8ada",
+    "lease_id": "eb5b7825-cee5-4dda-a26b-0a2e402eb914",
+    "operation": "room.upsert",
+    "target": {
+      "room_id": "existing-room-id"
+    },
+    "expected_revision": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+    "data": {
+      "name": "Living room",
+      "devices": [
+        "lamp1"
+      ]
+    }
+  },
+  "config_create": "For a newly created room/group/device/scenario, target may be empty; existing IDs go in target.<kind>_id, never a conflicting data.id. Delete/rename/run/enable require target. data is the existing validated board document; scenario.enable data.enabled is boolean. Revision is snapshot.catalog_revision, including rules definitions but excluding runtime journal fields.",
+  "quality": "live = recent non-retained MQTT; cached = recent retained MQTT; unknown = absent/stale/unreachable. value may be retained last-known with unknown quality and must not be presented as confirmed live. No fake last-seen timestamps.",
+  "operations": [
+    "device.control",
+    "device.upsert",
+    "device.delete",
+    "device.rename",
+    "room.upsert",
+    "room.delete",
+    "group.upsert",
+    "group.delete",
+    "scenario.upsert",
+    "scenario.delete",
+    "scenario.run",
+    "scenario.enable"
+  ],
+  "unsupported_features": "Metadata feature value 0 means unavailable: absent rules/history packages, cloud-only account/claim/push, arbitrary scenario-code editing, SSE. GET unsupported resource returns422 with scenarios_unavailable/history_unavailable; no success-shaped empty synthetic response. scenario.stop is not advertised in revision1 until an explicit running-scene cancellation contract exists.",
+  "config_commands": "All mutations use /commands with a lease and command_id. Configuration operations additionally require expected_revision and data object. No direct PUT/DELETE in revision 1, no arbitrary code/exec or arbitrary MQTT topic publication.",
+  "auth": {
+    "lan": "panel session cookie; all POST require X-SA02M-CSRF",
+    "cloud": "cloud session+owner/admin/enrolled ACL before RPC; board accepts RPC only through existing authenticated cloud-control session",
+    "csrf_error": "403 with ok:false,error:csrf,error_code:E_CSRF"
+  },
+  "compatibility": "Legacy CGI/routes unchanged. Feature discovery before writes, never replay or automatic transport failover after a command timeout. Unsupported capabilities are explicit; feature metadata reflects actual backend availability.",
+  "control_availability": "writable is static permission. can_control/availability is runtime permission, independent of value quality: an absolute command can use cached value only with a recent non-retained same-producer poll/uptime heartbeat and connected local broker. Retained-only data is never write permission. Explicit device-offline rejects. No inferred relative/toggle commands.",
+  "scenarios_get": "GET /scenarios lists summaries; GET /scenarios?id=<scenario_id> returns scenario full document plus catalog_revision. Missing is404; absent rules422.",
+  "cloud_registration": {
+    "profile": "cloud",
+    "header": "X-Home-API-Version",
+    "value": "1.0",
+    "binding": "authenticated Socket.IO session SID",
+    "meaning": "installed protocol capability, independent of dispatcher availability"
+  },
+  "legacy_discovery_example": {
+    "status": 422,
+    "body": {
+      "ok": false,
+      "api_version": "1.0",
+      "error": "home_api_unsupported",
+      "legacy_control_supported": true,
+      "discovery_source": "authenticated_registration"
+    }
+  },
+  "legacy_discovery_policy": "Only authenticated currently registered old peer with absent version header is legacy. Unsupported or invalid version is legacy_control_supported=false. Offline503/timeout504 never authorizes fallback; no POST replay."
+}

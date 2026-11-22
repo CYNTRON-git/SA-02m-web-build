@@ -108,6 +108,15 @@ class _MainHarness(unittest.TestCase):
 
 
 class MainWiringTests(_MainHarness):
+    def test_one_use_upgrade_skips_only_explicit_boot_and_keeps_heartbeat(self):
+        for consumed in (True, False):
+            with self.subTest(consumed=consumed), \
+                    mock.patch("sa02m_rules.upgrade.consume_skip_boot", return_value=consumed), \
+                    mock.patch.object(rules_service.RulesApp, "boot") as boot:
+                calls = self.run_main(_Client()).calls
+                self.assertEqual(boot.call_count, 0 if consumed else 1)
+                self.assertIn(("publish", "/devices/sa02m-rules/controls/home_api_v1", "1", 0, False), calls)
+
     def test_the_will_is_armed_before_connect_retained_offline(self):
         calls = self.run_main(_Client()).calls
         names = [c[0] for c in calls]

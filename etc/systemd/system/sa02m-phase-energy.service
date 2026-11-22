@@ -1,0 +1,28 @@
+[Unit]
+Description=SA-02m software phase energy correction
+After=local-fs.target mosquitto.service
+Wants=mosquitto.service
+
+[Service]
+Type=simple
+DynamicUser=yes
+StateDirectory=sa02m-phase-energy
+StateDirectoryMode=0700
+UMask=0077
+ExecStart=/usr/bin/python3 /usr/local/libexec/sa02m-phase-energy/mqtt_service.py
+Restart=on-failure
+RestartSec=5
+TimeoutStopSec=10
+NoNewPrivileges=yes
+PrivateTmp=yes
+PrivateDevices=yes
+ProtectSystem=strict
+ProtectHome=yes
+RestrictAddressFamilies=AF_UNIX AF_INET
+IPAddressDeny=any
+IPAddressAllow=localhost
+MemoryMax=48M
+TasksMax=8
+
+[Install]
+WantedBy=multi-user.target

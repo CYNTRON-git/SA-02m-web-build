@@ -869,3 +869,8 @@ mosquitto_sub -h 127.0.0.1 -v -t '/devices/sa02m-bridge/#'
 # Внешний доступ (порт 1884)
 mosquitto_sub -h 192.168.1.136 -p 1884 -u mqttuser -P <pass> -v -t '/devices/#'
 ```
+
+## Программная энергия фаз
+
+Независимые показания и setters виртуального `sa02m-phase-energy` описаны в
+[контракте программной коррекции](contracts/phase-energy-correction.md).

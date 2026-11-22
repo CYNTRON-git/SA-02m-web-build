@@ -33,6 +33,11 @@ from sa02m_alice.common.fw_version import get_fw_version  # noqa: E402
 
 
 class TestHandshakeHeaders(unittest.TestCase):
+    def test_home_protocol_advertised_only_on_authenticated_cloud_profile(self):
+        cloud = AliceSocketIO(profile=C.PROFILE_CLOUD)
+        self.assertEqual(cloud._build_headers("test-token")["X-Home-API-Version"], "1.0")
+        self.assertNotIn("X-Home-API-Version", AliceSocketIO()._build_headers())
+
     def test_fw_and_hw_sent_when_non_empty(self):
         sio = AliceSocketIO(
             controller_sn="SN123",

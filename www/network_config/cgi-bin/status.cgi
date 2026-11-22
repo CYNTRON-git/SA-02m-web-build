@@ -1,9 +1,14 @@
 #!/bin/bash
-# shellcheck disable=SC1091
-. "$(dirname "$0")/lib_web_auth.sh"
-echo "Content-type: application/json; charset=UTF-8"
-echo "Cache-Control: no-cache"
-echo ""
+# The local collector sources these same metric builders. Sourcing is a Bash
+# invocation property, never a request/query flag. Every executed CGI keeps the
+# session check before any metric work; the collector has no HTTP bypass.
+if [[ "${BASH_SOURCE[0]}" == "$0" ]]; then
+    # shellcheck disable=SC1091
+    . "$(dirname "$0")/lib_web_auth.sh"
+    echo "Content-type: application/json; charset=UTF-8"
+    echo "Cache-Control: no-cache"
+    echo ""
+fi
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
@@ -49,7 +54,7 @@ check_auth() {
 # client. (The former login-page warm-up prefetched part=priority, which was
 # never in the carve-out anyway, so it already returned unauthorized — closing
 # this loses no working behaviour.)
-if ! check_auth; then
+if [[ "${BASH_SOURCE[0]}" == "$0" ]] && ! check_auth; then
     echo '{"error":"unauthorized"}'
     exit 0
 fi
@@ -143,7 +148,7 @@ status_emit_snapshot() {
     local payload=$1 measured=$2 ttl=$3 now age
     now=$EPOCHSECONDS
     age=$(( now - measured ))
-    if (( age < 0 )) || [[ "$payload" == *'"hw_poll_disabled":1'* ]]; then age=null; fi
+    if (( age < 0 )) || [[ "$payload" =~ \"hw_poll_disabled\"[[:space:]]*:[[:space:]]*1 ]]; then age=null; fi
     if [ "${STATUS_PART:-}" = services ]; then
         status_port_coordinator
         payload="${payload%?},\"port_coordinator\":${STATUS_PORT_COORDINATOR}}"
@@ -2133,7 +2138,14 @@ gather_hardware_metrics() {
     HW_POLL_DISABLED=0
     if ! status_block_enabled hardware; then
         HW_POLL_DISABLED=1
-        sa02m_hw_metrics_cache_refresh
+        # Disabled polling may display an old readback but must never refresh
+        # I2C/GPIO, including a missing/expired cache and the no_cache path.
+        HW_DO=-1 HW_BEEP=-1 HW_LED=-1 HW_USB=-1
+        HW_I2C_BUSY=0 HW_I2C_EXP_ABS=0
+        HW_BACKEND=$(sa02m_hw_backend)
+        sa02m_hw_detect_channel_pins
+        sa02m_hw_metrics_cache_load || true
+        sa02m_hw_normalize_capabilities
         return 0
     fi
 
@@ -2764,6 +2776,9 @@ build_full_json() {
     RS485_JSON=$(build_rs485_array)
     print_full_json
 }
+
+# A local source loads the definitions but cannot dispatch a web request.
+if [[ "${BASH_SOURCE[0]}" != "$0" ]]; then return 0; fi
 
 case "$STATUS_PART" in
     cpu)

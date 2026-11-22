@@ -247,6 +247,11 @@ if [ "$_MQTT_DEPS_OK" = 1 ]; then
     esac
 fi
 
+# Independent MQTT-only service; never opens a serial port.
+if [ "$_MQTT_DEPS_OK" = 1 ]; then
+    bash "$SCRIPT_DIR/install-phase-energy.sh" || exit 1
+fi
+
 # ── 4. CGI-скрипты веб-интерфейса ────────────────────────────────────────────
 log INFO "Установка CGI MQTT..."
 CGI_SRC="$WWW_DIR/cgi-bin"

@@ -202,7 +202,7 @@ class AliceSocketIO:
         base = (C.EVT_DEVICES_LIST, C.EVT_DEVICES_QUERY, C.EVT_DEVICES_ACTION,
                 C.EVT_DEVICES_RENAME, C.EVT_DEVICES_ROOMS, C.EVT_DEVICES_SCENARIOS)
         if self._profile == C.PROFILE_CLOUD:
-            return base + (C.EVT_DEVICES_GROUPS,)
+            return base + (C.EVT_DEVICES_GROUPS, "home_api_v1")
         return base + (C.EVT_CONTROLLER_UNLINK,)
 
     def _build_headers(self, token: str = "") -> Dict[str, str]:
@@ -221,6 +221,10 @@ class AliceSocketIO:
         headers = {"X-Client-Version": self._client_version}
         if self._profile == C.PROFILE_CLOUD:
             headers[C.HDR_CONTROL_TOKEN] = token
+            # Protocol support of this installed bridge, not daemon health.
+            # A failed new daemon must remain a service error, never trigger
+            # legacy write fallback. The authenticated hub stores this per SID.
+            headers["X-Home-API-Version"] = "1.0"
         else:
             headers["X-Controller-SN"] = self._controller_sn or "unknown"
         if self._fw_version:

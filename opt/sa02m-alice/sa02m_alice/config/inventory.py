@@ -449,15 +449,18 @@ def led_readonly_source(*, follow_changes=False):
     families = {}
     unavailable = False
     previous_files = None
+    retry = False
 
     def refresh():
-        nonlocal families, unavailable, previous_files
+        nonlocal families, unavailable, previous_files, retry
         files = bridge_config_fingerprint() if follow_changes else ()
-        if files != previous_files:
+        if files != previous_files or retry:
             updated, unavailable = bridge_families.load_families(topics.YAML_CANDIDATES, topics._load_yaml)
             families = bridge_families.merge_families(families, updated)
+            # A failed live read can be repaired in place with identical stat fields.
+            retry = follow_changes and updated is None
             previous_files = files
-        return files
+        return files, retry, unavailable
 
     def readonly(topic):
         path = str(topic or "").strip()

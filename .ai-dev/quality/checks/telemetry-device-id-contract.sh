@@ -92,6 +92,9 @@ SANCTIONED_PREFIXES=(
     '/devices/sa02m-rules-'   # per-scenario VIRTUAL device sa02m-rules-{id} (docs/MQTT_TOPICS.md:100; docs/contracts/cloud-scenarios.md §MQTT mirror) — retained on deployed boards since 1.0.6.37, a rename would orphan that subtree
     '/devices/sa02m-audio/'   # the audio recorder's FIXED device id sa02m-audio (docs/contracts/audio-recorder.md §2, 1.0.7.4) — a subsystem id like sa02m-bridge, never hostname-derived; the trailing slash keeps the entry from excusing any longer sa02m-audio* id
     '/devices/sa02m-rules/'   # the scenario ENGINE's own availability device, its LWT flag /devices/sa02m-rules/meta/error (docs/contracts/cloud-scenarios.md §MQTT mirror) — the bridge-status pattern; the trailing slash keeps it to that one exact id
+    '/devices/sa02m-phase-energy/' # independent software phase-energy controls and LWT, never hostname-derived
+    "/devices/sa02m-phase-energy'" # exact Python root literal; no longer id admitted
+    '/devices/sa02m-phase-energy`' # exact documented root; no longer id admitted
 )
 
 # Sweep a LIST of files in three grep invocations rather than three per file —
@@ -163,6 +166,9 @@ printf '%s\n' '/devices/sa02m-bridge/controls/devices_online' \
               "/devices/sa02m-audio'" \
               'sa02m-<serial> cloud enrollment' \
               'RAW_IMG="$WORK/sa02m-${STAMP}-raw.img"' \
+              '/devices/sa02m-phase-energy/meta/error' \
+              "/devices/sa02m-phase-energy'" \
+              '/devices/sa02m-phase-energy`' \
               '/devices/SA-02m/controls/beeper' > "$GOOD"
 grep -q "$PAT1" "$BAD" || fail "A0: pattern 1 no longer matches its known-bad fixture"
 grep -qF "$PAT2" "$BAD" || fail "A0: pattern 2 no longer matches its known-bad fixture"
@@ -174,6 +180,12 @@ fi
 printf '%s\n' '/devices/sa02m-audio-unexpected/controls/power' > "$TMP/audio-suffix.txt"
 if ! sweep_file "$TMP/audio-suffix.txt" | grep -q .; then
     fail "A0: exact quoted audio id exemption admitted a different device id"
+fi
+printf '%s\n' '/devices/sa02m-phase-energy-unexpected/controls/power' \
+              "/devices/sa02m-phase-energy-unexpected'" \
+              '/devices/sa02m-phase-energy-unexpected`' > "$TMP/phase-energy-suffix.txt"
+if [ "$(sweep_file "$TMP/phase-energy-suffix.txt" | wc -l)" -ne 3 ]; then
+    fail "A0: exact phase-energy subsystem exemptions admitted a different device id"
 fi
 [ "$FAIL" -eq 0 ] && ok "patterns detect the known-bad forms and spare the look-alikes"
 

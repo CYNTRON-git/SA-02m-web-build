@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import colorsys
+from decimal import Decimal, InvalidOperation
 from . import capability_values
 
 from typing import Any, Dict, Optional, Tuple
@@ -132,6 +133,26 @@ def mqtt_to_range(
     }
 
 
+
+def _energy_baseline_to_mqtt(value: Any, params: Dict[str, Any], relative: bool,
+                             range_scale: float) -> Tuple[Optional[str], Optional[str]]:
+    """Keep the cloud-only kWh baseline exact; never clamp or round a command."""
+    if relative or range_scale != 1.0:
+        return None, C.ERR_INVALID_VALUE
+    try:
+        bounds = params['range']
+        amount = Decimal(str(value))
+        low, high = Decimal(str(bounds['min'])), Decimal(str(bounds['max']))
+        step = Decimal(str(bounds['precision']))
+        if (not all(n.is_finite() for n in (amount, low, high, step))
+                or step != Decimal('.001') or low < 0 or not low <= amount <= high
+                or amount % step != 0):
+            return None, C.ERR_INVALID_VALUE
+    except (InvalidOperation, KeyError, TypeError, ValueError):
+        return None, C.ERR_INVALID_VALUE
+    return format(amount if amount else Decimal(0), '.3f'), None
+
+
 def yandex_to_range(
     state: Dict[str, Any],
     current_raw: Optional[str] = None,
@@ -153,6 +174,8 @@ def yandex_to_range(
     relative = bool(state.get("relative"))
     if isinstance(value, bool):
         return None, C.ERR_INVALID_VALUE
+    if instance == 'electricity_meter' and params.get('unit') == 'unit.kilowatt_hour':
+        return _energy_baseline_to_mqtt(value, params, relative, range_scale)
     try:
         num = float(value)
     except (TypeError, ValueError, OverflowError):

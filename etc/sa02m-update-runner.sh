@@ -931,6 +931,7 @@ manifest = {
             "sa02m-alice-client",
             "sa02m-alice-config",
             "sa02m-cloud-control",
+            "sa02m-home-api",
             # HomeKit bridge: optional module, installed stopped/disabled
             # (scripts/06c-homekit.sh `app off`); it holds /opt/sa02m-homekit
             # and the Alice registry code in memory.
@@ -1667,7 +1668,7 @@ PY
     local last_patch=$SECONDS every=${SA02M_UPDATE_PROGRESS_S:-3}
     case "$every" in ''|*[!0-9]*) every=3 ;; esac
 
-    local src_rel dst mode owner src_abs bak pct
+    local src_rel dst mode owner src_abs bak pct home_masked home_mask_path home_mask_target
     while IFS= read -r -d '' src_rel && IFS= read -r -d '' dst \
           && IFS= read -r -d '' mode && IFS= read -r -d '' owner; do
         src_abs="$overlay/$src_rel"
@@ -1677,7 +1678,27 @@ PY
             return 1
         fi
         bak=""
-        if [ -e "$dst" ] && is_unchanged "$src_abs" "$dst" "$mode" "$owner"; then
+        home_masked=0
+        if [ "$dst" = /etc/systemd/system/sa02m-home-api.service ]; then
+            # Preserve operator policy before backup/journal/install. A mask
+            # cannot be copied and fdatasync'd as a normal file; a new /etc
+            # fragment would also shadow a runtime /run mask. Other targets
+            # keep the existing deploy policy. Processed skips still count,
+            # exactly like the unchanged-file branch below.
+            for home_mask_path in "$dst" /run/systemd/system/sa02m-home-api.service; do
+                if [ -L "$home_mask_path" ]; then
+                    home_mask_target=$(readlink "$home_mask_path") || {
+                        APPLY_FAIL_REASON="cannot inspect Home API mask: $home_mask_path"
+                        log "ERROR: $APPLY_FAIL_REASON"
+                        return 1
+                    }
+                    [ "$home_mask_target" != /dev/null ] || home_masked=1
+                fi
+            done
+        fi
+        if [ "$home_masked" -eq 1 ]; then
+            log "apply: preserve masked Home API unit $dst"
+        elif [ -e "$dst" ] && is_unchanged "$src_abs" "$dst" "$mode" "$owner"; then
             # Already installed identically (content + mode + owner) — skip the
             # backup, the journal line, AND the install entirely. Suppressing all
             # three together keeps content ⇄ backup ⇄ journal consistent, so a later

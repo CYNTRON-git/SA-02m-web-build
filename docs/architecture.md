@@ -13,7 +13,9 @@
 
 | Вопрос | Единственный дом |
 |---|---|
-| Стек (nginx + fcgiwrap + Bash CGI, vanilla JS без сборки), вкладки и подсистемы, архитектура опроса дашборда, дисциплина версий | `docs/agent-rules/sa02m-domain.md` |
+| Независимые программные начальные показания энергии фаз, виртуальный MQTT-адаптер и его узкий пилот | [Коррекция энергии фаз](contracts/phase-energy-correction.md) |
+| Стек (nginx + fcgiwrap + Bash CGI, vanilla JS без сборки), вкладки и подсистемы, дисциплина версий | `docs/agent-rules/sa02m-domain.md` |
+| Фоновый RAM-сборщик dashboard, авторизованный готовый пакет, граница CGI/браузера и legacy fallback | [Опрос статусов](contracts/status-polling.md) |
 | Исключительное владение UART, приостановка/восстановление служб, привилегированный координатор и его локальный протокол | [docs/contracts/port-ownership.md](contracts/port-ownership.md) |
 | Слои и границы: устройство → CGI → fetch → DOM; полы качества для CGI/JS/CSS | `docs/agent-rules/web-code-rigor.md` |
 | Контракты внешних поверхностей (MQTT-топики, CGI-эндпоинты, облако, Алиса, сценарии, образ, ядро) | `docs/contracts/` (сценарии: `cloud-scenarios.md`; межпроектный Python-API `sa02m_devices` для стенда HardPy: `sa02m-devices-python-api.md`) |
@@ -25,6 +27,7 @@
 | Раскладка репозитория как overlay файловой системы устройства | `README.md` → «Структура проекта» |
 | Живой перечень служб/демонов/эндпоинтов | само дерево (`ls -d opt/*/`, `ls www/network_config/cgi-bin/*.cgi`) |
 | Что именно проверяется на «зелено» | `.ai-dev/quality/tools.json` |
+| Единый LAN/cloud Home dispatcher, receipts, ревизии и runtime capabilities | [Home API v1](contracts/home-api-v1.md); канонические wire examples — `contracts/home-api-v1-wire.json` |
 | Знание, ещё не заслужившее канонического дома | `.ai-dev/notes/` |
 
 ## Оговорка про ссылки самого протокола

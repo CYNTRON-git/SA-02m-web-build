@@ -1,0 +1,27 @@
+[Unit]
+Description=SA-02m background dashboard snapshot
+After=local-fs.target
+
+[Service]
+Type=simple
+User=www-data
+Group=www-data
+RuntimeDirectory=sa02m-dashboard
+RuntimeDirectoryMode=0750
+UMask=0027
+ExecStart=/usr/bin/python3 /usr/local/libexec/sa02m-status-cache.py
+Restart=on-failure
+RestartSec=5
+TimeoutStopSec=25
+KillMode=control-group
+Nice=10
+CPUWeight=10
+MemoryMax=96M
+TasksMax=64
+ProtectHome=true
+ProtectSystem=full
+# Read-only status helpers already use the panel's narrow sudo policy.
+# NoNewPrivileges would disable those helpers; no new sudo grant is added.
+
+[Install]
+WantedBy=multi-user.target

@@ -2190,6 +2190,7 @@ async function shOpenModal() {
   if (!m) return;
   shSetBindMsg('', true);
   m.removeAttribute('hidden');
+  if (typeof window.sa02mAliceModalActive === 'function') window.sa02mAliceModalActive(true);
   document.addEventListener('keydown', shModalEsc);
   shRefresh();
   shSyncHomekitField();
@@ -2208,6 +2209,7 @@ async function shOpenModal() {
 function shCloseModal() {
   const m = $('sh-modal');
   if (m) m.setAttribute('hidden', '');
+  if (typeof window.sa02mAliceModalActive === 'function') window.sa02mAliceModalActive(false);
   shPickClose();
   document.removeEventListener('keydown', shModalEsc);
   shCancelEdit();

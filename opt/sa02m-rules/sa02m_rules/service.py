@@ -378,6 +378,10 @@ class RulesApp:
             LOG.warning(fmt, topic, *args)
 
     def _apply_message(self, topic: str, raw: str, retain: bool = False) -> None:
+        if topic == "/devices/sa02m-rules/controls/home_command/on":
+            from .home_command import execute
+            execute(raw, retain, self.engine, self.reload)
+            return
         parts = topic.strip("/").split("/")
         # devices / <id> / controls / <name> / on   — a command, ours only
         if len(parts) == 5:
@@ -479,6 +483,8 @@ def main() -> int:
         # does not storm every 5 s (sa02m-cloud-control parity, verdict A17).
         LOG.error("paho-mqtt missing — scenario engine in standby (exit 0)")
         return 0
+    from .upgrade import consume_skip_boot
+    skip_boot = consume_skip_boot()
     lat, lon = _geo()
     client = mqtt.Client(client_id="sa02m-rules", clean_session=True)
     app = RulesApp(client, PATH, lat, lon)
@@ -494,15 +500,24 @@ def main() -> int:
     arm_availability(client)
     client.connect(MQTT_HOST, MQTT_PORT, 30)
     client.loop_start()
-    app.boot()
+    if not skip_boot:
+        app.boot()
+    else:
+        LOG.info("upgrade marker consumed: explicit boot triggers skipped once")
 
     def _term(_signum, _frame):
         raise SystemExit(0)  # systemd stop: unwind into the flush below
 
     signal.signal(signal.SIGTERM, _term)
     try:
+        home_heartbeat = 0.0
         while True:
             app.tick()
+            if time.monotonic() >= home_heartbeat:
+                # Non-retained proof that the running engine supports the
+                # one-use claim protocol; a stale old process cannot advertise it.
+                client.publish("/devices/sa02m-rules/controls/home_api_v1", "1", qos=0, retain=False)
+                home_heartbeat = time.monotonic() + 15
             time.sleep(1)
     except (KeyboardInterrupt, SystemExit):
         pass

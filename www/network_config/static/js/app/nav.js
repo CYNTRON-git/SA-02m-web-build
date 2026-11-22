@@ -87,27 +87,39 @@ function initTopbarAutoHide() {
   var app = document.querySelector('.app');
   var main = document.querySelector('.main');
   if (!app || !main) return;
-  var lastY = 0;
+  var root = document.documentElement;
+  var mainState = { y: main.scrollTop, height: main.clientHeight, extent: main.scrollHeight };
+  var windowState = { y: window.scrollY || root.scrollTop || 0,
+    height: root.clientHeight, extent: root.scrollHeight };
   var shortLandscape = function () {
     return window.matchMedia
       && window.matchMedia('(orientation: landscape) and (max-height: 720px)').matches;
   };
-  var onScroll = function (y) {
-    if (!shortLandscape()) {
+  var onScroll = function (y, height, extent, state) {
+    var lastY = state.y;
+    var geometryChanged = height !== state.height || extent !== state.extent;
+    state.y = y;
+    state.height = height;
+    state.extent = extent;
+    if (!shortLandscape() || y <= 8) {
       if (app.classList.contains('topbar-hidden')) app.classList.remove('topbar-hidden');
-      lastY = y;
       return;
     }
+    // Hiding/showing the header resizes the scrollport and can clamp scrollTop
+    // near the bottom. Rebase that layout sample, not a new user direction.
+    // Each scrollport keeps its own baseline; later real gestures still apply.
+    if (geometryChanged) return;
     if (y > lastY + 4 && y > 48) {
       app.classList.add('topbar-hidden');
-    } else if (y < lastY - 4 || y <= 8) {
+    } else if (y < lastY - 4) {
       app.classList.remove('topbar-hidden');
     }
-    lastY = y;
   };
-  main.addEventListener('scroll', function () { onScroll(main.scrollTop); }, { passive: true });
+  main.addEventListener('scroll', function () {
+    onScroll(main.scrollTop, main.clientHeight, main.scrollHeight, mainState);
+  }, { passive: true });
   window.addEventListener('scroll', function () {
-    onScroll(window.scrollY || document.documentElement.scrollTop || 0);
+    onScroll(window.scrollY || root.scrollTop || 0, root.clientHeight, root.scrollHeight, windowState);
   }, { passive: true });
 }
 
