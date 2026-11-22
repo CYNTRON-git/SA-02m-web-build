@@ -90,14 +90,17 @@ try {
  mode='status-build-error';
  await page.evaluate(()=>fetchBackgroundPart('network',applyNetworkStatus,true));
  await page.waitForFunction(()=>statusFailures.network===1&&!_statusFetchInFlight);
- assert.match(await page.locator('#dashboard-poll-alert').innerText(),/Ошибка обновления/);
+ assert.equal(await page.locator('#dashboard-poll-alert, #port-operation-status').count(),0);
+ assert.match(await page.locator('[data-status-parts="network"]').first().getAttribute('title'),/Ошибка обновления/);
+ assert.equal(await page.locator('[data-status-parts="network"]').first().getAttribute('data-status-state'),'error');
  mode='normal';await page.evaluate(()=>fetchBackgroundPart('network',applyNetworkStatus,true));
  await page.waitForFunction(()=>statusFailures.network===0&&!_statusFetchInFlight);
  await page.evaluate(()=>{noteStatusFailure('priority',new Error('offline'));noteStatusSuccess('network',{_status_meta:{age_s:0}});});
- const alert=await page.locator('#dashboard-poll-alert').innerText();
+ const alert=await page.locator('[data-status-parts="priority"]').first().getAttribute('title');
  assert.match(alert,/^CPU, температура, ОЗУ, диск: /);assert.doesNotMatch(alert,/priority/);
  await page.evaluate(()=>{noteStatusSuccess('priority',{_status_meta:{age_s:statusStaleAfter('priority',0)/1000+1}});});
- assert.match(await page.locator('#dashboard-poll-alert').innerText(),/устарели/);
+ assert.match(await page.locator('[data-status-parts="priority"]').first().getAttribute('title'),/устарели/);
+ assert.equal(await page.locator('[data-status-parts="priority"]').first().getAttribute('data-status-state'),'stale');
  for(const theme of ['dark','light']) for(const variant of ['sa02m-1eth','sa02m-2eth']) for(const locale of ['ru','en']) {
   await page.evaluate(({theme,variant,locale})=>{document.documentElement.setAttribute('data-theme',theme);applyVariantVisibility(variant);if(window.sa02mI18n)window.sa02mI18n.setLang(locale);},{theme,variant,locale});
   assert.ok(await page.evaluate(()=>document.documentElement.scrollWidth<=innerWidth+1));

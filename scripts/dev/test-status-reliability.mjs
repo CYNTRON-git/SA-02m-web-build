@@ -8,7 +8,8 @@ const root = new URL('../../', import.meta.url);
 const source = readFileSync(new URL('www/network_config/static/js/app/status.js',root),'utf8');
 function world(fetcher=fetch, overrides={}) {
  const elements = new Map();
- const document={getElementById(id){ if(!elements.has(id)) elements.set(id,{style:{},textContent:'',dataset:{}}); return elements.get(id); },querySelectorAll(){return [];}};
+ for(const part of ['priority','network','storage','services','uptime','system','hardware','rs485','load','time']) elements.set('card-'+part,{dataset:{statusParts:part},title:'',querySelector(){return null;}});
+ const document={getElementById(id){ if(!elements.has(id)) elements.set(id,{style:{},textContent:'',dataset:{}}); return elements.get(id); },querySelectorAll(selector){return selector==='#tab-dashboard [data-status-parts]' ? [...elements.entries()].filter(([id])=>id.startsWith('card-')).map(([,el])=>el) : [];}};
  const c=vm.createContext(Object.assign({fetch:fetcher,AbortController,DOMException,setTimeout,clearTimeout,setInterval,clearInterval,Date,document,window:{},console},overrides));
  vm.runInContext(source.slice(0,source.indexOf('function cssVar')),c);
  return {c,elements,run:s=>vm.runInContext(s,c)};
@@ -24,7 +25,7 @@ test('S1: headers plus stalled body times out and releases its controller',async
 });
 test('S2: one successful part cannot clear another part failure',()=>{
  const {run,elements}=world();run("noteStatusFailure('priority',new Error('offline'));noteStatusSuccess('network')");
- assert.equal(elements.get('dashboard-poll-alert').style.display,'block');
+ assert.equal(run('statusFreshness.priority.state'),'error'); assert.equal(elements.get('card-priority').dataset.statusState,'error'); assert.equal(run('statusFreshness.network.state'),'unknown');
 });
 test('S1: late body from a retired generation cannot be applied',async()=>{
  let resolve; const {run}=world(async()=>({ok:true,json:()=>new Promise(r=>{resolve=r})}));
@@ -174,10 +175,10 @@ test('F8: a stopped/disabled/masked/failed service stays red; transitions and th
  for(const state of ['activating','deactivating','paused'])assert.equal(cls(state),'badge badge-unk',state);
  assert.equal(cls('active'),'badge badge-ok');
 });
-test('F6/F7: the freshness banner names widgets and takes the TTL from the answer',()=>{
+test('F6/F7: local freshness names widgets and takes the TTL from the answer',()=>{
  const {run,elements,c}=world();
  run("noteStatusFailure('priority',new Error('offline'))");
- const text=elements.get('dashboard-poll-alert').textContent;
+ const text=elements.get('card-priority').title;
  assert.match(text,/^CPU, температура, ОЗУ, диск: Ошибка обновления$/);assert.doesNotMatch(text,/priority/);
  // ttl_s moves the deadline: the same age is stale under ttl 10 and fresh under ttl 45
  c.age=run("statusStaleAfter('storage',10000)")/1000+1;
@@ -186,7 +187,7 @@ test('F6/F7: the freshness banner names widgets and takes the TTL from the answe
  run("noteStatusSuccess('storage',{_status_meta:{age_s:age,ttl_s:45}})");assert.equal(run('statusFreshness.storage.state'),'fresh');
  c.age=run("statusStaleAfter('services',45000)")/1000+1;
  run("noteStatusSuccess('services',{_status_meta:{age_s:age,ttl_s:45}})");assert.equal(run('statusFreshness.services.state'),'stale');
- assert.match(elements.get('dashboard-poll-alert').textContent,/Службы: Данные устарели/);
+ assert.match(elements.get('card-services').title,/Службы: Данные устарели/);
  assert.equal(run('typeof STATUS_SOURCE_TTL_MS'),'undefined');
 });
 test('F13: the JSON guard logs out only after auth_check confirms the session is gone',async()=>{
@@ -215,7 +216,7 @@ const BENCH_TTL_S={storage:10,network:8,system:30,services:45,hardware:10,rs485:
 test('bench 136: no part goes stale between two on-time 200s; a missed cycle does; ticks never clear it',()=>{
  let nowMs=0; class Clock extends Date { static now(){return nowMs;} }
  const {run,c,elements}=world(fetch,{Date:Clock});
- const alertText=()=>elements.get('dashboard-poll-alert').textContent;
+ const alertText=()=>[...elements.entries()].filter(([id])=>id.startsWith('card-')&&run('statusFreshness.'+id.slice(5))).map(([,el])=>el.title).filter(Boolean).join('; ');
  const note=(part)=>{c.part=part;c.meta={age_s:0,ttl_s:BENCH_TTL_S[part]||0};run("noteStatusSuccess(part,{_status_meta:meta})");};
  const flaps=[];let i=0;
  for(let t=0;t<=150;t++) {
@@ -253,14 +254,14 @@ test('services: an answer slower than the old 8 s timeout but inside the cold-bu
  assert.equal(run("statusRequestTimeout('priority',0)"),3000,'fast parts keep the short timeout');
  assert.ok(run("statusRequestTimeout('services_fast',0)")<run("statusRequestTimeout('services',0)"),'the init one-shot is best-effort and must not hold the queue 20 s');
 });
-test('the freshness banner is written only when its text changes',()=>{
- const {run,elements}=world();let writes=0,text='',display='none';
- elements.set('dashboard-poll-alert',{style:{get display(){return display;},set display(v){display=v;writes++;}},get textContent(){return text;},set textContent(v){text=v;writes++;},dataset:{}});
+test('local freshness is written only when its state or text changes',()=>{
+ const {run,elements}=world();let writes=0,text='',state='unknown';
+ elements.set('card-priority',{get title(){return text;},set title(v){text=v;writes++;},querySelector(){return null;},dataset:{statusParts:'priority',get statusState(){return state;},set statusState(v){state=v;writes++;}}});
  run("noteStatusFailure('priority',new Error('offline'))");
- const shown=writes;assert.ok(shown>0);assert.equal(display,'block');
+ const shown=writes;assert.ok(shown>0);assert.equal(state,'error');
  run('renderStatusFreshness();renderStatusFreshness();renderStatusFreshness()');
  assert.equal(writes,shown,'unchanged text ⇒ no DOM write (no 1 s layout thrash)');
- run("noteStatusSuccess('priority',{_status_meta:{age_s:0}})");assert.equal(display,'none');assert.equal(text,'');
+ run("noteStatusSuccess('priority',{_status_meta:{age_s:0}})");assert.equal(state,'fresh');assert.equal(text,'');
  const hidden=writes;run('renderStatusFreshness()');assert.equal(writes,hidden);
 });
 

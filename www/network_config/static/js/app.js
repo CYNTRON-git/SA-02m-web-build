@@ -6,7 +6,7 @@
 'use strict';
 
 /** Версия веб-интерфейса — см. www/network_config/VERSION или scripts/sync-app-version.py */
-const APP_VERSION = '1.0.7.37';
+const APP_VERSION = '1.0.7.38';
 
 function uiT(s) {
   return window.sa02mI18n ? window.sa02mI18n.t(String(s)) : String(s);
@@ -147,10 +147,15 @@ function sa02mBootstrapCsrfToken() {
   return sa02mRefreshCsrfToken();
 }
 
-function sa02mNoteCsrfTransitStrip() {
+function dashboardNoticeActive() {
+  const pane = document.getElementById('tab-dashboard');
+  return !!(pane && pane.classList && pane.classList.contains('active'));
+}
+
+function sa02mNoteCsrfTransitStrip(originDashboard) {
   window.SA02M_CSRF_BLOCKED = 'no_header';
   if (typeof toast === 'function') {
-    toast(uiT('Прокси не пропускает заголовок X-SA02M-CSRF — действие через этот путь невозможно. Откройте панель по локальному адресу или обновите облачный сервис.'), 'error', 8000);
+    toast(uiT('Прокси не пропускает заголовок X-SA02M-CSRF — действие через этот путь невозможно. Откройте панель по локальному адресу или обновите облачный сервис.'), 'error', 8000, originDashboard);
   }
 }
 
@@ -162,7 +167,7 @@ function sa02mHandleCsrfRejection(res, body, args, ctx) {
   const reason = body && typeof body.reason === 'string' ? body.reason : '';
   const sent = sa02mSentCsrfToken(args);
   if (reason === 'no_header' && sent) {              // the proxy stripped it: transit, not session
-    sa02mNoteCsrfTransitStrip();
+    sa02mNoteCsrfTransitStrip(ctx.originDashboard);
     return Promise.resolve(res);
   }
   return sa02mRefreshCsrfToken(ctx.fetch).then(function (tok) {
@@ -172,7 +177,7 @@ function sa02mHandleCsrfRejection(res, body, args, ctx) {
     const retryable = (typeof a0 === 'string' || (typeof URL !== 'undefined' && a0 instanceof URL)) &&
       !(init && init.body && typeof ReadableStream !== 'undefined' && init.body instanceof ReadableStream);
     if (!retryable) {                                   // a Request object cannot be re-read safely
-      if (typeof toast === 'function') toast(uiT('Токен защиты сессии обновлён — повторите действие'), 'warn', 6000);
+      if (typeof toast === 'function') toast(uiT('Токен защиты сессии обновлён — повторите действие'), 'warn', 6000, ctx.originDashboard);
       return res;
     }
     const init2 = Object.assign({}, init || {});
@@ -183,7 +188,7 @@ function sa02mHandleCsrfRejection(res, body, args, ctx) {
       if (!res2 || !res2.ok) return res2;
       return res2.clone().json().then(function (j2) {
         if (j2 && j2.error_code === 'E_CSRF') {
-          if (j2.reason === 'no_header') sa02mNoteCsrfTransitStrip();   // token in hand, still stripped
+          if (j2.reason === 'no_header') sa02mNoteCsrfTransitStrip(ctx.originDashboard);   // token in hand, still stripped
           else ctx.logout();
         }
         return res2;
@@ -299,6 +304,7 @@ function sa02mInstallFetchGuard() {
   };
   window.fetch = function () {
     const self = this, args = arguments;
+    const originDashboard = dashboardNoticeActive();
     let method = 'GET';
     try {
       const a0 = args[0];
@@ -317,7 +323,7 @@ function sa02mInstallFetchGuard() {
       if (res && res.ok && !_sa02mRedirecting && method !== 'GET' && method !== 'HEAD') {
         return res.clone().json().then(function (j) {
           if (j && j.error_code === 'E_CSRF' && !_sa02mRedirecting) {
-            return sa02mHandleCsrfRejection(res, j, args, ctx).then(sa02mGuardJsonResponse);
+            return sa02mHandleCsrfRejection(res, j, args, Object.assign({}, ctx, {originDashboard: originDashboard})).then(sa02mGuardJsonResponse);
           }
           return res;
         }, function () { return res; });   // non-JSON body (e.g. 504 HTML) — as is
@@ -479,6 +485,10 @@ function switchTab(tab) {
   if (navEl) navEl.classList.add('active');
   const pane = document.getElementById('tab-' + tab);
   if (pane) pane.classList.add('active');
+  if (tab === 'dashboard') {
+    const notices = document.getElementById('toast-area');
+    if (notices) notices.textContent = '';
+  }
   if (tab === 'system') {
     systemBindSubNav();
     systemOpenSubNav();
@@ -561,7 +571,8 @@ function initNav() {
 /** Integration-card notices (Alice / Cloud): viewport toast, 5.0 s. */
 const CARD_NOTICE_MS = 5000;
 
-function toast(msg, type = 'info', ms = 4000) {
+function toast(msg, type = 'info', ms = 4000, originDashboard = false) {
+  if (originDashboard || dashboardNoticeActive()) return;
   const text = uiT(msg);
   let area = document.getElementById('toast-area');
   if (!area) {

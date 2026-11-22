@@ -121,12 +121,14 @@ try:
         state['error'] = False; state['warming'] = True
         page.evaluate('fetchStatusSnapshot(true)')
         page.wait_for_function("statusFreshness.network.warming === true && statusFreshness.priority.state === 'fresh'")
-        assert 'Подготовка данных' in page.locator('#dashboard-poll-alert').inner_text()
+        assert page.locator('#dashboard-poll-alert, #port-operation-status').count() == 0
+        assert page.locator('[data-status-parts="network"]').first.get_attribute('data-status-state') == 'warming'
+        assert 'Подготовка данных' in page.locator('[data-status-parts="network"]').first.get_attribute('title')
         page.evaluate("document.documentElement.setAttribute('data-theme','light');window.sa02mI18n.setLang('en')")
-        page.wait_for_function("document.getElementById('dashboard-poll-alert').textContent.includes('Preparing data')")
+        page.wait_for_function("document.querySelector('[data-status-parts=network]').title.includes('Preparing data')")
         page.set_viewport_size({'width': 500, 'height': 900})
         page.screenshot(path=str(out/'status-snapshot-light-narrow.png'), full_page=True)
-        assert 'Preparing data' in page.locator('#dashboard-poll-alert').inner_text()
+        assert 'Preparing data' in page.locator('[data-status-parts="network"]').first.get_attribute('title')
         assert page.evaluate('document.documentElement.scrollWidth <= innerWidth + 1')
         page.evaluate("switchTab('network')")
         page.wait_for_function("!statusPageActive() && !Boolean(_statusPollTimers.snapshot)")

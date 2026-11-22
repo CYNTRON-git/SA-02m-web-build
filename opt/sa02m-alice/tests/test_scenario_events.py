@@ -197,6 +197,40 @@ class HandlerTests(_TmpDevices):
         self.assertIn("scenario_runs", resp)
         self.assertIn("scenario_notify", resp)
 
+    def test_scenario_reply_preserves_actual_engine_for_both_profiles(self):
+        # A supported older marker catches a hardcoded current version too.
+        with mock.patch.object(self.store, "RULES_ENGINE", 3):
+            for profile in (C.PROFILE_YANDEX, C.PROFILE_CLOUD):
+                with self.subTest(profile=profile):
+                    h = self.make(profile=profile)
+                    h.handle(C.EVT_DEVICES_SCENARIOS, {
+                        "request_id": "engine-reply", "name": "Engine marker",
+                    })
+                    direct = config_api.apply_scenarios({"id": self.emitted[0]["scenario"]["id"], "get": True})
+                    self.assertTrue(direct["ok"])
+                    self.assertEqual(direct["rules_engine"], 3)
+                    self.assertEqual(len(self.emitted), 1)
+                    reply = self.emitted[0]
+                    self.assertTrue(reply["ok"])
+                    self.assertEqual(reply["request_id"], "engine-reply")
+                    self.assertEqual(reply["rules_engine"], direct["rules_engine"])
+                    self.assertEqual(reply["scenarios"], direct["scenarios"])
+                    self.assertEqual(reply["scenario_runs"], reply["runs"])
+                    self.assertEqual(reply["scenario_notify"], reply["notify_queue"])
+                    self.assertEqual(self.published, [])
+
+    def test_scenario_failure_does_not_manufacture_engine_or_success(self):
+        for unavailable in (True, False):
+            with self.subTest(unavailable=unavailable):
+                h = self.make(profile=C.PROFILE_CLOUD)
+                patch = (mock.patch.object(config_api, "_rules_store", return_value=None)
+                         if unavailable else mock.patch.object(self.store, "apply_command", side_effect=OSError("fixture")))
+                with patch:
+                    h.handle(C.EVT_DEVICES_SCENARIOS, {"request_id": "failed", "get": True})
+                self.assertEqual(self.emitted, [{"request_id": "failed", "ok": False,
+                                               "error": "rules_unavailable" if unavailable else "internal"}])
+                self.assertEqual(self.published, [])
+
     def test_list_yandex_profile_stays_clean(self):
         h = self.make()
         h.handle(C.EVT_DEVICES_LIST, {"request_id": "r2"})

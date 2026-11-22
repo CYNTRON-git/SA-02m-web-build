@@ -1,7 +1,7 @@
 # Contract: cloud catalogue + on-board scenario channel (SA-02m)
 
 Board-side contract for the cloud-profile Socket.IO catalogue
-(rename / rooms / groups / scenarios) and the on-board engine
+(rename / delete / rooms / groups / scenarios) and the on-board engine
 `sa02m-rules` (`rules_engine=4`). Human overview of Alice/cloud
 transport: `docs/ALICE_INTEGRATION.md`. MQTT mapping of field
 devices: `docs/contracts/alice-mqtt-mapping.md`. Gateway event
@@ -24,6 +24,7 @@ Events (constants in `sa02m_alice/common/constants.py`):
 |---|---|---|---|
 | `alice_devices_list` | both profiles | `{request_id}` | `payload.devices`; **cloud only** also `rooms`, `groups`, and the scenario snapshot below |
 | `alice_devices_rename` | both | `{request_id, device\|id, name}` | `{ok, name}` — hub patches the catalogue name; bindings/type/icon stay |
+| `alice_devices_delete` | **cloud only** | `{request_id, device}` | `{request_id, ok, error}`; удаляется одна запись каталога |
 | `alice_devices_rooms` | both | upsert `{name, id?, devices?}` or `{id, delete:true}` | `{ok, room?, rooms?, devices?}` |
 | `alice_devices_groups` | **cloud only** | upsert `{name, id?, device_ids?\|devices?, icon?}` or `{id, delete:true}` | `{ok, group?, groups?}` |
 | `alice_devices_scenarios` | both (no-op without the rules stack) | store command, `request_id` stripped | store `_ok` payload + `rules_engine` |
@@ -56,6 +57,39 @@ cache does not wait for the next list. Маркеры: **3** — типизир�
 запись через converter Алисы (§«Типизированная запись: движок 3»); **4** —
 шаблон `air_quality_ventilation` (§«Room-air logic (engine 4)»). Значение
 только растёт: облако включает новое по `>=`.
+
+### Удаление записи каталога
+
+`alice_devices_delete` зарегистрирован только в профиле `cloud`; прямой
+вызов обработчика в профиле `yandex` тоже ничего не меняет. `request_id`
+должен быть непустой строкой и возвращается без изменения. Отсутствующий или
+неверный `request_id`, как и тело не в виде объекта, не вызывает запись или
+ответ. Поле `device` — строка длиной до 128 символов до удаления краевых
+пробелов; после их удаления нужен непустой точный ID. Псевдонима `id` нет.
+Неверный `device` при корректном `request_id` получает `ok: false`,
+`error: "invalid_device"`.
+
+Существующий `config.api.delete_device` под `devices_lock` удаляет ровно
+один ID и ссылки на него из комнат и групп, затем сохраняет документ.
+Это удаление из каталога: MQTT/Modbus-команд нет, YAML драйверов, привязка
+контроллера и ключи доступа не меняются. Доступность физического устройства
+для этого не требуется. После сохранения обработчик обновляет реестр и
+только затем отвечает `{request_id, ok: true, error: null}`.
+
+Ошибка записи или обновления реестра получает `error: "internal"` без
+текста исключения. Если запись уже завершилась, а обновление реестра
+не удалось, документ может быть изменён: отката и автоматического повтора
+нет. При настоящем `not_found` реестр также обновляется; поэтому повтор
+после такого сбоя согласует состояние в памяти с диском. Ошибка этого
+обновления остаётся `internal`, а не `not_found`.
+
+Шлюз убирает запись из своего кэша после успеха или настоящего `not_found`
+(HTTP 404); при `internal` или тайм-ауте сохраняет её. Потеря ответа после
+записи означает неизвестное подтверждение: обработчик не повторяет запись.
+Проверки: `opt/sa02m-alice/tests/test_cloud_delete_events.py`; композиция
+с согласованным checkout облака — `scripts/dev/test-cloud-rpc-composition.py`
+с переменной `CLOUD_RPC_CLOUD_ROOT`. Она запускает временные HTTP/Socket.IO
+серверы только на loopback; штатные службы и реальные устройства не нужны.
 
 ### Rooms
 

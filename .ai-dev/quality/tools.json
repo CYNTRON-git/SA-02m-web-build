@@ -12,6 +12,15 @@
   },
   "tools": [
     {
+      "id": "quiet-dashboard-browser",
+      "checks": "Real Chromium dashboard: local stale/warming/error quality, hardware success and touch-readable failures, USB reset, System storage notices, late dashboard CSRF and navigation cleanup; desktop/mobile, both themes and variants, no page errors.",
+      "config": null,
+      "run": "node scripts/dev/quiet-dashboard-browser.mjs",
+      "beat": "build",
+      "covers": ["www/network_config/index.html", "www/network_config/static/css/main.css", "www/network_config/static/js/app.js", "www/network_config/static/js/app/status.js", "www/network_config/static/js/app/hw.js", "www/network_config/static/js/i18n.js", "scripts/dev/quiet-dashboard-browser.mjs", "docs/contracts/status-polling.md", "docs/contracts/hardware-outputs.md"],
+      "init": "Existing scripts/dev Playwright and Chromium; missing renderer fails explicitly. All HTTP writes use the isolated synthetic fixture."
+    },
+    {
       "id": "rs485-inuse-batch",
       "checks": "Actual Linux PTY occupied/free/alias and multiple-process observations, one bounded process traversal, incomplete-evidence fallback and unchanged single-port/driver behavior.",
       "config": null,

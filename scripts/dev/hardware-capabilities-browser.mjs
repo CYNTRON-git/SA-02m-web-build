@@ -77,11 +77,11 @@ try {
     assert.equal(await page.locator('#hw-do-btn').isDisabled(), variant !== 'sa02m-1eth');
     const before = posts;
     await page.locator('#hw-beeper-btn').click();
-    await page.waitForFunction(() => document.getElementById('hw-block-status').textContent.includes('Канал недоступен'));
+    await page.waitForFunction(() => document.getElementById('hw-error-beeper').textContent.includes('Канал недоступен'));
     assert.equal(posts, before + 1);
     assert.equal(await page.locator('#hw-beeper-btn').isDisabled(), false);
     await page.evaluate(() => sa02mI18n.setLang('en'));
-    await page.waitForFunction(() => document.getElementById('hw-block-status').textContent.includes('Channel is unavailable for this hardware variant. Check the selected variant.'));
+    await page.waitForFunction(() => document.getElementById('hw-error-beeper').textContent.includes('Channel is unavailable for this hardware variant. Check the selected variant.'));
     assert.equal(await page.locator('#hw-do-btn').isDisabled(), variant !== 'sa02m-1eth');
     await page.screenshot({path: new URL(`${theme}-${variant}-${width}.png`, out).pathname.replace(/^\/([A-Za-z]:)/, '$1'), fullPage: true});
     accepted = true; state.hw_beeper = 1;
