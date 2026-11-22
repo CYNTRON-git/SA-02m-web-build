@@ -43,7 +43,20 @@ class Dispatcher:
             and self.registry.get_cached(marker) == "1"))
         return features
 
-    def availability(self, item):
+    def _latest_producer_observations(self):
+        latest, now = {}, self.monotonic()
+        for topic, observation in self.observations.items():
+            parts = topic.split('/')
+            if (len(parts) < 4 or parts[:2] != ['', 'devices']
+                    or topic.endswith('/meta/error') or topic.endswith('/on')
+                    or observation['retained'] or now - observation['mono'] > C.STATUS_STALE_S):
+                continue
+            producer = parts[2]
+            if producer not in latest or observation['mono'] > latest[producer]['mono']:
+                latest[producer] = observation
+        return latest
+
+    def availability(self, item, producers=None):
         if item.get("writable") is False:
             return {"can_control": False, "reason": "readonly"}
         if not self.broker_available():
@@ -52,15 +65,13 @@ class Dispatcher:
         parts = topic.split("/")
         if len(parts) < 5 or parts[1] != "devices":
             return {"can_control": False, "reason": "unsupported_topic"}
-        prefix = "/devices/" + parts[2] + "/"
         # Retained values can show a last-known position. Only a recent
         # non-retained poll/heartbeat from the same producer permits a write.
-        recent = [o for t, o in self.observations.items() if t.startswith(prefix)
-                  and not t.endswith("/meta/error") and not t.endswith("/on")
-                  and not o["retained"] and self.monotonic() - o["mono"] <= C.STATUS_STALE_S]
-        if not recent:
+        if producers is None:
+            producers = self._latest_producer_observations()
+        latest = producers.get(parts[2])
+        if latest is None:
             return {"can_control": False, "reason": "no_live_bus_evidence"}
-        latest = max(recent, key=lambda o: o["mono"])
         return {"can_control": True, "reason": "recent_producer_observation", "evidence_at": latest["at"]}
 
     def envelope(self, **fields):
@@ -141,6 +152,8 @@ class Dispatcher:
         devices = self.registry.discovery_devices(profile=C.PROFILE_CLOUD)
         if len(devices) > 512 or sum(len(d["capabilities"]) + len(d["properties"]) for d in devices) > 2048:
             raise APIError(413, "catalog_too_large")
+        # Request-local derivation: O(observations), reused for all capabilities.
+        producers = self._latest_producer_observations()
         for device in devices:
             live = queried.get(device["id"], {})
             dev, caps, props = raw[device["id"]]
@@ -166,7 +179,7 @@ class Dispatcher:
                         item["state"] = state
                     if key == "capabilities":
                         item["writable"] = source.get("writable", True) is not False
-                        item["availability"] = self.availability(source)
+                        item["availability"] = self.availability(source, producers)
                         if "error_code" in live:
                             item["availability"] = {"can_control": False, "reason": "device_unreachable"}
                         item["can_control"] = item["availability"]["can_control"]
@@ -178,6 +191,13 @@ class Dispatcher:
             cloud_linked=self.adapter.cloud_linked() if hasattr(self.adapter, "cloud_linked") else False,
             catalog_revision=self.adapter.revision(), state_source="board_mqtt_cache",
             generated_at=self.clock(), features=self.features())
+
+    def _command_source(self, body):
+        cap = body['capability']
+        return next((item for did, _dev, caps, _props in self.registry.catalogue_items()
+                     if did == body['target']['device_id'] for item in caps
+                     if item.get('type') == cap['type']
+                     and action_instance(item.get('type', ''), item.get('parameters', {})) == cap['instance']), None)
 
     def command(self, body):
         cid, digest = body["command_id"], command_hash(body)
@@ -217,10 +237,7 @@ class Dispatcher:
                 row = self.ledger.update(cid, "outcome_unknown", error="configuration_interrupted")
             return 202, self.envelope(receipt=row)
         cap = body["capability"]
-        source = next((item for did, _dev, caps, _props in self.registry.catalogue_items()
-                       if did == body["target"]["device_id"] for item in caps
-                       if item.get("type") == cap["type"]
-                       and action_instance(item.get("type", ""), item.get("parameters", {})) == cap["instance"]), None)
+        source = self._command_source(body)
         if source is not None and not self.availability(source)["can_control"]:
             row = self.ledger.update(cid, "rejected", error=self.availability(source)["reason"])
             return 202, self.envelope(receipt=row)
@@ -235,6 +252,7 @@ class Dispatcher:
         # Record after the durable barrier, before publish; callback runs under
         # this same lock, so a quick observation cannot race publication state.
         self.pending[cid] = {"command": copy.deepcopy(body), "started": self.monotonic(),
+                             "source": copy.deepcopy(source),
                              "topics": {p[0].removesuffix("/on") for p in publications}, "seen": set()}
         try:
             for topic, payload, _key in publications:
@@ -257,6 +275,13 @@ class Dispatcher:
                     continue
                 pending["seen"].add(topic)
                 body = pending["command"]
+                # Query conversion uses the current catalogue. A new mapping
+                # or normalization must never confirm a command sent under the
+                # original one; keep device-only renames independent of this.
+                if self._command_source(body) != pending['source']:
+                    self.ledger.update(cid, 'outcome_unknown', error='binding_changed', confirmation='broker_publish')
+                    del self.pending[cid]
+                    continue
                 states = self.registry.query_devices([body["target"]["device_id"]])
                 matches = any(c.get("type") == body["capability"]["type"]
                               and (c.get("state") or {}).get("instance") == body["capability"]["instance"]

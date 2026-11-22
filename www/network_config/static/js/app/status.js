@@ -1155,18 +1155,23 @@ function applySystemStatus(d) {
   const lbl = document.getElementById('storage-format-toggle-label');
   if (btn) {
     const installed = d.storage_mount_installed === 1;
+    const installedKnown = installed || d.storage_mount_installed === 0;
+    const valueKnown = d.storage_auto_format === 0 || d.storage_auto_format === 1;
     const on = d.storage_auto_format === 1;
+    const ready = installed && valueKnown;
+    btn.dataset.storageReady = ready ? '1' : '0';
     btn.dataset.storageOn = on ? '1' : '0';
-    if (!installed) {
-      btn.disabled = true;
-      if (lbl) lbl.textContent = uiT('НЕ УСТАНОВЛЕНО');
-      btn.className = 'btn btn-danger system-action-btn';
+    btn.disabled = !ready;
+    btn.className = 'btn btn-danger system-action-btn';
+    const label = !installedKnown || (installed && !valueKnown) ? 'Нет данных'
+      : !installed ? 'НЕ УСТАНОВЛЕНО' : on ? 'ВКЛЮЧЕНО' : 'ОТКЛЮЧЕНО';
+    if (lbl) { lbl.dataset.i18n = label; lbl.textContent = uiT(label); }
+    if (!installedKnown || (installed && !valueKnown)) {
+      btn.title = uiT('Нет данных');
+    } else if (!installed) {
       btn.title = uiT('Нет storage-mount — выполните установку системы (install.sh)');
     } else {
-      btn.disabled = false;
       btn.title = uiT('Нажмите, чтобы переключить: при выкл. раздел без ФС или NTFS не форматируется');
-      if (lbl) lbl.textContent = uiT(on ? 'ВКЛЮЧЕНО' : 'ОТКЛЮЧЕНО');
-      btn.className = 'btn btn-danger system-action-btn';
     }
   }
 }
@@ -1202,6 +1207,8 @@ function fetchWithTimeout(url, options, timeoutMs) {
 }
 
 function setStorageAutoFormat(enabled) {
+  const btn = document.getElementById('storage-format-toggle');
+  if (!btn || btn.disabled || btn.dataset.storageReady !== '1') return;
   const body = 'enabled=' + encodeURIComponent(enabled ? '1' : '0');
   fetchWithTimeout('cgi-bin/storage_format_set.cgi', {
     method: 'POST',
@@ -1265,7 +1272,8 @@ function applyCachedBackgroundPartsI18n() {
 function portCoordinatorLines(snapshot) {
   if (!snapshot) return [];
   const lines = [];
-  if (!snapshot.available) lines.push(statusText('Координатор портов недоступен'));
+  if (!snapshot.available) lines.push(statusText(snapshot.error === 'snapshot_unavailable'
+    ? 'Нет свежих данных о координаторе портов' : 'Координатор портов недоступен'));
   const purposes = { gateway: 'Шлюз', scan: 'Поиск', flasher: 'Настройка устройств' };
   (Array.isArray(snapshot.leases) ? snapshot.leases : []).forEach(function (lease) {
     let text = String(lease.port || '') + ': ' + statusText(purposes[lease.purpose] || 'Операция с портом');
@@ -1401,8 +1409,16 @@ function applyHardwareStatus(d) {
     } else if (d.hw_configured === 0 && d.hw_poll_disabled !== 1) {
       msg = 'Каналы не заданы — отредактируйте /etc/sa02m_hw.conf';
     }
-    hint.textContent = msg ? uiT(msg) : '';
-    hint.style.display = msg ? '' : 'none';
+    const messages = msg ? [uiT(msg)] : [];
+    if (d.hw_poll_disabled === 1) {
+      messages.push(uiT('Сохранённые показания; автоопрос отключён'));
+      const age = d._status_meta && d._status_meta.age_s;
+      if (typeof age !== 'number' || !Number.isFinite(age) || age < 0) {
+        messages.push(uiT('Возраст данных неизвестен'));
+      }
+    }
+    hint.textContent = messages.join(' · ');
+    hint.style.display = messages.length ? '' : 'none';
   }
   if (d.hw_variant !== undefined) applyVariantVisibility(d.hw_variant);
   applyHwChannel('hw-do-st', 'do', d.hw_do);
@@ -1410,7 +1426,11 @@ function applyHardwareStatus(d) {
   applyHwChannel('hw-led-st', 'alarm_led', d.hw_alarm_led);
   let usbPl = d.hw_usb_power;
   clearPendingUsbPowerIfServerMatches(usbPl);
-  if (pendingUsbPowerVal !== null && Date.now() < pendingUsbPowerUntil) {
+  // An older cached producer exposes only the legacy wall-clock deadline.
+  const usbPending = typeof pendingUsbPowerMonotonicUntil === 'number'
+    ? performance.now() < pendingUsbPowerMonotonicUntil
+    : Date.now() < pendingUsbPowerUntil;
+  if (pendingUsbPowerVal !== null && usbPending) {
     usbPl = pendingUsbPowerVal;
   }
   applyHwChannel('hw-usb-st', 'usb_power', usbPl);

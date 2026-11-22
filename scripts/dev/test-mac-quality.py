@@ -112,10 +112,53 @@ class AdapterTests(unittest.TestCase):
             argv = arguments.read_text().splitlines()
             self.assertIn('--init', argv[argv.index('run') + 1:argv.index(config['image'])])
             self.assertIn('--pull=never', argv[argv.index('run') + 1:argv.index(config['image'])])
+            self.assertNotIn('--cap-add=SYS_PTRACE', argv, 'ordinary rows must retain default capabilities')
             self.assertIn('QUALITY_SKIP_LOG', argv)
             self.assertIn('PYTHON=python3', argv)
             self.assertIn(name+'/deps.pth:/site/sa02m-qa.pth:ro', argv)
             self.assertEqual(argv[-3:], ['bash', '-c', row['run']])
+
+    def test_root_fd_fixture_gets_only_namespaced_ptrace_capability(self):
+        with tempfile.TemporaryDirectory() as name:
+            base = Path(name)
+            shim = base/'docker'
+            shim.write_text('#!/bin/sh\nprintf "%s\\n" "$@" > "$QA_ARGS"\nexit 0\n')
+            shim.chmod(0o755)
+            arguments = base/'args'
+            row = {'id': 'service-operations', 'run': 'python3 scripts/dev/test-service-operations.py'}
+            config = {'rows': [row], 'root': name, 'context': 'fixture-context', 'image': 'fixture-image',
+                      'git_common': name+'/git', 'deps': name+'/deps', 'pth': name+'/deps.pth', 'python_site': '/site'}
+            path = base/'config.json'
+            path.write_text(json.dumps(config))
+            with patch.dict(os.environ, {'PATH': name+os.pathsep+os.environ['PATH'], 'QA_ARGS': str(arguments)}):
+                self.assertEqual(qa.execute(str(path), row['id']), 0)
+            argv = arguments.read_text().splitlines()
+            options = argv[argv.index('run')+1:argv.index(config['image'])]
+            self.assertEqual([arg for arg in options if arg.startswith('--cap-add')], ['--cap-add=SYS_PTRACE'])
+            self.assertFalse(any(arg.startswith(('--privileged', '--pid', '--userns')) for arg in options), options)
+            self.assertEqual(argv[-3:], ['bash', '-c', row['run']])
+
+
+    def test_rs485_fd_row_has_only_private_namespace_capability(self):
+        for row_id, expected in (('rs485-inuse-batch', ['--cap-add=SYS_PTRACE']),
+                                 ('rs485-inuse-batch-unexpected', [])):
+            with self.subTest(row=row_id), tempfile.TemporaryDirectory() as name:
+                base = Path(name)
+                shim = base/'docker'
+                shim.write_text('#!/bin/sh\nprintf "%s\\n" "$@" > "$QA_ARGS"\nexit 0\n')
+                shim.chmod(0o755)
+                arguments = base/'args'
+                row = {'id': row_id, 'run': 'sudo -n python3 scripts/dev/test-rs485-inuse-batch.py'}
+                config = {'rows': [row], 'root': name, 'context': 'fixture-context', 'image': 'fixture-image',
+                          'git_common': name+'/git', 'deps': name+'/deps', 'pth': name+'/deps.pth', 'python_site': '/site'}
+                path = base/'config.json'; path.write_text(json.dumps(config))
+                with patch.dict(os.environ, {'PATH': name+os.pathsep+os.environ['PATH'], 'QA_ARGS': str(arguments)}):
+                    self.assertEqual(qa.execute(str(path), row_id), 0)
+                argv = arguments.read_text().splitlines()
+                options = argv[argv.index('run')+1:argv.index(config['image'])]
+                self.assertEqual([arg for arg in options if arg.startswith('--cap-add')], expected)
+                self.assertFalse(any(arg.startswith(('--privileged', '--pid', '--userns')) for arg in options), options)
+                self.assertEqual(argv[-3:], ['bash', '-c', row['run']])
 
     def test_non_pure_wheel_cannot_enter_linux_dependency_overlay(self):
         class Native:

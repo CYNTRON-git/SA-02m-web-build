@@ -13,6 +13,7 @@
 
 | Вопрос | Единственный дом |
 |---|---|
+| Независимые программные начальные показания энергии фаз, виртуальный MQTT-адаптер и его узкий пилот | [Коррекция энергии фаз](contracts/phase-energy-correction.md) |
 | Стек (nginx + fcgiwrap + Bash CGI, vanilla JS без сборки), вкладки и подсистемы, дисциплина версий | `docs/agent-rules/sa02m-domain.md` |
 | Фоновый RAM-сборщик dashboard, авторизованный готовый пакет, граница CGI/браузера и legacy fallback | [Опрос статусов](contracts/status-polling.md) |
 | Исключительное владение UART, приостановка/восстановление служб, привилегированный координатор и его локальный протокол | [docs/contracts/port-ownership.md](contracts/port-ownership.md) |

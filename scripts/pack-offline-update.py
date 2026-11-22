@@ -243,6 +243,9 @@ def list_allowlisted_files(patterns: list[str]) -> list[str]:
     tracked = [p.decode("utf-8").replace("\\", "/") for p in r.stdout.split(b"\0") if p]
     selected: list[str] = []
     for path in tracked:
+        # The optional adapter is installed with its complete runtime by its installer.
+        if path == "etc/systemd/system/sa02m-phase-energy.service":
+            continue
         if "/__pycache__/" in path or path.endswith((".pyc", ".pyo")):
             continue
         # A new collector needs the full installer (payload, activation and
@@ -652,6 +655,7 @@ def build_services_block(min_updater: str = MIN_UPDATER) -> dict[str, Any]:
         "sa02m-alice-client",
         "sa02m-alice-config",
         "sa02m-cloud-control",
+        "sa02m-home-api",
         # HomeKit bridge — optional, installed stopped (06c-homekit.sh
         # `app off`), so only ever restarted when already running. Must
         # stay in step with etc/sa02m-update-runner.sh.

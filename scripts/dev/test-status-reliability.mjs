@@ -40,6 +40,41 @@ function extract(src,name) {
  let depth=0;for(let i=src.indexOf('{',start);i<src.length;i++) {if(src[i]==='{')depth++;if(src[i]==='}'&&--depth===0)return src.slice(start,i+1);}
  throw new Error(name);
 }
+test('storage auto-format markup starts disabled and does not claim an unknown value',()=>{
+ const html=readFileSync(new URL('www/network_config/index.html',root),'utf8');
+ const button=html.match(/<button\b[^>]*\bid="storage-format-toggle"[^>]*>/);
+ const label=html.match(/<span\b[^>]*\bid="storage-format-toggle-label"[^>]*>([^<]*)<\/span>/);
+ assert.ok(button&&label,'actual storage control markup must be reached');
+ assert.match(button[0],/\bdisabled\b/);
+ assert.match(button[0],/data-storage-ready="0"/);
+ assert.equal(label[1],'Нет данных');
+ assert.match(label[0],/data-i18n="Нет данных"/);
+});
+test('storage auto-format sends no command until a complete valid status enables it',()=>{
+ const {c,run}=world();const requests=[];
+ const button={disabled:true,dataset:{storageReady:'0'},className:'',title:''};
+ const label={dataset:{},textContent:''};
+ c.document.getElementById=id=>id==='storage-format-toggle'?button:id==='storage-format-toggle-label'?label:null;
+ c.uiT=String;c.setText=()=>{};c.updateCpuProfileTile=()=>{};c.withCsrfHeaders=x=>x;c.toast=()=>{};
+ c.fetchWithTimeout=(url,options)=>{requests.push({url,options});return new Promise(()=>{});};
+ for(const name of ['applySystemStatus','toggleStorageAutoFormat','setStorageAutoFormat']) vm.runInContext(extract(source,name),c);
+ run('setStorageAutoFormat(1);toggleStorageAutoFormat()');
+ assert.equal(requests.length,0,'even a direct shared setter must respect unknown readiness');
+ for(const status of [{},{storage_mount_installed:1},{storage_mount_installed:'1',storage_auto_format:1}]) {
+  c.status=status;run('applySystemStatus(status);setStorageAutoFormat(1)');
+  assert.equal(button.disabled,true);assert.equal(requests.length,0);assert.equal(label.textContent,'Нет данных');
+ }
+ run('applySystemStatus({storage_mount_installed:1,storage_auto_format:0});toggleStorageAutoFormat()');
+ assert.equal(button.disabled,false);assert.equal(label.textContent,'ОТКЛЮЧЕНО');
+ assert.equal(label.dataset.i18n,'ОТКЛЮЧЕНО');assert.equal(requests.length,1);
+ assert.equal(requests[0].url,'cgi-bin/storage_format_set.cgi');assert.equal(requests[0].options.body,'enabled=1');
+ run('applySystemStatus({storage_mount_installed:1,storage_auto_format:1});toggleStorageAutoFormat()');
+ assert.equal(requests.length,2);assert.equal(requests[1].options.body,'enabled=0');
+ run('applySystemStatus({storage_mount_installed:0,storage_auto_format:0});setStorageAutoFormat(1)');
+ assert.equal(button.disabled,true);assert.equal(label.textContent,'НЕ УСТАНОВЛЕНО');assert.equal(requests.length,2);
+ run('applySystemStatus({});setStorageAutoFormat(1)');
+ assert.equal(button.dataset.storageReady,'0');assert.equal(label.textContent,'Нет данных');assert.equal(requests.length,2);
+});
 test('retired request release cannot release the new generation slot',()=>{
  const {c,run}=world();const releases=[];c.capture=r=>releases.push(r);
  run("scheduleStatusFetch('priority',0,capture)");assert.equal(releases.length,1);
@@ -79,6 +114,22 @@ test('coordinator projection distinguishes whole-service pause and restoration f
  c.snapshot={available:false,leases:[{port:'/dev/COM1',purpose:'gateway',phase:'recovering',services:['mplc4.service']}],services:{'mplc4.service':{phase:'restore_failed'}}};
  const lines=run('portCoordinatorLines(snapshot)').join('; ');
  assert.match(lines,/недоступен/);assert.match(lines,/COM1/);assert.match(lines,/целиком/);assert.match(lines,/Ошибка восстановления/);
+});
+test('expired coordinator data is not labelled a proven daemon outage in RU or EN',()=>{
+ const {c,run}=world();
+ c.document.readyState='loading';c.document.addEventListener=()=>{};c.requestAnimationFrame=()=>{};
+ vm.runInContext(readFileSync(new URL('www/network_config/static/js/i18n.js',root),'utf8'),c);
+ vm.runInContext(extract(source,'portCoordinatorLines'),c);
+ c.snapshot={available:false,error:'snapshot_unavailable',leases:[{port:'/dev/COM1',purpose:'gateway',phase:'recovering'}]};
+ assert.equal(run('portCoordinatorLines(snapshot)[0]'),'Нет свежих данных о координаторе портов');
+ assert.equal(c.snapshot.available,false,'missing evidence still fails closed');
+ assert.match(run('portCoordinatorLines(snapshot)[1]'),/COM1/,'unfinished leases remain visible');
+ run("window.sa02mI18n.setLang('en')");
+ assert.equal(run('portCoordinatorLines(snapshot)[0]'),'No fresh port coordinator data');
+ c.snapshot.error='socket_unavailable';
+ assert.equal(run('portCoordinatorLines(snapshot)[0]'),'Port coordinator unavailable');
+ run("window.sa02mI18n.setLang('ru')");
+ assert.equal(run('portCoordinatorLines(snapshot)[0]'),'Координатор портов недоступен');
 });
 test('OTA cooperative cancellation is pending; bootstrap/refusal cannot enable apply',()=>{
  const {c,run}=world();
@@ -212,3 +263,118 @@ test('the freshness banner is written only when its text changes',()=>{
  run("noteStatusSuccess('priority',{_status_meta:{age_s:0}})");assert.equal(display,'none');assert.equal(text,'');
  const hidden=writes;run('renderStatusFreshness()');assert.equal(writes,hidden);
 });
+
+// Feed acknowledged commands and status samples through the shipped USB badge.
+function usbBadge(reply, {legacyProducer = false, legacyConsumer = false} = {}) {
+  let wall = 1700000000000, elapsed = 1000;
+  const requests=[];
+  const {c, run, elements} = world(async (url,options) => {requests.push({url,options});return {json: async () => reply};}, {
+    Date: {now: () => wall}, performance: {now: () => elapsed},
+    setTimeout: () => 1, clearTimeout() {}, window: {setTimeout() {}},
+    uiT: text => text, withCsrfHeaders: headers => headers,
+    bumpMainStatusEpoch() {}, fetchStatusMain() {},
+  });
+  c.document.querySelector = () => null;
+  elements.set('hw-usb-reset-btn', {classList: {add() {}}});
+  let producer = readFileSync(new URL('www/network_config/static/js/app/hw.js', root), 'utf8');
+  let consumer = extract(source, 'applyHardwareStatus');
+  if (legacyProducer) {
+    // Recreate the historical producer by removing only its new clock domain.
+    const old = producer.replace(/^.*pendingUsbPowerMonotonicUntil.*\n/gm, '');
+    assert.notEqual(old, producer, 'the mixed-version fixture must remove the new clock');
+    producer = old;
+  }
+  if (legacyConsumer) {
+    const old = consumer.replace(/const usbPending = typeof pendingUsbPowerMonotonicUntil === 'number'\s*\? performance\.now\(\) < pendingUsbPowerMonotonicUntil\s*: Date\.now\(\) < pendingUsbPowerUntil;/,
+      'const usbPending = Date.now() < pendingUsbPowerUntil;');
+    assert.notEqual(old, consumer, 'the mixed-version fixture must use the historical wall comparison');
+    consumer = old;
+  }
+  vm.runInContext(producer, c);
+  vm.runInContext('let _lastHwMetrics;' + extract(source, 'hwMetricsPayloadValid')
+    + consumer, c);
+  return {
+    c,run,elements,requests,
+    async command(reset = false) {
+      run(reset ? 'usbPowerReset()' : "setHw('usb_power', 1)");
+      await new Promise(resolve => setImmediate(resolve));
+    },
+    advance(ms, wallJump = 0) { elapsed += ms; wall += ms + wallJump; },
+    sample(value, extra = {}) {
+      c.sample = {hw_configured: 1, hw_usb_power: value, ...extra};
+      run('applyHardwareStatus(sample)');
+      return elements.get('hw-usb-st').textContent;
+    },
+  };
+}
+
+test('disabled hardware polling labels preserved readings and unknown age without bus reads or command changes',async()=>{
+ const badge=usbBadge({ok:true,value:1});const {c,run,elements}=badge;
+ c.document.readyState='loading';c.document.addEventListener=()=>{};c.requestAnimationFrame=()=>{};
+ vm.runInContext(readFileSync(new URL('www/network_config/static/js/i18n.js',root),'utf8'),c);
+ c.uiT=text=>c.window.sa02mI18n.t(text);
+ run('_statusBlocksConfig={hardware:0}');
+ const unknown={hw_poll_disabled:1,hw_do:0,_status_meta:{measured_at:1,age_s:null,ttl_s:10}};
+ assert.equal(badge.sample(1,unknown),'ВКЛ');run("noteStatusSuccess('hardware',sample)");
+ const hint=elements.get('hw-hint');
+ assert.match(hint.textContent,/Сохранённые показания/);assert.match(hint.textContent,/автоопрос отключён/);
+ assert.match(hint.textContent,/Возраст данных неизвестен/);assert.notEqual(hint.style.display,'none');
+ assert.equal(run('_statusBlocksConfig.hardware'),0);assert.equal(badge.requests.length,0);
+ run("window.sa02mI18n.setLang('en')");badge.sample(1,unknown);
+ assert.match(hint.textContent,/Saved readings; automatic polling is off/);assert.match(hint.textContent,/Data age unknown/);
+ badge.sample(1,{...unknown,_status_meta:{age_s:0}});
+ assert.match(hint.textContent,/Saved readings/);assert.doesNotMatch(hint.textContent,/age unknown/i);
+ badge.sample(1,{...unknown,hw_i2c_busy:1});
+ assert.ok(hint.textContent.includes(c.uiT('ШИНА I2C ЗАНЯТА ДРУГОЙ СЛУЖБОЙ')));
+ assert.match(hint.textContent,/Saved readings/);
+ await badge.command();assert.equal(badge.requests.length,1,'explicit command remains available');
+ assert.equal(badge.sample(1,{hw_poll_disabled:0,_status_meta:{age_s:0}}),'ON');
+ assert.equal(hint.style.display,'none','fresh explicit readback is not mislabeled as preserved/unknown');
+ assert.equal(badge.requests.length,1,'displaying either sample never starts a bus read');
+});
+
+for (const wallJump of [-3600000, 3600000]) {
+  test('USB unconfirmed badge expires at 15 seconds across wall jump ' + wallJump, async () => {
+    const badge = usbBadge({ok: true, value: 1});
+    await badge.command();
+    badge.advance(14999, wallJump);
+    assert.equal(badge.sample(0), 'ВКЛ');
+    badge.advance(1);
+    assert.equal(badge.sample(0), 'ВЫКЛ');
+  });
+}
+
+test('USB reset badge uses the reset duration plus two seconds while its callback is pending', async () => {
+  const badge = usbBadge({ok: true, resetting: true, reset_sec: 3});
+  await badge.command(true);
+  badge.advance(4999, -3600000);
+  assert.equal(badge.sample(1), 'ВЫКЛ');
+  badge.advance(1);
+  assert.equal(badge.sample(1), 'ВКЛ');
+});
+
+test('USB confirmation releases the badge immediately and a refused command follows status', async () => {
+  const accepted = usbBadge({ok: true, value: 1});
+  await accepted.command();
+  assert.equal(accepted.sample(0), 'ВКЛ');
+  assert.equal(accepted.sample('1'), 'ВКЛ');
+  assert.equal(accepted.sample(0), 'ВЫКЛ');
+  const refused = usbBadge({ok: false, error: 'i2c_busy'});
+  await refused.command();
+  assert.equal(refused.sample(0), 'ВЫКЛ');
+});
+
+for (const mixed of [{legacyProducer:true}, {legacyConsumer:true}]) {
+  test('USB mixed cached assets never compare epoch with monotonic time: '+JSON.stringify(mixed),async()=>{
+    const badge=usbBadge({ok:true,value:1},mixed);
+    await badge.command();
+    badge.advance(14999);
+    assert.equal(badge.sample(0),'ВКЛ');
+    badge.advance(1);
+    assert.equal(badge.sample(0),'ВЫКЛ');
+    const reset=usbBadge({ok:true,resetting:true,reset_sec:3},mixed);
+    await reset.command(true);reset.advance(4999);
+    assert.equal(reset.sample(1),'ВЫКЛ');
+    reset.advance(1);assert.equal(reset.sample(1),'ВКЛ');
+  });
+}

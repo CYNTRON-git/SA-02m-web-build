@@ -3,7 +3,7 @@
 Запускайте канонический build gate из корня Git-дерева:
 
 ```sh
-~/cyntron-build/venvs/nms-edge/bin/python scripts/dev/mac-quality.py build --touched
+~/cyntron-build/venvs/nms-edge/bin/python scripts/dev/mac-quality.py build --image cyntron-build:sa-release-quality-full
 ```
 
 Без `--touched` исполняются все строки выбранного beat. Для известной базы можно
@@ -11,6 +11,14 @@
 Адаптер использует действующий `.ai-dev/quality/tools.json` и его штатный
 `run.mjs`: фильтрация scope, PASS/PARTIAL/SKIP/FAIL и итоговый exit code остаются
 в каноническом runner. Исходные команды и assertions не переписываются.
+
+На подготовленном Mac образ `sa-release-quality-full` дополнительно содержит
+объявленный Socket.IO client и все версии из HomeKit `requirements.lock`.
+Исходный образ `sa-native-quality` остаётся доступен, но без этих библиотек
+соответствующие unittest проверки дают честный PARTIAL. Для Linux aarch64
+использованы те же версии HomeKit и отдельные проверенные хеши wheels этой
+архитектуры; production lock ARMv7/x86_64 не меняется. QA wheelhouse и provenance
+сохранены в `~/cyntron-build/setup/sa-dashboard-cache-20261121/homekit-qa/`.
 
 Нужны уже установленные Node, Docker с контекстом `colima-cyntron`, образ
 `cyntron-build:sa-native-quality`, venv `nms-edge` (Python Playwright,
@@ -29,6 +37,12 @@ Serial fixtures получают `PYTHON` из venv `firmware`.
 
 Linux-строки запускаются с `docker run --init`. Процесс init занимает PID 1,
 и проверка шлюза в `install-maintenance` получает обычный PID тестового процесса.
+Только строки `service-operations` и `rs485-inuse-batch` получают `SYS_PTRACE`:
+их настоящие root helpers проверяют дескрипторы всех процессов, включая
+непривилегированный init контейнера.
+Без этой capability контейнерный root получает EACCES. Namespace PID остаётся
+отдельным; `--privileged` и доступ к PID хоста не используются. Остальные строки
+сохраняют стандартные capabilities и пользователя тестового образа.
 Колёса pure Python из `nms-edge` копируются во временный каталог. Файл `.pth`
 делает зависимости доступными дочерним fixtures, которые заменяют `PYTHONPATH`.
 

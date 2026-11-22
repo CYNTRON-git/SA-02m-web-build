@@ -12,7 +12,7 @@ fi
 activity_ack=null
 if [[ "${REQUEST_METHOD:-}" == GET && "${HTTP_X_SA02M_DASHBOARD:-}" == active ]]; then
     activity_ack=false
-    if /usr/bin/python3 -I /usr/local/libexec/sa02m-status-cache.py --heartbeat >/dev/null 2>&1; then
+    if /usr/bin/python3 -I -S /usr/local/libexec/sa02m-status-cache.py --heartbeat >/dev/null 2>&1; then
         activity_ack=true
     fi
 fi

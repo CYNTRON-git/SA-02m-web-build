@@ -34,6 +34,11 @@ def main():
     ref = git('rev-parse', '--verify', '--end-of-options', args.ref+'^{commit}').decode().strip()
     base = git('rev-parse', '--verify', '--end-of-options', args.base+'^{commit}').decode().strip()
     git('merge-base', '--is-ancestor', base, ref)
+    allowed = {row[0].encode() for row in FILES}
+    changed = git('diff', '--name-only', '-z', '--no-renames', base, ref, '--', 'www').split(b'\0')
+    outside = [path.decode('utf-8', errors='backslashreplace') for path in changed if path and path not in allowed]
+    if outside:
+        raise SystemExit('Changed WWW files outside fixed pilot whitelist: '+json.dumps(outside))
     existing = set(git('ls-tree', '-r', '--name-only', base).decode().splitlines())
     payload, runtime = {}, []
     for source, destination, mode, group in FILES:

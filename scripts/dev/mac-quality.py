@@ -70,7 +70,12 @@ def execute(config_path, row_id):
         # Matching Playwright's installed browser, with no revision aliases or preloader.
         environment.pop('NODE_OPTIONS', None)
     else:
+        # These rows sudo-reexec real root helpers and scan all /proc FDs.
+        # Container root otherwise cannot inspect the nonroot init's FDs.
+        # Keep the private PID namespace and default caps for every other row.
+        fd_caps = ['--cap-add=SYS_PTRACE'] if row_id in ('service-operations', 'rs485-inuse-batch') else []
         command = ['docker', '--context', config['context'], 'run', '--rm', '--init', '--pull=never',
+                   *fd_caps,
                    '-v', config['root']+':'+config['root'],
                    '-v', config['git_common']+':'+config['git_common']+':ro',
                    '-v', config['deps']+':/opt/sa02m-qa-deps:ro',

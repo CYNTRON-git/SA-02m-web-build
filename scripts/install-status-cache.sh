@@ -14,7 +14,18 @@ install -d -m 0755 /usr/local/libexec /etc/systemd/system
 sa02m_atomic_install -m 0755 -o root -g root "$source_root/etc/sa02m-status-part.sh" /usr/local/libexec/sa02m-status-part
 sa02m_atomic_install -m 0644 -o root -g root "$source_root/etc/sa02m-status-cache.py" /usr/local/libexec/sa02m-status-cache.py
 unit=/etc/systemd/system/sa02m-status-cache.service
-if [[ -L "$unit" && "$(readlink "$unit")" == /dev/null ]]; then
+runtime_unit=/run/systemd/system/sa02m-status-cache.service
+cache_unit_masked=0
+for cache_unit_link in "$unit" "$runtime_unit"; do
+    if [[ -L "$cache_unit_link" ]]; then
+        if ! cache_unit_target=$(readlink "$cache_unit_link"); then
+            log ERR "Cannot inspect sa02m-status-cache.service unit mask"
+            exit 1
+        fi
+        if [[ "$cache_unit_target" == /dev/null ]]; then cache_unit_masked=1; fi
+    fi
+done
+if [[ "$cache_unit_masked" == 1 ]]; then
     log INFO "Dashboard cache mask preserved; after unmask, run this installer again to install the unit"
 else
     sa02m_atomic_install -m 0644 -o root -g root "$source_root/etc/systemd/system/sa02m-status-cache.service" "$unit"

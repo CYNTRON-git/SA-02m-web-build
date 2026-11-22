@@ -150,8 +150,24 @@ systemctl daemon-reload
 sa02m_svc_apply sa02m-alice-config.service app off
 sa02m_svc_apply sa02m-alice-client.service app off
 sa02m_svc_apply sa02m-cloud-control.service app off
-sa02m_atomic_install -m 0644 -o root -g root \
-    "$UNIT_SRC/sa02m-home-api.service" /etc/systemd/system/
+home_unit=/etc/systemd/system/sa02m-home-api.service
+home_runtime_unit=/run/systemd/system/sa02m-home-api.service
+home_api_unit_masked=0
+for home_api_unit_link in "$home_unit" "$home_runtime_unit"; do
+    if [[ -L "$home_api_unit_link" ]]; then
+        if ! home_api_unit_target=$(readlink "$home_api_unit_link"); then
+            log ERR "Cannot inspect sa02m-home-api.service unit mask"
+            exit 1
+        fi
+        if [[ "$home_api_unit_target" == /dev/null ]]; then home_api_unit_masked=1; fi
+    fi
+done
+if [[ "$home_api_unit_masked" == 1 ]]; then
+    log INFO "Home API mask preserved; after unmask, repeat refresh to install the unit"
+else
+    sa02m_atomic_install -m 0644 -o root -g root \
+        "$UNIT_SRC/sa02m-home-api.service" "$home_unit"
+fi
 systemctl daemon-reload
 # Explicitly enabled by the unified-home deployment; refresh preserves opt-in.
 sa02m_svc_apply sa02m-home-api.service app off

@@ -1,18 +1,8 @@
 #!/usr/bin/env python3
 """Warm the dashboard once, then collect while visible readers hold a RAM lease."""
-import argparse
-import concurrent.futures
-import copy
-import fcntl
-import json
 import os
-from pathlib import Path
-import signal
 import stat
-import subprocess
-import tempfile
-import threading
-import time
+import sys
 
 RUNTIME = '/run/sa02m-dashboard'
 ACTIVITY_NAME = 'activity'
@@ -68,6 +58,29 @@ def renew_activity(runtime):
     finally:
         os.close(fd)
         os.close(directory)
+
+
+if __name__ == '__main__' and sys.argv[1:] == ['--heartbeat']:
+    # The authenticated CGI needs only descriptor-safe marker renewal. Avoid
+    # importing the collector/process machinery for every visible-page GET.
+    try:
+        renew_activity(RUNTIME)
+    except (OSError, ValueError):
+        raise SystemExit(1) from None
+    raise SystemExit(0)
+
+
+import argparse
+import concurrent.futures
+import copy
+import fcntl
+import json
+from pathlib import Path
+import signal
+import subprocess
+import tempfile
+import threading
+import time
 
 
 class ActivityLease:

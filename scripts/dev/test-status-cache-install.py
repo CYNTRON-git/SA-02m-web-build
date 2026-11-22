@@ -13,6 +13,50 @@ ROOT = Path(__file__).resolve().parents[2]
 
 
 class InstallTests(unittest.TestCase):
+    def test_readlink_failure_refuses_before_unit_install(self):
+        source = (ROOT / 'scripts/install-status-cache.sh').read_text()
+        begin = source.index('unit=/etc/systemd/system/sa02m-status-cache.service')
+        block = source[begin:]
+        if '# Never-started Yandex client' in block:
+            block = block[:block.index('# Never-started Yandex client')]
+        for policy in ('persistent', 'runtime', 'runtime-existing'):
+            for output in ('', '/dev/null'):
+                with self.subTest(policy=policy, output=output), tempfile.TemporaryDirectory() as tmp:
+                    root = Path(tmp)
+                    persistent, runtime = root/'etc/systemd/system', root/'run/systemd/system'
+                    persistent.mkdir(parents=True); runtime.mkdir(parents=True)
+                    target = persistent/'sa02m-status-cache.service'
+                    mask = (persistent if policy == 'persistent' else runtime)/'sa02m-status-cache.service'
+                    mask.symlink_to('/dev/null')
+                    if policy == 'runtime-existing':
+                        target.write_bytes(b'previous unit')
+                    inode = mask.lstat().st_ino
+                    calls = root/'calls'; calls.write_text('')
+                    callsite = block.replace('$source_root/etc/', '$source_root/SOURCE_ETC/')
+                    callsite = callsite.replace('/etc/systemd/system', str(persistent)).replace('/run/systemd/system', str(runtime))
+                    callsite = callsite.replace('$source_root/SOURCE_ETC/', '$source_root/etc/')
+                    script = """set -euo pipefail
+readlink() { printf '%s' "$LINK_OUTPUT"; return 1; }
+log() { printf '%s\n' "$*" >&2; }
+systemctl() { :; }
+sa02m_systemctl() { :; }
+sa02m_svc_apply() { :; }
+sa02m_atomic_install() { printf 'install\n' >> "$CALLS"; }
+"""
+                    env = dict(os.environ, source_root=str(ROOT), UNIT_SRC=str(ROOT/'etc/systemd/system'),
+                               CALLS=str(calls), LINK_OUTPUT=output)
+                    result = subprocess.run(['bash', '-c', script + callsite], env=env, capture_output=True, text=True)
+                    self.assertNotEqual(result.returncode, 0, 'an unreadable mask must fail even if readlink printed a target')
+                    self.assertIn('Cannot inspect', result.stderr)
+                    self.assertEqual(calls.read_text(), '', 'no unit installation after inspection failure')
+                    self.assertTrue(mask.is_symlink())
+                    self.assertEqual(mask.lstat().st_ino, inode)
+                    self.assertEqual(os.readlink(mask), '/dev/null')
+                    if policy == 'runtime':
+                        self.assertFalse(target.exists())
+                    elif policy == 'runtime-existing':
+                        self.assertEqual(target.read_bytes(), b'previous unit')
+
     def test_mask_before_first_install_and_repeat_remains_masked(self):
         self.exercise(masked=True)
 
@@ -62,6 +106,54 @@ sa02m_atomic_install() {
                     self.assertEqual(unit.read_bytes(), (ROOT/'etc/systemd/system/sa02m-status-cache.service').read_bytes())
                 self.assertEqual((dest/'usr/local/libexec/sa02m-status-part').read_bytes(), (ROOT/'etc/sa02m-status-part.sh').read_bytes())
                 self.assertEqual((dest/'usr/local/libexec/sa02m-status-cache.py').read_bytes(), (ROOT/'etc/sa02m-status-cache.py').read_bytes())
+
+    def test_runtime_mask_is_not_shadowed_by_first_install_or_refresh(self):
+        source = (ROOT / 'scripts/install-status-cache.sh').read_text()
+        block = source[source.index('unit=/etc/systemd/system/sa02m-status-cache.service'):]
+        lib = (ROOT / 'scripts/lib.sh').read_text()
+        begin = lib.index('sa02m_atomic_install() {')
+        atomic = lib[begin:lib.index('\n}\n', begin) + 3]
+        for old_unit in (None, b'previous operator unit\n'):
+            with self.subTest(existing=old_unit is not None), tempfile.TemporaryDirectory() as tmp:
+                root = Path(tmp)
+                persistent, runtime = root/'etc/systemd/system', root/'run/systemd/system'
+                persistent.mkdir(parents=True); runtime.mkdir(parents=True)
+                target = persistent/'sa02m-status-cache.service'
+                mask = runtime/target.name
+                mask.symlink_to('/dev/null')
+                if old_unit is not None:
+                    target.write_bytes(old_unit)
+                inode = mask.lstat().st_ino
+                callsite = block.replace('$source_root/etc/', '$source_root/SOURCE_ETC/')
+                callsite = callsite.replace('/etc/systemd/system', str(persistent)).replace('/run/systemd/system', str(runtime))
+                callsite = callsite.replace('$source_root/SOURCE_ETC/', '$source_root/etc/')
+                script = """set -euo pipefail
+log() { :; }
+sync() { :; }
+sa02m_systemctl() { printf 'systemctl %s\\n' "$*" >> "$CALLS"; }
+sa02m_svc_apply() { printf 'apply %s\\n' "$*" >> "$CALLS"; }
+install() {
+    local -a args=()
+    while [ "$#" -gt 0 ]; do
+        case "$1" in -o|-g) shift 2 ;; *) args+=("$1"); shift ;; esac
+    done
+    command install "${args[@]}"
+}
+""" + atomic + '\n'
+                env = dict(os.environ, source_root=str(ROOT), LOG_FILE=str(root/'log'), CALLS=str(root/'calls'))
+                for _ in range(2):
+                    result = subprocess.run(['bash', '-c', script + callsite], env=env, capture_output=True, text=True)
+                    self.assertEqual(result.returncode, 0, result.stderr)
+                    self.assertTrue(mask.is_symlink())
+                    self.assertEqual(os.readlink(mask), '/dev/null')
+                    self.assertEqual(mask.lstat().st_ino, inode)
+                    if old_unit is None:
+                        self.assertFalse(target.exists(), 'an installed /etc unit must not shadow the runtime mask')
+                    else:
+                        self.assertEqual(target.read_bytes(), old_unit, 'runtime mask also preserves the prior /etc fragment')
+                self.assertNotIn('unmask', (root/'calls').read_text())
+                self.assertEqual((root/'calls').read_text().splitlines(),
+                                 ['systemctl daemon-reload', 'apply sa02m-status-cache.service app on'] * 2)
 
     def test_web_only_offline_payload_does_not_install_orphan_collector_unit(self):
         spec = importlib.util.spec_from_file_location('offline_pack', ROOT/'scripts/pack-offline-update.py')

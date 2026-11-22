@@ -176,6 +176,30 @@ class SnapshotTests(unittest.TestCase):
     def sample(self, value=12, age=0):
         return {'cpu_usage': value, '_status_meta': {'measured_at': 123, 'age_s': age, 'ttl_s': 6}}
 
+    def test_exact_heartbeat_avoids_collector_imports_and_rejects_malformed_arguments(self):
+        lease = module.ActivityLease(self.runtime)
+        self.addCleanup(lease.close)
+        source = (ROOT/'etc/sa02m-status-cache.py').read_text()
+        self.assertEqual(source.count("RUNTIME = '/run/sa02m-dashboard'"), 1)
+        helper = self.path/'heartbeat-imports.py'
+        helper.write_text(source.replace("RUNTIME = '/run/sa02m-dashboard'", 'RUNTIME = '+repr(str(self.runtime))))
+        command = [sys.executable, '-I', '-S', '-X', 'importtime', str(helper)]
+        before = (self.runtime/'activity').stat().st_mtime_ns
+        result = subprocess.run(command+['--heartbeat'], capture_output=True, text=True, timeout=3)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertGreater((self.runtime/'activity').stat().st_mtime_ns, before)
+        imports = {line.rsplit('|', 1)[-1].strip() for line in result.stderr.splitlines() if line.startswith('import time:')}
+        self.assertTrue(imports, 'the real interpreter import probe must be non-empty')
+        heavy = {'argparse','concurrent','copy','json','pathlib','subprocess','tempfile','threading'}
+        self.assertFalse({name.split('.')[0] for name in imports} & heavy, 'heartbeat must not import the collector runtime')
+        for args in (['--heartbeat','--runtime',str(self.path/'other')],
+                     ['--heartbeat','--command','/bin/true'], ['--heartbeat','--unexpected'], ['--heartbeat=1']):
+            with self.subTest(args=args):
+                before = (self.runtime/'activity').stat().st_mtime_ns
+                result = subprocess.run(command+args, capture_output=True, text=True, timeout=3)
+                self.assertEqual(result.returncode, 2)
+                self.assertEqual((self.runtime/'activity').stat().st_mtime_ns, before)
+
     def test_boot_warms_once_then_sleeps_without_readers(self):
         calls, errors = [], []
         def collect(part, *_):
@@ -568,8 +592,8 @@ class SnapshotTests(unittest.TestCase):
             source = (ROOT/'www/network_config/cgi-bin'/name).read_text()
             source = source.replace('/run/sa02m-dashboard/snapshot.json', str(self.runtime/'snapshot.json'))
             source = source.replace('/tmp/sa02m_status_cache', str(self.path/'legacy'))
-            source = source.replace('/usr/bin/python3 -I /usr/local/libexec/sa02m-status-cache.py',
-                                    shlex.join([sys.executable, '-I', str(heartbeat)]))
+            source = source.replace('/usr/bin/python3 -I -S /usr/local/libexec/sa02m-status-cache.py',
+                                    shlex.join([sys.executable, '-I', '-S', str(heartbeat)]))
             (cgi/name).write_text(source)
         sessions = self.path/'sessions'
         sessions.mkdir()

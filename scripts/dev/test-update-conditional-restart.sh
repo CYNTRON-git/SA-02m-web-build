@@ -703,7 +703,7 @@ PY
     else
         bad "run8: online and offline restart_if_active differ — the two updates disagree about which opt-in units are bounced (online: $on_ria | offline: $off_ria)"
     fi
-    for u8 in sa02m-homekit sa02m-homeconnect sa02m-audio sa02m-agent-api; do
+    for u8 in sa02m-homekit sa02m-homeconnect sa02m-audio sa02m-agent-api sa02m-home-api; do
         case " $on_ria " in
             *" $u8 "*) ok "run8: $u8 is in the generated restart_if_active" ;;
             *) bad "run8: $u8 is NOT in the generated restart_if_active — an OTA leaves the running daemon on stale code" ;;
@@ -722,7 +722,7 @@ PY
               "health": {"http_url": "", "units_active": [], "version_file": "$TW/VERSION"}}}
 JSON
     : > "$STAGE/journal.jsonl"
-    for u8 in sa02m-homekit sa02m-homeconnect sa02m-audio sa02m-agent-api; do
+    for u8 in sa02m-homekit sa02m-homeconnect sa02m-audio sa02m-agent-api sa02m-home-api; do
         printf '%s\n' "$u8" > "$ACTIVE_FILE"
         run_health
         if [ "$run_rc" -eq 0 ] && called "restart $u8"; then
@@ -738,6 +738,18 @@ JSON
             ok "run8: a stopped $u8 is probed and left alone (never-widen)"
         else
             bad "run8: $u8 was never probed — the generated set did not reach the loop (vacuous)"
+        fi
+    done
+    for policy8 in disabled masked masked-runtime; do
+        : > "$ACTIVE_FILE"
+        printf '%s\n' "$policy8" > "$SHIM_STATE/enabled.sa02m-home-api"
+        run_health
+        if called 'restart sa02m-home-api' || called 'start sa02m-home-api' || called 'enable sa02m-home-api' || called 'unmask sa02m-home-api'; then
+            bad "run8: Home API $policy8 policy was widened"
+        elif called 'is-active --quiet sa02m-home-api'; then
+            ok "run8: inactive Home API $policy8 policy is preserved"
+        else
+            bad "run8: Home API $policy8 was not checked (vacuous)"
         fi
     done
 fi

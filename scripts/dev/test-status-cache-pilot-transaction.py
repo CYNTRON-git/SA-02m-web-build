@@ -9,6 +9,7 @@ import json
 import os
 from pathlib import Path
 import stat
+import subprocess
 import sys
 import tarfile
 import tempfile
@@ -48,6 +49,57 @@ def fixture_manifest():
 
 
 class PackageTests(unittest.TestCase):
+    def packager_fixture(self):
+        spec = importlib.util.spec_from_file_location('pilot_packager', ROOT / 'scripts/pack-status-cache-pilot.py')
+        packager = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(packager)
+        temp = tempfile.TemporaryDirectory(prefix='sa02m-pilot-ref-')
+        self.addCleanup(temp.cleanup)
+        tree = Path(temp.name)/'repo'
+        tree.mkdir()
+        def git(*args):
+            return subprocess.check_output(['git', '-C', str(tree), '-c', 'user.name=Fixture',
+                                           '-c', 'user.email=fixture@example.invalid', *args], stderr=subprocess.DEVNULL)
+        git('init', '-q')
+        for source in [row[0] for row in packager.FILES] + list(pilot.RECIPES):
+            path = tree/source
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_bytes((ROOT/source).read_bytes())
+        outside = tree/'www/network_config/static/js/app/hw.js'
+        outside.write_text('// historical producer\n')
+        git('add', '.')
+        git('commit', '-qm', 'base')
+        base = git('rev-parse', 'HEAD').decode().strip()
+        consumer = tree/'www/network_config/static/js/app/status.js'
+        consumer.write_bytes(consumer.read_bytes()+b'\n// demand-only fixture\n')
+        git('add', '.')
+        git('commit', '-qm', 'demand')
+        packager.ROOT = tree
+        return packager, tree, outside, base, git
+
+    def test_packager_accepts_complete_demand_only_ref(self):
+        packager, tree, _outside, base, _git = self.packager_fixture()
+        output = tree.parent/'output'
+        with mock.patch.object(sys, 'argv', ['pack', '--base', base, '--output', str(output)]):
+            packager.main()
+        manifest, _payload = pilot.load_package((output/'status-cache-pilot.tar.gz').read_bytes())
+        self.assertEqual(len(manifest['runtime']), 8)
+
+    def test_packager_rejects_paired_producer_and_other_www_changes_before_output(self):
+        for change in ('modify', 'delete', 'rename'):
+            with self.subTest(change=change):
+                packager, tree, outside, base, git = self.packager_fixture()
+                if change == 'modify': outside.write_text('// new producer with a paired consumer\n')
+                elif change == 'delete': outside.unlink()
+                else: outside.rename(outside.with_name('outside\nproducer.js'))
+                git('add', '-A')
+                git('commit', '-qm', 'outside whitelist')
+                output = tree.parent/'refused'
+                with mock.patch.object(sys, 'argv', ['pack', '--base', base, '--output', str(output)]):
+                    with self.assertRaisesRegex(SystemExit, 'outside.*whitelist'):
+                        packager.main()
+                self.assertFalse(output.exists(), 'a rejected ref cannot leave a partial release artifact')
+
     def test_packager_and_transaction_policy_match(self):
         spec = importlib.util.spec_from_file_location('pilot_packager', ROOT / 'scripts/pack-status-cache-pilot.py')
         packager = importlib.util.module_from_spec(spec)

@@ -98,6 +98,130 @@ class HomeTest(unittest.TestCase):
         self.api.note_mqtt("/devices/other/controls/do_1", "1")
         self.assertEqual(self.ledger.get(body["command_id"])["status"], "published")
 
+    def test_rebound_capability_cannot_confirm_an_original_command(self):
+        body = self.command()
+        self.send(body)
+        changed = copy.deepcopy(DOC)
+        replacement = '/devices/replacement/controls/state'
+        changed['devices'][0]['capabilities'][0]['mqtt'] = replacement
+        self.registry.reload(changed)
+        self.api.note_mqtt(replacement, '1')
+        self.api.note_mqtt(TOPIC, '0')
+        row = self.ledger.get(body['command_id'])
+        self.assertEqual(row['status'], 'outcome_unknown')
+        self.assertEqual(row['error'], 'binding_changed')
+        self.assertFalse(row['physical_confirmation'])
+        self.assertEqual(self.sent, [(TOPIC+'/on', '1')])
+        self.assertEqual(self.send(body)[1]['receipt']['status'], 'outcome_unknown')
+        self.assertEqual(len(self.sent), 1, 'unknown after rebind must never replay the command')
+
+    def test_rename_keeps_original_binding_and_rebind_after_observation_keeps_receipt(self):
+        body = self.command()
+        self.send(body)
+        changed = copy.deepcopy(DOC)
+        changed['devices'][0]['name'] = 'Renamed light'
+        self.registry.reload(changed)
+        self.api.note_mqtt(TOPIC, '1')
+        self.assertEqual(self.ledger.get(body['command_id'])['status'], 'observed')
+        changed['devices'][0]['capabilities'][0]['mqtt'] = '/devices/replacement/controls/state'
+        self.registry.reload(changed)
+        self.api.note_mqtt(TOPIC, '0')
+        self.assertEqual(self.ledger.get(body['command_id'])['status'], 'observed')
+
+    def test_rebind_before_dispatch_pins_new_binding_and_removed_mapping_is_unknown(self):
+        changed = copy.deepcopy(DOC)
+        replacement = '/devices/replacement/controls/state'
+        changed['devices'][0]['capabilities'][0]['mqtt'] = replacement
+        self.registry.reload(changed)
+        self.api.note_mqtt(replacement, '0')
+        body = self.command()
+        self.assertEqual(self.send(body)[1]['receipt']['status'], 'published')
+        self.assertEqual(self.sent, [(replacement+'/on', '1')])
+        self.api.note_mqtt(TOPIC, '1')
+        self.assertEqual(self.ledger.get(body['command_id'])['status'], 'published')
+        self.api.note_mqtt(replacement, '1', retained=True)
+        self.assertEqual(self.ledger.get(body['command_id'])['status'], 'published')
+        changed['devices'][0]['capabilities'] = []
+        self.registry.reload(changed)
+        self.api.note_mqtt(replacement, '1')
+        self.assertEqual(self.ledger.get(body['command_id'])['status'], 'outcome_unknown')
+
+    def test_same_topic_with_changed_normalization_cannot_confirm(self):
+        body = self.command()
+        self.send(body)
+        changed = copy.deepcopy(DOC)
+        changed['devices'][0]['capabilities'][0]['inverted'] = True
+        self.registry.reload(changed)
+        self.api.note_mqtt(TOPIC, '0')
+        self.assertEqual(self.ledger.get(body['command_id'])['status'], 'outcome_unknown')
+        self.assertEqual(self.ledger.get(body['command_id'])['error'], 'binding_changed')
+
+    def test_compound_light_receipt_pins_only_its_target_capability(self):
+        changed = copy.deepcopy(DOC)
+        color = {'type':'devices.capabilities.color_setting', 'parameters':{'instance':'rgb','color_model':'rgb'},
+                 'mqtt':'/devices/color-fixture/controls/color'}
+        changed['devices'][0]['capabilities'].append(color)
+        self.registry.reload(changed)
+        self.api.note_mqtt(color['mqtt'], '#000000')
+        body = self.command(capability={'type':color['type'],'instance':'rgb'}, value=0x112233)
+        self.assertEqual(self.send(body)[1]['receipt']['status'], 'published')
+        self.assertEqual(self.sent[-1][0], color['mqtt']+'/on')
+        # Rebinding the other capability is not a change to this RGB command.
+        changed['devices'][0]['capabilities'][0]['mqtt'] = '/devices/other-lamp/controls/state'
+        self.registry.reload(changed)
+        self.api.note_mqtt(color['mqtt'], '#112233')
+        self.assertEqual(self.ledger.get(body['command_id'])['status'], 'observed')
+
+    def test_snapshot_availability_scales_linearly_at_catalog_limit(self):
+        class Counted(dict):
+            visits = 0
+            def items(self):
+                for entry in super().items():
+                    self.visits += 1
+                    yield entry
+        devices = []
+        for index in range(512):
+            caps = [{'type':'devices.capabilities.range',
+                     'parameters':{'instance':instance, 'range':{'min':0,'max':100,'precision':1}},
+                     'mqtt':f'/devices/generic-{index}/controls/{instance}'}
+                    for instance in ('brightness','temperature','humidity','open')]
+            devices.append({'id':f'light-{index}','name':f'Light {index}',
+                            'type':'devices.types.light','capabilities':caps,'properties':[]})
+        self.registry.reload({'devices':devices})
+        self.api.observations.clear()
+        for device in devices:
+            for cap in device['capabilities']:
+                self.api.note_mqtt(cap['mqtt'], '25')
+        counted = self.api.observations = Counted(self.api.observations)
+        status, result = self.api.request('GET','/snapshot')
+        self.assertEqual(status, 200)
+        caps = [cap for device in result['devices'] for cap in device['capabilities']]
+        self.assertEqual(len(caps), 2048)
+        self.assertTrue(all(cap['can_control'] and cap['value'] == 25 for cap in caps))
+        self.assertEqual(counted.visits, 2048, 'availability must inspect each observation once, not once per capability')
+        self.now += C.STATUS_STALE_S + 1
+        later = self.api.request('GET','/snapshot')[1]
+        self.assertTrue(all(not cap['can_control'] for d in later['devices'] for cap in d['capabilities']))
+        self.assertEqual(counted.visits, 4096, 'the derived index must be rebuilt per request, never retained across requests')
+
+    def test_snapshot_availability_keeps_latest_valid_same_producer_evidence(self):
+        self.api.observations.clear()
+        self.api.note_mqtt(TOPIC, '0', retained=True)
+        self.now += 1
+        self.api.note_mqtt('/devices/mr02m-COM3-10/controls/uptime_s','100')
+        expected = self.now
+        self.now += 1
+        self.api.note_mqtt(TOPIC+'/on','1')
+        self.api.note_mqtt('/devices/mr02m-COM3-10/controls/other/meta/error','r')
+        self.api.note_mqtt('/devices/mr02m-COM3-100/controls/uptime_s','999')
+        self.api.note_mqtt('/devices/mr02m-COM3-10/controls/retained','1',retained=True)
+        cap = self.api.request('GET','/snapshot')[1]['devices'][0]['capabilities'][0]
+        self.assertEqual(cap['availability'], {'can_control':True,'reason':'recent_producer_observation','evidence_at':expected})
+        self.assertEqual(cap['quality'], 'cached')
+        self.now += C.STATUS_STALE_S + 1
+        self.assertEqual(self.api.availability(DOC['devices'][0]['capabilities'][0]),
+                         {'can_control':False,'reason':'no_live_bus_evidence'})
+
     def test_identical_duplicate_even_after_lease_expiry_never_republishes(self):
         body = self.command()
         self.send(body)

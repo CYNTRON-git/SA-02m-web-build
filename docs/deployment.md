@@ -32,6 +32,8 @@
 
 ## Пути деплоя
 
+Для явно согласованного пилота программной энергии фаз применяется [узкая процедура](contracts/phase-energy-correction.md#установка-и-узкий-пилот).
+
 Для отдельно запрошенного пилота фонового dashboard-кэша действует узкая процедура [status-snapshot-pilot.md](contracts/status-snapshot-pilot.md): manifest из commit, сверка live/base SHA-256, восемь файлов, backup/rollback и перезапуск только нового сборщика. Она не заменяет весь web-root и не изменяет общий deployed_commit.
 
 Исключение для явно запрошенного контролируемого пилота **Home API v1**:

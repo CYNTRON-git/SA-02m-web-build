@@ -5,6 +5,31 @@
 
 ---
 
+## 1.0.7.37 - Demand-driven dashboard, unified Home API and phase energy (November 2026)
+
+### Delivery
+
+- Use the full installer, including `--refresh`, for the matching dashboard collector, Home API, nginx route and optional phase-energy adapter. The web/offline update package intentionally excludes the collector and phase-energy bootstrap; copying only the panel is not a complete installation of this release. Existing disabled and persistent/runtime-masked application service choices are preserved. New Home API and phase-energy services start off; their first activation is explicit.
+- Updates conditionally restart an already active Home API. The newly installed network-update runner governs subsequent network updates, not the transaction that delivered it. Full installation runs the new installer directly. The narrow cache pilot rejects panel changes outside its fixed eight-file runtime set.
+
+### Dashboard and panel
+
+- Warm a bounded RAM status snapshot once at startup. Thereafter, collect metrics only while an authenticated visible dashboard renews the shared activity lease. Closing or hiding all readers lets the collector sleep; reopening shows saved values immediately and refreshes them without fabricating their age. Ordinary read-only requests do not activate collection. Snapshot files are not periodically written to flash.
+- Keep one completion-scheduled request per consumer, retire obsolete responses and preserve command/readback barriers. Canceled navigation no longer stops a still-visible dashboard. The heartbeat path avoids loading the full collector, and RS-485 telemetry batches process inspection instead of repeating it for each port; uncertain inspection retains the prior fallback.
+- Show saved hardware readings and unknown age when automatic hardware polling is disabled. Missing fresh coordinator evidence is distinguished from a current unavailable response. Storage auto-format stays unavailable until its installed state and current setting are known.
+- Keep the Smart Home modal as an explicit consumer of the shared Alice catalog. Hidden or closed consumers stop unnecessary reads without canceling sent commands or stopping another visible consumer. Short layouts no longer oscillate the header when its own resize clamps the scroll position.
+- USB pending-state barriers use a monotonic clock with compatibility for previously cached consumers. Failed inventory ownership reads are retried even when file size and timestamps did not change.
+
+### Unified Home API
+
+- Add the versioned local Home API with the shared cloud wire contract, authenticated panel access and guarded root/Unix operations. Catalog, status, command receipts and scenario revisions share the existing device registry and ownership rules. The runtime keeps request identity and uncertainty explicit instead of reporting a transport acknowledgment as physical confirmation.
+- Pin pending commands to their original capability binding. A replacement binding cannot confirm an earlier command; retries and conflicts preserve the command ledger. Snapshot availability uses one request-local producer index instead of rescanning every capability for each device. Existing receipts are retained across updates and must not be rolled back as configuration.
+
+### Phase energy
+
+- Add an optional software-only MQTT adapter for independent phase energy offsets, with exact Decimal arithmetic, durable atomic state and fresh source/error checks. It does not write Modbus energy, CT coefficients or calibration. The default device list is empty and the service is off.
+- Preserve all three decimal places in absolute kWh commands, including large readings. Reject invalid precision, bounds, relative commands and stale/retained/DUP inputs. A successful setter acknowledgment follows durable state persistence; the existing MQTT publisher trust boundary and retry limitations remain explicit in the contract.
+
 ## 1.0.7.36 - Audit fixes: MQTT commands, Fast Modbus events, watchdog, time and privileges (November 2026)
 
 ### Delivery

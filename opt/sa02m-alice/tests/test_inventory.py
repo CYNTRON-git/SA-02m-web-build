@@ -451,6 +451,56 @@ class TestOtherFamilies(Inv):
         self.write_yaml({"devices": []})
         self.assertFalse(readonly(topic))
 
+    def test_follow_changes_recovers_after_same_fingerprint_repair(self):
+        from unittest.mock import patch
+
+        alarm = "/devices/kitchen-strip/controls/ocp_g"
+        self.write_yaml({"devices": [{"id": "kitchen-strip", "type": "led"}]})
+        readonly = inventory.led_readonly_source(follow_changes=True)
+        self.assertTrue(readonly(alarm))
+        path = self.write_yaml({"devices": 42})
+        self.assertEqual(os.stat(path).st_size, 12)
+        with patch.object(inventory, "bridge_config_fingerprint",
+                          return_value=inventory.bridge_config_fingerprint()):
+            self.assertTrue(readonly(alarm))
+            invalid_revision = readonly.refresh()
+            self.write_yaml({"devices": []})
+            self.assertEqual(os.stat(path).st_size, 12)
+            self.assertFalse(readonly(alarm))
+            # Rules compares these tokens before rebuilding its capability index.
+            self.assertNotEqual(readonly.refresh(), invalid_revision)
+
+    def test_unavailable_then_malformed_keeps_known_owner_on_retry(self):
+        from unittest.mock import patch
+
+        known = "/devices/kitchen-strip/controls/ocp_g"
+        other = "/devices/other/controls/ocp_g"
+        self.write_yaml({"devices": [{"id": "kitchen-strip", "type": "led"},
+                                     {"id": "other", "type": "template"}]})
+        readonly = inventory.led_readonly_source(follow_changes=True)
+        self.assertTrue(readonly(known))
+        self.assertFalse(readonly(other))
+        self.write_yaml({"devices": 42})
+        with patch.object(os, "access", return_value=False):
+            self.assertTrue(readonly(other))
+            inaccessible_revision = readonly.refresh()
+        # Access was restored without writing the file. Malformed data keeps
+        # the known LED protected; only the temporary blanket guard is lifted.
+        self.assertTrue(readonly(known))
+        self.assertFalse(readonly(other))
+        self.assertNotEqual(readonly.refresh(), inaccessible_revision)
+
+    def test_stable_accepted_roster_loads_once(self):
+        from unittest.mock import patch
+
+        self.write_yaml({"devices": [{"id": "kitchen-strip", "type": "led"}]})
+        readonly = inventory.led_readonly_source(follow_changes=True)
+        with patch.object(topics, "_load_yaml", wraps=topics._load_yaml) as load:
+            for _ in range(100):
+                self.assertTrue(readonly("/devices/kitchen-strip/controls/ocp_g"))
+                self.assertFalse(readonly("/devices/another/controls/ocp_g"))
+            load.assert_called_once()
+
     def test_missing_current_index_guards_driver_readings_until_ownership_is_known(self):
         from unittest.mock import patch
         from sa02m_alice.config import bridge_families
