@@ -7,8 +7,8 @@
        iPhone top/bottom areas must match the page background, not a default). -->
   <meta name="theme-color" content="#161618" id="theme-color-meta">
   <title>СА-02м — Панель управления</title>
-  <link rel="icon" type="image/svg+xml" href="static/favicon_cyntron.svg?v=1.0.7.37&r=devhist1">
-  <link rel="stylesheet" href="static/css/main.css?v=1.0.7.37&r=ifwrite1">
+  <link rel="icon" type="image/svg+xml" href="static/favicon_cyntron.svg?v=1.0.7.38&r=devhist1">
+  <link rel="stylesheet" href="static/css/main.css?v=1.0.7.38&r=ifwrite1">
   <script>try{var _lt=localStorage.getItem('sa02m-theme')==='light';if(_lt)document.documentElement.setAttribute('data-theme','light');var _m=document.getElementById('theme-color-meta');if(_m)_m.setAttribute('content',_lt?'#ececf3':'#161618');}catch(e){}</script>
 </head>
 <body>
@@ -21,8 +21,8 @@
       <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" aria-hidden="true"><path d="M4 6h16M4 12h16M4 18h16"/></svg>
     </button>
     <div class="topbar-logo">
-      <img class="topbar-logo-img" src="static/logo-vector_cyntron.svg?v=1.0.7.37&r=devhist1" height="28" width="120" alt="ЦИНТРОН" title="Сведения">
-      <img class="topbar-logo-chip" src="static/logo-chip_cyntron.svg?v=1.0.7.37&r=devhist1" height="28" width="28" alt="ЦИНТРОН" title="Сведения">
+      <img class="topbar-logo-img" src="static/logo-vector_cyntron.svg?v=1.0.7.38&r=devhist1" height="28" width="120" alt="ЦИНТРОН" title="Сведения">
+      <img class="topbar-logo-chip" src="static/logo-chip_cyntron.svg?v=1.0.7.38&r=devhist1" height="28" width="28" alt="ЦИНТРОН" title="Сведения">
     </div>
     <div class="topbar-branding">
       <span class="topbar-brand-text" id="device-title">Сервер автоматизации СА-02м</span><span class="topbar-brand-short" id="device-title-short">СА-02м</span><span class="topbar-brand-ver" id="app-version" title="Версия веб-интерфейса"></span>
@@ -139,21 +139,20 @@
           <h2>Сведения</h2>
         </div>
 
-        <div id="dashboard-poll-alert" class="dashboard-poll-alert" style="display:none" role="status" aria-live="polite"></div>
-        <div id="port-operation-status" class="dashboard-poll-alert" style="display:none" role="status" aria-live="polite"></div>
 
         <div class="dash-grid">
 
           <!-- Система -->
-          <div class="widget dash-wide">
+          <div class="widget dash-wide" data-status-parts="system time">
             <div class="widget-title has-ico"><span class="w-ico w-ico-cyan" aria-hidden="true"><svg viewBox="0 0 24 24"><rect x="7" y="7" width="10" height="10" rx="1.5"/><path d="M9 3v4M15 3v4M9 17v4M15 17v4M3 9h4M3 15h4M17 9h4M17 15h4"/></svg></span><span>Система</span></div>
             <div class="widget-sub widget-sub-reserved" id="cpu-model" style="font-size:14px;font-weight:600;color:var(--text)">&nbsp;</div>
             <div class="widget-sub widget-sub-reserved" id="armbian-info" style="margin-top:4px">&nbsp;</div>
             <div class="widget-sub widget-sub-reserved" id="kernel-info" style="margin-top:4px">&nbsp;</div>
+            <details class="dashboard-quality" hidden><summary aria-label="Состояние"><span aria-hidden="true">ⓘ</span></summary><div class="dashboard-quality-text"></div></details>
           </div>
 
           <!-- Нагрузка (load avg) -->
-          <div class="widget dash-wide dash-kpi">
+          <div class="widget dash-wide dash-kpi" data-status-parts="load">
             <div class="widget-title has-ico"><span class="w-ico w-ico-cyan" aria-hidden="true"><svg viewBox="0 0 24 24"><path d="M5 20V10M12 20V4M19 20v-6"/></svg></span><span title="Load average">Нагрузка</span></div>
             <div class="widget-body">
               <div class="load-grid">
@@ -168,10 +167,11 @@
                 <span id="cpu-freq">0 МГц</span>
               </div>
             </div>
+            <details class="dashboard-quality" hidden><summary aria-label="Состояние"><span aria-hidden="true">ⓘ</span></summary><div class="dashboard-quality-text"></div></details>
           </div>
 
           <!-- Загрузка CPU -->
-          <div class="widget dash-kpi">
+          <div class="widget dash-kpi" data-status-parts="priority">
             <div class="widget-title has-ico"><span class="w-ico w-ico-cyan" aria-hidden="true"><svg viewBox="0 0 24 24"><polyline points="22 12 18 12 15 21 9 3 6 12 2 12"/></svg></span><span>Загрузка CPU</span></div>
             <div class="widget-body">
               <div class="widget-val widget-val-centered" id="cpu-val">—</div>
@@ -180,10 +180,11 @@
               <div class="bar-track"><div class="bar-fill" id="cpu-bar" style="width:0%"></div></div>
               <div class="bar-meta"><span>0%</span><span>100%</span></div>
             </div>
+            <details class="dashboard-quality" hidden><summary aria-label="Состояние"><span aria-hidden="true">ⓘ</span></summary><div class="dashboard-quality-text"></div></details>
           </div>
 
           <!-- Температура CPU -->
-          <div class="widget dash-kpi">
+          <div class="widget dash-kpi" data-status-parts="priority">
             <div class="widget-title has-ico"><span class="w-ico w-ico-cyan" aria-hidden="true"><svg viewBox="0 0 24 24"><path d="M14 14.76V5a2 2 0 0 0-4 0v9.76a4 4 0 1 0 4 0z"/></svg></span><span>Температура</span></div>
             <div class="widget-body">
               <div class="widget-val widget-val-centered" id="temp-val">—</div>
@@ -193,10 +194,11 @@
               <div class="bar-track"><div class="bar-fill" id="temp-bar" style="width:0%;background:var(--meter-green)"></div></div>
               <div class="bar-meta"><span>30°C</span><span>100°C</span></div>
             </div>
+            <details class="dashboard-quality" hidden><summary aria-label="Состояние"><span aria-hidden="true">ⓘ</span></summary><div class="dashboard-quality-text"></div></details>
           </div>
 
           <!-- ОЗУ -->
-          <div class="widget dash-kpi">
+          <div class="widget dash-kpi" data-status-parts="priority">
             <div class="widget-title has-ico"><span class="w-ico w-ico-cyan" aria-hidden="true"><svg viewBox="0 0 24 24"><rect x="3" y="7" width="18" height="10" rx="1.5"/><path d="M7 17v3M12 17v3M17 17v3M7 11h2M11 11h2M15 11h2"/></svg></span><span>ОЗУ</span></div>
             <div class="widget-body">
               <div class="widget-val widget-val-centered" id="ram-val">—</div>
@@ -213,10 +215,11 @@
                 <div class="bar-meta"><span id="swap-pct">0%</span><span id="swap-lbl"></span></div>
               </div>
             </div>
+            <details class="dashboard-quality" hidden><summary aria-label="Состояние"><span aria-hidden="true">ⓘ</span></summary><div class="dashboard-quality-text"></div></details>
           </div>
 
           <!-- Диск eMMC -->
-          <div class="widget dash-kpi">
+          <div class="widget dash-kpi" data-status-parts="priority">
             <div class="widget-title has-ico"><span class="w-ico w-ico-cyan" aria-hidden="true"><svg viewBox="0 0 24 24"><path d="M21 12H3M5 5h14l2 7v5a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-5z"/><path d="M17 16h.01"/></svg></span><span>Диск eMMC</span></div>
             <div class="widget-body">
               <div class="widget-val widget-val-centered" id="disk-val">—</div>
@@ -226,25 +229,28 @@
               <div class="bar-track"><div class="bar-fill" id="disk-bar" style="width:0%;background:var(--green)"></div></div>
               <div class="bar-meta"><span id="disk-pct">0%</span><span id="disk-free"></span></div>
             </div>
+            <details class="dashboard-quality" hidden><summary aria-label="Состояние"><span aria-hidden="true">ⓘ</span></summary><div class="dashboard-quality-text"></div></details>
           </div>
 
           <!-- Uptime -->
-          <div class="widget dash-kpi">
+          <div class="widget dash-kpi" data-status-parts="uptime">
             <div class="widget-title has-ico"><span class="w-ico w-ico-cyan" aria-hidden="true"><svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="9"/><polyline points="12 7 12 12 15 15"/></svg></span><span>Uptime</span></div>
             <div class="widget-body">
               <div class="widget-val widget-val-centered uptime-readout" id="uptime-val">—</div>
             </div>
             <div class="bar-row dash-kpi-bar-spacer" aria-hidden="true"></div>
+            <details class="dashboard-quality" hidden><summary aria-label="Состояние"><span aria-hidden="true">ⓘ</span></summary><div class="dashboard-quality-text"></div></details>
           </div>
 
           <!-- Службы -->
-          <div class="widget widget-svc dash-wide">
+          <div class="widget widget-svc dash-wide" data-status-parts="services">
             <div class="widget-title has-ico"><span class="w-ico w-ico-cyan" aria-hidden="true"><svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.7 1.7 0 0 0 .34 1.87l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.7 1.7 0 0 0-1.87-.34 1.7 1.7 0 0 0-1 1.55V21a2 2 0 1 1-4 0v-.09a1.7 1.7 0 0 0-1-1.55 1.7 1.7 0 0 0-1.87.34l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06a1.7 1.7 0 0 0 .34-1.87 1.7 1.7 0 0 0-1.55-1H3a2 2 0 1 1 0-4h.09a1.7 1.7 0 0 0 1.55-1 1.7 1.7 0 0 0-.34-1.87l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06a1.7 1.7 0 0 0 1.87.34h.01a1.7 1.7 0 0 0 1-1.55V3a2 2 0 1 1 4 0v.09a1.7 1.7 0 0 0 1 1.55h.01a1.7 1.7 0 0 0 1.87-.34l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06a1.7 1.7 0 0 0-.34 1.87v.01a1.7 1.7 0 0 0 1.55 1H21a2 2 0 1 1 0 4h-.09a1.7 1.7 0 0 0-1.55 1z"/></svg></span><span>Службы</span></div>
             <div class="svc-list" id="svc-dynamic-list"></div>
+            <details class="dashboard-quality" hidden><summary aria-label="Состояние"><span aria-hidden="true">ⓘ</span></summary><div class="dashboard-quality-text"></div></details>
           </div>
 
           <!-- USB (точка монтирования /media/usb или USB-модем) -->
-          <div class="widget dash-kpi">
+          <div class="widget dash-kpi" data-status-parts="storage">
             <div class="widget-title has-ico"><span class="w-ico w-ico-cyan" id="usb-widget-ico" data-kind="storage" aria-hidden="true"><svg viewBox="0 0 24 24"><rect x="8" y="9" width="8" height="12" rx="1.5"/><path d="M10 9V4a1 1 0 0 1 1-1h2a1 1 0 0 1 1 1v5"/><path d="M11 6h.01M13 6h.01"/></svg></span><span id="usb-widget-title">USB-flash</span></div>
             <div class="widget-body">
               <div id="usb-storage-view">
@@ -262,10 +268,11 @@
               <div class="bar-track"><div class="bar-fill" id="usb-bar" style="width:0%;background:var(--green)"></div></div>
               <div class="bar-meta"><span id="usb-pct">0%</span><span id="usb-free"></span></div>
             </div>
+            <details class="dashboard-quality" hidden><summary aria-label="Состояние"><span aria-hidden="true">ⓘ</span></summary><div class="dashboard-quality-text"></div></details>
           </div>
 
           <!-- microSD (/media/sdcard, mmcblk1 или mmcblk3) -->
-          <div class="widget dash-kpi">
+          <div class="widget dash-kpi" data-status-parts="storage">
             <div class="widget-title has-ico widget-title-preserve"><span class="w-ico w-ico-cyan" aria-hidden="true"><svg viewBox="0 0 24 24"><path d="M8 3h9a2 2 0 0 1 2 2v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6z"/><path d="M9 3v4M12 3v4M15 3v4"/></svg></span><span>microSD</span></div>
             <div class="widget-body">
               <div class="widget-val widget-val-centered" id="sd-val">—</div>
@@ -275,10 +282,11 @@
               <div class="bar-track"><div class="bar-fill" id="sd-bar" style="width:0%;background:var(--green)"></div></div>
               <div class="bar-meta"><span id="sd-pct">0%</span><span id="sd-free"></span></div>
             </div>
+            <details class="dashboard-quality" hidden><summary aria-label="Состояние"><span aria-hidden="true">ⓘ</span></summary><div class="dashboard-quality-text"></div></details>
           </div>
 
           <!-- Network eth0 -->
-          <div class="widget dash-eth">
+          <div class="widget dash-eth" data-status-parts="network">
             <div class="widget-title eth-hdr-title widget-title-preserve has-ico">
               <span class="w-ico w-ico-cyan" aria-hidden="true"><svg viewBox="0 0 24 24" stroke-width="1.8"><rect x="9.5" y="2.5" width="5" height="5"/><rect x="2.5" y="16.5" width="5" height="5"/><rect x="16.5" y="16.5" width="5" height="5"/><path d="M12 7.5V12M5 16.5V12h14v4.5"/></svg></span>
               <span>Ethernet № 1</span>
@@ -289,10 +297,11 @@
               <div class="mono eth-traffic-row"><span class="eth-traffic-label">TX</span><span class="eth-traffic-val" id="eth0-tx">0 Б</span></div>
             </div>
             <div class="widget-sub mono eth-ip" id="eth0-ip">—</div>
+            <details class="dashboard-quality" hidden><summary aria-label="Состояние"><span aria-hidden="true">ⓘ</span></summary><div class="dashboard-quality-text"></div></details>
           </div>
 
           <!-- Network eth1 (только СА-02м-2) -->
-          <div class="widget dash-eth" data-hide-for="sa02m-1eth">
+          <div class="widget dash-eth" data-status-parts="network" data-hide-for="sa02m-1eth">
             <div class="widget-title eth-hdr-title widget-title-preserve has-ico">
               <span class="w-ico w-ico-cyan" aria-hidden="true"><svg viewBox="0 0 24 24" stroke-width="1.8"><rect x="9.5" y="2.5" width="5" height="5"/><rect x="2.5" y="16.5" width="5" height="5"/><rect x="16.5" y="16.5" width="5" height="5"/><path d="M12 7.5V12M5 16.5V12h14v4.5"/></svg></span>
               <span>Ethernet № 2</span>
@@ -303,13 +312,13 @@
               <div class="mono eth-traffic-row"><span class="eth-traffic-label">TX</span><span class="eth-traffic-val" id="eth1-tx">0 Б</span></div>
             </div>
             <div class="widget-sub mono eth-ip" id="eth1-ip">—</div>
+            <details class="dashboard-quality" hidden><summary aria-label="Состояние"><span aria-hidden="true">ⓘ</span></summary><div class="dashboard-quality-text"></div></details>
           </div>
 
           <!-- HW outputs — ширина верхнего ряда (4 колонки) -->
-          <div class="widget hw-block dash-span-top4">
+          <div class="widget hw-block dash-span-top4" data-status-parts="hardware">
             <div class="widget-title hw-block-title">
               <span class="hw-title-full" data-i18n="Дискретный выход, USB-питание и индикация">Дискретный выход, USB-питание и индикация</span><span class="hw-title-short" data-i18n="DO, USB-питание и индикация">DO, USB-питание и индикация</span>
-              <div id="hw-block-status" class="hw-block-status" hidden aria-live="polite"></div>
             </div>
             <div class="hw-hint" id="hw-hint" style="display:none"></div>
             <div class="hw-grid">
@@ -317,7 +326,8 @@
                 <div class="hw-item-title" title="Дискретный выход">DO</div>
                 <div class="hw-item-body hw-item-body-toggle">
                   <div class="hw-btns" data-hw-ch="do">
-                    <button type="button" class="btn btn-sm hw-toggle-btn na" id="hw-do-btn" data-cur="-1" onclick="toggleHw('do')">н/д</button>
+                    <button type="button" class="btn btn-sm hw-toggle-btn na" id="hw-do-btn" data-cur="-1" onclick="toggleHw('do')" aria-describedby="hw-error-do">н/д</button>
+                    <span id="hw-error-do" class="hw-control-error" hidden aria-live="polite"></span>
                   </div>
                 </div>
               </div>
@@ -325,7 +335,8 @@
                 <div class="hw-item-title">Пищалка</div>
                 <div class="hw-item-body hw-item-body-toggle">
                   <div class="hw-btns" data-hw-ch="beeper">
-                    <button type="button" class="btn btn-sm hw-toggle-btn na" id="hw-beeper-btn" data-cur="-1" onclick="toggleHw('beeper')">н/д</button>
+                    <button type="button" class="btn btn-sm hw-toggle-btn na" id="hw-beeper-btn" data-cur="-1" onclick="toggleHw('beeper')" aria-describedby="hw-error-beeper">н/д</button>
+                    <span id="hw-error-beeper" class="hw-control-error" hidden aria-live="polite"></span>
                   </div>
                 </div>
               </div>
@@ -333,7 +344,8 @@
                 <div class="hw-item-title" title="Аварийный LED">LED (красный)</div>
                 <div class="hw-item-body hw-item-body-toggle">
                   <div class="hw-btns" data-hw-ch="alarm_led">
-                    <button type="button" class="btn btn-sm hw-toggle-btn na" id="hw-alarm_led-btn" data-cur="-1" onclick="toggleHw('alarm_led')">н/д</button>
+                    <button type="button" class="btn btn-sm hw-toggle-btn na" id="hw-alarm_led-btn" data-cur="-1" onclick="toggleHw('alarm_led')" aria-describedby="hw-error-alarm_led">н/д</button>
+                    <span id="hw-error-alarm_led" class="hw-control-error" hidden aria-live="polite"></span>
                   </div>
                 </div>
               </div>
@@ -341,7 +353,8 @@
                 <div class="hw-item-title">Питание USB</div>
                 <div class="hw-item-body">
                   <div class="hw-btns hw-btns-usb" data-hw-ch="usb_power" title="Сброс питания USB на 10 с (алгоритм test_fb.cpp MasterPLC)">
-                    <button type="button" class="btn btn-sm btn-warn" id="hw-usb-reset-btn">Сброс</button>
+                    <button type="button" class="btn btn-sm btn-warn" id="hw-usb-reset-btn" aria-describedby="hw-error-usb_power">Сброс</button>
+                    <span id="hw-error-usb_power" class="hw-control-error" hidden aria-live="polite"></span>
                   </div>
                   <div class="hw-status-line">
                     <span class="hw-status-val na" id="hw-usb-st">н/д</span>
@@ -349,12 +362,14 @@
                 </div>
               </div>
             </div>
+            <details class="dashboard-quality" hidden><summary aria-label="Состояние"><span aria-hidden="true">ⓘ</span></summary><div class="dashboard-quality-text"></div></details>
           </div>
 
           <!-- RS-485 — та же ширина, что и HW (4 колонки) -->
-          <div class="widget widget-rs485 dash-span-top4">
+          <div class="widget widget-rs485 dash-span-top4" data-status-parts="rs485">
             <div class="widget-title has-ico"><span class="w-ico w-ico-cyan" aria-hidden="true"><svg viewBox="0 0 24 24"><path d="M2 8c5 0 5 8 10 8s5-8 10-8"/><path d="M2 16c5 0 5-8 10-8s5 8 10 8"/></svg></span><span>Интерфейсы RS-485 — активность</span></div>
             <div class="rs485-grid" id="rs485-grid"></div>
+            <details class="dashboard-quality" hidden><summary aria-label="Состояние"><span aria-hidden="true">ⓘ</span></summary><div class="dashboard-quality-text"></div></details>
           </div>
 
         </div><!-- /dash-grid -->
@@ -1837,31 +1852,31 @@
   </div>
 </div>
 
-<script src="static/js/i18n.js?v=1.0.7.37&r=dashboard3"></script>
-<script src="static/js/app.js?v=1.0.7.37&r=audio1"></script>
-<script src="static/js/app/status.js?v=1.0.7.37&r=dashboard5"></script>
-<script src="static/js/app/hw.js?v=1.0.7.37&r=usbclock2"></script>
-<script src="static/js/app/rs485.js?v=1.0.7.37&r=audit39a"></script>
-<script src="static/js/app/forms.js?v=1.0.7.37&r=tzkeep1"></script>
-<script src="static/js/app/services.js?v=1.0.7.37&r=zimgmd5"></script>
-<script src="static/js/app/misc.js?v=1.0.7.37&r=console1"></script>
-<script src="static/js/app/init.js?v=1.0.7.37&r=cloud53a"></script>
-<script src="static/js/app/nav.js?v=1.0.7.37&r=navscroll2"></script>
-<script src="static/js/flasher/led.js?v=1.0.7.37&r=led1"></script>
-<script src="static/js/flasher/bridge-relink.js?v=1.0.7.37&r=mtd1"></script>
-<script src="static/js/flasher/mtd.js?v=1.0.7.37&r=mtd3"></script>
-<script src="static/js/flasher.js?v=1.0.7.37&r=fl2"></script>
-<script type="module" src="static/js/mqtt.js?v=1.0.7.37&r=secret1"></script>
-<script src="static/js/gateway.js?v=1.0.7.37&r=gwport2"></script>
-<script type="module" src="static/js/devices.js?v=1.0.7.37&r=stale1"></script>
-<script src="static/js/cloud.js?v=1.0.7.37&r=audit39a"></script>
-<script src="static/js/app/alice.js?v=1.0.7.37&r=alicepoll2"></script>
-<script src="static/js/app/smarthome.js?v=1.0.7.37&r=modalreader1"></script>
-<script src="static/js/app/homekit.js?v=1.0.7.37&r=syssub1"></script>
-<script src="static/js/app/homeconnect.js?v=1.0.7.37&r=syssub1"></script>
-<script src="static/js/app/agentapi.js?v=1.0.7.37&r=lean1"></script>
-<script src="static/js/app/audio.js?v=1.0.7.37&r=lmguard1"></script>
-<script src="static/js/devices-kpi-fit.js?v=1.0.7.37&r=kpifit1"></script>
+<script src="static/js/i18n.js?v=1.0.7.38&r=dashboard3"></script>
+<script src="static/js/app.js?v=1.0.7.38&r=audio1"></script>
+<script src="static/js/app/status.js?v=1.0.7.38&r=dashboard5"></script>
+<script src="static/js/app/hw.js?v=1.0.7.38&r=usbclock2"></script>
+<script src="static/js/app/rs485.js?v=1.0.7.38&r=audit39a"></script>
+<script src="static/js/app/forms.js?v=1.0.7.38&r=tzkeep1"></script>
+<script src="static/js/app/services.js?v=1.0.7.38&r=zimgmd5"></script>
+<script src="static/js/app/misc.js?v=1.0.7.38&r=console1"></script>
+<script src="static/js/app/init.js?v=1.0.7.38&r=cloud53a"></script>
+<script src="static/js/app/nav.js?v=1.0.7.38&r=navscroll2"></script>
+<script src="static/js/flasher/led.js?v=1.0.7.38&r=led1"></script>
+<script src="static/js/flasher/bridge-relink.js?v=1.0.7.38&r=mtd1"></script>
+<script src="static/js/flasher/mtd.js?v=1.0.7.38&r=mtd3"></script>
+<script src="static/js/flasher.js?v=1.0.7.38&r=fl2"></script>
+<script type="module" src="static/js/mqtt.js?v=1.0.7.38&r=secret1"></script>
+<script src="static/js/gateway.js?v=1.0.7.38&r=gwport2"></script>
+<script type="module" src="static/js/devices.js?v=1.0.7.38&r=stale1"></script>
+<script src="static/js/cloud.js?v=1.0.7.38&r=audit39a"></script>
+<script src="static/js/app/alice.js?v=1.0.7.38&r=alicepoll2"></script>
+<script src="static/js/app/smarthome.js?v=1.0.7.38&r=modalreader1"></script>
+<script src="static/js/app/homekit.js?v=1.0.7.38&r=syssub1"></script>
+<script src="static/js/app/homeconnect.js?v=1.0.7.38&r=syssub1"></script>
+<script src="static/js/app/agentapi.js?v=1.0.7.38&r=lean1"></script>
+<script src="static/js/app/audio.js?v=1.0.7.38&r=lmguard1"></script>
+<script src="static/js/devices-kpi-fit.js?v=1.0.7.38&r=kpifit1"></script>
 
 <div id="dev-modal" class="dev-modal" hidden>
   <div class="dev-modal-backdrop" id="dev-modal-backdrop"></div>

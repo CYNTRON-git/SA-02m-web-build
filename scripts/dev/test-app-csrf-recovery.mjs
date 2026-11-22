@@ -153,6 +153,7 @@ function makeWorld(script, opts) {
     const i = s.indexOf('='); jar.set(s.slice(0, i), s.slice(i + 1));
   }
   const document = {
+    getElementById: () => null,
     querySelector: () => null,
     get cookie() { return [...jar].map(([k, v]) => k + '=' + v).join('; '); },
     set cookie(v) {

@@ -7,7 +7,7 @@ const path = process.env.STATUS_TEST_SOURCE || new URL('../../www/network_config
 const source = readFileSync(path, 'utf8');
 function world(fetcher = async () => ({ok: true, json: async () => packet()})) {
   const rendered = [], elements = new Map();
-  const document = {hidden: false, addEventListener(){}, getElementById(id) {
+  const document = {hidden: false, addEventListener(){}, querySelectorAll(){return [];}, getElementById(id) {
     if (!elements.has(id)) elements.set(id, {style: {}, textContent: '',
       classList: {contains:name=>id==='tab-dashboard' && name==='active'}});
     return elements.get(id);

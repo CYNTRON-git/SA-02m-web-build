@@ -317,13 +317,6 @@ function isBenignStatusFetchError(e, timedOut) {
   return false;
 }
 
-function hideDashboardPollAlert() {
-  const el = document.getElementById('dashboard-poll-alert');
-  if (!el) return;
-  el.style.display = 'none';
-  el.textContent = '';
-}
-
 function abortStatusPart(part) {
   const ctrl = _statusFetchAbort[part];
   if (!ctrl) return;
@@ -682,6 +675,7 @@ function setStatusPartPause(part, ms) {
 }
 
 const statusFreshness = {};
+let _lastPortCoordinator = null;
 /* Dashboard names for the freshness banner: a part id is a wire name, not a
    label the Operator knows. Keys: priority, rs485 and BACKGROUND_STATUS_PARTS. */
 const STATUS_PART_LABELS = {
@@ -738,27 +732,48 @@ function statusStaleAfter(part, ttlMs, refreshBudgetMs) {
   if (_statusSnapshotMode) return (ttlMs || 0) + (refreshBudgetMs || 0) + STATUS_SNAPSHOT_INTERVAL_MS + STATUS_SNAPSHOT_TIMEOUT_MS;
   return (ttlMs || 0) + statusPollDeadlineMs(part);
 }
-/* Runs every second: a part turns stale only once its deadline has passed and
-   turns fresh only through noteStatusSuccess (a new record), so a tick can never
-   flip it back — no flapping inside a period by construction. The banner is
-   written only when its text changes (no per-tick layout work). */
+/* Existing freshness tick; update local quality only when it changes. */
 function renderStatusFreshness() {
   const now = statusMonotonicNow();
-  const issues = [];
   Object.keys(statusFreshness).forEach(function (part) {
     if (!isStatusBlockEnabled(part)) return;
     const f = statusFreshness[part];
     const age = f.sourceAgeMs == null || now < f.receivedAt ? null : f.sourceAgeMs + now - f.receivedAt;
     const state = f.warming ? 'warming' : f.error ? 'error' : age == null ? 'unknown' : age > statusStaleAfter(part, f.ttlMs, f.refreshBudgetMs) ? 'stale' : 'fresh';
     f.state = state;
-    if (state !== 'fresh') issues.push(statusPartLabel(part) + ': ' + statusText(state === 'warming' ? 'Подготовка данных' : state === 'error' ? 'Ошибка обновления' : state === 'stale' ? 'Данные устарели' : 'Возраст данных неизвестен'));
   });
-  const el = document.getElementById('dashboard-poll-alert');
-  if (!el) return;
-  const text = issues.join('; ');
-  const display = text ? 'block' : 'none';
-  if (el.textContent !== text) el.textContent = text;
-  if (el.style.display !== display) el.style.display = display;
+  renderDashboardCardQuality();
+}
+function renderDashboardCardQuality() {
+  const rank = {fresh: 0, warming: 1, stale: 2, unknown: 3, error: 4};
+  document.querySelectorAll('#tab-dashboard [data-status-parts]').forEach(function (card) {
+    const parts = card.dataset.statusParts.split(' ').filter(isStatusBlockEnabled);
+    const issues = [];
+    let state = 'fresh';
+    parts.forEach(function (part) {
+      const f = statusFreshness[part];
+      const quality = f && f.state || 'unknown';
+      if (rank[quality] > rank[state]) state = quality;
+      if (quality !== 'fresh') issues.push(statusPartLabel(part) + ': ' + statusText(quality === 'warming' ? 'Подготовка данных' : quality === 'error' ? 'Ошибка обновления' : quality === 'stale' ? 'Данные устарели' : 'Возраст данных неизвестен'));
+    });
+    if (_lastPortCoordinator && (parts.indexOf('services') >= 0 || parts.indexOf('rs485') >= 0)) {
+      const lines = portCoordinatorLines(_lastPortCoordinator);
+      issues.push.apply(issues, lines);
+      if (lines.length && state === 'fresh') state = 'unknown';
+    }
+    const title = issues.join('; ');
+    if (card.dataset.statusState !== state) card.dataset.statusState = state;
+    if (card.title !== title) card.title = title;
+    const disclosure = card.querySelector('.dashboard-quality');
+    if (!disclosure) return;
+    const summary = disclosure.querySelector('summary');
+    const description = disclosure.querySelector('.dashboard-quality-text');
+    const label = statusText('Состояние') + (title ? ': ' + title : '');
+    if (summary.getAttribute('aria-label') !== label) summary.setAttribute('aria-label', label);
+    if (description.textContent !== title) description.textContent = title;
+    if (disclosure.hidden !== !title) disclosure.hidden = !title;
+    if (!title && disclosure.open) disclosure.open = false;
+  });
 }
 function statusText(text) {
   return window.sa02mI18n ? window.sa02mI18n.t(text) : text;
@@ -1288,11 +1303,8 @@ function portCoordinatorLines(snapshot) {
   return lines;
 }
 function renderPortCoordinator(snapshot) {
-  const el = document.getElementById('port-operation-status');
-  if (!el) return;
-  const lines = portCoordinatorLines(snapshot);
-  el.textContent = lines.join('; ');
-  el.style.display = lines.length ? 'block' : 'none';
+  _lastPortCoordinator = snapshot || null;
+  renderDashboardCardQuality();
 }
 
 function applyServicesStatus(d) {
@@ -1320,6 +1332,7 @@ function applyVplcNavLink(d) {
 
 window.refreshMainStatusI18n = function () {
   applyCachedBackgroundPartsI18n();
+  renderStatusFreshness();
 };
 
 window.refreshPriorityStatusI18n = function () {

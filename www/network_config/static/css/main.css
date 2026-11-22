@@ -1110,18 +1110,6 @@ html[data-theme="light"] .nav-sub-item.active { color: var(--btn-primary-hover);
 /* HW-block title: full text on desktop; the short «DO, …» form on mobile (≤700)
    where «Дискретный выход, …» does not fit the block (Operator 2026-07-19). */
 .hw-title-short { display: none; }
-.hw-block-status {
-  flex: 1 1 auto;
-  text-align: right;
-  margin-top: 0;
-  font-size: .78rem;
-  color: var(--text-sec);
-  min-height: 1.2em;
-}
-.hw-block-status[hidden] { display: none !important; }
-.hw-block-status.success { color: var(--green); }
-.hw-block-status.warn { color: var(--yellow, #facc15); }
-.hw-block-status.error { color: var(--red); }
 
 .hw-grid { display: grid; grid-template-columns: repeat(4, 1fr); gap: 12px; margin-top: 12px; }
 
@@ -1224,17 +1212,27 @@ html[data-theme="light"] .nav-sub-item.active { color: var(--btn-primary-hover);
 }
 .hw-hint       { font-size: 13px; color: var(--text-sec); line-height: 1.45; }
 
-/* Предупреждение о таймаутах опроса дашборда (не путать с hw-hint) */
-.dashboard-poll-alert {
-  margin: 0 0 16px;
-  padding: 12px 14px;
-  border-radius: 8px;
-  font-size: 14px;
-  line-height: 1.45;
-  color: var(--text);
-  background: color-mix(in srgb, var(--meter-yellow) 22%, var(--bg-panel));
-  border: 1px solid color-mix(in srgb, var(--meter-yellow) 55%, var(--border-md));
+/* Native disclosure keeps quality reachable without hover or unsolicited text. */
+#tab-dashboard [data-status-parts] { position: relative; }
+#tab-dashboard [data-status-state]:not([data-status-state="fresh"]) > .widget-title { padding-right: 28px; }
+#tab-dashboard .dashboard-quality[hidden] { display: none; }
+#tab-dashboard .dashboard-quality > summary {
+  position: absolute; top: 2px; right: 2px;
+  width: var(--tap); height: var(--tap); min-height: var(--tap);
+  display: flex; align-items: center; justify-content: center;
+  list-style: none; cursor: pointer; border-radius: var(--radius-xs);
+  font-size: 18px; color: var(--text-sec);
 }
+#tab-dashboard .dashboard-quality > summary::-webkit-details-marker { display: none; }
+#tab-dashboard .dashboard-quality > summary:focus-visible { outline: 2px solid var(--cyan); outline-offset: -4px; }
+#tab-dashboard [data-status-state="error"] > .dashboard-quality > summary { color: var(--hw-io-off-fg); }
+#tab-dashboard .dashboard-quality[open] { margin-top: 10px; }
+#tab-dashboard .dashboard-quality-text { font-size: 12px; line-height: 1.4; color: var(--text-sec); overflow-wrap: anywhere; }
+#tab-dashboard .dash-grid > .widget:has(> .dashboard-quality[open]) { height: auto; max-height: none; min-height: 200px; }
+.hw-control-error { display: block; flex-basis: 100%; font-size: 12px; line-height: 1.35; color: var(--hw-io-off-fg); overflow-wrap: anywhere; }
+.hw-control-error[hidden] { display: none; }
+.hw-btns button[aria-invalid="true"] { outline: 1px solid var(--red); outline-offset: 2px; }
+.hw-btns:has(.hw-control-error:not([hidden])) { flex-wrap: wrap; }
 
 /* ── RS-485 cards ────────────────────────────────────────────────────────── */
 /* RS-485 widget: parent + inner port cards — nested hover (как hw-block) */
@@ -5999,8 +5997,7 @@ html[data-theme="light"] .mqtt-ch-live-ok { color: var(--cyan-hover); }
   .hw-grid    { grid-template-columns: repeat(2, 1fr); }  /* 2 HW items per row on mobile (Operator) */
   /* No transient status messages in the HW block on mobile (Operator 2026-07-19:
      don't flash the appear/disappear message on button press). */
-  .hw-block-status { display: none !important; }
-  /* No sticky blue :hover highlight on ANY block when tapping on touch (touch has
+    /* No sticky blue :hover highlight on ANY block when tapping on touch (touch has
      no real hover, so a tap leaves the cyan border + glow stuck). Operator
      2026-07-19: remove the blue outline on every block on mobile. */
   #tab-dashboard .widget:hover,

@@ -7,47 +7,24 @@
 /* ══════════════════════════════════════════════════════════════════════════
    HW GPIO CONTROL
    ══════════════════════════════════════════════════════════════════════════ */
-const HW_STATUS_AUTO_CLEAR_MS = 3000;
-let _hwBlockStatusTimer = null;
-let _hwBlockStatusGen = 0;
-let _lastHwBlockStatus = null;
-
-function clearHwBlockStatusTimer() {
-  if (_hwBlockStatusTimer) {
-    clearTimeout(_hwBlockStatusTimer);
-    _hwBlockStatusTimer = null;
-  }
-}
-
-function setHwBlockStatus(msg, type, clearMs) {
-  const el = document.getElementById('hw-block-status');
+// Errors belong to their control, remain readable on touch screens, and clear
+// only on another action. Successful writes are shown by the actual button state.
+const _hwControlErrors = {};
+function setHwChannelStatus(channel, msg) {
+  _hwControlErrors[channel] = msg ? String(msg) : '';
+  const el = document.getElementById('hw-error-' + channel);
   if (!el) return;
-  clearHwBlockStatusTimer();
-  if (!msg) {
-    _hwBlockStatusGen += 1;
-    _lastHwBlockStatus = null;
-    el.hidden = true;
-    el.textContent = '';
-    el.className = 'hw-block-status';
-    return;
-  }
-  _lastHwBlockStatus = { msg: String(msg), type: type || '', clearMs: clearMs };
-  el.hidden = false;
-  el.textContent = uiT(_lastHwBlockStatus.msg);
-  el.className = 'hw-block-status' + (type ? ' ' + type : '');
-  const gen = ++_hwBlockStatusGen;
-  const autoMs = (typeof clearMs === 'number' && clearMs > 0) ? clearMs : HW_STATUS_AUTO_CLEAR_MS;
-  _hwBlockStatusTimer = setTimeout(() => {
-    _hwBlockStatusTimer = null;
-    if (_hwBlockStatusGen !== gen) return;
-    setHwBlockStatus('');
-  }, autoMs);
+  el.textContent = msg ? uiT(String(msg)) : '';
+  el.hidden = !msg;
+  document.querySelectorAll('.hw-btns[data-hw-ch="' + channel + '"] button').forEach(function (button) {
+    if (msg) button.setAttribute('aria-invalid', 'true');
+    else button.removeAttribute('aria-invalid');
+  });
 }
-
 window.hwRerenderBlockStatus = function () {
-  if (_lastHwBlockStatus) {
-    setHwBlockStatus(_lastHwBlockStatus.msg, _lastHwBlockStatus.type, _lastHwBlockStatus.clearMs);
-  }
+  Object.keys(_hwControlErrors).forEach(function (channel) {
+    setHwChannelStatus(channel, _hwControlErrors[channel]);
+  });
 };
 
 const HW_STATE_WORDS = {
@@ -155,6 +132,7 @@ function usbPowerReset() {
   const btn = document.getElementById('hw-usb-reset-btn');
   if (btn && btn.disabled) return;
   if (btn) btn.disabled = true;
+  setHwChannelStatus('usb_power', '');
 
   fetch('cgi-bin/hw_set.cgi', {
     method: 'POST',
@@ -168,7 +146,6 @@ function usbPowerReset() {
         const sec = (typeof j.reset_sec === 'number' && j.reset_sec > 0)
           ? j.reset_sec
           : USB_POWER_RESET_SEC_DEFAULT;
-        setHwBlockStatus('Сброс питания на ' + sec + ' сек', 'success', (sec + 2) * 1000);
         // Кнопка «Сброс» горит голубым (как активный пункт меню) пока идёт сброс
         // — гаснет, когда питание USB снова появилось (по истечении sec).
         if (btn) btn.classList.add('hw-active-blue');
@@ -189,16 +166,16 @@ function usbPowerReset() {
         return;
       }
       if (btn) btn.disabled = false;
-      if (j.error === 'reset_busy') setHwBlockStatus('Сброс USB уже выполняется', 'warn');
-      else if (j.error === 'channel_unavailable') setHwBlockStatus('Канал недоступен для этого варианта устройства. Проверьте выбранный вариант.', 'error');
-      else if (j.error === 'gpio_not_configured') setHwBlockStatus('Канал не настроен в /etc/sa02m_hw.conf', 'error');
-      else if (j.error === 'i2c_busy') setHwBlockStatus('Шина I2C занята другой службой', 'error');
-      else if (j.error === 'i2c_tools_missing') setHwBlockStatus('На устройстве нет i2c-tools', 'error');
-      else setHwBlockStatus('Ошибка: ' + (j.error || 'unknown'), 'error');
+      if (j.error === 'reset_busy') setHwChannelStatus('usb_power', 'Сброс USB уже выполняется', 'warn');
+      else if (j.error === 'channel_unavailable') setHwChannelStatus('usb_power', 'Канал недоступен для этого варианта устройства. Проверьте выбранный вариант.', 'error');
+      else if (j.error === 'gpio_not_configured') setHwChannelStatus('usb_power', 'Канал не настроен в /etc/sa02m_hw.conf', 'error');
+      else if (j.error === 'i2c_busy') setHwChannelStatus('usb_power', 'Шина I2C занята другой службой', 'error');
+      else if (j.error === 'i2c_tools_missing') setHwChannelStatus('usb_power', 'На устройстве нет i2c-tools', 'error');
+      else setHwChannelStatus('usb_power', 'Ошибка: ' + (j.error || j.error_code || 'unknown'), 'error');
     })
     .catch(function () {
       if (btn) btn.disabled = false;
-      setHwBlockStatus('Нет связи с сервером', 'error');
+      setHwChannelStatus('usb_power', 'Нет связи с сервером', 'error');
     });
 }
 
@@ -213,7 +190,7 @@ function bindUsbPowerResetButton() {
 }
 
 function setHw(channel, value, opts) {
-  const quiet = !!(opts && opts.quiet);
+  setHwChannelStatus(channel, '');
   const body = 'channel=' + encodeURIComponent(channel) + '&value=' + encodeURIComponent(value);
   fetch('cgi-bin/hw_set.cgi', {
     method: 'POST',
@@ -237,14 +214,13 @@ function setHw(channel, value, opts) {
         }
         bumpMainStatusEpoch();
         fetchStatusMain(true);
-        if (!quiet) setHwBlockStatus('Применено', 'success');
       }
-      else if (j.error === 'channel_unavailable') setHwBlockStatus('Канал недоступен для этого варианта устройства. Проверьте выбранный вариант.', 'error');
-      else if (j.error === 'gpio_not_configured') setHwBlockStatus('Канал не настроен в /etc/sa02m_hw.conf', 'error');
-      else if (j.error === 'i2c_busy') setHwBlockStatus('Шина I2C занята другой службой', 'error');
-      else if (j.error === 'i2c_tools_missing') setHwBlockStatus('На устройстве нет i2c-tools', 'error');
-      else setHwBlockStatus('Ошибка: ' + (j.error || 'unknown'), 'error');
+      else if (j.error === 'channel_unavailable') setHwChannelStatus(channel, 'Канал недоступен для этого варианта устройства. Проверьте выбранный вариант.', 'error');
+      else if (j.error === 'gpio_not_configured') setHwChannelStatus(channel, 'Канал не настроен в /etc/sa02m_hw.conf', 'error');
+      else if (j.error === 'i2c_busy') setHwChannelStatus(channel, 'Шина I2C занята другой службой', 'error');
+      else if (j.error === 'i2c_tools_missing') setHwChannelStatus(channel, 'На устройстве нет i2c-tools', 'error');
+      else setHwChannelStatus(channel, 'Ошибка: ' + (j.error || j.error_code || 'unknown'), 'error');
     })
-    .catch(() => setHwBlockStatus('Нет связи с сервером', 'error'));
+    .catch(() => setHwChannelStatus(channel, 'Нет связи с сервером', 'error'));
 }
 

@@ -70,6 +70,8 @@ class SioHandlers:
         elif event == C.EVT_DEVICES_ACTION:
             payload = data.get("payload") or data
             self._on_action(request_id, (payload or {}).get("devices") or [])
+        elif event == C.EVT_DEVICES_DELETE:
+            self._on_delete(request_id, data)
         elif event == C.EVT_DEVICES_RENAME:
             self._on_rename(request_id, data)
         elif event == C.EVT_DEVICES_ROOMS:
@@ -141,6 +143,38 @@ class SioHandlers:
                             cap["error_code"] = C.ERR_DEVICE_UNREACHABLE
         self._emit_response({"request_id": request_id, "payload": {"devices": results}})
 
+    def _on_delete(self, request_id: Optional[str], data: Dict[str, Any]) -> None:
+        if self._profile != C.PROFILE_CLOUD:
+            return
+        if not isinstance(request_id, str) or not request_id.strip():
+            return
+        device = data.get("device")
+        device = device.strip() if isinstance(device, str) and len(device) <= 128 else ""
+        if not device:
+            self._emit_response({"request_id": request_id, "ok": False, "error": "invalid_device"})
+            return
+        try:
+            result = config_api.delete_device(device)
+        except Exception:
+            log.error("catalogue deletion persistence failed")
+            result = {"ok": False, "error": "internal"}
+        else:
+            if result.get("ok") or result.get("error") == "not_found":
+                # A previous write may have committed before its reload failed.
+                # Even an absent row must reconcile the in-memory registry.
+                try:
+                    self.registry.reload()
+                except Exception:
+                    log.error("catalogue deletion registry refresh failed; persistence may have completed")
+                    result = {"ok": False, "error": "internal"}
+        # Transport failure is an unknown acknowledgement, never a reason to
+        # repeat a catalogue mutation or turn it into a persistence error.
+        self._emit_response({
+            "request_id": request_id,
+            "ok": bool(result.get("ok")),
+            "error": result.get("error"),
+        })
+
     def _on_rename(self, request_id: Optional[str], data: Dict[str, Any]) -> None:
         device = data.get("device") or data.get("id")
         result = config_api.rename_device(str(device or ""), data.get("name"))
@@ -201,7 +235,7 @@ class SioHandlers:
             "ok": bool(result.get("ok")),
             "error": result.get("error"),
         }
-        for key in ("scenario", "scenarios", "library", "run_now", "notify_queue", "runs"):
+        for key in ("scenario", "scenarios", "library", "run_now", "notify_queue", "runs", "rules_engine"):
             if key in result:
                 out[key] = result[key]
         if "runs" in result:

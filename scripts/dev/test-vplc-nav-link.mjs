@@ -55,9 +55,11 @@ try {
   const status = readFileSync(STATUS_JS, 'utf8');
   api = new Function('document', 'renderServicesDynamic', [
     'let _lastServicesStatus = null;',
+    'let _lastPortCoordinator = null;',
     extractFn(app, 'normSvcState', 'app.js'),
     extractFn(app, 'svcStateIsActive', 'app.js'),
     extractFn(status, 'applyVplcNavLink', 'app/status.js'),
+    extractFn(status, 'renderDashboardCardQuality', 'app/status.js'),
     extractFn(status, 'renderPortCoordinator', 'app/status.js'),
     extractFn(status, 'applyServicesStatus', 'app/status.js'),
     'return { applyVplcNavLink, applyServicesStatus };',
@@ -70,7 +72,11 @@ try {
 
 const asked = [];
 let link = null;
-const doc = { getElementById(id) { asked.push(id); return id === 'nav-vplc' ? link : null; } };
+const doc = {
+  getElementById(id) { asked.push(id); return id === 'nav-vplc' ? link : null; },
+  // This navigation-only fixture has no dashboard cards.
+  querySelectorAll() { return []; },
+};
 const { applyVplcNavLink, applyServicesStatus } = api(doc, () => {});
 
 function run(initialHidden, payload) {

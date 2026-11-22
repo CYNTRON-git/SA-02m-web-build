@@ -5,6 +5,13 @@
 
 ---
 
+## 1.0.7.38 - Cloud device deletion and scenario readiness (November 2026)
+
+- Handle correlated cloud device deletion through the existing locked catalog update, membership cleanup and registry reload. Reject malformed or foreign-profile requests, and report persistence or reload failures explicitly.
+- Preserve `rules_engine` in successful scenario replies so the gateway receives the engine readiness reported by the controller.
+- Keep Information free of top banners and popups: freshness stays on its cards, hardware errors stay beside their controls, and successful commands update actual button states. Other tabs retain their notices; no polling or command behavior changes.
+- Cover actual event registration and dispatch, plus isolated fleet HTTP-to-gateway-to-controller composition, including correlation, timeouts and persistence failures.
+
 ## 1.0.7.37 - Demand-driven dashboard, unified Home API and phase energy (November 2026)
 
 ### Delivery
