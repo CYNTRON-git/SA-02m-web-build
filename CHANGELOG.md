@@ -5,6 +5,12 @@
 
 ---
 
+## 1.0.7.39 - Consistent dashboard CPU sampling (November 2026)
+
+- Measure CPU usage across one local 50 ms interval before calculating a result, avoiding single-tick spikes from adjacent reads while retaining genuine idle and full-load readings and the existing aggregate formula.
+- Remove the nonfunctional private CPU baseline cache and its clock/file operations. Preserve trusted dashboard values when a current sample is invalid; snapshot caching and collection cadence stay unchanged.
+- Cover the shipped sampler and direct consumers with deterministic sample-order, invalid-input, ignored-cache and independent concurrent-call regressions.
+
 ## 1.0.7.38 - Cloud device deletion and scenario readiness (November 2026)
 
 - Handle correlated cloud device deletion through the existing locked catalog update, membership cleanup and registry reload. Reject malformed or foreign-profile requests, and report persistence or reload failures explicitly.
