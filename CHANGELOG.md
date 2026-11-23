@@ -5,6 +5,12 @@
 
 ---
 
+## 1.0.7.40 - Reliable MQTT bridge command status (November 2026)
+
+- Wait for the correlated bridge command result and confirmed service state before reporting completion on the MQTT page. Keep controls pending while the action runs.
+- Prevent delayed status responses from restoring an obsolete bridge state, reject commands while status is unknown, and show command failures beside the bridge control.
+- Cover delayed completion, stale polls, operation identity, failures, deadlines and tab changes with actual-function and browser regressions.
+
 ## 1.0.7.39 - Consistent dashboard CPU sampling (November 2026)
 
 - Measure CPU usage across one local 50 ms interval before calculating a result, avoiding single-tick spikes from adjacent reads while retaining genuine idle and full-load readings and the existing aggregate formula.

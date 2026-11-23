@@ -348,6 +348,24 @@
       "init": "Node + scripts/dev Playwright and Chromium from the existing UI harness setup"
     },
     {
+      "id": "mqtt-bridge-control-ui",
+      "checks": "Executes shipped MQTT and shared service-control functions with delayed HTTP: pending acknowledgement, exact result identity, independent service/MQTT readback, one deadline including stalled response bodies, duplicate and cross-panel exclusion, unknown states, late poll generations and tab lifecycle; broker remains independent.",
+      "config": null,
+      "run": "node scripts/dev/test-mqtt-bridge-control.mjs",
+      "beat": "build",
+      "covers": ["www/network_config/static/js/mqtt.js", "www/network_config/static/js/app/services.js", "www/network_config/static/js/app.js", "www/network_config/static/js/i18n.js", "scripts/dev/test-mqtt-bridge-control.mjs", "scripts/dev/mqtt-js-sandbox.mjs", "docs/contracts/service-control.md"],
+      "init": "Node 18+; standard library only, no controller or network"
+    },
+    {
+      "id": "mqtt-bridge-control-browser",
+      "checks": "Real Chromium clicks on the MQTT bridge control in RU/EN, dark/light and 500/1280 px: pending, navigation, independent broker, stale pre-command response, verified stop and inline command failure with screenshots and overflow assertions; routes simulate CGI, no live controller.",
+      "config": null,
+      "run": "node scripts/dev/mqtt-bridge-control-browser.mjs",
+      "beat": "build",
+      "covers": ["www/network_config/static/js/mqtt.js", "www/network_config/static/js/app/services.js", "www/network_config/static/js/app.js", "www/network_config/static/js/i18n.js", "www/network_config/index.html", "www/network_config/static/css/main.css", "scripts/dev/mqtt-bridge-control-browser.mjs", "docs/contracts/service-control.md"],
+      "init": "Existing scripts/dev Playwright and Chromium; fixture routes only"
+    },
+    {
       "id": "service-operation-ui",
       "checks": "Service UI correlates operation results, retains disabled buttons across re-render, bounds requests and complete JSON bodies within one action deadline, starts independent state verification immediately, prevents duplicate POSTs and rejects stale list generations.",
       "config": null,

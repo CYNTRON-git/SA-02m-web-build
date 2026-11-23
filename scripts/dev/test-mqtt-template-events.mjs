@@ -35,6 +35,8 @@ async function exercise(browser, lang, theme, id = serialTemplate.id) {
     let available = true;
     let phaseValue = 223.4;
     let writes = 0;
+    const serviceActions=[];
+    let operation=null;
     await context.addCookies([{ name: 'session_token', value: 'fixture', url: origin }]);
     await context.addInitScript(({ lang, theme }) => {
       localStorage.setItem('sa02m-lang', lang);
@@ -54,7 +56,7 @@ async function exercise(browser, lang, theme, id = serialTemplate.id) {
         } else if (name === '/cgi-bin/mqtt_config.cgi') {
           if (route.request().method() === 'POST') {
             const { restart, ...config } = route.request().postDataJSON();
-            assert.equal(restart, true);
+            assert.equal(restart, false,'configuration save must not launch an uncorrelated restart');
             if (config.devices.some(device => device.id === '+')) {
               json = { ok: false, error: 'invalid_device', reason: 'invalid_device_id', id: '+' };
             } else {
@@ -65,6 +67,24 @@ async function exercise(browser, lang, theme, id = serialTemplate.id) {
           } else {
             json = stored;
           }
+        } else if(name==='/cgi-bin/services_ctrl.cgi'){
+          if(route.request().method()==='POST'){
+            const body=route.request().postDataJSON();
+            assert.equal(body.id,'mqtt-bridge');
+            assert.equal(body.action,serviceActions.length%2===0?'stop':'start');
+            serviceActions.push(body.action);
+            operation={...body,op_id:serviceActions.length.toString(16).padStart(32,'0')};
+            json={ok:true,pending:true,...operation};
+          } else if(url.searchParams.has('result')){
+            assert.equal(url.searchParams.get('op_id'),operation.op_id);assert.equal(url.searchParams.get('id'),'mqtt-bridge');
+            json={ok:true,...operation};
+          } else {
+            const active=!operation||operation.action==='start';
+            json={ok:true,services:[{id:'mqtt-bridge',installed:true,active:active?'active':'inactive',enabled:active,user_disabled:!active}]};
+          }
+        } else if(name==='/cgi-bin/mqtt_status.cgi'){
+          const active=!operation||operation.action==='start';
+          json={mosquitto_active:1,mosquitto_disabled:0,bridge_active:active?1:0,bridge_disabled:active?0:1};
         }
         return route.fulfill({ json });
       }
@@ -95,7 +115,10 @@ async function exercise(browser, lang, theme, id = serialTemplate.id) {
       const response = page.waitForResponse(r => r.url().endsWith('/mqtt_config.cgi') && r.request().method() === 'POST');
       await page.locator('#mqtt-save-btn').click();
       await response;
+      await page.waitForFunction(()=>!document.getElementById('mqtt-save-btn').disabled);
       assert.equal(writes, before + 1);
+      assert.equal(serviceActions.length,writes*2);
+      assert.deepEqual(serviceActions.slice(-2),['stop','start']);
       assert.deepEqual(stored, { devices: [{ ...serial, fmb_event_channels: names, fast_modbus: enabled }, tcp, expectedMtd],
         topic_prefix: 'existing' });
     };
@@ -167,7 +190,8 @@ async function exercise(browser, lang, theme, id = serialTemplate.id) {
     await page.locator('#mqtt-save-btn').click();
     const message = lang === 'ru' ? 'Проверьте путь в ID устройства. Символы + и # и служебные пути MQTT запрещены. (+)'
       : 'Check the device ID path. MQTT wildcards (+ and #) and reserved paths are not allowed. (+)';
-    await page.locator('#mqtt-toast').filter({ hasText: message }).waitFor();
+    await page.locator('#mqtt-bridge-control-status').filter({ hasText: message }).waitFor();
+    assert.equal(serviceActions.length,10,'refused configuration must not stop or start the service');
     assert.equal(stored.devices.length, 3);
     assert.deepEqual(pageErrors, []);
     assert.equal(writes, 5);
