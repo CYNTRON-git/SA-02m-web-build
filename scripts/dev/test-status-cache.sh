@@ -324,6 +324,299 @@ else
     skip "P1-P2 /proc/<pid>/stat is not readable on $(uname -s)"
 fi
 
+# CPU sampler: execute the shipped functions; the Python harness owns only fixtures.
+if "$PY" - "$SRC" <<'CPU_TESTS'
+import importlib.util
+import json
+import os
+from pathlib import Path
+import re
+import subprocess
+import sys
+import tempfile
+import unittest
+
+source = Path(sys.argv.pop(1)).read_text()
+root = Path.cwd()
+functions = list(re.finditer(r'^([a-zA-Z_][a-zA-Z_0-9]*)\(\) \{', source, re.M))
+def extract(name):
+    hits = [i for i, match in enumerate(functions) if match[1] == name]
+    assert len(hits) == 1, ('missing/ambiguous actual function', name)
+    i = hits[0]
+    body = source[functions[i].start():]
+    end = re.search(r'^}\n(?=\n|$)', body, re.M)
+    assert end, ('missing function end', name)
+    return body[:end.end()]
+
+names = [m[1] for m in functions if m[1].startswith('cpu_') and m[1] != 'cpu_temp']
+assert {'cpu_usage', 'cpu_usage_from_stat_lines'} <= set(names)
+names += ['gather_priority_metrics', 'build_priority_json', 'build_cpu_json',
+          'build_core_json', 'build_full_json', 'print_cpu_json',
+          'print_priority_json', 'status_emit_live', 'status_emit_snapshot', 'status_cache_failure',
+          'cache_is_fresh', 'status_emit_cache', 'cache_print_stale_and_refresh', 'cache_print_or_build',
+          'build_temp_json', 'print_temp_json']
+actual = '\n'.join(extract(n) for n in names)
+assert '/proc/stat' in actual
+actual = actual.replace('/proc/stat', '"$CPU_PROC"')
+assert '/proc/stat' not in actual
+A = 'cpu 100 0 0 300 0 0 0 0 0 0'
+B = 'cpu 101 0 0 300 0 0 0 0 0 0'
+C = 'cpu 105 0 0 315 0 0 0 0 0 0'
+SHIMS = r'''
+date() { echo date >> "$CASE/forbidden"; return 1; }
+mktemp() { echo mktemp >> "$CASE/forbidden"; return 1; }
+mv() { echo mv >> "$CASE/forbidden"; return 1; }
+rm() { echo rm >> "$CASE/forbidden"; return 1; }
+chmod() { echo chmod >> "$CASE/forbidden"; return 1; }
+flock() { echo flock >> "$CASE/forbidden"; return 1; }
+read() {
+    if [[ $(readlink /proc/self/fd/0) != "$CPU_PROC" ]]; then builtin read "$@"; return $?; fi
+    local value
+    if [[ -e "$CASE/waited" ]]; then value=$AFTER; echo after >> "$CASE/reads"
+    elif [[ -e "$CASE/read-once" ]]; then value=$IMMEDIATE; echo immediate >> "$CASE/reads"
+    else value=$FIRST; : > "$CASE/read-once"; echo first >> "$CASE/reads"; fi
+    [[ $value != FAIL ]] || return 1
+    printf -v "${@: -1}" '%s' "$value"
+}
+sleep() {
+    printf '%s\n' "$*" >> "$CASE/waits"
+    [[ ${WAIT_FAIL:-0} == 0 ]] || return 1
+    : > "$CASE/waited"
+    if [[ -n ${BARRIER:-} ]]; then
+        printf 'ready\n' > "$CASE/ready"
+        builtin read -r -t 4 _ < "$CASE/go" || return 1
+    fi
+}
+ram_stats() { echo '100 25 75 0 0'; }
+cpu_temp() { echo 40; }
+root_disk_usage_kb() { echo '100 25 75'; }
+gather_main_metrics() { echo UNEXPECTED; return 0; }
+print_core_json() { echo UNEXPECTED; }
+print_full_json() { echo UNEXPECTED; }
+build_rs485_array() { echo UNEXPECTED; }
+'''
+
+class CPU(unittest.TestCase):
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.tmp.cleanup)
+        self.base = Path(self.tmp.name)
+        self.cache = self.base/'cache'
+        self.cache.mkdir()
+        self.serial = 0
+
+    def prepare(self, first=A, after=C, immediate=B, mode='cpu_usage', **extra):
+        self.serial += 1
+        case = self.base/str(self.serial); case.mkdir()
+        proc = case/'stat'; proc.touch()
+        script = case/'run.sh'
+        script.write_text('#!/bin/bash\nset -u\n'+actual+'\n'+SHIMS+'\n'+extra.pop('shim', '')+'\n'+mode+'\n')
+        script.chmod(0o755)
+        env = dict(os.environ, CASE=str(case), CPU_PROC=str(proc), CACHE_DIR=str(self.cache),
+                   FIRST=first, AFTER=after, IMMEDIATE=immediate, **extra)
+        return script, env, case
+
+    def run_case(self, expected='25', waits=1, failure=False, envelope=False, **kwargs):
+        script, env, case = self.prepare(**kwargs)
+        result = subprocess.run(['bash', str(script)], env=env, capture_output=True, text=True, timeout=5)
+        observed = (case/'waits').read_text().splitlines() if (case/'waits').exists() else []
+        reads = (case/'reads').read_text().splitlines() if (case/'reads').exists() else []
+        if not failure or result.stdout or result.returncode == 0 or observed != ['0.05'] * waits:
+            print('CPU evidence:', json.dumps(dict(stdout=result.stdout.strip(), rc=result.returncode,
+                                                   reads=reads, waits=observed)), flush=True)
+        if failure:
+            self.assertNotEqual(result.returncode, 0, result.stdout)
+            if envelope:
+                self.assertEqual(result.stdout, '{"error":"status_build_failed"}\n')
+                self.assertNotIn('_status_meta', result.stdout)
+                self.assertRegex(result.stderr, r'^status.cgi: status_build_failed part=(cpu|priority|core|full) rc=1\n$')
+            else:
+                self.assertEqual(result.stdout, '')
+        else:
+            self.assertEqual(result.returncode, 0, result.stderr)
+            self.assertEqual(result.stdout.strip(), expected)
+        self.assertEqual(observed, ['0.05'] * waits, 'required wait evidence')
+        if not failure:
+            self.assertEqual(reads, ['first', 'after'], 'accepted reads must bracket the wait')
+        self.assertFalse((case/'forbidden').exists(), 'CPU sampler reached clock/cache operations')
+        self.assertFalse(list(self.cache.glob('cpu_sample.state.*')), 'publication temporary files left behind')
+        return result, case
+
+    def test_01_false_100_one_tick(self):
+        self.run_case()
+
+    def test_preserve_zero_full_floor_iowait_guest(self):
+        cases = [('cpu 100 0 0 320 0 0 0 0 0 0', '0'),
+                 ('cpu 120 0 0 300 0 0 0 0 0 0', '100'),
+                 ('cpu 101 0 0 302 0 0 0 0 0 0', '33'),
+                 ('cpu 100 0 0 310 10 0 0 0 0 0', '50'),
+                 ('cpu 100 0 0 310 0 0 0 0 10 0', '50')]
+        for end, expected in cases:
+            with self.subTest(end=end):
+                self.run_case(after=end, expected=expected)
+
+    def test_obsolete_cache_untouched(self):
+        old = self.cache/'cpu_sample.state'
+        for record in ['', '100 '+A+'\n', 'malformed\n', '101 '+C+'\n']:
+            old.unlink(missing_ok=True)
+            old.write_text(record); old.chmod(0o444)
+            before = old.stat()
+            self.run_case()
+            after = old.stat()
+            self.assertEqual((before.st_ino, before.st_mode, before.st_mtime_ns, before.st_atime_ns),
+                             (after.st_ino, after.st_mode, after.st_mtime_ns, after.st_atime_ns))
+            self.assertEqual(old.read_text(), record)
+        old.unlink(); old.symlink_to(self.base/'does-not-exist')
+        before = old.lstat(); self.run_case(); after = old.lstat()
+        self.assertEqual((before.st_ino, before.st_mode, before.st_mtime_ns),
+                         (after.st_ino, after.st_mode, after.st_mtime_ns))
+        self.assertEqual(os.readlink(old), str(self.base/'does-not-exist'))
+        old.unlink(); os.mkfifo(old)  # opening the obsolete path would block and fail the deadline
+        self.run_case(); old.unlink(); self.cache.rmdir()
+        self.run_case()
+
+    def test_bad_live_read_wait_and_deltas(self):
+        cases = [dict(first='FAIL', waits=0), dict(first='cpu nope', waits=0),
+                 dict(after='FAIL'), dict(after=A), dict(after='cpu 99 0 0 301 0 0 0 0 0 0'),
+                 dict(after='cpu 102 0 0 315 0 0 0 0 0'), dict(after='cpu 105 0 0 315 x 0 0 0 0 0'),
+                 dict(WAIT_FAIL='1')]
+        invalid = ['', 'intr 1 2 3 4', 'cpu 1 2 3', 'cpu 1 2 3 -4',
+                   'cpu 1 2 3 4 5 6 7 8 9 10 11', 'cpu 999999999999999999999 0 0 0',
+                   'cpu 1+2 0 0 300', 'cpu 1 0 0 ３００',
+                   'cpu a[$(touch '+str(self.base/'INJECTED')+')] 0 0 300']
+        cases += [dict(first=line, waits=0) for line in invalid]
+        cases += [dict(after=line) for line in invalid]
+        for args in cases:
+            with self.subTest(args=args): self.run_case(failure=True, **args)
+        self.assertFalse((self.base/'INJECTED').exists())
+
+    def test_actual_consumers_and_collector_preserve_last_trusted(self):
+        for builder in ['build_cpu_json', 'build_priority_json']:
+            (self.cache/'cpu_sample.state').unlink(missing_ok=True)
+            script, env, case = self.prepare(mode='status_emit_live '+builder)
+            proc = subprocess.run(['bash', str(script)], env=env, text=True, capture_output=True, timeout=5)
+            self.assertEqual(proc.returncode, 0, proc.stderr)
+            self.assertEqual(json.loads(proc.stdout)['cpu_usage'], 25)
+        for builder in ['build_cpu_json', 'build_priority_json', 'build_core_json', 'build_full_json']:
+            self.run_case(mode=builder, after='FAIL', failure=True)
+            self.run_case(mode='status_emit_live '+builder, after='FAIL', failure=True, envelope=True,
+                          STATUS_PART=builder.removeprefix('build_').removesuffix('_json'))
+        spec = importlib.util.spec_from_file_location('cpu_collector', root/'etc/sa02m-status-cache.py')
+        module = importlib.util.module_from_spec(spec); spec.loader.exec_module(module)
+        (self.cache/'cpu_sample.state').unlink(missing_ok=True)
+        script, env, case = self.prepare(mode='status_emit_live build_priority_json')
+        # The real collector starts the actual extracted builder subprocess.
+        from unittest.mock import patch
+        with patch.dict(os.environ, env):
+            collector = module.Collector(self.base/'runtime', str(script)); collector.runtime.mkdir()
+            collector.cycle('priority')
+            self.assertEqual(collector.samples['priority']['cpu_usage'], 25)
+            trusted = dict(collector.samples['priority']); received = collector.sample_received['priority']
+            os.environ['AFTER'] = 'FAIL'
+            collector.cycle('priority')
+            snapshot = json.loads((collector.runtime/'snapshot.json').read_text())
+            self.assertEqual(collector.samples['priority'], trusted)
+            self.assertEqual(collector.sample_received['priority'], received)
+            self.assertEqual(snapshot['parts']['priority']['cpu_usage'], 25)
+            self.assertEqual(snapshot['errors']['priority'], 'collection_failed')
+
+    def test_live_envelope_non_cpu_partial_and_success(self):
+        for part, diagnostic in [('temp', 'temp'), ('untrusted\nrequest', 'unknown')]:
+            script, env, _ = self.prepare(STATUS_PART=part, mode='status_emit_live failed_non_cpu',
+                                         shim='failed_non_cpu() { printf \'{"partial":\'; return 7; }')
+            result = subprocess.run(['bash', str(script)], env=env, capture_output=True, text=True, timeout=5)
+            print('Envelope evidence:', json.dumps(dict(part=diagnostic, rc=result.returncode,
+                                                       stdout=result.stdout, stderr=result.stderr)), flush=True)
+            self.assertEqual(result.returncode, 7)
+            self.assertEqual(result.stdout, '{"error":"status_build_failed"}\n')
+            self.assertEqual(result.stderr, 'status.cgi: status_build_failed part='+diagnostic+' rc=7\n')
+        script, env, _ = self.prepare(STATUS_PART='temp', mode='status_emit_live build_temp_json')
+        result = subprocess.run(['bash', str(script)], env=env, capture_output=True, text=True, timeout=5)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        data = json.loads(result.stdout)
+        self.assertEqual(data['temp_c'], 40)
+        self.assertEqual(data['_status_meta']['ttl_s'], 0)
+
+    def test_failed_rebuild_preserves_actual_cache(self):
+        cached = self.cache/'priority.json'
+        payload = b'{"cpu_usage":73}\n'
+        cached.write_bytes(payload); os.utime(cached, (100, 100))
+        before = cached.stat()
+        script, env, _ = self.prepare(after='FAIL', STATUS_PART='priority', STATUS_CACHE_LOCK_WAIT_SEC='0.25',
+                                     mode='cache_print_or_build "$CACHE_DIR/priority.json" 1 build_priority_json',
+                                     shim='rm() { command rm "$@"; }; flock() { command flock "$@"; }')
+        result = subprocess.run(['bash', str(script)], env=env, capture_output=True, text=True, timeout=5)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        data = json.loads(result.stdout)
+        self.assertEqual(data['cpu_usage'], 73)
+        self.assertEqual(data['_status_meta']['measured_at'], 100)
+        self.assertGreater(data['_status_meta']['age_s'], 0)
+        self.assertEqual(cached.read_bytes(), payload)
+        after = cached.stat()
+        self.assertEqual((before.st_ino, before.st_mtime_ns), (after.st_ino, after.st_mtime_ns))
+
+    def test_iowait_decrease_preserves_formula_and_consumer_quality(self):
+        first = 'cpu 100 0 0 300 10 0 0 0 0 0'
+        after = 'cpu 106 0 0 315 9 0 0 0 0 0'
+        self.run_case(first=first, after=after)
+        for builder in ['build_cpu_json', 'build_priority_json']:
+            script, env, _ = self.prepare(first=first, after=after, mode='status_emit_live '+builder)
+            result = subprocess.run(['bash', str(script)], env=env, capture_output=True, text=True, timeout=5)
+            self.assertEqual(result.returncode, 0, result.stderr)
+            self.assertEqual(json.loads(result.stdout)['cpu_usage'], 25)
+        spec = importlib.util.spec_from_file_location('iowait_collector', root/'etc/sa02m-status-cache.py')
+        module = importlib.util.module_from_spec(spec); spec.loader.exec_module(module)
+        script, env, _ = self.prepare(first=first, after=after, mode='status_emit_live build_priority_json')
+        from unittest.mock import patch
+        with patch.dict(os.environ, env):
+            collector = module.Collector(self.base/'runtime', str(script)); collector.runtime.mkdir()
+            collector.cycle('priority')
+        self.assertEqual(collector.samples['priority']['cpu_usage'], 25)
+        trusted = dict(collector.samples['priority']); received = collector.sample_received['priority']
+        for invalid in ['cpu 101 0 0 300 9 0 0 0 0 0',  # zero total delta
+                        'cpu 100 0 0 300 9 0 0 0 0 0',  # negative total delta
+                        'cpu 100 0 0 315 9 0 0 0 0 0']:  # idle delta exceeds total
+            with self.subTest(invalid=invalid):
+                self.run_case(first=first, after=invalid, failure=True)
+                script, env, _ = self.prepare(first=first, after=invalid,
+                                             mode='status_emit_live build_priority_json', STATUS_PART='priority')
+                collector.command = str(script)
+                with patch.dict(os.environ, env):
+                    collector.cycle('priority')
+                snapshot = json.loads((collector.runtime/'snapshot.json').read_text())
+                self.assertEqual(collector.samples['priority'], trusted)
+                self.assertEqual(collector.sample_received['priority'], received)
+                self.assertEqual(snapshot['parts']['priority']['cpu_usage'], 25)
+                self.assertEqual(snapshot['errors']['priority'], 'collection_failed')
+
+    def test_concurrent_independent_callers(self):
+        jobs = []
+        for end, expected in [(C, '25'), ('cpu 120 0 0 300 0 0 0 0 0 0', '100')]:
+            script, env, case = self.prepare(after=end, BARRIER='1')
+            os.mkfifo(case/'ready'); os.mkfifo(case/'go')
+            proc = subprocess.Popen(['bash', str(script)], env=env, text=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+            self.addCleanup(lambda p=proc: p.poll() is None and p.kill())
+            # FIFO readiness/wakeup are bounded by the subprocess and outer test deadline.
+            ready = subprocess.run(['timeout', '5', 'cat', str(case/'ready')], capture_output=True, text=True)
+            self.assertEqual(ready.stdout, 'ready\n')
+            jobs.append((proc, case, expected))
+        for proc, case, expected in jobs:
+            wake = subprocess.run(['timeout', '5', 'bash', '-c', 'printf "go\\n" > "$1"', '_',
+                                   str(case/'go')], capture_output=True, text=True, timeout=6)
+            self.assertEqual(wake.returncode, 0, wake.stderr)
+            out, err = proc.communicate(timeout=5)
+            self.assertEqual(proc.returncode, 0, err); self.assertEqual(out.strip(), expected)
+            self.assertEqual((case/'waits').read_text(), '0.05\n')
+            self.assertEqual((case/'reads').read_text(), 'first\nafter\n')
+            self.assertFalse((case/'forbidden').exists())
+            self.assertFalse(list(self.cache.iterdir()))
+
+unittest.main(verbosity=2)
+
+CPU_TESTS
+then ok "CPU actual sampling and consumer regressions"
+else bad "CPU actual sampling and consumer regressions"; fi
+
 echo
 [ "$skips" -gt 0 ] && echo "NOTE  $skips case(s) SKIPPED (environment) — skipped is not passed; CI is their authority"
 if [ "$fails" -eq 0 ]; then

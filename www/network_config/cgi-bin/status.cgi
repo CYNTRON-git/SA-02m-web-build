@@ -158,7 +158,7 @@ status_emit_snapshot() {
 
 status_cache_failure() {
     local rc=${1:-1} part=${STATUS_PART:-full}
-    case "$part" in storage|network|system|services|hardware|rs485|blocks|full) ;; *) part=unknown ;; esac
+    case "$part" in cpu|temp|ram|disk|storage|time|uptime|network|load|system|services|hardware|priority|main|rs485|blocks|core|full) ;; *) part=unknown ;; esac
     printf 'status.cgi: status_build_failed part=%s rc=%s\n' "$part" "$rc" >&2
     printf '{"error":"status_build_failed"}\n'
     return "$rc"
@@ -184,9 +184,13 @@ status_emit_cache() {
 }
 
 status_emit_live() {
-    local measured payload
+    local measured payload rc
     measured=$EPOCHSECONDS
-    payload=$("$1") || return $?
+    payload=$("$1") || {
+        rc=$?
+        status_cache_failure "$rc"
+        return "$rc"
+    }
     status_emit_snapshot "$payload" "$measured" 0
 }
 
@@ -961,44 +965,44 @@ first_existing_iface() {
     printf '%s' "$1"
 }
 
-cpu_usage_from_stat_lines() {
-    local c1=$1 c2=$2
-    local a1=($c1) a2=($c2) total1=0 total2=0
-    local idle1=${a1[4]:-0} idle2=${a2[4]:-0}
-    for v in "${a1[@]:1}"; do (( total1 += v )); done
-    for v in "${a2[@]:1}"; do (( total2 += v )); done
-    local dt=$(( total2 - total1 )) di=$(( idle2 - idle1 ))
-    (( dt > 0 )) && echo $(( (dt - di) * 100 / dt )) || echo 0
+# Bound decimal counters before Bash arithmetic, including the final * 100.
+cpu_stat_valid() {
+    local line=$1 value
+    local -a fields
+    IFS=$' \t' read -r -a fields <<< "$line"
+    [[ ${fields[0]:-} == cpu ]] && (( ${#fields[@]} >= 5 && ${#fields[@]} <= 11 )) || return 1
+    for value in "${fields[@]:1}"; do
+        [[ $value =~ ^[0-9]{1,15}$ ]] || return 1
+    done
 }
 
-# Option C: /tmp sample cache — delta без sleep при свежем baseline (<2 s); иначе короткий sleep 50 ms.
+cpu_usage_from_stat_lines() {
+    local c1=$1 c2=$2 i previous current delta dt=0 di=0
+    local -a a1 a2
+    cpu_stat_valid "$c1" && cpu_stat_valid "$c2" || return 1
+    IFS=$' \t' read -r -a a1 <<< "$c1"
+    IFS=$' \t' read -r -a a2 <<< "$c2"
+    (( ${#a1[@]} == ${#a2[@]} )) || return 1
+    for (( i=1; i<${#a1[@]}; i++ )); do
+        previous=$((10#${a1[i]}))
+        current=$((10#${a2[i]}))
+        # Linux permits iowait to decrease; the aggregate must still be usable.
+        (( i == 5 || current >= previous )) || return 1
+        delta=$((current - previous))
+        dt=$((dt + delta))
+        (( i == 4 )) && di=$delta
+    done
+    (( dt > 0 && di <= dt )) || return 1
+    printf '%s\n' "$(( (dt - di) * 100 / dt ))"
+}
+
 cpu_usage() {
-    local cache_file="${CACHE_DIR}/cpu_sample.state"
-    local now c1 c2 cached_ts cached_line pct
-    now=$(date +%s 2>/dev/null || echo 0)
-    read -r c2 < /proc/stat
-    cached_ts=0
-    cached_line=""
-    if [ -f "$cache_file" ]; then
-        IFS= read -r cached_ts cached_line < "$cache_file" || true
-        cached_ts=${cached_ts:-0}
-    fi
-    if [ -n "$cached_line" ] && (( now - cached_ts < 2 )); then
-        pct=$(cpu_usage_from_stat_lines "$cached_line" "$c2")
-        printf '%s %s\n' "$now" "$c2" > "$cache_file" 2>/dev/null || true
-        echo "$pct"
-        return 0
-    fi
-    c1=$c2
-    read -r c2 < /proc/stat
-    pct=$(cpu_usage_from_stat_lines "$c1" "$c2")
-    if [ "$pct" = "0" ]; then
-        sleep 0.05
-        read -r c2 < /proc/stat
-        pct=$(cpu_usage_from_stat_lines "$c1" "$c2")
-    fi
-    printf '%s %s\n' "$now" "$c2" > "$cache_file" 2>/dev/null || true
-    echo "$pct"
+    local c1 c2
+    IFS= read -r c1 < /proc/stat || return 1
+    cpu_stat_valid "$c1" || return 1
+    sleep 0.05 || return 1
+    IFS= read -r c2 < /proc/stat || return 1
+    cpu_usage_from_stat_lines "$c1" "$c2"
 }
 
 ram_stats() {
@@ -1400,7 +1404,7 @@ build_blocks_json() {
 gather_priority_metrics() {
     local ram_data disk_data
 
-    CPU_USAGE=$(cpu_usage)
+    CPU_USAGE=$(cpu_usage) || return $?
 
     ram_data=($(ram_stats))
     RAM_TOTAL=${ram_data[0]:-0}
@@ -2679,12 +2683,12 @@ JSON
 }
 
 build_priority_json() {
-    gather_priority_metrics
+    gather_priority_metrics || return $?
     print_priority_json
 }
 
 build_cpu_json() {
-    CPU_USAGE=$(cpu_usage)
+    CPU_USAGE=$(cpu_usage) || return $?
     print_cpu_json
 }
 
@@ -2765,13 +2769,13 @@ build_main_json() {
 }
 
 build_core_json() {
-    gather_priority_metrics
+    gather_priority_metrics || return $?
     gather_main_metrics
     print_core_json
 }
 
 build_full_json() {
-    gather_priority_metrics
+    gather_priority_metrics || return $?
     gather_main_metrics
     RS485_JSON=$(build_rs485_array)
     print_full_json
