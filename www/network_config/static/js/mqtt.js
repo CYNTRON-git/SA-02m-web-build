@@ -1,12 +1,12 @@
 /* SA-02m MQTT tab — v1.0 */
 
-import { AI_SENSOR_LABELS } from './ai-sensors.js?v=1.0.7.39';
+import { AI_SENSOR_LABELS } from './ai-sensors.js?v=1.0.7.40';
 
 // The add-device dialog's Modbus TCP rules and wording (pure, unit-tested).
 import {
   makeTcpDeviceId as tcpDeviceId, typeOptionAllowed, dialogRows, addrMax,
   buildTcpEntry, saveRefusalText, probeResultView,
-} from './mqtt/tcp-dialog.js?v=1.0.7.39&r=spodes1';
+} from './mqtt/tcp-dialog.js?v=1.0.7.40&r=spodes1';
 
 function uiT(s) {
   return window.sa02mI18n ? window.sa02mI18n.t(String(s)) : String(s);
@@ -1673,26 +1673,63 @@ function bindMqttClientInfoCells() {
 
 // ── Broker status ─────────────────────────────────────────────────────────────
 let _lastMqttBrokerStatus = null;
+let _mqttStatusSeq = 0;
+let _mqttBridgePending = null;
+let _mqttBridgeError = '';
+let _mqttBridgeErrorPrefix = '';
+let _mqttBridgeNeedsStatus = false;
 
 function mqttBridgeUiState(st) {
   if (!st || st.error) return 'unknown';
+  const flag = v => v === 0 || v === 1 || v === false || v === true;
+  if (!flag(st.bridge_active) || !flag(st.bridge_disabled)) return 'unknown';
+  if (st.bridge_active && st.bridge_disabled) return 'unknown';
   if (st.bridge_disabled) return 'disabled';
   return st.bridge_active ? 'active' : 'inactive';
+}
+
+function applyMqttBridgeControlUI(st) {
+  const pending = _mqttBridgePending ? _mqttBridgePending.action : _svcCtlPending['mqtt-bridge'];
+  const state = _mqttBridgeNeedsStatus ? 'unknown' : mqttBridgeUiState(st);
+  const badge = document.getElementById('mqtt-bridge-badge');
+  if (badge) {
+    badge.className = 'badge ' + (pending ? 'badge-unk' : state === 'active' ? 'badge-ok' : state === 'disabled' ? 'badge-err' : 'badge-unk');
+    badge.textContent = uiT(pending ? (pending === 'apply' ? 'Применение настроек' : pending === 'stop' ? 'Остановка моста' : 'Запуск моста')
+      : state === 'active' ? 'Мост активен' : state === 'disabled' ? 'Отключен'
+        : state === 'inactive' ? 'Мост остановлен' : 'Мост —');
+  }
+  const button = document.getElementById('mqtt-bridge-toggle-btn');
+  if (button) {
+    const on = pending ? pending === 'stop' : state === 'active';
+    button.disabled = !!pending || state === 'unknown';
+    button.setAttribute('aria-busy', pending ? 'true' : 'false');
+    button.textContent = uiT(on ? 'Остановить' : 'Запустить');
+    button.className = on ? 'btn btn-sm hw-io-btn hw-io-to-off' : 'btn btn-sm hw-io-btn hw-io-to-on';
+    button.title = uiT(on ? 'Остановить мост Modbus→MQTT (не запустится после перезагрузки)' : 'Запустить мост Modbus→MQTT');
+  }
+  const save = document.getElementById('mqtt-save-btn');
+  if (save) {
+    save.disabled = !!pending;
+    save.setAttribute('aria-busy', pending === 'apply' ? 'true' : 'false');
+    save.textContent = uiT(pending === 'apply' ? 'Применение настроек' : 'Сохранить и применить');
+  }
+  const hint = document.getElementById('mqtt-bridge-control-status');
+  if (hint) {
+    hint.textContent = _mqttBridgeError ? (_mqttBridgeErrorPrefix ? uiT(_mqttBridgeErrorPrefix) + ': ' : '') + uiT(svcCtlErrorMessage(_mqttBridgeError))
+      : !pending && state === 'unknown' ? uiT('Состояние моста неизвестно') : '';
+    hint.hidden = !hint.textContent;
+  }
 }
 
 function applyBrokerStatusUI(st) {
   const badge = document.getElementById('mqtt-broker-badge');
   const clients = document.getElementById('mqtt-broker-clients');
-  const bridgeBadge = document.getElementById('mqtt-bridge-badge');
+  applyMqttBridgeControlUI(st);
 
   if (!st || st.error) {
     if (badge) {
       badge.className = 'badge badge-err';
       badge.textContent = st && st.error === 'unauthorized' ? uiT('Нет доступа') : uiT('Нет данных');
-    }
-    if (bridgeBadge) {
-      bridgeBadge.className = 'badge badge-unk';
-      bridgeBadge.textContent = uiT('Мост —');
     }
     if (clients) clients.textContent = uiT('Клиентов: —');
     return;
@@ -1723,42 +1760,37 @@ function applyBrokerStatusUI(st) {
     }
   }
   if (clients) clients.textContent = uiT(`Клиентов: ${st.clients_connected}`);
-  if (bridgeBadge) {
-    const bridgeSt = mqttBridgeUiState(st);
-    if (bridgeSt === 'disabled') {
-      bridgeBadge.className = 'badge badge-err';
-      bridgeBadge.textContent = uiT('Отключен');
-    } else if (bridgeSt === 'active') {
-      bridgeBadge.className = 'badge badge-ok';
-      bridgeBadge.textContent = uiT('Мост активен');
-    } else {
-      bridgeBadge.className = 'badge badge-unk';
-      bridgeBadge.textContent = uiT('Мост остановлен');
-    }
-  }
-  const bridgeToggle = document.getElementById('mqtt-bridge-toggle-btn');
-  if (bridgeToggle) {
-    const on = mqttBridgeUiState(st) === 'active';
-    bridgeToggle.textContent = uiT(on ? 'Остановить' : 'Запустить');
-    bridgeToggle.className = on
-      ? 'btn btn-sm hw-io-btn hw-io-to-off'
-      : 'btn btn-sm hw-io-btn hw-io-to-on';
-    bridgeToggle.title = uiT(on
-      ? 'Остановить мост Modbus→MQTT (не запустится после перезагрузки)'
-      : 'Запустить мост Modbus→MQTT');
-  }
   renderMqttClientInfo(st);
   bindMqttClientInfoCells();
 }
 
-async function refreshBrokerStatus() {
-  const st = await apiGet('cgi-bin/mqtt_status.cgi');
-  _lastMqttBrokerStatus = st;
-  applyBrokerStatusUI(st);
+async function refreshBrokerStatus(deadline) {
+  const seq = ++_mqttStatusSeq;
+  const tab = _mqttTabSeq;
+  try {
+    const {response, data} = await svcCtlFetchJson('cgi-bin/mqtt_status.cgi', {
+      credentials: 'same-origin', cache: 'no-store',
+    }, deadline);
+    if (!response.ok || !data || data.error) throw new Error((data && data.error) || 'invalid_result');
+    if (seq !== _mqttStatusSeq || tab !== _mqttTabSeq) return null;
+    _lastMqttBrokerStatus = data;
+    _mqttBridgeNeedsStatus = mqttBridgeUiState(data) === 'unknown';
+    applyBrokerStatusUI(data);
+    return data;
+  } catch (error) {
+    if (seq === _mqttStatusSeq && tab === _mqttTabSeq) {
+      _lastMqttBrokerStatus = null;
+      _mqttBridgeNeedsStatus = true;
+      applyBrokerStatusUI(null);
+    }
+    // The command caller owns failure reporting; ordinary polling stays quiet.
+    if (deadline != null) throw error;
+    return null;
+  }
 }
 
 window.mqttRefreshI18n = function () {
-  if (_lastMqttBrokerStatus) applyBrokerStatusUI(_lastMqttBrokerStatus);
+  applyBrokerStatusUI(_lastMqttBrokerStatus);
 };
 
 // ── Load config ───────────────────────────────────────────────────────────────
@@ -3718,41 +3750,57 @@ function confirmAddDevice() {
 
 // ── Save & Apply ──────────────────────────────────────────────────────────────
 async function saveAndApply() {
-  const btn = document.getElementById('mqtt-save-btn');
-  if (btn) { btn.disabled = true; btn.textContent = 'Сохранение'; }
-
-  for (const dev of _config.devices || []) {
-    if (dev.type === 'mr02m') {
-      syncMr02mDiCounterFlagsFromDom(dev);
-      ensureMr02mChannels(dev);
-    }
-    normalizeMr02mAiPairsAll(dev);
-  }
-  const payload = Object.assign({}, _config, {restart: true});
-  // CGI writes YAML and returns immediately; bridge restart is async.
-  const res = await apiPost('cgi-bin/mqtt_config.cgi', payload).catch(() => ({ ok: false, error: 'network' }));
-
-  if (btn) { btn.disabled = false; btn.textContent = 'Сохранить и применить'; }
-
-  if (res && res.ok) {
-    _unsaved = false;
+  if (_mqttBridgePending || _svcCtlPending['mqtt-bridge']) return;
+  const deadline = Date.now() + 90000;
+  let saved = false;
+  _mqttBridgePending = { action: 'apply' };
+  _svcCtlPending['mqtt-bridge'] = 'apply';
+  _mqttBridgeError = '';
+  _mqttBridgeErrorPrefix = '';
+  _mqttStatusSeq += 1;
+  applyMqttBridgeControlUI(_lastMqttBrokerStatus);
+  if (_lastSvcCtlData) renderServicesControl(_lastSvcCtlData);
+  try {
     for (const dev of _config.devices || []) {
-      if (isAccordionOpen(dev.id)) refreshAiTypeSelects(dev);
-    }
-    showToast(res.restart === 'pending'
-      ? 'Настройки сохранены. Мост MQTT перезапускается…'
-      : 'Настройки сохранены.');
-    setTimeout(refreshBrokerStatus, 1500);
-    setTimeout(refreshBrokerStatus, 5000);
-    setTimeout(() => {
-      for (const dev of _config.devices || []) {
-        if (isAccordionOpen(dev.id)) void prefetchDeviceLive(dev.id);
+      if (dev.type === 'mr02m') {
+        syncMr02mDiCounterFlagsFromDom(dev);
+        ensureMr02mChannels(dev);
       }
-    }, 4000);
-  } else {
-    // A refused Modbus TCP entry reads in the operator's words (mqtt/tcp-dialog.js).
-    const why = saveRefusalText(res, uiT);
-    showToast(why || ('Ошибка сохранения: ' + (res?.error || 'неизвестная')), 'err');
+      normalizeMr02mAiPairsAll(dev);
+    }
+    // Persist first without the legacy uncorrelated background restart.
+    // One lock/deadline covers persistence and both existing service actions.
+    const payload = Object.assign({}, _config, {restart: false});
+    const {response, data} = await svcCtlFetchJson('cgi-bin/mqtt_config.cgi', {
+      method: 'POST', credentials: 'same-origin',
+      headers: withCsrfHeaders({'Content-Type': 'application/json; charset=utf-8'}),
+      body: JSON.stringify(payload),
+    }, deadline);
+    if (!response.ok || !data || data.ok !== true) {
+      throw new Error(saveRefusalText(data, uiT) || (data && data.error) || 'invalid_result');
+    }
+    saved = true;
+    _unsaved = false;
+    await mqttBridgeCommand('stop', deadline);
+    await mqttBridgeCommand('start', deadline);
+    await mqttBridgeWaitStatus('start', deadline);
+    for (const dev of _config.devices || []) {
+      if (isAccordionOpen(dev.id)) {
+        refreshAiTypeSelects(dev);
+        void prefetchDeviceLive(dev.id);
+      }
+    }
+    showToast('Настройки сохранены.');
+  } catch (error) {
+    _mqttBridgeErrorPrefix = saved ? 'Настройки сохранены, применение не завершено' : 'Сохранение настроек не подтверждено';
+    _mqttBridgeError = error && error.message ? error.message : 'invalid_result';
+    _mqttBridgeNeedsStatus = true;
+  } finally {
+    _mqttStatusSeq += 1;
+    _mqttBridgePending = null;
+    delete _svcCtlPending['mqtt-bridge'];
+    applyMqttBridgeControlUI(_lastMqttBrokerStatus);
+    if (_lastSvcCtlData) renderServicesControl(_lastSvcCtlData);
   }
 }
 
@@ -3964,48 +4012,63 @@ window.mqttCtrl          = async (action) => {
   else showToast('Ошибка: ' + (res?.error || '?'), 'err');
 };
 
-window.mqttToggleBridge = async function mqttToggleBridge() {
-  // Confirm IMMEDIATELY from cached UI state — never await mqtt_status.cgi
-  // before confirm (that CGI used to take several seconds → 10 s blank wait).
-  const btn = document.getElementById('mqtt-bridge-toggle-btn');
-  const stCached = _lastMqttBrokerStatus;
-  let on = mqttBridgeUiState(stCached) === 'active';
-  if (mqttBridgeUiState(stCached) === 'unknown' && btn) {
-    // Fallback: button label already reflects last paint — RU "Остановить"/
-    // "Запустить" or the EN paint uiT() produced ("Stop"/"Start").
-    const label = (btn.textContent || '').trim().toLowerCase();
-    if (label.includes('останов') || label.includes('stop')) on = true;
-    else if (label.includes('запуст') || label.includes('start')) on = false;
+async function mqttBridgeCommand(action, deadline) {
+  if (Date.now() >= deadline) throw new Error('timeout');
+  const {response, data} = await svcCtlFetchJson('cgi-bin/services_ctrl.cgi', {
+    method: 'POST', credentials: 'same-origin',
+    headers: withCsrfHeaders({ 'Content-Type': 'application/json; charset=utf-8' }),
+    body: JSON.stringify({ id: 'mqtt-bridge', action }),
+  }, deadline);
+  if (!response.ok || !data || data.ok !== true) throw new Error((data && data.error) || 'invalid_result');
+  if (data.pending !== true || !/^[a-f0-9]{32}$/.test(data.op_id || '') || data.id !== 'mqtt-bridge' || data.action !== action) {
+    throw new Error('invalid_result');
   }
-  const action = on ? 'stop_bridge' : 'start_bridge';
-  const msg = on
+  await pollServiceCtlDone('mqtt-bridge', action, 90000, 2000, data.op_id, deadline);
+}
+
+async function mqttBridgeWaitStatus(action, deadline) {
+  // The correlated helper result and service list prove completion. The MQTT
+  // readback supplies the independent broker fields and the final bridge paint.
+  while (true) {
+    if (Date.now() >= deadline) throw new Error('timeout');
+    const status = await refreshBrokerStatus(deadline);
+    const freshState = mqttBridgeUiState(status);
+    if (freshState === (action === 'stop' ? 'disabled' : 'active')) break;
+    await new Promise(resolve => setTimeout(resolve, Math.min(2000, Math.max(0, deadline - Date.now()))));
+  }
+}
+
+window.mqttToggleBridge = async function mqttToggleBridge() {
+  if (_mqttBridgePending || _svcCtlPending['mqtt-bridge']) return;
+  const state = _mqttBridgeNeedsStatus ? 'unknown' : mqttBridgeUiState(_lastMqttBrokerStatus);
+  if (state === 'unknown') {
+    applyMqttBridgeControlUI(_lastMqttBrokerStatus);
+    return;
+  }
+  const action = state === 'active' ? 'stop' : 'start';
+  const msg = action === 'stop'
     ? 'Остановить мост Modbus→MQTT? Служба будет отключена и не запустится после перезагрузки до ручного включения.'
     : 'Запустить мост Modbus→MQTT?';
-  if (!confirm(msg)) return;
-  if (btn) btn.disabled = true;
+  if (!confirm(uiT(msg))) return;
+  const deadline = Date.now() + 90000;
+  _mqttBridgePending = { action };
+  _svcCtlPending['mqtt-bridge'] = action;
+  _mqttBridgeError = '';
+  _mqttBridgeErrorPrefix = '';
+  _mqttStatusSeq += 1;
+  applyMqttBridgeControlUI(_lastMqttBrokerStatus);
+  if (_lastSvcCtlData) renderServicesControl(_lastSvcCtlData);
   try {
-    // CGI returns immediately (pending); service finishes in background.
-    const res = await apiPost('cgi-bin/mqtt_ctrl.cgi', {action});
-    if (res?.ok) {
-      showToast(on ? 'Остановка моста' : 'Запуск моста', 'success');
-      // Optimistic badge until status poll catches up.
-      if (_lastMqttBrokerStatus && typeof _lastMqttBrokerStatus === 'object') {
-        _lastMqttBrokerStatus = Object.assign({}, _lastMqttBrokerStatus, {
-          bridge_active: on ? 0 : 1,
-          bridge_disabled: on ? 1 : 0,
-        });
-        applyBrokerStatusUI(_lastMqttBrokerStatus);
-      }
-      setTimeout(refreshBrokerStatus, 800);
-      setTimeout(refreshBrokerStatus, 3000);
-    } else {
-      showToast('Ошибка: ' + (res?.error || '?'), 'err');
-      void refreshBrokerStatus();
-    }
-  } catch (_) {
-    showToast('Ошибка управления мостом', 'err');
+    await mqttBridgeCommand(action, deadline);
+    await mqttBridgeWaitStatus(action, deadline);
+  } catch (error) {
+    _mqttBridgeError = error && error.message ? error.message : 'invalid_result';
+    _mqttBridgeNeedsStatus = true;
   } finally {
-    if (btn) btn.disabled = false;
+    _mqttStatusSeq += 1;
+    _mqttBridgePending = null;
+    delete _svcCtlPending['mqtt-bridge'];
+    applyMqttBridgeControlUI(_lastMqttBrokerStatus);
+    if (_lastSvcCtlData) renderServicesControl(_lastSvcCtlData);
   }
 };
-
