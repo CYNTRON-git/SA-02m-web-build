@@ -5,6 +5,10 @@
 
 ---
 
+## 1.0.8.0 - Release version alignment (November 2026)
+
+- Advance release metadata and served asset cache keys to 1.0.8.0. MQTT bridge command status and dashboard CPU sampling behavior remain unchanged from 1.0.7.40.
+
 ## 1.0.7.40 - Reliable MQTT bridge command status (November 2026)
 
 - Wait for the correlated bridge command result and confirmed service state before reporting completion on the MQTT page. Keep controls pending while the action runs.
