@@ -48,7 +48,6 @@ FILES=(gateway_status.cgi cloud.cgi status.cgi services_ctrl.cgi mplc_project_de
 # file|literal fragment of the exempt line|reason
 EXEMPT=(
   'services_ctrl.cgi|nohup sudo -n "$CTL" "$ACTION" "$SID" "$OP_ID"|background mutation after the pending answer; install runs for minutes, the panel bounds it (600 s)'
-  'mplc_project_deploy.cgi|nohup sudo -n "$HELPER" "$STAGED_ZIP"|background deploy after the pending answer; the helper owns its own deadline'
   'cloud.cgi|OUT=$(sudo -n "$CLOUD_TRIGGER" pair|POST mutation (enrollment); killing the trigger half-way is not designed'
   'cloud.cgi|OUT=$(sudo -n "$CLOUD_TRIGGER" cancel|POST mutation'
   'cloud.cgi|OUT=$(sudo -n "$CLOUD_TRIGGER" "$ACTION"|POST mutation'

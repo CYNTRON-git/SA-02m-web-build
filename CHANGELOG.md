@@ -5,6 +5,11 @@
 
 ---
 
+## 1.0.8.1 - MasterPLC project upload and recovery (November 2026)
+
+- Accept controller ZIP uploads through the panel and report the running project identity and version from MasterPLC.
+- Restore the previous configuration if verification fails. The panel reports a separate error when the restored runtime cannot confirm the previous project.
+
 ## 1.0.8.0 - Release version alignment (November 2026)
 
 - Advance release metadata and served asset cache keys to 1.0.8.0. MQTT bridge command status and dashboard CPU sampling behavior remain unchanged from 1.0.7.40.

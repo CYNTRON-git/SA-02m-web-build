@@ -110,7 +110,7 @@ gateway_config.cgi|sudo /usr/local/sbin/sa02m-gateway-config-apply.sh
 gateway_ctrl.cgi|sudo /usr/bin/systemctl "$1" sa02m-serial-gateway
 hw_set.cgi|sa02m_hw_i2c_write_channel_web "$CH" "$VAL"
 kernel_ctrl.cgi|sudo -n "$CTL" set "$PROFILE"
-mplc_project_deploy.cgi|nohup sudo -n "$HELPER" "$STAGED_ZIP"
+mplc_project_deploy.cgi|sudo -n "$HELPER" --submit
 mqtt_config.cgi|sudo /usr/local/sbin/sa02m-mqtt-config-apply.sh
 mqtt_ctrl.cgi|sudo -n '"'"'$CTL'"'"' '"'"'$_act'"'"' mqtt-bridge
 mqtt_scan.cgi|sudo /usr/bin/python3 "$SCAN_PY"
