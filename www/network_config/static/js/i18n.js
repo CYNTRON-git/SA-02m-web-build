@@ -1007,6 +1007,7 @@
     'не удалось записать проект': 'could not write project',
     'не удалось запустить MPLC': 'could not start MPLC',
     'MPLC не загрузил проект': 'MPLC did not load the project',
+    'не удалось восстановить предыдущий проект MPLC': 'could not restore the previous MPLC project',
     'служба развёртывания недоступна': 'deploy service unavailable',
     'ошибка защиты сессии': 'session protection error',
     'внутренняя ошибка': 'internal error',
