@@ -1,0 +1,31 @@
+{
+  "packages": {
+    "node-red": {
+      "architecture": "armv7l",
+      "inventory_sha256": "3e842f3f0d2b4c730afc1bf3c5680e766f0d36a9e038865da06ab86c12d8b614",
+      "node": {
+        "filename": "node-v22.23.5-linux-armv7l.tar.xz",
+        "root": "node-v22.23.5-linux-armv7l",
+        "sha256": "1c3e15d38e4cafbbf74377ac070cd9d7e0418c673e1f6332f38f1d4762a699f9",
+        "size": 26367892,
+        "url": "https://nodejs.org/dist/v22.23.5/node-v22.23.5-linux-armv7l.tar.xz"
+      },
+      "node_engines": "^20.17.0 || >=22.9.0",
+      "node_version": "22.23.5",
+      "runtime": {
+        "filename": "node-red-4.1.13-947159fd23d7.tar.gz",
+        "root": "node-red",
+        "sha256": "4333a881637c7dc46fb7e5c9202f1da08fff0843dc1c8782707c0d8ebb85c081",
+        "size": 23228209,
+        "url": null
+      },
+      "source_lock_sha256": "947159fd23d7b5417a2e046999127cae1cc68189ba07eaab95f4eb633ab2e8e6",
+      "source_manifest_sha256": "242a851feeab244fe1c5c6d71db25d7c9c3643314f14279132b3a607857585b8",
+      "unit": {
+        "sha256": "3a251a0fd39f0d58d423a5721c1b820e998883588e0029ea0dcb309ef3478a32"
+      },
+      "version": "4.1.13"
+    }
+  },
+  "schema": 1
+}

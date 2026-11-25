@@ -73,6 +73,8 @@ SERVICES_OPTIONAL_KEYS = ("enable", "restart_if_active", "restart_if_changed")
 # `E_COMPAT updater < min_updater`. Gate: fix-eth-ota-delivery.
 FIX_ETH_OTA_SINCE = "1.0.7.19"
 TIERED_DSTS = {"/usr/local/bin/fix-eth.sh": FIX_ETH_OTA_SINCE}
+VENDOR_INSTALL_SINCE = "1.0.8.2"
+VENDOR_INSTALL_SOURCES = frozenset({"etc/sa02m-vendor-install.py", "etc/vendor-payloads.json", "etc/systemd/system/nodered.service"})
 # Wire footer is 21 bytes (plan text "+20" was a miscount of the 19-byte magic).
 FOOTER_MAGIC = b"SA02M_UPDATE_END_V1"
 FOOTER = FOOTER_MAGIC + b"\0\0"
@@ -89,6 +91,7 @@ DST_PREFIX_RE = re.compile(
     r"etc/default/sa02m-|"
     r"etc/sa02m-update/trusted-keys/|"
     r"usr/local/bin/fix-eth\.sh$|"
+    r"usr/local/share/sa02m/(vendor-payloads\.json|nodered\.service)$|"
     r"etc/dhcp/dhclient-exit-hooks\.d/eth1-default-route$)"
 )
 
@@ -424,6 +427,12 @@ def map_deploy_entry(rel: str, deploy_map: dict[str, Any]) -> dict[str, str] | N
 def build_deploy_list(
     overlay_files: list[str], deploy_map: dict[str, Any], min_updater: str = MIN_UPDATER
 ) -> list[dict[str, str]]:
+    vendor_sources = VENDOR_INSTALL_SOURCES.intersection(overlay_files)
+    if vendor_sources:
+        if vendor_sources != VENDOR_INSTALL_SOURCES:
+            _die("incomplete pinned vendor installer boundary")
+        if semver_key(min_updater) < semver_key(VENDOR_INSTALL_SINCE):
+            _die("pinned vendor installer requires --min-updater " + VENDOR_INSTALL_SINCE + "; bootstrap by full refresh first")
     deploy: list[dict[str, str]] = []
     skipped: list[str] = []
     for rel in overlay_files:

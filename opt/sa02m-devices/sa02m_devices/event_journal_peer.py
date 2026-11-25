@@ -15,9 +15,9 @@ PEER = "sa02m-stand-api.service"
 UNITS = {"devices-api": "sa02m-devices-api.service",
          "devices-logger": "sa02m-devices-logger.service", "stand-api": PEER}
 RELATIONS = ("After", "Before", "Requires", "Wants", "Requisite", "BindsTo",
-             "ConsistsOf", "PropagatesStopTo", "Conflicts", "OnFailure", "RequiredBy", "BoundBy")
-PROPERTIES = ("Id", "LoadState", "ActiveState", "UnitFileState", "MainPID",
-              "Environment", "EnvironmentFiles") + RELATIONS
+             "ConsistsOf", "PropagatesStopTo", "Conflicts", "ConflictedBy", "OnFailure", "RequiredBy", "BoundBy")
+COMMON_PROPERTIES = ("Id", "LoadState", "ActiveState", "UnitFileState", "Job") + RELATIONS
+PROPERTIES = COMMON_PROPERTIES + ("MainPID", "Environment", "EnvironmentFiles")
 UNIT_NAME = re.compile(r"[A-Za-z0-9:_.@\\-]+\Z")
 
 
@@ -59,19 +59,35 @@ def command(arguments, deadline, limit=65536):
                 process.wait(timeout=1)
 
 
-def show(unit, deadline):
+def show(unit, deadline, *, _service=True):
     if not UNIT_NAME.fullmatch(unit):
         raise JournalStateError("invalid peer relation unit")
-    text = command(["show", unit, "--all", "--no-pager", "--property=" + ",".join(PROPERTIES)], deadline)
+    required = PROPERTIES if _service else COMMON_PROPERTIES
+    text = command(["show", "--all", "--no-pager", "--property=" + ",".join(required), "--", unit], deadline)
     properties = {}
     for line in text.splitlines():
         key, separator, value = line.partition("=")
-        if not separator or key in properties or key not in PROPERTIES:
+        if not separator or key in properties or key not in required:
             raise JournalStateError("incomplete peer properties")
         properties[key] = value
-    if set(properties) != set(PROPERTIES):
-        raise JournalStateError("incomplete peer properties")
+    if set(properties) != set(required):
+        missing = ",".join(key for key in required if key not in properties)
+        raise JournalStateError("incomplete peer properties for " + unit + ": " + missing)
     return properties, len(text.encode())
+
+
+def _relation_units(value):
+    try:
+        units = shlex.split(value, comments=False, posix=True)
+    except ValueError as exc:
+        raise JournalStateError("invalid peer relation quoting") from exc
+    if any(not UNIT_NAME.fullmatch(unit) for unit in units):
+        raise JournalStateError("invalid peer relation unit")
+    # systemctl's string-array printer doubles literal unit-name backslashes.
+    encoded = " ".join('"' + unit.replace("\\", "\\\\") + '"' if "\\" in unit else unit for unit in units)
+    if encoded != value:
+        raise JournalStateError("noncanonical peer relation quoting")
+    return units
 
 
 def environment(properties):
@@ -149,18 +165,27 @@ def process_identity(pid):
 def graph_safe(current, cache, deadline):
     """Follow relevant directed closures; never enumerate the whole manager."""
     size = sum(item[1] for item in cache.values())
-    def get(unit):
+    def get(unit, *, ordering=False):
         nonlocal size
+        _remaining(deadline)
+        if len(cache) > 256:
+            raise JournalStateError("peer relation closure exceeds unit bound")
         if unit not in cache:
             if len(cache) >= 256:
                 raise JournalStateError("peer relation closure exceeds unit bound")
-            cache[unit] = show(unit, deadline)
+            cache[unit] = show(unit, deadline, _service=False)
             size += cache[unit][1]
-        if size > 65536 or cache[unit][0]["LoadState"] not in {"loaded", "masked"}:
+        info = cache[unit][0]
+        if size > 65536 or not UNIT_NAME.fullmatch(info["Id"]):
             raise JournalStateError("peer relation closure incomplete")
-        if cache[unit][0]["Id"] == current:
+        if info["Id"] == current:
             raise JournalStateError("peer relation alias reaches the starting unit")
-        return cache[unit][0]
+        if ordering and info["LoadState"] == "not-found" and info["ActiveState"] == "inactive" \
+                and info["Job"] == "" and info["Id"] == unit:
+            return info
+        if info["LoadState"] not in {"loaded", "masked"}:
+            raise JournalStateError("peer relation closure incomplete")
+        return info
     if current == PEER:
         raise JournalStateError("peer cannot restart its current unit")
     for relations in (("After",), ("Before",)):
@@ -172,9 +197,11 @@ def graph_safe(current, cache, deadline):
             visited.add(unit)
             if unit == current:
                 raise JournalStateError("peer restart reaches the starting unit")
-            info = get(unit)
+            info = get(unit, ordering=True)
+            if info["LoadState"] == "not-found":
+                continue
             for relation in relations:
-                pending.extend(info[relation].split())
+                pending.extend(_relation_units(info[relation]))
     pending, visited = [(PEER, "restart")], set()
     while pending:
         unit, action = pending.pop()
@@ -188,11 +215,12 @@ def graph_safe(current, cache, deadline):
         # Keep job directions separate to avoid expanding all network consumers.
         if action in {"restart", "stop"}:
             for relation in ("ConsistsOf", "PropagatesStopTo", "RequiredBy", "BoundBy"):
-                pending.extend((other, action) for other in info[relation].split())
+                pending.extend((other, action) for other in _relation_units(info[relation]))
         if action in {"restart", "start"}:
             for relation in ("Requires", "Wants", "Requisite", "BindsTo", "OnFailure"):
-                pending.extend((other, "start") for other in info[relation].split())
-        pending.extend((other, "stop") for other in info["Conflicts"].split())
+                pending.extend((other, "start") for other in _relation_units(info[relation]))
+            for relation in ("Conflicts", "ConflictedBy"):
+                pending.extend((other, "stop") for other in _relation_units(info[relation]))
 
 
 def skipped(properties):
@@ -202,6 +230,8 @@ def skipped(properties):
 
 
 def prepare_peer(expected, consumer, mark_not_ready, *, force_refresh=False):
+    if consumer != "installer" and consumer not in UNITS:
+        raise JournalStateError("unknown journal consumer")
     deadline = time.monotonic() + 5
     cache = {unit: show(unit, deadline) for unit in UNITS.values()}
     if any(info["LoadState"] == "loaded" and info["Id"] != unit for unit, (info, _) in cache.items()):
@@ -222,7 +252,9 @@ def prepare_peer(expected, consumer, mark_not_ready, *, force_refresh=False):
     if all(values.get(key) == value for key, value in expected.items()) and not force_refresh:
         return
     mark_not_ready()
-    graph_safe(UNITS.get(consumer), cache, deadline)
+    # Installer preparation has no invoking service job to deadlock against.
+    if consumer != "installer":
+        graph_safe(UNITS.get(consumer), cache, deadline)
     command(["--no-block", "try-restart", PEER], deadline)
     deadline = time.monotonic() + 35
     while True:

@@ -195,7 +195,7 @@ class PeerTests(StartupFixture, unittest.TestCase):
         self.env = {}
         self.units = {unit: properties(unit, Environment=" ".join(k + "=" + v for k, v in self.config.settings().items()))
                       for unit in peer.UNITS.values()}
-        def show(unit, deadline):
+        def show(unit, deadline, *, _service=True):
             self.shows.append(unit)
             peer._remaining(deadline)
             return self.units[unit], 100
@@ -269,7 +269,10 @@ class PeerTests(StartupFixture, unittest.TestCase):
 
     def test_direct_and_transitive_relations_refuse_before_dispatch(self):
         for relation in peer.RELATIONS:
-            for transitive in (False, True):
+            # A conflict's stop job cannot itself create another conflict stop.
+            # The positive cascade and all stop-propagation guards are exercised
+            # through the real parser in test_event_journal_peer.py.
+            for transitive in ((False,) if relation in ("Conflicts", "ConflictedBy") else (False, True)):
                 with self.subTest(relation=relation, transitive=transitive):
                     self.units[peer.PEER][relation] = "middle.service" if transitive else peer.UNITS["devices-api"]
                     self.units["middle.service"] = properties("middle.service", **{relation: peer.UNITS["devices-api"]})
@@ -339,7 +342,8 @@ class BoundedCommandTests(unittest.TestCase):
     def test_real_child_timeout_failure_and_output_limit(self):
         with tempfile.TemporaryDirectory() as folder:
             command = Path(folder) / "systemctl"
-            for body in ("import time; time.sleep(10)", "raise SystemExit(7)", "print('x' * 70000)"):
+            for body in ("import time; time.sleep(10)", "raise SystemExit(7)", "print('x' * 70000)",
+                         "import os; os.write(1, b'\\xff')"):
                 with self.subTest(body=body):
                     command.write_text("#!/usr/bin/python3\n" + body + "\n")
                     command.chmod(0o755)

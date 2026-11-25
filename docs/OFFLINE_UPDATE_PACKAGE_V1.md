@@ -120,6 +120,16 @@ Allowlist путей overlay: `scripts/offline-update-allowlist.txt`.
 
 ### Допустимые назначения (`deploy[].dst`) и ярусный путь
 
+Установщик Node-RED 1.0.8.2 поставляется целиком: helper
+`/usr/local/lib/sa02m-vendor-install.py`, manifest
+`/usr/local/share/sa02m/vendor-payloads.json` и неизменяемый шаблон
+`/usr/local/share/sa02m/nodered.service`. С этими входами требуется явный
+`--min-updater 1.0.8.2`; прежнее значение по умолчанию не делает такой пакет
+совместимым. Сборщик отказывает при меньшем floor или неполном наборе.
+Допустимы только эти два exact назначения в `share/sa02m`, не произвольный
+каталог. Перед первым переходом используется полный `install.sh --refresh`;
+последующие пакеты проверяются уже новым runner.
+
 Назначение принимается по префиксу (`/var/www/network_config/`,
 `/usr/local/{sbin,lib,libexec}/`, `/opt/sa02m-*/`, `/etc/systemd/system/sa02m-`,
 `/etc/nginx/`, `/etc/tmpfiles.d/`, `/etc/sudoers.d/`, `/etc/default/sa02m-`,

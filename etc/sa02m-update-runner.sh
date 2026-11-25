@@ -694,6 +694,7 @@ DST_RE = re.compile(
     r"etc/default/sa02m-|"
     r"etc/sa02m-update/trusted-keys/|"
     r"usr/local/bin/fix-eth\.sh$|"
+    r"usr/local/share/sa02m/(vendor-payloads\.json|nodered\.service)$|"
     r"etc/dhcp/dhclient-exit-hooks\.d/eth1-default-route$)"
 )
 # Git-tracked MPLC plugins (firmware/mplc4/) → /opt/mplc4/<name>. Closed set —
@@ -714,6 +715,12 @@ def map_dst(rel: str):
         return None
     if rel == "etc/sa02m-update-state-migrate.sh":
         return None  # Checkout-only installer preflight; not a runtime helper.
+    if rel == 'etc/sa02m-vendor-install.py':
+        return '/usr/local/lib/sa02m-vendor-install.py'
+    if rel == 'etc/vendor-payloads.json':
+        return '/usr/local/share/sa02m/vendor-payloads.json'
+    if rel == 'etc/systemd/system/nodered.service':
+        return '/usr/local/share/sa02m/nodered.service'
     if rel.startswith("www/network_config/"):
         # rel is www/network_config/... → /var/www/network_config/...
         return "/var/" + rel
@@ -822,6 +829,8 @@ def deploy_mode(rel: str, dst: str) -> str:
     # Mode follows DESTINATION role, not source extension. Extension-less helpers
     # (sa02m-set-storage-auto-format, sa02m-set-cpu-profile) land in
     # /usr/local/sbin and must stay executable — see private/BUG-ota-mode-0644.md.
+    if dst == "/usr/local/lib/sa02m-vendor-install.py":
+        return "0755"
     if dst.startswith("/usr/local/sbin/") or dst.startswith("/usr/local/libexec/"):
         return "0755"
     if dst.startswith("/usr/local/bin/"):
@@ -851,6 +860,10 @@ for p in overlay.rglob("*"):
     owner = "www-data:www-data" if dst.startswith("/var/www/") else "root:root"
     deploy.append({"src": rel, "dst": dst, "mode": mode, "owner": owner})
 
+vendor_inputs = {"etc/sa02m-vendor-install.py", "etc/vendor-payloads.json", "etc/systemd/system/nodered.service"}
+vendor_present = vendor_inputs.intersection(item["src"] for item in deploy)
+if vendor_present and vendor_present != vendor_inputs:
+    raise ValueError("incomplete pinned vendor installer boundary")
 ver = os.environ.get("TARGET_VER") or ""
 if not ver:
     vf = overlay / "www/network_config/VERSION"
@@ -870,7 +883,7 @@ manifest = {
     "repo_commit": commit if re.fullmatch(r"[0-9a-f]{40}", commit) else ("0" * 40),
     "built_at": __import__("time").strftime("%Y-%m-%dT%H:%M:%SZ", __import__("time").gmtime()),
     "signing_key_id": "github-unsigned",
-    "min_updater": "1.0.7.5",
+    "min_updater": "1.0.8.2" if vendor_present else "1.0.7.5",
     "min_version": "1.0.5.60",
     "payload": {"size": 0, "sha256": "0" * 64, "uncompressed_size_max": 1},
     "preflight": {
@@ -1080,6 +1093,7 @@ DST_RE = re.compile(
     r"etc/default/sa02m-|"
     r"etc/sa02m-update/trusted-keys/|"
     r"usr/local/bin/fix-eth\.sh$|"
+    r"usr/local/share/sa02m/(vendor-payloads\.json|nodered\.service)$|"
     r"etc/dhcp/dhclient-exit-hooks\.d/eth1-default-route$)"
 )
 DEL_RE = re.compile(

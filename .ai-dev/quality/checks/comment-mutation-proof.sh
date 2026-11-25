@@ -124,7 +124,7 @@ js-unit-apply-save-result|www/network_config/static/js/app/forms.js|if (refusal)
 js-unit-apply-save-result|www/network_config/static/js/app/forms.js|if (deferred) { configLoaded = false;
 iface-naming-contract|etc/99-lan-recovery.rules|ACTION=="add", SUBSYSTEM=="net", KERNEL=="eth0"
 iface-naming-contract|etc/99-lan-recovery.rules|ACTION=="bind", SUBSYSTEM=="net", KERNEL=="eth0"
-nodered-pin-consistency|scripts/dev/build-nodered-payload.sh|--omit=optional
+nodered-pin-consistency|scripts/dev/build-nodered-payload.py|subprocess.run(['npm', 'ci'
 watchdog-cap|scripts/01-system.sh|install -m 644 "$ETC_REPO/systemd/sa02m-watchdog.conf"
 telemetry-device-id-contract|opt/sa02m-modbus-mqtt/sa02m_telemetry.py|self._clear_legacy_retained()
 telemetry-device-id-contract|opt/sa02m-modbus-mqtt/sa02m_telemetry.py|"HW not ready — %s command dropped"
@@ -204,8 +204,8 @@ web-install-secret|etc/sa02m-update-runner.sh|scrub_cred_banner_logs || true
 web-install-secret|scripts/lib.sh|/../etc/sa02m-web-log-scrub-lib.sh"
 web-install-secret|etc/sa02m-web-log-scrub-lib.sh|/var/lib/sa02m-web-build/update.log /var/lib/sa02m-web-build/update.log.[0-9]*
 rtc-utc-convention|www/network_config/cgi-bin/lib_rtc.sh|--systohc --utc
-nodered-ctl-install|etc/sa02m-web-service-ctl.sh|nodered_guard_major_upgrade || return 1
-nodered-ctl-install|etc/sa02m-web-service-ctl.sh|atomic_install_unit "$_nr_unit" /etc/systemd/system/nodered.service
+nodered-ctl-install|etc/sa02m-web-service-ctl.sh|_nr_out=$(/usr/bin/python3 -I /usr/local/lib/sa02m-vendor-install.py
+nodered-ctl-install|etc/sa02m-web-service-ctl.sh|sync -d -- "$_ai_tmp" ||
 iface-dns-ensure|etc/fix-eth.sh|dns_ensure "$iface"
 iface-routes-ensure|etc/fix-eth.sh|routes_ensure "$iface"
 fix-eth-link-cycle|etc/fix-eth.sh|mii-tool -r "$iface" >/dev/null 2>&1

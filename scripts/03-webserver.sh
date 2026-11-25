@@ -432,6 +432,15 @@ if [ -f "$SCRIPT_DIR/../etc/sa02m-web-auth-lib.sh" ]; then
 else
     log WARN "Нет etc/sa02m-web-auth-lib.sh — безопасная запись sa02m_web.env недоступна"
 fi
+# Pinned vendor payload metadata must precede the panel installer delegate.
+for _vendor_source in sa02m-vendor-install.py vendor-payloads.json systemd/system/nodered.service; do
+    [ -f "$ETC_DIR/$_vendor_source" ] || { log ERR "Missing vendor payload source: $_vendor_source"; exit 1; }
+done
+mkdir -p /usr/local/lib /usr/local/share/sa02m || exit 1
+sa02m_atomic_install -m 755 "$ETC_DIR/sa02m-vendor-install.py" /usr/local/lib/sa02m-vendor-install.py || exit 1
+sa02m_atomic_install -m 644 "$ETC_DIR/vendor-payloads.json" /usr/local/share/sa02m/vendor-payloads.json || exit 1
+sa02m_atomic_install -m 644 "$ETC_DIR/systemd/system/nodered.service" /usr/local/share/sa02m/nodered.service || exit 1
+
 # ── Политика сторонних стеков (общая lib для установщика и service-ctl) ────
 if [ -f "$SCRIPT_DIR/../etc/sa02m-stacks-policy.sh" ]; then
     sa02m_atomic_install -m 644 "$SCRIPT_DIR/../etc/sa02m-stacks-policy.sh" /usr/local/lib/sa02m-stacks-policy.sh

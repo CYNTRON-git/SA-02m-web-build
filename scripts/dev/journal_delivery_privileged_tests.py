@@ -7,6 +7,7 @@ import json
 import multiprocessing
 import os
 from pathlib import Path
+import shutil
 import sqlite3
 import subprocess
 import sys
@@ -310,6 +311,17 @@ class UpdateGuardTests(unittest.TestCase):
 
 
 class FirstDeliveryTests(unittest.TestCase):
+    def test_service_hook_real_graph_and_process_replacement(self):
+        with tempfile.TemporaryDirectory() as folder:
+            destination, _ = harness.installer_rootfs(Path(folder), active_peer=True, service_hook=True)
+            self.assertTrue(state.read_atomic(state.Domain(destination / "var/lib/sa02m-devices/event-journal")).ready)
+            fixture = Path(folder) / "peer-fixture"
+            self.assertEqual((fixture / "restarts").read_text().splitlines(),
+                             ["try-restart sa02m-stand-api.service"] * 2)
+            self.assertTrue({"network.target", "system.slice", "-.mount", "systemd-journald.socket",
+                             "shutdown.target", "apparmor.service", r"system-fix\x2deth.slice"}
+                            <= set((fixture / "shows").read_text().splitlines()))
+
     def test_omitted_path_uses_root_owned_production_authority_without_sidecar(self):
         with tempfile.TemporaryDirectory() as folder:
             root = Path(folder)
@@ -396,7 +408,27 @@ unit_tests = harness.module("_delivery_startup_unit_tests", ROOT / "opt/sa02m-de
 class PrivilegedStartupTests(unit_tests.StartupTests):
     def test_core_nonowner_probe(self):
         probe = harness.module("_delivery_core_permissions", ROOT / "opt/sa02m-devices/tests/test_events_clear_permissions.py")
-        with traversable_fixture(self.root) as assigned, patch.dict(os.environ, {"TMPDIR": str(assigned)}):
+        # CI checkouts may have private ancestors; only the assigned fixture is
+        # opened to the real non-owner child, with byte-identical package code.
+        source = ROOT / "opt/sa02m-devices/sa02m_devices"
+        staged = self.root / "importable" / "sa02m_devices"
+        shutil.copytree(source, staged, ignore=shutil.ignore_patterns("__pycache__"))
+        for path in staged.rglob("*"):
+            self.assertFalse(path.is_symlink())
+            self.assertEqual(path.stat().st_uid, 0)
+            path.chmod(0o755 if path.is_dir() else 0o644)
+            if path.is_file():
+                self.assertEqual(path.read_bytes(), (source / path.relative_to(staged)).read_bytes())
+        staged.chmod(0o755)
+        staged.parent.chmod(0o755)
+        with traversable_fixture(self.root) as assigned, patch.dict(os.environ,
+                {"TMPDIR": str(assigned), "PYTHONPATH": str(staged.parent)}):
+            imported = subprocess.run([sys.executable, "-B", "-c",
+                "import os; from pathlib import Path; from sa02m_devices import event_journal_state as s; "
+                "assert os.geteuid() == 65534; print(Path(s.__file__).resolve())"],
+                user=65534, group=65534, extra_groups=[], capture_output=True, text=True, timeout=5)
+            self.assertEqual(imported.returncode, 0, imported.stderr)
+            self.assertEqual(imported.stdout.strip(), str(staged / "event_journal_state.py"))
             probe.permission_probe(self.root / "core-permissions")
 
     def test_nonowner_cannot_modify_receipt(self):

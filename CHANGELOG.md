@@ -14,7 +14,9 @@
 - Bound boot carrier waits by monotonic time and leave configured MAC assignment to ifupdown before the interface is raised.
 - Sanitize donor network overrides only during explicit image preparation and reject active vendor paths that could restore a shared MAC.
 - Require image checksums, reject mounted receiver targets, and propagate decompression and write failures when flashing an image.
-- Update five compatible Node-RED dependencies and pin the JSONata security fixes at 2.2.1 through the locked payload manifest. Remaining dependency advisories are tracked separately; this release does not claim a clean vulnerability audit.
+- Update the locked Node-RED payload and route installation through one pinned archive verifier with compatibility, health and rollback checks. Critical/High findings in the exact artifact block release; lower findings remain reported.
+- Parse native systemd unit properties and quoted relations correctly during journal preparation; preserve private CI fixture isolation. This transition requires a full refresh before golden-image preparation. Logger-only first OTA can still refuse its graph budget and is explicitly deferred.
+- Preserve the remaining Linux, dependency-isolation, throttle and flashing audit findings in the release audit handoff; this release does not claim completion of the whole-project audit.
 ## 1.0.8.1 - MasterPLC project upload and recovery (November 2026)
 
 - Accept controller ZIP uploads through the panel and report the running project identity and version from MasterPLC.

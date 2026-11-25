@@ -115,24 +115,36 @@ def unit_environment(path, destination):
     return values
 
 
+def manager_script(body):
+    return '''#!/usr/bin/python3
+def common(unit):
+    values = dict.fromkeys(('After', 'Before', 'Requires', 'Wants', 'Requisite', 'BindsTo',
+        'ConsistsOf', 'PropagatesStopTo', 'Conflicts', 'ConflictedBy', 'OnFailure', 'RequiredBy', 'BoundBy', 'Job'), '')
+    values.update(Id=unit, LoadState='loaded', ActiveState='active', UnitFileState='')
+    return values
+''' + body
+
+
 def service_hooks(manifest, destination, *, skip_api=False):
     shim = destination / "bin"
     shim.mkdir(exist_ok=True)
     systemctl = shim / "systemctl"
-    systemctl.write_text('''#!/usr/bin/python3
-import os, sys
+    systemctl.write_text(manager_script('''import os, sys
 args = sys.argv[1:]
 if args[0] != 'show':
     raise SystemExit('unexpected systemctl mutation in inactive-stand fixture')
-unit = args[1]
+assert args[-2] == '--'
+unit = args[-1]
 keys = next(a for a in args if a.startswith('--property=')).split('=', 1)[1].split(',')
 env = ' '.join(k + '=' + v for k, v in os.environ.items() if k.startswith('STAND_DEVICES_EVENTS_'))
-values = dict(Id=unit, LoadState='loaded', ActiveState='active', UnitFileState='enabled', MainPID='0', Environment=env)
+values = common(unit)
+values.update(UnitFileState='enabled', MainPID='0', Environment=env, EnvironmentFiles='')
 if unit == 'sa02m-stand-api.service':
     values.update(LoadState='not-found', ActiveState='inactive', UnitFileState='')
 for key in keys:
-    print(key + '=' + values.get(key, ''))
-''')
+    if key in values:
+        print(key + '=' + values[key])
+'''))
     systemctl.chmod(0o755)
     results = []
     for service in manifest["services"]["restart"]:
@@ -155,7 +167,7 @@ for key in keys:
     return results
 
 
-def installer_rootfs(folder, *, active_peer=False):
+def installer_rootfs(folder, *, active_peer=False, service_hook=False):
     source = candidate_payload(folder)
     scripts = source / "scripts"
     scripts.mkdir()
@@ -193,8 +205,7 @@ sa02m_atomic_install() { install "$@"; }
                                        env=old_environment, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
         (fixture / "pid").write_text(str(old_process.pid))
         env["JOURNAL_PEER_FIXTURE_DIR"] = str(fixture)
-        (shim / "systemctl").write_text('''#!/usr/bin/python3
-import os, signal, subprocess, sys
+        (shim / "systemctl").write_text(manager_script('''import json, os, signal, subprocess, sys
 from pathlib import Path
 root = Path(os.environ['JOURNAL_PEER_FIXTURE_DIR'])
 args = sys.argv[1:]
@@ -211,17 +222,46 @@ if args == ['--no-block', 'try-restart', 'sa02m-stand-api.service']:
     raise SystemExit(0)
 if args[0] != 'show':
     raise SystemExit('unexpected controlled manager command')
-unit = args[1]
+assert args[-2] == '--'
+unit = args[-1]
+with (root / 'shows').open('a') as stream:
+    stream.write(unit + '\\n')
 keys = next(a for a in args if a.startswith('--property=')).split('=', 1)[1].split(',')
 env = ' '.join(k + '=' + v for k, v in os.environ.items() if k.startswith('STAND_DEVICES_EVENTS_'))
-values = dict(Id=unit, LoadState='loaded', ActiveState='active', UnitFileState='enabled',
-              MainPID=(root / 'pid').read_text() if unit == 'sa02m-stand-api.service' else '0', Environment=env)
+values = common(unit)
+if unit in ('sa02m-stand-api.service', 'sa02m-devices-api.service', 'sa02m-devices-logger.service'):
+    values.update(UnitFileState='enabled', Environment=env, EnvironmentFiles='',
+                  MainPID=(root / 'pid').read_text() if unit == 'sa02m-stand-api.service' else '0')
+if unit == 'sa02m-stand-api.service':
+    values.update(After='network.target system.slice -.mount systemd-journald.socket', Conflicts='shutdown.target')
+    values['After'] += ' ' + json.dumps('system-fix' + chr(92) + 'x2deth.slice')
+if unit == 'shutdown.target':
+    values['Conflicts'] = 'sa02m-devices-logger.service'
+if unit == 'network.target':
+    values['After'] = 'apparmor.service'
+if unit == 'apparmor.service':
+    values.update(LoadState='not-found', ActiveState='inactive')
 for key in keys:
-    print(key + '=' + values.get(key, ''))
-''')
+    if key in values:
+        print(key + '=' + values[key])
+'''))
     try:
         result = subprocess.run(["bash", str(scripts / "11-devices.sh")], env=env, capture_output=True,
                                 text=True, timeout=55)
+        if service_hook and result.returncode == 0:
+            old_process.wait(timeout=5)
+            os.kill(int((fixture / "pid").read_text()), signal.SIGTERM)
+            old_process = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(120)"],
+                env=old_environment, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+            (fixture / "pid").write_text(str(old_process.pid))
+            unit = destination / "etc/systemd/system/sa02m-devices-logger.service"
+            hook = next(line.partition("=")[2] for line in unit.read_text().splitlines() if line.startswith("ExecStartPre="))
+            command = shlex.split(hook.removeprefix("-"))
+            command[2] = str(destination / command[2].lstrip("/"))
+            hook_result = subprocess.run(command, env={**env, **unit_environment(unit, destination)},
+                capture_output=True, text=True, timeout=55)
+            if hook_result.returncode:
+                raise AssertionError(hook_result.stdout + hook_result.stderr)
     finally:
         if old_process is not None:
             old_process.terminate()

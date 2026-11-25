@@ -74,6 +74,9 @@
     }
   ],
   "exact_rules": {
+    "etc/sa02m-vendor-install.py": {"dst": "/usr/local/lib/sa02m-vendor-install.py", "mode": "0755", "owner": "root:root"},
+    "etc/vendor-payloads.json": {"dst": "/usr/local/share/sa02m/vendor-payloads.json", "mode": "0644", "owner": "root:root"},
+    "etc/systemd/system/nodered.service": {"dst": "/usr/local/share/sa02m/nodered.service", "mode": "0644", "owner": "root:root"},
     "etc/nginx/network_config.conf": {
       "dst": "/etc/nginx/sites-available/network_config",
       "mode": "0644",
