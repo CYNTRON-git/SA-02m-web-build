@@ -40,7 +40,7 @@ else
 fi
 # CSRF must be required, and the require must sit before the helper launch.
 csrf_line=$(stripped_first_line "$CGI" 'web_csrf_require')
-launch_line=$(stripped_first_line "$CGI" 'nohup sudo -n "\$HELPER"')
+launch_line=$(stripped_first_line "$CGI" 'sudo -n "\$HELPER" --submit')
 if [ -n "$csrf_line" ] && [ -n "$launch_line" ] && [ "$csrf_line" -lt "$launch_line" ]; then
     pass "CGI requires CSRF before launching the deploy helper"
 else
@@ -100,22 +100,22 @@ fi
 # ── 5. Reversible-deploy floors in the helper ──────────────────────────────
 # Backup before delete: the tar backup site must precede the rm of the cfg dir.
 backup_line=$(stripped_first_line "$HELPER" 'tar czf "\$BACKUP_FILE"')
-delete_line=$(stripped_first_line "$HELPER" '^rm -rf "\$MPLC_CFG_DIR"')
+delete_line=$(stripped_first_line "$HELPER" '^if ! rm -rf "\$MPLC_CFG_DIR"')
 if [ -n "$backup_line" ] && [ -n "$delete_line" ] && [ "$backup_line" -lt "$delete_line" ]; then
     pass "helper backs up before deleting the live project"
 else
     fail "helper must back up (tar czf) before the rm -rf of MPLC_CFG_DIR (fail-closed delete)"
 fi
-if stripped_matches "$HELPER" '^restore\(\) \{' && stripped_matches "$HELPER" 'restore$'; then
+if stripped_matches "$HELPER" '^restore\(\) \{' && stripped_matches "$HELPER" 'if restore; then'; then
     pass "helper defines and calls restore() on the failure path"
 else
     fail "helper must restore() on any replace/start/verify failure"
 fi
-# Load-verify is the success signal — success only on 'load successful'.
-if stripped_has "$HELPER" '"load successful"' && stripped_has "$HELPER" 'write_status done success'; then
-    pass "helper reports success only on the RT 'load successful' signal"
+# The running-project identity and legacy load signal both remain supported.
+if stripped_has "$HELPER" '/Methods/GetState' && stripped_has "$HELPER" '"load successful"' && stripped_has "$HELPER" 'write_status done success'; then
+    pass "helper checks running project identity and supports the legacy log"
 else
-    fail "helper must gate success on 'load successful' (no false green on a bare start)"
+    fail "helper must gate success on a runtime confirmation"
 fi
 # LoadConfig error must be treated as a failure, not ignored.
 if stripped_has "$HELPER" 'LoadConfig() error' && stripped_has "$HELPER" 'E_VERIFY'; then

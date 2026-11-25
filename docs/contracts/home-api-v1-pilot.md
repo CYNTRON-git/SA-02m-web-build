@@ -5,6 +5,13 @@
 проверенного commit. Исходная рабочая копия и установленные конфигурации
 сохраняются. Общий `deployed_commit` и версия веб-интерфейса не подменяются.
 
+Самая старая проверенная база — **1.0.7.36**, commit
+`5e367530de3ab283e1060c32017091bdf75b25e3`. Проверка
+`scripts/dev/test-home-api-pilot-package.py` собирает настоящий архив поверх
+этой базы и исполняет регистрацию cloud-событий из установленного дерева.
+Для другой базы нужна отдельная проверка исходников и собранного архива:
+успешная проверка git ancestry сама по себе совместимость не подтверждает.
+
 ## До изменения платы
 
 1. Зафиксировать source commit, base commit, SHA256 manifest, зелёный strict
@@ -38,7 +45,9 @@
 ## Backup и доставка
 
 Создать уникальный root0700 каталог backup на плате. Для **каждого** пути из
-manifest записать existed/uid/gid/mode/SHA и сохранить старые bytes; сохранить
+manifest записать existed/uid/gid/mode/SHA и сохранить старые bytes,
+в том числе зависимости клиента, включая `sa02m_alice/common/constants.py`.
+Список runtime из manifest определяет полный состав backup и отката. Сохранить
 реальный nginx site и symlink target, unit files/drop-ins и enabled/active
 состояния `sa02m-home-api`, `sa02m-rules`, `sa02m-cloud-control`, nginx.
 Снять backup `/etc/sa02m-alice/sa02m-alice-devices.conf`, всего

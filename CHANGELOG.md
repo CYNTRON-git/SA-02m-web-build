@@ -5,6 +5,23 @@
 
 ---
 
+## 1.0.8.2 - Journal, device controls and image preparation (November 2026)
+
+- Keep cleared journal events excluded when previously disconnected storage returns, and coordinate clear operations across archive readers and writers. Validate stored generations through a partial index so normal journal reads do not scan the full archive.
+- Preserve DTV automatic and all-measurement selection in the MQTT panel, including the complete supported measurement catalogue.
+- Keep optional-service policy consistent across online and full updates; preserve navigation access during scrolling and viewport changes.
+- Report Home API backend failures without exposing private exception details, and include the complete runtime dependency set in the Home API pilot.
+- Bound boot carrier waits by monotonic time and leave configured MAC assignment to ifupdown before the interface is raised.
+- Sanitize donor network overrides only during explicit image preparation and reject active vendor paths that could restore a shared MAC.
+- Require image checksums, reject mounted receiver targets, and propagate decompression and write failures when flashing an image.
+- Update the locked Node-RED payload and route installation through one pinned archive verifier with compatibility, health and rollback checks. Critical/High findings in the exact artifact block release; lower findings remain reported.
+- Parse native systemd unit properties and quoted relations correctly during journal preparation; preserve private CI fixture isolation. This transition requires a full refresh before golden-image preparation. Logger-only first OTA can still refuse its graph budget and is explicitly deferred.
+- Preserve the remaining Linux, dependency-isolation, throttle and flashing audit findings in the release audit handoff; this release does not claim completion of the whole-project audit.
+## 1.0.8.1 - MasterPLC project upload and recovery (November 2026)
+
+- Accept controller ZIP uploads through the panel and report the running project identity and version from MasterPLC.
+- Restore the previous configuration if verification fails. The panel reports a separate error when the restored runtime cannot confirm the previous project.
+
 ## 1.0.8.0 - Release version alignment (November 2026)
 
 - Advance release metadata and served asset cache keys to 1.0.8.0. MQTT bridge command status and dashboard CPU sampling behavior remain unchanged from 1.0.7.40.

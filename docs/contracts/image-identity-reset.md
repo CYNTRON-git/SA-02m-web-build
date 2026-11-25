@@ -24,6 +24,8 @@
 **Проверка контракта:** `scripts/dev/test-alice-image-identity.sh`
 (quality row `alice-image-identity`, beat `build`); половину HomeKit (§7)
 проверяет его часть H, половину Home Connect (§8) — часть C.
+Сетевую часть §9 проверяет `scripts/dev/test-image-network-identity.py`.
+
 
 ---
 
@@ -332,3 +334,79 @@ retained-топики приборов с брокера, а не оставля
 конфиги откатываются, не стёрто ничего, работавшие до сброса юниты
 запускаются снова; проверяет `scripts/dev/test-factory-reset-runner.py`
 (C1–C7, O1–O4), строка реестра `factory-reset-runner`. Площадки — часть C строки `alice-image-identity`.
+
+---
+
+## 9. Сетевая идентичность золотого образа
+
+| Операция | MAC и KLogic |
+|---|---|
+| Обычный refresh, ремонт сети, сохранение из панели | Сохраняют операторский `hwaddress` и сторонние строки. ifupdown назначает MAC до первоначального подъёма (§4 `boot-network-dns.md`). |
+| Явная подготовка донора и обязательный offline patch образа | Убирают активный донорский `hwaddress` и известные KLogic ifup hooks; неизвестный писатель или включённый путь регенерации останавливает приёмку. |
+
+Один инструмент — `tools/imaging/sanitize-network-identity.py --root PATH`.
+Без флага он только проверяет; `--apply` явно разрешает очистку, `--check`
+обозначает повторную проверку. На доноре его запускают после off-device бэкапа
+и остановки писателей, до потока/zero-fill. `patch-firstboot-image.sh` безусловно
+и фатально вызывает `--apply`, затем `--check` на смонтированном образе.
+Обхода этой стадии в production patch нет; прежние boot/identity проверки
+сохраняются. Сам helper не выполняет сетевые команды или код образа.
+
+**Clear:** активные bare/ether `hwaddress` только в физических стансах
+`eth0`, `eth1`, `end0`, `end1` файлов `/etc/network/interfaces`, обычных
+`/etc/network/interfaces.d/*.conf` и распознанных зеркал
+`/home/klogic/eth0.conf`, `eth1.conf`. Удаляются только известные
+`up`/`post-up /home/klogic/adjust-<iface>` с допустимым `|| true`/`|| /bin/true`.
+**Keep:** IP, маска, gateway, DNS, metric, MTU, комментарии, независимые route
+hooks, установленные программы KLogic и аппаратный источник MAC платы.
+Инертные бэкапы, не входящие в канонический source-глоб, не переписываются.
+
+**Guard:** нестандартные includes/стансы, продолжения строк, ссылки или hardlink
+сетевого входа, неожиданный тип/размер файла, неизвестный MAC setter и остаточные
+MAC-matched `.link`/пользовательские MAC-политики требуют ручного разбора.
+Сетевой файл ограничен 32 KiB/200 строками, набор — 32 `.conf`; сканирование
+boot-конфигурации ограничено 4096 чтениями/16 MiB. Ошибка называется путём и
+причиной, содержимое конфигов не печатается. Все новые файлы сначала готовятся
+рядом с исходными с теми же owner/mode, затем каждый атомарно заменяется;
+транзакция сразу нескольких файлов не обещается. При отказе success receipt
+не выдаётся, повторный проход безопасен.
+
+Проверяются systemd enable/dependency ссылки, path/timer/socket триггеры,
+drop-ins, активные init/rc.local, udev/cron и ifup hooks. Абсолютные ссылки
+systemd разрешаются относительно корня образа, а не хоста. Отключённый
+`klogic.service` недостаточен: `sa02m-klogic-net-sync.path` может запускать
+`adjust-eth0 --klogic` при изменении `set-ip0`/`set-route`. Этот путь должен быть
+неактивен. Санитайзер не отключает службы и не исправляет vendor executables.
+
+Разбор systemd ограничен и консервативен: учитываются `default.target`,
+`Wants`/`Requires`/`BindsTo`/`Upholds`/`OnFailure`/`OnSuccess`, `Unit` для
+path/timer, `Service` и `Accept=yes` для socket, service `Sockets`, шаблон
+инстанса и drop-in самого юнита, его alias, типа и префикса с дефисом.
+Продолжения физических строк соединяются до разбора ключей, комментарии между
+ними пропускаются; продолжение не пересекает границу файлов. Неоднозначные
+activation values, неразрешённый specifier и неподдержанная строка дают отказ.
+Присваивания override учитываются консервативно, включая подозрительный более
+ранний писатель: guard может потребовать ручной проверки вместо моделирования
+всех reset/precedence правил systemd. Это не исполнение или универсальная
+симуляция менеджера служб. Основание формата и связей —
+[systemd.syntax](https://www.freedesktop.org/software/systemd/man/latest/systemd.syntax.html),
+[systemd.unit](https://www.freedesktop.org/software/systemd/man/latest/systemd.unit.html)
+и [systemd.socket](https://www.freedesktop.org/software/systemd/man/latest/systemd.socket.html).
+
+Статический guard не доказывает произвольную логику vendor binaries и updater
+архивов. Отдельная обязательная запись подготовки: проверены фактические
+генераторы, зеркала, set-ip/set-route, `pre-start`, `klogic.upd`/`klogic.tar` и
+все их загрузочные входы; пути/SHA сохраняются в закрытых доказательствах.
+Донорские данные сбрасываются поддерживаемым заводским способом, либо
+подтверждено отсутствие донорских источников и активных писателей. Неизвестный
+источник блокирует приёмку сетевой идентичности, даже при успешном guard.
+
+`sa02m-net-autolink` снят с эксплуатации и не создаёт уникальных MAC.
+Каноническое имя eth0/eth1 также не доказывает уникальность. Источник драйвера/
+bootloader сохраняется; фактический MAC/permanent address проверяют на первом
+клоне. Проверки временных rootfs не считаются испытанием другой платы.
+
+Поведенческий тест исполняет настоящий helper: проверка без записи,
+идемпотентная очистка обоих конфигов, metadata/preservation, отказ на symlink,
+hardlink, нестандартной сети, enabled path при disabled daemon и ошибке staging.
+Он исполняет обязательную offline-функцию и проверяет omission/fatality mutations.

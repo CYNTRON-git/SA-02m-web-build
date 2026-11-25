@@ -20,12 +20,8 @@
 
 STATEDIR=/var/lib/sa02m-mplc
 INCOMING="$STATEDIR/incoming"
-STAGED_ZIP="$INCOMING/project.zip"
-UPLOAD_BODY="$INCOMING/upload.bin"
 STATUS_FILE="$STATEDIR/status.json"
-CGI_LOCK="$INCOMING/.deploy.lock"
 HELPER=/usr/local/sbin/sa02m-mplc-project-deploy.sh
-SVC_CTL=/usr/local/sbin/sa02m-web-service-ctl.sh
 MPLC_LIB=/opt/sa02m-mplc
 CFG_DIR=/opt/mplc4/server/cfg
 MAX_BODY=5242880   # 5 MiB — the real export is ~14 KB
@@ -239,7 +235,8 @@ if [ ! -f "$HELPER" ]; then
 fi
 
 # Body-size cap on CONTENT_LENGTH before reading a byte (anti-DoS).
-CL=$(printf '%s' "${CONTENT_LENGTH:-}" | tr -cd '0-9')
+CL=${CONTENT_LENGTH:-}
+case "$CL" in *[!0-9]*) CL= ;; esac
 if [ -z "$CL" ] || [ "$CL" -lt 1 ] 2>/dev/null; then
   printf '{"ok":false,"error_code":"E_UPLOAD","error_message":"empty body"}\n'
   exit 0
@@ -250,13 +247,17 @@ if [ "$CL" -gt "$MAX_BODY" ] 2>/dev/null; then
 fi
 
 mkdir -p "$INCOMING" 2>/dev/null || true
-rm -f "$STAGED_ZIP" "$UPLOAD_BODY" 2>/dev/null || true
+STAGED_ZIP=$(mktemp "$INCOMING/upload.XXXXXXXX") || {
+  printf '%s\n' '{"ok":false,"error_code":"E_UPLOAD","error_message":"cannot stage upload"}'
+  exit 0
+}
+trap 'rm -f "$STAGED_ZIP"' EXIT
 
 # Receive the multipart body (bounded), extract the file field, and VALIDATE the
 # zip in Python — all read-only, no device mutation yet. Fails closed.
 VALIDATE_JSON=$(
   CONTENT_TYPE="${CONTENT_TYPE:-}" MAX_BODY="$MAX_BODY" STAGED_ZIP="$STAGED_ZIP" \
-  MPLC_LIB="$MPLC_LIB" python3 - <<'PY'
+  MPLC_LIB="$MPLC_LIB" python3 /dev/fd/3 3<<'PY'
 import json, os, sys
 sys.path.insert(0, os.environ["MPLC_LIB"])
 try:
@@ -271,7 +272,9 @@ max_body = int(os.environ.get("MAX_BODY") or "5242880")
 ctype = os.environ.get("CONTENT_TYPE", "")
 staged = os.environ["STAGED_ZIP"]
 try:
-    body = sys.stdin.buffer.read(max_body + 1)
+    body = sys.stdin.buffer.read(int(os.environ["CONTENT_LENGTH"]))
+    if len(body) != int(os.environ["CONTENT_LENGTH"]):
+        raise ProjectZipError("E_UPLOAD", "incomplete request body")
     if len(body) > max_body:
         raise ProjectZipError("E_SIZE", "body exceeds cap")
     raw = parse_multipart_file(body, ctype, field="file")
@@ -299,37 +302,11 @@ VALID_OK=$(printf '%s' "$VALIDATE_JSON" | python3 -c 'import json,sys;
 try: print("1" if json.load(sys.stdin).get("ok") else "0")
 except Exception: print("0")' 2>/dev/null || echo 0)
 if [ "$VALID_OK" != "1" ]; then
-  rm -f "$UPLOAD_BODY" 2>/dev/null || true
   printf '%s\n' "${VALIDATE_JSON:-'{"ok":false,"error_code":"E_UPLOAD","error_message":"upload failed"}'}"
   exit 0
 fi
 
-# Refuse if the RS-485 flasher holds the COM lease (mirror the mplc4-start gate).
-if [ -x "$SVC_CTL" ]; then
-  BUSY=$(timeout -k 2 18 sudo -n "$SVC_CTL" list 2>/dev/null | python3 -c 'import json,sys;
-try: print("1" if json.load(sys.stdin).get("flasher_busy") else "0")
-except Exception: print("0")' 2>/dev/null || echo 0)
-  if [ "$BUSY" = "1" ]; then
-    rm -f "$STAGED_ZIP" 2>/dev/null || true
-    printf '{"ok":false,"error":"flasher_busy","error_code":"E_BUSY","error_message":"идёт прошивка или сканирование RS-485"}\n'
-    exit 0
-  fi
+# The helper serializes the job and publishes its pending status before replying.
+if ! timeout --foreground 30 sudo -n "$HELPER" --submit <"$STAGED_ZIP"; then
+  printf '%s\n' '{"ok":false,"error_code":"E_CMD","error_message":"could not submit deployment"}'
 fi
-
-# Single-flight fast-fail: TEST (do not hold) the deploy lock. The privileged
-# helper is the TRUE single-flight guard — it flocks the same file for its whole
-# run and a second launch exits. This test only turns a concurrent POST into a
-# clean "busy" instead of a doomed second helper.
-if command -v flock >/dev/null 2>&1; then
-  : >>"$CGI_LOCK" 2>/dev/null || true
-  if ! ( flock -n 9 ) 9<"$CGI_LOCK" 2>/dev/null; then
-    printf '{"ok":false,"error":"busy","error_code":"E_LOCK","error_message":"развёртывание уже выполняется"}\n'
-    exit 0
-  fi
-fi
-
-# Answer `pending` immediately (deploy can exceed the nginx read timeout), then
-# hand to the root helper. The helper owns STATUS_FILE from here on.
-printf '{"ok":true,"pending":true,"stage":"validate"}\n'
-nohup sudo -n "$HELPER" "$STAGED_ZIP" >>/var/log/sa02m_install.log 2>&1 &
-exit 0

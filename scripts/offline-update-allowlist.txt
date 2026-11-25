@@ -57,6 +57,10 @@ etc/sa02m-update-runner.sh
 etc/sa02m-update-inspect.sh
 etc/sa02m-update-control.sh
 etc/sa02m-stacks-policy.sh
+# Complete pinned Node-RED installer boundary; requires updater >=1.0.8.2.
+etc/sa02m-vendor-install.py
+etc/vendor-payloads.json
+etc/systemd/system/nodered.service
 etc/sa02m-update/
 etc/tmpfiles.d/sa02m.conf
 etc/tmpfiles.d/sa02m-update.conf

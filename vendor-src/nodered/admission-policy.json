@@ -1,0 +1,38 @@
+{
+  "schema": 1,
+  "id": "nodered-release-npm-1",
+  "scope": "node-red-release-payload",
+  "block": [
+    "HIGH",
+    "CRITICAL"
+  ],
+  "ttl_seconds": 86400,
+  "lower_findings_owner": "SA-02m release maintainer",
+  "exceptions": [],
+  "coverage": {
+    "manifest": "vendor-src/nodered/package.json",
+    "lock": "vendor-src/nodered/package-lock.json",
+    "release_manifest": "etc/vendor-payloads.json",
+    "inventory": "runtime-packages.json",
+    "runtime_copies": 416,
+    "lock_copies": 437
+  },
+  "unscanned": [
+    "Python runtime dependencies",
+    "HomeKit dependencies",
+    "development dependencies",
+    "OS/dpkg/kernel",
+    "Node.js native runtime CVEs"
+  ],
+  "tools": {
+    "node": {
+      "version": "22.23.5",
+      "size": 124909296,
+      "sha256": "2f822d544601dfff107f57d945b649d15c5bf6302595735a6bd9cdc7ee9669bd",
+      "source_archive_sha256": "cdeb8670a0c81f51b4dc4ac61919f9b1ad917b304bf8221eb939570663d240f8",
+      "source_url": "https://nodejs.org/dist/v22.23.5/node-v22.23.5-linux-x64.tar.xz"
+    }
+  },
+  "provider": "npm",
+  "semver_version": "7.8.5"
+}

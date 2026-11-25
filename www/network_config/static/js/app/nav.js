@@ -95,9 +95,27 @@ function initTopbarAutoHide() {
     return window.matchMedia
       && window.matchMedia('(orientation: landscape) and (max-height: 720px)').matches;
   };
+  var clock = function () { return window.performance.now(); };
+  var inputState = function (event) {
+    if (event.defaultPrevented) return null;
+    var target = event.target;
+    while (target && target !== main && target !== root && target !== document.body) {
+      if (target.isContentEditable || /^(INPUT|TEXTAREA|SELECT|BUTTON|A)$/.test(target.tagName || '')) return null;
+      if (target.scrollHeight > target.clientHeight && window.getComputedStyle
+          && /^(auto|scroll)$/.test(window.getComputedStyle(target).overflowY)) return null;
+      target = target.parentElement;
+    }
+    return target === main ? mainState : target === root || target === document.body ? windowState : null;
+  };
+  var noteInput = function (state, direction) {
+    if (state) state.input = { direction: direction, at: clock() };
+  };
+  var clearInput = function () { mainState.input = null; windowState.input = null; };
   var onScroll = function (y, height, extent, state) {
     var lastY = state.y;
     var geometryChanged = height !== state.height || extent !== state.extent;
+    var input = state.input;
+    state.input = null;
     state.y = y;
     state.height = height;
     state.extent = extent;
@@ -108,7 +126,12 @@ function initTopbarAutoHide() {
     // Hiding/showing the header resizes the scrollport and can clamp scrollTop
     // near the bottom. Rebase that layout sample, not a new user direction.
     // Each scrollport keeps its own baseline; later real gestures still apply.
-    if (geometryChanged) return;
+    // A fresh, matching gesture can reverse direction during the transition.
+    // Consume its witness on this sample, including zero/clamped movement;
+    // input without a scroll must not authorize a later layout event.
+    var directedInput = input && clock() - input.at <= 150
+      && (y - lastY) * input.direction > 4;
+    if (geometryChanged && !directedInput) return;
     if (y > lastY + 4 && y > 48) {
       app.classList.add('topbar-hidden');
     } else if (y < lastY - 4) {
@@ -120,6 +143,47 @@ function initTopbarAutoHide() {
   }, { passive: true });
   window.addEventListener('scroll', function () {
     onScroll(window.scrollY || root.scrollTop || 0, root.clientHeight, root.scrollHeight, windowState);
+  }, { passive: true });
+  window.addEventListener('wheel', function (event) {
+    clearInput();
+    if (event.ctrlKey || event.metaKey || event.altKey) return;
+    var state = inputState(event);
+    var scale = event.deltaMode === 1 ? 16 : event.deltaMode === 2 && state ? state.height : 1;
+    if (Math.abs(event.deltaY * scale) > 4) noteInput(state, event.deltaY > 0 ? 1 : -1);
+  }, { passive: true });
+  window.addEventListener('keydown', function (event) {
+    clearInput();
+    if (event.ctrlKey || event.metaKey || event.altKey) return;
+    var direction = /^(ArrowUp|PageUp|Home)$/.test(event.key) ? -1
+      : /^(ArrowDown|PageDown|End)$/.test(event.key) ? 1
+      : event.key === ' ' ? (event.shiftKey ? -1 : 1) : 0;
+    if (direction) noteInput(inputState(event), direction);
+  });
+  var touch = null;
+  window.addEventListener('touchstart', function (event) {
+    clearInput();
+    touch = event.touches.length === 1
+      ? { state: inputState(event), y: event.touches[0].clientY } : null;
+  }, { passive: true });
+  window.addEventListener('touchmove', function (event) {
+    clearInput();
+    if (!touch || event.touches.length !== 1 || event.defaultPrevented) { touch = null; return; }
+    var y = event.touches[0].clientY;
+    var delta = touch.y - y;
+    if (Math.abs(delta) > 4) {
+      noteInput(touch.state, delta > 0 ? 1 : -1);
+      touch.y = y;
+    }
+  }, { passive: true });
+  var endTouch = function () { if (touch && touch.state) touch.state.input = null; touch = null; };
+  window.addEventListener('touchend', endTouch, { passive: true });
+  window.addEventListener('touchcancel', endTouch, { passive: true });
+  window.addEventListener('resize', function () {
+    mainState.y = main.scrollTop; mainState.height = main.clientHeight; mainState.extent = main.scrollHeight;
+    windowState.y = window.scrollY || root.scrollTop || 0;
+    windowState.height = root.clientHeight; windowState.extent = root.scrollHeight;
+    clearInput(); endTouch();
+    if (!shortLandscape()) app.classList.remove('topbar-hidden');
   }, { passive: true });
 }
 

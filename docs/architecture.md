@@ -17,6 +17,9 @@
 | Стек (nginx + fcgiwrap + Bash CGI, vanilla JS без сборки), вкладки и подсистемы, дисциплина версий | `docs/agent-rules/sa02m-domain.md` |
 | Фоновый RAM-сборщик dashboard, авторизованный готовый пакет, граница CGI/браузера и legacy fallback | [Опрос статусов](contracts/status-polling.md) |
 | Исключительное владение UART, приостановка/восстановление служб, привилегированный координатор и его локальный протокол | [docs/contracts/port-ownership.md](contracts/port-ownership.md) |
+| Журнал событий: `event_journal_state` — независимый модуль authority; `event_journal_startup` — оркестрация подготовки служб и восстановления | [Семантика журнала](contracts/carel-ahu.md), [подготовка и восстановление](deployment.md) |
+| Установка Node-RED: единый `sa02m-vendor-install.py`, закреплённый manifest и неизменяемый шаблон unit; panel и fullrefresh делегируют проверку и замену одному helper | [Payload и установка Node-RED](contracts/nodered-payload.md), [допуск зависимостей к выпуску](contracts/dependency-release-policy.md) |
+| Метаданные ДТВ: `bridge_dtv_catalog.py` — общий каталог для `bridge_dtv_ce` и `mqtt_config.cgi` | [Каталог и MQTT-темы ДТВ](MQTT_TOPICS.md) |
 | Слои и границы: устройство → CGI → fetch → DOM; полы качества для CGI/JS/CSS | `docs/agent-rules/web-code-rigor.md` |
 | Контракты внешних поверхностей (MQTT-топики, CGI-эндпоинты, облако, Алиса, сценарии, образ, ядро) | `docs/contracts/` (сценарии: `cloud-scenarios.md`; межпроектный Python-API `sa02m_devices` для стенда HardPy: `sa02m-devices-python-api.md`) |
 | Целевое состояние служб стендовых плат (эталон 192.168.1.136, 1.0.6.37) — runbook стенда, не контракт | `docs/bench-board-target-state.md` |

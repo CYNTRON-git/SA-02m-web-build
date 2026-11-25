@@ -114,6 +114,41 @@ check_mqtt_web_deps() (
 if check_mqtt_web_deps; then ok 'web dependencies land before the CGI switch on an installed bridge and skip a fresh host'
 else bad 'web dependencies absent, out of order, or created a partial bridge'; fi
 
+# Execute each shipped bridge-install loop against an isolated staging directory.
+# Both copies must contain the catalogue before the poller importer lands.
+if python3 - <<'PY'
+from pathlib import Path
+import re
+import subprocess
+import tempfile
+
+root = Path.cwd()
+for name in ("scripts/05-mqtt.sh", "scripts/update-www-only.sh"):
+    source = (root / name).read_text()
+    loop = re.search(r"(?m)^\s*for f in bridge_meta\.py.*?^\s*done", source, re.S)
+    assert loop, name
+    with tempfile.TemporaryDirectory() as tmp:
+        stage = Path(tmp)
+        script = '''install() {
+            local dest=${!#} src=${@: -2:1}
+            if [ "${dest##*/}" = bridge_dtv_ce.py ]; then
+                test -s "$BRIDGE_DIR/bridge_dtv_catalog.py" || return 1
+            fi
+            cp -- "$src" "$dest" || return 1
+            printf '%s\\n' "${dest##*/}" >> "$BRIDGE_DIR/order"
+        }
+        ''' + loop.group(0)
+        import os
+        env = dict(os.environ, OPT_DIR=str(root / "opt/sa02m-modbus-mqtt"),
+                   MQTT_OPT=str(root / "opt/sa02m-modbus-mqtt"), BRIDGE_DIR=tmp)
+        subprocess.run(["bash", "-eu", "-c", script], env=env, check=True)
+        order = (stage / "order").read_text().splitlines()
+        assert order.index("bridge_dtv_catalog.py") < order.index("bridge_dtv_ce.py"), name
+        assert (stage / "bridge_dtv_catalog.py").read_bytes() == (root / "opt/sa02m-modbus-mqtt/bridge_dtv_catalog.py").read_bytes()
+PY
+then ok 'DTV catalogue staged before its poller in both bridge installation paths'
+else bad 'DTV catalogue missing or installed after its consumer'; fi
+
 echo "── 2. 04-flasher.sh: shared packages land before the daemon tree ──"
 order_pin scripts/04-flasher.sh "2a LED pkg → rsync"   '^[[:space:]]*sa02m_install_led_pkg '   '^[[:space:]]*rsync '
 order_pin scripts/04-flasher.sh "2b Carel pkg → rsync" '^[[:space:]]*sa02m_install_carel_pkg ' '^[[:space:]]*rsync '

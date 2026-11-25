@@ -55,6 +55,13 @@ SBIN_SRC="$REPO_ROOT/usr/local/sbin"
 # tools/debian-rootfs/pack-sa02m-image.sh cannot drift apart.
 UBOOT_PY="$SCRIPT_DIR/uboot-script.py"
 
+sanitize_network_identity() {
+    python3 "$SCRIPT_DIR/sanitize-network-identity.py" --root "$1" --apply \
+        || die "network identity sanitation failed"
+    python3 "$SCRIPT_DIR/sanitize-network-identity.py" --root "$1" --check \
+        || die "network identity guard failed"
+}
+
 build_bootscr() {
     local out=$1
     local cmd_src default_src norm
@@ -519,6 +526,7 @@ log "wipe Home Connect sign-in in image"
 wipe_homeconnect_identity "$mnt"
 wipe_agent_api_identity "$mnt"
 assert_homeconnect_identity_clean "$mnt"
+sanitize_network_identity "$mnt"
 log "image identity: clean"
 
 sync

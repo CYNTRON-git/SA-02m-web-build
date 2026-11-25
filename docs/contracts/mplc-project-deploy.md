@@ -140,12 +140,14 @@ cfg/config.bin      cfg/ProjInfo.json      cfg/VMInfo.json      cfg/_files.xml
 Извлечение zip выполняется в Python (`zipfile`), не в shell; ни одно значение
 запроса не попадает в shell-слово; `mplc4` — литерал, не из запроса.
 
+После проверки запроса CGI передаёт байты ZIP через stdin команде `sa02m-mplc-project-deploy.sh --submit`. Помощник берёт блокировку, повторно проверяет собственную копию архива, публикует начальный статус и возвращает `pending`. Параллельная загрузка получает `E_LOCK`. Владельцу веб-процесса достаточно прав на собственный временный файл.
+
 ## Развёртывание (state machine помощника, каждый шаг под таймаутом)
 
 `validate → stopping → backup → replace → starting → verify`. Инварианты:
 
 - **Единственный in-flight** — помощник держит `flock` на
-  `/var/lib/sa02m-mplc/incoming/.deploy.lock` весь прогон; второй запуск выходит.
+  `/var/lib/sa02m-mplc/.deploy.lock` весь прогон; второй запуск выходит.
   CGI отклоняет POST при занятом lock (`E_LOCK`) и при занятом флэшере (`E_BUSY`).
 - **Порт-лиз RS-485** — отказ, если флэшер держит лиз COM (шина RS-485 общая);
   запуск `mplc4` идёт **только** через существующий
@@ -154,14 +156,19 @@ cfg/config.bin      cfg/ProjInfo.json      cfg/VMInfo.json      cfg/_files.xml
 - **Fail-closed удаление** — существующий проект удаляется **только** после
   успешной резервной копии (`cfg-<ts>.tgz`), либо когда его нет (первое
   развёртывание).
-- **Откат при любой ошибке** replace/start/verify — восстановление из копии и
-  перезапуск `mplc4`; первое развёртывание без копии → удаление недописанного
-  `cfg/` и перезапуск.
-- **verify-load — сигнал успеха.** SUCCESS только при `Configuration was load
-  successful` в мониторном логе RT (`/var/log/mplc4/monitor/mplc_monitor.log`),
-  читается **только новый** хвост лога (offset снят до старта). Голый старт с
-  `LoadConfig() error` / `Loading default configuration` — это FAILURE, а не
-  ложный green.
+- При ошибке замены, запуска или проверки помощник останавливает `mplc4`,
+  восстанавливает исходный каталог и снова запускает службу. Если каталога до
+  загрузки не было, помощник удаляет временную конфигурацию. Если до остановки
+  RT сообщил идентификатор и версию, помощник сверяет их после отката, включая
+  исходное состояние без загруженного проекта. Ошибка восстановления возвращает
+  `E_RESTORE`.
+- Помощник запрашивает у работающего MasterPLC `POST /Methods/GetState` на
+  `127.0.0.1:8082`. Успех требует совпадения `projectId` с экспортом и
+  совпадения версий, если обе стороны их передают. Для старых RT без идентификатора
+  после окончания окна опроса учитывается запись `load successful` в новом фрагменте мониторного лога.
+  Если RT уже сообщил другой идентификатор или версию, такая запись не подтверждает
+  загрузку. Ошибки `LoadConfig() error` и `Loading default configuration` в новом
+  фрагменте при отсутствии подтверждения от API запускают откат.
 - **Retention** — хранится не более 5 копий `cfg-*.tgz`, старые удаляются.
 - **Привилегии** — CGI работает как `www-data`; вся root-работа — один
   закреплённый `sudo -n /usr/local/sbin/sa02m-mplc-project-deploy.sh *` (не ad-hoc
@@ -183,9 +190,9 @@ cfg/config.bin      cfg/ProjInfo.json      cfg/VMInfo.json      cfg/_files.xml
 ```
 
 Коды стадий/ошибок (English enum): stage `validate|stopping|backup|replace|
-starting|verify|done`; error_code `E_UPLOAD|E_SIZE|E_ZIP|E_TRAVERSAL|E_MEMBERS|
+starting|verify|restore|done`; error_code `E_UPLOAD|E_SIZE|E_ZIP|E_TRAVERSAL|E_MEMBERS|
 E_PROJINFO|E_HASH|E_BUSY|E_LOCK|E_STOP|E_BACKUP|E_EXTRACT|E_START|E_VERIFY|E_CMD|
-E_CSRF|E_INTERNAL`. UI мапит error_code → русское сообщение.
+E_CSRF|E_INTERNAL|E_RESTORE`. Подробность ошибки доступна в `error_message`.
 
 ## Валидирующие проверки (рецепты)
 

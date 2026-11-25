@@ -173,7 +173,7 @@ sh /mnt/autorun.sh
 | [`capture-image-win.py`](capture-image-win.py) | хост Windows + WSL2 | снятие по SSH из Windows (paramiko), когда WSL не видит донора; финализация в WSL как у `make-image.sh`: проверка sha256 сырого снимка → PiShrink → [`patch-firstboot-image.sh`](patch-firstboot-image.sh) (безусловно, ошибка фатальна) → xz → manifest. Тесты — строка `py-unit-imaging` |
 | [`prepare-flash-media.sh`](prepare-flash-media.sh) | хост | упаковка USB для flash-receiver |
 | [`prepare-imageusb.sh`](prepare-imageusb.sh) | хост | распаковка .img.xz → .img для ImageUSB (Windows) |
-| [`flash-receiver.sh`](flash-receiver.sh) | приёмник | sha256 → `xz -dc \| dd /dev/mmcblk2` → reboot |
+| [`flash-receiver.sh`](flash-receiver.sh) | приёмник | проверка занятости диска и обязательной SHA → проверяемая запись через FIFO → reboot |
 | [`autorun-fel.sh`](autorun-fel.sh) / [`autorun.sh`](autorun.sh) | USB + buildroot | `sdcard.img` → `dd` eMMC + watchdog mask до reboot |
 | [`autorun-repair-rootfs.sh`](autorun-repair-rootfs.sh) | приёмник FEL (ручной запуск) | ремонт окирпиченного клона на месте: `e2fsck -fy` ×2 + улики, образ не пишет; процедура — `docs/deployment.md` «Первая загрузка клона» |
 | [`stand/start-stand.ps1`](stand/start-stand.ps1) | хост Windows | запуск стенда (usbipd + WSL provisioner/FEL/QA) |
@@ -244,6 +244,10 @@ bash tools/imaging/cleanup-donor.sh --apply --report
 ---
 
 ## Документация
+
+Для `flash-receiver.sh` нужна внешняя Linux-среда с POSIX `sh`, BusyBox/GNU
+утилитами, `xz` и доступными proc/sysfs. Точный состав, границы защиты и
+условия отказа: [контракт приёмника](../../docs/contracts/image-receiver-safety.md).
 
 | Документ | Содержание |
 |---|---|

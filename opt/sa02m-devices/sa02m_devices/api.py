@@ -61,6 +61,7 @@ except ImportError:  # pragma: no cover
     grp = None  # type: ignore[assignment]
 
 from sa02m_devices import __version__, device_events, device_history_db, devices_widgets
+from sa02m_devices import event_journal_state as journal
 from sa02m_devices.history_metrics import parse_kwh_rub
 from sa02m_devices.stand_devices import DEFAULT_CACHE_DIR, live_snapshot
 from sa02m_devices.websession import (
@@ -70,6 +71,8 @@ from sa02m_devices.websession import (
     check_session_store,
     csrf_error_body,
 )
+
+EVENTS_JOURNAL_PROTOCOL = 1
 
 log = logging.getLogger("sa02m-devices-api")
 
@@ -418,7 +421,11 @@ def handle_events(qs: dict[str, list[str]]) -> tuple[Any, int]:
     filt, err = _events_filter_from_qs(qs)
     if err:
         return {"ok": False, "error": err}, 400
-    return device_events.list_events(limit=limit, device_id=device_id, **filt), 200
+    try:
+        return device_events.list_events(limit=limit, device_id=device_id, **filt), 200
+    except (journal.JournalStateError, journal.JournalBusy) as exc:
+        log.warning("events read unavailable: %s", exc)
+        return {"ok": False, "error": "journal_unavailable"}, 503
 
 
 def handle_events_clear() -> tuple[Any, int]:
@@ -430,7 +437,7 @@ def handle_events_clear() -> tuple[Any, int]:
     except device_events.EventsBusy:
         log.warning("events clear: archive busy")
         return {"ok": False, "error": "busy"}, 503
-    except (OSError, sqlite3.Error) as exc:
+    except (OSError, sqlite3.Error, journal.JournalStateError) as exc:
         log.warning("events clear failed: %s", exc)
         return {"ok": False, "error": "не удалось очистить журнал"}, 500
     log.info("events clear: %d row(s) deleted", deleted)

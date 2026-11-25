@@ -12,6 +12,73 @@
   },
   "tools": [
     {
+      "id": "nodered-admission-policy",
+      "checks": "Exercise exact artifact binding, severity/freshness policy, coverage and malformed/offline scanner refusal; no advisory-service failure is converted to success.",
+      "config": null,
+      "run": "python3 scripts/dev/test-nodered-admission.py",
+      "beat": "build",
+      "covers": ["scripts/dev/nodered-admission.py", "scripts/dev/test-nodered-admission.py", "vendor-src/nodered/", "etc/vendor-payloads.json", "scripts/dev/build-nodered-payload.py", "scripts/dev/build-nodered-payload.sh", "docs/contracts/dependency-release-policy.md"],
+      "init": "Native Python3; deterministic isolated fixtures, no live service or advisory request."
+    },
+    {
+      "id": "nodered-release-admission",
+      "checks": "Mandatory release admission of the exact Node-RED artifact against a successful fresh verified scan: Critical/High block, lower findings remain reported; input changes, stale or missing evidence fail.",
+      "config": null,
+      "run": "python3 scripts/dev/nodered-admission.py check --artifact-dir \"$SA02M_NODERED_ADMISSION_ARTIFACT\" --tool-dir \"$SA02M_NODERED_ADMISSION_TOOLS\" --out \"$SA02M_NODERED_ADMISSION_REPORT\"",
+      "beat": "ship",
+      "covers": ["scripts/dev/nodered-admission.py", "vendor-src/nodered/", "etc/vendor-payloads.json", "docs/contracts/dependency-release-policy.md"],
+      "init": "Provide the exact artifact, verified Node 22 binary directory and fresh successful npm advisory report through the three named environment variables. Missing prerequisites fail; no SKIP."
+    },
+    {"id": "vendor-install", "checks": "Execute the fixed-manifest installer archive, UID, ownership, compatibility, service-state and rollback refusal matrix; no mutable upstream root script.", "config": null, "run": "sudo -n python3 -B scripts/dev/test-vendor-install.py", "beat": "build", "covers": ["etc/sa02m-vendor-install.py", "etc/vendor-payloads.json", "etc/systemd/system/nodered.service", "scripts/dev/test-vendor-install.py", "docs/contracts/nodered-payload.md"], "init": "Native Linux with real sudo/root for distinct-UID ownership cases; no live services or vendor installation."},
+    {"id": "nodered-installer-policy", "checks": "Execute actual07 installer routing and preserved refresh/activation policy through the fixed vendor installer; malformed results and failed installs cannot record success.", "config": null, "run": "python3 scripts/dev/test-nodered-installer-policy.py", "beat": "build", "covers": ["scripts/07-nodered.sh", "scripts/lib.sh", "etc/sa02m-vendor-install.py", "scripts/dev/test-nodered-installer-policy.py"], "init": "Native Linux Bash and Python3; inert installer fixtures."},
+    {"id": "nodered-delivery", "checks": "Execute online/offline generators and fullrefresh atomic delivery; require all three trust inputs, updater1.0.8.2 floor, exact destinations/modes and refusal before mutation on missing inputs.", "config": null, "run": "python3 scripts/dev/test-nodered-delivery.py", "beat": "build", "covers": ["scripts/03-webserver.sh", "etc/sa02m-update-runner.sh", "scripts/pack-offline-update.py", "scripts/offline-update-deploy-map.json", "scripts/offline-update-allowlist.txt", "etc/sa02m-vendor-install.py", "etc/vendor-payloads.json", "etc/systemd/system/nodered.service", "scripts/dev/test-nodered-delivery.py"], "init": "Native Linux Bash/Python3 and coreutils; private filesystem targets."},
+    {"id": "nodered-runtime", "checks": "Exercise the exact provenanced packaged runtime: palette install/upgrade/remove, external modules, MQTT, encrypted credentials and restart preservation; missing artifact/receipt fails.", "config": null, "run": "python3 scripts/dev/test-nodered-runtime.py", "beat": "build", "covers": ["vendor-src/nodered/", "etc/vendor-payloads.json", "scripts/dev/build-nodered-payload.py", "scripts/dev/build-nodered-payload.sh", "scripts/dev/test-nodered-runtime.py"], "init": "Node22 and supplied exact SA02M_NODERED_TEST_ROOT/SA02M_NODERED_TEST_RECEIPT; local fixtures only."},
+    {
+      "id": "nodered-jsonata-runtime",
+      "checks": "Execute the actual resolved JSONata version guard, normal util expressions, an actual Change/Switch flow and three bounded inert constructor/prototype regressions. Prebuilt test payloads require matching source, archive and extracted-tree provenance; no fallback or skip.",
+      "config": null,
+      "run": "node scripts/dev/test-nodered-jsonata.mjs",
+      "beat": "build",
+      "covers": ["vendor-src/nodered/package.json", "vendor-src/nodered/package-lock.json", "scripts/dev/build-nodered-payload.sh", "scripts/dev/test-nodered-jsonata.mjs", "docs/vendor-integrations.md"],
+      "init": "Node.js compatible with Node-RED 4.1.13 and npm. Default isolated npm ci needs registry access or a complete npm cache; offline gate environments may provide the explicitly verified canonical test payload described in docs/vendor-integrations.md."
+    },
+    {
+      "id": "image-network-identity",
+      "checks": "Execute the golden network identity sanitizer and mandatory fatal offline guard with preservation, symlink/hardlink, bounded-file and KLogic path/timer/init/cron/udev trigger cases.",
+      "config": null,
+      "run": "python3 scripts/dev/test-image-network-identity.py",
+      "beat": "build",
+      "covers": ["tools/imaging/sanitize-network-identity.py", "tools/imaging/patch-firstboot-image.sh", "scripts/dev/test-image-network-identity.py", "docs/contracts/image-identity-reset.md", "docs/deployment.md", "docs/SA02M_IMAGING_GUIDE.md"],
+      "init": "Python3 stdlib and Bash; actual helpers execute only against temporary image roots. No live network, mount or device operations."
+    },
+    {
+      "id": "flash-receiver-safety",
+      "checks": "Execute the standalone receiver under POSIX sh and BusyBox sh: topology refusal, mandatory checksum, dual process status, signals, lock ownership and bounded-file writes including real BusyBox dd.",
+      "config": null,
+      "run": "python3 scripts/dev/test-flash-receiver.py && SA02M_RECEIVER_TEST_SHELL=busybox python3 scripts/dev/test-flash-receiver.py",
+      "beat": "build",
+      "covers": ["tools/imaging/flash-receiver.sh", "tools/imaging/prepare-flash-media.sh", "tools/imaging/README.md", "scripts/dev/test-flash-receiver.py", "docs/contracts/image-receiver-safety.md"],
+      "init": "Linux, Python3 stdlib, POSIX sh, GNU tools, xz and BusyBox sh/dd. Synthetic proc/sysfs and regular-file targets only; no physical block-device access."
+    },
+    {
+      "id": "home-api-pilot-package",
+      "checks": "Build the actual committed-byte pilot package over the historical oldest baseline, exercise assembled event registration and handlers, and reject an intentionally omitted runtime dependency.",
+      "config": null,
+      "run": "python3 scripts/dev/test-home-api-pilot-package.py",
+      "beat": "build",
+      "covers": ["scripts/pack-home-api-pilot.py", "scripts/dev/test-home-api-pilot-package.py", "opt/sa02m-alice/sa02m_alice/", "opt/sa02m-devices/sa02m_devices/", "opt/sa02m-rules/sa02m_rules/", "etc/nginx/network_config.conf", "etc/systemd/system/sa02m-home-api.service", "etc/systemd/system/sa02m-rules.service", "docs/contracts/home-api-v1-pilot.md", ".github/workflows/web-quality.yml"],
+      "init": "Python3 with normal Alice test dependencies and Git. Historical commit 5e367530de3ab283e1060c32017091bdf75b25e3 must already exist locally; the test never fetches or contacts a board."
+    },
+    {
+      "id": "update-optional-unit-parity",
+      "checks": "Execute online and offline overlay selection and both full installers to preserve status-cache and phase-energy optional-service policy across repeated update/refresh cycles.",
+      "config": null,
+      "run": "python3 scripts/dev/test-update-optional-units.py",
+      "beat": "build",
+      "covers": ["etc/sa02m-update-runner.sh", "scripts/pack-offline-update.py", "scripts/offline-update-allowlist.txt", "scripts/offline-update-deploy-map.json", "etc/systemd/system/sa02m-status-cache.service", "etc/systemd/system/sa02m-phase-energy.service", "scripts/install-status-cache.sh", "scripts/install-phase-energy.sh", "scripts/lib.sh", "scripts/dev/test-update-optional-units.py", "scripts/dev/fixtures/optional-units-systemctl.py", "docs/contracts/web-update.md", "docs/deployment.md"],
+      "init": "Linux Python3 and Bash; real installers run in temporary target roots with a stateful systemctl adapter, without host services or network."
+    },
+    {
       "id": "quiet-dashboard-browser",
       "checks": "Real Chromium dashboard: local stale/warming/error quality, hardware success and touch-readable failures, USB reset, System storage notices, late dashboard CSRF and navigation cleanup; desktop/mobile, both themes and variants, no page errors.",
       "config": null,
@@ -202,6 +269,40 @@
   "init": "Python3.10+, standard library; Linux for Unix-peer integration.",
   "mutationExempt": "Direct unittest runner; behavior suite includes optimistic-cache and disabled-CSRF defect mutations."
 },
+    {
+      "id": "js-unit-mqtt-dtv-channels",
+      "checks": "Shipped mqtt.js in the existing VM DOM harness: AUTO unknown counts, ALL and explicit supported counts, no render-time config mutation, bounded optional capability validation.",
+      "config": null,
+      "run": "node scripts/dev/test-mqtt-dtv-channels.mjs",
+      "beat": "build",
+      "covers": [
+        "www/network_config/static/js/mqtt.js",
+        "www/network_config/static/js/i18n.js",
+        "scripts/dev/mqtt-js-sandbox.mjs",
+        "scripts/dev/test-mqtt-dtv-channels.mjs",
+        "opt/sa02m-modbus-mqtt/bridge_dtv_catalog.py",
+        "docs/MQTT_TOPICS.md"
+      ],
+      "init": "Node 18+, standard library only."
+    },
+    {
+      "id": "mqtt-dtv-channels-browser",
+      "checks": "Real shipped index and ES modules in Chromium with all HTTP intercepted: AUTO/ALL/explicit selection, no-edit save, full first-edit mask, unknown-key preservation, last-toggle refusal, lazy system edits, always-polled output command, missing/malformed capability, failed save. RU/EN, both themes and 1600/500px; screenshots and checkbox/page geometry. No hardware presence or live-device behavior claim.",
+      "config": null,
+      "run": "node scripts/dev/mqtt-dtv-channels-browser.mjs",
+      "beat": "build",
+      "covers": [
+        "www/network_config/static/js/mqtt.js",
+        "www/network_config/static/js/i18n.js",
+        "www/network_config/static/css/main.css",
+        "www/network_config/index.html",
+        "scripts/dev/mqtt-dtv-channels-browser.mjs",
+        "opt/sa02m-modbus-mqtt/bridge_dtv_catalog.py",
+        "www/network_config/cgi-bin/mqtt_config.cgi",
+        "docs/MQTT_TOPICS.md"
+      ],
+      "init": "Existing scripts/dev Playwright, Chromium and Python3; missing browser is a failure."
+    },
     {
       "id": "cmd-exec",
         "checks": "Real authenticated console CGI, streaming collector and root verifier: bounded output/spool, GNU TERM/KILL deadline, inherited-pipe capture timeout distinct from rc, UTF-8, metadata errors, temporary cleanup and session/method/CSRF/password refusals.",
@@ -587,7 +688,7 @@
       "config": null,
       "run": "bash .ai-dev/quality/checks/pytest-suite.sh py-unit-devices opt/sa02m-devices openpyxl",
       "beat": "build",
-      "covers": ["opt/sa02m-devices/", ".ai-dev/quality/checks/pytest-suite.sh", "www/network_config/static/js/i18n.js", "docs/contracts/devices-mr-history.md", "docs/contracts/devices-history-api.md","docs/contracts/carel-ahu.md", "docs/contracts/bridge-modbus-tcp.md"],
+      "covers": ["opt/sa02m-devices/", ".ai-dev/quality/checks/pytest-suite.sh", "www/network_config/static/js/i18n.js", "docs/contracts/devices-mr-history.md", "docs/contracts/devices-history-api.md","docs/contracts/carel-ahu.md", "docs/contracts/bridge-modbus-tcp.md", "docs/contracts/sa02m-devices-python-api.md", "opt/sa02m-update/lib/transaction.py", "opt/sa02m-update/lib/__init__.py", "scripts/dev/test-event-journal-delivery.py"],
       "init": "bash + python3 + pytest (pip install pytest; openpyxl>=3.1.0 for the xlsx export case) — installed in CI (web-quality.yml)"
     },
     {
@@ -846,7 +947,7 @@
     },
     {
       "id": "iface-dns-ensure",
-      "checks": "Functional RED/GREEN regression for the boot-time DNS guarantee (usr/local/sbin/sa02m-dns-ensure.sh + sa02m-wait-carrier.sh; contract docs/contracts/boot-network-dns.md). The defect it pins is SILENT: an ifup that dies on the gateway step because the PHY carrier arrived late aborts BEFORE its if-up.d stage, so /etc/network/if-up.d/000resolvconf never runs and /etc/resolv.conf stays EMPTY while address and default route look healthy — the board pings and serves its panel, and nothing fails until a name must resolve, then the OTA web update dies with 'Could not resolve host'. Covers rung 1 (an existing record is never clobbered so a real ifup always wins; a conf with no dns-nameservers writes nothing — the dhcp/2-eth case; multi-nameserver order; a KLogic-shaped conf with no-auto-down, TAB indent, comments and post-up; CRLF delivery; a control-char token, an oversized line and an invalid/leading-zero-octet token never reaching resolvconf; dns-search/dns-domain), rung 2 (empty resolv.conf regenerates from resolv.conf.d/base, a populated one is left alone, no needless fire after a rung-1 write), idempotency under the 30 s net-watchdog cadence (three runs = one write, one log line), degradation (resolvconf absent = silent no-op exit 0; a failing resolvconf -a logged and still exit 0), and the carrier wait — its timings measured on a SIMULATED clock: the wait's `date +%s` and `sleep` are PATH shims for its invocations only, so elapsed is exactly the shipped loop's own sleeps (a zero-sleep path reads 0, a burned budget reads the budget, the budget case reads exactly its 2 sleeps), a loop that never reaches its deadline is stopped at a 600 s simulated cap and FAILS instead of hanging, and a live-clock probe (sleep 3; sleep 2 => +5) fails the run if the shims fell off PATH; before this the cases read wall seconds and went RED from host fork latency alone (3–5 s on a zero-sleep path under parallel agents, green on an idle host) — (returns at once on carrier; TERMINATES at the budget with rc=0; IFUP_CARRIER_WAIT_SECS=0 disables it entirely; an admin-DOWN device is raised first because the kernel refuses a carrier read otherwise — without it the wait burns the whole budget every boot; --auto selects only auto+static+gateway ifaces; a malformed interface name is refused before it reaches a path or ip(8); lo is skipped; the hard 120 s ceiling stays well under ifup@'s 5-min TimeoutStartUSec, asserted so a future budget bump cannot silently cross it; and the clamp's EFFECT asserted by calling the extracted read_budget directly — the two in-situ clamp cases can only see the log line, so a clamp that logged and then returned 9999 would pass them). The resolvconf-absent guard is pinned with a LIVE logger shim on the PATH (and a host resolvconf in /usr/bin or /bin hidden through scripts/dev/lib_path_mask.sh, so the absent case is the harness's call on every host): with logger absent too, a helper missing the guard falls into rung 2, fails resolvconf -u and logs nothing anyway, so the case would pass on broken code. Also pins the wiring the mechanism depends on, which is where the mechanism most nearly died: the belt unit ordering-only (After=, never Before=), both drop-ins carrying the '-' never-fail prefix, the installer provisioning both helpers and both drop-in dirs and enabling the belt WITHOUT start, both recovery-ladder call sites, and — the OTA half — the belt unit's enable wiring in BOTH generators, each pinned to what it really does: ONLINE, sa02m-dns-ensure.service in the runner's services.enable plus the enable loop keeping its `|| true`; OFFLINE, since the frozen-v1 freeze (1.0.6.37) the packer emits enable[] only when its advertised MIN_UPDATER is >= SERVICES_OPTIONAL_SINCE, so an offline pack enables NOTHING until that threshold is raised (executable since 1.0.6.39, when the runner started deriving UPDATER_VERSION from the deployed VERSION file) — the offline pin is therefore three-fold: the entry is still in the packer's tier enable[] (so it returns the moment the tier turns on), the freeze is the tier gate (`emit_optional_service_keys`) and not a deleted block, and the coldboot bootstrap shim is CALLED from the script body, because that shim is what enables the unit on an offline-updated board meanwhile. Removing the entry from either generator, deleting the tier gate, or dropping the shim call FAILS; both generator files and the coldboot script are in this row's `covers`. Also covers the one-time OTA bootstrap shim in sa02m-eth-coldboot.sh, which exists because the ONLINE update generates its manifest from the runner already installed on the device and re-execs that same old binary before deploying — so a board coming from a pre-1.0.6.6 runner — and, since the 1.0.6.37 freeze, EVERY board updated by an offline pack — receives the belt unit DEPLOYED BUT DISABLED: the shipped dns_ensure_bootstrap is extracted and run against a scripted systemctl shim for no-unit-file, first-pass-enables-and-marks, one-time (a later boot never re-enables, so an operator's disable stays), enabled/static/masked/unknown all left alone, and a FAILING enable still returning 0 with the marker written (no retry storm on the boot path); the harness also FAILS if the shim is never called from the script body. Plus SHELL-DIALECT coverage, added because a `: >` redirection to a marker file shipped and survived every earlier neuter: `:` is a POSIX SPECIAL built-in, so under dash (the board's /bin/sh) a redirection error on one ABORTS the script and neither 2>/dev/null nor || true catches it, while bash simply continues — a bash-only harness is blind to the whole class. Two layers: a static scan of every shipped #!/bin/sh script for a special built-in taking a redirection (runs on every host; non-vacuous — it FAILS if it did not see all four files — sa02m-routes-ensure.sh included, if a file stopped being #!/bin/sh, or if its own regex stops detecting a known-bad fixture), and a real run of the shim under a strict POSIX shell with the marker's parent impossible to create, asserting the script runs to completion and that its `systemctl is-enabled` was answered by the scripted systemctl shim — the shim stays on PATH through that run, and the run is REFUSED (FAIL) when `systemctl` resolves anywhere else (until 2026-09-27 the shim was removed before it, so the shipped function asked the host's real systemctl — observed on a canary — and on a host answering `disabled` would have enabled a unit there). `sh` is NOT assumed to be POSIX: a `sh` that reports BASH_VERSION is rejected and the layer states it skipped, because on some dev hosts /usr/bin/sh IS bash. Method: the SHIPPED helpers are copied and sed-retargeted into a sandbox (no env seam in production code) with recording resolvconf/logger/ip shims — no root, no device, no systemd. Non-vacuous: a failed or over-wide retarget, a leftover real /etc root, a missing file, a fixture that stopped matching, or a shim never invoked FAILS rather than passing on zero matches; DNS_ENSURE_SRC / WAIT_CARRIER_SRC re-run it against a neutered helper (RED battery in the test header). The recovery-ladder wiring pin (both fix-eth call sites and both coldboot ones) is read COMMENT-STRIPPED through lib_check.sh: a raw `grep -c` used to count a `#`-disabled call site as live (1.0.6.24 review Q6 coverage sweep, shape (a)), and an unsourceable lib FAILS the case rather than skipping it. Its comment-out case is registered in comment-mutation-proof - commenting `dns_ensure \"$iface\"` out of etc/fix-eth.sh goes RED.",
+      "checks": "Functional RED/GREEN regression for the boot-time DNS guarantee (usr/local/sbin/sa02m-dns-ensure.sh + sa02m-wait-carrier.sh; contract docs/contracts/boot-network-dns.md). The defect it pins is SILENT: an ifup that dies on the gateway step because the PHY carrier arrived late aborts BEFORE its if-up.d stage, so /etc/network/if-up.d/000resolvconf never runs and /etc/resolv.conf stays EMPTY while address and default route look healthy — the board pings and serves its panel, and nothing fails until a name must resolve, then the OTA web update dies with 'Could not resolve host'. Covers rung 1 (an existing record is never clobbered so a real ifup always wins; a conf with no dns-nameservers writes nothing — the dhcp/2-eth case; multi-nameserver order; a KLogic-shaped conf with no-auto-down, TAB indent, comments and post-up; CRLF delivery; a control-char token, an oversized line and an invalid/leading-zero-octet token never reaching resolvconf; dns-search/dns-domain), rung 2 (empty resolv.conf regenerates from resolv.conf.d/base, a populated one is left alone, no needless fire after a rung-1 write), idempotency under the 30 s net-watchdog cadence (three runs = one write, one log line), degradation (resolvconf absent = silent no-op exit 0; a failing resolvconf -a logged and still exit 0), and carrier wait: a single monotonic uptime deadline shared across interfaces, exact simulated budget despite forward/backward wall-clock adjustments, zero-disable and the 120-second ceiling, malformed/decreasing/unreadable clock refusal, validated interface selection, and bounded effective ifquery within the remaining budget. Interfaces with hwaddress or unavailable/ambiguous query results defer MAC/link initialization to ifupdown; modeled ifup ordering proves no premature raise. Normal non-hwaddress interfaces retain carrier polling and admin-down raise. The sandbox retargets only the uptime constant and records real shipped-helper interactions without touching host networking. The resolvconf-absent guard is pinned with a LIVE logger shim on the PATH (and a host resolvconf in /usr/bin or /bin hidden through scripts/dev/lib_path_mask.sh, so the absent case is the harness's call on every host): with logger absent too, a helper missing the guard falls into rung 2, fails resolvconf -u and logs nothing anyway, so the case would pass on broken code. Also pins the wiring the mechanism depends on, which is where the mechanism most nearly died: the belt unit ordering-only (After=, never Before=), both drop-ins carrying the '-' never-fail prefix, the installer provisioning both helpers and both drop-in dirs and enabling the belt WITHOUT start, both recovery-ladder call sites, and — the OTA half — the belt unit's enable wiring in BOTH generators, each pinned to what it really does: ONLINE, sa02m-dns-ensure.service in the runner's services.enable plus the enable loop keeping its `|| true`; OFFLINE, since the frozen-v1 freeze (1.0.6.37) the packer emits enable[] only when its advertised MIN_UPDATER is >= SERVICES_OPTIONAL_SINCE, so an offline pack enables NOTHING until that threshold is raised (executable since 1.0.6.39, when the runner started deriving UPDATER_VERSION from the deployed VERSION file) — the offline pin is therefore three-fold: the entry is still in the packer's tier enable[] (so it returns the moment the tier turns on), the freeze is the tier gate (`emit_optional_service_keys`) and not a deleted block, and the coldboot bootstrap shim is CALLED from the script body, because that shim is what enables the unit on an offline-updated board meanwhile. Removing the entry from either generator, deleting the tier gate, or dropping the shim call FAILS; both generator files and the coldboot script are in this row's `covers`. Also covers the one-time OTA bootstrap shim in sa02m-eth-coldboot.sh, which exists because the ONLINE update generates its manifest from the runner already installed on the device and re-execs that same old binary before deploying — so a board coming from a pre-1.0.6.6 runner — and, since the 1.0.6.37 freeze, EVERY board updated by an offline pack — receives the belt unit DEPLOYED BUT DISABLED: the shipped dns_ensure_bootstrap is extracted and run against a scripted systemctl shim for no-unit-file, first-pass-enables-and-marks, one-time (a later boot never re-enables, so an operator's disable stays), enabled/static/masked/unknown all left alone, and a FAILING enable still returning 0 with the marker written (no retry storm on the boot path); the harness also FAILS if the shim is never called from the script body. Plus SHELL-DIALECT coverage, added because a `: >` redirection to a marker file shipped and survived every earlier neuter: `:` is a POSIX SPECIAL built-in, so under dash (the board's /bin/sh) a redirection error on one ABORTS the script and neither 2>/dev/null nor || true catches it, while bash simply continues — a bash-only harness is blind to the whole class. Two layers: a static scan of every shipped #!/bin/sh script for a special built-in taking a redirection (runs on every host; non-vacuous — it FAILS if it did not see all four files — sa02m-routes-ensure.sh included, if a file stopped being #!/bin/sh, or if its own regex stops detecting a known-bad fixture), and a real run of the shim under a strict POSIX shell with the marker's parent impossible to create, asserting the script runs to completion and that its `systemctl is-enabled` was answered by the scripted systemctl shim — the shim stays on PATH through that run, and the run is REFUSED (FAIL) when `systemctl` resolves anywhere else (until 2026-09-27 the shim was removed before it, so the shipped function asked the host's real systemctl — observed on a canary — and on a host answering `disabled` would have enabled a unit there). `sh` is NOT assumed to be POSIX: a `sh` that reports BASH_VERSION is rejected and the layer states it skipped, because on some dev hosts /usr/bin/sh IS bash. Method: the SHIPPED helpers are copied and sed-retargeted into a sandbox (no env seam in production code) with recording resolvconf/logger/ip shims — no root, no device, no systemd. Non-vacuous: a failed or over-wide retarget, a leftover real /etc root, a missing file, a fixture that stopped matching, or a shim never invoked FAILS rather than passing on zero matches; DNS_ENSURE_SRC / WAIT_CARRIER_SRC re-run it against a neutered helper (RED battery in the test header). The recovery-ladder wiring pin (both fix-eth call sites and both coldboot ones) is read COMMENT-STRIPPED through lib_check.sh: a raw `grep -c` used to count a `#`-disabled call site as live (1.0.6.24 review Q6 coverage sweep, shape (a)), and an unsourceable lib FAILS the case rather than skipping it. Its comment-out case is registered in comment-mutation-proof - commenting `dns_ensure \"$iface\"` out of etc/fix-eth.sh goes RED.",
       "config": null,
       "run": "bash scripts/dev/test-iface-dns-ensure.sh",
       "beat": "build",
@@ -1080,7 +1181,7 @@
     },
     {
       "id": "nodered-ctl-install",
-      "checks": "Functional regression for the Node-RED install logic in etc/sa02m-web-service-ctl.sh — the code behind Управление → Службы → Node-RED, whose whole defect class is SILENT on the device. Runs the SHIPPED functions against a sandbox (payload resolution through the SA02M_NODERED_DIR seam, journalctl/sleep PATH shims, mutating helpers stubbed — nothing extracts a tarball, writes /usr/lib or talks to systemd): a half-staged directory is not a payload; the Node-tarball glob never selects node-red-*.tar.gz (that mis-selection extracted the Node-RED tree into /usr/local on a Node-less board and still failed); a cross-major overwrite is refused with both versions named and a next step in the log, while a clean install and a same-major update still proceed; the flow-level verdict, IN BOTH LOG LANGUAGES (node-red localises its runtime log: the bench board writes «Запущены потоки», so an English-only check silently stops firing there) — port 1880 open with the flows stopped is install_failed, NOT success; a unit that logged for the whole poll window without ever reporting started flows is a FAILURE rather than 'no evidence'; only a total absence of journal degrades to the honest runtime_only label; and the dispatch order (staged payload beats a reachable registry, no payload behaves exactly as before). Plus static wiring pins the behavioural cases cannot see: both install paths still CALL the major guard, and the offline path still stops the unit, removes the old tree before extracting (tar merges — it never deletes), and asserts a single node-red/ top level before a root extraction. Non-vacuous: a failed or short extraction FAILS rather than passing on zero matches. Those wiring pins are read COMMENT-STRIPPED through lib_check.sh: they match the extracted function body, where a `#` in front of a call used to leave the text in place and a raw `grep -q` counted a disabled call site as live (1.0.6.24 review Q6 coverage sweep, shape (a)). Its comment-out case is registered in comment-mutation-proof - commenting `nodered_guard_major_upgrade || return 1` out of the shipped script goes RED. Since 1.0.6.60 the unit FILE lands atomically and this row proves it: the script's own atomic_install_unit() (tmp beside the target → fdatasync → rename-over → dir fsync; the script runs as /bin/sh on the board and cannot reach scripts/lib.sh) is extracted and RUN under PATH shims — a refused rename, a torn copy and a refused fdatasync each leave the live unit OLD with no tmp, the success path leaves it NEW, a recording `sync` shim proves the ORDER (tmp synced while the unit still reads OLD, directory synced once it reads NEW), the same path runs under dash, and a negative control shows the pre-fix bare `install -m` truncating the live unit under the same shim. Two more comment-blind pins: nodered_install_offline() lands the unit through the helper, and NO raw `install -m` anywhere in the file writes a live-path destination (the codemod's prefixes, decided by the DESTINATION word, floored by an install-site count and driven to failure by a raw unit write planted behind the real site's redirection tail). Second comment-out case registered: the atomic_install_unit call for /etc/systemd/system/nodered.service commented out goes RED.",
+      "checks": "Run the shipped fixed installer delegate through actual isolated Python: success, refusal, missing helper, malformed/non-object/multiple/false or nonzero success output; exact fixed argv. Preserve shared atomic-unit rename/sync/torn-copy/POSIX regressions. Archive/engine/flow/rollback cases moved to the single vendor-installer row.",
       "config": null,
       "run": "bash scripts/dev/test-nodered-ctl.sh",
       "beat": "build",
@@ -1089,11 +1190,11 @@
     },
     {
       "id": "nodered-pin-consistency",
-      "checks": "Static gate for the Node-RED pin across its five homes — the runtime install (etc/sa02m-web-service-ctl.sh), the install-time path (scripts/07-nodered.sh), the payload build recipe (scripts/dev/build-nodered-payload.sh), the committed dependency manifest (vendor-src/nodered/package{,-lock}.json) and the documented payload shape (docs/vendor-integrations.md). Pins: one and only one node-red version string across all five (the lockfile is the ground truth — a constant that disagrees with the tree npm ci installs IS the drift); --node22 present in both install homes; NO surviving `node-red@3` / `--node20` anywhere under etc/ scripts/ tools/ (the EOL pin this row exists to keep out); --omit=optional and npm ci in the build recipe (dropping either reintroduces the native @node-rs/bcrypt dep and re-binds the payload to one Node ABI, or re-resolves ranges and ends reproducibility); the ctl's Node floor (major AND minor) mirroring engines.node of the pinned node-red in the lockfile, so a lockfile bump that raises the floor fails the build instead of leaving a board installing a runtime it cannot boot; the flow verdict surviving a non-English board (our unit pins LC_ALL, and BOTH readers match the en and ru spellings of the started-flows marker — plus neither may depend on 'Flows stopped due to missing node types', which is an editor-UI notification the runtime never logs, i.e. a check that cannot fire in any locale); and the repo-owned etc/systemd/system/nodered.service existing, running as User=nodered, and resolving node by ABSOLUTE path rather than env/PATH (a board can carry apt's Node beside a staged tarball Node — PATH order would otherwise decide which one runs). Non-vacuous: a missing file, an empty extraction, or a sweep that stops seeing files FAILS rather than passing on zero matches. COMMENT-SAFE (1.0.6.24): every needle is matched against comment-stripped text (.ai-dev/quality/checks/lib_check.sh), so commenting a pinned line out FAILS the gate instead of satisfying it; proven per gate by the comment-mutation-proof row.",
+      "checks": "Cross-check exact package/lock/release-manifest hashes, Node/archive/unit pin, npm ci with optional/native exclusions, isolated fixed delegates, and real flow-level bilingual verdict. No duplicated mutable installer version flags.",
       "config": null,
       "run": "bash .ai-dev/quality/checks/nodered-pin-consistency.sh",
       "beat": "build",
-      "covers": ["etc/sa02m-web-service-ctl.sh", "etc/systemd/system/nodered.service", "scripts/07-nodered.sh", "scripts/dev/build-nodered-payload.sh", "vendor-src/nodered/", "docs/vendor-integrations.md", ".ai-dev/quality/checks/nodered-pin-consistency.sh"],
+      "covers": ["etc/sa02m-web-service-ctl.sh", "etc/systemd/system/nodered.service", "scripts/07-nodered.sh", "scripts/dev/build-nodered-payload.sh", "scripts/dev/build-nodered-payload.py", "etc/sa02m-vendor-install.py", "etc/vendor-payloads.json", "vendor-src/nodered/", "docs/vendor-integrations.md", ".ai-dev/quality/checks/nodered-pin-consistency.sh"],
       "init": "bash + grep (present everywhere the project builds)"
     },
     {
@@ -1156,7 +1257,7 @@
       "config": null,
       "run": "bash scripts/dev/test-mqtt-config-transport.sh",
       "beat": "build",
-      "covers": ["www/network_config/cgi-bin/mqtt_config.cgi", "www/network_config/cgi-bin/mqtt_templates.cgi", "www/network_config/cgi-bin/mqtt_live.cgi", "opt/sa02m-modbus-mqtt/bridge_meta.py", "opt/sa02m-modbus-mqtt/bridge_mqtt.py", "opt/sa02m-modbus-mqtt/mqtt_live_snapshot.py", "www/network_config/cgi-bin/lib_mqtt_write_controls.sh", "www/network_config/cgi-bin/lib_web_auth.sh", "www/network_config/cgi-bin/lib_web_json.sh", "opt/sa02m-modbus-mqtt/bridge_bus.py", "opt/sa02m-modbus-mqtt/bridge_template_channels.py", "scripts/dev/test-mqtt-config-transport.sh", "docs/contracts/bridge-modbus-tcp.md", "docs/contracts/template-device.md"],
+      "covers": ["opt/sa02m-modbus-mqtt/bridge_dtv_catalog.py", "docs/MQTT_TOPICS.md", "www/network_config/cgi-bin/mqtt_config.cgi", "www/network_config/cgi-bin/mqtt_templates.cgi", "www/network_config/cgi-bin/mqtt_live.cgi", "opt/sa02m-modbus-mqtt/bridge_meta.py", "opt/sa02m-modbus-mqtt/bridge_mqtt.py", "opt/sa02m-modbus-mqtt/mqtt_live_snapshot.py", "www/network_config/cgi-bin/lib_mqtt_write_controls.sh", "www/network_config/cgi-bin/lib_web_auth.sh", "www/network_config/cgi-bin/lib_web_json.sh", "opt/sa02m-modbus-mqtt/bridge_bus.py", "opt/sa02m-modbus-mqtt/bridge_template_channels.py", "scripts/dev/test-mqtt-config-transport.sh", "docs/contracts/bridge-modbus-tcp.md", "docs/contracts/template-device.md"],
       "init": "Bash and Python 3 with PyYAML and paho-mqtt, installed by web-quality.yml"
     },
     {
@@ -1745,7 +1846,7 @@
       "config": null,
       "run": "bash scripts/dev/test-installer-order.sh",
       "beat": "build",
-      "covers": [
+      "covers": ["scripts/update-www-only.sh", "opt/sa02m-modbus-mqtt/bridge_dtv_catalog.py", "opt/sa02m-modbus-mqtt/bridge_dtv_ce.py",
         "scripts/05-mqtt.sh",
         "scripts/04-flasher.sh",
         "scripts/06-alice.sh",
@@ -2460,6 +2561,15 @@
       "covers": ["www/network_config/static/js/flasher.js", "www/network_config/static/js/i18n.js", "scripts/dev/test-flasher-flash-failure.mjs"],
       "init": "Node 18+ (stdlib only), no extra dep - same posture as js-unit-flasher-signatures."
     }
-
+,
+    {
+      "id": "event-journal-delivery",
+      "checks": "First journal-generation delivery under the released runner: maps/package and API-condition-skipped logger seam, receipt persistence/crash retry, active-only bounded peer transition, real POSIX owner denial and updater SH/EX exclusion. Rootfs installer is retargeted into a temporary root and systemctl is controlled; systemd-analyze verifies the staged units. Native Linux with root or noninteractive sudo is required and missing prerequisites FAIL. No live manager, hardware or HardPy route execution is claimed.",
+      "config": null,
+      "run": "python3 scripts/dev/test-event-journal-delivery.py",
+      "beat": "build",
+      "covers": ["opt/sa02m-devices/", ".ai-dev/quality/checks/devices-api-upstream.sh", ".ai-dev/quality/checks/lib_check.sh", "etc/nginx/network_config.conf", "etc/systemd/system/sa02m-stand-api.service.d/20-devices-socket-group.conf", "opt/sa02m-update/lib/transaction.py", "opt/sa02m-update/lib/state_security.py", "opt/sa02m-update/lib/__init__.py", "scripts/dev/test-event-journal-delivery.py", "scripts/dev/journal_delivery_privileged_tests.py", "scripts/dev/event_journal_delivery_harness.py", "scripts/dev/fixtures/event-journal-github-generator-5e367530.py", "scripts/11-devices.sh", "scripts/pack-offline-update.py", "scripts/offline-update-deploy-map.json", "scripts/offline-update-allowlist.txt", "etc/systemd/sa02m-devices-api.service", "etc/systemd/sa02m-devices-logger.service", "etc/systemd/system/sa02m-stand-api.service.d/30-event-journal.conf", "docs/deployment.md", "docs/contracts/carel-ahu.md", "docs/contracts/sa02m-devices-python-api.md", "docs/contracts/installer-refresh-policy.md", "docs/contracts/web-update.md"],
+      "init": "Native Linux Python 3 stdlib, openssl, bash, systemd-analyze; root or sudo -n for isolated production-owner fixtures only."
+    }
   ]
 }

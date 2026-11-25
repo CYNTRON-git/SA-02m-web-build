@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import copy
 from contextlib import nullcontext
+import logging
 import threading
 import time
 import uuid
@@ -11,6 +12,8 @@ from ..client.device_registry import action_instance
 from ..common import constants as C
 from .contract import (APIError, API_VERSION, MAX_REQUEST, MAX_RESPONSE, command_hash,
                        encoded, identifier, validate_command, validate_request)
+
+log = logging.getLogger("sa02m-home.dispatcher")
 
 
 class Dispatcher:
@@ -221,7 +224,8 @@ class Dispatcher:
                 row = self.ledger.update(cid, "published", confirmation="broker_publish")
             except APIError as exc:
                 row = self.ledger.update(cid, "rejected", error=exc.code)
-            except Exception:
+            except Exception as exc:
+                log.error("home operation=scenario_dispatch error_type=%s", type(exc).__name__)
                 self.rule_pending.pop(cid, None)
                 row = self.ledger.update(cid, "outcome_unknown", error="engine_request_unconfirmed")
             return 202, self.envelope(receipt=row)
@@ -233,7 +237,8 @@ class Dispatcher:
                 row = self.ledger.update(cid, state, **outcome)
             except APIError as exc:
                 row = self.ledger.update(cid, "rejected", error=exc.code)
-            except Exception:
+            except Exception as exc:
+                log.error("home operation=configuration error_type=%s", type(exc).__name__)
                 row = self.ledger.update(cid, "outcome_unknown", error="configuration_interrupted")
             return 202, self.envelope(receipt=row)
         cap = body["capability"]
@@ -258,7 +263,8 @@ class Dispatcher:
             for topic, payload, _key in publications:
                 self.publisher(topic, payload)
             row = self.ledger.update(cid, "published", confirmation="broker_publish")
-        except Exception:
+        except Exception as exc:
+            log.error("home operation=device_publish error_type=%s", type(exc).__name__)
             self.pending.pop(cid, None)
             row = self.ledger.update(cid, "outcome_unknown", error="publish_unconfirmed", confirmation="none")
         return 202, self.envelope(receipt=row)

@@ -9,6 +9,8 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any
 
+from sa02m_devices import event_journal_state as journal
+
 from sa02m_devices.device_history_db import (
     CAREL_PLANT_STATE_CODE,
     carel_plant_code,
@@ -87,6 +89,15 @@ CAREL_EVENT_KINDS = ("carel_alarm_on", "carel_alarm_off", "carel_plant_state")
 _CAREL_PREV: dict[tuple[str, str], dict[str, float | None]] = {}
 _CAREL_PLANT_WORD = {code: word for word, code in CAREL_PLANT_STATE_CODE.items()}
 
+# SQLite length/GLOB can ignore a NUL suffix; instr checks it in any DB encoding.
+_GENERATION_VALID = (
+    "(typeof(journal_generation) = 'text' AND instr(journal_generation, char(0)) = 0 AND "
+    "(journal_generation = 'legacy' OR (length(journal_generation) = 32 "
+    "AND journal_generation NOT GLOB '*[^0-9a-f]*')))"
+)
+_GENERATION_INVALID = "COALESCE(" + _GENERATION_VALID + ", 0) = 0"
+_GENERATION_COLUMN = "journal_generation TEXT NOT NULL DEFAULT 'legacy' CHECK " + _GENERATION_VALID
+
 _CREATE_EVENTS = """
 CREATE TABLE IF NOT EXISTS device_events (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -98,18 +109,20 @@ CREATE TABLE IF NOT EXISTS device_events (
     addr INTEGER,
     value REAL,
     ref_value REAL,
-    message TEXT NOT NULL
+    message TEXT NOT NULL,
+    %s
 );
-"""
+""" % _GENERATION_COLUMN
 
 
 def ensure_events_schema(path: Path | None = None) -> Path:
-    """Create device_events (+ indexes) in the DB at `path`; return the path.
+    """Prepare authority and event schema before a caller opens a transaction.
 
     The migrate roster merges this table like the sample tables, and the
     destination must carry the schema BEFORE the merge reads PRAGMA table_info."""
     p = db_path(path)
-    _connect(p).close()
+    with journal.event_operation(path):
+        _connect(p).close()
     return p
 
 
@@ -126,16 +139,42 @@ def _connect(path: Path | None = None) -> sqlite3.Connection:
 
 
 def ensure_events_schema_on(conn: sqlite3.Connection) -> None:
-    """device_events + its two indexes on an already-open connection — the one
+    """device_events + its indexes on an already-open connection — the one
     home of the journal DDL (`_connect` and the logger's batch writer)."""
-    conn.executescript(_CREATE_EVENTS)
-    conn.execute(
-        "CREATE INDEX IF NOT EXISTS idx_device_events_ts ON device_events(ts DESC)"
+    indexes = (
+        ("idx_device_events_ts", "ts DESC", ""),
+        ("idx_device_events_dedup", "device_id, kind, phase, ts", ""),
+        ("idx_device_events_generation_ts", "journal_generation, ts DESC, id DESC", ""),
+        ("idx_device_events_generation_dedup", "journal_generation, device_id, kind, phase, ts", ""),
+        ("idx_device_events_invalid_generation", "journal_generation", _GENERATION_INVALID),
     )
-    conn.execute(
-        "CREATE INDEX IF NOT EXISTS idx_device_events_dedup "
-        "ON device_events(device_id, kind, phase, ts)"
-    )
+    columns = {r[1]: r for r in conn.execute("PRAGMA table_info(device_events)")}
+    if "journal_generation" in columns:
+        column = columns["journal_generation"]
+        if column[2].upper() != "TEXT" or not column[3] or column[4] != "'legacy'":
+            raise journal.JournalStateError("invalid event generation column")
+        present = {r[1] for r in conn.execute("PRAGMA index_list(device_events)")}
+        if all(name in present for name, _, _ in indexes):
+            return
+    own_transaction = not conn.in_transaction
+    if own_transaction:
+        conn.execute("BEGIN IMMEDIATE")
+    try:
+        conn.execute(_CREATE_EVENTS)
+        columns = {r[1]: r for r in conn.execute("PRAGMA table_info(device_events)")}
+        if "journal_generation" not in columns:
+            conn.execute("ALTER TABLE device_events ADD COLUMN " + _GENERATION_COLUMN)
+        elif columns["journal_generation"][2].upper() != "TEXT":
+            raise journal.JournalStateError("invalid event generation column")
+        for name, keys, predicate in indexes:
+            where = " WHERE " + predicate if predicate else ""
+            conn.execute(f"CREATE INDEX IF NOT EXISTS {name} ON device_events({keys}){where}")
+        if own_transaction:
+            conn.execute("COMMIT")
+    except BaseException:
+        if own_transaction and conn.in_transaction:
+            conn.execute("ROLLBACK")
+        raise
 
 
 def _ensure_seed_table(
@@ -144,22 +183,11 @@ def _ensure_seed_table(
     table: str,
     column: str = "",
 ) -> None:
-    """Make sure the history table a detector seeds from exists IN THE SHAPE the
-    seed reads — WITHOUT a second open on the steady state.
+    """Prepare the detector's seed table on its existing connection.
 
-    Both detectors run on every 1 Hz logger tick and used to call
-    `history_db.ensure_schema(path)` unconditionally — a full extra connect +
-    DDL + PK-migration probe per tick on top of their own `_connect()` (ship
-    review 1.0.6.39, advisory). One `sqlite_master` query on the connection we
-    already hold answers the question; `ensure_schema()` runs only when the
-    table is really absent (a brand-new file, a rotation, a direct call before
-    any sample landed), which keeps the fresh-file behaviour intact.
-
-    `column` names a column the seed query needs, for a table whose SHAPE can be
-    older than this release: on a board upgrading from 1.0.6.40 `carel_samples`
-    exists but is still the long `(metric, value)` table, and the wide seed read
-    would raise into a silent `None` baseline — a cleared alarm losing its `off`
-    row on exactly the restart the seed exists for. `ensure_schema` migrates it.
+    The steady state only probes the required shape. Missing or old long-form
+    tables migrate inside the caller's transaction: a second connection could
+    wait on the writer itself or commit independently of its sample batch.
     """
     row = conn.execute(
         "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = ?", (table,)
@@ -172,9 +200,9 @@ def _ensure_seed_table(
         if column not in cols:
             row = None
     if row is None:
-        from sa02m_devices.device_history_db import ensure_schema
+        from sa02m_devices import history_store
 
-        ensure_schema(path)
+        history_store.ensure_event_seed_on(conn, table)
 
 
 def _day_start_ts(now: float | None = None) -> float:
@@ -192,12 +220,14 @@ def _recent_exists(
     phase: str,
     ts: float,
     cooldown_s: float,
+    generation: str = "legacy",
 ) -> bool:
+    predicate, params = generation_filter(generation)
     row = conn.execute(
         "SELECT 1 FROM device_events"
         " WHERE device_id = ? AND kind = ? AND phase = ?"
-        " AND ts >= ? LIMIT 1",
-        (device_id, kind, phase, float(ts) - float(cooldown_s)),
+        f" AND ts >= ? AND {predicate} LIMIT 1",
+        (device_id, kind, phase, float(ts) - float(cooldown_s), *params),
     ).fetchone()
     return bool(row)
 
@@ -215,6 +245,7 @@ def _insert_event(
     ref_value: float | None,
     message: str,
     cooldown_s: float | None = None,
+    generation: str = "legacy",
 ) -> bool:
     """`cooldown_s` None → the CE spike cooldown; 0 → every edge lands (Carel)."""
     if _recent_exists(
@@ -224,13 +255,15 @@ def _insert_event(
         phase=phase,
         ts=ts,
         cooldown_s=event_cooldown_s() if cooldown_s is None else cooldown_s,
+        generation=generation,
     ):
         return False
     conn.execute(
         """
         INSERT INTO device_events(
-            ts, device_id, kind, phase, port_num, addr, value, ref_value, message
-        ) VALUES (?,?,?,?,?,?,?,?,?)
+            ts, device_id, kind, phase, port_num, addr, value, ref_value, message,
+            journal_generation
+        ) VALUES (?,?,?,?,?,?,?,?,?,?)
         """,
         (
             float(ts),
@@ -242,9 +275,24 @@ def _insert_event(
             value,
             ref_value,
             message,
+            generation,
         ),
     )
     return True
+
+
+def generation_filter(generation: str) -> tuple[str, tuple]:
+    if not journal.valid_generation(generation):
+        raise journal.JournalStateError("invalid event generation")
+    return ("1", ()) if generation == "legacy" else ("journal_generation = ?", (generation,))
+
+
+def validate_event_tags(conn: sqlite3.Connection) -> None:
+    # Without INDEXED BY SQLite can prefer the full generation/time index,
+    # turning an empty invalid set into a scan of every archived event.
+    if conn.execute("SELECT 1 FROM device_events INDEXED BY idx_device_events_invalid_generation WHERE "
+                    + _GENERATION_INVALID + " LIMIT 1").fetchone():
+        raise journal.JournalStateError("invalid stored event generation")
 
 
 def _prev_ce_row(
@@ -304,6 +352,7 @@ def detect_ce_events(
     *,
     path: Path | None = None,
     conn: sqlite3.Connection | None = None,
+    generation: str | None = None,
 ) -> list[dict[str, Any]]:
     """Сравнить текущий снимок СЭ с предыдущим/средним за день и записать события.
 
@@ -319,19 +368,22 @@ def detect_ce_events(
         return []
 
     if conn is not None:
-        _ensure_seed_table(conn, path, "ce_samples")
-        return _detect_ce(conn, ts, ce_list)
-    conn = _connect(path)
-    try:
-        _ensure_seed_table(conn, path, "ce_samples")
-        with conn:
-            return _detect_ce(conn, ts, ce_list)
-    finally:
-        conn.close()
+        with journal.event_operation(path, external_connection=True) as state:
+            ensure_events_schema_on(conn)
+            _ensure_seed_table(conn, path, "ce_samples")
+            return _detect_ce(conn, ts, ce_list, generation or state.generation)
+    with journal.event_operation(path) as state:
+        conn = _connect(path)
+        try:
+            _ensure_seed_table(conn, path, "ce_samples")
+            with conn:
+                return _detect_ce(conn, ts, ce_list, state.generation)
+        finally:
+            conn.close()
 
 
 def _detect_ce(
-    conn: sqlite3.Connection, ts: float, ce_list: list[dict[str, Any]]
+    conn: sqlite3.Connection, ts: float, ce_list: list[dict[str, Any]], generation: str
 ) -> list[dict[str, Any]]:
     created: list[dict[str, Any]] = []
     for ce in ce_list:
@@ -375,6 +427,7 @@ def _detect_ce(
                     value=v_now_f,
                     ref_value=v_prev,
                     message=msg,
+                    generation=generation,
                 ):
                     created.append(
                         {
@@ -419,6 +472,7 @@ def _detect_ce(
                     value=i_now_f,
                     ref_value=i_avg,
                     message=msg,
+                    generation=generation,
                 ):
                     created.append(
                         {
@@ -497,6 +551,8 @@ def detect_carel_events(
     path: Path | None = None,
     cooldown_s: float = 0.0,
     conn: sqlite3.Connection | None = None,
+    emit: bool = True,
+    generation: str | None = None,
 ) -> list[dict[str, Any]]:
     """Carel AHU edges → device_events: `alarm` 0→1 / 1→0 and every
     `plant_state` change, at the tick's own ts.
@@ -520,16 +576,23 @@ def detect_carel_events(
 
     key_path = str(db_path(path))
     if conn is not None:
-        _ensure_seed_table(conn, path, "carel_samples", column="alarm")
-        return _detect_carel(conn, ts, key_path, carel_list, cooldown_s)
-    conn = _connect(path)
-    try:
-        # `alarm` = the wide shape the seed reads (a 1.0.6.40 long table migrates).
-        _ensure_seed_table(conn, path, "carel_samples", column="alarm")
-        with conn:
-            return _detect_carel(conn, ts, key_path, carel_list, cooldown_s)
-    finally:
-        conn.close()
+        if not emit:
+            _ensure_seed_table(conn, path, "carel_samples", column="alarm")
+            return _detect_carel(conn, ts, key_path, carel_list, cooldown_s, emit=False)
+        with journal.event_operation(path, external_connection=True) as state:
+            ensure_events_schema_on(conn)
+            _ensure_seed_table(conn, path, "carel_samples", column="alarm")
+            return _detect_carel(conn, ts, key_path, carel_list, cooldown_s,
+                                 generation=generation or state.generation)
+    with journal.event_operation(path) as state:
+        conn = _connect(path)
+        try:
+            _ensure_seed_table(conn, path, "carel_samples", column="alarm")
+            with conn:
+                return _detect_carel(conn, ts, key_path, carel_list, cooldown_s,
+                                     emit=emit, generation=state.generation)
+        finally:
+            conn.close()
 
 
 def _detect_carel(
@@ -538,6 +601,9 @@ def _detect_carel(
     key_path: str,
     carel_list: list[dict[str, Any]],
     cooldown_s: float,
+    *,
+    emit: bool = True,
+    generation: str = "legacy",
 ) -> list[dict[str, Any]]:
     created: list[dict[str, Any]] = []
     for dev in carel_list:
@@ -553,7 +619,7 @@ def _detect_carel(
         plant_prev = prev.get("plant_state")
 
         if (
-            alarm_now is not None
+            emit and alarm_now is not None
             and alarm_prev is not None
             and alarm_now != alarm_prev
         ):
@@ -578,6 +644,7 @@ def _detect_carel(
                 ref_value=alarm_prev,
                 message=msg,
                 cooldown_s=cooldown_s,
+                generation=generation,
             ):
                 created.append(
                     {"ts": ts, "device_id": did, "kind": kind,
@@ -585,7 +652,7 @@ def _detect_carel(
                 )
 
         if (
-            plant_now is not None
+            emit and plant_now is not None
             and plant_prev is not None
             and plant_now != int(plant_prev)
         ):
@@ -606,6 +673,7 @@ def _detect_carel(
                 ref_value=float(plant_prev),
                 message=msg,
                 cooldown_s=cooldown_s,
+                generation=generation,
             ):
                 created.append(
                     {"ts": ts, "device_id": did, "kind": kind,
@@ -634,11 +702,20 @@ def list_events(
 ) -> dict[str, Any]:
     """Newest first. `t0`/`t1` (epoch s) window on ts; `kinds` restricts to a
     kind set (the chart asks for CAREL_EVENT_KINDS only)."""
+    with journal.event_operation(path) as state:
+        return _list_events(path=path, limit=limit, device_id=device_id, t0=t0,
+                            t1=t1, kinds=kinds, generation=state.generation)
+
+
+def _list_events(*, path, limit, device_id, t0, t1, kinds, generation):
     lim = max(1, min(int(limit if limit is not None else events_limit_default()), 500))
     conn = _connect(path)
     try:
-        clauses: list[str] = []
-        params: list[Any] = []
+        conn.execute("BEGIN")
+        validate_event_tags(conn)
+        predicate, arguments = generation_filter(generation)
+        clauses: list[str] = [predicate]
+        params: list[Any] = list(arguments)
         if device_id:
             clauses.append("device_id = ?")
             params.append(str(device_id).strip())
@@ -701,15 +778,16 @@ def purge_events(
     if conn is not None:
         n = conn.execute("DELETE FROM device_events WHERE ts < ?", (cut,)).rowcount
         return int(n or 0)
-    conn = _connect(path)
-    try:
-        with conn:
-            n = conn.execute(
-                "DELETE FROM device_events WHERE ts < ?", (cut,)
-            ).rowcount
-        return int(n or 0)
-    finally:
-        conn.close()
+    with journal.event_operation(path):
+        conn = _connect(path)
+        try:
+            with conn:
+                n = conn.execute(
+                    "DELETE FROM device_events WHERE ts < ?", (cut,)
+                ).rowcount
+            return int(n or 0)
+        finally:
+            conn.close()
 
 
 class EventsBusy(RuntimeError):
@@ -725,14 +803,7 @@ def _is_busy(exc: sqlite3.Error) -> bool:
 
 
 def _clear_targets(path: Path | None) -> list[Path]:
-    """The files whose device_events rows can reach the journal.
-
-    The read path (list_events) reads the ACTIVE file only — rotated archives
-    are never read for events and are left alone. An explicit `path` is the
-    whole answer; otherwise the eMMC staging file joins when it is a different
-    file: a promote merges it INTO the active one, device_events included
-    (device_history_migrate.HISTORY_TABLES), so rows left there would come
-    back into a journal the Operator cleared."""
+    """Accessible files physically counted/deleted; authority excludes offline rows."""
     active = db_path(path)
     out = [active]
     if path is None:
@@ -746,53 +817,25 @@ def _clear_targets(path: Path | None) -> list[Path]:
     return out
 
 
-def _clear_one(p: Path, busy_timeout_s: float) -> int:
-    # A plain connect, not _connect(): no schema DDL (the table either exists
-    # or there is nothing to clear) and the SHORT busy timeout, not 30 s.
-    conn = sqlite3.connect(str(p), timeout=busy_timeout_s, isolation_level=None)
-    try:
-        try:
-            has = conn.execute(
-                "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'device_events'"
-            ).fetchone()
-            if not has:
-                return 0
-            # IMMEDIATE takes the write lock up front, so a busy archive fails
-            # here — before anything is deleted — and inside the bound.
-            conn.execute("BEGIN IMMEDIATE")
-            try:
-                n = conn.execute("DELETE FROM device_events").rowcount
-                conn.execute("COMMIT")
-            except BaseException:
-                try:
-                    conn.execute("ROLLBACK")
-                except sqlite3.Error:
-                    pass
-                raise
-        except sqlite3.OperationalError as exc:
-            if _is_busy(exc):
-                raise EventsBusy(str(exc)) from exc
-            raise
-        return int(n or 0)
-    finally:
-        conn.close()
-
-
 def clear_events(
     path: Path | None = None, *, busy_timeout_s: float | None = None
 ) -> int:
-    """Delete EVERY device_events row (the «Очистить» button); return the count.
+    """Clear within the authority scope in docs/contracts/sa02m-devices-python-api.md §7.
 
-    Sample tables (ce/dtv/mr/carel/mtd and ce_roll) are untouched. A file that
-    does not exist is not created. The Carel detector seeds its baseline from
-    carel_samples, not from this table, so a clear re-creates no cleared edge —
-    only a real change after it lands. Raises EventsBusy when a file's write
-    lock is not granted within the bound; files are cleared one by one, so a
-    busy second file leaves the first cleared — a retry is idempotent."""
+    Return the physical count. Samples and Carel baselines remain intact;
+    generation publication excludes inaccessible older rows subject to that
+    scope's standalone exclusions. All archive write locks are acquired before
+    the first deletion, within one busy deadline.
+    """
     timeout = events_clear_busy_s() if busy_timeout_s is None else float(busy_timeout_s)
-    total = 0
-    for p in _clear_targets(path):
-        if not p.is_file():
-            continue
-        total += _clear_one(p, timeout)
-    return total
+    try:
+        from sa02m_devices.event_journal_delivery import clear_preflight
+
+        with clear_preflight():
+            return journal.clear(journal.domain_for(path), lambda: _clear_targets(path), timeout=timeout)
+    except journal.JournalBusy as exc:
+        raise EventsBusy(str(exc)) from exc
+    except sqlite3.OperationalError as exc:
+        if _is_busy(exc):
+            raise EventsBusy(str(exc)) from exc
+        raise

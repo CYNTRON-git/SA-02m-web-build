@@ -20,7 +20,7 @@ import sys
 from pathlib import Path
 from typing import Any
 
-from sa02m_devices import history_store
+from sa02m_devices import history_store, event_journal_state as journal
 from sa02m_devices.device_events import (
     carel_state_restore,
     carel_state_save,
@@ -102,9 +102,10 @@ class ArchiveWriter:
         self.flush_every_s = float(flush_every_s)
         self.interval_s = float(interval_s)
         self.conn: sqlite3.Connection | None = None
+        self._identity: tuple[int, int] | None = None
         self.last_flush_m: float | None = None
         self.dropped = 0
-        self._pending: list[tuple[dict[str, Any], bool]] = []
+        self._pending: list[tuple[dict[str, Any], bool, journal.Capture]] = []
 
     # -- buffer -----------------------------------------------------------
 
@@ -120,8 +121,10 @@ class ArchiveWriter:
         iv = max(0.2, self.interval_s)
         return 4 * math.ceil(max(self.flush_every_s, iv) / iv)
 
-    def add(self, snapshot: dict[str, Any], *, mr_due: bool) -> None:
-        self._pending.append((snapshot, bool(mr_due)))
+    def add(self, snapshot: dict[str, Any], *, mr_due: bool,
+            captured: journal.Capture | None = None) -> None:
+        self._pending.append((snapshot, bool(mr_due),
+                              captured if captured is not None else journal.capture(self.path)))
         over = len(self._pending) - self.max_pending
         if over > 0:
             del self._pending[:over]
@@ -134,7 +137,14 @@ class ArchiveWriter:
 
     def open(self) -> sqlite3.Connection:
         if self.conn is not None:
-            return self.conn
+            try:
+                info = self.path.stat()
+                identity = (info.st_dev, info.st_ino)
+            except FileNotFoundError:
+                identity = None
+            if identity == self._identity:
+                return self.conn
+            self._drop_conn()
         # Schema, migrations and the ce_roll DDL run once per connection life.
         conn = history_store._connect(self.path)
         try:
@@ -153,10 +163,13 @@ class ArchiveWriter:
             raise
         drop_legacy_carel_table(conn)
         self.conn = conn
+        info = self.path.stat()
+        self._identity = (info.st_dev, info.st_ino)
         return conn
 
     def _drop_conn(self) -> None:
         conn, self.conn = self.conn, None
+        self._identity = None
         if conn is None:
             return
         try:
@@ -173,27 +186,34 @@ class ArchiveWriter:
     # -- writing ----------------------------------------------------------
 
     def _replay(
-        self, conn: sqlite3.Connection, snap: dict[str, Any], mr_due: bool
+        self, conn: sqlite3.Connection, snap: dict[str, Any], mr_due: bool,
+        captured: journal.Capture, *, emit: bool,
     ) -> list[dict[str, Any]]:
         insert_sample(snap, conn=conn)
         if mr_due:
             insert_mr_sample(snap, conn=conn)
-            insert_carel_sample(snap, conn=conn)
             insert_mtd_sample(snap, conn=conn)
         # A detector failure costs its own events only, never the samples —
         # as when each ran in its own connection.
         before = carel_state_save()
         conn.execute("SAVEPOINT ev")
         try:
-            created = detect_ce_events(snap, path=self.path, conn=conn)
-            created += detect_carel_events(snap, path=self.path, conn=conn)
+            created = detect_ce_events(snap, path=self.path, conn=conn,
+                                       generation=captured.generation) if emit else []
+            created += detect_carel_events(snap, path=self.path, conn=conn,
+                                            generation=captured.generation, emit=emit)
         except Exception as exc:  # noqa: BLE001
             conn.execute("ROLLBACK TO ev")
             conn.execute("RELEASE ev")
             carel_state_restore(before)
             _err(f"events error: {exc}")
-            return []
-        conn.execute("RELEASE ev")
+            created = []
+        else:
+            conn.execute("RELEASE ev")
+        # A fresh detector must seed from the preceding archived observation,
+        # not from the current sample it is about to compare against that seed.
+        if mr_due:
+            insert_carel_sample(snap, conn=conn)
         return created
 
     def flush(self, *, now_m: float | None = None) -> list[dict[str, Any]]:
@@ -210,21 +230,29 @@ class ArchiveWriter:
             return []
         saved = carel_state_save()
         try:
-            conn = self.open()
-            conn.execute("BEGIN IMMEDIATE")
             try:
-                created: list[dict[str, Any]] = []
-                for snap, mr_due in self._pending:
-                    created += self._replay(conn, snap, mr_due)
-                conn.execute("COMMIT")
-            except BaseException:
-                if conn.in_transaction:
-                    try:
-                        conn.execute("ROLLBACK")
-                    except sqlite3.Error as exc:
-                        _err(f"archive rollback error: {exc}")
-                raise
-        except (sqlite3.Error, OSError) as exc:
+                destination = journal.domain_for(self.path)
+            except journal.JournalStateError as exc:
+                journal.diagnostic(None, exc)
+                destination = None
+            domains = [destination, *(item[2].domain for item in self._pending)]
+            with journal.guards(domains, tolerate_invalid=True) as states:
+                conn = self.open()
+                conn.execute("BEGIN IMMEDIATE")
+                try:
+                    created: list[dict[str, Any]] = []
+                    for snap, mr_due, captured in self._pending:
+                        created += self._replay(conn, snap, mr_due, captured,
+                                                emit=journal.eligible(captured, states[destination], states))
+                    conn.execute("COMMIT")
+                except BaseException:
+                    if conn.in_transaction:
+                        try:
+                            conn.execute("ROLLBACK")
+                        except sqlite3.Error as exc:
+                            _err(f"archive rollback error: {exc}")
+                    raise
+        except (sqlite3.Error, OSError, journal.JournalBusy) as exc:
             carel_state_restore(saved)
             self._drop_conn()
             raise ArchiveFlushError(
@@ -246,17 +274,18 @@ class ArchiveWriter:
 
     def purge(self) -> dict[str, int]:
         """The retention purge in its own transaction on the writer's connection."""
-        conn = self.open()
-        conn.execute("BEGIN IMMEDIATE")
-        try:
-            stats = purge_old(self.path, conn=conn)
-            conn.execute("COMMIT")
-        except BaseException:
-            if conn.in_transaction:
-                conn.execute("ROLLBACK")
-            self._drop_conn()
-            raise
-        return stats
+        with journal.guard(journal.domain_for(self.path)):
+            conn = self.open()
+            conn.execute("BEGIN IMMEDIATE")
+            try:
+                stats = purge_old(self.path, conn=conn)
+                conn.execute("COMMIT")
+            except BaseException:
+                if conn.in_transaction:
+                    conn.execute("ROLLBACK")
+                self._drop_conn()
+                raise
+            return stats
 
     def close(self) -> None:
         """Write what is buffered, then close — the last close is the one

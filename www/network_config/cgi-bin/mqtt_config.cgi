@@ -34,17 +34,30 @@ cfg_path = pathlib.Path("/etc/sa02m-modbus-mqtt.yaml")
 
 
 def capabilities():
+    caps = {}
+    sys.path.insert(0, sys.argv[1])
     try:
-        sys.path.insert(0, sys.argv[1])
         import bridge_bus
-        return bridge_bus.capabilities()
+        caps.update(bridge_bus.capabilities())
     except Exception as e:
         # Fail closed (no Ethernet option), but never silently: fcgiwrap
         # hands stderr to the nginx error log.
         print("mqtt_config.cgi: Modbus TCP validator unavailable - cannot "
               "import bridge_bus from %s: %s; the Ethernet option is hidden"
               % (sys.argv[1], e), file=sys.stderr)
-        return None
+    try:
+        from bridge_dtv_catalog import configuration_capability
+        dtv = configuration_capability()
+        # Fail independently of transport metadata if the optional module is broken.
+        json.dumps(dtv, allow_nan=False)
+        if not isinstance(dtv, dict) or not all(k in dtv for k in
+                ("sensor_keys", "always_polled_keys", "poll_defaults")):
+            raise ValueError("invalid configuration capability")
+        caps["dtv_channels"] = dtv
+    except Exception as e:
+        print("mqtt_config.cgi: DTV catalogue unavailable from %s: %s; "
+              "sensor selection is unavailable" % (sys.argv[1], e), file=sys.stderr)
+    return caps or None
 
 
 try:

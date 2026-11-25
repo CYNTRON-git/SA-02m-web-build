@@ -183,7 +183,7 @@ fi
 # tests/test_entry_surface.py EXPECTED_MODULES and scripts/update-www-only.sh.
 for f in bridge_meta.py bridge_uart.py bridge_serial.py bridge_bus.py bridge_probe.py bridge_tcp.py bridge_rtu_tcp.py bridge_scan_lease.py \
          bridge_mqtt.py bridge_fmb.py bridge_mr02m_map.py \
-         bridge_device.py bridge_mr02m.py bridge_dtv_ce.py bridge_template_channels.py bridge_template.py \
+         bridge_device.py bridge_mr02m.py bridge_dtv_catalog.py bridge_dtv_ce.py bridge_template_channels.py bridge_template.py \
          bridge_carel.py bridge_led.py bridge_spodes.py bridge_admission.py; do
     install -m 0755 -o root -g root "$OPT_DIR/$f" "$BRIDGE_DIR/$f" || exit 1
 done

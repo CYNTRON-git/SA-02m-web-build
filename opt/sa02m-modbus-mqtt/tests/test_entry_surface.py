@@ -57,6 +57,7 @@ EXPECTED_MODULES = [
     "bridge_bus",
     "bridge_carel",
     "bridge_device",
+    "bridge_dtv_catalog",
     "bridge_dtv_ce",
     "bridge_fmb",
     "bridge_led",

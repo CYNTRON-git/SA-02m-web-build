@@ -2,6 +2,8 @@
 import hashlib
 import http.client
 from http.server import ThreadingHTTPServer
+from contextlib import redirect_stderr
+import io
 import json
 from pathlib import Path
 import sys
@@ -18,6 +20,7 @@ from sa02m_alice.home.server import Handler
 from sa02m_alice.home.bridge import request
 from sa02m_alice.client.sio_handlers import SioHandlers
 from sa02m_alice.common import constants as C
+from sa02m_alice.home.contract import APIError
 
 
 class Dummy:
@@ -114,6 +117,35 @@ class HTTPTests(unittest.TestCase):
         with patch("sa02m_alice.home.server.check_csrf", return_value=(True, "")):
             with self.assertRaises(AssertionError):
                 self.assertEqual(self.call("POST", "/api/home/v1/controllers/SA-test/lease", b"{}", csrf=False)[0], 403)
+
+    def test_internal_errors_log_only_fixed_operation_and_exception_type(self):
+        secret = "PRIVATE_SENTINEL"
+        for error, status, code in ((OSError, 503, "temporarily_unavailable"),
+                                    (ValueError, 503, "temporarily_unavailable"),
+                                    (RuntimeError, 500, "internal")):
+            with self.subTest(error=error.__name__):
+                stderr = io.StringIO()
+                exception = error(secret + "\npassword=secret\x1b /private/path " + self.token)
+                with patch.object(self.server.dispatcher, "request", side_effect=exception), \
+                        redirect_stderr(stderr), self.assertLogs("sa02m-home.server") as logs:
+                    result = self.call("POST", "/api/home/v1/controllers/SA-test/snapshot?private=" + secret,
+                                       json.dumps({"private": secret}), headers={"X-Private": secret})
+                self.assertEqual(result, (status, {"ok": False, "error": code}))
+                self.assertEqual(len(logs.records), 1)
+                record = logs.records[0]
+                self.assertEqual(record.getMessage(), "home operation=http_request error_type=" + error.__name__)
+                self.assertIsNone(record.exc_info)
+                self.assertIsNone(record.stack_info)
+                output = "\n".join(logs.output) + stderr.getvalue()
+                for forbidden in (secret, self.token, self.csrf, "SA-test", "password", "/private", "Traceback"):
+                    self.assertNotIn(forbidden, output)
+
+    def test_expected_client_refusals_do_not_log_internal_errors(self):
+        with self.assertNoLogs("sa02m-home.server"):
+            self.assertEqual(self.call(auth=False)[0], 401)
+            self.assertEqual(self.call("POST", body="{")[0], 400)
+            with patch.object(self.server.dispatcher, "request", side_effect=APIError(409, "conflict")):
+                self.assertEqual(self.call(), (409, {"ok": False, "error": "conflict"}))
 
 
 class BridgeTests(unittest.TestCase):
