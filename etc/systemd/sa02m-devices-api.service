@@ -9,9 +9,9 @@ Environment=PYTHONPATH=/opt/sa02m-devices
 # Primary listener: the AF_UNIX socket, the ONLY server of nginx's upstream
 # (0660 root:www-data, the daemon re-asserts the mode; any www-data process can
 # connect — the daemon's session check is what holds). The loopback TCP pair
-# below is the compat listener for an OTA-only board whose old site file still
-# proxies to 127.0.0.1:8765 (GitHub-OTA does not carry the site file —
-# docs/deployment.md): STAND_API_TCP_COMPAT=auto keeps it open only while the
+# below is the compat listener for a board whose old site file still
+# proxies to 127.0.0.1:8765 (delivery paths: docs/deployment.md).
+# STAND_API_TCP_COMPAT=auto keeps it open only while the
 # live site file does not name the socket. 0/1 force it. The daemon reads the
 # site file at start: scripts/11-devices.sh renders nginx BEFORE (re)starting
 # this unit for that reason. Operator overrides go in a drop-in, never in
@@ -20,7 +20,12 @@ Environment=STAND_API_SOCKET=/run/sa02m-devices/api.sock
 Environment=STAND_API_TCP_COMPAT=auto
 Environment=STAND_API_HOST=127.0.0.1
 Environment=STAND_API_PORT=8765
+Environment=STAND_DEVICES_EVENTS_STATE_DIR=/var/lib/sa02m-devices/event-journal
+Environment=STAND_DEVICES_EVENTS_BOOTSTRAP_DIR=/var/lib/sa02m-devices-journal-init
+Environment=STAND_DEVICES_EVENTS_UPDATE_DIR=/var/lib/sa02m-update
+Environment=STAND_DEVICES_EVENTS_PROTOCOL=1
 EnvironmentFile=-/etc/default/sa02m-devices
+ExecStartPre=-/usr/bin/python3 -I /opt/sa02m-devices/sa02m_devices_journal_startup.py prepare --consumer devices-api
 ExecStart=/usr/bin/python3 /opt/sa02m-devices/sa02m_devices_api.py
 # /run/sa02m-devices for the socket: dir 0755 (traversable by www-data), the
 # socket's own 0660 is the boundary. systemd wipes it on stop; the daemon

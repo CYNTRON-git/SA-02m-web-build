@@ -27,7 +27,7 @@ _ROOT = Path(__file__).resolve().parents[1]
 if str(_ROOT) not in sys.path:
     sys.path.insert(0, str(_ROOT))
 
-from sa02m_devices import history_store  # noqa: E402
+from sa02m_devices import history_store, event_journal_state as journal  # noqa: E402
 from sa02m_devices.device_history_db import rotate_if_needed  # noqa: E402
 from sa02m_devices.device_history_migrate import (  # noqa: E402
     _db_has_rows,
@@ -108,14 +108,15 @@ def logger_tick(target, state: LoggerState, *, now_m: float | None = None) -> No
 
     snapshot → filter removed widgets → buffer. Once per batch the writer
     replays the buffer in tick order in one transaction: dtv/ce rows (every
-    tick) → MR + Carel rows (MR_INTERVAL_S) → CE spike events + Carel
-    alarm/state edges (every tick, cooldown 0, at the tick's own ts — the
-    fault moment is read from these). After a written batch: rotate → purge.
+    tick) → MR/MTD rows (MR_INTERVAL_S) → CE spike events + Carel
+    alarm/state edges (every tick, cooldown 0, at the tick's own ts) → Carel
+    rows (MR_INTERVAL_S). After a written batch: rotate → purge.
     Storage-target resolution and the eMMC promote stay in main(): they change
     `target`, this body only writes to it.
     """
     now_m = time.monotonic() if now_m is None else now_m
-    snap = live_snapshot()
+    with journal.observation(target.active_path) as captured:
+        snap = live_snapshot()
     try:
         snap = filter_for_archive(snap)
     except Exception:  # noqa: BLE001
@@ -124,7 +125,7 @@ def logger_tick(target, state: LoggerState, *, now_m: float | None = None) -> No
     # MR-02m AI and Carel on their own (slower) cadence — same already-built
     # snap, no extra bus/MQTT I/O; only the SQLite write is added.
     mr_due = now_m - state.last_mr >= MR_INTERVAL_S
-    writer.add(snap, mr_due=mr_due)
+    writer.add(snap, mr_due=mr_due, captured=captured)
     if mr_due:
         state.last_mr = now_m
     if state.flush_every_s > 0 and not writer.due(now_m):
@@ -189,12 +190,28 @@ def _staging_absorb_due(target) -> bool:
     return _db_has_rows(staging)
 
 
+def _try_promote(state: LoggerState, target, source=(None, None)):
+    """A failed history transfer must not prevent sampling the selected media."""
+    try:
+        if source[0] is not None or _staging_absorb_due(target):
+            close_writer(state)
+        report = promote_on_backend_change(
+            source[0], source[1], target.backend, target.active_path
+        )
+    except Exception as exc:  # noqa: BLE001
+        report = {"ok": False, "error": str(exc)}
+    if report:
+        if not report.get("ok"):
+            print(f"logger error: archive promotion failed: {report}", file=sys.stderr, flush=True)
+        elif any(s.get("action") in ("copy", "merge") for s in report.get("steps", [])):
+            print(f"promote: {report}", flush=True)
+    return report
+
+
 def main() -> int:
     signal.signal(signal.SIGTERM, _on_term)
     signal.signal(signal.SIGINT, _on_term)
     state = LoggerState(flush_every_s=FLUSH_EVERY_S)
-    prev_backend: str | None = None
-    prev_path: Path | None = None
     target = resolve_storage_target(force_refresh=True)
     print(
         f"devices logger: backend={target.backend} path={target.active_path} "
@@ -203,11 +220,8 @@ def main() -> int:
         f"flush_every={FLUSH_EVERY_S}s",
         flush=True,
     )
-    prev_backend = target.backend
-    prev_path = target.active_path
-
     try:
-        _run_loop(state, target, prev_backend, prev_path)
+        _run_loop(state, target)
     finally:
         # SIGTERM/SIGINT end the loop; an exception escaping it lands here too.
         close_writer(state)
@@ -215,16 +229,21 @@ def main() -> int:
     return 0
 
 
-def _run_loop(state: LoggerState, target, prev_backend, prev_path) -> None:
+def _run_loop(state: LoggerState, target) -> None:
     last_resolve = 0.0
+    # Only failed transfers are retained, independently of the recording
+    # target. Sources are the canonical targets actually visited this run.
+    pending_sources: dict[tuple[str, Path], None] = {}
     while not _stop:
         t0 = time.monotonic()
         interval = _tick_interval(target)
+        promotion_attempted = False
         try:
             now_m = time.monotonic()
             if now_m - last_resolve >= RESOLVE_EVERY_S:
                 invalidate_resolve_cache()
                 new_target = resolve_storage_target(force_refresh=True)
+                sources = list(pending_sources)
                 if (
                     new_target.backend != target.backend
                     or new_target.active_path != target.active_path
@@ -232,38 +251,44 @@ def _run_loop(state: LoggerState, target, prev_backend, prev_path) -> None:
                     # The buffer belongs to the OLD file: write it there, and
                     # release the file, before the promote moves it.
                     close_writer(state)
-                    report = promote_on_backend_change(
-                        prev_backend,
-                        prev_path,
-                        new_target.backend,
-                        new_target.active_path,
-                    )
-                    if report:
-                        print(f"promote: {report}", flush=True)
+                    source = (target.backend, target.active_path)
+                    if source not in sources:
+                        sources.append(source)
                     print(
                         f"devices logger: switch {target.backend} → "
                         f"{new_target.backend} path={new_target.active_path}",
                         flush=True,
                     )
-                    prev_backend = target.backend
-                    prev_path = target.active_path
-                    target = new_target
-                else:
-                    target = new_target
+                target = new_target
+                for source in sources:
+                    if source[1] == target.active_path:
+                        pending_sources.pop(source, None)
+                        continue
+                    if source in pending_sources and not source[1].is_file():
+                        continue  # removed media may return on a later resolve
+                    promotion_attempted = True
+                    report = _try_promote(state, target, source)
+                    steps = report.get("steps", []) if report else []
+                    completed = {s.get("source") for s in steps if s.get("ok")}
+                    for done in list(pending_sources):
+                        if str(done[1]) in completed:
+                            pending_sources.pop(done, None)
+                    if report and not report.get("ok") and str(source[1]) not in completed:
+                        pending_sources[source] = None
+                    elif source in pending_sources:
+                        if source[1].is_file() and not _db_has_rows(source[1]):
+                            pending_sources.pop(source, None)
+                    staging = emmc_staging_path()
+                    if any(not s.get("ok") and s.get("source") == str(staging) for s in steps):
+                        pending_sources[("emmc", staging)] = None
                 last_resolve = now_m
 
             # Absorb eMMC staging whenever on removable (even without switch)
-            if target.backend in ("usb", "sd"):
-                if _staging_absorb_due(target):
-                    close_writer(state)
-                report = promote_on_backend_change(
-                    None, None, target.backend, target.active_path
-                )
-                if report and any(
-                    s.get("action") in ("copy", "merge")
-                    for s in (report.get("steps") or [])
-                ):
-                    print(f"promote: {report}", flush=True)
+            # A failed absorb joins the same resolve-cadence retry queue.
+            if target.backend in ("usb", "sd") and not promotion_attempted and not pending_sources:
+                report = _try_promote(state, target)
+                if report and not report.get("ok"):
+                    pending_sources[("emmc", emmc_staging_path())] = None
 
             logger_tick(target, state, now_m=now_m)
         except Exception as exc:  # noqa: BLE001

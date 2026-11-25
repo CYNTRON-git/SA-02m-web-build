@@ -70,6 +70,7 @@ RC_RUN="$T/run/resolvconf/interface"
 RESOLV="$T/resolv.conf"
 NETCONF="$T/sa02m_network.conf"
 SYS="$T/sys/class/net"
+UPTIME="$T/uptime"
 BASE="$T/resolvconf-base"         # stands in for resolv.conf.d/base
 BIN="$T/bin"
 CALLS="$T/calls.log"
@@ -87,6 +88,7 @@ sed -e "s#^IFACE_CONF_DIR=/etc/network/interfaces\.d\$#IFACE_CONF_DIR=$CD#" \
 sed -e "s#^NET_CONF=/etc/sa02m_network\.conf\$#NET_CONF=$NETCONF#" \
     -e "s#^IFACE_CONF_DIR=/etc/network/interfaces\.d\$#IFACE_CONF_DIR=$CD#" \
     -e "s#^SYS_NET_DIR=/sys/class/net\$#SYS_NET_DIR=$SYS#" \
+    -e "s#^UPTIME_FILE=/proc/uptime\$#UPTIME_FILE=$UPTIME#" \
     "$WAIT_SRC" > "$WAIT"
 chmod +x "$DNS" "$WAIT"
 
@@ -101,6 +103,13 @@ for pat in "NET_CONF=$NETCONF" "IFACE_CONF_DIR=$CD" "SYS_NET_DIR=$SYS"; do
 done
 grep -Eq '^[A-Z_]+=/etc/' "$DNS" && { echo "FAIL  dns-ensure still holds an /etc root"; exit 1; }
 grep -Eq '^[A-Z_]+=/(etc|sys|run)/' "$WAIT" && { echo "FAIL  wait-carrier still holds a real root"; exit 1; }
+# Only constant assignments may differ; this also supports the original source
+# override for RED reproduction before UPTIME_FILE existed.
+sed -e "s#^NET_CONF=$NETCONF\$#NET_CONF=/etc/sa02m_network.conf#" \
+    -e "s#^IFACE_CONF_DIR=$CD\$#IFACE_CONF_DIR=/etc/network/interfaces.d#" \
+    -e "s#^SYS_NET_DIR=$SYS\$#SYS_NET_DIR=/sys/class/net#" \
+    -e "s#^UPTIME_FILE=$UPTIME\$#UPTIME_FILE=/proc/uptime#" "$WAIT" > "$T/wait-restored"
+cmp -s "$WAIT_SRC" "$T/wait-restored" || { echo 'FAIL  wait retarget changed more than constants'; exit 1; }
 
 # ── PATH shims ─────────────────────────────────────────────────────────────
 # resolvconf models the real thing closely enough for the assertions that
@@ -137,16 +146,42 @@ cat > "$BIN/ip" <<SHIM
 echo "ip \$*" | tee -a "$CALLS_ALL" >> "$CALLS"
 if [ "\${1:-}" = "link" ] && [ "\${2:-}" = "set" ] && [ "\${4:-}" = "up" ]; then
     _i="\$3"
+    touch "$SYS/\$_i/.up"
     [ -f "$SYS/\$_i/.pending" ] && cp "$SYS/\$_i/.pending" "$SYS/\$_i/carrier"
 fi
 exit 0
 SHIM
 chmod +x "$BIN/resolvconf" "$BIN/logger" "$BIN/ip"
+cat > "$BIN/ifquery" <<SHIM
+#!/bin/bash
+echo "ifquery \$*" | tee -a "$CALLS_ALL" >> "$CALLS"
+[ "\$#" = 2 ] && [ "\$1" = --no-mappings ] || exit 2
+[ "\${QUERY_FAIL:-0}" = 0 ] || exit 1
+if [ -f "$T/query-\$2" ]; then cat "$T/query-\$2"; exit 0; fi
+printf 'address: 192.168.1.136\n'
+if [ -f "$CD/\$2.conf" ]; then
+  awk -v iface="\$2" '\$1=="iface" { own=(\$2==iface); next } own && \$1=="hwaddress" { \$1=""; sub(/^[ \\t]+/, ""); print "hwaddress: " \$0 }' "$CD/\$2.conf"
+fi
+SHIM
+cat > "$BIN/timeout" <<SHIM
+#!/bin/bash
+echo "timeout \$*" | tee -a "$CALLS_ALL" >> "$CALLS"
+case "\${1:-}" in 1|2) ;; *) exit 2 ;; esac
+[ "\${2:-}" = ifquery ] || exit 2
+[ "\${QUERY_TIMEOUT:-0}" = 0 ] || exit 124
+if [ "\${QUERY_DELAY:-0}" != 0 ]; then
+    if [ "\$QUERY_DELAY" -ge "\$1" ]; then sleep "\$1"; exit 124; fi
+    sleep "\$QUERY_DELAY"
+fi
+shift; exec "\$@"
+SHIM
+chmod +x "$BIN/ifquery" "$BIN/timeout"
 PATH="$BIN:$PATH"; export PATH
 
 reset() {
     rm -rf "$CD" "$RC_RUN" "$SYS"; mkdir -p "$CD" "$RC_RUN" "$SYS"
     : > "$CALLS"; : > "$LOGGED"; : > "$RESOLV"; : > "$NETCONF"
+    rm -f "$T"/query-*
     printf '# SA-02m fallback DNS\nnameserver 8.8.8.8\nnameserver 8.8.4.4\n' > "$BASE"
 }
 # `grep -c` prints 0 AND exits 1 on no match, so a `|| echo 0` fallback would
@@ -390,8 +425,9 @@ seed_iface() {   # $1 iface, $2 carrier now ("" = unreadable/admin-down), $3 car
 # agents in parallel a zero-sleep path took 3–5 s of `date`/`sed`/`grep`/shim
 # forks and the cases went RED with the shipped loop unchanged, while an idle
 # host and WSL passed (every review of 2026-09-29/30). The wait reads time
-# through `date +%s` and waits through `sleep 1` — the two calls in wait_one —
-# so both are PATH shims for its invocations (run_wait; never for the harness
+# through a retargeted /proc/uptime and waits through `sleep 1`; the original
+# wall-clock implementation remains reproducible with WAIT_CARRIER_SRC.
+# Both date/sleep are PATH shims for its invocations (never for the harness
 # or dns-ensure): `sleep N` advances a clock file by N and returns at once,
 # `date +%s` reads it. Elapsed is then exactly the loop's own sleeps — a burned
 # budget reads as the budget, a zero-sleep path reads 0 — whatever the host is
@@ -405,7 +441,8 @@ cat > "$CLK/date" <<SHIM
 #!/bin/bash
 if [ "\$#" = 1 ] && [ "\$1" = "+%s" ]; then
     read -r _t < "$CLOCK" 2>/dev/null || _t=0
-    echo \$((1700000000 + _t)); exit 0
+    _jump=0; [ "\$_t" -lt 1 ] || _jump=\${WALL_JUMP:-0}
+    echo \$((1700000000 + _t + _jump)); exit 0
 fi
 PATH=/usr/bin:/bin exec date "\$@"
 SHIM
@@ -415,6 +452,12 @@ echo "sleep \$*" | tee -a "$CALLS_ALL" >> "$CALLS"
 _n=\${1%%.*}; case "\$_n" in ''|*[!0-9]*) _n=1 ;; esac
 read -r _t < "$CLOCK" 2>/dev/null || _t=0
 _t=\$((_t + _n)); echo "\$_t" > "$CLOCK"
+printf '%s.00 0.00\n' "\$_t" > "$UPTIME"
+case "\${UPTIME_BREAK:-}" in
+  malformed) echo invalid > "$UPTIME" ;;
+  missing) rm -f "$UPTIME" ;;
+  backward) echo '0.00 0.00' > "$UPTIME" ;;
+esac
 if [ "\$_t" -gt $CLOCK_CAP ]; then
     echo "harness: the wait slept past $CLOCK_CAP simulated seconds without reaching a deadline — stopped" >> "$LOGGED"
     kill -TERM "\$PPID" 2>/dev/null
@@ -425,7 +468,9 @@ chmod +x "$CLK/date" "$CLK/sleep"
 clock_now() { read -r _t < "$CLOCK" 2>/dev/null || _t=0; echo "$_t"; }
 run_wait() {   # runs the wait from simulated 0; leaves rc, el (simulated s), sleeps (count)
     echo 0 > "$CLOCK"
-    PATH="$CLK:$PATH" "$WAIT" "$@" >/dev/null 2>&1; rc=$?
+    printf '%s\n' "${UPTIME_INITIAL:-0.00 0.00}" > "$UPTIME"
+    [ "${UPTIME_MISSING:-0}" = 0 ] || rm -f "$UPTIME"
+    PATH="$CLK:$PATH" dash "$WAIT" "$@" >/dev/null 2>&1; rc=$?
     el=$(clock_now); sleeps=$(grep -c '^sleep ' "$CALLS" 2>/dev/null || true)
 }
 # Precondition: the clock is live and advances ONLY through `sleep` — a shim
@@ -606,6 +651,124 @@ if [ -n "$cap" ] && [ "$cap" -le 120 ] && [ "$cap" -lt 300 ]; then
 else
     bad "wait: MAX_WAIT_SECS='$cap' is missing or not safely under 300 s"
 fi
+
+# Clock corrections and MAC ownership: execute the whole shipped helper in dash.
+for jump in 900 -900; do
+    reset; seed_iface eth0 0; conf_static eth0 ''
+    WALL_JUMP=$jump run_wait eth0
+    if [ "$rc" = 0 ] && [ "$el" = 10 ] && grep -q 'after 10s' "$LOGGED"; then
+        ok "wait: wall jump $jump leaves the 10-second uptime budget and elapsed intact"
+    else bad "wait: wall jump $jump rc=$rc elapsed=$el log=$(cat "$LOGGED")"; fi
+done
+reset; seed_iface eth0 0; seed_iface eth1 0
+conf_static eth0 ''; conf_static eth1 ''
+run_wait --auto
+if [ "$rc" = 0 ] && [ "$el" = 10 ] && [ "$sleeps" = 10 ]; then
+    ok 'wait: two interfaces share one total deadline'
+else bad "wait: shared budget rc=$rc elapsed=$el sleeps=$sleeps"; fi
+
+for value in invalid '' '-1.0 0' '1x.0 0' '1.x 0' '999999999999999999999.00 0'; do
+    reset; seed_iface eth0 '' 1
+    # A single blank exercises empty input without the default expansion.
+    UPTIME_INITIAL="${value:- }" run_wait eth0
+    if [ "$rc" = 0 ] && [ "$el" = 0 ] && [ ! -s "$CALLS" ] \
+       && grep -q 'uptime unavailable' "$LOGGED" && ! grep -q 'carrier up' "$LOGGED"; then
+        ok 'wait: malformed uptime is an honest no-action success exit'
+    else bad 'wait: malformed uptime caused a wait, action or false carrier success'; fi
+done
+reset; seed_iface eth0 '' 1
+UPTIME_MISSING=1 run_wait eth0
+if [ "$rc" = 0 ] && [ ! -s "$CALLS" ] && grep -q 'uptime unavailable' "$LOGGED"; then
+    ok 'wait: unreadable uptime skips all network probes'
+else bad 'wait: unreadable uptime was not bounded'; fi
+for broken in malformed missing backward; do
+    reset; seed_iface eth0 0
+    UPTIME_INITIAL='1.00 0.00' UPTIME_BREAK=$broken run_wait eth0
+    if [ "$rc" = 0 ] && [ "$el" -le 2 ] && grep -q 'uptime unavailable' "$LOGGED" \
+       && ! grep -q 'carrier up\|after .*s' "$LOGGED"; then
+        ok "wait: $broken mid-wait clock ends without fabricated elapsed"
+    else bad "wait: $broken clock did not stop safely (elapsed=$el)"; fi
+done
+reset; seed_iface eth0 0; printf 'IFUP_CARRIER_WAIT_SECS=010\n' > "$NETCONF"
+UPTIME_INITIAL='0000.00 0.00' run_wait eth0
+[ "$rc:$el" = 0:10 ] && ok 'wait: leading zero uptime/budget remain decimal' || bad 'wait: decimal uptime failed'
+reset; seed_iface eth0 '' 1; printf 'IFUP_CARRIER_WAIT_SECS=0\n' > "$NETCONF"
+UPTIME_MISSING=1 run_wait eth0
+[ "$rc" = 0 ] && [ ! -s "$CALLS" ] && [ ! -s "$LOGGED" ] \
+    && ok 'wait: zero budget makes no query/ip/sleep, even with absent clock' || bad 'wait: zero is not inert'
+
+for mode in direct auto sourced; do
+  for mac in '02:53:f9:42:bc:1f' 'ether 02:53:b4:4c:14:bf'; do
+    reset; seed_iface eth0 '' 1; conf_static eth0 ''
+    if [ "$mode" = sourced ]; then printf 'address: 192.168.1.136\nhwaddress: %s\n' "$mac" > "$T/query-eth0"
+    else printf '    hwaddress %s\n' "$mac" >> "$CD/eth0.conf"; fi
+    if [ "$mode" = auto ]; then run_wait --auto; else run_wait eth0; fi
+    if [ "$rc" = 0 ] && [ "$el" = 0 ] && ! grep -q '^ip ' "$CALLS" \
+       && grep -q 'hwaddress.*deferred to ifupdown' "$LOGGED" && ! grep -q 'carrier up' "$LOGGED"; then
+        ok "wait: $mode hwaddress defers MAC and initial link-up to ifupdown"
+    else bad "wait: $mode hwaddress was pre-raised or misreported"; fi
+  done
+done
+reset; seed_iface eth0 '' 1; conf_static eth0 ''
+printf '# hwaddress ether 02:53:f9:42:bc:1f\niface eth1 inet static\n    hwaddress ether 02:53:f9:42:bc:1f\n' >> "$CD/eth0.conf"
+run_wait eth0
+[ "$rc" = 0 ] && [ "$(grep -c '^ip link set eth0 up$' "$CALLS")" = 1 ] \
+    && ok 'wait: another stanza/comment does not defer a confirmed clean target' || bad 'wait: wrong stanza caused deferral'
+for failure in failed timeout ambiguous empty; do
+    reset; seed_iface eth0 '' 1
+    case "$failure" in
+      failed) QUERY_FAIL=1 run_wait eth0 ;;
+      timeout) QUERY_TIMEOUT=1 run_wait eth0 ;;
+      ambiguous) printf 'address: 1\naddress: 2\n' > "$T/query-eth0"; run_wait eth0 ;;
+      empty) : > "$T/query-eth0"; run_wait eth0 ;;
+    esac
+    if [ "$rc" = 0 ] && [ "$el" = 0 ] && ! grep -q '^ip ' "$CALLS" && grep -q 'query.*deferred' "$LOGGED"; then
+        ok "wait: $failure effective config defers without unsafe link-up"
+    else bad "wait: $failure effective config was treated as clean"; fi
+done
+for absent in timeout ifquery; do
+    reset; seed_iface eth0 '' 1
+    limited="$T/no-$absent"; mkdir -p "$limited"
+    for tool in dash cat grep sed tail tr awk basename logger ip sleep; do
+        if [ "$tool" = sleep ]; then ln -sf "$CLK/sleep" "$limited/$tool"
+        else ln -sf "$(command -v "$tool")" "$limited/$tool"; fi
+    done
+    if [ "$absent" = timeout ]; then ln -sf "$BIN/ifquery" "$limited/ifquery"
+    else ln -sf "$BIN/timeout" "$limited/timeout"; fi
+    echo '0.00 0.00' > "$UPTIME"
+    PATH="$limited" dash "$WAIT" eth0 >/dev/null 2>&1; rc=$?
+    if [ "$rc" = 0 ] && [ ! -s "$CALLS" ] && grep -q 'bounded query unavailable' "$LOGGED"; then
+        ok "wait: missing $absent defers safely without unbounded execution"
+    else bad "wait: missing $absent was not safe"; fi
+done
+reset; seed_iface eth0 1; seed_iface eth1 1; conf_static eth0 ''; conf_static eth1 ''
+printf 'IFUP_CARRIER_WAIT_SECS=3\n' > "$NETCONF"
+QUERY_DELAY=1 run_wait --auto
+if [ "$rc" = 0 ] && [ "$el" = 2 ] && [ "$(grep -c '^timeout 2 ifquery' "$CALLS")" = 2 ]; then
+    ok 'wait: query cost is included in the shared uptime budget'
+else bad 'wait: effective query time escaped the budget'; fi
+reset; seed_iface eth0 1; seed_iface eth1 1; conf_static eth0 ''; conf_static eth1 ''
+printf 'IFUP_CARRIER_WAIT_SECS=2\n' > "$NETCONF"
+QUERY_DELAY=1 run_wait --auto
+if [ "$rc" = 0 ] && [ "$el" = 2 ] && grep -q '^timeout 1 ifquery' "$CALLS" && ! grep -q '^ip ' "$CALLS"; then
+    ok 'wait: query timeout shrinks to the single remaining second'
+else bad 'wait: query timeout exceeded remaining budget'; fi
+
+# Model ifupdown's observed address -> MAC/up -> route -> ifstate sequence.
+# sun4i rejects a MAC assignment on an already-UP link, even the same address.
+model_ifup() {
+    [ ! -e "$T/ifstate" ] || return 0
+    [ ! -e "$T/address" ] || return 17
+    touch "$T/address"
+    [ ! -e "$SYS/eth0/.up" ] || return 16
+    touch "$SYS/eth0/.up" "$T/route" "$T/ifstate"
+}
+reset; seed_iface eth0 '' 1; conf_static eth0 'hwaddress ether 02:53:f9:42:bc:1f'
+run_wait eth0
+model_ifup; first=$?; model_ifup; second=$?
+if [ "$rc:$first:$second" = 0:0:0 ] && [ -e "$T/route" ] && [ -e "$T/ifstate" ]; then
+    ok 'wait: full ifup composition completes once and ifstate avoids EEXIST'
+else bad "wait: full ifup composition failed first=$first second=$second (16=EBUSY 17=EEXIST)"; fi
 
 # ═══ wiring — the units and drop-ins the mechanism depends on ══════════════
 

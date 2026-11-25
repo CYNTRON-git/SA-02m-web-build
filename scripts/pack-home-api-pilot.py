@@ -13,6 +13,7 @@ EXACT = (
     "opt/sa02m-alice/sa02m_alice/client/device_registry.py",
     "opt/sa02m-alice/sa02m_alice/client/sio_connection.py",
     "opt/sa02m-alice/sa02m_alice/client/sio_handlers.py",
+    "opt/sa02m-alice/sa02m_alice/common/constants.py",
     "opt/sa02m-rules/sa02m_rules/document_lock.py",
     "opt/sa02m-rules/sa02m_rules/home_command.py",
     "opt/sa02m-rules/sa02m_rules/home_document.py",

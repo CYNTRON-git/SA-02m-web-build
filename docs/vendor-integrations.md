@@ -165,6 +165,22 @@ sudo bash scripts/dev/build-nodered-payload.sh --out /root/nodered-payload
 (mtime/gzip) и не доступность реестра — провенанс закрывается суммами в
 `BUILD-INFO.txt`.
 
+**JSONata закреплена на 2.2.1 через корневой npm `overrides`.** Node-RED
+4.1.13 использует её в `@node-red/util` и выражениях Change/Switch; штатный
+пин 2.0.6 уязвим. Версия 2.2.1 закрывает
+[GHSA-2943-5xfg-gq5f](https://github.com/advisories/GHSA-2943-5xfg-gq5f),
+[GHSA-8gq3-vp5j-2grp](https://github.com/advisories/GHSA-8gq3-vp5j-2grp) и
+[GHSA-66mm-25pp-rfff](https://github.com/advisories/GHSA-66mm-25pp-rfff).
+Lock генерируется npm; установленный код библиотек не патчится. Проверка
+`node scripts/dev/test-nodered-jsonata.mjs` исполняет реально разрешённую
+зависимость, обычные выражения через util, поток Change/Switch и безопасные
+регрессии доступа к прототипам. По умолчанию она делает изолированный `npm ci`.
+Для проверки готового payload без сети доступны только тестовые переменные
+`SA02M_NODERED_TEST_ROOT` и `SA02M_NODERED_TEST_RECEIPT`: обе обязательны,
+проверяются SHA-256 исходных manifest/lock, архива и дерева распаковки.
+Остальные зависимости требуют отдельного аудита; этот пин не означает,
+что всё дерево свободно от известных уязвимостей.
+
 **Почему `--omit=optional`.** Единственная нативная зависимость node-red
 4.1.13 — `@node-rs/bcrypt` (napi). Без неё дерево — **чистый JavaScript**, а
 значит: не нужен компилятор и `build-essential`/`python3` на плате, и — главное

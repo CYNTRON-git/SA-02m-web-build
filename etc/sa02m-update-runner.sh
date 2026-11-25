@@ -705,6 +705,13 @@ MPLC_OTA_PLUGINS = frozenset({
 
 def map_dst(rel: str):
     rel = rel.replace("\\", "/").lstrip("./")
+    if rel in (
+        "etc/systemd/system/sa02m-status-cache.service",
+        "etc/systemd/system/sa02m-phase-energy.service",
+    ):
+        # Full installers own the libexec payload and initial service policy;
+        # an OTA-only unit would be orphaned. Keep the offline packer's boundary.
+        return None
     if rel == "etc/sa02m-update-state-migrate.sh":
         return None  # Checkout-only installer preflight; not a runtime helper.
     if rel.startswith("www/network_config/"):

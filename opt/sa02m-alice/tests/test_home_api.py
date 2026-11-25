@@ -1,6 +1,8 @@
 """Behavioral tests using the real registry and dispatcher; no production I/O."""
 import copy
+from contextlib import redirect_stderr
 import hashlib
+import io
 import json
 import os
 from pathlib import Path
@@ -259,6 +261,54 @@ class HomeTest(unittest.TestCase):
         self.api.publisher = lambda *args: self.sent.append(args)
         self.send(body)
         self.assertFalse(self.sent)
+
+    def test_consumed_dispatch_errors_log_safely_and_remain_deduplicated(self):
+        secret = "PRIVATE_SENTINEL\npassword=secret\x1b /private/path"
+        cases = (("device.control", "device_publish", "publish_unconfirmed"),
+                 ("scenario.run", "scenario_dispatch", "engine_request_unconfirmed"),
+                 ("room.upsert", "configuration", "configuration_interrupted"))
+        for operation, logged_operation, wire_error in cases:
+            with self.subTest(operation=operation):
+                calls = []
+                def fail(*args):
+                    calls.append(args)
+                    raise RuntimeError(secret)
+                if operation == "device.control":
+                    body = self.command()
+                    self.api.publisher = fail
+                else:
+                    target = {"scenario_id": "scene1"} if operation == "scenario.run" else {}
+                    body = self.command(operation=operation, target=target,
+                                        expected_revision="a" * 64, data={"name": "PRIVATE_SENTINEL"})
+                    body.pop("capability")
+                    body.pop("value")
+                    if operation == "scenario.run":
+                        self.enable_rules_runtime()
+                        self.api.publisher = fail
+                    else:
+                        self.adapter.configure = fail
+                stderr = io.StringIO()
+                with redirect_stderr(stderr), self.assertLogs("sa02m-home.dispatcher") as logs:
+                    status, result = self.send(body)
+                receipt = result["receipt"]
+                self.assertEqual(status, 202)
+                self.assertEqual(receipt["status"], "outcome_unknown")
+                self.assertEqual(receipt["error"], wire_error)
+                self.assertEqual(len(calls), 1)
+                self.assertNotIn(body["command_id"], self.api.pending)
+                self.assertNotIn(body["command_id"], self.api.rule_pending)
+                self.assertEqual(self.ledger.get(body["command_id"]), receipt)
+                self.assertEqual(len(logs.records), 1)
+                record = logs.records[0]
+                self.assertEqual(record.getMessage(), "home operation=" + logged_operation + " error_type=RuntimeError")
+                self.assertIsNone(record.exc_info)
+                self.assertIsNone(record.stack_info)
+                output = "\n".join(logs.output) + stderr.getvalue()
+                for forbidden in ("PRIVATE_SENTINEL", "password", "/private", "Traceback", "SA-test", TOPIC, body["command_id"]):
+                    self.assertNotIn(forbidden, output)
+                with self.assertNoLogs("sa02m-home.dispatcher"):
+                    self.assertEqual(self.send(body), (200, self.api.envelope(receipt=receipt)))
+                self.assertEqual(len(calls), 1)
 
     def test_observation_timeout_unknown_not_failed_physics(self):
         body = self.command()

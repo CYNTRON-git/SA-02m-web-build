@@ -2,13 +2,15 @@
 
 from __future__ import annotations
 
-import shutil
+import os
 import sqlite3
+import tempfile
 import time
 from pathlib import Path
 from typing import Any
 
 from sa02m_devices.stand_storage_path import emmc_staging_path
+from sa02m_devices import event_journal_state as journal
 
 # THE roster of history tables a promote must carry — one home for both
 # `_db_has_rows()` («is there anything to promote?») and `merge_db_into()`
@@ -27,26 +29,16 @@ HISTORY_TABLES: dict[str, tuple[str, ...]] = {
 }
 
 
-def _checkpoint_and_close(path: Path) -> None:
+def _checkpoint_and_close(path: Path) -> bool:
     if not path.is_file():
-        return
+        return True
+    conn = sqlite3.connect(str(path), timeout=0.2)
     try:
-        conn = sqlite3.connect(str(path), timeout=30.0)
-        try:
-            conn.execute("PRAGMA wal_checkpoint(TRUNCATE)")
-            conn.commit()
-        finally:
-            conn.close()
-    except sqlite3.Error:
-        pass
-    # drop sidecar WAL/SHM if present
-    for suf in ("-wal", "-shm"):
-        side = Path(str(path) + suf)
-        try:
-            if side.is_file():
-                side.unlink()
-        except OSError:
-            pass
+        result = conn.execute("PRAGMA wal_checkpoint(TRUNCATE)").fetchone()
+        complete = result[0] == 0 and (result[1] < 0 or result[1] == result[2])
+    finally:
+        conn.close()
+    return complete and not any(Path(str(path) + suffix).exists() for suffix in ("-wal", "-shm"))
 
 
 def _db_has_rows(path: Path) -> bool:
@@ -112,71 +104,136 @@ _MERGED_KEY = {
 
 
 def merge_db_into(src_path: Path, dst_path: Path) -> dict[str, Any]:
-    """INSERT OR IGNORE всех строк src → dst по всему HISTORY_TABLES.
+    """Merge samples unchanged and eligible events with exact retry deduplication."""
+    source, destination = journal.domain_for(src_path), journal.domain_for(dst_path)
+    with journal.guards([source, destination], exclusive=True) as states:
+        return _merge_db_into(src_path, dst_path, states[source], states[destination])
 
-    dst получает полную схему (таблицы выборок + device_events) ДО merge —
-    иначе PRAGMA table_info пуст и таблица молча пропускается. src получает её
-    тоже: `_merge_table` копирует ПЕРЕСЕЧЕНИЕ колонок, поэтому длинная
-    (1.0.6.40) `carel_samples` в staging против широкой на носителе пересеклась
-    бы только по `{ts, device_id}` и перенесла бы строки без единого значения —
-    архив, ради которого перенос и делается, оказался бы пуст."""
+
+def _event_predicate(source: journal.State, destination: journal.State):
+    from sa02m_devices.device_events import generation_filter
+
+    left, left_args = generation_filter(source.generation)
+    right, right_args = generation_filter(destination.generation)
+    return f"({left}) AND ({right})", (*left_args, *right_args)
+
+
+def _merge_events(dst, src, source, destination) -> int:
+    from sa02m_devices.device_events import validate_event_tags
+
+    validate_event_tags(src)
+    predicate, args = _event_predicate(source, destination)
+    columns = ("journal_generation", "device_id", "kind", "phase", "ts",
+               "port_num", "addr", "value", "ref_value", "message")
+    names = ", ".join(columns)
+    values = ", ".join("?" for _ in columns)
+    equal = " AND ".join(f"{name} IS ?" for name in columns)
+    total = 0
+    for row in src.execute(f"SELECT {names} FROM device_events WHERE {predicate}", args):
+        total += dst.execute(
+            f"INSERT INTO device_events ({names}) SELECT {values} "
+            f"WHERE NOT EXISTS (SELECT 1 FROM device_events WHERE {equal})", (*row, *row)
+        ).rowcount
+    return total
+
+
+def _merge_db_into(src_path, dst_path, source, destination):
     from sa02m_devices import device_events, device_history_db
 
     device_history_db.ensure_schema(dst_path)
     device_events.ensure_events_schema(dst_path)
     device_history_db.ensure_schema(src_path)
-    _checkpoint_and_close(src_path)
+    device_events.ensure_events_schema(src_path)
     src = sqlite3.connect(str(src_path), timeout=60.0)
     dst = sqlite3.connect(str(dst_path), timeout=60.0)
     try:
         report: dict[str, Any] = {"ok": True}
+        src.execute("BEGIN")
+        dst.execute("PRAGMA synchronous=FULL")
         with dst:
             for table, skip in HISTORY_TABLES.items():
-                report[_MERGED_KEY[table]] = _merge_table(dst, src, table, skip)
+                report[_MERGED_KEY[table]] = (
+                    _merge_events(dst, src, source, destination) if table == "device_events"
+                    else _merge_table(dst, src, table, skip)
+                )
             # Raw ce rows may have landed past a rollup that was already
             # marked caught-up. Drop the fold; the next read rebuilds it.
             from sa02m_devices.history_ce_roll import reset_ce_roll
 
             reset_ce_roll(dst)
-        dst.execute("PRAGMA wal_checkpoint(TRUNCATE)")
-        dst.commit()
         return report
     finally:
         src.close()
         dst.close()
 
 
-def copy_db(src: Path, dst: Path) -> None:
-    dst.parent.mkdir(parents=True, exist_ok=True)
-    tmp = dst.with_suffix(dst.suffix + ".tmp")
-    if tmp.exists():
-        tmp.unlink()
-    shutil.copy2(src, tmp)
-    src_size = src.stat().st_size
-    if tmp.stat().st_size != src_size:
-        tmp.unlink(missing_ok=True)
-        raise OSError(f"copy size mismatch {tmp.stat().st_size} != {src_size}")
-    tmp.replace(dst)
+def _sync_directory(path: Path) -> None:
+    fd = os.open(path, os.O_RDONLY | os.O_DIRECTORY)
+    try:
+        os.fsync(fd)
+    finally:
+        os.close(fd)
 
 
-def remove_db_files(path: Path) -> None:
-    for p in (path, Path(str(path) + "-wal"), Path(str(path) + "-shm")):
+def copy_db(src: Path, dst: Path) -> dict[str, Any]:
+    """Publish a SQLite snapshot including WAL, without retiring its source."""
+    from sa02m_devices import device_events, device_history_db
+
+    source, destination = journal.domain_for(src), journal.domain_for(dst)
+    with journal.guards([source, destination], exclusive=True) as states:
+        if dst.exists():
+            return {**_merge_db_into(src, dst, states[source], states[destination]), "action": "merge"}
+        device_history_db.ensure_schema(src)
+        device_events.ensure_events_schema(src)
+        dst.parent.mkdir(parents=True, exist_ok=True)
+        fd, name = tempfile.mkstemp(prefix=".history-copy-", suffix=".db", dir=dst.parent)
+        os.close(fd)
+        temporary = Path(name)
+        reader = sqlite3.connect(src.resolve().as_uri() + "?mode=ro", uri=True)
+        target = sqlite3.connect(temporary)
         try:
-            if p.is_file():
-                p.unlink()
-        except OSError:
-            pass
+            reader.backup(target, pages=256)
+            device_events.ensure_events_schema_on(target)
+            device_events.validate_event_tags(target)
+            predicate, args = _event_predicate(states[source], states[destination])
+            target.execute("PRAGMA synchronous=FULL")
+            with target:
+                target.execute(f"DELETE FROM device_events WHERE NOT ({predicate})", args)
+            if target.execute("PRAGMA integrity_check").fetchone() != ("ok",):
+                raise sqlite3.DatabaseError("copied archive failed integrity check")
+        except BaseException:
+            target.close()
+            reader.close()
+            temporary.unlink(missing_ok=True)
+            raise
+        target.close()
+        reader.close()
+        try:
+            with temporary.open("rb") as stream:
+                os.fsync(stream.fileno())
+            if dst.exists():
+                return {**_merge_db_into(src, dst, states[source], states[destination]), "action": "merge"}
+            os.replace(temporary, dst)
+            _sync_directory(dst.parent)
+            return {"ok": True, "action": "copy"}
+        finally:
+            temporary.unlink(missing_ok=True)
+
+
+def remove_db_files(path: Path) -> bool:
+    """Retire only a quiescent archive; never unlink a live WAL or SHM."""
+    if not _checkpoint_and_close(path):
+        return False
+    path.unlink(missing_ok=True)
+    _sync_directory(path.parent)
+    return True
 
 
 def promote_to_media(
     source_path: Path,
     media_active_path: Path,
 ) -> dict[str, Any]:
-    """Перенести/влить source в media active, затем удалить source.
-
-    - нет active на носителе → copy + verify + unlink source
-    - есть active → merge + unlink source
-    """
+    """Transfer the archive, retaining the source until retirement is safe."""
     result: dict[str, Any] = {
         "ok": False,
         "action": "none",
@@ -187,31 +244,26 @@ def promote_to_media(
         result["ok"] = True
         result["action"] = "same"
         return result
-    if not _db_has_rows(source_path):
-        remove_db_files(source_path)
-        result["ok"] = True
-        result["action"] = "empty_source"
+    source, destination = journal.domain_for(source_path), journal.domain_for(media_active_path)
+    with journal.guards([source, destination], exclusive=True):
+        if not _db_has_rows(source_path):
+            result["ok"] = remove_db_files(source_path)
+            result["action"] = "empty_source"
+            return result
+        if not media_active_path.is_file():
+            result.update(copy_db(source_path, media_active_path))
+        else:
+            result.update(merge_db_into(source_path, media_active_path))
+            result["action"] = "merge"
+        if result["ok"]:
+            try:
+                retired = remove_db_files(source_path)
+            except (OSError, sqlite3.Error) as exc:
+                result.update(ok=False, error=f"source retirement failed: {exc}")
+            else:
+                if not retired:
+                    result.update(ok=False, error="source checkpoint or readers still busy")
         return result
-
-    _checkpoint_and_close(source_path)
-    media_active_path.parent.mkdir(parents=True, exist_ok=True)
-
-    if not media_active_path.is_file():
-        copy_db(source_path, media_active_path)
-        remove_db_files(source_path)
-        result["ok"] = True
-        result["action"] = "copy"
-        return result
-
-    merged = merge_db_into(source_path, media_active_path)
-    if not merged.get("ok"):
-        result["error"] = "merge failed"
-        return result
-    remove_db_files(source_path)
-    result["ok"] = True
-    result["action"] = "merge"
-    result.update(merged)
-    return result
 
 
 def promote_on_backend_change(
@@ -225,12 +277,14 @@ def promote_on_backend_change(
     Также: если пишем на media, а eMMC staging непустой — влить staging.
     """
     reports: list[dict[str, Any]] = []
+    attempted: set[Path] = set()
 
     # Always try to absorb eMMC staging when writing to removable
     if new_backend in ("usb", "sd"):
         staging = emmc_staging_path()
         if staging.is_file() and staging.resolve() != new_path.resolve():
             if _db_has_rows(staging):
+                attempted.add(staging.resolve())
                 reports.append(promote_to_media(staging, new_path))
 
     # Promote previous lower-priority active (e.g. SD → USB)
@@ -241,6 +295,7 @@ def promote_on_backend_change(
         and prev_path.is_file()
         and rank.get(new_backend, -1) > rank.get(prev_backend, -1)
         and prev_path.resolve() != new_path.resolve()
+        and prev_path.resolve() not in attempted
     ):
         if _db_has_rows(prev_path):
             reports.append(promote_to_media(prev_path, new_path))

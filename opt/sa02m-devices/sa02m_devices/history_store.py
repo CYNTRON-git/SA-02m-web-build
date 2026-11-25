@@ -313,6 +313,28 @@ def ensure_schema(path: Path | None = None) -> Path:
     return p
 
 
+def ensure_event_seed_on(conn: sqlite3.Connection, table: str) -> None:
+    """Seed detector tables without committing a caller's conn= transaction."""
+    ddl = {"ce_samples": _CREATE_CE, "carel_samples": _CREATE_CAREL}[table]
+    own = not conn.in_transaction
+    if own:
+        conn.execute("BEGIN IMMEDIATE")
+    try:
+        conn.execute(ddl)
+        if table == "carel_samples" and _carel_is_long(conn):
+            # Reuse the migration's statements, but retain the caller's boundary.
+            for statement in _MIGRATE_CAREL_SQL.split(";"):
+                statement = statement.strip()
+                if statement and statement not in ("BEGIN IMMEDIATE", "COMMIT"):
+                    conn.execute(statement)
+        if own:
+            conn.execute("COMMIT")
+    except BaseException:
+        if own and conn.in_transaction:
+            conn.execute("ROLLBACK")
+        raise
+
+
 def _connect(path: Path | None = None) -> sqlite3.Connection:
     p = db_path(path)
     p.parent.mkdir(parents=True, exist_ok=True)
@@ -370,7 +392,19 @@ def _connect(path: Path | None = None) -> sqlite3.Connection:
 
 def rotate_if_needed(path: Path | None = None) -> dict[str, Any]:
     """При размере active ≥ 3 ГиБ — архивировать и создать новый active."""
+    from sa02m_devices import event_journal_state as journal
+
     p = db_path(path)
+    if not p.is_file():
+        return {"rotated": False, "reason": "no_file"}
+    with journal.guard(journal.domain_for(path), exclusive=True):
+        return _rotate_guarded(p)
+
+
+def _rotate_guarded(p: Path) -> dict[str, Any]:
+    from sa02m_devices.device_history_migrate import _checkpoint_and_close, _sync_directory
+    from sa02m_devices.device_events import ensure_events_schema
+
     if not p.is_file():
         return {"rotated": False, "reason": "no_file"}
     try:
@@ -388,16 +422,8 @@ def rotate_if_needed(path: Path | None = None) -> dict[str, Any]:
             "free_bytes": free,
             "headroom": ROTATE_HEADROOM,
         }
-    # checkpoint + rename
-    try:
-        conn = sqlite3.connect(str(p), timeout=60.0)
-        try:
-            conn.execute("PRAGMA wal_checkpoint(TRUNCATE)")
-            conn.commit()
-        finally:
-            conn.close()
-    except sqlite3.Error:
-        pass
+    if not _checkpoint_and_close(p):
+        return {"rotated": False, "skipped": "busy", "size": size}
     stamp = datetime.now(timezone.utc).strftime("%Y%m%d_%H%M%S")
     archive = p.parent / f"devices_history_{stamp}.db"
     n = 0
@@ -405,14 +431,9 @@ def rotate_if_needed(path: Path | None = None) -> dict[str, Any]:
         n += 1
         archive = p.parent / f"devices_history_{stamp}_{n}.db"
     p.replace(archive)
-    for suf in ("-wal", "-shm"):
-        side = Path(str(p) + suf)
-        if side.is_file():
-            try:
-                side.unlink()
-            except OSError:
-                pass
     ensure_schema(p)
+    ensure_events_schema(p)
+    _sync_directory(p.parent)
     return {
         "rotated": True,
         "archive": str(archive),

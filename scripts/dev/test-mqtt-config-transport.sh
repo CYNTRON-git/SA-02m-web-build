@@ -342,7 +342,7 @@ fi
 # ── 15-16: GET advertises what the modal may offer — only with the lib ─────
 cp "$GOLDEN" "$YAML_FILE"
 out=$(call GET "$GOOD_COOKIE" "" "")
-if [ "$(jget "$out" 'j.get("capabilities")')" = "{'tcp_types': ['template', 'carel'], 'carel_families': ['crst', 'uaria'], 'tcp_default_port': 502, 'rtu_tcp_types': ['ce02m3', 'dtv', 'led', 'mr02m', 'template']}" ] \
+if [ "$(jget "$out" '{k: v for k, v in j.get("capabilities", {}).items() if k != "dtv_channels"}')" = "{'tcp_types': ['template', 'carel'], 'carel_families': ['crst', 'uaria'], 'tcp_default_port': 502, 'rtu_tcp_types': ['ce02m3', 'dtv', 'led', 'mr02m', 'template']}" ] \
    && [ "$(jget "$out" 'len(j.get("devices") or [])')" = 3 ]; then
     ok "15 GET carries capabilities (tcp_types template+carel) beside the unchanged config"
 else
@@ -647,6 +647,49 @@ if [ "$(jget "$out" "j.get('reason')")" = invalid_template_event_channels ] && [
 else
     bad "oversized topic reached YAML: $out"
 fi
+
+# DTV metadata is independent of transports and never becomes stored policy.
+expected_dtv=$("$PY" - "$LIBW" <<'PY'
+import json, sys
+sys.path.insert(0, sys.argv[1])
+from bridge_dtv_catalog import configuration_capability
+print(json.dumps(configuration_capability(), sort_keys=True))
+PY
+)
+out=$(call GET "$GOOD_COOKIE" "" "")
+actual_dtv=$(printf '%s' "$out" | "$PY" -c 'import json,sys; print(json.dumps(json.load(sys.stdin).get("capabilities",{}).get("dtv_channels"), sort_keys=True))')
+if [ "$actual_dtv" = "$expected_dtv" ] && [ "$(jget "$out" 'len(j["capabilities"]["dtv_channels"]["sensor_keys"])')" = 28 ]; then
+    ok 'DTV GET capability equals the pure catalogue, including all 28 sensors'
+else bad 'DTV GET capability missing or changed'; fi
+mkdir -p "$T/dtv-missing" "$T/dtv-broken"
+cp "$BRIDGE_LIB/bridge_bus.py" "$T/dtv-missing/"
+cp "$BRIDGE_LIB/bridge_bus.py" "$T/dtv-broken/"
+printf '%s\n' 'def configuration_capability(): return {"broken": True}' > "$T/dtv-broken/bridge_dtv_catalog.py"
+for lib in dtv-missing dtv-broken; do
+    out=$(call GET "$GOOD_COOKIE" "" "" "$TW/$lib")
+    if [ "$(jget "$out" '"dtv_channels" in j.get("capabilities", {})')" = False ] \
+       && [ "$(jget "$out" 'j["capabilities"]["tcp_types"]')" = "['template', 'carel']" ] \
+       && grep -q 'DTV catalogue unavailable' "$CGI_ERR"; then
+        ok "$lib: DTV failure logged; transport capability retained"
+    else bad "$lib: optional DTV failure damaged the GET response or lacked a log"; fi
+done
+for mask in absent null '[]' '["temp_ext","future_sensor","buzzer"]'; do
+    "$PY" - "$YAML_FILE" "$mask" <<'PY'
+import json, pathlib, sys
+dev = {"id": "dtv-COM3-15", "type": "dtv", "port": "/dev/COM3", "address": 15,
+       "custom": {"keep": True}}
+if sys.argv[2] != "absent": dev["sensors_present"] = json.loads(sys.argv[2])
+pathlib.Path(sys.argv[1]).write_text(json.dumps({"devices": [dev], "mqtt": {}}))
+PY
+    before=$("$PY" -c 'import json,sys; print(json.dumps(json.load(open(sys.argv[1])),sort_keys=True))' "$YAML_FILE")
+    out=$(call GET "$GOOD_COOKIE" "" "")
+    got=$(printf '%s' "$out" | "$PY" -c 'import json,sys; j=json.load(sys.stdin); j.pop("capabilities",None); print(json.dumps(j,sort_keys=True))')
+    if [ "$got" = "$before" ]; then ok "DTV GET preserves mask $mask"; else bad "DTV GET changed mask $mask"; fi
+    reply=$(call POST "$GOOD_COOKIE" "$CSRF" "$out")
+    if [ "$(jget "$reply" 'j.get("ok")')" = True ] && [ "$(applied 'json.dumps(d, sort_keys=True)')" = "$before" ]; then
+        ok "DTV GET-to-POST preserves mask $mask and strips capability metadata"
+    else bad "DTV JSON/YAML round trip changed mask $mask"; fi
+done
 
 # ── non-vacuity ────────────────────────────────────────────────────────────
 sudo_calls=$(grep -c . "$SUDOALL")

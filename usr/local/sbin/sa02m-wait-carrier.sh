@@ -34,6 +34,7 @@ set -u
 NET_CONF=/etc/sa02m_network.conf
 IFACE_CONF_DIR=/etc/network/interfaces.d
 SYS_NET_DIR=/sys/class/net
+UPTIME_FILE=/proc/uptime
 
 DEFAULT_WAIT_SECS=10
 # Hard ceiling on the budget. `ifup@.service` and `networking.service` both
@@ -45,7 +46,24 @@ MAX_WAIT_SECS=120
 
 log() { logger -t sa02m-wait-carrier -- "$*" 2>/dev/null || true; }
 
-now() { date +%s; }
+# Whole Linux boot seconds (including suspend); never RTC/NTP wall time.
+# Nine decimal digits leave room for the deadline even on 32-bit shells.
+now() {
+    _uptime=$(cat "$UPTIME_FILE" 2>/dev/null) || return 1
+    _uptime=${_uptime%% *}
+    case "$_uptime" in ''|*[!0-9.]*|.*|*.|*.*.*) return 1 ;; esac
+    case "$_uptime" in *.*) ;; *) return 1 ;; esac
+    _uptime=${_uptime%%.*}
+    while :; do case "$_uptime" in 0[0-9]*) _uptime=${_uptime#0} ;; *) break ;; esac; done
+    [ "${#_uptime}" -le 9 ] || return 1
+    printf '%s\n' "$_uptime"
+}
+
+tick() {
+    current=$(now) || return 1
+    [ "$current" -ge "$last_tick" ] || return 1
+    last_tick=$current
+}
 
 # Interface names reach `ip link` and a /sys path, so they are allow-listed
 # before use rather than quoted-and-hoped (web-code-rigor.md, CGI/system floors).
@@ -108,12 +126,38 @@ read_budget() {
     printf '%s\n' "$v"
 }
 
-# 0 on carrier, 1 on budget expiry. Never loops past $deadline.
+# 0 ready, 1 expired, 2 deferred to ifupdown, 3 clock failure.
 wait_one() {
     _if=$1
-    [ -d "$SYS_NET_DIR/$_if" ] || return 0
+    [ -d "$SYS_NET_DIR/$_if" ] || { log "$_if: interface absent, deferred to ifupdown"; return 2; }
+    tick || return 3
+    _remaining=$((deadline - current))
+    [ "$_remaining" -gt 0 ] || return 1
+    [ "$_remaining" -le 2 ] || _remaining=2
+    # Query effective ifupdown options, including sourced stanzas. A failed or
+    # ambiguous query must never become permission to raise a MAC-owned link.
+    if ! command -v timeout >/dev/null 2>&1 || ! command -v ifquery >/dev/null 2>&1; then
+        log "$_if: bounded query unavailable, deferred to ifupdown"; return 2
+    fi
+    _options=$(timeout "$_remaining" ifquery --no-mappings "$_if" 2>/dev/null) || {
+        log "$_if: effective query failed, deferred to ifupdown"; return 2;
+    }
+    tick || return 3
+    _policy=$(printf '%s\n' "$_options" | awk '
+      /^[[:space:]]*$/ { next }
+      !/^[a-zA-Z0-9_-]+:[[:space:]]+[^[:space:]]/ { bad=1; next }
+      { key=$1; sub(/:$/, "", key); n++; if (key=="hwaddress") mac=1;
+        if (++seen[key]>1 && key!="up" && key!="down" && key!="pre-up" && key!="post-down") bad=1 }
+      END { if (bad || !n) print "unknown"; else print mac ? "mac" : "clean" }')
+    case "$_policy" in
+        mac) log "$_if: hwaddress MAC/link initialization deferred to ifupdown"; return 2 ;;
+        clean) ;;
+        *) log "$_if: ambiguous effective query, deferred to ifupdown"; return 2 ;;
+    esac
     _raised=0
     while : ; do
+        tick || return 3
+        [ "$current" -lt "$deadline" ] || return 1
         _c=$(cat "$SYS_NET_DIR/$_if/carrier" 2>/dev/null || echo "")
         [ "$_c" = "1" ] && return 0
         if [ -z "$_c" ] && [ "$_raised" = "0" ]; then
@@ -121,21 +165,15 @@ wait_one() {
             # (carrier_show() returns -EINVAL when !netif_running), and before
             # ifup runs the interface usually IS down — so without raising it
             # first the wait could never observe a live link and would burn the
-            # whole budget on every boot, cable or no cable. ifup raises the
-            # link itself seconds later; this only brings that forward.
+            # whole budget on every boot. The effective stanza above proves
+            # ifupdown has no hwaddress assignment requiring a DOWN device.
             ip link set "$_if" up 2>/dev/null || true
             _raised=1
             continue
         fi
-        [ "$(now)" -lt "$deadline" ] || return 1
         sleep 1
     done
 }
-
-# Without a working `date` the deadline cannot be computed, and an unbounded
-# wait is exactly what this must never be — so skip the wait entirely and leave
-# today's behaviour. Fail toward not-waiting, never toward waiting forever.
-date +%s >/dev/null 2>&1 || exit 0
 
 budget=$(read_budget)
 # 0 disables the wait entirely — a total escape hatch, no side effects at all.
@@ -167,26 +205,38 @@ if [ -z "$targets" ]; then
     exit 0
 fi
 
-start=$(now)
+start=$(now) || { log "uptime unavailable; carrier wait skipped"; exit 0; }
+last_tick=$start
 # ONE shared deadline across every target: the budget bounds the whole run, not
 # each interface, so a 2-eth board with both ports unplugged still costs the
 # budget once.
 deadline=$(( start + budget ))
 missed=""
+ready=""
+deferred=""
 for iface in $targets; do
-    wait_one "$iface" || missed="$missed $iface"
+    wait_one "$iface"
+    case "$?" in
+        0) ready="${ready}${ready:+ }$iface" ;;
+        1) missed="$missed $iface" ;;
+        2) deferred="$deferred $iface" ;;
+        3) log "uptime unavailable or decreasing; carrier wait stopped"; exit 0 ;;
+    esac
 done
-elapsed=$(( $(now) - start ))
+tick || { log "uptime unavailable or decreasing; carrier wait stopped"; exit 0; }
+elapsed=$(( current - start ))
 
 # Logged on EVERY run, not only when it waited. The default 10 s budget came
 # from ONE observed boot, so "how long the wait actually took" is the telemetry
 # that confirms or revises it by measurement (docs/contracts/boot-network-dns.md
 # §4, §9). Do not make this conditional.
 flat() { printf '%s' "$1" | tr '\n' ' '; }
-if [ -z "$missed" ]; then
-    log "carrier up for [$(flat "$targets")] after ${elapsed}s (budget ${budget}s)"
-else
+if [ -n "$ready" ]; then
+    log "carrier up for [$(flat "$ready")] after ${elapsed}s (budget ${budget}s)"
+fi
+if [ -n "$missed" ]; then
     log "no carrier for [$(flat "$missed")] after ${elapsed}s — budget ${budget}s expired, proceeding anyway"
 fi
+[ -z "$deferred" ] || log "carrier deferred for [$(flat "$deferred")] after ${elapsed}s (budget ${budget}s); ifupdown owns initialization"
 
 exit 0

@@ -43,6 +43,11 @@ from pathlib import Path
 
 # module -> name -> {"pos": leading positional arity, "kw": keywords passed by keyword}
 CONTRACT: dict[str, dict[str, dict[str, object]]] = {
+    "sa02m_devices.api": {
+        "handle_events": {"pos": 1, "kw": ()},
+        "handle_events_clear": {"pos": 0, "kw": ()},
+        "handle_history": {"pos": 1, "kw": ()},
+    },
     "sa02m_devices.device_history_db": {
         "history": {"pos": 2, "kw": ("device_id",)},
         "history_batch": {"pos": 1, "kw": ("group", "device_id")},
@@ -87,6 +92,7 @@ CONTRACT: dict[str, dict[str, dict[str, object]]] = {
 
 # module -> constants the consumer reads (existence + type)
 CONSTANTS: dict[str, dict[str, type]] = {
+    "sa02m_devices.api": {"EVENTS_JOURNAL_PROTOCOL": int},
     "sa02m_devices.websession": {"CSRF_HEADER": str, "DEFAULT_SESSION_DIR": str},
 }
 
@@ -115,6 +121,13 @@ def _positional_capacity(sig: inspect.Signature) -> int | None:
 
 
 class PythonApiContract(unittest.TestCase):
+    def test_event_journal_protocol_is_explicit(self):
+        from sa02m_devices import api
+
+        protocol = getattr(api, "EVENTS_JOURNAL_PROTOCOL", None)
+        self.assertIs(type(protocol), int)
+        self.assertEqual(protocol, 1)
+
     def test_table_is_not_empty(self):
         # Non-vacuity: a gutted table must not pass as "nothing to check".
         self.assertGreaterEqual(len(CONTRACT), 5, "CONTRACT lost a module")

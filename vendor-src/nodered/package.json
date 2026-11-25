@@ -6,5 +6,8 @@
   "license": "UNLICENSED",
   "dependencies": {
     "node-red": "4.1.13"
+  },
+  "overrides": {
+    "jsonata": "2.2.1"
   }
 }

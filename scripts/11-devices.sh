@@ -80,51 +80,7 @@ if [ -f "$ETC_DIR/nginx/network_config.conf" ] \
     fi
 fi
 
-# Capture BEFORE the unit files land (first-install signal); operator stops
-# survive the upgrade (docs/contracts/installer-refresh-policy.md).
-sa02m_svc_capture sa02m-devices-api.service sa02m-devices-logger.service
-for unit in sa02m-devices-api.service sa02m-devices-logger.service; do
-    if [ -f "$ETC_DIR/systemd/$unit" ]; then
-        sa02m_atomic_install -m 644 "$ETC_DIR/systemd/$unit" "/etc/systemd/system/$unit"
-        sed -i 's/\r$//' "/etc/systemd/system/$unit"
-    fi
-done
-systemctl daemon-reload
-_DEV_OK=1
-for unit in sa02m-devices-api.service sa02m-devices-logger.service; do
-    sa02m_svc_apply "$unit" app on
-    case "$SA02M_SVC_LAST_RESULT" in
-        started|restarted|kept|left-inactive|left-masked) : ;;
-        *) _DEV_OK=0 ;;
-    esac
-done
-if [ "$_DEV_OK" = 1 ]; then
-    log OK "sa02m-devices-api + logger: состояние применено"
-else
-    log WARN "не удалось запустить sa02m-devices-* — см. journalctl -u sa02m-devices-api"
-fi
-
-# HardPy stand (1.135): gunicorn sa02m-stand-api serves /api/devices* (since
-# 1.0.6.65 on the same unix socket — docs/bench-board-target-state.md §10);
-# devices-api is Condition-skipped (10-stand-disable.conf). Restart the stand
-# API so a devices-package / nginx refresh does not leave a stale gunicorn
-# worker serving /api/devices* (12AI history kind=mr lives in that process).
-# Never-widen: only bounce a running stand API.
-# The unit is bench-only and NOT in this tree (no etc/systemd/ fragment): a
-# field board has no such unit and the helper is a logged no-op there. That
-# no-op is a MEASURED guarantee, not an assumption — until 1.0.6.41 the absent
-# unit aborted this module rc=4 here (bench 1.136, 2026-09-09) and everything
-# below it was skipped (the nginx block sat below then; since 1.0.6.65 it is
-# rendered first, above the units); pinned by case 12d of
-# scripts/dev/test-installer-svc-helpers.sh. Its one home is the bench runbook
-# docs/bench-board-target-state.md.
-#
-# Socket group. gunicorn --umask 0117 creates the inode as 0660 root:<process
-# group>. nginx is www-data. A 10s ExecStartPost misses a cold import (1.135,
-# 2026-10-15: socket 19s after start, tab 502 until a manual chgrp). The hook
-# runs in the master after bind. Install it BEFORE the restart below, and only
-# when both the unit and the hook file exist — a --config path that is not
-# there makes gunicorn refuse to start and takes the bench UI (:8765) with it.
+# Install the stand hooks before a standard unit can prepare its peer.
 sa02m_stand_devices_socket_group() {
     local stand_unit="/etc/systemd/system/sa02m-stand-api.service"
     local hook="/opt/sa02m-devices/sa02m_devices/stand_socket_group.py"
@@ -152,4 +108,50 @@ sa02m_stand_devices_socket_group() {
     log OK "sa02m-stand-api: сокет Устройств — группа www-data после bind"
 }
 sa02m_stand_devices_socket_group
-sa02m_svc_restart_if_active sa02m-stand-api.service
+if [ -f /etc/systemd/system/sa02m-stand-api.service ] \
+    || [ -f /usr/lib/systemd/system/sa02m-stand-api.service ] \
+    || [ -f /lib/systemd/system/sa02m-stand-api.service ]; then
+    install -d -m 0755 /etc/systemd/system/sa02m-stand-api.service.d
+    sa02m_atomic_install -m 644 \
+        "$ETC_DIR/systemd/system/sa02m-stand-api.service.d/30-event-journal.conf" \
+        /etc/systemd/system/sa02m-stand-api.service.d/30-event-journal.conf
+fi
+
+# Capture BEFORE the unit files land (first-install signal); operator stops
+# survive the upgrade (docs/contracts/installer-refresh-policy.md).
+sa02m_svc_capture sa02m-devices-api.service sa02m-devices-logger.service
+for unit in sa02m-devices-api.service sa02m-devices-logger.service; do
+    if [ -f "$ETC_DIR/systemd/$unit" ]; then
+        sa02m_atomic_install -m 644 "$ETC_DIR/systemd/$unit" "/etc/systemd/system/$unit"
+        sed -i 's/\r$//' "/etc/systemd/system/$unit"
+    fi
+done
+if [ -z "${SA02M_ROOTFS_BUILD:-}" ]; then
+    systemctl daemon-reload
+fi
+# Explicit provisioning is shared with the first-OTA service hooks. Failure
+# keeps journal clear unavailable while API and sample logging can still run.
+export STAND_DEVICES_EVENTS_STATE_DIR="${STAND_DEVICES_EVENTS_STATE_DIR:-/var/lib/sa02m-devices/event-journal}"
+export STAND_DEVICES_EVENTS_BOOTSTRAP_DIR="${STAND_DEVICES_EVENTS_BOOTSTRAP_DIR:-/var/lib/sa02m-devices-journal-init}"
+export STAND_DEVICES_EVENTS_UPDATE_DIR="${STAND_DEVICES_EVENTS_UPDATE_DIR:-/var/lib/sa02m-update}"
+export STAND_DEVICES_EVENTS_PROTOCOL="${STAND_DEVICES_EVENTS_PROTOCOL:-1}"
+_journal_args=(prepare --consumer installer)
+if [ -n "${SA02M_ROOTFS_BUILD:-}" ]; then
+    _journal_args+=(--rootfs)
+fi
+if ! /usr/bin/python3 -I /opt/sa02m-devices/sa02m_devices_journal_startup.py "${_journal_args[@]}"; then
+    log WARN "Journal preparation failed; samples remain available, journal clear requires recovery"
+fi
+_DEV_OK=1
+for unit in sa02m-devices-api.service sa02m-devices-logger.service; do
+    sa02m_svc_apply "$unit" app on
+    case "$SA02M_SVC_LAST_RESULT" in
+        started|restarted|kept|left-inactive|left-masked) : ;;
+        *) _DEV_OK=0 ;;
+    esac
+done
+if [ "$_DEV_OK" = 1 ]; then
+    log OK "sa02m-devices-api + logger: состояние применено"
+else
+    log WARN "не удалось запустить sa02m-devices-* — см. journalctl -u sa02m-devices-api"
+fi

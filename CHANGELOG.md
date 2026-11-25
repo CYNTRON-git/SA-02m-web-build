@@ -5,6 +5,21 @@
 
 ---
 
+## 1.0.8.2 - Journal, device controls and image preparation (November 2026)
+
+- Keep cleared journal events excluded when previously disconnected storage returns, and coordinate clear operations across archive readers and writers. Validate stored generations through a partial index so normal journal reads do not scan the full archive.
+- Preserve DTV automatic and all-measurement selection in the MQTT panel, including the complete supported measurement catalogue.
+- Keep optional-service policy consistent across online and full updates; preserve navigation access during scrolling and viewport changes.
+- Report Home API backend failures without exposing private exception details, and include the complete runtime dependency set in the Home API pilot.
+- Bound boot carrier waits by monotonic time and leave configured MAC assignment to ifupdown before the interface is raised.
+- Sanitize donor network overrides only during explicit image preparation and reject active vendor paths that could restore a shared MAC.
+- Require image checksums, reject mounted receiver targets, and propagate decompression and write failures when flashing an image.
+- Update five compatible Node-RED dependencies and pin the JSONata security fixes at 2.2.1 through the locked payload manifest. Remaining dependency advisories are tracked separately; this release does not claim a clean vulnerability audit.
+## 1.0.8.1 - MasterPLC project upload and recovery (November 2026)
+
+- Accept controller ZIP uploads through the panel and report the running project identity and version from MasterPLC.
+- Restore the previous configuration if verification fails. The panel reports a separate error when the restored runtime cannot confirm the previous project.
+
 ## 1.0.8.0 - Release version alignment (November 2026)
 
 - Advance release metadata and served asset cache keys to 1.0.8.0. MQTT bridge command status and dashboard CPU sampling behavior remain unchanged from 1.0.7.40.

@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import json
+import logging
 import os
 import socket
 import socketserver
@@ -12,6 +13,8 @@ from urllib.parse import parse_qs, urlsplit
 
 from sa02m_devices.websession import check_csrf, check_session_store, csrf_error_body
 from .contract import APIError, MAX_REQUEST, encoded
+
+log = logging.getLogger("sa02m-home.server")
 
 
 class Handler(BaseHTTPRequestHandler):
@@ -90,9 +93,11 @@ class Handler(BaseHTTPRequestHandler):
             status, body = self._handle()
         except APIError as exc:
             status, body = exc.status, {"ok": False, "error": exc.code}
-        except (OSError, ValueError):
+        except (OSError, ValueError) as exc:
+            log.warning("home operation=http_request error_type=%s", type(exc).__name__)
             status, body = 503, {"ok": False, "error": "temporarily_unavailable"}
-        except Exception:
+        except Exception as exc:
+            log.error("home operation=http_request error_type=%s", type(exc).__name__)
             status, body = 500, {"ok": False, "error": "internal"}
         raw = encoded(body)
         self.send_response(status)

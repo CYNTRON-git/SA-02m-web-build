@@ -1,12 +1,12 @@
 /* SA-02m MQTT tab — v1.0 */
 
-import { AI_SENSOR_LABELS } from './ai-sensors.js?v=1.0.8.0';
+import { AI_SENSOR_LABELS } from './ai-sensors.js?v=1.0.8.2';
 
 // The add-device dialog's Modbus TCP rules and wording (pure, unit-tested).
 import {
   makeTcpDeviceId as tcpDeviceId, typeOptionAllowed, dialogRows, addrMax,
   buildTcpEntry, saveRefusalText, probeResultView,
-} from './mqtt/tcp-dialog.js?v=1.0.8.0&r=spodes1';
+} from './mqtt/tcp-dialog.js?v=1.0.8.2&r=spodes1';
 
 function uiT(s) {
   return window.sa02mI18n ? window.sa02mI18n.t(String(s)) : String(s);
@@ -240,7 +240,10 @@ const DTV_SENSOR_UNITS = {
   temp_ds18b20: '°C', temp_mcp9808: '°C', temp_hdc1080: '°C', temp_bme280: '°C',
   temp_bme680: '°C', temp_ext: '°C', humidity_hdc1080: '%', humidity_bme280: '%',
   humidity_bme680: '%', pressure_bme280_mmhg: 'mmHg', pressure_bme680_mmhg: 'mmHg',
-  pressure_bme280_kpa: 'kPa', iaq_bme680: 'IAQ', presence_ld2412: '',
+  pressure_bme280_kpa: 'kPa', pressure_bme680_kpa: 'kPa', iaq_bme680: 'IAQ',
+  altitude_bme280: 'm', altitude_bme680: 'm', etoh_zmod: 'ppm',
+  gas_resist_bme680: 'kΩ', eco2_bme680: 'ppm', tvoc_zmod: 'mg/m³',
+  iaq_zmod: 'IAQ', eco2_zmod: 'ppm', light_pct: '%',
   moving_distance: 'cm', still_distance: 'cm', detect_distance: 'cm',
 };
 
@@ -270,6 +273,71 @@ const DTV_SENSORS = [
   {key:'buzzer',        label:'Зуммер',           group:'outputs'},
   {key:'leds',          label:'Светодиоды',       group:'outputs'},
 ];
+
+// Presentation only. Membership comes from the bridge capability; retain the
+// legacy list above for existing add-device defaults.
+const DTV_PRESENTATION = Object.fromEntries([...DTV_SENSORS,
+  {key:'pressure_bme280_mmhg', label:'Давление BME280 (мм рт. ст.)', group:'pressure'},
+  {key:'pressure_bme680_mmhg', label:'Давление BME680 (мм рт. ст.)', group:'pressure'},
+  {key:'altitude_bme280', label:'Высота BME280', group:'pressure'},
+  {key:'altitude_bme680', label:'Высота BME680', group:'pressure'},
+  {key:'etoh_zmod', label:'Этанол ZMOD', group:'iaq'},
+  {key:'input_pb2', label:'Вход PB2', group:'inputs'},
+].map(s => [s.key, s]));
+
+function dtvCapability(value) {
+  const keysValid = list => Array.isArray(list) && list.length > 0 && list.length <= 64 &&
+    list.every(k => typeof k === 'string' && /^[a-zA-Z0-9_]{1,64}$/.test(k)) &&
+    new Set(list).size === list.length;
+  if (!value || !keysValid(value.sensor_keys) || !keysValid(value.always_polled_keys) ||
+      value.sensor_keys.some(k => value.always_polled_keys.includes(k))) return null;
+  const defaults = value.poll_defaults;
+  if (!defaults || !['poll_sensors_s', 'poll_presence_s', 'poll_diag_s', 'poll_uptime_s']
+    .every(k => typeof defaults[k] === 'number' && Number.isFinite(defaults[k]) && defaults[k] > 0)) return null;
+  return value;
+}
+
+function dtvAutomatic(dev) { return !Array.isArray(dev.sensors_present); }
+
+function dtvSelectedSensors(dev) {
+  if (!_dtvCaps) return [];
+  const selected = dev.sensors_present;
+  return _dtvCaps.sensor_keys.filter(k => !Array.isArray(selected) || !selected.length || selected.includes(k));
+}
+
+function dtvSelectionChange(dev, key, checked) {
+  if (!_dtvCaps || !_dtvCaps.sensor_keys.includes(key)) return false;
+  const old = dev.sensors_present;
+  const selected = Array.isArray(old) && old.length ? old : _dtvCaps.sensor_keys;
+  const next = checked ? [...selected] : selected.filter(k => k !== key);
+  if (checked && !next.includes(key)) next.push(key);
+  if (!_dtvCaps.sensor_keys.some(k => next.includes(k))) {
+    showToast(uiT('Нужно оставить хотя бы один датчик. Полное отключение этой настройкой не поддерживается.'), 'err');
+    return false;
+  }
+  dev.sensors_present = next;
+  onPollConfigChanged(dev.id);
+  return true;
+}
+
+function dtvPolicyHint(dev) {
+  if (!_dtvCaps) return uiT('Настройки датчиков недоступны. Обновите компоненты панели и перезагрузите страницу.');
+  if (dtvAutomatic(dev)) return uiT('Автоматическое определение датчиков. Поддерживается: {count}. Выходы и включённые системные каналы опрашиваются отдельно.')
+    .replace('{count}', String(_dtvCaps.sensor_keys.length));
+  return uiT('Количество выбранных поддерживаемых каналов, включая постоянно опрашиваемые выходы.');
+}
+
+function deviceIoCountText(dev) {
+  if (dev.type === 'dtv' && dtvAutomatic(dev)) return uiT('Авто');
+  const enabled = countChannelsEnabled(dev), total = countChannelsTotal(dev);
+  return enabled == null || total == null ? '—' : `${enabled}/${total}`;
+}
+
+function devicePollCountText(dev) {
+  if (dev.type === 'dtv' && dtvAutomatic(dev)) return uiT('Авто');
+  const count = countPollEnabled(dev);
+  return count == null ? '—' : String(count);
+}
 
 const CE02M3_UNITS = {
   voltage_a: 'V', voltage_b: 'V', voltage_c: 'V', voltage_ab: 'V', voltage_bc: 'V', voltage_ca: 'V',
@@ -327,6 +395,7 @@ let _mqttTabSeq = 0;
 // mqtt_config.cgi GET `capabilities` (Modbus TCP types, Carel families, default
 // port) — null until loaded, or when the board cannot validate TCP entries.
 let _tcpCaps = null;
+let _dtvCaps = null;
 // capabilities.rtu_tcp_types — what a gateway scan row may add (bridge_bus
 // RTU_TCP_TYPES). null = an older CGI without the key: offer the full list.
 let _rtuTcpTypes = null;
@@ -1488,19 +1557,30 @@ function buildChannelWidget(title) {
   return {widget, body};
 }
 
-function buildSysChannelGroup(dev, title, vars) {
+function buildSysChannelGroup(dev, title, vars, lazy = false) {
   const pack = buildChannelWidget(title);
   pack.widget.classList.add('mqtt-ch-widget-sys');
   for (const item of vars) {
-    const chCfg = getOrCreateSysChannel(dev, item);
+    const chCfg = lazy ? ((dev.channels?.sys || []).find(c => c.key === item.key) || {})
+      : getOrCreateSysChannel(dev, item);
+    const writable = () => {
+      if (!lazy) return chCfg;
+      if (!dev.channels) dev.channels = {};
+      if (!dev.channels.sys) dev.channels.sys = [];
+      let record = dev.channels.sys.find(c => c.key === item.key);
+      if (!record) { record = {key: item.key}; dev.channels.sys.push(record); }
+      return record;
+    };
     const topic = topicPath(dev.id, item.key);
     pack.body.appendChild(h('div', {'class': 'mqtt-ch-row'},
       h('label', {'class': 'mqtt-ch-toggle'},
         h('input', {
           'type': 'checkbox',
-          checked: chCfg.enabled !== false ? '' : undefined,
+          ...(lazy ? {'aria-label': uiT(item.label)} : {}),
+          ...(lazy ? (chCfg.enabled !== false ? {checked: ''} : {})
+            : {checked: chCfg.enabled !== false ? '' : undefined}),
           'onchange': e => {
-            chCfg.enabled = e.target.checked;
+            writable().enabled = e.target.checked;
             onPollConfigChanged(dev.id);
           },
         }),
@@ -1508,10 +1588,10 @@ function buildSysChannelGroup(dev, title, vars) {
       h('input', {
         'type': 'text',
         'class': 'mqtt-ch-label-input',
-        'placeholder': item.label,
-        'value': chCfg.label || item.label,
+        'placeholder': lazy ? uiT(item.label) : item.label,
+        'value': chCfg.label || (lazy ? uiT(item.label) : item.label),
         'oninput': e => {
-          chCfg.label = e.target.value;
+          writable().label = e.target.value;
           markUnsaved();
         },
       }),
@@ -1822,6 +1902,7 @@ async function loadConfig() {
     // saved back. Absent (an older CGI, or the validator missing on the board)
     // = the modal stays RS-485 only.
     const caps = data.capabilities;
+    _dtvCaps = dtvCapability(caps && caps.dtv_channels);
     _tcpCaps = (caps && Array.isArray(caps.tcp_types) && caps.tcp_types.length) ? caps : null;
     _rtuTcpTypes = (caps && Array.isArray(caps.rtu_tcp_types) && caps.rtu_tcp_types.length)
       ? caps.rtu_tcp_types.map(String) : null;
@@ -1870,9 +1951,6 @@ function renderDeviceList() {
   tbody.innerHTML = '';
   refreshMonitorFilterOptions();
   for (const dev of _config.devices || []) {
-    const ioEnabled = countChannelsEnabled(dev);
-    const ioTotal = countChannelsTotal(dev);
-    const pollCount = countPollEnabled(dev);
     const comName = (dev.transport === 'tcp' || dev.transport === 'rtu_tcp')
       ? deviceEndpointLabel(dev)
       : (dev.port || '').replace('/dev/', '');
@@ -1883,8 +1961,8 @@ function renderDeviceList() {
       h('td', {}, formatDeviceDisplayName(dev)),
       h('td', {'class':'mono'}, comName),
       h('td', {'class':'mono'}, String(dev.address || '—')),
-      h('td', {'class': 'mqtt-io-count'}, `${ioEnabled}/${ioTotal}`),
-      h('td', {'class': 'mqtt-poll-count'}, String(pollCount)),
+      h('td', {'class': 'mqtt-io-count', title: dev.type === 'dtv' ? dtvPolicyHint(dev) : ''}, deviceIoCountText(dev)),
+      h('td', {'class': 'mqtt-poll-count', title: dev.type === 'dtv' ? dtvPolicyHint(dev) : ''}, devicePollCountText(dev)),
       h('td', {},
         h('span', {
           'class': 'mono mqtt-copy-cell mqtt-device-topic',
@@ -1913,8 +1991,8 @@ function refreshDeviceListCounts(devId) {
   if (!tr) return;
   const ioTd = tr.querySelector('.mqtt-io-count');
   const pollTd = tr.querySelector('.mqtt-poll-count');
-  if (ioTd) ioTd.textContent = `${countChannelsEnabled(dev)}/${countChannelsTotal(dev)}`;
-  if (pollTd) pollTd.textContent = String(countPollEnabled(dev));
+  if (ioTd) { ioTd.textContent = deviceIoCountText(dev); if (dev.type === 'dtv') ioTd.title = dtvPolicyHint(dev); }
+  if (pollTd) { pollTd.textContent = devicePollCountText(dev); if (dev.type === 'dtv') pollTd.title = dtvPolicyHint(dev); }
 }
 
 function onPollConfigChanged(devId) {
@@ -2001,7 +2079,8 @@ function countChannelsEnabled(dev) {
     for (let i = 1; i <= mt.ai; i++) if (mr02mPhysicalChannelEnabled(channels, 'ai', i)) n++;
     return n;
   }
-  if (dev.type === 'dtv') return (dev.sensors_present || []).length;
+  if (dev.type === 'dtv') return !_dtvCaps || dtvAutomatic(dev) ? null
+    : dtvSelectedSensors(dev).length + _dtvCaps.always_polled_keys.length;
   if (dev.type === 'ce02m3') {
     const en = dev.channels_enabled || {};
     let n = 0;
@@ -2025,7 +2104,7 @@ function countChannelsTotal(dev) {
     const mt = mr02mProfile(dev);
     return mt.do + mt.di + mt.ao + mt.ai;
   }
-  if (dev.type === 'dtv') return DTV_SENSORS.length;
+  if (dev.type === 'dtv') return _dtvCaps ? _dtvCaps.sensor_keys.length + _dtvCaps.always_polled_keys.length : null;
   if (dev.type === 'ce02m3') return CE02M3_CHANNELS.length;
   return 0;
 }
@@ -2059,7 +2138,9 @@ function countPollEnabled(dev) {
   if (dev.type === 'mr02m' || dev.type === 'ce02m3') {
     n += countChannelsEnabled(dev);
   } else if (dev.type === 'dtv') {
-    n += (dev.sensors_present || []).length;
+    const count = countChannelsEnabled(dev);
+    if (count == null) return null;
+    n += count;
   } else if (dev.type === 'template') {
     n += templateChannelList(dev).length;
   } else if (dev.type === 'carel') {
@@ -2510,62 +2591,68 @@ function buildMR02mChannels(dev, container) {
 }
 
 function buildDTVChannels(dev, container) {
-  if (!dev.sensors_present) dev.sensors_present = DTV_SENSORS.map(s => s.key);
-
+  const notice = h('p', {'class': 'field-hint', 'data-dtv-policy': ''});
+  const updateNotice = () => {
+    notice.textContent = !_dtvCaps ? dtvPolicyHint(dev) : uiT(dtvAutomatic(dev)
+      ? 'Выбор датчиков автоматический. Изменение флажка задаст ручной выбор из полного списка ниже.'
+      : dev.sensors_present.length === 0 ? 'Опрос всех поддерживаемых датчиков' : 'Ручной выбор датчиков');
+  };
+  container.appendChild(h('div', {'class': 'widget-title'}, uiT('Поддерживаемые датчики')));
+  updateNotice();
+  container.appendChild(notice);
+  container.appendChild(h('p', {'class': 'field-hint'}, uiT('Список поддерживаемых каналов не подтверждает наличие датчиков в устройстве.')));
   const row = mqttChannelWidgetsRow();
   container.appendChild(row);
-  row.appendChild(buildSysChannelGroup(dev, 'Системные', DTV_SYS_VARS));
+  row.appendChild(buildSysChannelGroup(dev, uiT('Системные'), DTV_SYS_VARS, true));
 
   const groups = {};
-  for (const s of DTV_SENSORS) {
+  for (const key of _dtvCaps ? _dtvCaps.sensor_keys : []) {
+    const s = Object.prototype.hasOwnProperty.call(DTV_PRESENTATION, key) ? DTV_PRESENTATION[key]
+      : {key, label: key, group: 'other'};
     if (!groups[s.group]) {
-      const label = {temperature:'Температура',humidity:'Влажность / Давление',
-        pressure:'Давление', iaq:'Качество воздуха',presence:'Присутствие LD2412',
-        outputs:'Выходы'}[s.group] || s.group;
-      const pack = buildChannelWidget(label);
+      const label = {temperature:'Температура', humidity:'Влажность / Давление',
+        pressure:'Давление', iaq:'Качество воздуха', presence:'Присутствие LD2412',
+        inputs:'Входы', other:'Другие датчики'}[s.group] || s.group;
+      const pack = buildChannelWidget(uiT(label));
       groups[s.group] = pack.body;
       row.appendChild(pack.widget);
     }
-    const enabled = dev.sensors_present.includes(s.key);
-    const topic = topicPath(dev.id, s.key);
-    // chRow, not row: an inner `const row` shadowed the outer widgets-row used
-    // earlier in this block (TDZ) and broke the whole DTV card body build.
-    const chRow = h('div', {'class':'mqtt-ch-row'},
-      h('label', {'class':'mqtt-ch-toggle'},
-        h('input', {'type':'checkbox', checked: enabled ? '' : undefined,
-          'onchange': e => {
-            if (e.target.checked) {
-              if (!dev.sensors_present.includes(s.key)) dev.sensors_present.push(s.key);
-            } else {
-              dev.sensors_present = dev.sensors_present.filter(k => k !== s.key);
-            }
-            onPollConfigChanged(dev.id);
-          }}),
-        h('span', {'class':'mqtt-ch-name'}, s.label)
-      ),
-      h('span', {'class':'topic-preview', 'title': topic}, topic),
-      liveSpan(dev.id, s.key, DTV_SENSOR_UNITS[s.key] || ''),
-    );
-    // DTV writable coils (bridge: DTV_COILS) get the same toggle as DO rows.
-    if (s.key === 'buzzer' || s.key === 'leds') {
-      chRow.appendChild(buildDoToggleBtn(dev, s.key, enabled));
-      const cb = chRow.querySelector('.mqtt-ch-toggle input[type=checkbox]');
-      if (cb) cb.addEventListener('change', e => setDoToggleChannelEnabled(dev.id, s.key, e.target.checked));
-    }
-    groups[s.group].appendChild(chRow);
+    const topic = topicPath(dev.id, key);
+    const input = h('input', {type:'checkbox', 'data-dtv-sensor': key, 'aria-label': uiT(s.label),
+      onchange: e => {
+        if (!dtvSelectionChange(dev, key, e.target.checked)) e.target.checked = dtvSelectedSensors(dev).includes(key);
+        updateNotice();
+      }});
+    input.checked = dtvSelectedSensors(dev).includes(key);
+    groups[s.group].appendChild(h('div', {'class':'mqtt-ch-row'},
+      h('label', {'class':'mqtt-ch-toggle'}, input,
+        h('span', {'class':'mqtt-ch-name', title: uiT(s.label)}, uiT(s.label))),
+      h('span', {'class':'topic-preview', title: topic}, topic),
+      liveSpan(dev.id, key, DTV_SENSOR_UNITS[key] || ''),
+    ));
   }
-  // Polling intervals
-  const intervals = h('div', {'class':'mqtt-form-row'},
-    h('label', {}, 'Опрос датчиков:'),
-    h('input', {'type':'number','class':'mqtt-input-small','value': dev.poll_sensors_s || 1,
-      'oninput': e => { dev.poll_sensors_s = Number(e.target.value); markUnsaved(); }}),
-    h('span', {}, 'с'),
-    h('label', {'style':'margin-left:12px'}, 'Присутствие:'),
-    h('input', {'type':'number','class':'mqtt-input-small','value': dev.poll_presence_s || 1,
-      'oninput': e => { dev.poll_presence_s = Number(e.target.value); markUnsaved(); }}),
-    h('span', {}, 'с')
-  );
-  container.insertBefore(intervals, container.firstChild);
+  const outputs = buildChannelWidget(uiT('Выходы'));
+  outputs.body.appendChild(h('p', {'class':'field-hint'}, uiT('Выходы опрашиваются постоянно.')));
+  // Existing command controls remain available even on a partially updated panel.
+  for (const s of DTV_SENSORS.filter(item => item.group === 'outputs')) {
+    const topic = topicPath(dev.id, s.key);
+    outputs.body.appendChild(h('div', {'class':'mqtt-ch-row', 'data-dtv-output': s.key},
+      h('span', {'class':'mqtt-ch-name'}, uiT(s.label)),
+      h('span', {'class':'topic-preview', title: topic}, topic),
+      liveSpan(dev.id, s.key, ''), buildDoToggleBtn(dev, s.key, true)));
+  }
+  row.appendChild(outputs.widget);
+  const intervals = h('div', {'class':'mqtt-form-row'});
+  for (const [key, label] of [['poll_sensors_s', 'Опрос датчиков:'], ['poll_presence_s', 'Присутствие:']]) {
+    const supplied = Object.prototype.hasOwnProperty.call(dev, key);
+    const value = supplied ? dev[key] : _dtvCaps ? _dtvCaps.poll_defaults[key] : '';
+    intervals.appendChild(h('label', {}, uiT(label)));
+    intervals.appendChild(h('input', {type:'number', 'class':'mqtt-input-small', value,
+      'aria-label': uiT(label), 'data-dtv-interval': key,
+      oninput: e => { dev[key] = Number(e.target.value); markUnsaved(); }}));
+    intervals.appendChild(h('span', {}, uiT('с')));
+  }
+  container.appendChild(intervals);
 }
 
 function buildCE02M3Channels(dev, container) {

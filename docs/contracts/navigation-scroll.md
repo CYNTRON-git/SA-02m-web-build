@@ -1,20 +1,28 @@
-# Navigation scroll and topbar
+# Прокрутка и верхняя панель
 
-In landscape viewports up to 720px high, a downward scroll beyond 48px hides the
-topbar; an upward scroll of more than 4px reveals it. Small direction jitter does
-not toggle it. Reaching the first 8px or leaving that media query reveals it.
+В альбомном окне высотой до 720 px прокрутка вниз после отметки 48 px скрывает
+верхнюю панель; перемещение вверх более чем на 4 px возвращает её. Дрожание до
+4 px не переключает состояние. Верхние 8 px и выход из этого режима окна
+всегда раскрывают панель, в том числе при изменении размера без события прокрутки.
+Возврат в альбомный режим сам по себе панель не скрывает.
 
-The shipped CSS transition changes scrollport geometry and may clamp scrollTop
-near the content bottom. That layout event is not a new user gesture: nav.js
-rebases the position when the viewport height or content extent changes. The
-next gesture with stable geometry is handled normally. Main and window scrolling
-keep independent position/geometry baselines. No polling, additional timer,
-observer or animation override is used.
+Штатный CSS-переход меняет высоту области прокрутки и может сдвинуть её позицию
+у конца содержимого. `nav.js` обновляет исходную позицию при изменении высоты
+или размера содержимого; такой сдвиг не считается новым жестом. У основной
+области и окна независимые исходные позиции и размеры.
 
-`test-nav-scroll.mjs` executes the shipped callbacks for clamping, repeated
-transition samples, actual direction, jitter, top boundary and separate
-scrollports. `test-nav-scroll-browser.mjs` loads the actual CSS/nav in Chromium,
-uses wheel input near the bottom and checks 45 stable frames after the normal
-transition, then a genuine upward gesture and ordinary button/text input. It
-covers 1280×720, 1024×600, 812×375 and tall 1280×900. The existing MQTT template
-browser test remains unchanged and checks the complete application integration.
+Пользователь может изменить направление во время перехода колесом, клавишами
+или касанием. Недавний ввод учитывается однократно и только при фактическом
+перемещении более чем на 4 px в том же направлении. Событие без перемещения,
+устаревший ввод, отменённое касание и изменение размера не разрешают позднее
+переключение из-за изменения геометрии. Предотвращённые события, поля ввода,
+кнопки, ссылки и вложенные области прокрутки сохраняют собственное управление.
+Новых таймеров, наблюдателей, циклов кадров или изменения CSS-анимации нет.
+
+`test-nav-scroll.mjs` исполняет реальные обработчики: изменения геометрии,
+пороги, раздельные области, одноразовый ввод и владение событиями.
+`test-nav-scroll-browser.mjs` загружает исходные CSS и nav в Chromium, выполняет
+настоящие wheel/key/touch события, проверяет вложенную прокрутку, поля/кнопки,
+смену размера и 45 стабильных кадров после штатного перехода. Размеры окна:
+1280×720, 1024×600, 812×375 и 1280×900. Проверка полной интеграции с MQTT
+остаётся в существующем browser-тесте шаблонов.

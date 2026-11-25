@@ -9,9 +9,14 @@ Environment=PYTHONPATH=/opt/sa02m-devices
 Environment=STAND_DEVICES_LOG_INTERVAL_S=1
 Environment=STAND_DEVICES_LOG_INTERVAL_EMMC_S=5
 Environment=STAND_DEVICES_PURGE_EVERY_S=3600
+Environment=STAND_DEVICES_EVENTS_STATE_DIR=/var/lib/sa02m-devices/event-journal
+Environment=STAND_DEVICES_EVENTS_BOOTSTRAP_DIR=/var/lib/sa02m-devices-journal-init
+Environment=STAND_DEVICES_EVENTS_UPDATE_DIR=/var/lib/sa02m-update
+Environment=STAND_DEVICES_EVENTS_PROTOCOL=1
 # Путь БД: USB(/media/usb) → SD(/media/sdcard) → eMMC(/var/lib/sa02m-stand).
 # Override: /etc/default/sa02m-devices → STAND_DEVICES_HISTORY_DB=…
 EnvironmentFile=-/etc/default/sa02m-devices
+ExecStartPre=-/usr/bin/python3 -I /opt/sa02m-devices/sa02m_devices_journal_startup.py prepare --consumer devices-logger
 ExecStart=/usr/bin/python3 /opt/sa02m-devices/sa02m_devices_logger.py
 Restart=always
 RestartSec=2
