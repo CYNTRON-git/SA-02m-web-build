@@ -301,14 +301,55 @@ class AdmissionTests(unittest.TestCase):
         for env in ([],["unknown"],None):
             with self.assertRaises(ValueError):on_linux({"affectedEnvironments":env})
 
+    def test_npm_replay_binds_original_receipt_wire_bytes_and_report(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root=Path(tmp)
+            src=root/"seed";src.mkdir()
+            dst=root/"report"
+            query=b'{"demo":["1.0.0"]}'
+            raw=b'{}'
+            def receipt(body):
+                return json.dumps({"schema":1,"provider":"npm","ttl_seconds":86400,
+                    "scan_started":"original", "query_sha256":hashlib.sha256(body).hexdigest(),
+                    "raw_sha256":hashlib.sha256(raw).hexdigest()}).encode()
+            data=receipt(query)
+            pin=hashlib.sha256(data).hexdigest()
+            for name, contents in (("admission",data),("query",query),("raw",raw)):
+                (src/(name+".json")).write_bytes(contents)
+            release.npm_capture(src,dst,"scan",pin,1024)
+            release.npm_capture(src,dst,"check",pin,1024)
+            (dst/"raw.json").write_bytes(b'[]')
+            with self.assertRaisesRegex(ValueError,"differs"):
+                release.npm_capture(src,dst,"check",pin,1024)
+            (src/"admission.json").write_bytes(data.replace(b"original",b"renewed"))
+            with self.assertRaisesRegex(ValueError,"unregistered"):
+                release.npm_capture(src,dst,"check",pin,1024)
+            (src/"admission.json").write_bytes(data)
+            (src/"raw.json").write_bytes(b'[]')
+            with self.assertRaisesRegex(ValueError,"digest mismatch"):
+                release.npm_capture(src,dst,"check",pin,1024)
+            (src/"raw.json").write_bytes(raw)
+            alternative=b'{"demo": ["1.0.0"]}'
+            (src/"query.json").write_bytes(alternative)
+            with self.assertRaisesRegex(ValueError,"digest mismatch"):
+                release.npm_capture(src,dst,"check",pin,1024)
+            (src/"admission.json").write_bytes(receipt(alternative))
+            with self.assertRaisesRegex(ValueError,"noncanonical"):
+                release.npm_capture(src,dst,"check",sha(src/"admission.json"),1024)
+            (src/"query.json").unlink()
+            (src/"query.json").symlink_to(dst/"query.json")
+            with self.assertRaisesRegex(ValueError,"missing or oversized"):
+                release.npm_capture(src,dst,"check",pin,1024)
+
     def test_ship_capture_paths_are_literal_and_explicit_flags_take_precedence(self):
         args=argparse.Namespace(action="check",ubuntu_capture=None,ubuntu_tracker=None,
-                                ecosystem_capture=None,node_capture=Path("pinned"))
+                                ecosystem_capture=None,node_capture=Path("pinned"),npm_capture=None)
         environment={"SA02M_RELEASE_UBUNTU_CAPTURE":"noble with spaces","SA02M_RELEASE_NODE_CAPTURE":"different",
-                     "SA02M_RELEASE_UBUNTU_TRACKER":"$(unused)","SA02M_RELEASE_ECOSYSTEM_CAPTURE":""}
+                     "SA02M_RELEASE_UBUNTU_TRACKER":"$(unused)","SA02M_RELEASE_ECOSYSTEM_CAPTURE":"","SA02M_RELEASE_NPM_CAPTURE":"npm with spaces"}
         release.configure_captures(args,environment)
         self.assertEqual((args.ubuntu_capture,args.ubuntu_tracker,args.node_capture,args.ecosystem_capture),
                          (Path("noble with spaces"),Path("$(unused)"),Path("pinned"),None))
+        self.assertEqual(args.npm_capture, Path("npm with spaces"))
         args.action="capture-ecosystems";args.ubuntu_capture=None
         release.configure_captures(args,environment)
         self.assertIsNone(args.ubuntu_capture)
