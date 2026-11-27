@@ -1,0 +1,6 @@
+{
+  "bundled_npm": "11.21.3",
+  "derived_sha256": "2a5ff29b1148dd508677143770660691af56a89ab5d74e07cef49edf9fcd173b",
+  "upstream_sha256": "1c3e15d38e4cafbbf74377ac070cd9d7e0418c673e1f6332f38f1d4762a699f9",
+  "upstream_url": "https://nodejs.org/dist/v22.23.5/node-v22.23.5-linux-armv7l.tar.xz"
+}

@@ -139,11 +139,36 @@ fi
 
 # ── (M) the monitor stream's life ──────────────────────────────────────────
 MON=$CGI/mqtt_monitor.cgi
-if [ -f "$MON" ] && text_matches "$(stripped_text "$MON")" '^exec timeout -k [0-9]+ [0-9]+ /usr/bin/python3 -u "\$STREAM_PY"'; then
-    ok "M  mqtt_monitor.cgi execs the stream under timeout"
-else
-    bad "M  mqtt_monitor.cgi runs its stream without a time limit"
+# Run both dispatch paths. The timeout shim captures its arguments without
+# starting an interpreter or connecting to a broker.
+if ! text_matches "$(stripped_text "$MON")" '^exec timeout '; then
+    bad "M  the CGI must exec the bounded stream"
 fi
+monitor_fixture=$(mktemp -d) || exit 1
+trap 'rm -rf "$monitor_fixture"' EXIT
+printf 'web_session_check_cookie() { return 0; }\n' > "$monitor_fixture/lib_web_auth.sh"
+printf '#!/bin/sh\nprintf "%%s\\n" "$@"\n' > "$monitor_fixture/timeout"
+chmod +x "$monitor_fixture/timeout"
+touch "$monitor_fixture/mqtt_monitor_stream.py"
+sed -e "s|/opt/sa02m-modbus-mqtt/|$monitor_fixture/|g" \
+    -e "s|/var/lib/sa02m-python-activation|$monitor_fixture/activation|g" \
+    -e "s|/usr/local/libexec/sa02m-python-consumer|$monitor_fixture/consumer|g" \
+    -e "s|/opt/sa02m-python-manager/|$monitor_fixture/manager/|g" "$MON" > "$monitor_fixture/monitor.cgi" || exit 1
+for interpreter in legacy managed; do
+    args=(/usr/bin/python3 -u "$monitor_fixture/mqtt_monitor_stream.py")
+    if [ "$interpreter" = managed ]; then
+        touch "$monitor_fixture/activation"
+        args=("$monitor_fixture/consumer" mqtt-monitor)
+    fi
+    query='filter=one&topic=two words'
+    expected=$(printf '%s\n' -k 2 60 "${args[@]}" "$query")
+    actual=$(PATH="$monitor_fixture:$PATH" QUERY_STRING="$query" bash "$monitor_fixture/monitor.cgi")
+    if [ "$?" = 0 ] && [ "$actual" = "$expected" ]; then
+        ok "M  $interpreter stream runs under the 60 s timeout with its query intact"
+    else
+        bad "M  $interpreter stream timeout or argv mismatch: $actual"
+    fi
+done
 
 echo
 if [ "$fails" -eq 0 ]; then

@@ -34,7 +34,7 @@
 # copies of HEAD): S1/S2 (5 builds, answers waited), S6 (no window in the
 # dispatch), L1-L7, B1/B2 (telemetry read as the bridge), P1-P2 (awk reached).
 #
-# Run: bash scripts/dev/test-status-cache.sh   (bash, sh, python3, flock)
+# Run: sudo -n bash scripts/dev/test-status-cache.sh   (Linux, python3, flock)
 # ═══════════════════════════════════════════════════════════════════════════
 set -u
 cd "$(dirname "${BASH_SOURCE[0]}")/../.." || exit 1
@@ -49,6 +49,7 @@ PY=""
 for p in python3 python; do command -v "$p" >/dev/null 2>&1 && "$p" -c 'import json' >/dev/null 2>&1 && { PY=$p; break; }; done
 [ -n "$PY" ] || { echo "FAIL  no python interpreter"; exit 1; }
 
+[ "$(id -u)" = 0 ] || { echo "FAIL  service-cache publisher fixtures require root; run with sudo -n"; exit 1; }
 T=$(mktemp -d) || exit 1
 cleanup() { [ -n "${SLEEPER:-}" ] && kill "$SLEEPER" 2>/dev/null; rm -rf "$T"; }
 trap cleanup EXIT
@@ -231,8 +232,7 @@ else
 fi
 
 # L6-L8: execute the private module now sourced by the shipped helper.
-mkdir -p "$T/res"
-cat /proc/sys/kernel/random/boot_id > "$T/res/owned-v1"
+mkdir -m 0755 "$T/res"
 {
     grep -E '^RESULT_DIR=' "$CTL"
     cat usr/local/lib/sa02m-service-cache.sh
@@ -241,6 +241,7 @@ sed -i "s|^RESULT_DIR=.*|RESULT_DIR=$T/res|" "$T/svclist.sh"
 if ! grep -q '^svc_list_publish() {' "$T/svclist.sh" || ! grep -q '^svc_list_cache_invalidate() {' "$T/svclist.sh"; then
     bad "L6 svc_list_publish / svc_list_cache_invalidate not found in $CTL"
 else
+    sh -c '. "$1"; svc_cache_state open-epoch' _ "$T/svclist.sh" || { bad "L6 could not open a root-owned cache epoch"; exit 1; }
     out=$(LJ=$LIST_JSON sh -c '. "$1"; cmd_list() { printf "%s\n" "$LJ"; }; svc_list_publish' _ "$T/svclist.sh")
     if [ "$out" = "$LIST_JSON" ] && [ "$(cat "$T/res/list.json" 2>/dev/null)" = "$LIST_JSON" ]; then
         ok "L6 \`list\` prints cmd_list's answer unchanged and publishes the same bytes"
@@ -260,7 +261,7 @@ else
         bad "L7 invalidate: list.json present=$([ -e "$T/res/list.json" ] && echo yes || echo no) gen=$(cat "$T/res/list.gen" 2>/dev/null)"
     fi
     out=$(LJ=$LIST_JSON sh -c '. "$1"; cmd_list() { svc_list_cache_invalidate; printf "%s\n" "$LJ"; }; svc_list_publish' _ "$T/svclist.sh")
-    if [ "$out" = "$LIST_JSON" ] && [ ! -e "$T/res/list.json" ]; then
+    if [ "$out" = "$LIST_JSON" ] && [ ! -e "$T/res/list.json" ] && [ "$(cat "$T/res/list.gen")" = 2 ]; then
         ok "L8 a list built across a mutation is printed but NOT published"
     else
         bad "L8 a list built across a mutation was published (stale state for 10 s)"
@@ -333,7 +334,7 @@ else
 fi
 
 # CPU sampler: execute the shipped functions; the Python harness owns only fixtures.
-if "$PY" - "$SRC" <<'CPU_TESTS'
+if "$PY" -B - "$SRC" <<'CPU_TESTS'
 import importlib.util
 import json
 import os

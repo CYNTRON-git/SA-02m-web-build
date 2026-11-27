@@ -1114,7 +1114,7 @@
       "config": null,
       "run": "bash scripts/dev/test-update-recover-boot.sh",
       "beat": "build",
-      "covers": ["etc/sa02m-update-runner.sh", "etc/systemd/sa02m-update-verify.service", "etc/systemd/sa02m-update-recover.service", "scripts/dev/test-update-recover-boot.sh", "scripts/03-webserver.sh", "scripts/update-www-only.sh", "scripts/pack-offline-update.py", ".ai-dev/quality/checks/lib_check.sh", "scripts/sa02m-update-remedy.sh", "docs/contracts/web-update.md"],
+      "covers": ["etc/sa02m-update-runner.sh", "etc/systemd/sa02m-update-verify.service", "etc/systemd/sa02m-update-recover.service", "scripts/dev/test-update-recover-boot.sh", "scripts/offline-update-allowlist.txt", "scripts/offline-update-deploy-map.json", "scripts/03-webserver.sh", "scripts/update-www-only.sh", "scripts/pack-offline-update.py", ".ai-dev/quality/checks/lib_check.sh", "scripts/sa02m-update-remedy.sh", "docs/contracts/web-update.md"],
       "init": "bash + python3 + coreutils (systemctl/systemd-run/busctl are shimmed) — run on demand: bash scripts/dev/test-update-recover-boot.sh"
     },
     {
@@ -2532,10 +2532,10 @@
       "id": "status-cache",
       "checks": "Runs extracted status.cgi / helper code and the real services_ctrl.cgi in a sandbox (audit 2026-11-11 A8-04/A8-05, H5-03/H5-04/H5-06). S: a services cache past TTL but inside 3 x TTL -> 5 parallel requests give 1 background build and 5 immediate stale answers, the cache replaced; answers do not wait for the build (stdout released); older than 3 x TTL or no window -> synchronous build; fresh -> no build; the dispatch passes the window for rs485 8/24, services 45/135, services&fast=1 10/30 only. L: load_svc_ctl_states and services_ctrl.cgi GET read list.json < 10 s old without sudo (byte-identical body), fall back to one sudo when older, a hung helper -> {\"ok\":false,\"error\":\"timeout\"}; the helper prints cmd_list's bytes unchanged and publishes them 0644, a mutation drops the file and bumps the generation, a list built across a mutation is not published, the dispatcher wires publish and invalidate (+EXIT trap). B: the \"MQTT мост\" row matches modbus_mqtt_bridge.py only, never the telemetry daemon (H5-06). P: /proc stat read in-shell equals the awk formula and starts no awk. RED on the 1.0.7.35 files: 16 failures. Comment-out cases registered in comment-mutation-proof: the rs485 dispatch line with its 24 s window and the helper's `trap 'svc_list_cache_invalidate' EXIT`. flock-dependent S cases SKIP where flock(1) is absent (git-bash), so the row reads PARTIAL there; nginx and real systemd are not run.",
       "config": null,
-      "run": "bash scripts/dev/test-status-cache.sh",
+      "run": "sudo -n bash scripts/dev/test-status-cache.sh",
       "beat": "build",
-      "covers": ["www/network_config/cgi-bin/status.cgi", "www/network_config/cgi-bin/services_ctrl.cgi", "www/network_config/cgi-bin/lib_web_json.sh", "etc/sa02m-web-service-ctl.sh", "scripts/dev/test-status-cache.sh", ".ai-dev/quality/checks/lib_check.sh", ".ai-dev/quality/checks/lib_skip.sh"],
-      "init": "bash + coreutils + flock (util-linux; absent on git-bash -> those cases SKIP) - run on demand: bash scripts/dev/test-status-cache.sh"
+      "covers": ["www/network_config/cgi-bin/status.cgi", "www/network_config/cgi-bin/services_ctrl.cgi", "www/network_config/cgi-bin/lib_web_json.sh", "etc/sa02m-web-service-ctl.sh", "usr/local/lib/sa02m-service-cache.sh", "scripts/dev/test-status-cache.sh", ".ai-dev/quality/checks/lib_check.sh", ".ai-dev/quality/checks/lib_skip.sh"],
+      "init": "Linux with root or sudo -n, GNU coreutils, python3 and flock. The isolated service-list publisher validates real root ownership and the kernel boot ID."
     },
     {
       "id": "json-escape-equiv",

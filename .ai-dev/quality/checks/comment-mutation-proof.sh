@@ -244,7 +244,7 @@ firstboot-overlay-parity|tools/imaging/firstboot-overlay/usr/local/bin/fix-eth.s
 firstboot-sb-csum|etc/sa02m-rootfs-expand.sh|rm -f "$RESULT.tmp"
 update-recover-boot|etc/systemd/sa02m-update-verify.service|ExecStart=/usr/local/libexec/sa02m-update-runner verify
 update-recover-boot|scripts/update-www-only.sh|sa02m-update-recover.service sa02m-update-verify.service sa02m-factory-reset.service
-update-recover-boot|scripts/pack-offline-update.py|"sa02m-update-verify.service"
+update-recover-boot|scripts/offline-update-allowlist.txt|etc/systemd/sa02m-*
 update-recover-boot|etc/sa02m-update-runner.sh|trap '"'"'exit 143'"'"' INT TERM
 no-absolute-api-paths|www/network_config/static/js/devices.js|"api/devices
 js-unit-flasher-mtd-window|opt/sa02m-flasher/sa02m_flasher/mtd_config.py|MTD_MODEL = "MTDx62-MB"
