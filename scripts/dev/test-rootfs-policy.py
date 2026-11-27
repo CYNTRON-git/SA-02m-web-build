@@ -177,6 +177,35 @@ exec(compile(sys.stdin.read(), '<shipped-policy>', 'exec'))
         self.assertEqual(self.run_policy().returncode, 0)
         self.assertEqual(self.run_policy('check').returncode, 0)
 
+    def test_factory_writers_publish_safe_fstab(self):
+        (self.t / 'tag').write_text('sa02m_root')
+        (self.t / 'defaults').write_text('user_xattr acl')
+        env = dict(os.environ, OUTPUT=str(self.root), WORK=str(self.t), REPO_ROOT=str(ROOT))
+        for filename, start, stop in (
+            ('create-sa02m-rootfs.sh', 'localhost ip6-loopback\nEOF\n', 'mkdir -p "$OUTPUT/mnt/boot_fat"'),
+            ('pack-sa02m-image.sh', 'log "rewrite /etc/fstab (LABEL= + nofail для boot_fat)"\n',
+             'install -d -m 755 "$WORK/root/mnt/boot_fat"'),
+        ):
+            source = (ROOT / 'tools/debian-rootfs' / filename).read_text()
+            writer = source.split(start, 1)[1].split(stop, 1)[0]
+            for prior in ('missing', 'group-writable', 'symlink'):
+                with self.subTest(writer=filename, prior=prior):
+                    self.fstab.unlink(missing_ok=True)
+                    outside = self.t / 'outside'
+                    outside.write_text('untouched')
+                    if prior == 'group-writable':
+                        self.fstab.write_text('old')
+                        self.fstab.chmod(0o664)
+                    if prior == 'symlink':
+                        self.fstab.symlink_to(outside)
+                    subprocess.run(['bash', '-ec', 'umask 0002\n' + writer], env=env, check=True)
+                    self.assertFalse(self.fstab.is_symlink())
+                    info = self.fstab.stat()
+                    self.assertEqual((info.st_mode & 0o777, info.st_uid, info.st_gid), (0o644, 0, 0))
+                    self.assertEqual(outside.read_text(), 'untouched')
+                    checked = self.run_policy('check')
+                    self.assertEqual(checked.returncode, 0, checked.stderr)
+
     def test_image_entrypoints_run_policy_and_fail_closed(self):
         recorder = self.t / 'sa02m-rootfs-policy.sh'
         recorder.write_text('#!/bin/sh\nprintf "%s\\n" "$*" >> "' + str(self.t / 'image.calls') + '"\nexit "${POLICY_RC:-0}"\n')

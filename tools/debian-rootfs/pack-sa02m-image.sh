@@ -236,11 +236,7 @@ rm -f "$WORK/root/var/lib/dbus/machine-id"
 # LABEL=… устойчиво к сменам /dev/mmcblkX, nofail на FAT — не роняет
 # local-fs.target → networking стартует даже если FAT недоступен.
 log "rewrite /etc/fstab (LABEL= + nofail для boot_fat)"
-cat > "$WORK/root/etc/fstab" <<'FSTAB'
-# SA-02m eMMC layout (Starterkit / Cyntron)
-LABEL=sa02m_root  /              ext4  defaults,noatime,errors=remount-ro,commit=60                    0 1
-LABEL=BOOT        /mnt/boot_fat  vfat  defaults,nofail,x-systemd.device-timeout=5s,x-systemd.automount 0 0
-FSTAB
+install -T -o root -g root -m 0644 "$REPO_ROOT/tools/debian-rootfs/fstab" "$WORK/root/etc/fstab"
 install -d -m 755 "$WORK/root/mnt/boot_fat"
 
 # The same policy applies to constructed and captured image partitions.

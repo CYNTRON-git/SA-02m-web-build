@@ -223,15 +223,7 @@ if [ "$SKIP_DEBOOT" = 0 ]; then
 127.0.0.1 localhost SA-02
 ::1       localhost ip6-localhost ip6-loopback
 EOF
-	cat > "$OUTPUT/etc/fstab" <<'EOF'
-# SA-02m eMMC layout (Starterkit / Cyntron)
-#
-# ВАЖНО: используем LABEL= (устойчиво к смене нумерации eMMC/SD при новом kernel/DTS).
-# У boot FAT — nofail + x-systemd.automount, чтобы сбой FAT не ронял local-fs.target
-# и не отправлял устройство в emergency (без сети).
-LABEL=sa02m_root  /              ext4  defaults,noatime,errors=remount-ro,commit=60                    0 1
-LABEL=BOOT        /mnt/boot_fat  vfat  defaults,nofail,x-systemd.device-timeout=5s,x-systemd.automount 0 0
-EOF
+	install -T -o root -g root -m 0644 "$REPO_ROOT/tools/debian-rootfs/fstab" "$OUTPUT/etc/fstab"
 	mkdir -p "$OUTPUT/mnt/boot_fat"
 	cat > "$OUTPUT/etc/os-release" <<EOF
 PRETTY_NAME="ЦИНТРОН SA-02m (Debian ${DEBIAN_RELEASE})"
