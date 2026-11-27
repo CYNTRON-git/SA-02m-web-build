@@ -21,4 +21,3 @@ ProtectHome=yes
 BindReadOnlyPaths=/etc/sa02m/site-vpn-apps/%i/resolv.conf:/etc/resolv.conf
 BindReadOnlyPaths=/etc/sa02m/site-vpn-apps/%i/nsswitch.conf:/etc/nsswitch.conf
 ExecStart=/etc/sa02m/site-vpn-apps/%i/run
-
