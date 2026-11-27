@@ -1,0 +1,12 @@
+zImage bb0856a31f98065f6bbaa80d0074d9c706408b879e5116d9c6dda2342c6ead3d
+orangepi-pc.dtb e94a63a6d00b874460916ec256ed0cb76c3d7342262642aeb89aa66c2e6df04f
+vpn-smp.cpio.gz 73b99b20184246517250c7f5c7dce85eb80d4fa5d0bc8ae0546ad94d8e4474e4
+[    0.642706]   #0: H3 Audio Codec
+VPN_BOOT kernel=6.1.193-sa02m-trial-smp userspace=production-armhf audio=H3
+2 packets transmitted, 2 packets received, 0% packet loss
+2 packets transmitted, 2 packets received, 0% packet loss
+2 packets transmitted, 2 packets received, 0% packet loss
+2 packets transmitted, 2 packets received, 0% packet loss
+VPN_BOOT peer=a rx=1180 tx=1236
+VPN_BOOT peer=b rx=1236 tx=1180
+VPN_BOOT_TEST_OK kernel=6.1.193-sa02m-trial-smp
