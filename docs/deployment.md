@@ -432,7 +432,7 @@ fixtures не подменяются и требуют отдельной про
 2. **Доставка** `www/`, `scripts/` **и `etc/`** в staging на устройстве.
    - **Основной путь — архив из git** (гарантированно LF, без CRLF-сюрпризов
      Windows-чекаута; источник, `<ref>` и `<src>` — Предусловия полного деплоя):
-     `git fetch origin && git archive --format=tar.gz -o deploy-<src>.tar.gz origin/<ref> www/network_config scripts etc`,
+     `git fetch origin && git -c tar.umask=0022 archive --format=tar.gz -o deploy-<src>.tar.gz origin/<ref> www/network_config scripts etc`,
      загрузка по SFTP (paramiko / WinSCP), на устройстве
      `tar xzf … -C /root/sa02m-deploy-<ver>` (практика деплоев 1.0.5.10–12).
    - **Запасной путь — только когда архив на плату не доставить:**
@@ -711,7 +711,7 @@ diff /root/before.txt /root/after.txt
    дерева) — всё дерево, а не только `www/`: полной установке нужны `etc/`,
    `opt/`, `scripts/`, `install.sh`:
    ```
-   git fetch origin && git archive --format=tar.gz -o deploy-<src>.tar.gz origin/<ref>
+   git fetch origin && git -c tar.umask=0022 archive --format=tar.gz -o deploy-<src>.tar.gz origin/<ref>
    ```
    `git fetch` обязателен: после мержа на форже или пуша в ветку локальный
    `origin/<ref>` ещё указывает на прежний коммит, архив соберётся молча и без
@@ -890,13 +890,13 @@ updater не примет `.sa02m` — пороги `MIN_VERSION`/`MIN_UPDATER` 
 **Архив на рабочей машине** (имя несёт версию и `<src>`; какой `<ref>`
 допустим — Предусловия этого раздела; `git fetch` обязателен — шаг 2):
 ```
-git fetch origin && git archive --format=tar.gz -o SA-02m-full-<ver>-<src>.tar.gz origin/<ref>
+git fetch origin && git -c tar.umask=0022 archive --format=tar.gz -o SA-02m-full-<ver>-<src>.tar.gz origin/<ref>
 ```
 Архив кладётся в `/tmp` платы любым транспортом (SFTP, шаг 3; WinSCP).
 
 **На плате (root), одной строкой:**
 ```
-mkdir -p /tmp/sa02m-upd && tar xzf /tmp/SA-02m-full-<ver>-<src>.tar.gz -C /tmp/sa02m-upd && bash /tmp/sa02m-upd/scripts/offline-full-update.sh
+umask 022 && mkdir -p /tmp/sa02m-upd && tar --no-same-permissions -xzf /tmp/SA-02m-full-<ver>-<src>.tar.gz -C /tmp/sa02m-upd && bash /tmp/sa02m-upd/scripts/offline-full-update.sh
 ```
 Скрипт выполняет шаги 1, 5–7 этого раздела (шаг 4 — распаковка — это сама строка выше): проверяет, что дерево полное
 (www-only архив отклоняется), показывает установленную и целевую версию

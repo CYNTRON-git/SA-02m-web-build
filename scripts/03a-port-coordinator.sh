@@ -14,10 +14,8 @@ if ! id sa02m-flasher >/dev/null 2>&1; then
     useradd --system --gid sa02m-flasher --home-dir /opt/sa02m-flasher \
         --shell /usr/sbin/nologin sa02m-flasher
 fi
-install -d -m 0755 -o root -g root /opt/sa02m-port-coordinator /etc/sa02m
-rsync -a --delete --exclude '__pycache__' --exclude '*.pyc' \
-    "$BASE_DIR/opt/sa02m-port-coordinator/" /opt/sa02m-port-coordinator/
-chown -R root:root /opt/sa02m-port-coordinator
+install -d -m 0755 -o root -g root /etc/sa02m
+sa02m_rsync_code_tree "$BASE_DIR/opt/sa02m-port-coordinator" /opt/sa02m-port-coordinator
 if [ ! -e /etc/sa02m/port-coordinator.json ] && [ ! -L /etc/sa02m/port-coordinator.json ]; then
     install -m 0644 -o root -g root "$BASE_DIR/etc/sa02m/port-coordinator.json" \
         /etc/sa02m/port-coordinator.json

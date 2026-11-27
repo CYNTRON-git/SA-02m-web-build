@@ -29,15 +29,17 @@ if [ ! -d "$OPT_SRC/sa02m_devices" ]; then
 fi
 
 log INFO "Установка /opt/sa02m-devices"
-install -d -m 0755 /opt/sa02m-devices
 if command -v rsync >/dev/null 2>&1; then
-    rsync -a --delete --exclude '__pycache__' --exclude '*.pyc' --exclude '.pytest_cache' \
-        "$OPT_SRC/" /opt/sa02m-devices/
+    sa02m_rsync_code_tree "$OPT_SRC" /opt/sa02m-devices --exclude '.pytest_cache'
 else
-    find /opt/sa02m-devices -mindepth 1 -delete 2>/dev/null || true
-    cp -a "$OPT_SRC/." /opt/sa02m-devices/
+    sa02m_check_code_source "$OPT_SRC" && sa02m_install_code_dir /opt/sa02m-devices || exit 1
+    find /opt/sa02m-devices -mindepth 1 -delete || exit 1
+    # GNU tar applies the receiver umask to delivered mode bits and recreates symlinks.
+    ( set -o pipefail
+      umask 022
+      tar --exclude=__pycache__ --exclude='*.pyc' --exclude=.pytest_cache -C "$OPT_SRC" -cf - . | tar --no-same-owner --no-same-permissions -C /opt/sa02m-devices -xf -
+    ) || exit 1
 fi
-find /opt/sa02m-devices -type d -name __pycache__ -exec rm -rf {} + 2>/dev/null || true
 chmod 755 /opt/sa02m-devices/sa02m_devices_api.py /opt/sa02m-devices/sa02m_devices_logger.py
 sed -i 's/\r$//' /opt/sa02m-devices/sa02m_devices_api.py \
     /opt/sa02m-devices/sa02m_devices_logger.py 2>/dev/null || true

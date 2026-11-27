@@ -11,6 +11,7 @@ import sys
 ROOT = Path(__file__).resolve().parents[2]
 TESTS = {"system-actions": ("python3", "scripts/dev/test-system-actions-systemd.py"),
          "mplc": ("python3", "scripts/dev/test-mplc-systemd.py"),
+         "install-code-modes": ("python3", "scripts/dev/test-install-code-modes.py"),
          "journal": ("python3", "scripts/dev/test-journal-completion-systemd.py"),
          "service-worker": ("python3", "scripts/dev/test-service-worker.py"),
          "runtime-transition": ("python3", "scripts/dev/test-runtime-transition-systemd.py"),
