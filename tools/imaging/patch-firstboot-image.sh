@@ -370,6 +370,12 @@ fi
 [ -b "$rootpart" ] || die "no p2 on $loop"
 mount "$rootpart" "$mnt" || die "mount $rootpart failed"
 log "mounted $rootpart -> $mnt"
+# Verify the complete commissioning allowlist before changing this image.
+python3 -I -B "$SCRIPT_DIR/sanitize-bench-staging.py" --root "$mnt" --device "$rootpart" --image "$IMG" --apply \
+    || die "offline bench sanitation failed"
+python3 -I -B "$SCRIPT_DIR/sanitize-bench-staging.py" --root "$mnt" --device "$rootpart" --image "$IMG" --check \
+    || die "commissioning residues remain in the offline copy"
+
 
 [ -b "$bootpart" ] || die "no p1 on $loop"
 if command -v fsck.vfat >/dev/null 2>&1; then
