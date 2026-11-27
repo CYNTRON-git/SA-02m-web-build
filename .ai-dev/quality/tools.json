@@ -1116,12 +1116,12 @@
     },
     {
       "id": "imaging-samefile-guard",
-      "checks": "Static gate for tools/imaging/make-image.sh: the KEEP_RAW_IMG publish path must not cp/rm a file onto/of itself. FINAL_IMG_WORK and FINAL_IMG_KEEP resolve to the SAME $WORK/<name>.img path (and FINAL_IMG can after a keep/rescue reassignment), so an unguarded cp errors 'are the same file' and aborts under set -e (observed on the 2026-08-20 golden capture: .img.xz published but the raw .img cp crashed), and an unguarded trailing rm would delete the kept raw image. Asserts (a) safe_publish_to_out early-returns on src -ef dst; (b) the raw self-copy is -ef guarded; (c) the trailing FINAL_IMG_WORK rm is -ef FINAL_IMG guarded; (d) the KEEP_RAW_IMG block still exists. Non-vacuous: removing a guard FAILS the gate. COMMENT-SAFE (1.0.6.24): every needle is matched against comment-stripped text (.ai-dev/quality/checks/lib_check.sh), so commenting a pinned line out FAILS the gate instead of satisfying it; proven per gate by the comment-mutation-proof row.",
+      "checks": "Safety checks for tools/imaging/make-image.sh: the KEEP_RAW_IMG publish path must not cp/rm a file onto/of itself. FINAL_IMG_WORK and FINAL_IMG_KEEP resolve to the SAME $WORK/<name>.img path (and FINAL_IMG can after a keep/rescue reassignment), so an unguarded cp errors 'are the same file' and aborts under set -e (observed on the 2026-08-20 golden capture: .img.xz published but the raw .img cp crashed), and an unguarded trailing rm would delete the kept raw image. Asserts (a) safe_publish_to_out early-returns on src -ef dst; (b) the raw self-copy is -ef guarded; (c) the trailing FINAL_IMG_WORK rm is -ef FINAL_IMG guarded; (d) the KEEP_RAW_IMG block still exists. Non-vacuous: removing a guard FAILS the gate. COMMENT-SAFE (1.0.6.24): every needle is matched against comment-stripped text (.ai-dev/quality/checks/lib_check.sh), so commenting a pinned line out FAILS the gate instead of satisfying it; proven per gate by the comment-mutation-proof row. Local filesystem fixtures also exercise a partial copy returning failure, equal-length corrupt copy returning success, a late rename collision, prior output refusal before SSH, byte-identical bundle publication, rescue paths, and preservation of both directories when a rescue fails partway through.",
       "config": null,
       "run": "bash .ai-dev/quality/checks/imaging-samefile-guard.sh",
       "beat": "build",
       "covers": ["tools/imaging/make-image.sh", ".ai-dev/quality/checks/imaging-samefile-guard.sh"],
-      "init": "bash + sed + grep (present everywhere the project builds)"
+      "init": "Linux/WSL Bash, GNU coreutils and cmp. Publication tests use only local fixtures, with SSH absent from PATH in the capture startup test."
     },
     {
       "id": "binding-reset-parity",

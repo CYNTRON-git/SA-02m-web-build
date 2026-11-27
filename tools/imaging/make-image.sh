@@ -31,7 +31,8 @@ RELEASE_PROFILE=""
 RELEASE_VERSION=""
 OUTPUT_NAME=""
 EMMC_BYTES=7818182656
-WORK="${TMPDIR:-/tmp}/sa02m-make-image-$$"
+OUT_LOCK=""
+RESCUE_INCOMPLETE=0
 SSH_OPTS=(-o StrictHostKeyChecking=accept-new -o ConnectTimeout=15
           -o ServerAliveInterval=15 -o ServerAliveCountMax=9999
           -o TCPKeepAlive=yes)
@@ -90,11 +91,7 @@ else
 fi
 
 STAMP="$(date +%Y%m%d-%H%M)"
-mkdir -p "$OUT_DIR" "$WORK"
-RAW_IMG="$WORK/sa02m-${STAMP}-raw.img"
-# Intermediate raw.xz stays under WORK only — never force-copy multi-GB xz onto OUT_DIR
-# (OUT_DIR on /mnt/c / drvfs often has no room after a successful stream).
-RAW_XZ="$WORK/sa02m-${STAMP}-raw.img.xz"
+mkdir -p -- "$OUT_DIR"
 
 if [ -n "$OUTPUT_NAME" ]; then
     SHRUNK_NAME="${OUTPUT_NAME}"
@@ -103,8 +100,15 @@ elif [ -n "$RELEASE_PROFILE" ] && [ -n "$RELEASE_VERSION" ]; then
 else
     SHRUNK_NAME="sa02m-${STAMP}-shrunk"
 fi
+case "$SHRUNK_NAME" in
+    */*|*\\*|*[[:cntrl:]]*) die "имя образа должно быть одним именем файла" ;;
+esac
 SHRUNK_XZ="$OUT_DIR/${SHRUNK_NAME}.img.xz"
 FINAL_IMG="$OUT_DIR/${SHRUNK_NAME}.img"
+WORK=$(mktemp -d -- "${TMPDIR:-/tmp}/sa02m-make-image-XXXXXXXX") || die "не удалось создать WORK"
+RAW_IMG="$WORK/sa02m-${STAMP}-raw.img"
+# Intermediate raw.xz stays under WORK, including when OUT_DIR is on DrvFS.
+RAW_XZ="$WORK/sa02m-${STAMP}-raw.img.xz"
 # Uncompressed .img kept under WORK by default; copied to OUT_DIR only when safe.
 FINAL_IMG_KEEP="$WORK/${SHRUNK_NAME}.img"
 
@@ -130,36 +134,80 @@ out_dir_has_space() {
     [ "$avail" -gt $((need + 64*1024*1024)) ]
 }
 
-# Copy src->dst only if OUT_DIR can hold it; else leave under WORK and echo path.
+# Stage the image and its optional sidecars on the destination filesystem.
+# Promote the image last so a failed copy cannot expose a partial image set.
 safe_publish_to_out() {
     local src=$1
     local dst=$2
-    local sz
+    shift 2
+    local src_file size total=0 stage i j
+    local sources=("$@" "$src") targets=()
     # src and dst can resolve to the same file (e.g. FINAL_IMG already == a WORK
     # path after a keep/rescue reassignment) — a plain `cp` would error
     # "are the same file". Nothing to copy: it is already at dst.
     if [ "$src" -ef "$dst" ]; then
         return 0
     fi
-    sz=$(stat -c%s "$src")
-    if out_dir_has_space "$sz"; then
-        cp -f "$src" "$dst"
-        return 0
+    for src_file in "${sources[@]}"; do
+        size=$(stat -c%s -- "$src_file") || return 1
+        total=$((total + size))
+        targets+=("$(dirname -- "$dst")/$(basename -- "$src_file")")
+    done
+    targets[${#targets[@]}-1]="$dst"
+    for src_file in "${targets[@]}"; do
+        if [ -e "$src_file" ] || [ -L "$src_file" ]; then
+            log "    WARN: output already exists: $src_file"
+            return 1
+        fi
+    done
+    if ! out_dir_has_space "$total"; then
+        log "    WARN: OUT_DIR has insufficient space for $(basename "$dst"); keeping under WORK: $src"
+        return 1
     fi
-    log "    WARN: OUT_DIR has insufficient space for $(basename "$dst") ($(numfmt --to=iec --suffix=B "$sz")); keeping under WORK: $src"
-    return 1
+    stage=$(mktemp -d -- "$(dirname -- "$dst")/.sa02m-publish-XXXXXXXX") || return 1
+    for i in "${!sources[@]}"; do
+        src_file=${sources[i]}
+        if ! cp -- "$src_file" "$stage/$i" || ! sync -d -- "$stage/$i" \
+            || ! cmp -s -- "$src_file" "$stage/$i"; then
+            log "    WARN: copy or verification failed for $(basename "$src_file"); keeping under WORK: $src"
+            rm -rf -- "$stage"
+            return 1
+        fi
+    done
+    for i in "${!targets[@]}"; do
+        # GNU mv -n can exit 0 on a collision and leave its source in place.
+        if ! mv -nT -- "$stage/$i" "${targets[i]}" || [ -e "$stage/$i" ]; then
+            log "    WARN: could not publish ${targets[i]}; keeping under WORK: $src"
+            for ((j = 0; j < i; j++)); do
+                rm -f -- "${targets[j]}" || log "    WARN: could not remove ${targets[j]}"
+            done
+            rm -rf -- "$stage"
+            return 1
+        fi
+    done
+    rmdir -- "$stage" || log "    WARN: could not remove $stage"
+}
+
+claim_output_name() {
+    local lock="$OUT_DIR/.${SHRUNK_NAME}.capture-lock" path
+    mkdir -- "$lock" || die "имя образа занято: $lock"
+    OUT_LOCK="$lock"
+    for path in "$SHRUNK_XZ" "${SHRUNK_XZ}.sha256" "${SHRUNK_XZ%.img.xz}.manifest.json" "$FINAL_IMG"; do
+        if [ -e "$path" ] || [ -L "$path" ]; then
+            die "артефакт уже существует: $path"
+        fi
+    done
 }
 
 # If final artifacts remain under WORK (OUT_DIR full/drvfs), move them aside before rm -rf.
 rescue_work_artifacts() {
     local keep_dir="$1"
-    mkdir -p "$keep_dir"
     local f
     for f in "$SHRUNK_XZ" "${SHRUNK_XZ}.sha256" "${SHRUNK_XZ%.img.xz}.manifest.json"; do
         case "$f" in
             "$WORK"/*)
                 if [ -e "$f" ]; then
-                    mv -f "$f" "$keep_dir/$(basename "$f")"
+                    mv -- "$f" "$keep_dir/$(basename "$f")" || return 1
                     log "    rescued: $keep_dir/$(basename "$f")"
                 fi
                 ;;
@@ -170,7 +218,7 @@ rescue_work_artifacts() {
             case "$f" in
                 "$WORK"/*)
                     if [ -e "$f" ]; then
-                        mv -f "$f" "$keep_dir/$(basename "$f")"
+                        mv -- "$f" "$keep_dir/$(basename "$f")" || return 1
                         log "    rescued KEEP_RAW_IMG: $keep_dir/$(basename "$f")"
                         FINAL_IMG="$keep_dir/$(basename "$f")"
                     fi
@@ -186,23 +234,34 @@ rescue_work_artifacts() {
     fi
 }
 
-cleanup_work() {
-    local need_rescue=0
-    case "$SHRUNK_XZ" in "$WORK"/*) need_rescue=1 ;; esac
-    if [ "$KEEP_RAW_IMG" -eq 1 ]; then
-        case "$FINAL_IMG$FINAL_IMG_KEEP" in "$WORK"/*|*"$WORK"*) need_rescue=1 ;; esac
-        [ -e "$FINAL_IMG_KEEP" ] && case "$FINAL_IMG_KEEP" in "$WORK"/*) need_rescue=1 ;; esac
-        [ -e "$FINAL_IMG" ] && case "$FINAL_IMG" in "$WORK"/*) need_rescue=1 ;; esac
-    fi
-    if [ "$need_rescue" -eq 1 ]; then
+rescue_remaining_artifacts() {
+    if [[ "$SHRUNK_XZ" == "$WORK/"* && -f "$SHRUNK_XZ" ]] \
+        || [[ "$KEEP_RAW_IMG" -eq 1 && -f "$FINAL_IMG_KEEP" ]]; then
         local keep_dir
-        keep_dir="$(dirname "$WORK")/sa02m-image-rescue-$$"
-        rescue_work_artifacts "$keep_dir"
+        # A failed move can split the set across WORK and the rescue directory.
+        # EXIT must preserve both locations instead of retrying or deleting WORK.
+        RESCUE_INCOMPLETE=1
+        if ! keep_dir=$(mktemp -d -- "$(dirname "$WORK")/sa02m-image-rescue-XXXXXXXX"); then
+            log "    WARN: could not create rescue directory; files remain under $WORK"
+            return 1
+        fi
+        if ! rescue_work_artifacts "$keep_dir"; then
+            log "    WARN: rescue incomplete; inspect both $keep_dir and $WORK"
+            return 1
+        fi
+        RESCUE_INCOMPLETE=0
         echo "    WORK artifacts kept under: $keep_dir"
     fi
-    rm -rf "$WORK"
+}
+
+cleanup_work() {
+    [ -z "$OUT_LOCK" ] || rmdir -- "$OUT_LOCK" || true
+    [ "$RESCUE_INCOMPLETE" -eq 0 ] || return 1
+    rescue_remaining_artifacts || return 1
+    rm -rf -- "$WORK"
 }
 trap cleanup_work EXIT
+claim_output_name
 
 collect_donor_metadata() {
     "${SSH[@]}" 'bash -s' <<'REMOTE'
@@ -284,7 +343,7 @@ PY
 }
 
 log "[0/6] Проверка окружения"
-for bin in ssh xz e2fsck resize2fs parted truncate sha256sum dd python3; do
+for bin in ssh xz e2fsck resize2fs parted truncate sha256sum dd python3 cmp sync; do
     command -v "$bin" >/dev/null || die "не найден '$bin'"
 done
 command -v pishrink.sh >/dev/null || die "не найден pishrink.sh"
@@ -411,56 +470,47 @@ run_firstboot_patch "$RAW_IMG" || \
     die "patch-firstboot-image.sh failed — образ непригоден (boot.scr/first-boot патч не применён)"
 
 log "[4/6] final xz (-T0 -${FINAL_XZ_LEVEL})"
-rm -f "$SHRUNK_XZ" "$FINAL_IMG"
 FINAL_IMG_WORK="$WORK/$(basename "$FINAL_IMG")"
-cp -f "$RAW_IMG" "$FINAL_IMG_WORK"
-FINAL_XZ_TMP="$WORK/$(basename "$SHRUNK_XZ")"
+mv -T -- "$RAW_IMG" "$FINAL_IMG_WORK"
+SHRUNK_OUT="$SHRUNK_XZ"
+FINAL_XZ_TMP="$WORK/$(basename "$SHRUNK_OUT")"
 xz "-T0" "-${FINAL_XZ_LEVEL}" -v -c "$FINAL_IMG_WORK" > "$FINAL_XZ_TMP"
-# Publish only the final shrunk .img.xz to OUT_DIR (skip if OUT_DIR cannot hold it).
-if ! safe_publish_to_out "$FINAL_XZ_TMP" "$SHRUNK_XZ"; then
-    SHRUNK_XZ="$FINAL_XZ_TMP"
+SHRUNK_XZ="$FINAL_XZ_TMP"
+
+log "[5/6] sha256"
+( cd "$WORK" && sha256sum -- "$(basename "$SHRUNK_XZ")" > "$(basename "$SHRUNK_XZ").sha256" )
+SIDECARS=("${SHRUNK_XZ}.sha256")
+if [ "$DO_MANIFEST" -eq 1 ]; then
+    log "[6/6] manifest.json"
+    write_manifest "$SHRUNK_XZ"
+    SIDECARS+=("${SHRUNK_XZ%.img.xz}.manifest.json")
+else
+    log "[6/6] manifest пропущен"
+fi
+
+if safe_publish_to_out "$SHRUNK_XZ" "$SHRUNK_OUT" "${SIDECARS[@]}"; then
+    SHRUNK_XZ="$SHRUNK_OUT"
+else
     log "    using WORK path for final xz: $SHRUNK_XZ"
 fi
 if [ "$KEEP_RAW_IMG" -eq 1 ]; then
     # FINAL_IMG_WORK ($WORK/<name>.img) and FINAL_IMG_KEEP ($WORK/<name>.img) are the
     # same path — do NOT cp a file onto itself (it errors and, under set -e, aborts).
     [ "$FINAL_IMG_WORK" -ef "$FINAL_IMG_KEEP" ] || cp -f "$FINAL_IMG_WORK" "$FINAL_IMG_KEEP"
-    # Prefer native WORK for large .img when OUT_DIR is drvfs or low on space.
-    if out_dir_is_drvfs || ! out_dir_has_space "$(stat -c%s "$FINAL_IMG_KEEP")"; then
-        FINAL_IMG="$FINAL_IMG_KEEP"
-        log "    KEEP_RAW_IMG: keeping uncompressed .img under WORK (not copying to OUT_DIR): $FINAL_IMG"
+    # Keep the raw image with a rescued bundle and avoid large copies to DrvFS.
+    if [ "$SHRUNK_XZ" = "$SHRUNK_OUT" ] && ! out_dir_is_drvfs \
+        && safe_publish_to_out "$FINAL_IMG_KEEP" "$FINAL_IMG"; then
+        : # published
     else
-        if safe_publish_to_out "$FINAL_IMG_KEEP" "$FINAL_IMG"; then
-            : # published
-        else
-            FINAL_IMG="$FINAL_IMG_KEEP"
-        fi
+        FINAL_IMG="$FINAL_IMG_KEEP"
+        log "    KEEP_RAW_IMG: keeping uncompressed .img under WORK: $FINAL_IMG"
     fi
-else
-    rm -f "$FINAL_IMG" "$FINAL_IMG_KEEP"
 fi
 # Keep the raw .img if FINAL_IMG_WORK ended up being the final kept image
 # (drvfs/low-space/publish-failed set FINAL_IMG to this WORK path).
 [ "$FINAL_IMG_WORK" -ef "$FINAL_IMG" ] || rm -f "$FINAL_IMG_WORK"
 
-log "[5/6] sha256"
-SHA_DIR="$(dirname "$SHRUNK_XZ")"
-( cd "$SHA_DIR" && sha256sum "$(basename "$SHRUNK_XZ")" > "$(basename "$SHRUNK_XZ").sha256" )
-# If final xz landed in WORK but OUT_DIR is usable for small sidecar files, mirror sha256 there.
-if [ "$SHA_DIR" != "$OUT_DIR" ] && [ -f "${SHRUNK_XZ}.sha256" ]; then
-    if out_dir_has_space "$(stat -c%s "${SHRUNK_XZ}.sha256")"; then
-        cp -f "${SHRUNK_XZ}.sha256" "$OUT_DIR/$(basename "$SHRUNK_XZ").sha256" || true
-    fi
-fi
-
-if [ "$DO_MANIFEST" -eq 1 ]; then
-    log "[6/6] manifest.json"
-    write_manifest "$SHRUNK_XZ"
-else
-    log "[6/6] manifest пропущен"
-fi
-
-
+rescue_remaining_artifacts || die "не удалось перенести артефакты из WORK: $WORK"
 FINAL_SIZE=$(stat -c%s "$SHRUNK_XZ")
 echo
 echo "    ════════════════════════════════════════════════════════════════"
