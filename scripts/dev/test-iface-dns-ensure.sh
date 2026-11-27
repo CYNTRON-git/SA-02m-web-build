@@ -763,12 +763,96 @@ model_ifup() {
     [ ! -e "$SYS/eth0/.up" ] || return 16
     touch "$SYS/eth0/.up" "$T/route" "$T/ifstate"
 }
-reset; seed_iface eth0 '' 1; conf_static eth0 'hwaddress ether 02:53:f9:42:bc:1f'
+
+# Exercise the shipped MAC function without sourcing the boot script or using
+# the host's sysfs/config/IP command. Only the extracted function runs.
+MAC_SRC=${MAC_PRE_START_SRC:-etc/sa02m-pre-start.sh}
+MAC_APPLY="$T/mac-apply.sh"
+sed -n '/^sa02m_mac_apply() {/,/^}$/p' "$MAC_SRC" |
+    sed -e "s#/sys/class/net/#$SYS/#g" -e "s#/etc/sa02m-mac\.conf#$T/mac.conf#g" > "$MAC_APPLY"
+if ! grep -q '^sa02m_mac_apply() {' "$MAC_APPLY" || ! grep -q '^}$' "$MAC_APPLY" \
+    || grep -Eq '"/sys/|/etc/sa02m-mac\.conf' "$MAC_APPLY"; then
+    echo "FAIL  missing or unretargeted MAC function"; exit 1
+fi
+OLD_MAC=02:53:b4:4c:14:bf
+STABLE_MAC=02:53:f9:42:bc:1f
+seed_mac() {
+    seed_iface eth0 '' 1
+    printf '%s\n' "$OLD_MAC" > "$SYS/eth0/address"
+    case "$1" in
+        missing) ;;
+        0x1003) printf '%s\n' "$1" > "$SYS/eth0/flags"; touch "$SYS/eth0/.up" ;;
+        *) printf '%s\n' "$1" > "$SYS/eth0/flags" ;;
+    esac
+}
+run_mac_apply() (
+    SA02M_MAC_ETH0=$STABLE_MAC
+    SA02M_MAC_ETH1=02:53:f9:42:bc:20
+    logp() { printf '%s\n' "$*" >> "$LOGGED"; }
+    ip() {
+        printf '%s\n' "$*" >> "$CALLS"
+        [ "$#" -ge 5 ] && [ "$1 $2 $3" = "link set dev" ] && [ "$4" = eth0 ] || return 2
+        [ "${MAC_FAIL_ACTION:-}" != "$5" ] || return 1
+        case "$5" in
+            down) rm -f "$SYS/eth0/.up" ;;
+            address) [ ! -e "$SYS/eth0/.up" ] && printf '%s\n' "$6" > "$SYS/eth0/address" ;;
+            up) touch "$SYS/eth0/.up" ;;
+            *) return 2 ;;
+        esac
+    }
+    . "$MAC_APPLY"
+    sa02m_mac_apply
+)
+
+reset; conf_static eth0 "hwaddress ether $STABLE_MAC"
+seed_mac 0x1002
+run_mac_apply
+if [ "$(cat "$SYS/eth0/address")" = "$STABLE_MAC" ] && [ ! -e "$SYS/eth0/.up" ] \
+    && [ "$(cat "$CALLS")" = "link set dev eth0 address $STABLE_MAC" ]; then
+    ok 'pre-start: stable MAC is applied without raising an initially DOWN interface'
+else bad 'pre-start: stable MAC assignment disturbed an initially DOWN interface'; fi
 run_wait eth0
 model_ifup; first=$?; model_ifup; second=$?
 if [ "$rc:$first:$second" = 0:0:0 ] && [ -e "$T/route" ] && [ -e "$T/ifstate" ]; then
-    ok 'wait: full ifup composition completes once and ifstate avoids EEXIST'
-else bad "wait: full ifup composition failed first=$first second=$second (16=EBUSY 17=EEXIST)"; fi
+    ok 'wait: pre-start and ifup complete once and ifstate avoids EEXIST'
+else bad "wait: pre-start/ifup failed first=$first second=$second (16=EBUSY 17=EEXIST)"; fi
+
+reset; seed_mac 0x1003; run_mac_apply
+expected=$(printf 'link set dev eth0 down\nlink set dev eth0 address %s\nlink set dev eth0 up\n' "$STABLE_MAC")
+if [ "$(cat "$SYS/eth0/address")" = "$STABLE_MAC" ] && [ -e "$SYS/eth0/.up" ] \
+    && [ "$(cat "$CALLS")" = "$expected" ]; then
+    ok 'pre-start: initially UP interface is restored after MAC assignment'
+else bad 'pre-start: initially UP interface was not restored'; fi
+
+reset; seed_mac 0x1003; MAC_FAIL_ACTION=down run_mac_apply
+if [ "$(cat "$CALLS")" = 'link set dev eth0 down' ] && [ -e "$SYS/eth0/.up" ] \
+    && [ "$(cat "$SYS/eth0/address")" = "$OLD_MAC" ]; then
+    ok 'pre-start: failed down stops MAC assignment'
+else bad 'pre-start: attempted to assign MAC after a failed down'; fi
+
+reset; seed_mac 0x1003; MAC_FAIL_ACTION=address run_mac_apply
+if [ "$(cat "$CALLS")" = "$expected" ] && [ -e "$SYS/eth0/.up" ] \
+    && [ "$(cat "$SYS/eth0/address")" = "$OLD_MAC" ]; then
+    ok 'pre-start: failed MAC assignment still restores an initially UP interface'
+else bad 'pre-start: failed MAC assignment lost the original UP state'; fi
+
+reset; seed_mac 0x1003; MAC_FAIL_ACTION=up run_mac_apply
+if [ "$(cat "$CALLS")" = "$expected" ] && [ ! -e "$SYS/eth0/.up" ] \
+    && grep -q 'восстановить' "$LOGGED"; then
+    ok 'pre-start: failure to restore UP is logged'
+else bad 'pre-start: failure to restore UP was not diagnosed'; fi
+
+for flags in missing '' malformed 0x 0x1002x; do
+    reset; seed_mac "$flags"; run_mac_apply
+    if [ ! -s "$CALLS" ] && [ "$(cat "$SYS/eth0/address")" = "$OLD_MAC" ]; then
+        ok "pre-start: unreadable or malformed flags [$flags] leave MAC and link untouched"
+    else bad "pre-start: changed link despite unknown flags [$flags]"; fi
+done
+
+reset; seed_mac 0x1003; printf '%s\n' "$STABLE_MAC" > "$SYS/eth0/address"; run_mac_apply
+if [ ! -s "$CALLS" ] && [ -e "$SYS/eth0/.up" ]; then
+    ok 'pre-start: matching MAC leaves an initially UP interface untouched'
+else bad 'pre-start: matching MAC caused link changes'; fi
 
 # ═══ wiring — the units and drop-ins the mechanism depends on ══════════════
 
