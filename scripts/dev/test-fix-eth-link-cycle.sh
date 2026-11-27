@@ -69,11 +69,8 @@
 #   `carrier_up "$iface" && _link_after_cycle=1` line out of a copy gives the
 #   same single C6 FAIL (registered in comment-mutation-proof).
 #
-# Off-board only: /usr/local/{bin,sbin} helpers the script probes with -x / -f
-# (sa02m-eth0-led.sh, sa02m-dns-ensure.sh, sa02m-routes-ensure.sh,
-# sa02m-grat-arp.py) are NOT retargeted — absent on CI and dev hosts they are
-# skipped, but on a board the harness would drive the real LED/DNS/route
-# helpers. Do not run it on a board.
+# Host-only. The shipped helpers, uptime and imaging lock also resolve inside
+# the sandbox; all link and address operations go through the recording shims.
 #
 # Run: bash scripts/dev/test-fix-eth-link-cycle.sh   (stdlib bash only, no deps)
 # ═══════════════════════════════════════════════════════════════════════════
@@ -113,6 +110,9 @@ sed -e "s#^LOG_FILE=\"/var/log/fix-eth\.log\"#LOG_FILE=\"$LOGF\"#" \
     -e "s#/etc/network/interfaces\.d#$CD#g" \
     -e "s#/etc/sa02m_network\.conf#$NETCONF#g" \
     -e "s#/sys/class/net#$SYS#g" \
+    -e "s#/proc/uptime#$T/uptime#g" \
+    -e "s#/run/sa02m-imaging.lock#$T/imaging.lock#g" \
+    -e "s#/usr/local/bin/#$T/helpers/#g;s#/usr/local/sbin/#$T/helpers/#g" \
     "$SRC" > "$FIX"
 chmod +x "$FIX"
 
@@ -174,7 +174,7 @@ cat > "$BIN/systemctl" <<SHIM
 #!/bin/bash
 echo "systemctl \$*" | tee -a "$CALLS_ALL" >> "$CALLS"
 case "\$*" in
-  *ActiveState*) echo inactive ;;
+  *ActiveState*) cat "$T/unit-state" 2>/dev/null || echo inactive ;;
   *SubState*)    echo dead ;;
 esac
 exit 0
@@ -182,7 +182,12 @@ SHIM
 cat > "$BIN/sleep" <<SHIM
 #!/bin/bash
 echo "sleep \$*" | tee -a "$CALLS_ALL" >> "$CALLS"
+if [ "\$1" = 4 ] && [ -f "$T/link-during-settle" ]; then echo 1 > "$SYS/eth0/carrier"; fi
 exit 0
+SHIM
+cat > "$BIN/flock" <<SHIM
+#!/bin/bash
+[ ! -e "$T/lock-busy" ]
 SHIM
 chmod +x "$BIN"/*
 # Hide a host mii-tool/ethtool (net-tools ships on CI runners): once the
@@ -213,7 +218,7 @@ conf_static() {   # $1 iface
 }
 run_pass() {   # one recovery pass for $1, as udev / net-watchdog invoke it
     : > "$CALLS"
-    "$FIX" "$1" > "$OUT" 2>&1
+    "$FIX" "$@" > "$OUT" 2>&1
 }
 # `grep -c` prints 0 AND exits 1 on no match; `|| true` keeps that single 0.
 n_calls()  { grep -c -E "$1" "$CALLS" 2>/dev/null || true; }
@@ -318,6 +323,81 @@ if [ "$(n_calls '^ip link set eth0 down$')" = 1 ] && [ "$(n_calls '^ip link set 
 else
     bad "C6: linkset=$(n_linkset) route_add=$(n_calls '^ip route add default via 192\.168\.1\.1 dev eth0$') counter=$(counter) log_line=$(grep -c 'линк появился после link cycle' "$OUT"): $(grep -F 'eth0:' "$OUT" | tail -1)"
 fi
+
+# The oneshot's post action can advance exactly the third boot cycle. The
+# If this cycle restores carrier, it repairs its own flushed routes immediately.
+grep -qxF 'ExecStartPost=-/usr/local/bin/fix-eth.sh --boot-carrier-retry %I' etc/fix-eth@.service ||
+    bad "C7: boot retry is disconnected from the installed unit"
+mkdir -p "$T/helpers"
+for helper in dns routes; do
+    cat > "$T/helpers/sa02m-$helper-ensure.sh" <<SHIM
+#!/bin/sh
+echo "$helper \$1" >> "$CALLS"
+SHIM
+    chmod +x "$T/helpers/sa02m-$helper-ensure.sh"
+done
+for condition in eligible boot-used carrier-up during-settle admin-down budget exhausted first-cycle \
+                 missing-config disabled manual legacy late imaging recovery-busy phy-busy ifup no-carrier-file; do
+    iface=eth0
+    [ "$condition" = legacy ] && iface=end1
+    conf_static "$iface"
+    seed "$iface" 0 0x1003 down
+    count_file="$LOCK/$iface.link_cycle_count"
+    marker="$LOCK/$iface.boot_retry_used"
+    rmdir "$marker" 2>/dev/null || true
+    printf '2\n' > "$count_file"
+    printf '47.60 3.14\n' > "$T/uptime"
+    : > "$NETCONF"
+    rm -f "$T/imaging.lock" "$T/lock-busy" "$T/unit-state" "$T/link-during-settle" "$LOCK/$iface.lock"
+    case "$condition" in
+        eligible)
+            printf '    inet 192.168.1.135/24 scope global eth0\n' > "$SYS/$iface/.addr"
+            echo "$iface" > "$FLIP"
+            ;;
+        boot-used) mkdir "$marker" ;;
+        carrier-up) echo 1 > "$SYS/$iface/carrier" ;;
+        during-settle) touch "$T/link-during-settle" ;;
+        admin-down) echo 0x1002 > "$SYS/$iface/flags" ;;
+        budget) echo MAX_LINK_CYCLES=2 > "$NETCONF" ;;
+        exhausted) echo 5 > "$count_file" ;;
+        first-cycle) echo 1 > "$count_file" ;;
+        missing-config) rm "$CD/$iface.conf" ;;
+        disabled) echo "# auto $iface" > "$CD/$iface.conf" ;;
+        manual) printf 'auto %s\niface %s inet manual\n' "$iface" "$iface" > "$CD/$iface.conf" ;;
+        late) echo '7200.10 4.32' > "$T/uptime" ;;
+        imaging) touch "$T/imaging.lock" ;;
+        recovery-busy) touch "$LOCK/$iface.lock" ;;
+        phy-busy) touch "$T/lock-busy" ;;
+        ifup) echo activating > "$T/unit-state" ;;
+        no-carrier-file) rm "$SYS/$iface/carrier" ;;
+    esac
+    before=$(cat "$count_file")
+    run_pass --boot-carrier-retry "$iface"
+    : > "$FLIP"
+    case "$condition" in
+        eligible|legacy)
+            [ "$(n_calls "^ip link set $iface (up|down)$")" = 2 ] &&
+                [ "$(n_calls "^ethtool -r $iface$")" = 1 ] &&
+                [ -d "$marker" ] &&
+                { { [ "$condition" = eligible ] && [ ! -e "$count_file" ]; } ||
+                  { [ "$condition" = legacy ] && [ "$(cat "$count_file")" = 3 ]; }; } ||
+                bad "C7/$condition: expected one counted PHY cycle"
+            ;;
+        *)
+            [ "$(n_calls '^(ip link|mii-tool|ethtool) ')" = 0 ] &&
+                [ "$(cat "$count_file")" = "$before" ] ||
+                bad "C7/$condition: unexpected PHY action or spent budget"
+            ;;
+    esac
+    if [ "$condition" = eligible ]; then
+        [ "$(n_calls '^ip route add default via 192\.168\.1\.1 dev eth0$')" = 1 ] &&
+            [ "$(n_calls '^routes eth0$')" = 1 ] && [ "$(n_calls '^dns eth0$')" = 1 ] ||
+            bad "C7/$condition: recovered link without restoring its default/static routes and DNS"
+    else
+        [ "$(n_calls '^(ip -4|ip route|ping|routes|dns) ')" = 0 ] || bad "C7/$condition: L3 recovery ran"
+    fi
+done
+ok "C7: examined 18 boot retry scenarios"
 
 # ── harness non-vacuity ────────────────────────────────────────────────────
 for s in ip mii-tool ethtool ping systemctl sleep; do

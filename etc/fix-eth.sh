@@ -244,9 +244,32 @@ release_lock() {
     rm -f "${LOCK_DIR}/${iface}.lock"
 }
 
+# The boot unit may advance one already-budgeted PHY cycle after two failures.
+# Recheck after the settle delay; daemon restarts later in the boot stay on
+# their normal schedule. Only enabled ifupdown stanzas may trigger this pass.
+boot_retry_due() {
+    local iface=$1 conf=$2 uptime
+    case "$iface" in eth[01]|end[01]) ;; *) return 1 ;; esac
+    read -r uptime _ < /proc/uptime || return 1
+    [[ ${uptime%%.*} =~ ^[0-9]+$ ]] && (( ${uptime%%.*} < 90 )) || return 1
+    [ ! -e /run/sa02m-imaging.lock ] && [ ! -e "$LOCK_DIR/$iface.lock" ] &&
+        [ ! -e "$LOCK_DIR/$iface.boot_retry_used" ] &&
+        [ "$(cat "$LOCK_DIR/$iface.link_cycle_count" 2>/dev/null)" = 2 ] &&
+        [ "${MAX_LINK_CYCLES:-5}" -gt 2 ] &&
+        [ "$(cat "/sys/class/net/${iface}/carrier" 2>/dev/null)" = 0 ] || return 1
+    awk -v dev="$iface" '
+        { sub(/#.*/, "") }
+        $1 == "auto" || $1 == "allow-auto" || $1 == "allow-hotplug" {
+            for (i = 2; i <= NF; i++) if ($i == dev) enabled = 1
+        }
+        $1 == "iface" && $2 == dev && $3 == "inet" && ($4 == "static" || $4 == "dhcp") { ipv4 = 1 }
+        END { exit !(enabled && ipv4) }
+    ' "$conf"
+}
+
 # ── Основное восстановление интерфейса ────────────────────────────────────
-recover_iface() {
-    local iface=$1
+recover_iface() (
+    local iface=$1 mode=${2:-normal} needs_carrier=0
     local conf="/etc/network/interfaces.d/${iface}.conf"
 
     # Интерфейс не сконфигурирован — пропускаем
@@ -254,11 +277,31 @@ recover_iface() {
     # Нет физического устройства
     [ -d "/sys/class/net/${iface}" ] || return 0
 
+    if [ "$mode" = boot-retry ]; then
+        boot_retry_due "$iface" "$conf" || return 0
+        sleep 4
+    fi
+
+    # udev/monitor use one systemd instance, the watchdog invokes this script
+    # directly. Serialize their carrier cycles and re-read sysfs under the lock.
+    if ! carrier_up "$iface"; then
+        if command -v flock >/dev/null 2>&1; then
+            exec 8>"$LOCK_DIR/$iface.phy.flock" || return 0
+            flock -n 8 || return 0
+        elif [ "$mode" = boot-retry ]; then
+            return 0
+        fi
+        if [ "$mode" = boot-retry ]; then
+            boot_retry_due "$iface" "$conf" && ! iface_bootstrap_in_progress "$iface" || return 0
+        fi
+        carrier_up "$iface" || needs_carrier=1
+    fi
+
     # 1. Нет физического линка — повторять link cycle до MAX_LINK_CYCLES раз.
     #    IP101A / EMAC на cold boot может требовать нескольких попыток autoneg.
     #    Stuck PHY with cable often shows operstate=dormant|unknown (admin UP),
     #    not only "down" — gating on down alone skipped recovery until re-plug.
-    if ! carrier_up "$iface"; then
+    if [ "$needs_carrier" = 1 ]; then
         local oper flags admin_up=0 _link_after_cycle=0
         oper=$(cat "/sys/class/net/${iface}/operstate" 2>/dev/null || echo unknown)
         flags=$(cat "/sys/class/net/${iface}/flags" 2>/dev/null || echo 0)
@@ -271,6 +314,12 @@ recover_iface() {
             case "$oper" in
                 down|dormant|unknown|"") _do_cycle=1 ;;
             esac
+        fi
+        if [ "$mode" = boot-retry ]; then
+            [ "$_do_cycle" = 1 ] && [ ! -e /run/sa02m-imaging.lock ] &&
+                [ "$(cat "/sys/class/net/${iface}/carrier" 2>/dev/null)" = 0 ] &&
+                mkdir "$LOCK_DIR/$iface.boot_retry_used" 2>/dev/null || return 0
+            log INFO "$iface: дополнительная попытка PHY при загрузке"
         fi
         if [ "$_do_cycle" = "1" ]; then
             _cycle_count=$(( _cycle_count + 1 ))
@@ -313,12 +362,19 @@ recover_iface() {
             debug_iface_state "$iface"
         fi
         if [ "$_link_after_cycle" = "1" ]; then
+            # This cycle flushed routes. Finish the ordinary guarded IP pass
+            # even when the link monitor misses or coalesces our own edge.
+            mode=normal
             log INFO "$iface: линк появился после link cycle ${_cycle_count}"
         else
+            [ "$mode" = boot-retry ] && return 0
             [ -x /usr/local/bin/sa02m-eth0-led.sh ] && /usr/local/bin/sa02m-eth0-led.sh || true
             return 0
         fi
     fi
+
+    exec 8>&-
+    [ "$mode" = boot-retry ] && return 0
 
     # Carrier есть — перевзводим бюджет link cycle. Счётчик ограничивает только
     # ПОДРЯД идущие неудачные попытки; без сброса исчерпанный бюджет блокировал
@@ -447,7 +503,7 @@ recover_iface() {
         debug_iface_state "$iface"
         release_lock "$iface"
     fi
-}
+)
 
 # ── Точка входа ────────────────────────────────────────────────────────────
 rotate_log
@@ -456,7 +512,9 @@ mkdir -p "$STATE_DIR"
 
 # Если передан конкретный интерфейс (из udev: KERNEL==ethX) — работаем только с ним
 # Иначе — проверяем все сконфигурированные интерфейсы
-if [ -n "$1" ]; then
+if [ "$1" = --boot-carrier-retry ]; then
+    recover_iface "$2" boot-retry
+elif [ -n "$1" ]; then
     recover_iface "$1"
 else
     # Оба именования: eth*.conf (канонические имена) и end*.conf (legacy).

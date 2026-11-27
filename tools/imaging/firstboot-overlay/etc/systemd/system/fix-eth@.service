@@ -32,6 +32,7 @@ StartLimitBurst=10
 [Service]
 Type=oneshot
 ExecStart=/usr/local/bin/fix-eth.sh %I
+ExecStartPost=-/usr/local/bin/fix-eth.sh --boot-carrier-retry %I
 TimeoutSec=45
 RemainAfterExit=no
 StandardOutput=journal
