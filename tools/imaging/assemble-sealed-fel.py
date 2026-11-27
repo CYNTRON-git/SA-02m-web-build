@@ -38,6 +38,19 @@ def validate_boot(path):
         raise ValueError("Payload FAT boot.scr does not match the release boot command and U-Boot CRCs")
 
 
+def verify_ext4_seal(raw, offset, seal):
+    seal_bytes = (json.dumps(seal, sort_keys=True, separators=(",", ":")) + "\n").encode()
+    disk = f"{raw}?offset={offset}"
+    for name, expected in (
+        ("/var/lib/sa02m-runtime-transition/image-epoch.json", hashlib.sha256(seal_bytes).hexdigest()),
+        ("/var/lib/sa02m-python-activation/current.json", seal["selector_sha256"]),
+    ):
+        data = run(["debugfs", "-R", "cat " + name, disk])
+        if hashlib.sha256(data).hexdigest() != expected:
+            raise ValueError(f"Captured ext4 file differs from managed seal: {name}")
+    return hashlib.sha256(seal_bytes).hexdigest()
+
+
 def read_mbr(path):
     with path.open("rb") as f:
         block = f.read(512)
@@ -98,6 +111,7 @@ def assemble(image, destination, boot_reference=None):
         if (p1[0] not in (11,12) or p2[0] != 131 or p1[1] < 1 or p1[2] < 1
             or p2[1] < p1[1]+p1[2] or p2[2] < 1 or (p2[1]+p2[2])*512 > raw.stat().st_size):
             raise ValueError("Expected an eMMC disk with FAT p1 and Linux p2 inside the captured file")
+        seal_sha = verify_ext4_seal(raw, p2[1] * 512, seal)
         boot = work/"boot.scr"
         run(["mcopy","-i",f"{raw}@@{p1[1]*512}","::boot.scr",boot])
         validate_boot(boot)
@@ -118,10 +132,9 @@ def assemble(image, destination, boot_reference=None):
             raise ValueError("Uncompressed disk does not match final free-block receipt")
         if digest(image) != compressed_sha:
             raise ValueError("Compressed payload changed during verification")
-        seal_bytes = (json.dumps(seal, sort_keys=True, separators=(",", ":")) + "\n").encode()
         sealed_receipt = work/"SEALED-FEL"
         sealed_receipt.write_text(" ".join(("SA02M-SEALED-FEL-1", str(raw.stat().st_size),
-            hashes["sdcard.img"], hashes["boot.scr"], hashlib.sha256(seal_bytes).hexdigest(),
+            hashes["sdcard.img"], hashes["boot.scr"], seal_sha,
             seal["selector_sha256"])) + "\n")
         items["SEALED-FEL"] = sealed_receipt
         hashes["SEALED-FEL"] = digest(sealed_receipt)
