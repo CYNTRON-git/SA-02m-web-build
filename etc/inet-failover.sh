@@ -3,11 +3,11 @@
 # inet-failover.sh  —  Переключение default-маршрута по наличию интернета
 #
 # Логика приоритетов:
-#   eth0  — приоритет 10  (primary ethernet)
+#   eth0  — приоритет 0   (primary ethernet)
 #   eth1  — приоритет 20  (secondary ethernet)
 #   modem — приоритет 100 (enx*/usb*/: USB-модем, резерв)
 #
-# Если интернет через интерфейс недоступен → metric 300 (фактически отключён).
+# Offline Ethernet priorities are 300 for eth0 and 301 for eth1 by default.
 # Если интернет снова появляется → штатная metric восстанавливается.
 #
 # Вызывается из net-watchdog.sh каждые CHECK_INTERVAL секунд.
@@ -43,13 +43,6 @@ log() {
 
 mkdir -p "$STATE_DIR"
 
-# ── Определяем шлюз интерфейса ────────────────────────────────────────────
-get_iface_gateway() {
-    local iface=$1
-    # Читаем из текущей таблицы маршрутов
-    ip route show default dev "$iface" 2>/dev/null | awk '{print $3; exit}'
-}
-
 # ── Проверка интернета через конкретный интерфейс ─────────────────────────
 check_inet() {
     local iface=$1
@@ -72,23 +65,59 @@ check_inet() {
     [ "$code" = "200" ] || [ "$code" = "301" ] || [ "$code" = "302" ]
 }
 
-# ── Получить текущую metric default-маршрута интерфейса ───────────────────
-get_current_metric() {
-    local iface=$1
-    local m
-    m=$(ip route show default dev "$iface" 2>/dev/null | awk '/metric/{
-        for(i=1;i<=NF;i++) if($i=="metric") {print $(i+1); exit}
-    }')
-    # Если metric не задана явно — это metric 0
-    echo "${m:-0}"
+show_iface_defaults() {
+    ip -4 -o -N route show table main default dev "$1" 2>/dev/null
+}
+
+default_route_key() {
+    local iface=$1 line=$2 metric=0 protocol=3 prefsrc=- scope=0 onlink=0 start=3 i
+    local -a words
+    read -r -a words <<< "$line"
+    [[ ${#words[@]} -ge 3 && "${words[0]} ${words[1]}" == "default via" \
+        && "${words[2]}" =~ ^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$ ]] || return 1
+    # iproute2 may omit the device from output already filtered by dev.
+    if [ "${words[3]:-}" = dev ]; then
+        [ "${words[4]:-}" = "$iface" ] || return 1
+        start=5
+    fi
+    for ((i = start; i < ${#words[@]}; i++)); do
+        case "${words[i]}" in
+            metric) metric=${words[i+1]:-}; i=$((i + 1)) ;;
+            proto) protocol=${words[i+1]:-}; i=$((i + 1)) ;;
+            src)
+                prefsrc=${words[i+1]:-}
+                [[ "$prefsrc" =~ ^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$ ]] || return 1
+                i=$((i + 1))
+                ;;
+            scope) scope=${words[i+1]:-}; i=$((i + 1)) ;;
+            onlink) onlink=1 ;;
+            linkdown) ;;
+            *) return 1 ;;
+        esac
+    done
+    # ip route omits the zero priority and the default boot protocol (3).
+    [[ "$metric" =~ ^(0|[1-9][0-9]{0,9})$ && "$protocol" =~ ^[1-9][0-9]{0,2}$ \
+        && "$scope" =~ ^(0|[1-9][0-9]{0,2})$ ]] || return 1
+    printf '%s %s %s %s %s %s\n' "${words[2]}" "$metric" "$protocol" "$prefsrc" "$scope" "$onlink"
 }
 
 # ── Установить metric для default-маршрута интерфейса ────────────────────
 set_metric() {
     local iface=$1
     local metric=$2
-    local cur_metric
-    cur_metric=$(get_current_metric "$iface")
+    local old_line old_key gw cur_metric cur_proto new_proto prefsrc scope onlink observed new_line=""
+    local -a rows old_selector new_selector route_attrs=()
+    [[ "$iface" == eth[01] && "$metric" =~ ^(0|[1-9][0-9]{0,9})$ ]] || return 1
+    if ! old_line=$(show_iface_defaults "$iface"); then
+        log WARN "$iface: не удалось прочитать IPv4-маршруты по умолчанию"
+        return 1
+    fi
+    [ -n "$old_line" ] || return 0
+    if [[ "$old_line" == *$'\n'* ]] || ! old_key=$(default_route_key "$iface" "$old_line"); then
+        log WARN "$iface: неоднозначный IPv4-маршрут по умолчанию, метрика не меняется"
+        return 1
+    fi
+    read -r gw cur_metric cur_proto prefsrc scope onlink <<< "$old_key"
 
     # Не делать лишних операций если metric уже правильная
     [ "$cur_metric" = "$metric" ] && return 0
@@ -98,28 +127,60 @@ set_metric() {
     if [ -f "$cooldown_file" ]; then
         local last_t; last_t=$(cat "$cooldown_file" 2>/dev/null || echo 0)
         local now; now=$(date +%s)
-        if (( now - last_t < SWITCH_COOLDOWN )); then
+        if [[ "$last_t" =~ ^[0-9]{1,11}$ ]] && (( now - 10#$last_t < SWITCH_COOLDOWN )); then
             return 0
         fi
     fi
 
-    local gw; gw=$(get_iface_gateway "$iface")
-    [ -z "$gw" ] && return 0
+    # Linux treats metric 0 as a wildcard on deletion. When either metric is
+    # zero, use a distinct protocol to keep both selectors unambiguous.
+    new_proto=$cur_proto
+    if [[ "$cur_metric" == 0 || "$metric" == 0 ]]; then
+        if [ "$cur_proto" = 3 ]; then new_proto=4; else new_proto=3; fi
+    fi
+    old_selector=(default via "$gw" dev "$iface" table main proto "$cur_proto" metric "$cur_metric")
+    new_selector=(default via "$gw" dev "$iface" table main proto "$new_proto" metric "$metric")
+    [ "$prefsrc" = - ] || route_attrs+=(src "$prefsrc")
+    [ "$scope" = 0 ] || route_attrs+=(scope "$scope")
+    [ "$iface" != eth0 ] || onlink=1
+    [ "$onlink" = 0 ] || route_attrs+=(onlink)
 
-    # Определяем нужен ли onlink (eth0 всегда с onlink из-за особенностей PHY)
-    local onlink_flag=""
-    [ "$iface" = "eth0" ] && onlink_flag="onlink"
-
-    # Удаляем старый default и добавляем с новой метрикой
-    ip route del default dev "$iface" 2>/dev/null || true
-    if [ "$metric" -eq 0 ]; then
-        ip route add default via "$gw" dev "$iface" $onlink_flag 2>/dev/null || true
-    else
-        ip route add default via "$gw" dev "$iface" $onlink_flag metric "$metric" 2>/dev/null || true
+    if ! ip -4 route add "${new_selector[@]}" "${route_attrs[@]}" 2>/dev/null; then
+        log WARN "$iface: не удалось добавить маршрут с метрикой $metric, удаление пропущено"
+        return 1
+    fi
+    if ! observed=$(show_iface_defaults "$iface"); then
+        log WARN "$iface: не удалось проверить добавленный маршрут, удаление пропущено"
+        return 1
+    fi
+    mapfile -t rows <<< "$observed"
+    if [ "${#rows[@]}" -eq 2 ]; then
+        if [ "${rows[0]}" = "$old_line" ]; then
+            new_line=${rows[1]}
+        elif [ "${rows[1]}" = "$old_line" ]; then
+            new_line=${rows[0]}
+        fi
+    fi
+    if [ "$(default_route_key "$iface" "$new_line")" != "$gw $metric $new_proto $prefsrc $scope $onlink" ]; then
+        log WARN "$iface: таблица маршрутов изменилась, удаление пропущено"
+        return 1
     fi
 
-    date +%s > "$cooldown_file"
-    return 0
+    if ! ip -4 route del "${old_selector[@]}" 2>/dev/null; then
+        log WARN "$iface: не удалось удалить прежний маршрут"
+        # Only remove our addition while both observed routes are still present.
+        if [ "$(show_iface_defaults "$iface")" = "$observed" ]; then
+            ip -4 route del "${new_selector[@]}" 2>/dev/null \
+                || log WARN "$iface: не удалось откатить добавление маршрута"
+        fi
+        return 1
+    fi
+    if [ "$(show_iface_defaults "$iface")" != "$new_line" ]; then
+        log WARN "$iface: не удалось подтвердить итоговый маршрут"
+        return 1
+    fi
+
+    date +%s > "$cooldown_file" || { log WARN "$iface: не удалось записать время переключения"; return 1; }
 }
 
 # ── Определяем имя модемного интерфейса (enx*/usb*/wwan* с IP и шлюзом) ──
@@ -165,28 +226,34 @@ run_failover() {
         echo "$cur_state" > "$state_file"
     fi
 
-    # ── Устанавливаем метрики ──────────────────────────────────────────────
-    # eth0
-    if [ -d "/sys/class/net/eth0" ] && ip route show default dev eth0 2>/dev/null | grep -q .; then
-        if [ "$eth0_inet" -eq 1 ]; then
-            set_metric eth0 0
+    local switch_result=0 secondary_dead_metric=$DEAD_METRIC
+    # The kernel may reject another default at the same priority. Keep the
+    # configured primary priority and use an adjacent valid value for eth1.
+    if [[ "$DEAD_METRIC" =~ ^(0|[1-9][0-9]{0,9})$ ]] && (( DEAD_METRIC <= 4294967295 )); then
+        secondary_dead_metric=$((DEAD_METRIC == 4294967295 ? DEAD_METRIC - 1 : DEAD_METRIC + 1))
+    fi
+
+    # Move eth1 first so a legacy route on DEAD_METRIC vacates that priority.
+    if [ -d "/sys/class/net/eth1" ] && ip route show default dev eth1 2>/dev/null | grep -q .; then
+        if [ "$eth1_inet" -eq 1 ]; then
+            set_metric eth1 "${IFACE_METRIC[eth1]}" || switch_result=1
         else
-            set_metric eth0 $DEAD_METRIC
+            set_metric eth1 "$secondary_dead_metric" || switch_result=1
         fi
     fi
 
-    # eth1
-    if [ -d "/sys/class/net/eth1" ] && ip route show default dev eth1 2>/dev/null | grep -q .; then
-        if [ "$eth1_inet" -eq 1 ]; then
-            set_metric eth1 ${IFACE_METRIC[eth1]}
+    if [ -d "/sys/class/net/eth0" ] && ip route show default dev eth0 2>/dev/null | grep -q .; then
+        if [ "$eth0_inet" -eq 1 ]; then
+            set_metric eth0 0 || switch_result=1
         else
-            set_metric eth1 $DEAD_METRIC
+            set_metric eth0 "$DEAD_METRIC" || switch_result=1
         fi
     fi
 
     # Модем: всегда оставляем на MODEM_METRIC (100) — не деградируем,
     # так как он единственный резервный канал.
     # Если интернета на модеме нет, но eth0/eth1 тоже нет — оставляем как есть.
+    return "$switch_result"
 }
 
 # Support both variable names for backward compatibility

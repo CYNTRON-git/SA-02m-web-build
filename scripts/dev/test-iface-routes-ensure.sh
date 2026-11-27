@@ -623,6 +623,145 @@ if [ -s "$UNMODELLED" ]; then
 fi
 
 printf '\n'
+if (
+    # Run only the shipped transition. Every mutation is matched against the
+    # model's expected selectors, and the state survives command substitutions.
+    failover=etc/inet-failover.sh
+    eval "$(sed -n '/^get_iface_gateway() {/,/^}$/p; /^get_current_metric() {/,/^}$/p; /^show_iface_defaults() {/,/^}$/p; /^default_route_key() {/,/^}$/p; /^set_metric() {/,/^}$/p' "$failover")"
+    STATE_DIR="$T/failover-state"
+    SWITCH_COOLDOWN=30
+    mkdir "$STATE_DIR" || exit 2
+    log() { :; }
+    ip() {
+        while [[ "$1" == -* ]]; do shift; done
+        [ "$1" = route ] || return 2
+        local action=$2
+        shift 2
+        [ "$action" != show ] || { sed "s/ dev $iface//" "$T/defaults"; return; }
+        printf '%s %s\n' "$action" "$*" >> "$T/failover-ops"
+        local base="default via 192.0.2.1 dev $iface table main"
+        local old_args="$base proto $old_proto metric $old_metric"
+        local new_args="$base proto $new_proto metric $metric"
+        local add_args=$new_args
+        [ "$prefsrc" = - ] || add_args+=" src $prefsrc"
+        [ "$onlink" = 0 ] || add_args+=" onlink"
+        if [ "$action" = add ]; then
+            [ "$*" = "$add_args" ] && [ "$(cat "$T/defaults")" = "$old" ] || return 2
+            [ "$mode" != add-failure ] || return 1
+            printf '%s\n' "$new" >> "$T/defaults"
+            if [ "$mode" = post-add-race ]; then printf '%s\n' "$other" >> "$T/defaults"; fi
+            return 0
+        fi
+        [ "$action" = del ] || return 2
+        if [ "$*" = "$old_args" ]; then
+            [ "$mode" != remove-failure ] || return 1
+            printf '%s\n' "$new" > "$T/defaults"
+            [ "$mode" != remove-race ]
+        elif [ "$*" = "$new_args" ]; then
+            printf '%s\n' "$old" > "$T/defaults"
+        else
+            # The old broad delete path drops the only working default.
+            : > "$T/defaults"
+            return 2
+        fi
+    }
+    setup() {
+        mode=$1 iface=$2 old_metric=$3 old_proto=$4 metric=$5 new_proto=$6
+        onlink=${7:-0} prefsrc=-
+        [ "$iface" != eth0 ] || onlink=1
+        [ "$old_proto" != 16 ] || prefsrc=192.0.2.9
+        old="default via 192.0.2.1 dev $iface"
+        new=$old
+        [ "$old_proto" -eq 3 ] || old+=" proto $old_proto"
+        [ "$old_metric" -eq 0 ] || old+=" metric $old_metric"
+        [ "$new_proto" -eq 3 ] || new+=" proto $new_proto"
+        [ "$metric" -eq 0 ] || new+=" metric $metric"
+        if [ "$prefsrc" != - ]; then old+=" src $prefsrc"; new+=" src $prefsrc"; fi
+        if [ "$onlink" != 0 ]; then old+=" onlink"; new+=" onlink"; fi
+        other="default via 192.0.2.254 dev $iface metric 333"
+        printf '%s\n' "$old" > "$T/defaults"
+        : > "$T/failover-ops"
+        cooldown="$STATE_DIR/$iface.cooldown"
+        rm -f "$cooldown"
+    }
+
+    setup add-failure eth0 0 3 300 4
+    if set_metric "$iface" "$metric" || [ "$(cat "$T/defaults")" != "$old" ] \
+        || [ -e "$cooldown" ] || [ "$(wc -l < "$T/failover-ops")" -ne 1 ]; then
+        echo "failed add lost the old route, tried deletion, or started cooldown"; exit 1
+    fi
+    for direction in 'eth0 0 3 300 4 1' 'eth0 300 3 0 4 1' 'eth1 100 16 20 16 0' 'eth1 300 16 20 16 1'; do
+        # Splitting this literal fixture supplies the arguments by design.
+        read -r fixtures_if old_priority old_protocol new_priority new_protocol fixture_onlink <<< "$direction"
+        setup success "$fixtures_if" "$old_priority" "$old_protocol" "$new_priority" "$new_protocol" "$fixture_onlink"
+        if ! set_metric "$iface" "$metric" || [ "$(cat "$T/defaults")" != "$new" ] \
+            || [ ! -s "$cooldown" ] || [ "$(wc -l < "$T/failover-ops")" -ne 2 ]; then
+            echo "replacement failed: $direction"; exit 1
+        fi
+    done
+    setup multiple eth0 0 3 300 4
+    printf '%s\n' "$other" >> "$T/defaults"
+    if set_metric "$iface" "$metric" || [ -s "$T/failover-ops" ] || [ -e "$cooldown" ]; then
+        echo "multiple defaults were not refused"; exit 1
+    fi
+    setup unsupported eth0 0 3 300 4
+    printf '%s\n' 'default nhid 10 via 192.0.2.1 dev eth0' > "$T/defaults"
+    if set_metric "$iface" "$metric" || [ -s "$T/failover-ops" ] || [ -e "$cooldown" ]; then
+        echo "a nexthop object was not refused"; exit 1
+    fi
+    setup unchanged eth0 0 3 0 3
+    if ! set_metric "$iface" "$metric" || [ -s "$T/failover-ops" ] || [ -e "$cooldown" ]; then
+        echo "the requested metric already matched, but the script attempted to switch"; exit 1
+    fi
+    setup remove-failure eth0 300 3 0 4
+    if set_metric "$iface" "$metric" || [ "$(cat "$T/defaults")" != "$old" ] \
+        || [ -e "$cooldown" ] || [ "$(wc -l < "$T/failover-ops")" -ne 3 ]; then
+        echo "failed old deletion did not safely roll back the addition"; exit 1
+    fi
+    setup remove-race eth0 0 3 300 4
+    if set_metric "$iface" "$metric" || [ "$(cat "$T/defaults")" != "$new" ] \
+        || [ -e "$cooldown" ] || [ "$(wc -l < "$T/failover-ops")" -ne 2 ]; then
+        echo "rollback after concurrent removal discarded the usable new route"; exit 1
+    fi
+    setup post-add-race eth0 0 3 300 4
+    if set_metric "$iface" "$metric" || [ "$(wc -l < "$T/defaults")" -ne 3 ] \
+        || [ -e "$cooldown" ] || [ "$(wc -l < "$T/failover-ops")" -ne 1 ]; then
+        echo "concurrent route addition did not prevent deletion"; exit 1
+    fi
+); then
+    ok "default failover: verified add-before-delete, exact protocol selectors, and safe failure/rollback"
+else
+    bad "default failover: transition violated route preservation or cooldown"
+fi
+
+if (
+    # Execute the actual policy with both Ethernet ports present and a modem.
+    # The recorded dispatch checks the legacy migration order as well as values.
+    mkdir -p "$T/failover-sys/eth0" "$T/failover-sys/eth1" "$T/failover-policy" || exit 2
+    eval "$(sed -n '/^run_failover() {/,/^}$/p' etc/inet-failover.sh | sed "s#/sys/class/net/#$T/failover-sys/#g")"
+    STATE_DIR="$T/failover-policy"
+    INET_FAILOVER_ENABLED=yes
+    declare -A IFACE_METRIC=([eth1]=20)
+    log() { :; }
+    get_modem_iface() { printf '%s\n' wwan0; }
+    check_inet() { [ "$1" = wwan0 ] || [ "$wired_ready" -eq 1 ]; }
+    ip() { [ "$1 $2 $3 $4" = 'route show default dev' ] && printf 'default via 192.0.2.1\n'; }
+    set_metric() { printf '%s %s\n' "$1" "$2" >> "$T/metric-dispatch"; }
+    check_dispatch() {
+        DEAD_METRIC=$1 wired_ready=$2
+        : > "$T/metric-dispatch"
+        run_failover && [ "$(cat "$T/metric-dispatch")" = "$3" ]
+    }
+    check_dispatch 300 0 $'eth1 301\neth0 300' \
+        && check_dispatch 450 0 $'eth1 451\neth0 450' \
+        && check_dispatch 4294967295 0 $'eth1 4294967294\neth0 4294967295' \
+        && check_dispatch 300 1 $'eth1 20\neth0 0'
+); then
+    ok "default failover: secondary vacates the legacy metric first, configured base and normal priorities are retained"
+else
+    bad "default failover: both wired routes can collide at the same degraded priority"
+fi
+
 if [ "$fails" = 0 ]; then
     echo "PASS  test-iface-routes-ensure.sh"
     exit 0
