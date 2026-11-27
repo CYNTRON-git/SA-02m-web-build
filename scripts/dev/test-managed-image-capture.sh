@@ -34,7 +34,7 @@ cat > "$fixture/bin/sudo" <<'EOS'
 set -euo pipefail
 printf '%s\n' "$1" >> "$TRACE"
 case "$1" in
-    pishrink.sh) [ "$#" -eq 4 ]; printf shrink >> "$4" ;;
+    pishrink.sh) [ "$#" -eq 5 ] && [ "$2 $3 $4" = "-a -v -s" ] || exit 94; printf shrink >> "$5" ;;
     bash) [ "$#" -eq 3 ]; printf patch >> "$3" ;;
     *) exit 95 ;;
 esac
@@ -135,4 +135,43 @@ doc = json.loads((out/'fixture.manifest.json').read_text())
 assert doc['image_sha256'] == hashlib.sha256((out/'fixture.img.xz').read_bytes()).hexdigest()
 assert doc['uncompressed_sha256'] == hashlib.sha256((out/'fixture.img').read_bytes()).hexdigest()
 PY_COMPARE
+# The Debian packer also accepts unprovisioned legacy roots. Exercise its
+# shipped argument selection and invocation against enabled and incomplete roots.
+pack=tools/debian-rootfs/pack-sa02m-image.sh
+awk '/^pishrink_options=/{emit=1} emit{print} emit && /^fi$/{exit}' "$pack" > "$fixture/pack-options"
+awk '/^[[:space:]]*pishrink[.]sh .*"\$RAW_IMG"$/{print}' "$pack" >> "$fixture/pack-options"
+pishrink.sh() { printf '%s\n' "$@"; }
+WORK="$fixture/debian"
+RAW_IMG="$fixture/packed.img"
+system="$WORK/root/etc/systemd/system"
+helper="$WORK/root/usr/local/sbin/sa02m-rootfs-expand.sh"
+unit=sa02m-rootfs-expand.service
+mkdir -p "$system/multi-user.target.wants" "${helper%/*}"
+legacy_args=$(printf '%s\n' -a -v "$RAW_IMG")
+sa_args=$(printf '%s\n' -a -v -s "$RAW_IMG")
+assert_pack_args() {
+    local got
+    got=$(source "$fixture/pack-options")
+    if [ "$got" != "$2" ]; then
+        printf 'FAIL Debian PiShrink arguments (%s): %s\n' "$1" "$got" >&2
+        return 1
+    fi
+}
+assert_pack_args "unprovisioned rootfs" "$legacy_args"
+touch "$helper" "$system/$unit"
+chmod 755 "$helper"
+assert_pack_args "disabled service" "$legacy_args"
+for target in "../$unit" "/etc/systemd/system/$unit"; do
+    ln -sfn "$target" "$system/multi-user.target.wants/$unit"
+    assert_pack_args "enabled via $target" "$sa_args"
+done
+chmod 644 "$helper"
+assert_pack_args "unexecutable helper" "$legacy_args"
+chmod 755 "$helper"
+ln -sfn /dev/null "$system/multi-user.target.wants/$unit"
+assert_pack_args "unrelated enablement link" "$legacy_args"
+mkdir "$system/basic.target.wants"
+ln -s "../$unit" "$system/basic.target.wants/$unit"
+assert_pack_args "older basic.target enablement" "$sa_args"
+echo 'PASS Debian PiShrink preserves rc.local only with the enabled SA eMMC expander'
 echo 'PASS managed imaging admission, full-size failure, seal gate and publication'

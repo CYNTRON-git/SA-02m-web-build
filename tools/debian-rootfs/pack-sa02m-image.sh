@@ -273,6 +273,20 @@ if [ "$DO_PATCH_WATCHDOG" -eq 1 ]; then
 		"$WORK/root/etc/systemd/system.conf" 2>/dev/null || true
 fi
 
+# A supplied rootfs can be a legacy tree, including one made with --skip-install.
+pishrink_options=(-a -v)
+if [ -x "$WORK/root/usr/local/sbin/sa02m-rootfs-expand.sh" ] &&
+   [ -f "$WORK/root/etc/systemd/system/sa02m-rootfs-expand.service" ]; then
+    for target in multi-user basic; do
+        expand_link=$(readlink "$WORK/root/etc/systemd/system/$target.target.wants/sa02m-rootfs-expand.service" || true)
+        case "$expand_link" in
+            ../sa02m-rootfs-expand.service|/etc/systemd/system/sa02m-rootfs-expand.service)
+                pishrink_options+=(-s)
+                break ;;
+        esac
+    done
+fi
+
 sync
 umount "$WORK/boot"
 umount "$WORK/root"
@@ -282,7 +296,7 @@ trap - EXIT
 
 if [ "$DO_PISHRINK" -eq 1 ]; then
 	log "PiShrink"
-	pishrink.sh -a -v "$RAW_IMG"
+	pishrink.sh "${pishrink_options[@]}" "$RAW_IMG"
 fi
 
 SHRUNK_XZ="$OUT_DIR/${OUTPUT_NAME}-shrunk.img.xz"

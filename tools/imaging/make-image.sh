@@ -516,7 +516,8 @@ else
     xz "-T0" "-${STREAM_XZ_LEVEL}" -v -c "$RAW_IMG" > "$RAW_XZ"
     log "    raw.xz (WORK only): $RAW_XZ ($(numfmt --to=iec --suffix=B "$(stat -c%s "$RAW_XZ")"))"
 fi
-sudo pishrink.sh -a -v "$RAW_IMG"
+# patch-firstboot-image.sh installs and enables the eMMC expander. Preserve rc.local.
+sudo pishrink.sh -a -v -s "$RAW_IMG"
 
 # Патч образа: first-boot resize/network/watchdog (см. patch-firstboot-image.sh).
 # Шаг БЕЗУСЛОВНЫЙ: наличие скрипта проверено на шаге 0. Прежняя обёртка
