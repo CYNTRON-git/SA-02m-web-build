@@ -1,0 +1,6 @@
+a8dd8bb6e2e6b3cc8d86ffc384241dbf307caa65fc8312dc11874bec55682c9d  01-starterkit.patch
+279bd6c01338730a761e8538696dd1c5552e5e3d362646211dd4435f12b8e61c  02-sunxi-audio.patch
+dc8a42458fd9aa41a5f16cb345ccd093a4e1c8fc201a6b7521bddc667a687d77  03-rt72.patch
+e47276bbbc8aa191c5421ff2f6e0da87e25073042bc242e4afb1e53ab4ddcd80  /linux.tar.xz
+80a0b024ecca655db78f7c65bec84f8033b3d1bd354cbecf0fd7c975c4de349b  /work/profiles/smp/output/build/linux-custom/.config
+1d6b6328775026a88e36bd496e373b9243bcb7ece95b69260f9e6e4a36d1fe4b  /work/profiles/rt/output/build/linux-custom/.config

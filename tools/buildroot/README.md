@@ -1,5 +1,7 @@
 # Buildroot VM — RT + Docker kernel для SA-02m
 
+[Испытательные SMP и PREEMPT_RT на Linux 6.1.193, QEMU и порядок HIL](lts-trial/README.md)
+
 > ### Это действующий путь сборки ядра — единственный в репозитории
 >
 > Именно эта цепочка (Starterkit VM + Buildroot 2022.08.x-sk-a40i) собирает пару

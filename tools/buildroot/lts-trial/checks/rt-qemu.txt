@@ -1,0 +1,13 @@
+zImage 53519cc0e6ab1e03b0296d5e6e006671d0f1d5ff787523df0c5fe1ae5b993cf8
+orangepi-pc.dtb e94a63a6d00b874460916ec256ed0cb76c3d7342262642aeb89aa66c2e6df04f
+vpn-rt.cpio.gz a4364c6236b8b0d32df1d415ffb74d13334b9f83462d70dbd81cdbf6d740e6bf
+[    0.690709]   #0: H3 Audio Codec
+VPN_BOOT PREEMPT_RT=1
+VPN_BOOT kernel=6.1.193-rt72-sa02m-trial userspace=production-armhf audio=H3
+2 packets transmitted, 2 packets received, 0% packet loss
+2 packets transmitted, 2 packets received, 0% packet loss
+2 packets transmitted, 2 packets received, 0% packet loss
+2 packets transmitted, 2 packets received, 0% packet loss
+VPN_BOOT peer=a rx=1180 tx=1236
+VPN_BOOT peer=b rx=1236 tx=1180
+VPN_BOOT_TEST_OK kernel=6.1.193-rt72-sa02m-trial
