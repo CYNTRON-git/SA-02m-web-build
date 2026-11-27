@@ -20,6 +20,42 @@ log() {
     echo    "[${ts}] [${level}] ${msg}" >> "$LOG_FILE" 2>/dev/null || true
 }
 
+# Product code is executed as root. Refuse a redirected package destination
+# before install or rsync can change its owner or mode.
+sa02m_install_code_dir() {
+    local dest=$1
+    if [ -L "$dest" ] || [ "$(realpath -m -- "$dest")" != "$dest" ]; then
+        log ERR "Недопустимая ссылка в каталоге установки кода $dest"
+        return 1
+    fi
+    install -d -m 0755 -o root -g root -- "$dest"
+}
+
+# These Git packages contain only regular files and directories. Sender-only
+# bytecode filters allow --delete to remove caches left by a previous release.
+sa02m_check_code_source() {
+    local src=$1 special
+    if [ ! -d "$src" ] || [ -L "$src" ]; then
+        log ERR "Некорректный каталог исходного кода $src"
+        return 1
+    fi
+    special=$(find "$src" ! -type d ! -type f -printf x -quit) || return 1
+    if [ -n "$special" ]; then
+        log ERR "Недопустимый тип файла в пакете $src"
+        return 1
+    fi
+}
+
+sa02m_rsync_code_tree() {
+    local src=$1 dest=$2
+    shift 2
+    sa02m_check_code_source "$src" && sa02m_install_code_dir "$dest" || return 1
+    # Replace existing files even on a quick-check match so that installation
+    # cannot change the metadata of an unrelated hard link to the old inode.
+    rsync -a --ignore-times --chown=root:root --chmod=go-w --delete \
+        --filter='H __pycache__' --filter='H *.pyc' "$@" -- "$src/" "$dest/"
+}
+
 # Installer summary for the panel credential: the FACT, never the value. Every
 # `log` line lands in $LOG_FILE, which the panel serves to any logged-in session
 # (log.cgi / log_export.cgi), so printing the password there leaked an

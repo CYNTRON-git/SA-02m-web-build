@@ -21,11 +21,9 @@ SVC_NAME="sa02m-serial-gateway"
 sa02m_pkg_install_tier optional python3 python3-serial python3-yaml
 
 # ── Каталог установки ─────────────────────────────────────────────────────
-install -d -m 0755 -o root -g root "$INSTALL_DIR"
 log INFO "Копирую $OPT_SRC → $INSTALL_DIR"
-rsync -a --delete --exclude '__pycache__' --exclude '*.pyc' \
-    "$OPT_SRC/" "$INSTALL_DIR/"
-find "$INSTALL_DIR" -type f -name "*.py" -exec chmod 0755 {} \;
+sa02m_rsync_code_tree "$OPT_SRC" "$INSTALL_DIR" || exit 1
+find "$INSTALL_DIR" -type f -name "*.py" -exec chmod 0755 {} + || exit 1
 
 # ── /etc конфигурация ────────────────────────────────────────────────────
 if [ ! -f /etc/sa02m-gateway.yaml ]; then

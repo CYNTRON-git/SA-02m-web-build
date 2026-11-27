@@ -2,9 +2,9 @@
 # ═══════════════════════════════════════════════════════════════════════════
 # Офлайн ПОЛНОЕ обновление СА-02м из распакованного архива репозитория.
 # Запуск на устройстве (root), из любого каталога:
-#   mkdir -p /tmp/sa02m-upd && tar xzf /tmp/SA-02m-full-<ver>-<ref>-<sha7>.tar.gz -C /tmp/sa02m-upd
+#   umask 022 && mkdir -p /tmp/sa02m-upd && tar --no-same-permissions -xzf /tmp/SA-02m-full-<ver>-<ref>-<sha7>.tar.gz -C /tmp/sa02m-upd
 #   bash /tmp/sa02m-upd/scripts/offline-full-update.sh [опции]
-# The archive is `git archive origin/<ref>` after `git fetch`; which <ref> is
+# The archive is `git -c tar.umask=0022 archive origin/<ref>` after `git fetch`; which <ref> is
 # allowed: docs/deployment.md «Полный деплой» → «Предусловия».
 # Процедура и WHY — docs/deployment.md «Полный деплой» → «Офлайн-вариант»;
 # режим --unattended — там же, «Мост самообновления для плат < 1.0.5.75».

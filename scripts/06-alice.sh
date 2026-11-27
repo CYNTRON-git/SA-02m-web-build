@@ -41,13 +41,11 @@ sa02m_install_carel_pkg "$BASE_DIR"
 sa02m_install_spodes_pkg "$BASE_DIR"
 
 # ── Package tree ───────────────────────────────────────────────────────────
-install -d -m 0755 -o root -g root "$INSTALL_DIR"
 log INFO "Копирую $OPT_SRC → $INSTALL_DIR"
-rsync -a --delete --exclude '__pycache__' --exclude '*.pyc' --exclude 'tests' \
-    "$OPT_SRC/" "$INSTALL_DIR/"
+sa02m_rsync_code_tree "$OPT_SRC" "$INSTALL_DIR" --exclude 'tests'
 # Keep tests on device for optional host-like checks
 if [ -d "$OPT_SRC/tests" ]; then
-    rsync -a --delete --exclude '__pycache__' "$OPT_SRC/tests/" "$INSTALL_DIR/tests/"
+    sa02m_rsync_code_tree "$OPT_SRC/tests" "$INSTALL_DIR/tests"
 fi
 
 # ── Runtime dirs ───────────────────────────────────────────────────────────

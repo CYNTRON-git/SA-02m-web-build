@@ -22,12 +22,10 @@ ETC_DIR="/etc/sa02m-rules"
 
 python3 -c "import paho.mqtt" 2>/dev/null || sa02m_pkg_install_tier optional python3-paho-mqtt
 
-install -d -m 0755 -o root -g root "$INSTALL_DIR"
+sa02m_install_code_dir "$INSTALL_DIR" || exit 1
 install -d -m 0755 -o root -g root "$ETC_DIR"
 if [ -d "$OPT_SRC" ]; then
-    rsync -a --delete --exclude '__pycache__' --exclude '*.pyc' --exclude 'tests' \
-        --exclude '/sa02m_rules/bridge_roster.py' \
-        "$OPT_SRC/" "$INSTALL_DIR/"
+    sa02m_rsync_code_tree "$OPT_SRC" "$INSTALL_DIR" --exclude 'tests' --exclude '/sa02m_rules/bridge_roster.py'
     # Mixed-version Rules must classify the same validated roster as current Alice.
     sa02m_atomic_install -m 0644 -o root -g root \
         "$BASE_DIR/opt/sa02m-alice/sa02m_alice/config/bridge_roster.py" \
