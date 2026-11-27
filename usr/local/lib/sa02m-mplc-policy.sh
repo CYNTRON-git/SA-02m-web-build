@@ -191,3 +191,4 @@ sa02m_mplc_runtime_active() {
         || pgrep -x mplc_monitor >/dev/null 2>&1 \
         || pgrep -f '[m]plc.*\.bin\|[M]asterPLC\|[m]asterplc' >/dev/null 2>&1
 }
+
