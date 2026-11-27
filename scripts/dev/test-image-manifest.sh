@@ -105,9 +105,10 @@ run_manifest() {
     printf 'deadbeef  x.img.xz\n' > "$T/x.sha256"
     DONOR_META="$1" DEVICE_IP=192.168.1.136 \
     RELEASE_PROFILE="${3-sa02m-1eth}" RELEASE_VERSION=1.0.5.54 \
-    PIPE_CLEANUP=1 PIPE_ZEROFILL=1 PIPE_ID_RESET=1 PIPE_XZ_LEVEL=9e \
+    PIPE_FINAL_FREE_BLOCKS="$T/final-free-blocks.json" \
+    PIPE_CLEANUP=1 PIPE_ZEROFILL="${6:-1}" PIPE_ID_RESET=1 PIPE_XZ_LEVEL=9e \
     PIPE_RUNTIME_MODE="${4:-legacy}" PIPE_RUNTIME_SEAL="${5:-}" \
-        "$PY" "$T/wm.py" "$T/x.img.xz" "$T/x.sha256" "$2" >/dev/null 2>&1
+        "$PY" "$T/wm.py" "$T/x.img.xz" "$T/x.sha256" "$2" >/dev/null 2>"$T/manifest.err"
 }
 
 # field <out.json> <dotted.path>
@@ -193,9 +194,12 @@ expect "malformed: fields fall back to unknown" "$T/m4.json" platform.kernel "un
 hash=$(printf '%064d' 0)
 printf '{"schema":1,"source":"%s","release_id":"%s","manifest_sha256":"%s","selector_sha256":"%s"}\n' \
     "$hash" "$hash" "$hash" "$hash" > "$T/seal.json"
-run_manifest "$META1" "$T/managed.json" "" managed "$T/seal.json" || bad "valid managed seal refused"
+copy_hash=$(printf '%064d' 1)
+printf '{"copy_sha256":"%s"}\n' "$copy_hash" > "$T/final-free-blocks.json"
+run_manifest "$META1" "$T/managed.json" "" managed "$T/seal.json" || bad "valid managed seal and copy receipt refused ($(cat "$T/manifest.err"))"
 expect "managed mode recorded" "$T/managed.json" runtime_capture managed
 expect "managed selector digest recorded" "$T/managed.json" runtime_image_seal.selector_sha256 "$hash"
+expect "managed image records the final uncompressed copy digest" "$T/managed.json" uncompressed_sha256 "$copy_hash"
 printf 'null\n' > "$T/null.json"
 for seal in "$T/missing.json" "$T/null.json"; do
     if run_manifest "$META1" "$T/rejected.json" "" managed "$seal" || [ -e "$T/rejected.json" ]; then
@@ -204,6 +208,24 @@ for seal in "$T/missing.json" "$T/null.json"; do
         ok "managed seal ${seal##*/} rejected before manifest"
     fi
 done
+
+# The valid seal stays fixed while only the copy receipt changes.
+rm "$T/final-free-blocks.json"
+for receipt in missing invalid; do
+    if [ "$receipt" = invalid ]; then
+        printf '{"copy_sha256":"short"}\n' > "$T/final-free-blocks.json"
+    fi
+    out="$T/rejected-$receipt-copy.json"
+    if run_manifest "$META1" "$out" "" managed "$T/seal.json" || [ -e "$out" ]; then
+        bad "managed zerofill accepted $receipt copy receipt"
+    else
+        ok "managed zerofill rejected $receipt copy receipt before manifest"
+    fi
+done
+run_manifest "$META1" "$T/no-zero.json" "" managed "$T/seal.json" 0 &&
+    "$PY" -c 'import json,sys; assert "uncompressed_sha256" not in json.load(open(sys.argv[1]))' "$T/no-zero.json" \
+    && ok "managed capture without zerofill omits the copy digest" \
+    || bad "managed capture without zerofill did not preserve the no-copy contract"
 
 printf '\n'
 if [ "$fails" -eq 0 ]; then

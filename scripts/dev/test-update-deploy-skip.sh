@@ -185,6 +185,11 @@ fi
 # This file isolates filesystem rollback; UART restoration is covered by
 # test-update-control-boundaries.py.
 restore_port_consumers() { return 0; }
+restart_after_rollback() { :; }  # Covered by test-update-conditional-restart.sh.
+systemctl() {
+    printf '%s\n' "$*" >> "$T/runtime-jobs"
+    [ "${REFUSE_RUNTIME_JOB:-0}" = 0 ]
+}
 _systemctl_bounded() { shift; systemctl "$@"; }
 txn_has_key() { return 1; }
 fails=0
@@ -224,6 +229,13 @@ for fn in $funcs; do
     grep -q "^$fn() {" "$T/fn.sh" \
         || { echo "FAIL  could not extract $fn() from $SRC — the marker moved; fix this harness, do not delete it"; exit 1; }
 done
+# Keep the service boundary local even when this runs on a managed system.
+if grep -q '^queue_runtime_after_update() {' "$SRC"; then
+    extract queue_runtime_after_update |
+        sed 's@/opt/sa02m-runtime-transition/runtime_transition.py@"$T/runtime_transition.py"@' > "$T/queue.sh"
+    grep -qF '"$T/runtime_transition.py"' "$T/queue.sh" || { echo "FAIL  missing runtime fixture path"; exit 1; }
+    . "$T/queue.sh"
+fi
 # When the source HAS the guard, the extracted apply loop MUST call it — else the
 # extraction range silently dropped it and every skip assertion is vacuous.
 if [ "$HAS_GUARD" = "1" ]; then
@@ -967,6 +979,25 @@ if [ "$rb_rc" -eq 0 ] && [ "$(rb_states "$T/live15b")" = "r1 OLD|r2 OLD|r3 OLD" 
 else
     bad "15b NUL-filled journal tail: rc=$rb_rc states=$(rb_states "$T/live15b") stage=$(txn_get stage)"
 fi
+# The restored journal is terminal only after the managed runtime accepts its job.
+touch "$T/runtime_transition.py"
+for REFUSE_RUNTIME_JOB in 0 1; do
+    rb_setup "R15Q$REFUSE_RUNTIME_JOB" "$T/live15q"
+    : > "$T/runtime-jobs"
+    rb_run "R15Q$REFUSE_RUNTIME_JOB"
+    if [ "$rb_rc" = 0 ] && [ "$(rb_states "$T/live15q")" = "r1 OLD|r2 OLD|r3 OLD" ] &&
+       [ "$(cat "$T/runtime-jobs")" = "start --no-block sa02m-runtime-activate.service" ] &&
+       { { [ "$REFUSE_RUNTIME_JOB" = 0 ] && [ "$(txn_get stage)" = rolled_back ]; } ||
+         { [ "$REFUSE_RUNTIME_JOB" = 1 ] && [ "$(txn_get stage)" = error ] &&
+           txn_get error_message | grep -qF 'restored runtime activation could not be queued'; }; }; then
+        ok "15q journal rollback honors the runtime activation result (refused=$REFUSE_RUNTIME_JOB)"
+    else
+        bad "15q journal rollback runtime activation (refused=$REFUSE_RUNTIME_JOB, stage=$(txn_get stage))"
+    fi
+done
+unset REFUSE_RUNTIME_JOB
+rm "$T/runtime_transition.py"
+
 # 15c a replace record whose backup is GONE: the others restore, the stage says so
 rb_setup TXN15C "$T/live15c"
 rm -f "$(rb_bak "$T/live15c/r2.conf" TXN15C)"
