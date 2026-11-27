@@ -331,6 +331,88 @@ class IdentityTests(unittest.TestCase):
         link.parent.mkdir(); link.symlink_to('../ordinary.service')
         self.run_helper('--check', expected=1)
 
+    def test_getty_login_prompt_escape_and_injected_writers(self):
+        self.clean()
+        getty = r"ExecStart=-/sbin/agetty -o '-p -- \\u' --noclear - $TERM"
+        self.write('etc/systemd/system/getty@.service', '[Service]\n' + getty + '\n')
+        link = self.root/'etc/systemd/system/getty.target.wants/getty@tty1.service'
+        link.parent.mkdir(); link.symlink_to('../getty@.service')
+        self.run_helper('--check')
+        for command in ('ExecStartPost=/home/klogic/adjust-eth0',
+                        r'ExecStartPost=/home/\x6blogic/set-ip0',
+                        getty + r" ; /home/\x6blogic/set-route"):
+            with self.subTest(command=command):
+                self.write('etc/systemd/system/getty@.service', '[Service]\n' + getty + '\n' + command + '\n')
+                self.run_helper('--apply', expected=1)
+
+    def test_transitive_instance_dependencies_keep_the_selected_instance(self):
+        self.clean(); self.vendor()
+        self.write('etc/systemd/system/parent@.service', '[Unit]\nWants=ifup@%i.service\n')
+        self.write('etc/systemd/system/ifup@.service', '[Unit]\nBindsTo=sys-subsystem-net-devices-%i.device\n')
+        link = self.root/'etc/systemd/system/multi-user.target.wants/parent@eth0.service'
+        link.parent.mkdir(); link.symlink_to('../parent@.service')
+        self.run_helper('--apply')
+        self.write('etc/systemd/system/ifup@eth0.service.d/vendor.conf', '[Unit]\nRequires=sa02m-klogic-net-sync.path\n')
+        self.run_helper('--check', expected=1)
+        self.write('etc/systemd/system/ifup@eth0.service.d/vendor.conf', '[Unit]\nWants=unknown@%H.service\n')
+        self.run_helper('--check', expected=1)
+
+    def test_transitive_template_alias_uses_canonical_instance_dropin(self):
+        self.clean(); self.vendor()
+        self.write('etc/systemd/system/dispatcher@.service', '[Unit]\nWants=alias@%i.service\n')
+        self.write('etc/systemd/system/actual@.service', '[Service]\nExecStart=/bin/true\n')
+        (self.root/'etc/systemd/system/alias@.service').symlink_to('actual@.service')
+        link = self.root/'etc/systemd/system/multi-user.target.wants/dispatcher@eth0.service'
+        link.parent.mkdir(); link.symlink_to('../dispatcher@.service')
+        for target in ('sa02m-klogic-net-sync.path', 'observer@%H.service'):
+            self.write('etc/systemd/system/actual@eth0.service.d/site.conf', f'[Unit]\nWants={target}\n')
+            self.run_helper('--check', expected=1)
+
+    def test_bridge_configuration_and_activation_environment_refused(self):
+        self.clean()
+        for field in ('bridge_ports eth0', 'bridge-hw 02:11:22:33:44:55'):
+            self.write('etc/network/interfaces.d/eth0.conf', CONF + '    ' + field + '\n')
+            self.run_helper('--apply', expected=1)
+        self.clean()
+        self.write('etc/systemd/system/networking.service', '[Service]\nEnvironment=IF_BRIDGE_PORTS=none\n')
+        self.enable('networking.service')
+        self.run_helper('--apply', expected=1)
+
+    def test_expanded_instance_command_cannot_hide_a_writer(self):
+        self.clean()
+        self.write('etc/systemd/system/parent@.service', '[Unit]\nWants=tool@%i.service\n')
+        self.write('etc/systemd/system/tool@.service', '[Service]\nExecStart=/usr/sbin/%i\n')
+        link = self.root/'etc/systemd/system/multi-user.target.wants/parent@macchanger.service'
+        link.parent.mkdir(); link.symlink_to('../parent@.service')
+        self.run_helper('--apply', expected=1)
+
+    def test_instantiated_device_cannot_hide_a_writer_dependency(self):
+        self.clean(); self.vendor()
+        self.write('etc/systemd/system/ifup@.service', '[Unit]\nBindsTo=sys-subsystem-net-devices-%i.device\n')
+        link = self.root/'etc/systemd/system/multi-user.target.wants/ifup@eth0.service'
+        link.parent.mkdir(); link.symlink_to('../ifup@.service')
+        device = 'etc/systemd/system/sys-subsystem-net-devices-eth0.device'
+        self.write(device + '.d/override.conf', '[Unit]\nWants=sa02m-klogic-net-sync.service\n')
+        self.run_helper('--check', expected=1)
+        self.write(device, '[Unit]\nDescription=Ethernet device\n')
+        self.run_helper('--check', expected=1)
+        (self.root/(device + '.d/override.conf')).unlink()
+        self.run_helper('--check')
+
+    def test_distro_hook_paths_do_not_trust_changed_writers(self):
+        original = (self.root/'etc/network/interfaces.d/eth0.conf').read_bytes()
+        for path, writer in (
+            ('etc/network/if-pre-up.d/vlan', '#!/bin/sh\n/home/klogic/adjust-eth0\n'),
+            ('usr/lib/udev/rules.d/85-nm-unmanaged.rules',
+             'ATTR{address}=="00:50:56:*", ENV{INTERFACE}=="vmnet[0-9]*", ENV{NM_UNMANAGED}="1"\n'
+             'ACTION=="add", RUN+="/home/klogic/adjust-eth0"\n'),
+        ):
+            with self.subTest(path=path):
+                p = self.write(path, writer)
+                self.run_helper('--apply', expected=1)
+                self.assertEqual((self.root/'etc/network/interfaces.d/eth0.conf').read_bytes(), original)
+                p.unlink()
+
     def test_escaped_active_command_and_ambiguous_accept_are_refused(self):
         self.clean()
         self.write('etc/systemd/system/ordinary.service', '[Service]\nExecStart=/usr/sbin/\\x69p link set dev eth0 address 02:11:22:33:44:55\n')

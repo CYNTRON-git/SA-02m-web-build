@@ -430,6 +430,11 @@ systemd разрешаются относительно корня образа,
 `Wants`/`Requires`/`BindsTo`/`Upholds`/`OnFailure`/`OnSuccess`, `Unit` для
 path/timer, `Service` и `Accept=yes` для socket, service `Sockets`, шаблон
 инстанса и drop-in самого юнита, его alias, типа и префикса с дефисом.
+Конкретный экземпляр сохраняется при переходе между шаблонами и их alias.
+Для поддерживаемых имён зависимостей подставляется экранированный экземпляр
+`%i` (например, в `ifup@%i.service` и `sys-subsystem-net-devices-%i.device`).
+Штатная команда `agetty` передаёт подстановку имени пользователя программе
+`login`; остальные команды и drop-ins проходят ту же проверку писателей.
 Продолжения физических строк соединяются до разбора ключей, комментарии между
 ними пропускаются; продолжение не пересекает границу файлов. Неоднозначные
 activation values, неразрешённый specifier и неподдержанная строка дают отказ.
@@ -440,6 +445,12 @@ activation values, неразрешённый specifier и неподдержа�
 [systemd.syntax](https://www.freedesktop.org/software/systemd/man/latest/systemd.syntax.html),
 [systemd.unit](https://www.freedesktop.org/software/systemd/man/latest/systemd.unit.html)
 и [systemd.socket](https://www.freedesktop.org/software/systemd/man/latest/systemd.socket.html).
+
+Для профиля физических интерфейсов проверены штатные хуки Noble из пакетов
+`vlan`, `bridge-utils` и `network-manager`. Проверка сверяет точные байты
+с названным путём. Для bridge проверяются также обе подключаемые shell-конфигурации:
+параметры `bridge_ports`, `bridge_hw` или явное задание соответствующих
+переменных окружения требуют разбора перед подготовкой образа.
 
 Статический guard не доказывает произвольную логику vendor binaries и updater
 архивов. Отдельная обязательная запись подготовки: проверены фактические

@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """Golden-only Ethernet identity sanitation; never executes image code."""
 import argparse
+import hashlib
 import os
 from pathlib import Path, PurePosixPath
 import re
@@ -15,6 +16,25 @@ WRITER = re.compile(r'\bhwaddress\b|\bmacchanger\b|\bip\s+link\s+[^\n;]*\baddres
                     r'\bifconfig\s+[^\n;]*\bhw\s+ether\b|\bMACAddress\s*=|'
                     r'\b(?:cloned-mac-address|assigned-mac-address)\s*=', re.I)
 VENDOR = re.compile(r'/home/klogic(?:/|\b)|\bklogic(?:[-.\s]|$)|\badjust-(?:eth|end)[01]\b|\bset-ip[01]\b|\bset-route\b', re.I)
+
+# Noble agetty passes a literal backslash-u to login's prompt formatter.
+GETTY_LOGIN = r"-/sbin/agetty -o '-p -- \\u' --noclear - $TERM"
+# Noble vlan exits before its writer for all supported interfaces. NetworkManager
+# matches two virtual NIC OUIs to select management policy and never sets a MAC.
+# Only the reviewed distribution files qualify; changes receive full inspection.
+DISTRO_HOOKS = {
+    'etc/network/if-pre-up.d/vlan': '23a8ab91549cd866ec6d8db95ed94302e06cb93138c414def51849979fe07924',
+    'usr/lib/udev/rules.d/85-nm-unmanaged.rules': 'afce2a870bf2cefb2b52214ed959d0e0025ed2efef5c05871895f6edbedec24a',
+}
+BRIDGE_HOOKS = {f'etc/network/{stage}/bridge' for stage in ('if-pre-up.d', 'if-down.d', 'if-post-down.d')}
+BRIDGE_SHA256 = '7f9c7cb078a2fe1fe488f1ff20fc8abfccdb1c89e47a8c3316d824a2b77cb351'
+BRIDGE_INPUTS = {
+    'etc/default/bridge-utils': 'e0c9444242a606e05f7206be6329b2035abfc790805f3620a5e373a2ff530720',
+    'lib/bridge-utils/bridge-utils.sh': 'edac03730b63a0094a4497e4ddf4153ff4cdbfe096c7c9657d90c0867d78b18f',
+}
+BRIDGE_OPTIONS = re.compile(r'(?<![A-Za-z0-9_])(?:IF[_-])?BRIDGE[_-](?:PORTS|HW)\b', re.I)
+BRIDGE_ENV = re.compile(r'\bIF_BRIDGE_(?:PORTS|HW)\s*=')
+
 
 
 class Refused(Exception):
@@ -135,7 +155,7 @@ def network_content(rel, text, apply):
             if stanza not in PHYSICAL: refuse(rel, 'KLogic hook outside physical stanza')
             if not apply: refuse(rel, 'active KLogic ifup hook')
             continue
-        elif WRITER.search(value) or VENDOR.search(value):
+        elif WRITER.search(value) or VENDOR.search(value) or BRIDGE_OPTIONS.search(value):
             refuse(rel, 'unrecognized network identity writer')
         elif stanza is None:
             refuse(rel, 'option outside supported stanza')
@@ -187,7 +207,7 @@ def check_boot_entries(image):
                     if image.path(child, links=True) is not None:
                         seeds.add(target)
                         edges.setdefault(name.rsplit('.', 1)[0], set()).add(target)
-            elif name.endswith(('.service', '.path', '.timer', '.socket', '.target')):
+            elif name.endswith(('.service', '.path', '.timer', '.socket', '.target', '.device')):
                 text = image.read(rel, links=True)
                 if image.path(rel, links=True) is None:
                     masked.add(name); definitions.pop(name, None)
@@ -233,25 +253,28 @@ def check_boot_entries(image):
     for name, (rel, _) in definitions.items():
         canonical = canonical_name(name, rel)
         aliases.setdefault(canonical, set()).update((name, canonical))
-        # Alias symlink targets identify a unit name, not a permission to
-        # bypass its higher-priority /etc definition with the /usr/lib file.
-        if canonical != name: edges.setdefault(name, set()).add(canonical)
     for name, (rel, fragments) in definitions.items():
         inherited = set()
         for alias in aliases[canonical_name(name, rel)]: inherited.update(scopes(alias))
         for scope in sorted(inherited): fragments.extend(dropins.get(scope, ()))
-    dangerous = {}; ambiguous = {}
+    dangerous = {}; ambiguous = {}; instance_commands = {}
     for name, (rel, fragments) in definitions.items():
         fields = {}
         for path, text in fragments:
             # A continuation never crosses a physical file boundary.
             for key, values in unit_fields(text, path).items():
                 fields.setdefault(key, []).extend(values)
-        commands = '\n'.join(v for (_, k), vals in fields.items()
-                             if k.startswith('Exec') or k in ('WorkingDirectory', 'PathChanged', 'PathModified') for v in vals)
-        if '\\' in commands:
-            ambiguous[name] = rel
-        if VENDOR.search(name) or VENDOR.search(commands) or WRITER.search(commands):
+        active = [(section, key, value) for (section, key), values in fields.items()
+                  if key.startswith('Exec') or key in ('WorkingDirectory', 'PathChanged', 'PathModified')
+                  for value in values]
+        for section, key, value in active:
+            if '\\' in value and (section, key, value) != ('Service', 'ExecStart', GETTY_LOGIN):
+                ambiguous[name] = rel
+        commands = '\n'.join(value for _, _, value in active)
+        if '%i' in commands or '%I' in commands:
+            instance_commands[name] = commands
+        environment = '\n'.join(fields.get(('Service', 'Environment'), ()))
+        if VENDOR.search(name) or VENDOR.search(commands) or WRITER.search(commands) or BRIDGE_ENV.search(commands + '\n' + environment):
             dangerous[name] = rel
         def add_edges(section, key):
             for value in fields.get((section, key), []):
@@ -286,19 +309,44 @@ def check_boot_entries(image):
         name = seeds.pop()
         if name in visited or name in masked: continue
         visited.add(name)
-        # Dependency names can select an instance without a top-level alias.
-        if name not in definitions and '@' in name and '.' in name:
-            template = name.split('@', 1)[0] + '@.' + name.rsplit('.', 1)[1]
-            if template in definitions or template in masked:
-                seeds.add(template)
-                continue
-        if name in ambiguous:
-            refuse(ambiguous[name], 'unsupported systemd activation value')
-        if '%' in name:
-            refuse(name, 'unresolved systemd activation specifier')
-        if name in dangerous or VENDOR.search(name):
-            refuse(dangerous.get(name, name), 'enabled network identity regeneration entry')
-        seeds.update(edges.get(name, ()))
+        if '%' in name or len(name) > 255 or len(visited) > 4096:
+            refuse(name, 'unresolved or excessive systemd activation')
+        # Keep the instance while loading template fragments. Its %i must
+        # survive multiple activation edges and reach instance-specific drop-ins.
+        instance = None
+        definition = name
+        match = re.fullmatch(r'([^@]+)@([^@]*)\.([a-z]+)', name)
+        if match:
+            prefix, instance, kind = match.groups()
+            template = f'{prefix}@.{kind}'
+            if name not in definitions:
+                if template in masked: continue
+                if template in definitions: definition = template
+        # A dynamically synthesized device can still inherit drop-ins. Without
+        # a source definition, their activation edges have not been inspected.
+        if name.endswith('.device') and name not in definitions and scopes(name) & dropins.keys():
+            refuse(name, 'unreviewed generated device drop-in')
+        # Resolve a template alias under the concrete name at every hop, so
+        # canonical instance drop-ins and higher-precedence definitions apply.
+        if definition in definitions:
+            canonical = canonical_name(name, definitions[definition][0])
+            if canonical != name: seeds.add(canonical)
+        if definition in ambiguous:
+            refuse(ambiguous[definition], 'unsupported systemd activation value')
+        if instance and definition in instance_commands:
+            commands = instance_commands[definition]
+            if not re.fullmatch(r'[A-Za-z0-9_.:-]+', instance):
+                refuse(name, 'unresolved command instance')
+            commands = commands.replace('%i', instance).replace('%I', instance.replace('-', '/'))
+            if VENDOR.search(commands) or WRITER.search(commands):
+                refuse(name, 'enabled instance network identity regeneration entry')
+        if definition in dangerous or VENDOR.search(name):
+            refuse(dangerous.get(definition, name), 'enabled network identity regeneration entry')
+        for edge in edges.get(definition, set()) | edges.get(name, set()):
+            if ('%i' in edge and instance and re.fullmatch(r'[A-Za-z0-9_.:-]+', instance)
+                    and edge.endswith(('.service', '.path', '.timer', '.socket', '.target', '.device'))):
+                edge = edge.replace('%i', instance)
+            seeds.add(edge)
 
     for base in ('etc/udev/rules.d', 'usr/lib/udev/rules.d', 'lib/udev/rules.d',
                  'etc/cron.d', 'etc/cron.hourly', 'etc/cron.daily', 'etc/cron.weekly',
@@ -308,8 +356,20 @@ def check_boot_entries(image):
         for rel in image.entries(base, links=True):
             text = image.read(rel, links=True)
             if text is None: continue
+            canonical = 'usr/' + rel if rel.startswith('lib/udev/') else rel
+            if canonical in DISTRO_HOOKS and hashlib.sha256(text.encode()).hexdigest() == DISTRO_HOOKS[canonical]:
+                continue
+            if rel in BRIDGE_HOOKS and hashlib.sha256(text.encode()).hexdigest() == BRIDGE_SHA256:
+                # The hook sources both files before returning on empty
+                # IF_BRIDGE_PORTS. Their executable contents are part of the proof.
+                for input_path, expected in BRIDGE_INPUTS.items():
+                    source = image.read(input_path, links=True)
+                    if source is None and input_path == 'etc/default/bridge-utils': continue
+                    if source is None or hashlib.sha256(source.encode()).hexdigest() != expected:
+                        refuse(input_path, 'unreviewed bridge hook input')
+                continue
             active = '\n'.join(active_lines(text))
-            if VENDOR.search(active) or WRITER.search(active) or re.search(r'ATTR\{address\}\s*==', active):
+            if VENDOR.search(active) or WRITER.search(active) or BRIDGE_ENV.search(active) or re.search(r'ATTR\{address\}\s*==', active):
                 refuse(rel, 'unresolved network identity trigger')
     for rel in ('etc/crontab', 'etc/rc.local'):
         text = image.read(rel)
