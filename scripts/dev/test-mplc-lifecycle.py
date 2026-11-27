@@ -102,6 +102,60 @@ if args[0]=='is-active': print(s['active'])
         self.assertIn('STOP_TIMEOUT=95', helper)
         self.assertIn('START_TIMEOUT=95', helper)
 
+    def install_timeout_policy(self, system):
+        policy = self.root / 'install-policy.sh'
+        policy.write_text((ROOT / 'usr/local/lib/sa02m-mplc-policy.sh').read_text()
+                          .replace('/etc/systemd/system', str(system)))
+        installer = (ROOT / 'scripts/09-mplc.sh').read_text()
+        adapter = next(line for line in installer.splitlines() if line.startswith('sa02m_mplc_atomic()'))
+        body = ('source "$1"; source "$2"\n' + adapter +
+                '\nsa02m_mplc_policy_install "$3" || exit 1\necho "$SA02M_MPLC_POLICY_CHANGED"')
+        return subprocess.run(['/bin/bash', '-c', body, '_', str(ROOT / 'scripts/lib.sh'), str(policy),
+                               str(ROOT / 'opt/sa02m-mplc/systemd/mplc4.service')],
+                              capture_output=True, text=True, timeout=8,
+                              env={**os.environ, 'LOG_FILE': str(self.root / 'log')})
+
+    def test_refresh_creates_missing_timeout_directory_once(self):
+        system = self.root / 'etc/systemd/system'
+        system.mkdir(parents=True)
+        (system / 'mplc4.service').write_text('[Service]\n')
+        dropin = system / 'mplc4.service.d/sa02m-timeout.conf'
+        first = self.install_timeout_policy(system)
+        self.assertEqual(first.returncode, 0, first.stdout + first.stderr)
+        self.assertEqual(first.stdout.strip(), '1')
+        self.assertEqual(dropin.parent.stat().st_mode & 0o777, 0o755)
+        self.assertEqual(dropin.stat().st_mode & 0o777, 0o644)
+        self.assertIn('TimeoutStartSec=45s\n', dropin.read_text())
+        inode = dropin.stat().st_ino
+        again = self.install_timeout_policy(system)
+        self.assertEqual(again.returncode, 0, again.stdout + again.stderr)
+        self.assertEqual(again.stdout.strip(), '0')
+        self.assertEqual(dropin.stat().st_ino, inode)
+
+    def test_refresh_refuses_unsafe_timeout_paths(self):
+        system = self.root / 'etc/systemd/system'
+        system.mkdir(parents=True)
+        outside = self.root / 'outside'
+        outside.mkdir()
+        parent = system / 'mplc4.service.d'
+        dropin = parent / 'sa02m-timeout.conf'
+        parent.symlink_to(outside)
+        self.assertNotEqual(self.install_timeout_policy(system).returncode, 0)
+        self.assertEqual(list(outside.iterdir()), [])
+        parent.unlink()
+        parent.mkdir()
+        parent.chmod(0o777)
+        self.assertNotEqual(self.install_timeout_policy(system).returncode, 0)
+        self.assertFalse(dropin.exists())
+        parent.chmod(0o755)
+        dropin.symlink_to(outside / 'missing')
+        self.assertNotEqual(self.install_timeout_policy(system).returncode, 0)
+        self.assertTrue(dropin.is_symlink())
+        dropin.unlink()
+        dropin.mkdir()
+        self.assertNotEqual(self.install_timeout_policy(system).returncode, 0)
+        self.assertEqual(list(dropin.iterdir()), [])
+
     def test_client_timeout_observes_same_job_and_never_retries_initd(self):
         reply, data, calls = self.invoke('late_success')
         self.assertEqual(reply.returncode, 0, reply.stderr + reply.stdout)

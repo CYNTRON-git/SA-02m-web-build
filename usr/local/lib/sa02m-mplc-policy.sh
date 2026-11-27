@@ -4,11 +4,30 @@
 # their derived drop-in. Callers supply their existing atomic-install primitive
 # and bounded systemctl function as sa02m_mplc_atomic / sa02m_mplc_sc.
 
+sa02m_mplc_trusted_path() {
+    # find uses lstat by default, including for a dangling symlink.
+    [ "$(find "$1" -maxdepth 0 -type "$2" -uid 0 ! -perm /022 -print)" = "$1" ] ||
+        { printf 'MPLC: unsafe policy path: %s\n' "$1" >&2; return 1; }
+}
+
 sa02m_mplc_policy_install() {
     SA02M_MPLC_POLICY_CHANGED=0
     _mp_source=$1
     [ -f "$_mp_source" ] || return 1
-    _mp_dropin=/etc/systemd/system/mplc4.service.d/sa02m-timeout.conf
+    _mp_system=/etc/systemd/system
+    _mp_parent=${_mp_system%/*}
+    _mp_dir=$_mp_system/mplc4.service.d
+    _mp_dropin=$_mp_dir/sa02m-timeout.conf
+    for _mp_path in "${_mp_parent%/*}" "$_mp_parent" "$_mp_system"; do
+        sa02m_mplc_trusted_path "$_mp_path" d || return 1
+    done
+    if [ ! -e "$_mp_dir" ] && [ ! -L "$_mp_dir" ]; then
+        mkdir -m 0755 -- "$_mp_dir" || [ -d "$_mp_dir" ] || return 1
+    fi
+    sa02m_mplc_trusted_path "$_mp_dir" d || return 1
+    if [ -e "$_mp_dropin" ] || [ -L "$_mp_dropin" ]; then
+        sa02m_mplc_trusted_path "$_mp_dropin" f || return 1
+    fi
     _mp_tmp=$(mktemp) || return 1
     if ! awk '
         BEGIN { print "[Service]" }
@@ -24,8 +43,11 @@ sa02m_mplc_policy_install() {
     fi
     _mp_rc=0
     if ! cmp -s "$_mp_tmp" "$_mp_dropin"; then
-        sa02m_mplc_atomic "$_mp_tmp" "$_mp_dropin" 0644 || _mp_rc=$?
-        SA02M_MPLC_POLICY_CHANGED=1
+        if sa02m_mplc_atomic "$_mp_tmp" "$_mp_dropin" 0644; then
+            SA02M_MPLC_POLICY_CHANGED=1
+        else
+            _mp_rc=$?
+        fi
     fi
     rm -f "$_mp_tmp"
     return "$_mp_rc"
