@@ -14,7 +14,7 @@
 - Bind a managed image to the donor runtime receipt, verify the private acquisition and its derivative, and publish only after sealing succeeds. Reject a donor that still holds a dated full-system configuration backup. Limit cleanup of update state to the intended files.
 
 - Verify standard Ubuntu network hooks and systemd template instances during image preparation. Zero and read back free ext4 blocks on the sealed distribution copy before compression.
-- Supply a reproducible opt-in TUN build for the two shipped kernel profiles. The donor passed repeated IPv4 data transfers with OpenVPN and Ubuntu wireguard-go on the SMP kernel.
+- Supply a reproducible opt-in TUN build for the two shipped kernel profiles. The donor passed repeated IPv4 data transfers with OpenVPN and Ubuntu wireguard-go and all 15 deployed-release checks on both SMP and RT.
 
 - Show the outcome and freshness of actual device polling. Derive COM membership from the current saved poll configuration and preserve device history when a binding moves.
 - Separate orderly reboot and web restart admission from completion. Track privileged service operations through their PID1 workers, guard cached service lists by boot and operation lifetime, and bound MPLC start and stop.
