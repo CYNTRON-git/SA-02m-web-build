@@ -50,6 +50,7 @@ while [ $# -gt 0 ]; do
         --version)         RELEASE_VERSION="$2";  shift 2 ;;
         --name)            OUTPUT_NAME="$2"; KEEP_RAW_IMG=1; shift 2 ;;
         --no-cleanup)      DO_CLEANUP=0;          shift ;;
+        --zerofill)        DO_ZEROFILL=1;         shift ;;
         --no-zerofill)     DO_ZEROFILL=0;         shift ;;
         --no-id-reset)     DO_ID_RESET=0;         shift ;;
         --no-manifest)     DO_MANIFEST=0;         shift ;;
@@ -67,6 +68,7 @@ CLEANUP_SCRIPT="$SCRIPT_DIR/cleanup-donor.sh"
 STREAM_SCRIPT="$SCRIPT_DIR/stream-after-cleanup.sh"
 PATCH_SCRIPT="$SCRIPT_DIR/patch-firstboot-image.sh"
 SEAL_SCRIPT="$SCRIPT_DIR/seal-captured-runtime.sh"
+FREE_BLOCK_SCRIPT="$SCRIPT_DIR/zero-free-ext4.py"
 FIX_DONOR_SCRIPT="$SCRIPT_DIR/fix-donor-after-abort.sh"
 WATCHDOG_SCRIPT="$REPO_ROOT/etc/sa02m-userspace-watchdog.sh"
 WATCHDOG_CONF="$REPO_ROOT/etc/sa02m_userspace_watchdog.conf"
@@ -348,6 +350,13 @@ if doc["runtime_capture"] == "managed":
                    for key in hex_keys)):
         raise ValueError("invalid managed runtime image seal")
     doc["runtime_image_seal"] = seal
+    if doc["pipeline"]["zerofill"]:
+        with open(os.environ["PIPE_FINAL_FREE_BLOCKS"], encoding="utf-8") as f:
+            final_copy = json.load(f)
+        raw_sha = final_copy["copy_sha256"]
+        if not isinstance(raw_sha, str) or not re.fullmatch(r"[0-9a-f]{64}", raw_sha):
+            raise ValueError("invalid final free-block receipt")
+        doc["uncompressed_sha256"] = raw_sha
 with open(out, "w", encoding="utf-8") as f:
     json.dump(doc, f, indent=2, ensure_ascii=False)
     f.write("\n")
@@ -385,6 +394,10 @@ if [ "$PIPE_RUNTIME_MODE" = managed ]; then
     [ "$EUID" -eq 0 ] && [ "$DO_ID_RESET" = 1 ] && [ "$DO_MANIFEST" = 1 ] && [ "$DO_CLEANUP" = 0 ] \
         || die "управляемый захват требует root, сброса идентичности, манифеста и подготовленного донора (--no-cleanup)"
     [ -r "$SEAL_SCRIPT" ] || die "не найден $SEAL_SCRIPT"
+    if [ "$DO_ZEROFILL" = 1 ]; then
+        [ -r "$FREE_BLOCK_SCRIPT" ] || die "не найден $FREE_BLOCK_SCRIPT"
+        for bin in blkid dumpe2fs; do command -v "$bin" >/dev/null || die "не найден $bin"; done
+    fi
     for bin in losetup mount umount; do command -v "$bin" >/dev/null || die "не найден '$bin'"; done
     RELEASE_VERSION="$DONOR_VERSION"
     CAPTURE_HOME=/var/lib/sa02m-image-captures
@@ -538,9 +551,17 @@ if [ "$PIPE_RUNTIME_MODE" = managed ]; then
         || die "не удалось подтвердить runtime образа; исходный raw остался в $CAPTURE_DIR"
 fi
 
-log "[4/6] final xz (-T0 -${FINAL_XZ_LEVEL})"
 FINAL_IMG_WORK="$WORK/$(basename "$FINAL_IMG")"
-mv -T -- "$RAW_IMG" "$FINAL_IMG_WORK"
+if [ "$PIPE_RUNTIME_MODE" = managed ] && [ "$DO_ZEROFILL" = 1 ]; then
+    log "    очистка свободных блоков запечатанной производной"
+    export PIPE_FINAL_FREE_BLOCKS="$CAPTURE_DIR/final-free-blocks.json"
+    (umask 077; python3 -I -B "$FREE_BLOCK_SCRIPT" "$RAW_IMG" "$FINAL_IMG_WORK" > "$PIPE_FINAL_FREE_BLOCKS") \
+        || die "не удалось подтвердить очистку свободных блоков; исходный raw сохранён в $CAPTURE_DIR"
+    rm -- "$RAW_IMG"
+else
+    mv -T -- "$RAW_IMG" "$FINAL_IMG_WORK"
+fi
+log "[4/6] final xz (-T0 -${FINAL_XZ_LEVEL})"
 SHRUNK_OUT="$SHRUNK_XZ"
 FINAL_XZ_TMP="$WORK/$(basename "$SHRUNK_OUT")"
 xz "-T0" "-${FINAL_XZ_LEVEL}" -v -c "$FINAL_IMG_WORK" > "$FINAL_XZ_TMP"

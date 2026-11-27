@@ -25,7 +25,7 @@ case "$command" in
     'test -b /dev/mmcblk2 && blockdev --getsize64 /dev/mmcblk2') echo 6 ;;
     '/usr/local/libexec/sa02m-runtime-activate capture-receipt') printf '{"fixture":true}\n' ;;
     'bash -s') printf 'hostname=fixture\n' ;;
-    'bash -s -- --no-zerofill --capture-receipt-sha256 '*) printf rawimg; exit "$STREAM_RC" ;;
+    'bash -s -- --no-zerofill --capture-receipt-sha256 '*|'bash -s -- --capture-receipt-sha256 '*) printf rawimg; exit "$STREAM_RC" ;;
     *) exit 96 ;;
 esac
 EOS
@@ -62,6 +62,21 @@ printf '{"schema":1,"source":"%s","release_id":"%s","manifest_sha256":"%s","sele
     "$hash" "$hash" "$hash" "$hash"
 exit "$exit_code"
 EOS
+cat > "$imaging/zero-free-ext4.py" <<'PY_ZERO'
+import hashlib, json, os, sys
+from pathlib import Path
+source, final = map(Path, sys.argv[1:])
+assert source.read_bytes() == b'rawimgshrinkpatch'
+assert (source.parent/'raw.img').read_bytes() == b'rawimg'
+assert Path(os.environ['TRACE']).read_text().splitlines()[-1] == 'seal'
+with open(os.environ['TRACE'], 'a') as stream:
+    stream.write('final-zero\n')
+if os.environ.get('ZERO_RC'):
+    raise SystemExit(int(os.environ['ZERO_RC']))
+data = source.read_bytes() + b'zero'
+final.write_bytes(data)
+print(json.dumps(dict(copy_sha256=hashlib.sha256(data).hexdigest(), image_bytes=len(data), cleared_blocks=1)))
+PY_ZERO
 chmod +x "$fixture/bin/"*
 export PATH="$fixture/bin:$PATH" SA02M_DEVICE_ENV="$fixture/no-env"
 export TRACE="$fixture/trace" STREAM_RC=0 SEAL_RC=0
@@ -103,4 +118,21 @@ grep -q 'READY:' "$fixture/ready.log"
 [ "$(xz -dc "$fixture/ready/fixture.img.xz")" = rawimgshrinkpatch ]
 grep -q '"runtime_image_seal"' "$fixture/ready/fixture.manifest.json"
 ( cd "$fixture/ready"; sha256sum -c fixture.img.xz.sha256 )
+! grep -qx final-zero "$TRACE"
+ZERO_RC=3 assert_refused failed-final-zero --no-cleanup --zerofill
+grep -qx final-zero "$TRACE"
+SEAL_RC=42 assert_refused zero-before-seal --no-cleanup --zerofill
+! grep -qx final-zero "$TRACE"
+capture clean-copy --no-cleanup --zerofill || { cat "$fixture/clean-copy.log"; exit 1; }
+[ "$(xz -dc "$fixture/clean-copy/fixture.img.xz")" = rawimgshrinkpatchzero ]
+cmp <(xz -dc "$fixture/clean-copy/fixture.img.xz") "$fixture/clean-copy/fixture.img"
+( cd "$fixture/clean-copy"; sha256sum -c fixture.img.xz.sha256 )
+python3 - "$fixture/clean-copy" <<'PY_COMPARE'
+import hashlib, json, sys
+from pathlib import Path
+out = Path(sys.argv[1])
+doc = json.loads((out/'fixture.manifest.json').read_text())
+assert doc['image_sha256'] == hashlib.sha256((out/'fixture.img.xz').read_bytes()).hexdigest()
+assert doc['uncompressed_sha256'] == hashlib.sha256((out/'fixture.img').read_bytes()).hexdigest()
+PY_COMPARE
 echo 'PASS managed imaging admission, full-size failure, seal gate and publication'
