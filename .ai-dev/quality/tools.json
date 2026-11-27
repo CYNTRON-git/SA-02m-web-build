@@ -75,6 +75,15 @@
       "init": "Python3 stdlib and Bash; actual helpers execute only against temporary image roots. No live network, mount or device operations."
     },
     {
+      "id": "sealed-fel-receiver",
+      "checks": "Verify bounded writes, direct readback, boot decisions and failures for sealed FEL media on file-backed fixtures.",
+      "config": null,
+      "run": "python3 -B scripts/dev/test-sealed-fel.py",
+      "beat": "build",
+      "covers": ["tools/imaging/autorun-sealed.sh", "scripts/dev/test-sealed-fel.py"],
+      "init": "Linux Bash, Python 3 and GNU coreutils, with ordinary file-backed targets."
+    },
+    {
       "id": "flash-receiver-safety",
       "checks": "Execute the standalone receiver under POSIX sh and BusyBox sh: topology refusal, mandatory checksum, dual process status, signals, lock ownership and bounded-file writes including real BusyBox dd.",
       "config": null,
