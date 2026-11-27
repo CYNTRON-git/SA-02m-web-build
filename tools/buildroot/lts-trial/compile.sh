@@ -7,7 +7,7 @@ case "$profile" in
     *) exit 2 ;;
 esac
 export LC_ALL=C ARCH=arm HOSTCC=gcc
-export KBUILD_BUILD_USER=cyntron KBUILD_BUILD_HOST=offline-lts KBUILD_BUILD_VERSION=$number
+export KBUILD_BUILD_USER=cyntron KBUILD_BUILD_HOST=offline-lts
 export KBUILD_BUILD_TIMESTAMP='Fri Nov 27 00:00:00 UTC 2026'
 host=/work/profiles/$profile/output/host
 export CROSS_COMPILE=$host/bin/arm-none-linux-gnueabihf-
@@ -32,6 +32,10 @@ opts=(O="$obj" LOCALVERSION="$suffix")
 make "${opts[@]}" olddefconfig
 cp "$obj/.config" /out/kernel.config
 (cd /out && sha256sum --strict -c "/inputs/$profile.config.sha256")
+# Kbuild embeds both a weak, unnumbered banner and the final numbered one.
+# Seed its automatic counter to reproduce the reviewed pair of banners.
+unset KBUILD_BUILD_VERSION
+printf '%s\n' "$((number - 1))" > "$obj/.version"
 make -j2 "${opts[@]}" zImage modules
 make -j2 "${opts[@]}" INSTALL_MOD_PATH=/trial/install INSTALL_MOD_STRIP=1 modules_install
 release=$(cat "$obj/include/config/kernel.release")
