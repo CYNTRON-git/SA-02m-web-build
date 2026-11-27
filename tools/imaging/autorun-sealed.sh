@@ -29,9 +29,9 @@ whole_number() {
 # an installed OS, a mounted eMMC or an active swap before opening the target.
 topology() {
     awk '$5=="/" && $3~/^0:/ {for(i=7;i<=NF;i++) if($i=="-" && $(i+1)~/^(rootfs|ramfs|tmpfs)$/) root=1}
-         $5=="/mnt" {for(i=7;i<=NF;i++) if($i=="-" && $(i+2)~/^\/dev\/sd[a-z][1-9][0-9]*$/ && $3!~/^0:/) usb++}
+         $5=="/mnt" {sources++; for(i=7;i<=NF;i++) if($i=="-" && $(i+1)=="exfat" && $(i+2)~/^\/dev\/sd[a-z][1-9][0-9]*$/ && $3!~/^0:/) usb++}
          $3!~/^0:/ && $5!="/mnt" {bad=1}
-         END {exit !(root && usb==1 && !bad)}' /proc/self/mountinfo || return 1
+         END {exit !(root && sources==1 && usb==1 && !bad)}' /proc/self/mountinfo || return 1
     [ ! -e /proc/swaps ] || awk 'NR>1 {exit 1}' /proc/swaps || return 1
     [ -b "$target" ] && [ ! -L "$target" ] && [ "$(cat "$sys/device/type")" = MMC ] &&
         [ "$(cat "$sys/removable")" = 0 ]
@@ -57,7 +57,7 @@ if [ -d /sys/module/g_mass_storage ]; then
 fi
 topology || die 'target became busy'
 echo "FEL writing $bytes verified bytes to $target"
-dd if="$image" of="$target" bs=4M conv=notrunc,fsync || die 'write failed'
+dd if="$image" of="$target" bs=4M iflag=count_bytes count="$bytes" conv=notrunc,fsync || die 'write failed'
 sync || die 'sync failed'
 # Direct I/O bypasses the Linux block cache. count_bytes includes the
 # final partial 4 MiB block without hashing the unused eMMC tail.
