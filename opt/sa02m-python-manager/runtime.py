@@ -12,6 +12,7 @@ import shutil
 import stat
 import subprocess
 import sys
+from time import sleep
 import zipfile
 
 HERE = Path(__file__).absolute().parent
@@ -208,8 +209,20 @@ def main():
         require((args.action == "verify") == bool(args.release_id), "invalid action arguments")
         os.umask(0o022)
         manager = Manager(Catalogue(HERE))
-        result = manager.prepare() if args.action == "prepare" else manager.verify(args.release_id)
+        if args.action == "prepare":
+            result = manager.prepare()
+        else:
+            try:
+                result = manager.verify(args.release_id)
+            except subprocess.TimeoutExpired:
+                # Cold boot can delay a package query or an import probe.
+                # Rerun all catalogue, tree and native checks before accepting.
+                sleep(15)
+                result = Manager(Catalogue(HERE)).verify(args.release_id)
     except (ValueError, OSError, KeyError, TypeError, zipfile.BadZipFile, subprocess.TimeoutExpired) as exc:
+        if args.action == "verify" and isinstance(exc, subprocess.TimeoutExpired):
+            print(json.dumps({"ok":False, "code":"verification_timeout", "error":"runtime child timed out twice"}))
+            return 1
         code = "verification_failed"
         if isinstance(exc,FileNotFoundError) and exc.filename and Path(exc.filename).is_relative_to(HERE):
             code = "payload_missing"
