@@ -13,6 +13,9 @@
 - Pin the HomeKit ARM cryptography wheel with OpenSSL 4.0.3 and check the entire wheel set. Check the exact Node binary and all numbered upstream Node advisories. For unavailable Ubuntu advisory pages, check the official Ubuntu Security Tracker Git record against the package and severity evidence. Keep inconclusive results open. Verified provider data can be replayed offline.
 - Bind a managed image to the donor runtime receipt, verify the private acquisition and its derivative, and publish only after sealing succeeds. Reject a donor that still holds a dated full-system configuration backup. Limit cleanup of update state to the intended files.
 
+- Verify standard Ubuntu network hooks and systemd template instances during image preparation. Zero and read back free ext4 blocks on the sealed distribution copy before compression.
+- Supply a reproducible opt-in TUN build for the two shipped kernel profiles. The donor passed repeated IPv4 data transfers with OpenVPN and Ubuntu wireguard-go on the SMP kernel.
+
 - Show the outcome and freshness of actual device polling. Derive COM membership from the current saved poll configuration and preserve device history when a binding moves.
 - Separate orderly reboot and web restart admission from completion. Track privileged service operations through their PID1 workers, guard cached service lists by boot and operation lifetime, and bound MPLC start and stop.
 - Limit root-console password failures at the privileged verifier. Preserve genuine command exit codes and display authentication and throttle outcomes separately.
