@@ -33,7 +33,9 @@ OUTPUT_NAME=""
 EMMC_BYTES=7818182656
 OUT_LOCK=""
 RESCUE_INCOMPLETE=0
-SSH_OPTS=(-o StrictHostKeyChecking=accept-new -o ConnectTimeout=15
+PIPE_RUNTIME_MODE=legacy
+CAPTURE_SHA=""
+SSH_OPTS=(-o StrictHostKeyChecking=yes -o ConnectTimeout=15
           -o ServerAliveInterval=15 -o ServerAliveCountMax=9999
           -o TCPKeepAlive=yes)
 
@@ -64,6 +66,7 @@ done
 CLEANUP_SCRIPT="$SCRIPT_DIR/cleanup-donor.sh"
 STREAM_SCRIPT="$SCRIPT_DIR/stream-after-cleanup.sh"
 PATCH_SCRIPT="$SCRIPT_DIR/patch-firstboot-image.sh"
+SEAL_SCRIPT="$SCRIPT_DIR/seal-captured-runtime.sh"
 FIX_DONOR_SCRIPT="$SCRIPT_DIR/fix-donor-after-abort.sh"
 WATCHDOG_SCRIPT="$REPO_ROOT/etc/sa02m-userspace-watchdog.sh"
 WATCHDOG_CONF="$REPO_ROOT/etc/sa02m_userspace_watchdog.conf"
@@ -292,7 +295,7 @@ write_manifest() {
     local sha_file="${img_path}.sha256"
     local manifest_path="${img_path%.img.xz}.manifest.json"
     python3 - "$img_path" "$sha_file" "$manifest_path" <<'PY'
-import json, sys, datetime, os
+import datetime, json, os, re, sys
 img, sha_file, out = sys.argv[1:4]
 with open(sha_file, encoding="utf-8") as f:
     sha = f.read().split()[0]
@@ -334,6 +337,17 @@ doc = {
 }
 if os.environ.get("RELEASE_VERSION"):
     doc["release_version"] = os.environ["RELEASE_VERSION"]
+doc["runtime_capture"] = os.environ.get("PIPE_RUNTIME_MODE", "legacy")
+if doc["runtime_capture"] == "managed":
+    with open(os.environ["PIPE_RUNTIME_SEAL"], encoding="utf-8") as f:
+        seal = json.load(f)
+    hex_keys = {"source", "release_id", "manifest_sha256", "selector_sha256"}
+    if (not isinstance(seal, dict) or set(seal) != hex_keys | {"schema"}
+            or type(seal["schema"]) is not int or seal["schema"] != 1
+            or any(not isinstance(seal[key], str) or not re.fullmatch(r"[0-9a-f]{64}", seal[key])
+                   for key in hex_keys)):
+        raise ValueError("invalid managed runtime image seal")
+    doc["runtime_image_seal"] = seal
 with open(out, "w", encoding="utf-8") as f:
     json.dump(doc, f, indent=2, ensure_ascii=False)
     f.write("\n")
@@ -358,15 +372,49 @@ command -v mkimage >/dev/null || die "не найден 'mkimage' (apt install u
 [ -r "$PATCH_SCRIPT" ] || die "не найден $PATCH_SCRIPT — образ не получит валидный boot.scr"
 log "    auth: $SSH_AUTH → ${SSH_USER}@${DEVICE_IP}"
 
-log "    ssh → $DEVICE_IP (ожидание до 5 мин после reboot)"
-WAIT_SCRIPT="$SCRIPT_DIR/wait-donor.sh"
-if [ -x "$WAIT_SCRIPT" ] || [ -f "$WAIT_SCRIPT" ]; then
-    IP="$DEVICE_IP" SA02M_PASS="$SSH_PASS" SA02M_USER="$SSH_USER" SSH_KEY="$SSH_KEY" bash "$WAIT_SCRIPT" || die "донор недоступен по ssh"
-else
-    "${SSH[@]}" "uname -nrm" || die "ssh до $DEVICE_IP не работает"
+donor_mode=$("${SSH[@]}" 'bash -s -- --probe-mode' < "$STREAM_SCRIPT") \
+    || die "не удалось подтвердить версию и runtime донора по SSH"
+[[ "$donor_mode" =~ ^(legacy|managed)\ ([0-9]+\.[0-9]+\.[0-9]+\.[0-9]+)$ ]] \
+    || die "неизвестный результат проверки донора"
+PIPE_RUNTIME_MODE=${BASH_REMATCH[1]}
+DONOR_VERSION=${BASH_REMATCH[2]}
+if [ -n "$RELEASE_VERSION" ] && [ "$RELEASE_VERSION" != "$DONOR_VERSION" ]; then
+    die "версия донора $DONOR_VERSION отличается от запрошенной $RELEASE_VERSION"
 fi
-
-if [ -r "$FIX_DONOR_SCRIPT" ]; then
+if [ "$PIPE_RUNTIME_MODE" = managed ]; then
+    [ "$EUID" -eq 0 ] && [ "$DO_ID_RESET" = 1 ] && [ "$DO_MANIFEST" = 1 ] && [ "$DO_CLEANUP" = 0 ] \
+        || die "управляемый захват требует root, сброса идентичности, манифеста и подготовленного донора (--no-cleanup)"
+    [ -r "$SEAL_SCRIPT" ] || die "не найден $SEAL_SCRIPT"
+    for bin in losetup mount umount; do command -v "$bin" >/dev/null || die "не найден '$bin'"; done
+    RELEASE_VERSION="$DONOR_VERSION"
+    CAPTURE_HOME=/var/lib/sa02m-image-captures
+    if [ ! -e "$CAPTURE_HOME" ] && [ ! -L "$CAPTURE_HOME" ]; then mkdir -m 700 -- "$CAPTURE_HOME"; fi
+    [ -d "$CAPTURE_HOME" ] && [ ! -L "$CAPTURE_HOME" ] \
+        && [ "$(stat -c '%u:%g:%a' -- "$CAPTURE_HOME")" = 0:0:700 ] \
+        || die "ненадёжный каталог захвата $CAPTURE_HOME"
+    available=$(df -B1 --output=avail "$CAPTURE_HOME" | tail -n1 | tr -d ' ')
+    [[ "$available" =~ ^[0-9]+$ ]] && [ "$available" -ge $((2 * EMMC_BYTES + 64*1024*1024)) ] \
+        || die "нет места для исходного образа и рабочей копии в $CAPTURE_HOME"
+    donor_bytes=$("${SSH[@]}" 'test -b /dev/mmcblk2 && blockdev --getsize64 /dev/mmcblk2') \
+        || die "не удалось определить размер eMMC донора"
+    [ "$donor_bytes" = "$EMMC_BYTES" ] || die "неожиданный размер eMMC донора"
+    CAPTURE_DIR=$(mktemp -d -- "$CAPTURE_HOME/acquisition-XXXXXXXX")
+    rmdir -- "$WORK"
+    WORK="$CAPTURE_DIR/work"
+    mkdir -m 700 -- "$WORK"
+    FINAL_IMG_KEEP="$WORK/${SHRUNK_NAME}.img"
+    CAPTURE_RAW="$CAPTURE_DIR/raw.img"
+    CAPTURE_RECEIPT="$CAPTURE_DIR/preflight.json"
+    CAPTURE_PASSPORT="$CAPTURE_DIR/passport.json"
+    PIPE_RUNTIME_SEAL="$CAPTURE_DIR/seal.json"
+    (umask 077; "${SSH[@]}" '/usr/local/libexec/sa02m-runtime-activate capture-receipt' > "$CAPTURE_RECEIPT") \
+        || die "донор не выдал квитанцию захвата"
+    chmod 400 "$CAPTURE_RECEIPT"
+    CAPTURE_SHA=$(sha256sum -- "$CAPTURE_RECEIPT" | cut -d' ' -f1)
+    RAW_IMG="$CAPTURE_RAW"
+    log "    managed capture: $CAPTURE_DIR"
+    log "    захват квитанции: $CAPTURE_SHA"
+elif [ -r "$FIX_DONOR_SCRIPT" ]; then
     log "    preflight: orphan dd на доноре"
     "${SSH[@]}" 'bash -s -- --preflight' < "$FIX_DONOR_SCRIPT" || true
 fi
@@ -401,13 +449,16 @@ sync
 REMOTE
 }
 
-deploy_userspace_watchdog
-prepare_donor_watchdogs_for_imaging
+if [ "$PIPE_RUNTIME_MODE" = legacy ]; then
+    deploy_userspace_watchdog
+    prepare_donor_watchdogs_for_imaging
+fi
 
 log "    метаданные донора"
 DONOR_META="$(collect_donor_metadata)"
 export DONOR_META DEVICE_IP RELEASE_PROFILE RELEASE_VERSION
 export PIPE_CLEANUP="$DO_CLEANUP" PIPE_ZEROFILL="$DO_ZEROFILL" PIPE_ID_RESET="$DO_ID_RESET" PIPE_XZ_LEVEL="$FINAL_XZ_LEVEL"
+export PIPE_RUNTIME_MODE PIPE_RUNTIME_SEAL
 
 if [ "$DO_CLEANUP" -eq 1 ]; then
     log "[1/6] Cleanup на доноре (фазы 1–4, --apply, ssh остаётся рабочим)"
@@ -420,15 +471,14 @@ fi
 STREAM_ARGS=()
 [ "$DO_ZEROFILL" -eq 0 ] && STREAM_ARGS+=(--no-zerofill)
 [ "$DO_ID_RESET" -eq 0 ] && STREAM_ARGS+=(--no-id-reset)
+[ -z "$CAPTURE_SHA" ] || STREAM_ARGS+=(--capture-receipt-sha256 "$CAPTURE_SHA")
 
 log "[2/6] Zero-fill + id reset + dd (одна ssh-сессия, stdout → raw)"
 log "    ⚠ после начала dd не прерывайте — новый ssh на доноре будет недоступен до reboot"
-rm -f "$RAW_IMG"
-# SSH may report "Broken Pipe" when the remote dd completes and closes the channel
-# while the client is still sending a keepalive — this is harmless.  We treat
-# any SSH exit as "try to recover": the authoritative check is the raw image size.
+# Legacy captures can salvage a full-size stream after SSH errors. Managed
+# captures need both complete bytes and a successful remote dd exit.
 set +e
-"${SSH[@]}" "bash -s -- ${STREAM_ARGS[*]}" < "$STREAM_SCRIPT" > "$RAW_IMG"
+(umask 077; "${SSH[@]}" "bash -s -- ${STREAM_ARGS[*]}" < "$STREAM_SCRIPT" > "$RAW_IMG")
 SSH_RC=$?
 set -e
 
@@ -436,10 +486,23 @@ RAW_SIZE=$(stat -c%s "$RAW_IMG" 2>/dev/null || echo 0)
 log "    raw: $(numfmt --to=iec --suffix=B "$RAW_SIZE") (ssh_rc=${SSH_RC})"
 [ "$RAW_SIZE" -eq "$EMMC_BYTES" ] || die "размер raw $RAW_SIZE != $EMMC_BYTES (ssh_rc=${SSH_RC})"
 
-log "[3/6] compress raw (optional archive under WORK) + PiShrink"
-# Write intermediate raw.xz only into WORK — do not copy onto OUT_DIR.
-xz "-T0" "-${STREAM_XZ_LEVEL}" -v -c "$RAW_IMG" > "$RAW_XZ"
-log "    raw.xz (WORK only): $RAW_XZ ($(numfmt --to=iec --suffix=B "$(stat -c%s "$RAW_XZ")"))"
+if [ "$PIPE_RUNTIME_MODE" = managed ]; then
+    [ "$SSH_RC" -eq 0 ] || die "неуспешное чтение eMMC (ssh_rc=$SSH_RC), raw остаётся в $CAPTURE_DIR"
+    chmod 400 "$CAPTURE_RAW"
+    raw_hash=$(sha256sum -- "$CAPTURE_RAW" | cut -d' ' -f1)
+    (umask 077; printf '{"schema":1,"raw_sha256":"%s","receipt_sha256":"%s"}\n' \
+        "$raw_hash" "$CAPTURE_SHA" > "$CAPTURE_PASSPORT")
+    sync -f "$CAPTURE_DIR"
+    log "[3/6] сохранение исходного raw и PiShrink отдельной копии"
+    RAW_IMG="$CAPTURE_DIR/derivative.img"
+    cp --reflink=auto --sparse=always -- "$CAPTURE_RAW" "$RAW_IMG"
+    chmod 600 "$RAW_IMG"
+else
+    log "[3/6] compress raw (optional archive under WORK) + PiShrink"
+    # Keep intermediate raw.xz in WORK.
+    xz "-T0" "-${STREAM_XZ_LEVEL}" -v -c "$RAW_IMG" > "$RAW_XZ"
+    log "    raw.xz (WORK only): $RAW_XZ ($(numfmt --to=iec --suffix=B "$(stat -c%s "$RAW_XZ")"))"
+fi
 sudo pishrink.sh -a -v "$RAW_IMG"
 
 # Патч образа: first-boot resize/network/watchdog (см. patch-firstboot-image.sh).
@@ -468,6 +531,12 @@ log "    [patch] patch-firstboot-image.sh"
 # выпускала образ с невалидным boot.scr (плата не грузится, нужен FEL).
 run_firstboot_patch "$RAW_IMG" || \
     die "patch-firstboot-image.sh failed — образ непригоден (boot.scr/first-boot патч не применён)"
+
+if [ "$PIPE_RUNTIME_MODE" = managed ]; then
+    log "    подтверждение runtime по исходному raw"
+    (umask 077; bash "$SEAL_SCRIPT" "$CAPTURE_RAW" "$RAW_IMG" "$CAPTURE_RECEIPT" "$CAPTURE_PASSPORT" > "$PIPE_RUNTIME_SEAL") \
+        || die "не удалось подтвердить runtime образа; исходный raw остался в $CAPTURE_DIR"
+fi
 
 log "[4/6] final xz (-T0 -${FINAL_XZ_LEVEL})"
 FINAL_IMG_WORK="$WORK/$(basename "$FINAL_IMG")"
@@ -520,5 +589,9 @@ echo "           sha256: $(awk '{print $1}' "${SHRUNK_XZ}.sha256")"
 [ "$KEEP_RAW_IMG" -eq 1 ] && echo "           raw img: $FINAL_IMG"
 [ "$DO_MANIFEST" -eq 1 ] && echo "           manifest: ${SHRUNK_XZ%.img.xz}.manifest.json"
 echo "    ════════════════════════════════════════════════════════════════"
-echo "    После снятия образа донор без ssh host keys — выполните reboot."
+if [ "$PIPE_RUNTIME_MODE" = managed ]; then
+    echo "    Квитанция захвата снята. Восстановите сервисную политику донора через заранее открытую сессию."
+else
+    echo "    После снятия образа донор без ssh host keys — выполните reboot."
+fi
 echo "    USB: ./prepare-flash-media.sh --image $SHRUNK_XZ [--dest /mnt/c/USB/SA02m]"

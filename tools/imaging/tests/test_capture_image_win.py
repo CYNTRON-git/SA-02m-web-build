@@ -234,19 +234,42 @@ class FinalizeScriptTests(FinalizeBase):
     def test_main_forwards_capture_flags(self):
         argv = ["capture-image-win.py", "--ip", TEST_IP, "--name", self.name, "--out-dir", str(self.out),
                 "--no-cleanup", "--no-zerofill", "--no-id-reset"]
+        client = mock.MagicMock()
         with mock.patch.object(sys, "argv", argv), \
-                mock.patch.object(MOD, "connect", return_value=mock.MagicMock()), \
+                mock.patch.object(MOD, "connect", return_value=client), \
                 mock.patch.object(MOD, "exec_bash", return_value=0), \
-                mock.patch.object(MOD, "run_script_file", return_value=0) as cleanup_run, \
+                mock.patch.object(MOD, "run_script_file", return_value=0) as run_script, \
                 mock.patch.object(MOD, "stream_image") as stream, \
                 mock.patch.object(MOD, "finalize_wsl") as fin, \
                 mock.patch.object(MOD.time, "sleep"):
             self.assertEqual(MOD.main(), 0)
-        cleanup_run.assert_not_called()
+        run_script.assert_called_once_with(
+            client, MOD.IMAGING / "stream-after-cleanup.sh", args="--legacy-only", timeout=30,
+        )
         self.assertEqual(stream.call_args[0][3], "--no-zerofill --no-id-reset")
         fin.assert_called_once()
         self.assertEqual(fin.call_args[0][3], TEST_IP)
         self.assertEqual(fin.call_args[1], {"cleanup": False, "zerofill": False, "id_reset": False})
+
+
+class DonorAdmissionTests(unittest.TestCase):
+    def test_nonlegacy_donor_is_rejected_before_any_mutation(self):
+        client = mock.MagicMock()
+        with mock.patch.object(sys, "argv", ["capture-image-win.py", "--ip", TEST_IP]), \
+                mock.patch.object(MOD, "connect", return_value=client) as connect, \
+                mock.patch.object(MOD, "run_script_file", return_value=1) as run_script, \
+                mock.patch.object(MOD, "exec_bash") as exec_bash, \
+                mock.patch.object(MOD, "stream_image") as stream, \
+                mock.patch.object(MOD, "finalize_wsl") as finalize, \
+                self.assertRaisesRegex(SystemExit, "guarded Linux"):
+            MOD.main()
+        connect.assert_called_once()
+        run_script.assert_called_once_with(
+            client, MOD.IMAGING / "stream-after-cleanup.sh", args="--legacy-only", timeout=30,
+        )
+        for mutate in (exec_bash, stream, finalize, client.exec_command):
+            mutate.assert_not_called()
+        client.close.assert_called_once()
 
 
 class QuotedNameTests(FinalizeBase):

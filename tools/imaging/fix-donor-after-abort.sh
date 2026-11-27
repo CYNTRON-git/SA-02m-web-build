@@ -9,6 +9,20 @@ PREFLIGHT=0
 
 [ "$(id -u)" -ne 0 ] && { echo "ERROR: need root" >&2; exit 1; }
 
+# A managed receipt must be released by its owner; this legacy helper may
+# neither terminate its reader nor remove its watchdog marker.
+version=$(sed -n -E 's/^[[:space:]]*([0-9]+\.[0-9]+\.[0-9]+\.[0-9]+)[[:space:]]*$/\1/p' \
+    /var/www/network_config/VERSION)
+[[ "$version" =~ ^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$ ]] || exit 1
+managed_error() { echo 'Use the managed runtime capture recovery procedure.' >&2; exit 1; }
+if [ "$(printf '%s\n' 1.0.8.3 "$version" | sort -V | sed -n '1p')" = 1.0.8.3 ]; then
+    managed_error
+fi
+for path in /var/lib/sa02m-runtime-transition /var/lib/sa02m-python-activation \
+    /usr/local/libexec/sa02m-runtime-activate; do
+    if [ -e "$path" ] || [ -L "$path" ]; then managed_error; fi
+done
+
 log() { printf '[fix-donor %s] %s\n' "$(date +%H:%M:%S)" "$*"; }
 
 log "останов orphan dd (если есть)"

@@ -284,6 +284,8 @@ def main() -> int:
 
     client = connect(args.ip, args.user, args.password)
     try:
+        if run_script_file(client, stream, args="--legacy-only", timeout=30) != 0:
+            raise SystemExit("Donor requires guarded Linux make-image.sh or its runtime is unreadable")
         print("[0] stop/mask watchdogs", flush=True)
         rc = exec_bash(
             client,

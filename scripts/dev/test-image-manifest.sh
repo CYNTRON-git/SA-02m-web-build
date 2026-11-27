@@ -106,6 +106,7 @@ run_manifest() {
     DONOR_META="$1" DEVICE_IP=192.168.1.136 \
     RELEASE_PROFILE="${3-sa02m-1eth}" RELEASE_VERSION=1.0.5.54 \
     PIPE_CLEANUP=1 PIPE_ZEROFILL=1 PIPE_ID_RESET=1 PIPE_XZ_LEVEL=9e \
+    PIPE_RUNTIME_MODE="${4:-legacy}" PIPE_RUNTIME_SEAL="${5:-}" \
         "$PY" "$T/wm.py" "$T/x.img.xz" "$T/x.sha256" "$2" >/dev/null 2>&1
 }
 
@@ -187,6 +188,22 @@ run_manifest "junk-with-no-separator" "$T/m4.json" \
     && ok "malformed DONOR_META does not crash write_manifest" \
     || bad "malformed DONOR_META crashed write_manifest"
 expect "malformed: fields fall back to unknown" "$T/m4.json" platform.kernel "unknown"
+
+# Managed releases need a valid public seal before a manifest can be written.
+hash=$(printf '%064d' 0)
+printf '{"schema":1,"source":"%s","release_id":"%s","manifest_sha256":"%s","selector_sha256":"%s"}\n' \
+    "$hash" "$hash" "$hash" "$hash" > "$T/seal.json"
+run_manifest "$META1" "$T/managed.json" "" managed "$T/seal.json" || bad "valid managed seal refused"
+expect "managed mode recorded" "$T/managed.json" runtime_capture managed
+expect "managed selector digest recorded" "$T/managed.json" runtime_image_seal.selector_sha256 "$hash"
+printf 'null\n' > "$T/null.json"
+for seal in "$T/missing.json" "$T/null.json"; do
+    if run_manifest "$META1" "$T/rejected.json" "" managed "$seal" || [ -e "$T/rejected.json" ]; then
+        bad "managed seal ${seal##*/} accepted"
+    else
+        ok "managed seal ${seal##*/} rejected before manifest"
+    fi
+done
 
 printf '\n'
 if [ "$fails" -eq 0 ]; then

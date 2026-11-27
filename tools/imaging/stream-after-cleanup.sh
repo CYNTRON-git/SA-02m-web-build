@@ -11,11 +11,38 @@ export DEBIAN_FRONTEND=noninteractive
 
 DO_ZEROFILL=1
 DO_ID_RESET=1
+CAPTURE_SHA=""
+RUNTIME_STATE=/var/lib/sa02m-runtime-transition
+
+capture_mode() {
+    local version mode=legacy marker
+    version=$(sed -n -E 's/^[[:space:]]*([0-9]+\.[0-9]+\.[0-9]+\.[0-9]+)[[:space:]]*$/\1/p' \
+        /var/www/network_config/VERSION) || return 1
+    [[ "$version" =~ ^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$ ]] || return 1
+    if [ "$(printf '%s\n' 1.0.8.3 "$version" | sort -V | sed -n '1p')" = 1.0.8.3 ]; then
+        mode=managed
+    fi
+    for marker in /var/lib/sa02m-python-activation "$RUNTIME_STATE" /usr/local/libexec/sa02m-runtime-activate; do
+        if [ -e "$marker" ] || [ -L "$marker" ]; then mode=managed; fi
+    done
+    printf '%s %s\n' "$mode" "$version"
+}
+
+mode_and_version=$(capture_mode) || { echo 'cannot determine donor runtime' >&2; exit 1; }
+mode=${mode_and_version%% *}
+case "${1:-}" in
+    --probe-mode) [ "$#" = 1 ] || exit 2; printf '%s\n' "$mode_and_version"; exit ;;
+    --legacy-only)
+        [ "$#" = 1 ] || exit 2
+        [ "$mode" = legacy ] || { echo 'managed runtime requires guarded make-image.sh' >&2; exit 1; }
+        exit ;;
+esac
 
 while [ $# -gt 0 ]; do
     case "$1" in
         --no-zerofill) DO_ZEROFILL=0; shift ;;
         --no-id-reset) DO_ID_RESET=0; shift ;;
+        --capture-receipt-sha256) CAPTURE_SHA="${2:?missing capture receipt SHA}"; shift 2 ;;
         *) echo "unknown arg: $1" >&2; exit 2 ;;
     esac
 done
@@ -23,16 +50,57 @@ done
 log() { printf '[stream %s] %s\n' "$(date +%H:%M:%S)" "$*" >&2; }
 
 IMAGING_LOCK="${IMAGING_LOCK:-/run/sa02m-imaging.lock}"
+if [ "$mode" = managed ]; then
+    [[ "$EUID" -eq 0 && "$DO_ID_RESET" = 1 && "$CAPTURE_SHA" =~ ^[0-9a-f]{64}$ ]] || {
+        echo 'managed runtime capture requires root, identity reset and a verified receipt' >&2
+        exit 1
+    }
+    # Use the installed launcher lock order and the persistent raw acquisition lock.
+    locks=(/run/sa02m-install.lock /var/lib/sa02m-update/update.lock
+        /var/lib/sa02m-update/control.lock "$RUNTIME_STATE/acquisition.lock")
+    for lock in "${locks[@]}"; do
+        [ -f "$lock" ] && [ ! -L "$lock" ] && [ "$(stat -c '%u:%h' "$lock")" = '0:1' ] || exit 1
+    done
+    exec 5<"${locks[0]}" 6<"${locks[1]}" 7<"${locks[2]}" 8<"${locks[3]}"
+    for fd in 5 6 7 8; do
+        [ "${locks[fd-5]}" -ef "/proc/$$/fd/$fd" ] || exit 1
+    done
+    flock -x -n 5 && flock -x -n 6 && flock -x -n 7 && flock -s -n 8 || exit 1
+    receipt="$RUNTIME_STATE/capture.json"
+    [ -f "$receipt" ] && [ ! -L "$receipt" ] && [ "$(stat -c '%u:%h' "$receipt")" = '0:1' ] || exit 1
+    [ "$(sha256sum -- "$receipt" | cut -d' ' -f1)" = "$CAPTURE_SHA" ] || exit 1
+    IMAGING_LOCK=/run/sa02m-imaging.lock
+    [ ! -e "$IMAGING_LOCK" ] && [ ! -L "$IMAGING_LOCK" ] || exit 1
+    (umask 077; set -C; printf 'capture:%s\n' "$CAPTURE_SHA" > "$IMAGING_LOCK") || {
+        echo 'cannot claim imaging lock' >&2; exit 1;
+    }
+    marker_inode=$(stat -c '%d:%i' -- "$IMAGING_LOCK")
+else
+    [ -z "$CAPTURE_SHA" ] || exit 1
+    date -Iseconds >"$IMAGING_LOCK" 2>/dev/null || echo 1 >"$IMAGING_LOCK"
+fi
 log "блокировка userspace watchdog ($IMAGING_LOCK)"
-date -Iseconds >"$IMAGING_LOCK" 2>/dev/null || echo 1 >"$IMAGING_LOCK"
 sync
 
 # Страховка: make-image.sh маскирует watchdog до stream; повторяем на случай ручного запуска.
 for _svc in sa02m-userspace-watchdog sa02m-failure-monitor net-watchdog sa02m-watchdog-feed; do
     systemctl stop "$_svc" 2>/dev/null || true
-    systemctl mask "$_svc" 2>/dev/null || true
+    if [ "$mode" = managed ]; then
+        systemctl mask --runtime "$_svc" 2>/dev/null || true
+        state=$(systemctl show "$_svc" -p ActiveState --value)
+        [ "$state" = inactive ] || { log "watchdog $_svc: $state"; exit 1; }
+    else
+        systemctl mask "$_svc" 2>/dev/null || true
+    fi
 done
-systemctl set-property --runtime Manager RuntimeWatchdogSec=0 2>/dev/null || true
+systemctl set-property --runtime Manager RuntimeWatchdogSec=0 2>/dev/null || \
+    busctl set-property org.freedesktop.systemd1 /org/freedesktop/systemd1 \
+        org.freedesktop.systemd1.Manager RuntimeWatchdogUSec t 0 2>/dev/null || true
+if [ "$mode" = managed ]; then
+    manager_wdt=$(busctl get-property org.freedesktop.systemd1 /org/freedesktop/systemd1 \
+        org.freedesktop.systemd1.Manager RuntimeWatchdogUSec)
+    [ "$manager_wdt" = "t 0" ] || { log "hardware watchdog still active: $manager_wdt"; exit 1; }
+fi
 
 install_regen_ssh_service() {
     cat > /etc/systemd/system/regen-ssh-host-keys.service <<'EOF'
@@ -319,4 +387,20 @@ if [ "$DO_ID_RESET" = "1" ]; then
 fi
 
 log "dd /dev/mmcblk2 -> stdout (не закрывайте ssh до конца передачи)"
-exec dd if=/dev/mmcblk2 bs=1M status=none
+if [ "$mode" = legacy ]; then
+    exec dd if=/dev/mmcblk2 bs=1M status=none
+fi
+# dd inherits the acquisition exclusion, even if the SSH parent is interrupted.
+# Keep the marker and receipt on any read failure. After a complete stream,
+# release through the installed launcher on this same SSH connection.
+dd if=/dev/mmcblk2 bs=1M status=none
+flock -x -n 8 || { log 'another raw reader still holds the acquisition lock'; exit 1; }
+if ! { [ -f "$IMAGING_LOCK" ] && [ ! -L "$IMAGING_LOCK" ] \
+    && [ "$(stat -c '%u:%h:%d:%i' -- "$IMAGING_LOCK")" = "0:1:$marker_inode" ] \
+    && cmp -s -- "$IMAGING_LOCK" <(printf 'capture:%s\n' "$CAPTURE_SHA"); }; then
+    log 'imaging marker ownership changed; recovery required'
+    exit 1
+fi
+rm -- "$IMAGING_LOCK"
+exec 8<&- 7<&- 6<&- 5<&-
+/usr/local/libexec/sa02m-runtime-activate release-capture "$CAPTURE_SHA" >&2
