@@ -7,6 +7,7 @@
 
 ## 1.0.8.3 - Runtime activation, service controls and polling status (November 2026)
 
+- Preserve rc.local when shrinking images that use the SA-02m first-boot eMMC expander.
 - Publish the managed 1ETH golden eMMC capture and a checksum-verified MBR/exFAT USB image for FEL production. The receiver bounds the write, reads the programmed range back directly and verifies the FAT boot script, the ext4 runtime seal and the active selector before reboot. The released USB image passed a full ARM recovery write and independent readback on an 8 GiB virtual receiver.
 - Include 14 signed Noble package upgrades and Ubuntu wireguard-go in the serial image. The standard Ubuntu and Starterkit kernel security admission remains open. Production authorization covers this 1.0.8.3 batch under the recorded exception.
 - Bind offline npm advisory replay to the original acquisition time and exact request, response and artifact digests.

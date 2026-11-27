@@ -140,7 +140,7 @@ class FinalizeScriptTests(FinalizeBase):
         code = _code_only(self.wsl_call()[0])
         marks = {
             "sha256 verify": code.find("sha256sum -c"),
-            "pishrink": code.find("pishrink.sh -a"),
+            "pishrink": code.find('pishrink.sh -a -v -s "$WORK/$NAME.img"'),
             "patch": (PATCH_CALL_RE.search(code).start() if PATCH_CALL_RE.search(code) else -1),
             "xz": code.find("xz -T0"),
         }
@@ -424,6 +424,7 @@ class FinalizeScriptExecutionTests(FinalizeBase):
         r = self._exec("exit 0\n", self.raw_sha)
         self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
         calls = self._calls()
+        self.assertRegex(calls, r"(?m)^pishrink -a -v -s /var/tmp/sa02m-finalize-[^/]+/.+\.img$")
         self.assertLess(calls.index("pishrink"), calls.index("patch "))
         for f in (f"{self.name}.img", f"{self.name}.img.xz",
                   f"{self.name}.img.sha256", f"{self.name}.img.xz.sha256"):

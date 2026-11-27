@@ -204,7 +204,8 @@ printf '%s  %s\n' "$RAW_SHA" "$NAME.img" > "$WORK/raw.sha256"
 ( cd "$WORK" && sha256sum -c raw.sha256 ) || die "sha256 of the WSL copy != the stream's"
 
 echo "[finalize] PiShrink"
-sudo pishrink.sh -a -v "$WORK/$NAME.img"
+# patch-firstboot-image.sh installs and enables the eMMC expander. Preserve rc.local.
+sudo pishrink.sh -a -v -s "$WORK/$NAME.img"
 
 # Unconditional and fatal, as in make-image.sh: canonical boot.scr, first-boot
 # wiring and the image-identity wipe + check (docs/contracts/image-identity-reset.md
