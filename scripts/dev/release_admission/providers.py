@@ -38,7 +38,7 @@ class Transport:
         self.lock = threading.Lock()
         self.deadline = time.monotonic()+1800
 
-    def fetch(self, url, request=None):
+    def fetch(self, url, request=None, *, git_blob=None):
         parsed = urlsplit(url)
         require(parsed.scheme=="https" and parsed.netloc in self.HOSTS,"unexpected provider")
         require(time.monotonic() < self.deadline,"scan timeout")
@@ -88,6 +88,10 @@ class Transport:
         with self.lock:
             require(len(self.seen)<12000,"request count limit")
             self.seen[key] = {"url":url,"request":request,"bytes":len(raw),"sha256":hashlib.sha256(raw).hexdigest(),**evidence}
+        if git_blob is not None:
+            header = b"blob " + str(len(raw)).encode("ascii") + b"\0"
+            require((len(raw), hashlib.sha1(header + raw).hexdigest()) == git_blob,
+                    "Git blob identity mismatch " + url)
         return response
 
 

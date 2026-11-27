@@ -19,7 +19,7 @@ HERE=Path(__file__).resolve().parent
 sys.path.insert(0,str(HERE))
 from release_admission.inventory import Inventory
 from release_admission import openssl
-from release_admission.native_node import on_linux
+from release_admission.native_node import catalogue, on_linux
 from release_admission.ubuntu import tracker_row, upstream
 from native_node_payload import derive
 from release_admission.providers import Transport,level,osv_matches,osv_records,sha
@@ -228,6 +228,49 @@ class AdmissionTests(unittest.TestCase):
         self.assertFalse(on_linux({"affectedEnvironments":["win32"]}))
         for env in ([],["unknown"],None):
             with self.assertRaises(ValueError):on_linux({"affectedEnvironments":env})
+
+    def test_node_directory_reads_individual_pinned_blobs_and_replays(self):
+        commit = "a" * 40
+        api = "https://api.github.com/repos/nodejs/security-wg"
+        raw = "https://raw.githubusercontent.com/nodejs/security-wg/" + commit + "/vuln/core/"
+        record = {"cve": [], "severity": "high", "affectedEnvironments": ["linux"],
+                  "vulnerable": "22.x", "patched": ">=22.9.0"}
+        data = {name: json.dumps(value).encode() for name, value in
+                [("1.json", record), ("2.json", dict(record, severity="low")), ("index.json", {"1": record})]}
+        listing = []
+        for name, body in data.items():
+            digest = hashlib.sha1(b"blob " + str(len(body)).encode() + b"\0" + body).hexdigest()
+            listing.append({"name": name, "type": "file", "path": "vuln/core/" + name, "size": len(body), "sha": digest})
+        bodies = {api + "/commits?path=vuln/core&per_page=1": json.dumps([{"sha":commit}]).encode(),
+                  api + "/contents/vuln/core?ref=" + commit: json.dumps(listing).encode(),
+                  **{raw + name: body for name, body in data.items() if name != "index.json"}}
+
+        def open_url(request, timeout):
+            body = io.BytesIO(bodies[request.full_url])
+            body.status = 200
+            body.geturl = lambda: request.full_url
+            return body
+
+        with tempfile.TemporaryDirectory() as tmp, patch("release_admission.providers.urlopen", side_effect=open_url):
+            net = Transport(Path(tmp))
+            revision, records = catalogue(net)
+            self.assertEqual((revision, set(records), records["2"]["severity"]), (commit, {"1", "2"}, "low"))
+            replay = Transport(Path(tmp), net.seen)
+            self.assertEqual(catalogue(replay), (revision, records))
+            self.assertEqual(replay.seen, net.seen)
+            self.assertEqual({row["url"] for row in net.seen.values()}, set(bodies))
+            # Changed bytes still decode to a valid advisory with the same length.
+            bodies[raw + "2.json"] = bodies[raw + "2.json"].replace(b'"low"', b'"bad"')
+            with self.assertRaisesRegex(ValueError, "Git blob identity mismatch"):
+                catalogue(Transport(Path(tmp)))
+
+    def test_node_rejects_duplicate_and_truncated_directories(self):
+        member = {"name":"1.json", "path":"vuln/core/1.json", "type":"file", "size":1, "sha":"a" * 40}
+        for listing in ([member, member], [member] * 1000, [dict(member, type="symlink")]):
+            transport = Mock()
+            transport.fetch.side_effect = [[{"sha":"b" * 40}], listing]
+            with self.subTest(size=len(listing)), self.assertRaises(ValueError):
+                catalogue(transport)
 
     def test_native_recipe_preserves_cli_and_publishes_after_verification(self):
         def archive(path, mode, members):
