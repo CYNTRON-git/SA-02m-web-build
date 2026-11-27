@@ -15,7 +15,7 @@ HERE=Path(__file__).resolve().parent
 REPO=HERE.parents[1]
 sys.path.insert(0,str(HERE))
 from release_admission.inventory import Inventory
-from release_admission.native_node import check as native_node
+from release_admission import native_node
 from release_admission.providers import Transport, canonical, level, osv_matches, osv_records, require, sha
 from release_admission import ubuntu as noble
 from release_admission import homekit_review, openssl
@@ -245,7 +245,12 @@ def execute(args):
             results["homekit"]["native"]=component
     def node_check(core_version):
         with tempfile.TemporaryDirectory(dir=out) as stage:
-            return native_node(core_version,args.artifact_dir,args.tool_dir,Path(stage),node,node_policy,net)
+            arguments=(core_version,args.artifact_dir,args.tool_dir,Path(stage),node,node_policy)
+            if args.node_capture:
+                snapshot=inv.json("Node advisory capture",args.node_capture/"node.json")
+                catalogue=native_node.replay(args.node_capture,snapshot,policy["ttl_seconds"])
+                return native_node.evaluate(*arguments,*catalogue)
+            return native_node.check(*arguments,net)
     for core_version in sorted(set(inv.node_versions)|{version}):
         scopes=["native-node"] if core_version==version else []
         if core_version in inv.node_versions:
@@ -288,13 +293,18 @@ def execute(args):
 
 if __name__=="__main__":
     parser=argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("action",choices=["scan","check","capture-ubuntu","capture-ecosystems"])
+    parser.add_argument("action",choices=["scan","check","capture-ubuntu","capture-ecosystems","capture-node"])
     for name in ("artifact-dir","tool-dir","targets","out"):
-        parser.add_argument("--"+name,required=name in {"targets","out"},type=Path)
+        parser.add_argument("--"+name,required=name=="out",type=Path)
     parser.add_argument("--ubuntu-capture",type=Path)
     parser.add_argument("--ecosystem-capture",type=Path)
+    parser.add_argument("--node-capture",type=Path)
     try:
         args=parser.parse_args()
+        if args.action=="capture-node":
+            print(json.dumps({"records":native_node.capture(args.out)}))
+            raise SystemExit(0)
+        require(args.targets,"targets required")
         if args.action=="capture-ubuntu":
             data=noble.capture(args.targets,args.out)
             print(json.dumps({"findings":len(data["findings"]),"gaps":len(data["gaps"])}))

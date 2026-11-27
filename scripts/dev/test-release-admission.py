@@ -19,7 +19,7 @@ HERE=Path(__file__).resolve().parent
 sys.path.insert(0,str(HERE))
 from release_admission.inventory import Inventory
 from release_admission import homekit_absence, homekit_review, openssl
-from release_admission.native_node import catalogue, on_linux
+from release_admission.native_node import capture as capture_node, catalogue, on_linux, replay as replay_node
 from release_admission.ubuntu import tracker_row, upstream
 from native_node_payload import derive
 from release_admission.providers import Transport,level,osv_matches,osv_records,sha
@@ -328,6 +328,20 @@ class AdmissionTests(unittest.TestCase):
             self.assertEqual((revision, set(records), records["2"]["severity"]), (commit, {"1", "2"}, "low"))
             replay = Transport(Path(tmp), net.seen)
             self.assertEqual(catalogue(replay), (revision, records))
+            folder = Path(tmp) / "standalone"
+            self.assertEqual(capture_node(folder), 2)
+            snapshot = json.loads((folder / "node.json").read_bytes())
+            with patch("release_admission.providers.urlopen", side_effect=AssertionError("network on replay")):
+                self.assertEqual(replay_node(folder, snapshot, 86400), (revision, records))
+                for metadata in (dict(snapshot, catalogue_commit="f"*40), dict(snapshot, record_count=1),
+                                 dict(snapshot, started=time.time()-86401), dict(snapshot, started=time.time()+300),
+                                 dict(snapshot, responses=dict(list(snapshot["responses"].items())[1:]))):
+                    with self.subTest(metadata=set(metadata)), self.assertRaises(ValueError):
+                        replay_node(folder, metadata, 86400)
+                blob = folder / "provider" / (hashlib.sha256(release.canonical([raw+"1.json",None])).hexdigest()+".json")
+                blob.write_bytes(blob.read_bytes().replace(b"high", b"down"))
+                with self.assertRaisesRegex(ValueError, "response mismatch"):
+                    replay_node(folder, snapshot, 86400)
             self.assertEqual(replay.seen, net.seen)
             self.assertEqual({row["url"] for row in net.seen.values()}, set(bodies))
             # Changed bytes still decode to a valid advisory with the same length.

@@ -1,7 +1,8 @@
 """Evaluate the exact upstream Node.js core catalogue with upstream semver."""
 from concurrent.futures import ThreadPoolExecutor
 import re
-from .providers import require
+import time
+from .providers import Transport, canonical, require
 
 
 def on_linux(record):
@@ -49,8 +50,35 @@ def catalogue(transport):
     return commit, dict(request.result() for request in requests)
 
 
+def capture(folder):
+    folder.mkdir(exist_ok=False)
+    started = time.time()
+    transport = Transport(folder / "provider")
+    commit, records = catalogue(transport)
+    snapshot = {"schema": 1, "started": started, "catalogue_commit": commit,
+                "record_count": len(records), "responses": transport.seen}
+    (folder / "node.json").write_bytes(canonical(snapshot) + b"\n")
+    return len(records)
+
+
+def replay(folder, snapshot, ttl):
+    require(snapshot["schema"] == 1 and 0 <= time.time() - snapshot["started"] <= ttl,
+            "invalid or expired Node catalogue capture")
+    count = snapshot["record_count"]
+    require(type(count) is int and 0 < count < 1000 and isinstance(snapshot["responses"], dict)
+            and len(snapshot["responses"]) == count + 2, "incomplete Node catalogue capture")
+    transport = Transport(folder / "provider", snapshot["responses"])
+    commit, records = catalogue(transport)
+    require(commit == snapshot["catalogue_commit"] and len(records) == count
+            and transport.seen == snapshot["responses"], "Node catalogue replay differs")
+    return commit, records
+
+
 def check(version, artifact, tool_dir, work, node, policy, transport):
-    commit, index = catalogue(transport)
+    return evaluate(version, artifact, tool_dir, work, node, policy, *catalogue(transport))
+
+
+def evaluate(version, artifact, tool_dir, work, node, policy, commit, index):
     rows=[]
     for identifier,record in sorted(index.items()):
         for key in ("vulnerable","patched"):

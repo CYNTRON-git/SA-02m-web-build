@@ -73,6 +73,12 @@ launcher и карту потребителей по SHA, прочитанный
 
     python3 scripts/dev/release-admission.py capture-ecosystems --artifact-dir /work/payload --targets /work/evidence/targets.json --out /work/ecosystems
 
+Для отдельного сбора каталога advisory ядра Node.js запустите
+`python3 scripts/dev/release-admission.py capture-node --out /work/node-core`.
+В `scan` и `check` передайте `--node-capture /work/node-core`. Обе команды сверяют
+возраст снимка, SHA коммита, полный состав каталога и Git blob каждого файла,
+затем оценивают semver для версий Node в архиве и на целевых устройствах.
+
 `admission.json` сохраняет решение каждой области, пути физических копий,
 идентификаторы, SHA входов, инструментов, политики и ответов. Содержимое
 ответов хранится в `provider/`, отчёт npm в `npm/`. `check` повторяет решение
