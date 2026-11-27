@@ -40,6 +40,76 @@ ensure_rt_patch() {
     log "Buildroot applies it at: make linux-patch (do NOT duplicate via BR2_LINUX_KERNEL_PATCH)"
 }
 
+# Patch stdin applies to exactly one of the supplied (original, corrected)
+# SHA-256 pairs. Already-corrected inputs also support incremental builds.
+apply_pinned_kernel_patch() {
+    local source_file="$LINUX_DIR/$1" digest
+    shift
+    digest=$(sha256sum "$source_file") || return 1
+    digest=${digest%% *}
+    while [ "$#" -ge 2 ]; do
+        if [ "$digest" = "$2" ]; then
+            return 0
+        fi
+        if [ "$digest" = "$1" ]; then
+            patch --batch --forward --fuzz=0 "$source_file" || return 1
+            printf '%s  %s\n' "$2" "$source_file" | sha256sum -c -
+            return
+        fi
+        shift 2
+    done
+    log "Unsupported kernel source: $source_file ($digest)" >&2
+    return 1
+}
+
+# Retain the patches in the standalone script copied to the build VM.
+apply_kernel_security_fixes() {
+    # CVE-2024-1086, Linux 6.1.y commit 8e34430e33b8; SMP and RT inputs differ.
+    apply_pinned_kernel_patch net/netfilter/nf_tables_api.c \
+        0bb480855563ac2d788929253ff19b6aaa7242988cc4a9648629ae2742b17ed0 \
+        8f1c23bb5324bb77829dd08057e15465b7845efb8963ea5a36197af28ea33854 \
+        026787576faa3378d8a3f48e6d0b17e738e7155c79ad1b9d24b326e8187ecde6 \
+        cb709dbc1a77952adde157b8a26c82c9fe0049a5dbe964f383ffb6f775bbba76 <<'PATCH' || return 1
+--- a/net/netfilter/nf_tables_api.c
++++ b/net/netfilter/nf_tables_api.c
+@@ -9684,10 +9684,4 @@
+-	default:
+-		switch (data->verdict.code & NF_VERDICT_MASK) {
+-		case NF_ACCEPT:
+-		case NF_DROP:
+-		case NF_QUEUE:
+-			break;
+-		default:
+-			return -EINVAL;
+-		}
+-		fallthrough;
++	case NF_ACCEPT:
++	case NF_DROP:
++	case NF_QUEUE:
++		break;
+@@ -9725,0 +9720,2 @@
++	default:
++		return -EINVAL;
+PATCH
+    # CVE-2023-0386, upstream commit 4f11ada10d0a; common to SMP and RT.
+    apply_pinned_kernel_patch fs/overlayfs/copy_up.c \
+        9a424b61ccb852acf9cc9b04e770d48202b172beccf4627f2b8a48acd56f39d5 \
+        5810d0420fe79290a1de3c03180675d7d28a15b59ba33b88e358fdc91cc0e472 <<'PATCH' || return 1
+--- a/fs/overlayfs/copy_up.c
++++ b/fs/overlayfs/copy_up.c
+@@ -975,0 +976,4 @@
++	if (!kuid_has_mapping(current_user_ns(), ctx.stat.uid) ||
++	    !kgid_has_mapping(current_user_ns(), ctx.stat.gid))
++		return -EOVERFLOW;
++
+PATCH
+    # Buildroot tracks its own stamps rather than kernel C dependencies. A
+    # restored tree may also have corrected sources older than vulnerable .o's.
+    # Keep extract/configure results and force the next make linux to republish.
+    rm -f "$LINUX_DIR"/{net/netfilter/nf_tables_api,fs/overlayfs/copy_up}.o \
+        "$LINUX_DIR"/.stamp_{built,installed,host_installed,staging_installed,target_installed,images_installed}
+}
+
 verify_rt_patch_applied() {
     [ -d "$LINUX_DIR" ] || return 0
     if [ -f "$LINUX_DIR/kernel/sched/rt.c" ] || grep -q '^config PREEMPT_RT' "$LINUX_DIR/kernel/Kconfig.preempt" 2>/dev/null; then
@@ -421,8 +491,9 @@ cmd_menuconfig() {
     ensure_rt_patch
     log "linux-menuconfig: PREEMPT_RT only after RT patch is applied."
     log "  Prefer: $0 build-kernel"
-    log "  Or manually: make linux-extract && make linux-patch && make linux-configure"
     log "  Then: Expert → Preemption Model → Fully Preemptible Kernel (RT)"
+    make linux-patch
+    apply_kernel_security_fixes
     make linux-menuconfig
     apply_kconfig_snippets || true
 }
@@ -438,6 +509,7 @@ cmd_build_kernel_smp_only() {
     log "linux extract + configure (no RT patch)..."
     make linux-extract
     # buildroot linux-configure depends on .stamp_patched — skip PREEMPT_RT patch for SMP
+    apply_kernel_security_fixes
     touch ./output/build/linux-custom/.stamp_patched
     make linux-configure
     if [ -f "$LINUX_DIR/.config" ]; then
@@ -476,6 +548,7 @@ cmd_build_kernel_only() {
     log "linux extract + patch + configure (patch-first RT workflow)..."
     make linux-extract
     make linux-patch
+    apply_kernel_security_fixes
     verify_rt_patch_applied || { log "ERROR: RT patch not applied after linux-patch" >&2; return 1; }
     make linux-configure
     if [ -f "$LINUX_DIR/.config" ]; then
@@ -506,6 +579,8 @@ cmd_build() {
     ensure_rt_patch
     log "Removing stale linux-custom (required after RT/Docker config change)..."
     rm -rf ./output/build/linux-custom
+    make linux-patch
+    apply_kernel_security_fixes
     log "Building (may take 1-2 hours)..."
     make -j"$(nproc)"
     log "Artifacts:"
@@ -520,7 +595,7 @@ cmd_build() {
 
 cmd_help() {
     cat <<EOF
-Usage: $0 {check|menuconfig|build|build-kernel|build-kernel-smp|kconfig}
+Usage: $0 {check|security-fix|menuconfig|build|build-kernel|build-kernel-smp|kconfig}
 
 RT (PREEMPT_RT) — patch-first workflow (Starterkit «Сборка ядра на ВМ.txt»):
   1) linux/patch-6.1-rc6-rt4.patch  →  make linux-patch  (NOT BR2_LINUX_KERNEL_PATCH)
@@ -531,6 +606,7 @@ SMP (no RT, Docker netfilter) — for web kernel switch / lower CPU load:
   build-kernel-smp  — extract → configure → SMP kconfig → linux (no RT patch)
 
   check         — verify Buildroot path, RT patch file, patch-applied markers
+  security-fix  — apply or verify kernel security backports in the extracted SMP/RT source
   menuconfig    — linux-menuconfig (RT options only after patch; prefer build-kernel)
   kconfig       — apply RT snippets only (linux-custom + RT patch must exist)
   build-kernel  — extract → patch → configure → kconfig → linux (RT)
@@ -545,7 +621,8 @@ main() {
     case "${1:-help}" in
         check) cmd_check ;;
         menuconfig) cmd_menuconfig ;;
-        kconfig) require_root; require_br; apply_kconfig_snippets ;;
+        security-fix) require_root; require_br; apply_kernel_security_fixes ;;
+        kconfig) require_root; require_br; apply_kernel_security_fixes; apply_kconfig_snippets ;;
         build-kernel) cmd_build_kernel_only ;;
         build-kernel-smp) cmd_build_kernel_smp_only ;;
         build) cmd_build ;;

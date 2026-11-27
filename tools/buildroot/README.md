@@ -57,6 +57,7 @@ PREEMPT_RT **не включается только Kconfig** — сначала
 ```
 make linux-extract
 make linux-patch          # patch-6.1-rc6-rt4 из buildroot/linux/
+sudo bash /root/prepare-rt-docker-kernel.sh security-fix
 make linux-configure
 # Expert → Preemption Model → Fully Preemptible Kernel (RT) + Docker kconfig
 make linux
@@ -76,6 +77,16 @@ sudo bash prepare-rt-docker-kernel.sh build-kernel
 Ручной `menuconfig` / Expert → PREEMPT_RT имеет смысл только **после** `make linux-patch` — иначе опции RT в дереве нет.
 
 Артефакты: `output/images/zImage`, modules `output/target/lib/modules/6.1.0-rc6-rt4/`.
+
+Для SMP и RT скрипт применяет исправления Netfilter (CVE-2024-1086) и
+OverlayFS (CVE-2023-0386). При ручной или инкрементальной сборке выполните
+`security-fix` после распаковки исходников (для RT — после наложения
+RT-патча) и до компиляции. Команда проверяет SHA-256 каждого исходного и
+исправленного файла для обоих профилей и сбрасывает отметки сборки и
+установки ядра. Следующий `make linux` пересоберёт оба объекта и запишет
+обновлённый `output/images/zImage`, в том числе в ранее собранном дереве.
+[Исправление Netfilter](https://github.com/gregkh/linux/commit/8e34430e33b8a80bc014f3efe29cac76bc30a4b4) ·
+[Исправление OverlayFS](https://github.com/torvalds/linux/commit/4f11ada10d0ad3fd53e2bd67806351de63a4f9c3).
 
 ## Быстрый старт (Windows)
 
