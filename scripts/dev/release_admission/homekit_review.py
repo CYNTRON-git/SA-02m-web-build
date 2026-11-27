@@ -11,12 +11,28 @@ from .providers import canonical, require
 SOURCE_ROOTS = ("opt/sa02m-homekit", "opt/sa02m-alice", "opt/sa02m-rules", "opt/sa02m-modbus-mqtt", "opt/sa02m-spodes")
 ALICE_MARKER = "opt/sa02m-alice/__init__.py"
 ALICE_MARKER_SHA = "2b097e7de3d197820c7bea512dd1aeaa482dc028f287579ae3fd5028cfff9745"
+INSTALL_RECIPES = ("scripts/06-alice.sh", "scripts/06b-rules.sh", "scripts/lib.sh")
 
 
 def verified_file(inv, label, path, digest):
     path = inv.file(label, path)
     require(inv.inputs[label] == digest, "HomeKit review input changed: " + label)
     return path
+
+
+def verify_installation(inv, repo, profiles):
+    require(isinstance(profiles, dict) and set(profiles) == {"capture_1164445", "qualified_51d45e"},
+            "incomplete HomeKit installation profiles")
+    for profile in profiles.values():
+        require(isinstance(profile, dict) and set(profile) == set(INSTALL_RECIPES)
+                and all(isinstance(v, str) and re.fullmatch(r"[0-9a-f]{64}", v) for v in profile.values()),
+                "incomplete HomeKit installation recipe")
+    observed = {}
+    for name in INSTALL_RECIPES:
+        label = "HomeKit source " + name
+        inv.file(label, repo / name)
+        observed[name] = inv.inputs[label]
+    require(observed in profiles.values(), "HomeKit installation recipe combination changed")
 
 
 def verify_graph(inv, repo, folder, review, wheelhouse):
@@ -45,6 +61,7 @@ def verify_graph(inv, repo, folder, review, wheelhouse):
         require(path.stat().st_size == entry["bytes"], "HomeKit source size changed")
     for name, digest in review["extra_source_files"].items():
         verified_file(inv, "HomeKit source " + name, repo / name, digest)
+    verify_installation(inv, repo, review["installation_profiles"])
 
     wheels = {n: row for n, row in packages["wheels"].items() if n.endswith("-any.whl") or "armv7l" in n}
     require(wheelhouse.is_dir() and not wheelhouse.is_symlink() and {p.name for p in wheelhouse.glob("*.whl")} == set(wheels),

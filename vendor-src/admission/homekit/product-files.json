@@ -348,8 +348,8 @@
     "sha256": "9403094e9d8857c0d47ecf4a27070a8a4e9552ccf3af274a0aa9f2da339b66ee"
   },
   "opt/sa02m-rules/sa02m_rules/capability_binding.py": {
-    "bytes": 6684,
-    "sha256": "2fe63edd77147777e3d3f28aec73660c80659268efe84b7ad9c0940e17398c32"
+    "bytes": 6571,
+    "sha256": "b06b0bf253f71e033381f2c6ecf2a6328dd7fb50ad16862fe5b5a8809c34d09d"
   },
   "opt/sa02m-rules/sa02m_rules/code_runner.py": {
     "bytes": 21006,
@@ -446,9 +446,5 @@
   "scripts/06c-homekit.sh": {
     "bytes": 21755,
     "sha256": "60274249d4873f78ab65c0b3972213b0cae3a6e529be7aa29f6ffd43978ceb2b"
-  },
-  "scripts/lib.sh": {
-    "bytes": 88858,
-    "sha256": "6104c3861a495d059f2c6a921b5726bdd27cce488902ef120697bbd08da35909"
   }
 }

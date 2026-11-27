@@ -2,7 +2,7 @@
   "schema": 1,
   "scopes": ["node-red", "python", "python-ambient", "homekit", "development", "native-node", "external-node", "ubuntu", "vendor-kernel", "opcua-native"],
   "opcua_review_sha256": "4b9df9482c7bc1c11f24554de969a23007f86cfef2ce0faab7097f5447a50dde",
-  "homekit_review_sha256": "caa1b8b4d9ec36c051b43066883ce2811dcff50565a312c350fc6c80aac01e7f",
+  "homekit_review_sha256": "03f91ce8b2080e25a4b0e49d95de5019c0dc9adfab9d986162c500ac079d2bfc",
   "openssl_cna_archive_sha256": "de55b8338b01a3c5e4ad4e4f2a989e8a63121639285a17995ea4d45dd72b1453",
   "npm_capture_receipt_sha256": "da35f3dd88a3dd8b6b55ba59ff2f64d4431823f6d16ac85146a16529a82cf50d",
   "ubuntu_tracker_commit": "d4bb3b238208ba9725e75cc6808dc5e7bdbad449",

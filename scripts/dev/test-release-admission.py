@@ -7,6 +7,7 @@ import importlib.util
 import io
 import hashlib
 import json
+import shutil
 import sys
 import subprocess
 import tarfile
@@ -91,7 +92,6 @@ class AdmissionTests(unittest.TestCase):
         folder = repo / "vendor-src/admission/homekit"
         review = {"product_files_sha256":sha(folder/"product-files.json"), "package_files_sha256":sha(folder/"package-files.json"),
                   "builder_inputs_sha256":sha(folder/"candidate.json"), "extra_source_files":{}}
-        import shutil
         with tempfile.TemporaryDirectory() as place:
             root=Path(place)
             for relative in homekit_review.SOURCE_ROOTS:
@@ -101,9 +101,76 @@ class AdmissionTests(unittest.TestCase):
             with self.assertRaisesRegex(ValueError,"module membership changed"):
                 homekit_review.verify_graph(Inventory(), root, folder, review, root/"wheelhouse")
             injected.unlink()
-            (root/"etc/systemd/system/sa02m-homekit.service.d").mkdir(parents=True)
+            override = root/"etc/systemd/system/sa02m-homekit.service.d"
+            override.mkdir(parents=True)
             with self.assertRaisesRegex(ValueError,"service drop-in"):
                 homekit_review.verify_graph(Inventory(), root, folder, review, root/"wheelhouse")
+            override.rmdir()
+            for name in json.loads((folder / "product-files.json").read_bytes()):
+                if not (root / name).exists():
+                    (root / name).parent.mkdir(parents=True, exist_ok=True)
+                    shutil.copyfile(repo / name, root / name)
+            for name in ("opt/sa02m-rules/sa02m_rules/capability_binding.py",
+                         "opt/sa02m-alice/sa02m_alice/config/bridge_roster.py",
+                         "opt/sa02m-alice/sa02m_alice/config/__init__.py"):
+                path = root / name
+                original = path.read_bytes()
+                path.write_bytes(original + b"\n")
+                with self.assertRaisesRegex(ValueError, "HomeKit review input changed: HomeKit source " + name):
+                    homekit_review.verify_graph(Inventory(), root, folder, review, root/"wheelhouse")
+                path.write_bytes(original)
+
+    def test_homekit_requires_one_complete_installer_profile(self):
+        with tempfile.TemporaryDirectory() as place:
+            root = Path(place)
+            (root / "scripts").mkdir()
+            def write_recipe(generation, name):
+                path = root / name
+                path.write_text(generation + name)
+                return sha(path)
+            profiles = {}
+            for generation in ("capture_1164445", "qualified_51d45e"):
+                profiles[generation] = {name:write_recipe(generation, name) for name in homekit_review.INSTALL_RECIPES}
+            homekit_review.verify_installation(Inventory(), root, profiles)
+            for name in homekit_review.INSTALL_RECIPES:
+                write_recipe("capture_1164445", name)
+            homekit_review.verify_installation(Inventory(), root, profiles)
+            write_recipe("qualified_51d45e", "scripts/06b-rules.sh")
+            with self.assertRaisesRegex(ValueError, "combination changed"):
+                homekit_review.verify_installation(Inventory(), root, profiles)
+            write_recipe("unreviewed", "scripts/lib.sh")
+            with self.assertRaisesRegex(ValueError, "combination changed"):
+                homekit_review.verify_installation(Inventory(), root, profiles)
+            del profiles["qualified_51d45e"]["scripts/lib.sh"]
+            with self.assertRaisesRegex(ValueError, "incomplete HomeKit installation recipe"):
+                homekit_review.verify_installation(Inventory(), root, profiles)
+
+    def test_homekit_roster_origins_in_both_reviewed_layouts(self):
+        repo = HERE.parents[1]
+        alice = Path("sa02m-alice/sa02m_alice/config/bridge_roster.py")
+        installed = Path("sa02m-rules/sa02m_rules/bridge_roster.py")
+        probe = """
+from pathlib import Path
+import sys
+root = Path(sys.argv[1])
+sys.path[:0] = [str(root / 'sa02m-homekit'), str(root / 'sa02m-alice'), str(root / 'sa02m-rules')]
+from sa02m_rules import capability_binding
+reader = capability_binding._roster_reader()
+assert Path(reader.__file__).resolve() == root / sys.argv[2]
+assert reader.__spec__.name == sys.argv[3]
+assert str(root / 'sa02m-alice/sa02m_alice/config') not in sys.path
+assert 'bridge_roster' not in sys.modules
+assert reader.PRODUCER == root / 'sa02m-modbus-mqtt/modbus_mqtt_bridge.py'
+"""
+        with tempfile.TemporaryDirectory() as place:
+            root = Path(place).resolve()
+            for subtree in ("sa02m-homekit", "sa02m-alice", "sa02m-rules"):
+                shutil.copytree(repo / "opt" / subtree, root / subtree)
+            for expected, module in ((alice, "sa02m_alice.config.bridge_roster"), (installed, "sa02m_rules.bridge_roster")):
+                if expected == installed:
+                    shutil.copyfile(root / alice, root / installed)
+                    self.assertEqual(sha(root / alice), sha(root / installed))
+                subprocess.run([sys.executable, "-I", "-B", "-c", probe, str(root), str(expected), module], check=True)
 
     def test_homekit_openssl_preserves_scope_unknown_grammars_and_provider_score(self):
         identifier="CVE-2026-10000"
