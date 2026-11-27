@@ -14,6 +14,7 @@ import tarfile
 import tempfile
 import unittest
 from pathlib import Path
+from unittest.mock import patch
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 _REPO = Path(__file__).resolve().parents[3]
@@ -384,7 +385,10 @@ class TestManifestAndPackage(unittest.TestCase):
         # demand a runner newer than the one it carries).
         pack = self._load_packer()
         repo_version = pack.read_version()
-        self.assertEqual(pack.resolve_min_updater(None), pack.MIN_UPDATER)
+        with tempfile.TemporaryDirectory() as tmp, patch.object(pack, "ROOT", Path(tmp)):
+            self.assertEqual(pack.resolve_min_updater(None), pack.MIN_UPDATER)
+            (Path(tmp) / "opt" / "sa02m-runtime-transition").mkdir(parents=True)
+            self.assertEqual(pack.resolve_min_updater(None), pack.RUNTIME_ACTIVATION_SINCE)
         self.assertEqual(pack.resolve_min_updater(pack.MIN_UPDATER), pack.MIN_UPDATER)
         self.assertEqual(pack.resolve_min_updater(repo_version), repo_version)
         parts = [int(x) for x in repo_version.split(".")]

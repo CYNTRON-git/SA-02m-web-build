@@ -352,7 +352,9 @@ class TestTopicsCgiTimeout(unittest.TestCase):
         match = re.search(r"SA02M_ALICE_TOPICS_TIMEOUT:-(\d+)", text)
         self.assertIsNotNone(match, "topics CGI default timeout missing")
         self.assertEqual(int(match.group(1)), int(C.TOPICS_CGI_TIMEOUT_S))
-        self.assertIn('timeout "$TOPICS_CGI_TIMEOUT" python3 -', text)
+        self.assertIn("runtime=(python3 -)", text)
+        self.assertIn("runtime=(/usr/local/libexec/sa02m-python-consumer alice-topics)", text)
+        self.assertIn('timeout "$TOPICS_CGI_TIMEOUT" "${runtime[@]}"', text)
         self.assertIn("topics_failed", text)
 
 

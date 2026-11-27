@@ -562,7 +562,7 @@ def emit_optional_service_keys(min_updater: str) -> bool:
 
 
 def resolve_min_updater(arg: str | None) -> str:
-    """The min_updater this pack advertises: --min-updater, else MIN_UPDATER.
+    """Select the explicit floor or the default for the runtime payload in this tree.
 
     Bounded both ways: never below MIN_UPDATER (the floor the packer promises
     its manifest shape for) and never above the tree's VERSION (a pack cannot
@@ -810,7 +810,9 @@ def main() -> int:
         default=None,
         metavar="X.Y.Z[.W]",
         help=(
-            f"Advertise this min_updater instead of {MIN_UPDATER} (>= it, <= the tree VERSION). "
+            f"Set the minimum updater between {MIN_UPDATER} and the tree VERSION. "
+            f"Default with runtime activation: {RUNTIME_ACTIVATION_SINCE}. "
+            f"Default without runtime activation: {MIN_UPDATER}. "
             f"At/above {FIX_ETH_OTA_SINCE} the pack also carries /usr/local/bin/fix-eth.sh; "
             "a board with an older updater refuses such a pack up front (E_COMPAT)"
         ),

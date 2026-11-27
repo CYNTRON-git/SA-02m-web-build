@@ -36,10 +36,7 @@ def _roster_reader():
     try:
         from . import bridge_roster
     except ImportError:
-        sibling = os.path.join(_ALICE, "sa02m_alice", "config")
-        if sibling not in sys.path:
-            sys.path.append(sibling)
-        import bridge_roster
+        from sa02m_alice.config import bridge_roster
     return bridge_roster
 
 
