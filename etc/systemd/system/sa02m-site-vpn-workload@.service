@@ -1,0 +1,24 @@
+[Unit]
+Description=Приложение объекта %i в изолированной сети VPN
+BindsTo=sa02m-site-vpn@%i.service
+After=sa02m-site-vpn@%i.service
+PartOf=sa02m-site-vpn@%i.service sa02m-site@%i.target
+JoinsNamespaceOf=sa02m-site-vpn@%i.service
+
+[Service]
+PrivateNetwork=yes
+DynamicUser=yes
+NoNewPrivileges=yes
+CapabilityBoundingSet=
+RestrictAddressFamilies=AF_INET AF_INET6
+SystemCallArchitectures=native
+SystemCallFilter=~io_uring_setup io_uring_enter io_uring_register
+SystemCallErrorNumber=EPERM
+PrivateDevices=yes
+PrivateTmp=yes
+ProtectSystem=strict
+ProtectHome=yes
+BindReadOnlyPaths=/etc/sa02m/site-vpn-apps/%i/resolv.conf:/etc/resolv.conf
+BindReadOnlyPaths=/etc/sa02m/site-vpn-apps/%i/nsswitch.conf:/etc/nsswitch.conf
+ExecStart=/etc/sa02m/site-vpn-apps/%i/run
+
