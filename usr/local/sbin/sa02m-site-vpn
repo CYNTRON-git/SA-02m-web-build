@@ -169,17 +169,46 @@ def ready():
         sock.sendto(b'READY=1', ('\0'+target[1:]) if target.startswith('@') else target)
 
 
+def prerequisites(backend, routes, addresses, params):
+    ipv6 = any(entry.version == 6 for entry in [*routes,*addresses])
+    if backend == 'openvpn':
+        try:
+            fd = os.open('/dev/net/tun', os.O_RDWR | os.O_CLOEXEC)
+            try:
+                info = os.fstat(fd)
+                require(stat.S_ISCHR(info.st_mode) and (os.major(info.st_rdev),os.minor(info.st_rdev)) == (10,200),
+                        'OpenVPN requires the Linux TUN character device /dev/net/tun (10:200)')
+            finally:
+                os.close(fd)
+        except OSError as exc:
+            raise ValueError('OpenVPN requires an accessible Linux TUN driver and /dev/net/tun') from exc
+        ipv6 |= params[params.index('--proto')+1] in ('udp6','tcp6-client')
+    if ipv6:
+        try:
+            with socket.socket(socket.AF_INET6,socket.SOCK_DGRAM):
+                pass
+        except OSError as exc:
+            raise ValueError('this site configuration requires IPv6 in the running kernel and network namespace') from exc
+
+
+def create_wireguard(device):
+    # In one rtnetlink operation, create in the underlay and place directly in the private namespace.
+    try:
+        run(*host(IP,'link','add','dev',device,'netns',str(os.getpid()),'type','wireguard'))
+    except subprocess.CalledProcessError as exc:
+        raise ValueError('native WireGuard link creation failed; check running kernel WireGuard and namespace permissions') from exc
+
+
 def serve(site):
     private_scope()
     links=json.loads(subprocess.check_output([IP,'-j','link','show'],timeout=10))
     require({r['ifname'] for r in links}=={'lo'}, 'expected only loopback in fresh private network')
     backend,routes,addresses,params=config_for(site)
+    prerequisites(backend,routes,addresses,params)
     run(IP,'link','set','lo','up')
     device=('swg' if backend=='wireguard' else 'sov')+secrets.token_hex(5)
     if backend=='wireguard':
-        # In one rtnetlink operation, create in the underlay and place straight
-        # in the private namespace. No interface or key can be stranded outside it.
-        run(*host(IP,'link','add','dev',device,'netns',str(os.getpid()),'type','wireguard'))
+        create_wireguard(device)
         try:
             wireguard_config(site,device)
             addresses_and_routes(device,addresses,routes)

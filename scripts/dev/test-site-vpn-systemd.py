@@ -2,6 +2,7 @@
 """Run after installing the units in an explicitly disposable, disconnected Linux PID1."""
 import ipaddress
 import json
+import runpy
 import os
 from pathlib import Path
 import select
@@ -10,6 +11,7 @@ import struct
 import subprocess
 import sys
 import time
+from unittest.mock import patch
 
 IP = '/usr/sbin/ip'
 ROOT = Path('/etc/sa02m/site-vpn')
@@ -236,8 +238,41 @@ def reject_private_key_errors():
         assert marker not in log and 'wg rejected the private site configuration' in log
 
 
+def reject_missing_driver_capabilities():
+    helper = runpy.run_path('/usr/local/sbin/sa02m-site-vpn')
+    probe = helper['prerequisites']
+    routes = [ipaddress.ip_network('192.0.2.0/24')]
+    for proto in ('udp4','tcp4-client'):
+        with patch('os.open',side_effect=FileNotFoundError()):
+            try:
+                probe('openvpn',routes,[],['--proto',proto])
+            except ValueError as exc:
+                assert '/dev/net/tun' in str(exc)
+            else:
+                raise AssertionError('missing TUN accepted')
+    with patch('socket.socket',side_effect=OSError()):
+        probe('wireguard',routes,[],None)
+        for backend,networks,params in [('wireguard',[ipaddress.ip_network('::/0')],None),
+                                         ('openvpn',routes,['--proto','udp6'])]:
+            try:
+                probe(backend,networks,[],params)
+            except ValueError as exc:
+                assert 'IPv6' in str(exc)
+            else:
+                raise AssertionError('missing IPv6 accepted')
+    with patch('subprocess.run',side_effect=subprocess.CalledProcessError(2,'ip')) as create:
+        try:
+            helper['create_wireguard']('swgproof')
+        except ValueError as exc:
+            assert 'native WireGuard' in str(exc)
+        else:
+            raise AssertionError('native link failure accepted')
+        assert create.call_count == 1
+
+
 def main():
     guard()
+    reject_missing_driver_capabilities()
     setup()
     procs=[]
     try:
