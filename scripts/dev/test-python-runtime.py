@@ -1,7 +1,9 @@
 #!/usr/bin/python3
 # comment-mutation-proof-exempt: exercises wheel contents, runtime entry points, native integrity and refusal on filesystem mutations.
 """Offline product catalogue, trust and consumer-boundary regressions."""
+from contextlib import redirect_stdout
 from email.parser import BytesParser
+import io
 import json
 import os
 from pathlib import Path
@@ -10,6 +12,7 @@ import subprocess
 import sys
 import tempfile
 import unittest
+from types import SimpleNamespace
 from unittest.mock import patch
 import zipfile
 
@@ -18,6 +21,7 @@ CAT=ROOT/"opt/sa02m-python-manager"
 sys.path.insert(0,str(CAT))
 from integrity import Unavailable, sha, tree_digest, trusted
 from native_guard import stamp,check
+import runtime
 from runtime import Catalogue
 
 
@@ -165,6 +169,44 @@ class RuntimeTest(unittest.TestCase):
                 with self.assertRaises(FileNotFoundError):cat.validate()
                 wheel.write_bytes(bytes(len(saved)))
                 with self.assertRaisesRegex(Unavailable,"file mismatch"):cat.validate()
+
+    def test_verify_retries_only_a_real_subprocess_deadline(self):
+        def expired():
+            subprocess.run([sys.executable, "-c", "import time; time.sleep(10)"], timeout=0.04)
+
+        def corrupt():
+            raise ValueError("file mismatch: timed out after 35 seconds")
+
+        def passed():
+            return {"ok": True}
+
+        cases = (
+            ("verify", [expired, passed], 0, None, 1),
+            ("verify", [expired, expired], 1, "verification_timeout", 1),
+            ("verify", [corrupt], 1, "verification_failed", 0),
+            ("verify", [expired, corrupt], 1, "verification_failed", 1),
+            ("prepare", [expired], 1, "verification_failed", 0),
+        )
+        for action, steps, expected_rc, code, retries in cases:
+            with self.subTest(action=action, steps=[step.__name__ for step in steps]):
+                argv = ["runtime.py", action] + (["a"*64] if action == "verify" else [])
+                attempts = iter(steps)
+                output = io.StringIO()
+                with (patch.object(sys, "argv", argv),
+                      patch.object(runtime, "sys", SimpleNamespace(flags=SimpleNamespace(isolated=1, no_site=1))),
+                      patch.object(runtime, "Catalogue"), patch.object(runtime, "Manager") as manager,
+                      patch.object(runtime, "sleep", create=True) as pause, redirect_stdout(output)):
+                    command = getattr(manager.return_value, action)
+                    command.side_effect = lambda *args: next(attempts)()
+                    self.assertEqual(runtime.main(), expected_rc)
+                result = json.loads(output.getvalue())
+                self.assertIs(result["ok"], expected_rc == 0)
+                self.assertEqual(result.get("code"), code)
+                self.assertEqual(command.call_count, len(steps))
+                self.assertEqual(manager.call_count, len(steps))
+                if code == "verification_timeout":
+                    self.assertNotIn(sys.executable, result["error"])
+                self.assertEqual(pause.call_count, retries)
 
     def test_system_manager_requires_no_site_and_returns_json(self):
         p=subprocess.run([sys.executable,"-I","-B",str(CAT/"runtime.py"),"prepare"],capture_output=True,text=True)

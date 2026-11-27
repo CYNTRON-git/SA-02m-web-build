@@ -95,6 +95,8 @@ def runtime(action, release=None):
     result = bounded_command(args, 540)
     data = json.loads(result.stdout)
     if result.returncode:
+        if action == 'verify' and data.get('ok') is False and data.get('code') == 'verification_timeout':
+            raise ValueError('runtime_verification_timeout')
         if data.get('code') in ('payload_missing', 'runtime_busy'):
             raise BlockingIOError(data['code'])
         raise ValueError('runtime_verification_failed')

@@ -41,6 +41,10 @@ MANAGER_FIXTURE = '''import json,sys
 from pathlib import Path
 p=Path(__file__).parent
 v=json.loads((p/'runtime.json').read_bytes())
+injected=p/'verify-failure'
+if sys.argv[1]=='verify' and injected.exists():
+    print(json.dumps({'ok':False,'code':injected.read_text(),'error':'timed out after 35 seconds'}))
+    raise SystemExit(1)
 if v['fault'] in ('payload_missing','verification_failed'):
     print(json.dumps({'ok':False,'code':v['fault']}))
     raise SystemExit(1)
@@ -274,6 +278,15 @@ class RuntimeTransition(unittest.TestCase):
         self.activate(1,'image_selector_mismatch')
         put(STATE/'image-epoch.json',json.dumps(seal))
         self.assertEqual(cli('systemctl','start',ACTIVE_UNIT).returncode,0)
+        for code, reason in [('verification_timeout','runtime_verification_timeout'),
+                             ('verification_failed','runtime_verification_failed')]:
+            put(MANAGER/'verify-failure',code)
+            self.activate(1,reason)
+            self.assertEqual(json.loads((STATE/'image-epoch.json').read_bytes()),seal)
+            self.assertFalse((STATE/'image-epoch-consuming.json').exists())
+            self.assertFalse(EPOCH.exists())
+            self.assertFalse((STATE/'status.json').exists())
+        (MANAGER/'verify-failure').unlink()
         self.activate(0,'verified')
         self.assertFalse((STATE/'image-epoch.json').exists())
         self.assertFalse((STATE/'image-epoch-consuming.json').exists())
