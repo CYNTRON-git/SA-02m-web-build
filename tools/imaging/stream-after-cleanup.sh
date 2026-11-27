@@ -28,10 +28,24 @@ capture_mode() {
     printf '%s %s\n' "$mode" "$version"
 }
 
+check_offline_etc_backups() {
+    local archive
+    [[ -r /root && -x /root ]] || { echo 'cannot inspect donor /root' >&2; return 1; }
+    for archive in /root/etc-backup-????????-??????.tgz; do
+        [[ ${archive##*/} =~ ^etc-backup-[0-9]{8}-[0-9]{6}\.tgz$ ]] || continue
+        echo "offline update /etc backup remains: $archive" >&2
+        return 1
+    done
+    return 0
+}
+
 mode_and_version=$(capture_mode) || { echo 'cannot determine donor runtime' >&2; exit 1; }
 mode=${mode_and_version%% *}
 case "${1:-}" in
-    --probe-mode) [ "$#" = 1 ] || exit 2; printf '%s\n' "$mode_and_version"; exit ;;
+    --probe-mode)
+        [ "$#" = 1 ] || exit 2
+        if [ "$mode" = managed ]; then check_offline_etc_backups || exit 1; fi
+        printf '%s\n' "$mode_and_version"; exit ;;
     --legacy-only)
         [ "$#" = 1 ] || exit 2
         [ "$mode" = legacy ] || { echo 'managed runtime requires guarded make-image.sh' >&2; exit 1; }
@@ -49,6 +63,7 @@ done
 
 log() { printf '[stream %s] %s\n' "$(date +%H:%M:%S)" "$*" >&2; }
 
+check_offline_etc_backups || exit 1
 IMAGING_LOCK="${IMAGING_LOCK:-/run/sa02m-imaging.lock}"
 if [ "$mode" = managed ]; then
     [[ "$EUID" -eq 0 && "$DO_ID_RESET" = 1 && "$CAPTURE_SHA" =~ ^[0-9a-f]{64}$ ]] || {
@@ -386,6 +401,7 @@ if [ "$DO_ID_RESET" = "1" ]; then
     drop_ssh_host_keys
 fi
 
+check_offline_etc_backups || exit 1
 log "dd /dev/mmcblk2 -> stdout (не закрывайте ssh до конца передачи)"
 if [ "$mode" = legacy ]; then
     exec dd if=/dev/mmcblk2 bs=1M status=none

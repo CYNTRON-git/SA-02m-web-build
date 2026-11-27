@@ -72,6 +72,7 @@ DENY_TREES=(
     /opt/vendor-installers
     /var/lib/sa02m-alice
     /var/lib/sa02m-flasher
+    /var/lib/sa02m-update/state
     /var/lib/mosquitto
     /etc/network
     /etc/nginx
@@ -129,19 +130,25 @@ is_denied() {
     path="${path%/}"
     [ -z "$path" ] && return 0
     if [ -e "$path" ] || [ -L "$path" ]; then
-        canon="$(readlink -f "$path" 2>/dev/null || true)"
+        canon="$(readlink -f -- "$path")" || return 0
+    else
+        canon="$path"
     fi
-    [ -z "$canon" ] && canon="$path"
 
-    # --purge-update-state: allow only these update paths (still never alice/firmware)
-    if [ "$PURGE_UPDATE_STATE" -eq 1 ]; then
-        case "$canon" in
-            /var/lib/sa02m-update/state/deployed_*) return 1 ;;
-            /etc/sa02m-update/trusted-keys|/*) return 1 ;;
-        esac
-        case "$path" in
-            /var/lib/sa02m-update/state/deployed_*) return 1 ;;
-            /etc/sa02m-update/trusted-keys/*) return 1 ;;
+    # The offline updater owns this exact filename format. Never recursively
+    # remove a directory or follow a link if a candidate changed after discovery.
+    case "$path" in
+        /root/etc-backup-*)
+            [[ ${path##*/} =~ ^etc-backup-[0-9]{8}-[0-9]{6}\.tgz$ ]] &&
+                [[ "$path" = "$canon" && -f "$path" && ! -L "$path" ]] &&
+                [ "$(stat -c %h -- "$path")" = 1 ] || return 0 ;;
+    esac
+
+    # Only direct regular files in the two purge namespaces may bypass DENY.
+    if [[ "$PURGE_UPDATE_STATE" = 1 && "$path" = "$canon" && -f "$path" && ! -L "$path" ]]; then
+        case "${path%/*}" in
+            /var/lib/sa02m-update/state) [[ ${path##*/} = deployed_* ]] && return 1 ;;
+            /etc/sa02m-update/trusted-keys) return 1 ;;
         esac
     fi
 
@@ -327,6 +334,7 @@ collect_junk() {
     add_candidate /root/NUL
     add_candidate '/root/ystemd-analyze critical-chain'
     expand_globs \
+        '/root/etc-backup-????????-??????.tgz' \
         '/root/mplc_backup*' \
         '/root/www-backup-*.tgz' \
         '/root/www-backup-*.tar.gz' \
@@ -369,10 +377,15 @@ remove_one() {
         return 0
     fi
     sz="$(bytes_of "$p")"
+    local rm_flags=-rf
+    case "$p" in
+        /root/etc-backup-*|/var/lib/sa02m-update/state/deployed_*|/etc/sa02m-update/trusted-keys/*)
+            rm_flags=-f ;;
+    esac
     if [ "$VERBOSE" -eq 1 ]; then
-        log "  rm -rf $p"
+        log "  rm $rm_flags $p"
     fi
-    if rm -rf -- "$p" 2>/dev/null; then
+    if rm "$rm_flags" -- "$p" 2>/dev/null; then
         DELETED_COUNT=$((DELETED_COUNT + 1))
         DELETED_BYTES=$((DELETED_BYTES + sz))
     else

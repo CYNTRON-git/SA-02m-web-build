@@ -13,12 +13,26 @@ sed -E "s#/(etc|run|root|sys|var/(lib|www)|usr/local/libexec)(/|[[:space:]\"])#$
 state=$fixture/var/lib/sa02m-runtime-transition
 mkdir -p $fixture/var/www/network_config $fixture/var/lib/dbus $fixture/etc/systemd/system $fixture/etc/ssh $fixture/usr/local/libexec $fixture/root $fixture/run/guard-fixture
 cp www/network_config/VERSION $fixture/var/www/network_config/VERSION
+archive="$fixture/root/etc-backup-20261127-160403.tgz"
+touch "$fixture/root/etc-backup-user.tgz" "$fixture/root/etc-backup-A0261127-160403.tgz"
 for v in 1.0.8.2 1.0.8.3 1.0.8.10; do
   sed -E -i "s/^[0-9]+[.][0-9]+[.][0-9]+[.][0-9]+$/$v/" $fixture/var/www/network_config/VERSION
   expected=managed
   [ "$v" != 1.0.8.2 ] || expected=legacy
   [ "$(bash "$tool" --probe-mode)" = "$expected $v" ]
-  echo "classified $expected $v"
+  touch "$archive"
+  if [[ "$expected" = managed ]]; then
+    if bash "$tool" --probe-mode >"$fixture/out" 2>"$fixture/log"; then exit 1; fi
+    [[ ! -s "$fixture/out" ]]
+    grep -Fq "backup remains: $archive" "$fixture/log"
+    if bash "$tool" --legacy-only >"$fixture/out" 2>"$fixture/log"; then exit 1; fi
+    grep -Fq 'managed runtime requires guarded make-image.sh' "$fixture/log"
+  else
+    [[ $(bash "$tool" --probe-mode) = "legacy $v" ]]
+    bash "$tool" --legacy-only
+  fi
+  rm "$archive"
+  echo "classified $expected $v and checked admission with a private archive"
 done
 mkdir -p "$state" $fixture/var/lib/sa02m-update
 touch $fixture/run/sa02m-install.lock $fixture/var/lib/sa02m-update/update.lock $fixture/var/lib/sa02m-update/control.lock "$state/acquisition.lock"
@@ -27,6 +41,9 @@ sha=$(sha256sum -- "$state/capture.json" | cut -d' ' -f1)
 for fake in sync ethtool rmmod; do ln -s /bin/true "$fixture/run/guard-fixture/$fake"; done
 cat > $fixture/run/guard-fixture/systemctl <<'SYS'
 #!/bin/bash
+if [[ "${SCENARIO:-}" = late-archive && "$1" = stop && "$2" = nginx ]]; then
+  touch "$fixture/root/etc-backup-20261127-160403.tgz"
+fi
 if [[ "$1" = show ]]; then echo inactive; fi
 SYS
 cat > $fixture/run/guard-fixture/busctl <<'BUS'
@@ -37,6 +54,11 @@ chmod +x $fixture/run/guard-fixture/{busctl,systemctl}
 cat > $fixture/run/guard-fixture/dd <<'DD'
 #!/bin/bash
 set -eu
+if [[ "${SCENARIO:-}" = legacy ]]; then
+  touch "$fixture/run/dd-started"
+  printf legacy-sample
+  exit 0
+fi
 state=$fixture/var/lib/sa02m-runtime-transition
 for f in $fixture/run/sa02m-install.lock $fixture/var/lib/sa02m-update/update.lock $fixture/var/lib/sa02m-update/control.lock "$state/acquisition.lock"; do
   if flock -n -x "$f" true; then echo "unheld lock at dd" >&2; exit 30; fi
@@ -69,6 +91,23 @@ printf '{"schema":1,"phase":"complete","reason":"capture_released"}\n'
 REL
 chmod +x $fixture/usr/local/libexec/sa02m-runtime-activate $fixture/run/guard-fixture/dd
 export PATH="$fixture/run/guard-fixture:$PATH"
+for scenario in archive-at-entry late-archive; do
+  export SCENARIO=$scenario
+  if [[ "$scenario" = archive-at-entry ]]; then ln -s "$fixture/root/absent" "$archive"; fi
+  rc=0
+  timeout 15 bash "$tool" --no-zerofill --capture-receipt-sha256 "$sha" >"$fixture/out" 2>"$fixture/log" || rc=$?
+  [[ $rc = 1 && ! -s "$fixture/out" && ! -e "$fixture/run/dd-started" && ! -e "$fixture/run/release-complete" ]]
+  grep -Fq "backup remains: $archive" "$fixture/log"
+  if [[ "$scenario" = archive-at-entry ]]; then
+    [[ ! -e "$fixture/run/sa02m-imaging.lock" && -L "$archive" ]]
+  else
+    grep -Fxq "capture:$sha" "$fixture/run/sa02m-imaging.lock"
+    rm "$fixture/run/sa02m-imaging.lock"
+  fi
+  rm "$archive"
+  echo "refused $scenario before raw read"
+done
+unset SCENARIO
 for scenario in wrong-hash foreign-marker foreign-symlink foreign-fifo busy-acquisition; do
   case "$scenario" in
     wrong-hash) digest=$(printf '0%.0s' {1..64});;
@@ -104,3 +143,17 @@ for scenario in good dd-failure failed-release replaced-marker altered-marker co
   esac
   rm -f $fixture/run/sa02m-imaging.lock $fixture/run/dd-started $fixture/run/release-complete
 done
+
+# Native Windows admits legacy donors before optional cleanup, then runs this same stream.
+mv "$state" "$state.saved"
+mv "$fixture/usr/local/libexec/sa02m-runtime-activate" "$fixture/activate.saved"
+sed -E -i 's/^[0-9]+[.][0-9]+[.][0-9]+[.][0-9]+$/1.0.8.2/' "$fixture/var/www/network_config/VERSION"
+touch "$archive"
+bash "$tool" --legacy-only
+if SCENARIO=legacy bash "$tool" --no-zerofill --no-id-reset >"$fixture/out" 2>"$fixture/log"; then exit 1; fi
+grep -Fq "backup remains: $archive" "$fixture/log"
+[[ ! -s "$fixture/out" && ! -e "$fixture/run/dd-started" && ! -e "$fixture/run/sa02m-imaging.lock" ]]
+rm "$archive"
+SCENARIO=legacy bash "$tool" --no-zerofill --no-id-reset >"$fixture/out" 2>"$fixture/log"
+[[ $(cat "$fixture/out") = legacy-sample && -f "$fixture/run/dd-started" ]]
+echo 'legacy stream refuses outstanding backup and reads successfully after cleanup'

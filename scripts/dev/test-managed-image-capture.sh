@@ -21,7 +21,7 @@ set -euo pipefail
 command=${!#}
 printf '%s\n' "$command" >> "$TRACE"
 case "$command" in
-    'bash -s -- --probe-mode') echo 'managed 1.0.8.3' ;;
+    'bash -s -- --probe-mode') echo 'managed 1.0.8.3'; exit "${PROBE_RC:-0}" ;;
     'test -b /dev/mmcblk2 && blockdev --getsize64 /dev/mmcblk2') echo 6 ;;
     '/usr/local/libexec/sa02m-runtime-activate capture-receipt') printf '{"fixture":true}\n' ;;
     'bash -s') printf 'hostname=fixture\n' ;;
@@ -86,6 +86,8 @@ assert_refused() {
     ! grep -q 'READY:' "$fixture/$out.log"
 }
 
+PROBE_RC=1 assert_refused donor-preflight --no-cleanup
+[ "$(cat "$TRACE")" = 'bash -s -- --probe-mode' ]
 assert_refused cleanup-required
 grep -q -- "управляемый захват" "$fixture/cleanup-required.log" || { cat "$fixture/cleanup-required.log"; exit 1; }
 [ "$(cat "$TRACE")" = 'bash -s -- --probe-mode' ]
