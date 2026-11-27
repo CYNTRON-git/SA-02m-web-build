@@ -53,7 +53,7 @@ HAP-python 5.0.0 — последняя версия на PyPI на 2026-09-27; 
 | Пакет | Версия | Зачем | Колесо для платы (armv7l) |
 |---|---|---|---|
 | `hap-python` | 5.0.0 | HAP-сервер | `py3-none-any` |
-| `cryptography` | 50.0.1 (последняя) | Ed25519/X25519/HKDF | `cp311-abi3-manylinux_2_31_armv7l` |
+| `cryptography` | 50.0.2 | Ed25519/X25519/HKDF | `cp311-abi3-manylinux_2_31_armv7l` |
 | `chacha20poly1305-reuseable` | 0.13.2 | шифрование сессии (`cryptography>=43.0.0`) | `py3-none-any` |
 | `orjson` | 3.12.0 | JSON HAP | `cp312-cp312-manylinux2014_armv7l` |
 | `zeroconf` | 0.151.3 | mDNS (`ifaddr>=0.1.7`) | `cp312-cp312-manylinux2014_armv7l…manylinux_2_31_armv7l` |
@@ -63,7 +63,7 @@ HAP-python 5.0.0 — последняя версия на PyPI на 2026-09-27; 
 | `_cffi_backend` | apt `python3-cffi-backend` 1.16.0-2build1 | C-модуль, нужный `cryptography` в рантайме | — (из apt, не из PyPI) |
 | `paho-mqtt` | apt `python3-paho-mqtt` 1.6.1-1 (noble universe, `all`) | MQTT-клиент демона (план D1: переиспользуется через `--system-site-packages`) | — (из apt, в lock не входит) |
 
-Почему apt, а не PyPI для cffi: `cryptography 50.0.1` объявляет
+Почему apt, а не PyPI для cffi: `cryptography 50.0.2` объявляет
 `cffi>=2.0.0`, но у `cffi` на PyPI **нет ни одного armv7l-колеса ни в одном
 релизе** (просмотр всех `releases` в `https://pypi.org/pypi/cffi/json`: 0 файлов
 с `armv7`; последняя версия 2.1.1) — без компилятора его не поставить. В рантайме
@@ -133,8 +133,19 @@ ssh root@192.168.1.136 '
   rm -rf /tmp/hk-venv'
 ```
 
-Критерий прохода: `time` < 5 мин, строка `import OK 50.0.1`. Записать сюда
+Критерий прохода: `time` < 5 мин, строка `import OK` с текущей версией из lock. Записать сюда
 время, `du -sh` и `uname -m`.
+
+**Проверка обновлённого lock на 192.168.1.136, 2026-11-27.** Временное
+окружение Python 3.12.3 на armv7l собрано офлайн из набора колёс по SHA-256.
+Окружение унаследовало h11 0.16.0 из `/usr/local/lib/python3.12/dist-packages`.
+Из окружения под непривилегированным UID 65534 загружен
+`cryptography 50.0.2` с OpenSSL 4.0.3. SHA-256 загруженного ELF совпал
+с файлом в колесе. Проверены подпись Ed25519, обмен X25519, HKDF-SHA512,
+шифрование и расшифрование ChaCha20-Poly1305. Все 18 тестов
+`tests.test_bridge_glue` прошли. Сопряжение с телефоном для этого
+обновления отдельно не проверялось. Актуальный статус CVE определяет
+[допуск зависимостей выпуска](../contracts/dependency-release-policy.md).
 
 **Результат (2026-09-28, плата 192.168.1.135).** Вместо ручной процедуры —
 `scripts/06c-homekit.sh` из дерева ветки: venv из PyPI за 110 с (порог < 5 мин);

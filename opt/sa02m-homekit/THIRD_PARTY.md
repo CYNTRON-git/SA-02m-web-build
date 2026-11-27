@@ -15,7 +15,7 @@ and the evidence for the versions: `docs/decisions/homekit-home-connect.md`
 |---|---|---|---|---|
 | hap-python | 5.0.0 | Apache-2.0 | https://github.com/ikalchev/HAP-python | HAP accessory server: pairing, TLV, encrypted sessions, accessory model. Used through subclasses and documented hooks only (`bridge.py`); never patched. Upstream ships no NOTICE file; its `LICENSE` and `AUTHORS` travel in the wheel. |
 | zeroconf | 0.151.3 | LGPL-2.1-or-later | https://github.com/python-zeroconf/python-zeroconf | mDNS advertisement of `_hap._tcp` (HAP-python's own dependency). Installed unmodified as its own distribution in the venv and dynamically imported, so it can be replaced by any compatible build (`pip install` over it); source at the link above. |
-| cryptography | 50.0.1 | Apache-2.0 OR BSD-3-Clause | https://github.com/pyca/cryptography | Ed25519 / X25519 / HKDF for HAP. Venv-only on purpose: the system copy verifies OTA signatures and is never upgraded by this module. |
+| cryptography | 50.0.2 | Apache-2.0 OR BSD-3-Clause | https://github.com/pyca/cryptography | Ed25519 / X25519 / HKDF for HAP. Venv-only on purpose: the system copy verifies OTA signatures and is never upgraded by this module. |
 | chacha20poly1305-reuseable | 0.13.2 | Apache-2.0 OR BSD-3-Clause | https://github.com/bdraco/chacha20poly1305-reuseable | HAP session encryption (HAP-python dependency). |
 | orjson | 3.12.0 | MPL-2.0 AND (Apache-2.0 OR MIT) | https://github.com/ijl/orjson | JSON encoding inside HAP-python. Unmodified binary wheel; source at the link. |
 | h11 | 0.16.0 | MIT | https://github.com/python-hyper/h11 | HTTP/1.1 framing of the HAP server (HAP-python dependency). |

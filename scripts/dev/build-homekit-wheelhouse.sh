@@ -41,6 +41,21 @@ want=$(sed -nE 's/^([A-Za-z0-9_.-]+)==.*/\1/p' "$LOCK" | tr 'A-Z' 'a-z' | tr -- 
 n_want=$(printf '%s\n' "$want" | grep -c . || true)
 [ "$n_want" -ge 1 ] || { echo "build-homekit-wheelhouse: no pinned package parsed from $LOCK (vacuous)" >&2; exit 1; }
 
+# pip validates the wheels it selects. An existing output directory can also
+# contain an older wheel for the same project from a previous media build.
+pins=$(awk '
+    /^[A-Za-z0-9_.-]+==/ {
+        split($1, parts, "==")
+        name = tolower(parts[1])
+        gsub(/[-.]/, "_", name)
+        pin = name "==" parts[2]
+    }
+    /^[A-Za-z0-9_.-]+==|^[[:space:]]+--hash=/ {
+        for (i = 1; i <= NF && $i !~ /^#/; i++)
+            if ($i ~ /^--hash=sha256:/) print pin " " $i
+    }
+' "$LOCK")
+
 fails=0
 got=""
 for w in "$OUT"/*.whl; do
@@ -50,10 +65,17 @@ for w in "$OUT"/*.whl; do
         *armv7l.whl|*-none-any.whl) ;;
         *) echo "build-homekit-wheelhouse: $b is not an armv7l or pure-Python wheel" >&2; fails=$((fails + 1)) ;;
     esac
+    name=$(printf '%s\n' "${b%%-*}" | tr 'A-Z' 'a-z' | tr -- '-.' '__')
+    tail=${b#*-}
+    digest=$(sha256sum < "$w")
+    if ! grep -Fxq -- "$name==${tail%%-*} --hash=sha256:${digest%% *}" <<< "$pins"; then
+        echo "build-homekit-wheelhouse: $b does not match a locked wheel digest" >&2
+        fails=$((fails + 1))
+    fi
     got="$got
-$(printf '%s\n' "${b%%-*}" | tr 'A-Z' 'a-z' | tr -- '-.' '__')"
+$name"
 done
-got=$(printf '%s\n' "$got" | grep . | sort -u || true)
+got=$(printf '%s\n' "$got" | grep . | sort || true)
 if [ "$got" != "$want" ]; then
     echo "build-homekit-wheelhouse: wheels in $OUT do not match the lock" >&2
     echo "  lock:  $(printf '%s ' $want)" >&2

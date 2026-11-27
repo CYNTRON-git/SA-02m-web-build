@@ -24,6 +24,9 @@
 #      (RED on the pre-fix `n_want=$(… | grep -c .)`: under set -e/pipefail
 #      the zero-count grep aborted the script silently before the message)
 #
+#   W8 stale version of a pinned wheel remains alongside the new version -> exit 1
+#   W9 changed wheel contents under the expected name -> exit 1
+#
 # Comment-mutation case registered with the row (measured RED here):
 #   commenting out the arch-check `*) echo … is not an armv7l …` line -> W5 RED.
 #
@@ -67,7 +70,12 @@ while [ $# -gt 0 ]; do
 done
 [ -n "$out" ] || { echo "python3 shim: no -d" >&2; exit 98; }
 [ "${HK_FAKE_PIP_RC:-0}" -eq 0 ] || exit "$HK_FAKE_PIP_RC"
-for w in ${HK_FAKE_WHEELS:-}; do : > "$out/$w"; done
+for w in ${HK_FAKE_WHEELS:-}; do
+    printf '%s' "$w" > "$out/$w"
+done
+if [ -n "${HK_BAD_BYTES:-}" ]; then
+    printf 'unexpected bytes' > "$out/$HK_BAD_BYTES"
+fi
 exit 0
 EOF
 chmod +x "$SHIM"/*
@@ -76,9 +84,9 @@ LOCK="$SB/requirements.lock"
 cat > "$LOCK" <<'EOF'
 # fixture lock: two pinned packages, names needing PEP 503 normalisation
 Foo-Bar==1.0 \
-    --hash=sha256:0000000000000000000000000000000000000000000000000000000000000000
+    --hash=sha256:6485874f7dba10b75e03dc28616f3c3351720f002861954b5eb0bb5b05952e08
 baz.qux==2.0 \
-    --hash=sha256:1111111111111111111111111111111111111111111111111111111111111111
+    --hash=sha256:9ef192e177eafbd407b2acacda9cd132a4c7fe0850ed7e3a7a7cb977f554a225
 EOF
 EMPTY_LOCK="$SB/empty.lock"
 printf '# nothing pinned\n' > "$EMPTY_LOCK"
@@ -147,6 +155,20 @@ if [ "$RC" -eq 1 ] && out_has '(vacuous)'; then
     ok "W7 a lock that parses to zero packages: exit 1 with the vacuous line"
 else
     bad "W7 empty lock: rc=$RC, vacuous line printed=$(out_has '(vacuous)' && echo yes || echo no) out=$(tr '\n' ' ' < "$SB/out")"
+fi
+
+HK_FAKE_WHEELS="$ARM $PURE foo_bar-0.9-cp312-cp312-manylinux_2_17_armv7l.whl" run_tool "$LOCK" "$SB/wh"
+if [ "$RC" -eq 1 ] && ! out_has 'wheels for armv7l'; then
+    ok "W8 stale version alongside the current wheel rejected"
+else
+    bad "W8 stale version left on the media: rc=$RC"
+fi
+
+HK_BAD_BYTES="$ARM" HK_FAKE_WHEELS="$ARM $PURE" run_tool "$LOCK" "$SB/wh"
+if [ "$RC" -eq 1 ] && ! out_has 'wheels for armv7l'; then
+    ok "W9 changed wheel bytes rejected"
+else
+    bad "W9 unexpected wheel bytes on the media: rc=$RC"
 fi
 
 if [ "$fails" -eq 0 ]; then
