@@ -3,6 +3,7 @@
 """Admit the exact release artifacts and device inventories against fresh official feeds."""
 import argparse
 from collections import defaultdict
+import hashlib
 import importlib.util
 import json
 import os
@@ -95,10 +96,39 @@ def aggregate(records, matches, inventory, cvss):
 
 def configure_captures(args, environment):
     if args.action in {"scan","check"}:
-        for name in ("ubuntu_capture","ubuntu_tracker","ecosystem_capture","node_capture"):
+        for name in ("ubuntu_capture","ubuntu_tracker","ecosystem_capture","node_capture","npm_capture"):
             value = environment.get("SA02M_RELEASE_"+name.upper())
             if getattr(args,name) is None and value:
                 setattr(args,name,Path(value))
+
+
+def npm_capture(folder, destination, action, pinned_receipt, limit):
+    """Replay the registered acquisition without renewing its date or rewriting its bytes."""
+    entries = {}
+    for name in ("admission", "query", "raw"):
+        path = folder / (name + ".json")
+        require(path.is_file() and not path.is_symlink() and path.stat().st_size <= limit,
+                "missing or oversized npm capture " + name)
+        entries[name] = path.read_bytes()
+    digest = lambda data: hashlib.sha256(data).hexdigest()
+    require(digest(entries["admission"]) == pinned_receipt, "unregistered npm acquisition receipt")
+    receipt = json.loads(entries["admission"])
+    require(receipt["schema"] == 1 and receipt["provider"] == "npm" and receipt["ttl_seconds"] == 86400,
+            "invalid npm acquisition receipt")
+    require(all(digest(entries[k]) == receipt[k + "_sha256"] for k in ("query", "raw")),
+            "npm capture body digest mismatch")
+    expected_wire = json.dumps(json.loads(entries["query"]), sort_keys=True, separators=(",", ":")).encode()
+    require(entries["query"] == expected_wire, "noncanonical npm POST bytes")
+    if action == "scan":
+        destination.mkdir()
+    for name, contents in entries.items():
+        target = destination / (name + ".json")
+        if action == "check":
+            require(target.is_file() and not target.is_symlink() and target.stat().st_size == len(contents)
+                    and target.read_bytes() == contents, "npm report capture differs from acquisition")
+        else:
+            target.write_bytes(contents)
+    return receipt
 
 
 def execute(args):
@@ -288,12 +318,22 @@ def execute(args):
                         "package":"node","version":core_version,"locations":places})
     def npm_check():
         sub=out/"npm"
-        rc=subprocess.run([sys.executable,"-I","-B",str(HERE/"nodered-admission.py"),args.action,
+        action=args.action
+        if args.npm_capture:
+            pinned=policy["npm_capture_receipt_sha256"]
+            receipt=npm_capture(args.npm_capture,sub,action,pinned,node.LIMIT)
+            inv.inputs["npm acquisition receipt"]=pinned
+            action="check"
+        rc=subprocess.run([sys.executable,"-I","-B",str(HERE/"nodered-admission.py"),action,
                            "--artifact-dir",str(args.artifact_dir),"--tool-dir",str(args.tool_dir),"--out",str(sub)],timeout=450).returncode
         data=read(sub/"admission.json")
         require(rc in (0,1) and data["status"] in {"PASS","FAIL"},"npm provider unavailable")
         results["node-red"]["npm_bulk"]={"status":data["status"],"raw_sha256":data["raw_sha256"],
                                        "query_sha256":data["query_sha256"],"findings":data["findings"]}
+        if args.npm_capture:
+            results["node-red"]["npm_bulk"]["acquisition"]={"receipt_sha256":pinned,
+                "scan_started":receipt["scan_started"], "scan_finished":receipt["scan_finished"],
+                "endpoint":"https://registry.npmjs.org/-/npm/v1/security/advisories/bulk"}
         return data["status"]
     npm_status=isolate(["node-red"],npm_check)
     for scope,row in results.items():
@@ -323,6 +363,7 @@ if __name__=="__main__":
     parser.add_argument("--ubuntu-tracker",type=Path)
     parser.add_argument("--ecosystem-capture",type=Path)
     parser.add_argument("--node-capture",type=Path)
+    parser.add_argument("--npm-capture",type=Path)
     try:
         args=parser.parse_args()
         configure_captures(args,os.environ)

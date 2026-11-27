@@ -114,3 +114,12 @@ HTTP-снимок и проверяет SHA коммита, деревья и bl
 Первичные описания провайдеров приведены в [npm Security](https://docs.npmjs.com/cli/v11/commands/npm-audit#bulk-advisory-endpoint),
 [OSV](https://google.github.io/osv.dev/api/), [Ubuntu OSV](https://documentation.ubuntu.com/security/security-updates/osv/)
 и [Ubuntu VEX](https://documentation.ubuntu.com/security/security-updates/vex/).
+
+При недоступности npm Bulk Security API команда `scan` и её офлайн-проверка
+`check` принимают `--npm-capture DIR` или `SA02M_RELEASE_NPM_CAPTURE`.
+В DIR нужны исходные `admission.json`, `query.json` и `raw.json` успешного
+HTTP-запроса штатного сканера. Для выпуска в политике фиксируется SHA-256
+исходной квитанции, включая время получения, хеши запроса, ответа, сканера,
+инструмента и входов. Повторная проверка вычисляет покрытие и тяжесть на
+текущих байтах артефакта с сохранением исходного 24-часового срока. Новая
+квитанция требует проверки происхождения и обновления её SHA в политике.
