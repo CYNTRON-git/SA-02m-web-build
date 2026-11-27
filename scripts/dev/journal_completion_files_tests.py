@@ -220,17 +220,26 @@ with files.completion_admission(root / 'update', records):
             source.inventory(installed, time.monotonic() + 5)
 
     def test_loaded_protocol_and_actual_import_origins_are_mandatory(self):
-        from sa02m_devices import api
-        self.assertRegex(source.verified_fingerprint(PACKAGE, time.monotonic() + 5), r"^[a-f0-9]{64}$")
-        with patch.object(api, "EVENTS_JOURNAL_PROTOCOL", 0), self.assertRaisesRegex(JournalStateError, "incompatible"):
-            source.verified_fingerprint(PACKAGE, time.monotonic() + 5)
-        with patch.object(api, "__file__", str(self.root / "api.py")), self.assertRaisesRegex(JournalStateError, "outside"):
-            source.verified_fingerprint(PACKAGE, time.monotonic() + 5)
-        with patch.object(api.__spec__, "origin", str(self.root / "api.py")), self.assertRaisesRegex(JournalStateError, "outside"):
-            source.verified_fingerprint(PACKAGE, time.monotonic() + 5)
-        foreign = types.ModuleType("sa02m_devices.foreign")
-        with patch.dict(sys.modules, {"sa02m_devices.foreign": foreign}), self.assertRaises(JournalStateError):
-            source.verified_fingerprint(PACKAGE, time.monotonic() + 5)
+        # Exercise the owner's installed package, including actual import origins.
+        # A developer's checkout can legitimately be owned by their own UID.
+        installed = self.root / "staged-package"
+        shutil.copytree(PACKAGE, installed, ignore=shutil.ignore_patterns("__pycache__"))
+        with patch.dict(sys.modules), patch.object(sys, "path", [str(installed), *sys.path]):
+            for name in tuple(sys.modules):
+                if name == "sa02m_devices" or name.startswith("sa02m_devices."):
+                    del sys.modules[name]
+            from sa02m_devices import api, event_journal_source as installed_source
+            from sa02m_devices.event_journal_state import JournalStateError as InstalledStateError
+            self.assertRegex(installed_source.verified_fingerprint(installed, time.monotonic() + 5), r"^[a-f0-9]{64}$")
+            with patch.object(api, "EVENTS_JOURNAL_PROTOCOL", 0), self.assertRaisesRegex(InstalledStateError, "incompatible"):
+                installed_source.verified_fingerprint(installed, time.monotonic() + 5)
+            with patch.object(api, "__file__", str(self.root / "api.py")), self.assertRaisesRegex(InstalledStateError, "outside"):
+                installed_source.verified_fingerprint(installed, time.monotonic() + 5)
+            with patch.object(api.__spec__, "origin", str(self.root / "api.py")), self.assertRaisesRegex(InstalledStateError, "outside"):
+                installed_source.verified_fingerprint(installed, time.monotonic() + 5)
+            foreign = types.ModuleType("sa02m_devices.foreign")
+            with patch.dict(sys.modules, {"sa02m_devices.foreign": foreign}), self.assertRaises(InstalledStateError):
+                installed_source.verified_fingerprint(installed, time.monotonic() + 5)
 
     def test_failed_import_cleans_private_cache_without_touching_installed_pyc(self):
         installed = self.root / "failed-import"
