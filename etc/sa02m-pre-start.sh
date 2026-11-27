@@ -214,7 +214,7 @@ sa02m_mac_next() {   # 02:53:aa:bb:cc:dd → 02:53:aa:bb:cc:(dd+1)
 }
 
 sa02m_mac_apply() {
-  local eth0_mac="" eth1_mac="" iface want cur
+  local eth0_mac="" eth1_mac="" iface want cur flags was_up
   if [ -f /etc/sa02m-mac.conf ]; then
     # shellcheck source=/dev/null
     . /etc/sa02m-mac.conf 2>/dev/null || true
@@ -230,13 +230,25 @@ sa02m_mac_apply() {
     if [ "$iface" = eth0 ]; then want=$eth0_mac; else want=$eth1_mac; fi
     cur=$(cat "/sys/class/net/$iface/address" 2>/dev/null)
     [ "$cur" = "$want" ] && continue
-    ip link set dev "$iface" down 2>/dev/null || true
+    # Preserve IFF_UP. ifupdown may still need to set hwaddress on a down link.
+    if ! IFS= read -r flags 2>/dev/null < "/sys/class/net/$iface/flags" \
+      || [[ ! "$flags" =~ ^0x[0-9a-fA-F]{1,8}$ ]]; then
+      logp "MAC: не удалось определить административное состояние $iface, адрес сохраняется"
+      continue
+    fi
+    was_up=$((flags & 1))
+    if (( was_up )) && ! ip link set dev "$iface" down 2>/dev/null; then
+      logp "MAC: не удалось опустить $iface для смены адреса"
+      continue
+    fi
     if ip link set dev "$iface" address "$want" 2>/dev/null; then
       logp "MAC: $iface $cur → $want (из SID)"
     else
       logp "MAC: не удалось задать $want на $iface"
     fi
-    ip link set dev "$iface" up 2>/dev/null || true
+    if (( was_up )) && ! ip link set dev "$iface" up 2>/dev/null; then
+      logp "MAC: не удалось восстановить состояние UP на $iface"
+    fi
   done
 }
 
