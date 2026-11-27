@@ -89,7 +89,9 @@ log() { :; }
             for src,(dst,mode) in PINS.items():
                 installed = target/dst.lstrip('/')
                 self.assertEqual(hashlib.sha256(installed.read_bytes()).digest(), hashlib.sha256((ROOT/src).read_bytes()).digest())
-                self.assertEqual(installed.stat().st_mode & 0o777, int(mode,8))
+                status = installed.stat()
+                self.assertEqual(status.st_mode & 0o777, int(mode,8))
+                self.assertEqual((status.st_uid, status.st_gid), (0, 0))
             # A missing trust input must refuse before another installed file changes.
             hashes = {p:p.read_bytes() for p in target.rglob('*') if p.is_file()}
             partial = target / 'partial-tree'
