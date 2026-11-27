@@ -5,6 +5,7 @@ import argparse
 from collections import defaultdict
 import importlib.util
 import json
+import os
 from pathlib import Path
 import subprocess
 import sys
@@ -18,7 +19,7 @@ from release_admission.inventory import Inventory
 from release_admission import native_node
 from release_admission.providers import Transport, canonical, level, osv_matches, osv_records, require, sha
 from release_admission import ubuntu as noble
-from release_admission import homekit_review, openssl
+from release_admission import homekit_review, openssl, ubuntu_tracker
 
 POLICY=REPO/"vendor-src/admission/policy.json"
 SCOPES=("node-red","python","python-ambient","homekit","development","native-node","external-node","ubuntu","vendor-kernel","opcua-native")
@@ -92,6 +93,14 @@ def aggregate(records, matches, inventory, cvss):
     return result
 
 
+def configure_captures(args, environment):
+    if args.action in {"scan","check"}:
+        for name in ("ubuntu_capture","ubuntu_tracker","ecosystem_capture","node_capture"):
+            value = environment.get("SA02M_RELEASE_"+name.upper())
+            if getattr(args,name) is None and value:
+                setattr(args,name,Path(value))
+
+
 def execute(args):
     policy=read(POLICY)
     require(tuple(policy["scopes"])==SCOPES and policy["blocking"]==["HIGH","CRITICAL"] and
@@ -158,6 +167,18 @@ def execute(args):
         sub=Transport(folder/"provider",snapshot["responses"])
         current=noble.collect(args.targets,sub)
         require(canonical(current)==canonical(snapshot["result"]) and sub.seen==snapshot["responses"],"Ubuntu replay differs")
+        if args.ubuntu_tracker:
+            try:
+                inv.file("Ubuntu tracker collector",HERE/"capture-ubuntu-tracker.py")
+                inv.file("Ubuntu Debian version comparator",Path("/usr/bin/dpkg"))
+                proof=inv.json("Ubuntu tracker Git capture",args.ubuntu_tracker/"tracker.json")
+                tracker=ubuntu_tracker.Tracker(args.ubuntu_tracker,proof,policy["ubuntu_tracker_commit"],
+                                              policy["ttl_seconds"],cvss)
+                supplemented=noble.collect(args.targets,sub,tracker)
+                require(sub.seen==snapshot["responses"],"Ubuntu tracker fallback changed website queries")
+                return supplemented
+            except Exception as exc:
+                current["gaps"]=sorted(set([*current["gaps"],"Ubuntu tracker Git fallback: "+str(exc)]))
         return current
     eco_net=net
     queries={k for k in inv.paths if k[0]!="Ubuntu:24.04:LTS"}
@@ -219,6 +240,8 @@ def execute(args):
     if ubuntu:
         results["ubuntu"]["withdrawn"]=ubuntu["withdrawn"]
         results["ubuntu"]["findings"]=ubuntu["findings"]
+        if "tracker_git" in ubuntu:
+            results["ubuntu"]["tracker_git"]=ubuntu["tracker_git"]
         inv.gaps["ubuntu"].extend(ubuntu["gaps"])
     node_policy=node.read_json(node.POLICY)
     inv.file("Node semver interpreter",args.tool_dir/"node")
@@ -297,14 +320,17 @@ if __name__=="__main__":
     for name in ("artifact-dir","tool-dir","targets","out"):
         parser.add_argument("--"+name,required=name=="out",type=Path)
     parser.add_argument("--ubuntu-capture",type=Path)
+    parser.add_argument("--ubuntu-tracker",type=Path)
     parser.add_argument("--ecosystem-capture",type=Path)
     parser.add_argument("--node-capture",type=Path)
     try:
         args=parser.parse_args()
+        configure_captures(args,os.environ)
         if args.action=="capture-node":
             print(json.dumps({"records":native_node.capture(args.out)}))
             raise SystemExit(0)
         require(args.targets,"targets required")
+        require(not args.ubuntu_tracker or args.ubuntu_capture,"Ubuntu tracker supplement requires website capture")
         if args.action=="capture-ubuntu":
             data=noble.capture(args.targets,args.out)
             print(json.dumps({"findings":len(data["findings"]),"gaps":len(data["gaps"])}))

@@ -7,6 +7,12 @@
 
 ## 1.0.8.3 - Runtime activation, service controls and polling status (November 2026)
 
+- Retry Ethernet PHY negotiation once during early boot if the first two cycles leave a configured port without carrier. When a cycle restores the link, restore routes in the same pass. DHCP option 121 remains available for site networks.
+- Build both vendor kernel profiles with the Netfilter and OverlayFS fixes for CVE-2024-1086 and CVE-2023-0386. The SMP build ran on the donor. Security coverage of the full vendor kernel remains open.
+- Refresh an existing installation with a missing MPLC timeout drop-in directory. Install the factory fstab with root ownership and mode 0644. Restore the hardware watchdog and retry deferred runtime activation when an OTA rollback is interrupted.
+- Pin the HomeKit ARM cryptography wheel with OpenSSL 4.0.3 and check the entire wheel set. Check the exact Node binary and all numbered upstream Node advisories. For unavailable Ubuntu advisory pages, check the official Ubuntu Security Tracker Git record against the package and severity evidence. Keep inconclusive results open. Verified provider data can be replayed offline.
+- Bind a managed image to the donor runtime receipt, verify the private acquisition and its derivative, and publish only after sealing succeeds. Reject a donor that still holds a dated full-system configuration backup. Limit cleanup of update state to the intended files.
+
 - Show the outcome and freshness of actual device polling. Derive COM membership from the current saved poll configuration and preserve device history when a binding moves.
 - Separate orderly reboot and web restart admission from completion. Track privileged service operations through their PID1 workers, guard cached service lists by boot and operation lifetime, and bound MPLC start and stop.
 - Limit root-console password failures at the privileged verifier. Preserve genuine command exit codes and display authentication and throttle outcomes separately.

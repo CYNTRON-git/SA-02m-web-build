@@ -2,6 +2,7 @@
 # comment-mutation-proof-exempt: exercises advisory parsing, query coverage, and decision replay through callable production code.
 """Exercise provider, coverage, severity, alias and fail-closed admission semantics."""
 from pathlib import Path
+import argparse
 import importlib.util
 import io
 import hashlib
@@ -18,7 +19,7 @@ from urllib.error import HTTPError
 HERE=Path(__file__).resolve().parent
 sys.path.insert(0,str(HERE))
 from release_admission.inventory import Inventory
-from release_admission import homekit_absence, homekit_review, openssl
+from release_admission import homekit_absence, homekit_review, openssl, ubuntu_tracker
 from release_admission.native_node import capture as capture_node, catalogue, on_linux, replay as replay_node
 from release_admission.ubuntu import tracker_row, upstream
 from native_node_payload import derive
@@ -299,6 +300,90 @@ class AdmissionTests(unittest.TestCase):
         self.assertFalse(on_linux({"affectedEnvironments":["win32"]}))
         for env in ([],["unknown"],None):
             with self.assertRaises(ValueError):on_linux({"affectedEnvironments":env})
+
+    def test_ship_capture_paths_are_literal_and_explicit_flags_take_precedence(self):
+        args=argparse.Namespace(action="check",ubuntu_capture=None,ubuntu_tracker=None,
+                                ecosystem_capture=None,node_capture=Path("pinned"))
+        environment={"SA02M_RELEASE_UBUNTU_CAPTURE":"noble with spaces","SA02M_RELEASE_NODE_CAPTURE":"different",
+                     "SA02M_RELEASE_UBUNTU_TRACKER":"$(unused)","SA02M_RELEASE_ECOSYSTEM_CAPTURE":""}
+        release.configure_captures(args,environment)
+        self.assertEqual((args.ubuntu_capture,args.ubuntu_tracker,args.node_capture,args.ecosystem_capture),
+                         (Path("noble with spaces"),Path("$(unused)"),Path("pinned"),None))
+        args.action="capture-ecosystems";args.ubuntu_capture=None
+        release.configure_captures(args,environment)
+        self.assertIsNone(args.ubuntu_capture)
+
+    def test_ubuntu_tracker_object_chain_identity_date_and_ambiguous_membership(self):
+        cve = "CVE-2026-12345"
+        vector = "CVSS:3.1/AV:N/AC:L/PR:N/UI:N/S:U/C:L/I:N/A:H"
+        raw = f"Candidate: {cve}\nPriority: high\nCVSS:\n upstream: {vector} [8.2 HIGH]\nnoble_demo: ignored (see notes)\n".encode()
+        with tempfile.TemporaryDirectory() as tmp:
+            folder=Path(tmp); objects=folder/"objects";objects.mkdir()
+            def save(kind, content):
+                h=hashlib.sha1(kind.encode()+b" "+str(len(content)).encode()+b"\0"+content).hexdigest()
+                (objects/h).write_bytes(content)
+                return h
+            def entry(mode, name, digest):
+                return mode.encode()+b" "+name.encode()+b"\0"+bytes.fromhex(digest)
+            def proof(body=raw, duplicate=False, stamp=None, mode="100644"):
+                stamp=int(time.time()) if stamp is None else stamp
+                blob=save("blob",body)
+                active=save("tree",entry(mode,cve,blob)); empty=save("tree",b"")
+                root=save("tree",entry("40000","active",active)+entry("40000","ignored",empty)
+                          +entry("40000","retired",active if duplicate else empty))
+                commit=save("commit",f"tree {root}\ncommitter Ubuntu <ubuntu@example.invalid> {stamp} +0000\n\nrecord\n".encode())
+                snap={"schema":1,"repository":ubuntu_tracker.REPOSITORY,"started":time.time(),"commit":commit}
+                return ubuntu_tracker.Tracker(folder,snap,commit,86400,cvss),blob
+            tracker, blob=proof(); row=tracker.row(cve,"demo")
+            self.assertEqual((row["priority"],row["status"],row["upstream_levels"],row["tracker_git"]["git_blob"]),
+                             ("HIGH","ignored",["HIGH"],blob))
+            self.assertNotIn("pocket",row)
+            v4="CVSS:4.0/AV:N/AC:L/AT:N/PR:L/UI:N/VC:L/VI:N/VA:N/SC:N/SI:N/SA:N/E:P"
+            multi,_=proof(raw.replace(b"noble_demo:",(" upstream-v4: "+v4+" [2.1 LOW]\nnoble_demo:").encode()))
+            self.assertEqual(multi.row(cve,"demo")["upstream_levels"],["HIGH","LOW"])
+            record={"severity":[{"type":"Ubuntu","score":"high"},{"type":"CVSS_V3","score":vector}]}
+            self.assertTrue(ubuntu_tracker.compatible_direct_record(record,row,cvss))
+            self.assertFalse(ubuntu_tracker.compatible_direct_record(dict(record,severity=[{"type":"Ubuntu","score":"low"}]),row,cvss))
+            for body,kwargs in [(raw.replace(cve.encode(),b"CVE-2026-54321"),{}),
+                                (raw+b"Priority_demo: low\n",{}),(raw+b"noble_demo: ignored\n",{}),
+                                (raw.replace(b"8.2 HIGH",b"8.1 HIGH"),{}),(raw.replace(b"CVSS:3.1",b"x"),{}),
+                                (raw,{"duplicate":True}),(raw,{"mode":"120000"})]:
+                with self.subTest(kwargs=kwargs), self.assertRaises(ValueError):
+                    bad,_=proof(body,**kwargs);bad.row(cve,"demo")
+            with self.assertRaisesRegex(ValueError,"commit date"):
+                proof(stamp=int(time.time())-86460)
+            changed,blob=proof();(objects/blob).write_bytes(raw.replace(b"high",b"tiny"))
+            with self.assertRaisesRegex(ValueError,"identity mismatch"):
+                changed.row(cve,"demo")
+
+    def test_ubuntu_tracker_parity_rejects_conflicting_decision_like_source(self):
+        row={"status":"needed","description":"","priority":"MODERATE","upstream_levels":["HIGH"],
+             "tracker_git":{"cvss_generations":["3"]}}
+        tracker=Mock(commit="commit");tracker.row.return_value=row
+        websites={name:{"packages":[{"name":"demo"}]} for name in ("CVE-2026-1234","CVE-2026-1235")}
+        equal=lambda package,cve,web:dict(row)
+        proven,audit=ubuntu_tracker.parity(tracker,websites,{"demo"},equal)
+        self.assertEqual((len(proven),audit["matched"]),(1,2))
+        def changing(package,cve,web):
+            return dict(row,priority="HIGH") if cve.endswith("35") else row
+        proven,audit=ubuntu_tracker.parity(tracker,websites,{"demo"},changing)
+        self.assertFalse(proven)
+        self.assertEqual(audit["differences"][0]["fields"],["priority"])
+        tracker.row.side_effect=lambda cve,package:dict(row,tracker_git={"cvss_generations":["4"]}) if cve.endswith("35") else row
+        proven,_=ubuntu_tracker.parity(tracker,websites,{"demo"},changing)
+        self.assertEqual(proven,{ubuntu_tracker.decision_shape(row)})
+
+    def test_ubuntu_tracker_fixed_version_requires_direct_range_and_debian_order(self):
+        source={"package":{"name":"demo","ecosystem":"Ubuntu:24.04:LTS"},
+                "ranges":[{"type":"ECOSYSTEM","events":[{"introduced":"0"},{"fixed":"1:4.0-3ubuntu1.2"}]}]}
+        record={"affected":[source]}
+        with self.assertRaisesRegex(ValueError,"direct OSV"):
+            ubuntu_tracker.confirmed_release("other","1.0","1:4.0-3ubuntu1.2",record)
+        if Path("/usr/bin/dpkg").is_file():
+            ubuntu_tracker.confirmed_release("demo","1:4.0-3ubuntu1.1","1:4.0-3ubuntu1.2",record)
+            for version in ("1:4.0-3ubuntu1.2","1:4.0-3ubuntu1.10","2:1.0"):
+                with self.assertRaisesRegex(ValueError,"installed Debian"):
+                    ubuntu_tracker.confirmed_release("demo",version,"1:4.0-3ubuntu1.2",record)
 
     def test_node_directory_reads_individual_pinned_blobs_and_replays(self):
         commit = "a" * 40

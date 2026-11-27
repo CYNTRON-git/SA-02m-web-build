@@ -1,10 +1,12 @@
 """Correlate official Ubuntu source publication, affected ranges and Noble tracker status."""
 from concurrent.futures import ThreadPoolExecutor
+import hashlib
 import json
 import re
 import time
 
-from .providers import Transport, official_sources, osv_matches, osv_records, require, sha
+from . import ubuntu_tracker
+from .providers import Transport, canonical, official_sources, osv_matches, osv_records, require, sha
 
 
 def sources(targets):
@@ -46,7 +48,7 @@ def tracker_row(name, cve, record):
             "pocket":rows[0].get("pocket"), "priority":priority, "upstream_levels":sorted(impact)}
 
 
-def collect(targets, net):
+def collect(targets, net, git_tracker=None):
     inputs, packages = sources(targets)
     origins = official_sources({(n,v) for _,n,v in packages}, net)
     gaps = [f"{n}={v}: Noble archive origin " + ("provider unavailable" if ok is None else "unverified")
@@ -65,6 +67,8 @@ def collect(targets, net):
             return cve, {"unavailable":str(exc)}
     with ThreadPoolExecutor(max_workers=6) as pool:
         tracker = dict(pool.map(fetch, cves))
+    if git_tracker:
+        proven, audit = ubuntu_tracker.parity(git_tracker,tracker,{k[1] for k in keys},tracker_row)
     findings = []
     for key, found in hits.items():
         eco,name,version = key
@@ -81,13 +85,29 @@ def collect(targets, net):
         for cve, identifiers in sorted(grouped.items()):
             obj = tracker[cve]
             if "unavailable" in obj:
-                gaps.append(f"{cve} {name}: tracker unavailable")
-                continue
-            try:
-                row = tracker_row(name,cve,obj)
-            except (KeyError, ValueError, AttributeError, TypeError):
-                gaps.append(f"{cve} {name}: invalid Ubuntu status or priority")
-                continue
+                url = "https://ubuntu.com/security/cves/"+cve+".json"
+                request_key = hashlib.sha256(canonical([url,None])).hexdigest()
+                if not git_tracker or "error" not in net.seen.get(request_key, {}):
+                    gaps.append(f"{cve} {name}: tracker unavailable")
+                    continue
+                try:
+                    row = git_tracker.row(cve,name)
+                    require(ubuntu_tracker.decision_shape(row) in proven, "Ubuntu tracker decision fields lack matching web evidence")
+                    identifier = "UBUNTU-"+cve
+                    require(identifier in identifiers and ubuntu_tracker.compatible_direct_record(
+                        records[identifier],row,git_tracker.cvss), "Ubuntu tracker has no matching direct OSV severity")
+                    if row["status"] == "released":
+                        ubuntu_tracker.confirmed_release(name,version,row["description"],records[identifier])
+                except (ValueError,OSError,KeyError,TypeError,UnicodeError) as exc:
+                    gaps.append(f"{cve} {name}: tracker unavailable; Git assessment: {exc}")
+                    continue
+                audit["used"].append({"cve":cve,"package":name,**row["tracker_git"]})
+            else:
+                try:
+                    row = tracker_row(name,cve,obj)
+                except (KeyError, ValueError, AttributeError, TypeError):
+                    gaps.append(f"{cve} {name}: invalid Ubuntu status or priority")
+                    continue
             direct = "UBUNTU-" + cve in identifiers
             if not row:
                 if direct:
@@ -111,8 +131,11 @@ def collect(targets, net):
                 "identifiers":[cve,*identifiers],"fixed":fixed, "ubuntu":row,
                 "levels":[row["priority"]] if applicable else [],
                 "locations":sorted(packages[key])})
-    return {"inputs":inputs,"coverage":len(packages),"withdrawn":withdrawn,
-            "findings":findings,"gaps":sorted(set(gaps))}
+    result = {"inputs":inputs,"coverage":len(packages),"withdrawn":withdrawn,
+              "findings":findings,"gaps":sorted(set(gaps))}
+    if git_tracker:
+        result["tracker_git"] = audit
+    return result
 
 
 def capture(targets, folder):
