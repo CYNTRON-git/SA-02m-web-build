@@ -41,14 +41,16 @@ def validate_boot(path):
 def verify_ext4_seal(raw, offset, seal):
     seal_bytes = (json.dumps(seal, sort_keys=True, separators=(",", ":")) + "\n").encode()
     disk = f"{raw}?offset={offset}"
-    for name, expected in (
-        ("/var/lib/sa02m-runtime-transition/image-epoch.json", hashlib.sha256(seal_bytes).hexdigest()),
-        ("/var/lib/sa02m-python-activation/current.json", seal["selector_sha256"]),
-    ):
-        data = run(["debugfs", "-R", "cat " + name, disk])
-        if hashlib.sha256(data).hexdigest() != expected:
-            raise ValueError(f"Captured ext4 file differs from managed seal: {name}")
-    return hashlib.sha256(seal_bytes).hexdigest()
+    receipt = run(["debugfs", "-R", "cat /var/lib/sa02m-runtime-transition/image-epoch.json", disk])
+    if receipt != seal_bytes:
+        raise ValueError("Captured ext4 image-epoch.json differs from the managed seal")
+    active = run(["debugfs", "-R", "cat /var/lib/sa02m-python-activation/current.json", disk])
+    if hashlib.sha256(active).hexdigest() != seal["selector_sha256"]:
+        raise ValueError("Captured ext4 current.json differs from the managed seal")
+    selector = json.loads(active)
+    if any(selector.get(k) != seal[k] for k in ("schema","release_id","manifest_sha256")):
+        raise ValueError("Active selector identity differs from the managed seal")
+    return hashlib.sha256(seal_bytes).hexdigest(), selector
 
 
 def read_mbr(path):
@@ -111,7 +113,7 @@ def assemble(image, destination, boot_reference=None):
         if (p1[0] not in (11,12) or p2[0] != 131 or p1[1] < 1 or p1[2] < 1
             or p2[1] < p1[1]+p1[2] or p2[2] < 1 or (p2[1]+p2[2])*512 > raw.stat().st_size):
             raise ValueError("Expected an eMMC disk with FAT p1 and Linux p2 inside the captured file")
-        seal_sha = verify_ext4_seal(raw, p2[1] * 512, seal)
+        seal_sha, active_selector = verify_ext4_seal(raw, p2[1] * 512, seal)
         boot = work/"boot.scr"
         run(["mcopy","-i",f"{raw}@@{p1[1]*512}","::boot.scr",boot])
         validate_boot(boot)
@@ -171,7 +173,7 @@ def assemble(image, destination, boot_reference=None):
         image_sha = digest(disk)
         (result/(disk.name+".sha256")).write_text(f"{image_sha}  {disk.name}\n")
         metadata = {"profile":doc["serial_profile"],"version":doc["release_version"],"source_xz":basename,
-            "source_xz_sha256":compressed_sha,"source_manifest_sha256":digest(manifest),"managed_seal":seal,
+            "source_xz_sha256":compressed_sha,"source_manifest_sha256":digest(manifest),"managed_seal":seal,"active_selector":active_selector,"sealed_epoch_file_sha256":seal_sha,
             "source_bytes":raw.stat().st_size,"disk_file":disk.name,"disk_bytes":disk.stat().st_size,
             "disk_sha256":image_sha,"partition_table":"MBR","filesystem":"exFAT","filesystem_check":"fsck_exfat -n passed",
             "files_sha256_readback":readback,"emmc_fat_boot_sha256":boot_hashes,"recovery_entrypoint":"/mnt/autorun.sh","health_check":"offline file-backed image",
