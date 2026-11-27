@@ -29,6 +29,13 @@ def properties(unit, *, service=False, **changes):
     return result
 
 
+def absent_service(unit):
+    # systemd 255.4 on bench 1.136 omits EnvironmentFiles for this absent unit.
+    result = properties(unit, service=True, LoadState="not-found", ActiveState="inactive", MainPID="0")
+    del result["EnvironmentFiles"]
+    return result
+
+
 class Manager:
     """Only emit fields implemented by the modeled interface, like systemctl."""
     def __init__(self):
@@ -77,6 +84,29 @@ class PropertyTests(unittest.TestCase):
                 del manager.units[peer.PEER][key]
                 with patch.object(peer, "command", manager.command), self.assertRaises(JournalStateError):
                     peer.show(peer.PEER, time.monotonic() + 5)
+
+    def test_absent_stand_exception_requires_complete_inert_evidence(self):
+        manager = Manager()
+        base = absent_service(peer.PEER)
+        with patch.object(peer, "command", manager.command):
+            for key in base:
+                with self.subTest(missing=key):
+                    manager.units[peer.PEER] = {name: value for name, value in base.items() if name != key}
+                    with self.assertRaises(JournalStateError):
+                        peer.show(peer.PEER, time.monotonic() + 5)
+            contradictions = {
+                "Id": CURRENT, "LoadState": "loaded", "ActiveState": "active",
+                "Job": "42", "UnitFileState": "enabled", "MainPID": "10", "Environment": "EXTRA=1",
+                **dict.fromkeys(RELATIONS, CURRENT),
+            }
+            for key, value in contradictions.items():
+                with self.subTest(property=key):
+                    manager.units[peer.PEER] = {**base, key: value}
+                    with self.assertRaises(JournalStateError):
+                        peer.show(peer.PEER, time.monotonic() + 5)
+            manager.units[CURRENT] = absent_service(CURRENT)
+            with self.assertRaises(JournalStateError):
+                peer.show(CURRENT, time.monotonic() + 5)
 
     def test_invalid_unit_never_executes_command(self):
         for unit in ("bad unit", "../unit", "x;touch", "x\n.service", "", '"x.service"'):
@@ -134,6 +164,15 @@ class GraphTests(unittest.TestCase):
             if argv[0] == "show" and argv[-1] in peer.UNITS.values():
                 keys = next(a.split("=", 1)[1] for a in argv if a.startswith("--property="))
                 self.assertTrue(set(SERVICE) <= set(keys.split(",")))
+
+    def test_absent_optional_stand_allows_preparation_without_restart(self):
+        self.manager.units[peer.PEER] = absent_service(peer.PEER)
+        with patch.object(peer, "process_identity") as identity:
+            self.prepare()
+        identity.assert_not_called()
+        self.assertFalse(self.manager.dispatched)
+        self.assertEqual(self.marked, [])
+        self.assertEqual([argv[-1] for argv in self.manager.calls], list(peer.UNITS.values()))
 
     def test_each_missing_common_property_refuses_before_dispatch(self):
         self.manager.units[peer.PEER]["After"] = "network.target"

@@ -70,9 +70,17 @@ def show(unit, deadline, *, _service=True):
         if not separator or key in properties or key not in required:
             raise JournalStateError("incomplete peer properties")
         properties[key] = value
-    if set(properties) != set(required):
-        missing = ",".join(key for key in required if key not in properties)
-        raise JournalStateError("incomplete peer properties for " + unit + ": " + missing)
+    missing = [key for key in required if key not in properties]
+    if missing:
+        # systemd can omit EnvironmentFiles for the absent optional stand
+        # service. Require the rest of the response to show an inert unit.
+        if (unit == PEER and missing == ["EnvironmentFiles"]
+                and properties["Id"] == PEER and properties["LoadState"] == "not-found"
+                and properties["ActiveState"] == "inactive" and properties["MainPID"] == "0"
+                and all(properties[key] == "" for key in ("Job", "UnitFileState", "Environment", *RELATIONS))):
+            properties["EnvironmentFiles"] = ""
+        else:
+            raise JournalStateError("incomplete peer properties for " + unit + ": " + ",".join(missing))
     return properties, len(text.encode())
 
 
