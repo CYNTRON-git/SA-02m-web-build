@@ -300,7 +300,9 @@ if __name__=="__main__":
             print(json.dumps({"findings":len(data["findings"]),"gaps":len(data["gaps"])}))
             raise SystemExit(0)
         require(args.artifact_dir and (args.action=="capture-ecosystems" or args.tool_dir),"artifact-dir and tool-dir required")
-        raise SystemExit(execute(args))
+        status = execute(args)
+        require(status in (0, 1, 2), f"unexpected admission exit status: {status!r}")
+        raise SystemExit(status)  # exit-status: validated PASS=0, FAIL=1, INDETERMINATE=2
     except Exception as exc:
         print(json.dumps({"status":"INDETERMINATE","error":str(exc)}))
         raise SystemExit(2)

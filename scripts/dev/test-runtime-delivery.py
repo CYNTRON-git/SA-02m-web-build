@@ -160,7 +160,8 @@ try:
                      runner_version='1.0.8.2',extract_to=Path(sys.argv[4]),check_compat=True)
 except PackageError as error:
     print(error.code,str(error))
-    raise SystemExit(0 if error.code=='E_COMPAT' and 'min_updater' in str(error) else 1)
+    if error.code == 'E_COMPAT' and 'min_updater' in str(error):
+        raise SystemExit(0)
 raise SystemExit(1)"""
         dest = self.base/'extracted'
         run = subprocess.run([sys.executable,'-I','-B','-c',probe,str(old),str(package),str(keys),str(dest)],

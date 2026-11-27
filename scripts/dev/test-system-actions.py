@@ -42,9 +42,13 @@ if name == 'systemctl' and 'show' in sys.argv:
     if '--value' in sys.argv: print('inactive')
     else: print((t/'manager-state').read_text() if (t/'manager-state').exists() else 'Job=\\nActiveState=active')
     sys.exit(0)
-if name == 'systemctl' and 'fcgiwrap.service' in sys.argv and (t/'fcgi.rc').exists(): sys.exit(int((t/'fcgi.rc').read_text()))
-code=t/(name+'.rc')
-sys.exit(int(code.read_text()) if code.exists() else 0)
+code = t / (name + '.rc')
+if name == 'systemctl' and 'fcgiwrap.service' in sys.argv and (t/'fcgi.rc').exists():
+    code = t / 'fcgi.rc'
+status = int(code.read_text()) if code.exists() else 0
+if not 0 <= status <= 255:
+    raise ValueError(f'invalid fixture process status: {status}')
+sys.exit(status)  # exit-status: bounded child command result supplied by the test, including timeout=124
 '''
         for name in ('systemctl', 'systemd-run', 'reboot', 'shutdown', 'sync', 'nginx', 'sudo', 'sleep', 'nohup'):
             (self.bin / name).write_text(recorder)
