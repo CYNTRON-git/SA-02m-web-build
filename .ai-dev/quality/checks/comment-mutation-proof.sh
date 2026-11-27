@@ -124,7 +124,7 @@ js-unit-apply-save-result|www/network_config/static/js/app/forms.js|if (refusal)
 js-unit-apply-save-result|www/network_config/static/js/app/forms.js|if (deferred) { configLoaded = false;
 iface-naming-contract|etc/99-lan-recovery.rules|ACTION=="add", SUBSYSTEM=="net", KERNEL=="eth0"
 iface-naming-contract|etc/99-lan-recovery.rules|ACTION=="bind", SUBSYSTEM=="net", KERNEL=="eth0"
-nodered-pin-consistency|scripts/dev/build-nodered-payload.py|subprocess.run(['npm', 'ci'
+nodered-pin-consistency|scripts/dev/build-nodered-payload.py|--omit=optional
 watchdog-cap|scripts/01-system.sh|install -m 644 "$ETC_REPO/systemd/sa02m-watchdog.conf"
 telemetry-device-id-contract|opt/sa02m-modbus-mqtt/sa02m_telemetry.py|self._clear_legacy_retained()
 telemetry-device-id-contract|opt/sa02m-modbus-mqtt/sa02m_telemetry.py|"HW not ready — %s command dropped"
