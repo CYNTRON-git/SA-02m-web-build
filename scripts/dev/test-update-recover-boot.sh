@@ -109,14 +109,14 @@ trap 'rm -rf "$T"' EXIT
 TW=$T
 if command -v cygpath >/dev/null 2>&1; then TW=$(cygpath -m "$T") || TW=$T; fi
 
-cat "$SRC" > "$T/runner.sh" 2>/dev/null || { echo "FAIL  cannot read runner source: $SRC"; exit 1; }
+sed 's@/opt/sa02m-runtime-transition/runtime_transition.py@"$T/runtime_transition.py"@g' "$SRC" > "$T/runner.sh" || { echo "FAIL  cannot read runner source: $SRC"; exit 1; }
 SRC="$T/runner.sh"
 
 # UART coordinator composition is exercised by test-update-control-boundaries.py.
 # These existing fixtures have no UART snapshot or external broker.
-acquire_port_maintenance() { return 0; }
-guard_boot_port_consumers() { return 0; }
-restore_port_consumers() { return 0; }
+acquire_port_maintenance() { [ ! -e "$T/refuse-port-lock" ]; }
+guard_boot_port_consumers() { [ ! -e "$T/refuse-boot-guard" ]; }
+restore_port_consumers() { [ ! -e "$T/refuse-port-restore" ]; }
 fails=0
 ok()  { printf 'ok    %s\n' "$1"; }
 bad() { printf 'FAIL  %s\n' "$1"; fails=$((fails + 1)); }
@@ -134,7 +134,7 @@ for fn in cmd_recover rollback_from_journal _systemctl_bounded install_imaging_l
 done
 # Present on the fixed side only — extract-if-present (the drive-to-failure run
 # must reach and FAIL the assertions).
-for fn in restart_after_rollback _journal_has_dst_prefix cmd_verify schedule_boot_verify load_runtime_wdt_prev runtime_wdt_policy_usec restore_runtime_wdt on_exit cmd_reclaim recover_transaction; do
+for fn in queue_runtime_after_update restart_after_rollback _journal_has_dst_prefix cmd_verify schedule_boot_verify load_runtime_wdt_prev runtime_wdt_policy_usec restore_runtime_wdt on_exit cmd_reclaim recover_transaction; do
     grep -q "^$fn() {" "$SRC" && extract "$fn" >> "$T/fn.sh"
 done
 [ "$(tail -n1 "$T/fn.sh")" = "}" ] || { echo "FAIL  extraction did not stop at a closing brace"; exit 1; }
@@ -340,8 +340,107 @@ no_web_restart && ok "R3 boot-context rollback skips nginx/fcgiwrap (systemd sta
 [ -n "$(txn_field error_message)" ] && ok "R3 error_message names the cause: $(txn_field error_message)" \
     || bad "R3 error_message empty after the rollback"
 
+# A restored runtime also needs the post-boot activation handoff when an
+# older transaction has no UART snapshot. A refused queue must be retryable.
+for rollback_stage in applying backing_up; do
+    reset_run
+    touch "$T/runtime_transition.py"
+    write_txn "$rollback_stage" 1 3 runtime_wdt_prev_usec=15000000
+    date -Iseconds > "$IMAGING_LOCK"
+    for blocker in refuse-boot-guard refuse-port-lock; do
+        printf '0\n' > "$T/wdt.value"
+        touch "$T/$blocker"
+        ( set -euo pipefail; trap on_exit EXIT; cmd_recover ) >/dev/null 2>&1
+        rc=$?
+        rm "$T/$blocker"
+        if [ "$rc" != 0 ] && [ "$(cat "$T/wdt.value")" = 15000000 ] &&
+           [ -f "$IMAGING_LOCK" ] && [ "$(txn_field stage)" = "$rollback_stage" ]; then
+            ok "R3a $rollback_stage: $blocker restores the inherited watchdog"
+        else
+            bad "R3a $rollback_stage: $blocker rc=$rc watchdog=$(cat "$T/wdt.value") stage=$(txn_field stage)"
+        fi
+    done
+    printf '1\n' > "$T/start.rc"
+    for handoff_stage in "$rollback_stage" rolling_back; do
+        printf '0\n' > "$T/wdt.value"
+        ( set -euo pipefail; trap on_exit EXIT; cmd_recover ) >/dev/null 2>&1
+        rc=$?
+        if [ "$rc" != 0 ] && [ "$(cat "$T/wdt.value")" = 15000000 ] &&
+           [ -f "$IMAGING_LOCK" ] && [ "$(txn_field stage)" = rolling_back ] &&
+           called "systemctl start --no-block sa02m-update-verify.service"; then
+            ok "R3a $handoff_stage: refused verify handoff restores watchdog and retains rollback"
+        else
+            bad "R3a $handoff_stage: verify handoff rc=$rc watchdog=$(cat "$T/wdt.value") stage=$(txn_field stage)"
+        fi
+    done
+    : > "$CALLS"
+    printf '0\n' > "$T/start.rc"
+    run_recover
+    if [ "$rc" = 0 ] && [ "$(txn_field stage)" = rolling_back ] && \
+       called "systemctl start --no-block sa02m-update-verify.service" && \
+       ! called "systemctl start --no-block sa02m-runtime-activate.service"; then
+        ok "R3b $rollback_stage: restored runtime without a UART snapshot defers activation to verify"
+    else
+        bad "R3b $rollback_stage: boot runtime handoff: rc=$rc stage=$(txn_field stage)"
+    fi
+    printf '1\n' > "$T/start.rc"
+    ( set -euo pipefail; trap on_exit EXIT; cmd_verify ) >/dev/null 2>&1
+    rc=$?
+    if [ "$rc" != 0 ] && [ "$(cat "$T/wdt.value")" = 15000000 ] && [ "$(txn_field stage)" = rolling_back ] && [ -f "$IMAGING_LOCK" ] && \
+       called "systemctl start --no-block sa02m-runtime-activate.service"; then
+        ok "R3c $rollback_stage: refused runtime queue retains the rollback and imaging lock"
+    else
+        bad "R3c $rollback_stage: runtime refusal: rc=$rc stage=$(txn_field stage)"
+    fi
+    : > "$CALLS"
+    printf '0\n' > "$T/start.rc"
+    run_verify
+    if [ "$rc" = 0 ] && [ "$(cat "$T/wdt.value")" = 15000000 ] && [ "$(txn_field stage)" = rolled_back ] && [ ! -f "$IMAGING_LOCK" ] && \
+       called "systemctl start --no-block sa02m-runtime-activate.service"; then
+        ok "R3d $rollback_stage: accepted retry finishes the deferred rollback"
+    else
+        bad "R3d $rollback_stage: runtime retry: rc=$rc stage=$(txn_field stage)"
+    fi
+    rm -f "$T/runtime_transition.py"
+done
+
 # ── R4: cmd_verify — health ok → done; health fails → rollback with reason ──
 echo "── R4: runner verify ──"
+# Verify inherits the boot hold before validating the manifest or acquiring
+# UART maintenance. Each refused attempt must leave it safe to retry.
+for verify_stage in verifying committing; do
+    reset_run
+    write_txn "$verify_stage" 3 3 runtime_wdt_prev_usec=15000000
+    touch "$IMAGING_LOCK"
+    for blocker in manifest refuse-port-lock refuse-port-restore; do
+        printf '0\n' > "$T/wdt.value"
+        if [ "$blocker" = manifest ]; then
+            mv "$STAGE/meta/manifest.json" "$T/saved-manifest"
+        else
+            touch "$T/$blocker"
+        fi
+        ( set -euo pipefail; trap on_exit EXIT; cmd_verify ) >/dev/null 2>&1
+        rc=$?
+        if [ "$blocker" = manifest ]; then
+            mv "$T/saved-manifest" "$STAGE/meta/manifest.json"
+        else
+            rm "$T/$blocker"
+        fi
+        if [ "$rc" != 0 ] && [ "$(cat "$T/wdt.value")" = 15000000 ] &&
+           [ "$(txn_field stage)" = "$verify_stage" ] && [ -f "$IMAGING_LOCK" ] && [ ! -f "$T/commit.marker" ]; then
+            ok "R4e $verify_stage: $blocker refusal restores watchdog before retry"
+        else
+            bad "R4e $verify_stage: $blocker rc=$rc watchdog=$(cat "$T/wdt.value") stage=$(txn_field stage)"
+        fi
+    done
+    printf '0\n' > "$T/health.rc"
+    run_verify
+    if [ "$rc" = 0 ] && [ "$(txn_field stage)" = done ] && [ ! -f "$IMAGING_LOCK" ] && [ -f "$T/commit.marker" ]; then
+        ok "R4f $verify_stage: successful retry commits and releases imaging lock"
+    else
+        bad "R4f $verify_stage: retry rc=$rc stage=$(txn_field stage)"
+    fi
+done
 reset_run; printf '0\n' > "$T/health.rc"
 write_txn verifying 3 3 boot_verify_pending=true runtime_wdt_prev_usec=15000000
 date -Iseconds > "$IMAGING_LOCK"; printf '0\n' > "$T/wdt.value"   # the hold is in force from before the reboot
@@ -734,8 +833,34 @@ for f in scripts/03-webserver.sh scripts/update-www-only.sh; do
     [ "${n:-0}" -ge 1 ] && ok "U1 $f installs sa02m-update-verify.service next to the recover unit ($n loop(s))" \
         || bad "U1 $f does not list sa02m-update-verify.service in its unit loop"
 done
-stripped_has scripts/pack-offline-update.py '"sa02m-update-verify.service"' && ok "U1 pack-offline-update.py packs the verify unit" \
-    || bad "U1 scripts/pack-offline-update.py does not pack sa02m-update-verify.service"
+# Exercise the tracked-file selection and deploy mapping used by the packer.
+# Two tracked inputs are sufficient even when this harness runs from an export.
+if python3 - "$T" <<'PACK'
+import importlib.util
+from pathlib import Path
+import shutil
+import subprocess
+import sys
+
+spec = importlib.util.spec_from_file_location("sa02m_pack", "scripts/pack-offline-update.py")
+pack = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(pack)
+fixture = Path(sys.argv[1]) / "pack-source"
+src = "etc/systemd/sa02m-update-verify.service"
+for name in (src, "www/network_config/VERSION"):
+    (fixture / name).parent.mkdir(parents=True, exist_ok=True)
+    shutil.copyfile(name, fixture / name)
+pack.ROOT = fixture
+subprocess.run(["git", "init", "-q", str(fixture)], check=True)
+pack.run(["git", "add", "."])
+selected = pack.list_allowlisted_files(pack.load_allowlist_patterns())
+entries = pack.build_deploy_list(selected, pack.load_deploy_map())
+assert {"src": src, "dst": "/etc/systemd/system/sa02m-update-verify.service",
+        "mode": "0644", "owner": "root:root"} in entries, entries
+PACK
+then ok "U1 packer selects and deploys the verify unit to the systemd directory"
+else bad "U1 offline package missing the verify unit or its required metadata"
+fi
 
 # ── R10: a TORN journal converges on ONE boot (round 6 — review R3-1) ────────
 # The residue a power cut mid-apply leaves: stage applying, one file renamed

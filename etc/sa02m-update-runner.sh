@@ -2164,7 +2164,8 @@ PY
         log "ERROR: rollback INCOMPLETE: $incomplete"
         return 0
     fi
-    if [ "${RUNNER_CONTEXT:-}" = boot ] && txn_has_key port_services; then
+    if [ "${RUNNER_CONTEXT:-}" = boot ] &&
+       { txn_has_key port_services || [ -f /opt/sa02m-runtime-transition/runtime_transition.py ]; }; then
         txn_patch "stage=rolling_back" "result=pending" "port_restore_pending=true" \
             "error_code=$code" "error_message=${message:-null}"
         systemctl start --no-block sa02m-update-verify.service || return 1
@@ -3153,14 +3154,15 @@ recover_transaction() {
             *) log "E_RECOVERY_REQUIRED: factory reset journal requires explicit root recovery; OTA journal unchanged"; return 1 ;;
         esac
     fi
+    # Recovery inherits the previous runner's watchdog hold. An early guard or
+    # queue refusal must restore it through on_exit while retaining the journal.
+    load_runtime_wdt_prev
     case "$stage" in
         backing_up|applying|verifying|committing|rolling_back)
+            if [ -f "$IMAGING_LOCK" ]; then IMAGING_HELD=1; fi
             guard_boot_port_consumers || return 1
             acquire_port_maintenance || { log "ERROR: recovery blocked by UART operation/coordinator; journal retained"; return 1; } ;;
     esac
-    # The hold (if any) was taken before the reboot; reload its value before
-    # install_imaging_lock reads a manager that already says 0 (F6).
-    load_runtime_wdt_prev
 
     case "$stage" in
         uploaded|validating|cancelled)
@@ -3176,8 +3178,8 @@ recover_transaction() {
             else
                 txn_patch "stage=error" "result=failed" "error_code=E_POWER" \
                     "error_message=power loss during backup" "finished_at=$(utc_now)"
+                cleanup_imaging_lock || true
             fi
-            cleanup_imaging_lock || true
             ;;
         applying)
             install_imaging_lock || true
@@ -3302,23 +3304,26 @@ cmd_verify() {
     stage=$(txn_get stage)
     txn=$(txn_get id)
     case "$stage" in
-        rolling_back)
-            if [ "$(txn_get port_restore_pending)" = true ]; then
-                acquire_port_maintenance || return 1
-                restore_port_consumers || return 1
-                queue_runtime_after_update || return 1
-                txn_patch "stage=rolled_back" "result=rolled_back" "port_restore_pending=false" "finished_at=$(utc_now)"
-                rm -f "$STATEDIR/maintenance"
-                cleanup_imaging_lock || true
-                return 0
-            fi
-            return 1 ;;
-        verifying|committing) ;;
+        rolling_back|verifying|committing) ;;
         *)
             log "verify: stage=$stage — no-op"
             exit 0
             ;;
     esac
+    load_runtime_wdt_prev
+    if [ -f "$IMAGING_LOCK" ]; then IMAGING_HELD=1; fi
+    if [ "$stage" = rolling_back ]; then
+        [ "$(txn_get port_restore_pending)" = true ] || return 1
+        if txn_has_key port_services; then
+            acquire_port_maintenance || return 1
+            restore_port_consumers || return 1
+        fi
+        queue_runtime_after_update || { log "verify: restored runtime activation queue refused; rollback pending"; return 1; }
+        txn_patch "stage=rolled_back" "result=rolled_back" "port_restore_pending=false" "finished_at=$(utc_now)"
+        rm -f "$STATEDIR/maintenance"
+        cleanup_imaging_lock || true
+        return 0
+    fi
     if [ -z "$txn" ] || [ ! -f "$(manifest_path "$txn")" ]; then
         log "ERROR [E_INTERNAL]: verify: manifest missing for txn=$txn — stage left at $stage (the panel reports it stale; a reboot retries)"
         exit 1
@@ -3326,12 +3331,7 @@ cmd_verify() {
     acquire_port_maintenance || { log "ERROR: verification blocked by UART operation/coordinator; journal retained"; exit 1; }
     restore_port_consumers || { log "ERROR: UART services not restored; journal retained"; exit 1; }
     log "verify: post-boot verification txn=$txn stage=$stage"
-    load_runtime_wdt_prev
-    if [ -f "$IMAGING_LOCK" ]; then
-        IMAGING_HELD=1
-    else
-        install_imaging_lock
-    fi
+    if [ "$IMAGING_HELD" != 1 ]; then install_imaging_lock; fi
     txn_patch "stage=verifying" "boot_verify_pending=false"
     # Both steps can fail (a dead manifest read — round 4); at top level under
     # set -e an unchecked failure would kill verify mid-way (stage frozen at
@@ -3368,7 +3368,7 @@ on_exit() {
         local stage
         stage=$(txn_get stage 2>/dev/null || echo error)
         case "$stage" in
-            applying|verifying|rolling_back|committing)
+            backing_up|applying|verifying|rolling_back|committing)
                 restore_runtime_wdt
                 log "exit $ec at stage=$stage: imaging lock kept for recover/reclaim; runtime watchdog $WDT_RESTORE_MSG"
                 ;;
