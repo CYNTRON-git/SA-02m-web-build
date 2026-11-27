@@ -146,6 +146,7 @@ def homekit(component,archive_path,expected_archive,transport,range_matches,cvss
     blobs={}
     ranges={}
     other=[]
+    cna_digests={}
     with tarfile.open(archive_path) as archive:
         for member in archive:
             if not re.fullmatch(r"[^/]+/secjson/CVE-\d{4}-\d+\.json",member.name):
@@ -154,6 +155,7 @@ def homekit(component,archive_path,expected_archive,transport,range_matches,cvss
             filename=member.name.rsplit("/",1)[1]
             blobs[filename]=hashlib.sha1(b"blob "+str(len(raw)).encode()+b"\0"+raw).hexdigest()
             identifier=filename[:-5]
+            cna_digests[identifier]=hashlib.sha256(raw).hexdigest()
             cna=json.loads(raw)["containers"]["cna"]
             for product in cna["affected"]:
                 if product["product"].lower()!="openssl":continue
@@ -195,9 +197,9 @@ def homekit(component,archive_path,expected_archive,transport,range_matches,cvss
         levels=[{"MEDIUM":"MODERATE"}.get(v,v) for v in levels] or ["UNKNOWN"]
         return {"identifiers":[identifier],"levels":sorted(set(levels)),"package":"OpenSSL","version":version,
                 "locations":["HomeKit lock:"+component["wheel"]+"!"+component["elf"]],"range":row["range"],
-                "applicability":"under_investigation"},notes
+                "cna_sha256":cna_digests[identifier],"applicability":"under_investigation"},notes
     with ThreadPoolExecutor(max_workers=5) as pool:
         outcomes=list(pool.map(join,selected))
     for _,notes in outcomes:gaps.extend(notes)
     return {"findings":[r for r,_ in outcomes],"gaps":gaps,"uncategorized_ranges":other,
-            "compared_semver_ranges":len(ranges),"component":component}
+            "compared_semver_ranges":len(ranges),"catalogue_records":len(blobs),"component":component}

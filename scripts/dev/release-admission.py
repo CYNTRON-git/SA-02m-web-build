@@ -18,7 +18,7 @@ from release_admission.inventory import Inventory
 from release_admission.native_node import check as native_node
 from release_admission.providers import Transport, canonical, level, osv_matches, osv_records, require, sha
 from release_admission import ubuntu as noble
-from release_admission import openssl
+from release_admission import homekit_review, openssl
 
 POLICY=REPO/"vendor-src/admission/policy.json"
 SCOPES=("node-red","python","python-ambient","homekit","development","native-node","external-node","ubuntu","vendor-kernel","opcua-native")
@@ -47,6 +47,9 @@ def blocks_finding(scope,row,policy):
     independently_excluded=(scope=="opcua-native" and row.get("package")=="OpenSSL"
         and row.get("locations")==["opcua:sa02m-mqtt-opcua"] and row.get("review_sha256")==policy["opcua_review_sha256"]
         and row.get("applicability")=="not_affected")
+    if scope == "homekit" and row.get("package") == "OpenSSL" and row.get("applicability") == "not_affected":
+        independently_excluded = (row.get("review_sha256") == policy["homekit_review_sha256"] and
+            row.get("locations") == ["HomeKit lock:cryptography-50.0.2-cp311-abi3-manylinux_2_31_armv7l.whl!cryptography/hazmat/bindings/_rust.abi3.so"])
     return bool(set(row["levels"]).intersection(policy["blocking"])) and not independently_excluded
 
 
@@ -126,7 +129,7 @@ def execute(args):
         def path(key):
             return args.targets.parent/data[key] if data.get(key) else None
         inv.board(name,path("inventory"),path("boot_artifacts"),path("python_receipt"),path("homekit_integrity"),
-                  path("system_python"),path("homekit_origins"),path("homekit_native"))
+                  path("system_python"),path("homekit_origins"),path("homekit_native"),path("homekit_absence"))
         inv.external_node(name,path("node_lineage"),path("node_packages"),path("node_versions"))
     results={k:{"findings":[],"gaps":inv.gaps[k],"status":"INDETERMINATE"} for k in SCOPES}
     def isolate(scopes, callback):
@@ -162,7 +165,7 @@ def execute(args):
     # Source closure and exact observed package queries can be captured while
     # the independent target verification is still running.
     provider_inputs={k:v for k,v in inv.inputs.items() if k!="release targets" and
-                     not k.startswith(("native Python receipt ","installed OPC UA profile ","HomeKit native origins "))}
+                     not k.startswith(("native Python receipt ","installed OPC UA profile ","HomeKit native origins ","HomeKit absence "))}
     if args.ecosystem_capture:
         folder=args.ecosystem_capture
         snapshot=read(folder/"ecosystems.json")
@@ -232,6 +235,11 @@ def execute(args):
     if inv.hk_native:
         component=isolate(["homekit"],homekit_scan)
         if component:
+            if targets.get("homekit_arm_wheelhouse"):
+                assessed = isolate(["homekit"], lambda: homekit_review.apply(component, inv, REPO, policy,
+                    args.targets.parent / targets["homekit_arm_wheelhouse"], net))
+                if assessed is not None:
+                    component = assessed
             results["homekit"]["findings"].extend(component.pop("findings"))
             inv.gaps["homekit"].extend(component.pop("gaps"))
             results["homekit"]["native"]=component

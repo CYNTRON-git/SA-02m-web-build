@@ -18,7 +18,7 @@ from urllib.error import HTTPError
 HERE=Path(__file__).resolve().parent
 sys.path.insert(0,str(HERE))
 from release_admission.inventory import Inventory
-from release_admission import openssl
+from release_admission import homekit_absence, homekit_review, openssl
 from release_admission.native_node import catalogue, on_linux
 from release_admission.ubuntu import tracker_row, upstream
 from native_node_payload import derive
@@ -33,6 +33,77 @@ import cvss
 
 
 class AdmissionTests(unittest.TestCase):
+    def test_homekit_absence_requires_same_boot_packages_and_no_unit_or_runtime(self):
+        now = time.time()
+        board = {"boot_id":"11111111-2222-3333-4444-555555555555", "kernel_release":"test",
+                 "homekit":{"exists":False, "distributions":[]}, "dpkg":{"stdout":"physical packages"}}
+        proof = {"schema":1, "target":"136", "captured":now, "boot_id":board["boot_id"], "kernel_release":"test",
+                 "dpkg_sha256":hashlib.sha256(b"physical packages").hexdigest(), "unit":dict(homekit_absence.ABSENT_UNIT),
+                 "processes":[], "paths":dict.fromkeys(homekit_absence.PATHS, False)}
+        self.assertTrue(homekit_absence.matches(proof, board, "136", now))
+        for field, value in [("boot_id", "old"), ("dpkg_sha256", "different"), ("captured", now-86401), ("target", "135"),
+                             ("processes", [21]), ("paths", {}), ("unit", dict(proof["unit"], ExecStart="unexpected")),
+                             ("unit", dict(proof["unit"], DropInPaths="/etc/override.conf")), ("paths", dict.fromkeys(homekit_absence.PATHS, 0))]:
+            with self.subTest(field=field, value=value):
+                self.assertFalse(homekit_absence.matches(dict(proof, **{field:value}), board, "136", now))
+        for homes in ({}, {"exists":False}, {"exists":True, "distributions":[]}, {"exists":False, "distributions":["pyhap"]}):
+            self.assertFalse(homekit_absence.matches(proof, dict(board, homekit=homes), "136", now))
+        for devices in ({}, {"136":{}}, {"136":{"homekit_absence_verified":True}, "135":{}}):
+            inv = Inventory(); inv.devices = devices
+            with self.assertRaisesRegex(ValueError, "absent donor"):
+                homekit_review.apply({}, inv, None, {}, None, None)
+
+    def test_homekit_review_retains_severity_and_refuses_any_evidence_drift(self):
+        identifier = "CVE-2026-12345"
+        wheel = "cryptography-50.0.2-cp311-abi3-manylinux_2_31_armv7l.whl"
+        component = {"wheel":wheel,"elf":"cryptography/hazmat/bindings/_rust.abi3.so","version":"4.0.3"}
+        raw = {"package":"OpenSSL", "version":"4.0.3", "identifiers":[identifier], "range":{"version":"4.0.0"},
+               "cna_sha256":"frozen CNA", "levels":["HIGH"], "locations":["HomeKit lock:"+wheel+"!"+component["elf"]]}
+        old = [{"id":identifier, "range":{"version":"historic"}}]
+        result = {"component":component, "catalogue_records":1, "compared_semver_ranges":1, "uncategorized_ranges":old,
+                  "gaps":["1 upstream custom or non-semver OpenSSL ranges require provider assessment"], "findings":[raw]}
+        url = openssl.cve_url(identifier)
+        record = {"id":identifier, "status":"not_affected", "justification":"vulnerable_code_not_in_execute_path",
+                  "prerequisite":"reviewed condition", "record_url":url, "record_sha256":"frozen external CVE",
+                  "range":raw["range"], "cna_sha256":raw["cna_sha256"], "levels":raw["levels"]}
+        review = {"records":[record], "artifact":dict(component), "upstream_records":1, "upstream_compared_semver_ranges":1,
+                  "legacy_ranges":{"count":1,"distinct_cves":1,"rows_sha256":hashlib.sha256(release.canonical(old)).hexdigest()}}
+        net = Mock(); key = hashlib.sha256(release.canonical([url,None])).hexdigest(); net.seen = {key:{"sha256":record["record_sha256"]}}
+        digest = policy["homekit_review_sha256"]
+        approved, = homekit_review.reviewed_findings(result, review, net, digest)
+        self.assertEqual(approved["levels"], ["HIGH"])
+        self.assertFalse(release.blocks_finding("homekit", approved, policy))
+        self.assertTrue(release.blocks_finding("homekit", dict(approved, review_sha256="other"), policy))
+        self.assertTrue(release.blocks_finding("homekit", dict(approved, locations=["another wheel"]), policy))
+        self.assertTrue(release.blocks_finding("opcua-native", approved, policy))
+        for field, value in [("uncategorized_ranges", []), ("findings", [raw,raw]), ("gaps", []), ("component", dict(component,version="4.0.2")),
+                             ("findings", [dict(raw, cna_sha256="changed")]), ("findings", [dict(raw, levels=["CRITICAL"])])]:
+            with self.subTest(field=field), self.assertRaises(ValueError):
+                homekit_review.reviewed_findings(dict(result, **{field:value}), review, net, digest)
+        net.seen[key]["sha256"] = "changed"
+        with self.assertRaises(ValueError):
+            homekit_review.reviewed_findings(result, review, net, digest)
+        self.assertNotIn("applicability", raw)
+
+    def test_homekit_source_graph_refuses_extra_top_level_module_or_dropin(self):
+        repo = HERE.parents[1]
+        folder = repo / "vendor-src/admission/homekit"
+        review = {"product_files_sha256":sha(folder/"product-files.json"), "package_files_sha256":sha(folder/"package-files.json"),
+                  "builder_inputs_sha256":sha(folder/"candidate.json"), "extra_source_files":{}}
+        import shutil
+        with tempfile.TemporaryDirectory() as place:
+            root=Path(place)
+            for relative in homekit_review.SOURCE_ROOTS:
+                shutil.copytree(repo/relative, root/relative)
+            injected=root/"opt/sa02m-homekit/sitecustomize.py"
+            injected.touch()
+            with self.assertRaisesRegex(ValueError,"module membership changed"):
+                homekit_review.verify_graph(Inventory(), root, folder, review, root/"wheelhouse")
+            injected.unlink()
+            (root/"etc/systemd/system/sa02m-homekit.service.d").mkdir(parents=True)
+            with self.assertRaisesRegex(ValueError,"service drop-in"):
+                homekit_review.verify_graph(Inventory(), root, folder, review, root/"wheelhouse")
+
     def test_homekit_openssl_preserves_scope_unknown_grammars_and_provider_score(self):
         identifier="CVE-2026-10000"
         product={"product":"OpenSSL","defaultStatus":"unaffected","versions":[

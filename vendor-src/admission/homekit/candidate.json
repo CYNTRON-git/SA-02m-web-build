@@ -1,0 +1,370 @@
+{
+  "cves": [
+    {
+      "cna_sha256": "b4286370f653419262461dfc913ac09812695f531e963fcaad28a4d3be4b92a7",
+      "id": "CVE-2026-107494",
+      "levels": [
+        "HIGH",
+        "LOW"
+      ],
+      "range": {
+        "lessThan": "4.0.4",
+        "status": "affected",
+        "version": "4.0.0",
+        "versionType": "semver"
+      },
+      "record_sha256": "2f51c45ef4450e8eef62fb66c106430aefff686c60591cf844744e13dd692d72",
+      "record_url": "https://raw.githubusercontent.com/CVEProject/cvelistV5/main/cves/2026/107xxx/CVE-2026-107494.json",
+      "source_group": "quic",
+      "upstream_title": "Unbounded QUIC RETIRE_CONNECTION_ID Frame Sending Queue"
+    },
+    {
+      "cna_sha256": "f01787b5604af79be8615b9c9bd57d5cb8cbd893ae0b864aa736005ffd83330e",
+      "id": "CVE-2026-124709",
+      "levels": [
+        "HIGH",
+        "LOW"
+      ],
+      "range": {
+        "lessThan": "4.0.4",
+        "status": "affected",
+        "version": "4.0.0",
+        "versionType": "semver"
+      },
+      "record_sha256": "dc20fca48906d51a0c4b04e421a1f7ddb88fe3df38647c4d6c572df773a1bc55",
+      "record_url": "https://raw.githubusercontent.com/CVEProject/cvelistV5/main/cves/2026/124xxx/CVE-2026-124709.json",
+      "source_group": "quic",
+      "upstream_title": "Unbounded Memory Retention in QUIC Server for Rejected Streams"
+    },
+    {
+      "cna_sha256": "f6164fe2e2d989cfd28ba3a67333f7a8edb9b1b25f0fce64ed674983dd5ea2dc",
+      "id": "CVE-2026-84785",
+      "levels": [
+        "LOW"
+      ],
+      "range": {
+        "lessThan": "4.0.4",
+        "status": "affected",
+        "version": "4.0.0",
+        "versionType": "semver"
+      },
+      "record_sha256": "c56281ae4e0683734a56fb867fa145d7fc317de7d40cf88f810a00fbea08e2f6",
+      "record_url": "https://raw.githubusercontent.com/CVEProject/cvelistV5/main/cves/2026/84xxx/CVE-2026-84785.json",
+      "source_group": "quic",
+      "upstream_title": "Unbounded Out-of-Order Fragment Reassembly in QUIC Streams"
+    },
+    {
+      "cna_sha256": "ff90ab7e3ae590ed06abbafce6c1c9478fa0a31c8bbf56f2f40a0a45fae8d953",
+      "id": "CVE-2026-88822",
+      "levels": [
+        "LOW",
+        "MODERATE"
+      ],
+      "range": {
+        "lessThan": "4.0.4",
+        "status": "affected",
+        "version": "4.0.0",
+        "versionType": "semver"
+      },
+      "record_sha256": "a813a69017141fe1f400e0379797d0506117423c233daebee7edda03031af241",
+      "record_url": "https://raw.githubusercontent.com/CVEProject/cvelistV5/main/cves/2026/88xxx/CVE-2026-88822.json",
+      "source_group": "quic",
+      "upstream_title": "QUIC Uses Uninitialized Stack Bytes During Automated Peer Detection"
+    },
+    {
+      "cna_sha256": "949d6ed33fed90ea13d5daf06e85a13975043e1db4291a61da6d5f0ab6b464c9",
+      "id": "CVE-2026-95691",
+      "levels": [
+        "HIGH",
+        "LOW"
+      ],
+      "range": {
+        "lessThan": "4.0.4",
+        "status": "affected",
+        "version": "4.0.0",
+        "versionType": "semver"
+      },
+      "record_sha256": "2b406434d1e98e46aa37af3f8ad4e477c81f73f670aa35b35d31229f2b567b0e",
+      "record_url": "https://raw.githubusercontent.com/CVEProject/cvelistV5/main/cves/2026/95xxx/CVE-2026-95691.json",
+      "source_group": "quic",
+      "upstream_title": "Retransmitted QUIC CRYPTO Frames Can Cause DoS or One-byte Disclosure"
+    },
+    {
+      "cna_sha256": "1567c5285fa9eaf1952294bc917e503c4bbc5b0ecb5b4fe2ee5629bfdc1d0a4b",
+      "id": "CVE-2026-35190",
+      "levels": [
+        "LOW",
+        "MODERATE"
+      ],
+      "range": {
+        "lessThan": "4.0.4",
+        "status": "affected",
+        "version": "4.0.0",
+        "versionType": "semver"
+      },
+      "record_sha256": "f386856e797d636fae655838505b8d2ebf2e66607bfa7bb0dcb8310e637f755f",
+      "record_url": "https://raw.githubusercontent.com/CVEProject/cvelistV5/main/cves/2026/35xxx/CVE-2026-35190.json",
+      "source_group": "tls",
+      "upstream_title": "Out-of-Bounds Read in TLS 1.3 Key-Share Processing with Suite B Certificate Flag"
+    },
+    {
+      "cna_sha256": "ce120ba64fe21aef614f3ae58162e45b239185005a19f4da695f79a0a281e584",
+      "id": "CVE-2026-84786",
+      "levels": [
+        "HIGH",
+        "LOW"
+      ],
+      "range": {
+        "lessThan": "4.0.4",
+        "status": "affected",
+        "version": "4.0.0",
+        "versionType": "semver"
+      },
+      "record_sha256": "46dab8e00156a6e48c02b214cab28d6f9cc4b2ff38016fd812e54846ea5a6ada",
+      "record_url": "https://raw.githubusercontent.com/CVEProject/cvelistV5/main/cves/2026/84xxx/CVE-2026-84786.json",
+      "source_group": "tls",
+      "upstream_title": "Possible NULL Dereference in Non-SMTP DANE Clients"
+    },
+    {
+      "cna_sha256": "351cea1c7b27ee1f1737b1d3091e054a372ffcec8f613748f3eda924fe17feb9",
+      "id": "CVE-2026-107493",
+      "levels": [
+        "HIGH",
+        "LOW"
+      ],
+      "range": {
+        "lessThan": "4.0.4",
+        "status": "affected",
+        "version": "4.0.0",
+        "versionType": "semver"
+      },
+      "record_sha256": "e6a357db75e315dd21a6b2c4a12f6704bdb9fa56fcae8b5275e662892d9568f0",
+      "record_url": "https://raw.githubusercontent.com/CVEProject/cvelistV5/main/cves/2026/107xxx/CVE-2026-107493.json",
+      "source_group": "keys",
+      "upstream_title": "Use-After-Free in PEM_X509_INFO_read_bio_ex() when appending to a caller-supplied stack fails"
+    },
+    {
+      "cna_sha256": "51c8e31114262253cb31576e6ae1d28cec2372974a25544a079ac52bb8300c99",
+      "id": "CVE-2026-107496",
+      "levels": [
+        "HIGH",
+        "LOW"
+      ],
+      "range": {
+        "lessThan": "4.0.4",
+        "status": "affected",
+        "version": "4.0.0",
+        "versionType": "semver"
+      },
+      "record_sha256": "58169cb809ef0299bb8c420ebe0ad1dd7373634f527853d640dffa7ec696ae24",
+      "record_url": "https://raw.githubusercontent.com/CVEProject/cvelistV5/main/cves/2026/107xxx/CVE-2026-107496.json",
+      "source_group": "keys",
+      "upstream_title": "Infinite Loop in CMS_encrypt() With an EC Group Order of 1"
+    },
+    {
+      "cna_sha256": "04e0aa4d38cc51a3ee08b6109e1e1c80cb0387e6c29d0dcc610bca2daa31d550",
+      "id": "CVE-2026-121482",
+      "levels": [
+        "HIGH",
+        "LOW"
+      ],
+      "range": {
+        "lessThan": "4.0.4",
+        "status": "affected",
+        "version": "4.0.0",
+        "versionType": "semver"
+      },
+      "record_sha256": "7a911e9a6c2c010a01f01f8d815c87ab05d0286a0125cc5f80df6d82ffde2fdb",
+      "record_url": "https://raw.githubusercontent.com/CVEProject/cvelistV5/main/cves/2026/121xxx/CVE-2026-121482.json",
+      "source_group": "keys",
+      "upstream_title": "Relative CRL Distribution Point Names Rebuilt per CRL in X.509 Verification"
+    },
+    {
+      "cna_sha256": "2769571a1937352b7c7d66f0815331da4a6604353051fda51ed5194edcc47ae5",
+      "id": "CVE-2026-88823",
+      "levels": [
+        "HIGH",
+        "LOW"
+      ],
+      "range": {
+        "lessThan": "4.0.4",
+        "status": "affected",
+        "version": "4.0.0",
+        "versionType": "semver"
+      },
+      "record_sha256": "afdc35c29e45f58e3c5c4ebace93171b3b89eb8dbab269758829062207c04a72",
+      "record_url": "https://raw.githubusercontent.com/CVEProject/cvelistV5/main/cves/2026/88xxx/CVE-2026-88823.json",
+      "source_group": "aead",
+      "upstream_title": "AES-GCM-SIV AAD Forgery After Zero-length Incremental AAD Update"
+    },
+    {
+      "cna_sha256": "e877a92df2e34a924d023d8f634a6f54ebe45e90ff70ebb85cebc783be8f9217",
+      "id": "CVE-2026-95692",
+      "levels": [
+        "HIGH",
+        "LOW"
+      ],
+      "range": {
+        "lessThan": "4.0.4",
+        "status": "affected",
+        "version": "4.0.0",
+        "versionType": "semver"
+      },
+      "record_sha256": "d6cc72e7c2536a4a709d7cd5f0d0b6b96744810bf97e9e6d714dcba16e147fa6",
+      "record_url": "https://raw.githubusercontent.com/CVEProject/cvelistV5/main/cves/2026/95xxx/CVE-2026-95692.json",
+      "source_group": "aead",
+      "upstream_title": "Out-of-Bounds Read and Incorrect IV Length Handling in AES-GCM-SIV"
+    }
+  ],
+  "groups": {
+    "aead": {
+      "evidence": [
+        "pyhap/hap_crypto.py:63-71",
+        "pyhap/hap_crypto.py:97-107",
+        "pyhap/hap_handler.py:360-375",
+        "chacha20poly1305_reuseable/__init__.py:7-11",
+        "cryptography-50.0.2/src/rust/src/backend/aead.rs:405-440"
+      ],
+      "ids": [
+        "88823",
+        "95692"
+      ],
+      "profile": "HAP session encryption selects ChaCha20-Poly1305",
+      "reason": "The wrapper aliases PyCA ChaCha20Poly1305. The rust backend selects the ChaCha20-Poly1305 EVP cipher. The HAP encryption and decryption call sites do not select the AES-GCM-SIV cipher."
+    },
+    "keys": {
+      "evidence": [
+        "pyhap/encoder.py:71-90",
+        "pyhap/encoder.py:98-124",
+        "pyhap/hap_handler.py:401-420",
+        "pyhap/hap_handler.py:511-525",
+        "pyhap/hap_handler.py:590-605",
+        "cryptography-50.0.2/src/rust/src/backend/ed25519.rs:42-60",
+        "cryptography-50.0.2/src/rust/src/backend/x25519.rs:39-59"
+      ],
+      "ids": [
+        "107493",
+        "107496",
+        "121482"
+      ],
+      "profile": "Raw Ed25519/X25519 HAP keys and JSON pairing store",
+      "reason": "The controller sends fixed-type raw keys through TLV. The persisted state decodes JSON and imports raw keys. The typed PyCA methods call the Ed25519/X25519 raw-key APIs. HAP performs no certificate parsing, CRL verification, CMS encryption, or PEM stack accumulation."
+    },
+    "quic": {
+      "evidence": [
+        "opt/sa02m-homekit/sa02m_homekit/bridge.py:153-160",
+        "opt/sa02m-homekit/sa02m_homekit/bridge.py:189",
+        "opt/sa02m-homekit/sa02m_homekit/mqtt_link.py:23-34",
+        "opt/sa02m-homekit/sa02m_homekit/mqtt_link.py:88-91",
+        "pyhap/hap_protocol.py:10-20",
+        "pyhap/hap_crypto.py:63-71"
+      ],
+      "ids": [
+        "107494",
+        "124709",
+        "84785",
+        "88822",
+        "95691"
+      ],
+      "profile": "TCP HAP listener and TCP MQTT client",
+      "reason": "The production HAP server builds an asyncio TCP protocol. Session framing and authentication are provided by HAP. The local MQTT client is created with default TCP transport. mDNS uses multicast DNS. None of these paths creates a QUIC client, server or stream."
+    },
+    "tls": {
+      "evidence": [
+        "opt/sa02m-homekit/sa02m_homekit/bridge.py:153-160",
+        "opt/sa02m-homekit/sa02m_homekit/mqtt_link.py:23-34",
+        "opt/sa02m-homekit/sa02m_homekit/mqtt_link.py:88-91",
+        "pyhap/hap_handler.py:511-553",
+        "pyhap/hap_crypto.py:63-71"
+      ],
+      "ids": [
+        "35190",
+        "84786"
+      ],
+      "profile": "No OpenSSL TLS server, DANE client or Suite B setting in the bridge transport",
+      "reason": "The asyncio listener receives no SSLContext. HAP establishes raw X25519 keys, signs with Ed25519 and encrypts frames using ChaCha20-Poly1305. The MQTT client calls connect_async with a host and port and never configures TLS."
+    }
+  },
+  "invalidate_if": "Change of the unit, effective profile, app, transport, PyCA binary or source, HAP dependencies, dynamically loaded origins, service environment, advisory catalogue, or CVE record. A different consumer of this ELF requires its own assessment.",
+  "package": {
+    "elf": "cryptography/hazmat/bindings/_rust.abi3.so",
+    "elf_sha256": "3547bf7902477933b7355dff3c88bddb46078624dca717921d48ffd4876d8d65",
+    "pyca_workspace_crates": [
+      {
+        "name": "cryptography-cffi",
+        "parent": "cryptography",
+        "version": "0.50.2"
+      },
+      {
+        "name": "cryptography-crypto",
+        "parent": "cryptography",
+        "version": "0.50.2"
+      },
+      {
+        "name": "cryptography-keepalive",
+        "parent": "cryptography",
+        "version": "0.50.2"
+      },
+      {
+        "name": "cryptography-key-parsing",
+        "parent": "cryptography",
+        "version": "0.50.2"
+      },
+      {
+        "name": "cryptography-openssl",
+        "parent": "cryptography",
+        "version": "0.50.2"
+      },
+      {
+        "name": "cryptography-x509",
+        "parent": "cryptography",
+        "version": "0.50.2"
+      },
+      {
+        "name": "cryptography-x509-verification",
+        "parent": "cryptography",
+        "version": "0.50.2"
+      }
+    ],
+    "sboms": {
+      "cryptography-50.0.2.dist-info/sboms/cryptography-rust.cyclonedx.json": "afd2189299bdca8a1a2359dc20d00684be6f1535c5bd57825a1d4e97330d1307",
+      "cryptography-50.0.2.dist-info/sboms/sbom.json": "99ed88aec0191cbbff601763a0069f87234b4af97c79c345ff8ca41f4f5dfc27"
+    },
+    "version": "4.0.3",
+    "wheel": "cryptography-50.0.2-cp311-abi3-manylinux_2_31_armv7l.whl",
+    "wheel_sha256": "ac9ed99d81760c62fe89d5f0815cdfa1ba9a35141cf30f1c2d044f04b4803d2e"
+  },
+  "peer_imports": "Alice classifies bridge families with bridge_roster._producer_namespace and prepare_poller_registration. This path can instantiate SpodesPoller, whose constructor takes the meter configuration and sets the session and transport to None. The DLMS security implementation uses Cipher with GCM; it is distinct from GCM-SIV. Cover the actual producer and peer import origins during independent review.",
+  "scope": "Source observations for the fixed optional SA-02m HAP Python consumer. Independent adjudication pending. No release admission or VEX waiver.",
+  "snapshot": {
+    "arm-build.log": {
+      "bytes": 2775,
+      "sha256": "809df28aa91f99b91e90b2f7e4c3f3b18aaafd730885bd75e2552585cb97edf0"
+    },
+    "hil.log": {
+      "bytes": 1846,
+      "sha256": "b808abb7ed11ab4591ffe0c53f48f0f2d3e080c43690a8839ce9f3a572c93478"
+    },
+    "homekit-50.0.2.json": {
+      "bytes": 91346,
+      "sha256": "913503c4601733a2f95ce4f4bf7ffdf791c8bf15a803e3d0e0f8ad58f4b53408"
+    },
+    "homekit-x86-suite.log": {
+      "bytes": 99,
+      "sha256": "a4ea19fde31f801c5c77b259162989f55374706e2ec872d3e595591079fda54a"
+    },
+    "probe.py": {
+      "bytes": 1702,
+      "sha256": "d166673d996892f0fc6178dd4b2e768b828c9df570bd88ed77eeb5ab15b721f7"
+    },
+    "real-stale-wheel.log": {
+      "bytes": 3242,
+      "sha256": "e0fca23b1657fc72655e27a63756ffe327f47a219c810dc2f3881b6e4c7749d0"
+    },
+    "used-responses.json": {
+      "bytes": 4001,
+      "sha256": "e6cdb43e0ccf7f79d4fccbd0ee0d9f12abc2b2b18497eae574dcdf4d676ea54a"
+    }
+  },
+  "target": "192.168.1.136; factory donor; HomeKit absent; isolated unprivileged test"
+}

@@ -6,10 +6,12 @@ from pathlib import Path
 from pathlib import PurePosixPath
 import re
 import tarfile
+import time
 import zipfile
 from email.parser import BytesParser
 
 from .providers import canonical, require, sha
+from .homekit_absence import matches as absent_homekit
 
 
 def normalize(name):
@@ -210,7 +212,7 @@ class Inventory:
             if row["exists"]:
                 require(actual.get(row["path"])==(row["name"],row["version"],row["sha256"]),"installed Node CLI tree incomplete")
 
-    def board(self,name,inventory,kernel,runtime,homekit_integrity=None,system_python=None,homekit_origins=None,homekit_native=None):
+    def board(self,name,inventory,kernel,runtime,homekit_integrity=None,system_python=None,homekit_origins=None,homekit_native=None,homekit_absence=None):
         self.devices[name]={}
         data=self.json("board "+name,inventory)
         require(data["dpkg"]["rc"]==0 and data["kernel_release"],"dpkg/kernel unavailable "+name)
@@ -239,6 +241,9 @@ class Inventory:
         self.gaps["vendor-kernel"].append(f"{name} {data['kernel_release']}: vendor advisory mapping unavailable")
         h=data["homekit"]
         self.devices[name]["homekit_installed"]=h["exists"]
+        if homekit_absence:
+            receipt = self.json("HomeKit absence " + name, homekit_absence)
+            self.devices[name]["homekit_absence_verified"] = absent_homekit(receipt, data, name, time.time())
         if h["exists"]:
             artifact=getattr(self,"hk_native",None)
             if not artifact or not homekit_native:

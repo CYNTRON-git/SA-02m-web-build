@@ -1,0 +1,454 @@
+{
+  "etc/systemd/system/sa02m-homekit.service": {
+    "bytes": 3235,
+    "sha256": "7ed0ed3494ce8ae80aaebfdd3bd011caa8ba5d79d5c49f8a91554857831828b7"
+  },
+  "opt/sa02m-alice/sa02m_alice/__init__.py": {
+    "bytes": 154,
+    "sha256": "c758a3f7ef184411754fb8116bfa6d76d2122ebdc195734d5d80cafd05a12e34"
+  },
+  "opt/sa02m-alice/sa02m_alice/client/__init__.py": {
+    "bytes": 44,
+    "sha256": "521aea4f78d0a42ad568e737ba8a0ff123b01b3e91f196da47f59cf7cbe25992"
+  },
+  "opt/sa02m-alice/sa02m_alice/client/auto_provision.py": {
+    "bytes": 24678,
+    "sha256": "fe079e91bed167008a158d311901072bd93b9c47ba8f04e3e1baa4f11daaaf70"
+  },
+  "opt/sa02m-alice/sa02m_alice/client/capability_values.py": {
+    "bytes": 3502,
+    "sha256": "86ba133a44fa4d0bad606f165b1902ef83b23afa267723cace258b29cc8c141a"
+  },
+  "opt/sa02m-alice/sa02m_alice/client/converters.py": {
+    "bytes": 25076,
+    "sha256": "2646977f6583e0b56daf50a8ed302c2ce86f065e832c9143636db1165c9fdd73"
+  },
+  "opt/sa02m-alice/sa02m_alice/client/device_registry.py": {
+    "bytes": 44521,
+    "sha256": "71bea2ebd611346ea24a39b0f44a3074ffb829a33abe05020649bbb6266027c1"
+  },
+  "opt/sa02m-alice/sa02m_alice/client/fleet_token.py": {
+    "bytes": 4867,
+    "sha256": "4ca9fd088734ebb5f6011dc06c069200aed288488a880bb717de72fc24df8892"
+  },
+  "opt/sa02m-alice/sa02m_alice/client/main.py": {
+    "bytes": 43606,
+    "sha256": "5afc6aed913288d257b84997745d6aa259dec7d78124c321991b0f439b395eac"
+  },
+  "opt/sa02m-alice/sa02m_alice/client/mqtt_link.py": {
+    "bytes": 13283,
+    "sha256": "5c189d61c4235af7364d0a538ec42bb742a9e76342eba623b2b4a1679f679694"
+  },
+  "opt/sa02m-alice/sa02m_alice/client/reload_watch.py": {
+    "bytes": 9185,
+    "sha256": "e1684ad1d4f1137e31722defdbdf8c67749d679c3e48803bafa555794decbdb2"
+  },
+  "opt/sa02m-alice/sa02m_alice/client/sio_connection.py": {
+    "bytes": 20857,
+    "sha256": "ee8463d955216d396363ad301881bee66d17c30a099595616dec43a9b335a2b5"
+  },
+  "opt/sa02m-alice/sa02m_alice/client/sio_handlers.py": {
+    "bytes": 11239,
+    "sha256": "8e13fd5e2ba043130d2c1c0fbba98695e455bbed16a4ee696cc50db99ae013cf"
+  },
+  "opt/sa02m-alice/sa02m_alice/client/state_sender.py": {
+    "bytes": 15355,
+    "sha256": "d41aca2c50367b79e536582d637e0760faa8342b8ed697d7dd9762eb57ad679e"
+  },
+  "opt/sa02m-alice/sa02m_alice/common/__init__.py": {
+    "bytes": 53,
+    "sha256": "640c67c87578a42739d8ef7323b2d1a8d798267af4cbd6b12d1e8d4b887aaed7"
+  },
+  "opt/sa02m-alice/sa02m_alice/common/binding_core.py": {
+    "bytes": 22279,
+    "sha256": "1e688b962339ea52e525487d355fa87af487b19ac0ed269370bc776e6c2789f0"
+  },
+  "opt/sa02m-alice/sa02m_alice/common/binding_sources.py": {
+    "bytes": 8044,
+    "sha256": "e4fa5add6c14c1c01cc4fe81dc9ee07eccc2b6f541c464c2aad0d671048d230f"
+  },
+  "opt/sa02m-alice/sa02m_alice/common/carel_import.py": {
+    "bytes": 4277,
+    "sha256": "8d343e9eb82aee0320e9f35fd7aba93f2e9afe0efdc60ebf90ce52e7febc8f4b"
+  },
+  "opt/sa02m-alice/sa02m_alice/common/config_store.py": {
+    "bytes": 12586,
+    "sha256": "7146dc78b77056b96308049232c009e939ac60351edfc25b03f60564b1d99b6a"
+  },
+  "opt/sa02m-alice/sa02m_alice/common/constants.py": {
+    "bytes": 12886,
+    "sha256": "d0bf60e4b00ff9ce7747dcf2f852210ae4e2ab14f7b9d9b84ab4cc68b44ed3fd"
+  },
+  "opt/sa02m-alice/sa02m_alice/common/fw_version.py": {
+    "bytes": 1632,
+    "sha256": "38e8e2983dbb40d2ffd98956bca2a2a20f97833d09c859f458d8261591bdb11e"
+  },
+  "opt/sa02m-alice/sa02m_alice/config/__init__.py": {
+    "bytes": 50,
+    "sha256": "074cb2bbce7e915414e1bf0008dd7b65986bf273a340fc408f0bf85f6397de92"
+  },
+  "opt/sa02m-alice/sa02m_alice/config/ahu_status.py": {
+    "bytes": 20571,
+    "sha256": "7dbd0d57c5238604831de2d21a72b8ad620a9227cf0a5576d47d7bebe366095c"
+  },
+  "opt/sa02m-alice/sa02m_alice/config/api.py": {
+    "bytes": 69957,
+    "sha256": "cb5c1c6de71d90ecbca13470370c288812caa3e69396f817290ecd3a548602be"
+  },
+  "opt/sa02m-alice/sa02m_alice/config/bridge_families.py": {
+    "bytes": 3476,
+    "sha256": "6aeb029c2ec48608f3a0f16bbc232fa6620afac8f0ba591abfb099c3dec8a0cb"
+  },
+  "opt/sa02m-alice/sa02m_alice/config/bridge_roster.py": {
+    "bytes": 9926,
+    "sha256": "0554cc4f3a8458345eb68d824aaf61c1649b2b47f8111715567f223e0a30d4b9"
+  },
+  "opt/sa02m-alice/sa02m_alice/config/device_types.py": {
+    "bytes": 17520,
+    "sha256": "6e71f4841c759d5a93d7c5c24f225f480b494332491e22c9e10b380385af8fd4"
+  },
+  "opt/sa02m-alice/sa02m_alice/config/inventory.py": {
+    "bytes": 31791,
+    "sha256": "72d019ff69a5de956ebff3c6c8c6b2366cc8aa2946e2626fb9e075f2c1b2d50b"
+  },
+  "opt/sa02m-alice/sa02m_alice/config/models.py": {
+    "bytes": 29898,
+    "sha256": "5054a688343f2a7b4dcb58c3d0e7a37ca7ef427667932c691b12495e0e666d94"
+  },
+  "opt/sa02m-alice/sa02m_alice/config/scene_devices.py": {
+    "bytes": 20162,
+    "sha256": "08e725f24e14eb85c7eed5d95bedb031c0fc05fdd1f68318ac98101f359637cf"
+  },
+  "opt/sa02m-alice/sa02m_alice/config/topics.py": {
+    "bytes": 12086,
+    "sha256": "8b422f3f4004a542f448fea000fe098367a406c30f052846baa2d0b226c41ad1"
+  },
+  "opt/sa02m-alice/sa02m_alice/home/__init__.py": {
+    "bytes": 77,
+    "sha256": "992b324d24a08a38f670e09e5732a564ef7728749f69cb66c56da07eb2ddfb48"
+  },
+  "opt/sa02m-alice/sa02m_alice/home/adapter.py": {
+    "bytes": 8141,
+    "sha256": "c705f034cb50ba9b1250d0ab31fc2a05f00875614df404695fc1bac59242aec9"
+  },
+  "opt/sa02m-alice/sa02m_alice/home/bridge.py": {
+    "bytes": 1839,
+    "sha256": "4f9785ce43263654a486761f609a98c41697d9504b6411beb859cc9e580dcb10"
+  },
+  "opt/sa02m-alice/sa02m_alice/home/contract.py": {
+    "bytes": 4981,
+    "sha256": "d1532eb929f34679e971a67cfa62274d48881eb33df16d7ae3a9265d7b74ab9e"
+  },
+  "opt/sa02m-alice/sa02m_alice/home/dispatcher.py": {
+    "bytes": 19233,
+    "sha256": "649fe031392af369559dd518330460dee67ac88cb7d3da8dba8c1681dd3317d6"
+  },
+  "opt/sa02m-alice/sa02m_alice/home/ledger.py": {
+    "bytes": 3965,
+    "sha256": "518e627ff05e6efffc0dd05cabb969407cc1b55a857a5ac7df8f4d5870aea79b"
+  },
+  "opt/sa02m-alice/sa02m_alice/home/main.py": {
+    "bytes": 3943,
+    "sha256": "9d39e5d750e9ca43e95f1c25b2f7c79f80a7c3f5de412ee01037e2b34e7a97b8"
+  },
+  "opt/sa02m-alice/sa02m_alice/home/publisher.py": {
+    "bytes": 1734,
+    "sha256": "330062d7d357db195729aa4b79cd529bc8eebce318726248ca75be8b14a86826"
+  },
+  "opt/sa02m-alice/sa02m_alice/home/server.py": {
+    "bytes": 6131,
+    "sha256": "1687d405db1403e375e8280a007b2f052c8bf89a447695e1969fb7c32ca6c89b"
+  },
+  "opt/sa02m-homekit/requirements.lock": {
+    "bytes": 1802,
+    "sha256": "9432d18f9216fcbfe0f0781775e65763bb4004d735a55f2f3d68e042f0e024b7"
+  },
+  "opt/sa02m-homekit/sa02m_homekit/__init__.py": {
+    "bytes": 177,
+    "sha256": "b77d6cab4bf32dc23b7cc457240b6032969a450ad8e8cbb0dd63998989e7cf55"
+  },
+  "opt/sa02m-homekit/sa02m_homekit/aid_store.py": {
+    "bytes": 4486,
+    "sha256": "67f9d40980dbb8d27e10b28ad86ef8a98541a52ac456f20d41a5b238f24bf3ce"
+  },
+  "opt/sa02m-homekit/sa02m_homekit/api.py": {
+    "bytes": 10018,
+    "sha256": "3f033c01bb39c4d0d8c8ff57c637f8f184719044f3dae77b76e8740773bdd822"
+  },
+  "opt/sa02m-homekit/sa02m_homekit/bridge.py": {
+    "bytes": 21957,
+    "sha256": "6ddcf6aa94bf98ad085ce4e283138bed5a921a04110320856d52e126cc7518f2"
+  },
+  "opt/sa02m-homekit/sa02m_homekit/config.py": {
+    "bytes": 4715,
+    "sha256": "bbacf1684935de517a10bba803c19176f14081ce948da922b7668df95fc9c25d"
+  },
+  "opt/sa02m-homekit/sa02m_homekit/constants.py": {
+    "bytes": 8838,
+    "sha256": "ecde42cdbbdf79734cca82b3a889fe5870d800cb87be0b3ea3e72a9aa9ba83ec"
+  },
+  "opt/sa02m-homekit/sa02m_homekit/engine.py": {
+    "bytes": 18456,
+    "sha256": "d6dcb1b496c45ec21949b6dff98f091c6745f861171502dbc09f7df289a8119e"
+  },
+  "opt/sa02m-homekit/sa02m_homekit/fsutil.py": {
+    "bytes": 4839,
+    "sha256": "84810f1f0ba4f4ffc77f4d365d6b837ce9f0bff279f1e5e1b54afcd9eb5ec780"
+  },
+  "opt/sa02m-homekit/sa02m_homekit/identity.py": {
+    "bytes": 5128,
+    "sha256": "a63eba0f492a1f7dc513bef541f3753e11de736b57a3cfa7d80603ecbef926a0"
+  },
+  "opt/sa02m-homekit/sa02m_homekit/main.py": {
+    "bytes": 24778,
+    "sha256": "b54aeff3f6a0016baa4eb97700b06e1c5166eee47f3f20410bfa1ce669033c5c"
+  },
+  "opt/sa02m-homekit/sa02m_homekit/mqtt_link.py": {
+    "bytes": 5046,
+    "sha256": "2590b60c4101c36910c0278ce218a2034a5f3125bb37960c4994527d49a533f1"
+  },
+  "opt/sa02m-homekit/sa02m_homekit/netif.py": {
+    "bytes": 2645,
+    "sha256": "c1dc19babe37b243383f8b6e441511509fd426d47fa073919292fdbb8f8daba8"
+  },
+  "opt/sa02m-homekit/sa02m_homekit/peers.py": {
+    "bytes": 8310,
+    "sha256": "a20b2cc5d13b5842b61ff35e2e4c6f6e02cbbff27b704312ce639a4f60ca6524"
+  },
+  "opt/sa02m-homekit/sa02m_homekit/projection.py": {
+    "bytes": 36671,
+    "sha256": "3a5ead5509f7c12d3b6c8330d5f5b3821051bf87a9fdedc438def999d741b643"
+  },
+  "opt/sa02m-homekit/sa02m_homekit/setup_payload.py": {
+    "bytes": 2491,
+    "sha256": "3b99cd182dd9cc8adf3c34aca779f191fc1692478e983b1d4deb4a396cfdf9d9"
+  },
+  "opt/sa02m-homekit/sa02m_homekit/status.py": {
+    "bytes": 4162,
+    "sha256": "aea349498c1d7d8a8279e1a66b6923579c2cc0246516c9fe8ebbbb522ec7cf51"
+  },
+  "opt/sa02m-modbus-mqtt/bridge_admission.py": {
+    "bytes": 2863,
+    "sha256": "1f48ffc6f0279da10f6e820a5f5c0af4325fca42177987d4c11561dd0d1aab30"
+  },
+  "opt/sa02m-modbus-mqtt/bridge_bus.py": {
+    "bytes": 16546,
+    "sha256": "b9c755d6569d4b13ae6e8b845c21b76adfb4cfdcd2228da7db21d9e94af52ea2"
+  },
+  "opt/sa02m-modbus-mqtt/bridge_carel.py": {
+    "bytes": 30390,
+    "sha256": "17aa8abc54256a7429617df28e35df0c29a158ddcbd041363406c5fee80749d6"
+  },
+  "opt/sa02m-modbus-mqtt/bridge_device.py": {
+    "bytes": 31038,
+    "sha256": "43a485907631495d6bdeeaa7ccab8f64decf89b47dd616298b0a53fc91e83321"
+  },
+  "opt/sa02m-modbus-mqtt/bridge_dtv_catalog.py": {
+    "bytes": 2701,
+    "sha256": "78b4f70bd8862e11203040ef5e7a96316d4d06ad8bf45f965472d87f0247684c"
+  },
+  "opt/sa02m-modbus-mqtt/bridge_dtv_ce.py": {
+    "bytes": 60471,
+    "sha256": "27d0a7df6569ea61f8141828671ea290842f44615b04533439e97827a38d3f07"
+  },
+  "opt/sa02m-modbus-mqtt/bridge_fmb.py": {
+    "bytes": 54974,
+    "sha256": "51ee11d7edfc3533a522d3c71008817d74cc286f093bd059a4d96b2206bd2965"
+  },
+  "opt/sa02m-modbus-mqtt/bridge_led.py": {
+    "bytes": 41058,
+    "sha256": "6710ac82f2ff2c6983c44799aad6a81038c78a695ecaacf68ab5c367dbcb8d13"
+  },
+  "opt/sa02m-modbus-mqtt/bridge_meta.py": {
+    "bytes": 6216,
+    "sha256": "c022c6ab58d1159faf5ed12afe2ceed4b68de8709c5655963dd875fa093d62c7"
+  },
+  "opt/sa02m-modbus-mqtt/bridge_mqtt.py": {
+    "bytes": 26502,
+    "sha256": "e2f1f1e29dbf4595265bd9d149514c04f49cc5cc333c177de2c4f05121c0bc13"
+  },
+  "opt/sa02m-modbus-mqtt/bridge_mr02m.py": {
+    "bytes": 64400,
+    "sha256": "22b82e6373adbf979b22d5f52ec4b4e6b4ed551ba877bbcd810b83c5c120614e"
+  },
+  "opt/sa02m-modbus-mqtt/bridge_mr02m_map.py": {
+    "bytes": 12823,
+    "sha256": "e7fcbfaf01c2a8c6a05b6d328e924a75c8f376e4d1fdee31acb30825ef4213b9"
+  },
+  "opt/sa02m-modbus-mqtt/bridge_probe.py": {
+    "bytes": 8183,
+    "sha256": "d98331b30956e7a64c4c88a72e534acec7fbf4eb29470eb9584a82c14104b6a9"
+  },
+  "opt/sa02m-modbus-mqtt/bridge_roster.py": {
+    "bytes": 3057,
+    "sha256": "6acc1f48aae586706cff334120a4e0c40cf1a34d517d527df4c1a61011be8a2c"
+  },
+  "opt/sa02m-modbus-mqtt/bridge_rtu_tcp.py": {
+    "bytes": 14907,
+    "sha256": "bc56c241aa57ee2d63a2566a84953b1598c6a6b7a23999414a1a63a9c009d0e1"
+  },
+  "opt/sa02m-modbus-mqtt/bridge_scan_lease.py": {
+    "bytes": 9753,
+    "sha256": "a7a809c63b49fae29a058bc7d879c32f46f02cefa8829aecd2e7c1610e2a8191"
+  },
+  "opt/sa02m-modbus-mqtt/bridge_serial.py": {
+    "bytes": 38897,
+    "sha256": "5a47933cef87b083759fe2f786ab4d23ac655d72265cffb63604ac8140327453"
+  },
+  "opt/sa02m-modbus-mqtt/bridge_spodes.py": {
+    "bytes": 13090,
+    "sha256": "99e38d52f0892fe087d7f183ae2917afa0bb8c6352a451027dc4f9c4542c66eb"
+  },
+  "opt/sa02m-modbus-mqtt/bridge_tcp.py": {
+    "bytes": 17276,
+    "sha256": "0768fe83a69983650aac5f723597a6bf7447a0a299543c4b4ce41e2325c6731a"
+  },
+  "opt/sa02m-modbus-mqtt/bridge_template.py": {
+    "bytes": 34376,
+    "sha256": "d819470f9c8672d13d3b5b96eea945661c9c3f1f100f8e94808a92125502d177"
+  },
+  "opt/sa02m-modbus-mqtt/bridge_template_channels.py": {
+    "bytes": 9895,
+    "sha256": "36ab593b331c8e4d176c023b25cefb3185d9d3c99afa498003565778b3462d03"
+  },
+  "opt/sa02m-modbus-mqtt/bridge_uart.py": {
+    "bytes": 2897,
+    "sha256": "9615a424a804b23376ea65a6eeb63144b1d4777b03018362410fc71e9c8d0d43"
+  },
+  "opt/sa02m-modbus-mqtt/devices_tables.py": {
+    "bytes": 337037,
+    "sha256": "f52ac9200a232e0f2f7d5e2d3af76b484556700da5955f9b50fa059dcc66fc51"
+  },
+  "opt/sa02m-modbus-mqtt/modbus_mqtt_bridge.py": {
+    "bytes": 17295,
+    "sha256": "9e54ed2e30eafd5c96a3c93b4caab24b2b45165aa461d66495a8367e6a98fb42"
+  },
+  "opt/sa02m-modbus-mqtt/mqtt_bus_scan.py": {
+    "bytes": 47958,
+    "sha256": "a0b7bba6298ac3afb8954effb049fdd8baaacd148bc93e8458cb2c13900fb7b5"
+  },
+  "opt/sa02m-modbus-mqtt/mqtt_live_snapshot.py": {
+    "bytes": 4291,
+    "sha256": "b8edb3b4b1b7d420c68237727816a7792fd74c629918a9f909c41777d4179b42"
+  },
+  "opt/sa02m-modbus-mqtt/mqtt_monitor_poll.py": {
+    "bytes": 2313,
+    "sha256": "ae7c73324eac4d6ad6ab7c9e2b58a3feb832d10315275ab4ff1801ea0321f36a"
+  },
+  "opt/sa02m-modbus-mqtt/mqtt_monitor_stream.py": {
+    "bytes": 5679,
+    "sha256": "07a694f3e6f18b97c0c24c5d710cddcc7446df3ed5e7ea7801a70567cfa44c69"
+  },
+  "opt/sa02m-modbus-mqtt/sa02m_telemetry.py": {
+    "bytes": 87580,
+    "sha256": "acf6898a63d70f22a0e6c9c681c7bba388583a963bccdcfdd89048611e722c97"
+  },
+  "opt/sa02m-rules/sa02m_rules/__init__.py": {
+    "bytes": 95,
+    "sha256": "9403094e9d8857c0d47ecf4a27070a8a4e9552ccf3af274a0aa9f2da339b66ee"
+  },
+  "opt/sa02m-rules/sa02m_rules/capability_binding.py": {
+    "bytes": 6684,
+    "sha256": "2fe63edd77147777e3d3f28aec73660c80659268efe84b7ad9c0940e17398c32"
+  },
+  "opt/sa02m-rules/sa02m_rules/code_runner.py": {
+    "bytes": 21006,
+    "sha256": "3d8d8dacaf2f2017b5d5041aa98317f7e0bb352d3ec5d0949ed7b9b400691243"
+  },
+  "opt/sa02m-rules/sa02m_rules/device_index.py": {
+    "bytes": 9630,
+    "sha256": "2d373f51ccb75f7ac4ea8a1333bef52eb28d8c056137d7c75e5f939a1648d973"
+  },
+  "opt/sa02m-rules/sa02m_rules/document_lock.py": {
+    "bytes": 1499,
+    "sha256": "0d1a0c0d6835904179a3592faae429c9a8f6b8470162a085ff0d63a60d88d819"
+  },
+  "opt/sa02m-rules/sa02m_rules/engine.py": {
+    "bytes": 67878,
+    "sha256": "d480b357239499474abb30849c0542e4a04d4eb1d19ecb0f79294e566442bb3a"
+  },
+  "opt/sa02m-rules/sa02m_rules/home_command.py": {
+    "bytes": 2619,
+    "sha256": "3429d5837fb5b48078ac9fbd61827fd89eb59f58f86fd09246a8ab060c4b2a6d"
+  },
+  "opt/sa02m-rules/sa02m_rules/home_document.py": {
+    "bytes": 2991,
+    "sha256": "e37ddb5dea780273df8d0dde58775175c087e3392dd9044fe8c6a8b8c2fd9a00"
+  },
+  "opt/sa02m-rules/sa02m_rules/http_guard.py": {
+    "bytes": 10253,
+    "sha256": "5cea0e86ee12c8573af4dd25c14fa13a71cf14544daa8ca6ad835868068a7f2c"
+  },
+  "opt/sa02m-rules/sa02m_rules/logic_templates.py": {
+    "bytes": 41619,
+    "sha256": "a4d511bd878095817b38512a0ba9c68eb267a047ffe67736b37048992dbb15a9"
+  },
+  "opt/sa02m-rules/sa02m_rules/service.py": {
+    "bytes": 24111,
+    "sha256": "28e9e6d5401bff0d5ce1939f4f5920c08037184e69f649c5691499db45a2f5f9"
+  },
+  "opt/sa02m-rules/sa02m_rules/store.py": {
+    "bytes": 54962,
+    "sha256": "451b9acad74dc44cba6466f48e4906ee6e60b50de9a864692d3357bb5191fd51"
+  },
+  "opt/sa02m-rules/sa02m_rules/upgrade.py": {
+    "bytes": 3027,
+    "sha256": "8fd9282adc29baff5bcd73c9d88a481360e5d3d1534b60c36263f464ca9fb0fe"
+  },
+  "opt/sa02m-spodes/sa02m_spodes/__init__.py": {
+    "bytes": 213,
+    "sha256": "b426e28880fa1daf85ebaebd3657da85d3be6efeb59650efe30016ea3c1430f6"
+  },
+  "opt/sa02m-spodes/sa02m_spodes/acse.py": {
+    "bytes": 3990,
+    "sha256": "0f0f6b6719b852fe134b45c178752ae581925dd445d35459718aaaf24363c40f"
+  },
+  "opt/sa02m-spodes/sa02m_spodes/axdr.py": {
+    "bytes": 7109,
+    "sha256": "d801b11e9fff0864131ba4276e715e864468de24c2f05f5712f19ea7bf57c39a"
+  },
+  "opt/sa02m-spodes/sa02m_spodes/hdlc.py": {
+    "bytes": 7093,
+    "sha256": "365eacd7219f8c1928996ce7c417a6124cea04450264857a667ce22603d5f962"
+  },
+  "opt/sa02m-spodes/sa02m_spodes/link.py": {
+    "bytes": 5812,
+    "sha256": "e1f3c028e799f4b7ccdc5c0cbac60c6e07826ccad5c9d7095f75d80ab9be95ff"
+  },
+  "opt/sa02m-spodes/sa02m_spodes/mercury.py": {
+    "bytes": 5001,
+    "sha256": "e0fc167ca611241074c2a0ccb069462cc704e65de77d4539880eb197c671fd8c"
+  },
+  "opt/sa02m-spodes/sa02m_spodes/obis_spodes.py": {
+    "bytes": 3952,
+    "sha256": "784e0578e94d1f583dd29747cda58ca335692bd6984c39be507b93090c2c28c5"
+  },
+  "opt/sa02m-spodes/sa02m_spodes/profiles.py": {
+    "bytes": 3906,
+    "sha256": "ae85e68245c5c7e661dea54feca453528aadba0e465189165824b0d174d078cc"
+  },
+  "opt/sa02m-spodes/sa02m_spodes/security.py": {
+    "bytes": 5493,
+    "sha256": "605a1e50d9a27ae5de290b68373fa1f5f217ad1e010ba42976f96f2c6ab16a0e"
+  },
+  "opt/sa02m-spodes/sa02m_spodes/session.py": {
+    "bytes": 8096,
+    "sha256": "b23e075b678c856c3ccebe4cb88b4d5736fc1b108b3830697fd459517cde025f"
+  },
+  "opt/sa02m-spodes/sa02m_spodes/wrapper.py": {
+    "bytes": 1126,
+    "sha256": "e7bf7b04b3e2797c34694ace2e446dddced3514973d6ccf049979b88936439bb"
+  },
+  "opt/sa02m-spodes/sa02m_spodes/xdlms.py": {
+    "bytes": 5148,
+    "sha256": "6d8de82737c0edad71d4bbe6543831b8b197b85c8d7b953dadce6957d8080c95"
+  },
+  "scripts/06c-homekit.sh": {
+    "bytes": 21755,
+    "sha256": "60274249d4873f78ab65c0b3972213b0cae3a6e529be7aa29f6ffd43978ceb2b"
+  },
+  "scripts/lib.sh": {
+    "bytes": 88858,
+    "sha256": "6104c3861a495d059f2c6a921b5726bdd27cce488902ef120697bbd08da35909"
+  }
+}
