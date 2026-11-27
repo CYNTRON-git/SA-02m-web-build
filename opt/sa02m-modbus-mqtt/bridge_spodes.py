@@ -165,6 +165,7 @@ class SpodesPoller(DevicePoller):
         self.pub.subscribe_writeback(
             self.device_id, "load_disconnect", self._on_load_mqtt)
 
+    @DeviceLiveCache.flush_changes()
     def poll_io(self) -> None:
         now = time.monotonic()
         if now - self._t_power < self._poll_power_s:
@@ -188,6 +189,7 @@ class SpodesPoller(DevicePoller):
             self.mark_fail()
             self.log_poll_fail("power poll", type(e).__name__)
 
+    @DeviceLiveCache.flush_changes()
     def poll_slow_if_due(self, now: float) -> None:
         if now - self._t_energy >= self._poll_energy_s:
             self._t_energy = now

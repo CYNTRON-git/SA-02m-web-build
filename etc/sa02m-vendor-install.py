@@ -361,10 +361,12 @@ class System:
         return values
 
     def state(self):
+        properties = {'LoadState', 'ActiveState', 'SubState', 'UnitFileState', 'Job', 'MainPID',
+                      'ControlGroup', 'WorkingDirectory', 'InvocationID'}
         result = self.run(['/usr/bin/systemctl', 'show', UNIT,
-                           '--property=LoadState,ActiveState,SubState,UnitFileState,Job,MainPID,ControlGroup'])
+                           '--property=' + ','.join(sorted(properties))])
         values = dict(line.split('=', 1) for line in result.stdout.splitlines() if '=' in line)
-        if result.returncode or set(values) != {'LoadState', 'ActiveState', 'SubState', 'UnitFileState', 'Job', 'MainPID', 'ControlGroup'}:
+        if result.returncode or set(values) != properties:
             raise InstallError('manager_unknown')
         if values['LoadState'] not in ('loaded', 'not-found', 'masked'):
             raise InstallError('manager_unknown')
@@ -399,32 +401,52 @@ class System:
         if result.returncode:
             raise InstallError('service_command_failed')
 
+    def process_identity(self, node, user_dir, state):
+        pid = int(state['MainPID']) if state['MainPID'].isdigit() else 0
+        if state['ActiveState'] != 'active' or not pid:
+            raise InstallError('runtime_health_failed')
+        invocation = state.get('InvocationID', '')
+        if (not re.fullmatch(r'[0-9a-f]{32}', invocation) or invocation == '0' * 32
+                or state.get('WorkingDirectory') != str(user_dir)):
+            return None
+        try:
+            proc = Path('/proc') / str(pid)
+            command = (proc / 'cmdline').read_bytes().rstrip(b'\0')
+            arguments = command.split(b'\0')
+            # Node-RED changes process.title after startup, replacing Linux argv.
+            expected = command == b'node-red' or (
+                str(TARGET / 'red.js').encode() in arguments and str(user_dir).encode() in arguments)
+            same_node = (proc / 'exe').resolve(strict=True) == node.resolve(strict=True)
+            same_directory = (proc / 'cwd').resolve(strict=True) == user_dir.resolve(strict=True)
+            groups = [line.split(':', 2)[2] for line in (proc / 'cgroup').read_text().splitlines() if line.count(':') >= 2]
+            owned = state['ControlGroup'].endswith('/nodered.service') and state['ControlGroup'] in groups
+            start_ticks = (proc / 'stat').read_text().rsplit(') ', 1)[1].split()[19]
+            if expected and same_node and same_directory and owned and start_ticks.isdigit() and int(start_ticks) > 0:
+                return pid, invocation, state['ControlGroup'], start_ticks
+        except (OSError, IndexError):
+            pass
+        return None
+
     def healthy(self, node, user_dir, since):
         limit = min(self.deadline, time.monotonic() + 45)
         while time.monotonic() < limit:
-            state = self.terminal()
-            pid = int(state['MainPID']) if state['MainPID'].isdigit() else 0
-            if state['ActiveState'] != 'active' or not pid:
-                raise InstallError('runtime_health_failed')
-            try:
-                proc = Path('/proc') / str(pid)
-                command = (proc / 'cmdline').read_bytes().split(b'\0')
-                same_node = (proc / 'exe').resolve(strict=True) == node.resolve(strict=True)
-                cgroup = (proc / 'cgroup').read_text()
-                expected = (str(TARGET / 'red.js').encode() in command and str(user_dir).encode() in command)
-                groups = [line.split(':', 2)[2] for line in cgroup.splitlines() if line.count(':') >= 2]
-                owned = state['ControlGroup'].endswith('/nodered.service') and state['ControlGroup'] in groups
-            except OSError:
-                same_node = expected = owned = False
-            result = self.run(['/usr/bin/journalctl', '-u', UNIT, '--since', '@' + str(since), '-n', '200', '--no-pager', '-o', 'cat'])
+            identity = self.process_identity(node, user_dir, self.terminal())
+            if identity is None:
+                time.sleep(.3)
+                continue
+            pid, invocation, group, _ = identity
+            result = self.run(['/usr/bin/journalctl', '_SYSTEMD_UNIT=' + UNIT,
+                               '_SYSTEMD_INVOCATION_ID=' + invocation, '_PID=' + str(pid),
+                               '--since', '@' + str(since), '-n', '200', '--no-pager', '-o', 'cat'])
             states = re.findall(
                 r'Started flows|Запущены потоки|Stopped flows|Остановлены потоки|'
                 r'Error loading credentials|Ошибка при загрузке учетных данных|'
                 r'Flows stopped in safe mode|Потоки остановлены в безопасном режиме|'
                 r'Waiting for missing types to be registered|Ожидание регистрации отсутствующих типов|'
                 r'Failed to load external modules|Unsupported version of|Неподдерживаемая версия', result.stdout)
-            if result.returncode == 0 and same_node and expected and owned and states and states[-1] in ('Started flows', 'Запущены потоки'):
-                return {'main_pid': pid, 'control_group': state['ControlGroup']}
+            if (result.returncode == 0 and states and states[-1] in ('Started flows', 'Запущены потоки')
+                    and self.process_identity(node, user_dir, self.terminal()) == identity):
+                return {'main_pid': pid, 'control_group': group}
             time.sleep(.3)
         raise InstallError('runtime_health_failed')
 

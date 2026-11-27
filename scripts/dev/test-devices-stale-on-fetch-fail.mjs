@@ -75,16 +75,36 @@ const FIXTURE = {
 };
 let mode = 'ok';            // 'ok' | 'drop' | 'http500'
 let liveRequests = 0;       // /api/devices hits in the current phase
+let snapshot = FIXTURE;
+let heldReply;
 const MIME = { '.js': 'text/javascript', '.css': 'text/css', '.html': 'text/html', '.svg': 'image/svg+xml', '.json': 'application/json' };
 
 const server = createServer(async (req, res) => {
   const url = new URL(req.url, 'http://localhost');
+  if (url.pathname.startsWith('/api/devices/widgets/') && req.method === 'POST') {
+    const chunks = [];
+    for await (const chunk of req) chunks.push(chunk);
+    const {id} = JSON.parse(Buffer.concat(chunks));
+    if (url.pathname.endsWith('/remove')) {
+      const device = snapshot.dtv.find((d) => d.id === id);
+      snapshot.available = [{...device, online: device.ok === true}];
+      snapshot.dtv = snapshot.dtv.filter((d) => d.id !== id);
+    } else if (url.pathname.endsWith('/add')) {
+      snapshot.dtv = snapshot.available.filter((d) => d.id === id);
+      snapshot.available = [];
+    }
+    res.setHeader('Content-Type', 'application/json');
+    res.end('{"ok":true}');
+    return;
+  }
   if (url.pathname === '/api/devices') {
     liveRequests++;
     if (mode === 'drop') { req.socket.destroy(); return; }
     res.setHeader('Content-Type', 'application/json');
     if (mode === 'http500') { res.writeHead(500); res.end('{"ok":false,"error":"daemon down"}'); return; }
-    res.end(JSON.stringify(FIXTURE));
+    if (mode === 'envelope') { res.end('{"ok":false}'); return; }
+    if (mode === 'hold') { heldReply = res; return; }
+    res.end(JSON.stringify(snapshot));
     return;
   }
   if (url.pathname.includes('/cgi-bin/') || url.pathname.startsWith('/api/')) {
@@ -179,6 +199,137 @@ try {
   check(liveRequests >= 1, `recovery: the fetch reached the stub (${liveRequests})`);
   check(cards.length === 1 && allPill(cards, 'online'), 'recovery +5 s: pill online again, dev-stale gone', fmt(cards));
 
+  async function tick() {
+    const before = liveRequests;
+    await page.clock.runFor(POLL_MS);
+    await waitCards(page, () => liveRequests > before);
+    await new Promise((resolve) => setTimeout(resolve, 75));
+    return page.evaluate(readCards);
+  }
+  mode = 'envelope';
+  await page.clock.runFor((BORDER_S + 5) * 1000);
+  cards = await waitCards(page, (c) => allPill(c, 'stale'));
+  check(allPill(cards, 'stale'), 'HTTP 200 error envelope ages the last sample', fmt(cards));
+  mode = 'ok';
+  for (const [age, file] of [[20, process.env.PRESENCE_CAPTURE_1], [1.4, process.env.PRESENCE_CAPTURE_2]]) {
+    snapshot = file ? JSON.parse(await readFile(file, 'utf8')).reads['api/devices'] : {
+      ok: true, dtv: [15, 3].map((addr, i) => ({kind: 'dtv', id: 'dtv-COM' + (3 + i) + '-' + addr, ok: true, age_s: 1})),
+      mtd: [{kind: 'mtd', id: 'mtdx62-mb-COM3-20', age_s: age, ok: false, presence: 1}],
+    };
+    cards = await tick();
+    const mtd = cards.find((c) => c.id === 'mtdx62-mb-COM3-20');
+    check(mtd?.pill === 'offline' && mtd.stale, 'MTD fresh failure, age ' + age, fmt(cards));
+    check(['dtv-COM3-15', 'dtv-COM4-3'].every((id) => cards.some((c) => c.id === id && c.pill === 'online')),
+      'two answering DTV devices stay online', fmt(cards));
+    if (age === 20 && process.env.PRESENCE_SCREEN_DIR) {
+      await page.locator('#dev-grid').screenshot({path: process.env.PRESENCE_SCREEN_DIR + '/devices.png'});
+    }
+  }
+  snapshot = {ok: true};
+  for (const kind of ['dtv', 'mr', 'ce', 'spodes', 'carel', 'mtd']) {
+    snapshot[kind] = [{kind, id: kind + '-one', ok: false, age_s: 30}];
+  }
+  cards = await tick();
+  check(cards.length === 6 && cards.every((c) => c.pill === 'offline' && c.stale),
+    'all six card kinds show an explicit failure', fmt(cards));
+  for (const [okValue, age, expected] of [[true, 30, 'online'], [false, 31, 'stale'], [true, 30.01, 'stale'],
+    [true, -1, 'stale'], [true, null, 'stale'], [true, '3', 'stale'], [true, undefined, 'stale'],
+    [undefined, 0, 'stale']]) {
+    snapshot = {ok: true, dtv: [{...FIXTURE.dtv[0], age_s: age, ok: okValue}]};
+    cards = await tick();
+    check(cards.length === 1 && cards[0].pill === expected, 'availability ' + JSON.stringify([okValue, age, expected]), fmt(cards));
+  }
+  mode = 'hold';
+  await tick();
+  mode = 'ok';
+  snapshot.dtv[0].ok = false;
+  snapshot.dtv[0].age_s = 0;
+  snapshot.available = [{id: 'hidden', label: 'Hidden', kind: 'dtv', online: true, ok: false, age_s: 1}];
+  await tick();
+  heldReply.end(JSON.stringify(FIXTURE));
+  await new Promise((resolve) => setTimeout(resolve, 150));
+  cards = await page.evaluate(readCards);
+  check(cards.length === 1 && cards[0].pill === 'offline', 'older successful poll cannot undo a newer failure', fmt(cards));
+  await page.evaluate(() => document.getElementById('dev-widget-add-btn').click());
+  const picker = await page.locator('#dev-add-list').textContent();
+  check(picker.includes('offline'), 'legacy contradictory picker entry shows offline', picker);
+  const list = page.locator('#dev-add-list');
+  snapshot.available = [{id:'dtv-COM5-7', label:'ДТВ порт 5', port_num:5,
+    kind:'dtv', location_source:'legacy_id', age_s:1, ok:true, online:true}];
+  await tick();
+  check((await list.textContent()).includes('online') && await list.locator('span[aria-label]').count() === 1,
+    'hidden legacy port is visibly unconfirmed on a fresh sample', await list.textContent());
+  for (const failure of ['envelope', 'drop']) {
+    mode = failure;
+    await page.clock.runFor(40000);
+    await tick();
+    check((await list.textContent()).includes('stale'), 'open picker ages after ' + failure, await list.textContent());
+    await page.evaluate(() => {
+      document.getElementById('dev-add-modal-close').click();
+      document.getElementById('dev-widget-add-btn').click();
+    });
+    check((await list.textContent()).includes('stale'), 'reopened picker ages after ' + failure);
+    mode = 'ok';
+    snapshot.available[0].location_source = 'sample';
+    await tick();
+    check((await list.textContent()).includes('online') && await list.locator('span[aria-label]').count() === 0,
+      'confirmed hidden device recovers after ' + failure);
+  }
+  snapshot = {ok: true, dtv: [{...FIXTURE.dtv[0], id: 'dtv-COM5-3', port_num: 4,
+    location_source: 'sample', label: 'ДТВ № 3 порт 4'}]};
+  await tick();
+  const title = page.locator('#dev-grid .dev-card-title');
+  check((await title.textContent()).endsWith('4') && !(await title.getAttribute('title')),
+    'confirmed sample uses its COM4 label with the stable COM5 id');
+  snapshot.dtv[0].port_num = 5;
+  snapshot.dtv[0].label = 'ДТВ № 3 порт 5';
+  for (const source of ['legacy_id', undefined]) {
+    snapshot.dtv[0].location_source = source;
+    await tick();
+    check((await title.textContent()).endsWith('(?)') && await title.locator('span[title][aria-label]').count() === 1,
+      'legacy address is visibly unconfirmed for source ' + source, await title.evaluate((n) => n.outerHTML));
+  }
+  snapshot.dtv[0].ok = false;
+  await tick();
+  page.once('dialog', (dialog) => dialog.accept());
+  await page.evaluate(() => {
+    document.getElementById('dev-add-modal-close')?.click();
+    document.querySelector('#dev-grid [data-role="remove"]').click();
+  });
+  await page.locator('#dev-grid .dev-card').waitFor({state: 'detached', timeout: 4000});
+  await page.evaluate(() => document.getElementById('dev-widget-add-btn').click());
+  check((await page.locator('#dev-add-list').textContent()).includes('offline'), 'hidden failed device remains offline in picker');
+  await page.evaluate(() => document.querySelector('#dev-add-list .dev-add-item').click());
+  cards = await waitCards(page, (c) => c.length === 1 && c[0].pill === 'offline');
+  check(cards.length === 1 && cards[0].pill === 'offline', 're-added widget retains offline state');
+  if (process.env.PRESENCE_DASHBOARD) {
+    const ports = JSON.parse(await readFile(process.env.PRESENCE_DASHBOARD, 'utf8'));
+    await page.evaluate(() => switchTab('dashboard'));
+    for (const count of [5, 4]) {
+      for (const theme of ['dark', 'light']) {
+        await page.setViewportSize({width: theme === 'dark' ? 1280 : 500, height: 900});
+        await page.evaluate(({ports, count, theme}) => {
+          document.documentElement.dataset.theme = theme;
+          applyRs485Status({rs485: ports.slice(0, count)});
+        }, {ports, count, theme});
+        const grid = page.locator('#rs485-grid');
+        check(await grid.locator('.rs485-port').count() === count, 'dashboard port count ' + count);
+        check(await grid.locator('#rs485c-1 .is-on').count() === 1
+          && await grid.locator('#rs485c-2 .rs485-chip').count() === 0, 'COM2/14 only on COM2');
+        check(await grid.locator('#rs485c-3 .is-on').count() === 1
+          && await grid.locator('#rs485c-3 .is-off').count() === 1
+          && await grid.locator('#rs485c-3 .is-scan[title]').count() === 1, 'COM4 confirmed and moved statuses');
+        check(!(await grid.innerHTML()).includes('последнему сканированию'), 'configured unknown has no scan tooltip');
+        if (process.env.PRESENCE_SCREEN_DIR) {
+          await grid.screenshot({path: process.env.PRESENCE_SCREEN_DIR + '/com-' + count + '-' + theme + '.png'});
+        }
+      }
+    }
+    await page.evaluate((ports) => applyRs485Status({rs485: ports.map((p) => ({
+      ...p, modules: {source: 'bridge', live: true, ours: [{addr: 14, model: 'ghost', online: true}]}
+    }))}), ports);
+    check(await page.locator('#rs485-grid .rs485-chip').count() === 0, 'older mixed helper cannot claim configured chips');
+  }
   check(errors.length === 0, 'no page errors', errors.join(' | '));
 } finally {
   await browser.close();

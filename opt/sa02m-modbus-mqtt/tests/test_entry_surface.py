@@ -66,6 +66,7 @@ EXPECTED_MODULES = [
     "bridge_mr02m",
     "bridge_mr02m_map",
     "bridge_probe",
+    "bridge_roster",
     "bridge_rtu_tcp",
     "bridge_scan_lease",
     "bridge_serial",
@@ -200,6 +201,7 @@ class TestSubmoduleImportSmoke(unittest.TestCase):
                 ("bridge_device", "bridge_template"),
                 ("bridge_template_channels", "bridge_template"),
                 ("bridge_template", "bridge_admission"),
+                ("bridge_admission", "bridge_roster"),
             ):
                 self.assertLess(copied.index(dependency), copied.index(consumer),
                                 f"{script} copies {consumer} before {dependency}")

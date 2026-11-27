@@ -80,7 +80,14 @@ export SA02M_ALICE_PATH="${PATH_INFO:-/integrations/alice/}"
 # import/JSON on a loaded ARM board. Must stay below nginx /cgi-bin/
 # fastcgi_read_timeout (20 s). Override: SA02M_ALICE_CGI_TIMEOUT.
 ALICE_CGI_TIMEOUT="${SA02M_ALICE_CGI_TIMEOUT:-18}"
-RESULT=$(timeout "$ALICE_CGI_TIMEOUT" python3 - <<'PY'
+runtime=(python3 -)
+if [[ -e /var/lib/sa02m-python-activation || -L /var/lib/sa02m-python-activation ||
+      ( -x /usr/local/libexec/sa02m-python-consumer && -r /opt/sa02m-python-manager/launch.py &&
+        -r /opt/sa02m-python-manager/consumers.json ) ]]; then
+    runtime=(/usr/local/libexec/sa02m-python-consumer alice-api)
+fi
+
+RESULT=$(timeout "$ALICE_CGI_TIMEOUT" "${runtime[@]}" <<'PY'
 import json, os, sys
 method = os.environ.get("SA02M_ALICE_METHOD", "GET")
 path = os.environ.get("SA02M_ALICE_PATH") or "/integrations/alice/"

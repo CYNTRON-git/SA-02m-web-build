@@ -1,21 +1,10 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
-"""RS-485 roster aggregator — the single writer of /run/sa02m-rs485-roster.json.
+"""Publish legacy discovery inventory and config-backed polling membership together.
 
-Reads Provider A (MQTT bridge, live) + Provider B (flasher scan cache, last-known),
-merges by (port, addr) preferring the live bridge entry, tags every entry with
-source/live/ours, and writes ONE normalized cache the status.cgi rs485 part reads.
-
-NEVER opens a serial port — every input is a file already written by a bus-owning
-service or a past leased scan. Run by a systemd timer (~8 s). ARM-cheap: a few
-small file reads + a dict merge + one atomic write.
-
-Output shape (consumed by status.cgi and the cloud heartbeat filler):
-    { "ts": <epoch>,
-      "ports": { "COM4": { "source": "bridge", "live": true, "ts": <epoch>,
-                           "ours": [ {"addr": 6, "model": "6AI6AO",
-                                      "online": true, "source": "bridge"} ],
-                           "third_party": { "total": 3, "online": 2 } } } }
+The legacy ports map merges active bridge rows and last-scan files. The dashboard
+gets polling_ports from the current saved setup and confirmed bridge bindings.
+The worker never opens a bus. See docs/contracts/rs485-roster.md.
 """
 
 import json
@@ -27,7 +16,13 @@ import traceback
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
-from providers import MqttBridgeProvider, FlasherScanProvider  # noqa: E402
+try:
+    from providers import MqttBridgeProvider, FlasherScanProvider  # noqa: E402
+    from polling_roster import projection  # noqa: E402
+except ModuleNotFoundError as exc:
+    if __name__ == "__main__" and exc.name in ("roster_files", "polling_roster"):
+        sys.exit(0)
+    raise
 
 OUTPUT_PATH = os.environ.get(
     "SA02M_RS485_ROSTER_OUT", "/run/sa02m-rs485-roster.json")
@@ -94,12 +89,16 @@ def build_ports(entries):
     return ports
 
 
-def aggregate(providers=None):
+def aggregate(providers=None, **projection_options):
     providers = providers if providers is not None else _default_providers()
     entries = []
+    runtime = None
     for provider in providers:
         try:
-            if provider.available():
+            if isinstance(provider, MqttBridgeProvider):
+                runtime = provider.snapshot()
+                entries.extend(provider.entries_from(runtime))
+            elif provider.available():
                 entries.extend(provider.entries())
         except Exception:  # noqa: BLE001 — a bad provider must not sink the rest
             # Never silently swallow: report to stderr (journald) so a broken
@@ -109,7 +108,8 @@ def aggregate(providers=None):
                                 traceback.format_exc()))
             continue
     ports = build_ports(merge_entries(entries))
-    return {"ts": time.time(), "ports": ports}
+    now = time.time()
+    return {"ts": now, "ports": ports, **projection(runtime, now, **projection_options)}
 
 
 def write_atomic(payload, path=OUTPUT_PATH):
@@ -134,6 +134,8 @@ def write_atomic(payload, path=OUTPUT_PATH):
 
 
 def main():
+    if not hasattr(MqttBridgeProvider, "snapshot"):
+        return 0  # The preceding release's provider is still installed.
     payload = aggregate()
     write_atomic(payload)
     return 0

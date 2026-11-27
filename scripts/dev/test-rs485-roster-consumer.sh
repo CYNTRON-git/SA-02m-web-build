@@ -145,28 +145,18 @@ PATH="$BIN:$PATH"; export PATH
 : > "$DEV/RS-485-3"
 : > "$DEV/RS-485-4"
 
-# ── the contract's own §1 fixture ──────────────────────────────────────────
-cat > "$CACHE" <<'JSON'
-{
-  "ts": 1737000000.0,
-  "ports": {
-    "COM4": {
-      "source": "bridge",
-      "live": true,
-      "ts": 1737000000.0,
-      "ours": [ { "addr": 6, "model": "6AI6AO", "online": true, "source": "bridge" } ],
-      "third_party": { "total": 3, "online": 2 }
-    },
-    "COM5": {
-      "source": "scan",
-      "live": false,
-      "ts": 1736900000.0,
-      "ours": [ { "addr": 3, "model": "4DO6DI", "online": null, "source": "scan" } ],
-      "third_party": { "total": 0, "online": null }
-    }
-  }
-}
-JSON
+# Exercise the shipped bridge exporter and worker with a pending config save.
+export SA02M_MQTT_CONFIG="$T/config.yaml" SA02M_MQTT_ROSTER="$T/bridge.json"
+export SA02M_FLASHER_SCAN_CACHE="$T/scan" SA02M_RS485_ROSTER_OUT="$CACHE"
+export SA02M_RS485_ROSTER_MEMO="$T/config.memo"
+"$PY" opt/sa02m-rs485-roster/tests/fixture_polling.py "$T" || exit 1
+cat > "$BIN/systemctl" <<'MOCK'
+#!/bin/sh
+printf 'ActiveState=active\nInvocationID=1f1f1f1f1f1f1f1f1f1f1f1f1f1f1f1f\n'
+MOCK
+chmod +x "$BIN/systemctl"
+"$PY" opt/sa02m-rs485-roster/aggregate.py || exit 1
+for n in 0 1 2; do : > "$DEV/RS-485-$n"; done
 
 # Since 1.0.7.36 rs485_port_json leaves its object in RS485_PORT_JSON instead
 # of printing it (A8-03: a `$(…)` caller lost the error-delta state). This
@@ -197,27 +187,48 @@ fi
 [ "$(jget "$J3" 'int("modules" in d)')" = "1" ] \
     && ok "3  RS-485-3 carries the contracted \`modules\` field" \
     || bad "3  RS-485-3 has NO \`modules\` field — contract §2 broken: $J3"
-[ "$(jget "$J3" 'd["modules"]["source"]')" = "bridge" ] \
+[ "$(jget "$J3" 'd["modules"]["source"]')" = "configured" ] \
     && ok "4  RS-485-3 <-> COM4 (the bridge port), not COM3" \
     || bad "4  port mapping is wrong: RS-485-3 got source $(jget "$J3" 'd["modules"]["source"]')"
-[ "$(jget "$J4" 'd["modules"]["source"]')" = "scan" ] \
-    && ok "5  RS-485-4 <-> COM5 (the scan port)" \
+[ "$(jget "$J4" 'd["modules"]["source"]')" = "configured" ] \
+    && ok "5  RS-485-4 <-> COM5 (configured, awaiting a matching poll)" \
     || bad "5  port mapping is wrong: RS-485-4 got source $(jget "$J4" 'd["modules"]["source"]')"
-[ "$(jget "$J3" 'd["modules"]["ours"][0]["model"]')" = "6AI6AO" ] \
+[ "$(jget "$J3" 'next(r["model"] for r in d["modules"]["ours"] if r["addr"] == 6)')" = "6AI6AO" ] \
     && ok "6  the module roster reaches the port object (addr/model)" \
     || bad "6  the module roster did not reach the port object: $J3"
 
 # 7-8: the honesty clauses — a stale scan must never render live/green.
 [ "$(jget "$J4" 'repr(d["modules"]["live"])')" = "False" ] \
-    && ok "7  a scan-sourced port stays live:false" \
+    && ok "7  a port with no matching runtime binding stays live:false" \
     || bad "7  a scan-sourced port claims live:true — a stale name would render as live"
 [ "$(jget "$J4" 'repr(d["modules"]["ours"][0]["online"])')" = "None" ] \
-    && ok "8  a scan-sourced module keeps online:null (not a false offline/online)" \
+    && ok "8  a configured module awaiting its first confirmed poll keeps online:null" \
     || bad "8  a scan-sourced module lost its null online state"
 [ "$(jget "$J4" 'repr(d["modules"]["third_party"]["online"])')" = "None" ] \
     && ok "9  third_party.online stays null where there is no live source" \
     || bad "9  third_party.online was coerced to a number without a live source"
 
+PORTS='['
+for n in 0 1 2 3 4; do
+    [ "$n" = 0 ] || PORTS+=','
+    PORTS+="$(port_json "$n")"
+done
+PORTS+=']'
+if "$PY" - "$PORTS" "$CACHE" <<'PY'
+import json, sys
+p = json.loads(sys.argv[1])
+legacy = json.load(open(sys.argv[2], encoding="utf-8"))["ports"]
+assert legacy["COM3"]["ours"][0]["addr"] == 14
+assert legacy["COM4"]["third_party"]["total"] == 3
+assert "modules" not in p[2]
+assert p[1]["modules"]["ours"][0]["addr"] == 14
+assert [(r["addr"], r["online"]) for r in p[3]["modules"]["ours"]] == [(3, None), (6, True), (8, False)]
+assert p[3]["modules"]["third_party"] == {"total": 2, "online": 1}
+assert [(r["addr"], r["online"]) for r in p[4]["modules"]["ours"]] == [(22, None)]
+PY
+then ok "24 saved membership, confirmed failures, moved binding and legacy inventory"
+else bad "24 incorrect configured membership: $PORTS"; fi
+if [ -n "${PRESENCE_DASHBOARD:-}" ]; then printf '%s\n' "$PORTS" > "$PRESENCE_DASHBOARD"; fi
 # 10: VERBATIM — the consumer must embed what the helper produced, not its own
 # reshaping of the cache. Compare against the helper run directly.
 HELPER_OUT=$("$PY" "$HELPER" "$CACHE" | awk -F'\t' '$1=="3"{print $2}')

@@ -329,9 +329,7 @@ def _wait_bootloader_ready_for_data_impl(
     while time.perf_counter() < deadline:
         payload_state, err_state = read_regs(REG_DIAG_STATE, 1)
         payload_f2, err_f2 = read_regs(REG_LAST_DATA_REJECT, 1)
-        # Exc 02 = регистр не поддерживается (старый bootloader).
-        # Таймаут = bootloader занят блокирующим стиранием Flash (bl_nmbs_poll не вызывается).
-        # В обоих случаях переключаемся на legacy-паузу ERASE_WAIT_AFTER_INFO_S.
+        # Both responses retain the legacy pause; silence alone proves no cause.
         state_unsupported = (
             _modbus_inner_exception_code(err_state) == 2
             or _fp_is_timeout_err(err_state)
@@ -343,13 +341,16 @@ def _wait_bootloader_ready_for_data_impl(
         if state_unsupported and not legacy_wait_due_to_missing_diag:
             legacy_wait_due_to_missing_diag = True
             if flasher.log_cb:
-                missing = ["0xF3"]
-                if reject_unsupported:
-                    missing.append("0xF2")
+                reasons = []
+                for register, error in (("0xF3", err_state), ("0xF2", err_f2)):
+                    if _modbus_inner_exception_code(error) == 2:
+                        reasons.append(register + ": Modbus exception 02 (регистр не поддерживается)")
+                    elif _fp_is_timeout_err(error):
+                        reasons.append(register + ": нет ответа (таймаут)")
                 flasher.log_cb(
-                    "Bootloader не поддерживает %s для %s; используем совместимый fallback "
+                    "Диагностика bootloader недоступна для %s (%s); используем совместимый fallback "
                     "с legacy-паузой %.1f с перед первым блоком данных."
-                    % ("/".join(missing), target_label, ERASE_WAIT_AFTER_INFO_S)
+                    % (target_label, "; ".join(reasons), ERASE_WAIT_AFTER_INFO_S)
                 )
         if state_unsupported:
             err_state = None

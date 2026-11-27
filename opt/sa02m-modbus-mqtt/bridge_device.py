@@ -357,7 +357,8 @@ def _setup_pollers(pollers, stop, hold, log) -> None:
                 stop.wait(0.05)
                 continue
             try:
-                p.setup()
+                with DeviceLiveCache.flush_changes():
+                    p.setup()
             except bridge_serial.ScanHold:
                 # Retry only the interrupted setup after the reservation ends.
                 stop.wait(0.05)
@@ -415,6 +416,7 @@ class PortCycleScheduler:
             self._fmb_rearm.clear()
             self._fmb.rearm_after_line_return()
 
+    @DeviceLiveCache.flush_changes()
     def _classic_slice(self, budget_s: float, read_at_least_one: bool) -> bool:
         """RegisterPoller.OpenPortCycle — one time-boxed classic pass."""
         t0 = time.monotonic()
@@ -480,7 +482,8 @@ class PortCycleScheduler:
                     break
                 try:
                     if not p.in_backoff():
-                        p.poll_io()
+                        with DeviceLiveCache.flush_changes():
+                            p.poll_io()
                 except bridge_serial.ScanHold:
                     break
                 except Exception as e:

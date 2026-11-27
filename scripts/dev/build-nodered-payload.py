@@ -9,8 +9,11 @@ from pathlib import Path
 import platform
 import shutil
 import subprocess
+import sys
 import tarfile
 import urllib.request
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+from native_node_payload import derive
 
 NODE_VERSION = '22.23.5'
 BUILD_NPM_VERSION = '10.9.9'
@@ -126,30 +129,32 @@ def main():
                     tf.addfile(info, f)
             else:
                 tf.addfile(info)
-    node_archive = out / NODE_NAME
+    upstream_node = build / NODE_NAME
     if args.node_archive:
-        shutil.copyfile(args.node_archive, node_archive)
+        shutil.copyfile(args.node_archive, upstream_node)
     else:
-        with urllib.request.urlopen(NODE_URL, timeout=120) as src, node_archive.open('wb') as dst:
+        with urllib.request.urlopen(NODE_URL, timeout=120) as src, upstream_node.open('wb') as dst:
             size = 0
             while chunk := src.read(1024 * 1024):
                 size += len(chunk)
                 if size > 100 * 1024 * 1024:
                     raise ValueError('Oversized Node download')
                 dst.write(chunk)
-    if sha(node_archive) != NODE_SHA256:
-        raise ValueError('Node archive does not match reviewed SHA-256')
+    npm_version = json.loads((nested/'npm/package.json').read_bytes())['version']
+    node_root = f'node-v{NODE_VERSION}-linux-armv7l'
+    node_archive = out / f'{node_root}-npm-{npm_version}.tar.xz'
+    node_digest = derive(upstream_node,NODE_SHA256,archive,sha(archive),node_root,npm_version,node_archive)
     shutil.copyfile(repo / 'etc/systemd/system/nodered.service', out / 'nodered.service')
     def entry(path, root, url):
         return {'filename': path.name, 'size': path.stat().st_size, 'sha256': sha(path), 'root': root, 'url': url}
     package = {'version': version, 'architecture': 'armv7l', 'node_version': NODE_VERSION, **provenance,
                'runtime': entry(archive, 'node-red', None),
-               'node': entry(node_archive, f'node-v{NODE_VERSION}-linux-armv7l', NODE_URL),
+               'node': entry(node_archive, node_root, None),
                'unit': {'sha256': sha(out / 'nodered.service')},
                'inventory_sha256': sha(runtime / '.sa02m-inventory.json')}
     write_json(out / 'vendor-payloads.json', {'schema': 1, 'packages': {'node-red': package}})
     write_json(out / 'runtime-packages.json', packages)
-    write_json(out / 'build-receipt.json', {'build_arch': platform.machine(), 'build_node': NODE_VERSION, 'build_npm': BUILD_NPM_VERSION, 'native_addons': [], 'package_copies': len(packages), 'archive_sha256': sha(archive), **provenance})
+    write_json(out / 'build-receipt.json', {'build_arch': platform.machine(), 'build_node': NODE_VERSION, 'build_npm': BUILD_NPM_VERSION, 'native_addons': [], 'package_copies': len(packages), 'archive_sha256': sha(archive), 'native_node': {'upstream_url':NODE_URL,'upstream_sha256':NODE_SHA256,'bundled_npm':npm_version,'derived_sha256':node_digest}, **provenance})
     print(json.dumps({'archive': str(archive), 'sha256': sha(archive), 'packages': len(packages)}))
     if not args.keep_build:
         shutil.rmtree(build)

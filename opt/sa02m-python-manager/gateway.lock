@@ -1,0 +1,2 @@
+pyserial==3.5 --hash=sha256:c4451db6ba391ca6ca299fb3ec7bae67a5c55dde170964c7a14ceefec02f2cf0
+pyyaml==6.0.1 --hash=sha256:dfbee2471127c57641172d643bc34a48b8d36364133fbe92b6b927c45258c0d1

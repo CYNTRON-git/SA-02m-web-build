@@ -74,6 +74,21 @@ try {
       await input.fill('printf failed');await button.click();
       await page.waitForFunction(text=>document.getElementById('cmd-output').textContent.includes(text),lang==='ru'?'Не удалось получить вывод команды.':'Could not capture command output.');
       assert.ok(!(await page.locator('#cmd-output').innerText()).includes('capture_failed'));
+      for (const [error, reason] of [
+        ['root_auth_failed', lang === 'ru' ? 'неверный пароль root' : 'wrong root password'],
+        ['root_locked', lang === 'ru' ? 'Повторите через 5 минут' : 'Retry in 5 minutes'],
+        ['root_auth_unavailable', lang === 'ru' ? 'Проверка пароля root недоступна' : 'Root password verification is unavailable']
+      ]) {
+        injected = {ok:false, error};
+        await page.evaluate(()=>executeCommandLine('printf status','root','synthetic'));
+        await page.waitForFunction(text=>document.getElementById('cmd-output').textContent.includes(text),reason);
+      }
+      for (const rc of [77,78,79]) {
+        injected = {ok:true, mode:'root', rc, output:'root authentication failed', root_authenticated:true};
+        await page.evaluate(()=>executeCommandLine('printf status','root','synthetic'));
+        await page.waitForFunction(text=>document.getElementById('cmd-output').textContent.includes(text),`[mode root, exit ${rc}]`);
+        assert.ok((await page.locator('#cmd-output').innerText()).endsWith('root authentication failed'));
+      }
     }
     await page.screenshot({path:fileURLToPath(new URL(`${theme}-${width}.png`,out)),fullPage:true});
     injected={ok:true,rc:77,mode:'root',output:'root authentication failed\n',truncated:false,capture_timed_out:false};

@@ -26,4 +26,11 @@ fi
 # One stream holds one fcgiwrap worker for its whole life, so it is capped at
 # 60 s (A8-07); a client that wants more reconnects. nginx also allows a single
 # stream per session (limit_conn in etc/nginx/network_config.conf).
-exec timeout -k 2 60 /usr/bin/python3 -u "$STREAM_PY" "${QUERY_STRING:-}"
+runtime=(/usr/bin/python3 -u "$STREAM_PY")
+if [[ -e /var/lib/sa02m-python-activation || -L /var/lib/sa02m-python-activation ||
+      ( -x /usr/local/libexec/sa02m-python-consumer && -r /opt/sa02m-python-manager/launch.py &&
+        -r /opt/sa02m-python-manager/consumers.json ) ]]; then
+    runtime=(/usr/local/libexec/sa02m-python-consumer mqtt-monitor)
+fi
+
+exec timeout -k 2 60 "${runtime[@]}" "${QUERY_STRING:-}"

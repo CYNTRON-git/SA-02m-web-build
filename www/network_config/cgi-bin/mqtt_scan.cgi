@@ -127,5 +127,13 @@ if [ ! -x "$SCAN_PY" ] && [ ! -f "$SCAN_PY" ]; then
     exit 0
 fi
 
-sudo /usr/bin/python3 "$SCAN_PY" "$TMP" 2>/dev/null \
+if [[ -x /usr/local/sbin/sa02m-mqtt-scan && -x /usr/local/libexec/sa02m-python-consumer &&
+      -r /opt/sa02m-python-manager/launch.py && -r /opt/sa02m-python-manager/consumers.json ]] &&
+      sudo -n -l /usr/local/sbin/sa02m-mqtt-scan "$TMP" >/dev/null 2>&1; then
+    sudo -n /usr/local/sbin/sa02m-mqtt-scan "$TMP"
+elif [[ -e /var/lib/sa02m-python-activation || -L /var/lib/sa02m-python-activation ]]; then
+    /usr/local/libexec/sa02m-python-consumer mqtt-scan "$TMP"
+else
+    sudo /usr/bin/python3 "$SCAN_PY" "$TMP" 2>/dev/null \
     || /usr/bin/python3 "$SCAN_PY" "$TMP"
+fi

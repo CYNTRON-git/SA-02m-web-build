@@ -16,6 +16,13 @@ check_auth() {
 }
 if ! check_auth; then echo '{"error":"unauthorized"}'; exit 0; fi
 
+runtime=(python3 -)
+if [[ -e /var/lib/sa02m-python-activation || -L /var/lib/sa02m-python-activation ||
+      ( -x /usr/local/libexec/sa02m-python-consumer && -r /opt/sa02m-python-manager/launch.py &&
+        -r /opt/sa02m-python-manager/consumers.json ) ]]; then
+    runtime=(/usr/local/libexec/sa02m-python-consumer gateway-config)
+fi
+
 # ── GET: YAML → JSON ──────────────────────────────────────────────────────────
 if [ "$REQUEST_METHOD" = "GET" ]; then
     if [ ! -f "$CONFIG_FILE" ]; then
@@ -41,7 +48,7 @@ print(json.dumps({"ports": default_ports}))
 PYEOF
         exit 0
     fi
-    python3 - <<'PYEOF'
+    "${runtime[@]}" <<'PYEOF'
 import sys, json, yaml, pathlib
 try:
     with open("/etc/sa02m-gateway.yaml") as f:
@@ -67,7 +74,7 @@ if [ "$REQUEST_METHOD" = "POST" ]; then
 
     dd bs=1 count="${CONTENT_LENGTH:-0}" 2>/dev/null > "$TMP_IN"
 
-    RESULT=$(python3 - "$TMP_IN" "$TMP_OUT" <<'PYEOF'
+    RESULT=$("${runtime[@]}" "$TMP_IN" "$TMP_OUT" <<'PYEOF'
 import sys, json, yaml, pathlib, ipaddress
 
 VALID_MODES     = {'disabled', 'modbus_tcp', 'rtu_over_tcp', 'transparent'}

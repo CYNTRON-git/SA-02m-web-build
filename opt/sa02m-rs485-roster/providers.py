@@ -15,9 +15,17 @@ new source tag; the aggregator, cache format, CGI and UI are untouched.
 
 import json
 import os
+import sys
 import time
 
 from model_alias import canonical_model
+try:
+    from roster_files import BRIDGE_STALE_S, ROSTER_LIMIT, fresh, read_regular
+except ModuleNotFoundError as exc:
+    # The old timer can launch its previous entry point partway through delivery.
+    if exc.name == "roster_files" and os.path.basename(sys.argv[0]) == "aggregate.py":
+        sys.exit(0)
+    raise
 
 # Default source paths (overridable via env for tests / non-standard installs).
 BRIDGE_ROSTER_PATH = os.environ.get(
@@ -25,9 +33,6 @@ BRIDGE_ROSTER_PATH = os.environ.get(
 SCAN_CACHE_DIR = os.environ.get(
     "SA02M_FLASHER_SCAN_CACHE", "/var/lib/sa02m-flasher/last_scan")
 
-# A bridge roster older than this is treated as stale (bridge stopped, e.g. a
-# flasher scan took the port) — the aggregator then falls back to the scan cache.
-BRIDGE_STALE_S = 60.0
 
 
 def _read_json(path):
@@ -71,22 +76,26 @@ class MqttBridgeProvider(RosterProvider):
         self._path = path
         self._stale_s = stale_s
 
-    def _load(self):
-        data = _read_json(self._path)
+    def snapshot(self):
+        try:
+            data = json.loads(read_regular(self._path, ROSTER_LIMIT)[0])
+        except (OSError, ValueError, RecursionError):
+            return None
         if not isinstance(data, dict):
             return None
         ts = data.get("ts")
-        if not isinstance(ts, (int, float)):
-            return None
-        if (time.time() - float(ts)) > self._stale_s:
+        if not fresh(ts, time.time(), self._stale_s):
             return None  # stale ⇒ bridge not owning the port right now
         return data
 
     def available(self):
-        return self._load() is not None
+        return self.snapshot() is not None
 
     def entries(self):
-        data = self._load()
+        data = self.snapshot()
+        return self.entries_from(data)
+
+    def entries_from(self, data):
         if not data:
             return []
         ts = float(data.get("ts") or time.time())
@@ -96,7 +105,7 @@ class MqttBridgeProvider(RosterProvider):
                 out.append(_entry(
                     dev.get("port"), dev.get("addr"), dev.get("model"),
                     dev.get("ours"), bool(dev.get("online")), "bridge", ts))
-            except (TypeError, ValueError):
+            except (AttributeError, TypeError, ValueError, OverflowError):
                 continue
         return out
 

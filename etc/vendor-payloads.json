@@ -4,11 +4,11 @@
       "architecture": "armv7l",
       "inventory_sha256": "3e842f3f0d2b4c730afc1bf3c5680e766f0d36a9e038865da06ab86c12d8b614",
       "node": {
-        "filename": "node-v22.23.5-linux-armv7l.tar.xz",
+        "filename": "node-v22.23.5-linux-armv7l-npm-11.21.3.tar.xz",
         "root": "node-v22.23.5-linux-armv7l",
-        "sha256": "1c3e15d38e4cafbbf74377ac070cd9d7e0418c673e1f6332f38f1d4762a699f9",
-        "size": 26367892,
-        "url": "https://nodejs.org/dist/v22.23.5/node-v22.23.5-linux-armv7l.tar.xz"
+        "sha256": "2a5ff29b1148dd508677143770660691af56a89ab5d74e07cef49edf9fcd173b",
+        "size": 26905228,
+        "url": null
       },
       "node_engines": "^20.17.0 || >=22.9.0",
       "node_version": "22.23.5",

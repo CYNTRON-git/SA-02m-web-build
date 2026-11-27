@@ -10,6 +10,9 @@ CONFIG_FILE="/etc/sa02m-modbus-mqtt.yaml"
 # env only: fcgiwrap passes a request nothing but HTTP_* variables. Handed to
 # python as argv, never interpolated into its source.
 BRIDGE_LIB_DIR="${SA02M_BRIDGE_LIB_DIR:-/opt/sa02m-modbus-mqtt}"
+if [[ -e /var/lib/sa02m-python-activation || -L /var/lib/sa02m-python-activation ]]; then
+    BRIDGE_LIB_DIR=/opt/sa02m-modbus-mqtt
+fi
 
 echo "Content-type: application/json; charset=UTF-8"
 echo "Cache-Control: no-store"
@@ -24,11 +27,18 @@ if ! check_auth; then echo '{"error":"unauthorized"}'; exit 0; fi
 # json_escape: shared escaper (web-code-rigor.md ## Bash CGI floors).
 . "$(dirname "$0")/lib_web_json.sh"
 
+runtime=(python3 -)
+if [[ -e /var/lib/sa02m-python-activation || -L /var/lib/sa02m-python-activation ||
+      ( -x /usr/local/libexec/sa02m-python-consumer && -r /opt/sa02m-python-manager/launch.py &&
+        -r /opt/sa02m-python-manager/consumers.json ) ]]; then
+    runtime=(/usr/local/libexec/sa02m-python-consumer mqtt-config)
+fi
+
 if [ "$REQUEST_METHOD" = "GET" ]; then
     # Читаем YAML и конвертируем в JSON через Python. `capabilities` (what the
     # add-device modal may offer over Modbus TCP) comes from the validator
     # itself; without it the field is absent and the modal hides Ethernet.
-    python3 - "$BRIDGE_LIB_DIR" <<'PYEOF'
+    "${runtime[@]}" "$BRIDGE_LIB_DIR" <<'PYEOF'
 import sys, json, yaml, pathlib
 cfg_path = pathlib.Path("/etc/sa02m-modbus-mqtt.yaml")
 
@@ -100,7 +110,7 @@ if [ "$REQUEST_METHOD" = "POST" ]; then
         exit 0
     fi
 
-    RESULT=$(python3 - "$TMP_IN" "$TMP_OUT" "$BRIDGE_LIB_DIR" "$CONFIG_FILE" <<'PYEOF'
+    RESULT=$("${runtime[@]}" "$TMP_IN" "$TMP_OUT" "$BRIDGE_LIB_DIR" "$CONFIG_FILE" <<'PYEOF'
 import sys, json, yaml, pathlib
 
 

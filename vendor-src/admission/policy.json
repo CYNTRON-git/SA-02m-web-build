@@ -1,0 +1,28 @@
+{
+  "schema": 1,
+  "scopes": ["node-red", "python", "python-ambient", "homekit", "development", "native-node", "external-node", "ubuntu", "vendor-kernel", "opcua-native"],
+  "opcua_review_sha256": "4b9df9482c7bc1c11f24554de969a23007f86cfef2ce0faab7097f5447a50dde",
+  "openssl_cna_archive_sha256": "de55b8338b01a3c5e4ad4e4f2a989e8a63121639285a17995ea4d45dd72b1453",
+  "blocking": ["HIGH", "CRITICAL"],
+  "ttl_seconds": 86400,
+  "exceptions": [],
+  "lower_findings_owner": "SA-02m release maintainer",
+  "providers": {
+    "node-red": "npm official bulk API with upstream semver",
+    "python": "OSV.dev exact PyPI versions",
+    "python-ambient": "OSV.dev exact ambient non-distro Python distributions",
+    "homekit": "OSV.dev PyPI and crates.io, Ubuntu distro bootstrap, ARM wheel SBOM, OpenSSL CNA ranges, upstream semver and CVE List metrics",
+    "development": "OSV.dev exact npm and PyPI versions",
+    "native-node": "Node.js Security WG core catalogue with upstream semver",
+    "external-node": "Physical node binaries and npm CLI trees, Node.js Security WG and OSV.dev",
+    "ubuntu": "Canonical Noble source advisories via OSV.dev, Launchpad primary archive history and Ubuntu Security Tracker source/release status",
+    "vendor-kernel": "No authoritative vendor feed verified",
+    "opcua-native": "OpenSSL CNA catalogue, CVE List records, independent artifact-specific applicability and OSV.dev for crates.io dependencies"
+  },
+  "cvss": {
+    "name": "cvss", "version": "3.6",
+    "file": "cvss-3.6-py2.py3-none-any.whl", "bytes": 31154,
+    "sha256": "e342c6ad9c7eb69d2aebbbc2768a03cabd57eb947c806e145de5b936219833ea",
+    "url": "https://files.pythonhosted.org/packages/63/6d/fe2c65b94a28ae0481dc254e8cd664b82390069003bea945076d8a445f2b/cvss-3.6-py2.py3-none-any.whl"
+  }
+}

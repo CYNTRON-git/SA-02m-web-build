@@ -1,5 +1,5 @@
 /* Devices tab — live ДТВ / СЭ-02м-3 widgets + MR-02m analog cards + history modal / Excel / events */
-import { aiSensorLabel, aiUnitPrecision } from "./ai-sensors.js?v=1.0.8.2";
+import { aiSensorLabel, aiUnitPrecision } from "./ai-sensors.js?v=1.0.8.3";
 
 (function () {
   "use strict";
@@ -180,6 +180,12 @@ import { aiSensorLabel, aiUnitPrecision } from "./ai-sensors.js?v=1.0.8.2";
     return Number(age) > STALE_BORDER_S;
   }
 
+  function availability(d) {
+    if (!Number.isFinite(d.age_s) || d.age_s < 0 || d.age_s > STALE_BORDER_S) return "stale";
+    if (d.ok === true) return "online";
+    return d.ok === false ? "offline" : "stale";
+  }
+
   function escapeHtml(s) {
     return String(s)
       .replace(/&/g, "&amp;")
@@ -191,11 +197,12 @@ import { aiSensorLabel, aiUnitPrecision } from "./ai-sensors.js?v=1.0.8.2";
   function deviceList(data) {
     const dtv = Array.isArray(data.dtv) ? data.dtv : data.dtv ? [data.dtv] : [];
     const ce = Array.isArray(data.ce) ? data.ce : data.ce ? [data.ce] : [];
+    const spodes = Array.isArray(data.spodes) ? data.spodes : data.spodes ? [data.spodes] : [];
     const mr = Array.isArray(data.mr) ? data.mr : data.mr ? [data.mr] : [];
     const carel = Array.isArray(data.carel) ? data.carel : data.carel ? [data.carel] : [];
     const mtd = Array.isArray(data.mtd) ? data.mtd : data.mtd ? [data.mtd] : [];
     // AHU cards first (Operator decision F5); mirrors stand_devices.live_snapshot.
-    return [...carel, ...dtv, ...ce, ...mr, ...mtd];
+    return [...carel, ...dtv, ...ce, ...spodes, ...mr, ...mtd];
   }
 
   /* MR-02m analog card body: fixed grid of ai_count cells (a disabled channel
@@ -794,6 +801,20 @@ import { aiSensorLabel, aiUnitPrecision } from "./ai-sensors.js?v=1.0.8.2";
     return custom || (d && (d.label || d.title)) || (d && d.id) || "";
   }
 
+  function setCardLabel(el, d, label = displayLabel(d)) {
+    el.textContent = label;
+    const legacy = d.location_source === "legacy_id"
+      || (d.location_source !== "sample" && (d.port_num != null || !!d.host || !!d.com || /-tcp-/.test(d.id)));
+    if (legacy) {
+      // The title fitter owns the parent tooltip when the name is truncated.
+      const marker = document.createElement("span");
+      marker.textContent = " (?)";
+      marker.title = tl("Адрес опроса не подтверждён");
+      marker.setAttribute("aria-label", marker.title);
+      el.appendChild(marker);
+    }
+  }
+
   const WIDGET_NAME_RE = /^[\p{L}\p{N}_ \-./+]{1,64}$/u;
   let titleEditing = false;
 
@@ -809,7 +830,7 @@ import { aiSensorLabel, aiUnitPrecision } from "./ai-sensors.js?v=1.0.8.2";
     }
     const card = document.querySelector('.dev-card[data-device-id="' + id + '"]');
     const titleEl = card && card.querySelector(".dev-card-title");
-    if (titleEl) titleEl.textContent = names[id] || def;
+    if (titleEl && lastDeviceById[id]) setCardLabel(titleEl, lastDeviceById[id]);
     if (activeDeviceId === id) {
       activeDeviceLabel = names[id] || def || activeDeviceLabel;
       const modalTitle = $("dev-modal-title");
@@ -1405,13 +1426,14 @@ import { aiSensorLabel, aiUnitPrecision } from "./ai-sensors.js?v=1.0.8.2";
     list.innerHTML = "";
     const items = availableDevices || [];
     if (empty) empty.hidden = items.length > 0;
+    const elapsed = elapsedSinceLive();
     items.forEach((d) => {
       const id = String(d.id || "");
       const row = document.createElement("button");
       row.type = "button";
       row.className = "dev-add-item";
       row.innerHTML =
-        `<span class="dev-add-item-title">${escapeHtml(d.label || id)}</span>` +
+        '<span class="dev-add-item-title"></span>' +
         `<span class="dev-add-item-meta muted">${escapeHtml(
           (d.kind === "ce"
             ? "СЭ-02м-3"
@@ -1422,9 +1444,10 @@ import { aiSensorLabel, aiUnitPrecision } from "./ai-sensors.js?v=1.0.8.2";
             : d.kind === "mr"
             ? "MR-02m"
             : "ДТВ") +
-            (d.online ? " · online" : " · offline")
+            (" · " + (d.online === false && d.age_s == null ? "offline" : availability(agedSample(d, elapsed))))
         )}</span>` +
         `<span class="dev-add-item-action">Добавить</span>`;
+      setCardLabel(row.querySelector(".dev-add-item-title"), d, d.label || id);
       row.addEventListener("click", () => addWidget(id));
       list.appendChild(row);
     });
@@ -1462,17 +1485,16 @@ import { aiSensorLabel, aiUnitPrecision } from "./ai-sensors.js?v=1.0.8.2";
   function updateCard(card, d) {
     if (!card || !d) return;
     if (d.id) lastDeviceById[String(d.id)] = d;
-    const stale = isAgeStale(d);
+    const status = availability(d);
+    const stale = status !== "online";
     card.classList.toggle("dev-stale", stale);
     card.classList.toggle("dev-stale-border", stale);
     card.classList.toggle("dev-has-alert", !!(d.alerts && d.alerts.length));
     const titleEl = card.querySelector(".dev-card-title");
-    if (titleEl) {
-      titleEl.textContent = displayLabel(d);
-    }
+    if (titleEl) setCardLabel(titleEl, d);
     const st = card.querySelector('[data-role="status"]');
     if (st) {
-      st.textContent = stale ? "stale" : "online";
+      st.textContent = status;
       st.className = "dev-pill " + (stale ? "bad" : "ok");
     }
     const al = card.querySelector('[data-role="alerts"]');
@@ -1672,6 +1694,8 @@ import { aiSensorLabel, aiUnitPrecision } from "./ai-sensors.js?v=1.0.8.2";
       aged re-render, so repeated failures do not compound the age). */
   let lastLiveDevices = null;
   let lastLiveOkTs = 0;
+  let liveRequest = 0;
+  let lastSettledRequest = 0;
 
   function ensureCards(list) {
     const grid = $("dev-grid");
@@ -1853,30 +1877,31 @@ import { aiSensorLabel, aiUnitPrecision } from "./ai-sensors.js?v=1.0.8.2";
       });
   }
 
-  /* A failed api/devices fetch (network error, non-2xx, aborted) used to be
-     swallowed, leaving every card with its last values and the green `online`
-     pill for as long as the API stayed unreachable — a frozen card that read
-     as live (bench 1.135, 2026-10-29). Once the last good fetch is older than
-     STALE_BORDER_S the last live snapshot is re-rendered with age_s advanced
-     by the elapsed time, so isAgeStale() flips the pill to `stale` and the
-     card gets `dev-stale` — the existing vocabulary. A later good fetch
-     overwrites it as usual. The 401 path is app.js's fetch wrapper, untouched. */
+  // Age from the last successful response; a failed refresh has no new samples.
+  function elapsedSinceLive() {
+    return lastLiveOkTs ? Math.max(0, (Date.now() - lastLiveOkTs) / 1000) : 0;
+  }
+
+  function agedSample(d, elapsed) {
+    return Number.isFinite(d.age_s) && d.age_s >= 0
+      ? Object.assign({}, d, { age_s: d.age_s + elapsed }) : d;
+  }
+
   function markLiveFetchFailed() {
     if (!lastLiveDevices || !lastLiveOkTs) return;
-    const elapsedS = (Date.now() - lastLiveOkTs) / 1000;
-    if (elapsedS <= STALE_BORDER_S) return;
-    ensureCards(
-      lastLiveDevices.map((d) => {
-        const age = Number(d.age_s);
-        return Object.assign({}, d, { age_s: (Number.isFinite(age) ? age : 0) + elapsedS });
-      })
-    );
+    const elapsed = elapsedSinceLive();
+    ensureCards(lastLiveDevices.map((d) => agedSample(d, elapsed)));
+    const modal = $("dev-add-modal");
+    if (modal && !modal.hidden) renderAddList();
   }
 
   function refreshLive() {
+    const request = ++liveRequest;
     return fetchJson("api/devices")
       .then((data) => {
-        if (!data || !data.ok) return;
+        if (request < lastSettledRequest) return;
+        lastSettledRequest = request;
+        if (!data || data.ok !== true) return markLiveFetchFailed();
         availableDevices = Array.isArray(data.available) ? data.available : [];
         lastLiveDevices = deviceList(data);
         lastLiveOkTs = Date.now();
@@ -1894,8 +1919,12 @@ import { aiSensorLabel, aiUnitPrecision } from "./ai-sensors.js?v=1.0.8.2";
               : "Нет устройств ДТВ / СЭ-02м-3 / Carel / MR-02m / MTD262-MB в MQTT. Добавьте их на вкладке MQTT — виджеты появятся здесь автоматически.";
         }
       })
-      .catch(markLiveFetchFailed)
-      .then(() => refreshEvents());
+      .catch(() => {
+        if (request < lastSettledRequest) return;
+        lastSettledRequest = request;
+        markLiveFetchFailed();
+      })
+      .then(() => request === lastSettledRequest && refreshEvents());
   }
 
   function historyQs(extra) {
@@ -4231,6 +4260,7 @@ import { aiSensorLabel, aiUnitPrecision } from "./ai-sensors.js?v=1.0.8.2";
   };
 
   window.devicesTabDestroy = function () {
+    lastSettledRequest = ++liveRequest;
     if (timer) {
       clearInterval(timer);
       timer = null;

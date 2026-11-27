@@ -1,0 +1,401 @@
+{
+  "entries": {
+    "alice-api": {
+      "group": "home",
+      "imports": [
+        "sa02m_alice",
+        "yaml"
+      ],
+      "kind": "stdin",
+      "roots": [
+        "/opt/sa02m-alice",
+        "/opt/sa02m-devices",
+        "/opt/sa02m-rules"
+      ],
+      "source": "www/network_config/cgi-bin/sa02m_alice_api.cgi",
+      "target": null,
+      "user": "www-data"
+    },
+    "alice-topics": {
+      "group": "home",
+      "imports": [
+        "sa02m_alice",
+        "yaml"
+      ],
+      "kind": "stdin",
+      "roots": [
+        "/opt/sa02m-alice",
+        "/opt/sa02m-devices",
+        "/opt/sa02m-rules"
+      ],
+      "source": "www/network_config/cgi-bin/sa02m_alice_topics.cgi",
+      "target": null,
+      "user": "www-data"
+    },
+    "gateway-apply": {
+      "group": "gateway",
+      "imports": [
+        "yaml"
+      ],
+      "kind": "stdin",
+      "roots": [],
+      "source": "usr/local/sbin/sa02m-gateway-config-apply.sh",
+      "target": null,
+      "user": "root"
+    },
+    "gateway-config": {
+      "group": "gateway",
+      "imports": [
+        "yaml"
+      ],
+      "kind": "stdin",
+      "roots": [],
+      "source": "www/network_config/cgi-bin/gateway_config.cgi",
+      "target": null,
+      "user": "www-data"
+    },
+    "mqtt-config": {
+      "group": "mqtt",
+      "imports": [
+        "yaml"
+      ],
+      "kind": "stdin",
+      "roots": [
+        "/opt/sa02m-modbus-mqtt"
+      ],
+      "source": "www/network_config/cgi-bin/mqtt_config.cgi",
+      "target": null,
+      "user": "www-data"
+    },
+    "mqtt-live": {
+      "group": "mqtt",
+      "imports": [
+        "paho.mqtt"
+      ],
+      "kind": "script",
+      "roots": [
+        "/opt/sa02m-modbus-mqtt"
+      ],
+      "source": "www/network_config/cgi-bin/mqtt_live.cgi",
+      "target": "/opt/sa02m-modbus-mqtt/mqtt_live_snapshot.py",
+      "user": "www-data"
+    },
+    "mqtt-monitor": {
+      "group": "mqtt",
+      "imports": [
+        "paho.mqtt"
+      ],
+      "kind": "script",
+      "roots": [
+        "/opt/sa02m-modbus-mqtt"
+      ],
+      "source": "www/network_config/cgi-bin/mqtt_monitor.cgi",
+      "target": "/opt/sa02m-modbus-mqtt/mqtt_monitor_stream.py",
+      "user": "www-data"
+    },
+    "mqtt-scan": {
+      "group": "mqtt",
+      "imports": [
+        "serial"
+      ],
+      "kind": "script",
+      "roots": [
+        "/opt/sa02m-modbus-mqtt"
+      ],
+      "source": "www/network_config/cgi-bin/mqtt_scan.cgi",
+      "target": "/opt/sa02m-modbus-mqtt/mqtt_bus_scan.py",
+      "user": "root or www-data"
+    },
+    "sa02m-alice-client": {
+      "group": "home",
+      "imports": [
+        "sa02m_alice",
+        "sa02m_rules",
+        "yaml",
+        "paho.mqtt"
+      ],
+      "kind": "module",
+      "roots": [
+        "/opt/sa02m-alice",
+        "/opt/sa02m-devices",
+        "/opt/sa02m-rules"
+      ],
+      "source": "etc/systemd/system/sa02m-alice-client.service",
+      "target": "sa02m_alice.client.main",
+      "user": "root"
+    },
+    "sa02m-alice-config": {
+      "group": "home",
+      "imports": [
+        "sa02m_alice",
+        "sa02m_rules",
+        "yaml",
+        "paho.mqtt"
+      ],
+      "kind": "module",
+      "roots": [
+        "/opt/sa02m-alice",
+        "/opt/sa02m-devices",
+        "/opt/sa02m-rules"
+      ],
+      "source": "etc/systemd/system/sa02m-alice-config.service",
+      "target": "sa02m_alice.config.api",
+      "user": "root"
+    },
+    "sa02m-cloud-control": {
+      "group": "home",
+      "imports": [
+        "sa02m_alice",
+        "sa02m_rules",
+        "yaml",
+        "paho.mqtt"
+      ],
+      "kind": "module",
+      "roots": [
+        "/opt/sa02m-alice",
+        "/opt/sa02m-devices",
+        "/opt/sa02m-rules"
+      ],
+      "source": "etc/systemd/system/sa02m-cloud-control.service",
+      "target": "sa02m_alice.client.main",
+      "user": "root"
+    },
+    "sa02m-home-api": {
+      "group": "home",
+      "imports": [
+        "sa02m_alice",
+        "sa02m_rules",
+        "yaml",
+        "paho.mqtt"
+      ],
+      "kind": "module",
+      "roots": [
+        "/opt/sa02m-alice",
+        "/opt/sa02m-devices",
+        "/opt/sa02m-rules"
+      ],
+      "source": "etc/systemd/system/sa02m-home-api.service",
+      "target": "sa02m_alice.home.main",
+      "user": "root"
+    },
+    "sa02m-homekit-families": {
+      "group": "home",
+      "imports": [
+        "sa02m_alice",
+        "sa02m_rules",
+        "yaml",
+        "paho.mqtt"
+      ],
+      "kind": "module",
+      "roots": [
+        "/opt/sa02m-alice",
+        "/opt/sa02m-devices",
+        "/opt/sa02m-rules"
+      ],
+      "source": "etc/systemd/system/sa02m-homekit-families.service",
+      "target": "sa02m_alice.config.bridge_families",
+      "user": "root"
+    },
+    "sa02m-modbus-mqtt": {
+      "group": "mqtt",
+      "imports": [
+        "serial",
+        "yaml",
+        "paho.mqtt",
+        "sa02m_spodes"
+      ],
+      "kind": "script",
+      "roots": [
+        "/opt/sa02m-modbus-mqtt"
+      ],
+      "source": "etc/sa02m-modbus-mqtt.service",
+      "target": "/opt/sa02m-modbus-mqtt/modbus_mqtt_bridge.py",
+      "user": "root"
+    },
+    "sa02m-mqtt-opcua": {
+      "group": "opcua",
+      "imports": [
+        "_cffi_backend",
+        "aiosqlite",
+        "anyio",
+        "asyncua.server.binary_server_asyncio",
+        "asyncua.sync",
+        "cffi",
+        "cryptography",
+        "cryptography.hazmat.backends.openssl.backend",
+        "cryptography.hazmat.bindings._rust",
+        "dateutil",
+        "idna",
+        "paho.mqtt.client",
+        "pycparser",
+        "pytz",
+        "six",
+        "sortedcontainers",
+        "typing_extensions"
+      ],
+      "kind": "script",
+      "roots": [
+        "/opt/sa02m-mqtt-opcua"
+      ],
+      "source": "etc/systemd/sa02m-mqtt-opcua.service",
+      "target": "/opt/sa02m-mqtt-opcua/sa02m-mqtt-opcua-managed.py",
+      "user": "root"
+    },
+    "sa02m-mqtt-snmp": {
+      "group": "snmp",
+      "imports": [
+        "paho.mqtt.client",
+        "pyasn1.codec.ber.decoder",
+        "pysnmp.hlapi.asyncio",
+        "pysnmp.proto.rfc1902"
+      ],
+      "kind": "script",
+      "roots": [
+        "/opt/sa02m-mqtt-snmp"
+      ],
+      "source": "etc/systemd/sa02m-mqtt-snmp.service",
+      "target": "/opt/sa02m-mqtt-snmp/sa02m-mqtt-snmp.py",
+      "user": "root"
+    },
+    "sa02m-phase-energy": {
+      "group": "mqtt",
+      "imports": [
+        "paho.mqtt"
+      ],
+      "kind": "script",
+      "roots": [
+        "/usr/local/libexec/sa02m-phase-energy"
+      ],
+      "source": "etc/systemd/system/sa02m-phase-energy.service",
+      "target": "/usr/local/libexec/sa02m-phase-energy/mqtt_service.py",
+      "user": "DynamicUser"
+    },
+    "sa02m-rs485-roster": {
+      "group": "mqtt",
+      "imports": [
+        "serial",
+        "yaml",
+        "paho.mqtt",
+        "sa02m_spodes"
+      ],
+      "kind": "script",
+      "roots": [
+        "/opt/sa02m-rs485-roster",
+        "/opt/sa02m-modbus-mqtt"
+      ],
+      "source": "etc/systemd/sa02m-rs485-roster.service",
+      "target": "/opt/sa02m-rs485-roster/aggregate.py",
+      "user": "root"
+    },
+    "sa02m-rules": {
+      "group": "home",
+      "imports": [
+        "sa02m_alice",
+        "sa02m_rules",
+        "yaml",
+        "paho.mqtt"
+      ],
+      "kind": "module",
+      "roots": [
+        "/opt/sa02m-alice",
+        "/opt/sa02m-devices",
+        "/opt/sa02m-rules"
+      ],
+      "source": "etc/systemd/system/sa02m-rules.service",
+      "target": "sa02m_rules.service",
+      "user": "root"
+    },
+    "sa02m-serial-gateway": {
+      "group": "gateway",
+      "imports": [
+        "serial",
+        "yaml"
+      ],
+      "kind": "script",
+      "roots": [
+        "/opt/sa02m-serial-gateway"
+      ],
+      "source": "etc/sa02m-serial-gateway.service",
+      "target": "/opt/sa02m-serial-gateway/serial_gateway.py",
+      "user": "root"
+    },
+    "sa02m-telemetry": {
+      "group": "mqtt",
+      "imports": [
+        "paho.mqtt"
+      ],
+      "kind": "script",
+      "roots": [
+        "/opt/sa02m-modbus-mqtt"
+      ],
+      "source": "etc/sa02m-telemetry.service",
+      "target": "/opt/sa02m-modbus-mqtt/sa02m_telemetry.py",
+      "user": "root"
+    }
+  },
+  "preserved": [
+    {
+      "owner": "system",
+      "reason": "Devices API has optional openpyxl for rich Excel; journal preparation has a separate fixed interpreter contract.",
+      "sources": [
+        "etc/systemd/sa02m-devices-api.service",
+        "etc/systemd/sa02m-devices-logger.service"
+      ]
+    },
+    {
+      "owner": "apt",
+      "reason": "The flasher and maintenance exercise use distro serial.",
+      "sources": [
+        "etc/sa02m-flasher.service",
+        "opt/sa02m-port-coordinator/exercise.py"
+      ]
+    },
+    {
+      "owner": "system",
+      "reason": "The port broker uses stdlib; its serial exercise is a separate CLI.",
+      "sources": [
+        "etc/systemd/sa02m-port-coordinator.service"
+      ]
+    },
+    {
+      "owner": "apt",
+      "reason": "Both installers declare distro Paho.",
+      "sources": [
+        "etc/systemd/system/sa02m-audio.service",
+        "etc/systemd/system/sa02m-homeconnect.service"
+      ]
+    },
+    {
+      "owner": "homekit",
+      "reason": "Existing /opt/sa02m-homekit-venv and hashed lock.",
+      "sources": [
+        "etc/systemd/system/sa02m-homekit.service"
+      ]
+    },
+    {
+      "owner": "apt",
+      "reason": "Updater uses distro cryptography during signature verification.",
+      "sources": [
+        "opt/sa02m-update/lib/validate_package.py"
+      ]
+    },
+    {
+      "owner": "system",
+      "reason": "Shared bridge helpers on these read paths import stdlib only.",
+      "sources": [
+        "www/network_config/cgi-bin/mqtt_tcp_probe.cgi",
+        "www/network_config/cgi-bin/mqtt_templates.cgi",
+        "www/network_config/cgi-bin/mqtt_monitor_poll.cgi"
+      ]
+    },
+    {
+      "owner": "system",
+      "reason": "Existing stdlib dispatcher.",
+      "sources": [
+        "www/network_config/cgi-bin/sa02m_homekit_api.cgi",
+        "etc/systemd/system/sa02m-agent-api.service"
+      ]
+    }
+  ],
+  "schema": 1
+}

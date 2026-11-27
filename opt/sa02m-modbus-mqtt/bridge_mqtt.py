@@ -42,6 +42,16 @@ class DeviceLiveCache:
     # Absent until the device's first tracked read decides (mark_ok → True,
     # the offline transition → False): unknown is written as not ok below.
     _online: dict[str, bool | None] = {}
+    _observed_at: dict[str, float] = {}
+    _locations: dict[str, dict | None] = {}
+
+    @classmethod
+    def set_locations(cls, locations):
+        with cls._lock:
+            cls._locations = locations
+            # A new registration pass has no observations from its readers yet.
+            cls._observed_at.clear()
+            cls._online.clear()
 
     @classmethod
     @contextmanager
@@ -68,9 +78,15 @@ class DeviceLiveCache:
     @classmethod
     def set_online(cls, device_id: str, online: bool) -> None:
         with cls._lock:
-            if cls._online.get(device_id) is not bool(online):
-                cls._online[device_id] = bool(online)
-                cls._note_change(device_id)
+            cls._online[device_id] = bool(online)
+            cls._observed_at[device_id] = time.time()
+            cls._note_change(device_id)
+
+    @classmethod
+    def observations_snapshot(cls):
+        with cls._lock:
+            return {did: (state, cls._observed_at[did]) for did, state in cls._online.items()
+                    if type(state) is bool and did in cls._observed_at}
 
     @classmethod
     def set_control(cls, device_id: str, name: str, value: str) -> None:
@@ -150,6 +166,8 @@ class DeviceLiveCache:
             sensor_types = dict(cls._sensor_types.get(device_id, {}))
             confirmations = dict(cls._sensor_type_confirmations.get(device_id, {}))
             online = cls._online.get(device_id)
+            observed_at = cls._observed_at.get(device_id)
+            location = cls._locations.get(str(device_id)) if observed_at is not None else None
         if not controls and not units and not sensor_types and not errors:
             return
         try:
@@ -167,7 +185,9 @@ class DeviceLiveCache:
                 # an FMB event included. The «Устройства» card was never
                 # fooled: it also requires non-empty controls.
                 "ok": online is True,
+                "observed_at": observed_at,
                 "device": device_id,
+                "poll_location": location,
                 "source": "cache",
                 "controls": controls,
                 "units": units,
@@ -493,10 +513,11 @@ class MQTTPublisher:
             self.pub_device_error(device_id, "" if online else "r")
             self._publish_bridge_status(online=True)
 
-    def device_online_snapshot(self) -> dict:
-        """Copy of the per-device online map (device_id → bool) for the roster
-        writer; a device that has not answered yet reads False."""
+    def device_online_snapshot(self, *, include_unknown=False) -> dict:
+        """Preserve unconfirmed registrations for readers that understand tri-state."""
         with self._lock:
+            if include_unknown:
+                return self._device_online.copy()
             return {did: v is True for did, v in self._device_online.items()}
 
     def _publish_bridge_status(self, online: bool) -> None:

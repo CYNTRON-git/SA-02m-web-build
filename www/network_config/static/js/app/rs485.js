@@ -54,42 +54,22 @@ function rs485TxRxRowHtml(txVal, rxVal) {
   );
 }
 
-/** One module chip, coloured from its OWN tri-state (never the port-level flag):
-    online===true → cyan live-online; online===false → red live-offline;
-    online==null (source "scan") → grey last-scan chip, NEVER red/green (honesty, R2).
-    A scan-only module mixed onto a bridge-owned port thus stays grey, not a false red. */
+/** Each chip describes the current binding's last confirmed poll. */
 function rs485ModuleChipHtml(m) {
-  const online = m ? m.online : null;
-  const isScan = (online == null) || (m && m.source === 'scan');
-  let state;
-  let titleAttr = '';
-  if (!isScan && online === true) {
-    state = 'is-on';
-  } else if (!isScan && online === false) {
-    state = 'is-off';
-  } else {
-    state = 'is-scan';
-    titleAttr = ' title="' + escAttr(uiT('по последнему сканированию')) + '"';
-  }
+  const online = m && m.online;
+  const known = online === true || online === false;
+  const state = known ? (online ? 'is-on' : 'is-off') : 'is-scan';
+  const titleAttr = known ? '' : ' title="' + escAttr(uiT('Опрос не подтверждён')) + '"';
   const addr = (m && m.addr != null) ? (m.addr + '\u00b7') : '';
   const label = addr + ((m && m.model) ? m.model : uiT('модуль'));
   return '<span class="rs485-chip ' + state + '"' + titleAttr + '>' + escHtml(label) + '</span>';
 }
 
-/** Date-only string for a scan timestamp (epoch seconds); '' when unknown. */
-function rs485ScanDateStr(ts) {
-  const n = Number(ts);
-  if (!isFinite(n) || n <= 0) return '';
-  const d = new Date(n * 1000);
-  return d.getFullYear() + '-' + pad2(d.getMonth() + 1) + '-' + pad2(d.getDate());
-}
-
-/** Module sub-block below TX/RX: our-model chips + third-party summary + scan badge. */
+/** An older helper cannot distinguish configured rows from past scan hits. */
 function rs485ModulesHtml(mods) {
-  if (!mods) return '';
+  if (!mods || mods.source !== 'configured') return '';
   const ours = mods.ours || [];
   const tp = mods.third_party || {};
-  const live = !!mods.live;
   const total = tp.total | 0;
   if (!ours.length && total <= 0) return '';
   let html = '';
@@ -98,15 +78,12 @@ function rs485ModulesHtml(mods) {
     for (let i = 0; i < ours.length; i += 1) chips += rs485ModuleChipHtml(ours[i]);
     html += '<div class="rs485-chips">' + chips + '</div>';
   }
-  if (!live) {
-    const dateStr = rs485ScanDateStr(mods.ts);
-    const titleAttr = dateStr ? (' title="' + escAttr(uiT('ростер по сканированию от') + ' ' + dateStr) + '"') : '';
-    html += '<div class="rs485-mods-note"' + titleAttr + '>' + escHtml(uiT('по последнему сканированию')) + '</div>';
-  }
+
   if (total > 0) {
     let line = escHtml(uiT('сторонних')) + ': ' + total;
     if (tp.online != null) line += ', ' + escHtml(uiT('онлайн')) + ' ' + (tp.online | 0);
-    html += '<div class="rs485-mods-tp">' + line + '</div>';
+    const titleAttr = tp.online == null ? ' title="' + escAttr(uiT('Опрос не подтверждён')) + '"' : '';
+    html += '<div class="rs485-mods-tp"' + titleAttr + '>' + line + '</div>';
   }
   return '<div class="rs485-mods">' + html + '</div>';
 }

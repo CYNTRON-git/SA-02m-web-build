@@ -9,6 +9,8 @@ import io
 import json
 import os
 from pathlib import Path
+import shutil
+import subprocess
 import tarfile
 import tempfile
 import time
@@ -257,6 +259,24 @@ class PayloadTests(unittest.TestCase):
                     with self.assertRaisesRegex(vendor.InstallError, 'manager_unknown'):
                         system.unit_identity('node-red.service')
 
+    def test_manager_state_requires_invocation_and_directory_properties(self):
+        values = {'LoadState': 'loaded', 'ActiveState': 'active', 'SubState': 'running',
+                  'UnitFileState': 'enabled', 'Job': '0', 'MainPID': '123',
+                  'ControlGroup': '/system.slice/nodered.service',
+                  'WorkingDirectory': '/home/nodered/.node-red', 'InvocationID': 'a' * 32}
+        system = vendor.System(time.monotonic() + 10)
+        for missing, code in ((None, 0), ('InvocationID', 0), ('WorkingDirectory', 0), (None, 1)):
+            output = '\n'.join(key + '=' + value for key, value in values.items() if key != missing)
+            with self.subTest(missing=missing, code=code), \
+                 mock.patch.object(system, 'run', return_value=SimpleNamespace(returncode=code, stdout=output)) as run:
+                if missing or code:
+                    with self.assertRaisesRegex(vendor.InstallError, 'manager_unknown'):
+                        system.state()
+                else:
+                    self.assertEqual(system.state(), values)
+                    requested = run.call_args.args[0][-1].removeprefix('--property=').split(',')
+                    self.assertEqual(set(requested), set(values))
+
     def test_custom_user_validation_and_dropin(self):
         account = mock.Mock(pw_name='fixture-user', pw_uid=1234, pw_gid=4321, pw_dir='/home/fixture-user')
         with mock.patch.object(vendor.pwd, 'getpwnam', return_value=account):
@@ -344,24 +364,43 @@ class ProductionHealthTests(unittest.TestCase):
         self.node = self.root / 'node'
         self.node.write_text('node fixture')
         self.user_dir = self.root / 'userdir'
+        self.user_dir.mkdir()
         self.proc = self.root / 'proc'
         self.process = self.proc / '123'
         self.process.mkdir(parents=True)
         (self.process / 'exe').symlink_to(self.node)
+        (self.process / 'cwd').symlink_to(self.user_dir)
+        self.write_start_ticks('100')
         self.command = [str(self.node).encode(), str(vendor.TARGET / 'red.js').encode(), b'--userDir', str(self.user_dir).encode()]
         (self.process / 'cmdline').write_bytes(b'\0'.join(self.command) + b'\0')
         (self.process / 'cgroup').write_text('0::/system.slice/nodered.service\n')
-        self.state = {'ActiveState': 'active', 'MainPID': '123', 'ControlGroup': '/system.slice/nodered.service'}
+        self.state = {'ActiveState': 'active', 'MainPID': '123', 'ControlGroup': '/system.slice/nodered.service',
+                      'WorkingDirectory': str(self.user_dir), 'InvocationID': 'a' * 32}
+
+    def write_start_ticks(self, ticks):
+        # Field 22 is stable across process-title changes and changes on PID reuse.
+        fields = ['S'] + ['0'] * 18 + [ticks] + ['0'] * 8
+        (self.process / 'stat').write_text('123 (node fixture) ' + ' '.join(fields))
 
     def tearDown(self):
         self.temp.cleanup()
 
-    def healthy(self, journal, code=0):
+    def healthy(self, journal, code=0, records=None, states=None, after_journal=None):
         system = vendor.System(100)
         def path(value):
             return self.proc if str(value) == '/proc' else Path(value)
-        with mock.patch.object(vendor, 'Path', side_effect=path), mock.patch.object(system, 'terminal', return_value=self.state), \
-             mock.patch.object(system, 'run', return_value=SimpleNamespace(returncode=code, stdout=journal)) as command, \
+        def query(argv):
+            output = journal
+            if records is not None:
+                filters = dict(item.split('=', 1) for item in argv if item.startswith('_') and '=' in item)
+                output = '\n'.join(row['MESSAGE'] for row in records
+                                   if all(row.get(key) == value for key, value in filters.items()))
+            if after_journal:
+                after_journal()
+            return SimpleNamespace(returncode=code, stdout=output)
+        with mock.patch.object(vendor, 'Path', side_effect=path), \
+             mock.patch.object(system, 'terminal', **({'side_effect': states} if states else {'return_value': self.state})), \
+             mock.patch.object(system, 'run', side_effect=query) as command, \
              mock.patch.object(vendor.time, 'monotonic', side_effect=[0, 0, 46]), mock.patch.object(vendor.time, 'sleep'):
             result = system.healthy(self.node, self.user_dir, 123.0)
             self.assertIn('@123.0', command.call_args.args[0])
@@ -410,6 +449,73 @@ class ProductionHealthTests(unittest.TestCase):
                 (self.process / 'exe').symlink_to(self.node)
                 (self.process / 'cmdline').write_bytes(b'\0'.join(self.command) + b'\0')
                 (self.process / 'cgroup').write_text('0::/system.slice/nodered.service\n')
+
+    @unittest.skipUnless(sys.platform.startswith('linux'), 'real /proc title evidence requires Linux')
+    def test_real_node_process_title_retains_health_identity(self):
+        node = shutil.which('node')
+        self.assertIsNotNone(node, 'Node must be installed for the process-title regression')
+        script = '''const fs = require('fs');
+const before = fs.readFileSync('/proc/self/cmdline').toString('base64');
+process.title = 'node-red';
+console.log(JSON.stringify({before, after: fs.readFileSync('/proc/self/cmdline').toString('base64'), cwd: process.cwd()}));'''
+        import base64
+        evidence = json.loads(subprocess.check_output([node, '-e', script], cwd=self.user_dir, timeout=10))
+        before, after = (base64.b64decode(evidence[key]) for key in ('before', 'after'))
+        self.assertIn(b'-e\0', before)
+        self.assertEqual(after.rstrip(b'\0'), b'node-red')
+        self.assertEqual(evidence['cwd'], str(self.user_dir))
+        (self.process / 'cmdline').write_bytes(after)
+        self.assertEqual(self.healthy('Started flows'), {'main_pid': 123, 'control_group': '/system.slice/nodered.service'})
+
+    def test_title_needs_exact_executable_directory_and_cgroup(self):
+        (self.process / 'cmdline').write_bytes(b'node-red\0' + b'\0' * 80)
+        for kind in ('exe', 'cwd', 'cgroup', 'cgroup_suffix', 'unit_directory', 'missing_process'):
+            with self.subTest(kind=kind):
+                if kind in ('exe', 'cwd'):
+                    (self.process / kind).unlink()
+                    (self.process / kind).symlink_to(self.root / 'foreign')
+                elif kind.startswith('cgroup'):
+                    suffix = 'other.service' if kind == 'cgroup' else 'nodered.service-foreign'
+                    (self.process / 'cgroup').write_text('0::/system.slice/' + suffix + '\n')
+                elif kind == 'unit_directory':
+                    self.state['WorkingDirectory'] = str(self.root / 'foreign')
+                else:
+                    (self.process / 'stat').unlink()
+                with self.assertRaisesRegex(vendor.InstallError, 'runtime_health_failed'):
+                    self.healthy('Started flows')
+                for name, target in (('exe', self.node), ('cwd', self.user_dir)):
+                    (self.process / name).unlink()
+                    (self.process / name).symlink_to(target)
+                (self.process / 'cgroup').write_text('0::/system.slice/nodered.service\n')
+                self.state['WorkingDirectory'] = str(self.user_dir)
+                self.write_start_ticks('100')
+        for command in (b'fake-node-red\0', b'node-red --other\0', b'node-red\0foreign.js\0'):
+            with self.subTest(command=command), self.assertRaisesRegex(vendor.InstallError, 'runtime_health_failed'):
+                (self.process / 'cmdline').write_bytes(command)
+                self.healthy('Started flows')
+
+    def test_readiness_is_bound_to_current_pid_and_invocation(self):
+        row = {'_SYSTEMD_UNIT': vendor.UNIT, '_SYSTEMD_INVOCATION_ID': 'a' * 32,
+               '_PID': '123', 'MESSAGE': 'Started flows'}
+        self.assertEqual(self.healthy('', records=[row])['main_pid'], 123)
+        for key, value in (('_SYSTEMD_UNIT', 'foreign.service'), ('_SYSTEMD_INVOCATION_ID', 'b' * 32), ('_PID', '124')):
+            with self.subTest(key=key), self.assertRaisesRegex(vendor.InstallError, 'runtime_health_failed'):
+                self.healthy('', records=[{**row, key: value}])
+        for invocation in ('', 'unknown', '0' * 31, '0' * 32, 'A' * 32):
+            with self.subTest(invocation=invocation), self.assertRaisesRegex(vendor.InstallError, 'runtime_health_failed'):
+                self.state['InvocationID'] = invocation
+                self.healthy('Started flows')
+        self.state['InvocationID'] = 'a' * 32
+
+    def test_identity_is_rechecked_after_journal_read(self):
+        for field, value in (('MainPID', '124'), ('InvocationID', 'b' * 32), ('ActiveState', 'inactive'),
+                             ('ControlGroup', '/system.slice/foreign.service')):
+            with self.subTest(field=field), self.assertRaisesRegex(vendor.InstallError, 'runtime_health_failed'):
+                self.healthy('Started flows', states=[self.state, {**self.state, field: value}])
+        with self.assertRaisesRegex(vendor.InstallError, 'runtime_health_failed'):
+            self.healthy('Started flows', after_journal=lambda: self.write_start_ticks('101'))
+        with self.assertRaisesRegex(vendor.InstallError, 'manager_unknown'):
+            self.healthy('Started flows', states=[self.state, vendor.InstallError('manager_unknown')])
 
 
 class FakeManager:

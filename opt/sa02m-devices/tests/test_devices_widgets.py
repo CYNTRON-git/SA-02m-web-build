@@ -143,3 +143,24 @@ def test_add_restores_widget(tmp_path: Path):
     assert [d["id"] for d in view["dtv"]] == ["dtv-A"]
     assert view["available"] == []
     assert load(path=cfg)["removed_ids"] == []
+
+
+def test_available_requires_a_successful_device_poll(tmp_path):
+    cfg = tmp_path / "widgets.json"
+    device = {"id": "dtv-COM3-15", "kind": "dtv", "ok": False, "age_s": 1.4}
+    remove_widget(device["id"], device=device, path=cfg)
+    for flag, expected in ((False, False), (True, True), ("false", False), (None, False)):
+        device["ok"] = flag
+        brief = apply_widgets_view({"dtv":[device]}, path=cfg)["available"][0]
+        assert brief["online"] is expected and brief["ok"] is expected
+    assert not apply_widgets_view({"dtv":[]}, path=cfg)["available"][0]["online"]
+
+
+def test_picker_address_provenance(tmp_path):
+    cfg = tmp_path / "widgets.json"
+    d = {"id":"dtv-COM5-3", "port_num":5, "addr":3, "kind":"dtv", "label":"ДТВ порт 5"}
+    remove_widget(d["id"], device=d, path=cfg)
+    for source in ("legacy_id", "sample", "unknown"):
+        d["location_source"] = source
+        assert apply_widgets_view({"dtv":[d]}, path=cfg)["available"][0]["location_source"] == source
+    assert apply_widgets_view({}, path=cfg)["available"][0]["location_source"] == "unknown"

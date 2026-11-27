@@ -13,6 +13,13 @@ check_auth() {
 if ! check_auth; then echo '{"ok":false,"error":"unauthorized","controls":{}}'; exit 0; fi
 
 SNAP_PY="${SA02M_BRIDGE_LIB_DIR:-/opt/sa02m-modbus-mqtt}/mqtt_live_snapshot.py"
+runtime=(/usr/bin/python3 "$SNAP_PY")
+if [[ -e /var/lib/sa02m-python-activation || -L /var/lib/sa02m-python-activation ||
+      ( -x /usr/local/libexec/sa02m-python-consumer && -r /opt/sa02m-python-manager/launch.py &&
+        -r /opt/sa02m-python-manager/consumers.json ) ]]; then
+    runtime=(/usr/local/libexec/sa02m-python-consumer mqtt-live)
+fi
+
 CACHE_DIR="${SA02M_MQTT_LIVE_CACHE:-/run/sa02m-modbus-mqtt}"
 if [ -z "${QUERY_STRING:-}" ]; then
     echo '{"ok":false,"error":"device required","controls":{}}'
@@ -50,6 +57,6 @@ if [ ! -f "$SNAP_PY" ]; then
 fi
 
 if [ -n "$CACHE_FILE" ]; then
-    exec /usr/bin/python3 "$SNAP_PY" "$DEVICE"
+    exec "${runtime[@]}" "$DEVICE"
 fi
-exec /usr/bin/python3 "$SNAP_PY"
+exec "${runtime[@]}"

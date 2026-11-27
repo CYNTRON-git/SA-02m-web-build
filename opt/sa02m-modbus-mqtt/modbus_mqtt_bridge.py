@@ -106,6 +106,7 @@ from bridge_template import TemplatePoller  # noqa: F401
 from bridge_spodes import SpodesPoller
 import bridge_admission
 import bridge_bus
+import bridge_roster
 
 
 # ── Systemd watchdog ───────────────────────────────────────────────────────────
@@ -162,24 +163,7 @@ def signal_handler(sig, frame) -> None:
 # ── Main ───────────────────────────────────────────────────────────────────────
 # ── RS-485 roster export (Provider A source for the bus-free aggregator) ────────
 ROSTER_PATH = LIVE_CACHE_DIR / "_roster.json"
-# `led` is a strip this bridge polls (`type: led`). Leaving it out marked the
-# live COM3 addr 13 row `ours: false`, so the status chips counted it as a
-# third-party module and drew no chip — the strip looked gone from the list
-# while the yaml entry and the bus answer were both present.
-_OUR_DEVICE_TYPES = ("mr02m", "dtv", "ce02m3", "led")
 
-
-def _roster_model_name(dev_type: str, module_type: int) -> str:
-    """Display model for a configured bridge device, reusing the bridge's own tables."""
-    if dev_type == "mr02m":
-        return MR02M_TYPE_NAMES.get(int(module_type), "")
-    if dev_type == "dtv":
-        return "DTV-RS-45"
-    if dev_type == "ce02m3":
-        return "CE-02m-3"
-    if dev_type == "led":
-        return "LED"
-    return ""
 
 
 def mixed_baud_port_conflicts(port_keys) -> dict:
@@ -211,42 +195,21 @@ def mixed_baud_port_conflicts(port_keys) -> dict:
     return {p: sorted(b) for p, b in bauds.items() if len(b) > 1}
 
 
-def _com_key_from_port(port_path: str) -> str:
-    """/dev/COM4 → COM4 (the aggregator keys ports by COM label)."""
-    base = os.path.basename(str(port_path or "").rstrip("/"))
-    return base or str(port_path)
-
-
 def write_bridge_roster(devices_cfg: list, pub: MQTTPublisher,
-                        path: Path = ROSTER_PATH) -> None:
-    """Emit /run/sa02m-modbus-mqtt/_roster.json — a normalized per-device roster with
-    a REAL per-device online derived from the bridge's availability state machine
-    (not the hardcoded controls "ok":true). Atomic tmp+replace, no bus access."""
-    online = pub.device_online_snapshot()
+                        path: Path = ROSTER_PATH, projected=None) -> None:
+    """Export current registrations; legacy online remains boolean on the wire."""
+    if projected is None:
+        projected = bridge_roster.prepare(devices_cfg or [])
+    states = pub.device_online_snapshot(include_unknown=True)
+    observations = DeviceLiveCache.observations_snapshot()
     rows = []
-    for dev_cfg in devices_cfg or []:
-        if str(dev_cfg.get("type", "")).lower() == "spodes":
-            # HDLC is not a Modbus slave; a roster row would look like one.
-            continue
-        if dev_cfg.get("transport") not in (None, bridge_bus.TRANSPORT_RTU):
-            # A Modbus TCP device is not on an RS-485 line: no roster row
-            # (docs/contracts/rs485-roster.md), and never a "" ghost port.
-            continue
-        dev_type = str(dev_cfg.get("type", "")).lower()
-        try:
-            module_type = int(dev_cfg.get("module_type", 0) or 0)
-        except (ValueError, TypeError, OverflowError):
-            module_type = 0
-        rows.append({
-            "port": _com_key_from_port(dev_cfg.get("port", "")),
-            "addr": int(dev_cfg.get("address", 0) or 0),
-            "type": dev_type,
-            "module_type": module_type,
-            "model": _roster_model_name(dev_type, module_type),
-            "ours": dev_type in _OUR_DEVICE_TYPES,
-            "online": bool(online.get(dev_cfg.get("id"), False)),
-        })
-    payload = {"ts": time.time(), "devices": rows}
+    for projection in projected:
+        row = dict(projection)
+        did = row.pop("id")
+        row["online"] = states.get(did) is True
+        row["observed_online"], row["observed_at"] = observations.get(did, (None, None))
+        rows.append(row)
+    payload = {"ts": time.time(), "invocation": os.environ.get("INVOCATION_ID"), "devices": rows}
     try:
         LIVE_CACHE_DIR.mkdir(parents=True, exist_ok=True)
         tmp = path.with_suffix(".json.tmp")
@@ -316,6 +279,8 @@ def compose_pollers(devices_cfg: list, pub: MQTTPublisher):
                   path, ", ".join(framed))
     fmb_ports = {key: mgr for key, mgr in fmb_ports.items()
                  if by_port[key][0].port_path not in mixed_framing}
+    DeviceLiveCache.set_locations(bridge_roster.sample_locations(
+        poller for _, poller, _ in prepared.values()))
     return by_port, fmb_ports, refused
 
 
@@ -372,9 +337,8 @@ def main() -> None:
                              args=((wdg_usec / 1_000_000) / 2,), daemon=True)
         t.start()
 
-    by_port, fmb_ports, refused = compose_pollers(devices_cfg, pub)
-    rejected = {row["index"] for row in refused}
-    roster_devices = [row for index, row in enumerate(devices_cfg) if index not in rejected]
+    by_port, fmb_ports, _ = compose_pollers(devices_cfg, pub)
+    roster_devices = bridge_roster.project(p for group in by_port.values() for p in group)
 
     # One thread per port — EVENTS+POLLING interleaved (wb-mqtt-serial).
     for port_key, pollers in by_port.items():
@@ -406,14 +370,14 @@ def main() -> None:
 
     # Export the RS-485 roster (Provider A) once now, then on a periodic tick so
     # the bus-free aggregator sees a fresh real per-device online. Cheap file write.
-    write_bridge_roster(roster_devices, pub)
+    write_bridge_roster(devices_cfg, pub, ROSTER_PATH, roster_devices)
     _roster_interval_s = 5
     _next_roster = time.monotonic() + _roster_interval_s
     while not _stop_ev.is_set():
         time.sleep(1)
         now = time.monotonic()
         if now >= _next_roster:
-            write_bridge_roster(roster_devices, pub)
+            write_bridge_roster(devices_cfg, pub, ROSTER_PATH, roster_devices)
             _next_roster = now + _roster_interval_s
 
     # Graceful offline: tell consumers the bridge and its devices went down

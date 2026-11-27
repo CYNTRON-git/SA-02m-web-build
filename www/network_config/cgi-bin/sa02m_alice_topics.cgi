@@ -46,7 +46,14 @@ export SA02M_TOPICS_FORMAT
 # one-object guarantee by scripts/dev/test-alice-topics-cgi.sh. Must stay below
 # nginx /cgi-bin/ fastcgi_read_timeout (20 s). Override: SA02M_ALICE_TOPICS_TIMEOUT.
 TOPICS_CGI_TIMEOUT="${SA02M_ALICE_TOPICS_TIMEOUT:-15}"
-if TOPICS_JSON="$(timeout "$TOPICS_CGI_TIMEOUT" python3 - <<'PY'
+runtime=(python3 -)
+if [[ -e /var/lib/sa02m-python-activation || -L /var/lib/sa02m-python-activation ||
+      ( -x /usr/local/libexec/sa02m-python-consumer && -r /opt/sa02m-python-manager/launch.py &&
+        -r /opt/sa02m-python-manager/consumers.json ) ]]; then
+    runtime=(/usr/local/libexec/sa02m-python-consumer alice-topics)
+fi
+
+if TOPICS_JSON="$(timeout "$TOPICS_CGI_TIMEOUT" "${runtime[@]}" <<'PY'
 import json, os
 try:
     if os.environ.get("SA02M_TOPICS_FORMAT") == "inventory":

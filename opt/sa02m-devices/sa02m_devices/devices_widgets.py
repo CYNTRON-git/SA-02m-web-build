@@ -134,6 +134,8 @@ def _catalog_entry(device: dict[str, Any]) -> dict[str, Any]:
         "port_num": device.get("port_num"),
         "addr": device.get("addr"),
         "com": device.get("com") or "",
+        "host": device.get("host") or "",
+        "location_source": device.get("location_source") or "legacy_id",
         "removed_at": time.time(),
     }
 
@@ -189,7 +191,7 @@ def add_widget(device_id: str, *, path: Path | None = None) -> dict[str, Any]:
     return {"ok": True, "removed_ids": saved["removed_ids"], "id": did}
 
 
-def _device_brief(d: dict[str, Any], *, online: bool) -> dict[str, Any]:
+def _device_brief(d: dict[str, Any], *, online: bool, catalog_only: bool = False) -> dict[str, Any]:
     return {
         "id": str(d.get("id") or ""),
         "kind": _kind_name(d),
@@ -198,8 +200,10 @@ def _device_brief(d: dict[str, Any], *, online: bool) -> dict[str, Any]:
         "port_num": d.get("port_num"),
         "addr": d.get("addr"),
         "com": d.get("com") or "",
+        "host": d.get("host") or "",
+        "location_source": "unknown" if catalog_only else d.get("location_source") or "legacy_id",
         "online": bool(online),
-        "ok": bool(d.get("ok")),
+        "ok": d.get("ok") is True,
         "age_s": d.get("age_s"),
     }
 
@@ -251,16 +255,17 @@ def apply_widgets_view(
             # (1.0.6.35-38) may still list one: nothing to re-add, never shown.
             continue
         if did in live_by_id:
-            available.append(_device_brief(live_by_id[did], online=True))
+            device = live_by_id[did]
+            available.append(_device_brief(device, online=device.get("ok") is True))
             seen.add(did)
         elif did in catalog:
-            available.append(_device_brief(catalog[did], online=False))
+            available.append(_device_brief(catalog[did], online=False, catalog_only=True))
             seen.add(did)
         else:
             available.append(
                 _device_brief(
                     {"id": did, "kind": _kind_name(None, did)},
-                    online=False,
+                    online=False, catalog_only=True,
                 )
             )
             seen.add(did)

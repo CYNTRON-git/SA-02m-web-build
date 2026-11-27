@@ -7,6 +7,7 @@
 
 from __future__ import annotations
 
+import ipaddress
 import json
 import math
 import os
@@ -298,7 +299,27 @@ def parse_device_id(device_id: str) -> dict[str, Any]:
     }
 
 
-def device_label(kind: str, addr: int | None, port_num: int | None) -> str:
+def _sample_meta(raw, device_id):
+    if not raw or "poll_location" not in raw:
+        coords = parse_device_id(device_id)
+        coords.pop("kind", None)
+        return dict(coords, location_source="legacy_id")
+    unknown = {"com": "", "port_num": None, "addr": None, "location_source": "unknown"}
+    loc = raw["poll_location"]
+    if not isinstance(loc, dict) or type(loc.get("addr")) is not int or not 1 <= loc["addr"] <= 16383:
+        return unknown
+    if set(loc) == {"com", "addr"} and isinstance(loc["com"], str) and re.fullmatch(r"COM[1-5]", loc["com"]):
+        return dict(loc, port_num=int(loc["com"][-1]), location_source="sample")
+    if set(loc) == {"host", "addr"} and isinstance(loc["host"], str):
+        try:
+            host = str(ipaddress.IPv4Address(loc["host"]))
+        except ValueError:
+            return unknown
+        return dict(loc, host=host, com="", port_num=None, location_source="sample")
+    return unknown
+
+
+def device_label(kind: str, addr: int | None, port_num: int | None, *, host: str = "") -> str:
     """Подпись виджета: ``СЭ-02м-3 № 14 порт 2``."""
     if kind == "dtv":
         sku = "ДТВ-RS-485"
@@ -313,6 +334,8 @@ def device_label(kind: str, addr: int | None, port_num: int | None) -> str:
     else:
         sku = "СЭ-02м-3"
     a = "—" if addr is None else str(addr)
+    if host:
+        return f"{sku} № {a} · {host}"
     p = "—" if port_num is None else str(port_num)
     return f"{sku} № {a} порт {p}"
 
@@ -329,12 +352,27 @@ def _load_cache(path: Path) -> dict[str, Any] | None:
         return None
     if not isinstance(data, dict):
         return None
-    data["_mtime"] = st.st_mtime
+    if "observed_at" in data:
+        ts = data["observed_at"]
+        # New writers distinguish a tracked result from a file or writeback heartbeat.
+        data["ts"] = ts if type(ts) in (float, int) and 0 < ts <= time.time() else None
+        if data["ts"] is None:
+            data["ok"] = False
+        data.pop("_mtime", None)
+    else:
+        data["_mtime"] = st.st_mtime
     return data
 
 
+def _sample_age(raw):
+    if "observed_at" in raw:
+        ts = raw.get("ts")
+        return round(time.time() - ts, 1) if ts is not None else None
+    return _age_s(raw.get("ts"), raw.get("_mtime"))
+
+
 def _empty_dtv(device_id: str = "") -> dict[str, Any]:
-    meta = parse_device_id(device_id)
+    meta = _sample_meta(None, device_id)
     kind = "dtv"
     return {
         "id": device_id or "",
@@ -342,9 +380,7 @@ def _empty_dtv(device_id: str = "") -> dict[str, Any]:
         "sku": "ДТВ-RS-485",
         "label": device_label(kind, meta.get("addr"), meta.get("port_num")),
         "title": device_label(kind, meta.get("addr"), meta.get("port_num")),
-        "port_num": meta.get("port_num"),
-        "addr": meta.get("addr"),
-        "com": meta.get("com") or "",
+        **meta,
         "ok": False,
         "ts": None,
         "age_s": None,
@@ -369,7 +405,7 @@ def _empty_dtv(device_id: str = "") -> dict[str, Any]:
 
 
 def _empty_ce(device_id: str = "") -> dict[str, Any]:
-    meta = parse_device_id(device_id)
+    meta = _sample_meta(None, device_id)
     kind = "ce"
     return {
         "id": device_id or "",
@@ -377,9 +413,7 @@ def _empty_ce(device_id: str = "") -> dict[str, Any]:
         "sku": "СЭ-02м-3",
         "label": device_label(kind, meta.get("addr"), meta.get("port_num")),
         "title": device_label(kind, meta.get("addr"), meta.get("port_num")),
-        "port_num": meta.get("port_num"),
-        "addr": meta.get("addr"),
-        "com": meta.get("com") or "",
+        **meta,
         "ok": False,
         "ts": None,
         "age_s": None,
@@ -398,8 +432,8 @@ def _build_dtv(raw: dict[str, Any] | None, *, fallback_id: str = "") -> dict[str
         return _empty_dtv(fallback_id)
     controls = raw.get("controls") if isinstance(raw.get("controls"), dict) else {}
     device_id = str(raw.get("device") or fallback_id or "")
-    meta = parse_device_id(device_id)
-    age = _age_s(raw.get("ts"), raw.get("_mtime"))
+    meta = _sample_meta(raw, device_id)
+    age = _sample_age(raw)
     ok_flag = bool(raw.get("ok", True)) and bool(controls)
     if age is not None and age > STALE_S:
         ok_flag = False
@@ -412,16 +446,14 @@ def _build_dtv(raw: dict[str, Any] | None, *, fallback_id: str = "") -> dict[str
     ext_entry = _dtv_ext_entry(controls)
     if ext_entry is not None:
         temp_sensors.append(ext_entry)
-    label = device_label("dtv", meta.get("addr"), meta.get("port_num"))
+    label = device_label("dtv", meta.get("addr"), meta.get("port_num"), host=meta.get("host", ""))
     return {
         "id": device_id,
         "kind": "dtv",
         "sku": "ДТВ-RS-485",
         "label": label,
         "title": label,
-        "port_num": meta.get("port_num"),
-        "addr": meta.get("addr"),
-        "com": meta.get("com") or "",
+        **meta,
         "ok": ok_flag,
         "ts": raw.get("ts"),
         "age_s": age,
@@ -480,22 +512,20 @@ def _build_ce(raw: dict[str, Any] | None, *, fallback_id: str = "") -> dict[str,
         return _empty_ce(fallback_id)
     controls = raw.get("controls") if isinstance(raw.get("controls"), dict) else {}
     device_id = str(raw.get("device") or fallback_id or "")
-    meta = parse_device_id(device_id)
-    age = _age_s(raw.get("ts"), raw.get("_mtime"))
+    meta = _sample_meta(raw, device_id)
+    age = _sample_age(raw)
     ok_flag = bool(raw.get("ok", True)) and bool(controls)
     if age is not None and age > STALE_S:
         ok_flag = False
     e_wh = _f(controls.get("energy_active_import"))
-    label = device_label("ce", meta.get("addr"), meta.get("port_num"))
+    label = device_label("ce", meta.get("addr"), meta.get("port_num"), host=meta.get("host", ""))
     return {
         "id": device_id,
         "kind": "ce",
         "sku": "СЭ-02м-3",
         "label": label,
         "title": label,
-        "port_num": meta.get("port_num"),
-        "addr": meta.get("addr"),
-        "com": meta.get("com") or "",
+        **meta,
         "ok": ok_flag,
         "ts": raw.get("ts"),
         "age_s": age,
@@ -526,7 +556,7 @@ def _build_spodes(raw: dict[str, Any] | None, *, fallback_id: str = "") -> dict[
     """Same live fields as a СЭ card. Energy stays Wh/1000 → kWh. Own label."""
     card = _build_ce(raw, fallback_id=fallback_id)
     device_id = str(card.get("id") or fallback_id or "")
-    meta = parse_device_id(device_id)
+    meta = _sample_meta(raw, device_id)
     if meta.get("host"):
         addr = "—" if meta.get("addr") is None else str(meta.get("addr"))
         label = f"Меркурий № {addr} · {meta['host']}"
@@ -540,9 +570,7 @@ def _build_spodes(raw: dict[str, Any] | None, *, fallback_id: str = "") -> dict[
         "sku": "Меркурий",
         "label": label,
         "title": label,
-        "port_num": meta.get("port_num"),
-        "addr": meta.get("addr"),
-        "com": meta.get("com") or "",
+        **meta,
         "host": meta.get("host") or "",
         "association": str(controls.get("association") or ""),
     })
@@ -584,8 +612,8 @@ def _build_mr(
     errors = raw.get("errors") if isinstance(raw.get("errors"), dict) else {}
 
     device_id = str(raw.get("device") or fallback_id or "")
-    meta = parse_device_id(device_id)
-    age = _age_s(raw.get("ts"), raw.get("_mtime"))
+    meta = _sample_meta(raw, device_id)
+    age = _sample_age(raw)
     # Staleness mirrors _build_dtv/_build_ce: age is the signal. A missing OR None
     # online flag ("ok") is «unknown», not «offline» — the bench 12AI publishes a
     # None flag while fresh and must read online (coordinator note, board 1.135).
@@ -621,6 +649,8 @@ def _build_mr(
         f"MR-02m {module_type} № "
         f"{'—' if a is None else a} порт {'—' if p is None else p}"
     )
+    if meta.get("host"):
+        label = f"MR-02m {module_type} № {a} · {meta['host']}"
     return {
         "id": device_id,
         "kind": "mr",
@@ -629,9 +659,7 @@ def _build_mr(
         "ai_count": ai_count,
         "label": label,
         "title": label,
-        "port_num": p,
-        "addr": a,
-        "com": meta.get("com") or "",
+        **meta,
         "ok": ok_flag,
         "ts": raw.get("ts"),
         "age_s": age,
@@ -673,8 +701,8 @@ def _build_carel(
         return None
     errors = raw.get("errors") if isinstance(raw.get("errors"), dict) else {}
     device_id = str(raw.get("device") or fallback_id or "")
-    meta = parse_device_id(device_id)
-    age = _age_s(raw.get("ts"), raw.get("_mtime"))
+    meta = _sample_meta(raw, device_id)
+    age = _sample_age(raw)
     ok_raw = raw.get("ok", True)
     ok_flag = (True if ok_raw is None else bool(ok_raw)) and bool(controls)
     if age is not None and age > STALE_S:
@@ -696,9 +724,7 @@ def _build_carel(
         "family": family,
         "label": label,
         "title": label,
-        "port_num": p,
-        "addr": a,
-        "com": meta.get("com") or "",
+        **meta,
         "ok": ok_flag,
         "ts": raw.get("ts"),
         "age_s": age,
@@ -730,24 +756,22 @@ def _build_carel(
 def _build_mtd(raw: dict[str, Any] | None, *, fallback_id: str = "") -> dict[str, Any]:
     """Карточка MTDX62-MB: живые controls из кэша моста, без архива."""
     device_id = str((raw or {}).get("device") or fallback_id or "")
-    meta = parse_device_id(device_id)
+    meta = _sample_meta(raw, device_id)
     controls = {}
     if raw and isinstance(raw.get("controls"), dict):
         controls = raw.get("controls") or {}
-    age = _age_s((raw or {}).get("ts"), (raw or {}).get("_mtime")) if raw else None
+    age = _sample_age(raw) if raw else None
     ok_flag = bool(raw) and bool((raw or {}).get("ok", True)) and bool(controls)
     if age is not None and age > STALE_S:
         ok_flag = False
-    label = device_label("mtd", meta.get("addr"), meta.get("port_num"))
+    label = device_label("mtd", meta.get("addr"), meta.get("port_num"), host=meta.get("host", ""))
     return {
         "id": device_id,
         "kind": "mtd",
         "sku": "MTD262-MB",
         "label": label,
         "title": label,
-        "port_num": meta.get("port_num"),
-        "addr": meta.get("addr"),
-        "com": meta.get("com") or "",
+        **meta,
         "ok": ok_flag,
         "ts": (raw or {}).get("ts") if raw else None,
         "age_s": age,

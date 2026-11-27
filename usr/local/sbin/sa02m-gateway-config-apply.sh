@@ -109,7 +109,14 @@ fi
 # Sanity check: the file must be valid YAML carrying a 'ports' key. Quoted
 # delimiter + argv — the path is DATA here, never source. Validates the PRIVATE
 # copy, so what was validated is what gets installed.
-if ! python3 - "$SAFE_SRC" <<'PYEOF'
+runtime=(/usr/bin/python3 -I -B -)
+if [[ -e /var/lib/sa02m-python-activation || -L /var/lib/sa02m-python-activation ||
+      ( -x /usr/local/libexec/sa02m-python-consumer && -r /opt/sa02m-python-manager/launch.py &&
+        -r /opt/sa02m-python-manager/consumers.json ) ]]; then
+    runtime=(/usr/local/libexec/sa02m-python-consumer gateway-apply)
+fi
+
+if ! "${runtime[@]}" "$SAFE_SRC" <<'PYEOF'
 import sys
 
 import yaml
