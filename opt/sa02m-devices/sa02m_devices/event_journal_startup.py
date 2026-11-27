@@ -13,6 +13,7 @@ import time
 from . import event_journal_state as state
 from . import event_journal_delivery as files
 from . import event_journal_peer as peer
+from . import event_journal_source as source
 
 DEFAULT_RECEIPTS = Path("/var/lib/sa02m-devices-journal-init")
 DEFAULT_UPDATE = Path("/var/lib/sa02m-update")
@@ -65,14 +66,14 @@ def read_receipt(config, dfd):
 
 
 @contextmanager
-def receipt_guard(config, *, deadline):
+def receipt_guard(config, *, deadline, create=True):
     if config.receipts == config.domain.directory \
             or config.domain.directory in config.receipts.parents \
             or config.receipts in config.domain.directory.parents:
         raise state.JournalStateError("journal receipt requires an independent directory")
     files.canonical_directory(config.domain.directory)
-    with files.directory(config.receipts, config.domain.owner, create=True) as dfd:
-        fd = files.open_file(dfd, "bootstrap.lock", config.domain.owner, create=True)
+    with files.directory(config.receipts, config.domain.owner, create=create) as dfd:
+        fd = files.open_file(dfd, "bootstrap.lock", config.domain.owner, create=create)
         try:
             os.fsync(dfd)
             while True:
@@ -124,6 +125,15 @@ def validate(config, *, deadline=None):
         return current
 
 
+def set_ready_for(config, identity, ready, deadline):
+    with state.guard(config.domain, exclusive=True, deadline=deadline) as current:
+        if current.identity != identity:
+            raise state.JournalStateError("journal preparation identity changed")
+        if current.ready == ready:
+            return current
+        return state.set_ready(config.domain, ready, deadline=deadline)
+
+
 def prepare(config, consumer, *, rootfs=False):
     if consumer not in {"devices-api", "devices-logger", "installer"} \
             or (rootfs and consumer != "installer"):
@@ -134,17 +144,39 @@ def prepare(config, consumer, *, rootfs=False):
         current = _provision(config, dfd, initialization_deadline)
         def not_ready():
             nonlocal current
-            if current.ready:
-                current = state.set_ready(config.domain, False, deadline=time.monotonic() + 1)
+            current = set_ready_for(config, current.identity, False, time.monotonic() + 1)
         try:
+            if not rootfs and consumer != "installer":
+                from . import event_journal_request as request
+                from . import event_journal_queue as queue
+                deadline = time.monotonic() + 5
+                budget = peer.Budget(deadline)
+                context = files.source_context(config.update)
+                _, _, peer_current = peer.observe(config.settings(), deadline=deadline, budget=budget)
+                if current.ready and peer_current and context["mode"] != "pending":
+                    return current
+                not_ready()
+                encoded = request.build(config, current.identity, deadline)
+                if request.decode(encoded)["context"] != context:
+                    raise state.JournalStateError("journal updater context changed before enqueue")
+                unit = queue.enqueue(encoded, deadline=deadline, budget=budget)
+                _checkpoint("pending")
+                print("journal preparation pending: " + unit)
+                return current
             if not rootfs:
-                peer.prepare_peer(config.settings(), consumer, not_ready,
-                                  force_refresh=consumer == "installer")
+                deadline = time.monotonic() + 5
+                fingerprint = source.verified_fingerprint(source.installed_root(), deadline)
+                context = files.source_context(config.update)
+                peer.transition(config.settings(), not_ready, force_refresh=True)
             _checkpoint("peer")
             deadline = time.monotonic() + 5
             validate(config, deadline=deadline)
-            if not current.ready:
-                current = state.set_ready(config.domain, True, deadline=deadline)
+            if not rootfs:
+                if source.verified_fingerprint(source.installed_root(), deadline) != fingerprint \
+                        or files.source_context(config.update) != context:
+                    raise state.JournalStateError("journal installer source changed")
+                peer.observe(config.settings(), deadline=deadline)
+            current = set_ready_for(config, current.identity, True, deadline)
             _checkpoint("ready")
             return current
         except Exception:
@@ -164,15 +196,27 @@ def recover(config):
 
 def main(argv=None):
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("action", choices=("prepare", "validate", "recover"))
+    parser.add_argument("action", choices=("prepare", "validate", "recover", "complete"))
     parser.add_argument("--consumer", choices=("devices-api", "devices-logger", "stand-api", "installer"))
     parser.add_argument("--rootfs", action="store_true")
+    parser.add_argument("--request")
     args = parser.parse_args(argv)
     if (args.action == "prepare" and args.consumer not in {"devices-api", "devices-logger", "installer"}) \
             or (args.action == "validate" and args.consumer != "stand-api") \
             or (args.rootfs and (args.action != "prepare" or args.consumer != "installer")) \
-            or (args.action == "recover" and args.consumer is not None):
+            or (args.action in {"recover", "complete"} and args.consumer is not None) \
+            or ((args.action == "complete") != (args.request is not None)):
         parser.error("invalid action/consumer combination")
+    if args.action == "complete":
+        from .event_journal_completion import complete
+        try:
+            complete(args.request)
+            from .event_journal_request import unit_name
+            print("journal completion ready: " + unit_name(args.request))
+        except (state.JournalStateError, state.JournalBusy, OSError, ValueError) as exc:
+            print("journal completion unavailable: " + str(exc)[:240], file=sys.stderr)
+            return 1
+        return 0
     try:
         config = Configuration.from_environment()
     except (ValueError, state.JournalStateError):

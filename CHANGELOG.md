@@ -5,6 +5,20 @@
 
 ---
 
+## 1.0.8.3 - Runtime activation, service controls and polling status (November 2026)
+
+- Show the outcome and freshness of actual device polling. Derive COM membership from the current saved poll configuration and preserve device history when a binding moves.
+- Separate orderly reboot and web restart admission from completion. Track privileged service operations through their PID1 workers, guard cached service lists by boot and operation lifetime, and bound MPLC start and stop.
+- Limit root-console password failures at the privileged verifier. Preserve genuine command exit codes and display authentication and throttle outcomes separately.
+- Stage isolated Python environments before switching consumers. Verify the selected interpreters and service processes, preserve administrative unit policy, and restore the previous selection on a failed switch.
+- Bind release admission to the exact dependency locks, distributed payloads and installed target inventory. Record applicable advisories and incomplete coverage before release or image capture.
+- Preserve Node-RED process identity checks when the runtime changes its process title.
+- Migrate the optional MQTT to OPC UA service through its managed entry point. MQTT telemetry refreshes values without echoing a write command. Accepted OPC UA value changes publish in order to the existing MQTT control topic.
+- Run MQTT to SNMP with its pinned Python dependencies after verified activation. Both optional protocol services preserve their installed enablement and run state.
+- Complete journal readiness in an independent PID1 worker and verify required readers and writers. Preserve archive history and recognize an absent optional stand.
+- Set the ext4 commit interval to 60 seconds, retain unrelated filesystem defaults, and verify ordered data mode at the next mount. Bind a clone's runtime epoch to the verified capture and its own first boot.
+- Distinguish a Modbus diagnostic timeout from an unsupported diagnostic register in Flasher messages. The historical COM4 interruption still lacks a confirmed cause.
+
 ## 1.0.8.2 - Journal, device controls and image preparation (November 2026)
 
 - Keep cleared journal events excluded when previously disconnected storage returns, and coordinate clear operations across archive readers and writers. Validate stored generations through a partial index so normal journal reads do not scan the full archive.

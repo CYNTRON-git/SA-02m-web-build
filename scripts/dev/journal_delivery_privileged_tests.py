@@ -311,16 +311,15 @@ class UpdateGuardTests(unittest.TestCase):
 
 
 class FirstDeliveryTests(unittest.TestCase):
-    def test_service_hook_real_graph_and_process_replacement(self):
+    def test_service_hook_pending_then_external_process_replacement(self):
         with tempfile.TemporaryDirectory() as folder:
             destination, _ = harness.installer_rootfs(Path(folder), active_peer=True, service_hook=True)
             self.assertTrue(state.read_atomic(state.Domain(destination / "var/lib/sa02m-devices/event-journal")).ready)
             fixture = Path(folder) / "peer-fixture"
             self.assertEqual((fixture / "restarts").read_text().splitlines(),
                              ["try-restart sa02m-stand-api.service"] * 2)
-            self.assertTrue({"network.target", "system.slice", "-.mount", "systemd-journald.socket",
-                             "shutdown.target", "apparmor.service", r"system-fix\x2deth.slice"}
-                            <= set((fixture / "shows").read_text().splitlines()))
+            self.assertEqual(set((fixture / "shows").read_text().splitlines()),
+                             {"sa02m-stand-api.service", "sa02m-devices-api.service", "sa02m-devices-logger.service"})
 
     def test_omitted_path_uses_root_owned_production_authority_without_sidecar(self):
         with tempfile.TemporaryDirectory() as folder:
@@ -387,6 +386,10 @@ class FirstDeliveryTests(unittest.TestCase):
                                 "/opt/sa02m-devices/sa02m_devices/event_journal_startup.py",
                                 "/opt/sa02m-devices/sa02m_devices/event_journal_peer.py",
                                 "/opt/sa02m-devices/sa02m_devices/event_journal_delivery.py",
+                                "/opt/sa02m-devices/sa02m_devices/event_journal_queue.py",
+                                "/opt/sa02m-devices/sa02m_devices/event_journal_request.py",
+                                "/opt/sa02m-devices/sa02m_devices/event_journal_source.py",
+                                "/opt/sa02m-devices/sa02m_devices/event_journal_completion.py",
                                 "/etc/systemd/system/sa02m-stand-api.service.d/30-event-journal.conf"}
                     self.assertTrue(required <= destinations, required - destinations)
                     self.assertNotIn("sa02m-stand-api", manifest["services"]["restart"])
@@ -462,6 +465,8 @@ def load_tests(loader, tests, pattern):
     suite.addTest(PrivilegedStartupTests("test_nonowner_cannot_modify_receipt"))
     suite.addTest(PrivilegedStartupTests("test_core_nonowner_probe"))
     suite.addTest(PrivilegedPeerTests("test_environment_file_override_is_compared"))
+    completion_files = harness.module("_delivery_completion_files", ROOT / "scripts/dev/journal_completion_files_tests.py")
+    suite.addTests(loader.loadTestsFromTestCase(completion_files.CompletionFilesTests))
     return suite
 
 if __name__ == "__main__":

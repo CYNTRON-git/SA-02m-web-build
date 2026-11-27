@@ -22,6 +22,21 @@ CODE_TIMEOUT = "guard_timeout"
 # over; install/uninstall (CODESYS, Node-RED) legitimately runs for minutes and
 # is bounded by the panel's 600 s budget instead, so it gets no timer here.
 START_STOP_TIMEOUT_S = 300
+CACHE_LEASE_VERIFIER = "/usr/local/lib/sa02m-service-cache.sh"
+
+
+def cache_lease_descriptor():
+    """Forward only the OFD verified by the lifecycle's single authority."""
+    if not os.environ.get("SA02M_CACHE_LEASE") and not os.environ.get("SA02M_CACHE_FD"):
+        return None
+    if os.environ.get("SA02M_CACHE_FD") != "8":
+        raise PermissionError("Invalid cache lease descriptor")
+    result = subprocess.run(["/bin/sh", CACHE_LEASE_VERIFIER, "--verify-cache-lease"],
+                            pass_fds=(8,), capture_output=True, text=True,
+                            timeout=5, check=False)
+    if result.returncode or result.stdout != "8\n":
+        raise PermissionError("Cache lease verification failed")
+    return 8
 
 
 def error_code(exc):
@@ -52,11 +67,18 @@ def run(helper, action, identity, unit):
     # of those carries its own bound in the helper (initd_run, sc_run_slow) and
     # this timeout only stops the wrapper from being waited on forever.
     timeout = START_STOP_TIMEOUT_S if action in {"start", "stop"} else None
+    cache_fd = cache_lease_descriptor()
     with ServiceMutation(unit) as guard:
         env = {**os.environ, "SA02M_SERVICE_GUARD_FD": str(guard.fd),
                "SA02M_SERVICE_GUARD_UNIT": guard.unit}
+        descriptors = (guard.fd,)
+        if cache_fd is not None:
+            if guard.fd == cache_fd:
+                raise PermissionError("UART and cache descriptors collide")
+            env["SA02M_CACHE_JOIN"] = "1"
+            descriptors += (cache_fd,)
         return subprocess.run(["/bin/sh", helper, action, identity], env=env,
-                              pass_fds=(guard.fd,), check=False,
+                              pass_fds=descriptors, check=False,
                               timeout=timeout).returncode
 
 

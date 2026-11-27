@@ -6,6 +6,7 @@ import importlib.util
 import json
 import os
 from pathlib import Path
+import re
 import subprocess
 import sys
 import tempfile
@@ -68,16 +69,21 @@ log() { :; }
             self.assertEqual({e['src']:(e['dst'],e['mode'],e['owner']) for e in entries}, expected)
 
     def test_real_fullrefresh_atomic_install_block(self):
-        source = (ROOT/'scripts/03-webserver.sh').read_text()
-        begin = source.index('# Pinned vendor payload metadata must precede')
-        end = source.index('# ── Политика сторонних стеков', begin)
-        self.assertLess(end, source.index('"$SCRIPT_DIR/../etc/sa02m-web-service-ctl.sh"'))
-        block = source[begin:end]
+        for rel in ('scripts/03-webserver.sh', 'scripts/update-www-only.sh'):
+            source = (ROOT/rel).read_text()
+            self.assertLess(source.index('sa02m_install_web_control "$SCRIPT_DIR/.." || exit 1'),
+                            source.index('mkdir -p "$WEB_ROOT/cgi-bin"'))
+        source = (ROOT/'scripts/lib.sh').read_text()
+        begin = source.index('sa02m_install_web_control() {')
+        block = source[begin:source.index('\n}', begin) + 2]
+        self.assertLess(block.index('"$tree/etc/sa02m-vendor-install.py"'),
+                        block.index('sa02m-web-service-ctl.sh'))
         with tempfile.TemporaryDirectory() as directory:
             target = Path(directory)
-            block = block.replace('/usr/local/', str(target)+'/usr/local/')
-            script = '. "$SOURCE_LIB"\nlog() { :; }\n' + block
-            env = {**os.environ, 'SOURCE_LIB':str(ROOT/'scripts/lib.sh'), 'ETC_DIR':str(ROOT/'etc'), 'LOG_FILE':str(target/'install.log')}
+            block = re.sub(r'(?<=[ "\t])/(?=usr/local/|opt/|etc/)', str(target) + '/', block)
+            script = '. "$SOURCE_LIB"\nlog() { :; }\n' + block + '\nsa02m_install_web_control "$SOURCE_TREE"'
+            env = {**os.environ, 'SOURCE_LIB':str(ROOT/'scripts/lib.sh'), 'SOURCE_TREE':str(ROOT),
+                   'LOG_FILE':str(target/'install.log')}
             result = subprocess.run(['bash','-c',script], env=env, capture_output=True, text=True, timeout=20)
             self.assertEqual(result.returncode, 0, result.stderr)
             for src,(dst,mode) in PINS.items():
@@ -86,7 +92,12 @@ log() { :; }
                 self.assertEqual(installed.stat().st_mode & 0o777, int(mode,8))
             # A missing trust input must refuse before another installed file changes.
             hashes = {p:p.read_bytes() for p in target.rglob('*') if p.is_file()}
-            env['ETC_DIR'] = str(target/'missing')
+            partial = target / 'partial-tree'
+            for src in sorted(PINS)[:-1]:
+                path = partial / src
+                path.parent.mkdir(parents=True, exist_ok=True)
+                path.write_bytes((ROOT / src).read_bytes())
+            env['SOURCE_TREE'] = str(partial)
             result = subprocess.run(['bash','-c',script], env=env, capture_output=True, text=True, timeout=20)
             self.assertNotEqual(result.returncode, 0)
             self.assertTrue(all(p.read_bytes()==data for p,data in hashes.items()))

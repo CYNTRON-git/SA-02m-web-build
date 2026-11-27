@@ -1,5 +1,4 @@
 #!/bin/bash
-# comment-mutation-proof-exempt: Executes the actual fixed delegate with a real isolated Python child and strict stdout/exit cases; retains the shared atomic-unit failure tests. Archive/engine/flow/rollback behavior moved to the canonical vendor-installer suite, not duplicated shell helpers.
 set -u
 cd "$(dirname "${BASH_SOURCE[0]}")/../.." || exit 1
 SRC=etc/sa02m-web-service-ctl.sh

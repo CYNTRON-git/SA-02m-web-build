@@ -118,6 +118,21 @@ for f in "${MODULES[@]}"; do
     while IFS=: read -r ln line; do
         [ -n "$ln" ] || continue
         unit=$(sed -E 's/.*sa02m_svc_apply[[:space:]]+([^[:space:]]+)[[:space:]]+app.*/\1/' <<<"$line")
+        apply_lines=$ln
+        if [ "$f" = scripts/09-mplc.sh ]; then
+            # This named wrapper preserves the parent shell's capture arrays.
+            # Check its actual invocation sites, not its earlier definition.
+            wrapper_start=$(stripped_first_line "$f" '^_mplc_apply\(\) \{')
+            wrapper_end=$(awk '/^_mplc_apply\(\) \{/ {inside=1; next} inside && /^\}/ {print NR; exit}' "$f")
+            if [ -n "$wrapper_start" ] && [ -n "$wrapper_end" ] \
+                && [ "$ln" -gt "$wrapper_start" ] && [ "$ln" -lt "$wrapper_end" ]; then
+                apply_lines=$(grep -nE '^[[:space:]]*_mplc_apply([[:space:]]|$)' "$f" | cut -d: -f1)
+                if [ -z "$apply_lines" ]; then
+                    d_bad="$d_bad $f:$ln(wrapper-not-invoked)"
+                    continue
+                fi
+            fi
+        fi
         first_cap=""
         case "$unit" in
             \$*|\"\$*)
@@ -128,9 +143,11 @@ for f in "${MODULES[@]}"; do
                 first_cap=$(stripped_first_line "$f" "sa02m_svc_capture[[:space:]].*$unit")
                 ;;
         esac
-        if [ -z "$first_cap" ] || [ "$first_cap" -ge "$ln" ]; then
-            d_bad="$d_bad $f:$ln($unit)"
-        fi
+        for call_line in $apply_lines; do
+            if [ -z "$first_cap" ] || [ "$first_cap" -ge "$call_line" ]; then
+                d_bad="$d_bad $f:$call_line($unit)"
+            fi
+        done
     done < <(grep -nE 'sa02m_svc_apply[[:space:]]+[^[:space:]]+[[:space:]]+app\b' "$f" | grep -vE '^[0-9]+:[[:space:]]*#' || true)
 done
 if [ -n "$d_bad" ]; then

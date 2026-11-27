@@ -3,17 +3,15 @@
 # test-initd-bounded.sh — every SysV start/stop the service helper runs is
 # bounded in time (A4-10, 1.0.7.36).
 #
-# etc/sa02m-web-service-ctl.sh starts and stops CODESYS, CodeMeter and MPLC4
-# through their vendor /etc/init.d scripts. Before 1.0.7.36 those calls had no
-# time limit: a wedged vendor script kept the coordinator's service guard, the
-# helper and the panel's «port_busy» for as long as it hung.
+# The three managed vendor paths dispatch through PID1. The compatibility
+# primitive still bounds any other command; the sole direct vendor stop is a
+# separately verified fresh CODESYS handoff, tested by test-service-worker.py.
 #
 # (A) Allow-list, open world: on the helper's text with comments blanked
 #     (.ai-dev/quality/checks/lib_check.sh), EVERY occurrence of
 #     `/etc/init.d/<name> start|stop` must be the argument of `initd_run`. A bare
-#     call anywhere FAILS, whatever the script name. Non-vacuous: fewer than 6
-#     occurrences (8 on 2026-11-11) FAILS — the sweep would have stopped seeing
-#     the calls.
+#     call anywhere FAILS, whatever the script name. Non-vacuous: the managed
+#     PID1 dispatch and at least one live compatibility call must remain.
 # (B) Behaviour: initd_run is EXTRACTED from the shipped helper and run with
 #     SA02M_INITD_TIMEOUT_S=1 on `sleep 30` — it must return 124 within 8 s and
 #     write its «timed out» line to the log; a command that finishes returns its
@@ -54,8 +52,10 @@ while IFS= read -r line; do
         rest=${rest#*"$m"}
     done
 done <<< "$text"
-if [ "$n" -lt 6 ]; then
-    bad "A  only $n init.d start/stop call(s) found in $CTL — the sweep is vacuous"
+if ! text_has "$text" 'sc_run_slow "$2" "$_initd_unit"'; then
+    bad "A  managed init.d dispatch no longer reaches PID1"
+elif [ "$n" -lt 1 ]; then
+    bad "A  no bounded init.d compatibility call remains in $CTL"
 elif [ -n "$bare" ]; then
     bad "A  init.d start/stop without initd_run (unbounded):$bare"
 else
@@ -86,6 +86,29 @@ else
     out=$(LOG="$LOG" sh -c '. "$1"; initd_run sh -c "exit 3"; echo $?' _ "$T/initd.sh")
     [ "$out" = 3 ] && ok "B  a command that finishes keeps its own exit status" \
                    || bad "B  initd_run changed a finished command's status: $out"
+fi
+
+# The three managed paths never fall back after manager failure or without
+# systemd. Both directories are fixtures; even a broken fallback is harmless.
+mkdir -p "$T/initd" "$T/manager"
+sed -e "s|/run/systemd/system|$T/manager|g" -e "s|/etc/init.d/|$T/initd/|g" "$T/initd.sh" > "$T/managed.sh"
+for name in mplc4 codesyscontrol codemeter; do
+    printf '#!/bin/sh\necho bad >>"%s/fallback"\n' "$T" > "$T/initd/$name"
+    chmod +x "$T/initd/$name"
+    out=$(LOG="$T/log" sh -c '. "$1"; unit_exists() { return 0; }; sc_run_slow() { echo "$*"; return 42; }; initd_run "$2" start; echo rc=$?' _ "$T/managed.sh" "$T/initd/$name")
+    if [ "$out" = "start $name.service
+rc=42" ] && [ ! -e "$T/fallback" ]; then
+        ok "C $name: failed PID1 dispatch cannot retry init.d"
+    else
+        bad "C $name: manager failure changed outcome or invoked init.d: $out"
+    fi
+done
+rmdir "$T/manager"
+out=$(LOG="$T/log" sh -c '. "$1"; initd_run "$2" start; echo rc=$?' _ "$T/managed.sh" "$T/initd/mplc4" 2>&1)
+if [[ "$out" == *systemd_required* ]] && [[ "$out" == *rc=1* ]] && [ ! -e "$T/fallback" ]; then
+    ok "C unsupported SysV context refuses mutation"
+else
+    bad "C unsupported context unexpectedly executed vendor launch: $out"
 fi
 
 echo

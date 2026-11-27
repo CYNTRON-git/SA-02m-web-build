@@ -36,6 +36,10 @@ json_escape() {
 }
 
 sc_run() {
+    if [ -n "${MPLC_DEADLINE:-}" ]; then
+        mplc_bounded "$TIMEOUT_SEC" "$SC" "$@" 2>/dev/null
+        return $?
+    fi
     if command -v timeout >/dev/null 2>&1; then
         timeout "$TIMEOUT_SEC" "$SC" "$@" 2>/dev/null
     else
@@ -44,6 +48,10 @@ sc_run() {
 }
 
 sc_run_slow() {
+    if [ -n "${MPLC_DEADLINE:-}" ]; then
+        mplc_bounded "$TIMEOUT_SLOW_SEC" "$SC" "$@" 2>/dev/null
+        return $?
+    fi
     if command -v timeout >/dev/null 2>&1; then
         timeout "$TIMEOUT_SLOW_SEC" "$SC" "$@" 2>/dev/null
     else
@@ -62,6 +70,25 @@ sc_run_slow() {
 INITD_TIMEOUT_S=45
 case "${SA02M_INITD_TIMEOUT_S:-}" in ''|*[!0-9]*) ;; *) INITD_TIMEOUT_S=$SA02M_INITD_TIMEOUT_S ;; esac
 initd_run() {
+    case "$1" in
+        /etc/init.d/mplc4|/etc/init.d/codesyscontrol|/etc/init.d/codemeter)
+            [ -d /run/systemd/system ] || { echo 'service control: systemd_required' >&2; return 1; } ;;
+    esac
+    if [ -d /run/systemd/system ]; then
+        case "$1" in
+            /etc/init.d/mplc4) _initd_unit=mplc4.service ;;
+            /etc/init.d/codesyscontrol) _initd_unit=codesyscontrol.service ;;
+            /etc/init.d/codemeter) _initd_unit=codemeter.service ;;
+            *) _initd_unit= ;;
+        esac
+        if [ -n "$_initd_unit" ]; then
+            # PID1's runtime inherits no caller lease descriptors. A failed
+            # manager request never grants permission to start a second owner.
+            unit_exists "$_initd_unit" || return 1
+            sc_run_slow "$2" "$_initd_unit"
+            return $?
+        fi
+    fi
     command -v timeout >/dev/null 2>&1 || { "$@"; return $?; }
     timeout -k 5 "$INITD_TIMEOUT_S" "$@"
     _initd_rc=$?
@@ -71,58 +98,18 @@ initd_run() {
     return "$_initd_rc"
 }
 
-# The list cache: `list` leaves its exact answer here for status.cgi and
-# services_ctrl.cgi to read without a second `sudo … list` (A8-04; dir 0755
-# root, file 0644 — www-data reads, cannot write). Every mutation bumps the
-# generation and drops the file before AND after its work; a `list` that was
-# already running when a mutation began sees the generation move and does not
-# publish its now-stale snapshot.
-SVC_LIST_CACHE="${RESULT_DIR}/list.json"
-SVC_LIST_GEN="${RESULT_DIR}/list.gen"
-SVC_LIST_LOCK="${RESULT_DIR}/list.lock"
-
-svc_list_gen_read() {
-    _svc_gen=0
-    [ -r "$SVC_LIST_GEN" ] && read -r _svc_gen <"$SVC_LIST_GEN" 2>/dev/null
-    case "$_svc_gen" in ''|*[!0-9]*) _svc_gen=0 ;; esac
-}
-
-svc_list_cache_invalidate() {
-    mkdir -p "$RESULT_DIR" 2>/dev/null || return 0
-    (
-        command -v flock >/dev/null 2>&1 && flock -w 2 9 2>/dev/null
-        svc_list_gen_read
-        printf '%s\n' "$((_svc_gen + 1))" >"${SVC_LIST_GEN}.tmp" 2>/dev/null \
-            && mv -f "${SVC_LIST_GEN}.tmp" "$SVC_LIST_GEN" 2>/dev/null
-        rm -f "$SVC_LIST_CACHE" 2>/dev/null
-    ) 9>"$SVC_LIST_LOCK" 2>/dev/null
-    return 0
-}
-
-# Print cmd_list's answer unchanged; publish it only when it is a JSON object
-# and no mutation began while it was being built.
-svc_list_publish() {
-    svc_list_gen_read
-    _svc_start_gen=$_svc_gen
-    _svc_out=$(cmd_list)
-    _svc_rc=$?
-    printf '%s\n' "$_svc_out"
-    [ "$_svc_rc" -eq 0 ] || return "$_svc_rc"
-    case "$_svc_out" in '{'*'}') ;; *) return 0 ;; esac
-    mkdir -p "$RESULT_DIR" 2>/dev/null || return 0
-    (
-        command -v flock >/dev/null 2>&1 && flock -w 2 9 2>/dev/null
-        svc_list_gen_read
-        [ "$_svc_gen" = "$_svc_start_gen" ] || exit 0
-        _svc_tmp=$(mktemp "${SVC_LIST_CACHE}.XXXXXX" 2>/dev/null) || exit 0
-        if printf '%s\n' "$_svc_out" >"$_svc_tmp" && chmod 644 "$_svc_tmp" \
-                && mv -f "$_svc_tmp" "$SVC_LIST_CACHE"; then
-            exit 0
-        fi
-        rm -f "$_svc_tmp"
-    ) 9>"$SVC_LIST_LOCK" 2>/dev/null
-    return 0
-}
+# Mandatory private lifecycle module: no unsafe cache/mutation fallback.
+SVC_CACHE_LIB=/usr/local/lib/sa02m-service-cache.sh
+if [ ! -f "$SVC_CACHE_LIB" ]; then
+    if [ "${1:-}" != list ]; then
+        printf '%s\n' '{"ok":false,"error":"cache_module_missing"}'
+        exit 1
+    fi
+    svc_list_publish() { cmd_list; }
+else
+    # shellcheck disable=SC1090
+    . "$SVC_CACHE_LIB" || exit 1
+fi
 
 emit_result() {
     _json=$1
@@ -131,6 +118,12 @@ emit_result() {
 d=json.load(sys.stdin)
 d.update(id=sys.argv[1], action=sys.argv[2], op_id=sys.argv[3])
 print(json.dumps(d))' "$ID" "$ACTION" "$SA02M_SVC_OPERATION_ID") || return 1
+    fi
+    if [ "${SVC_DEFER_RESULT:-0}" = 1 ]; then
+        case "$_json" in
+            *'"pending":true'*|*'"pending": true'*) ;;
+            *) SVC_FINAL_JSON=$_json; return 0 ;;
+        esac
     fi
     printf '%s\n' "$_json"
     if [ -n "${SVC_RESULT_FILE:-}" ]; then
@@ -437,16 +430,7 @@ mplc4_rc_autostart() {
     return 1
 }
 
-mplc4_process_active() {
-    # Align with status.cgi fast_service_state: comm names first, then vendor
-    # binary patterns. Never trust systemctl ActiveState alone — mplc4.service
-    # is Type=oneshot RemainAfterExit=yes and stays "active (exited)" with no
-    # runtime process (dashboard then shows «<1м»).
-    pgrep -x mplc >/dev/null 2>&1 \
-        || pgrep -x mplc4 >/dev/null 2>&1 \
-        || pgrep -x mplc_monitor >/dev/null 2>&1 \
-        || pgrep -f '[m]plc.*\.bin\|[M]asterPLC\|[m]asterplc' >/dev/null 2>&1
-}
+mplc4_process_active() { mplc_policy_load && sa02m_mplc_runtime_active; }
 
 service_runtime_active() {
     _sid=$1
@@ -901,7 +885,17 @@ EOF
     if flasher_poll_lock_held; then
         _flasher_busy=true
     fi
-    printf '{"ok":true,"flasher_busy":%s,"services":[%s]}\n' "$_flasher_busy" "$parts"
+    _migration=''
+    if [ ! -s "$RESULT_DIR/owned-v1" ] || [ "$(cat "$RESULT_DIR/owned-v1")" != "$(cat /proc/sys/kernel/random/boot_id)" ]; then
+        _migration=',"activation":"pending"'
+        if [ -x /usr/local/libexec/sa02m-runtime-activate ]; then
+            _phase=$(/usr/local/libexec/sa02m-runtime-activate status 2>/dev/null | /usr/bin/python3 -ISB -c 'import json,sys
+d=json.load(sys.stdin)
+print("failed" if d.get("phase") == "failed" else "reboot" if d.get("reason") == "ordinary_reboot_required" else "pending")' 2>/dev/null) || _phase=pending
+            _migration=',"activation":"'"$_phase"'"'
+        fi
+    fi
+    printf '{"ok":true,"flasher_busy":%s,"services":[%s]%s}\n' "$_flasher_busy" "$parts" "$_migration"
 }
 
 validate_id() {
@@ -936,6 +930,135 @@ port_listening() {
     ss -H -ltn "sport = :$1" 2>/dev/null | grep -q ":$1"
 }
 
+mplc_clock() { sa02m_mplc_clock; }
+mplc_budget_begin() { mplc_policy_load && sa02m_mplc_budget_begin; }
+mplc_bounded() { sa02m_mplc_bounded "$@"; }
+
+mplc_policy_load() {
+    MPLC_POLICY_LIB=/usr/local/lib/sa02m-mplc-policy.sh
+    [ -f "$MPLC_POLICY_LIB" ] || return 1
+    # shellcheck disable=SC1090
+    . "$MPLC_POLICY_LIB"
+}
+sa02m_mplc_atomic() { atomic_install_unit "$@"; }
+sa02m_mplc_sc() { sc_run "$@"; }
+
+mplc_observe() {
+    mplc_policy_load || return 1
+    _mplc_observation=$(sa02m_mplc_policy_observe) || return $?
+    _mplc_status=${_mplc_observation%|*}
+    _mplc_result=${_mplc_observation##*|}
+}
+
+mplc_wait_terminal() { sa02m_mplc_wait_terminal "$@"; }
+
+mplc_failed_start_cleanup() {
+    # Native Restart=always is preserved. Cancel the same unit after a failed
+    # attempt so automatic retries cannot outlive this bounded operation.
+    if sa02m_mplc_cancel_start >>"$LOG" 2>&1; then
+        case "$_mplc_status" in
+            terminal\|inactive\|*|terminal\|failed\|*)
+                if ! mplc4_process_active; then
+                    emit_result '{"ok":false,"id":"mplc4","error":"start_failed"}'
+                    return 1
+                fi ;;
+        esac
+    fi
+    emit_result '{"ok":false,"id":"mplc4","error":"mplc_outcome_unknown"}'
+    return 1
+}
+
+mplc_managed_action() {
+    _mplc_action=$1
+    _mplc_quiet=${2:-}
+    [ -n "${MPLC_DEADLINE:-}" ] || mplc_budget_begin || return 1
+    # A board with systemd but without the canonical wrapper needs fullrefresh,
+    # not a retry through an unrelated SysV process tree.
+    if ! unit_exists mplc4.service; then
+        emit_result '{"ok":false,"id":"mplc4","error":"mplc_unit_missing"}'
+        return 1
+    fi
+    if ! sc_run_slow unmask mplc4.service >>"$LOG" 2>&1 || ! sc_run daemon-reload >>"$LOG" 2>&1 || ! mplc_observe; then
+        emit_result '{"ok":false,"id":"mplc4","error":"mplc_timeout_policy"}'
+        return 1
+    fi
+    if [ "$_mplc_action" = start ]; then
+        case "$_mplc_status" in
+            changing\|*)
+                emit_result '{"ok":false,"id":"mplc4","error":"mplc_job_pending"}'
+                return 1 ;;
+        esac
+        if ! sc_run_slow enable mplc4.service >>"$LOG" 2>&1; then
+            emit_result '{"ok":false,"id":"mplc4","error":"enable_failed"}'
+            return 1
+        fi
+        if [ -x /etc/init.d/mplc4 ] && ! mplc_bounded 15 update-rc.d mplc4 defaults >>"$LOG" 2>&1; then
+            emit_result '{"ok":false,"id":"mplc4","error":"enable_failed"}'
+            return 1
+        fi
+    fi
+    # The client can time out before PID1 finishes its 45s + 15s cleanup.
+    # Observe that same job; never issue a direct init.d retry or reset-failed.
+    _mplc_client_rc=0
+    sc_run_slow "$_mplc_action" mplc4.service >>"$LOG" 2>&1 || _mplc_client_rc=$?
+    if [ "$_mplc_action" = start ]; then
+        case "$_mplc_client_rc" in
+            0|124|137) ;;
+            *) mplc_failed_start_cleanup; return 1 ;;
+        esac
+    fi
+    if ! mplc_wait_terminal "$_mplc_action"; then
+        if [ "$_mplc_action" = start ]; then
+            mplc_failed_start_cleanup
+            return 1
+        fi
+        emit_result '{"ok":false,"id":"mplc4","error":"mplc_outcome_unknown"}'
+        return 1
+    fi
+    if [ "$_mplc_action" = start ]; then
+        case "$_mplc_status" in
+            terminal\|active\|enabled|terminal\|active\|enabled-runtime) ;;
+            *) mplc_failed_start_cleanup; return 1 ;;
+        esac
+        if ! mplc4_process_active; then
+            mplc_failed_start_cleanup
+            return 1
+        fi
+    else
+        case "$_mplc_status" in
+            terminal\|inactive\|*|terminal\|failed\|*) ;;
+            *) emit_result '{"ok":false,"id":"mplc4","error":"still_running"}'; return 1 ;;
+        esac
+        if mplc4_process_active; then
+            emit_result '{"ok":false,"id":"mplc4","error":"still_running"}'
+            return 1
+        fi
+        if ! sc_run_slow disable mplc4.service >>"$LOG" 2>&1; then
+            emit_result '{"ok":false,"id":"mplc4","error":"disable_failed"}'
+            return 1
+        fi
+        if [ -x /etc/init.d/mplc4 ] && ! mplc_bounded 15 update-rc.d mplc4 disable >>"$LOG" 2>&1; then
+            emit_result '{"ok":false,"id":"mplc4","error":"disable_failed"}'
+            return 1
+        fi
+        if unit_can_mask mplc4.service; then
+            sc_run mask mplc4.service >>"$LOG" 2>&1 || { emit_result '{"ok":false,"error":"mask_failed","id":"mplc4"}'; return 1; }
+        fi
+        if ! mplc_observe; then
+            emit_result '{"ok":false,"id":"mplc4","error":"mplc_outcome_unknown"}'
+            return 1
+        fi
+        case "$_mplc_status" in
+            terminal\|inactive\|disabled|terminal\|failed\|disabled|terminal\|inactive\|masked|terminal\|failed\|masked) ;;
+            *) emit_result '{"ok":false,"id":"mplc4","error":"disable_failed"}'; return 1 ;;
+        esac
+    fi
+    if [ "$_mplc_quiet" != quiet ]; then
+        emit_result "{\"ok\":true,\"id\":\"mplc4\",\"action\":\"$_mplc_action\"}"
+    fi
+    return 0
+}
+
 cmd_stop() {
     _id=$1
     validate_id "$_id" || { emit_result '{"ok":false,"error":"invalid_id"}'; return 1; }
@@ -945,14 +1068,13 @@ cmd_stop() {
     fi
     _u=$_found_unit
     begin_result "$_id" stop || return 1
+    if [ "$_id" = mplc4 ]; then
+        mplc_managed_action stop
+        return $?
+    fi
     echo "$(date '+%Y-%m-%d %H:%M:%S') sa02m-web-service-ctl: stop ${_id} (${_u})" >>"$LOG" 2>&1
     if [ "$_id" = "codesys" ] && [ -x /etc/init.d/codesyscontrol ]; then
-        initd_run /etc/init.d/codesyscontrol stop >>"$LOG" 2>&1 || true
         codesys_rc_disable
-    fi
-    if [ "$_id" = "mplc4" ] && [ -x /etc/init.d/mplc4 ]; then
-        initd_run /etc/init.d/mplc4 stop >>"$LOG" 2>&1 || true
-        mplc4_rc_disable
     fi
     if [ "$_id" = "alice" ]; then
         alice_sync_client_enabled false
@@ -992,9 +1114,6 @@ cmd_stop() {
         if [ "$_id" = "codesys" ]; then
             codesys_rc_disable
         fi
-        if [ "$_id" = "mplc4" ]; then
-            mplc4_rc_disable
-        fi
     fi
     if ! service_admin_off "$_id" "$_u"; then
         emit_result "$(printf '{"ok":false,"error":"disable_failed","id":"%s"}' "$_id")"
@@ -1026,15 +1145,16 @@ cmd_start() {
     esac
     _u=$_found_unit
     begin_result "$_id" start || return 1
+    if [ "$_id" = mplc4 ]; then
+        mplc_managed_action start
+        return $?
+    fi
     echo "$(date '+%Y-%m-%d %H:%M:%S') sa02m-web-service-ctl: start ${_id} (${_u:-init.d})" >>"$LOG" 2>&1
     # codesys: start = RUNTIME ONLY (kernel-conditional service policy) — no
     # codesys_rc_enable, and no `systemctl enable` on the SysV-generated unit
     # (it shims to `update-rc.d enable`, re-arming the disabled autostart).
     if [ "$_id" = "codesys" ]; then
         codemeter_runtime_start
-    fi
-    if [ "$_id" = "mplc4" ]; then
-        mplc4_rc_enable
     fi
     if [ "$_id" = "alice" ]; then
         alice_sync_client_enabled true
@@ -1053,16 +1173,6 @@ cmd_start() {
         sc_run_slow start "$_u" >>"$LOG" 2>&1 || true
         sc_run daemon-reload >>"$LOG" 2>&1 || true
     fi
-    if [ "$_id" = "codesys" ] && [ -x /etc/init.d/codesyscontrol ]; then
-        if ! codesys_process_active; then
-            initd_run /etc/init.d/codesyscontrol start >>"$LOG" 2>&1 || true
-        fi
-    fi
-    if [ "$_id" = "mplc4" ] && [ -x /etc/init.d/mplc4 ]; then
-        if ! service_runtime_active mplc4 "$_u"; then
-            initd_run /etc/init.d/mplc4 start >>"$LOG" 2>&1 || true
-        fi
-    fi
     if ! service_runtime_active "$_id" "$_u"; then
         emit_result "$(printf '{"ok":false,"error":"start_failed","id":"%s"}' "$_id")"
         return 1
@@ -1074,9 +1184,6 @@ cmd_start() {
         if [ -n "$_u" ]; then
             sc_run_slow enable "$_u" >>"$LOG" 2>&1 || true
             sc_run daemon-reload >>"$LOG" 2>&1 || true
-        fi
-        if [ "$_id" = "mplc4" ]; then
-            mplc4_rc_enable
         fi
     fi
     if [ "$_id" != "codesys" ] && ! service_admin_on "$_id" "$_u"; then
@@ -1097,6 +1204,109 @@ cmd_start() {
 # ═══════════════════════════════════════════════════════════════════════════
 
 # ── CODESYS install (local .deb only) ──────────────────────────────────────
+codesys_vendor_handoff() {
+    [ "${SVC_WORKER_UNIT:-}" = sa02m-svcctl-install-codesys.service ] || return 1
+    svc_worker_verify "$SVC_WORKER_UNIT" "${SA02M_SVC_WORKER_PID:-}" || return 1
+    python3 -I - "$SVC_WORKER_UNIT" <<'PY_CODESYS_HANDOFF'
+import os
+from pathlib import Path
+import stat
+import subprocess
+import sys
+
+group = '/system.slice/' + sys.argv[1]
+
+def runtime_processes():
+    result = {}
+    for path in Path('/proc').iterdir():
+        if not path.name.isdigit():
+            continue
+        try:
+            argv = (path / 'cmdline').read_bytes().split(b'\0')
+            if not any(os.path.basename(arg) == b'codesyscontrol.bin' for arg in argv):
+                continue
+            ticks = (path / 'stat').read_text().rsplit(')', 1)[1].split()[19]
+            groups = {line.split(':', 2)[2] for line in (path / 'cgroup').read_text().splitlines()}
+            result[int(path.name)] = (ticks, groups)
+        except FileNotFoundError:
+            continue
+    return result
+
+try:
+    before = runtime_processes()
+    owned = {pid: value for pid, value in before.items() if group in value[1]}
+    if not owned:
+        sys.exit(0)
+    if len(owned) != 1 or before != owned:
+        raise ValueError('ambiguous or foreign CODESYS runtime; refusing vendor stop')
+    pidfile = Path('/var/run/codesyscontrol.pid')
+    info = pidfile.lstat()
+    if not stat.S_ISREG(info.st_mode) or info.st_uid or info.st_nlink != 1 or info.st_size > 32:
+        raise ValueError('unsafe vendor pidfile')
+    pid = int(pidfile.read_text().strip())
+    if pid not in owned or runtime_processes() != before:
+        raise ValueError('vendor process identity changed before handoff')
+    # This single stop is for the proven postinst process in this worker,
+    # before its first PID1 start. It is never a retry of a manager request.
+    subprocess.run(['timeout', '-k', '5', '45', '/etc/init.d/codesyscontrol', 'stop'],
+                   close_fds=False, check=True, timeout=52)
+    if runtime_processes():
+        raise ValueError('vendor stop did not prove runtime termination')
+    old = Path('/proc') / str(pid) / 'stat'
+    if old.exists() and old.read_text().rsplit(')', 1)[1].split()[19] == owned[pid][0]:
+        raise ValueError('original vendor PID still exists after stop')
+except (OSError, ValueError, subprocess.SubprocessError) as exc:
+    print('CODESYS handoff: ' + str(exc), file=sys.stderr)
+    sys.exit(1)
+PY_CODESYS_HANDOFF
+}
+
+svc_runtime_cgroup_proof() {
+    python3 -I - "$1" "$SC" <<'PY_RUNTIME_CGROUP'
+import os
+from pathlib import Path
+import re
+import subprocess
+import sys
+identity, manager = sys.argv[1:]
+units = {'codesys': 'codesyscontrol.service', 'mplc4': 'mplc4.service', 'node-red': 'nodered.service'}
+try:
+    unit = units[identity]
+    if identity == 'node-red':
+        unit = 'node-red.service'
+        if subprocess.run([manager, 'show', '-p', 'LoadState', '--value', unit], capture_output=True, text=True, timeout=8).stdout.strip() == 'not-found':
+            unit = 'nodered.service'
+    group = subprocess.run([manager, 'show', '--property=ControlGroup', '--value', unit],
+                           capture_output=True, text=True, timeout=8, check=True).stdout.strip()
+    if not group.startswith('/system.slice/'):
+        raise ValueError('missing canonical runtime cgroup')
+    found = 0
+    for process in Path('/proc').iterdir():
+        if not process.name.isdigit():
+            continue
+        try:
+            argv = (process / 'cmdline').read_bytes().split(b'\0')
+            comm = (process / 'comm').read_text().strip()
+            matched = (identity == 'codesys' and any(os.path.basename(a) == b'codesyscontrol.bin' for a in argv) or
+                       identity == 'mplc4' and (comm in {'mplc', 'mplc4', 'mplc_monitor'} or
+                           any(re.fullmatch(rb'mplc[^/]*\.bin|MasterPLC|masterplc', os.path.basename(a)) for a in argv)) or
+                       identity == 'node-red' and (comm == 'node-red' or any(a.endswith(b'/red.js') for a in argv)))
+            if not matched:
+                continue
+            groups = {line.split(':', 2)[2] for line in (process / 'cgroup').read_text().splitlines()}
+            if group not in groups:
+                raise ValueError('runtime outside its canonical PID1 cgroup')
+            found += 1
+        except FileNotFoundError:
+            continue
+    if not found:
+        raise ValueError('runtime process not found')
+except (OSError, ValueError, subprocess.SubprocessError) as exc:
+    print('runtime ownership: ' + str(exc), file=sys.stderr)
+    sys.exit(1)
+PY_RUNTIME_CGROUP
+}
+
 codesys_install() {
     _deb=""
     for _c in /opt/vendor-installers/codesys/codesyscontrol_linuxarm_*_armhf.deb \
@@ -1111,7 +1321,14 @@ codesys_install() {
     fi
     # codemeter-lite is absent in Debian main → --force-depends; demo mode until
     # the license .wbc lands. Hold so `apt-get -f install` never removes it.
-    DEBIAN_FRONTEND=noninteractive dpkg -i --force-depends "$_deb" >>"$LOG" 2>&1 || true
+    if ! DEBIAN_FRONTEND=noninteractive dpkg -i --force-depends "$_deb" >>"$LOG" 2>&1; then
+        emit_result '{"ok":false,"error":"install_failed","id":"codesys"}'
+        return 1
+    fi
+    if ! codesys_vendor_handoff >>"$LOG" 2>&1; then
+        emit_result '{"ok":false,"error":"runtime_cgroup_unknown","id":"codesys"}'
+        return 1
+    fi
     apt-mark hold codesyscontrol >>"$LOG" 2>&1 || true
     _dropin_src=/opt/vendor-installers/codesys/sa02m.conf
     _dropin_dir=/etc/systemd/system/codesyscontrol.service.d
@@ -1147,29 +1364,57 @@ codesys_install() {
 }
 
 # ── MPLC4 install (vendor payload only) ─────────────────────────────────────
+mplc_install_failure() {
+    _mplc_install_error=$1
+    MPLC_DEADLINE=
+    SA02M_MPLC_DEADLINE=
+    if mplc_budget_begin && sa02m_mplc_cancel_start && ! mplc4_process_active; then
+        emit_result "{\"ok\":false,\"error\":\"$_mplc_install_error\",\"id\":\"mplc4\"}"
+    else
+        emit_result '{"ok":false,"error":"mplc_outcome_unknown","id":"mplc4"}'
+    fi
+    return 1
+}
+
 mplc4_install() {
     _src=/opt/vendor-installers/mplc4
+    _unit_src=/opt/sa02m-mplc/systemd
     if [ ! -d "$_src" ] || [ ! -f "$_src/install.sh" ] \
        || [ ! -f "$_src/mplc4.tar.gz" ] || [ ! -f "$_src/nginx.tar.gz" ]; then
         emit_result '{"ok":false,"error":"staging_missing","id":"mplc4"}'
         return 1
     fi
-    (
-        cd "$_src" || exit 1
-        chmod +x ./install.sh 2>/dev/null || true
-        bash ./install.sh --use-systemd --http-port=8082 --enable-log
-    ) >>"$LOG" 2>&1 || true
+    if ! mplc_policy_load || ! sa02m_mplc_policy_install "$_unit_src/mplc4.service" ||
+            ! sa02m_mplc_wrapper_install "$_unit_src/mplc4.service" "$_unit_src/mplc4-native.service" ||
+            ! sc_run daemon-reload >>"$LOG" 2>&1 || ! mplc_observe; then
+        emit_result '{"ok":false,"error":"mplc_timeout_policy","id":"mplc4"}'
+        return 1
+    fi
+    if ! (cd "$_src" && unset SYSTEMCTL_SKIP_REDIRECT &&
+            bash ./install.sh --use-systemd --http-port=8082 --enable-log) >>"$LOG" 2>&1; then
+        mplc_install_failure install_failed
+        return $?
+    fi
+    if ! sa02m_mplc_wrapper_install "$_unit_src/mplc4.service" "$_unit_src/mplc4-native.service" ||
+            ! sc_run daemon-reload >>"$LOG" 2>&1 || ! mplc_observe; then
+        mplc_install_failure mplc_timeout_policy
+        return $?
+    fi
     if [ -f "$_src/mplc_cyntron.so" ] && [ -d /opt/mplc4 ]; then
         install -m 0755 "$_src/mplc_cyntron.so" /opt/mplc4/mplc_cyntron.so >>"$LOG" 2>&1 || true
     fi
     if [ -f "$_src/mplc_protocol_fast_modbus.so" ] && [ -d /opt/mplc4 ]; then
         install -m 0755 "$_src/mplc_protocol_fast_modbus.so" /opt/mplc4/mplc_protocol_fast_modbus.so >>"$LOG" 2>&1 || true
     fi
-    sc_run daemon-reload >>"$LOG" 2>&1 || true
-    sc_run_slow enable mplc4 >>"$LOG" 2>&1 || true
-    sc_run_slow restart mplc4 >>"$LOG" 2>&1 || true
-    sleep 3
-    if port_listening 8082 || service_runtime_active mplc4 mplc4.service; then
+    MPLC_DEADLINE=
+    SA02M_MPLC_DEADLINE=
+    mplc_managed_action stop quiet || return 1
+    MPLC_DEADLINE=
+    SA02M_MPLC_DEADLINE=
+    mplc_managed_action start quiet || return 1
+    MPLC_DEADLINE=
+    SA02M_MPLC_DEADLINE=
+    if service_runtime_active mplc4 mplc4.service; then
         # Payload-version stamp — the same format scripts/09-mplc.sh writes
         # (first dotted version, one line): an equal payload then never re-runs
         # the vendor installer on the next full install.
@@ -1260,11 +1505,14 @@ codesys_uninstall() {
 # ── MPLC4 uninstall (full clean; preserve staging) ──────────────────────────
 mplc4_uninstall() {
     if unit_exists mplc4.service; then
-        sc_run_slow stop mplc4.service >>"$LOG" 2>&1 || true
-        sc_run_slow disable mplc4.service >>"$LOG" 2>&1 || true
-    fi
-    if [ -x /etc/init.d/mplc4 ]; then
-        initd_run /etc/init.d/mplc4 stop >>"$LOG" 2>&1 || true
+        MPLC_DEADLINE=
+        SA02M_MPLC_DEADLINE=
+        mplc_managed_action stop quiet || return 1
+        MPLC_DEADLINE=
+        SA02M_MPLC_DEADLINE=
+    elif mplc4_process_active; then
+        emit_result '{"ok":false,"error":"mplc_outcome_unknown","id":"mplc4"}'
+        return 1
     fi
     if command -v update-rc.d >/dev/null 2>&1; then
         update-rc.d mplc4 remove >>"$LOG" 2>&1 || true
@@ -1360,6 +1608,10 @@ cmd_install() {
         node-red) nodered_install ;;
     esac
     _rc=$?
+    if [ "$_rc" -eq 0 ] && ! svc_runtime_cgroup_proof "$_id" >>"$LOG" 2>&1; then
+        emit_result '{"ok":false,"error":"runtime_cgroup_unknown"}'
+        return 1
+    fi
     [ "$_rc" -eq 0 ] && stack_policy_record "$_id" present
     return $_rc
 }
@@ -1383,6 +1635,95 @@ cmd_uninstall() {
     return $_rc
 }
 
+# Every candidate comes from the fixed catalogue, never request-supplied unit
+# text. Include companion units before any install/start can dispatch their job.
+svc_cache_units() {
+    while IFS='|' read -r _cu_id _cu_label _cu_units; do
+        [ "$_cu_id" = "$1" ] || continue
+        printf '%s\n' "$_cu_units" | tr ',' ' '
+        case "$1" in
+            codesys) printf '%s\n' codemeter.service ;;
+            mplc4) printf '%s\n' nginx.service ;;
+        esac
+        [ -z "${SVC_WORKER_UNIT:-}" ] || printf '%s\n' "$SVC_WORKER_UNIT"
+        return 0
+    done <<CACHE_UNITS
+$SERVICE_DEFS
+CACHE_UNITS
+    return 1
+}
+
+svc_cache_exit() {
+    _cache_exit_rc=$?
+    trap - EXIT
+    if ! svc_cache_finish; then
+        echo 'sa02m-web-service-ctl: cache completion unresolved; operation record retained' >>"$LOG" 2>&1
+        if [ "$_cache_exit_rc" -eq 0 ]; then
+            _cache_exit_rc=1
+            SVC_FINAL_JSON='{"ok":false,"error":"cache_completion_unknown"}'
+        fi
+    fi
+    SVC_DEFER_RESULT=0
+    [ -z "${SVC_FINAL_JSON:-}" ] || emit_result "$SVC_FINAL_JSON"
+    exit "$_cache_exit_rc"
+}
+
+svc_worker_verify() {
+    case "$1" in
+        sa02m-svcctl-install-codesys.service|sa02m-svcctl-uninstall-codesys.service|sa02m-svcctl-install-mplc4.service|sa02m-svcctl-uninstall-mplc4.service|sa02m-svcctl-install-node-red.service|sa02m-svcctl-uninstall-node-red.service) ;;
+        *) return 1 ;;
+    esac
+    [ "$(id -u)" = 0 ] || return 1
+    _worker_main=$(sc_run show --property=MainPID --value "$1") || return 1
+    [ "$_worker_main" = "$2" ] || return 1
+    awk -F: -v u="/system.slice/$1" '$3 == u {found=1} END {exit !found}' "/proc/$$/cgroup"
+}
+
+svc_vendor_admit() {
+    command -v systemd-run >/dev/null 2>&1 && command -v timeout >/dev/null 2>&1 || {
+        emit_result '{"ok":false,"error":"systemd_required"}'; return 1;
+    }
+    _worker_unit="sa02m-svcctl-${ACTION}-${ID}.service"
+    _worker_reply=$(timeout -k 5 600 systemd-run --quiet --wait --pipe --collect \
+        --unit="$_worker_unit" --service-type=exec --uid=root --gid=root \
+        --property=RuntimeMaxSec=570s --property=TimeoutStopSec=15s \
+        --property=KillMode=control-group /bin/sh /usr/local/sbin/sa02m-web-service-ctl.sh \
+        --vendor-worker "$ACTION" "$ID" "$SA02M_SVC_OPERATION_ID" 2>>"$LOG")
+    _worker_rc=$?
+    if [ "$_worker_rc" -ne 0 ]; then
+        # A collected failed unit's disappearance cannot turn its client exit
+        # into success. A precise worker JSON error is preserved when present.
+        case "$_worker_reply" in
+            *'"ok":false'*|*'"ok": false'*) emit_result "$_worker_reply" ;;
+            *) emit_result '{"ok":false,"error":"vendor_worker_failed"}' ;;
+        esac
+        return 1
+    fi
+    case "$_worker_reply" in
+        '{'*'}') emit_result "$_worker_reply" ;;
+        *) emit_result '{"ok":false,"error":"vendor_worker_failed"}'; return 1 ;;
+    esac
+}
+
+SVC_WORKER_UNIT=
+if [ "${1:-}" = --vendor-worker ]; then
+    [ "$#" = 4 ] || { printf '%s\n' '{"ok":false,"error":"invalid_worker"}'; exit 1; }
+    _worker_expected="sa02m-svcctl-${2}-${3}.service"
+    svc_worker_verify "$_worker_expected" "$$" || { printf '%s\n' '{"ok":false,"error":"invalid_worker"}'; exit 1; }
+    SVC_WORKER_UNIT=$_worker_expected
+    SA02M_SVC_WORKER_UNIT=$SVC_WORKER_UNIT
+    SA02M_SVC_WORKER_PID=$$
+    export SA02M_SVC_WORKER_UNIT SA02M_SVC_WORKER_PID
+    unset SYSTEMCTL_SKIP_REDIRECT
+    set -- "$2" "$3" "$4"
+elif [ -n "${SA02M_SVC_WORKER_UNIT:-}" ]; then
+    # The coordinator child must still be in the same PID1-owned cgroup and
+    # carry the real cache OFD. Environment text alone grants no internal mode.
+    svc_worker_verify "$SA02M_SVC_WORKER_UNIT" "${SA02M_SVC_WORKER_PID:-}" &&
+        svc_cache_state verify >/dev/null || { printf '%s\n' '{"ok":false,"error":"invalid_worker"}'; exit 1; }
+    SVC_WORKER_UNIT=$SA02M_SVC_WORKER_UNIT
+fi
+
 ACTION=${1:-}
 ID=${2:-}
 SA02M_SVC_OPERATION_ID=${3:-${SA02M_SVC_OPERATION_ID:-}}
@@ -1397,11 +1738,35 @@ case "$ACTION" in
     start|stop|install|uninstall)
         validate_id "$ID" || { printf '{"ok":false,"error":"invalid_id"}\n'; exit 1; }
         service_id_known "$ID" || { emit_result '{"ok":false,"error":"unknown_service"}'; exit 1; }
+        if [ ! -f "$RESULT_DIR/owned-v1" ] || [ "$(cat "$RESULT_DIR/owned-v1")" != "$(cat /proc/sys/kernel/random/boot_id)" ]; then
+            SVC_RESULT_FILE="${RESULT_DIR}/${ID}.json"
+            emit_result '{"ok":false,"error":"migration_required"}'
+            exit 1
+        fi
+        case "$ACTION" in
+            install|uninstall)
+                svc_is_installable "$ID" || { emit_result '{"ok":false,"error":"not_installable"}'; exit 1; }
+                if [ -z "$SVC_WORKER_UNIT" ]; then
+                    svc_vendor_admit
+                    exit $?
+                fi ;;
+        esac
+        case "$ID" in
+            mplc4|codesys)
+                [ -d /run/systemd/system ] || { emit_result '{"ok":false,"error":"systemd_required"}'; exit 1; } ;;
+        esac
+        case "$ACTION:$ID" in
+            start:mplc4|stop:mplc4)
+                mplc_budget_begin || { emit_result '{"ok":false,"error":"mplc_budget_unavailable"}'; exit 1; } ;;
+        esac
         begin_result "$ID" "$ACTION" || exit 1
-        # A cached `list` must not outlive a change of service state: drop it
-        # now and again whenever this process ends (svc_list_cache_invalidate).
-        svc_list_cache_invalidate
-        trap 'svc_list_cache_invalidate' EXIT
+        _cache_units=$(svc_cache_units "$ID") || exit 1
+        if ! svc_cache_begin "$_cache_units"; then
+            emit_result '{"ok":false,"error":"cache_registration_failed"}'
+            exit 1
+        fi
+        SVC_DEFER_RESULT=1
+        trap 'svc_cache_exit' EXIT
         ;;
 esac
 

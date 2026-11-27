@@ -338,17 +338,19 @@ class CaptureLoopTest(unittest.TestCase):
 @unittest.skipUnless(os.name == "posix", "root verifier requires the target crypt/spwd modules")
 class RootVerifierTest(unittest.TestCase):
     def run_verifier(self, shadow, password='correct', command='exit 7', raises=False):
-        source = (ROOT / 'etc/sa02m-web-root-cmd.sh').read_text()
-        block = re.search(r"<<'PY'\n(.*?)^PY$", source, re.M | re.S).group(1)
-        with mock.patch('builtins.open', side_effect=[io.StringIO(password + '\n'), io.StringIO(command + '\n')]), \
-             mock.patch.object(sys, 'argv', ['verify', 'pass', 'cmd']), \
+        spec = importlib.util.spec_from_file_location('root_auth_test', ROOT / 'usr/local/lib/sa02m-root-auth.py')
+        module = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(module)
+        throttle = mock.MagicMock()
+        throttle.__enter__.return_value.authenticate.side_effect = lambda value: 0 if module.verify_password(value) else 77
+        with mock.patch.object(module, 'read_input', side_effect=[password, command.rstrip('\n')]), \
+             mock.patch.object(module, 'Throttle', return_value=throttle), \
+             mock.patch.object(module.os, 'geteuid', return_value=0), \
              mock.patch('spwd.getspnam', side_effect=KeyError('missing') if raises else None) as get_shadow, \
              mock.patch('crypt.crypt', return_value='hash') as crypt, \
              mock.patch('os.execv') as execute, contextlib.redirect_stderr(io.StringIO()) as err:
             get_shadow.return_value.sp_pwdp = shadow
-            rc = 0
-            try: exec(compile(block, 'root-helper', 'exec'), {})
-            except SystemExit as exc: rc = exc.code
+            rc = module.main(['pass', 'cmd'])
         return rc, execute, crypt, err.getvalue()
 
     def test_good_password_execs_fixed_shell_and_preserves_command(self):
@@ -370,6 +372,32 @@ class RootVerifierTest(unittest.TestCase):
         result = subprocess.run(['sh', str(helper), '/wrong', '/wrong'], capture_output=True, timeout=3)
         self.assertEqual(result.returncode, 64)
         self.assertIn(b'invalid password file', result.stderr)
+
+    def test_first_delivery_cannot_send_receipt_command_to_legacy_helper(self):
+        # This is the actual released Git blob. Archive-only fixtures supply
+        # the same bytes and must pass the same content-address check.
+        import hashlib
+        blob = '60ecf4b553c8ec650bdc4a8641cf93bfea211f9b'
+        fixture = os.environ.get('SA02M_RELEASED_ROOT_HELPER')
+        source = (Path(fixture).read_bytes() if fixture else
+                  subprocess.check_output(['git', 'cat-file', 'blob', blob], cwd=ROOT))
+        self.assertEqual(hashlib.sha1(b'blob ' + str(len(source)).encode() + b'\0' + source).hexdigest(), blob)
+        cgi = (ROOT / 'www/network_config/cgi-bin/cmd_exec.cgi').read_text()
+        template = re.search(r'^TMP_PASS=\$\(mktemp (/tmp/[\w.-]+\.XXXXXX)\)$', cgi, re.M).group(1)
+        with tempfile.TemporaryDirectory() as scratch:
+            legacy = Path(scratch) / 'legacy.sh'
+            legacy.write_bytes(source)
+            with tempfile.NamedTemporaryFile(prefix=Path(template).name[:-6], dir='/tmp') as password, \
+                 tempfile.NamedTemporaryFile(prefix='sa02m-cmd-cmd.', dir='/tmp') as command, \
+                 tempfile.NamedTemporaryFile(prefix='sa02m-cmd-auth.', dir='/tmp') as receipt:
+                command.write(b'printf harmless'); command.flush()
+                result = subprocess.run(['sh', str(legacy), password.name, command.name, receipt.name],
+                                        capture_output=True, timeout=3)
+                self.assertEqual((result.returncode, result.stdout, result.stderr),
+                                 (64, b'', b'invalid password file\n'))
+                current = ROOT / 'etc/sa02m-web-root-cmd.sh'
+                self.assertEqual(subprocess.run(['sh', str(current), password.name, command.name],
+                                               capture_output=True, timeout=3).returncode, 64)
 
 
 if __name__ == "__main__":

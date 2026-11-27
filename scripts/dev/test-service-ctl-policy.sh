@@ -50,7 +50,8 @@ grep -q '^# ── Node-RED: staged payload' "$SRC" && grep -q '^# ── CODESY
 
 # Neutralise the ctl's own soft lib source (points at /usr/local/lib on a real
 # board); the harness decides per-case whether the policy lib is loaded.
-sed 's#^SA02M_STACKS_LIB=/usr/local/lib/sa02m-stacks-policy.sh#SA02M_STACKS_LIB=/nonexistent-in-test#' \
+sed -e 's#^SA02M_STACKS_LIB=/usr/local/lib/sa02m-stacks-policy.sh#SA02M_STACKS_LIB=/nonexistent-in-test#' \
+    -e "s#^SVC_CACHE_LIB=/usr/local/lib/sa02m-service-cache.sh#SVC_CACHE_LIB=$PWD/usr/local/lib/sa02m-service-cache.sh#" \
     "$T/raw.sh" > "$T/fn.sh"
 grep -q 'SA02M_STACKS_LIB=/nonexistent-in-test' "$T/fn.sh" \
     || { echo "FAIL  soft-source retarget matched nothing — the ctl would source the real /usr/local/lib"; exit 1; }
@@ -67,6 +68,8 @@ LOG="$T/install.log"; : >"$LOG"
 # shellcheck disable=SC2034  # read by the SHIPPED code sourced above
 RESULT_DIR="$T/svcctl"
 _STUB_RC=0
+_PROOF_RC=0
+svc_runtime_cgroup_proof() { return "$_PROOF_RC"; }
 codesys_install()   { echo '{"ok":true,"id":"codesys","action":"install"}';   return "$_STUB_RC"; }
 mplc4_install()     { echo '{"ok":true,"id":"mplc4","action":"install"}';     return "$_STUB_RC"; }
 nodered_install()   { echo '{"ok":true,"id":"node-red","action":"install"}';  return "$_STUB_RC"; }
@@ -127,6 +130,15 @@ fi
 _STUB_RC=0
 
 # 1d. a non-installable id never reaches the hooks
+_PROOF_RC=1
+rm -f "$SA02M_STACKS_CONF"
+out=$(cmd_install mplc4); rc=$?
+if [ "$rc" -eq 1 ] && [ ! -f "$SA02M_STACKS_CONF" ] && [[ "$out" == *runtime_cgroup_unknown* ]]; then
+    ok "a successful installer without a proved runtime cannot record present"
+else
+    bad "unproved runtime wrote policy or reported success: rc=$rc out=$out"
+fi
+_PROOF_RC=0
 rm -f "$SA02M_STACKS_CONF"
 out=$(cmd_install mosquitto); rc=$?
 if [ "$rc" -eq 1 ] && [ ! -f "$SA02M_STACKS_CONF" ] && [[ "$out" == *not_installable* ]]; then

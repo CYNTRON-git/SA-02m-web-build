@@ -130,10 +130,12 @@ else
     fail "helper must cap kept backups (BACKUP_KEEP + prune_backups)"
 fi
 # Timeouts on the hangable calls.
-if stripped_has "$HELPER" 'timeout "$STOP_TIMEOUT"' \
-   && stripped_has "$HELPER" 'timeout "$START_TIMEOUT"' \
+if stripped_has "$HELPER" 'timeout -k 2 "$STOP_TIMEOUT"' \
+   && stripped_has "$HELPER" 'timeout -k 2 "$START_TIMEOUT"' \
+   && stripped_matches "$HELPER" '^STOP_TIMEOUT=95$' \
+   && stripped_matches "$HELPER" '^START_TIMEOUT=95$' \
    && stripped_matches "$HELPER" '^VERIFY_TIMEOUT=[0-9]+'; then
-    pass "helper bounds stop/start/verify with timeouts"
+    pass "helper bounds stop/start at 95s plus 2s kill grace, and bounds verify"
 else
     fail "helper must bound stop, start, and verify with timeouts"
 fi

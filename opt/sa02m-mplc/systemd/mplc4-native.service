@@ -1,0 +1,13 @@
+[Unit]
+Description=MPLC4 / MasterSCADA 4D native runtime
+After=network.target
+
+[Service]
+Type=forking
+Restart=always
+WorkingDirectory=/opt/mplc4
+ExecStart=/opt/mplc4/start_mplc4.sh
+KillMode=process
+
+[Install]
+WantedBy=multi-user.target

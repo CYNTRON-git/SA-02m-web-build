@@ -7,7 +7,7 @@
 #
 # Contract: docs/contracts/mplc-project-deploy.md. Fail-closed: the existing
 # project is deleted ONLY after a good backup, and ANY failure in replace/start/
-# verify restores the backup and restarts mplc4. Success is reported ONLY on the
+# verify restores the backup only after a proven stop. Success is reported on the
 # RT's project identity or the legacy successful-load message. 'LoadConfig()
 # error' is a FAILURE (§0 load-verify guard), never a false green.
 #
@@ -32,8 +32,8 @@ LOG=/var/log/sa02m_install.log
 SVC_ID=mplc4                                 # literal — never from the request
 
 BACKUP_KEEP=5                                # retention cap (embedded ARM disk)
-STOP_TIMEOUT=60
-START_TIMEOUT=60
+STOP_TIMEOUT=95
+START_TIMEOUT=95
 VERIFY_TIMEOUT=60
 
 SOURCE="${1:-}"
@@ -102,9 +102,9 @@ flasher_busy() {
   return 0   # нет поля poll_locked → fail closed
 }
 
-start_mplc4() { timeout "$START_TIMEOUT" "$SVC_CTL" start "$SVC_ID" >>"$LOG" 2>&1; }
+start_mplc4() { timeout -k 2 "$START_TIMEOUT" "$SVC_CTL" start "$SVC_ID" >>"$LOG" 2>&1; }
 
-stop_mplc4() { timeout "$STOP_TIMEOUT" "$SVC_CTL" stop "$SVC_ID" >>"$LOG" 2>&1; }
+stop_mplc4() { timeout -k 2 "$STOP_TIMEOUT" "$SVC_CTL" stop "$SVC_ID" >>"$LOG" 2>&1; }
 
 runtime_identity() {
   curl --noproxy '*' -fsS --max-time 2 -H 'Content-Type: application/json' \
@@ -133,7 +133,10 @@ resume_prior() {
 restore() {
   log "restoring prior project"
   # A failed verification may leave a running project holding outputs and files.
-  stop_mplc4 || return 1
+  if ! stop_mplc4; then
+    RESTORE_DETAIL="stop of replacement runtime was not proven; backup retained at $BACKUP_FILE"
+    return 1
+  fi
   rm -rf "$MPLC_CFG_DIR" || return 1
   if [ "$HAD_PRIOR" = "1" ]; then
     tar xzf "$BACKUP_FILE" -C "$SERVER_DIR" 2>>"$LOG" || return 1
@@ -145,7 +148,7 @@ rollback_failure() {
   if restore; then
     fail "$1" "$2" "$3"
   else
-    fail restore E_RESTORE "could not restore the previous configuration after $2"
+    fail restore E_RESTORE "could not restore the previous configuration after $2: ${RESTORE_DETAIL:-restore or prior runtime verification failed}; backup=$BACKUP_FILE"
   fi
 }
 

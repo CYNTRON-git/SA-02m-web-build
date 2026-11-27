@@ -114,6 +114,7 @@ case "$SA02M_INSTALL_MODE" in
         ;;
 esac
 
+sa02m_pause_runtime_epoch || exit 1
 # Install profile (docs/contracts/install-profile.md): persist --skip-module /
 # --keep-module, then export SA02M_SKIP_<ID>=1 for every module the board does
 # not carry. An unknown ID writes nothing and stops the run. One home:
@@ -452,6 +453,7 @@ if [ -z "${SA02M_ROOTFS_BUILD:-}" ]; then
 fi
 
 # ── Summary ────────────────────────────────────────────────────────────────
+sa02m_queue_runtime_activation || exit 1
 echo ""
 log OK "════════════════════════════════════════"
 log OK " Установка завершена!"

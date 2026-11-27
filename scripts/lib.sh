@@ -273,12 +273,33 @@ check_root() {
 # systemctl с таймаутом — защита от зависания при сбое D-Bus (Armbian, нагрузка MPLC и т.д.).
 SA02M_SYSTEMCTL_TIMEOUT_SEC="${SA02M_SYSTEMCTL_TIMEOUT_SEC:-35}"
 
+_sa02m_systemctl_deadline_seconds() {
+    local cap=$1 uptime unused remaining
+    [[ "${SA02M_SYSTEMCTL_DEADLINE:-}" =~ ^[0-9]{1,10}$ ]] || return 64
+    [[ "$cap" =~ ^[0-9]{1,5}$ ]] || return 64
+    read -r uptime unused < /proc/uptime || return 64
+    uptime=${uptime%%.*}
+    [[ "$uptime" =~ ^[0-9]{1,10}$ ]] || return 64
+    remaining=$((10#$SA02M_SYSTEMCTL_DEADLINE - 10#$uptime - 1))
+    [ "$remaining" -gt 0 ] || return 124
+    cap=$((10#$cap))
+    [ "$cap" -gt 0 ] || return 64
+    [ "$remaining" -ge "$cap" ] || cap=$remaining
+    printf '%s\n' "$cap"
+}
+
 sa02m_systemctl() {
     if [ -n "${SA02M_ROOTFS_BUILD:-}" ]; then
         systemctl --root="${SA02M_ROOTFS_ROOT:-/}" "$@" >> "$LOG_FILE" 2>&1 || true
         return 0
     fi
     local sec=${SA02M_SYSTEMCTL_TIMEOUT_SEC:-35}
+    if [ "${SA02M_SYSTEMCTL_DEADLINE+set}" = set ]; then
+        sec=$(_sa02m_systemctl_deadline_seconds "$sec") || return $?
+        command -v timeout >/dev/null 2>&1 || return 127
+        timeout -k 1 "$sec" systemctl "$@"
+        return $?
+    fi
     if command -v timeout >/dev/null 2>&1; then
         timeout "$sec" systemctl "$@"
     else
@@ -460,6 +481,73 @@ sa02m_stamp_runner_version() {
     install -m 0644 "$statedir/runner.version.tmp" "$statedir/runner.version" || return 1
     rm -f "$statedir/runner.version.tmp"
     log OK "runner.version = $ver"
+}
+
+# Land prerequisites before publishing the CGI entry points that use them.
+sa02m_install_web_control() {
+    local tree=$1 name
+    for name in etc/vendor-payloads.json etc/systemd/system/nodered.service etc/sa02m-vendor-install.py; do
+        [ -s "$tree/$name" ] || { log ERR "Missing vendor installation input $name"; return 1; }
+    done
+    install -d -m 0755 -o root -g root /usr/local/lib /usr/local/sbin /usr/local/share/sa02m \
+        /usr/local/libexec /opt/sa02m-mplc/systemd /opt/sa02m-port-coordinator/sa02m_ports \
+        /opt/sa02m-runtime-transition /opt/sa02m-python-manager/wheelhouse /opt/sa02m-mqtt-opcua /etc/systemd/system || return 1
+    sa02m_atomic_install -m 0644 -o root -g root "$tree/opt/sa02m-mqtt-opcua/sa02m-mqtt-opcua-managed.py" \
+        /opt/sa02m-mqtt-opcua/sa02m-mqtt-opcua-managed.py || return 1
+    for name in files.py units.py image_epoch.py runtime_transition.py; do
+        sa02m_atomic_install -m 0644 -o root -g root "$tree/opt/sa02m-runtime-transition/$name" "/opt/sa02m-runtime-transition/$name" || return 1
+    done
+    local manager="$tree/opt/sa02m-python-manager" file wheelset
+    for wheelset in "$manager"/wheelhouse/*; do
+        [[ -d "$wheelset" && ! -L "$wheelset" && ${wheelset##*/} =~ ^[a-f0-9]{64}$ ]] || return 1
+        install -d -m 0755 -o root -g root "/opt/sa02m-python-manager/wheelhouse/${wheelset##*/}" || return 1
+        for file in "$wheelset"/*.whl; do
+            sa02m_atomic_install -m 0644 -o root -g root "$file" "/opt/sa02m-python-manager/${file#"$manager"/}" || return 1
+        done
+    done
+    for file in "$manager"/*.py "$manager"/*.lock "$manager"/*.json; do
+        sa02m_atomic_install -m 0644 -o root -g root "$file" "/opt/sa02m-python-manager/${file#"$manager"/}" || return 1
+    done
+    sa02m_atomic_install -m 0644 -o root -g root "$tree/opt/sa02m-port-coordinator/sa02m_ports/service_guard.py" \
+        /opt/sa02m-port-coordinator/sa02m_ports/service_guard.py || return 1
+    sa02m_atomic_install -m 0755 -o root -g root "$tree/usr/local/libexec/sa02m-python-consumer" /usr/local/libexec/sa02m-python-consumer || return 1
+    sa02m_atomic_install -m 0755 -o root -g root "$tree/usr/local/libexec/sa02m-runtime-activate" /usr/local/libexec/sa02m-runtime-activate || return 1
+    sa02m_atomic_install -m 0755 -o root -g root "$tree/usr/local/sbin/sa02m-mqtt-scan" /usr/local/sbin/sa02m-mqtt-scan || return 1
+    sa02m_atomic_install -m 0644 -o root -g root "$tree/etc/systemd/system/sa02m-runtime-activate.service" \
+        /etc/systemd/system/sa02m-runtime-activate.service || return 1
+    for name in sa02m-root-auth.py sa02m-service-cache.sh sa02m-mplc-policy.sh; do
+        sa02m_atomic_install -m 0644 -o root -g root "$tree/usr/local/lib/$name" "/usr/local/lib/$name" || return 1
+    done
+    for name in mplc4.service mplc4-native.service; do
+        sa02m_atomic_install -m 0644 -o root -g root "$tree/opt/sa02m-mplc/systemd/$name" "/opt/sa02m-mplc/systemd/$name" || return 1
+    done
+    sa02m_atomic_install -m 0644 -o root -g root "$tree/etc/vendor-payloads.json" /usr/local/share/sa02m/vendor-payloads.json || return 1
+    sa02m_atomic_install -m 0644 -o root -g root "$tree/etc/systemd/system/nodered.service" /usr/local/share/sa02m/nodered.service || return 1
+    sa02m_atomic_install -m 0755 -o root -g root "$tree/etc/sa02m-vendor-install.py" /usr/local/lib/sa02m-vendor-install.py || return 1
+    for name in sa02m-web-root-cmd.sh sa02m-web-reboot.sh sa02m-web-restart-services.sh sa02m-web-service-ctl.sh; do
+        sa02m_atomic_install -m 0755 -o root -g root "$tree/etc/$name" "/usr/local/sbin/$name" || return 1
+    done
+}
+
+sa02m_pause_runtime_epoch() {
+    [ -z "${SA02M_ROOTFS_BUILD:-}" ] || return 0
+    local program="${BASH_SOURCE[0]%/*}/../opt/sa02m-runtime-transition/runtime_transition.py"
+    /usr/bin/python3 -I -S -B "$program" delivery-begin || return 1
+    if [ -e /run/sa02m-svcctl/owned-v1 ] || [ -d /run/sa02m-svcctl/operations ] || [ -e /var/lib/sa02m-runtime-transition/epoch.json ]; then
+        /bin/sh /usr/local/lib/sa02m-service-cache.sh --pause-epoch || return 1
+    fi
+}
+
+sa02m_queue_runtime_activation() {
+    if [ -n "${SA02M_ROOTFS_BUILD:-}" ]; then
+        systemctl --root="${SA02M_ROOTFS_ROOT:-/}" enable sa02m-runtime-activate.service >>"$LOG_FILE" 2>&1
+        return $?
+    fi
+    sa02m_systemctl enable sa02m-runtime-activate.service >>"$LOG_FILE" 2>&1 || return 1
+    sa02m_systemctl daemon-reload >>"$LOG_FILE" 2>&1 || return 1
+    sa02m_systemctl start --no-block sa02m-runtime-activate.service >>"$LOG_FILE" 2>&1 || return 1
+    /usr/bin/python3 -I -S -B /opt/sa02m-runtime-transition/runtime_transition.py delivery-staged || return 1
+    log INFO "Runtime activation queued; check the independent activation status before image capture"
 }
 
 # The web tree can be refreshed before 05-mqtt. Keep its CGI imports and
@@ -1210,6 +1298,13 @@ sa02m_sysv_autostart() {
 # Internal: one bounded systemctl query. Prints stdout; returns the rc
 # (124 = timeout). Never logs.
 _sa02m_svc_query() {
+    if [ "${SA02M_SYSTEMCTL_DEADLINE+set}" = set ]; then
+        local SA02M_SYSTEMCTL_TIMEOUT_SEC=${SA02M_SYSTEMCTL_TIMEOUT_SEC:-35}
+        [[ "$SA02M_SYSTEMCTL_TIMEOUT_SEC" =~ ^[0-9]{1,5}$ ]] || return 64
+        if [ "$((10#$SA02M_SYSTEMCTL_TIMEOUT_SEC))" -gt 8 ]; then
+            SA02M_SYSTEMCTL_TIMEOUT_SEC=8
+        fi
+    fi
     sa02m_systemctl "$@" 2>/dev/null
 }
 

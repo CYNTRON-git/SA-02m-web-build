@@ -70,7 +70,9 @@ done
 
 # Retarget 1: the socket path (matches both the pre-fix hard-coded literal and
 # the post-fix FLASHER_SOCK default).
-sed "s#/run/sa02m-flasher/flasher.sock#${SOCK}#g" "$T/raw.sh" > "$T/s1.sh"
+sed -e "s#/run/sa02m-flasher/flasher.sock#${SOCK}#g" \
+    -e "s#^SVC_CACHE_LIB=/usr/local/lib/sa02m-service-cache.sh#SVC_CACHE_LIB=$PWD/usr/local/lib/sa02m-service-cache.sh#" \
+    "$T/raw.sh" > "$T/s1.sh"
 grep -q "$SOCK" "$T/s1.sh" \
     || { echo "FAIL  socket-path retarget matched nothing — the probe would talk to the REAL /run socket"; exit 1; }
 # Retarget 2: relax the socket-type test so a plain file can stand in for it.

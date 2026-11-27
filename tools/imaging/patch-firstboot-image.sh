@@ -529,6 +529,12 @@ assert_homeconnect_identity_clean "$mnt"
 sanitize_network_identity "$mnt"
 log "image identity: clean"
 
+# Mandatory also for donor captures, independently of the rootfs builder.
+bash "$SBIN_SRC/sa02m-rootfs-policy.sh" offline "$mnt" "$rootpart" \
+    || die "offline rootfs policy failed"
+bash "$SBIN_SRC/sa02m-rootfs-policy.sh" check "$mnt" "$rootpart" \
+    || die "offline rootfs policy verification failed"
+
 sync
 log "OK: first-boot patch applied to $(basename "$IMG")"
 # umount via trap

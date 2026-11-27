@@ -238,10 +238,16 @@ rm -f "$WORK/root/var/lib/dbus/machine-id"
 log "rewrite /etc/fstab (LABEL= + nofail для boot_fat)"
 cat > "$WORK/root/etc/fstab" <<'FSTAB'
 # SA-02m eMMC layout (Starterkit / Cyntron)
-LABEL=sa02m_root  /              ext4  defaults,noatime,errors=remount-ro                              0 1
+LABEL=sa02m_root  /              ext4  defaults,noatime,errors=remount-ro,commit=60                    0 1
 LABEL=BOOT        /mnt/boot_fat  vfat  defaults,nofail,x-systemd.device-timeout=5s,x-systemd.automount 0 0
 FSTAB
 install -d -m 755 "$WORK/root/mnt/boot_fat"
+
+# The same policy applies to constructed and captured image partitions.
+bash "$REPO_ROOT/usr/local/sbin/sa02m-rootfs-policy.sh" offline "$WORK/root" "${LOOP}p2" \
+    || die "offline rootfs policy failed"
+bash "$REPO_ROOT/usr/local/sbin/sa02m-rootfs-policy.sh" check "$WORK/root" "${LOOP}p2" \
+    || die "offline rootfs policy verification failed"
 
 # ── Удаляем нелегитимный kernel 6.1.0-*-rt-armmp (остаток случайного apt install) ─
 for stale in "$WORK/root/lib/modules"/6.1.0-*-rt-armmp \

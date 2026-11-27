@@ -34,6 +34,83 @@ log INFO "=== [09] Установка MasterSCADA MPLC 4D Runtime ==="
 
 BASE_DIR="$SCRIPT_DIR/.."
 
+# One timeout-policy home shared with the panel. Stage both real launch modes
+# for later panel installation, even when this refresh skips the optional stack.
+source "$BASE_DIR/usr/local/lib/sa02m-mplc-policy.sh" || exit 1
+sa02m_mplc_atomic() { sa02m_atomic_install -m "${3:-0644}" "$1" "$2"; }
+sa02m_mplc_sc() {
+    if [ -n "${MPLC_DEADLINE:-}" ]; then
+        sa02m_mplc_bounded 8 systemctl "$@"
+    else
+        timeout -k 1 8 systemctl "$@"
+    fi
+}
+
+_mplc_cancel_failed_install() {
+    MPLC_DEADLINE=
+    sa02m_mplc_budget_begin || return 1
+    if sa02m_mplc_cancel_start && ! sa02m_mplc_runtime_active; then
+        log ERR "MPLC: failed operation stopped; autostart policy retained"
+    else
+        log ERR "MPLC: operation outcome unknown; runtime stop not proven"
+    fi
+    MPLC_DEADLINE=
+    return 1
+}
+
+_mplc_apply() {
+    # Keep the installer's one capture/apply policy table and timestamp witness.
+    # The shared command deadline bounds apply without serializing shell state
+    # through eval or launching a second service operation after client timeout.
+    if [ -n "${SA02M_ROOTFS_BUILD:-}" ]; then
+        sa02m_svc_apply mplc4.service app on --stack=MPLC
+        return $?
+    fi
+    local wanted=stop expected=${SA02M_SVC_EN[mplc4.service]:-timeout}
+    case "$expected:${SA02M_SVC_ACT[mplc4.service]:-timeout}" in
+        timeout:*|*:timeout) log ERR "MPLC: pre-install service state unknown"; return 1 ;;
+        absent:*|broken:*|*:active|*:activating|*:reloading) wanted=start ;;
+    esac
+    sa02m_mplc_budget_begin || return 1
+    SA02M_SYSTEMCTL_DEADLINE=$((MPLC_DEADLINE - 20))
+    sa02m_svc_apply mplc4.service app on --stack=MPLC
+    unset SA02M_SYSTEMCTL_DEADLINE
+    if sa02m_mplc_wait_terminal "$wanted"; then
+        case "$wanted:$_mplc_status" in
+            start:terminal\|active\|*)
+                sa02m_mplc_runtime_active || wanted=failed ;;
+            stop:terminal\|inactive\|*|stop:terminal\|failed\|*)
+                ! sa02m_mplc_runtime_active || wanted=failed ;;
+            *) wanted=failed ;;
+        esac
+        case "$expected:${_mplc_status##*|}" in
+            absent:enabled|broken:enabled) ;;
+            absent:*|broken:*) wanted=failed ;;
+            enabled:enabled|enabled-runtime:enabled-runtime|disabled:disabled|masked:masked|masked-runtime:masked-runtime) ;;
+            enabled:*|enabled-runtime:*|disabled:*|masked:*|masked-runtime:*) wanted=failed ;;
+        esac
+        if [ "$wanted" != failed ]; then
+            MPLC_DEADLINE=
+            return 0
+        fi
+    fi
+    # Preserve Restart=always for future explicit starts, but cancel this failed
+    # job inside the original 85s deadline rather than leaving auto-restarts.
+    if sa02m_mplc_cancel_start && ! sa02m_mplc_runtime_active; then
+        log ERR "MPLC: apply failed; unit stopped"
+    else
+        log ERR "MPLC: apply failed; terminal runtime state unknown"
+    fi
+    MPLC_DEADLINE=
+    return 1
+}
+install -d -m 0755 -o root -g root /opt/sa02m-mplc/systemd || exit 1
+for _mplc_unit in mplc4.service mplc4-native.service; do
+    if ! cmp -s "$BASE_DIR/opt/sa02m-mplc/systemd/$_mplc_unit" "/opt/sa02m-mplc/systemd/$_mplc_unit"; then
+        sa02m_mplc_atomic "$BASE_DIR/opt/sa02m-mplc/systemd/$_mplc_unit" "/opt/sa02m-mplc/systemd/$_mplc_unit" || exit 1
+    fi
+done
+
 # Authoritative, git-tracked plugin source (correct-ABI cyntron + fast_modbus).
 # Decoupled from the runtime source so a stale vendor drop can't win here.
 MPLC_PLUGIN_SRC="$BASE_DIR/firmware/mplc4"
@@ -91,13 +168,16 @@ MPLC_STAMP=/opt/mplc4/.sa02m-payload-version
 _MPLC_OVERLAY_CHANGED=0
 _mplc_install_overlay() {
     local _so
-    if [ -f "$BASE_DIR/etc/systemd/mplc4.service" ] && [ -x /etc/init.d/mplc4 ]; then
-        if ! cmp -s "$BASE_DIR/etc/systemd/mplc4.service" /etc/systemd/system/mplc4.service 2>/dev/null; then
-            sa02m_atomic_install -m 644 "$BASE_DIR/etc/systemd/mplc4.service" /etc/systemd/system/mplc4.service
-            systemctl daemon-reload >>"$LOG_FILE" 2>&1 || true
-            _MPLC_OVERLAY_CHANGED=1
-            log OK "mplc4.service (обёртка systemd) установлен"
+    sa02m_mplc_policy_install "$BASE_DIR/opt/sa02m-mplc/systemd/mplc4.service" || return 1
+    sa02m_mplc_wrapper_install "$BASE_DIR/opt/sa02m-mplc/systemd/mplc4.service" "$BASE_DIR/opt/sa02m-mplc/systemd/mplc4-native.service" || return 1
+    if [ "$SA02M_MPLC_POLICY_CHANGED" = 1 ]; then
+        _MPLC_OVERLAY_CHANGED=1
+        if [ -z "${SA02M_ROOTFS_BUILD:-}" ]; then
+            systemctl daemon-reload >>"$LOG_FILE" 2>&1 || return 1
         fi
+    fi
+    if [ -z "${SA02M_ROOTFS_BUILD:-}" ]; then
+        sa02m_mplc_policy_observe >/dev/null || { log ERR "MPLC timeout policy verification failed"; return 1; }
     fi
     [ -d /opt/mplc4 ] || return 0
     # Plugins from the git-tracked firmware/mplc4 (authoritative, correct ABI);
@@ -137,9 +217,9 @@ case "$_VERDICT" in
     overlay)
         log INFO "refresh: MPLC установлен ($(cat "$MPLC_STAMP" 2>/dev/null || echo 'версия неизвестна')) — обновляю только надстройку sa02m, стек не переустанавливаю"
         sa02m_svc_capture mplc4.service
-        _mplc_install_overlay
+        _mplc_install_overlay || exit 1
         if [ "$_MPLC_OVERLAY_CHANGED" = 1 ]; then
-            sa02m_svc_apply mplc4.service app on --stack=MPLC
+            _mplc_apply || exit 1
         else
             log INFO "MPLC: надстройка sa02m без изменений — служба не трогается"
         fi
@@ -194,6 +274,13 @@ else
     if [ -d /opt/mplc4 ] && [ -z "$_stamp_ver" ]; then
         log INFO "версия установленного MPLC неизвестна (нет метки) — выполняю vendor install.sh"
     fi
+    # Preflight the persistent policy before the vendor can start its unit.
+    sa02m_mplc_policy_install "$BASE_DIR/opt/sa02m-mplc/systemd/mplc4.service" || exit 1
+    sa02m_mplc_wrapper_install "$BASE_DIR/opt/sa02m-mplc/systemd/mplc4.service" "$BASE_DIR/opt/sa02m-mplc/systemd/mplc4-native.service" || exit 1
+    if [ -z "${SA02M_ROOTFS_BUILD:-}" ]; then
+        systemctl daemon-reload >>"$LOG_FILE" 2>&1 || exit 1
+        sa02m_mplc_policy_observe >/dev/null || { log ERR "MPLC timeout policy verification failed"; exit 1; }
+    fi
     log INFO "Запуск vendor install.sh (лог: $MPLC_INSTALL_LOG)"
     (
         cd "$MPLC_SRC" || exit 1
@@ -206,6 +293,7 @@ else
         tail -20 "$MPLC_INSTALL_LOG" 2>/dev/null | while read -r line; do
             log WARN "  $line"
         done
+        [ -n "${SA02M_ROOTFS_BUILD:-}" ] || _mplc_cancel_failed_install
         exit 1
     fi
     if [ -n "$_payload_ver" ] && [ -d /opt/mplc4 ]; then
@@ -215,12 +303,12 @@ else
 fi
 
 # sa02m-надстройка: unit-обёртка + плагины ЦИНТРОН (cmp-gated — см. функцию).
-_mplc_install_overlay
+_mplc_install_overlay || { [ -n "${SA02M_ROOTFS_BUILD:-}" ] || _mplc_cancel_failed_install; exit 1; }
 
 # Apply: первая установка ⇒ enable+start (штатный рантайм изделия — контракт
 # kernel-conditional-services §3); обновление ⇒ точное восстановление
 # операторского состояния (ROOTFS-ветка внутри helper'а: enable через --root).
-sa02m_svc_apply mplc4.service app on --stack=MPLC
+_mplc_apply || exit 1
 
 if [ -z "${SA02M_ROOTFS_BUILD:-}" ]; then
     case "$SA02M_SVC_LAST_RESULT" in

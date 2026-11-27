@@ -19,9 +19,6 @@ SVC_NAME="sa02m-serial-gateway"
 
 # ── Python зависимости ────────────────────────────────────────────────────
 sa02m_pkg_install_tier optional python3 python3-serial python3-yaml
-# fallback: pip, если apt-версии нет (уже импортируемые — тихий no-op)
-sa02m_pip_install serial pyserial
-sa02m_pip_install yaml pyyaml
 
 # ── Каталог установки ─────────────────────────────────────────────────────
 install -d -m 0755 -o root -g root "$INSTALL_DIR"

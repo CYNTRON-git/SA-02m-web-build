@@ -1,4 +1,4 @@
-"""Real property parsing and action-directed bounded manager evidence."""
+"""Strict consumer observation and external active-only transition."""
 
 import json
 import os
@@ -12,19 +12,15 @@ from sa02m_devices import event_journal_peer as peer
 from sa02m_devices.event_journal_state import JournalStateError
 
 
-RELATIONS = ("After", "Before", "Requires", "Wants", "Requisite", "BindsTo",
-             "ConsistsOf", "PropagatesStopTo", "Conflicts", "ConflictedBy", "OnFailure",
-             "RequiredBy", "BoundBy")
-COMMON = ("Id", "LoadState", "ActiveState", "UnitFileState", "Job") + RELATIONS
-SERVICE = ("MainPID", "Environment", "EnvironmentFiles")
-CURRENT = peer.UNITS["devices-api"]
+COMMON = ("Id", "LoadState", "ActiveState", "SubState", "Job")
+SERVICE = ("UnitFileState", "MainPID", "Environment", "EnvironmentFiles")
 
 
 def properties(unit, *, service=False, **changes):
     result = dict.fromkeys(COMMON, "")
-    result.update(Id=unit, LoadState="loaded", ActiveState="active")
+    result.update(Id=unit, LoadState="loaded", ActiveState="active", SubState="running")
     if service:
-        result.update(MainPID="10", Environment="", EnvironmentFiles="")
+        result.update(UnitFileState="enabled", MainPID="10", Environment="", EnvironmentFiles="")
     result.update(changes)
     return result
 
@@ -37,7 +33,7 @@ class Manager:
         self.dispatched = False
         self.transform = lambda unit, text: text
 
-    def command(self, argv, deadline):
+    def command(self, argv, deadline, limit=65536, *, executable="systemctl"):
         peer._remaining(deadline)
         self.calls.append(argv)
         if argv == ["--no-block", "try-restart", peer.PEER]:
@@ -71,7 +67,7 @@ class PropertyTests(unittest.TestCase):
                 self.assertFalse(set(keys.split(",")) & set(SERVICE))
 
     def test_every_required_service_property_remains_mandatory(self):
-        for key in SERVICE:
+        for key in COMMON + SERVICE:
             with self.subTest(key=key):
                 manager = Manager()
                 del manager.units[peer.PEER][key]
@@ -107,7 +103,7 @@ for key in keys:
             self.assertEqual(actual, properties("-.mount"))
 
 
-class GraphTests(unittest.TestCase):
+class ObservationTests(unittest.TestCase):
     def setUp(self):
         self.manager = Manager()
         self.marked = []
@@ -115,225 +111,105 @@ class GraphTests(unittest.TestCase):
         patch.object(peer, "command", self.manager.command).start()
         patch.object(peer, "process_identity", self.manager.identity).start()
 
-    def prepare(self):
-        peer.prepare_peer({}, "devices-api", lambda: self.marked.append(True), force_refresh=True)
+    def prepare(self, expected=None):
+        peer.transition(expected or {}, lambda: self.marked.append(True), force_refresh=True)
 
     def refuse(self):
         with self.assertRaises(JournalStateError):
             self.prepare()
         self.assertFalse(self.manager.dispatched)
 
-    def test_real_parser_graph_prepare_composition(self):
-        self.manager.units[peer.PEER]["After"] = "network.target system.slice -.mount systemd-journald.socket"
-        for unit in self.manager.units[peer.PEER]["After"].split():
-            self.manager.units[unit] = properties(unit)
+    def test_observation_never_dispatches_and_only_queries_fixed_consumers(self):
+        self.manager.units.update({f"extra-{n}.service": properties("ignored") for n in range(1000)})
+        peer.observe({})
+        self.assertFalse(self.manager.dispatched)
+        self.assertEqual({argv[-1] for argv in self.manager.calls}, set(peer.UNITS.values()))
         self.prepare()
+        self.assertTrue(self.manager.dispatched)
         self.assertEqual(self.marked, [True])
-        self.assertTrue(self.manager.dispatched)
-        for argv in self.manager.calls:
-            if argv[0] == "show" and argv[-1] in peer.UNITS.values():
-                keys = next(a.split("=", 1)[1] for a in argv if a.startswith("--property="))
-                self.assertTrue(set(SERVICE) <= set(keys.split(",")))
 
-    def test_each_missing_common_property_refuses_before_dispatch(self):
-        self.manager.units[peer.PEER]["After"] = "network.target"
-        for key in COMMON:
-            with self.subTest(key=key):
-                self.manager.units["network.target"] = properties("network.target")
-                del self.manager.units["network.target"][key]
-                self.refuse()
-
-    def test_duplicate_unknown_and_malformed_properties_refuse(self):
-        self.manager.units[peer.PEER]["After"] = "network.target"
-        self.manager.units["network.target"] = properties("network.target")
-        for extra in ("After=\n", "Unexpected=secret-value\n", "invalid-line\n"):
-            with self.subTest(extra=extra):
-                self.manager.transform = lambda unit, text: text + extra if unit == "network.target" else text
-                with self.assertRaises(JournalStateError) as caught:
-                    self.prepare()
-                self.assertNotIn("secret-value", str(caught.exception))
-                self.assertFalse(self.manager.dispatched)
-
-    def test_conflicts_start_but_do_not_cascade_from_stop(self):
-        for first in ("Conflicts", "ConflictedBy"):
-            for second in ("Conflicts", "ConflictedBy"):
-                with self.subTest(first=first, second=second):
-                    self.manager.units[peer.PEER] = properties(peer.PEER, service=True, **{first: "shutdown.target"})
-                    self.manager.units["shutdown.target"] = properties("shutdown.target", **{second: CURRENT})
-                    self.manager.dispatched = False
-                    self.prepare()
-                    self.assertTrue(self.manager.dispatched)
-
-    def test_direct_and_dependency_start_conflicts_refuse(self):
-        for relation in ("Conflicts", "ConflictedBy"):
-            for indirect in (False, True):
-                with self.subTest(relation=relation, indirect=indirect):
-                    self.manager.units[peer.PEER] = properties(peer.PEER, service=True,
-                        **({"Requires": "middle.target"} if indirect else {relation: CURRENT}))
-                    self.manager.units["middle.target"] = properties("middle.target", **{relation: CURRENT})
-                    self.refuse()
-
-    def test_conflict_stop_still_propagates_each_stop_relation(self):
-        for conflict in ("Conflicts", "ConflictedBy"):
-            for stop in ("ConsistsOf", "PropagatesStopTo", "RequiredBy", "BoundBy"):
-                with self.subTest(conflict=conflict, stop=stop):
-                    self.manager.units[peer.PEER] = properties(peer.PEER, service=True, **{conflict: "shutdown.target"})
-                    self.manager.units["shutdown.target"] = properties("shutdown.target", **{stop: CURRENT})
-                    self.refuse()
-
-    def test_bounded_cycles_terminate_and_unsafe_aliases_refuse(self):
-        self.manager.units[peer.PEER]["Requires"] = "middle.target"
-        self.manager.units["middle.target"] = properties("middle.target", Requires=peer.PEER)
-        self.prepare()
-        self.assertLess(len(self.manager.calls), 10)
-        for changes in ({"Requires": CURRENT}, {"Id": CURRENT}):
-            with self.subTest(changes=changes):
-                self.manager.dispatched = False
-                self.manager.units["middle.target"].update(changes)
-                self.refuse()
-
-    def test_node_limit_counts_cached_services(self):
-        self.manager.units[peer.PEER]["Requires"] = "node-0.target"
-        for number in range(254):
-            self.manager.units[f"node-{number}.target"] = properties(f"node-{number}.target", Requires=f"node-{number + 1}.target")
-        self.refuse()
-        shown = [argv[-1] for argv in self.manager.calls if argv[0] == "show"]
-        self.assertEqual(len(shown), 256)
-        self.assertNotIn("node-253.target", shown)
-
-    def test_aggregate_bound_counts_utf8_and_cached_service_evidence(self):
+    def test_each_common_and_loaded_service_property_refuses_before_dispatch(self):
         for unit in peer.UNITS.values():
-            self.manager.units[unit]["Environment"] = "IGNORED=" + "я" * 11000
-        self.refuse()
-        self.assertEqual(len(self.manager.calls), 3)
-
-    def test_initial_deadline_is_shared_with_graph_queries(self):
-        self.manager.units[peer.PEER]["After"] = "network.target"
-        self.manager.units["network.target"] = properties("network.target")
-        deadlines = []
-        command = self.manager.command
-        def delayed(argv, deadline):
-            deadlines.append(deadline)
-            if len(deadlines) == 4:
-                with patch.object(peer.time, "monotonic", return_value=deadline + 0.001):
-                    return command(argv, deadline)
-            return command(argv, deadline)
-        with patch.object(peer, "command", delayed):
-            self.refuse()
-        self.assertEqual(len(set(deadlines)), 1)
-
-    def test_quoted_unit_name_round_trip_and_transitive_refusal(self):
-        escaped = r"system-fix\x2deth.slice"
-        self.manager.units[peer.PEER]["After"] = 'network.target "system-fix\\\\x2deth.slice"'
-        self.manager.units["network.target"] = properties("network.target")
-        self.manager.units[escaped] = properties(escaped)
-        self.prepare()
-        shown = [argv[-1] for argv in self.manager.calls if argv[0] == "show"]
-        self.assertIn(escaped, shown)
-        self.assertNotIn("system-fix-eth.slice", shown)
-        self.manager.dispatched = False
-        self.manager.units[escaped]["After"] = CURRENT
-        self.refuse()
-
-    def test_bad_relation_representation_never_dispatches(self):
-        for relation in RELATIONS:
-            for value in ('"unterminated', '""', '../bad.service', 'bad;unit',
-                          r'system-fix\x2deth.slice', r'"system-fix\x2deth.slice"',
-                          "network.target  system.slice", "network.target\t"):
-                with self.subTest(relation=relation, value=value):
-                    self.manager.units[peer.PEER] = properties(peer.PEER, service=True, **{relation: value})
-                    self.refuse()
-
-    def test_installer_has_no_invoking_job_but_service_evidence_is_still_strict(self):
-        self.manager.units[peer.PEER]["After"] = "network.target -.mount system.slice systemd-journald.socket"
-        for unit in self.manager.units[peer.PEER]["After"].split():
-            self.manager.units[unit] = properties(unit, After="apparmor.service")
-        self.manager.units["apparmor.service"] = properties("apparmor.service", LoadState="not-found", ActiveState="inactive")
-        peer.prepare_peer({}, "installer", lambda: self.marked.append(True), force_refresh=True)
-        self.assertTrue(self.manager.dispatched)
-        self.assertEqual({argv[-1] for argv in self.manager.calls if argv[0] == "show"}, set(peer.UNITS.values()))
-        for unit in peer.UNITS.values():
-            for key in SERVICE:
+            for key in COMMON + SERVICE:
+                original = self.manager.units[unit].pop(key)
                 with self.subTest(unit=unit, missing=key):
-                    saved = self.manager.units[unit].pop(key)
-                    self.manager.dispatched = False
-                    with self.assertRaises(JournalStateError):
-                        peer.prepare_peer({}, "installer", lambda: None, force_refresh=True)
-                    self.assertFalse(self.manager.dispatched)
-                    self.manager.units[unit][key] = saved
+                    self.refuse()
+                self.manager.units[unit][key] = original
 
-    def test_installer_does_not_bypass_environment_or_process_checks(self):
+    def test_duplicate_unknown_malformed_properties_and_aliases_refuse(self):
+        for extra in ("Job=\n", "Unexpected=secret-value\n", "invalid-line\n"):
+            self.manager.transform = lambda unit, text: text + extra if unit == peer.PEER else text
+            with self.subTest(extra=extra), self.assertRaises(JournalStateError) as caught:
+                self.prepare()
+            self.assertNotIn("secret-value", str(caught.exception))
+            self.assertFalse(self.manager.dispatched)
+        self.manager.transform = lambda unit, text: text
+        self.manager.units[peer.PEER]["Id"] = "alias.service"
+        self.refuse()
+
+    def test_absent_stand_and_inactive_masks_preserve_service_policy(self):
+        for load in ("not-found", "masked"):
+            for unit in peer.UNITS.values():
+                manager = Manager()
+                manager.units[unit] = properties(unit, LoadState=load, ActiveState="inactive", SubState="dead")
+                with patch.object(peer, "command", manager.command), patch.object(peer, "process_identity", manager.identity):
+                    if load == "not-found" and unit != peer.PEER:
+                        with self.assertRaises(JournalStateError):
+                            self.prepare()
+                        self.assertFalse(manager.dispatched)
+                        continue
+                    self.prepare()
+                self.assertEqual(manager.dispatched, unit != peer.PEER)
+                selected = [argv for argv in manager.calls if argv[0] == "show" and argv[-1] == unit]
+                self.assertEqual(len(selected), 1)
+                self.assertTrue(all("EnvironmentFiles" not in argument for argument in selected[0]))
+
+    def test_absent_optional_stand_requires_missing_or_zero_main_pid(self):
+        self.manager.units[peer.PEER] = properties(peer.PEER, LoadState="not-found",
+                                                 ActiveState="inactive", SubState="dead", MainPID="0")
+        self.assertTrue(peer.observe({})[-1])
+        self.manager.units[peer.PEER]["MainPID"] = "23"
+        self.refuse()
+
+    def test_unavailable_contradictions_and_partial_common_refuse(self):
+        for load in ("not-found", "masked"):
+            base = properties(peer.PEER, LoadState=load, ActiveState="inactive", SubState="dead")
+            variants = [{**base, key: value} for key, value in (("ActiveState", "active"), ("ActiveState", "failed"),
+                        ("ActiveState", "activating"), ("SubState", "running"), ("Job", "42"), ("Id", "alias.service"))]
+            variants += [{key: value for key, value in base.items() if key != missing} for missing in COMMON]
+            for info in variants:
+                self.manager.units[peer.PEER] = info
+                with self.subTest(info=info):
+                    self.refuse()
+
+    def test_loaded_stopped_and_failed_peer_remain_stopped(self):
+        for active in ("inactive", "failed"):
+            self.manager.units[peer.PEER] = properties(peer.PEER, service=True, ActiveState=active)
+            self.prepare()
+            self.assertFalse(self.manager.dispatched)
+        self.manager.units[peer.PEER] = properties(peer.PEER, service=True, UnitFileState="masked")
+        self.refuse()
+
+    def test_wrong_effective_settings_and_process_identity_refuse(self):
+        expected = {"STAND_DEVICES_EVENTS_PROTOCOL": "1"}
+        for info in self.manager.units.values():
+            info["Environment"] = "STAND_DEVICES_EVENTS_PROTOCOL=1"
         for unit in peer.UNITS.values():
-            with self.subTest(unit=unit):
-                self.manager.units[unit]["Environment"] = "STAND_DEVICES_EVENTS_STATE_DIR=/wrong"
-                with self.assertRaises(JournalStateError):
-                    peer.prepare_peer({"STAND_DEVICES_EVENTS_STATE_DIR": "/expected"}, "installer", lambda: None,
-                                      force_refresh=True)
-                self.assertFalse(self.manager.dispatched)
-                self.manager.units[unit]["Environment"] = ""
-        with patch.object(peer, "process_identity", side_effect=JournalStateError("bad process identity")), \
-                self.assertRaises(JournalStateError):
-            peer.prepare_peer({}, "installer", lambda: None, force_refresh=True)
+            self.manager.units[unit]["Environment"] = "STAND_DEVICES_EVENTS_PROTOCOL=wrong"
+            with self.subTest(unit=unit), self.assertRaises(JournalStateError):
+                self.prepare(expected)
+            self.assertFalse(self.manager.dispatched)
+            self.manager.units[unit]["Environment"] = "STAND_DEVICES_EVENTS_PROTOCOL=1"
+        with patch.object(peer, "process_identity", side_effect=JournalStateError("bad process identity")), self.assertRaises(JournalStateError):
+            self.prepare(expected)
         self.assertFalse(self.manager.dispatched)
 
-    def test_absent_inactive_no_job_is_only_an_ordering_leaf(self):
-        self.manager.units[peer.PEER]["After"] = "absent.service"
-        self.manager.units["absent.service"] = properties("absent.service", LoadState="not-found", ActiveState="inactive",
-                                                         After=CURRENT)
-        self.prepare()
-        self.assertTrue(self.manager.dispatched)
-        for relation in ("Requires", "Wants", "ConsistsOf", "PropagatesStopTo", "RequiredBy", "BoundBy", "Conflicts"):
-            with self.subTest(relation=relation):
-                self.manager.units[peer.PEER] = properties(peer.PEER, service=True, After="absent.service",
-                                                         **{relation: "absent.service"})
-                self.manager.dispatched = False
-                self.refuse()
-
-    def test_ordering_leaf_requires_complete_consistent_identity_and_state(self):
-        self.manager.units[peer.PEER]["After"] = "absent.service"
-        base = properties("absent.service", LoadState="not-found", ActiveState="inactive")
-        for key in COMMON:
-            with self.subTest(missing=key):
-                self.manager.units["absent.service"] = dict(base)
-                del self.manager.units["absent.service"][key]
-                self.refuse()
-        for changes in ({"Job": "42"}, {"ActiveState": "active"}, {"ActiveState": "failed"},
-                        {"Id": CURRENT}, {"Id": "other.service"}, {"Id": "bad unit"}, {"LoadState": "error"}):
-            with self.subTest(changes=changes):
-                self.manager.units["absent.service"] = {**base, **changes}
-                self.refuse()
-        self.manager.units[peer.PEER]["After"] = CURRENT
-        self.manager.units[CURRENT] = properties(CURRENT, service=True, LoadState="not-found", ActiveState="inactive")
-        self.refuse()
-
-    def test_loaded_no_job_is_not_pruned(self):
-        self.manager.units[peer.PEER]["After"] = "middle.target"
-        self.manager.units["middle.target"] = properties("middle.target", ActiveState="inactive", Job="", After=CURRENT)
-        self.refuse()
-
-    def test_both_service_consumers_refuse_current_and_alias_paths(self):
-        for consumer in ("devices-api", "devices-logger"):
-            current = peer.UNITS[consumer]
-            for indirect in (False, True):
-                with self.subTest(consumer=consumer, indirect=indirect):
-                    self.manager.units[peer.PEER]["After"] = "middle.target" if indirect else current
-                    self.manager.units["middle.target"] = properties("middle.target", Id=current)
-                    with self.assertRaises(JournalStateError):
-                        peer.prepare_peer({}, consumer, lambda: None, force_refresh=True)
-                    self.assertFalse(self.manager.dispatched)
-
-    def test_unknown_consumer_refuses_before_any_command(self):
-        for consumer in (None, "", "unknown", "Installer"):
-            with self.subTest(consumer=consumer), self.assertRaises(JournalStateError):
-                peer.prepare_peer({}, consumer, lambda: None, force_refresh=True)
-        self.assertEqual(self.manager.calls, [])
-
-    def test_installer_replacement_requires_new_identity_and_matching_environment(self):
+    def test_replacement_requires_new_birth_and_matching_environment(self):
         expected = {"STAND_DEVICES_EVENTS_PROTOCOL": "1"}
         for info in self.manager.units.values():
             info["Environment"] = "STAND_DEVICES_EVENTS_PROTOCOL=1"
         with self.assertRaises(JournalStateError):
-            peer.prepare_peer(expected, "installer", lambda: None, force_refresh=True)
+            self.prepare(expected)
         self.assertTrue(self.manager.dispatched)
         ticks = [time.monotonic()]
         def monotonic():
@@ -344,17 +220,25 @@ class GraphTests(unittest.TestCase):
         with patch.object(peer, "process_identity", return_value=(("10", b"100"), expected)), \
                 patch.object(peer.time, "monotonic", monotonic), patch.object(peer.time, "sleep"), \
                 self.assertRaisesRegex(JournalStateError, "deadline"):
-            peer.prepare_peer(expected, "installer", lambda: None, force_refresh=True)
-        self.assertTrue(self.manager.dispatched)
+            self.prepare(expected)
 
-    def test_cached_only_graph_still_obeys_node_and_deadline_bounds(self):
-        cache = {unit: (info, 10) for unit, info in self.manager.units.items()}
+    def test_operator_stop_or_mask_during_transition_refuses(self):
+        original = self.manager.command
+        def stopped(argv, *args, **kwargs):
+            text = original(argv, *args, **kwargs)
+            if self.manager.dispatched:
+                self.manager.units[peer.PEER]["ActiveState"] = "inactive"
+            return text
+        with patch.object(peer, "command", stopped), self.assertRaisesRegex(JournalStateError, "unavailable"):
+            self.prepare()
+
+    def test_shared_probe_byte_and_time_bounds_are_not_per_command(self):
+        budget = peer.Budget(time.monotonic() + 5)
+        budget.consume(b"x" * 65535)
         with self.assertRaises(JournalStateError):
-            peer.graph_safe(CURRENT, dict(cache), time.monotonic() - 1)
-        cache.update({f"extra-{n}.target": (properties(f"extra-{n}.target"), 10) for n in range(254)})
+            peer.observe({}, deadline=budget.deadline, budget=budget)
         with self.assertRaises(JournalStateError):
-            peer.graph_safe(CURRENT, cache, time.monotonic() + 5)
-        self.assertFalse(self.manager.calls)
+            peer.observe({}, deadline=time.monotonic() - 1)
 
 
 if __name__ == "__main__":

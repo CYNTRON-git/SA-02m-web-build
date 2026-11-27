@@ -106,6 +106,10 @@ function svcCtlEnsureRow(host, svc) {
   return row;
 }
 
+function svcCtlAdmissionPending(id) {
+  return !!(_lastSvcCtlData && _lastSvcCtlData.activation) || !!_svcCtlPending[id];
+}
+
 function svcCtlSyncButton(cell, svc, action, flasherBusy) {
   if (!cell) return;
   const cur = cell.querySelector('button');
@@ -115,7 +119,7 @@ function svcCtlSyncButton(cell, svc, action, flasherBusy) {
   }
   const blocked = action === 'start' && flasherBusy && (svc.id === 'mplc4' || svc.id === 'mqtt-bridge');
   if (cur && cur.dataset.svcId === svc.id && cur.dataset.svcAction === action) {
-    cur.disabled = !!blocked || !!_svcCtlPending[svc.id];
+    cur.disabled = !!blocked || svcCtlAdmissionPending(svc.id);
     return;
   }
   cell.textContent = '';
@@ -215,7 +219,7 @@ function makeSvcCtlButton(svc, action, flasherBusy) {
   btn.textContent = window.sa02mI18n ? window.sa02mI18n.t(meta.ru) : meta.ru;
   btn.dataset.svcId = svc.id;
   btn.dataset.svcAction = action;
-  btn.disabled = !!_svcCtlPending[svc.id];
+  btn.disabled = svcCtlAdmissionPending(svc.id);
   if (action === 'start' && flasherBusy && (svc.id === 'mplc4' || svc.id === 'mqtt-bridge')) {
     btn.disabled = true;
     btn.title = window.sa02mI18n
@@ -238,6 +242,17 @@ function renderServicesControl(data) {
     child = next;
   }
   const flasherBusy = !!(data && data.flasher_busy);
+  if (data && data.activation) {
+    const p = document.createElement('p');
+    p.className = 'field-hint';
+    const messages = {
+      reboot: 'Для управления службами требуется штатная перезагрузка контроллера.',
+      failed: 'Активация служб завершилась ошибкой. Проверьте журнал sa02m-runtime-activate.',
+      pending: 'Управление службами ожидает проверки установленного обновления.'
+    };
+    p.textContent = svcCtlT(messages[data.activation] || messages.pending);
+    host.appendChild(p);
+  }
   const list = ((data && data.services) || []).slice();
   if (!list.length) {
     if (!pending) {
@@ -611,6 +626,7 @@ function loadServicesControl(forceToast) {
 function svcCtlErrorMessage(code) {
   const c = String(code || '');
   const map = {
+    migration_required: svcCtlT('Управление службами ожидает проверки установленного обновления.'),
     missing_id: 'не указана служба',
     bad_action: 'неверное действие',
     unknown_service: 'служба не найдена',
@@ -807,7 +823,7 @@ function serviceCtlAction(btn) {
    SYSTEM ACTIONS
    ══════════════════════════════════════════════════════════════════════════ */
 function doRestart() {
-  if (!confirm('Перезапустить службы nginx и fcgiwrap?')) return;
+  if (!confirm(uiT('Перезапустить nginx и fcgiwrap? Панель кратковременно отключится.'))) return;
   fetch('cgi-bin/restart.cgi', {
     method: 'POST',
     redirect: 'manual',
@@ -820,21 +836,22 @@ function doRestart() {
         const t = await r.text().catch(() => '');
         throw new Error((t || '').trim().slice(0, 120) || ('HTTP ' + r.status));
       }
-      const j = await r.json().catch(() => ({}));
-      if (j && j.ok === false) throw new Error(j.error || 'отклонено');
+      const j = await r.json();
+      if (j && j.error_code === 'E_UPDATE_RUNNING') throw new Error(uiT('Идёт обновление — перезапуск отложен'));
+      if (!j || j.ok !== true || j.accepted !== true) throw new Error(uiT('Запуск не подтверждён'));
       return j;
     })
     .then(() => {
-      toast('Команда перезапуска отправлена. Если systemd недоступен, смотрите /var/log/sa02m_install.log', 'success', 8000);
+      toast(uiT('Перезапуск nginx и fcgiwrap принят. Панель кратковременно отключится.'), 'info', 8000);
       setTimeout(fetchStatus, 2000);
     })
     .catch((e) => {
-      toast('Перезапуск служб: ' + (e && e.message ? e.message : String(e)), 'error');
+      toast(uiT('Перезапуск служб:') + ' ' + (e && e.message ? e.message : String(e)), 'error');
     });
 }
 
 function doReboot() {
-  if (!confirm('Перезагрузить контроллер?')) return;
+  if (!confirm(uiT('Перезагрузить контроллер?'))) return;
   fetch('cgi-bin/reboot.cgi', {
     method: 'POST',
     redirect: 'manual',
@@ -847,25 +864,26 @@ function doReboot() {
         const t = await r.text().catch(() => '');
         throw new Error((t || '').trim().slice(0, 120) || ('HTTP ' + r.status));
       }
-      const j = await r.json().catch(() => ({}));
+      const j = await r.json();
       if (j && j.ok === false) {
         // A live update runner: the board postponed the reboot (reboot.cgi
         // E_UPDATE_RUNNING, 1.0.6.52) — not an error, the update finishes first.
         if (j.error_code === 'E_UPDATE_RUNNING') return null;
-        throw new Error(j.error || 'отклонено');
+        throw new Error(uiT('Запуск не подтверждён'));
       }
+      if (!j || j.ok !== true || j.accepted !== true) throw new Error(uiT('Запуск не подтверждён'));
       return j;
     })
     .then((j) => {
       if (j === null) {
-        toast('Идёт обновление — перезагрузка отложена', 'info', 8000);
+        toast(uiT('Идёт обновление — перезагрузка отложена'), 'info', 8000);
         return;
       }
-      toast('Перезагрузка… страница обновится через 60 с', 'info', 65000);
-      setTimeout(() => location.reload(), 60000);
+      toast(uiT('Перезагрузка принята. Штатная остановка служб может занять 2–3 минуты; страница обновится через 3 минуты.'), 'info', 180000);
+      setTimeout(() => location.reload(), 180000);
     })
     .catch((e) => {
-      toast('Перезагрузка не запущена: ' + (e && e.message ? e.message : String(e)), 'error');
+      toast(uiT('Перезагрузка не подтверждена:') + ' ' + (e && e.message ? e.message : String(e)), 'error');
     });
 }
 

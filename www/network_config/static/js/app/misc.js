@@ -363,19 +363,25 @@ function executeCommandLine(cmd, mode, rootPassword) {
       catch (e) { throw new Error(uiT('сервер вернул не-JSON (таймаут?); для непрерывных команд задайте предел, напр. ping -c 4')); }
     }))
     .then(j => {
-      if (!j || !j.ok) {
-        const reason = j && j.error === 'capture_failed'
-          ? uiT('Не удалось получить вывод команды. Повторите запрос; если ошибка сохраняется, проверьте журнал веб-сервера.')
-          : ((j && j.error) || 'server_error');
-        setCommandOutput(prompt + cmd + '\n' + uiT('Ошибка:') + ' ' + reason);
-        return;
-      }
-      if (execMode === 'root' && /root authentication failed/i.test(j.output || '')) {
+      const rootAuthFailed = execMode === 'root' && j &&
+        (j.error === 'root_auth_failed' ||
+         (j.root_authenticated !== true && /root authentication failed/i.test(j.output || '')));
+      if (rootAuthFailed) {
         cmdRootPassword = '';
         cmdAwaitPassword = true;
         updateCommandPasswordVisibility();
         setCommandOutput(prompt + cmd + '\n' + uiT('Ошибка: неверный пароль root. Введите пароль снова.'));
         document.getElementById('cmd-root-password')?.focus();
+        return;
+      }
+      if (!j || !j.ok) {
+        const messages = {
+          capture_failed: 'Не удалось получить вывод команды. Повторите запрос; если ошибка сохраняется, проверьте журнал веб-сервера.',
+          root_locked: 'Проверка пароля root временно заблокирована. Повторите через 5 минут; обычная веб-консоль доступна.',
+          root_auth_unavailable: 'Проверка пароля root недоступна. Проверьте журнал системы через SSH; обычная веб-консоль доступна.'
+        };
+        const reason = j && messages[j.error] ? uiT(messages[j.error]) : ((j && j.error) || 'server_error');
+        setCommandOutput(prompt + cmd + '\n' + uiT('Ошибка:') + ' ' + reason);
         return;
       }
       saveCommandHistory(cmd);

@@ -85,6 +85,14 @@ grep -q 'rollback-extract' "$T/fn.sh" \
 awk '/^atomic_install_file\(\) \{/{f=1} f{print} f&&/^\}/{exit}' "$SRC" > "$T/aif.sh"
 grep -q '^atomic_install_file() {' "$T/aif.sh" \
     || bad "$SRC defines no atomic_install_file() — the archive fallback has no atomic helper to restore through"
+awk '/^queue_runtime_after_update\(\) \{/{f=1} f{print} f&&/^\}/{exit}' "$SRC" \
+    | sed 's@/opt/sa02m-runtime-transition/runtime_transition.py@"$T/runtime_transition.py"@' > "$T/queue.sh"
+grep -qF '"$T/runtime_transition.py"' "$T/queue.sh" || { echo "FAIL  runtime queue fixture path missing"; exit 1; }
+systemctl() {
+    printf '%s\n' "$*" >> "$T/queued"
+    [ "${REJECT_QUEUE:-0}" = 0 ]
+}
+. "$T/queue.sh"
 
 # ── Stubs for the helpers rollback_from_journal calls ──────────────────────
 STATEDIR="$T/state"
@@ -242,6 +250,20 @@ else
     bad "(f) order: expected sync -d <tmp> (live=LIV) → mv -f → sync <dir> (live=pla); trace: $(tr '\n' ';' < "$TRACE")"
 fi
 
+touch "$T/runtime_transition.py"
+for REJECT_QUEUE in 0 1; do
+    seed_live
+    : > "$T/queued"
+    run_fallback; rc=$?
+    if [ "$rc" = 0 ] && [ "$(cat "$T/queued")" = "start --no-block sa02m-runtime-activate.service" ] &&
+       { { [ "$REJECT_QUEUE" = 0 ] && stage_is rolled_back; } || { [ "$REJECT_QUEUE" = 1 ] && stage_is error && incomplete_recorded; }; }; then
+        ok "restored runtime activation follows the actual queue result (refused=$REJECT_QUEUE)"
+    else
+        bad "restored runtime queue state (refused=$REJECT_QUEUE)"
+    fi
+done
+unset REJECT_QUEUE
+rm -f "$T/runtime_transition.py"
 # (g) refused fdatasync of plain.conf's tmp — no rename over a tmp that may not
 # be on disk.
 seed_live; SYNC_FAIL_D_ON="plain.conf.tmp."

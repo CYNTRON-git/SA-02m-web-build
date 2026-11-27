@@ -117,12 +117,57 @@ def unit_environment(path, destination):
 
 def manager_script(body):
     return '''#!/usr/bin/python3
+import os, subprocess, sys
+if sys.argv[1:2] == ['show'] and sys.argv[-1].startswith('sa02m-journal-complete-'):
+    result = subprocess.run([os.environ['JOURNAL_QUEUE_SHOW'], *sys.argv[1:]])
+    raise SystemExit(result.returncode)
 def common(unit):
     values = dict.fromkeys(('After', 'Before', 'Requires', 'Wants', 'Requisite', 'BindsTo',
         'ConsistsOf', 'PropagatesStopTo', 'Conflicts', 'ConflictedBy', 'OnFailure', 'RequiredBy', 'BoundBy', 'Job'), '')
-    values.update(Id=unit, LoadState='loaded', ActiveState='active', UnitFileState='')
+    values.update(Id=unit, LoadState='loaded', ActiveState='active', SubState='running', UnitFileState='')
     return values
 ''' + body
+
+
+def controlled_queue(destination, shim, env):
+    """Retarget only fixed runtime paths in the delivered copy, never host PID1."""
+    package = destination / "opt/sa02m-devices/sa02m_devices"
+    edits = {"event_journal_delivery.py": [("INSTALL_LOCK = Path(\"/run/sa02m-install.lock\")",
+                "INSTALL_LOCK = Path(" + repr(str(destination / "run/install.lock")) + ")")],
+             "event_journal_queue.py": [("RUNTIME = Path(\"/run/systemd/system\")",
+                "RUNTIME = Path(" + repr(str(destination / "run/systemd/system")) + ")"),
+                ("TRANSIENT = Path(\"/run/systemd/transient\")",
+                "TRANSIENT = Path(" + repr(str(destination / "run/systemd/transient")) + ")")]}
+    for name, replacements in edits.items():
+        path = package / name
+        raw = path.read_text()
+        for before, after in replacements:
+            if raw.count(before) != 1:
+                raise AssertionError("controlled-manager fixed-path retarget missing: " + name)
+            raw = raw.replace(before, after)
+        path.write_text(raw)
+    for relative in ("run/systemd/system", "run/systemd/transient", "var/lib/sa02m-update"):
+        (destination / relative).mkdir(parents=True, exist_ok=True)
+    fixture = (ROOT / "scripts/dev/fixtures/journal-completion-manager.py").read_bytes()
+    for name in ("systemd-run", "queue-systemctl"):
+        target = shim / name
+        target.write_bytes(fixture)
+        target.chmod(0o755)
+    env.update(JOURNAL_QUEUE_FIXTURE=str(destination), JOURNAL_QUEUE_SHOW=str(shim / "queue-systemctl"))
+
+
+def complete_controlled_queue(destination, env):
+    from sa02m_devices import event_journal_state as journal_state
+    domain = journal_state.Domain(destination / "var/lib/sa02m-devices/event-journal")
+    if journal_state.read_atomic(domain).ready:
+        raise AssertionError("service hook published ready before completion")
+    records = sorted((destination / "queue-records").glob("*.json"))
+    if len(records) != 1:
+        raise AssertionError("equivalent hooks did not coalesce")
+    command = json.loads(records[0].read_text())
+    result = subprocess.run(command, env=env, capture_output=True, text=True, timeout=55)
+    if result.returncode or not journal_state.read_atomic(domain).ready:
+        raise AssertionError(result.stdout + result.stderr)
 
 
 def service_hooks(manifest, destination, *, skip_api=False):
@@ -131,6 +176,8 @@ def service_hooks(manifest, destination, *, skip_api=False):
     systemctl = shim / "systemctl"
     systemctl.write_text(manager_script('''import os, sys
 args = sys.argv[1:]
+if args == ['daemon-reload']:
+    raise SystemExit(0)
 if args[0] != 'show':
     raise SystemExit('unexpected systemctl mutation in inactive-stand fixture')
 assert args[-2] == '--'
@@ -140,30 +187,33 @@ env = ' '.join(k + '=' + v for k, v in os.environ.items() if k.startswith('STAND
 values = common(unit)
 values.update(UnitFileState='enabled', MainPID='0', Environment=env, EnvironmentFiles='')
 if unit == 'sa02m-stand-api.service':
-    values.update(LoadState='not-found', ActiveState='inactive', UnitFileState='')
+    values.update(LoadState='not-found', ActiveState='inactive', SubState='dead', UnitFileState='')
 for key in keys:
     if key in values:
         print(key + '=' + values[key])
 '''))
     systemctl.chmod(0o755)
     results = []
+    env = {**os.environ, "PATH": str(shim) + ":/usr/bin:/bin"}
+    controlled_queue(destination, shim, env)
     for service in manifest["services"]["restart"]:
         if service not in {"sa02m-devices-api", "sa02m-devices-logger"} or (skip_api and service.endswith("api")):
             continue
         unit = destination / "etc/systemd/system" / (service + ".service")
         hooks = [line.partition("=")[2] for line in unit.read_text().splitlines()
                  if line.startswith("ExecStartPre=")]
-        if len(hooks) != 1 or not hooks[0].startswith("-/usr/bin/python3 -I "):
+        if len(hooks) != 1 or not hooks[0].startswith("-/usr/bin/python3 -I -B "):
             raise AssertionError("delivered unit lacks its isolated, nonfatal prepare hook")
         command = shlex.split(hooks[0][1:])
-        command[2] = str(destination / command[2].lstrip("/"))
-        env = {**os.environ, **unit_environment(unit, destination), "PATH": str(shim) + ":/usr/bin:/bin"}
+        command[3] = str(destination / command[3].lstrip("/"))
+        env.update(unit_environment(unit, destination))
         result = subprocess.run(command, env=env, capture_output=True, text=True, timeout=55)
         if result.returncode:
             raise AssertionError(result.stderr)
         results.append(service)
     if not results:
         raise AssertionError("released restart manifest exercised no startup command")
+    complete_controlled_queue(destination, env)
     return results
 
 
@@ -172,7 +222,7 @@ def installer_rootfs(folder, *, active_peer=False, service_hook=False):
     scripts = source / "scripts"
     scripts.mkdir()
     destination = folder / "rootfs"
-    for name in ("etc/default", "etc/systemd/system", "var/lib", "opt"):
+    for name in ("etc/default", "etc/systemd/system", "var/lib/sa02m-update", "opt"):
         (destination / name).mkdir(parents=True, exist_ok=True)
     (destination / "etc/systemd/system/sa02m-stand-api.service").write_text("[Service]\nExecStart=/bin/true\n")
     installer = (ROOT / "scripts/11-devices.sh").read_text()
@@ -249,6 +299,7 @@ for key in keys:
         result = subprocess.run(["bash", str(scripts / "11-devices.sh")], env=env, capture_output=True,
                                 text=True, timeout=55)
         if service_hook and result.returncode == 0:
+            controlled_queue(destination, shim, env)
             old_process.wait(timeout=5)
             os.kill(int((fixture / "pid").read_text()), signal.SIGTERM)
             old_process = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(120)"],
@@ -257,11 +308,13 @@ for key in keys:
             unit = destination / "etc/systemd/system/sa02m-devices-logger.service"
             hook = next(line.partition("=")[2] for line in unit.read_text().splitlines() if line.startswith("ExecStartPre="))
             command = shlex.split(hook.removeprefix("-"))
-            command[2] = str(destination / command[2].lstrip("/"))
-            hook_result = subprocess.run(command, env={**env, **unit_environment(unit, destination)},
+            command[3] = str(destination / command[3].lstrip("/"))
+            hook_env = {**env, **unit_environment(unit, destination)}
+            hook_result = subprocess.run(command, env=hook_env,
                 capture_output=True, text=True, timeout=55)
             if hook_result.returncode:
                 raise AssertionError(hook_result.stdout + hook_result.stderr)
+            complete_controlled_queue(destination, hook_env)
     finally:
         if old_process is not None:
             old_process.terminate()
@@ -286,7 +339,7 @@ def order_gate_mutations(folder):
     installer = folder / "scripts/11-devices.sh"
     original = installer.read_text()
     hook = "\nsa02m_stand_devices_socket_group\n"
-    prepare = 'if ! /usr/bin/python3 -I /opt/sa02m-devices/sa02m_devices_journal_startup.py "${_journal_args[@]}"; then'
+    prepare = 'if ! /usr/bin/python3 -I -B /opt/sa02m-devices/sa02m_devices_journal_startup.py "${_journal_args[@]}"; then'
     if original.count(hook) != 1 or original.count(prepare) != 1:
         raise AssertionError("installer mutation target missing or ambiguous")
     cases = {"baseline": original, "comment-hook": original.replace(hook, "\n#sa02m_stand_devices_socket_group\n"),

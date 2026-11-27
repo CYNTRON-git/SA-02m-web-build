@@ -27,9 +27,10 @@ fi
 TMP_IN=$(mktemp /tmp/sa02m-cmd-in.XXXXXX)
 TMP_OUT=$(mktemp /tmp/sa02m-cmd-out.XXXXXX)
 TMP_META=$(mktemp /tmp/sa02m-cmd-meta.XXXXXX)
-TMP_PASS=$(mktemp /tmp/sa02m-cmd-pass.XXXXXX)
+TMP_PASS=$(mktemp /tmp/sa02m-cmd-v1-pass.XXXXXX)
 TMP_CMD=$(mktemp /tmp/sa02m-cmd-cmd.XXXXXX)
-trap 'rm -f "$TMP_IN" "$TMP_OUT" "$TMP_META" "$TMP_PASS" "$TMP_CMD"' EXIT
+TMP_AUTH=$(mktemp /tmp/sa02m-cmd-auth.XXXXXX)
+trap 'rm -f "$TMP_IN" "$TMP_OUT" "$TMP_META" "$TMP_PASS" "$TMP_CMD" "$TMP_AUTH"' EXIT
 
 CL=$(printf '%s' "${CONTENT_LENGTH:-}" | tr -cd '0-9')
 if [ -n "$CL" ] && [ "$CL" -gt 0 ] 2>/dev/null; then
@@ -94,18 +95,10 @@ if [ "$MODE" = "root" ]; then
         echo '{"ok":false,"error":"root_helper_missing"}'
         exit 0
     fi
-    # Root-password guessing is throttled like the panel login (A8-09): same
-    # 10 failures / 5 min window, its own `root-` bucket, checked BEFORE the
-    # helper runs, so a locked client never reaches the shadow check.
-    if ! web_login_check root-; then
-        echo "cmd_exec.cgi: root mode locked for ${REMOTE_ADDR:-unknown} after repeated wrong passwords" >&2
-        echo '{"ok":false,"error":"root_locked"}'
-        exit 0
-    fi
     printf '%s\n' "$ROOT_PASSWORD" >"$TMP_PASS"
     printf '%s\n' "$CMD" >"$TMP_CMD"
-    chmod 600 "$TMP_PASS" "$TMP_CMD" 2>/dev/null || true
-    timeout -k 1s 18s sudo -n -u root "$HELPER" "$TMP_PASS" "$TMP_CMD" 2>&1 |
+    chmod 600 "$TMP_PASS" "$TMP_CMD" "$TMP_AUTH" 2>/dev/null || true
+    timeout -k 1s 18s sudo -n -u root "$HELPER" "$TMP_PASS" "$TMP_CMD" "$TMP_AUTH" 2>&1 |
         python3 "$COLLECTOR" "$TMP_OUT" "$TMP_META"
     STATUSES=("${PIPESTATUS[@]}")
 else
@@ -114,11 +107,6 @@ else
     STATUSES=("${PIPESTATUS[@]}")
 fi
 RC=${STATUSES[0]}
-# 77 = the helper's "root authentication failed" (etc/sa02m-web-root-cmd.sh).
-if [ "$MODE" = "root" ] && [ "$RC" -eq 77 ]; then
-    web_login_record_failure root-
-    echo "cmd_exec.cgi: wrong root password from ${REMOTE_ADDR:-unknown}" >&2
-fi
 if [ "${STATUSES[1]}" -ne 0 ]; then
     echo '{"ok":false,"error":"capture_failed"}'
     exit 0
@@ -131,7 +119,7 @@ if [ "$RC" -eq 124 ] || [ "$RC" -eq 137 ]; then
     MARKER_BYTES=${#TIMEOUT_MARKER}
 fi
 
-python3 - "$TMP_OUT" "$RC" "$MODE" "$TMP_META" "$MARKER_BYTES" <<'PY'
+python3 - "$TMP_OUT" "$RC" "$MODE" "$TMP_META" "$MARKER_BYTES" "$TMP_AUTH" <<'PY'
 import json
 import sys
 
@@ -155,12 +143,29 @@ except (OSError, ValueError, KeyError, TypeError):
     print(json.dumps({"ok": False, "error": "capture_failed"}))
     sys.exit(0)
 text = data.decode("utf-8", "replace")
-print(json.dumps({
+if mode == "root":
+    try:
+        with open(sys.argv[6], "rb") as receipt:
+            auth = receipt.read(65)
+    except (OSError, IndexError):
+        auth = b""
+    if auth != b"authenticated\n":
+        errors = {b"denied\n": "root_auth_failed", b"locked\n": "root_locked"}
+        error = errors.get(auth, "root_auth_unavailable")
+        print("cmd_exec.cgi: " + error, file=sys.stderr)
+        print(json.dumps({"ok": False, "error": error, "rc": rc, "mode": mode,
+                          "output": text, "truncated": truncated,
+                          "capture_timed_out": timed_out, "root_authenticated": False}))
+        sys.exit(0)
+result = {
     "ok": True,
     "rc": rc,
     "mode": mode,
     "output": text,
     "truncated": truncated,
     "capture_timed_out": timed_out,
-}, ensure_ascii=False))
+}
+if mode == "root":
+    result["root_authenticated"] = True
+print(json.dumps(result, ensure_ascii=False))
 PY

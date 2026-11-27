@@ -746,14 +746,11 @@ else
     skip "72 python3 with the crypt module is not available here (removed in Python 3.13; the board's 3.11 has it)"
 fi
 
-# ═══ 11. Root-password guessing in cmd_exec.cgi is throttled (A8-09) ════════
-# The SHIPPED cmd_exec.cgi runs in a sandbox: the real lib (session, CSRF,
-# throttle), the real output collector, and a root-helper stand-in behind a
-# `sudo` shim that logs every call and answers like a wrong password (exit 77,
-# «root authentication failed»). 10 wrong passwords inside the window -> the
-# 11th request is refused with root_locked WITHOUT reaching the helper, and the
-# panel-login bucket of the same client stays open. RED on the pre-1.0.7.36
-# CGI: the helper is called all 11 times and no root_locked is ever answered.
+# ═══ 11. Root-authentication receipts and independent panel login ══════════
+# This real CGI/session/CSRF/collector fixture models the privileged helper's
+# receipts. The actual device-wide limit, direct sudo bypass, separate UIDs
+# and concurrent accounting are exercised by test-root-auth.py in a disposable
+# root container. CGI must propagate the helper refusal, not own its counter.
 CMD_SRC=${CMD_EXEC_SRC:-www/network_config/cgi-bin/cmd_exec.cgi}
 CGI_DIR="$T/cgi"; mkdir -p "$CGI_DIR"
 if [ "$(uname -s 2>/dev/null)" != "Linux" ]; then
@@ -764,7 +761,17 @@ elif [ -n "$PYBIN" ] && [ -f "$CMD_SRC" ]; then
     cp "$LIB" "$CGI_DIR/lib_web_auth.sh"
     cp www/network_config/cgi-bin/lib_cmd_capture.py "$CGI_DIR/"
     printf '#!/bin/sh\nexit 0\n' > "$CGI_DIR/root-helper"; chmod +x "$CGI_DIR/root-helper"
-    printf '#!/bin/sh\necho call >> "%s/root-helper.calls"\necho "root authentication failed" >&2\nexit 77\n' "$T" > "$CGI_DIR/sudo-root"
+    cat > "$CGI_DIR/sudo-root" <<EOF
+#!/bin/bash
+echo call >> "$T/root-helper.calls"
+if [ "\$(wc -l < "$T/root-helper.calls")" -gt 10 ]; then
+    printf 'locked\\n' > "\${!#}"
+    exit 78
+fi
+printf 'denied\\n' > "\${!#}"
+echo "root authentication failed" >&2
+exit 77
+EOF
     chmod +x "$CGI_DIR/sudo-root"
     sed -e "s|HELPER=/usr/local/sbin/sa02m-web-root-cmd.sh|HELPER=$CGI_DIR/root-helper|" \
         -e "s|sudo -n -u root|$CGI_DIR/sudo-root -n -u root|" "$CMD_SRC" > "$CGI_DIR/cmd_exec.cgi"
@@ -787,13 +794,13 @@ elif [ -n "$PYBIN" ] && [ -f "$CMD_SRC" ]; then
     calls10=$(wc -l < "$T/root-helper.calls")
     eleventh=$(root_try 11)
     calls11=$(wc -l < "$T/root-helper.calls")
-    if [ "$calls10" -eq 10 ] && printf '%s' "$last" | grep -q 'root authentication failed'; then
+    if [ "$calls10" -eq 10 ] && printf '%s' "$last" | grep -q '"error": *"root_auth_failed"'; then
         ok "73 ten wrong root passwords each reach the helper and read as a wrong password"
     else
         bad "73 precondition: $calls10 helper call(s) after 10 tries, last answer: $last"
     fi
-    if [ "$calls11" -eq 10 ] && printf '%s' "$eleventh" | grep -q '"error": *"root_locked"'; then
-        ok "74 the 11th try is refused with root_locked and never reaches the helper"
+    if [ "$calls11" -eq 11 ] && printf '%s' "$eleventh" | grep -q '"error": *"root_locked"'; then
+        ok "74 the 11th helper refusal is surfaced as root_locked"
     else
         bad "74 the 11th try was not throttled: helper calls=$calls11, answer: $eleventh"
     fi

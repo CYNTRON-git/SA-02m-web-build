@@ -180,7 +180,7 @@ class StartupTests(StartupFixture, unittest.TestCase):
 
 def properties(unit, **values):
     result = dict.fromkeys(peer.PROPERTIES, "")
-    result.update(Id=unit, LoadState="loaded", ActiveState="active", UnitFileState="enabled", MainPID="10")
+    result.update(Id=unit, LoadState="loaded", ActiveState="active", SubState="running", UnitFileState="enabled", MainPID="10")
     result.update(values)
     return result
 
@@ -195,7 +195,7 @@ class PeerTests(StartupFixture, unittest.TestCase):
         self.env = {}
         self.units = {unit: properties(unit, Environment=" ".join(k + "=" + v for k, v in self.config.settings().items()))
                       for unit in peer.UNITS.values()}
-        def show(unit, deadline, *, _service=True):
+        def show(unit, deadline, *, _service=True, budget=None):
             self.shows.append(unit)
             peer._remaining(deadline)
             return self.units[unit], 100
@@ -203,6 +203,8 @@ class PeerTests(StartupFixture, unittest.TestCase):
         patch.object(peer, "show", show).start()
         patch.object(peer, "process_identity", lambda pid: (self.process, self.env)).start()
         patch.object(peer, "command", self.dispatch).start()
+        patch.object(startup.source, "verified_fingerprint", return_value="b" * 64).start()
+        patch.object(startup.files, "source_context", return_value={"mode": "absent"}).start()
 
     def dispatch(self, argv, deadline):
         self.calls.append(argv)
@@ -221,98 +223,41 @@ class PeerTests(StartupFixture, unittest.TestCase):
         self.assertIs(queue.get(timeout=2), False)
         child.join(2)
         self.assertEqual(child.exitcode, 0)
-        self.process = ("20", b"200")
+        self.process = (str(int(self.process[0]) + 10), str(int(self.process[1]) + 100).encode())
         self.env = self.config.settings()
         return ""
 
     def run_peer(self):
-        return startup.prepare(self.config, "devices-api")
+        return startup.prepare(self.config, "installer")
 
-    def test_old_peer_restarts_once_and_current_peer_is_untouched(self):
+    def test_explicit_installer_refreshes_old_and_current_peer(self):
         self.assertTrue(self.run_peer().ready)
         self.assertTrue(self.run_peer().ready)
-        self.assertEqual(self.calls, [["--no-block", "try-restart", peer.PEER]])
-
-    def test_concurrent_prepare_bounces_active_old_peer_once(self):
-        ctx = multiprocessing.get_context("fork")
-        count, queue = ctx.Value("i", 0), ctx.Queue()
-        def identity(pid):
-            return (("20", b"200"), self.config.settings()) if count.value else (("10", b"100"), {})
-        def dispatch(argv, deadline):
-            self.assertEqual(argv, ["--no-block", "try-restart", peer.PEER])
-            with count.get_lock():
-                count.value += 1
-            return ""
-        def prepare_child():
-            try:
-                queue.put(startup.prepare(self.config, "devices-api").identity)
-            except Exception as exc:
-                queue.put(type(exc).__name__)
-        with patch.object(peer, "process_identity", identity), patch.object(peer, "command", dispatch):
-            children = [ctx.Process(target=prepare_child) for _ in range(2)]
-            for child in children:
-                child.start()
-            actual = [queue.get(timeout=5) for _ in children]
-            for child in children:
-                child.join(5)
-                self.assertEqual(child.exitcode, 0)
-        self.assertEqual(actual, [state.read_atomic(self.config.domain).identity] * 2)
-        self.assertEqual(count.value, 1)
+        self.assertEqual(self.calls, [["--no-block", "try-restart", peer.PEER]] * 2)
 
     def test_inactive_masked_absent_are_never_started(self):
-        for override in ({"ActiveState": "inactive"}, {"LoadState": "masked"},
-                         {"LoadState": "not-found"}, {"ActiveState": "failed"}):
+        for override in ({"LoadState": "loaded", "ActiveState": "inactive", "SubState": "dead"},
+                         {"LoadState": "masked", "ActiveState": "inactive", "SubState": "dead"},
+                         {"LoadState": "not-found", "ActiveState": "inactive", "SubState": "dead"},
+                         {"LoadState": "loaded", "ActiveState": "failed", "SubState": "failed"}):
             with self.subTest(override=override):
-                self.units[peer.PEER].update(override)
+                self.units[peer.PEER].update(override, MainPID="0")
                 self.assertTrue(self.run_peer().ready)
                 self.assertEqual(self.calls, [])
 
-    def test_direct_and_transitive_relations_refuse_before_dispatch(self):
-        for relation in peer.RELATIONS:
-            # A conflict's stop job cannot itself create another conflict stop.
-            # The positive cascade and all stop-propagation guards are exercised
-            # through the real parser in test_event_journal_peer.py.
-            for transitive in ((False,) if relation in ("Conflicts", "ConflictedBy") else (False, True)):
-                with self.subTest(relation=relation, transitive=transitive):
-                    self.units[peer.PEER][relation] = "middle.service" if transitive else peer.UNITS["devices-api"]
-                    self.units["middle.service"] = properties("middle.service", **{relation: peer.UNITS["devices-api"]})
-                    with self.assertRaises(state.JournalStateError):
-                        self.run_peer()
-                    self.assertFalse(state.read_atomic(self.config.domain).ready)
-                    self.assertEqual(self.calls, [])
-                    self.units[peer.PEER][relation] = ""
+    def test_unavailable_stand_with_running_pid_refuses_readiness(self):
+        for load in ("masked", "not-found"):
+            with self.subTest(load=load):
+                self.units[peer.PEER].update(LoadState=load, ActiveState="inactive", SubState="dead", MainPID="10")
+                with self.assertRaisesRegex(state.JournalStateError, "contradictory unavailable journal consumer"):
+                    self.run_peer()
+                self.assertFalse(state.read_atomic(self.config.domain).ready)
+                self.assertEqual(self.calls, [])
 
     def test_unrelated_manager_units_are_not_scanned(self):
         self.units.update({f"unrelated-{n}.service": properties(f"unrelated-{n}.service") for n in range(1000)})
         self.run_peer()
         self.assertEqual(set(self.shows), set(peer.UNITS.values()))
-
-    def test_common_ordering_ancestor_is_safe(self):
-        self.units[peer.PEER]["After"] = "network.target"
-        self.units[peer.UNITS["devices-api"]]["After"] = "network.target"
-        self.units["network.target"] = properties("network.target", Before=peer.PEER + " " + peer.UNITS["devices-api"])
-        self.assertTrue(self.run_peer().ready)
-        self.assertEqual(len(self.calls), 1)
-
-    def test_restart_propagation_then_dependency_refuses(self):
-        self.units[peer.PEER]["ConsistsOf"] = "middle.service"
-        self.units["middle.service"] = properties("middle.service", Requires=peer.UNITS["devices-api"])
-        with self.assertRaises(state.JournalStateError):
-            self.run_peer()
-        self.assertEqual(self.calls, [])
-
-    def test_incomplete_or_oversized_graph_refuses(self):
-        self.units[peer.PEER]["After"] = "missing.service"
-        self.units["missing.service"] = properties("missing.service", LoadState="not-found")
-        with self.assertRaises(state.JournalStateError):
-            self.run_peer()
-        self.assertEqual(self.calls, [])
-        self.units[peer.PEER]["After"] = "node-0.service"
-        for number in range(257):
-            self.units[f"node-{number}.service"] = properties(f"node-{number}.service", After=f"node-{number + 1}.service")
-        with self.assertRaises(state.JournalStateError):
-            self.run_peer()
-        self.assertEqual(self.calls, [])
 
     def test_wrong_replacement_environment_fails_closed(self):
         original = self.dispatch

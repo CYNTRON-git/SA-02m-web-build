@@ -13,9 +13,11 @@
 
 | Вопрос | Единственный дом |
 |---|---|
+| Переход с системного Python на проверенные группы, boot epoch, восстановление служб и фактический статус | [Политика обновления установки](contracts/installer-refresh-policy.md#активация-изолированного-python) |
 | Независимые программные начальные показания энергии фаз, виртуальный MQTT-адаптер и его узкий пилот | [Коррекция энергии фаз](contracts/phase-energy-correction.md) |
 | Стек (nginx + fcgiwrap + Bash CGI, vanilla JS без сборки), вкладки и подсистемы, дисциплина версий | `docs/agent-rules/sa02m-domain.md` |
 | Фоновый RAM-сборщик dashboard, авторизованный готовый пакет, граница CGI/браузера и legacy fallback | [Опрос статусов](contracts/status-polling.md) |
+| Допуск устройств мостом, сбор реестра и передача текущего опроса COM в панель | [Реестр RS-485](contracts/rs485-roster.md) |
 | Исключительное владение UART, приостановка/восстановление служб, привилегированный координатор и его локальный протокол | [docs/contracts/port-ownership.md](contracts/port-ownership.md) |
 | Журнал событий: `event_journal_state` — независимый модуль authority; `event_journal_startup` — оркестрация подготовки служб и восстановления | [Семантика журнала](contracts/carel-ahu.md), [подготовка и восстановление](deployment.md) |
 | Установка Node-RED: единый `sa02m-vendor-install.py`, закреплённый manifest и неизменяемый шаблон unit; panel и fullrefresh делегируют проверку и замену одному helper | [Payload и установка Node-RED](contracts/nodered-payload.md), [допуск зависимостей к выпуску](contracts/dependency-release-policy.md) |

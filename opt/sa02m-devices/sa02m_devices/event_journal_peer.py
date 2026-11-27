@@ -14,10 +14,8 @@ from .event_journal_state import JournalStateError
 PEER = "sa02m-stand-api.service"
 UNITS = {"devices-api": "sa02m-devices-api.service",
          "devices-logger": "sa02m-devices-logger.service", "stand-api": PEER}
-RELATIONS = ("After", "Before", "Requires", "Wants", "Requisite", "BindsTo",
-             "ConsistsOf", "PropagatesStopTo", "Conflicts", "ConflictedBy", "OnFailure", "RequiredBy", "BoundBy")
-COMMON_PROPERTIES = ("Id", "LoadState", "ActiveState", "UnitFileState", "Job") + RELATIONS
-PROPERTIES = COMMON_PROPERTIES + ("MainPID", "Environment", "EnvironmentFiles")
+COMMON_PROPERTIES = ("Id", "LoadState", "ActiveState", "SubState", "Job")
+PROPERTIES = COMMON_PROPERTIES + ("UnitFileState", "MainPID", "Environment", "EnvironmentFiles")
 UNIT_NAME = re.compile(r"[A-Za-z0-9:_.@\\-]+\Z")
 
 
@@ -28,9 +26,9 @@ def _remaining(deadline):
     return remaining
 
 
-def command(arguments, deadline, limit=65536):
+def command(arguments, deadline, limit=65536, *, executable="systemctl"):
     """Cap output while reading, not after an unbounded communicate buffer."""
-    with subprocess.Popen(["systemctl", *arguments], stdout=subprocess.PIPE,
+    with subprocess.Popen([executable, *arguments], stdout=subprocess.PIPE,
                           stderr=subprocess.DEVNULL) as process:
         chunks, size = [], 0
         selector = selectors.DefaultSelector()
@@ -59,38 +57,44 @@ def command(arguments, deadline, limit=65536):
                 process.wait(timeout=1)
 
 
-def show(unit, deadline, *, _service=True):
+class Budget:
+    """One deadline/output allowance shared by observation and enqueue."""
+    def __init__(self, deadline):
+        self.deadline = deadline
+        self.remaining = 65536
+
+    def consume(self, raw):
+        _remaining(self.deadline)
+        self.remaining -= len(raw)
+        if self.remaining < 0:
+            raise JournalStateError("journal scheduling evidence exceeded bound")
+
+    def command(self, arguments, *, executable="systemctl"):
+        text = command(arguments, self.deadline, self.remaining, executable=executable)
+        self.consume(text.encode("utf-8"))
+        return text
+
+
+def show(unit, deadline, *, _service=True, budget=None):
     if not UNIT_NAME.fullmatch(unit):
         raise JournalStateError("invalid peer relation unit")
     required = PROPERTIES if _service else COMMON_PROPERTIES
-    text = command(["show", "--all", "--no-pager", "--property=" + ",".join(required), "--", unit], deadline)
+    requested = required + (("MainPID",) if not _service and unit == PEER else ())
+    arguments = ["show", "--all", "--no-pager", "--property=" + ",".join(requested), "--", unit]
+    text = command(arguments, deadline) if budget is None else budget.command(arguments)
     properties = {}
     for line in text.splitlines():
         key, separator, value = line.partition("=")
-        if not separator or key in properties or key not in required:
+        if not separator or key in properties or key not in requested:
             raise JournalStateError("incomplete peer properties")
         properties[key] = value
-    if set(properties) != set(required):
+    if not set(required).issubset(properties):
         missing = ",".join(key for key in required if key not in properties)
         raise JournalStateError("incomplete peer properties for " + unit + ": " + missing)
     return properties, len(text.encode())
 
 
-def _relation_units(value):
-    try:
-        units = shlex.split(value, comments=False, posix=True)
-    except ValueError as exc:
-        raise JournalStateError("invalid peer relation quoting") from exc
-    if any(not UNIT_NAME.fullmatch(unit) for unit in units):
-        raise JournalStateError("invalid peer relation unit")
-    # systemctl's string-array printer doubles literal unit-name backslashes.
-    encoded = " ".join('"' + unit.replace("\\", "\\\\") + '"' if "\\" in unit else unit for unit in units)
-    if encoded != value:
-        raise JournalStateError("noncanonical peer relation quoting")
-    return units
-
-
-def environment(properties):
+def environment(properties, *, budget=None):
     values = {}
     def assignments(words):
         for word in words:
@@ -118,6 +122,8 @@ def environment(properties):
             os.close(fd)
         if len(raw) > 65536:
             raise JournalStateError("unit EnvironmentFile exceeds bound")
+        if budget is not None:
+            budget.consume(raw)
         for line in raw.decode("utf-8").splitlines():
             line = line.strip()
             if not line or line.startswith(("#", ";")):
@@ -162,105 +168,66 @@ def process_identity(pid):
         raise JournalStateError("peer process evidence unavailable") from exc
 
 
-def graph_safe(current, cache, deadline):
-    """Follow relevant directed closures; never enumerate the whole manager."""
-    size = sum(item[1] for item in cache.values())
-    def get(unit, *, ordering=False):
-        nonlocal size
-        _remaining(deadline)
-        if len(cache) > 256:
-            raise JournalStateError("peer relation closure exceeds unit bound")
-        if unit not in cache:
-            if len(cache) >= 256:
-                raise JournalStateError("peer relation closure exceeds unit bound")
-            cache[unit] = show(unit, deadline, _service=False)
-            size += cache[unit][1]
-        info = cache[unit][0]
-        if size > 65536 or not UNIT_NAME.fullmatch(info["Id"]):
-            raise JournalStateError("peer relation closure incomplete")
-        if info["Id"] == current:
-            raise JournalStateError("peer relation alias reaches the starting unit")
-        if ordering and info["LoadState"] == "not-found" and info["ActiveState"] == "inactive" \
-                and info["Job"] == "" and info["Id"] == unit:
-            return info
-        if info["LoadState"] not in {"loaded", "masked"}:
-            raise JournalStateError("peer relation closure incomplete")
-        return info
-    if current == PEER:
-        raise JournalStateError("peer cannot restart its current unit")
-    for relations in (("After",), ("Before",)):
-        pending, visited = [PEER], set()
-        while pending:
-            unit = pending.pop()
-            if unit in visited:
-                continue
-            visited.add(unit)
-            if unit == current:
-                raise JournalStateError("peer restart reaches the starting unit")
-            info = get(unit, ordering=True)
-            if info["LoadState"] == "not-found":
-                continue
-            for relation in relations:
-                pending.extend(_relation_units(info[relation]))
-    pending, visited = [(PEER, "restart")], set()
-    while pending:
-        unit, action = pending.pop()
-        if (unit, action) in visited:
-            continue
-        visited.add((unit, action))
-        if unit == current:
-            raise JournalStateError("peer restart reaches the starting unit")
-        info = get(unit)
-        # Starting an already-active dependency does not restart its dependants.
-        # Keep job directions separate to avoid expanding all network consumers.
-        if action in {"restart", "stop"}:
-            for relation in ("ConsistsOf", "PropagatesStopTo", "RequiredBy", "BoundBy"):
-                pending.extend((other, action) for other in _relation_units(info[relation]))
-        if action in {"restart", "start"}:
-            for relation in ("Requires", "Wants", "Requisite", "BindsTo", "OnFailure"):
-                pending.extend((other, "start") for other in _relation_units(info[relation]))
-            for relation in ("Conflicts", "ConflictedBy"):
-                pending.extend((other, "stop") for other in _relation_units(info[relation]))
-
-
 def skipped(properties):
     return properties["LoadState"] in {"not-found", "masked"} \
         or properties["UnitFileState"] == "masked" \
         or properties["ActiveState"] in {"inactive", "failed"}
 
 
-def prepare_peer(expected, consumer, mark_not_ready, *, force_refresh=False):
-    if consumer != "installer" and consumer not in UNITS:
-        raise JournalStateError("unknown journal consumer")
-    deadline = time.monotonic() + 5
-    cache = {unit: show(unit, deadline) for unit in UNITS.values()}
-    if any(info["LoadState"] == "loaded" and info["Id"] != unit for unit, (info, _) in cache.items()):
+def _consumer_info(unit, expected, deadline, *, budget=None):
+    common, _ = show(unit, deadline, _service=False, budget=budget)
+    if common["Id"] != unit:
         raise JournalStateError("journal consumer unit alias is ambiguous")
-    for properties, _ in cache.values():
-        if properties["LoadState"] not in {"not-found", "masked"}:
-            check_settings(environment(properties), expected)
-    peer = cache[PEER][0]
-    while peer["ActiveState"] in {"activating", "deactivating", "reloading"}:
+    if common["LoadState"] in {"not-found", "masked"}:
+        if common["LoadState"] == "not-found" and unit != PEER:
+            raise JournalStateError("required journal consumer is absent: " + unit)
+        if (common["ActiveState"] != "inactive" or common["SubState"] != "dead" or common["Job"]
+                or common.get("MainPID", "0") != "0"):
+            raise JournalStateError("contradictory unavailable journal consumer")
+        return common
+    if common["LoadState"] != "loaded":
+        raise JournalStateError("unknown journal consumer load state")
+    info, _ = show(unit, deadline, budget=budget)
+    if info["Id"] != unit or info["LoadState"] != "loaded":
+        raise JournalStateError("journal consumer changed during observation")
+    if info["UnitFileState"] == "masked" and (info["ActiveState"] != "inactive" or info["Job"]):
+        raise JournalStateError("contradictory masked journal consumer")
+    check_settings(environment(info, budget=budget), expected)
+    return info
+
+
+def observe(expected, *, deadline=None, budget=None):
+    """Fresh evidence only; this operation never dispatches or publishes state."""
+    if deadline is None:
+        deadline = time.monotonic() + 5
+    if budget is None:
+        budget = Budget(deadline)
+    consumers = {unit: _consumer_info(unit, expected, deadline, budget=budget) for unit in UNITS.values()}
+    info = consumers[PEER]
+    while info["ActiveState"] in {"activating", "deactivating", "reloading"}:
         time.sleep(min(0.05, _remaining(deadline)))
-        peer, count = show(PEER, deadline)
-        cache[PEER] = peer, count
-    if skipped(peer):
-        return
-    if peer["LoadState"] != "loaded" or peer["ActiveState"] != "active":
+        info = _consumer_info(PEER, expected, deadline, budget=budget)
+    if info["LoadState"] in {"not-found", "masked"} or skipped(info):
+        return info, None, True
+    if info["ActiveState"] != "active":
         raise JournalStateError("unknown stand service state")
-    original, values = process_identity(peer["MainPID"])
-    if all(values.get(key) == value for key, value in expected.items()) and not force_refresh:
+    identity, values = process_identity(info["MainPID"])
+    return info, identity, all(values.get(key) == value for key, value in expected.items())
+
+
+def transition(expected, mark_not_ready, *, force_refresh=False, observed=None, deadline=None):
+    """External completion/installer context; never called by a starting hook."""
+    if deadline is None:
+        deadline = time.monotonic() + 5
+    info, original, current = observe(expected, deadline=deadline) if observed is None else observed
+    if original is None or (current and not force_refresh):
         return
     mark_not_ready()
-    # Installer preparation has no invoking service job to deadlock against.
-    if consumer != "installer":
-        graph_safe(UNITS.get(consumer), cache, deadline)
     command(["--no-block", "try-restart", PEER], deadline)
     deadline = time.monotonic() + 35
     while True:
-        info, _ = show(PEER, deadline)
-        if skipped(info):
-            # try-restart must not turn an operator stop into a start.
+        info = _consumer_info(PEER, expected, deadline)
+        if info["LoadState"] in {"not-found", "masked"} or skipped(info):
             raise JournalStateError("stand became unavailable during transition")
         if info["ActiveState"] == "active":
             identity, values = process_identity(info["MainPID"])

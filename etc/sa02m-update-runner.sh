@@ -673,7 +673,7 @@ prepare_github_overlay() {
         cp -a "$overlay_src/." "$stage_dir/overlay/" || die E_APPLY "cp overlay failed"
         rm -rf "$stage_dir/overlay/.git"
     fi
-    OVERLAY="$stage_dir/overlay" META="$stage_dir/meta" \
+    OVERLAY="$stage_dir/overlay" META="$stage_dir/meta" VALIDATE_LIB="${VALIDATE_PY:-/opt/sa02m-update/lib/validate_package.py}" \
     TARGET_VER="$(txn_get target_version)" TARGET_COMMIT="$(txn_get target_commit)" \
     PREV_VER="$(txn_get previous_version)" \
     python3 <<'PY' || die E_COMPAT "github manifest build failed"
@@ -864,6 +864,14 @@ vendor_inputs = {"etc/sa02m-vendor-install.py", "etc/vendor-payloads.json", "etc
 vendor_present = vendor_inputs.intersection(item["src"] for item in deploy)
 if vendor_present and vendor_present != vendor_inputs:
     raise ValueError("incomplete pinned vendor installer boundary")
+activation = any(i['src'].startswith(('opt/sa02m-runtime-transition/', 'opt/sa02m-python-manager/')) or
+                 i['src'] in ('usr/local/libexec/sa02m-runtime-activate', 'usr/local/libexec/sa02m-python-consumer')
+                 for i in deploy)
+if activation:
+    import sys
+    sys.path.insert(0, str(Path(os.environ['VALIDATE_LIB']).parent))
+    from runtime_delivery import ordered
+    deploy = ordered(deploy, overlay)
 ver = os.environ.get("TARGET_VER") or ""
 if not ver:
     vf = overlay / "www/network_config/VERSION"
@@ -883,7 +891,7 @@ manifest = {
     "repo_commit": commit if re.fullmatch(r"[0-9a-f]{40}", commit) else ("0" * 40),
     "built_at": __import__("time").strftime("%Y-%m-%dT%H:%M:%SZ", __import__("time").gmtime()),
     "signing_key_id": "github-unsigned",
-    "min_updater": "1.0.8.2" if vendor_present else "1.0.7.5",
+    "min_updater": "1.0.8.3" if activation else "1.0.8.2" if vendor_present else "1.0.7.5",
     "min_version": "1.0.5.60",
     "payload": {"size": 0, "sha256": "0" * 64, "uncompressed_size_max": 1},
     "preflight": {
@@ -2141,6 +2149,9 @@ PY
     if [ "${RUNNER_CONTEXT:-}" != boot ]; then
         restore_port_consumers || incomplete="UART service restoration failed"
     fi
+    if [ -z "$incomplete" ] && [ "${RUNNER_CONTEXT:-}" != boot ]; then
+        queue_runtime_after_update || incomplete="restored runtime activation could not be queued"
+    fi
     if [ -n "$incomplete" ]; then
         # Terminal and honest: not rolled_back over a partly restored tree, and
         # not a crash either (a crash here would freeze the stage at
@@ -2899,6 +2910,19 @@ prepare_profile_excludes() {
     log "apply: install profile skips $(printf '%s\n' "$out" | cut -f1 | sort -u | tr '\n' ' ')($n pattern(s))"
 }
 
+pause_runtime_for_update() {
+    if [ -e /run/sa02m-svcctl/owned-v1 ] || [ -d /var/lib/sa02m-runtime-transition ]; then
+        /bin/sh /usr/local/lib/sa02m-service-cache.sh --pause-epoch
+    fi
+}
+
+queue_runtime_after_update() {
+    if [ -f /opt/sa02m-runtime-transition/runtime_transition.py ]; then
+        systemctl start --no-block sa02m-runtime-activate.service || return 1
+        log "Runtime activation queued; independent result in /var/lib/sa02m-runtime-transition/status.json"
+    fi
+}
+
 cmd_apply() {
     ensure_dirs
     migrate_legacy_state
@@ -2930,6 +2954,7 @@ cmd_apply() {
     scrub_cred_banner_logs || true
 
     acquire_port_maintenance || die E_BUSY "port coordinator unavailable or operation active; refresh/recover first"
+    [ ! -e /var/lib/sa02m-runtime-transition/capture.json ] || die E_BUSY "runtime image capture in progress"
     honour_cancel_if_early
 
     local pkg txn previous source overlay_src
@@ -2985,6 +3010,10 @@ cmd_apply() {
         txn_patch "stage=applying" "progress_pct=35"
         flock -u 8
         exec 8>&-
+        if ! pause_runtime_for_update; then
+            rollback_from_journal "$txn" E_BUSY "cannot quiesce service operations"
+            exit 1
+        fi
         if ! stop_port_consumers; then
             rollback_from_journal "$txn" E_APPLY "cannot stop UART consumers"
             exit 1
@@ -3015,6 +3044,10 @@ cmd_apply() {
         exit 1
     fi
     # Deploy now.
+    if ! pause_runtime_for_update; then
+        rollback_from_journal "$txn" E_BUSY "cannot quiesce service operations"
+        exit 1
+    fi
     if ! apply_deploy_items "$txn"; then
         rollback_from_journal "$txn" E_APPLY "${APPLY_FAIL_REASON:-deploy failed}"
         log "ERROR [E_APPLY]: deploy failed (${ROLLBACK_OUTCOME:-rollback attempted})"
@@ -3045,6 +3078,10 @@ cmd_apply() {
         exit 1
     fi
 
+    if ! queue_runtime_after_update; then
+        rollback_from_journal "$txn" E_APPLY "runtime activation could not be queued"
+        exit 1
+    fi
     txn_patch "stage=committing" "progress_pct=95"
     commit_markers "$txn"
     txn_patch "stage=done" "result=success" "progress_pct=100" "error_code=null" \
@@ -3269,6 +3306,7 @@ cmd_verify() {
             if [ "$(txn_get port_restore_pending)" = true ]; then
                 acquire_port_maintenance || return 1
                 restore_port_consumers || return 1
+                queue_runtime_after_update || return 1
                 txn_patch "stage=rolled_back" "result=rolled_back" "port_restore_pending=false" "finished_at=$(utc_now)"
                 rm -f "$STATEDIR/maintenance"
                 cleanup_imaging_lock || true
@@ -3301,6 +3339,10 @@ cmd_verify() {
     if ! services_enable_and_tmpfiles "$txn" || ! health_check "$txn"; then
         rollback_from_journal "$txn" E_HEALTH "${HEALTH_FAIL_REASON:-health gate failed}"
         log "ERROR [E_HEALTH]: post-boot health failed (${ROLLBACK_OUTCOME:-rollback attempted}): ${HEALTH_FAIL_REASON:-}"
+        exit 1
+    fi
+    if ! queue_runtime_after_update; then
+        rollback_from_journal "$txn" E_APPLY "runtime activation could not be queued"
         exit 1
     fi
     txn_patch "stage=committing" "progress_pct=95"

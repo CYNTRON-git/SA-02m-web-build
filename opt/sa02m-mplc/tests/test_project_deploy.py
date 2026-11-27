@@ -124,3 +124,41 @@ class ProjectDeployment(unittest.TestCase):
         self.reply.write_text('{"projectId":null,"code":0}')
         self.assertTrue(self.post()["pending"])
         self.assertEqual(self.complete()["error_code"], "E_VERIFY")
+
+    def test_unknown_initial_stop_preserves_cfg_without_backup_or_start(self):
+        marker = self.cfg / "previous-project"
+        marker.write_bytes(b"original")
+        self.reply.write_text("{}")
+        self.script("svc", f"echo \"$1\" >>'{self.actions}'; exit 1")
+        self.assertTrue(self.post()["pending"])
+        result = self.complete()
+        self.assertEqual(result["error_code"], "E_STOP")
+        self.assertEqual(marker.read_bytes(), b"original")
+        self.assertEqual(self.actions.read_text().splitlines(), ["stop"])
+        self.assertEqual(list((self.state / "backups").glob("*.tgz")), [])
+
+    def test_unknown_replacement_stop_retains_new_cfg_and_prior_backup(self):
+        import tarfile
+
+        marker = self.cfg / "previous-project"
+        marker.write_bytes(b"original")
+        self.reply.write_text("{}")
+        # The start client returns failure while its replacement job/runtime
+        # remains live. The next stop cannot prove completion; rollback must
+        # preserve both the running replacement and the recoverable backup.
+        running = self.base / "replacement-running"
+        self.script("svc", f"echo \"$1\" >>'{self.actions}'\n"
+                    f"if [ \"$1\" = start ]; then touch '{running}'; exit 1; fi\n"
+                    f"[ ! -e '{running}' ]")
+        self.assertTrue(self.post()["pending"])
+        result = self.complete()
+        self.assertEqual((result["stage"], result["error_code"]), ("restore", "E_RESTORE"))
+        self.assertIn("backup retained", result["error_message"])
+        self.assertTrue(running.exists())
+        self.assertFalse(marker.exists(), "rollback overwrote a possibly running replacement")
+        self.assertEqual((self.cfg / "config.bin").read_bytes(), GOOD_MEMBERS["cfg/config.bin"])
+        backups = list((self.state / "backups").glob("*.tgz"))
+        self.assertEqual(len(backups), 1)
+        with tarfile.open(backups[0]) as archive:
+            self.assertEqual(archive.extractfile("cfg/previous-project").read(), b"original")
+        self.assertEqual(self.actions.read_text().splitlines(), ["stop", "start", "stop"])

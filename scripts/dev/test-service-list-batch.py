@@ -96,6 +96,10 @@ class ServiceListBatch(unittest.TestCase):
     def run_list(self, case, source=TEXT, cgi=False, expected_escapes=None):
         with tempfile.TemporaryDirectory(prefix='svc-list-') as tmp:
             root = Path(tmp)
+            result_dir = root / 'result'
+            result_dir.mkdir()
+            (result_dir / 'owned-v1').write_bytes(Path('/proc/sys/kernel/random/boot_id').read_bytes())
+            source = source.replace('RESULT_DIR=/var/run/sa02m-svcctl', 'RESULT_DIR=' + str(result_dir))
             (root / 'case.json').write_text(json.dumps(case))
             (root / 'mock.py').write_text(MOCK)
             for name in case['sysv']:
@@ -105,6 +109,8 @@ class ServiceListBatch(unittest.TestCase):
             if expected_escapes is not None:
                 source = source.replace('json_escape() {', 'json_escape() {\n    echo list-json-escape >&2', 1)
             source = source.replace('SA02M_STACKS_LIB=/usr/local/lib/sa02m-stacks-policy.sh', 'SA02M_STACKS_LIB=/nonexistent')
+            source = source.replace('/usr/local/lib/sa02m-service-cache.sh', str(ROOT / 'usr/local/lib/sa02m-service-cache.sh'))
+            source = source.replace('/usr/local/lib/sa02m-mplc-policy.sh', str(ROOT / 'usr/local/lib/sa02m-mplc-policy.sh'))
             source = source.replace('/etc/init.d/codesyscontrol', str(root / 'sysv-codesys')).replace('/etc/init.d/mplc4', str(root / 'sysv-mplc4'))
             mock = 'python3 ' + shlex.quote(str(root / 'mock.py'))
             source += '\nsc_run() { ' + mock + ' ctl "$@"; }\n'

@@ -23,6 +23,8 @@ if [ ! -d "$WWW_DIR" ]; then
 fi
 
 log INFO "Копирование $WWW_DIR → $WEB_ROOT"
+sa02m_pause_runtime_epoch || exit 1
+sa02m_install_web_control "$SCRIPT_DIR/.." || exit 1
 sa02m_install_mqtt_web_deps "$SCRIPT_DIR/../opt/sa02m-modbus-mqtt" /opt/sa02m-modbus-mqtt
 mkdir -p "$WEB_ROOT/cgi-bin" "$WEB_ROOT/static/css" "$WEB_ROOT/static/js"
 sa02m_atomic_install -m 0644 -o root -g www-data "$WWW_DIR/cgi-bin/lib_mqtt_write_controls.sh" "$WEB_ROOT/cgi-bin/lib_mqtt_write_controls.sh"
@@ -280,12 +282,6 @@ if [ -f "$SCRIPT_DIR/../etc/sa02m-commit-web-env.sh" ]; then
     sa02m_atomic_install -m 755 "$SCRIPT_DIR/../etc/sa02m-commit-web-env.sh" /usr/local/sbin/sa02m-commit-web-env
     sed -i 's/\r$//' /usr/local/sbin/sa02m-commit-web-env
 fi
-if [ -f "$SCRIPT_DIR/../etc/sa02m-web-reboot.sh" ]; then
-    sa02m_atomic_install -m 755 "$SCRIPT_DIR/../etc/sa02m-web-reboot.sh" /usr/local/sbin/sa02m-web-reboot.sh
-fi
-if [ -f "$SCRIPT_DIR/../etc/sa02m-web-restart-services.sh" ]; then
-    sa02m_atomic_install -m 755 "$SCRIPT_DIR/../etc/sa02m-web-restart-services.sh" /usr/local/sbin/sa02m-web-restart-services.sh
-fi
 if [ -f "$SCRIPT_DIR/../etc/sa02m-pre-start.sh" ]; then
     sa02m_atomic_install -m 755 "$SCRIPT_DIR/../etc/sa02m-pre-start.sh" /usr/local/sbin/sa02m-pre-start.sh
 fi
@@ -352,7 +348,7 @@ log INFO "Синхронизация sudoers (установка единого 
 sa02m_install_sudoers "$REPO_ETC/sudoers.d/sa02m-www" /etc/sudoers.d/sa02m-www
 # Pinned helpers referenced by that grant (the two new B1 helpers + the existing
 # rm/root-cmd pins).
-for _h in sa02m-iface-conf-write.sh sa02m-ensure-eth1-dhcp-hook.sh sa02m-usb-power.sh sa02m-conf-rm.sh sa02m-web-root-cmd.sh; do
+for _h in sa02m-iface-conf-write.sh sa02m-ensure-eth1-dhcp-hook.sh sa02m-usb-power.sh sa02m-conf-rm.sh; do
     if [ -f "$REPO_ETC/$_h" ]; then
         sa02m_atomic_install -m 755 "$REPO_ETC/$_h" "/usr/local/sbin/$_h"
         sed -i 's/\r$//' "/usr/local/sbin/$_h"
@@ -458,7 +454,7 @@ visudo -c >/dev/null 2>&1 || log WARN "visudo -c: sudoers set has an error — �
 if [ -f "$SCRIPT_DIR/10-rs485-roster.sh" ]; then
     bash "$SCRIPT_DIR/10-rs485-roster.sh" \
         && log OK "sa02m-rs485-roster установлен/обновлён" \
-        || log WARN "10-rs485-roster.sh завершился с ошибкой"
+        || { log ERR "10-rs485-roster.sh завершился с ошибкой"; exit 1; }
 fi
 
 # Modbus→MQTT bridge — full install.sh runs 05-mqtt.sh; www-only used to skip
@@ -478,8 +474,8 @@ if [ -d "$BRIDGE_DIR" ] && [ -f "$MQTT_OPT/modbus_mqtt_bridge.py" ]; then
     for f in bridge_meta.py bridge_uart.py bridge_serial.py bridge_bus.py bridge_probe.py bridge_tcp.py bridge_rtu_tcp.py bridge_scan_lease.py \
              bridge_mqtt.py bridge_fmb.py bridge_mr02m_map.py \
              bridge_device.py bridge_mr02m.py bridge_dtv_catalog.py bridge_dtv_ce.py bridge_template_channels.py bridge_template.py \
-             bridge_carel.py bridge_led.py bridge_spodes.py bridge_admission.py; do
-        install -m 0755 -o root -g root "$MQTT_OPT/$f" "$BRIDGE_DIR/$f"
+             bridge_carel.py bridge_led.py bridge_spodes.py bridge_admission.py bridge_roster.py; do
+        sa02m_atomic_install -m 0755 -o root -g root "$MQTT_OPT/$f" "$BRIDGE_DIR/$f" || exit 1
         sed -i 's/\r$//' "$BRIDGE_DIR/$f" 2>/dev/null || true
     done
     # Shared Carel register map — the bridge imports it, so it has to travel
@@ -488,7 +484,7 @@ if [ -d "$BRIDGE_DIR" ] && [ -f "$MQTT_OPT/modbus_mqtt_bridge.py" ]; then
     sa02m_install_spodes_pkg "$REPO_ROOT"
     # Same for the shared LED map.
     sa02m_install_led_pkg "$REPO_ROOT"
-    install -m 0755 -o root -g root \
+    sa02m_atomic_install -m 0755 -o root -g root \
         "$MQTT_OPT/modbus_mqtt_bridge.py" "$BRIDGE_DIR/modbus_mqtt_bridge.py"
     sed -i 's/\r$//' "$BRIDGE_DIR/modbus_mqtt_bridge.py" 2>/dev/null || true
     # Device-template drop-in dir (type: template devices) — refresh shipped files.
@@ -530,4 +526,5 @@ if [ -f "$SCRIPT_DIR/install-status-cache.sh" ]; then
     bash "$SCRIPT_DIR/install-status-cache.sh" || exit 1
 fi
 
+sa02m_queue_runtime_activation || exit 1
 log OK "Веб-интерфейс обновлён: $WEB_ROOT"

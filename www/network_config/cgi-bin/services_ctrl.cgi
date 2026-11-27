@@ -79,7 +79,9 @@ if [[ "$METHOD" = "GET" ]]; then
     # 10 s is served without a `sudo CTL list` (A8-04). Read directly — the
     # sudoers grant pins the bare `list` verb, and a read forks no sudo.
     LIST_CACHE="${RESULT_DIR}/list.json"
-    if [[ -f "$LIST_CACHE" && -s "$LIST_CACHE" ]]; then
+    EPOCH="${RESULT_DIR}/owned-v1"
+    if [[ -f "$EPOCH" && ! -L "$EPOCH" && $(<"$EPOCH") == $(</proc/sys/kernel/random/boot_id) &&
+          -f "$LIST_CACHE" && -s "$LIST_CACHE" ]]; then
         LIST_AGE=$(( EPOCHSECONDS - $(stat -c %Y "$LIST_CACHE" 2>/dev/null || echo 0) ))
         if (( LIST_AGE >= 0 && LIST_AGE < 10 )) && cat "$LIST_CACHE" 2>/dev/null; then
             exit 0

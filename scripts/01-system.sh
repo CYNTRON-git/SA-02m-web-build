@@ -11,6 +11,16 @@ ETC_REPO="$SCRIPT_DIR/../etc"
 
 log INFO "=== [01] Системная настройка ==="
 
+# Rootfs policy is mandatory on installed ext4 roots; image builders apply it
+# to their explicit partition after construction (never remount the host).
+_rootfs_policy="$SCRIPT_DIR/../usr/local/sbin/sa02m-rootfs-policy.sh"
+[ -f "$_rootfs_policy" ] || { log ERROR "Missing rootfs policy helper"; exit 1; }
+sa02m_atomic_install -m 755 "$_rootfs_policy" /usr/local/sbin/sa02m-rootfs-policy.sh || exit 1
+if [ -z "${SA02M_ROOTFS_BUILD:-}" ]; then
+    /usr/local/sbin/sa02m-rootfs-policy.sh live >>"$LOG_FILE" 2>&1 \
+        || { log ERROR "Rootfs policy failed; see backup and partial-state details in the install log"; exit 1; }
+fi
+
 # ── Armbian board branding (MOTD / release metadata) ───────────────────────
 if [ -z "${SA02M_ROOTFS_BUILD:-}" ] && [ -f "$ETC_REPO/sa02m-armbian-branding.sh" ]; then
     sa02m_atomic_install -m 755 "$ETC_REPO/sa02m-armbian-branding.sh" /usr/local/sbin/sa02m-armbian-branding

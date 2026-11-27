@@ -150,6 +150,7 @@ case "${WEB_ROOT:-}" in
 esac
 
 log INFO "Деплой файлов в $WEB_ROOT"
+sa02m_install_web_control "$SCRIPT_DIR/.." || exit 1
 sa02m_install_mqtt_web_deps "$SCRIPT_DIR/../opt/sa02m-modbus-mqtt" /opt/sa02m-modbus-mqtt || exit 1
 mkdir -p "$WEB_ROOT"
 
@@ -196,13 +197,6 @@ find "$WEB_ROOT/cgi-bin" -name "*.cgi" -exec chmod 755 {} \;
 find "$WEB_ROOT/static"  \( -name "*.css" -o -name "*.js" -o -name "*.svg" \) -exec chmod 644 {} \;
 chmod 644 "$WEB_ROOT/index.html" "$WEB_ROOT/login.html"
 chown -R www-data:www-data "$WEB_ROOT"
-
-if [ -f "$SCRIPT_DIR/../etc/sa02m-web-root-cmd.sh" ]; then
-    sa02m_atomic_install -m 755 "$SCRIPT_DIR/../etc/sa02m-web-root-cmd.sh" /usr/local/sbin/sa02m-web-root-cmd.sh
-    sed -i 's/\r$//' /usr/local/sbin/sa02m-web-root-cmd.sh
-else
-    log WARN "Нет etc/sa02m-web-root-cmd.sh — root-режим командной строки недоступен"
-fi
 
 # ── GPIO hw.conf ──────────────────────────────────────────────────────────
 if [ ! -f /etc/sa02m_hw.conf ]; then
@@ -432,15 +426,6 @@ if [ -f "$SCRIPT_DIR/../etc/sa02m-web-auth-lib.sh" ]; then
 else
     log WARN "Нет etc/sa02m-web-auth-lib.sh — безопасная запись sa02m_web.env недоступна"
 fi
-# Pinned vendor payload metadata must precede the panel installer delegate.
-for _vendor_source in sa02m-vendor-install.py vendor-payloads.json systemd/system/nodered.service; do
-    [ -f "$ETC_DIR/$_vendor_source" ] || { log ERR "Missing vendor payload source: $_vendor_source"; exit 1; }
-done
-mkdir -p /usr/local/lib /usr/local/share/sa02m || exit 1
-sa02m_atomic_install -m 755 "$ETC_DIR/sa02m-vendor-install.py" /usr/local/lib/sa02m-vendor-install.py || exit 1
-sa02m_atomic_install -m 644 "$ETC_DIR/vendor-payloads.json" /usr/local/share/sa02m/vendor-payloads.json || exit 1
-sa02m_atomic_install -m 644 "$ETC_DIR/systemd/system/nodered.service" /usr/local/share/sa02m/nodered.service || exit 1
-
 # ── Политика сторонних стеков (общая lib для установщика и service-ctl) ────
 if [ -f "$SCRIPT_DIR/../etc/sa02m-stacks-policy.sh" ]; then
     sa02m_atomic_install -m 644 "$SCRIPT_DIR/../etc/sa02m-stacks-policy.sh" /usr/local/lib/sa02m-stacks-policy.sh
@@ -666,21 +651,6 @@ if [ -f /usr/local/lib/sa02m-web-build-lib.sh ]; then
     if type sync_web_build_conf_from_deploy >/dev/null 2>&1; then
         sync_web_build_conf_from_deploy && log OK "sa02m_web_build.conf синхронизирован с веткой/версией"
     fi
-fi
-if [ -f "$SCRIPT_DIR/../etc/sa02m-web-reboot.sh" ]; then
-    sa02m_atomic_install -m 755 "$SCRIPT_DIR/../etc/sa02m-web-reboot.sh" /usr/local/sbin/sa02m-web-reboot.sh
-else
-    log WARN "Нет etc/sa02m-web-reboot.sh — перезагрузка из веб может не сработать при сбое systemd"
-fi
-if [ -f "$SCRIPT_DIR/../etc/sa02m-web-restart-services.sh" ]; then
-    sa02m_atomic_install -m 755 "$SCRIPT_DIR/../etc/sa02m-web-restart-services.sh" /usr/local/sbin/sa02m-web-restart-services.sh
-else
-    log WARN "Нет etc/sa02m-web-restart-services.sh — перезапуск служб из веб без расширенных fallback"
-fi
-if [ -f "$SCRIPT_DIR/../etc/sa02m-web-service-ctl.sh" ]; then
-    sa02m_atomic_install -m 755 "$SCRIPT_DIR/../etc/sa02m-web-service-ctl.sh" /usr/local/sbin/sa02m-web-service-ctl.sh
-else
-    log WARN "Нет etc/sa02m-web-service-ctl.sh — управление прикладными службами из веб недоступно"
 fi
 # ── MPLC4 project deploy («Обновление проекта MPLC»): helper + Python module ──
 if [ -f "$SCRIPT_DIR/../etc/sa02m-mplc-project-deploy.sh" ]; then

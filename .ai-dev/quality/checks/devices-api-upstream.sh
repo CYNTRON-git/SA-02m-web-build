@@ -184,7 +184,7 @@ if stripped_has "$INST" '[ -f "$hook" ] || {'; then
     ok "$INST: refuses to point gunicorn at a missing hook"
 else bad "$INST: a missing hook file would still install --config and take down sa02m-stand-api"; fi
 hook_ln=$(stripped_first_line "$INST" '^sa02m_stand_devices_socket_group[[:space:]]*$')
-restart_ln=$(stripped_first_line "$INST" '^if ! /usr/bin/python3 -I /opt/sa02m-devices/sa02m_devices_journal_startup\.py "\$\{_journal_args\[@\]\}"; then$')
+restart_ln=$(stripped_first_line "$INST" '^if ! /usr/bin/python3 -I -B /opt/sa02m-devices/sa02m_devices_journal_startup\.py "\$\{_journal_args\[@\]\}"; then$')
 if [ -n "$hook_ln" ] && [ -n "$restart_ln" ] && [ "$hook_ln" -lt "$restart_ln" ]; then
     ok "$INST installs the socket-group drop-in (line $hook_ln) before restarting stand-api (line $restart_ln)"
 else

@@ -229,7 +229,7 @@ EOF
 # ВАЖНО: используем LABEL= (устойчиво к смене нумерации eMMC/SD при новом kernel/DTS).
 # У boot FAT — nofail + x-systemd.automount, чтобы сбой FAT не ронял local-fs.target
 # и не отправлял устройство в emergency (без сети).
-LABEL=sa02m_root  /              ext4  defaults,noatime,errors=remount-ro                              0 1
+LABEL=sa02m_root  /              ext4  defaults,noatime,errors=remount-ro,commit=60                    0 1
 LABEL=BOOT        /mnt/boot_fat  vfat  defaults,nofail,x-systemd.device-timeout=5s,x-systemd.automount 0 0
 EOF
 	mkdir -p "$OUTPUT/mnt/boot_fat"

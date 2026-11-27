@@ -74,6 +74,7 @@ SERVICES_OPTIONAL_KEYS = ("enable", "restart_if_active", "restart_if_changed")
 FIX_ETH_OTA_SINCE = "1.0.7.19"
 TIERED_DSTS = {"/usr/local/bin/fix-eth.sh": FIX_ETH_OTA_SINCE}
 VENDOR_INSTALL_SINCE = "1.0.8.2"
+RUNTIME_ACTIVATION_SINCE = "1.0.8.3"
 VENDOR_INSTALL_SOURCES = frozenset({"etc/sa02m-vendor-install.py", "etc/vendor-payloads.json", "etc/systemd/system/nodered.service"})
 # Wire footer is 21 bytes (plan text "+20" was a miscount of the 19-byte magic).
 FOOTER_MAGIC = b"SA02M_UPDATE_END_V1"
@@ -241,8 +242,9 @@ def path_matches(path: str, pattern: str) -> bool:
     return path == pattern or path.startswith(pattern.rstrip("/") + "/")
 
 
-def list_allowlisted_files(patterns: list[str]) -> list[str]:
-    r = run(["git", "ls-files", "-z"])
+def list_allowlisted_files(patterns: list[str], *, dirty: bool = False) -> list[str]:
+    options = ["--cached", "--others", "--exclude-standard"] if dirty else []
+    r = run(["git", "ls-files", "-z", *options])
     tracked = [p.decode("utf-8").replace("\\", "/") for p in r.stdout.split(b"\0") if p]
     selected: list[str] = []
     for path in tracked:
@@ -284,52 +286,21 @@ def git_archive_extract(paths: list[str], dest: Path) -> None:
 
 
 def overlay_workdir_files(paths: list[str], dest: Path) -> int:
-    """Copy current worktree files over git-archive overlay (--allow-dirty)."""
-    n = 0
+    """Copy the selected working files for a non-release package."""
+    dest.mkdir(parents=True, exist_ok=True)
+    count = 0
     for rel in paths:
-        src = ROOT / rel
+        name = Path(rel)
+        if any((ROOT / part).is_symlink() for part in (name, *name.parents)):
+            _die(f"refusing symlink in worktree overlay: {rel}")
+        src = ROOT / name
         if not src.is_file():
             continue
-        out = dest / rel
+        out = dest / name
         out.parent.mkdir(parents=True, exist_ok=True)
         shutil.copy2(src, out)
-        n += 1
-    # Also include newly untracked allowlisted files present on disk
-    for src in (ROOT / "opt").rglob("*") if (ROOT / "opt").is_dir() else []:
-        if not src.is_file() or "__pycache__" in src.parts or src.suffix in (".pyc", ".pyo"):
-            continue
-        rel = src.relative_to(ROOT).as_posix()
-        if not rel.startswith("opt/sa02m-"):
-            continue
-        out = dest / rel
-        if out.is_file():
-            continue
-        out.parent.mkdir(parents=True, exist_ok=True)
-        shutil.copy2(src, out)
-        n += 1
-    for src in [
-        ROOT / "etc" / "sa02m-update-runner.sh",
-        ROOT / "etc" / "sa02m-update-inspect.sh",
-        ROOT / "etc" / "sa02m-update-control.sh",
-        ROOT / "etc" / "sa02m-stacks-policy.sh",
-        ROOT / "etc" / "systemd" / "sa02m-update-download.service",
-        ROOT / "etc" / "systemd" / "sa02m-port-coordinator.service",
-        ROOT / "etc" / "sa02m-web-backup.sh",
-        ROOT / "etc" / "sa02m-restore-backup.sh",
-        ROOT / "etc" / "sa02m-factory-reset-runner.sh",
-        ROOT / "etc" / "systemd" / "sa02m-update.service",
-        ROOT / "etc" / "systemd" / "sa02m-update-recover.service",
-        ROOT / "etc" / "systemd" / "sa02m-update-verify.service",
-        ROOT / "etc" / "systemd" / "sa02m-factory-reset.service",
-        ROOT / "etc" / "nginx" / "network_config.conf",
-    ]:
-        if src.is_file():
-            rel = src.relative_to(ROOT).as_posix()
-            out = dest / rel
-            out.parent.mkdir(parents=True, exist_ok=True)
-            shutil.copy2(src, out)
-            n += 1
-    return n
+        count += 1
+    return count
 
 
 def render_nginx_template(overlay: Path) -> None:
@@ -425,8 +396,14 @@ def map_deploy_entry(rel: str, deploy_map: dict[str, Any]) -> dict[str, str] | N
 
 
 def build_deploy_list(
-    overlay_files: list[str], deploy_map: dict[str, Any], min_updater: str = MIN_UPDATER
+    overlay_files: list[str], deploy_map: dict[str, Any], min_updater: str = MIN_UPDATER, *, overlay: Path = ROOT
 ) -> list[dict[str, str]]:
+    activation = any(rel.startswith(("opt/sa02m-runtime-transition/", "opt/sa02m-python-manager/")) or
+                     rel in ("usr/local/libexec/sa02m-runtime-activate", "usr/local/libexec/sa02m-python-consumer")
+                     for rel in overlay_files)
+    if activation:
+        if semver_key(min_updater) < semver_key(RUNTIME_ACTIVATION_SINCE):
+            _die("runtime activation requires --min-updater " + RUNTIME_ACTIVATION_SINCE)
     vendor_sources = VENDOR_INSTALL_SOURCES.intersection(overlay_files)
     if vendor_sources:
         if vendor_sources != VENDOR_INSTALL_SOURCES:
@@ -468,6 +445,13 @@ def build_deploy_list(
         _die("deploy[] is empty — check allowlist/deploy-map")
     # Stable order for review diffs
     deploy.sort(key=lambda d: d["dst"])
+    if activation:
+        sys.path.insert(0, str(ROOT / "opt/sa02m-update/lib"))
+        from runtime_delivery import ordered
+        try:
+            return ordered(deploy, overlay)
+        except (TypeError, KeyError, OSError, ValueError) as error:
+            _die(str(error))
     return deploy
 
 
@@ -585,7 +569,7 @@ def resolve_min_updater(arg: str | None) -> str:
     demand a runner newer than the one it carries).
     """
     if arg is None:
-        return MIN_UPDATER
+        arg = RUNTIME_ACTIVATION_SINCE if (ROOT / "opt/sa02m-runtime-transition").is_dir() else MIN_UPDATER
     if not VERSION_RE.match(arg):
         _die(f"--min-updater {arg!r}: not a version X.Y.Z[.W]")
     if semver_key(arg) < semver_key(MIN_UPDATER):
@@ -852,14 +836,15 @@ def main() -> int:
     key_path = resolve_signing_key(args.key_id, args.signing_key)
     patterns = load_allowlist_patterns()
     deploy_map = load_deploy_map()
-    paths = list_allowlisted_files(patterns)
+    paths = list_allowlisted_files(patterns, dirty=args.allow_dirty)
 
     with tempfile.TemporaryDirectory(prefix="sa02m-pack-") as tmp:
         overlay = Path(tmp) / "overlay"
-        git_archive_extract(paths, overlay)
         if args.allow_dirty:
             n = overlay_workdir_files(paths, overlay)
-            print(f"allow-dirty: overlaid {n} worktree files", file=sys.stderr)
+            print(f"allow-dirty: copied {n} worktree files", file=sys.stderr)
+        else:
+            git_archive_extract(paths, overlay)
         render_nginx_template(overlay)
         overlay_files = iter_overlay_files(overlay)
         # Ensure VERSION in payload matches branch version gate
@@ -873,7 +858,7 @@ def main() -> int:
         if first != version:
             _die(f"payload VERSION {first!r} != pack version {version!r}")
 
-        deploy = build_deploy_list(overlay_files, deploy_map, min_updater)
+        deploy = build_deploy_list(overlay_files, deploy_map, min_updater, overlay=overlay)
         payload_gz, unc_size = make_payload_tar_gz(overlay, overlay_files)
         manifest = build_manifest(
             version=version,

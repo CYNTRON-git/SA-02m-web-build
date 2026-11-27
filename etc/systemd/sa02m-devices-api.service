@@ -1,6 +1,7 @@
 [Unit]
 Description=SA-02m Devices API (DTV / CE-02m-3 widgets, history, export)
 After=network.target sa02m-modbus-mqtt.service
+Wants=sa02m-runtime-activate.service
 
 [Service]
 Type=simple
@@ -25,7 +26,7 @@ Environment=STAND_DEVICES_EVENTS_BOOTSTRAP_DIR=/var/lib/sa02m-devices-journal-in
 Environment=STAND_DEVICES_EVENTS_UPDATE_DIR=/var/lib/sa02m-update
 Environment=STAND_DEVICES_EVENTS_PROTOCOL=1
 EnvironmentFile=-/etc/default/sa02m-devices
-ExecStartPre=-/usr/bin/python3 -I /opt/sa02m-devices/sa02m_devices_journal_startup.py prepare --consumer devices-api
+ExecStartPre=-/usr/bin/python3 -I -B /opt/sa02m-devices/sa02m_devices_journal_startup.py prepare --consumer devices-api
 ExecStart=/usr/bin/python3 /opt/sa02m-devices/sa02m_devices_api.py
 # /run/sa02m-devices for the socket: dir 0755 (traversable by www-data), the
 # socket's own 0660 is the boundary. systemd wipes it on stop; the daemon

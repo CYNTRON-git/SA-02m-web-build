@@ -17,10 +17,10 @@ from pathlib import Path
 from typing import Any, Dict, Iterable, List, Optional, Set, Tuple
 
 try:
-    from .semver import check_update_gates, is_valid as semver_valid
+    from .semver import check_update_gates, ge, is_valid as semver_valid
     from . import PackageError
 except ImportError:  # pragma: no cover - flat PYTHONPATH=/opt/sa02m-update/lib
-    from semver import check_update_gates, is_valid as semver_valid  # type: ignore
+    from semver import check_update_gates, ge, is_valid as semver_valid  # type: ignore
     from __init__ import PackageError  # type: ignore
 
 # --- container layout (§2.1) -------------------------------------------------
@@ -651,11 +651,38 @@ def validate_safe_tar_members(
     return infos
 
 
+def check_staged_inventory(tf, members, manifest):
+    if not manifest:
+        return
+    try:
+        if __package__:
+            from . import runtime_delivery
+        else:
+            import runtime_delivery
+        deploy = manifest["deploy"]
+        sources = {item["src"] for item in deploy}
+        if not runtime_delivery.includes_runtime(sources):
+            return
+        if not ge(manifest["min_updater"], "1.0.8.3"):
+            raise ValueError("runtime delivery requires min_updater 1.0.8.3")
+        if (len(sources) != len(deploy) or len({item["dst"] for item in deploy}) != len(deploy)
+                or deploy != sorted(deploy, key=runtime_delivery.stage_order)):
+            raise ValueError("duplicate or misordered runtime deploy entries")
+        regular = {_check_inner_member_name(info.name): info for info in members if info.isreg()}
+        if not sources.issubset(regular):
+            raise ValueError("deploy input missing from payload")
+        with tf.extractfile(regular[runtime_delivery.MANAGER + "runtime.json"]) as stream:
+            runtime_delivery.validate_inventory(sources, stream.read(524289))
+    except (ImportError, KeyError, TypeError, ValueError, OSError) as exc:
+        raise PackageError("E_MANIFEST", f"runtime inventory: {exc}") from exc
+
+
 def extract_payload_safe(
     payload_path: Path,
     dest_dir: Path,
     *,
     uncompressed_size_max: int,
+    manifest: Optional[dict] = None,
 ) -> None:
     """Extract inner payload.tar.gz to staging with Py3.12 data filter + mode caps."""
     dest_dir = Path(dest_dir)
@@ -663,11 +690,12 @@ def extract_payload_safe(
     compressed_size = payload_path.stat().st_size
     try:
         with tarfile.open(payload_path, mode="r:gz") as tf:
-            validate_safe_tar_members(
+            members = validate_safe_tar_members(
                 tf,
                 uncompressed_size_max=uncompressed_size_max,
                 compressed_size=compressed_size,
             )
+            check_staged_inventory(tf, members, manifest)
         with tarfile.open(payload_path, mode="r:gz") as tf:
             # filter='data' is Python 3.12+; required on device.
             tf.extractall(path=dest_dir, members=None, filter="data")  # type: ignore[call-arg]
@@ -778,6 +806,11 @@ def validate_package(
     if sidecar != digest:
         raise PackageError("E_HASH", "payload.sha256 member != payload.tar.gz digest")
 
+    if check_compat:
+        if not installed_version or not runner_version:
+            raise PackageError("E_INTERNAL", "check_compat requires installed_version and runner_version")
+        check_device_compat(manifest, installed_version=installed_version, runner_version=runner_version)
+
     staging_payload: Optional[Path] = None
     tmp_root: Optional[tempfile.TemporaryDirectory[str]] = None
     try:
@@ -790,6 +823,7 @@ def validate_package(
                 staging_payload,
                 dest / "overlay",
                 uncompressed_size_max=int(manifest["payload"]["uncompressed_size_max"]),
+                manifest=manifest,
             )
             ver_path = dest / "overlay" / "www" / "network_config" / "VERSION"
             if ver_path.is_file():
@@ -800,20 +834,13 @@ def validate_package(
             staging_payload = Path(tmp_root.name) / "payload.tar.gz"
             staging_payload.write_bytes(payload_bytes)
             with tarfile.open(staging_payload, mode="r:gz") as tf:
-                validate_safe_tar_members(
+                members = validate_safe_tar_members(
                     tf,
                     uncompressed_size_max=int(manifest["payload"]["uncompressed_size_max"]),
                     compressed_size=len(payload_bytes),
                 )
+                check_staged_inventory(tf, members, manifest)
 
-        if check_compat:
-            if not installed_version or not runner_version:
-                raise PackageError("E_INTERNAL", "check_compat requires installed_version and runner_version")
-            check_device_compat(
-                manifest,
-                installed_version=installed_version,
-                runner_version=runner_version,
-            )
     finally:
         if tmp_root is not None:
             tmp_root.cleanup()

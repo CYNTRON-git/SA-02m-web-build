@@ -28,7 +28,7 @@ if ! dpkg -s python3 >/dev/null 2>&1; then
 fi
 python3 -c "import paho.mqtt" 2>/dev/null || sa02m_pkg_install_tier optional python3-paho-mqtt
 python3 -c "import yaml"      2>/dev/null || sa02m_pkg_install_tier optional python3-yaml
-sa02m_pip_install socketio "python-socketio[client]"
+sa02m_pkg_install_tier optional python3-socketio
 
 # ── Shared Carel package, BEFORE the Alice tree that imports it ────────────
 # The catalogue and the converters read the cloud fan vocabulary from

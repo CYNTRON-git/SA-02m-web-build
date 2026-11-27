@@ -1,0 +1,67 @@
+#!/usr/bin/python3 -ISB
+"""Select the published interpreter for a fixed product entry point."""
+import json
+import os
+from pathlib import Path
+import re
+import stat
+import sys
+
+SELECTOR = Path('/var/lib/sa02m-python-activation/current.json')
+MANAGER = Path('/opt/sa02m-python-manager')
+RELEASES = Path('/opt/sa02m-python-runtimes/releases')
+
+
+def read_trusted(path, limit):
+    for parent in reversed(path.parents):
+        info = parent.lstat()
+        if not stat.S_ISDIR(info.st_mode) or info.st_uid != 0 or info.st_mode & 0o022:
+            raise ValueError('untrusted parent')
+    fd = os.open(path, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
+    with os.fdopen(fd, 'rb') as source:
+        info = os.fstat(fd)
+        if (not stat.S_ISREG(info.st_mode) or info.st_uid or info.st_nlink != 1 or
+                info.st_mode & 0o022 or info.st_size > limit):
+            raise ValueError('untrusted runtime metadata')
+        raw = source.read(limit + 1)
+        if len(raw) > limit:
+            raise ValueError('oversized runtime metadata')
+        return json.loads(raw)
+
+
+def main():
+    if len(sys.argv) < 2 or not re.fullmatch('[a-z][a-z0-9-]{1,63}', sys.argv[1]):
+        raise ValueError('invalid consumer')
+    entries = read_trusted(MANAGER / 'consumers.json', 65536)['entries']
+    group = entries[sys.argv[1]]['group']
+    groups = sorted({entry['group'] for entry in entries.values()})
+    if not isinstance(group, str) or not re.fullmatch(r'[a-z][a-z0-9-]{0,31}', group):
+        raise ValueError('invalid group')
+    try:
+        active = read_trusted(SELECTOR, 4096)
+    except FileNotFoundError:
+        # The directory can be absent during initial file delivery. A broken
+        # symlink or an unreadable selector is never a legacy installation.
+        if group in ('opcua','snmp') or os.path.lexists(SELECTOR.parent):
+            raise
+        interpreter = Path('/usr/bin/python3')
+    else:
+        release = active['release_id']
+        if (type(active.get('schema')) is not int or active['schema'] != 1
+                or set(active) != {'schema','release_id','manifest_sha256','groups'}
+                or active['groups'] not in (['gateway','home','mqtt'], ['gateway','home','mqtt','opcua'], groups)
+                or group not in active['groups'] or not re.fullmatch('[a-f0-9]{64}', release)
+                or not re.fullmatch('[a-f0-9]{64}', active['manifest_sha256'])):
+            raise ValueError('invalid selector')
+        interpreter = RELEASES / release / group / 'bin/python'
+        for variable in ('LD_LIBRARY_PATH', 'LD_PRELOAD', 'LD_AUDIT'):
+            os.environ.pop(variable, None)
+    os.execv(interpreter, [str(interpreter), '-I', '-B', str(MANAGER / 'launch.py'), *sys.argv[1:]])
+
+
+if __name__ == '__main__':
+    try:
+        main()
+    except (KeyError, TypeError, ValueError, OSError):
+        print('python_runtime_unavailable', file=sys.stderr)
+        sys.exit(1)

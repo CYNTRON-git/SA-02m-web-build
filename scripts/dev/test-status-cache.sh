@@ -177,6 +177,13 @@ svc_state_of() {  # prints "<state> <sudo calls>"
 svc_state_of_plain() { svc_state_of | tr -d '\r' | tr '\n' ' '; }
 printf '%s\n' "$LIST_JSON" > "$T/svc/list.json"
 r=$(svc_state_of_plain)
+if [ "$r" = "inactive 1 " ]; then
+    ok "an unowned legacy cache cannot override current service discovery"
+else
+    bad "unowned legacy cache served: $r"
+fi
+cat /proc/sys/kernel/random/boot_id > "$T/svc/owned-v1"
+r=$(svc_state_of_plain)
 if [ "$r" = "active 0 " ]; then
     ok "L1 status.cgi reads a list.json younger than 10 s without sudo (mosquitto=active, 0 sudo calls)"
 else
@@ -223,12 +230,12 @@ else
     bad "L5 a hung helper did not end in the timeout answer: $body"
 fi
 
-# L6-L8: the helper publishes and invalidates.
+# L6-L8: execute the private module now sourced by the shipped helper.
+mkdir -p "$T/res"
+cat /proc/sys/kernel/random/boot_id > "$T/res/owned-v1"
 {
-    grep -E '^RESULT_DIR=|^SVC_LIST_(CACHE|GEN|LOCK)=' "$CTL"
-    for fn in svc_list_gen_read svc_list_cache_invalidate svc_list_publish; do
-        awk -v fn="$fn" '$0 ~ "^" fn "\\(\\) \\{" {f=1} f{print} f&&/^\}/{exit}' "$CTL"
-    done
+    grep -E '^RESULT_DIR=' "$CTL"
+    cat usr/local/lib/sa02m-service-cache.sh
 } > "$T/svclist.sh"
 sed -i "s|^RESULT_DIR=.*|RESULT_DIR=$T/res|" "$T/svclist.sh"
 if ! grep -q '^svc_list_publish() {' "$T/svclist.sh" || ! grep -q '^svc_list_cache_invalidate() {' "$T/svclist.sh"; then
@@ -263,8 +270,9 @@ ctltext=$(stripped_text "$CTL")
 l9=0
 [[ "$ctltext" =~ list\)[[:space:]]*svc_list_publish ]] || { l9=1; bad "L9 the dispatcher's list) branch does not call svc_list_publish"; }
 text_has "$ctltext" 'begin_result "$ID" "$ACTION" || exit 1' || { l9=1; bad "L9 the mutation case changed shape (begin_result line not found)"; }
-text_has "$ctltext" "        svc_list_cache_invalidate" || { l9=1; bad "L9 the mutation case does not call svc_list_cache_invalidate"; }
-text_has "$ctltext" "trap 'svc_list_cache_invalidate' EXIT" || { l9=1; bad "L9 no EXIT trap drops the cache after the mutation"; }
+text_has "$ctltext" 'svc_cache_begin "$_cache_units"' || { l9=1; bad "L9 mutation does not register its private lease"; }
+text_has "$ctltext" "trap 'svc_cache_exit' EXIT" || { l9=1; bad "L9 missing lease finalization trap"; }
+text_has "$ctltext" 'svc_cache_finish' || { l9=1; bad "L9 missing lease finalization"; }
 [ "$l9" -eq 0 ] && ok "L9 the dispatcher publishes on list and invalidates before and after every mutation"
 
 # ═══ B / P. process probes ════════════════════════════════════════════════

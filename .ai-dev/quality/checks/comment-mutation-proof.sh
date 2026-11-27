@@ -436,7 +436,9 @@ sudoers-pin-contract|etc/sudoers.d/sa02m-www|www-data ALL=(ALL) NOPASSWD: /usr/l
 clock-set-helper|usr/local/sbin/sa02m-clock-set.sh|if ! tz_ok "$2"; then
 initd-bounded|etc/sa02m-web-service-ctl.sh|initd_run() {
 status-cache|www/network_config/cgi-bin/status.cgi|cache_print_or_build "${CACHE_DIR}/rs485.json" 8 build_rs485_json 24
-status-cache|etc/sa02m-web-service-ctl.sh|trap '"'"'svc_list_cache_invalidate'"'"' EXIT
+status-cache|etc/sa02m-web-service-ctl.sh|trap '"'"'svc_cache_exit'"'"' EXIT
+service-cache-lifecycle|usr/local/lib/sa02m-service-cache.sh|os.rename(path, records / path.name[1:])
+mplc-lifecycle|usr/local/lib/sa02m-mplc-policy.sh|sa02m_mplc_sc stop mplc4.service >/dev/null 2>&1 || true
 cgi-timeouts|etc/nginx/network_config.conf|limit_conn     sa02m_cgi_sess 6;
 cgi-timeouts|etc/nginx/network_config.conf|limit_conn     sa02m_mon_sess 1;
 cgi-timeouts|www/network_config/cgi-bin/mqtt_monitor.cgi|exec timeout -k 2 60

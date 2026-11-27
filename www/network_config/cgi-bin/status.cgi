@@ -791,7 +791,9 @@ load_svc_ctl_states() {
     # than 10 s skips the second `sudo CTL list` of a poll round (A8-04); it is
     # read directly, not through `list --cached` — the sudoers grant pins the
     # bare `list` verb, and a plain read forks no sudo at all.
-    if cache_is_fresh "$SVC_CTL_LIST_CACHE" 10 && [ -s "$SVC_CTL_LIST_CACHE" ]; then
+    local epoch="${SVC_CTL_LIST_CACHE%/*}/owned-v1"
+    if [[ -f "$epoch" && ! -L "$epoch" && $(<"$epoch") == $(</proc/sys/kernel/random/boot_id) ]] &&
+            cache_is_fresh "$SVC_CTL_LIST_CACHE" 10 && [ -s "$SVC_CTL_LIST_CACHE" ]; then
         src=$SVC_CTL_LIST_CACHE
     else
         tmp=$(mktemp /tmp/sa02m-svcctl.XXXXXX) || return 0

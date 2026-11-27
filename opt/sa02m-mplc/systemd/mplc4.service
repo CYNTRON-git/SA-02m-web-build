@@ -7,7 +7,10 @@ Type=oneshot
 RemainAfterExit=yes
 ExecStart=/etc/init.d/mplc4 start
 ExecStop=/etc/init.d/mplc4 stop
+TimeoutStartSec=45s
+TimeoutStartFailureMode=terminate
 TimeoutStopSec=15
+TimeoutStopFailureMode=terminate
 KillMode=mixed
 
 [Install]

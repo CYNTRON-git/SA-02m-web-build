@@ -739,7 +739,7 @@ LEDGER = {
         "/usr/bin/systemctl start sa02m-telemetry",
         "/bin/systemctl stop sa02m-telemetry",
         "/usr/bin/systemctl stop sa02m-telemetry",
-        "/usr/bin/python3 /opt/sa02m-modbus-mqtt/mqtt_bus_scan.py *",
+        "/usr/local/sbin/sa02m-mqtt-scan /tmp/sa02m-mqttscan.*",
         "/usr/local/sbin/sa02m-mqtt-config-apply.sh *",
         "/usr/local/sbin/sa02m-mqtt-external-info.py",
         "/usr/bin/cat /etc/sa02m_mqtt.env",

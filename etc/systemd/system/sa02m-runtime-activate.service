@@ -1,0 +1,17 @@
+[Unit]
+Description=Verify and activate the staged SA-02m runtime
+After=local-fs.target sa02m-update-recover.service sa02m-port-coordinator.service
+StartLimitIntervalSec=300s
+StartLimitBurst=5
+
+[Service]
+Type=exec
+ExecStart=/usr/local/libexec/sa02m-runtime-activate activate
+RuntimeMaxSec=900s
+TimeoutStopSec=15s
+SuccessExitStatus=75
+RestartForceExitStatus=76
+RestartSec=15s
+
+[Install]
+WantedBy=multi-user.target

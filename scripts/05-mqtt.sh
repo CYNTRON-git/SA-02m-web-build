@@ -110,15 +110,6 @@ if [ -n "$_MQTT_APT_MISSING" ] && sa02m_online; then
     rm -rf "$_TMPDIR"
 fi
 
-# 2.2. Fallback через pip, если apt-версии всё ещё нет (уже импортируемый
-# модуль — тихий no-op; оффлайн — WARN и деградация, см. lib.sh)
-sa02m_pip_install paho.mqtt paho-mqtt
-sa02m_pip_install yaml pyyaml
-sa02m_pip_install serial pyserial
-# AES-GCM for a Mercury reader. Absent cryptography leaves the poller on the
-# public client (security_for returns None); the bridge still starts.
-python3 -c "import cryptography" 2>/dev/null || sa02m_pip_install cryptography cryptography
-
 # 2.3. Обязательная проверка импорта (fail-loud в полной установке; в refresh —
 # WARN + пропуск установки юнитов: свежие юниты без зависимостей ушли бы в
 # restart-loop, а плата в refresh должна остаться в прежнем состоянии)
@@ -184,11 +175,11 @@ fi
 for f in bridge_meta.py bridge_uart.py bridge_serial.py bridge_bus.py bridge_probe.py bridge_tcp.py bridge_rtu_tcp.py bridge_scan_lease.py \
          bridge_mqtt.py bridge_fmb.py bridge_mr02m_map.py \
          bridge_device.py bridge_mr02m.py bridge_dtv_catalog.py bridge_dtv_ce.py bridge_template_channels.py bridge_template.py \
-         bridge_carel.py bridge_led.py bridge_spodes.py bridge_admission.py; do
-    install -m 0755 -o root -g root "$OPT_DIR/$f" "$BRIDGE_DIR/$f" || exit 1
+         bridge_carel.py bridge_led.py bridge_spodes.py bridge_admission.py bridge_roster.py; do
+    sa02m_atomic_install -m 0755 -o root -g root "$OPT_DIR/$f" "$BRIDGE_DIR/$f" || exit 1
 done
 
-install -m 0755 -o root -g root "$OPT_DIR/modbus_mqtt_bridge.py" "$BRIDGE_DIR/modbus_mqtt_bridge.py"
+sa02m_atomic_install -m 0755 -o root -g root "$OPT_DIR/modbus_mqtt_bridge.py" "$BRIDGE_DIR/modbus_mqtt_bridge.py" || exit 1
 
 # Device-template drop-in dir (type: template devices). Ship the self-authored
 # example + README; the integrator drops their own WB-format JSON here.

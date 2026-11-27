@@ -139,7 +139,7 @@ _journal_args=(prepare --consumer installer)
 if [ -n "${SA02M_ROOTFS_BUILD:-}" ]; then
     _journal_args+=(--rootfs)
 fi
-if ! /usr/bin/python3 -I /opt/sa02m-devices/sa02m_devices_journal_startup.py "${_journal_args[@]}"; then
+if ! /usr/bin/python3 -I -B /opt/sa02m-devices/sa02m_devices_journal_startup.py "${_journal_args[@]}"; then
     log WARN "Journal preparation failed; samples remain available, journal clear requires recovery"
 fi
 _DEV_OK=1

@@ -36,6 +36,15 @@ try {
 } catch (e) { failures++; console.error('FAIL pending state: ' + e.message); }
 try {
   context.document.createElement = () => ({dataset: {}, addEventListener() {}});
+  for (const phase of ['pending', 'reboot', 'failed']) {
+    vm.runInContext('_lastSvcCtlData = {activation:' + JSON.stringify(phase) + '}', context);
+    const created = context.makeSvcCtlButton({id:'other'}, 'start', false);
+    assert.equal(created.disabled, true);
+    vm.runInContext('_lastSvcCtlData = {services:[]}', context);
+    context.svcCtlSyncButton({querySelector:()=>created}, {id:'other'}, 'start', false);
+    assert.equal(created.disabled, false);
+  }
+  vm.runInContext('_lastSvcCtlData = null', context);
   assert.equal(context.makeSvcCtlButton({id: 'vplc'}, 'start', false).disabled, true);
   let resolvePost, posts = 0;
   context.fetch = () => { posts++; return new Promise(resolve => {resolvePost = resolve;}); };

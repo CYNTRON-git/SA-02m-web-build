@@ -28,6 +28,9 @@ class ServiceOperations(unittest.TestCase):
         self.root = Path(self.tmp.name)
         self.result = self.root / "results"
         self.result.mkdir()
+        self.cache_module = self.root / "cache-module.sh"
+        self.cache_module.write_text((ROOT / "usr/local/lib/sa02m-service-cache.sh").read_text().replace(
+            "RESULT_DIR=/var/run/sa02m-svcctl", "RESULT_DIR=" + str(self.result)))
         self.helper = self.root / "helper.sh"
         self.helper.write_text('#!/bin/sh\nprintf "%s\\n" "$@" >"' + str(self.root / "args") + '"\n')
         self.helper.chmod(0o755)
@@ -75,10 +78,21 @@ class ServiceOperations(unittest.TestCase):
         self.assertEqual(self.request("result=1&id=vplc", TEST_AUTH="no")["error"], "unauthorized")
         self.assertEqual(self.request(data={"id": "vplc", "action": "stop"}, TEST_CSRF="no")["error"], "E_CSRF")
 
+    def test_public_cache_requires_current_ownership_epoch(self):
+        self.helper.write_text('#!/bin/sh\nprintf \'%s\\n\' \'{"source":"live"}\'\n')
+        (self.result / 'list.json').write_text('{"source":"cache"}')
+        marker = self.result / 'owned-v1'
+        self.assertEqual(self.request(), {'source':'live'})
+        marker.write_text('00000000-0000-0000-0000-000000000000\n')
+        self.assertEqual(self.request(), {'source':'live'})
+        marker.write_bytes(Path('/proc/sys/kernel/random/boot_id').read_bytes())
+        self.assertEqual(self.request(), {'source':'cache'})
+
     def test_unknown_helper_identity_never_publishes_a_file(self):
         source = (ROOT / "etc/sa02m-web-service-ctl.sh").read_text()
         source = source.replace("RESULT_DIR=/var/run/sa02m-svcctl", "RESULT_DIR=" + str(self.result))
         source = source.replace("SA02M_STACKS_LIB=/usr/local/lib/sa02m-stacks-policy.sh", "SA02M_STACKS_LIB=/nonexistent")
+        source = source.replace("/usr/local/lib/sa02m-service-cache.sh", str(self.cache_module))
         self.helper.write_text(source)
         for identity, operation, error in (("unknown-service", "e" * 32, "unknown_service"), ("../vplc", "e" * 32, "invalid_id"), ("vplc", "../x", "invalid_operation")):
             run = subprocess.run(["sh", str(self.helper), "stop", identity, operation], text=True, capture_output=True, timeout=5)
@@ -90,6 +104,7 @@ class ServiceOperations(unittest.TestCase):
         source = (ROOT / "etc/sa02m-web-service-ctl.sh").read_text().split("\nACTION=", 1)[0]
         source = source.replace("RESULT_DIR=/var/run/sa02m-svcctl", "RESULT_DIR=" + str(self.result))
         source = source.replace("SA02M_STACKS_LIB=/usr/local/lib/sa02m-stacks-policy.sh", "SA02M_STACKS_LIB=/nonexistent")
+        source = source.replace("/usr/local/lib/sa02m-service-cache.sh", str(self.cache_module))
         source += '\nID=vplc\nACTION=stop\nSA02M_SVC_OPERATION_ID=' + 'b' * 32 + '\nbegin_result "$ID" "$ACTION"\ni=0\nwhile [ "$i" -lt 30 ]; do\nemit_result \'{"ok":false,"error":"port_busy"}\' >/dev/null\ni=$((i + 1))\ndone\n'
         script = self.root / "publish.sh"
         script.write_text(source)
@@ -125,6 +140,7 @@ class ServiceOperations(unittest.TestCase):
             self.assertIn("Ran 1 test", run.stderr)
             self.assertNotIn("skipped=", run.stderr)
             return
+        (self.result / "owned-v1").write_bytes(Path("/proc/sys/kernel/random/boot_id").read_bytes())
         sys.path.insert(0, str(ROOT / "opt/sa02m-port-coordinator/tests"))
         import test_process_ownership as ownership
         h = ownership.ProcessOwnership()
@@ -132,6 +148,8 @@ class ServiceOperations(unittest.TestCase):
         self.addCleanup(h.tearDown)
         package = self.root / "coordinator"
         shutil.copytree(ROOT / "opt/sa02m-port-coordinator/sa02m_ports", package / "sa02m_ports")
+        guard = package / "sa02m_ports/service_guard.py"
+        guard.write_text(guard.read_text().replace("/usr/local/lib/sa02m-service-cache.sh", str(self.cache_module)))
         client = package / "sa02m_ports/client.py"
         client.write_text(client.read_text().replace("/run/sa02m-port-coordinator", h.root + "/run"))
         bindir = self.root / "bin"
@@ -140,6 +158,10 @@ class ServiceOperations(unittest.TestCase):
         sc.write_text('''#!/bin/sh
 printf '%s\\n' "$*" >>"''' + str(sc_log) + '''"
 case "$*" in
+  *--property=Id,Names,ActiveState,Job*)
+    for u in "$@"; do
+      case "$u" in *.service) printf 'Id=%s\\nNames=%s\\nActiveState=inactive\\nJob=\\n\\n' "$u" "$u" ;; esac
+    done ;;
   *--property=Id*) echo "$2" ;;
   *LoadState*) echo loaded ;;
   *FragmentPath*) echo /lib/systemd/system/vplc.service ;;
@@ -159,6 +181,7 @@ exit 0
         source = source.replace("RESULT_DIR=/var/run/sa02m-svcctl", "RESULT_DIR=" + str(self.result))
         source = source.replace("/var/log/sa02m_install.log", str(self.root / "helper.log"))
         source = source.replace("SA02M_STACKS_LIB=/usr/local/lib/sa02m-stacks-policy.sh", "SA02M_STACKS_LIB=/nonexistent")
+        source = source.replace("/usr/local/lib/sa02m-service-cache.sh", str(self.cache_module))
         self.helper.write_text(source)
         op = "c" * 32
         run = subprocess.run(["sh", str(self.helper), "stop", "vplc", op], env=self.env, text=True, capture_output=True, timeout=20)
@@ -167,6 +190,8 @@ exit 0
         self.assertEqual(final, {"ok": True, "id": "vplc", "action": "stop", "op_id": op})
         self.assertEqual(json.loads((self.result / "vplc.json").read_text()), final)
         self.assertIn("stop vplc.service", sc_log.read_text())
+        self.assertEqual((self.result / "list.gen").read_text(), "2\n")
+        self.assertEqual(list((self.result / "operations").iterdir()), [])
         before = sc_log.read_text().count("stop vplc.service")
         with h.lease():
             refused = subprocess.run(["sh", str(self.helper), "stop", "mqtt-bridge", "d" * 32], env=self.env, text=True, capture_output=True, timeout=20)

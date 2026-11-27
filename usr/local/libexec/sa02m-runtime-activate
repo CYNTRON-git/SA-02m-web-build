@@ -1,0 +1,20 @@
+#!/bin/sh
+# Open the existing update exclusions before Python reads any staged product
+# code. PID1 launches this helper with clean descriptors.
+set -eu
+program=/opt/sa02m-runtime-transition/runtime_transition.py
+case "${1:-}" in
+    status) [ "$#" = 1 ] || exit 64
+        exec /usr/bin/python3 -I -S -B "$program" status ;;
+    activate|capture-receipt) [ "$#" = 1 ] && [ "$(id -u)" = 0 ] || exit 64 ;;
+    release-capture) [ "$#" = 2 ] && [ "$(id -u)" = 0 ] || exit 64 ;;
+    *) exit 64 ;;
+esac
+umask 022
+exec 5>>/run/sa02m-install.lock
+flock -x -w 90 5 || exit 76
+exec 6>>/var/lib/sa02m-update/update.lock
+flock -x -w 90 6 || exit 76
+exec 7>>/var/lib/sa02m-update/control.lock
+flock -x -w 90 7 || exit 76
+exec /usr/bin/python3 -I -S -B "$program" "$@"

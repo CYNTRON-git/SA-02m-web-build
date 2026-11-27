@@ -129,21 +129,27 @@ for name in ("scripts/05-mqtt.sh", "scripts/update-www-only.sh"):
     assert loop, name
     with tempfile.TemporaryDirectory() as tmp:
         stage = Path(tmp)
-        script = '''install() {
+        script = '''source scripts/lib.sh
+        install() {
+            command install -m 0755 -- "${@: -2}"
+        }
+        mv() {
             local dest=${!#} src=${@: -2:1}
             if [ "${dest##*/}" = bridge_dtv_ce.py ]; then
                 test -s "$BRIDGE_DIR/bridge_dtv_catalog.py" || return 1
             fi
-            cp -- "$src" "$dest" || return 1
+            command mv -- "$src" "$dest" || return 1
             printf '%s\\n' "${dest##*/}" >> "$BRIDGE_DIR/order"
         }
         ''' + loop.group(0)
         import os
         env = dict(os.environ, OPT_DIR=str(root / "opt/sa02m-modbus-mqtt"),
-                   MQTT_OPT=str(root / "opt/sa02m-modbus-mqtt"), BRIDGE_DIR=tmp)
+                   MQTT_OPT=str(root / "opt/sa02m-modbus-mqtt"), BRIDGE_DIR=tmp,
+                   LOG_FILE=str(stage / "install.log"))
         subprocess.run(["bash", "-eu", "-c", script], env=env, check=True)
         order = (stage / "order").read_text().splitlines()
         assert order.index("bridge_dtv_catalog.py") < order.index("bridge_dtv_ce.py"), name
+        assert order.index("bridge_admission.py") < order.index("bridge_roster.py"), name
         assert (stage / "bridge_dtv_catalog.py").read_bytes() == (root / "opt/sa02m-modbus-mqtt/bridge_dtv_catalog.py").read_bytes()
 PY
 then ok 'DTV catalogue staged before its poller in both bridge installation paths'
