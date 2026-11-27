@@ -1,0 +1,236 @@
+#!/usr/bin/python3
+"""Run one object-specific VPN for workloads sharing this unit's private network."""
+import ipaddress
+import json
+import os
+from pathlib import Path
+import re
+import secrets
+import signal
+import socket
+import stat
+import subprocess
+import sys
+import time
+
+IP = '/usr/sbin/ip'
+WG = '/usr/bin/wg'
+OPENVPN = '/usr/sbin/openvpn'
+NSENTER = '/usr/bin/nsenter'
+HELPER = '/usr/local/sbin/sa02m-site-vpn'
+HOST = Path('/proc/1/ns/net')
+ROOT = Path('/etc/sa02m/site-vpn')
+
+
+def require(condition, message):
+    if not condition:
+        raise ValueError(message)
+
+
+def run(*cmd):
+    subprocess.run(cmd, check=True, stdin=subprocess.DEVNULL, timeout=20)
+
+
+def private_scope():
+    require(HOST.stat().st_ino != Path('/proc/self/ns/net').stat().st_ino,
+            'service requires PrivateNetwork=yes')
+
+
+def file_at(folder, name):
+    file = folder/name
+    st = file.lstat()
+    require(stat.S_ISREG(st.st_mode) and st.st_uid == 0 and not st.st_mode & 0o077,
+            'expected a private root-owned file: ' + str(file))
+    return str(file)
+
+
+def config_for(site):
+    require(re.fullmatch(r'[a-z0-9][a-z0-9_-]{0,30}',site), 'invalid site name')
+    folder = ROOT/site
+    for directory in (ROOT,folder):
+        st = directory.lstat()
+        require(stat.S_ISDIR(st.st_mode) and st.st_uid == 0 and not st.st_mode & 0o022,
+                'insecure configuration directory')
+    data = json.loads(Path(file_at(folder,'profile.json')).read_bytes())
+    base = {'backend','routes'}
+    require(isinstance(data, dict) and isinstance(data.get('routes'),list)
+            and 0 < len(data['routes']) <= 64, 'provide 1..64 site routes')
+    routes = [ipaddress.ip_network(n,strict=True) for n in data['routes']]
+    require(len(routes)==len(set(routes)), 'duplicate site route')
+    if data.get('backend') == 'wireguard':
+        require(set(data)==base|{'addresses'} and isinstance(data['addresses'],list)
+                and 0<len(data['addresses'])<=16, 'invalid WireGuard address configuration')
+        addresses = [ipaddress.ip_interface(a) for a in data['addresses']]
+        require(set(r.version for r in routes) <= set(a.version for a in addresses),
+                'route has no configured address family')
+        return data['backend'],routes,addresses,file_at(folder,'wireguard.conf')
+    require(data.get('backend')=='openvpn' and base|{'remote','port','proto','server_name'}<=set(data)
+            and set(data)<=base|{'remote','port','proto','server_name','tls_crypt','auth_file'},
+            'invalid OpenVPN profile')
+    remote = ipaddress.ip_address(data['remote'])
+    require(data['proto'] in (f'udp{remote.version}',f'tcp{remote.version}-client')
+            and type(data['port']) is int and 1<=data['port']<=65535
+            and re.fullmatch(r'[A-Za-z0-9][A-Za-z0-9._-]{0,127}',data['server_name']),
+            'invalid OpenVPN peer')
+    params=['--remote',str(remote),str(data['port']),'--proto',data['proto'],
+            '--remote-cert-tls','server','--verify-x509-name',data['server_name'],'name',
+            '--ca',file_at(folder,'ca.pem'),'--cert',file_at(folder,'client.pem'),'--key',file_at(folder,'client.key')]
+    for key, option, filename in [('tls_crypt','--tls-crypt','tls-crypt.key'),('auth_file','--auth-user-pass','auth.txt')]:
+        require(type(data.get(key,False)) is bool,'invalid '+key)
+        if data.get(key):
+            params.extend([option,file_at(folder,filename)])
+    return data['backend'],routes,[],params
+
+
+def addresses_and_routes(device, addresses, routes):
+    require(addresses and set(r.version for r in routes) <= set(a.version for a in addresses),
+            'tunnel is missing a routed address family')
+    for addr in addresses:
+        flags=['nodad'] if addr.version==6 else []
+        run(IP,'address','add',str(addr),'dev',device,*flags)
+    run(IP,'link','set','dev',device,'up')
+    for route in routes:
+        # Assigning an address may have already created the same connected route.
+        run(IP,'-'+str(route.version),'route','replace',str(route),'dev',device)
+
+
+def host(*cmd):
+    return [NSENTER,'--net='+str(HOST),'--',*cmd]
+
+
+def resolve_endpoints(site,output):
+    # wg's endpoint names belong to the site's underlay resolver. Only the
+    # anonymous descriptor of the private service receives the configuration.
+    _,_,_,config=config_for(site)
+    for line in Path(config).read_text().splitlines(keepends=True):
+        directive=line.split('#',1)[0].strip()
+        name,equals,value=directive.partition('=')
+        if equals and name.strip().lower()=='endpoint':
+            match=re.fullmatch(r'(?:\[([^]]+)\]|([^: ]+)):([0-9]{1,5})',value.strip())
+            require(match and 0<int(match[3])<=65535,'invalid WireGuard endpoint')
+            host_name=match[1] or match[2]
+            choices=socket.getaddrinfo(host_name,int(match[3]),type=socket.SOCK_DGRAM)
+            family,_,_,_,address=choices[0]
+            if family==socket.AF_INET6:
+                zone='%'+str(address[3]) if address[3] else ''
+                endpoint='['+address[0]+zone+']:'+str(address[1])
+            else:
+                endpoint=address[0]+':'+str(address[1])
+            line='Endpoint = '+endpoint+'\n'
+        output.write(line)
+
+
+def wireguard_config(site,device):
+    fd=os.memfd_create('sa02m-site-wg',os.MFD_CLOEXEC)
+    with os.fdopen(fd,'w+b') as conf:
+        subprocess.run(host(HELPER,'resolve-endpoints',site,str(fd)),check=True,timeout=35,
+                       pass_fds=(fd,),stdin=subprocess.DEVNULL)
+        conf.seek(0)
+        # wg reports invalid key values verbatim. Never send its parser diagnostics to journald.
+        result=subprocess.run([WG,'setconf',device,'/proc/self/fd/'+str(fd)],stdin=subprocess.DEVNULL,
+                              stdout=subprocess.DEVNULL,stderr=subprocess.DEVNULL,timeout=20,pass_fds=(fd,))
+        require(result.returncode==0, 'wg rejected the private site configuration')
+
+
+def move_here(device):
+    run(*host(IP,'link','set','dev',device,'netns',str(os.getpid())))
+
+
+def openvpn_up():
+    device=os.environ['dev']
+    owner=int(os.environ['SA02M_SITE_OWNER'])
+    owner_ns=Path(f'/proc/{owner}/ns/net')
+    require(re.fullmatch(r'sov[0-9a-f]{10}',device) and device==os.environ['SA02M_SITE_DEV']
+            and owner_ns.stat().st_ino==int(os.environ['SA02M_SITE_NS']), 'unexpected interface or owner namespace')
+    # Pin the destination while joining it. The helper that requests the move remains
+    # alive in that namespace until ip returns.
+    fd=os.open(owner_ns,os.O_RDONLY)
+    try:
+        require(os.fstat(fd).st_ino==int(os.environ['SA02M_SITE_NS']), 'owner namespace changed')
+        os.setns(fd,0)
+    finally:
+        os.close(fd)
+    private_scope()
+    backend,routes,_,_=config_for(os.environ['SA02M_SITE'])
+    require(backend=='openvpn', 'invalid backend')
+    addresses=[]
+    if 'ifconfig_local' in os.environ:
+        addresses.append(ipaddress.IPv4Interface((os.environ['ifconfig_local'],os.environ['ifconfig_netmask'])))
+    if 'ifconfig_ipv6_local' in os.environ:
+        addresses.append(ipaddress.IPv6Interface((os.environ['ifconfig_ipv6_local'],int(os.environ['ifconfig_ipv6_netbits']))))
+    move_here(device)
+    addresses_and_routes(device,addresses,routes)
+    Path('/run/sa02m-site-vpn-'+os.environ['SA02M_SITE'],device).touch(mode=0o600,exist_ok=True)
+
+
+def ready():
+    target=os.environ['NOTIFY_SOCKET']
+    with socket.socket(socket.AF_UNIX,socket.SOCK_DGRAM) as sock:
+        sock.sendto(b'READY=1', ('\0'+target[1:]) if target.startswith('@') else target)
+
+
+def serve(site):
+    private_scope()
+    links=json.loads(subprocess.check_output([IP,'-j','link','show'],timeout=10))
+    require({r['ifname'] for r in links}=={'lo'}, 'expected only loopback in fresh private network')
+    backend,routes,addresses,params=config_for(site)
+    run(IP,'link','set','lo','up')
+    device=('swg' if backend=='wireguard' else 'sov')+secrets.token_hex(5)
+    if backend=='wireguard':
+        # In one rtnetlink operation, create in the underlay and place straight
+        # in the private namespace. No interface or key can be stranded outside it.
+        run(*host(IP,'link','add','dev',device,'netns',str(os.getpid()),'type','wireguard'))
+        try:
+            wireguard_config(site,device)
+            addresses_and_routes(device,addresses,routes)
+            ready()
+            while True:
+                signal.pause()
+        finally:
+            run(IP,'link','delete','dev',device)
+    else:
+        owner=str(os.getpid())
+        conf=['--client','--dev',device,'--dev-type','tun','--topology','subnet','--nobind',
+              '--auth-nocache','--pull-filter','reject','setenv','--disable-dco','--route-nopull','--ifconfig-noexec','--route-noexec',
+              '--script-security','2','--up',HELPER+' openvpn-up',
+              '--setenv','SA02M_SITE_OWNER',owner,'--setenv','SA02M_SITE_NS',str(Path('/proc/self/ns/net').stat().st_ino),
+              '--setenv','SA02M_SITE',site,'--setenv','SA02M_SITE_DEV',device,*params]
+        marker=Path('/run/sa02m-site-vpn-'+site,device)
+        environment = {k:v for k,v in os.environ.items() if k not in {'NOTIFY_SOCKET','LISTEN_FDS','LISTEN_PID','LISTEN_FDNAMES'}}
+        p=subprocess.Popen(host(OPENVPN,*conf),stdin=subprocess.DEVNULL,env=environment)
+        try:
+            deadline=time.monotonic()+75
+            while not marker.is_file():
+                require(p.poll() is None and time.monotonic()<deadline, 'OpenVPN did not configure the private network')
+                time.sleep(.2)
+            ready()
+            require(p.wait()==0,'OpenVPN exited abnormally')
+        finally:
+            if p.poll() is None:
+                p.terminate()
+                try:
+                    p.wait(timeout=10)
+                except subprocess.TimeoutExpired:
+                    p.kill()
+                    p.wait()
+            marker.unlink(missing_ok=True)
+
+
+if __name__=='__main__':
+    try:
+        if sys.argv[1:2]==['openvpn-up']:
+            openvpn_up()
+        elif len(sys.argv)==4 and sys.argv[1]=='resolve-endpoints':
+            require(os.geteuid()==0 and HOST.stat().st_ino==Path('/proc/self/ns/net').stat().st_ino, 'expected underlay resolver')
+            fd=int(sys.argv[3])
+            require(fd>2 and os.readlink('/proc/self/fd/'+str(fd))=='/memfd:sa02m-site-wg (deleted)', 'expected anonymous configuration descriptor')
+            with os.fdopen(fd,'w') as output:
+                resolve_endpoints(sys.argv[2],output)
+        else:
+            require(len(sys.argv)==3 and sys.argv[1]=='serve','expected serve SITE')
+            def stop(_signal,_frame):
+                raise SystemExit(0)
+            signal.signal(signal.SIGTERM,stop)
+            serve(sys.argv[2])
+    except (KeyError,ValueError,OSError,subprocess.SubprocessError) as exc:
+        sys.exit(str(exc))

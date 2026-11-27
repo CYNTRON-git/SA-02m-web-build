@@ -301,6 +301,12 @@ if [ -e /usr/local/sbin/sa02m-dtb-patch.py ]; then
     rm -f /usr/local/sbin/sa02m-dtb-patch.py
 fi
 
+# Объектовые VPN включаются оператором для выбранных приложений.
+sa02m_atomic_install -m 755 "$ETC_DIR/../usr/local/sbin/sa02m-site-vpn" /usr/local/sbin/sa02m-site-vpn
+for unit in sa02m-site@.target sa02m-site-vpn@.service sa02m-site-vpn-workload@.service; do
+    sa02m_atomic_install -m 644 "$ETC_DIR/systemd/system/$unit" "/etc/systemd/system/$unit"
+done
+
 # ── Загрузка без DNS: ожидание carrier + пересборка резолвера ─────────────
 # Контракт: docs/contracts/boot-network-dns.md. Оба хелпера идемпотентны и
 # всегда выходят с кодом 0; drop-in'ы подключены через `ExecStartPre=-`, так

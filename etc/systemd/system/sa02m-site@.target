@@ -1,0 +1,6 @@
+[Unit]
+Description=VPN и приложение объекта %i
+Upholds=sa02m-site-vpn-workload@%i.service
+
+[Install]
+WantedBy=multi-user.target

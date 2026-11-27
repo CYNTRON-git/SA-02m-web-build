@@ -1,0 +1,18 @@
+[Unit]
+Description=Изолированная сеть VPN объекта %i
+After=network.target
+PartOf=sa02m-site@%i.target
+
+[Service]
+Type=notify
+NotifyAccess=main
+PrivateNetwork=yes
+RuntimeDirectory=sa02m-site-vpn-%i
+RuntimeDirectoryMode=0700
+UMask=0077
+ExecStart=/usr/local/sbin/sa02m-site-vpn serve %i
+Restart=on-failure
+RestartSec=5
+TimeoutStartSec=90
+TimeoutStopSec=20
+KillMode=control-group
