@@ -12,10 +12,12 @@ import sys
 import threading
 import time
 import unittest
+from unittest.mock import patch
 
 ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0,str(ROOT/'opt/sa02m-runtime-transition'))
 from files import bounded_command
+import units
 RUN = Path('/run/sa02m-port-coordinator')
 STATE = Path('/var/lib/sa02m-runtime-transition')
 OWNED = Path('/run/sa02m-svcctl/owned-v1')
@@ -82,6 +84,23 @@ class CommandEvidence(unittest.TestCase):
             bounded_command([*prefix,'import sys;sys.stdout.write("x"*65537)'], 4)
         with self.assertRaises(subprocess.TimeoutExpired):
             bounded_command([*prefix,'import time;time.sleep(5)'], 0.1)
+
+    def test_roster_snapshot_rejects_replacement_or_changed_policy(self):
+        running = dict(Id=units.ROSTER, Job='42', Type='oneshot', ExecMainStartTimestampMonotonic='9000',
+                       LoadState='loaded', UnitFileState='static', TriggeredBy='sa02m-rs485-roster.timer',
+                       ActiveState='activating', SubState='start', MainPID='100', ControlPID='0')
+        finished = dict(running, Job='', ActiveState='inactive', SubState='dead', MainPID='0')
+        for new in (dict(running, Job='43'), dict(finished, ExecMainStartTimestampMonotonic='9500'),
+                    dict(finished, UnitFileState='enabled'), dict(finished, Type='simple'),
+                    dict(finished, TriggeredBy='other.timer'), dict(finished, ActiveState='failed'),
+                    dict(finished, ControlPID='101'), dict(finished, MainPID='102')):
+            with self.subTest(new=new), patch.object(units, 'properties', side_effect=[running,new]), \
+                    patch.object(units.time, 'sleep'), self.assertRaisesRegex(BlockingIOError, 'unit_job_pending'):
+                units.snapshot(units.ROSTER)
+        with patch.object(units, 'properties', return_value=running) as query, \
+                self.assertRaisesRegex(BlockingIOError, 'unit_job_pending'):
+            units.snapshot(ACTIVE_UNIT)
+        query.assert_called_once_with(ACTIVE_UNIT)
 
 
 class RuntimeTransition(unittest.TestCase):
@@ -174,6 +193,42 @@ class RuntimeTransition(unittest.TestCase):
         self.assertEqual(state['reason'],reason,state)
         self.assertEqual(state,json.loads(cli(str(ACTIVATE),'status').stdout))
         return state
+
+    def test_running_roster_job_can_finish_before_snapshot(self):
+        service = units.ROSTER
+        timer = 'sa02m-rs485-roster.timer'
+        gate = Path('/run/sa02m-test-roster-release')
+        for path in (gate, UNIT/service, UNIT/timer):
+            self.assertFalse(os.path.lexists(path))
+            self.addCleanup(path.unlink, missing_ok=True)
+        put(UNIT/service, "[Service]\nType=oneshot\nExecStart=/bin/sh -c "
+            "'while test ! -e /run/sa02m-test-roster-release; do sleep 0.1; done'\n")
+        put(UNIT/timer, '[Timer]\nOnActiveSec=100ms\nOnUnitActiveSec=8s\nAccuracySec=100ms\n')
+        self.assertEqual(cli('systemctl','daemon-reload').returncode, 0)
+        self.addCleanup(cli, 'systemctl', 'stop', timer, service)
+        self.assertEqual(cli('systemctl','start',timer).returncode, 0)
+        for _ in range(50):
+            running = units.properties(service)
+            if running['Job'].isdigit() and int(running['ExecMainStartTimestampMonotonic']) > 0:
+                break
+            time.sleep(0.05)
+        self.assertEqual(running['ActiveState'], 'activating')
+        put(ACTIVE, json.dumps(dict(schema=1, release_id='a'*64, manifest_sha256='a'*64,
+                                    groups=['gateway','home','mqtt','opcua','snmp'])))
+        selector = ACTIVE.read_bytes()
+        with self.assertRaisesRegex(BlockingIOError, 'unit_job_pending'):
+            units.snapshot(service)
+        self.assertEqual(ACTIVE.read_bytes(), selector)
+        release = threading.Timer(0.7, gate.touch)
+        release.start()
+        try:
+            info = units.snapshot(service)
+        finally:
+            release.join()
+        self.assertEqual((info['Job'], info['ActiveState'], info['SubState'], info['MainPID'], info['ControlPID']),
+                         ('','inactive','dead','0','0'))
+        self.assertTrue(set(info).issubset(units.FIELDS))
+        self.assertEqual(ACTIVE.read_bytes(), selector)
 
     def test_first_and_repeated_activation_and_rollback(self):
         self.assertEqual(json.loads(cli(str(ACTIVATE),'status').stdout)['phase'],'pending')

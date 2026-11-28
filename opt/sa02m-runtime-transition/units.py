@@ -3,6 +3,7 @@ import json
 import os
 from pathlib import Path
 import re
+import subprocess
 import time
 
 from files import MANAGER, SELECTOR, bounded_command, directory, entry_sources, read, release_groups, replace, sync
@@ -13,27 +14,68 @@ ARGUMENTS = {'sa02m-cloud-control': ' --profile cloud',
              'sa02m-mqtt-snmp': ' -c /etc/sa02m-mqtt-snmp.conf',
              'sa02m-serial-gateway': ' --config /etc/sa02m-gateway.yaml'}
 FIELDS = ('Id', 'LoadState', 'ActiveState', 'SubState', 'UnitFileState', 'Job', 'MainPID', 'ControlPID', 'TriggeredBy')
+ROSTER = 'sa02m-rs485-roster.service'
+ROSTER_FIELDS = ('Type', 'ExecMainStartTimestampMonotonic')
 
 
-def manager(*args, absent=False):
-    result = bounded_command(['/usr/bin/systemctl', *args], 60)
+def manager(*args, absent=False, timeout=60):
+    result = bounded_command(['/usr/bin/systemctl', *args], timeout)
     if result.returncode and not (absent and result.returncode == 4):
         raise ValueError('systemd_' + args[0] + '_failed')
     return result.stdout.decode('utf-8')
 
 
-def snapshot(name):
-    raw = manager('show', '--all', '--property=' + ','.join(FIELDS), name, absent=True)
+def properties(name, timeout=60):
+    fields = FIELDS + ROSTER_FIELDS if name == ROSTER else FIELDS
+    raw = manager('show', '--all', '--property=' + ','.join(fields), name, absent=True, timeout=timeout)
     info = {}
     for line in raw.splitlines():
         key, eq, value = line.partition('=')
-        if not eq or key not in FIELDS or key in info:
+        if not eq or key not in fields or key in info:
             raise ValueError('unknown_unit_properties:' + name)
         info[key] = value
     if info.get('Id') != name or 'Job' not in info:
         raise ValueError('unknown_unit_identity:' + name)
-    if info['Job'] not in ('', '0'):
+    return info
+
+
+def wait_for_roster_job(name, info):
+    # Only the existing start of the shipped periodic oneshot may finish here.
+    job = info['Job']
+    started = info.get('ExecMainStartTimestampMonotonic', '')
+    policy = ('loaded', 'static', 'sa02m-rs485-roster.timer', 'oneshot', started)
+    identity_fields = ('LoadState', 'UnitFileState', 'TriggeredBy', *ROSTER_FIELDS)
+    if (name != ROSTER or not re.fullmatch(r'[1-9][0-9]*', job)
+            or not re.fullmatch(r'[1-9][0-9]*', started)):
         raise BlockingIOError('unit_job_pending')
+    deadline = time.monotonic() + 5
+    while tuple(info.get(field) for field in identity_fields) == policy:
+        state = (info.get('ActiveState'), info.get('SubState'))
+        if (info['Job'] in ('', '0') and state == ('inactive', 'dead')
+                and info.get('MainPID') == '0' and info.get('ControlPID') == '0'):
+            return info
+        if info['Job'] != job or state != ('activating', 'start'):
+            break
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            break
+        time.sleep(min(0.2, remaining))
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            break
+        try:
+            info = properties(name, remaining)
+        except subprocess.TimeoutExpired:
+            break
+    raise BlockingIOError('unit_job_pending')
+
+
+def snapshot(name):
+    info = properties(name)
+    if info['Job'] not in ('', '0'):
+        info = wait_for_roster_job(name, info)
+    for field in ROSTER_FIELDS:
+        info.pop(field, None)
     if info.get('LoadState') in ('not-found', 'masked'):
         if ((info.get('ActiveState'), info.get('SubState')) != ('inactive', 'dead')
                 or info.get('MainPID', '0') != '0' or info.get('ControlPID', '0') != '0'):
