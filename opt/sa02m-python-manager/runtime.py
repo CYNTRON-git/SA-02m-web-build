@@ -22,6 +22,7 @@ from integrity import (SYSTEM_SITE, checked, read_json, require, run, sha,
 
 BASE = Path("/opt/sa02m-python-runtimes")
 GROUPS = ("gateway", "home", "mqtt", "opcua", "snmp")
+GROUP_PROBE_TIMEOUT = 120
 PIP = "import runpy,sys;sys.path.insert(0,sys.argv.pop(1));runpy.run_module('pip',run_name='__main__')"
 
 
@@ -117,7 +118,7 @@ class Manager:
         if bridge:
             expected["cryptography"] = self.cat.bridge["packages"]["python3-cryptography"]["version"].split("-")[0]
         output = run([str(path/"bin/python"), "-I", "-B", str(self.cat.dir/"probe.py"),
-                      json.dumps([config, expected, bridge,self.cat.native if config.get("native") else {}])], 35)
+                      json.dumps([config, expected, bridge,self.cat.native if config.get("native") else {}])], GROUP_PROBE_TIMEOUT)
         return {"tree_sha256":actual, **json.loads(output)}
 
     def build(self, group, path):

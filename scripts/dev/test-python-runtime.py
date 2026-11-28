@@ -170,6 +170,31 @@ class RuntimeTest(unittest.TestCase):
                 wheel.write_bytes(bytes(len(saved)))
                 with self.assertRaisesRegex(Unavailable,"file mismatch"):cat.validate()
 
+    @unittest.skipUnless(os.geteuid() == 0, "requires a trusted venv under /run")
+    def test_group_probe_budget_for_preparation_and_verification(self):
+        interpreter = Path(sys.executable).resolve()
+        target = {"interpreter": {"path": str(interpreter)}, "python": f"{sys.version_info.major}.{sys.version_info.minor}"}
+        group = {"imports": [], "packages": [], "bridge": False}
+        cat = SimpleNamespace(dir=CAT, target=target, manifest={"groups": {"home": group}, "packages": {}})
+        manager = runtime.Manager(cat)
+        with tempfile.TemporaryDirectory(dir="/run") as tmp:
+            path = Path(tmp)/"home"
+            subprocess.run([str(interpreter), "-I", "-m", "venv", "--without-pip", str(path)], check=True)
+            with patch.object(runtime, "run", wraps=runtime.run) as probe:
+                prepared = manager.inspect("home", path)
+                verified = manager.inspect("home", path, prepared["tree_sha256"])
+                self.assertEqual(prepared, verified)
+                self.assertEqual(prepared["distributions"], {})
+                self.assertEqual(probe.call_count, 2)
+                for call in probe.call_args_list:
+                    argv, timeout = call.args
+                    self.assertEqual(argv[:4], [str(path/"bin/python"), "-I", "-B", str(CAT/"probe.py")])
+                    self.assertEqual(timeout, 120)
+                (path/"unexpected").touch()
+                with self.assertRaisesRegex(Unavailable, "runtime bytes changed"):
+                    manager.inspect("home", path, prepared["tree_sha256"])
+                self.assertEqual(probe.call_count, 2)
+
     def test_verify_retries_only_a_real_subprocess_deadline(self):
         def expired():
             subprocess.run([sys.executable, "-c", "import time; time.sleep(10)"], timeout=0.04)
